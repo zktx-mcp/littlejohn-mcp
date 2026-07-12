@@ -1,0 +1,321 @@
+# AGENTS.md
+
+Read this file before every task in this repository.
+
+This file is the sole authority for repository-wide development, review,
+documentation, planning, progress, technical-debt, verification, and completion
+policy. It does not own product policy, product state, evidence authority,
+runtime architecture, numeric rules, protocol behavior, or transaction
+authority.
+
+## Document Ownership
+
+Read every document whose boundary a task touches.
+
+| Document | Sole responsibility |
+| --- | --- |
+| `docs/PRODUCT_POLICY.md` | Product identity, scope, philosophy, responsibilities, support meanings, and the public current-support projection |
+| `docs/EVIDENCE_POLICY.md` | Source authority, provenance, freshness, coverage, inference, and public evidence claims |
+| `docs/ARCHITECTURE.md` | Repository state and ownership, modules, dependencies, processes, persistence, browser and CLI surfaces, WalletConnect session ownership, and loopback HTTP |
+| `docs/NUMERIC_POLICY.md` | Numeric values, units, asset identity, decimals, conversion, arithmetic, prices, charts, serialization, and numeric verification |
+| `docs/PROTOCOL_ADAPTERS.md` | Protocol packages, capability mapping, activation, commercial behavior, and adapter verification |
+| `docs/TRANSACTION_POLICY.md` | Transaction authority, explicit confirmation, construction, commitments, review, simulation, wallet handoff, broadcast, receipts, and transaction security claims |
+
+Keep each detailed rule in its owning document. A non-owning document names the
+owner and does not paraphrase the rule.
+
+## Documentation Policy
+
+- Every binding policy, current-state fact, interface contract, schema, and
+  identifier has one authoritative source. A second handwritten copy is a
+  defect even when its wording differs.
+- Generated projections identify their authoritative source and are never
+  edited as independent contracts.
+- A `Current State` section contains only verified present behavior and
+  availability. Required architecture and policy appear outside that section
+  and do not claim implementation.
+- Replace obsolete current-state statements. Do not retain historical state.
+- When documents conflict, stop work at the affected boundary. Determine which
+  document owns the subject, preserve permanent product and security boundaries,
+  and remove the non-owner copy. Do not invent precedence between two rules that
+  both belong to the same owner; report the contradiction for explicit
+  resolution.
+- A task plan narrows implementation work but cannot redefine product policy or
+  another binding document. A binding policy change requires explicit user
+  approval before the dependent implementation proceeds.
+- `AGENTS.md` and `docs/` contain only current policy and current state. Exclude
+  decision logs, chronological narratives, status snapshots, past alternatives,
+  meeting notes, retrospectives, implementation diaries, origin stories,
+  motivational prose, ecosystem commentary, roadmaps, phases, milestones,
+  forecasts, future feature lists, and speculative integrations.
+- Product behavior claims describe current implementation only. Policy documents
+  define mandatory boundaries without presenting unavailable behavior as a
+  feature. Unresolved task work belongs in the active progress document as
+  technical debt.
+- State implemented, unavailable, and permanently prohibited behavior
+  distinctly. Do not describe unavailable behavior as planned, optional, or an
+  extension.
+- External links are evidence citations, not required reading for instructions.
+- Public claims use source-owner official citations under
+  `docs/EVIDENCE_POLICY.md`.
+- Exclude other-chain and other-product comparisons.
+- Repository-visible code, comments, schemas, tests, fixtures, development
+  documents, and product documents use English by default.
+- Ignored files under `.WORK/` may use any language. Rewrite material in English
+  before moving it to a repository-visible surface.
+- Use plain, common technical terms. Remove coined, ambiguous, duplicate, and
+  legacy names.
+
+## Policy Conflict Resolution
+
+Resolve conflicts by authority, not by convenience:
+
+1. Permanent user authority, key-custody, transaction-integrity, numeric,
+   identity, privacy, and fail-closed boundaries cannot be weakened.
+2. The document that owns a subject controls that subject's contract and current
+   state.
+3. An accepted task plan controls implementation order and completion only
+   within the binding documents.
+4. Process and formatting rules cannot be used to weaken the original product
+   goal, a complete handoff, or a higher-authority boundary.
+
+A lower-authority rule never silently overrides a higher-authority rule. Stop at
+the conflict, preserve completed valid outputs, identify the exact owner, and
+request explicit resolution when the owning policy itself is contradictory or
+the required correction changes an accepted plan.
+
+## Workspace Policy
+
+- `.WORK/sources/` contains external source repositories used as references.
+- `.WORK/notes/` contains active task plan and progress files.
+- `.WORK/notes/research/` contains research material.
+- `.WORK/experiments/` contains isolated experiments that do not modify product
+  source.
+- `.WORK/` is ignored and is not product authority. An accepted plan is
+  authoritative only for its task implementation.
+- Do not preserve obsolete plans and progress files as an implementation
+  history. Delete them only after the user selects replacement, clean restart,
+  or abandonment and every reusable current requirement and item of evidence
+  has an explicit owner.
+- Preserve reusable experiments. Remove generated dependencies, build output,
+  credentials, and runtime session state from retained experiments.
+
+## Agent Rules
+
+- Inspect repository state before editing.
+- Preserve user changes and unrelated work.
+- State assumptions that affect authority, security, public interfaces,
+  financial meaning, support claims, or user authorization.
+- Make the smallest complete change that satisfies the accepted goal and closes
+  the affected boundary.
+- Do not add unrelated refactors or formatting.
+- Do not invent scripts, addresses, liquidity, quotes, evidence, or support.
+- Do not weaken binding policy or its verification without explicit user
+  approval.
+- An agent never accepts a third-party license, service term, paid threshold, or
+  redistribution obligation on the user's behalf. Record the exact official
+  terms and required package artifacts, then obtain explicit user approval
+  before the first dependent implementation or service use.
+- Run relevant checks, audit what those checks establish, and report exact
+  results.
+- Check final repository status and classify unexpected files.
+
+## Problem And Improvement Workflow
+
+Apply this workflow to every defect correction, hardening task, refactor, and
+quality improvement. Complete each step before the next.
+
+1. Do not fix a newly observed problem immediately.
+2. Combine agent findings and supplied external-review findings into one
+   deduplicated issue inventory. External review is evidence, not authority.
+3. Search affected and analogous boundaries for similar defects, including
+   implementation, tests, schemas, generated projections, documentation, and
+   downstream handoffs.
+4. Identify structural root causes. Separate root causes, direct defects,
+   consequences, unaccepted public choices, and unrelated observations.
+5. Produce an honest structural improvement plan that preserves the accepted
+   goal and review boundary, fixes the root causes, removes obsolete paths, and
+   defines independent verification.
+6. Start implementation only after the applicable plan and user-controlled
+   choices are explicitly accepted.
+
+Passing reported examples, adding wrappers, renaming work, narrowing its scope,
+or increasing test counts never substitutes for closing the complete affected
+boundary.
+
+## Work Plan And Progress Policy
+
+Do not create plan or progress files for trivial work. Use them when dependency
+management, multi-step implementation, review quality, technical debt, or
+handoff quality requires persistent task context.
+
+Task files are:
+
+```text
+.WORK/notes/<canonical-task-name>-plan.md
+.WORK/notes/<canonical-task-name>-progress.md
+```
+
+### Plan Baseline
+
+- The accepted plan is the fixed implementation baseline. Do not edit it during
+  implementation.
+- The plan defines one canonical task name, goal, exact scope, permanent
+  boundaries, dependency-ordered work units, inputs, outputs, affected surfaces,
+  acceptance gates, review evidence, debt handling, and final completion gates.
+- Write requirements and outcomes as decisive statements. Remove ambiguous
+  language that makes an implementer choose unstated behavior.
+- The plan must be executable by a third party without conversation history,
+  external narrative, or hidden decisions.
+- Do not rename, split, narrow, replace, or reframe a task to present incomplete
+  work as complete.
+- Do not delete or rewrite an active plan to escape its goal or reset
+  responsibility.
+- A clean restart requires explicit user authorization and a new proposed plan
+  that preserves the complete product goal and completion criteria before
+  implementation resumes.
+
+### Dependency Order And Work Units
+
+- Order work only by dependency, never by category, file type, team, or
+  convenience.
+- Every work unit consumes complete dependency outputs and produces a complete,
+  independently reviewable input for its dependents.
+- A passed work-unit output is the sole task authority for the contract,
+  policy, state model, or port that it owns. Dependent units consume that output
+  without redefining, repairing, weakening, or bypassing its meaning.
+- A work unit fixes every downstream-relevant invariant, failure behavior, and
+  extension point that belongs to its output. A dependent unit may add only the
+  implementations and entries permitted by those declared extension points.
+- If a dependent unit requires an unstated choice, a new bypass, or a change to
+  a passed dependency, the dependency handoff was incomplete. Stop at that
+  boundary; do not patch the missing authority in the dependent unit.
+- Each planned work unit identifies its owned authority, frozen handoff,
+  permitted downstream extensions, prohibited downstream changes, consumers,
+  and independent handoff verification.
+- A passed unit leaves the minimum reproducible handoff evidence needed to
+  prove that dependent work did not alter its frozen output. Use canonical
+  schema or artifact digests and owned-path manifests only when they reduce that
+  uncertainty; retain them in the progress document as current dependency
+  evidence, not as a chronological log.
+- Every work unit terminates with `passed` or `failed`.
+- Do not implement a later work unit early. Early implementation blocks the
+  task even when it appears useful or passes tests.
+- Do not split work into units too small to carry meaningful behavior, context,
+  and review evidence.
+- A review request contains one or more dependency-contiguous work units that
+  form a meaningful behavioral or architectural result.
+- Do not combine unrelated work merely to enlarge a review request.
+
+### Plan Simulation
+
+Before accepting a plan and at every work-unit and review boundary, perform:
+
+1. Forward simulation from the first unit to the final result, checking
+   dependency availability, handoff, policy, architecture, state transitions,
+   failure behavior, and review boundaries.
+2. Reverse simulation from the final result to the first unit, checking that
+   each required fact has one producer and each dependent receives a complete
+   input.
+
+Reject or block the plan when either simulation finds a missing dependency,
+circular or contradictory work, incomplete handoff, hidden early
+implementation, weakened boundary, policy violation, unreviewable work unit, or
+completion condition that permits unresolved task debt.
+
+### Progress Document
+
+- A progress document is current task state, not a diary.
+- Record only the canonical task and plan reference, current work unit and
+  outcome, available dependency outputs, material evidence, current blocker,
+  current technical debt, and self-review of architecture, policy, scope,
+  quality, and handoff completeness.
+- Replace stale content. Do not append timestamps, percentages, command history,
+  test counts, routine actions, resolved errors, or format-filling text.
+- Record verification only when it reduces handoff uncertainty or supports a
+  pass, fail, blocker, risk, or debt conclusion.
+- Retain the current canonical identifiers and digests of passed dependency
+  handoffs until every consumer boundary that relies on them has closed.
+
+### Technical Debt
+
+- Technical debt is an incomplete quality condition, not a successful outcome.
+- A work unit cannot pass when debt prevents its output, reviewability,
+  acceptance gate, or dependent handoff from being complete.
+- Bind downstream-resolvable debt to the earliest dependency-valid owning unit
+  and resolve it before that unit passes.
+- Do not move debt to an unrelated unit.
+- Unowned debt blocks the task. Remaining task-scoped debt makes final
+  completion fail.
+
+### Plan Conflict And Alternatives
+
+- A contradiction, missing dependency, early implementation, invalid handoff,
+  policy conflict, or unowned debt first creates a `blocked` state. It does not
+  decide the final outcome by itself.
+- Stop at the affected boundary. Do not change the accepted plan, enter another
+  unit, or implement a recovery path before the user selects an alternative.
+- State the exact conflict, affected outputs, evidence, and why the accepted
+  plan cannot proceed unchanged.
+- Present executable in-scope alternatives and their costs. These include
+  revalidating completed outputs, reverting incomplete work, restarting the
+  invalid boundary, explicitly authorized clean restart under the full goal, or
+  abandonment.
+- Do not delete a complete output merely because its plan is blocked.
+- Classify an execution attempt as `failed` only after the selected alternative
+  terminates it, the user abandons the goal, or no executable alternative
+  remains.
+
+### Pre-Release Anti-Legacy Policy
+
+- The repository has no released compatibility surface.
+- Use the best current structure directly.
+- Remove obsolete names and structures across code, schemas, tests, fixtures,
+  and documentation in the owning work unit.
+- Do not add compatibility aliases, deprecated wrappers, legacy readers or
+  writers, dual fields, old-name fallbacks, or migration shims for unreleased
+  behavior.
+
+### Outcome Rules
+
+- Work-unit and final task outcomes are `passed` or `failed`. `blocked` is a
+  current state, not success.
+- A failed execution attempt leaves the original goal incomplete and never
+  makes replacement planning the completed product.
+- Do not use partial success or positive wording to pass incomplete work.
+- Acceptance gates and checklists are minimum evidence, not proof of completion
+  or quality.
+- The result passes only when it honestly and robustly satisfies the original
+  goal, product boundaries, architecture, and complete dependent handoff.
+- Passing gates never overrides failed self-review, architecture weakness,
+  policy violation, incomplete handoff, or technical debt.
+
+## Test And Verification Policy
+
+- Test count has no authority.
+- Audit test code to determine the behavior, boundaries, and counterexamples it
+  actually verifies.
+- Test schema rejection, normalization, exact numeric behavior, commitments,
+  malformed inputs, stale state, mismatches, cancellation, and failure paths
+  applicable to the implemented boundary.
+- Test security and external boundaries independently from the implementation
+  path. Do not make a generated projection verify its own source.
+- Do not hardcode production behavior for fixtures, manipulate tests to pass, or
+  treat a special-case reproduction as complete boundary coverage.
+- Automated tests never broadcast a transaction or request a real signature.
+- Networked smoke tests and broadcast-capable checks are manual-only.
+
+## Commands
+
+Inspect the current manifest before running project commands. Use only declared
+scripts.
+
+## Completion
+
+- Implement the requested current behavior without weakening its owning policy.
+- Keep code, schemas, interfaces, storage, tests, and documentation consistent.
+- Verify relevant normal and failure paths and audit what the verification
+  proves.
+- Do not present fixtures, experiments, or discovery as live support.
+- State unavailable and unverified behavior directly.
+- Check final repository status.
