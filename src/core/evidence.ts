@@ -1,0 +1,422 @@
+import { z } from "zod";
+
+import {
+  canonicalBase64UrlSchema,
+  compareCodePointSequences,
+  createPrimitiveSchemaSet,
+  prefixedCanonicalBase64UrlSchema,
+} from "./primitives.js";
+import { deepFreezeValue } from "./immutability.js";
+import { guardJsonSchema, jsonObject } from "./json-object.js";
+
+type SourceReferenceKind = "public" | "configured_rpc" | "wallet_session" | "wallet_sdk" | "validated_input";
+type ConclusionStatus = "established" | "not_applicable" | "unavailable";
+type FactEvidenceAuthority = "external" | "validated_input" | "none";
+
+const definitionKeys = <Definition extends Readonly<Record<string, unknown>>>(definition: Definition) =>
+  Object.freeze(Object.keys(definition)) as unknown as readonly [Extract<keyof Definition, string>, ...Extract<keyof Definition, string>[]];
+
+export const sourceClassDefinitions = deepFreezeValue({
+  official_document: { external: true, referenceKinds: ["public"] },
+  chain_rpc: { external: true, referenceKinds: ["public", "configured_rpc"] },
+  wallet_sdk: { external: true, referenceKinds: ["wallet_sdk"] },
+  wallet_session: { external: true, referenceKinds: ["wallet_session"] },
+  validated_input: { external: false, referenceKinds: ["validated_input"] },
+} satisfies Record<string, { readonly external: boolean; readonly referenceKinds: readonly SourceReferenceKind[] }>);
+
+export const sourceClasses = definitionKeys(sourceClassDefinitions);
+export const externalSourceClasses = Object.freeze(sourceClasses.filter((sourceClass) =>
+  sourceClassDefinitions[sourceClass].external)) as readonly [
+    Exclude<(typeof sourceClasses)[number], "validated_input">,
+    ...Exclude<(typeof sourceClasses)[number], "validated_input">[],
+  ];
+
+export const sourceClassAcceptsReference = (
+  sourceClass: (typeof sourceClasses)[number],
+  referenceKind: SourceReferenceKind,
+): boolean => sourceClassDefinitions[sourceClass].referenceKinds.includes(referenceKind as never);
+
+export const factOutcomeDefinitions = deepFreezeValue({
+  not_observed: { conclusionStatus: "not_applicable", evidenceAuthority: "none" },
+  not_present: { conclusionStatus: "not_applicable", evidenceAuthority: "none" },
+  not_requested: { conclusionStatus: "not_applicable", evidenceAuthority: "none" },
+  observed: { conclusionStatus: "established", evidenceAuthority: "external" },
+  pending: { conclusionStatus: "established", evidenceAuthority: "external" },
+  source_failed: { conclusionStatus: "unavailable", evidenceAuthority: "external" },
+  source_inconsistent: { conclusionStatus: "unavailable", evidenceAuthority: "external" },
+  unsupported: { conclusionStatus: "not_applicable", evidenceAuthority: "none" },
+  validated_input: { conclusionStatus: "established", evidenceAuthority: "validated_input" },
+} satisfies Record<string, {
+  readonly conclusionStatus: ConclusionStatus;
+  readonly evidenceAuthority: FactEvidenceAuthority;
+}>);
+
+export const factOutcomes = definitionKeys(factOutcomeDefinitions);
+
+export const freshnessRuleDefinitions = deepFreezeValue({
+  chain_anchor_exact: {
+    status: "fresh",
+    sourceClasses: ["chain_rpc"],
+    anchor: "consistent_present",
+  },
+  wallet_session_current: {
+    status: "fresh",
+    sourceClasses: ["wallet_sdk", "wallet_session"],
+    anchor: "any",
+  },
+  validated_input_current: {
+    status: "fresh",
+    sourceClasses: ["validated_input"],
+    anchor: "any",
+  },
+  pending_transaction_observed: {
+    status: "unknown",
+    sourceClasses: ["chain_rpc"],
+    anchor: "absent",
+    exactSourceCount: 1,
+    purpose: "transaction",
+  },
+} as const);
+
+export const freshnessRuleIds = definitionKeys(freshnessRuleDefinitions);
+
+export const warningDefinitions = Object.freeze({
+  decimals_unavailable: Object.freeze({
+    message: "Token decimals are unavailable for an exact display amount.",
+  }),
+  partial_result: Object.freeze({
+    message: "Some requested results are unavailable.",
+  }),
+  unsupported_transaction_type: Object.freeze({
+    message: "The transaction type is not interpreted.",
+  }),
+} as const);
+
+export const fieldIssueDefinitions = deepFreezeValue({
+  invalid_value: { message: "The field value is invalid." },
+} as const);
+
+export type WarningCode = keyof typeof warningDefinitions;
+
+export const warningCodes = Object.freeze(
+  Object.keys(warningDefinitions).sort(compareCodePointSequences),
+) as readonly [WarningCode, ...WarningCode[]];
+export type FieldIssueCode = keyof typeof fieldIssueDefinitions;
+export const fieldIssueCodes = definitionKeys(fieldIssueDefinitions);
+
+export const isStrictlyOrderedUnique = (values: readonly string[]): boolean => {
+  for (let index = 1; index < values.length; index += 1) {
+    if (compareCodePointSequences(values[index - 1] ?? "", values[index] ?? "") >= 0) return false;
+  }
+  return true;
+};
+
+const coverageStatusForCounts = (
+  established: number,
+  notApplicable: number,
+  unavailable: number,
+): "complete" | "partial" | "unavailable" => {
+  const total = established + notApplicable + unavailable;
+  if (total > 0 && unavailable === total) return "unavailable";
+  if (notApplicable > 0 || unavailable > 0) return "partial";
+  return "complete";
+};
+
+export const createEvidenceSchemaSet = () => {
+  const primitive = createPrimitiveSchemaSet();
+  const invocationId = prefixedCanonicalBase64UrlSchema("inv:", 32).brand("InvocationId");
+  const observationId = prefixedCanonicalBase64UrlSchema("obs:", 32).brand("ObservationId");
+  const sourceClass = z.enum(sourceClasses);
+  const externalSourceClass = z.enum(externalSourceClasses);
+  const digest = canonicalBase64UrlSchema(32);
+  const factOutcome = z.enum(factOutcomes);
+  const freshnessRuleId = z.enum(freshnessRuleIds);
+  const warningCode = z.enum(warningCodes);
+  const fieldIssueCode = z.enum(fieldIssueCodes);
+
+  const sourceReference = z.discriminatedUnion("kind", [
+    jsonObject({
+        kind: z.literal("public"),
+        sourceId: primitive.fixedIdentifier,
+        uri: z.url().refine((value) => {
+          const url = new URL(value);
+          return (
+            url.protocol === "https:" &&
+            url.username === "" &&
+            url.password === "" &&
+            url.href === value
+          );
+        }, "Public references must be canonical HTTPS URLs without user information."),
+      })
+      .strict(),
+    jsonObject({
+        kind: z.literal("configured_rpc"),
+        sourceId: prefixedCanonicalBase64UrlSchema("rpc:", 32),
+        publicOrigin: z.url().refine((value) => {
+          const url = new URL(value);
+          return (
+            (url.protocol === "http:" || url.protocol === "https:") &&
+            url.username === "" &&
+            url.password === "" &&
+            url.pathname === "/" &&
+            url.search === "" &&
+            url.hash === "" &&
+            url.origin === value
+          );
+        }, "Expected a normalized public origin."),
+        configurationDigest: digest,
+      })
+      .strict(),
+    jsonObject({
+        kind: z.literal("wallet_session"),
+        sourceId: prefixedCanonicalBase64UrlSchema("wallet-session:", 32),
+        topicDigest: digest,
+      })
+      .strict(),
+    jsonObject({
+        kind: z.literal("wallet_sdk"),
+        sourceId: prefixedCanonicalBase64UrlSchema("wallet-sdk:", 16),
+      })
+      .strict(),
+    jsonObject({
+        kind: z.literal("validated_input"),
+        sourceId: primitive.fixedIdentifier,
+      })
+      .strict(),
+  ]).superRefine((value, context) => {
+    if (value.kind === "configured_rpc" && value.sourceId !== "rpc:" + value.configurationDigest) {
+      context.addIssue({ code: "custom", message: "RPC source identity does not match its digest." });
+    }
+    if (value.kind === "wallet_session" && value.sourceId !== "wallet-session:" + value.topicDigest) {
+      context.addIssue({ code: "custom", message: "Wallet session identity does not match its digest." });
+    }
+  });
+
+  const evidenceSource = jsonObject({
+      observationId,
+      invocationId,
+      sourceClass,
+      owner: primitive.generalSingleLineText,
+      purpose: primitive.snakeCaseCode,
+      observedAt: primitive.utcTimestamp,
+      reference: sourceReference,
+      chainAnchor: primitive.chainAnchor.optional(),
+    })
+    .strict()
+    .superRefine((value, context) => {
+      if (!sourceClassAcceptsReference(value.sourceClass, value.reference.kind)) {
+        context.addIssue({ code: "custom", message: "Evidence source class and reference are inconsistent." });
+      }
+    });
+
+  const freshness = jsonObject({
+      status: z.enum(["fresh", "stale", "unknown"]),
+      ruleId: freshnessRuleId,
+      evaluatedAt: primitive.utcTimestamp,
+      observationIds: z.array(observationId).min(1).max(128),
+    })
+    .strict()
+    .superRefine((value, context) => {
+      if (value.status !== freshnessRuleDefinitions[value.ruleId].status) {
+        context.addIssue({ code: "custom", message: "Freshness status does not match its rule." });
+      }
+      if (!isStrictlyOrderedUnique(value.observationIds)) {
+        context.addIssue({ code: "custom", message: "Observation identifiers must be unique and ordered." });
+      }
+    });
+
+  const conclusion = jsonObject({
+      id: primitive.fixedIdentifier,
+      status: z.enum(["established", "not_applicable", "unavailable"]),
+      reason: factOutcome,
+      observationIds: z.array(observationId).min(1).max(128),
+      freshness,
+    })
+    .strict()
+    .superRefine((value, context) => {
+      if (value.status !== factOutcomeDefinitions[value.reason].conclusionStatus) {
+        context.addIssue({ code: "custom", message: "Conclusion status does not match its reason." });
+      }
+      if (!isStrictlyOrderedUnique(value.observationIds)) {
+        context.addIssue({ code: "custom", message: "Conclusion evidence must be unique and ordered." });
+      }
+      if (value.observationIds.join("\0") !== value.freshness.observationIds.join("\0")) {
+        context.addIssue({ code: "custom", message: "Conclusion freshness must use the same evidence." });
+      }
+    });
+
+  const coverage = jsonObject({
+      status: z.enum(["complete", "partial", "unavailable"]),
+      established: z.array(primitive.fixedIdentifier).max(64),
+      notApplicable: z.array(primitive.fixedIdentifier).max(64),
+      unavailable: z.array(primitive.fixedIdentifier).max(64),
+    })
+    .strict()
+    .superRefine((value, context) => {
+      for (const ids of [value.established, value.notApplicable, value.unavailable]) {
+        if (!isStrictlyOrderedUnique(ids)) {
+          context.addIssue({ code: "custom", message: "Coverage identifiers must be unique and ordered." });
+        }
+      }
+      const combined = [...value.established, ...value.notApplicable, ...value.unavailable];
+      if (new Set(combined).size !== combined.length) {
+        context.addIssue({ code: "custom", message: "Coverage outcomes must not overlap." });
+      }
+      if (value.status !== coverageStatusForCounts(
+        value.established.length,
+        value.notApplicable.length,
+        value.unavailable.length,
+      )) context.addIssue({ code: "custom", message: "Coverage status does not match its outcomes." });
+    });
+
+  const warning = jsonObject({
+      code: warningCode,
+      message: primitive.warningMessage,
+      observationIds: z.array(observationId).min(1).max(128),
+    })
+    .strict()
+    .superRefine((value, context) => {
+      if (value.message !== warningDefinitions[value.code].message) {
+        context.addIssue({ code: "custom", message: "Warning message does not match its code." });
+      }
+      if (!isStrictlyOrderedUnique(value.observationIds)) {
+        context.addIssue({ code: "custom", message: "Warning evidence must be unique and ordered." });
+      }
+    });
+
+  const staticScopeExclusion = jsonObject({ id: primitive.snakeCaseCode, message: primitive.generalSingleLineText })
+    .strict();
+
+  const fieldIssue = jsonObject({
+      path: z.string().regex(/^(?:|\/(?:[^~/]|~0|~1)*)*$/, "Expected an RFC 6901 JSON Pointer."),
+      code: fieldIssueCode,
+      message: primitive.generalSingleLineText,
+    })
+    .strict()
+    .superRefine((value, context) => {
+      if (value.message !== fieldIssueDefinitions[value.code].message) {
+        context.addIssue({ code: "custom", message: "Field issue message does not match its code." });
+      }
+    });
+
+  return Object.freeze({
+    invocationId,
+    observationId,
+    sourceClass,
+    externalSourceClass,
+    digest,
+    factOutcome,
+    freshnessRuleId,
+    warningCode,
+    fieldIssueCode,
+    sourceReference,
+    evidenceSource,
+    freshness,
+    conclusion,
+    coverage,
+    warning,
+    staticScopeExclusion,
+    fieldIssue,
+  });
+};
+
+const publicSchemas = createEvidenceSchemaSet();
+const authoritySchemas = createEvidenceSchemaSet();
+const authoritySourceReferenceSchema = guardJsonSchema(authoritySchemas.sourceReference);
+const authorityWarningSchema = guardJsonSchema(authoritySchemas.warning);
+const authorityCoverageSchema = guardJsonSchema(authoritySchemas.coverage);
+const authorityFieldIssueSchema = guardJsonSchema(authoritySchemas.fieldIssue);
+
+export const invocationIdSchema = publicSchemas.invocationId;
+export type InvocationId = z.infer<typeof invocationIdSchema>;
+
+export const observationIdSchema = publicSchemas.observationId;
+export type ObservationId = z.infer<typeof observationIdSchema>;
+
+export const sourceClassSchema = publicSchemas.sourceClass;
+export type SourceClass = z.infer<typeof sourceClassSchema>;
+
+export const externalSourceClassSchema = publicSchemas.externalSourceClass;
+export type ExternalSourceClass = z.infer<typeof externalSourceClassSchema>;
+
+export const digestSchema = publicSchemas.digest;
+export const factOutcomeSchema = publicSchemas.factOutcome;
+export type FactOutcome = z.infer<typeof factOutcomeSchema>;
+
+export const freshnessRuleIdSchema = publicSchemas.freshnessRuleId;
+export const warningCodeSchema = publicSchemas.warningCode;
+export const sourceReferenceSchema = guardJsonSchema(publicSchemas.sourceReference);
+export type SourceReference = z.infer<typeof sourceReferenceSchema>;
+
+export const evidenceSourceSchema = guardJsonSchema(publicSchemas.evidenceSource);
+export type EvidenceSource = z.infer<typeof evidenceSourceSchema>;
+
+export const freshnessSchema = guardJsonSchema(publicSchemas.freshness);
+export type Freshness = z.infer<typeof freshnessSchema>;
+
+export const conclusionSchema = guardJsonSchema(publicSchemas.conclusion);
+export type Conclusion = z.infer<typeof conclusionSchema>;
+
+export const coverageSchema = guardJsonSchema(publicSchemas.coverage);
+export type Coverage = z.infer<typeof coverageSchema>;
+
+export const warningSchema = guardJsonSchema(publicSchemas.warning);
+export type Warning = z.infer<typeof warningSchema>;
+
+export const staticScopeExclusionSchema = guardJsonSchema(publicSchemas.staticScopeExclusion);
+export type StaticScopeExclusion = z.infer<typeof staticScopeExclusionSchema>;
+
+export const fieldIssueSchema = guardJsonSchema(publicSchemas.fieldIssue);
+export type FieldIssue = z.infer<typeof fieldIssueSchema>;
+
+export const createFieldIssue = (code: FieldIssueCode, path: string): FieldIssue =>
+  deepFreezeValue(authorityFieldIssueSchema.parse({
+    path,
+    code,
+    message: Object.hasOwn(fieldIssueDefinitions, code) ? fieldIssueDefinitions[code].message : undefined,
+  }));
+
+export const parseExternalSourceClass = (value: unknown): ExternalSourceClass =>
+  authoritySchemas.externalSourceClass.parse(value);
+
+export const parseSourceReference = (value: unknown): SourceReference =>
+  authoritySourceReferenceSchema.parse(value);
+
+export const createWarning = (
+  code: WarningCode,
+  observationIds: readonly ObservationId[],
+): Warning => {
+  const parsed = authorityWarningSchema.parse({
+    code,
+    message: Object.hasOwn(warningDefinitions, code) ? warningDefinitions[code].message : undefined,
+    observationIds,
+  });
+  return deepFreezeValue({
+    ...parsed,
+    observationIds: [...parsed.observationIds],
+  }) as Warning;
+};
+
+export const deriveCoverage = (conclusions: readonly Conclusion[]): Coverage => {
+  const established: string[] = [];
+  const notApplicable: string[] = [];
+  const unavailable: string[] = [];
+  for (const conclusion of conclusions) {
+    if (conclusion.status === "established") established.push(conclusion.id);
+    else if (conclusion.status === "not_applicable") notApplicable.push(conclusion.id);
+    else unavailable.push(conclusion.id);
+  }
+  const status = coverageStatusForCounts(established.length, notApplicable.length, unavailable.length);
+  const parsed = authorityCoverageSchema.parse({
+    status,
+    established: established.sort(compareCodePointSequences),
+    notApplicable: notApplicable.sort(compareCodePointSequences),
+    unavailable: unavailable.sort(compareCodePointSequences),
+  });
+  return deepFreezeValue({
+    ...parsed,
+    established: [...parsed.established],
+    notApplicable: [...parsed.notApplicable],
+    unavailable: [...parsed.unavailable],
+  }) as Coverage;
+};

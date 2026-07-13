@@ -1,0 +1,140 @@
+{
+  "version": 2,
+  "immutableFiles": {
+    "scripts/clean.mjs": "8541ee79bf51b8eb094d156bd08a9e9bf4e2be35fab07cee47776a57419e9076",
+    "src/build/generate-build-identity.ts": "b2bd8784da8f4c20c77dede511ad593adce126d2636c29b9f0cd9598ffab360c",
+    "src/build/generate-contracts.ts": "5185ee65d16387511b2b36ea6c4349ff2a7fcfc2aebcf3299fe1f5435e5d780f",
+    "src/build/runtime-file-set.ts": "14bbb89b318335b7feb5576ee6a7d7a2f234d7a9d874987a8a37ed8f011fd490",
+    "src/core/amounts.ts": "20a69c33b50d7976c443807523aa2ad7b907ba68c057dd071fcbbe6cc620d531",
+    "src/core/build-identity.ts": "2e35ad47222e9a831988c69b929605d48e179932d45369c5a2c14029df5d5def",
+    "src/core/canonical-json.ts": "23761758fcef53ef7e19826c11c60cd5db1599cadf9f84866e8984473dc5ee70",
+    "src/core/capabilities.ts": "2d4c5160370528c34f5c18b6b447f1ff075ac8585ad9bd319f0607eb80704e8b",
+    "src/core/capability.ts": "691ee90f32c12f6d94ab87b9e721bdc65d098533db1d52201af400cfa15c9662",
+    "src/core/contract.ts": "c552d5ba4c90c8d6b3bb6554bc74506bac6acd8b967454c57e51e771f721c5d6",
+    "src/core/digests.ts": "f51572c56c65dfa2289e09b51814739524398cf15a4ffeeea59008c4269bea87",
+    "src/core/erc20-events.ts": "9ce569ac7446b37ce2db9127eb0bb0ea297c74102b2b19699348342aae117c1c",
+    "src/core/errors.ts": "c23e91a648f883cd93d384382c65bbd9ad46c3023a443ca548c91536332ba393",
+    "src/core/evidence.ts": "e28dc131b40d4cd90b1812276161eb3a53639a781f5483826ff3051f18689d9a",
+    "src/core/identities.ts": "4f670d64ca84a71ed5d6eec25c3668da232ae9173425c30d15ba2a13f529e292",
+    "src/core/immutability.ts": "d42727f5691d966423a668c83f99f2753ec511fb8aa0c145398bfde4787acd26",
+    "src/core/index.ts": "6e7c4796f942da7fb0939216a0991129b5687967b06ee3281f14e9239a7fd1f5",
+    "src/core/invocation.ts": "33140b790a16cb28e245345d5d17363b73c0abadacd652450bcff02c13982142",
+    "src/core/json-object.ts": "d5e092a360cbfa977050c15f0075da7bb57ab29c4e33f92f7897eded4ae940b5",
+    "src/core/keccak256.ts": "3e91c494fb93082226b2fe4469bf6202b9c9a92e3dee061a373eb1fc676716d4",
+    "src/core/primitives.ts": "48be8e0abe63dbcc5b985b7907aabe680850e5cb4955d7149a3342c505a66eff",
+    "src/core/schema-projection.ts": "eb82522e2de0c9c2a1595502e9cd177b6e9653eef3b018e0409345bb6ce6dbf0",
+    "test/core/amounts.test.ts": "601134b9caa45c873827c9f2851af985d11970ac0d09c1f27b84cb43a8223bb7",
+    "test/core/architecture.test.ts": "5365aff7248a3c1120b413bec5cf6aa0827bacf1bfc3de2e4ae7d47ea56dd2d2",
+    "test/core/build-identity.test.ts": "548e4573973a8ebdec894f79790ed1d54ac4a58ec08022fa9736dca167a70b36",
+    "test/core/capability-binding.test.ts": "8be2a4e2919e524a2d58b1def2d29e32d59093501a1ed47f625245cf8faae535",
+    "test/core/capability-harness.ts": "1f4f0dbd17169339ddee94e1266b93bd4e37b5de731ee932974ebb60f515ef1e",
+    "test/core/capability-schemas.test.ts": "e8b3fa1754c2039e6cd840d350473bccddaf4aabe2c9cf3abb9683a8d602c909",
+    "test/core/capability-semantics.test.ts": "635f5abd603cd48e3e1d46aa60c5a86981f05834008203412b29ad3cc53b87c6",
+    "test/core/erc20-events.test.ts": "79ebf851c024c2d1450430611093c2ca615602be94f36bd206bdc319a7a831f7",
+    "test/core/errors.test.ts": "42088ef7b974b337b454349b6a9127550588b1f0da4ea12de18e34e598135a6a",
+    "test/core/evidence.test.ts": "40cd112c5a180f45e6c41897b04e699f6948e894395b702cfe8464dec903f61b",
+    "test/core/invocation-rng-child.ts": "b358e409f4fe11922ed600f3a1f55cd2d1c5de6bb472e96c5f49b5fba648d702",
+    "test/core/keccak256.test.ts": "fde70672952565c82f008b7c96519d5fa1fb55d9c419a6c79898ee1d6010beef",
+    "test/core/primitives.test.ts": "e98fb2a03db9058d9c56ee41276c4bfb848100b4f2462f93e1da04feba7cf7b0",
+    "test/core/runtime-file-set.test.ts": "5e23b237ac7d8cb06fa50dd6019ed9d5d199a824cea93637b46b0549dcfb13e2",
+    "test/core/schema-projection.test.ts": "cce1df148de3adfa19816fec5cad8f88b012d5cc2f90922539aeec7a007a6d10",
+    "test/core/type-contracts.ts": "0f8ec1ab8dadba3826f0a31818d588ee10a3419a3a3486dbb86cc574d92bd87d",
+    "tsconfig.build.json": "48a8dfe7b503af758782a11f32a995fcfbb74c2a482461a9c55ad2dc414d61d6",
+    "tsconfig.json": "6fec546516d8d1fc9e5b7d3e346f5b9180a6584cb09c5c5bd7bb715e8191ca60",
+    "vitest.config.ts": "3d8ceedbf76d8b42807516222fe8fb71585caf102fc75604e8e2c948049ca6f0"
+  },
+  "immutableFilesDigest": "f951c7255c049f56ebfeec50aa64401d491d0e6ae27d52158bffc83908869ff6",
+  "capabilityProjectionDigest": "e38b9c817a57e2bc5704dffe42e6a7275b6798a6071e9d74abfb147ba34b6f9c",
+  "buildRuleDigest": "1b78626ca8aace7f5f17163af2ba94be5b8d0ce64b6f37d09daacb3bb8d4fd3f",
+  "packageFoundation": {
+    "name": "littlejohn-mcp",
+    "version": "0.1.0",
+    "description": "Local Robinhood Chain MCP and transaction review runtime",
+    "type": "module",
+    "exports": {},
+    "engines": {
+      "node": ">=22"
+    },
+    "bin": {
+      "littlejohn": "dist/cli.js"
+    },
+    "files": [
+      "dist",
+      "THIRD_PARTY_NOTICES.txt",
+      "LICENSES"
+    ],
+    "scripts": {
+      "clean": "node scripts/clean.mjs",
+      "build": "npm run clean && tsc -p tsconfig.build.json && node dist/build/generate-contracts.js && node dist/build/generate-build-identity.js",
+      "typecheck": "tsc -p tsconfig.json --noEmit",
+      "test": "vitest run"
+    },
+    "dependencies": {
+      "zod": "4.4.3"
+    },
+    "devDependencies": {
+      "@types/node": "22.20.1",
+      "ajv": "8.20.0",
+      "fast-check": "4.9.0",
+      "tsx": "4.23.0",
+      "typescript": "6.0.3",
+      "vitest": "4.1.10"
+    }
+  },
+  "extensionsByWorkUnit": {
+    "WU2": {
+      "sourceRoot": "src/runtime",
+      "scripts": {},
+      "dependencies": {
+        "better-sqlite3": "12.11.1"
+      },
+      "devDependencies": {
+        "@types/better-sqlite3": "7.6.13"
+      }
+    },
+    "WU3": {
+      "sourceRoot": "src/wallet",
+      "scripts": {},
+      "dependencies": {
+        "@walletconnect/sign-client": "2.23.10",
+        "qrcode": "1.5.4"
+      },
+      "devDependencies": {
+        "@types/qrcode": "1.5.6"
+      }
+    },
+    "WU4": {
+      "sourceRoot": "src/chain",
+      "scripts": {},
+      "dependencies": {
+        "viem": "2.55.0"
+      },
+      "devDependencies": {}
+    },
+    "WU5": {
+      "sourceRoot": "src/interfaces",
+      "scripts": {},
+      "dependencies": {
+        "@modelcontextprotocol/sdk": "1.29.0"
+      },
+      "devDependencies": {}
+    },
+    "WU6": {
+      "sourceRoot": "scripts",
+      "scripts": {
+        "release:check": "node scripts/release-check.mjs"
+      },
+      "dependencies": {},
+      "devDependencies": {}
+    }
+  },
+  "requiredAtBoundaryA": {
+    "dependencies": [
+      "better-sqlite3"
+    ],
+    "devDependencies": [
+      "@types/better-sqlite3"
+    ]
+  },
+  "wu1LockClosureDigest": "d994a1d59adf430351cbbe50d595862775a1ddade96e8ff62e187fbe6980a5e2"
+}

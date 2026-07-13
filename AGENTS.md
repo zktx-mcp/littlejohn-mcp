@@ -106,15 +106,30 @@ the required correction changes an accepted plan.
 - Preserve user changes and unrelated work.
 - State assumptions that affect authority, security, public interfaces,
   financial meaning, support claims, or user authorization.
-- Make the smallest complete change that satisfies the accepted goal and closes
-  the affected boundary.
+- Implement the simplest complete structure that satisfies the accepted goal
+  and closes the affected boundary. Complete authority, lifecycle, failure, and
+  handoff logic takes priority over minimizing changed lines or code size.
 - Do not add unrelated refactors or formatting.
 - Do not invent scripts, addresses, liquidity, quotes, evidence, or support.
 - Do not weaken binding policy or its verification without explicit user
   approval.
-- An agent never accepts a third-party license, service term, paid threshold, or
-  redistribution obligation on the user's behalf. Record the exact official
-  terms and required package artifacts, then obtain explicit user approval
+- An accepted task may use a pinned dependency under a standard permissive
+  open-source license without separate per-package user approval when the
+  official package artifact identifies the license and the current use adds no
+  fee, service account, data transfer, telemetry, branding requirement, source
+  disclosure duty, reciprocal product-license duty, field-of-use restriction,
+  or commercial-use restriction. Preserve every required copyright, license,
+  attribution, modification, and notice artifact in the distributed form that
+  triggers that obligation.
+- For this policy, a standard permissive license is an official SPDX expression
+  composed only of `0BSD`, `MIT`, `ISC`, `BSD-2-Clause`, `BSD-3-Clause`, or
+  `Apache-2.0`. Any other license expression requires the review in the next
+  rule.
+- An agent never accepts a custom or non-permissive license, service term, paid
+  threshold, data-processing term, branding obligation, source-disclosure or
+  reciprocal-license duty, field-of-use or commercial restriction, or other
+  material redistribution obligation on the user's behalf. Record the exact
+  official terms and required artifacts, then obtain explicit user approval
   before the first dependent implementation or service use.
 - Run relevant checks, audit what those checks establish, and report exact
   results.

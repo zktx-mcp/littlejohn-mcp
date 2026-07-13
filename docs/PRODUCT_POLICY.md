@@ -6,9 +6,7 @@ meanings, and public current-support presentation. Required behavior in this
 document does not claim implementation.
 
 The runtime support manifest is the sole machine authority for implemented
-support values. `Current Support` is its deterministic public projection. Before
-that manifest exists, the section states only verified absence of implementation
-and repository-held official evidence; it never fabricates runtime availability.
+support values. `Current Support` is its deterministic public projection.
 
 ## Product Scope
 
@@ -60,13 +58,15 @@ authority and execution requirements are owned by
 
 ## Current Support
 
-- Runtime support manifest: unavailable. The values below state verified
-  repository state directly and claim no implemented runtime support.
+<!-- Generated from the runtime support manifest. Do not edit this section. -->
+
+- Runtime support manifest: implemented as the sole machine authority for the
+  values in this section.
 - Robinhood Chain: `L0 discovered`. The official network configuration identifies
   Robinhood Chain mainnet with chain ID `4663` in the
   [Robinhood Chain documentation](https://docs.robinhood.com/chain/connecting/).
-  Source owner: Robinhood. Coverage: published network identity and chain ID;
-  no endpoint availability, runtime availability, or safety conclusion.
+  Source owner: Robinhood. Coverage: Published Robinhood Chain network identity and chain ID.
+  Unsupported conclusions: Endpoint availability. Runtime availability. Safety.
 - Implemented protocol support: none.
 - Implemented wallet support: none.
 - Implemented transaction actions: none.

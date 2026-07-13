@@ -2,9 +2,16 @@
 
 ## Current State
 
-Littlejohn has no package manifest, runtime source, product test, generated
-schema, core capability implementation, SQLite persistence, HTTP server, MCP
-tool, CLI, React interface, WalletConnect integration, or chain read.
+Littlejohn has an ESM TypeScript package, canonical core contracts, five
+semantic read-capability definitions, generated JSON Schema and descriptor
+projections, deterministic runtime build identity, product tests, owner-only
+POSIX application-data permissions, SQLite product state, local control
+credentials, secret-safe source identity, a runtime support manifest, and one
+authenticated fixed-port HTTP owner with compatible peer deferral and
+demand-driven takeover. The default composition initializes neither a
+WalletConnect consumer nor an RPC consumer. It has no MCP tool, CLI, React
+interface, WalletConnect client, RPC provider, capability handler, or chain
+read.
 
 This document is the sole authority for repository ownership, module
 dependencies, local processes, persistence, browser and CLI surfaces,
@@ -119,10 +126,18 @@ to contain a malicious process already running with the same user authority.
   `runtimeProtocolVersion`, `runtimeBuildDigest`, echoed `challenge`,
   `ownerRevision`, and `proof`. The proof is HMAC-SHA-256 over the version-1
   length-prefixed UTF-8 encoding of those preceding fields in that order using
-  the local control credential.
+  the local control credential. Each length prefix is the unsigned 32-bit
+  big-endian byte length of the following UTF-8 field.
 - The peer verifies the challenge, proof, profile ID, protocol version, and exact
   runtime build digest before deferring ownership or sending any authenticated
   control request.
+- A credential-bearing owner operation is assigned only to the exact socket
+  that completed identity verification. A replacement socket receives no
+  credential until it completes a new identity verification.
+- Connection, identity verification, and exact-socket request dispatch have a
+  finite transport deadline. After dispatch, the owning route and runtime
+  lifecycle own operation completion and cancellation. An operation is never
+  resent after delivery becomes uncertain.
 - A missing, malformed, invalid, foreign-profile, or incompatible identity
   response is a port conflict. The peer never sends its credential to that
   listener.
@@ -179,6 +194,18 @@ Required runtime persistence uses two stores with different authority:
 1. The product SQLite database stores shared Littlejohn state.
 2. The WalletConnect SDK private store contains WalletConnect protocol state
    and secrets.
+
+The SQLite main database and WAL are the durable product-state authority. The
+SQLite shared-memory file is owner-only transient coordination state. SQLite
+may create or reconstruct it from the WAL after a crash; Littlejohn never uses
+its presence or bytes as product-state evidence.
+
+Fresh-database publication staging is never product state or a recovery input.
+The runtime validates and leases the final database before removing exact
+owner-only staging artifacts. An unsafe artifact in the reserved staging
+namespace fails startup without changing the final database. Concurrent
+creators converge on the validated final database rather than choosing or
+repairing a staging database.
 
 The product SQLite database stores:
 

@@ -1,0 +1,358 @@
+{
+  "version": 1,
+  "immutableFiles": {
+    "src/runtime/composition.ts": "a84daea83d3cdaae263a02c27a13d29af95be7ea8cb8962ddfeb4463a9d417fa",
+    "src/runtime/configuration.ts": "d2fe49f7cbca4323fb0fad845f23be1b1e2fbb3e499fdd4063c50a2b805c694d",
+    "src/runtime/control-credential.ts": "9b20314138da88ea66cc68f643a3562b2975a5705429299c61075a49498c2b77",
+    "src/runtime/database.ts": "b0b7e61e4767de97aa0323a3fa44e7a29072e306955b80a82557bb14b9536c8a",
+    "src/runtime/errors.ts": "12d153e2e752b49e76ef188a683a34faf4ca782a2a000718890b339a0bb3dd3f",
+    "src/runtime/http-boundary.ts": "58432c0051dc47edcb17a5806f4bcb5af76cad7c62233681ad25ea9914791233",
+    "src/runtime/http-owner.ts": "d0d2b5dde954e47d839eadf37280370862f621b09f1c87aae60a2b28bd0c74ff",
+    "src/runtime/http-routing.ts": "78153661e1ba4d368861d51ad2d75cd81cd03321c13e6dbe302afad91fcae0bc",
+    "src/runtime/index.ts": "7239892cc88596fa6848817fd3495387298302770a98e6fa8928f250b28973c3",
+    "src/runtime/paths.ts": "d9e28bc8d686ce6a2d0949bdd55612ab41c3276ab873c9284e9bf1945eabcb23",
+    "src/runtime/request-security.ts": "d945cda7762b51a1c362a49c58de3358b43263b94f59a669e042446b5c747f03",
+    "src/runtime/runtime-identity.ts": "fc6bf0d59da560f9d4b0286b2f028b089b9bf5bb38ae8239524de48bc7c2ca76",
+    "src/runtime/schema-authority.ts": "7bc3eefac9a25cae96611218f56afabb5e578aa84d03efd0860cd26cbe58f104",
+    "src/runtime/source-identity.ts": "730796ba4565f588402a1d0da0a9bdfda91bb77f9242254e43af4545be0892a0",
+    "src/runtime/support-manifest.ts": "93553a16f4f2a1245ee1c98d9bd566b70bdaeca185e67ae69f12741d6c730cb3",
+    "src/runtime/wallet-connection-storage.ts": "32cbc758688b2c2f3680f0b6ae6d775c33b46684b21e4f4ba1c983cdab27a4ed",
+    "test/runtime/architecture.test.ts": "1991d952d4316c0314fec6989f86874d294811270487f643a5134b001ff7ec42",
+    "test/runtime/composition.test.ts": "8d898f560d800b4d9a43ef6b7b654af5116afe14fb854f29c1dbdc57c51285b2",
+    "test/runtime/http-owner-process-worker.ts": "ca725e82d9c546120bda82d48d9d2573a6566b1e3e744cb1dd685756587d06a8",
+    "test/runtime/http-owner.test.ts": "22bf4ad811731a044313f318c9abfedd247b9ac81177cd88fd1fa536bbe01969",
+    "test/runtime/request-security.test.ts": "909443889df63550dc7d6095267f5bf71e0cee1454b1e23558e6c676a983572f",
+    "test/runtime/sqlite-crash-worker.ts": "5bf6e9dc4903d21b4f2c33f37c37782ea07293c068b043a71c2e26b0e11698ea",
+    "test/runtime/storage.test.ts": "28529c881af140fcc1b7b4b14866ed9ebf833483cdef8bfdc33812802bd37922",
+    "test/runtime/support-and-errors.test.ts": "7cfc97e2f33c4fc8441bc438d077077aa2a1ed1405eb3faccd972860f6de3c47",
+    "test/runtime/type-contracts.ts": "6144d645acc83bc62f48176c8b1c4a2bbe31557f17d7112ecde8660b85dff61e",
+    "test/runtime/wu1-handoff.test.ts": "08b1bf3ef591facc7b9aa77cbe77fcc2ac7fff767a3565f704fd90b7f89ba865"
+  },
+  "immutableFilesDigest": "409eabd1dbf1f5c98f57508d55c45f3f60ebcf7c46cc4fe6cb4890574830bd37",
+  "dependencyClosureDigest": "2495eb70be09d4b4f9fe23051fe9aedaf1194cad6b97de60848d459aa5dcd563",
+  "databaseMigrationIdentity": {
+    "version": 1,
+    "digest": "4b8b0e8a04401ea63e5d08231cae96c7b01315d34fc5653c30edb6e4b42ecec1",
+    "schemaIdentity": "2638533d55a13984787c8bd9cb80d1ebc85e719a466f842edaa4b491e6c04117"
+  },
+  "runtimeErrorProjection": [
+    {
+      "code": "content_type_unsupported",
+      "category": "transport",
+      "message": "The request content type is not supported.",
+      "retryable": false,
+      "httpStatus": 415,
+      "problemTitle": "Unsupported content type",
+      "cliExitCode": 2
+    },
+    {
+      "code": "internal_error",
+      "category": "internal",
+      "message": "The request could not be completed.",
+      "retryable": false,
+      "httpStatus": 500,
+      "problemTitle": "Internal error",
+      "cliExitCode": 1
+    },
+    {
+      "code": "invalid_host",
+      "category": "security",
+      "message": "The request host is not allowed.",
+      "retryable": false,
+      "httpStatus": 400,
+      "problemTitle": "Invalid host",
+      "cliExitCode": 6
+    },
+    {
+      "code": "invalid_input",
+      "category": "input",
+      "message": "The request input is invalid.",
+      "retryable": false,
+      "httpStatus": 400,
+      "problemTitle": "Invalid request",
+      "cliExitCode": 2
+    },
+    {
+      "code": "invalid_json",
+      "category": "transport",
+      "message": "The request body is not valid JSON.",
+      "retryable": false,
+      "httpStatus": 400,
+      "problemTitle": "Invalid JSON",
+      "cliExitCode": 2
+    },
+    {
+      "code": "invalid_origin",
+      "category": "security",
+      "message": "The request origin is not allowed.",
+      "retryable": false,
+      "httpStatus": 403,
+      "problemTitle": "Invalid origin",
+      "cliExitCode": 6
+    },
+    {
+      "code": "method_not_allowed",
+      "category": "transport",
+      "message": "The HTTP method is not allowed for this route.",
+      "retryable": false,
+      "httpStatus": 405,
+      "problemTitle": "Method not allowed",
+      "cliExitCode": 2
+    },
+    {
+      "code": "payload_too_large",
+      "category": "transport",
+      "message": "The request body exceeds the allowed size.",
+      "retryable": false,
+      "httpStatus": 413,
+      "problemTitle": "Payload too large",
+      "cliExitCode": 2
+    },
+    {
+      "code": "port_conflict",
+      "category": "runtime",
+      "message": "The fixed Littlejohn port is owned by an incompatible process.",
+      "retryable": false,
+      "httpStatus": 409,
+      "problemTitle": "Port conflict",
+      "cliExitCode": 7
+    },
+    {
+      "code": "query_not_supported",
+      "category": "transport",
+      "message": "Query parameters are not supported.",
+      "retryable": false,
+      "httpStatus": 400,
+      "problemTitle": "Query not supported",
+      "cliExitCode": 2
+    },
+    {
+      "code": "request_aborted",
+      "category": "transport",
+      "message": "The request ended before completion.",
+      "retryable": true,
+      "httpStatus": 408,
+      "problemTitle": "Request aborted",
+      "cliExitCode": 4
+    },
+    {
+      "code": "route_not_found",
+      "category": "transport",
+      "message": "The requested route does not exist.",
+      "retryable": false,
+      "httpStatus": 404,
+      "problemTitle": "Route not found",
+      "cliExitCode": 3
+    },
+    {
+      "code": "runtime_busy",
+      "category": "runtime",
+      "message": "The local runtime is busy.",
+      "retryable": true,
+      "httpStatus": 503,
+      "problemTitle": "Runtime busy",
+      "cliExitCode": 4
+    },
+    {
+      "code": "runtime_state_unavailable",
+      "category": "runtime",
+      "message": "Local runtime state is unavailable.",
+      "retryable": false,
+      "httpStatus": 500,
+      "problemTitle": "Runtime state unavailable",
+      "cliExitCode": 7
+    },
+    {
+      "code": "state_conflict",
+      "category": "state",
+      "message": "Local state changed before the request completed.",
+      "retryable": false,
+      "httpStatus": 409,
+      "problemTitle": "State conflict",
+      "cliExitCode": 5
+    },
+    {
+      "code": "unauthorized",
+      "category": "security",
+      "message": "The request is not authorized.",
+      "retryable": false,
+      "httpStatus": 401,
+      "problemTitle": "Unauthorized",
+      "cliExitCode": 6
+    }
+  ],
+  "runtimeErrorProjectionDigest": "6c1e7ba4cdfb7da59d500029d5e66f7a153ea2f885059fe6b9e62bff7c79655d",
+  "httpBoundary": {
+    "fixedHost": "127.0.0.1",
+    "fixedHostHeader": "127.0.0.1:46630",
+    "fixedOrigin": "http://127.0.0.1:46630",
+    "fixedPort": 46630,
+    "requestBodyLimitBytes": 65536,
+    "internalResponseLimitBytes": 65536,
+    "publicReadResponseLimitBytes": 8388608,
+    "jsonContentType": "application/json",
+    "problemJsonContentType": "application/problem+json",
+    "noStoreCacheControl": "no-store"
+  },
+  "initialSupport": {
+    "contractVersion": "1",
+    "chains": [
+      {
+        "chainId": "4663",
+        "caip2": "eip155:4663",
+        "supportLevel": "L0_discovered",
+        "evidence": {
+          "position": "source_defined",
+          "sourceOwner": "Robinhood",
+          "canonicalUri": "https://docs.robinhood.com/chain/connecting/",
+          "coverage": "Published Robinhood Chain network identity and chain ID.",
+          "unsupportedConclusions": [
+            "Endpoint availability.",
+            "Runtime availability.",
+            "Safety."
+          ]
+        }
+      }
+    ],
+    "protocols": [],
+    "transactionActions": [],
+    "capabilities": [
+      {
+        "capabilityId": "account.balance",
+        "availability": {
+          "overall": "unavailable",
+          "direct": "unavailable",
+          "http": "unavailable",
+          "mcp": "unavailable",
+          "cli": "unavailable",
+          "web": "unavailable"
+        }
+      },
+      {
+        "capabilityId": "chain.status",
+        "availability": {
+          "overall": "unavailable",
+          "direct": "unavailable",
+          "http": "unavailable",
+          "mcp": "unavailable",
+          "cli": "unavailable",
+          "web": "unavailable"
+        }
+      },
+      {
+        "capabilityId": "contract.inspect",
+        "availability": {
+          "overall": "unavailable",
+          "direct": "unavailable",
+          "http": "unavailable",
+          "mcp": "unavailable",
+          "cli": "unavailable",
+          "web": "unavailable"
+        }
+      },
+      {
+        "capabilityId": "transaction.inspect",
+        "availability": {
+          "overall": "unavailable",
+          "direct": "unavailable",
+          "http": "unavailable",
+          "mcp": "unavailable",
+          "cli": "unavailable",
+          "web": "unavailable"
+        }
+      },
+      {
+        "capabilityId": "wallet.connect",
+        "availability": {
+          "overall": "unavailable",
+          "direct": "unavailable",
+          "http": "unavailable",
+          "mcp": "unavailable",
+          "cli": "unavailable",
+          "web": "unavailable"
+        }
+      },
+      {
+        "capabilityId": "wallet.connection",
+        "availability": {
+          "overall": "unavailable",
+          "direct": "unavailable",
+          "http": "unavailable",
+          "mcp": "unavailable",
+          "cli": "unavailable",
+          "web": "unavailable"
+        }
+      },
+      {
+        "capabilityId": "wallet.disconnect",
+        "availability": {
+          "overall": "unavailable",
+          "direct": "unavailable",
+          "http": "unavailable",
+          "mcp": "unavailable",
+          "cli": "unavailable",
+          "web": "unavailable"
+        }
+      },
+      {
+        "capabilityId": "wallet.list_sessions",
+        "availability": {
+          "overall": "unavailable",
+          "direct": "unavailable",
+          "http": "unavailable",
+          "mcp": "unavailable",
+          "cli": "unavailable",
+          "web": "unavailable"
+        }
+      },
+      {
+        "capabilityId": "wallet.select_session",
+        "availability": {
+          "overall": "unavailable",
+          "direct": "unavailable",
+          "http": "unavailable",
+          "mcp": "unavailable",
+          "cli": "unavailable",
+          "web": "unavailable"
+        }
+      }
+    ]
+  },
+  "initialSupportDigest": "ab6b641d7463128c98e2918c6b7f300809e423372e6cf6768dbf32e77650d110",
+  "initialCatalogDigest": "78992dcd4bf0f98549a70c138053a80d366d159eb2528346e1f8cc340016d08a",
+  "currentSupportSectionDigest": "43a56b1370e722c13c3b4c39dba0105d3a7986638053888ee361a9d77dc1b1d3",
+  "runtimePublicValueExports": [
+    "LocalRuntime",
+    "RuntimeOperationError",
+    "assertChainRuntimeSupportManifestExtension",
+    "assertInterfaceRuntimeSupportManifestExtension",
+    "assertWalletRuntimeSupportManifestExtension",
+    "capabilityCatalogSchema",
+    "composeCapabilityCatalog",
+    "extendChainRuntimeSupportManifest",
+    "extendInterfaceRuntimeSupportManifest",
+    "extendWalletRuntimeSupportManifest",
+    "fixedHost",
+    "fixedHostHeader",
+    "fixedOrigin",
+    "fixedPort",
+    "initialRuntimeSupportManifest",
+    "internalResponseLimitBytes",
+    "jsonContentType",
+    "noStoreCacheControl",
+    "ownerIdentitySchema",
+    "problemDetailsSchema",
+    "problemJsonContentType",
+    "projectCurrentSupportDocument",
+    "publicReadResponseLimitBytes",
+    "readRuntimeSupportManifest",
+    "renderCurrentSupportSection",
+    "requestBodyLimitBytes",
+    "runtimeErrorRegistry",
+    "runtimeInterfaceErrorMappings",
+    "runtimeProtocolVersion",
+    "runtimeSupportManifestSchema",
+    "toProblemDetails",
+    "verifyCurrentSupportDocument"
+  ]
+}
