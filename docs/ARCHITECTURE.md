@@ -121,7 +121,8 @@ to contain a malicious process already running with the same user authority.
   owner instance ID, runtime protocol version, process ID, and owner revision to
   SQLite.
 - On `EADDRINUSE`, a peer sends a fresh 256-bit base64url challenge in the
-  `Littlejohn-Identity-Challenge` header of `GET /__identity`.
+  `Littlejohn-Identity-Challenge` header of
+  `GET /api/v1/runtime-identity`.
 - The owner returns the strict fields `profileId`, `ownerInstanceId`,
   `runtimeProtocolVersion`, `runtimeBuildDigest`, echoed `challenge`,
   `ownerRevision`, and `proof`. The proof is HMAC-SHA-256 over the version-1
@@ -161,15 +162,17 @@ to contain a malicious process already running with the same user authority.
 - Browser cookies, local storage, and session storage are host-local UI state.
 - Browser storage never contains wallet secrets, signing material, transaction
   authority, or the authoritative cross-host state.
-- Store transitions own lifecycle rules. MCP, HTTP, and React map stored state
-  and do not reimplement transitions.
+- Store and wallet-coordinator transitions own lifecycle rules. MCP, HTTP,
+  React, and CLI map those transitions and do not reimplement them.
 - One wallet coordinator owns the WalletConnect Sign Client, relay connection,
-  session lifecycle, and request lifecycle.
-- One active WalletConnect session belongs to the local Littlejohn profile and
-  is shared by web and CLI interfaces.
-- Web and CLI send commands to the coordinator and consume its connection read
-  model. They never copy session topics, keys, or signing authority into
-  interface state.
+  session lifecycle, wallet-management-operation lifecycle, and request
+  lifecycle.
+- A local Littlejohn profile has zero or one live WalletConnect session and zero
+  or one nonterminal wallet management operation. A pending pairing proposal is
+  operation state and is not a WalletConnect session.
+- MCP, web, and CLI send commands to the coordinator and consume its connection
+  and operation read models. They never copy session topics, keys, or signing
+  authority into interface state.
 - The WalletConnect SDK's private storage is authoritative for pairings,
   sessions, topics, namespaces, expiry, and session key material.
 - The selected Robinhood Chain account is a CAIP-10 account reference bound to
@@ -186,6 +189,7 @@ to contain a malicious process already running with the same user authority.
 - Owner shutdown does not revoke an approved wallet session. A replacement
   owner restores the SDK session, revalidates its namespace and expiry, and
   publishes the resulting connection state before accepting wallet operations.
+  A nonterminal wallet management operation is not restored or resumed.
 
 ## Local Persistence Boundary
 
@@ -218,6 +222,14 @@ The product SQLite database stores:
 - product-owned settings, read models, review state, and evidence that are
   independently permitted by their owning modules.
 
+The current wallet management operation is owner-memory coordination state. It
+contains its opaque identifier, kind, state, starting connection revision,
+expiry, and secret-free terminal result. It never enters SQLite or the
+WalletConnect SDK store. A nonterminal operation has a fixed user-action
+deadline. A terminal operation has a fixed bounded retention period and is then
+removed. Pairing URI and QR material remain separate owner-memory secret state
+and never enter the operation read model.
+
 The WalletConnect SDK private store is authoritative for:
 
 - client identity and keychain material;
@@ -246,10 +258,12 @@ is currently connected. On startup or ownership takeover, the coordinator:
 4. subscribes to session lifecycle events; and
 5. transactionally replaces the SQLite connection projection.
 
-No valid session produces a disconnected projection. More than one eligible
-session produces an unresolved state that requires explicit user selection;
-Littlejohn never chooses a session silently. Until reconciliation completes,
-the shared projection is unknown and cannot authorize a wallet request.
+No valid session produces a disconnected projection. More than one live
+session violates the single-session invariant and produces an unresolved state;
+Littlejohn never chooses one, exposes session selection as a normal operation,
+or silently revokes sessions. The user must explicitly confirm disconnection or
+replacement of every stored session. Until reconciliation completes, the shared
+projection is unknown and cannot authorize a wallet request.
 
 A wallet-originated deletion, expiry, account removal, chain removal, or
 unusable SDK store invalidates the SQLite projection. Historical connection
@@ -269,6 +283,9 @@ application logs, exports, and diagnostic bundles.
   display, focus, and navigation to that URL.
 - An intent review page contains the wallet connection and contract-execution
   flow for one review session and contains no links to other product pages.
+- A wallet management operation page shows only the requested connection,
+  replacement, disconnection, or cancellation flow and contains no links to
+  other product pages. Opening the page does not confirm its action.
 - A user-requested information page may use the shared navigation bar to move
   between information pages.
 - Opening any page does not connect a wallet, request a signature, or execute a
@@ -298,6 +315,10 @@ application logs, exports, and diagnostic bundles.
   review reaches a terminal result.
 - MCP stdio remains a transport and session gateway. It is not a wallet
   confirmation interface.
+- An MCP wallet-management tool may create an operation and return its local
+  management-page URL. The tool call does not confirm the operation, and its
+  response never contains a pairing URI, QR matrix, session topic, or wallet
+  secret.
 
 ## CLI Surface
 
@@ -307,6 +328,10 @@ application logs, exports, and diagnostic bundles.
 - The CLI consumes the same server-owned review state, commitments,
   WalletConnect session, and receipt verification as the web interface.
 - Wallet connection and transaction confirmation require an interactive TTY.
+- CLI wallet commands consume the same coordinator-owned wallet management
+  operations as MCP and web. A direct interactive CLI action may provide the
+  operation confirmation owned by the CLI flow; piped or redirected input may
+  not.
 - The CLI renders a WalletConnect pairing URI as a terminal QR code and does not
   print the raw URI by default.
 - Pairing URIs and terminal QR output never enter MCP responses, logs, redirected
@@ -317,7 +342,40 @@ application logs, exports, and diagnostic bundles.
 
 ## Wallet Connection Lifecycle
 
-- Wallet connection creates or restores one server-owned WalletConnect session.
+- Wallet connection creates or restores the profile's only server-owned live
+  WalletConnect session.
+- Starting a wallet management operation, locally confirming a destructive
+  transition, and approving a WalletConnect proposal in the wallet are separate
+  actions. The operation's interaction interface selects where Littlejohn shows
+  status, warnings, confirmation controls, and QR material; it does not grant
+  confirmation or wallet authority.
+- The wallet coordinator owns one operation state machine for connection,
+  replacement, disconnection, and cancellation. Operation kinds are `connect`
+  and `disconnect`. Nonterminal states are `awaiting_confirmation`,
+  `awaiting_wallet_approval`, `disconnecting`, and `validating_session`.
+  Terminal states are `completed`, `cancelled`, `rejected`, `failed`, and
+  `expired`.
+- A connection instruction with no live session starts pairing. A connection
+  instruction with one or more live sessions first shows the current
+  connection or conflicting-session count and the consequence that a failed
+  new approval leaves the profile disconnected. Cancellation before
+  confirmation preserves every existing session. Confirmation disconnects
+  every existing session, waits for SDK deletion, and only then starts a new
+  pairing. Failed deletion starts no pairing. A rejected, cancelled, failed, or
+  expired new pairing never restores a deleted session silently.
+- A disconnection instruction with no live session completes successfully with
+  the `already_disconnected` outcome and performs no session mutation. With one
+  live session, a direct interactive CLI instruction may start disconnection;
+  an MCP-created operation requires direct confirmation in its local web page.
+  With multiple live sessions, every interface requires explicit confirmation
+  before disconnecting every session. A confirmed disconnection waits for SDK
+  deletion before completing.
+- Every confirmation binds the operation identifier and the connection revision
+  shown to the user. A changed revision makes the confirmation stale and causes
+  no session mutation.
+- One target-chain account is required in an approved session. Zero or multiple
+  `eip155:4663` accounts fail validation; Littlejohn never selects an account
+  silently.
 - The coordinator derives accounts, chains, methods, and events from the
   approved session namespaces as defined by the
   [WalletConnect session model](https://docs.walletconnect.network/wallet-sdk/web/usage).
@@ -334,7 +392,7 @@ application logs, exports, and diagnostic bundles.
 - Session deletion, disconnect, expiry, unusable storage, or removal of the
   selected account clears the active connection.
 - A wallet-originated `session_delete` invalidates the selected account and
-  connection read model for both web and CLI, cancels use of that session, and
+  shared connection read model, cancels use of that session, and
   requires a new connection before another wallet request.
 
 ## Local Credential Taxonomy
@@ -347,10 +405,15 @@ These credentials have separate authority and are never interchangeable:
   authorizes signature or transaction execution. Its persisted representation
   is an owner-only file in the application-data directory.
 - A `browser request credential` authenticates a browser instance to the fixed
-  local origin for state-changing browser requests. It is bound to the browser
-  session through an `HttpOnly`, `SameSite=Strict` cookie, works with Host,
-  Origin, and CSRF validation, and expires with that browser session. It never
-  authorizes a wallet action by itself.
+  local origin for operation-scoped browser reads and state changes. It is
+  bound to the browser session and one wallet management operation through an
+  `HttpOnly`, `SameSite=Strict` cookie, works with Host, Origin, and CSRF
+  validation, and expires no later than that operation's bounded retention. It
+  never authorizes a wallet action by itself.
+- A `wallet management operation identifier` selects owner-memory operation
+  state for status, cancellation, and confirmation. It is not a credential and
+  cannot authorize a state change without the applicable browser or direct CLI
+  user action.
 - A `confirmation grant` is transaction-authority state owned only by
   `docs/TRANSACTION_POLICY.md#confirmation-authority`. The authoritative record
   remains server-side and an interface receives only an opaque reference for
@@ -362,14 +425,18 @@ These credentials have separate authority and are never interchangeable:
 Local control credentials, browser request credentials, confirmation grants,
 and grant references are unguessable and scope-limited. They are excluded from
 URLs, logs, durable product evidence, browser local storage, browser session
-storage, and WalletConnect storage. The browser request credential exists only
-in its session cookie. WalletConnect secrets remain only in the SDK-owned store.
+storage, and WalletConnect storage. A non-authorizing wallet management
+operation identifier may appear as a local path segment. The browser request
+credential exists only in its session cookie. WalletConnect secrets remain only
+in the SDK-owned store.
 
 ## HTTP Boundary
 
 - The server binds only to `127.0.0.1:46630`.
 - Host and Origin are validated but are not authentication.
-- Native-process and CLI state changes require a valid local control credential.
+- Compatible-process and CLI state changes require a valid local control
+  credential. The credential authenticates the caller but does not prove user
+  confirmation.
 - Browser state changes require a valid browser request credential, exact Host
   and Origin validation, and CSRF validation.
 - A transaction handoff additionally requires the confirmation grant defined by
@@ -383,7 +450,9 @@ Request-class security is fixed as follows:
 | --- | --- | --- | --- | --- |
 | Owner identity | Exact fixed Host | Must be absent | None; challenge proof is the response | No |
 | Public read | Exact fixed Host | Absent for native clients or exact fixed Origin for browser clients | None | No |
-| Native-process or CLI control | Exact fixed Host | Must be absent | Local control credential | Only the declared control transition |
+| Compatible-process control | Exact fixed Host | Must be absent | Local control credential | Only the declared control transition |
+| Browser bootstrap | Exact fixed Host | Must be absent | None; validates the operation identifier before issuing a scoped browser request credential | No |
+| Browser session read | Exact fixed Host | Absent or exact fixed Origin | Scoped browser request credential | No |
 | Browser state change | Exact fixed Host | Exact fixed Origin | Browser request credential and CSRF validation | Only the declared browser transition |
 
 An Origin value other than the exact fixed origin always fails. A request never
@@ -393,6 +462,8 @@ one request class.
 ## Verification
 
 Implementation verification covers module dependency direction, fixed-port
-ownership and takeover, foreign-process conflict, store separation, session
-restoration and invalidation, shared web and CLI state, credential separation,
-Host and Origin validation, CSRF, request limits, and secret-leak boundaries.
+ownership and takeover, foreign-process conflict, store separation, the
+single-session invariant, wallet-operation serialization and expiry, stale
+confirmation, replacement failure, session restoration and invalidation,
+shared MCP, web, and CLI state, credential separation, Host and Origin
+validation, CSRF, request limits, and secret-leak boundaries.

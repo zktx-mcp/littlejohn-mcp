@@ -66,6 +66,23 @@ owner and does not paraphrase the rule.
 - Use plain, common technical terms. Remove coined, ambiguous, duplicate, and
   legacy names.
 
+## Naming Policy
+
+- Repository-visible identifiers use one format for each role: capability IDs
+  contain one dot between a lowercase snake-case domain and member; MCP tool
+  names use lowercase `domain_verb_object`; application errors, reasons,
+  operation kinds, and operation states use lowercase snake case; JSON and
+  TypeScript fields use lower camel case; SQLite identifiers use lowercase
+  snake case; HTTP literal
+  path segments use lowercase kebab case and name resources rather than clients;
+  CLI commands and flags use lowercase kebab case. Do not expose an interface
+  name in a shared domain or HTTP resource solely to describe the caller.
+- A public action verb describes its actual effect. Use `start` when a call
+  creates an asynchronous or confirmation-dependent operation, `get` for one
+  current resource, `list` for a collection, `inspect` for analysis, and
+  `cancel` for cancellation. Do not use `prepare`, `manage`, `handle`, or
+  `process` as substitutes for an exact effect.
+
 ## Policy Conflict Resolution
 
 Resolve conflicts by authority, not by convenience:
