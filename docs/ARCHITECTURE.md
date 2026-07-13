@@ -18,8 +18,11 @@ browser text with fixed CSP, content-type, opener, referrer, and no-store
 headers; no route can supply arbitrary response headers. The initial support
 manifest contains only the five canonical read capabilities. The default
 composition initializes neither a WalletConnect consumer nor an RPC consumer.
-It has no MCP tool, CLI, React interface, WalletConnect client, RPC provider,
-capability handler, or chain read.
+When a wallet application is composed, its typed operation port is passed by
+identity only to the interface application; the chain application receives only
+the wallet connection read port. The default composition has no MCP tool, CLI,
+React interface, WalletConnect client, RPC provider, capability handler, or
+chain read.
 
 This document is the sole authority for repository ownership, module
 dependencies, local processes, persistence, browser and CLI surfaces,

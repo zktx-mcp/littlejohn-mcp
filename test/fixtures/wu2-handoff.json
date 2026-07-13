@@ -1,7 +1,7 @@
 {
   "version": 1,
   "immutableFiles": {
-    "src/runtime/composition.ts": "a84daea83d3cdaae263a02c27a13d29af95be7ea8cb8962ddfeb4463a9d417fa",
+    "src/runtime/composition.ts": "a2c3c4b3d2104e64a10eef7e2138cba3f0a44b9ed2eecfb0f5afe207db7b8a0e",
     "src/runtime/configuration.ts": "d2fe49f7cbca4323fb0fad845f23be1b1e2fbb3e499fdd4063c50a2b805c694d",
     "src/runtime/control-credential.ts": "9b20314138da88ea66cc68f643a3562b2975a5705429299c61075a49498c2b77",
     "src/runtime/database.ts": "f83b5dd01133ec5ceefc5a04fff004626ef347cdc75bc14dccfc5213a9dfd9ac",
@@ -18,17 +18,17 @@
     "src/runtime/support-manifest.ts": "46598f316aafa9dc9641fa38b70a1c9e0f3408a1d9fa8cf71f7c8e685fa81b8d",
     "src/runtime/wallet-connection-storage.ts": "61e1dbab5cc5633fde201713fa11f930367fe59451f3dc66a8e0d90a0d1fd225",
     "test/runtime/architecture.test.ts": "52cb8f8e99b8ad5e9e27645034b31c4568d7314c352c946ec8cf7a02acb905d1",
-    "test/runtime/composition.test.ts": "84a8a1b0ba47a20571f95c7f05c749c53c0adef5aa8e00375385c3ad66440422",
+    "test/runtime/composition.test.ts": "3be331bb6ce5b58931ca4e83ff2427e6b6ef420d2890e315a99f940854c3acb3",
     "test/runtime/http-owner-process-worker.ts": "c00986de3c9439b017f2ca46fbd2df9c260ee014ca3df03936be8f55676cc06e",
     "test/runtime/http-owner.test.ts": "f251263f820b02c4187e45d66b174585b1ab7c3f2aab52ae760fb7439576f029",
     "test/runtime/request-security.test.ts": "6917faa3d3c5a1987c3787eb3f490129281010e4b037cdc9c5d561420036a5c2",
     "test/runtime/sqlite-crash-worker.ts": "623e93db868a2e41963b971ad94f7a17ec54d3a47627cbb5898ed2beb88f484e",
     "test/runtime/storage.test.ts": "cf781ccd973a14b9ebcacfb856982a20f05fc23aa181f71287209eeeca1eb620",
     "test/runtime/support-and-errors.test.ts": "0fc19b168942ca4657e60653598dc5c8702bf78392391006bf5e79d2856eb608",
-    "test/runtime/type-contracts.ts": "6144d645acc83bc62f48176c8b1c4a2bbe31557f17d7112ecde8660b85dff61e",
+    "test/runtime/type-contracts.ts": "1081ab97a3ffda81bec713a21fb1817d6e49a52ee3dd9e6d4cb6ffd0480c2ad2",
     "test/runtime/wu1-handoff.test.ts": "46de12ceb8c774d59a203e52976166d0a4526d67cd16c0381cbaf91e159d7bab"
   },
-  "immutableFilesDigest": "3ae400d8f2e09826eea4f750a924d6beada4a517e3025c415da91a6edca7a270",
+  "immutableFilesDigest": "512448146de94dfaffe2f8e76b3d950dbdc582f27d8b4adf6c2bfbfde9633602",
   "dependencyClosureDigest": "2495eb70be09d4b4f9fe23051fe9aedaf1194cad6b97de60848d459aa5dcd563",
   "databaseMigrationIdentity": {
     "version": 1,

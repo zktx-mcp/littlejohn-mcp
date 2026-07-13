@@ -146,17 +146,19 @@ export interface ChainOwnerApplicationContext {
   readonly chain: ChainOwnerBootstrapPort;
 }
 
-export interface InterfaceOwnerApplicationContext {
+export interface InterfaceOwnerApplicationContext<WalletOperations extends object> {
   readonly routes: RuntimeRouteRegistry;
   readonly signal: AbortSignal;
   readonly supportManifest: ChainRuntimeSupportManifest;
   readonly walletConnection: WalletConnectionReadCapabilityPort;
+  readonly walletOperations: WalletOperations;
   readonly chainReads: ChainReadCapabilityPort;
 }
 
-export interface WalletOwnerApplication extends HttpOwnerApplication {
+export interface WalletOwnerApplication<WalletOperations extends object> extends HttpOwnerApplication {
   readonly supportManifest: WalletRuntimeSupportManifest;
   readonly walletConnection: WalletConnectionReadCapabilityPort;
+  readonly walletOperations: WalletOperations;
 }
 
 export interface ChainOwnerApplication extends HttpOwnerApplication {
@@ -168,14 +170,14 @@ export interface InterfaceOwnerApplication extends HttpOwnerApplication {
   readonly supportManifest: InterfaceRuntimeSupportManifest;
 }
 
-export type WalletOwnerApplicationFactory = (
+export type WalletOwnerApplicationFactory<WalletOperations extends object> = (
   context: WalletOwnerApplicationContext,
-) => Promise<WalletOwnerApplication> | WalletOwnerApplication;
+) => Promise<WalletOwnerApplication<WalletOperations>> | WalletOwnerApplication<WalletOperations>;
 export type ChainOwnerApplicationFactory = (
   context: ChainOwnerApplicationContext,
 ) => Promise<ChainOwnerApplication> | ChainOwnerApplication;
-export type InterfaceOwnerApplicationFactory = (
-  context: InterfaceOwnerApplicationContext,
+export type InterfaceOwnerApplicationFactory<WalletOperations extends object> = (
+  context: InterfaceOwnerApplicationContext<WalletOperations>,
 ) => Promise<InterfaceOwnerApplication> | InterfaceOwnerApplication;
 
 interface LocalRuntimeBaseOptions {
@@ -183,29 +185,30 @@ interface LocalRuntimeBaseOptions {
   readonly now?: () => UtcTimestamp;
 }
 
-type LocalRuntimeApplicationFactories =
+type LocalRuntimeApplicationFactories<WalletOperations extends object> =
   | {
       readonly walletApplicationFactory?: never;
       readonly chainApplicationFactory?: never;
       readonly interfaceApplicationFactory?: never;
     }
   | {
-      readonly walletApplicationFactory: WalletOwnerApplicationFactory;
+      readonly walletApplicationFactory: WalletOwnerApplicationFactory<WalletOperations>;
       readonly chainApplicationFactory?: never;
       readonly interfaceApplicationFactory?: never;
     }
   | {
-      readonly walletApplicationFactory: WalletOwnerApplicationFactory;
+      readonly walletApplicationFactory: WalletOwnerApplicationFactory<WalletOperations>;
       readonly chainApplicationFactory: ChainOwnerApplicationFactory;
       readonly interfaceApplicationFactory?: never;
     }
   | {
-      readonly walletApplicationFactory: WalletOwnerApplicationFactory;
+      readonly walletApplicationFactory: WalletOwnerApplicationFactory<WalletOperations>;
       readonly chainApplicationFactory: ChainOwnerApplicationFactory;
-      readonly interfaceApplicationFactory: InterfaceOwnerApplicationFactory;
+      readonly interfaceApplicationFactory: InterfaceOwnerApplicationFactory<NoInfer<WalletOperations>>;
     };
 
-export type LocalRuntimeOptions = LocalRuntimeBaseOptions & LocalRuntimeApplicationFactories;
+export type LocalRuntimeOptions<WalletOperations extends object> =
+  LocalRuntimeBaseOptions & LocalRuntimeApplicationFactories<WalletOperations>;
 
 const systemNow = (): UtcTimestamp => parseUtcTimestamp(new Date().toISOString());
 
@@ -235,23 +238,28 @@ const closeApplications = async (applications: readonly HttpOwnerApplication[]):
   if (failure !== undefined) throw failure;
 };
 
-export type WalletOwnerApplicationStage = (
+export type WalletOwnerApplicationStage<WalletOperations extends object> = (
   context: HttpOwnerApplicationContext,
-) => Promise<WalletOwnerApplication> | WalletOwnerApplication;
+) => Promise<WalletOwnerApplication<WalletOperations>> | WalletOwnerApplication<WalletOperations>;
 export type ChainOwnerApplicationStage = (
   context: HttpOwnerApplicationContext,
   wallet: WalletOwnerHandoff,
 ) => Promise<ChainOwnerApplication> | ChainOwnerApplication;
-export type InterfaceOwnerApplicationStage = (
+export type InterfaceOwnerApplicationStage<WalletOperations extends object> = (
   context: HttpOwnerApplicationContext,
   wallet: WalletOwnerHandoff,
   chain: ChainOwnerHandoff,
+  walletOperations: WalletOperations,
 ) => Promise<InterfaceOwnerApplication> | InterfaceOwnerApplication;
 
-export type OwnerApplicationStages =
-  | readonly [WalletOwnerApplicationStage]
-  | readonly [WalletOwnerApplicationStage, ChainOwnerApplicationStage]
-  | readonly [WalletOwnerApplicationStage, ChainOwnerApplicationStage, InterfaceOwnerApplicationStage];
+export type OwnerApplicationStages<WalletOperations extends object> =
+  | readonly [WalletOwnerApplicationStage<WalletOperations>]
+  | readonly [WalletOwnerApplicationStage<WalletOperations>, ChainOwnerApplicationStage]
+  | readonly [
+      WalletOwnerApplicationStage<WalletOperations>,
+      ChainOwnerApplicationStage,
+      InterfaceOwnerApplicationStage<WalletOperations>,
+    ];
 
 const snapshotWalletConnection = (
   input: WalletConnectionReadCapabilityPort,
@@ -292,9 +300,9 @@ const assertCapabilityDirectSupport = (
   }
 };
 
-export const composeOwnerApplicationStages = async (
+export const composeOwnerApplicationStages = async <WalletOperations extends object>(
   context: HttpOwnerApplicationContext,
-  stages: OwnerApplicationStages,
+  stages: OwnerApplicationStages<WalletOperations>,
 ): Promise<HttpOwnerApplication> => {
   const applications: HttpOwnerApplication[] = [];
   let currentRoutes = context.routes;
@@ -304,6 +312,11 @@ export const composeOwnerApplicationStages = async (
     assertRuntimeRouteRegistryDescendant(currentRoutes, wallet.routes);
     assertWalletRuntimeSupportManifestExtension(initialRuntimeSupportManifest, wallet.supportManifest);
     const walletConnection = snapshotWalletConnection(wallet.walletConnection);
+    const walletOperations = wallet.walletOperations;
+    const walletOperationsType = typeof walletOperations;
+    if (walletOperations === null || (walletOperationsType !== "object" && walletOperationsType !== "function")) {
+      throw new TypeError("Wallet operation port must be a reference value.");
+    }
     assertCapabilityDirectSupport(wallet.supportManifest, [walletConnectionCapabilityId]);
     const walletHandoff: WalletOwnerHandoff = Object.freeze({
       supportManifest: wallet.supportManifest,
@@ -340,6 +353,7 @@ export const composeOwnerApplicationStages = async (
         { routes: currentRoutes, signal: context.signal },
         walletHandoff,
         chainHandoff,
+        walletOperations,
       );
       applications.push(interfaceApplication);
       assertRuntimeRouteRegistryDescendant(currentRoutes, interfaceApplication.routes);
@@ -382,7 +396,9 @@ export class LocalRuntime {
 
   get ownerState(): FixedHttpOwner["state"] { return this.#httpOwner.state; }
 
-  static async start(options: LocalRuntimeOptions = {}): Promise<LocalRuntime> {
+  static async start<WalletOperations extends object = object>(
+    options: LocalRuntimeOptions<WalletOperations> = {},
+  ): Promise<LocalRuntime> {
     let database: ProductDatabase | undefined;
     try {
       const environment = options.environment ?? process.env;
@@ -418,23 +434,24 @@ export class LocalRuntime {
         (chainApplicationFactory === undefined && interfaceApplicationFactory !== undefined)) {
         throw new TypeError("Owner application factories must form a dependency prefix.");
       }
-      const walletStage: WalletOwnerApplicationStage | undefined = walletApplicationFactory === undefined
-        ? undefined
-        : ({ routes, signal }) => walletApplicationFactory({
-          routes,
-          signal,
-          supportManifest: initialRuntimeSupportManifest,
-          wallet: Object.freeze({
-            configuration: configuration.wallet,
-            privateStoreDirectory: createWalletPrivateStoreDirectoryPort(
-              paths.walletConnectDirectory,
-              signal,
-            ),
-            projection: walletProjection,
-            sourceAuthority: walletSource,
-            capabilityAuthority: walletCapabilityAuthority,
-          }),
-        });
+      const walletStage: WalletOwnerApplicationStage<WalletOperations> | undefined =
+        walletApplicationFactory === undefined
+          ? undefined
+          : ({ routes, signal }) => walletApplicationFactory({
+            routes,
+            signal,
+            supportManifest: initialRuntimeSupportManifest,
+            wallet: Object.freeze({
+              configuration: configuration.wallet,
+              privateStoreDirectory: createWalletPrivateStoreDirectoryPort(
+                paths.walletConnectDirectory,
+                signal,
+              ),
+              projection: walletProjection,
+              sourceAuthority: walletSource,
+              capabilityAuthority: walletCapabilityAuthority,
+            }),
+          });
       const chainStage: ChainOwnerApplicationStage | undefined = chainApplicationFactory === undefined
         ? undefined
         : ({ routes, signal }, wallet) => chainApplicationFactory({
@@ -452,16 +469,18 @@ export class LocalRuntime {
             }),
           }),
         });
-      const interfaceStage: InterfaceOwnerApplicationStage | undefined = interfaceApplicationFactory === undefined
-        ? undefined
-        : ({ routes, signal }, wallet, chain) => interfaceApplicationFactory({
-          routes,
-          signal,
-          supportManifest: chain.supportManifest,
-          walletConnection: wallet.walletConnection,
-          chainReads: chain.chainReads,
-        });
-      const stages: OwnerApplicationStages | undefined = walletStage === undefined
+      const interfaceStage: InterfaceOwnerApplicationStage<WalletOperations> | undefined =
+        interfaceApplicationFactory === undefined
+          ? undefined
+          : ({ routes, signal }, wallet, chain, walletOperations) => interfaceApplicationFactory({
+            routes,
+            signal,
+            supportManifest: chain.supportManifest,
+            walletConnection: wallet.walletConnection,
+            walletOperations,
+            chainReads: chain.chainReads,
+          });
+      const stages: OwnerApplicationStages<WalletOperations> | undefined = walletStage === undefined
         ? undefined
         : chainStage === undefined
           ? [walletStage]

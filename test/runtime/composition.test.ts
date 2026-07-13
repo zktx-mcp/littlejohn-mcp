@@ -54,6 +54,14 @@ const route = (pathPattern: string) => ({
   handler: async () => ({ ok: true as const, body: {} }),
 });
 
+interface TestWalletOperations {
+  readOperation(): "test-operation";
+}
+
+const testWalletOperations = (): TestWalletOperations => Object.freeze({
+  readOperation: () => "test-operation" as const,
+});
+
 const capabilityPorts = (): {
   readonly wallet: WalletConnectionReadCapabilityPort;
   readonly chain: ChainReadCapabilityPort;
@@ -143,6 +151,7 @@ describe("owner application composition", () => {
     const events: string[] = [];
     const ports = capabilityPorts();
     const support = manifests();
+    const walletOperations = testWalletOperations();
     const walletRoutes = routes.extend([route("/api/v1/internal/control/wallet")]);
     const chainRoutes = walletRoutes.extend([route("/api/v1/internal/control/chain")]);
     const interfaceRoutes = chainRoutes.extend([route("/api/v1/internal/control/interfaces")]);
@@ -151,10 +160,12 @@ describe("owner application composition", () => {
         routes: walletRoutes,
         supportManifest: support.wallet,
         walletConnection: ports.wallet,
+        walletOperations,
         close: () => { events.push("wallet:close"); },
       }),
       (_context, wallet) => {
         expect(wallet.walletConnection.connection).toBe(ports.wallet.connection);
+        expect("walletOperations" in wallet).toBe(false);
         return {
           routes: chainRoutes,
           supportManifest: support.chain,
@@ -162,9 +173,11 @@ describe("owner application composition", () => {
           close: () => { events.push("chain:close"); },
         };
       },
-      (_context, wallet, chain) => {
+      (_context, wallet, chain, operations) => {
         expect(wallet.walletConnection.connection).toBe(ports.wallet.connection);
         expect(chain.chainReads.chainStatus).toBe(ports.chain.chainStatus);
+        expect(operations).toBe(walletOperations);
+        expect(operations.readOperation()).toBe("test-operation");
         return {
           routes: interfaceRoutes,
           supportManifest: support.interfaces,
@@ -207,7 +220,10 @@ describe("owner application composition", () => {
     });
     await expect(composeOwnerApplicationStages({ routes, signal }, [
       () => ({
-        routes: walletRoutes, supportManifest: support.wallet, walletConnection: ports.wallet,
+        routes: walletRoutes,
+        supportManifest: support.wallet,
+        walletConnection: ports.wallet,
+        walletOperations: testWalletOperations(),
         close: () => { events.push("wallet:close"); },
       }),
       () => ({
@@ -234,7 +250,10 @@ describe("owner application composition", () => {
     let closed = false;
     await expect(composeOwnerApplicationStages({ routes, signal: new AbortController().signal }, [
       () => ({
-        routes, supportManifest: wrongWallet, walletConnection: ports.wallet,
+        routes,
+        supportManifest: wrongWallet,
+        walletConnection: ports.wallet,
+        walletOperations: testWalletOperations(),
         close: () => { closed = true; },
       }),
     ])).rejects.toThrow("absent from its support manifest");
@@ -251,6 +270,7 @@ describe("owner application composition", () => {
         routes,
         supportManifest: support.wallet,
         walletConnection: { connection: ports.chain.chainStatus as never },
+        walletOperations: testWalletOperations(),
         close: () => { closed = true; },
       }),
     ])).rejects.toThrow("provenance");
@@ -269,7 +289,10 @@ describe("owner application composition", () => {
         () => {
           lifecycle.abort();
           return {
-            routes, supportManifest: support.wallet, walletConnection: ports.wallet,
+            routes,
+            supportManifest: support.wallet,
+            walletConnection: ports.wallet,
+            walletOperations: testWalletOperations(),
             close: () => { events.push("wallet:close"); },
           };
         },
@@ -282,5 +305,33 @@ describe("owner application composition", () => {
     expect(failure).toBeInstanceOf(RuntimeOperationError);
     expect((failure as RuntimeOperationError).failure.error.code).toBe("request_aborted");
     expect(events).toEqual(["wallet:close"]);
+  });
+
+  it("rejects an absent or primitive wallet operation port before starting a dependent stage", async () => {
+    const routes = await baseRoutes();
+    const ports = capabilityPorts();
+    const support = manifests();
+    for (const invalid of [undefined, null, "operation", 1]) {
+      const events: string[] = [];
+      await expect(composeOwnerApplicationStages({ routes, signal: new AbortController().signal }, [
+        () => ({
+          routes,
+          supportManifest: support.wallet,
+          walletConnection: ports.wallet,
+          walletOperations: invalid as never,
+          close: () => { events.push("wallet:close"); },
+        }),
+        () => {
+          events.push("chain:start");
+          return {
+            routes,
+            supportManifest: support.chain,
+            chainReads: ports.chain,
+            close: () => undefined,
+          };
+        },
+      ])).rejects.toThrow("Wallet operation port must be a reference value");
+      expect(events).toEqual(["wallet:close"]);
+    }
   });
 });
