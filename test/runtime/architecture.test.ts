@@ -151,4 +151,40 @@ describe("WU2 architecture boundary", () => {
       "extendInterfaceRuntimeSupportManifest",
     ]) expect(Object.hasOwn(runtimePublic, scopedAuthority)).toBe(true);
   });
+
+  it("confines SQLite snake-case row names to SQL aliases at the database adapter", async () => {
+    const files = [resolve("src/runtime/database.ts"), resolve("src/runtime/wallet-connection-storage.ts")];
+    const violations: string[] = [];
+    for (const file of files) {
+      const source = await readFile(file, "utf8");
+      const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const visit = (node: ts.Node): void => {
+        const record = (name: ts.PropertyName | undefined): void => {
+          if (name !== undefined && ts.isIdentifier(name) && /^[a-z][a-z0-9]*_[a-z0-9_]+$/.test(name.text)) {
+            violations.push(`${relative(sourceRoot, file)}:${name.text}`);
+          }
+        };
+        if (ts.isPropertySignature(node) || ts.isPropertyAssignment(node) || ts.isMethodSignature(node)) {
+          record(node.name);
+        } else if (ts.isPropertyAccessExpression(node) && /^[a-z][a-z0-9]*_[a-z0-9_]+$/.test(node.name.text)) {
+          violations.push(`${relative(sourceRoot, file)}:${node.name.text}`);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(parsed);
+    }
+    expect(violations).toEqual([]);
+
+    const database = await readFile(resolve("src/runtime/database.ts"), "utf8");
+    for (const alias of [
+      "profile_id AS profileId",
+      "owner_instance_id AS ownerInstanceId",
+      "protocol_version AS protocolVersion",
+      "process_id AS processId",
+      "owner_revision AS ownerRevision",
+      "approved_methods_json AS approvedMethodsJson",
+      "approved_events_json AS approvedEventsJson",
+      "eligible_session_count AS eligibleSessionCount",
+    ]) expect(database).toContain(alias);
+  });
 });

@@ -50,7 +50,7 @@ interface HandoffFixture {
 }
 
 const fixturePath = "test/fixtures/wu1-handoff.json";
-const fixtureDigest = "3894f270f79bc84fadc843fd48044dc221955ae652fc7eac39ca67ce3662c0bf";
+const fixtureDigest = "2598433cede65fe361ad588d827a3049893f86c8fd4a7b754c9b6bad01aabf43";
 const extensionWorkUnits = ["WU2", "WU3", "WU4", "WU5", "WU6"] as const;
 const buildRuleFiles = [
   "scripts/clean.mjs",
@@ -137,20 +137,24 @@ const packagePolicyErrors = (manifest: Record<string, unknown>, fixture: Handoff
     devDependencies: manifest["devDependencies"] as Record<string, string>,
   };
   const foundation = fixture.packageFoundation;
-  const allowed = {
-    scripts: { ...foundation.scripts, ...mergedExtensions(fixture, "scripts") },
-    dependencies: { ...foundation.dependencies, ...mergedExtensions(fixture, "dependencies") },
-    devDependencies: { ...foundation.devDependencies, ...mergedExtensions(fixture, "devDependencies") },
+  const extensions = {
+    scripts: mergedExtensions(fixture, "scripts"),
+    dependencies: mergedExtensions(fixture, "dependencies"),
+    devDependencies: mergedExtensions(fixture, "devDependencies"),
   };
   for (const section of ["scripts", "dependencies", "devDependencies"] as const) {
     for (const [name, value] of Object.entries(actual[section])) {
-      if (allowed[section][name] !== value) errors.push(`${section}:${name}@${value}`);
+      if (foundation[section][name] !== value && extensions[section][name] !== value) {
+        errors.push(`${section}:${name}@${value}`);
+      }
     }
   }
   for (const workUnit of extensionWorkUnits) {
     const extension = fixture.extensionsByWorkUnit[workUnit];
-    const active = (["scripts", "dependencies", "devDependencies"] as const).some((section) =>
-      Object.keys(extension[section]).some((name) => actual[section][name] !== undefined));
+    const active = (["dependencies", "devDependencies"] as const).some((section) =>
+      Object.keys(extension[section]).some((name) => actual[section][name] !== undefined)) ||
+      Object.keys(extension.scripts).some((name) =>
+        actual.scripts[name] !== undefined && actual.scripts[name] !== foundation.scripts[name]);
     if (!active) continue;
     for (const section of ["scripts", "dependencies", "devDependencies"] as const) {
       for (const [name, value] of Object.entries(extension[section])) {
@@ -159,10 +163,10 @@ const packagePolicyErrors = (manifest: Record<string, unknown>, fixture: Handoff
     }
   }
   for (const name of fixture.requiredAtBoundaryA.dependencies) {
-    if (actual.dependencies[name] !== allowed.dependencies[name]) errors.push(`boundaryA:dependency:${name}`);
+    if (actual.dependencies[name] !== extensions.dependencies[name]) errors.push(`boundaryA:dependency:${name}`);
   }
   for (const name of fixture.requiredAtBoundaryA.devDependencies) {
-    if (actual.devDependencies[name] !== allowed.devDependencies[name]) errors.push(`boundaryA:devDependency:${name}`);
+    if (actual.devDependencies[name] !== extensions.devDependencies[name]) errors.push(`boundaryA:devDependency:${name}`);
   }
   return errors.sort(compareCodePointSequences);
 };
@@ -344,6 +348,55 @@ describe("WU1 frozen handoff", () => {
       },
     };
     expect(packagePolicyErrors(earlyWallet, fixture)).toContain("WU3:missing:dependencies:qrcode@1.5.4");
+    const earlyWeb = {
+      ...manifest,
+      dependencies: {
+        ...(manifest["dependencies"] as object),
+        react: "19.2.7",
+      },
+    };
+    expect(packagePolicyErrors(earlyWeb, fixture)).toEqual(expect.arrayContaining([
+      "WU5:missing:dependencies:@modelcontextprotocol/sdk@1.29.0",
+      "WU5:missing:dependencies:react-dom@19.2.7",
+      "WU5:missing:devDependencies:vite@8.1.4",
+      "WU5:missing:scripts:build@npm run clean && tsc -p tsconfig.build.json && tsc -p tsconfig.web.json --noEmit && vite build --config vite.config.ts && node dist/build/generate-contracts.js && node dist/build/generate-build-identity.js",
+      "WU5:missing:scripts:typecheck@tsc -p tsconfig.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    ]));
+  });
+
+  it("declares the isolated WU5 web build without activating browser compilation", async () => {
+    const fixture = await loadFixture();
+    const web = fixture.extensionsByWorkUnit.WU5;
+    expect(web).toEqual({
+      sourceRoot: "src/interfaces",
+      scripts: {
+        build: "npm run clean && tsc -p tsconfig.build.json && tsc -p tsconfig.web.json --noEmit && vite build --config vite.config.ts && node dist/build/generate-contracts.js && node dist/build/generate-build-identity.js",
+        typecheck: "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+      },
+      dependencies: {
+        "@modelcontextprotocol/sdk": "1.29.0",
+        react: "19.2.7",
+        "react-dom": "19.2.7",
+      },
+      devDependencies: {
+        "@types/react": "19.2.17",
+        "@types/react-dom": "19.2.3",
+        "@vitejs/plugin-react": "6.0.3",
+        vite: "8.1.4",
+      },
+    });
+    const manifest = JSON.parse(await readFile("package.json", "utf8")) as Record<string, unknown>;
+    const dependencies = manifest["dependencies"] as Record<string, string>;
+    const devDependencies = manifest["devDependencies"] as Record<string, string>;
+    for (const name of Object.keys(web.dependencies)) expect(dependencies[name]).toBeUndefined();
+    for (const name of Object.keys(web.devDependencies)) expect(devDependencies[name]).toBeUndefined();
+    const config = JSON.parse(await readFile("tsconfig.json", "utf8")) as {
+      compilerOptions: { lib: readonly string[] };
+      include: readonly string[];
+    };
+    expect(config.compilerOptions.lib).toEqual(["ES2023"]);
+    expect(config.include.some((path) => path.includes(".tsx"))).toBe(false);
+    await expect(access("tsconfig.web.json")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("binds the shrinkwrap root to the current manifest and preserves exact WU1 resolution", async () => {

@@ -33,6 +33,12 @@ export type {
   ProblemDetails,
 } from "./errors.js";
 export {
+  browserContentSecurityPolicy,
+  browserContentTypeOptions,
+  browserContentTypes,
+  browserCrossOriginOpenerPolicy,
+  browserReferrerPolicy,
+  browserSetCookieLimitBytes,
   fixedHost,
   fixedHostHeader,
   fixedOrigin,
@@ -44,6 +50,7 @@ export {
   publicReadResponseLimitBytes,
   requestBodyLimitBytes,
 } from "./http-boundary.js";
+export type { BrowserContentType } from "./http-boundary.js";
 export type {
   OwnerOperation,
   OwnerOperationResponse,
@@ -65,8 +72,15 @@ export type {
   RouteDefinition,
   RouteMethod,
   RouteResult,
+  ResourcePathDefinition,
   RuntimeRouteRegistry,
 } from "./http-routing.js";
+export type {
+  AuthenticationVerifierDefinition,
+  RequestAuthenticationInput,
+  RequestPolicyDefinition,
+  RequestPolicyExtension,
+} from "./request-security.js";
 export type {
   RuntimeOwnerRecord,
   RuntimeOwnerStore,
@@ -91,11 +105,14 @@ export {
 } from "./support-manifest.js";
 export type {
   Availability,
+  CapabilityAvailabilityInput,
   CapabilityCatalog,
+  CapabilitySupportEntryInput,
   ChainRuntimeSupportManifest,
   InitialRuntimeSupportManifest,
   InterfaceRuntimeSupportManifest,
   RuntimeSupportManifest,
+  RuntimeSupportManifestExtensionInput,
   RuntimeSupportManifestSnapshot,
   WalletRuntimeSupportManifest,
 } from "./support-manifest.js";

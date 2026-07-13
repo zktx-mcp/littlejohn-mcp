@@ -19,10 +19,13 @@ const fixture = async () => {
   directories.push(root);
   const dist = resolve(root, "dist");
   const generated = resolve(dist, "generated");
+  const webAssets = resolve(dist, "web/assets");
   await mkdir(generated, { recursive: true });
+  await mkdir(webAssets, { recursive: true });
   await writeFile(resolve(root, "package.json"), "{}\n");
   await writeFile(resolve(root, "npm-shrinkwrap.json"), "{}\n");
   await writeFile(resolve(dist, "runtime.js"), "export {};\n");
+  await writeFile(resolve(webAssets, "application-a1b2c3.js"), "export {};\n");
   const identityPath = resolve(generated, "runtime-build-identity.json");
   const identity = await createRuntimeBuildIdentityFromFiles(root, dist, identityPath);
   await writeFile(identityPath, `${canonicalJsonStringify(identity as unknown as CanonicalJson)}\n`);
@@ -32,6 +35,7 @@ const fixture = async () => {
 describe("runtime build file identity", () => {
   it("verifies the exact file set and file bytes", async () => {
     const built = await fixture();
+    expect(built.identity.files).toHaveProperty("dist/web/assets/application-a1b2c3.js");
     await expect(verifyRuntimeBuildIdentityFiles(
       built.identity,
       built.root,

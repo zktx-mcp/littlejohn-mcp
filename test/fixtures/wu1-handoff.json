@@ -9,7 +9,7 @@
     "src/core/build-identity.ts": "2e35ad47222e9a831988c69b929605d48e179932d45369c5a2c14029df5d5def",
     "src/core/canonical-json.ts": "23761758fcef53ef7e19826c11c60cd5db1599cadf9f84866e8984473dc5ee70",
     "src/core/capabilities.ts": "2d4c5160370528c34f5c18b6b447f1ff075ac8585ad9bd319f0607eb80704e8b",
-    "src/core/capability.ts": "691ee90f32c12f6d94ab87b9e721bdc65d098533db1d52201af400cfa15c9662",
+    "src/core/capability.ts": "cffefc59a034bb183dcc4de5be0ea4315b84738db525be09a223f23a1e56d368",
     "src/core/contract.ts": "c552d5ba4c90c8d6b3bb6554bc74506bac6acd8b967454c57e51e771f721c5d6",
     "src/core/digests.ts": "f51572c56c65dfa2289e09b51814739524398cf15a4ffeeea59008c4269bea87",
     "src/core/erc20-events.ts": "9ce569ac7446b37ce2db9127eb0bb0ea297c74102b2b19699348342aae117c1c",
@@ -26,9 +26,9 @@
     "test/core/amounts.test.ts": "601134b9caa45c873827c9f2851af985d11970ac0d09c1f27b84cb43a8223bb7",
     "test/core/architecture.test.ts": "5365aff7248a3c1120b413bec5cf6aa0827bacf1bfc3de2e4ae7d47ea56dd2d2",
     "test/core/build-identity.test.ts": "548e4573973a8ebdec894f79790ed1d54ac4a58ec08022fa9736dca167a70b36",
-    "test/core/capability-binding.test.ts": "8be2a4e2919e524a2d58b1def2d29e32d59093501a1ed47f625245cf8faae535",
+    "test/core/capability-binding.test.ts": "4946d2555d1b9c4babd11b364a42dcb0b6c47b3da0260f9fca9a0f4bcff00424",
     "test/core/capability-harness.ts": "1f4f0dbd17169339ddee94e1266b93bd4e37b5de731ee932974ebb60f515ef1e",
-    "test/core/capability-schemas.test.ts": "e8b3fa1754c2039e6cd840d350473bccddaf4aabe2c9cf3abb9683a8d602c909",
+    "test/core/capability-schemas.test.ts": "cadcf9d5921d4f805c20c433c5a64d13c1ab1c8b1c7d6f41125b1ec5b139c531",
     "test/core/capability-semantics.test.ts": "635f5abd603cd48e3e1d46aa60c5a86981f05834008203412b29ad3cc53b87c6",
     "test/core/erc20-events.test.ts": "79ebf851c024c2d1450430611093c2ca615602be94f36bd206bdc319a7a831f7",
     "test/core/errors.test.ts": "42088ef7b974b337b454349b6a9127550588b1f0da4ea12de18e34e598135a6a",
@@ -36,16 +36,16 @@
     "test/core/invocation-rng-child.ts": "b358e409f4fe11922ed600f3a1f55cd2d1c5de6bb472e96c5f49b5fba648d702",
     "test/core/keccak256.test.ts": "fde70672952565c82f008b7c96519d5fa1fb55d9c419a6c79898ee1d6010beef",
     "test/core/primitives.test.ts": "e98fb2a03db9058d9c56ee41276c4bfb848100b4f2462f93e1da04feba7cf7b0",
-    "test/core/runtime-file-set.test.ts": "5e23b237ac7d8cb06fa50dd6019ed9d5d199a824cea93637b46b0549dcfb13e2",
+    "test/core/runtime-file-set.test.ts": "2cb254ee2fa75d425438c123ffd845cde14d8b9932473ab1c53506e59fdd2cd4",
     "test/core/schema-projection.test.ts": "cce1df148de3adfa19816fec5cad8f88b012d5cc2f90922539aeec7a007a6d10",
     "test/core/type-contracts.ts": "0f8ec1ab8dadba3826f0a31818d588ee10a3419a3a3486dbb86cc574d92bd87d",
     "tsconfig.build.json": "48a8dfe7b503af758782a11f32a995fcfbb74c2a482461a9c55ad2dc414d61d6",
     "tsconfig.json": "6fec546516d8d1fc9e5b7d3e346f5b9180a6584cb09c5c5bd7bb715e8191ca60",
     "vitest.config.ts": "3d8ceedbf76d8b42807516222fe8fb71585caf102fc75604e8e2c948049ca6f0"
   },
-  "immutableFilesDigest": "f951c7255c049f56ebfeec50aa64401d491d0e6ae27d52158bffc83908869ff6",
+  "immutableFilesDigest": "46a05320ee68f3b232e5a9e8603b5f2a6841ca931a573e690980c57f0a95e4e8",
   "capabilityProjectionDigest": "e38b9c817a57e2bc5704dffe42e6a7275b6798a6071e9d74abfb147ba34b6f9c",
-  "buildRuleDigest": "1b78626ca8aace7f5f17163af2ba94be5b8d0ce64b6f37d09daacb3bb8d4fd3f",
+  "buildRuleDigest": "7dff9f91f5546e859b17830887198e870e235e96f580f5a3aba5b41df0f36b88",
   "packageFoundation": {
     "name": "littlejohn-mcp",
     "version": "0.1.0",
@@ -53,7 +53,7 @@
     "type": "module",
     "exports": {},
     "engines": {
-      "node": ">=22"
+      "node": ">=22.12.0"
     },
     "bin": {
       "littlejohn": "dist/cli.js"
@@ -113,11 +113,21 @@
     },
     "WU5": {
       "sourceRoot": "src/interfaces",
-      "scripts": {},
-      "dependencies": {
-        "@modelcontextprotocol/sdk": "1.29.0"
+      "scripts": {
+        "build": "npm run clean && tsc -p tsconfig.build.json && tsc -p tsconfig.web.json --noEmit && vite build --config vite.config.ts && node dist/build/generate-contracts.js && node dist/build/generate-build-identity.js",
+        "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.web.json --noEmit"
       },
-      "devDependencies": {}
+      "dependencies": {
+        "@modelcontextprotocol/sdk": "1.29.0",
+        "react": "19.2.7",
+        "react-dom": "19.2.7"
+      },
+      "devDependencies": {
+        "@types/react": "19.2.17",
+        "@types/react-dom": "19.2.3",
+        "@vitejs/plugin-react": "6.0.3",
+        "vite": "8.1.4"
+      }
     },
     "WU6": {
       "sourceRoot": "scripts",

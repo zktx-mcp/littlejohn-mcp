@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   canonicalJsonStringify,
+  capabilityIdSchema,
   compareCodePointSequences,
   coreContractVersion,
   extendCapabilitySchemaProjection,
@@ -16,22 +17,9 @@ import {
 } from "../core/index.js";
 import { guardRuntimeJsonSchema, parseRuntimeAuthority } from "./schema-authority.js";
 
-const walletControlCapabilityIds = Object.freeze([
-  "wallet.connect",
-  "wallet.disconnect",
-  "wallet.list_sessions",
-  "wallet.select_session",
-] as const);
 const readCapabilityIds = Object.freeze(readCapabilityRegistry.values().map((definition) =>
   getCapabilityDefinitionSnapshot(definition).capabilityId));
 const walletConnectionCapabilityId = getCapabilityDefinitionSnapshot(walletConnectionCapability).capabilityId;
-const chainReadCapabilityIds = Object.freeze(readCapabilityIds
-  .filter((capabilityId) => capabilityId !== walletConnectionCapabilityId));
-const chainReadCapabilityIdSet: ReadonlySet<string> = new Set(chainReadCapabilityIds);
-const expectedCapabilityIds = Object.freeze([...readCapabilityIds, ...walletControlCapabilityIds]
-  .sort(compareCodePointSequences));
-const walletCapabilityIds = Object.freeze([...walletControlCapabilityIds, walletConnectionCapabilityId]
-  .sort(compareCodePointSequences));
 
 const createSupportSchemaSet = () => {
   const availability = z.enum(["unavailable", "internal", "available"]);
@@ -41,37 +29,32 @@ const createSupportSchemaSet = () => {
     http: availability,
     mcp: availability,
     cli: availability,
-    web: z.literal("unavailable"),
+    web: availability,
   }).strict().superRefine((value, context) => {
-    if (value.direct === "unavailable" && [value.http, value.mcp, value.cli].some((state) => state !== "unavailable")) {
+    if (value.direct === "unavailable" && [value.http, value.mcp, value.cli, value.web]
+      .some((state) => state !== "unavailable")) {
       context.addIssue({ code: "custom", message: "Exposed bindings require an internal direct capability." });
     }
-    const userFacing = [value.http, value.mcp, value.cli].includes("available");
+    const userFacing = [value.http, value.mcp, value.cli, value.web].includes("available");
     const expectedOverall = userFacing
       ? "available"
-      : [value.direct, value.http, value.mcp, value.cli].includes("internal") ? "internal" : "unavailable";
+      : [value.direct, value.http, value.mcp, value.cli, value.web].includes("internal") ? "internal" : "unavailable";
     if (value.overall !== expectedOverall) {
       context.addIssue({ code: "custom", message: "Overall availability must follow exposed bindings." });
     }
   });
   const capabilityManifestEntry = z.object({
-    capabilityId: fixedIdentifierSchema,
+    capabilityId: capabilityIdSchema,
     availability: capabilityAvailability,
   }).strict();
-  const walletCapabilityIdSchema = z.enum(walletCapabilityIds as [string, ...string[]]);
-  const interfaceCapabilityIdSchema = z.enum(readCapabilityIds as unknown as [string, ...string[]]);
-  const walletChanges = z.array(z.object({
-    capabilityId: walletCapabilityIdSchema,
-    direct: z.literal("internal").optional(),
-    http: z.literal("internal").optional(),
-    cli: z.literal("available").optional(),
-  }).strict())
-    .min(1)
-    .max(walletCapabilityIds.length);
-  const interfaceBindings = z.array(z.object({
-    capabilityId: interfaceCapabilityIdSchema,
-    bindings: z.array(z.enum(["http", "mcp", "cli"])).min(1).max(3),
-  }).strict()).min(1).max(readCapabilityIds.length);
+  const capabilityExtension = z.object({
+    registrations: z.array(capabilityManifestEntry),
+    changes: z.array(capabilityManifestEntry),
+  }).strict().superRefine((value, context) => {
+    if (value.registrations.length === 0 && value.changes.length === 0) {
+      context.addIssue({ code: "custom", message: "A support extension cannot be empty." });
+    }
+  });
   const chainSupport = z.object({
     chainId: z.literal(robinhoodChainIdentity.chainId),
     caip2: z.literal(robinhoodChainIdentity.caip2),
@@ -92,11 +75,17 @@ const createSupportSchemaSet = () => {
     chains: z.array(chainSupport).length(1),
     protocols: z.array(protocolSupport).max(128),
     transactionActions: z.array(transactionActionSupport).max(256),
-    capabilities: z.array(capabilityManifestEntry).length(expectedCapabilityIds.length),
+    capabilities: z.array(capabilityManifestEntry).min(readCapabilityIds.length),
   }).strict().superRefine((value, context) => {
     const ids = value.capabilities.map((entry) => entry.capabilityId);
-    if (ids.join("\0") !== expectedCapabilityIds.join("\0")) {
-      context.addIssue({ code: "custom", message: "Runtime capability support identity is incomplete." });
+    for (let index = 1; index < ids.length; index += 1) {
+      if (compareCodePointSequences(ids[index - 1] ?? "", ids[index] ?? "") >= 0) {
+        context.addIssue({ code: "custom", message: "Capability support entries must be unique and ordered." });
+        break;
+      }
+    }
+    if (readCapabilityIds.some((capabilityId) => !ids.includes(capabilityId))) {
+      context.addIssue({ code: "custom", message: "A canonical read capability support identity is missing." });
     }
     for (const entries of [value.protocols, value.transactionActions]) {
       const ids = entries.map((entry) => "protocolId" in entry ? entry.protocolId : entry.actionId);
@@ -111,8 +100,7 @@ const createSupportSchemaSet = () => {
   return Object.freeze({
     availability,
     capabilityAvailability,
-    walletChanges,
-    interfaceBindings,
+    capabilityExtension,
     manifest,
   });
 };
@@ -121,6 +109,15 @@ const publicSchemas = createSupportSchemaSet();
 const authoritySchemas = createSupportSchemaSet();
 
 export type Availability = z.infer<typeof publicSchemas.availability>;
+export type CapabilityAvailabilityInput = Readonly<z.infer<typeof publicSchemas.capabilityAvailability>>;
+export interface CapabilitySupportEntryInput {
+  readonly capabilityId: string;
+  readonly availability: CapabilityAvailabilityInput;
+}
+export interface RuntimeSupportManifestExtensionInput {
+  readonly registrations: readonly CapabilitySupportEntryInput[];
+  readonly changes: readonly CapabilitySupportEntryInput[];
+}
 export const runtimeSupportManifestSchema = guardRuntimeJsonSchema(publicSchemas.manifest);
 export type RuntimeSupportManifestSnapshot = z.infer<typeof runtimeSupportManifestSchema>;
 
@@ -208,29 +205,67 @@ export const initialRuntimeSupportManifest = createManifest("initial", {
   }],
   protocols: [],
   transactionActions: [],
-  capabilities: expectedCapabilityIds.map((capabilityId) => ({ capabilityId, availability: unavailable })),
+  capabilities: readCapabilityIds.map((capabilityId) => ({ capabilityId, availability: unavailable })),
 }) as InitialRuntimeSupportManifest;
 
 export const readRuntimeSupportManifest = (
   manifest: RuntimeSupportManifest,
 ): RuntimeSupportManifestSnapshot => manifestState(manifest).snapshot;
 
-const assertOrderedUnique = (values: readonly string[], expected?: readonly string[]): void => {
+const assertOrderedUnique = (values: readonly string[]): void => {
   const ordered = [...values].sort(compareCodePointSequences);
-  if (new Set(values).size !== values.length || values.join("\0") !== ordered.join("\0") ||
-    (expected !== undefined && values.join("\0") !== expected.join("\0"))) {
+  if (new Set(values).size !== values.length || values.join("\0") !== ordered.join("\0")) {
     throw new TypeError("Runtime support capability identities must be unique and ordered.");
   }
 };
 
 const availabilityRank = Object.freeze({ unavailable: 0, internal: 1, available: 2 } as const);
 
-const deriveOverall = (availability: RuntimeSupportManifestSnapshot["capabilities"][number]["availability"]): Availability =>
-  [availability.http, availability.mcp, availability.cli].includes("available")
-    ? "available"
-    : [availability.direct, availability.http, availability.mcp, availability.cli].includes("internal")
-      ? "internal"
-      : "unavailable";
+type CapabilityAvailability = RuntimeSupportManifestSnapshot["capabilities"][number]["availability"];
+
+const assertAvailabilityMovesForward = (
+  previous: CapabilityAvailability,
+  next: CapabilityAvailability,
+): void => {
+  let advanced = false;
+  for (const binding of ["direct", "http", "mcp", "cli", "web"] as const) {
+    if (availabilityRank[next[binding]] < availabilityRank[previous[binding]]) {
+      throw new TypeError("Support availability cannot move backward.");
+    }
+    if (availabilityRank[next[binding]] > availabilityRank[previous[binding]]) advanced = true;
+  }
+  if (!advanced) throw new TypeError("Support availability change does not move forward.");
+};
+
+const applyCapabilityExtension = (
+  snapshot: RuntimeSupportManifestSnapshot,
+  input: unknown,
+): RuntimeSupportManifestSnapshot["capabilities"] => {
+  const extension = parseRuntimeAuthority(authoritySchemas.capabilityExtension, input);
+  const registrationIds = extension.registrations.map((entry) => entry.capabilityId);
+  const changeIds = extension.changes.map((entry) => entry.capabilityId);
+  assertOrderedUnique(registrationIds);
+  assertOrderedUnique(changeIds);
+  const existing = new Map(snapshot.capabilities.map((entry) => [entry.capabilityId, entry]));
+  for (const entry of extension.registrations) {
+    if (existing.has(entry.capabilityId)) throw new TypeError("Capability support identity is already registered.");
+    existing.set(entry.capabilityId, entry);
+  }
+  for (const entry of extension.changes) {
+    const previous = existing.get(entry.capabilityId);
+    if (previous === undefined || registrationIds.includes(entry.capabilityId)) {
+      throw new TypeError("Capability support change requires a previously registered identity.");
+    }
+    assertAvailabilityMovesForward(previous.availability, entry.availability);
+    existing.set(entry.capabilityId, entry);
+  }
+  return Object.freeze([...existing.values()]
+    .sort((left, right) => compareCodePointSequences(left.capabilityId, right.capabilityId))
+    .map((entry) => Object.freeze({
+      capabilityId: entry.capabilityId,
+      availability: Object.freeze({ ...entry.availability }),
+    }))) as unknown as RuntimeSupportManifestSnapshot["capabilities"];
+};
 
 const assertScopedChild = (
   parent: RuntimeSupportManifest,
@@ -263,44 +298,13 @@ export const assertInterfaceRuntimeSupportManifestExtension = (
 
 export const extendWalletRuntimeSupportManifest = (
   parent: InitialRuntimeSupportManifest,
-  changesInput: unknown,
+  extensionInput: RuntimeSupportManifestExtensionInput,
 ): WalletRuntimeSupportManifest => {
   const parentState = manifestState(parent);
   if (parentState.scope !== "initial") throw new TypeError("Wallet support requires the initial manifest.");
-  const changes = parseRuntimeAuthority(authoritySchemas.walletChanges, changesInput);
-  const capabilityIds = changes.map((change) => change.capabilityId);
-  assertOrderedUnique(capabilityIds);
-  const changesById = new Map(changes.map((change) => [change.capabilityId, change]));
-  const capabilities = parentState.snapshot.capabilities.map((entry) => {
-    const change = changesById.get(entry.capabilityId);
-    if (change === undefined) return entry;
-    const keys = Object.keys(change).filter((key) => key !== "capabilityId");
-    if (keys.length === 0) throw new TypeError("Wallet support change is empty.");
-    const next = { ...entry.availability };
-    if (change.direct !== undefined) {
-      if (availabilityRank[change.direct] <= availabilityRank[next.direct]) {
-        throw new TypeError("Wallet support changes must move availability forward.");
-      }
-      next.direct = change.direct;
-    }
-    if (change.http !== undefined) {
-      if (availabilityRank[change.http] <= availabilityRank[next.http]) {
-        throw new TypeError("Wallet support changes must move availability forward.");
-      }
-      next.http = change.http;
-    }
-    if (change.cli !== undefined) {
-      if (availabilityRank[change.cli] <= availabilityRank[next.cli]) {
-        throw new TypeError("Wallet support changes must move availability forward.");
-      }
-      next.cli = change.cli;
-    }
-    next.overall = deriveOverall(next);
-    return Object.freeze({ ...entry, availability: Object.freeze(next) });
-  });
   const extension = createManifest("wallet", {
     ...parentState.snapshot,
-    capabilities,
+    capabilities: applyCapabilityExtension(parentState.snapshot, extensionInput),
   }, parent) as WalletRuntimeSupportManifest;
   assertWalletRuntimeSupportManifestExtension(parent, extension);
   return extension;
@@ -308,22 +312,13 @@ export const extendWalletRuntimeSupportManifest = (
 
 export const extendChainRuntimeSupportManifest = (
   parent: WalletRuntimeSupportManifest,
+  extensionInput: RuntimeSupportManifestExtensionInput,
 ): ChainRuntimeSupportManifest => {
   const parentState = manifestState(parent);
   if (parentState.scope !== "wallet") throw new TypeError("Chain support requires the wallet manifest.");
-  assertOrderedUnique(chainReadCapabilityIds, chainReadCapabilityIds);
-  const capabilities = parentState.snapshot.capabilities.map((entry) => {
-    if (!chainReadCapabilityIdSet.has(entry.capabilityId)) return entry;
-    if (entry.availability.direct !== "unavailable") {
-      throw new TypeError("Chain read direct support already exists.");
-    }
-    const availability = { ...entry.availability, direct: "internal" as const };
-    availability.overall = deriveOverall(availability);
-    return Object.freeze({ ...entry, availability: Object.freeze(availability) });
-  });
   const extension = createManifest("chain", {
     ...parentState.snapshot,
-    capabilities,
+    capabilities: applyCapabilityExtension(parentState.snapshot, extensionInput),
   }, parent) as ChainRuntimeSupportManifest;
   assertChainRuntimeSupportManifestExtension(parent, extension);
   return extension;
@@ -331,43 +326,13 @@ export const extendChainRuntimeSupportManifest = (
 
 export const extendInterfaceRuntimeSupportManifest = (
   parent: ChainRuntimeSupportManifest,
-  bindingsInput: unknown,
+  extensionInput: RuntimeSupportManifestExtensionInput,
 ): InterfaceRuntimeSupportManifest => {
   const parentState = manifestState(parent);
   if (parentState.scope !== "chain") throw new TypeError("Interface support requires the chain manifest.");
-  const bindings = parseRuntimeAuthority(authoritySchemas.interfaceBindings, bindingsInput);
-  const capabilityIds = bindings.map((entry) => entry.capabilityId);
-  assertOrderedUnique(capabilityIds);
-  for (const entry of bindings) {
-    const orderedBindings = [...entry.bindings].sort(compareCodePointSequences);
-    if (new Set(entry.bindings).size !== entry.bindings.length ||
-      entry.bindings.join("\0") !== orderedBindings.join("\0")) {
-      throw new TypeError("Interface binding identities must be unique and ordered.");
-    }
-  }
-  const bindingsById = new Map(bindings.map((entry) => [entry.capabilityId, entry.bindings]));
-  const capabilities = parentState.snapshot.capabilities.map((entry) => {
-    const exposedBindings = bindingsById.get(entry.capabilityId);
-    if (exposedBindings === undefined) return entry;
-    if (entry.availability.direct !== "internal") {
-      throw new TypeError("An interface cannot expose an unavailable direct capability.");
-    }
-    const availability = {
-      ...entry.availability,
-      overall: "available" as const,
-      http: exposedBindings.includes("http") ? "available" as const : entry.availability.http,
-      mcp: exposedBindings.includes("mcp") ? "available" as const : entry.availability.mcp,
-      cli: exposedBindings.includes("cli") ? "available" as const : entry.availability.cli,
-    };
-    if (availability.http === entry.availability.http && availability.mcp === entry.availability.mcp &&
-      availability.cli === entry.availability.cli) {
-      throw new TypeError("Interface support binding does not add an exposed capability.");
-    }
-    return Object.freeze({ ...entry, availability: Object.freeze(availability) });
-  });
   const extension = createManifest(
     "interfaces",
-    { ...parentState.snapshot, capabilities },
+    { ...parentState.snapshot, capabilities: applyCapabilityExtension(parentState.snapshot, extensionInput) },
     parent,
   ) as InterfaceRuntimeSupportManifest;
   assertInterfaceRuntimeSupportManifestExtension(parent, extension);
@@ -383,8 +348,8 @@ export const renderCurrentSupportSection = (manifest: RuntimeSupportManifest): s
   const availableCapabilities = snapshot.capabilities
     .filter((entry) => entry.availability.overall === "available")
     .map((entry) => `\`${entry.capabilityId}\``);
-  const walletCliAvailable = walletCapabilityIds.every((capabilityId) =>
-    snapshot.capabilities.find((entry) => entry.capabilityId === capabilityId)?.availability.cli === "available");
+  const walletCliAvailable = snapshot.capabilities
+    .find((entry) => entry.capabilityId === walletConnectionCapabilityId)?.availability.cli === "available";
   const displayLevel = (level: string): string => level.replace("_", " ");
   const protocols = snapshot.protocols.map((entry) => `\`${entry.protocolId}\` (${displayLevel(entry.supportLevel)})`);
   const transactionActions = snapshot.transactionActions.map((entry) => `\`${entry.actionId}\` (${displayLevel(entry.supportLevel)})`);

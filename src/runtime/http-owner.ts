@@ -31,6 +31,10 @@ import {
   toProblemDetails,
 } from "./errors.js";
 import {
+  browserContentSecurityPolicy,
+  browserContentTypeOptions,
+  browserCrossOriginOpenerPolicy,
+  browserReferrerPolicy,
   fixedHost,
   fixedHostHeader,
   fixedPort,
@@ -40,6 +44,7 @@ import {
   parseRequestTarget,
   problemJsonContentType,
   requestBodyLimitBytes,
+  type BrowserContentType,
   type RequestTarget,
 } from "./http-boundary.js";
 import {
@@ -99,6 +104,31 @@ const writeFailure = (
     ? toProblemDetails(failure, runtimeInterfaceErrorMappings)
     : routes.toProblemDetails(failure);
   writeJson(response, problem.status, problem as unknown as CanonicalJson);
+};
+
+const writeBrowserContent = (
+  response: ServerResponse,
+  status: number,
+  body: string,
+  contentType: BrowserContentType,
+  maximumBytes: number,
+  setCookie?: string,
+): void => {
+  if (response.destroyed || response.writableEnded) return;
+  const length = Buffer.byteLength(body);
+  if (length > maximumBytes) throw new Error("HTTP response exceeds its size limit.");
+  const headers: Record<string, string> = {
+    "Content-Type": contentType,
+    "Content-Length": String(length),
+    "Cache-Control": noStoreCacheControl,
+    "Content-Security-Policy": browserContentSecurityPolicy,
+    "X-Content-Type-Options": browserContentTypeOptions,
+    "Referrer-Policy": browserReferrerPolicy,
+    "Cross-Origin-Opener-Policy": browserCrossOriginOpenerPolicy,
+  };
+  if (setCookie !== undefined) headers["Set-Cookie"] = setCookie;
+  response.writeHead(status, headers);
+  response.end(body);
 };
 
 const readBodySize = (request: IncomingMessage): number => {
@@ -337,7 +367,7 @@ const openAuthenticatedOwnerChannel = async (input: {
   try {
     const packet = await requestPacket(channel, {
       method: "GET",
-      path: "/__identity",
+      path: "/api/v1/runtime-identity",
       headers: {
         Host: fixedHostHeader,
         "Littlejohn-Identity-Challenge": challenge,
@@ -387,7 +417,7 @@ export interface OwnerOperationResponse {
 
 const validateOwnerOperation = (operation: OwnerOperation): OwnerOperation => {
   const target = parseRequestTarget(operation.path);
-  if (target === undefined || target.query !== "" || !target.pathname.startsWith("/api/v1/internal/cli/")) {
+  if (target === undefined || target.query !== "" || !target.pathname.startsWith("/api/v1/internal/control/")) {
     throw new TypeError("Owner operation path is invalid.");
   }
   if (operation.method === "POST" && operation.body === undefined) {
@@ -749,7 +779,7 @@ export class FixedHttpOwner {
     try {
       const target = parseRequestTarget(request.url);
       if (target === undefined) return writeFailure(response, "invalid_input");
-      if (target.pathname === "/__identity") await this.#handleIdentity(request, response, target);
+      if (target.pathname === "/api/v1/runtime-identity") await this.#handleIdentity(request, response, target);
       else await this.#handleApplicationRoute(request, response, target, work.controller.signal);
     } catch (error) {
       if (work.controller.signal.aborted) {
@@ -771,6 +801,8 @@ export class FixedHttpOwner {
       host: headerValues(request, "host"),
       origin: headerValues(request, "origin"),
       authorization: headerValues(request, "authorization"),
+      cookie: headerValues(request, "cookie"),
+      csrfToken: headerValues(request, "littlejohn-csrf-token"),
       contentType: headerValues(request, "content-type"),
       query: target.query,
       bodyLength: readBodySize(request),
@@ -823,9 +855,11 @@ export class FixedHttpOwner {
     const match = this.#routes.match(request.method, target.pathname);
     if (match.status === "not_found") return writeFailure(response, "route_not_found", this.#routes);
     if (match.status === "method_not_allowed") {
-      const classSecurity = this.#routes.validateRequestClass(match.route, {
+      const classSecurity = this.#routes.validateMethodRejection(match.routes, {
         origin: headerValues(request, "origin"),
         authorization: headerValues(request, "authorization"),
+        cookie: headerValues(request, "cookie"),
+        csrfToken: headerValues(request, "littlejohn-csrf-token"),
       });
       if (!classSecurity.ok) return writeFailure(response, classSecurity.code, this.#routes);
       response.setHeader("Allow", match.allow.join(", "));
@@ -835,6 +869,8 @@ export class FixedHttpOwner {
       host: headerValues(request, "host"),
       origin: headerValues(request, "origin"),
       authorization: headerValues(request, "authorization"),
+      cookie: headerValues(request, "cookie"),
+      csrfToken: headerValues(request, "littlejohn-csrf-token"),
       contentType: headerValues(request, "content-type"),
       query: target.query,
       bodyLength,
@@ -865,6 +901,17 @@ export class FixedHttpOwner {
     if (!result.ok) {
       return writeJson(response, result.problem.status, result.problem as unknown as CanonicalJson);
     }
-    writeJson(response, match.route.successStatus, result.body, match.route.responseLimitBytes);
+    if (result.response === "canonical_json") {
+      writeJson(response, match.route.successStatus, result.body, match.route.responseLimitBytes);
+    } else {
+      writeBrowserContent(
+        response,
+        match.route.successStatus,
+        result.body,
+        result.contentType,
+        match.route.responseLimitBytes,
+        result.setCookie,
+      );
+    }
   }
 }

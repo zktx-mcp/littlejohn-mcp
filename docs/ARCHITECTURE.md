@@ -2,16 +2,24 @@
 
 ## Current State
 
-Littlejohn has an ESM TypeScript package, canonical core contracts, five
+Littlejohn has a Node.js `>=22.12.0` ESM TypeScript package, canonical core contracts, five
 semantic read-capability definitions, generated JSON Schema and descriptor
 projections, deterministic runtime build identity, product tests, owner-only
 POSIX application-data permissions, SQLite product state, local control
 credentials, secret-safe source identity, a runtime support manifest, and one
 authenticated fixed-port HTTP owner with compatible peer deferral and
-demand-driven takeover. The default composition initializes neither a
-WalletConnect consumer nor an RPC consumer. It has no MCP tool, CLI, React
-interface, WalletConnect client, RPC provider, capability handler, or chain
-read.
+demand-driven takeover. The owner identity resource is
+`GET /api/v1/runtime-identity`; authenticated process control is confined to
+`/api/v1/internal/control/*`. SQLite row adapters alias SQL snake-case names to
+lower-camel TypeScript fields. Immutable request-policy, resource-path, route,
+support-manifest, and interface-mapping registries accept only complete
+first-consumer extensions. Route responses are either canonical JSON or bounded
+browser text with fixed CSP, content-type, opener, referrer, and no-store
+headers; no route can supply arbitrary response headers. The initial support
+manifest contains only the five canonical read capabilities. The default
+composition initializes neither a WalletConnect consumer nor an RPC consumer.
+It has no MCP tool, CLI, React interface, WalletConnect client, RPC provider,
+capability handler, or chain read.
 
 This document is the sole authority for repository ownership, module
 dependencies, local processes, persistence, browser and CLI surfaces,

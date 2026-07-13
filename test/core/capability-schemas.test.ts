@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   accountBalanceCapability,
+  capabilityIdSchema,
   contractInspectCapability,
   erc20TransferTopic0,
   parseCapabilityInput,
@@ -28,6 +29,31 @@ const gasRate = {
 };
 
 describe("capability schemas", () => {
+  it("uses one exact capability identifier convention", () => {
+    for (const capabilityId of [
+      "chain.status",
+      "contract.inspect",
+      "transaction.inspect",
+      "account.balance",
+      "wallet.connection",
+      "wallet.cancel_operation",
+    ]) expect(capabilityIdSchema.safeParse(capabilityId).success).toBe(true);
+
+    for (const capabilityId of [
+      "chain",
+      "chain.status.extra",
+      "chain.",
+      ".status",
+      "chain.cancelOperation",
+      "chain.cancel__operation",
+      "chain._operation",
+      "chain.operation_",
+      "Chain.status",
+      "1chain.status",
+      `chain.${"a".repeat(59)}`,
+    ]) expect(capabilityIdSchema.safeParse(capabilityId).success).toBe(false);
+  });
+
   it("rejects unknown fields at nested boundaries", () => {
     expect(safeParseCapabilityData(contractInspectCapability, {
       address: address1,

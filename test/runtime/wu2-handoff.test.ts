@@ -15,6 +15,12 @@ import {
   runtimeInterfaceErrorMappings,
 } from "../../src/runtime/errors.js";
 import {
+  browserContentSecurityPolicy,
+  browserContentTypeOptions,
+  browserContentTypes,
+  browserCrossOriginOpenerPolicy,
+  browserReferrerPolicy,
+  browserSetCookieLimitBytes,
   fixedHost,
   fixedHostHeader,
   fixedOrigin,
@@ -51,7 +57,7 @@ interface WU2HandoffFixture {
 }
 
 const fixturePath = "test/fixtures/wu2-handoff.json";
-const fixtureDigest = "b3f086b4f8c7bab218e5936bcc6d52b6372e7f230f30c32a148075dae7876fad";
+const fixtureDigest = "ff2584e337b686b5127c40a051197df2298d38a02bd2d2796e191b33cd4859f2";
 const excludedRuntimeTests = new Set(["test/runtime/wu2-handoff.test.ts"]);
 
 const collect = async (path: string): Promise<string[]> => {
@@ -171,6 +177,12 @@ const httpBoundary = Object.freeze({
   jsonContentType,
   problemJsonContentType,
   noStoreCacheControl,
+  browserContentSecurityPolicy,
+  browserContentTypeOptions,
+  browserContentTypes,
+  browserCrossOriginOpenerPolicy,
+  browserReferrerPolicy,
+  browserSetCookieLimitBytes,
 }) as unknown as Readonly<Record<string, CanonicalJson>>;
 
 describe("WU2 frozen handoff", () => {

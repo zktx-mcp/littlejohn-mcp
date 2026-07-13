@@ -116,21 +116,21 @@ export interface WalletProjectionStore {
   ): WalletConnectionRecord;
 }
 
-interface MigrationRow { version: number; digest: string; applied_at: string }
-interface ProfileRow { singleton: number; profile_id: string; created_at: string }
+interface MigrationRow { version: number; digest: string; appliedAt: string }
+interface ProfileRow { singleton: number; profileId: string; createdAt: string }
 interface OwnerRow {
   singleton: number;
-  profile_id: string;
-  owner_instance_id: string;
-  protocol_version: number;
-  process_id: number;
-  owner_revision: string;
-  acquired_at: string;
+  profileId: string;
+  ownerInstanceId: string;
+  protocolVersion: number;
+  processId: number;
+  ownerRevision: string;
+  acquiredAt: string;
 }
 interface WalletRow extends WalletConnectionStorageRow {
   singleton: number;
   revision: string;
-  updated_at: string;
+  updatedAt: string;
 }
 interface SchemaRow { readonly type: string; readonly name: string; readonly tableName: string; readonly sql: string }
 
@@ -169,11 +169,10 @@ const tableNames = (database: Database.Database): string[] =>
     .all() as { name: string }[]).map((row) => row.name);
 
 const schemaRows = (database: Database.Database): SchemaRow[] =>
-  (database.prepare(`SELECT type, name, tbl_name, sql
+  database.prepare(`SELECT type, name, tbl_name AS tableName, sql
     FROM sqlite_schema
     WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
-    ORDER BY type, name`).all() as { type: string; name: string; tbl_name: string; sql: string }[])
-    .map((row) => ({ type: row.type, name: row.name, tableName: row.tbl_name, sql: row.sql }));
+    ORDER BY type, name`).all() as SchemaRow[];
 
 const schemaIdentity = (database: Database.Database): string =>
   createHash("sha256")
@@ -229,32 +228,32 @@ const configureExistingValidation = (database: Database.Database): void => {
 const profileFromRow = (row: ProfileRow): LocalProfile => {
   if (row.singleton !== 1) throw new Error("Local profile singleton is invalid.");
   return Object.freeze({
-    profileId: parseProfileId(row.profile_id),
-    createdAt: parseUtcTimestamp(row.created_at),
+    profileId: parseProfileId(row.profileId),
+    createdAt: parseUtcTimestamp(row.createdAt),
   });
 };
 
 const ownerFromRow = (row: OwnerRow, profile: LocalProfile): RuntimeOwnerRecord => {
   if (
     row.singleton !== 1 ||
-    row.profile_id !== profile.profileId ||
-    row.protocol_version !== runtimeProtocolVersion ||
-    !Number.isSafeInteger(row.process_id) ||
-    row.process_id <= 0
+    row.profileId !== profile.profileId ||
+    row.protocolVersion !== runtimeProtocolVersion ||
+    !Number.isSafeInteger(row.processId) ||
+    row.processId <= 0
   ) throw new Error("Runtime owner projection is invalid.");
   return Object.freeze({
     profileId: profile.profileId,
-    ownerInstanceId: parseOwnerInstanceId(row.owner_instance_id),
+    ownerInstanceId: parseOwnerInstanceId(row.ownerInstanceId),
     protocolVersion: runtimeProtocolVersion,
-    processId: row.process_id,
-    ownerRevision: parseRuntimeRevision(row.owner_revision),
-    acquiredAt: parseUtcTimestamp(row.acquired_at),
+    processId: row.processId,
+    ownerRevision: parseRuntimeRevision(row.ownerRevision),
+    acquiredAt: parseUtcTimestamp(row.acquiredAt),
   });
 };
 
 const walletFromRow = (row: WalletRow): WalletConnectionRecord => {
   if (row.singleton !== 1) throw new Error("Wallet connection singleton is invalid.");
-  const updatedAt = parseUtcTimestamp(row.updated_at);
+  const updatedAt = parseUtcTimestamp(row.updatedAt);
   return Object.freeze({
     revision: parseRuntimeRevision(row.revision),
     connection: parseCapabilityDataAt(
@@ -267,40 +266,46 @@ const walletFromRow = (row: WalletRow): WalletConnectionRecord => {
 };
 
 const readProfileRaw = (database: Database.Database): LocalProfile => {
-  const rows = database.prepare("SELECT singleton, profile_id, created_at FROM local_profile ORDER BY singleton").all() as ProfileRow[];
+  const rows = database.prepare(`SELECT singleton, profile_id AS profileId, created_at AS createdAt
+    FROM local_profile ORDER BY singleton`).all() as ProfileRow[];
   if (rows.length !== 1 || rows[0] === undefined) throw new Error("Local profile is unavailable.");
   return profileFromRow(rows[0]);
 };
 
 const readOwnerRaw = (database: Database.Database): RuntimeOwnerRecord | undefined => {
-  const rows = database.prepare(`SELECT singleton, profile_id, owner_instance_id, protocol_version,
-    process_id, owner_revision, acquired_at FROM runtime_owner ORDER BY singleton`).all() as OwnerRow[];
+  const rows = database.prepare(`SELECT singleton, profile_id AS profileId,
+    owner_instance_id AS ownerInstanceId, protocol_version AS protocolVersion,
+    process_id AS processId, owner_revision AS ownerRevision, acquired_at AS acquiredAt
+    FROM runtime_owner ORDER BY singleton`).all() as OwnerRow[];
   if (rows.length > 1) throw new Error("Runtime owner projection is invalid.");
   return rows[0] === undefined ? undefined : ownerFromRow(rows[0], readProfileRaw(database));
 };
 
 const readWalletRaw = (database: Database.Database): WalletConnectionRecord => {
-  const rows = database.prepare(`SELECT singleton, revision, status, reason, account, address, chain_id,
-    approved_methods_json, approved_events_json, expires_at, eligible_session_count, updated_at
+  const rows = database.prepare(`SELECT singleton, revision, status, reason, account, address,
+    chain_id AS chainId, approved_methods_json AS approvedMethodsJson,
+    approved_events_json AS approvedEventsJson, expires_at AS expiresAt,
+    eligible_session_count AS eligibleSessionCount, updated_at AS updatedAt
     FROM wallet_connection ORDER BY singleton`).all() as WalletRow[];
   if (rows.length !== 1 || rows[0] === undefined) throw new Error("Wallet connection projection is unavailable.");
   return walletFromRow(rows[0]);
 };
 
 const validateDatabaseState = (database: Database.Database): void => {
-  const integrity = database.pragma("integrity_check") as { integrity_check: string }[];
-  if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok") throw new Error("Database integrity failed.");
+  const integrity = database.pragma("integrity_check", { simple: true }) as string;
+  if (integrity !== "ok") throw new Error("Database integrity failed.");
   if ((database.pragma("foreign_key_check") as unknown[]).length !== 0) throw new Error("Database foreign keys are invalid.");
   const expectedTables = ["local_profile", "runtime_owner", "schema_migrations", "wallet_connection"];
   if (tableNames(database).join("\0") !== expectedTables.join("\0")) throw new Error("Database table set is invalid.");
   if (schemaIdentity(database) !== expectedSchemaIdentity) throw new Error("Database schema identity is invalid.");
-  const migrations = database.prepare("SELECT version, digest, applied_at FROM schema_migrations ORDER BY version").all() as MigrationRow[];
+  const migrations = database.prepare(`SELECT version, digest, applied_at AS appliedAt
+    FROM schema_migrations ORDER BY version`).all() as MigrationRow[];
   if (
     migrations.length !== 1 ||
     migrations[0]?.version !== 1 ||
     migrations[0].digest !== migrationDigest
   ) throw new Error("Database migration identity is invalid.");
-  parseUtcTimestamp(migrations[0].applied_at);
+  parseUtcTimestamp(migrations[0].appliedAt);
   readProfileRaw(database);
   readOwnerRaw(database);
   readWalletRaw(database);
@@ -326,10 +331,10 @@ const bootstrapFreshDatabase = (database: Database.Database, now: UtcTimestamp):
         initialWallet.account,
         initialWallet.address,
         initialWallet.chainId,
-        initialWallet.methods,
-        initialWallet.events,
+        initialWallet.approvedMethodsJson,
+        initialWallet.approvedEventsJson,
         initialWallet.expiresAt,
-        initialWallet.eligibleCount,
+        initialWallet.eligibleSessionCount,
         now,
       );
     validateDatabaseState(database);
@@ -801,8 +806,8 @@ export class ProductDatabase {
           WHERE singleton = 1 AND revision = ?`)
           .run(
             revision, values.status, values.reason, values.account, values.address,
-            values.chainId, values.methods, values.events, values.expiresAt,
-            values.eligibleCount, updatedAt, expectedRevision,
+            values.chainId, values.approvedMethodsJson, values.approvedEventsJson, values.expiresAt,
+            values.eligibleSessionCount, updatedAt, expectedRevision,
           );
         if (result.changes !== 1) throw new RuntimeOperationError("state_conflict");
         return readWalletRaw(this.#database);

@@ -26,11 +26,57 @@ import {
   readRuntimeSupportManifest,
   renderCurrentSupportSection,
   runtimeSupportManifestSchema,
+  type RuntimeSupportManifestExtensionInput,
   verifyCurrentSupportDocument,
 } from "../../src/runtime/support-manifest.js";
 
+const unavailable = {
+  overall: "unavailable",
+  direct: "unavailable",
+  http: "unavailable",
+  mcp: "unavailable",
+  cli: "unavailable",
+  web: "unavailable",
+} as const;
+
+const internal = {
+  overall: "internal",
+  direct: "internal",
+  http: "unavailable",
+  mcp: "unavailable",
+  cli: "unavailable",
+  web: "unavailable",
+} as const;
+
+const cliAvailable = {
+  overall: "available",
+  direct: "internal",
+  http: "internal",
+  mcp: "unavailable",
+  cli: "available",
+  web: "unavailable",
+} as const;
+
+const walletExtensionInput = {
+  registrations: [
+    { capabilityId: "wallet.cancel_operation", availability: cliAvailable },
+    { capabilityId: "wallet.connect", availability: cliAvailable },
+    { capabilityId: "wallet.disconnect", availability: cliAvailable },
+    { capabilityId: "wallet.operation", availability: cliAvailable },
+  ],
+  changes: [{ capabilityId: "wallet.connection", availability: cliAvailable }],
+} as const;
+
+const chainExtensionInput = {
+  registrations: [],
+  changes: ["account.balance", "chain.status", "contract.inspect", "transaction.inspect"].map((capabilityId) => ({
+    capabilityId,
+    availability: internal,
+  })),
+};
+
 describe("runtime support manifest authority", () => {
-  it("owns L0 evidence and derives capability identity from the canonical registry", async () => {
+  it("starts with only the five canonical read identities and official L0 evidence", () => {
     const snapshot = readRuntimeSupportManifest(initialRuntimeSupportManifest);
     expect(snapshot.contractVersion).toBe("1");
     expect(snapshot.chains).toEqual([{
@@ -50,101 +96,107 @@ describe("runtime support manifest authority", () => {
       "chain.status",
       "contract.inspect",
       "transaction.inspect",
-      "wallet.connect",
       "wallet.connection",
-      "wallet.disconnect",
-      "wallet.list_sessions",
-      "wallet.select_session",
     ]);
     expect(snapshot.capabilities.every((entry) => entry.availability.overall === "unavailable")).toBe(true);
     expect(Object.isFrozen(snapshot)).toBe(true);
     expect(Object.isFrozen(snapshot.capabilities)).toBe(true);
+  });
 
-    const catalog = composeCapabilityCatalog(initialRuntimeSupportManifest);
-    expect(catalog.capabilities.map((entry) => entry.capabilityId)).toEqual([
+  it("accepts the complete first-consumer capability set without predeclaring it", () => {
+    const wallet = extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, walletExtensionInput);
+    const walletSnapshot = readRuntimeSupportManifest(wallet);
+    expect(walletSnapshot.capabilities.map((entry) => entry.capabilityId)).toEqual([
       "account.balance",
       "chain.status",
       "contract.inspect",
       "transaction.inspect",
+      "wallet.cancel_operation",
+      "wallet.connect",
       "wallet.connection",
+      "wallet.disconnect",
+      "wallet.operation",
     ]);
-    expect(catalog.capabilities.every((entry) => entry.availability.overall === "unavailable")).toBe(true);
-  });
+    expect(walletSnapshot.capabilities.find((entry) => entry.capabilityId === "wallet.operation")?.availability)
+      .toEqual(cliAvailable);
+    expect(() => assertWalletRuntimeSupportManifestExtension(initialRuntimeSupportManifest, wallet)).not.toThrow();
 
-  it("allows only dependency-ordered, scope-limited support changes", () => {
-    const wallet = extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, [
-      { capabilityId: "wallet.connect", direct: "internal", http: "internal", cli: "available" },
-      { capabilityId: "wallet.connection", direct: "internal", http: "internal", cli: "available" },
-    ]);
-    expect(readRuntimeSupportManifest(wallet).capabilities
-      .find((entry) => entry.capabilityId === "wallet.connection")?.availability).toEqual({
-      overall: "available", direct: "internal", http: "internal",
-      mcp: "unavailable", cli: "available", web: "unavailable",
-    });
-    const chain = extendChainRuntimeSupportManifest(wallet);
+    const chain = extendChainRuntimeSupportManifest(wallet, chainExtensionInput);
     for (const capabilityId of ["account.balance", "chain.status", "contract.inspect", "transaction.inspect"]) {
       expect(readRuntimeSupportManifest(chain).capabilities
-        .find((entry) => entry.capabilityId === capabilityId)?.availability.direct).toBe("internal");
+        .find((entry) => entry.capabilityId === capabilityId)?.availability).toEqual(internal);
     }
-    const interfaces = extendInterfaceRuntimeSupportManifest(chain, [
-      { capabilityId: "account.balance", bindings: ["cli", "http", "mcp"] },
-      { capabilityId: "wallet.connection", bindings: ["http", "mcp"] },
-    ]);
-    expect(readRuntimeSupportManifest(interfaces).capabilities
-      .find((entry) => entry.capabilityId === "account.balance")?.availability).toEqual({
-      overall: "available", direct: "internal", http: "available",
-      mcp: "available", cli: "available", web: "unavailable",
+    const interfaces = extendInterfaceRuntimeSupportManifest(chain, {
+      registrations: [],
+      changes: [{
+        capabilityId: "wallet.operation",
+        availability: { ...cliAvailable, web: "available" },
+      }],
     });
     expect(readRuntimeSupportManifest(interfaces).capabilities
-      .find((entry) => entry.capabilityId === "wallet.connection")?.availability).toEqual({
-      overall: "available", direct: "internal", http: "available",
-      mcp: "available", cli: "available", web: "unavailable",
-    });
-    expect(() => assertWalletRuntimeSupportManifestExtension(initialRuntimeSupportManifest, wallet)).not.toThrow();
+      .find((entry) => entry.capabilityId === "wallet.operation")?.availability.web).toBe("available");
     expect(() => assertChainRuntimeSupportManifestExtension(wallet, chain)).not.toThrow();
     expect(() => assertInterfaceRuntimeSupportManifestExtension(chain, interfaces)).not.toThrow();
     expect(() => assertWalletRuntimeSupportManifestExtension(initialRuntimeSupportManifest, chain as never))
       .toThrow("scope lineage");
-    expect(() => extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, [])).toThrow();
-    expect(() => extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, [{
-      capabilityId: "account.balance", direct: "internal",
-    }])).toThrow();
-    expect(() => extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, [{
-      capabilityId: "wallet.connection", mcp: "available",
-    }])).toThrow();
-    expect(() => extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, [{
-      capabilityId: "wallet.connection", http: "available",
-    }])).toThrow();
-    expect(() => extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, [{
-      capabilityId: "wallet.connection", direct: "available",
-    }])).toThrow();
-    expect(() => extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, [{
-      capabilityId: "wallet.connection", cli: "available",
-    }])).toThrow("direct capability");
-    expect(() => extendInterfaceRuntimeSupportManifest(chain, [{
-      capabilityId: "wallet.disconnect", bindings: ["cli"],
-    }])).toThrow();
-    expect(() => extendInterfaceRuntimeSupportManifest(chain, [{
-      capabilityId: "account.balance", bindings: ["web"],
-    }])).toThrow();
-    expect(() => extendInterfaceRuntimeSupportManifest(chain, [{
-      capabilityId: "wallet.connection", bindings: ["http"],
-    }])).not.toThrow();
-    expect(() => extendInterfaceRuntimeSupportManifest(chain, [{
-      capabilityId: "chain.status", bindings: ["mcp", "http"],
-    }])).toThrow("unique and ordered");
-    const hostile = new Proxy([], {
+
+    const catalog = composeCapabilityCatalog(interfaces);
+    expect(catalog.capabilities.map((entry) => entry.capabilityId)).toEqual([
+      "account.balance", "chain.status", "contract.inspect", "transaction.inspect", "wallet.connection",
+    ]);
+  });
+
+  it("rejects incomplete, invalid, duplicate, replacement, removal, and backward extensions", () => {
+    expect(() => extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, {
+      registrations: [], changes: [],
+    })).toThrow("empty");
+    expect(() => extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, {
+      registrations: [{ capabilityId: "wallet.invalid.name", availability: unavailable }], changes: [],
+    })).toThrow();
+    expect(() => extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, {
+      registrations: [{ capabilityId: "wallet.connection", availability: unavailable }], changes: [],
+    })).toThrow("already registered");
+    expect(() => extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, {
+      registrations: [
+        { capabilityId: "wallet.operation", availability: internal },
+        { capabilityId: "wallet.connect", availability: internal },
+      ],
+      changes: [],
+    })).toThrow("unique and ordered");
+    expect(() => extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, {
+      registrations: [{ capabilityId: "wallet.operation", availability: { direct: "internal" } }], changes: [],
+    } as unknown as RuntimeSupportManifestExtensionInput)).toThrow();
+    expect(() => extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, {
+      registrations: [], changes: [{ capabilityId: "wallet.operation", availability: internal }],
+    })).toThrow("previously registered");
+    expect(() => extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, {
+      registrations: [], changes: [{ capabilityId: "wallet.connection", availability: unavailable }],
+    })).toThrow("does not move forward");
+
+    const wallet = extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, walletExtensionInput);
+    expect(() => extendChainRuntimeSupportManifest(wallet, {
+      registrations: [],
+      changes: [{ capabilityId: "wallet.operation", availability: internal }],
+    })).toThrow("backward");
+    expect(() => extendChainRuntimeSupportManifest(wallet, {
+      registrations: [{ capabilityId: "wallet.operation", availability: cliAvailable }], changes: [],
+    })).toThrow("already registered");
+    expect(() => extendChainRuntimeSupportManifest(wallet, {
+      registrations: [],
+      changes: [{ capabilityId: "wallet.operation", availability: { ...cliAvailable, web: "available", overall: "internal" } }],
+    })).toThrow();
+  });
+
+  it("normalizes hostile extension input and keeps internal schemas independent", () => {
+    const hostile = new Proxy({}, {
       ownKeys(): never { throw new Error("secret-support-delta"); },
     });
     let hostileFailure: unknown;
-    try {
-      extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, hostile as never);
-    } catch (error) { hostileFailure = error; }
+    try { extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, hostile as never); }
+    catch (error) { hostileFailure = error; }
     expect(hostileFailure).toBeInstanceOf(TypeError);
     expect(String(hostileFailure)).not.toContain("secret-support-delta");
-  });
 
-  it("keeps internal authority independent from mutated public schemas", () => {
     const manifestRuntime = (runtimeSupportManifestSchema as unknown as { _zod: { run: unknown } })._zod;
     const catalogRuntime = (capabilityCatalogSchema as unknown as { _zod: { run: unknown } })._zod;
     const manifestRun = manifestRuntime.run;
@@ -160,18 +212,21 @@ describe("runtime support manifest authority", () => {
     }
   });
 
-  it("requires exactly one generated Current Support section and marker", async () => {
+  it("projects exactly one generated Current Support section from the manifest", async () => {
     const document = await readFile("docs/PRODUCT_POLICY.md", "utf8");
     expect(() => verifyCurrentSupportDocument(document, initialRuntimeSupportManifest)).not.toThrow();
     const drifted = document.replace("Available user-facing capabilities: none.", "Available user-facing capabilities: all.");
     expect(() => verifyCurrentSupportDocument(drifted, initialRuntimeSupportManifest)).toThrow("not synchronized");
     expect(projectCurrentSupportDocument(drifted, initialRuntimeSupportManifest)).toBe(document);
-    expect(() => projectCurrentSupportDocument(`${document}\n${renderCurrentSupportSection(initialRuntimeSupportManifest)}`, initialRuntimeSupportManifest))
-      .toThrow("identity");
+    expect(() => projectCurrentSupportDocument(
+      `${document}\n${renderCurrentSupportSection(initialRuntimeSupportManifest)}`,
+      initialRuntimeSupportManifest,
+    )).toThrow("identity");
     expect(() => projectCurrentSupportDocument(
       document.replace(
         "<!-- Generated from the runtime support manifest. Do not edit this section. -->",
-        "<!-- Generated from the runtime support manifest. Do not edit this section. -->\n<!-- Generated from the runtime support manifest. Do not edit this section. -->",
+        "<!-- Generated from the runtime support manifest. Do not edit this section. -->\n" +
+          "<!-- Generated from the runtime support manifest. Do not edit this section. -->",
       ),
       initialRuntimeSupportManifest,
     )).toThrow("identity");

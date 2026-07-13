@@ -9,47 +9,37 @@ export interface WalletConnectionStorageRow {
   readonly reason: string | null;
   readonly account: string | null;
   readonly address: string | null;
-  readonly chain_id: string | null;
-  readonly approved_methods_json: string | null;
-  readonly approved_events_json: string | null;
-  readonly expires_at: string | null;
-  readonly eligible_session_count: string | null;
+  readonly chainId: string | null;
+  readonly approvedMethodsJson: string | null;
+  readonly approvedEventsJson: string | null;
+  readonly expiresAt: string | null;
+  readonly eligibleSessionCount: string | null;
 }
 
-export interface WalletConnectionStorageValues {
-  readonly status: string;
-  readonly reason: string | null;
-  readonly account: string | null;
-  readonly address: string | null;
-  readonly chainId: string | null;
-  readonly methods: string | null;
-  readonly events: string | null;
-  readonly expiresAt: string | null;
-  readonly eligibleCount: string | null;
-}
+export type WalletConnectionStorageValues = WalletConnectionStorageRow;
 
 type StoredField = Exclude<keyof WalletConnectionStorageRow, "status">;
 
 const storedFields = Object.freeze([
-  "reason",
-  "account",
-  "address",
-  "chain_id",
-  "approved_methods_json",
-  "approved_events_json",
-  "expires_at",
-  "eligible_session_count",
-] as const satisfies readonly StoredField[]);
+  { field: "reason", column: "reason" },
+  { field: "account", column: "account" },
+  { field: "address", column: "address" },
+  { field: "chainId", column: "chain_id" },
+  { field: "approvedMethodsJson", column: "approved_methods_json" },
+  { field: "approvedEventsJson", column: "approved_events_json" },
+  { field: "expiresAt", column: "expires_at" },
+  { field: "eligibleSessionCount", column: "eligible_session_count" },
+] as const satisfies readonly { readonly field: StoredField; readonly column: string }[]);
 
 const emptyValues = (): Omit<WalletConnectionStorageValues, "status"> => ({
   reason: null,
   account: null,
   address: null,
   chainId: null,
-  methods: null,
-  events: null,
+  approvedMethodsJson: null,
+  approvedEventsJson: null,
   expiresAt: null,
-  eligibleCount: null,
+  eligibleSessionCount: null,
 });
 
 const parseCanonicalArray = (value: string): unknown => {
@@ -82,18 +72,18 @@ const storageVariants = Object.freeze([
   reasonVariant("disconnected"),
   Object.freeze({
     status: "unresolved",
-    present: Object.freeze(["eligible_session_count"] as const),
+    present: Object.freeze(["eligibleSessionCount"] as const),
     encode(connection: WalletConnectionData): WalletConnectionStorageValues {
       if (connection.status !== "unresolved") throw new TypeError("Wallet storage projection status is invalid.");
       return Object.freeze({
         status: "unresolved",
         ...emptyValues(),
-        eligibleCount: connection.eligibleSessionCount,
+        eligibleSessionCount: connection.eligibleSessionCount,
       });
     },
     decode: (row: WalletConnectionStorageRow) => ({
       status: "unresolved",
-      eligibleSessionCount: row.eligible_session_count,
+      eligibleSessionCount: row.eligibleSessionCount,
     }),
   }),
   Object.freeze({
@@ -101,10 +91,10 @@ const storageVariants = Object.freeze([
     present: Object.freeze([
       "account",
       "address",
-      "chain_id",
-      "approved_methods_json",
-      "approved_events_json",
-      "expires_at",
+      "chainId",
+      "approvedMethodsJson",
+      "approvedEventsJson",
+      "expiresAt",
     ] as const),
     encode(connection: WalletConnectionData): WalletConnectionStorageValues {
       if (connection.status !== "connected") throw new TypeError("Wallet storage projection status is invalid.");
@@ -114,8 +104,8 @@ const storageVariants = Object.freeze([
         account: connection.account,
         address: connection.address,
         chainId: connection.chainId,
-        methods: canonicalJsonStringify(connection.approvedMethods as unknown as CanonicalJson),
-        events: canonicalJsonStringify(connection.approvedEvents as unknown as CanonicalJson),
+        approvedMethodsJson: canonicalJsonStringify(connection.approvedMethods as unknown as CanonicalJson),
+        approvedEventsJson: canonicalJsonStringify(connection.approvedEvents as unknown as CanonicalJson),
         expiresAt: connection.expiresAt,
       });
     },
@@ -123,10 +113,10 @@ const storageVariants = Object.freeze([
       status: "connected",
       account: row.account,
       address: row.address,
-      chainId: row.chain_id,
-      approvedMethods: parseCanonicalArray(row.approved_methods_json as string),
-      approvedEvents: parseCanonicalArray(row.approved_events_json as string),
-      expiresAt: row.expires_at,
+      chainId: row.chainId,
+      approvedMethods: parseCanonicalArray(row.approvedMethodsJson as string),
+      approvedEvents: parseCanonicalArray(row.approvedEventsJson as string),
+      expiresAt: row.expiresAt,
     }),
   }),
 ] satisfies readonly StorageVariant[]);
@@ -136,7 +126,8 @@ const sqlString = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 export const walletConnectionFieldPresenceCheckSql = `CHECK (\n${storageVariants
   .map((variant) => {
     const present = new Set<StoredField>(variant.present);
-    const fields = storedFields.map((field) => `${field} IS ${present.has(field) ? "NOT " : ""}NULL`);
+    const fields = storedFields.map(({ field, column }) =>
+      `${column} IS ${present.has(field) ? "NOT " : ""}NULL`);
     return `    (status = ${sqlString(variant.status)} AND ${fields.join(" AND ")})`;
   })
   .join(" OR\n")}\n  )`;
@@ -153,7 +144,7 @@ export const decodeWalletConnectionStorage = (row: WalletConnectionStorageRow): 
   const variant = storageVariants.find((candidate) => candidate.status === row.status);
   if (variant === undefined) throw new Error("Stored wallet connection state is invalid.");
   const present = new Set<StoredField>(variant.present);
-  if (storedFields.some((field) => (row[field] !== null) !== present.has(field))) {
+  if (storedFields.some(({ field }) => (row[field] !== null) !== present.has(field))) {
     throw new Error("Stored wallet connection field presence is invalid.");
   }
   return variant.decode(row);

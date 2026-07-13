@@ -49,6 +49,8 @@ const baseRoutes = async () => {
 const route = (pathPattern: string) => ({
   method: "GET" as const,
   pathPattern,
+  mutation: "none" as const,
+  response: "canonical_json" as const, successStatus: 200 as const,
   handler: async () => ({ ok: true as const, body: {} }),
 });
 
@@ -72,15 +74,36 @@ const capabilityPorts = (): {
 };
 
 const manifests = () => {
-  const wallet = extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, [{
-    capabilityId: "wallet.connection",
-    direct: "internal",
-  }]);
-  const chain = extendChainRuntimeSupportManifest(wallet);
-  const interfaces = extendInterfaceRuntimeSupportManifest(chain, [{
-    capabilityId: "chain.status",
-    bindings: ["http"],
-  }]);
+  const wallet = extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, {
+    registrations: [],
+    changes: [{
+      capabilityId: "wallet.connection",
+      availability: {
+        overall: "internal", direct: "internal", http: "unavailable",
+        mcp: "unavailable", cli: "unavailable", web: "unavailable",
+      },
+    }],
+  });
+  const chain = extendChainRuntimeSupportManifest(wallet, {
+    registrations: [],
+    changes: ["account.balance", "chain.status", "contract.inspect", "transaction.inspect"].map((capabilityId) => ({
+      capabilityId,
+      availability: {
+        overall: "internal", direct: "internal", http: "unavailable",
+        mcp: "unavailable", cli: "unavailable", web: "unavailable",
+      },
+    })),
+  });
+  const interfaces = extendInterfaceRuntimeSupportManifest(chain, {
+    registrations: [],
+    changes: [{
+      capabilityId: "chain.status",
+      availability: {
+        overall: "available", direct: "internal", http: "available",
+        mcp: "unavailable", cli: "unavailable", web: "unavailable",
+      },
+    }],
+  });
   return { wallet, chain, interfaces };
 };
 
@@ -120,9 +143,9 @@ describe("owner application composition", () => {
     const events: string[] = [];
     const ports = capabilityPorts();
     const support = manifests();
-    const walletRoutes = routes.extend([route("/api/v1/internal/cli/wallet")]);
-    const chainRoutes = walletRoutes.extend([route("/api/v1/internal/cli/chain")]);
-    const interfaceRoutes = chainRoutes.extend([route("/api/v1/internal/cli/interfaces")]);
+    const walletRoutes = routes.extend([route("/api/v1/internal/control/wallet")]);
+    const chainRoutes = walletRoutes.extend([route("/api/v1/internal/control/chain")]);
+    const interfaceRoutes = chainRoutes.extend([route("/api/v1/internal/control/interfaces")]);
     const application = await composeOwnerApplicationStages({ routes, signal }, [
       () => ({
         routes: walletRoutes,
@@ -160,12 +183,28 @@ describe("owner application composition", () => {
     const events: string[] = [];
     const ports = capabilityPorts();
     const support = manifests();
-    const walletRoutes = routes.extend([route("/api/v1/internal/cli/wallet")]);
-    const chainRoutes = walletRoutes.extend([route("/api/v1/internal/cli/chain")]);
-    const siblingWallet = extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, [{
-      capabilityId: "wallet.connection", direct: "internal",
-    }]);
-    const wrongChain = extendChainRuntimeSupportManifest(siblingWallet);
+    const walletRoutes = routes.extend([route("/api/v1/internal/control/wallet")]);
+    const chainRoutes = walletRoutes.extend([route("/api/v1/internal/control/chain")]);
+    const siblingWallet = extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, {
+      registrations: [],
+      changes: [{
+        capabilityId: "wallet.connection",
+        availability: {
+          overall: "internal", direct: "internal", http: "unavailable",
+          mcp: "unavailable", cli: "unavailable", web: "unavailable",
+        },
+      }],
+    });
+    const wrongChain = extendChainRuntimeSupportManifest(siblingWallet, {
+      registrations: [],
+      changes: ["account.balance", "chain.status", "contract.inspect", "transaction.inspect"].map((capabilityId) => ({
+        capabilityId,
+        availability: {
+          overall: "internal", direct: "internal", http: "unavailable",
+          mcp: "unavailable", cli: "unavailable", web: "unavailable",
+        },
+      })),
+    });
     await expect(composeOwnerApplicationStages({ routes, signal }, [
       () => ({
         routes: walletRoutes, supportManifest: support.wallet, walletConnection: ports.wallet,
@@ -182,9 +221,16 @@ describe("owner application composition", () => {
   it("rejects a manifest that omits its typed capability output", async () => {
     const routes = await baseRoutes();
     const ports = capabilityPorts();
-    const wrongWallet = extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, [{
-      capabilityId: "wallet.connect", direct: "internal",
-    }]);
+    const wrongWallet = extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, {
+      registrations: [{
+        capabilityId: "wallet.connect",
+        availability: {
+          overall: "internal", direct: "internal", http: "unavailable",
+          mcp: "unavailable", cli: "unavailable", web: "unavailable",
+        },
+      }],
+      changes: [],
+    });
     let closed = false;
     await expect(composeOwnerApplicationStages({ routes, signal: new AbortController().signal }, [
       () => ({

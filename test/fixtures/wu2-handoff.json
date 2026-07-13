@@ -4,31 +4,31 @@
     "src/runtime/composition.ts": "a84daea83d3cdaae263a02c27a13d29af95be7ea8cb8962ddfeb4463a9d417fa",
     "src/runtime/configuration.ts": "d2fe49f7cbca4323fb0fad845f23be1b1e2fbb3e499fdd4063c50a2b805c694d",
     "src/runtime/control-credential.ts": "9b20314138da88ea66cc68f643a3562b2975a5705429299c61075a49498c2b77",
-    "src/runtime/database.ts": "b0b7e61e4767de97aa0323a3fa44e7a29072e306955b80a82557bb14b9536c8a",
+    "src/runtime/database.ts": "f83b5dd01133ec5ceefc5a04fff004626ef347cdc75bc14dccfc5213a9dfd9ac",
     "src/runtime/errors.ts": "12d153e2e752b49e76ef188a683a34faf4ca782a2a000718890b339a0bb3dd3f",
-    "src/runtime/http-boundary.ts": "58432c0051dc47edcb17a5806f4bcb5af76cad7c62233681ad25ea9914791233",
-    "src/runtime/http-owner.ts": "d0d2b5dde954e47d839eadf37280370862f621b09f1c87aae60a2b28bd0c74ff",
-    "src/runtime/http-routing.ts": "78153661e1ba4d368861d51ad2d75cd81cd03321c13e6dbe302afad91fcae0bc",
-    "src/runtime/index.ts": "7239892cc88596fa6848817fd3495387298302770a98e6fa8928f250b28973c3",
+    "src/runtime/http-boundary.ts": "aeb592b3eaf3f85233bee03265d2ea2113996c5dcc23c4a4ffd84df529c2dca0",
+    "src/runtime/http-owner.ts": "2b73f45fa3886411b830fec118af1af4e16bc6e7806b4963d18292ecb58afe17",
+    "src/runtime/http-routing.ts": "fa3d1bc897ce8c92e03309eca03ecefbb3400400a9ffd94f2ef3e475a3d8dd66",
+    "src/runtime/index.ts": "74bb402c811f80b37c58b7b8ef29dcb3da309119a614c7c23c17c21f4b5aba1f",
     "src/runtime/paths.ts": "d9e28bc8d686ce6a2d0949bdd55612ab41c3276ab873c9284e9bf1945eabcb23",
-    "src/runtime/request-security.ts": "d945cda7762b51a1c362a49c58de3358b43263b94f59a669e042446b5c747f03",
+    "src/runtime/request-security.ts": "4da489a22f4109d45a69bad5253cc3d6674bda939a279083d5e4749f6a7b793c",
     "src/runtime/runtime-identity.ts": "fc6bf0d59da560f9d4b0286b2f028b089b9bf5bb38ae8239524de48bc7c2ca76",
     "src/runtime/schema-authority.ts": "7bc3eefac9a25cae96611218f56afabb5e578aa84d03efd0860cd26cbe58f104",
     "src/runtime/source-identity.ts": "730796ba4565f588402a1d0da0a9bdfda91bb77f9242254e43af4545be0892a0",
-    "src/runtime/support-manifest.ts": "93553a16f4f2a1245ee1c98d9bd566b70bdaeca185e67ae69f12741d6c730cb3",
-    "src/runtime/wallet-connection-storage.ts": "32cbc758688b2c2f3680f0b6ae6d775c33b46684b21e4f4ba1c983cdab27a4ed",
-    "test/runtime/architecture.test.ts": "1991d952d4316c0314fec6989f86874d294811270487f643a5134b001ff7ec42",
-    "test/runtime/composition.test.ts": "8d898f560d800b4d9a43ef6b7b654af5116afe14fb854f29c1dbdc57c51285b2",
-    "test/runtime/http-owner-process-worker.ts": "ca725e82d9c546120bda82d48d9d2573a6566b1e3e744cb1dd685756587d06a8",
-    "test/runtime/http-owner.test.ts": "22bf4ad811731a044313f318c9abfedd247b9ac81177cd88fd1fa536bbe01969",
-    "test/runtime/request-security.test.ts": "909443889df63550dc7d6095267f5bf71e0cee1454b1e23558e6c676a983572f",
-    "test/runtime/sqlite-crash-worker.ts": "5bf6e9dc4903d21b4f2c33f37c37782ea07293c068b043a71c2e26b0e11698ea",
-    "test/runtime/storage.test.ts": "28529c881af140fcc1b7b4b14866ed9ebf833483cdef8bfdc33812802bd37922",
-    "test/runtime/support-and-errors.test.ts": "7cfc97e2f33c4fc8441bc438d077077aa2a1ed1405eb3faccd972860f6de3c47",
+    "src/runtime/support-manifest.ts": "46598f316aafa9dc9641fa38b70a1c9e0f3408a1d9fa8cf71f7c8e685fa81b8d",
+    "src/runtime/wallet-connection-storage.ts": "61e1dbab5cc5633fde201713fa11f930367fe59451f3dc66a8e0d90a0d1fd225",
+    "test/runtime/architecture.test.ts": "52cb8f8e99b8ad5e9e27645034b31c4568d7314c352c946ec8cf7a02acb905d1",
+    "test/runtime/composition.test.ts": "84a8a1b0ba47a20571f95c7f05c749c53c0adef5aa8e00375385c3ad66440422",
+    "test/runtime/http-owner-process-worker.ts": "c00986de3c9439b017f2ca46fbd2df9c260ee014ca3df03936be8f55676cc06e",
+    "test/runtime/http-owner.test.ts": "f251263f820b02c4187e45d66b174585b1ab7c3f2aab52ae760fb7439576f029",
+    "test/runtime/request-security.test.ts": "6917faa3d3c5a1987c3787eb3f490129281010e4b037cdc9c5d561420036a5c2",
+    "test/runtime/sqlite-crash-worker.ts": "623e93db868a2e41963b971ad94f7a17ec54d3a47627cbb5898ed2beb88f484e",
+    "test/runtime/storage.test.ts": "cf781ccd973a14b9ebcacfb856982a20f05fc23aa181f71287209eeeca1eb620",
+    "test/runtime/support-and-errors.test.ts": "0fc19b168942ca4657e60653598dc5c8702bf78392391006bf5e79d2856eb608",
     "test/runtime/type-contracts.ts": "6144d645acc83bc62f48176c8b1c4a2bbe31557f17d7112ecde8660b85dff61e",
-    "test/runtime/wu1-handoff.test.ts": "08b1bf3ef591facc7b9aa77cbe77fcc2ac7fff767a3565f704fd90b7f89ba865"
+    "test/runtime/wu1-handoff.test.ts": "46de12ceb8c774d59a203e52976166d0a4526d67cd16c0381cbaf91e159d7bab"
   },
-  "immutableFilesDigest": "409eabd1dbf1f5c98f57508d55c45f3f60ebcf7c46cc4fe6cb4890574830bd37",
+  "immutableFilesDigest": "3ae400d8f2e09826eea4f750a924d6beada4a517e3025c415da91a6edca7a270",
   "dependencyClosureDigest": "2495eb70be09d4b4f9fe23051fe9aedaf1194cad6b97de60848d459aa5dcd563",
   "databaseMigrationIdentity": {
     "version": 1,
@@ -192,7 +192,17 @@
     "publicReadResponseLimitBytes": 8388608,
     "jsonContentType": "application/json",
     "problemJsonContentType": "application/problem+json",
-    "noStoreCacheControl": "no-store"
+    "noStoreCacheControl": "no-store",
+    "browserContentSecurityPolicy": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "browserContentTypeOptions": "nosniff",
+    "browserContentTypes": [
+      "text/html; charset=utf-8",
+      "text/css; charset=utf-8",
+      "text/javascript; charset=utf-8"
+    ],
+    "browserCrossOriginOpenerPolicy": "same-origin",
+    "browserReferrerPolicy": "no-referrer",
+    "browserSetCookieLimitBytes": 4096
   },
   "initialSupport": {
     "contractVersion": "1",
@@ -262,51 +272,7 @@
         }
       },
       {
-        "capabilityId": "wallet.connect",
-        "availability": {
-          "overall": "unavailable",
-          "direct": "unavailable",
-          "http": "unavailable",
-          "mcp": "unavailable",
-          "cli": "unavailable",
-          "web": "unavailable"
-        }
-      },
-      {
         "capabilityId": "wallet.connection",
-        "availability": {
-          "overall": "unavailable",
-          "direct": "unavailable",
-          "http": "unavailable",
-          "mcp": "unavailable",
-          "cli": "unavailable",
-          "web": "unavailable"
-        }
-      },
-      {
-        "capabilityId": "wallet.disconnect",
-        "availability": {
-          "overall": "unavailable",
-          "direct": "unavailable",
-          "http": "unavailable",
-          "mcp": "unavailable",
-          "cli": "unavailable",
-          "web": "unavailable"
-        }
-      },
-      {
-        "capabilityId": "wallet.list_sessions",
-        "availability": {
-          "overall": "unavailable",
-          "direct": "unavailable",
-          "http": "unavailable",
-          "mcp": "unavailable",
-          "cli": "unavailable",
-          "web": "unavailable"
-        }
-      },
-      {
-        "capabilityId": "wallet.select_session",
         "availability": {
           "overall": "unavailable",
           "direct": "unavailable",
@@ -318,7 +284,7 @@
       }
     ]
   },
-  "initialSupportDigest": "ab6b641d7463128c98e2918c6b7f300809e423372e6cf6768dbf32e77650d110",
+  "initialSupportDigest": "0a97484d16c7ab33cdc6c8ffb4e843ecb124bb0e6b2c72d2171ae2d41ac47b8f",
   "initialCatalogDigest": "78992dcd4bf0f98549a70c138053a80d366d159eb2528346e1f8cc340016d08a",
   "currentSupportSectionDigest": "43a56b1370e722c13c3b4c39dba0105d3a7986638053888ee361a9d77dc1b1d3",
   "runtimePublicValueExports": [
@@ -327,6 +293,12 @@
     "assertChainRuntimeSupportManifestExtension",
     "assertInterfaceRuntimeSupportManifestExtension",
     "assertWalletRuntimeSupportManifestExtension",
+    "browserContentSecurityPolicy",
+    "browserContentTypeOptions",
+    "browserContentTypes",
+    "browserCrossOriginOpenerPolicy",
+    "browserReferrerPolicy",
+    "browserSetCookieLimitBytes",
     "capabilityCatalogSchema",
     "composeCapabilityCatalog",
     "extendChainRuntimeSupportManifest",

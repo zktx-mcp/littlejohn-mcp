@@ -105,6 +105,31 @@ const requestJson = (
     request.end(body);
   });
 
+const requestText = (
+  path: string,
+  method = "GET",
+  headers: Record<string, string> = {},
+): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }> =>
+  new Promise((resolveResponse, reject) => {
+    const request = httpRequest({
+      host: fixedHost,
+      port: fixedPort,
+      path,
+      method,
+      headers: { Host: fixedHostHeader, ...headers },
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.on("end", () => resolveResponse({
+        status: response.statusCode ?? 0,
+        headers: response.headers,
+        body: Buffer.concat(chunks).toString("utf8"),
+      }));
+    });
+    request.on("error", reject);
+    request.end();
+  });
+
 const credentialAuthorization = async (path: string): Promise<string> =>
   `Bearer ${(await readFile(path, "utf8")).slice(0, -1)}`;
 
@@ -481,7 +506,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     owners.push(owner);
     expect(await owner.start()).toBe("owner");
     const challenge = Buffer.alloc(32, 3).toString("base64url");
-    const response = await requestJson("/__identity", "GET", { "Littlejohn-Identity-Challenge": challenge });
+    const response = await requestJson("/api/v1/runtime-identity", "GET", { "Littlejohn-Identity-Challenge": challenge });
     expect(response.status).toBe(200);
     const identity = response.body as OwnerIdentity;
     const { proof, ...withoutProof } = identity;
@@ -518,7 +543,9 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     const applicationFactory = ({ routes }: HttpOwnerApplicationContext) => ({
       routes: routes.extend([{
         method: "GET",
-        pathPattern: "/api/v1/internal/cli/example",
+        pathPattern: "/api/v1/internal/control/example",
+        mutation: "none" as const,
+        response: "canonical_json" as const, successStatus: 200,
         handler: async () => {
           executions += 1;
           return { ok: true as const, body: { executions } };
@@ -537,12 +564,75 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     owners.push(first, second);
     expect(await first.start()).toBe("owner");
     expect(await second.start()).toBe("deferred");
-    expect(await second.executeOwnerOperation({ method: "GET", path: "/api/v1/internal/cli/example" }))
+    expect(await second.executeOwnerOperation({ method: "GET", path: "/api/v1/internal/control/example" }))
       .toEqual({ status: 200, body: { executions: 1 } });
     await first.stop();
-    expect(await second.executeOwnerOperation({ method: "GET", path: "/api/v1/internal/cli/example" }))
+    expect(await second.executeOwnerOperation({ method: "GET", path: "/api/v1/internal/control/example" }))
       .toEqual({ status: 200, body: { executions: 2 } });
     expect(second.state).toBe("owner");
+  });
+
+  it("serves browser content through fixed headers without exposing an arbitrary header channel", async () => {
+    const test = await fixture();
+    const shell = "<!doctype html><html><head></head><body><div id=\"root\"></div></body></html>";
+    const cookie =
+      "littlejohn_browser=token; Path=/api/v1/wallet/operations/example; Max-Age=60; HttpOnly; SameSite=Strict";
+    const owner = new FixedHttpOwner({
+      ownerStore: test.database.ownerStore(), credential: test.credential,
+      runtimeBuildDigest: buildDigest, now: () => now,
+      applicationFactory: ({ routes }) => {
+        const browserRoutes = routes.extendRequestPolicies({
+          authenticationVerifiers: [],
+          policies: [{
+            requestClass: "browser_bootstrap",
+            host: "fixed",
+            origin: "absent",
+            authentication: "none",
+            body: "none",
+            responseLimitBytes: 65_536,
+            mutation: "none",
+          }],
+        }, [{
+          kind: "route",
+          method: "GET",
+          pathPattern: "/wallet/operations/{operationId}",
+          requestClass: "browser_bootstrap",
+        }]);
+        return {
+          routes: browserRoutes.extend([{
+            method: "GET",
+            pathPattern: "/wallet/operations/{operationId}",
+            mutation: "none",
+            response: "browser_content",
+            successStatus: 200,
+            handler: async () => ({
+              ok: true,
+              body: shell,
+              contentType: "text/html; charset=utf-8",
+              setCookie: cookie,
+            }),
+          }]),
+          close: () => undefined,
+        };
+      },
+    });
+    owners.push(owner);
+    expect(await owner.start()).toBe("owner");
+
+    const response = await requestText("/wallet/operations/example");
+    expect(response.status).toBe(200);
+    expect(response.body).toBe(shell);
+    expect(response.headers["content-type"]).toBe("text/html; charset=utf-8");
+    expect(response.headers["content-length"]).toBe(String(Buffer.byteLength(shell)));
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.headers["content-security-policy"]).toBe(
+      "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; " +
+      "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    );
+    expect(response.headers["x-content-type-options"]).toBe("nosniff");
+    expect(response.headers["referrer-policy"]).toBe("no-referrer");
+    expect(response.headers["cross-origin-opener-policy"]).toBe("same-origin");
+    expect(response.headers["set-cookie"]).toEqual([cookie]);
   });
 
   it("sends the credential-bearing operation on the exact socket that authenticated the owner", async () => {
@@ -554,7 +644,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     let operationSocket: IncomingMessage["socket"] | undefined;
     const authorizations: string[] = [];
     const compatible = createServer((request, response) => {
-      if (request.url === "/__identity") {
+      if (request.url === "/api/v1/runtime-identity") {
         identityRequests += 1;
         if (identityRequests === 2) authenticatedSocket = request.socket;
         const identityWithoutProof = {
@@ -584,7 +674,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     });
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
-    expect(await candidate.executeOwnerOperation({ method: "GET", path: "/api/v1/internal/cli/example" }))
+    expect(await candidate.executeOwnerOperation({ method: "GET", path: "/api/v1/internal/control/example" }))
       .toEqual({ status: 200, body: { served: true } });
     expect(identityRequests).toBe(2);
     expect(authenticatedSocket).toBeDefined();
@@ -599,7 +689,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     let identityRequests = 0;
     let operationRequests = 0;
     const compatible = createServer((request, response) => {
-      if (request.url === "/__identity") {
+      if (request.url === "/api/v1/runtime-identity") {
         identityRequests += 1;
         const identityWithoutProof = {
           profileId: record.profileId,
@@ -626,7 +716,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     });
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
-    expect(await candidate.executeOwnerOperation({ method: "GET", path: "/api/v1/internal/cli/example" }))
+    expect(await candidate.executeOwnerOperation({ method: "GET", path: "/api/v1/internal/control/example" }))
       .toEqual({ status: 200, body: { completed: true } });
     expect(identityRequests).toBe(2);
     expect(operationRequests).toBe(1);
@@ -651,7 +741,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         request.socket.destroy();
         return;
       }
-      if (request.url !== "/__identity") {
+      if (request.url !== "/api/v1/runtime-identity") {
         originalOperationRequests += 1;
         const authorization = request.headers["authorization"];
         if (typeof authorization === "string") originalAuthorizations.push(authorization);
@@ -699,7 +789,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
     const operation = candidate.executeOwnerOperation({
-      method: "GET", path: "/api/v1/internal/cli/example",
+      method: "GET", path: "/api/v1/internal/control/example",
     }).then(
       (value) => ({ kind: "settled" as const, value }),
       (error: unknown) => ({ kind: "settled" as const, error }),
@@ -772,7 +862,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     });
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
-    await expect(candidate.executeOwnerOperation({ method: "GET", path: "/api/v1/internal/cli/example" }))
+    await expect(candidate.executeOwnerOperation({ method: "GET", path: "/api/v1/internal/control/example" }))
       .rejects.toMatchObject({ failure: { error: { code: "port_conflict" } } });
     expect(authorizations).toEqual([]);
   });
@@ -980,7 +1070,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     let identityRequests = 0;
     let operationRequests = 0;
     const foreign = createServer((request, response) => {
-      if (request.url === "/__identity") {
+      if (request.url === "/api/v1/runtime-identity") {
         identityRequests += 1;
         const identityWithoutProof = {
           profileId: record.profileId,
@@ -1007,7 +1097,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     });
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
-    await expect(candidate.executeOwnerOperation({ method: "GET", path: "/api/v1/internal/cli/example" }))
+    await expect(candidate.executeOwnerOperation({ method: "GET", path: "/api/v1/internal/control/example" }))
       .rejects.toMatchObject({ failure: { error: { code: "runtime_state_unavailable" } } });
     expect(identityRequests).toBe(2);
     expect(operationRequests).toBe(1);
@@ -1051,7 +1141,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
     const operationOutcome = candidate.executeOwnerOperation({
-      method: "GET", path: "/api/v1/internal/cli/example",
+      method: "GET", path: "/api/v1/internal/control/example",
     }).then((value) => value, (error: unknown) => error);
     await authenticationStarted;
     await candidate.stop();
@@ -1071,7 +1161,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     let resolveDelivery!: () => void;
     const delivered = new Promise<void>((resolveDelivered) => { resolveDelivery = resolveDelivered; });
     const foreign = createServer((request, response) => {
-      if (request.url === "/__identity") {
+      if (request.url === "/api/v1/runtime-identity") {
         identityRequests += 1;
         const identityWithoutProof = {
           profileId: record.profileId,
@@ -1100,7 +1190,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     expect(await candidate.start()).toBe("deferred");
     let operationSettled = false;
     const operationOutcome = candidate.executeOwnerOperation({
-      method: "GET", path: "/api/v1/internal/cli/example",
+      method: "GET", path: "/api/v1/internal/control/example",
     }).then(
       (value) => { operationSettled = true; return value; },
       (error: unknown) => { operationSettled = true; return error; },
@@ -1163,7 +1253,9 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       applicationFactory: ({ routes }) => ({
         routes: routes.extend([{
           method: "GET",
-          pathPattern: "/api/v1/internal/cli/example",
+          pathPattern: "/api/v1/internal/control/example",
+          mutation: "none" as const,
+          response: "canonical_json" as const, successStatus: 200,
           handler: async ({ signal }) => {
             handlerCalls += 1;
             entered(signal);
@@ -1183,7 +1275,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     await owner.start();
     const authorization = await credentialAuthorization(test.paths.controlCredential);
     const request = requestJson(
-      "/api/v1/internal/cli/example", "GET", { Authorization: authorization },
+      "/api/v1/internal/control/example", "GET", { Authorization: authorization },
     ).then((value) => value, (error: unknown) => error);
     const handlerSignal = await handlerEntered;
     const stopping = owner.stop();
@@ -1196,7 +1288,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     expect(applicationClosed).toBe(false);
     expect(handlerCalls).toBe(1);
     const blocked = await requestJson(
-      "/api/v1/internal/cli/example", "GET", { Authorization: authorization },
+      "/api/v1/internal/control/example", "GET", { Authorization: authorization },
     );
     expect(blocked).toMatchObject({ status: 408, body: { code: "request_aborted" } });
     expect(handlerCalls).toBe(1);
@@ -1219,7 +1311,9 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       applicationFactory: ({ routes }) => ({
         routes: routes.extend([{
           method: "POST",
-          pathPattern: "/api/v1/internal/cli/wallet-connection-attempts",
+          pathPattern: "/api/v1/internal/control/wallet/operations",
+          mutation: "declared_control" as const,
+          response: "canonical_json" as const, successStatus: 201,
           handler: async () => {
             handlerCalls += 1;
             return { ok: true, body: { accepted: true } };
@@ -1232,7 +1326,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     await owner.start();
     const authorization = await credentialAuthorization(test.paths.controlCredential);
     const malformed = await requestJson(
-      "/api/v1/internal/cli/wallet-connection-attempts",
+      "/api/v1/internal/control/wallet/operations",
       "POST",
       { Authorization: authorization, "Content-Type": "application/json", "Content-Length": "1" },
       Buffer.from([0xff]),
@@ -1242,7 +1336,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
 
     const body = "{}";
     const accepted = await requestJson(
-      "/api/v1/internal/cli/wallet-connection-attempts",
+      "/api/v1/internal/control/wallet/operations",
       "POST",
       { Authorization: authorization, "Content-Type": "application/json", "Content-Length": String(Buffer.byteLength(body)) },
       body,
@@ -1259,7 +1353,9 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       applicationFactory: ({ routes }) => ({
         routes: routes.extend([{
           method: "GET",
-          pathPattern: "/api/v1/internal/cli/example",
+          pathPattern: "/api/v1/internal/control/example",
+          mutation: "none" as const,
+          response: "canonical_json" as const, successStatus: 200,
           handler: async () => ({ ok: true, body: {} }),
         }]),
         close: () => undefined,
@@ -1270,33 +1366,33 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     const authorization = await credentialAuthorization(test.paths.controlCredential);
 
     const invalidHost = await requestJson(
-      "/api/v1/internal/cli/example", "POST", { Host: "localhost:46630" },
+      "/api/v1/internal/control/example", "POST", { Host: "localhost:46630" },
     );
     expect(invalidHost).toMatchObject({ status: 400, body: { code: "invalid_host" } });
-    const invalidQuery = await requestJson("/api/v1/internal/cli/example?x=1", "POST");
+    const invalidQuery = await requestJson("/api/v1/internal/control/example?x=1", "POST");
     expect(invalidQuery).toMatchObject({ status: 400, body: { code: "query_not_supported" } });
     const invalidOrigin = await requestJson(
-      "/api/v1/internal/cli/example", "POST", { Origin: "http://127.0.0.1:46630" },
+      "/api/v1/internal/control/example", "POST", { Origin: "http://127.0.0.1:46630" },
     );
     expect(invalidOrigin).toMatchObject({ status: 403, body: { code: "invalid_origin" } });
-    const unauthorized = await requestJson("/api/v1/internal/cli/example", "POST");
+    const unauthorized = await requestJson("/api/v1/internal/control/example", "POST");
     expect(unauthorized).toMatchObject({ status: 401, body: { code: "unauthorized" } });
     const oversized = await requestJson(
-      "/api/v1/internal/cli/example",
+      "/api/v1/internal/control/example",
       "POST",
       { "Content-Length": "65537" },
       Buffer.alloc(65_537),
     );
     expect(oversized).toMatchObject({ status: 413, body: { code: "payload_too_large" } });
     const method = await requestJson(
-      "/api/v1/internal/cli/example", "POST", { Authorization: authorization },
+      "/api/v1/internal/control/example", "POST", { Authorization: authorization },
     );
     expect(method).toMatchObject({ status: 405, body: { code: "method_not_allowed" } });
     expect(method.headers["allow"]).toBe("GET");
 
-    const unknownQuery = await requestJson("/api/v1/internal/cli/unknown?x=1");
+    const unknownQuery = await requestJson("/api/v1/internal/control/unknown?x=1");
     expect(unknownQuery).toMatchObject({ status: 400, body: { code: "query_not_supported" } });
-    const unknown = await requestJson("/api/v1/internal/cli/unknown");
+    const unknown = await requestJson("/api/v1/internal/control/unknown");
     expect(unknown).toMatchObject({ status: 404, body: { code: "route_not_found" } });
   });
 
@@ -1309,7 +1405,9 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       applicationFactory: ({ routes }) => ({
         routes: routes.extend([{
           method: "POST",
-          pathPattern: "/api/v1/internal/cli/wallet-session-selection",
+          pathPattern: "/api/v1/internal/control/wallet/operations",
+          mutation: "declared_control" as const,
+          response: "canonical_json" as const, successStatus: 201,
           handler: async () => {
             handlerCalls += 1;
             return { ok: true, body: {} };
@@ -1327,7 +1425,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       socket.once("error", reject);
     });
     socket.write([
-      "POST /api/v1/internal/cli/wallet-session-selection HTTP/1.1",
+      "POST /api/v1/internal/control/wallet/operations HTTP/1.1",
       `Host: ${fixedHostHeader}`,
       `Authorization: ${authorization}`,
       "Content-Type: application/json",

@@ -9,6 +9,21 @@ export const publicReadResponseLimitBytes = 8 * 1024 * 1024;
 export const jsonContentType = "application/json";
 export const problemJsonContentType = "application/problem+json";
 export const noStoreCacheControl = "no-store";
+export const browserContentSecurityPolicy =
+  "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; " +
+  "base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+export const browserContentTypeOptions = "nosniff";
+export const browserReferrerPolicy = "no-referrer";
+export const browserCrossOriginOpenerPolicy = "same-origin";
+export const browserSetCookieLimitBytes = 4_096;
+
+export const browserContentTypes = Object.freeze([
+  "text/html; charset=utf-8",
+  "text/css; charset=utf-8",
+  "text/javascript; charset=utf-8",
+] as const);
+
+export type BrowserContentType = (typeof browserContentTypes)[number];
 
 export interface RequestTarget {
   readonly pathname: string;

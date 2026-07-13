@@ -58,7 +58,8 @@ const binderPrimitiveSchemas = createPrimitiveSchemaSet();
 const binderAmountSchemas = createAmountSchemaSet();
 const binderEvidenceSchemas = createEvidenceSchemaSet();
 
-export const capabilityIdPatternSource = "[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9]*)+";
+export const capabilityIdPatternSource =
+  "[a-z][a-z0-9]*(?:_[a-z0-9]+)*\\.[a-z][a-z0-9]*(?:_[a-z0-9]+)*";
 
 export const createCapabilityIdSchema = () => z
   .string()

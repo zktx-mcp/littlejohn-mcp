@@ -126,7 +126,9 @@ const applicationFactory = ({ routes }: HttpOwnerApplicationContext) => {
   return Object.freeze({
     routes: routes.extend([{
       method: "GET",
-      pathPattern: "/api/v1/internal/cli/process-owner",
+      pathPattern: "/api/v1/internal/control/process-owner",
+      mutation: "none" as const,
+      response: "canonical_json" as const, successStatus: 200,
       handler: async () => {
         executionCount += 1;
         return {
@@ -172,7 +174,7 @@ const operate = async (notBeforeEpochMs: number): Promise<WorkerOperationResult>
   await waitUntil(notBeforeEpochMs);
   const response = await owner.executeOwnerOperation({
     method: "GET",
-    path: "/api/v1/internal/cli/process-owner",
+    path: "/api/v1/internal/control/process-owner",
   });
   return Object.freeze({ response, ...snapshot() });
 };

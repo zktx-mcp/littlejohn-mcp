@@ -13,16 +13,19 @@ import {
   type ProblemDetails,
 } from "./errors.js";
 import {
-  internalResponseLimitBytes,
-  publicReadResponseLimitBytes,
-} from "./http-boundary.js";
-import {
-  validateRequestClassSecurity,
-  validateRequestSecurity,
-  type RequestClass,
+  assertRequestPolicyRegistryDescendant,
+  createInitialRequestPolicyRegistry,
+  type RequestPolicyExtension,
+  type RequestPolicyRegistry,
   type RequestClassSecurityInput,
+  type RequestSecurityInput,
   type RequestSecurityResult,
 } from "./request-security.js";
+import {
+  browserContentTypes,
+  browserSetCookieLimitBytes,
+  type BrowserContentType,
+} from "./http-boundary.js";
 
 export type RouteMethod = "GET" | "POST" | "DELETE";
 
@@ -34,11 +37,20 @@ export interface RouteContext {
 
 export type RouteResult =
   | { readonly ok: true; readonly body: CanonicalJson }
+  | {
+      readonly ok: true;
+      readonly body: string;
+      readonly contentType: BrowserContentType;
+      readonly setCookie?: string;
+    }
   | { readonly ok: false; readonly failure: ApplicationFailure };
 
 export interface RouteDefinition {
   readonly method: RouteMethod;
+  readonly mutation: "none" | "declared_control";
   readonly pathPattern: string;
+  readonly response: "canonical_json" | "browser_content";
+  readonly successStatus: 200 | 201;
   readonly handler: (context: RouteContext) => Promise<RouteResult>;
 }
 
@@ -60,7 +72,7 @@ const captureRouteDefinition = (input: RouteDefinition): RouteDefinition => {
   const keys = Reflect.ownKeys(descriptors);
   if (keys.some((key) => typeof key === "symbol") ||
     keys.filter((key): key is string => typeof key === "string").sort(compareCodePointSequences).join("\0") !==
-      ["handler", "method", "pathPattern"].join("\0")) {
+      ["handler", "method", "mutation", "pathPattern", "response", "successStatus"].join("\0")) {
     throw new TypeError("Route definition fields are invalid.");
   }
   const values: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
@@ -72,65 +84,163 @@ const captureRouteDefinition = (input: RouteDefinition): RouteDefinition => {
     values[key] = descriptor.value;
   }
   if (!(["GET", "POST", "DELETE"] as const).includes(values["method"] as RouteMethod) ||
-    typeof values["pathPattern"] !== "string" || typeof values["handler"] !== "function") {
+    !(["none", "declared_control"] as const).includes(values["mutation"] as RouteDefinition["mutation"]) ||
+    typeof values["pathPattern"] !== "string" ||
+    !(["canonical_json", "browser_content"] as const).includes(
+      values["response"] as RouteDefinition["response"],
+    ) ||
+    !([200, 201] as const).includes(values["successStatus"] as 200 | 201) ||
+    typeof values["handler"] !== "function") {
     throw new TypeError("Route definition values are invalid.");
   }
   return Object.freeze({
     method: values["method"] as RouteMethod,
+    mutation: values["mutation"] as RouteDefinition["mutation"],
     pathPattern: values["pathPattern"],
+    response: values["response"] as RouteDefinition["response"],
+    successStatus: values["successStatus"] as 200 | 201,
     handler: values["handler"] as RouteDefinition["handler"],
   });
 };
+
+interface CompiledRoute extends RouteDefinition {
+  readonly requestClass: string;
+  readonly acceptsBody: boolean;
+  readonly responseLimitBytes: number;
+  readonly segments: readonly RouteSegment[];
+}
 
 type RouteSegment =
   | { readonly kind: "literal"; readonly value: string }
   | { readonly kind: "parameter"; readonly name: string };
 
-interface CompiledRoute extends RouteDefinition {
-  readonly requestClass: Exclude<RequestClass, "owner_identity">;
-  readonly acceptsBody: boolean;
-  readonly successStatus: 200 | 201;
-  readonly responseLimitBytes: number;
-  readonly segments: readonly RouteSegment[];
-}
-
-const requestClassForPath = (pathPattern: string): Exclude<RequestClass, "owner_identity"> => {
-  if (pathPattern.startsWith("/api/v1/internal/cli/")) return "native_control";
-  if (pathPattern.startsWith("/api/v1/read/") || pathPattern === "/api/v1/wallet/connection") {
-    return "public_read";
-  }
-  throw new TypeError("Route path is outside an owned request-class namespace.");
-};
-
-const compile = (definition: RouteDefinition): CompiledRoute => {
-  const captured = captureRouteDefinition(definition);
-  if (!captured.pathPattern.startsWith("/") || captured.pathPattern.includes("//") ||
-    captured.pathPattern.endsWith("/")) {
+const parseRouteSegments = (pathPattern: string): readonly RouteSegment[] => {
+  if (!pathPattern.startsWith("/") || pathPattern.includes("//") || pathPattern.endsWith("/") ||
+    pathPattern === "/api/v1/runtime-identity") {
     throw new TypeError("Route path pattern is invalid.");
   }
   const parameterNames = new Set<string>();
-  const segments = captured.pathPattern.slice(1).split("/").map((segment) => {
+  return Object.freeze(pathPattern.slice(1).split("/").map((segment) => {
     const parameter = /^\{([a-z][a-zA-Z0-9]*)\}$/.exec(segment);
     if (parameter !== null) {
       const name = parameter[1] as string;
       if (parameterNames.has(name)) throw new TypeError("Route parameter is duplicated.");
       parameterNames.add(name);
-      return { kind: "parameter" as const, name };
+      return Object.freeze({ kind: "parameter" as const, name });
     }
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(segment)) throw new TypeError("Route literal is invalid.");
-    return { kind: "literal" as const, value: segment };
-  });
-  const requestClass = requestClassForPath(captured.pathPattern);
+    return Object.freeze({ kind: "literal" as const, value: segment });
+  }));
+};
+
+export type ResourcePathDefinition =
+  | { readonly kind: "prefix"; readonly pathPrefix: string; readonly requestClass: string }
+  | {
+      readonly kind: "route";
+      readonly method: RouteMethod;
+      readonly pathPattern: string;
+      readonly requestClass: string;
+    };
+
+const captureResourcePathDefinition = (input: ResourcePathDefinition): ResourcePathDefinition => {
+  if (typeof input !== "object" || input === null) throw new TypeError("Resource path definition is invalid.");
+  let prototype: object | null;
+  let descriptors: Record<PropertyKey, PropertyDescriptor>;
+  try {
+    prototype = Object.getPrototypeOf(input) as object | null;
+    descriptors = Object.getOwnPropertyDescriptors(input) as Record<PropertyKey, PropertyDescriptor>;
+  } catch { throw new TypeError("Resource path definition cannot be inspected safely."); }
+  if (prototype !== Object.prototype && prototype !== null) throw new TypeError("Resource path definition is invalid.");
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.some((key) => typeof key !== "string")) throw new TypeError("Resource path definition is invalid.");
+  const values: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const key of keys as string[]) {
+    const descriptor = descriptors[key];
+    if (descriptor === undefined || !("value" in descriptor) || descriptor.enumerable !== true) {
+      throw new TypeError("Resource path definition is invalid.");
+    }
+    values[key] = descriptor.value;
+  }
+  if (values["kind"] === "prefix") {
+    if ((keys as string[]).sort(compareCodePointSequences).join("\0") !==
+      ["kind", "pathPrefix", "requestClass"].join("\0") ||
+      typeof values["pathPrefix"] !== "string" || typeof values["requestClass"] !== "string" ||
+      !values["pathPrefix"].startsWith("/") || !values["pathPrefix"].endsWith("/") ||
+      values["pathPrefix"].includes("//")) throw new TypeError("Resource path definition is invalid.");
+    return Object.freeze({
+      kind: "prefix", pathPrefix: values["pathPrefix"], requestClass: values["requestClass"],
+    });
+  }
+  if (values["kind"] === "route") {
+    if ((keys as string[]).sort(compareCodePointSequences).join("\0") !==
+      ["kind", "method", "pathPattern", "requestClass"].join("\0") ||
+      !(["GET", "POST", "DELETE"] as const).includes(values["method"] as RouteMethod) ||
+      typeof values["pathPattern"] !== "string" || typeof values["requestClass"] !== "string") {
+      throw new TypeError("Resource path definition is invalid.");
+    }
+    parseRouteSegments(values["pathPattern"]);
+    return Object.freeze({
+      kind: "route", method: values["method"] as RouteMethod,
+      pathPattern: values["pathPattern"], requestClass: values["requestClass"],
+    });
+  }
+  throw new TypeError("Resource path definition is invalid.");
+};
+
+const resourceKey = (definition: ResourcePathDefinition): string => definition.kind === "prefix"
+  ? `prefix:${definition.pathPrefix}`
+  : `route:${definition.method}:${definition.pathPattern}`;
+
+const requestClassForResource = (
+  method: RouteMethod,
+  pathPattern: string,
+  definitions: readonly ResourcePathDefinition[],
+): string => {
+  const pathAuthorities = definitions.filter((definition): definition is Extract<ResourcePathDefinition, { kind: "route" }> =>
+    definition.kind === "route" && definition.pathPattern === pathPattern);
+  const exact = pathAuthorities.filter((definition) => definition.method === method);
+  if (exact.length > 1) throw new TypeError("Resource path authority is ambiguous.");
+  if (exact[0] !== undefined) return exact[0].requestClass;
+  if (pathAuthorities.length !== 0) {
+    throw new TypeError("Route method is outside the registered resource authority.");
+  }
+  const prefixes = definitions.filter((definition): definition is Extract<ResourcePathDefinition, { kind: "prefix" }> =>
+    definition.kind === "prefix" && pathPattern.startsWith(definition.pathPrefix))
+    .sort((left, right) => right.pathPrefix.length - left.pathPrefix.length);
+  if (prefixes.length === 0 || (prefixes[1] !== undefined &&
+    prefixes[0]?.pathPrefix.length === prefixes[1].pathPrefix.length)) {
+    throw new TypeError("Route path is outside an owned request-class resource.");
+  }
+  const selected = prefixes[0] as Extract<ResourcePathDefinition, { kind: "prefix" }>;
+  if (pathPattern.startsWith("/api/v1/internal/") && selected.pathPrefix === "/api/v1/") {
+    throw new TypeError("Internal routes require an explicitly owned resource namespace.");
+  }
+  return selected.requestClass;
+};
+
+const compile = (
+  definition: RouteDefinition,
+  requestPolicies: RequestPolicyRegistry,
+  resources: readonly ResourcePathDefinition[],
+): CompiledRoute => {
+  const captured = captureRouteDefinition(definition);
+  const segments = parseRouteSegments(captured.pathPattern);
+  const requestClass = requestClassForResource(captured.method, captured.pathPattern, resources);
+  const requestPolicy = requestPolicies.get(requestClass);
+  if (requestClass === "owner_identity" ||
+    (captured.method === "POST" && requestPolicy.body === "none") ||
+    (captured.mutation === "declared_control" &&
+      (requestPolicy.mutation !== "declared_control" || captured.method === "GET")) ||
+    (captured.successStatus === 201 && captured.method !== "POST")) {
+    throw new TypeError("Route request policy is incompatible with its resource.");
+  }
   const acceptsBody = captured.method === "POST";
-  const successStatus = captured.method === "POST" &&
-    captured.pathPattern === "/api/v1/internal/cli/wallet-connection-attempts" ? 201 : 200;
   return Object.freeze({
     ...captured,
     requestClass,
     acceptsBody,
-    successStatus,
-    responseLimitBytes: requestClass === "public_read" ? publicReadResponseLimitBytes : internalResponseLimitBytes,
-    segments: Object.freeze(segments),
+    responseLimitBytes: requestPolicy.responseLimitBytes,
+    segments,
   });
 };
 
@@ -182,16 +292,33 @@ const matchSegments = (route: CompiledRoute, pathname: string): Readonly<Record<
 
 export type RouteMatch =
   | { readonly status: "matched"; readonly route: CompiledRoute; readonly params: Readonly<Record<string, string>> }
-  | { readonly status: "method_not_allowed"; readonly route: CompiledRoute; readonly allow: readonly RouteMethod[] }
+  | {
+      readonly status: "method_not_allowed";
+      readonly routes: readonly CompiledRoute[];
+      readonly allow: readonly RouteMethod[];
+    }
   | { readonly status: "not_found" };
 
 export type NormalizedRouteResult =
-  | { readonly ok: true; readonly body: CanonicalJson }
+  | { readonly ok: true; readonly response: "canonical_json"; readonly body: CanonicalJson }
+  | {
+      readonly ok: true;
+      readonly response: "browser_content";
+      readonly body: string;
+      readonly contentType: BrowserContentType;
+      readonly setCookie?: string;
+    }
   | { readonly ok: false; readonly problem: ProblemDetails };
+
+const isSafeSetCookie = (value: string): boolean =>
+  Buffer.byteLength(value) <= browserSetCookieLimitBytes &&
+  !value.includes(",") &&
+  /^[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?$/.test(value);
 
 interface RouteRegistryState {
   readonly routes: readonly CompiledRoute[];
-  readonly controlVerifier: ControlCredentialVerifier;
+  readonly requestPolicies: RequestPolicyRegistry;
+  readonly resources: readonly ResourcePathDefinition[];
   readonly errorMappings: InterfaceErrorMappingRegistry;
   readonly parent?: RuntimeRouteRegistry;
 }
@@ -217,15 +344,79 @@ export class RuntimeRouteRegistry {
     routesInput: readonly RouteDefinition[],
     errorMappings?: InterfaceErrorMappingRegistry,
   ): RuntimeRouteRegistry {
-    if (routesInput.length === 0) throw new TypeError("Route registry extension is empty.");
+    let routeDefinitions: readonly RouteDefinition[];
+    try {
+      if (!Array.isArray(routesInput)) throw new TypeError();
+      routeDefinitions = Object.freeze([...routesInput]);
+    } catch { throw new TypeError("Route registry extension cannot be inspected safely."); }
+    if (routeDefinitions.length === 0) throw new TypeError("Route registry extension is empty.");
     const state = routeRegistryState(this);
     const mappings = errorMappings ?? state.errorMappings;
     if (mappings !== state.errorMappings) {
       assertDirectInterfaceErrorMappingRegistryExtension(state.errorMappings, mappings);
     }
-    const routes = Object.freeze([...state.routes, ...routesInput.map(compile)]);
+    const routes = Object.freeze([
+      ...state.routes,
+      ...routeDefinitions.map((route) => compile(route, state.requestPolicies, state.resources)),
+    ]);
     assertUnambiguousRoutes(routes);
-    return createRegistry({ routes, controlVerifier: state.controlVerifier, errorMappings: mappings, parent: this });
+    return createRegistry({
+      routes,
+      requestPolicies: state.requestPolicies,
+      resources: state.resources,
+      errorMappings: mappings,
+      parent: this,
+    });
+  }
+
+  extendRequestPolicies(
+    extension: RequestPolicyExtension,
+    resourceDefinitions: readonly ResourcePathDefinition[],
+  ): RuntimeRouteRegistry {
+    let resourceInputs: readonly ResourcePathDefinition[];
+    try {
+      if (!Array.isArray(resourceDefinitions)) throw new TypeError();
+      resourceInputs = Object.freeze([...resourceDefinitions]);
+    } catch { throw new TypeError("Resource path extension cannot be inspected safely."); }
+    if (resourceInputs.length === 0) throw new TypeError("Resource path extension is empty.");
+    const state = routeRegistryState(this);
+    const requestPolicies = state.requestPolicies.extend(extension);
+    assertRequestPolicyRegistryDescendant(state.requestPolicies, requestPolicies);
+    const newRequestClasses = requestPolicies.directRequestClasses(state.requestPolicies);
+    const newAuthentications = requestPolicies.directAuthentications(state.requestPolicies);
+    const resources = [...state.resources];
+    const keys = new Set(resources.map(resourceKey));
+    const capturedResources: ResourcePathDefinition[] = [];
+    for (const input of resourceInputs) {
+      const definition = captureResourcePathDefinition(input);
+      requestPolicies.get(definition.requestClass);
+      const ownedPath = definition.kind === "prefix" ? definition.pathPrefix : definition.pathPattern;
+      if (ownedPath === "/api/v1/runtime-identity" || ownedPath.startsWith("/api/v1/internal/control/")) {
+        throw new TypeError("A request policy extension cannot replace a fixed runtime resource authority.");
+      }
+      const key = resourceKey(definition);
+      if (keys.has(key)) throw new TypeError("Duplicate resource path authority.");
+      keys.add(key);
+      capturedResources.push(definition);
+    }
+    const resourceClasses = [...new Set(capturedResources.map((definition) => definition.requestClass))]
+      .sort(compareCodePointSequences);
+    if (newRequestClasses.some((requestClass) => !resourceClasses.includes(requestClass))) {
+      throw new TypeError("Every new request class requires an owned resource.");
+    }
+    const usedAuthentications = [...new Set(newRequestClasses.map((requestClass) =>
+      requestPolicies.get(requestClass).authentication))];
+    if (newAuthentications.some((authentication) => !usedAuthentications.includes(authentication))) {
+      throw new TypeError("Every new authentication verifier requires a request policy consumer.");
+    }
+    resources.push(...capturedResources);
+    return createRegistry({
+      routes: state.routes,
+      requestPolicies,
+      resources: Object.freeze(resources),
+      errorMappings: state.errorMappings,
+      parent: this,
+    });
   }
 
   match(method: string | undefined, pathname: string): RouteMatch {
@@ -237,13 +428,9 @@ export class RuntimeRouteRegistry {
     const matched = pathMatches.find((candidate) => candidate.route.method === method);
     if (matched !== undefined) return { status: "matched", route: matched.route, params: matched.params };
     if (pathMatches.length !== 0) {
-      const route = pathMatches[0]?.route;
-      if (route === undefined || pathMatches.some((candidate) => candidate.route.requestClass !== route.requestClass)) {
-        throw new TypeError("Matched route request-class authority is inconsistent.");
-      }
       return {
         status: "method_not_allowed",
-        route,
+        routes: Object.freeze(pathMatches.map((candidate) => candidate.route)),
         allow: Object.freeze([...new Set(pathMatches.map((candidate) => candidate.route.method))]
           .sort(compareCodePointSequences)),
       };
@@ -253,29 +440,33 @@ export class RuntimeRouteRegistry {
 
   validateSecurity(
     route: CompiledRoute,
-    input: Omit<Parameters<typeof validateRequestSecurity>[0], "requestClass" | "acceptsBody" | "controlVerifier">,
+    input: Omit<RequestSecurityInput, "requestClass" | "acceptsBody">,
   ): RequestSecurityResult {
     const state = routeRegistryState(this);
     if (!state.routes.includes(route)) throw new TypeError("Route provenance is invalid.");
-    return validateRequestSecurity({
+    return state.requestPolicies.validate({
       ...input,
       requestClass: route.requestClass,
       acceptsBody: route.acceptsBody,
-      ...(route.requestClass === "native_control" ? { controlVerifier: state.controlVerifier } : {}),
     });
   }
 
-  validateRequestClass(
-    route: CompiledRoute,
-    input: Omit<RequestClassSecurityInput, "requestClass" | "controlVerifier">,
+  validateMethodRejection(
+    routes: readonly CompiledRoute[],
+    input: Omit<RequestClassSecurityInput, "requestClass">,
   ): RequestSecurityResult {
     const state = routeRegistryState(this);
-    if (!state.routes.includes(route)) throw new TypeError("Route provenance is invalid.");
-    return validateRequestClassSecurity({
+    if (routes.length === 0 || routes.some((route) => !state.routes.includes(route))) {
+      throw new TypeError("Route provenance is invalid.");
+    }
+    const requestClasses = [...new Set(routes.map((route) => route.requestClass))]
+      .sort(compareCodePointSequences);
+    const results = requestClasses.map((requestClass) => state.requestPolicies.validateClass({
       ...input,
-      requestClass: route.requestClass,
-      ...(route.requestClass === "native_control" ? { controlVerifier: state.controlVerifier } : {}),
-    });
+      requestClass,
+    }));
+    if (results.some((result) => result.ok)) return { ok: true };
+    return results[0] as Exclude<RequestSecurityResult, { readonly ok: true }>;
   }
 
   toProblemDetails(failure: ApplicationFailure): ProblemDetails {
@@ -290,10 +481,31 @@ export class RuntimeRouteRegistry {
       typeof captured["ok"] !== "boolean") throw new TypeError("Route result is invalid.");
     const keys = Object.keys(captured).sort(compareCodePointSequences);
     if (captured["ok"] === true) {
-      if (keys.join("\0") !== ["body", "ok"].join("\0") || captured["body"] === undefined) {
-        throw new TypeError("Route success result is invalid.");
+      if (route.response === "canonical_json") {
+        if (keys.join("\0") !== ["body", "ok"].join("\0") || captured["body"] === undefined) {
+          throw new TypeError("Route success result is invalid.");
+        }
+        return Object.freeze({ ok: true, response: "canonical_json", body: captured["body"] });
       }
-      return Object.freeze({ ok: true, body: captured["body"] });
+      const expectedKeys = captured["setCookie"] === undefined
+        ? ["body", "contentType", "ok"]
+        : ["body", "contentType", "ok", "setCookie"];
+      if (keys.join("\0") !== expectedKeys.join("\0") ||
+        typeof captured["body"] !== "string" ||
+        !browserContentTypes.includes(captured["contentType"] as BrowserContentType) ||
+        Buffer.byteLength(captured["body"]) > route.responseLimitBytes ||
+        (captured["setCookie"] !== undefined &&
+          (captured["contentType"] !== "text/html; charset=utf-8" ||
+            typeof captured["setCookie"] !== "string" || !isSafeSetCookie(captured["setCookie"])))) {
+        throw new TypeError("Browser content result is invalid.");
+      }
+      return Object.freeze({
+        ok: true,
+        response: "browser_content",
+        body: captured["body"],
+        contentType: captured["contentType"] as BrowserContentType,
+        ...(captured["setCookie"] === undefined ? {} : { setCookie: captured["setCookie"] }),
+      });
     }
     if (keys.join("\0") !== ["failure", "ok"].join("\0") || captured["failure"] === undefined) {
       throw new TypeError("Route failure result is invalid.");
@@ -310,7 +522,11 @@ export const createRuntimeRouteRegistry = (input: {
   readonly errorMappings?: InterfaceErrorMappingRegistry;
 }): RuntimeRouteRegistry => createRegistry({
   routes: Object.freeze([]),
-  controlVerifier: input.controlVerifier,
+  requestPolicies: createInitialRequestPolicyRegistry(input.controlVerifier),
+  resources: Object.freeze([
+    Object.freeze({ kind: "prefix", pathPrefix: "/api/v1/internal/control/", requestClass: "local_control" }),
+    Object.freeze({ kind: "prefix", pathPrefix: "/api/v1/", requestClass: "public_read" }),
+  ]),
   errorMappings: input.errorMappings ?? runtimeInterfaceErrorMappings,
 });
 
