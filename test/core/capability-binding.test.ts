@@ -8,6 +8,7 @@ import { z } from "zod";
 import {
   CapabilityBindingRegistry,
   CapabilityRegistry,
+  ObservationAuthorityRegistry,
   accountBalanceCapability,
   bindCapability,
   canonicalJsonStringify,
@@ -15,12 +16,16 @@ import {
   chainStatusCapability,
   contractInspectCapability,
   coreErrorRegistry,
+  createCanonicalClock,
+  createCapabilityInvocationAuthority,
   createObservationAuthority,
   evmAddressSchema,
   getCapabilityDefinitionSnapshot,
+  parseCapabilitySuccess,
   safeParseCapabilityInput,
   safeParseCapabilityData,
   sourceReferenceSchema,
+  walletConnectionCapability,
   type ObservationClaim,
   type ObservationWriter,
 } from "../../src/core/index.js";
@@ -466,19 +471,184 @@ describe("capability binding authority", () => {
       definition: chainStatusCapability,
       errorRegistry: forgedRegistry,
       invocationAuthority: harness.invocationAuthority,
-      ports: harness.ports,
+      createInvocationPorts: () => harness.ports,
       handler: async () => ({ status: "failure", code: "internal_error", issues: [] }),
     })).toThrow("provenance");
   });
 
-  it("captures the exact invocation-port references when a binding is created", async () => {
+  it("creates and captures invocation ports exactly once after input validation", async () => {
     const base = createCapabilityHarness();
-    const mutablePorts = { observations: base.ports.observations };
-    const harness = { invocationAuthority: base.invocationAuthority, ports: mutablePorts };
-    const binding = bindForHarness(chainStatusCapability, harness, async (_input, context, observations) =>
-      successfulHandler(context, observations));
-    mutablePorts.observations = {} as never;
+    let calls = 0;
+    const binding = bindCapability({
+      definition: chainStatusCapability,
+      errorRegistry: coreErrorRegistry,
+      invocationAuthority: base.invocationAuthority,
+      createInvocationPorts: () => {
+        calls += 1;
+        return { observations: base.ports.observations };
+      },
+      handler: async (_input, context, observations) => successfulHandler(context, observations),
+    });
+
+    const invalid = await invokeBinding(chainStatusCapability, binding, { unexpected: true });
+    expect(invalid.ok).toBe(false);
+    expect(calls).toBe(0);
     expect((await invokeBinding(chainStatusCapability, binding, {})).ok).toBe(true);
+    expect(calls).toBe(1);
+    expect((await invokeBinding(chainStatusCapability, binding, {})).ok).toBe(true);
+    expect(calls).toBe(2);
+  });
+
+  it("fails closed on hostile invocation-port factories without running the handler", async () => {
+    const base = createCapabilityHarness();
+    const wrongClock = createCapabilityHarness();
+    let getterReads = 0;
+    const accessorPorts = Object.defineProperty({}, "observations", {
+      enumerable: true,
+      get() {
+        getterReads += 1;
+        throw new Error("secret accessor value");
+      },
+    });
+    const factories: readonly (() => unknown)[] = [
+      () => { throw new Error("secret factory value"); },
+      () => new Proxy({}, {
+        getPrototypeOf() { throw new Error("secret proxy value"); },
+      }),
+      () => accessorPorts,
+      () => Promise.resolve(base.ports),
+      () => Object.create({ observations: base.ports.observations }),
+      () => wrongClock.ports,
+    ];
+
+    for (const createInvocationPorts of factories) {
+      let handlerCalls = 0;
+      const binding = bindCapability({
+        definition: chainStatusCapability,
+        errorRegistry: coreErrorRegistry,
+        invocationAuthority: base.invocationAuthority,
+        createInvocationPorts: createInvocationPorts as () => typeof base.ports,
+        handler: async (_input, context, observations) => {
+          handlerCalls += 1;
+          return successfulHandler(context, observations);
+        },
+      });
+      const result = await invokeBinding(chainStatusCapability, binding, {});
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("Expected an internal failure.");
+      expect(result.error.code).toBe("internal_error");
+      expect(JSON.stringify(result)).not.toContain("secret");
+      expect(handlerCalls).toBe(0);
+    }
+    expect(getterReads).toBe(0);
+  });
+
+  it("keeps each invocation on the one captured authority snapshot", async () => {
+    const clock = createCanonicalClock(() => fixedEvaluationTime);
+    const invocationAuthority = createCapabilityInvocationAuthority(clock);
+    const registry = (label: string) => new ObservationAuthorityRegistry(clock, [
+      createObservationAuthority({
+        clock,
+        sourceClass: "chain_rpc",
+        owner: "user_configured",
+        reference: sourceReferenceSchema.parse({
+          kind: "public",
+          sourceId: `rpc_${label}`,
+          uri: `https://${label}.example/`,
+        }),
+      }),
+    ]);
+    const firstRegistry = registry("first");
+    const secondRegistry = registry("second");
+    let release!: () => void;
+    const gate = new Promise<void>((resolveGate) => { release = resolveGate; });
+    const mutablePorts = { observations: firstRegistry };
+    const binding = bindCapability({
+      definition: chainStatusCapability,
+      errorRegistry: coreErrorRegistry,
+      invocationAuthority,
+      createInvocationPorts: () => mutablePorts,
+      handler: async (_input, context, observations) => {
+        await gate;
+        return successfulHandler(context, observations);
+      },
+    });
+
+    const first = invokeBinding(chainStatusCapability, binding, {});
+    mutablePorts.observations = secondRegistry;
+    const second = invokeBinding(chainStatusCapability, binding, {});
+    release();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(firstResult.ok).toBe(true);
+    expect(secondResult.ok).toBe(true);
+    if (!firstResult.ok || !secondResult.ok) return;
+    expect(firstResult.evidence.sources.find(({ purpose }) => purpose === "chain_id")?.reference)
+      .toMatchObject({ uri: "https://first.example/" });
+    expect(secondResult.evidence.sources.find(({ purpose }) => purpose === "chain_id")?.reference)
+      .toMatchObject({ uri: "https://second.example/" });
+  });
+
+  it("parses a strict transport success with definition-owned data invariants", async () => {
+    const harness = createCapabilityHarness(() => "2026-07-12T10:16:02.000Z");
+    const connected = {
+      status: "connected" as const,
+      account: "eip155:4663:0x1111111111111111111111111111111111111111",
+      address: "0x1111111111111111111111111111111111111111",
+      chainId: "eip155:4663" as const,
+      approvedMethods: ["eth_sendTransaction"],
+      approvedEvents: ["accountsChanged", "chainChanged"],
+      expiresAt: "2026-07-13T10:16:02.000Z",
+    };
+    const binding = bindForHarness(walletConnectionCapability, harness, async (_input, context, observations) => {
+      observations.record("wallet_sdk", {
+        source: context.ports.observations.get("wallet_sdk"),
+        claims: [{ role: "wallet_sdk_state", value: connected }],
+      });
+      observations.record("wallet_session", {
+        source: context.ports.observations.get("wallet_session"),
+        claims: [{ role: "wallet_session_state", value: connected }],
+      });
+      return { status: "success", data: connected };
+    });
+    const result = await invokeBinding(walletConnectionCapability, binding, {});
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const parsed = parseCapabilitySuccess(walletConnectionCapability, result);
+    expect(parsed).toEqual(result);
+    expect(Object.isFrozen(parsed)).toBe(true);
+    expect(Object.isFrozen(parsed.data)).toBe(true);
+
+    expect(() => parseCapabilitySuccess(walletConnectionCapability, {
+      ...result,
+      unexpected: true,
+    })).toThrow();
+    expect(() => parseCapabilitySuccess(walletConnectionCapability, {
+      ...result,
+      meta: { ...result.meta, capabilityId: "chain.status" },
+    })).toThrow();
+    expect(() => parseCapabilitySuccess(walletConnectionCapability, {
+      ...result,
+      data: { ...result.data, account: `eip155:4663:0x${"2".repeat(40)}` },
+    })).toThrow();
+    expect(() => parseCapabilitySuccess(walletConnectionCapability, {
+      ...result,
+      meta: { ...result.meta, evaluatedAt: connected.expiresAt },
+    })).toThrow();
+
+    let getterReads = 0;
+    const hostile = Object.defineProperty({}, "ok", {
+      enumerable: true,
+      get() {
+        getterReads += 1;
+        throw new Error("secret transport value");
+      },
+    });
+    expect(() => parseCapabilitySuccess(walletConnectionCapability, hostile)).toThrow();
+    expect(getterReads).toBe(0);
+    expect(() => parseCapabilitySuccess(walletConnectionCapability, new Proxy({}, {
+      ownKeys(): never { throw new Error("secret transport proxy"); },
+    }))).toThrow();
   });
 
   it("rejects a capability target that differs from its validated request", async () => {

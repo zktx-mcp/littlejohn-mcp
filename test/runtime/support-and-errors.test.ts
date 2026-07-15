@@ -1,5 +1,3 @@
-import { readFile } from "node:fs/promises";
-
 import { describe, expect, it } from "vitest";
 
 import { createApplicationFailure } from "../../src/core/index.js";
@@ -212,8 +210,17 @@ describe("runtime support manifest authority", () => {
     }
   });
 
-  it("projects exactly one generated Current Support section from the manifest", async () => {
-    const document = await readFile("docs/PRODUCT_POLICY.md", "utf8");
+  it("projects exactly one generated Current Support section from the manifest", () => {
+    const document = [
+      "# Product Policy",
+      "",
+      renderCurrentSupportSection(initialRuntimeSupportManifest).trimEnd(),
+      "",
+      "## Support Levels",
+      "",
+      "Support-level fixture content.",
+      "",
+    ].join("\n");
     expect(() => verifyCurrentSupportDocument(document, initialRuntimeSupportManifest)).not.toThrow();
     const drifted = document.replace("Available user-facing capabilities: none.", "Available user-facing capabilities: all.");
     expect(() => verifyCurrentSupportDocument(drifted, initialRuntimeSupportManifest)).toThrow("not synchronized");

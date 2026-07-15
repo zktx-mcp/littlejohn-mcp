@@ -344,16 +344,16 @@ describe("application data and local credential", () => {
     const activeController = new AbortController();
     const path = resolve(directory, "wallet-private");
     const port = createWalletPrivateStoreDirectoryPort(path, activeController.signal);
-    expect(await port.prepare()).toBe(path);
+    expect(await port.ensureDirectory()).toBe(path);
     if (process.platform !== "win32") expect((await stat(path)).mode & 0o077).toBe(0);
     activeController.abort();
-    await expectRuntimeCode(port.prepare(), "request_aborted");
+    await expectRuntimeCode(port.ensureDirectory(), "request_aborted");
 
     const stoppedController = new AbortController();
     stoppedController.abort();
     const unusedPath = resolve(directory, "wallet-private-unused");
     await expectRuntimeCode(
-      createWalletPrivateStoreDirectoryPort(unusedPath, stoppedController.signal).prepare(),
+      createWalletPrivateStoreDirectoryPort(unusedPath, stoppedController.signal).ensureDirectory(),
       "request_aborted",
     );
     await expect(lstat(unusedPath)).rejects.toMatchObject({ code: "ENOENT" });
@@ -866,6 +866,51 @@ describe("SQLite product state", () => {
       "runtime_state_unavailable",
     );
     database.close();
+  });
+
+  it("retains the main-file lease until the database connection is proven closed", () => {
+    const databaseFailure = new Error("database close failed");
+    const leaseFailure = new Error("lease close failed");
+
+    for (const failingResource of ["database", "lease"] as const) {
+      const events: string[] = [];
+      let failureAvailable = true;
+      const database = Reflect.construct(ProductDatabase, [{
+        database: {
+          close(): void {
+            events.push("database:close");
+            if (failingResource === "database" && failureAvailable) {
+              failureAvailable = false;
+              throw databaseFailure;
+            }
+          },
+        },
+        mainLease: {
+          close(): void {
+            events.push("lease:close");
+            if (failingResource === "lease" && failureAvailable) {
+              failureAvailable = false;
+              throw leaseFailure;
+            }
+          },
+        },
+      }]) as ProductDatabase;
+
+      expect(() => database.close()).toThrow(RuntimeOperationError);
+      expect(events).toEqual(failingResource === "database"
+        ? ["database:close"]
+        : ["database:close", "lease:close"]);
+
+      events.length = 0;
+      expect(() => database.close()).not.toThrow();
+      expect(events).toEqual(failingResource === "database"
+        ? ["database:close", "lease:close"]
+        : ["lease:close"]);
+
+      events.length = 0;
+      database.close();
+      expect(events).toEqual([]);
+    }
   });
 
   it("rejects weak or linked SQLite sidecars before opening and never repairs them", async () => {

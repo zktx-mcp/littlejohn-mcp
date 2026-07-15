@@ -27,38 +27,51 @@ interface TestWalletOperations {
   readOperation(): unknown;
 }
 
+interface TestActiveWallet {
+  capture(): unknown;
+}
+
 interface OtherWalletOperations {
   cancelOperation(): unknown;
 }
 
-type TestWalletApplicationFactory = WalletOwnerApplicationFactory<TestWalletOperations>;
+interface OtherActiveWallet {
+  read(): unknown;
+}
+
+type TestWalletApplicationFactory = WalletOwnerApplicationFactory<TestActiveWallet, TestWalletOperations>;
+type TestChainApplicationFactory = ChainOwnerApplicationFactory<TestActiveWallet>;
 type TestInterfaceApplicationFactory = InterfaceOwnerApplicationFactory<TestWalletOperations>;
 
 type _WalletContextKeys = Assert<Equal<
   keyof WalletOwnerApplicationContext,
-  "routes" | "signal" | "supportManifest" | "wallet"
+  "routes" | "signal" | "startupResources" | "supportManifest" | "wallet"
 >>;
 type _ChainContextKeys = Assert<Equal<
-  keyof ChainOwnerApplicationContext,
-  "routes" | "signal" | "supportManifest" | "walletConnection" | "chain"
+  keyof ChainOwnerApplicationContext<TestActiveWallet>,
+  "routes" | "signal" | "startupResources" | "supportManifest" | "walletConnection" | "activeWallet" | "chain"
+>>;
+type _ChainActiveWallet = Assert<Equal<
+  ChainOwnerApplicationContext<TestActiveWallet>["activeWallet"],
+  TestActiveWallet
 >>;
 type _InterfaceContextKeys = Assert<Equal<
   keyof InterfaceOwnerApplicationContext<TestWalletOperations>,
-  "routes" | "signal" | "supportManifest" | "walletConnection" | "walletOperations" | "chainReads"
+  "routes" | "signal" | "startupResources" | "supportManifest" | "walletConnection" | "walletOperations" | "chainReads"
 >>;
 type _InterfaceWalletOperations = Assert<Equal<
   InterfaceOwnerApplicationContext<TestWalletOperations>["walletOperations"],
   TestWalletOperations
 >>;
 type _WalletApplicationKeys = Assert<Equal<
-  keyof WalletOwnerApplication<TestWalletOperations>,
-  "routes" | "close" | "supportManifest" | "walletConnection" | "walletOperations"
+  keyof WalletOwnerApplication<TestActiveWallet, TestWalletOperations>,
+  "routes" | "close" | "supportManifest" | "walletConnection" | "activeWallet" | "walletOperations"
 >>;
 type _WalletPortKeys = Assert<Equal<
   keyof WalletOwnerBootstrapPort,
   "configuration" | "privateStoreDirectory" | "projection" | "sourceAuthority" | "capabilityAuthority"
 >>;
-type _PrivateStoreDirectoryKeys = Assert<Equal<keyof WalletPrivateStoreDirectoryPort, "prepare">>;
+type _PrivateStoreDirectoryKeys = Assert<Equal<keyof WalletPrivateStoreDirectoryPort, "ensureDirectory">>;
 type _ChainPortKeys = Assert<Equal<
   keyof ChainOwnerBootstrapPort,
   "configuredRpcUri" | "sourceAuthority" | "capabilityAuthority"
@@ -69,8 +82,12 @@ type _ChainReadKeys = Assert<Equal<
   "accountBalance" | "chainStatus" | "contractInspect" | "transactionInspect"
 >>;
 type _WalletHandoffKeys = Assert<Equal<
-  keyof WalletOwnerHandoff,
-  "supportManifest" | "walletConnection"
+  keyof WalletOwnerHandoff<TestActiveWallet>,
+  "supportManifest" | "walletConnection" | "activeWallet"
+>>;
+type _WalletHandoffActiveWallet = Assert<Equal<
+  WalletOwnerHandoff<TestActiveWallet>["activeWallet"],
+  TestActiveWallet
 >>;
 type _ChainHandoffKeys = Assert<Equal<
   keyof ChainOwnerHandoff,
@@ -78,37 +95,41 @@ type _ChainHandoffKeys = Assert<Equal<
 >>;
 type _RuntimeHandleKeys = Assert<Equal<
   keyof LocalRuntime,
-  "ownerState" | "executeOwnerOperation" | "stop"
+  "ownerState" | "start" | "executeOwnerOperation" | "stop"
 >>;
 type _RuntimeOptionKeys = Assert<Equal<
-  keyof LocalRuntimeOptions<TestWalletOperations>,
+  keyof LocalRuntimeOptions<TestActiveWallet, TestWalletOperations>,
   "environment" | "now" | "walletApplicationFactory" | "chainApplicationFactory" | "interfaceApplicationFactory"
 >>;
-type _NoFactoryPrefix = Assert<{} extends LocalRuntimeOptions<TestWalletOperations> ? true : false>;
+type _NoFactoryPrefix = Assert<{} extends LocalRuntimeOptions<TestActiveWallet, TestWalletOperations> ? true : false>;
 type _WalletFactoryPrefix = Assert<{
   walletApplicationFactory: TestWalletApplicationFactory;
-} extends LocalRuntimeOptions<TestWalletOperations> ? true : false>;
+} extends LocalRuntimeOptions<TestActiveWallet, TestWalletOperations> ? true : false>;
 type _ChainFactoryPrefix = Assert<{
   walletApplicationFactory: TestWalletApplicationFactory;
-  chainApplicationFactory: ChainOwnerApplicationFactory;
-} extends LocalRuntimeOptions<TestWalletOperations> ? true : false>;
+  chainApplicationFactory: TestChainApplicationFactory;
+} extends LocalRuntimeOptions<TestActiveWallet, TestWalletOperations> ? true : false>;
 type _InterfaceFactoryPrefix = Assert<{
   walletApplicationFactory: TestWalletApplicationFactory;
-  chainApplicationFactory: ChainOwnerApplicationFactory;
+  chainApplicationFactory: TestChainApplicationFactory;
   interfaceApplicationFactory: TestInterfaceApplicationFactory;
-} extends LocalRuntimeOptions<TestWalletOperations> ? true : false>;
+} extends LocalRuntimeOptions<TestActiveWallet, TestWalletOperations> ? true : false>;
 type _ChainWithoutWalletRejected = AssertFalse<{
-  chainApplicationFactory: ChainOwnerApplicationFactory;
-} extends LocalRuntimeOptions<TestWalletOperations> ? true : false>;
+  chainApplicationFactory: TestChainApplicationFactory;
+} extends LocalRuntimeOptions<TestActiveWallet, TestWalletOperations> ? true : false>;
 type _InterfaceWithoutChainRejected = AssertFalse<{
   walletApplicationFactory: TestWalletApplicationFactory;
   interfaceApplicationFactory: TestInterfaceApplicationFactory;
-} extends LocalRuntimeOptions<TestWalletOperations> ? true : false>;
+} extends LocalRuntimeOptions<TestActiveWallet, TestWalletOperations> ? true : false>;
 type _MismatchedInterfaceOperationsRejected = AssertFalse<{
   walletApplicationFactory: TestWalletApplicationFactory;
-  chainApplicationFactory: ChainOwnerApplicationFactory;
+  chainApplicationFactory: TestChainApplicationFactory;
   interfaceApplicationFactory: InterfaceOwnerApplicationFactory<OtherWalletOperations>;
-} extends LocalRuntimeOptions<TestWalletOperations> ? true : false>;
+} extends LocalRuntimeOptions<TestActiveWallet, TestWalletOperations> ? true : false>;
+type _MismatchedActiveWalletRejected = AssertFalse<{
+  walletApplicationFactory: TestWalletApplicationFactory;
+  chainApplicationFactory: ChainOwnerApplicationFactory<OtherActiveWallet>;
+} extends LocalRuntimeOptions<TestActiveWallet, TestWalletOperations> ? true : false>;
 type _WalletSessionSourceKeys = Assert<Equal<
   keyof WalletSessionSource,
   "sourceId" | "candidateId" | "topicDigest" | "observationAuthority"
@@ -117,6 +138,7 @@ type _WalletSessionSourceKeys = Assert<Equal<
 export type RuntimePortTypeContracts =
   | _WalletContextKeys
   | _ChainContextKeys
+  | _ChainActiveWallet
   | _InterfaceContextKeys
   | _InterfaceWalletOperations
   | _WalletApplicationKeys
@@ -126,6 +148,7 @@ export type RuntimePortTypeContracts =
   | _WalletConnectionReadKeys
   | _ChainReadKeys
   | _WalletHandoffKeys
+  | _WalletHandoffActiveWallet
   | _ChainHandoffKeys
   | _RuntimeHandleKeys
   | _RuntimeOptionKeys
@@ -136,4 +159,5 @@ export type RuntimePortTypeContracts =
   | _ChainWithoutWalletRejected
   | _InterfaceWithoutChainRejected
   | _MismatchedInterfaceOperationsRejected
+  | _MismatchedActiveWalletRejected
   | _WalletSessionSourceKeys;

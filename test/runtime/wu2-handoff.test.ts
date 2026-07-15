@@ -57,7 +57,7 @@ interface WU2HandoffFixture {
 }
 
 const fixturePath = "test/fixtures/wu2-handoff.json";
-const fixtureDigest = "a9c7e237d0eaadd9879fd84105ec60aae5005990de3548128930fb68f8676ef8";
+const fixtureDigest = "2170ba72b3b9c40963817b9f227da606de853e8fcf6fa7360187c5260d633b81";
 const excludedRuntimeTests = new Set(["test/runtime/wu2-handoff.test.ts"]);
 
 const collect = async (path: string): Promise<string[]> => {

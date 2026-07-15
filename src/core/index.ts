@@ -58,6 +58,7 @@ export {
   getCapabilityDefinitionSnapshot,
   parseCapabilityData,
   parseCapabilityDataAt,
+  parseCapabilitySuccess,
   parseCapabilityInput,
   safeParseCapabilityData,
   safeParseCapabilityInput,

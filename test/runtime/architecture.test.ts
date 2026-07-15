@@ -1,4 +1,4 @@
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -6,47 +6,27 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import * as runtimePublic from "../../src/runtime/index.js";
+import {
+  collectProductSourceFiles,
+  collectSourceFiles,
+  createPackageImportPolicy,
+  directCodeExecutionViolations,
+  inspectSourceFile,
+  moduleImportPolicyViolations,
+} from "./import-audit.js";
+import { loadPackageManifest, loadWu1HandoffFixture } from "./wu1-handoff-fixture.js";
 
-const sourceRoot = resolve("src");
+const repositoryRoot = resolve(".");
+const sourceRoot = resolve(repositoryRoot, "src");
 const coreRoot = resolve("src/core");
-const prohibitedPackages = ["@walletconnect/", "viem", "@modelcontextprotocol/", "react", "qrcode"];
 
-const collectTypeScript = async (directory: string): Promise<string[]> => {
-  const files: string[] = [];
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    const path = resolve(directory, entry.name);
-    if (entry.isDirectory()) files.push(...await collectTypeScript(path));
-    else if (entry.isFile() && entry.name.endsWith(".ts")) files.push(path);
-  }
-  return files;
-};
-
-const moduleSpecifiers = (source: string, file: string): readonly { readonly kind: string; readonly value?: string }[] => {
-  const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const specifiers: { kind: string; value?: string }[] = [];
-  const record = (kind: string, expression: ts.Expression | undefined): void => {
-    if (expression !== undefined && ts.isStringLiteralLike(expression)) specifiers.push({ kind, value: expression.text });
-    else specifiers.push({ kind });
-  };
-  const visit = (node: ts.Node): void => {
-    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
-      if (node.moduleSpecifier !== undefined) record("module", node.moduleSpecifier);
-    } else if (ts.isCallExpression(node)) {
-      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) record("dynamic_import", node.arguments[0]);
-      if (ts.isIdentifier(node.expression) && node.expression.text === "require") record("require", node.arguments[0]);
-      if (ts.isIdentifier(node.expression) && (node.expression.text === "eval" || node.expression.text === "Function")) {
-        specifiers.push({ kind: `loader:${node.expression.text}` });
-      }
-      if (ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "getBuiltinModule") {
-        specifiers.push({ kind: "loader:getBuiltinModule" });
-      }
-    } else if (ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "Function") {
-      specifiers.push({ kind: "loader:Function" });
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(parsed);
-  return specifiers;
+const loadPackagePolicy = async () => {
+  const [{ fixture }, manifest, sourceFiles] = await Promise.all([
+    loadWu1HandoffFixture(),
+    loadPackageManifest(),
+    collectProductSourceFiles(repositoryRoot),
+  ]);
+  return createPackageImportPolicy(fixture, manifest, repositoryRoot, sourceFiles);
 };
 
 const resolvesInsideCore = (file: string, specifier: string): string | undefined => {
@@ -60,33 +40,30 @@ const resolvesInsideCore = (file: string, specifier: string): string | undefined
 };
 
 describe("WU2 architecture boundary", () => {
-  it("contains no early WalletConnect, RPC SDK, MCP, QR, React, or dynamic-loader implementation", async () => {
+  it("enforces foundation and fully active extension package owners without stage-specific exceptions", async () => {
+    const policy = await loadPackagePolicy();
     const violations: string[] = [];
-    for (const file of await collectTypeScript(sourceRoot)) {
-      for (const specifier of moduleSpecifiers(await readFile(file, "utf8"), file)) {
-        if (specifier.kind.startsWith("loader:") ||
-          ((specifier.kind === "dynamic_import" || specifier.kind === "require") && specifier.value === undefined)) {
-          violations.push(`${relative(sourceRoot, file)}:${specifier.kind}:non_literal`);
-        }
-        const value = specifier.value;
-        if (value !== undefined && prohibitedPackages.some((name) =>
-          value === name || value.startsWith(name))) {
-          violations.push(`${relative(sourceRoot, file)}:${value}`);
-        }
-      }
+    for (const file of await collectProductSourceFiles(repositoryRoot)) {
+      const audit = await inspectSourceFile(file);
+      violations.push(...moduleImportPolicyViolations(file, audit.moduleImports, policy));
+      violations.push(...directCodeExecutionViolations(
+        file,
+        audit.directCodeExecutions,
+        repositoryRoot,
+      ));
     }
     expect(violations).toEqual([]);
   });
 
   it("requires every non-core product consumer to use the frozen curated core entry point", async () => {
     const violations: string[] = [];
-    for (const file of await collectTypeScript(sourceRoot)) {
+    for (const file of await collectSourceFiles(sourceRoot)) {
       if (file.startsWith(`${coreRoot}${sep}`)) continue;
-      for (const specifier of moduleSpecifiers(await readFile(file, "utf8"), file)) {
-        if (specifier.value === undefined) continue;
-        const target = resolvesInsideCore(file, specifier.value);
+      for (const reference of (await inspectSourceFile(file)).moduleImports) {
+        if (reference.specifier === undefined) continue;
+        const target = resolvesInsideCore(file, reference.specifier);
         if (target !== undefined && target !== "index.js") {
-          violations.push(`${relative(sourceRoot, file)}:${specifier.value}`);
+          violations.push(`${relative(sourceRoot, file)}:${reference.specifier}`);
         }
       }
     }
@@ -125,10 +102,10 @@ describe("WU2 architecture boundary", () => {
       "source-identity.ts",
     ]);
     const violations: string[] = [];
-    for (const file of await collectTypeScript(resolve("src/runtime"))) {
+    for (const file of await collectSourceFiles(resolve("src/runtime"))) {
       const name = relative(resolve("src/runtime"), file).split(sep).join("/");
-      for (const specifier of moduleSpecifiers(await readFile(file, "utf8"), file)) {
-        if (specifier.value?.endsWith("/control-credential.js") && !allowedCredentialConsumers.has(name)) {
+      for (const reference of (await inspectSourceFile(file)).moduleImports) {
+        if (reference.specifier?.endsWith("/control-credential.js") && !allowedCredentialConsumers.has(name)) {
           violations.push(`${name}:control-credential`);
         }
       }

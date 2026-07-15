@@ -671,6 +671,8 @@ export class ProductDatabase {
   readonly #mainLease: OwnerOnlyStateFileLease;
   readonly #ownerStore: RuntimeOwnerStore;
   readonly #walletStore: WalletProjectionStore;
+  #databaseClosed = false;
+  #mainLeaseClosed = false;
 
   private constructor(opened: OpenedValidatedDatabase) {
     this.#database = opened.database;
@@ -714,8 +716,18 @@ export class ProductDatabase {
 
   close(): void {
     let failure: unknown;
-    try { this.#database.close(); } catch (error) { failure = error; }
-    try { this.#mainLease.close(); } catch (error) { failure ??= error; }
+    if (!this.#databaseClosed) {
+      try {
+        this.#database.close();
+        this.#databaseClosed = true;
+      } catch (error) { failure = error; }
+    }
+    if (this.#databaseClosed && !this.#mainLeaseClosed) {
+      try {
+        this.#mainLease.close();
+        this.#mainLeaseClosed = true;
+      } catch (error) { failure ??= error; }
+    }
     if (failure !== undefined) throw storageError(failure);
   }
 

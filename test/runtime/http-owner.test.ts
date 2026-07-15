@@ -26,6 +26,7 @@ import {
   FixedHttpOwner,
   type HttpOwnerApplicationContext,
 } from "../../src/runtime/http-owner.js";
+import { createResourceOwnershipScope } from "../../src/runtime/resource-ownership.js";
 import type { OwnerIdentity } from "../../src/runtime/runtime-identity.js";
 import { fixedHost, fixedHostHeader, fixedPort } from "../../src/runtime/http-boundary.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
@@ -512,6 +513,344 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     const { proof, ...withoutProof } = identity;
     expect(proof).toBe(independentProof(key, withoutProof));
     expect(JSON.stringify(response.body)).not.toContain(Buffer.from(key).toString("base64url"));
+  });
+
+  it("serializes startup cleanup reentry and retries only resources not proven closed", async () => {
+    const scope = createResourceOwnershipScope();
+    const failure = new Error("first cleanup failed");
+    let failingCalls = 0;
+    let successfulCalls = 0;
+    let reentered: Promise<void> | undefined;
+    scope.resources.register({
+      close(): void {
+        failingCalls += 1;
+        if (failingCalls === 1) throw failure;
+      },
+    });
+    scope.resources.register({
+      close(): void {
+        successfulCalls += 1;
+        reentered = scope.close();
+      },
+    });
+
+    const first = scope.close();
+    await expect(first).rejects.toBe(failure);
+    expect(reentered).toBe(first);
+    expect(failingCalls).toBe(1);
+    expect(successfulCalls).toBe(1);
+    expect(scope.empty).toBe(false);
+
+    await expect(scope.close()).resolves.toBeUndefined();
+    expect(failingCalls).toBe(2);
+    expect(successfulCalls).toBe(1);
+    expect(scope.empty).toBe(true);
+  });
+
+  it("keeps replacement ownership across active cleanup and retries only the replacement", async () => {
+    const scope = createResourceOwnershipScope();
+    let originalCloses = 0;
+    let replacementCloses = 0;
+    let unrelatedCloses = 0;
+    let releaseOriginal!: () => void;
+    let originalEntered!: () => void;
+    const originalGate = new Promise<void>((resolveGate) => { releaseOriginal = resolveGate; });
+    const entered = new Promise<void>((resolveEntered) => { originalEntered = resolveEntered; });
+    const registration = scope.resources.register({
+      async close(): Promise<void> {
+        originalCloses += 1;
+        originalEntered();
+        await originalGate;
+      },
+    });
+    scope.resources.register({ close(): void { unrelatedCloses += 1; } });
+
+    const firstClose = scope.close();
+    await entered;
+    registration.replace({ close(): void { replacementCloses += 1; } });
+    expect(() => registration.transfer()).toThrow(
+      "Owned resource registration is unavailable.",
+    );
+    releaseOriginal();
+    await firstClose;
+
+    expect(originalCloses).toBe(1);
+    expect(unrelatedCloses).toBe(1);
+    expect(replacementCloses).toBe(0);
+    expect(scope.empty).toBe(false);
+    await scope.close();
+    expect(originalCloses).toBe(1);
+    expect(unrelatedCloses).toBe(1);
+    expect(replacementCloses).toBe(1);
+    expect(scope.empty).toBe(true);
+  });
+
+  it("retains a replacement and its dependencies when the replaced cleanup fails", async () => {
+    const scope = createResourceOwnershipScope();
+    const events: string[] = [];
+    let releaseOriginal!: () => void;
+    let originalEntered!: () => void;
+    const originalGate = new Promise<void>((resolveGate) => { releaseOriginal = resolveGate; });
+    const entered = new Promise<void>((resolveEntered) => { originalEntered = resolveEntered; });
+    scope.resources.register({ close(): void { events.push("dependency:close"); } });
+    const registration = scope.resources.register({
+      async close(): Promise<void> {
+        events.push("original:close");
+        originalEntered();
+        await originalGate;
+        throw new Error("original cleanup failed");
+      },
+    });
+
+    const first = scope.close();
+    await entered;
+    registration.replace({ close(): void { events.push("replacement:close"); } });
+    releaseOriginal();
+    await expect(first).rejects.toThrow("original cleanup failed");
+    expect(events).toEqual(["original:close"]);
+
+    scope.seal();
+    await scope.close();
+    expect(events).toEqual(["original:close", "replacement:close", "dependency:close"]);
+  });
+
+  it("seals acquisition ownership and cannot revive a closed registration", async () => {
+    const scope = createResourceOwnershipScope();
+    let closes = 0;
+    const registration = scope.resources.register({ close(): void { closes += 1; } });
+    scope.seal();
+    expect(scope.sealed).toBe(true);
+    expect(() => scope.resources.register({ close(): void {} })).toThrow("scope is sealed");
+    expect(() => registration.replace({ close(): void {} })).toThrow("registration is unavailable");
+    expect(() => registration.transfer()).toThrow("registration is unavailable");
+    await scope.close();
+    expect(closes).toBe(1);
+    expect(scope.empty).toBe(true);
+    expect(() => registration.replace({ close(): void {} })).toThrow("registration is unavailable");
+  });
+
+  it("rejects duplicate identity and close-getter reentry without changing ownership", async () => {
+    const duplicateScope = createResourceOwnershipScope();
+    let duplicateCloses = 0;
+    const duplicate = { close(): void { duplicateCloses += 1; } };
+    duplicateScope.resources.register(duplicate);
+    expect(() => duplicateScope.resources.register(duplicate)).toThrow("already registered");
+    duplicateScope.seal();
+    await duplicateScope.close();
+    expect(duplicateCloses).toBe(1);
+
+    const registerScope = createResourceOwnershipScope();
+    expect(() => registerScope.resources.register({
+      get close(): () => void {
+        registerScope.seal();
+        return () => undefined;
+      },
+    })).toThrow("mutation is active");
+    expect(registerScope.sealed).toBe(false);
+    expect(registerScope.empty).toBe(true);
+
+    const replaceScope = createResourceOwnershipScope();
+    let originalCloses = 0;
+    let replacementCloses = 0;
+    const registration = replaceScope.resources.register({ close(): void { originalCloses += 1; } });
+    expect(() => registration.replace({
+      get close(): () => void {
+        registration.transfer();
+        return () => { replacementCloses += 1; };
+      },
+    })).toThrow("mutation is active");
+    expect(replaceScope.size).toBe(1);
+    replaceScope.seal();
+    await replaceScope.close();
+    expect(originalCloses).toBe(1);
+    expect(replacementCloses).toBe(0);
+  });
+
+  it("closes acquired dependencies in reverse order and retains earlier dependencies after failure", async () => {
+    const scope = createResourceOwnershipScope();
+    const events: string[] = [];
+    let dependentCalls = 0;
+    scope.resources.register({ close(): void { events.push("dependency:close"); } });
+    scope.resources.register({
+      close(): void {
+        events.push("dependent:close");
+        dependentCalls += 1;
+        if (dependentCalls === 1) throw new Error("dependent close failed");
+      },
+    });
+    scope.seal();
+
+    await expect(scope.close()).rejects.toThrow("dependent close failed");
+    expect(events).toEqual(["dependent:close"]);
+    await scope.close();
+    expect(events).toEqual(["dependent:close", "dependent:close", "dependency:close"]);
+  });
+
+  it("keeps the application and fixed port owned until a failed shutdown is retried", async () => {
+    const test = await fixture();
+    const peerDatabase = await ProductDatabase.open(test.paths.database, now);
+    databases.push(peerDatabase);
+    const closeFailure = new Error("application close failed");
+    let closeCalls = 0;
+    const owner = new FixedHttpOwner({
+      ownerStore: test.database.ownerStore(), credential: test.credential,
+      runtimeBuildDigest: buildDigest, now: () => now,
+      applicationFactory: ({ routes }) => ({
+        routes,
+        close(): void {
+          closeCalls += 1;
+          if (closeCalls === 1) throw closeFailure;
+        },
+      }),
+    });
+    const peer = new FixedHttpOwner({
+      ownerStore: peerDatabase.ownerStore(), credential: test.credential,
+      runtimeBuildDigest: buildDigest, now: () => now,
+    });
+    owners.push(owner, peer);
+    await owner.start();
+
+    const first = owner.stop();
+    expect(owner.stop()).toBe(first);
+    await expect(first).rejects.toBe(closeFailure);
+    expect(owner.state).toBe("stopping");
+    expect(closeCalls).toBe(1);
+    await expect(peer.start()).rejects.toMatchObject({
+      failure: { error: { code: "port_conflict" } },
+    });
+    expect(peer.state).toBe("stopped");
+
+    const retry = owner.stop();
+    expect(retry).not.toBe(first);
+    await retry;
+    expect(closeCalls).toBe(2);
+    expect(owner.state).toBe("stopped");
+
+    const releaseProbe = createServer();
+    servers.push(releaseProbe);
+    await listen(releaseProbe);
+    await close(releaseProbe);
+  });
+
+  it("installs the shared stop promise before synchronous abort listeners can reenter", async () => {
+    const test = await fixture();
+    let owner!: FixedHttpOwner;
+    let reentered: Promise<void> | undefined;
+    let closeCalls = 0;
+    owner = new FixedHttpOwner({
+      ownerStore: test.database.ownerStore(), credential: test.credential,
+      runtimeBuildDigest: buildDigest, now: () => now,
+      applicationFactory: ({ routes, signal }) => {
+        signal.addEventListener("abort", () => { reentered = owner.stop(); }, { once: true });
+        return { routes, close: () => { closeCalls += 1; } };
+      },
+    });
+    owners.push(owner);
+    await owner.start();
+
+    const stopping = owner.stop();
+    await stopping;
+    expect(reentered).toBe(stopping);
+    expect(closeCalls).toBe(1);
+  });
+
+  it("requires the exact application-close permit before releasing the fixed port", async () => {
+    const test = await fixture();
+    const owner = new FixedHttpOwner({
+      ownerStore: test.database.ownerStore(), credential: test.credential,
+      runtimeBuildDigest: buildDigest, now: () => now,
+    });
+    owners.push(owner);
+    await owner.start();
+
+    await expect(owner.releaseListener({ generation: 0 } as never)).rejects.toMatchObject({
+      failure: { error: { code: "state_conflict" } },
+    });
+    expect(owner.state).toBe("owner");
+
+    const closing = owner.closeApplication();
+    expect(owner.closeApplication()).toBe(closing);
+    const permit = await closing;
+    expect(owner.state).toBe("stopping");
+    const releasing = owner.releaseListener(permit);
+    expect(owner.releaseListener(permit)).toBe(releasing);
+    await expect(owner.releaseListener({ generation: permit.generation } as never)).rejects.toMatchObject({
+      failure: { error: { code: "state_conflict" } },
+    });
+    await releasing;
+    expect(owner.state).toBe("stopped");
+  });
+
+  it("seals the startup registry when application production completes", async () => {
+    const test = await fixture();
+    let retainedRegistry!: HttpOwnerApplicationContext["startupResources"];
+    const owner = new FixedHttpOwner({
+      ownerStore: test.database.ownerStore(), credential: test.credential,
+      runtimeBuildDigest: buildDigest, now: () => now,
+      applicationFactory: ({ routes, startupResources }) => {
+        retainedRegistry = startupResources;
+        return { routes, close: () => undefined };
+      },
+    });
+    owners.push(owner);
+    await owner.start();
+
+    expect(() => retainedRegistry.register({ close(): void {} })).toThrow("scope is sealed");
+    await owner.stop();
+  });
+
+  it("rejects an application that leaves startup ownership behind and closes every retained resource", async () => {
+    const test = await fixture();
+    const events: string[] = [];
+    const owner = new FixedHttpOwner({
+      ownerStore: test.database.ownerStore(), credential: test.credential,
+      runtimeBuildDigest: buildDigest, now: () => now,
+      applicationFactory: ({ routes, startupResources }) => {
+        startupResources.register({ close(): void { events.push("startup:close"); } });
+        return { routes, close: () => { events.push("application:close"); } };
+      },
+    });
+    owners.push(owner);
+
+    await expect(owner.start()).rejects.toThrow("retained startup resources");
+    expect(owner.state).toBe("stopping");
+    await owner.stop();
+    expect(events).toEqual(["application:close", "startup:close"]);
+  });
+
+  it("does not close the same application twice when a factory registers and returns it", async () => {
+    const test = await fixture();
+    let closeCalls = 0;
+    const owner = new FixedHttpOwner({
+      ownerStore: test.database.ownerStore(), credential: test.credential,
+      runtimeBuildDigest: buildDigest, now: () => now,
+      applicationFactory: ({ routes, startupResources }) => {
+        const application = { routes, close: () => { closeCalls += 1; } };
+        startupResources.register(application);
+        return application;
+      },
+    });
+    owners.push(owner);
+
+    await expect(owner.start()).rejects.toThrow("already registered");
+    await owner.stop();
+    expect(closeCalls).toBe(1);
+  });
+
+  it("classifies EADDRINUSE only when the fixed-port listen itself fails", async () => {
+    const test = await fixture();
+    const applicationFailure = Object.assign(new Error("application startup failed"), { code: "EADDRINUSE" });
+    const owner = new FixedHttpOwner({
+      ownerStore: test.database.ownerStore(), credential: test.credential,
+      runtimeBuildDigest: buildDigest, now: () => now,
+      applicationFactory: () => { throw applicationFailure; },
+    });
+    owners.push(owner);
+
+    await expect(owner.start()).rejects.toBe(applicationFailure);
+    expect(owner.state).toBe("stopping");
+    await owner.stop();
+    expect(owner.state).toBe("stopped");
   });
 
   it("aborts and awaits initial deferred-owner authentication during stop", async () => {
@@ -1234,6 +1573,49 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     await stopping;
     expect(stopSettled).toBe(true);
     expect(closes).toBe(1);
+    expect(owner.state).toBe("stopped");
+  });
+
+  it("retains a late application whose first abort cleanup fails and retries the same instance", async () => {
+    const test = await fixture();
+    let context: HttpOwnerApplicationContext | undefined;
+    let release!: () => void;
+    let closeCalls = 0;
+    const closeFailure = new Error("late application close failed");
+    const pending = new Promise<void>((resolvePending) => { release = resolvePending; });
+    let application: {
+      readonly routes: HttpOwnerApplicationContext["routes"];
+      close(): void;
+    } | undefined;
+    const owner = new FixedHttpOwner({
+      ownerStore: test.database.ownerStore(), credential: test.credential,
+      runtimeBuildDigest: buildDigest, now: () => now,
+      applicationFactory: async (input) => {
+        context = input;
+        application = {
+          routes: input.routes,
+          close(): void {
+            closeCalls += 1;
+            if (closeCalls === 1) throw closeFailure;
+          },
+        };
+        await pending;
+        return application;
+      },
+    });
+    owners.push(owner);
+    const starting = owner.start();
+    while (context === undefined) await new Promise<void>((resolveTick) => setImmediate(resolveTick));
+    const stopping = owner.stop();
+    release();
+
+    await expect(starting).rejects.toMatchObject({ failure: { error: { code: "request_aborted" } } });
+    await expect(stopping).rejects.toBe(closeFailure);
+    expect(closeCalls).toBe(1);
+    expect(owner.state).toBe("stopping");
+
+    await owner.stop();
+    expect(closeCalls).toBe(2);
     expect(owner.state).toBe("stopped");
   });
 

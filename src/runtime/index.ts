@@ -52,6 +52,8 @@ export {
 } from "./http-boundary.js";
 export type { BrowserContentType } from "./http-boundary.js";
 export type {
+  HttpOwnerStartupResourceRegistry,
+  HttpOwnerReleasePermit,
   OwnerOperation,
   OwnerOperationResponse,
 } from "./http-owner.js";

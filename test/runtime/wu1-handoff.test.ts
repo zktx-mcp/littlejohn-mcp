@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
-import { access, readFile, readdir } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { relative, resolve } from "node:path";
-import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -11,47 +10,19 @@ import {
   readCapabilityRegistry,
   type CanonicalJson,
 } from "../../src/core/index.js";
-
-type ExtensionWorkUnit = "WU2" | "WU3" | "WU4" | "WU5" | "WU6";
-type PackageSection = "scripts" | "dependencies" | "devDependencies";
-
-interface PackageExtensionSet {
-  readonly sourceRoot: string;
-  readonly scripts: Readonly<Record<string, string>>;
-  readonly dependencies: Readonly<Record<string, string>>;
-  readonly devDependencies: Readonly<Record<string, string>>;
-}
-
-interface HandoffFixture {
-  readonly version: 2;
-  readonly immutableFiles: Readonly<Record<string, string>>;
-  readonly immutableFilesDigest: string;
-  readonly capabilityProjectionDigest: string;
-  readonly buildRuleDigest: string;
-  readonly packageFoundation: {
-    readonly name: string;
-    readonly version: string;
-    readonly description: string;
-    readonly type: string;
-    readonly exports: Readonly<Record<string, never>>;
-    readonly engines: Readonly<Record<string, string>>;
-    readonly bin: Readonly<Record<string, string>>;
-    readonly files: readonly string[];
-    readonly scripts: Readonly<Record<string, string>>;
-    readonly dependencies: Readonly<Record<string, string>>;
-    readonly devDependencies: Readonly<Record<string, string>>;
-  };
-  readonly extensionsByWorkUnit: Readonly<Record<ExtensionWorkUnit, PackageExtensionSet>>;
-  readonly requiredAtBoundaryA: {
-    readonly dependencies: readonly string[];
-    readonly devDependencies: readonly string[];
-  };
-  readonly wu1LockClosureDigest: string;
-}
+import { collectSourceFiles, inspectSourceFile } from "./import-audit.js";
+import {
+  analyzePackageExtensions,
+  extensionEntries,
+  extensionWorkUnits,
+  loadPackageManifest,
+  loadWu1HandoffFixture,
+  type PackageManifest,
+  type Wu1HandoffFixture,
+} from "./wu1-handoff-fixture.js";
 
 const fixturePath = "test/fixtures/wu1-handoff.json";
-const fixtureDigest = "2598433cede65fe361ad588d827a3049893f86c8fd4a7b754c9b6bad01aabf43";
-const extensionWorkUnits = ["WU2", "WU3", "WU4", "WU5", "WU6"] as const;
+const fixtureDigest = "5bf3f423abd2f6b640aa320fcc9f3b83a7a4fd562ad29c002173f72b314c86a7";
 const buildRuleFiles = [
   "scripts/clean.mjs",
   "src/build/generate-build-identity.ts",
@@ -77,10 +48,10 @@ const collect = async (path: string): Promise<string[]> => {
   return files;
 };
 
-const loadFixture = async (): Promise<HandoffFixture> => {
-  const bytes = await readFile(fixturePath);
+const loadFixture = async (): Promise<Wu1HandoffFixture> => {
+  const { bytes, fixture } = await loadWu1HandoffFixture(fixturePath);
   expect(createHash("sha256").update(bytes).digest("hex")).toBe(fixtureDigest);
-  return JSON.parse(bytes.toString("utf8")) as HandoffFixture;
+  return fixture;
 };
 
 const select = (
@@ -96,10 +67,18 @@ const select = (
   return selected;
 };
 
-const packageFoundation = (manifest: Record<string, unknown>, fixture: HandoffFixture) => {
-  const dependencies = manifest["dependencies"] as Record<string, string>;
-  const devDependencies = manifest["devDependencies"] as Record<string, string>;
-  const scripts = manifest["scripts"] as Record<string, string>;
+const packageFoundation = (manifest: PackageManifest, fixture: Wu1HandoffFixture) => {
+  const { dependencies, devDependencies, scripts } = manifest;
+  const analysis = analyzePackageExtensions(fixture, manifest);
+  if (analysis.errors.length !== 0) throw new TypeError(analysis.errors[0]);
+  const foundationScripts: Record<string, string> = Object.create(null) as Record<string, string>;
+  for (const name of Object.keys(fixture.packageFoundation.scripts)) {
+    const overridden = [...analysis.activeWorkUnits].some((workUnit) =>
+      Object.hasOwn(fixture.extensionsByWorkUnit[workUnit].scripts, name));
+    const value = overridden ? fixture.packageFoundation.scripts[name] : scripts[name];
+    if (value === undefined) throw new TypeError(`Missing package foundation value: ${name}`);
+    foundationScripts[name] = value;
+  }
   return {
     name: manifest["name"],
     version: manifest["version"],
@@ -109,123 +88,81 @@ const packageFoundation = (manifest: Record<string, unknown>, fixture: HandoffFi
     engines: manifest["engines"],
     bin: manifest["bin"],
     files: manifest["files"],
-    scripts: select(scripts, Object.keys(fixture.packageFoundation.scripts)),
+    scripts: foundationScripts,
     dependencies: select(dependencies, Object.keys(fixture.packageFoundation.dependencies)),
     devDependencies: select(devDependencies, Object.keys(fixture.packageFoundation.devDependencies)),
   };
 };
 
-const mergedExtensions = (
-  fixture: HandoffFixture,
-  section: PackageSection,
-): Readonly<Record<string, string>> => {
-  const merged: Record<string, string> = Object.create(null) as Record<string, string>;
-  for (const workUnit of extensionWorkUnits) {
-    for (const [name, value] of Object.entries(fixture.extensionsByWorkUnit[workUnit][section])) {
-      if (merged[name] !== undefined) throw new TypeError(`Duplicate package extension owner: ${name}`);
-      merged[name] = value;
-    }
+const withoutExtension = (
+  manifest: PackageManifest,
+  fixture: Wu1HandoffFixture,
+  workUnit: "WU2" | "WU3" | "WU4" | "WU5" | "WU6",
+): PackageManifest => {
+  const extension = fixture.extensionsByWorkUnit[workUnit];
+  const scripts = { ...manifest.scripts };
+  const dependencies = { ...manifest.dependencies };
+  const devDependencies = { ...manifest.devDependencies };
+  for (const name of Object.keys(extension.dependencies)) delete dependencies[name];
+  for (const name of Object.keys(extension.devDependencies)) delete devDependencies[name];
+  for (const [name, value] of Object.entries(extension.scripts)) {
+    if (scripts[name] !== value) continue;
+    const foundationValue = fixture.packageFoundation.scripts[name];
+    if (foundationValue === undefined) delete scripts[name];
+    else scripts[name] = foundationValue;
   }
-  return merged;
+  return { ...manifest, scripts, dependencies, devDependencies };
 };
 
-const packagePolicyErrors = (manifest: Record<string, unknown>, fixture: HandoffFixture): readonly string[] => {
-  const errors: string[] = [];
-  const actual = {
-    scripts: manifest["scripts"] as Record<string, string>,
-    dependencies: manifest["dependencies"] as Record<string, string>,
-    devDependencies: manifest["devDependencies"] as Record<string, string>,
+const withExtension = (
+  manifest: PackageManifest,
+  fixture: Wu1HandoffFixture,
+  workUnit: (typeof extensionWorkUnits)[number],
+): PackageManifest => {
+  const extension = fixture.extensionsByWorkUnit[workUnit];
+  return {
+    ...manifest,
+    scripts: { ...manifest.scripts, ...extension.scripts },
+    dependencies: { ...manifest.dependencies, ...extension.dependencies },
+    devDependencies: { ...manifest.devDependencies, ...extension.devDependencies },
   };
-  const foundation = fixture.packageFoundation;
-  const extensions = {
-    scripts: mergedExtensions(fixture, "scripts"),
-    dependencies: mergedExtensions(fixture, "dependencies"),
-    devDependencies: mergedExtensions(fixture, "devDependencies"),
-  };
-  for (const section of ["scripts", "dependencies", "devDependencies"] as const) {
-    for (const [name, value] of Object.entries(actual[section])) {
-      if (foundation[section][name] !== value && extensions[section][name] !== value) {
-        errors.push(`${section}:${name}@${value}`);
-      }
-    }
-  }
-  for (const workUnit of extensionWorkUnits) {
-    const extension = fixture.extensionsByWorkUnit[workUnit];
-    const active = (["dependencies", "devDependencies"] as const).some((section) =>
-      Object.keys(extension[section]).some((name) => actual[section][name] !== undefined)) ||
-      Object.keys(extension.scripts).some((name) =>
-        actual.scripts[name] !== undefined && actual.scripts[name] !== foundation.scripts[name]);
-    if (!active) continue;
-    for (const section of ["scripts", "dependencies", "devDependencies"] as const) {
-      for (const [name, value] of Object.entries(extension[section])) {
-        if (actual[section][name] !== value) errors.push(`${workUnit}:missing:${section}:${name}@${value}`);
-      }
-    }
-  }
-  for (const name of fixture.requiredAtBoundaryA.dependencies) {
-    if (actual.dependencies[name] !== extensions.dependencies[name]) errors.push(`boundaryA:dependency:${name}`);
-  }
-  for (const name of fixture.requiredAtBoundaryA.devDependencies) {
-    if (actual.devDependencies[name] !== extensions.devDependencies[name]) errors.push(`boundaryA:devDependency:${name}`);
-  }
-  return errors.sort(compareCodePointSequences);
 };
 
 const importedPackages = async (root: string): Promise<ReadonlySet<string>> => {
-  try {
-    await access(root);
-  } catch {
-    return new Set();
-  }
   const packages = new Set<string>();
-  for (const path of await collect(root)) {
-    if (!/\.(?:[cm]?ts|[cm]?js)$/.test(path)) continue;
-    const source = await readFile(path, "utf8");
-    const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-    const record = (node: ts.Expression | undefined): void => {
-      if (node !== undefined && ts.isStringLiteralLike(node) && !node.text.startsWith(".") && !node.text.startsWith("node:")) {
-        const parts = node.text.split("/");
-        packages.add(node.text.startsWith("@") ? parts.slice(0, 2).join("/") : (parts[0] ?? node.text));
-      }
-    };
-    const visit = (node: ts.Node): void => {
-      if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) record(node.moduleSpecifier);
-      else if (ts.isCallExpression(node)) {
-        if (node.expression.kind === ts.SyntaxKind.ImportKeyword) record(node.arguments[0]);
-        if (ts.isIdentifier(node.expression) && node.expression.text === "require") record(node.arguments[0]);
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(sourceFile);
+  for (const path of await collectSourceFiles(resolve(root))) {
+    for (const reference of (await inspectSourceFile(path)).moduleImports) {
+      if (reference.runtime && reference.packageRoot !== undefined) packages.add(reference.packageRoot);
+    }
   }
   return packages;
 };
 
 const extensionConsumerErrors = async (
-  manifest: Record<string, unknown>,
-  fixture: HandoffFixture,
+  manifest: PackageManifest,
+  fixture: Wu1HandoffFixture,
+  readImportedPackages: (root: string) => Promise<ReadonlySet<string>> = importedPackages,
 ): Promise<readonly string[]> => {
-  const dependencies = manifest["dependencies"] as Record<string, string>;
+  const extensionAnalysis = analyzePackageExtensions(fixture, manifest);
+  if (extensionAnalysis.errors.length !== 0) return extensionAnalysis.errors;
   const errors: string[] = [];
-  for (const workUnit of extensionWorkUnits) {
-    const extension = fixture.extensionsByWorkUnit[workUnit];
-    const activeDependencies = Object.keys(extension.dependencies).filter((name) => dependencies[name] !== undefined);
-    if (activeDependencies.length === 0) continue;
-    const imports = await importedPackages(extension.sourceRoot);
-    for (const name of activeDependencies) {
+  for (const [workUnit, extension] of extensionEntries(fixture)) {
+    if (!extensionAnalysis.activeWorkUnits.has(workUnit)) continue;
+    const imports = await readImportedPackages(extension.sourceRoot);
+    for (const name of Object.keys(extension.dependencies)) {
       if (!imports.has(name)) errors.push(`${workUnit}:consumer:${name}`);
     }
   }
   return errors.sort(compareCodePointSequences);
 };
 
-const rootLockProjection = (manifest: Record<string, unknown>): Record<string, unknown> => ({
-  name: manifest["name"],
-  version: manifest["version"],
-  dependencies: manifest["dependencies"],
-  bin: manifest["bin"],
-  devDependencies: manifest["devDependencies"],
-  engines: manifest["engines"],
+const rootLockProjection = (manifest: PackageManifest): Record<string, unknown> => ({
+  name: manifest.name,
+  version: manifest.version,
+  dependencies: manifest.dependencies,
+  bin: manifest.bin,
+  devDependencies: manifest.devDependencies,
+  engines: manifest.engines,
 });
 
 const dependencyCandidatePaths = (fromPath: string, dependency: string): readonly string[] => {
@@ -326,36 +263,37 @@ describe("WU1 frozen handoff", () => {
     expect(canonicalSha256(actual as unknown as CanonicalJson)).toBe(fixture.immutableFilesDigest);
   });
 
-  it("preserves package authority and requires each activated extension at its declared first consumer", async () => {
+  it("preserves the package foundation and complete activated extension groups", async () => {
     const fixture = await loadFixture();
-    const manifest = JSON.parse(await readFile("package.json", "utf8")) as Record<string, unknown>;
+    const manifest = await loadPackageManifest();
     expect(Object.keys(manifest)).toEqual([
       "name", "version", "description", "type", "exports", "engines", "bin", "files", "scripts",
       "dependencies", "devDependencies",
     ]);
     expect(packageFoundation(manifest, fixture)).toEqual(fixture.packageFoundation);
-    expect(packagePolicyErrors(manifest, fixture)).toEqual([]);
-    expect(await extensionConsumerErrors(manifest, fixture)).toEqual([]);
-    expect(packagePolicyErrors({
+    expect(analyzePackageExtensions(fixture, manifest).errors).toEqual([]);
+    expect(analyzePackageExtensions(fixture, {
       ...manifest,
-      scripts: { ...(manifest["scripts"] as object), undeclared: "node undeclared.js" },
-    }, fixture)).toContain("scripts:undeclared@node undeclared.js");
+      scripts: { ...manifest.scripts, undeclared: "node undeclared.js" },
+    }).errors).toContain("scripts:undeclared@node undeclared.js");
     const earlyWallet = {
       ...manifest,
-      dependencies: {
-        ...(manifest["dependencies"] as object),
-        "@walletconnect/sign-client": "2.23.10",
-      },
+      dependencies: Object.fromEntries(
+        Object.entries(manifest.dependencies)
+          .filter(([name]) => name !== "qrcode"),
+      ),
     };
-    expect(packagePolicyErrors(earlyWallet, fixture)).toContain("WU3:missing:dependencies:qrcode@1.5.4");
+    expect(analyzePackageExtensions(fixture, earlyWallet).errors)
+      .toContain("WU3:missing:dependencies:qrcode@1.5.4");
+    const webBaseline = withoutExtension(manifest, fixture, "WU5");
     const earlyWeb = {
-      ...manifest,
+      ...webBaseline,
       dependencies: {
-        ...(manifest["dependencies"] as object),
+        ...webBaseline.dependencies,
         react: "19.2.7",
       },
     };
-    expect(packagePolicyErrors(earlyWeb, fixture)).toEqual(expect.arrayContaining([
+    expect(analyzePackageExtensions(fixture, earlyWeb).errors).toEqual(expect.arrayContaining([
       "WU5:missing:dependencies:@modelcontextprotocol/sdk@1.29.0",
       "WU5:missing:dependencies:react-dom@19.2.7",
       "WU5:missing:devDependencies:vite@8.1.4",
@@ -364,7 +302,48 @@ describe("WU1 frozen handoff", () => {
     ]));
   });
 
-  it("declares the isolated WU5 web build without activating browser compilation", async () => {
+  it("requires each activated runtime dependency to have a consumer under its declared source root", async () => {
+    const fixture = await loadFixture();
+    const manifest = await loadPackageManifest();
+    expect(await extensionConsumerErrors(manifest, fixture)).toEqual([]);
+
+    const missingConsumer = {
+      ...fixture,
+      extensionsByWorkUnit: {
+        ...fixture.extensionsByWorkUnit,
+        WU3: {
+          ...fixture.extensionsByWorkUnit.WU3,
+          sourceRoot: "src/runtime",
+        },
+      },
+    };
+    expect(await extensionConsumerErrors(manifest, missingConsumer)).toEqual([
+      "WU3:consumer:@walletconnect/sign-client",
+      "WU3:consumer:qrcode",
+    ]);
+
+    for (const workUnit of extensionWorkUnits) {
+      const activeManifest = withExtension(manifest, fixture, workUnit);
+      const target = fixture.extensionsByWorkUnit[workUnit];
+      const completeConsumers = async (sourceRoot: string): Promise<ReadonlySet<string>> => {
+        const entry = extensionEntries(fixture).find(([, extension]) => extension.sourceRoot === sourceRoot);
+        return new Set(entry === undefined ? [] : Object.keys(entry[1].dependencies));
+      };
+      expect(await extensionConsumerErrors(activeManifest, fixture, completeConsumers)).toEqual([]);
+
+      const firstDependency = Object.keys(target.dependencies)[0];
+      if (firstDependency === undefined) continue;
+      const missingTargetConsumer = async (sourceRoot: string): Promise<ReadonlySet<string>> => {
+        const packages = new Set(await completeConsumers(sourceRoot));
+        if (sourceRoot === target.sourceRoot) packages.delete(firstDependency);
+        return packages;
+      };
+      expect(await extensionConsumerErrors(activeManifest, fixture, missingTargetConsumer))
+        .toContain(`${workUnit}:consumer:${firstDependency}`);
+    }
+  });
+
+  it("declares and activates the isolated WU5 web build as one complete extension", async () => {
     const fixture = await loadFixture();
     const web = fixture.extensionsByWorkUnit.WU5;
     expect(web).toEqual({
@@ -385,23 +364,22 @@ describe("WU1 frozen handoff", () => {
         vite: "8.1.4",
       },
     });
-    const manifest = JSON.parse(await readFile("package.json", "utf8")) as Record<string, unknown>;
-    const dependencies = manifest["dependencies"] as Record<string, string>;
-    const devDependencies = manifest["devDependencies"] as Record<string, string>;
-    for (const name of Object.keys(web.dependencies)) expect(dependencies[name]).toBeUndefined();
-    for (const name of Object.keys(web.devDependencies)) expect(devDependencies[name]).toBeUndefined();
-    const config = JSON.parse(await readFile("tsconfig.json", "utf8")) as {
-      compilerOptions: { lib: readonly string[] };
-      include: readonly string[];
+    const manifest = await loadPackageManifest();
+    const baseline = withoutExtension(manifest, fixture, "WU5");
+    const activated = {
+      ...baseline,
+      scripts: { ...baseline.scripts, ...web.scripts },
+      dependencies: { ...baseline.dependencies, ...web.dependencies },
+      devDependencies: { ...baseline.devDependencies, ...web.devDependencies },
     };
-    expect(config.compilerOptions.lib).toEqual(["ES2023"]);
-    expect(config.include.some((path) => path.includes(".tsx"))).toBe(false);
-    await expect(access("tsconfig.web.json")).rejects.toMatchObject({ code: "ENOENT" });
+    const analysis = analyzePackageExtensions(fixture, activated);
+    expect(analysis.errors).toEqual([]);
+    expect(analysis.activeWorkUnits.has("WU5")).toBe(true);
   });
 
   it("binds the shrinkwrap root to the current manifest and preserves exact WU1 resolution", async () => {
     const fixture = await loadFixture();
-    const manifest = JSON.parse(await readFile("package.json", "utf8")) as Record<string, unknown>;
+    const manifest = await loadPackageManifest();
     const lock = JSON.parse(await readFile("npm-shrinkwrap.json", "utf8")) as {
       lockfileVersion: number;
       packages: Record<string, Record<string, unknown>>;
@@ -418,7 +396,7 @@ describe("WU1 frozen handoff", () => {
 
   it("freezes the complete capability projection and build-rule projections", async () => {
     const fixture = await loadFixture();
-    const manifest = JSON.parse(await readFile("package.json", "utf8")) as Record<string, unknown>;
+    const manifest = await loadPackageManifest();
     const files = await immutableFileDigests();
     expect(canonicalSha256(
       projectCapabilities(readCapabilityRegistry) as unknown as CanonicalJson,

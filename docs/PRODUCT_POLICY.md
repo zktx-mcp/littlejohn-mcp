@@ -68,9 +68,9 @@ authority and execution requirements are owned by
   Source owner: Robinhood. Coverage: Published Robinhood Chain network identity and chain ID.
   Unsupported conclusions: Endpoint availability. Runtime availability. Safety.
 - Implemented protocol support: none.
-- Implemented wallet support: none.
+- Implemented wallet support: WalletConnect connection through the interactive CLI.
 - Implemented transaction actions: none.
-- Available user-facing capabilities: none.
+- Available user-facing capabilities: `wallet.cancel_operation`, `wallet.connect`, `wallet.connection`, `wallet.disconnect`, `wallet.operation`.
 - Experiments and collected research do not establish product support.
 
 ## Support Levels

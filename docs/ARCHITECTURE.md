@@ -2,27 +2,45 @@
 
 ## Current State
 
-Littlejohn has a Node.js `>=22.12.0` ESM TypeScript package, canonical core contracts, five
-semantic read-capability definitions, generated JSON Schema and descriptor
-projections, deterministic runtime build identity, product tests, owner-only
-POSIX application-data permissions, SQLite product state, local control
-credentials, secret-safe source identity, a runtime support manifest, and one
-authenticated fixed-port HTTP owner with compatible peer deferral and
-demand-driven takeover. The owner identity resource is
-`GET /api/v1/runtime-identity`; authenticated process control is confined to
-`/api/v1/internal/control/*`. SQLite row adapters alias SQL snake-case names to
-lower-camel TypeScript fields. Immutable request-policy, resource-path, route,
-support-manifest, and interface-mapping registries accept only complete
-first-consumer extensions. Route responses are either canonical JSON or bounded
-browser text with fixed CSP, content-type, opener, referrer, and no-store
-headers; no route can supply arbitrary response headers. The initial support
-manifest contains only the five canonical read capabilities. The default
-composition initializes neither a WalletConnect consumer nor an RPC consumer.
-When a wallet application is composed, its typed operation port is passed by
-identity only to the interface application; the chain application receives only
-the wallet connection read port. The default composition has no MCP tool, CLI,
-React interface, WalletConnect client, RPC provider, capability handler, or
-chain read.
+Littlejohn has a Node.js `>=22.12.0` ESM TypeScript package, canonical core
+contracts, five semantic read-capability definitions, generated JSON Schema and
+descriptor projections, deterministic runtime build identity, owner-only POSIX
+application-data permissions, SQLite product state, local control credentials,
+secret-safe source identity, a runtime support manifest, and one authenticated
+fixed-port HTTP owner with compatible peer deferral and demand-driven takeover.
+The owner identity resource is `GET /api/v1/runtime-identity`; authenticated
+process control is confined to `/api/v1/internal/control/*`. SQLite row adapters
+alias SQL snake-case names to lower-camel TypeScript fields. Immutable
+request-policy, resource-path, route, support-manifest, and interface-mapping
+registries accept only complete first-consumer extensions. Route responses are
+either canonical JSON or bounded browser text with fixed CSP, content-type,
+opener, referrer, and no-store headers; no route can supply arbitrary response
+headers.
+
+Runtime creation returns a cleanup-capable handle after opening SQLite and
+before constructing or starting the fixed-port owner. The implemented owner,
+application composition, and CLI shutdown behavior follows
+[`Runtime Lifecycle`](#runtime-lifecycle).
+
+The `littlejohn` package binary composes the wallet module into the fixed-port
+owner. The owner opens one WalletConnect Sign Client on the owner-only SDK
+private store, reconciles SDK sessions into the SQLite wallet-connection
+projection, and serves authenticated internal wallet connection and operation
+resources. One coordinator enforces the single-session and serialized wallet
+operation contracts defined below.
+
+The interactive CLI implements `wallet status`, `wallet connect`, `wallet
+disconnect`, `wallet operation`, and `wallet cancel` under
+[`CLI Surface`](#cli-surface). The coordinator exposes one atomic operation
+presentation containing the canonical operation, web control access, and an
+optional QR matrix. No browser route currently consumes the presentation.
+The wallet application extends the runtime support manifest; the public
+availability projection remains owned by
+`docs/PRODUCT_POLICY.md#current-support`.
+
+No RPC consumer, chain-read handler, MCP server or tool, React or browser wallet
+interface, public wallet HTTP route, signature request, or transaction request
+is implemented.
 
 This document is the sole authority for repository ownership, module
 dependencies, local processes, persistence, browser and CLI surfaces,
@@ -113,6 +131,49 @@ transaction material, WalletConnect state, or private settings.
 - No process selects, increments, or falls back to another port.
 - A foreign or incompatible port owner causes a clear startup failure and is
   never stopped or replaced.
+
+## Runtime Lifecycle
+
+- Fixed-owner application initialization, composed application stages, and
+  WalletConnect acquisition register each acquired long-lived resource with its
+  current lifecycle owner before the next fallible initialization step.
+- Replacing a registered resource changes the owned resource atomically. The
+  replacement assumes the same remaining cleanup obligation. The previous
+  owner transfers its registration only after the receiving owner has accepted
+  the replacement.
+- One scope owns each exact resource identity at most once. Reading a resource's
+  cleanup operation cannot reenter or alter registration, replacement,
+  transfer, or sealing.
+- A producer seals its ownership scope after its lifecycle work finishes. A
+  sealed scope rejects registration, replacement, and transfer; only cleanup
+  and cleanup retry remain available.
+- Concurrent cleanup shares one completion. A successful close removes only
+  the exact resource proven closed; a failed close keeps that resource for the
+  next attempt.
+- Resources close in reverse acquisition order. Closing stops at the first
+  failure so an earlier dependency remains open while its dependent consumer is
+  unresolved. A replacement made during active cleanup remains owned for the
+  next attempt.
+- A resource cleanup operation does not await cleanup of the scope that owns
+  that operation. Concurrent cleanup requested outside the owned operation
+  shares the scope's existing completion.
+- Each application stage owns a separate acquisition scope. A failed partial
+  stage closes before completed earlier stages; a successful stage retains only
+  its returned application before its scope is sealed.
+- Fixed-owner shutdown blocks new work, aborts and drains active work, closes
+  interface, chain, and wallet applications in that order, validates the
+  WalletConnect private store, closes SQLite, releases the database lease, and
+  then releases the fixed HTTP listener.
+- The listener release requires the exact permit bound to the sealed and empty
+  startup scope after application cleanup completes. Another permit or scope
+  cannot share or trigger that release.
+- A shutdown failure keeps the owner in `stopping` and preserves the fixed port
+  and every unresolved dependency. A later graceful attempt uses the same
+  retained resources and never reconstructs them from projections.
+- A direct CLI process that cannot complete graceful shutdown reports the safe
+  normalized failure and terminates. Operating-system process teardown is the
+  final resource boundary; it is not a wallet disconnect and does not revoke an
+  approved session.
 
 ## HTTP Owner Authentication
 
@@ -318,6 +379,15 @@ application logs, exports, and diagnostic bundles.
   account state, terminal availability, or browser availability.
 - Each review has one confirmation interface. The other interface may display
   the current review as read-only.
+- Terminal capacity changes only QR presentation. It never changes the
+  operation's interaction or confirmation interface.
+- An authenticated browser may display the current QR for a CLI-owned operation
+  as a read-only presentation. It cannot confirm, cancel, transfer, replace, or
+  disconnect that operation.
+- The authenticated local-control cancellation resource cancels one exact
+  cancellable operation independently of its presentation interface. This is a
+  local user management authority, not browser control or confirmation, and it
+  cannot interrupt an approved session transition.
 - Before wallet handoff, an explicit interface transfer revokes any existing
   confirmation grant. Transfer never authorizes the new interface; a new
   explicit user action is required under
@@ -343,12 +413,44 @@ application logs, exports, and diagnostic bundles.
   operations as MCP and web. A direct interactive CLI action may provide the
   operation confirmation owned by the CLI flow; piped or redirected input may
   not.
-- The CLI renders a WalletConnect pairing URI as a terminal QR code and does not
-  print the raw URI by default.
-- Pairing URIs and terminal QR output never enter MCP responses, logs, redirected
-  stdout, shell history, durable evidence, or activity records.
-- The CLI removes the QR after pairing, rejection, cancellation, or expiry.
-- The CLI verifies terminal dimensions before rendering a QR code.
+- The wallet owner converts a WalletConnect pairing URI to a QR matrix and
+  discards the URI. The CLI renders only that matrix and never receives or
+  prints the raw URI.
+- Pairing URIs and terminal QR output never enter MCP responses, redirected
+  stdout, product-controlled logs, shell command arguments, durable evidence,
+  or activity records. An external terminal transcript can record terminal
+  output and is outside Littlejohn's control.
+- The CLI confines QR output to an alternate terminal screen with the cursor
+  hidden and restores the primary screen after pairing, rejection,
+  cancellation, expiry, resize below the required dimensions, or controlled
+  CLI exit.
+- The CLI derives the exact required terminal rows and columns from the complete
+  QR matrix and four-module quiet zone before rendering. The required width
+  includes one unused terminal column so the raster never enters automatic
+  right-margin wrapping.
+- It renders only a complete, undistorted matrix when both terminal dimensions
+  are known and sufficient. Otherwise it renders no QR, reports the current or
+  unknown dimensions and the exact required dimensions, and continues observing
+  the same operation. Terminal size alone does not authorize cancellation or a
+  replacement operation.
+- A catchable termination signal is latched before readline or terminal cleanup.
+  Before operation admission it prevents a wallet command from starting and
+  drains any acquired runtime. During a cancellable wallet operation it starts
+  cancellation of that exact operation before removing the QR presentation.
+- A terminal presentation, polling, or operation-observation failure uses the
+  same exact cancellation transition while the operation remains cancellable.
+  Failure to confirm cancellation is reported as unavailable runtime state and
+  never authorizes a replacement operation.
+- After a connection operation completes, a catchable termination signal stops
+  the direct CLI runtime without disconnecting or deleting the approved wallet
+  session.
+- Compact terminal rendering uses one-cell Unicode half-block glyphs. Actual
+  scanability is claimed only for terminal profiles that pass the physical
+  wallet check; ambiguous-width terminal configurations are not inferred from
+  locale or static text width.
+- The CLI prints the same operation's fixed-origin browser URL only when the
+  authenticated browser presentation binding is available. It never opens the
+  URL automatically.
 - CLI transaction authorization is defined in `docs/TRANSACTION_POLICY.md`.
 
 ## Wallet Connection Lifecycle
@@ -357,9 +459,11 @@ application logs, exports, and diagnostic bundles.
   WalletConnect session.
 - Starting a wallet management operation, locally confirming a destructive
   transition, and approving a WalletConnect proposal in the wallet are separate
-  actions. The operation's interaction interface selects where Littlejohn shows
-  status, warnings, confirmation controls, and QR material; it does not grant
-  confirmation or wallet authority.
+  actions. The operation's interaction interface selects its confirmation
+  controls. One atomic presentation snapshot contains its canonical operation,
+  interface-relative control access, and QR material only while wallet approval
+  is pending. A second interface receives `read_only`; presentation does not
+  grant confirmation, cancellation, or wallet authority.
 - The wallet coordinator owns one operation state machine for connection,
   replacement, disconnection, and cancellation. Operation kinds are `connect`
   and `disconnect`. Nonterminal states are `awaiting_confirmation`,

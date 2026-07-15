@@ -76,7 +76,7 @@ export const bindForHarness = <Definition extends AnyReadCapabilityDefinition>(
   definition,
   errorRegistry: coreErrorRegistry,
   invocationAuthority: harness.invocationAuthority,
-  ports: harness.ports,
+  createInvocationPorts: () => harness.ports,
   handler,
 });
 

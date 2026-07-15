@@ -106,6 +106,9 @@ the required correction changes an accepted plan.
 - `.WORK/sources/` contains external source repositories used as references.
 - `.WORK/notes/` contains active task plan and progress files.
 - `.WORK/notes/research/` contains research material.
+- `.WORK/tests/` contains reusable, non-authoritative reproduction, adversarial,
+  and audit code that does not belong in the product test suite. Do not create
+  repository test code under operating-system private or temporary directories.
 - `.WORK/experiments/` contains isolated experiments that do not modify product
   source.
 - `.WORK/` is ignored and is not product authority. An accepted plan is
@@ -114,8 +117,8 @@ the required correction changes an accepted plan.
   history. Delete them only after the user selects replacement, clean restart,
   or abandonment and every reusable current requirement and item of evidence
   has an explicit owner.
-- Preserve reusable experiments. Remove generated dependencies, build output,
-  credentials, and runtime session state from retained experiments.
+- Preserve reusable tests and experiments. Remove generated dependencies, build
+  output, credentials, and runtime session state from retained material.
 
 ## Agent Rules
 
@@ -130,7 +133,7 @@ the required correction changes an accepted plan.
 - Do not invent scripts, addresses, liquidity, quotes, evidence, or support.
 - Do not weaken binding policy or its verification without explicit user
   approval.
-- An accepted task may use a pinned dependency under a standard permissive
+- An accepted task may use a pinned dependency under an automatically permitted
   open-source license without separate per-package user approval when the
   official package artifact identifies the license and the current use adds no
   fee, service account, data transfer, telemetry, branding requirement, source
@@ -138,16 +141,28 @@ the required correction changes an accepted plan.
   or commercial-use restriction. Preserve every required copyright, license,
   attribution, modification, and notice artifact in the distributed form that
   triggers that obligation.
-- For this policy, a standard permissive license is an official SPDX expression
-  composed only of `0BSD`, `MIT`, `ISC`, `BSD-2-Clause`, `BSD-3-Clause`, or
-  `Apache-2.0`. Any other license expression requires the review in the next
-  rule.
+- Automatically permitted SPDX license identifiers are `0BSD`, `MIT`, `ISC`,
+  `BSD-2-Clause`, `BSD-3-Clause`, `Apache-2.0`, and `BlueOak-1.0.0`. For an
+  `OR` expression, one complete branch must contain only automatically permitted
+  identifiers and the official package artifact must supply or unambiguously
+  identify the selected branch's license text. Record that selection in the
+  dependency review. For an `AND` expression, every branch must be
+  automatically permitted. Any other identifier, operator, exception,
+  `LicenseRef`, missing license, or ambiguous artifact requires the review in
+  the next rule.
+- Review the complete pinned dependency closure rather than direct dependencies
+  alone. Classify runtime, development, optional, and platform dependencies and
+  distinguish local development use, separate npm installation, bundled or
+  vendored distribution, and generated product output. Apply preservation and
+  redistribution duties to the actual use and distribution form.
 - An agent never accepts a custom or non-permissive license, service term, paid
   threshold, data-processing term, branding obligation, source-disclosure or
   reciprocal-license duty, field-of-use or commercial restriction, or other
   material redistribution obligation on the user's behalf. Record the exact
   official terms and required artifacts, then obtain explicit user approval
-  before the first dependent implementation or service use.
+  before the first dependent implementation or service use. Do not request the
+  same approval again while the exact dependency version, official terms, and
+  disclosed use remain unchanged.
 - Run relevant checks, audit what those checks establish, and report exact
   results.
 - Check final repository status and classify unexpected files.

@@ -58,6 +58,13 @@ import {
   validateRequestSecurity,
 } from "./request-security.js";
 import {
+  createResourceOwnershipScope,
+  type OwnedResource,
+  type OwnedResourceRegistration,
+  type OwnedResourceRegistry,
+  type ResourceOwnershipScope,
+} from "./resource-ownership.js";
+import {
   createOwnerInstanceId,
   createRuntimeIdentityChallenge,
   encodeOwnerProofPayload,
@@ -438,9 +445,15 @@ export interface HttpOwnerApplication {
   close(): Promise<void> | void;
 }
 
+export type HttpOwnerStartupResource = OwnedResource;
+export type HttpOwnerStartupResourceRegistration = OwnedResourceRegistration;
+export type HttpOwnerStartupResourceRegistry = OwnedResourceRegistry;
+export type HttpOwnerStartupResourceScope = ResourceOwnershipScope;
+
 export interface HttpOwnerApplicationContext {
   readonly routes: RuntimeRouteRegistry;
   readonly signal: AbortSignal;
+  readonly startupResources: HttpOwnerStartupResourceRegistry;
 }
 
 export interface HttpOwnerOptions {
@@ -454,6 +467,13 @@ export interface HttpOwnerOptions {
 }
 
 type OwnerPhase = "stopped" | "starting" | "owner" | "deferred" | "stopping";
+
+const ownerReleasePermitBrand: unique symbol = Symbol("littlejohn.http-owner-release-permit");
+
+export interface HttpOwnerReleasePermit {
+  readonly generation: number;
+  readonly [ownerReleasePermitBrand]: FixedHttpOwner;
+}
 
 interface LifecycleWork {
   readonly controller: AbortController;
@@ -490,12 +510,18 @@ export class FixedHttpOwner {
   #generation = 0;
   #lifecycleController: AbortController | undefined;
   #application: HttpOwnerApplication | undefined;
+  #startupResources: HttpOwnerStartupResourceScope | undefined;
   #routes: RuntimeRouteRegistry;
   #server: Server | undefined;
   #ownerRecord: RuntimeOwnerRecord | undefined;
   #tail: Promise<void> = Promise.resolve();
   #stopRequested = false;
   #stopPromise: Promise<void> | undefined;
+  #closeApplicationPromise: Promise<HttpOwnerReleasePermit> | undefined;
+  #releaseListenerPromise: Promise<void> | undefined;
+  #releaseListenerPermit: HttpOwnerReleasePermit | undefined;
+  #releasePermit: HttpOwnerReleasePermit | undefined;
+  #releaseScope: HttpOwnerStartupResourceScope | undefined;
 
   constructor(options: HttpOwnerOptions) {
     this.#ownerStore = options.ownerStore;
@@ -528,65 +554,14 @@ export class FixedHttpOwner {
   async #startLocked(): Promise<"owner" | "deferred"> {
     const generation = ++this.#generation;
     const lifecycle = new AbortController();
+    const startupResources = createResourceOwnershipScope();
     this.#lifecycleController = lifecycle;
+    this.#startupResources = startupResources;
     this.#phase = "starting";
     const server = createServer((request, response) => { void this.#handle(request, response); });
     try {
       await listen(server);
-      if (lifecycle.signal.aborted || generation !== this.#generation) throw new RuntimeOperationError("request_aborted");
-      this.#server = server;
-      const ownerInstanceId = createOwnerInstanceId();
-      this.#ownerRecord = this.#ownerStore.publishOwner(ownerInstanceId, parseUtcTimestamp(this.#now()));
-      if (this.#applicationFactory !== undefined) {
-        const initialization = createLifecycleWork();
-        initialization.generation = generation;
-        this.#lifecycleWork.add(initialization);
-        let returnedApplication: HttpOwnerApplication | undefined;
-        const factoryResult = (async () => {
-          try {
-            const application = await this.#applicationFactory?.({ routes: this.#baseRoutes, signal: lifecycle.signal });
-            if (application === undefined) throw new TypeError("HTTP owner application is unavailable.");
-            if (
-              initialization.controller.signal.aborted ||
-              lifecycle.signal.aborted ||
-              initialization.generation !== this.#generation
-            ) {
-              await application.close();
-            } else returnedApplication = application;
-          } finally {
-            this.#finishLifecycleWork(initialization);
-          }
-        })();
-        const aborted = new Promise<never>((_resolve, reject) => {
-          lifecycle.signal.addEventListener("abort", () => reject(new RuntimeOperationError("request_aborted")), { once: true });
-        });
-        try {
-          await Promise.race([factoryResult, aborted]);
-          if (
-            returnedApplication === undefined ||
-            lifecycle.signal.aborted ||
-            generation !== this.#generation
-          ) throw new RuntimeOperationError("request_aborted");
-          assertRuntimeRouteRegistryDescendant(this.#baseRoutes, returnedApplication.routes);
-          this.#application = returnedApplication;
-          this.#routes = returnedApplication.routes;
-          returnedApplication = undefined;
-        } catch (error) {
-          initialization.controller.abort();
-          try { await factoryResult; } catch { /* Preserve the startup failure. */ }
-          if (returnedApplication !== undefined) {
-            try { await returnedApplication.close(); } catch { /* Preserve the startup failure. */ }
-          }
-          throw error;
-        }
-      }
-      if (lifecycle.signal.aborted || generation !== this.#generation) throw new RuntimeOperationError("request_aborted");
-      this.#phase = "owner";
-      return "owner";
     } catch (error) {
-      if (server.listening || this.#server === server) {
-        try { await this.#closeOwnedResources(server, this.#application, generation); } catch { /* Preserve startup failure. */ }
-      }
       this.#resetStopped();
       if (error instanceof Error && "code" in error && error.code === "EADDRINUSE") {
         this.#lifecycleController = lifecycle;
@@ -610,6 +585,69 @@ export class FixedHttpOwner {
           throw new RuntimeOperationError("port_conflict");
         }
       }
+      throw error;
+    }
+
+    this.#server = server;
+    try {
+      if (lifecycle.signal.aborted || generation !== this.#generation) throw new RuntimeOperationError("request_aborted");
+      const ownerInstanceId = createOwnerInstanceId();
+      this.#ownerRecord = this.#ownerStore.publishOwner(ownerInstanceId, parseUtcTimestamp(this.#now()));
+      if (this.#applicationFactory !== undefined) {
+        const initialization = createLifecycleWork();
+        initialization.generation = generation;
+        this.#lifecycleWork.add(initialization);
+        const factoryResult = (async () => {
+          try {
+            const application = await this.#applicationFactory?.({
+              routes: this.#baseRoutes,
+              signal: lifecycle.signal,
+              startupResources: startupResources.resources,
+            });
+            if (application === undefined) throw new TypeError("HTTP owner application is unavailable.");
+            const registration = startupResources.resources.register(application);
+            return Object.freeze({ application, registration });
+          } finally {
+            this.#finishLifecycleWork(initialization);
+          }
+        })();
+        let rejectAborted!: (error: RuntimeOperationError) => void;
+        const aborted = new Promise<never>((_resolve, reject) => {
+          rejectAborted = reject;
+        });
+        const onAbort = (): void => rejectAborted(new RuntimeOperationError("request_aborted"));
+        lifecycle.signal.addEventListener("abort", onAbort, { once: true });
+        if (lifecycle.signal.aborted) onAbort();
+        try {
+          let produced!: Awaited<typeof factoryResult>;
+          try { produced = await Promise.race([factoryResult, aborted]); }
+          finally { lifecycle.signal.removeEventListener("abort", onAbort); }
+          if (
+            initialization.controller.signal.aborted ||
+            lifecycle.signal.aborted ||
+            generation !== this.#generation
+          ) throw new RuntimeOperationError("request_aborted");
+          assertRuntimeRouteRegistryDescendant(this.#baseRoutes, produced.application.routes);
+          const routes = produced.application.routes;
+          produced.registration.transfer();
+          this.#application = produced.application;
+          startupResources.seal();
+          if (!startupResources.empty) throw new TypeError("HTTP owner application retained startup resources.");
+          this.#routes = routes;
+        } catch (error) {
+          initialization.controller.abort();
+          try { await factoryResult; } catch { /* Preserve the startup failure. */ }
+          try { startupResources.seal(); } catch { /* Preserve the startup failure. */ }
+          throw error;
+        }
+      } else {
+        startupResources.seal();
+      }
+      if (lifecycle.signal.aborted || generation !== this.#generation) throw new RuntimeOperationError("request_aborted");
+      this.#phase = "owner";
+      return "owner";
+    } catch (error) {
+      this.#beginStoppingLocked();
       throw error;
     }
   }
@@ -696,54 +734,191 @@ export class FixedHttpOwner {
 
   stop(): Promise<void> {
     if (this.#stopPromise !== undefined) return this.#stopPromise;
-    this.#stopRequested = true;
-    this.#lifecycleController?.abort();
-    for (const work of this.#lifecycleWork) work.controller.abort();
-    const stopping = this.#stopInternal();
-    const tracked = stopping.finally(() => {
-      if (this.#stopPromise === tracked) this.#stopPromise = undefined;
-      this.#stopRequested = false;
+    let resolveTracked!: () => void;
+    let rejectTracked!: (error: unknown) => void;
+    const tracked = new Promise<void>((resolve, reject) => {
+      resolveTracked = resolve;
+      rejectTracked = reject;
     });
     this.#stopPromise = tracked;
+    void (async () => {
+      try {
+        const permit = await this.closeApplication();
+        await this.releaseListener(permit);
+        resolveTracked();
+      } catch (error) {
+        rejectTracked(error);
+      } finally {
+        if (this.#stopPromise === tracked) this.#stopPromise = undefined;
+      }
+    })();
     return tracked;
   }
 
-  async #stopInternal(): Promise<void> {
-    const resources = await this.#serialize(async () => {
-      if (this.#phase === "stopped") return undefined;
-      this.#phase = "stopping";
-      this.#generation += 1;
-      for (const work of this.#lifecycleWork) work.controller.abort();
-      this.#ownerRecord = undefined;
-      return {
-        server: this.#server,
-        application: this.#application,
-        activeCompletions: Object.freeze([...this.#lifecycleWork].map((work) => work.completion)),
-      };
+  closeApplication(): Promise<HttpOwnerReleasePermit> {
+    if (this.#closeApplicationPromise !== undefined) return this.#closeApplicationPromise;
+    let resolveTracked!: (permit: HttpOwnerReleasePermit) => void;
+    let rejectTracked!: (error: unknown) => void;
+    const tracked = new Promise<HttpOwnerReleasePermit>((resolve, reject) => {
+      resolveTracked = resolve;
+      rejectTracked = reject;
     });
-    if (resources === undefined) return;
-    try {
-      await Promise.all(resources.activeCompletions);
-      try {
-        await resources.application?.close();
-      } finally {
-        if (resources.server !== undefined) await closeServer(resources.server);
-      }
-    } finally {
-      await this.#serialize(async () => { this.#resetStopped(); });
-    }
+    this.#closeApplicationPromise = tracked;
+    this.#stopRequested = true;
+    this.#lifecycleController?.abort();
+    for (const work of this.#lifecycleWork) work.controller.abort();
+    void this.#closeApplicationForRelease().then(
+      (permit) => {
+        if (this.#closeApplicationPromise === tracked) this.#closeApplicationPromise = undefined;
+        resolveTracked(permit);
+      },
+      (error: unknown) => {
+        if (this.#closeApplicationPromise === tracked) this.#closeApplicationPromise = undefined;
+        rejectTracked(error);
+      },
+    );
+    return tracked;
   }
 
-  async #closeOwnedResources(
-    server: Server,
-    application: HttpOwnerApplication | undefined,
-    generation: number,
-  ): Promise<void> {
-    const work = [...this.#lifecycleWork].filter((active) => active.generation === generation);
-    for (const active of work) active.controller.abort();
-    await Promise.all(work.map((active) => active.completion));
-    try { await application?.close(); }
-    finally { await closeServer(server); }
+  releaseListener(permit: HttpOwnerReleasePermit): Promise<void> {
+    if (permit !== this.#releasePermit) {
+      return Promise.reject(new RuntimeOperationError("state_conflict"));
+    }
+    if (this.#releaseListenerPromise !== undefined) {
+      return permit === this.#releaseListenerPermit
+        ? this.#releaseListenerPromise
+        : Promise.reject(new RuntimeOperationError("state_conflict"));
+    }
+    let resolveTracked!: () => void;
+    let rejectTracked!: (error: unknown) => void;
+    const tracked = new Promise<void>((resolve, reject) => {
+      resolveTracked = resolve;
+      rejectTracked = reject;
+    });
+    this.#releaseListenerPromise = tracked;
+    this.#releaseListenerPermit = permit;
+    const clear = (): void => {
+      if (this.#releaseListenerPromise === tracked) {
+        this.#releaseListenerPromise = undefined;
+        this.#releaseListenerPermit = undefined;
+      }
+    };
+    void this.#releaseListenerInternal(permit).then(
+      () => { clear(); resolveTracked(); },
+      (error: unknown) => { clear(); rejectTracked(error); },
+    );
+    return tracked;
+  }
+
+  async #closeApplicationForRelease(): Promise<HttpOwnerReleasePermit> {
+    const completions = await this.#serialize(async () => {
+      if (this.#phase === "stopped") return undefined;
+      this.#beginStoppingLocked();
+      return Object.freeze([...this.#lifecycleWork].map((work) => work.completion));
+    });
+    if (completions !== undefined) {
+      await Promise.all(completions);
+      this.#startupResources?.seal();
+      await this.#closeApplicationResources();
+    }
+    return this.#serialize(async () => {
+      if (this.#phase === "stopped") return this.#issueReleasePermitLocked();
+      if (
+        this.#phase !== "stopping" ||
+        this.#application !== undefined ||
+        this.#startupResources?.sealed === false ||
+        this.#startupResources?.empty === false ||
+        this.#lifecycleWork.size !== 0
+      ) throw new RuntimeOperationError("state_conflict");
+      return this.#issueReleasePermitLocked();
+    });
+  }
+
+  async #releaseListenerInternal(permit: HttpOwnerReleasePermit): Promise<void> {
+    const shouldRelease = await this.#serialize(async () => {
+      if (
+        permit !== this.#releasePermit ||
+        this.#startupResources !== this.#releaseScope
+      ) throw new RuntimeOperationError("state_conflict");
+      if (this.#phase === "stopped") {
+        this.#releasePermit = undefined;
+        this.#releaseScope = undefined;
+        this.#stopRequested = false;
+        return false;
+      }
+      if (
+        this.#phase !== "stopping" ||
+        this.#application !== undefined ||
+        this.#startupResources?.sealed === false ||
+        this.#startupResources?.empty === false ||
+        this.#lifecycleWork.size !== 0
+      ) throw new RuntimeOperationError("state_conflict");
+      return true;
+    });
+    if (!shouldRelease) return;
+    await this.#closeServerResource();
+    await this.#serialize(async () => {
+      if (
+        permit !== this.#releasePermit ||
+        this.#startupResources !== this.#releaseScope ||
+        this.#startupResources?.sealed === false ||
+        this.#startupResources?.empty === false ||
+        this.#server !== undefined
+      ) {
+        throw new RuntimeOperationError("state_conflict");
+      }
+      this.#resetStopped();
+    });
+  }
+
+  #issueReleasePermitLocked(): HttpOwnerReleasePermit {
+    const current = this.#releasePermit;
+    if (current !== undefined && current.generation === this.#generation) return current;
+    const permit = Object.freeze({
+      generation: this.#generation,
+      [ownerReleasePermitBrand]: this,
+    });
+    this.#releasePermit = permit;
+    this.#releaseScope = this.#startupResources;
+    return permit;
+  }
+
+  #beginStoppingLocked(): void {
+    this.#stopRequested = true;
+    if (this.#phase !== "stopping") {
+      this.#phase = "stopping";
+      this.#generation += 1;
+      this.#releasePermit = undefined;
+      this.#releaseScope = undefined;
+    }
+    this.#lifecycleController?.abort();
+    for (const work of this.#lifecycleWork) work.controller.abort();
+  }
+
+  async #closeApplicationResources(): Promise<void> {
+    let failure: unknown;
+    const application = this.#application;
+    if (application !== undefined) {
+      try {
+        await application.close();
+        if (this.#application === application) this.#application = undefined;
+      } catch (error) {
+        failure = error;
+      }
+    }
+    const startupResources = this.#startupResources;
+    if (startupResources !== undefined && !startupResources.empty) {
+      try { await startupResources.close(); }
+      catch (error) { failure ??= error; }
+    }
+    if (failure !== undefined) throw failure;
+  }
+
+  async #closeServerResource(): Promise<void> {
+    const server = this.#server;
+    if (server === undefined) return;
+    await closeServer(server);
+    if (this.#server === server) this.#server = undefined;
   }
 
   #finishLifecycleWork(work: LifecycleWork): void {
@@ -755,9 +930,13 @@ export class FixedHttpOwner {
     this.#phase = "stopped";
     this.#lifecycleController = undefined;
     this.#application = undefined;
+    this.#startupResources = undefined;
     this.#routes = this.#baseRoutes;
     this.#server = undefined;
     this.#ownerRecord = undefined;
+    this.#releasePermit = undefined;
+    this.#releaseScope = undefined;
+    this.#stopRequested = false;
   }
 
   async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {

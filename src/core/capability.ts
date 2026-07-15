@@ -29,6 +29,7 @@ import { robinhoodChainIdentity } from "./identities.js";
 import { deepFreezeValue } from "./immutability.js";
 import { jsonObject } from "./json-object.js";
 import {
+  assertCapabilityInvocationAuthority,
   createHandlerInvocationContext,
   readCanonicalClock,
   readObservationAuthority,
@@ -435,6 +436,24 @@ export const safeParseCapabilityData = <Definition extends AnyReadCapabilityDefi
   value: unknown,
 ): z.ZodSafeParseResult<CapabilityData<Definition>> =>
   definitionRecord(definition).dataParser(value) as z.ZodSafeParseResult<CapabilityData<Definition>>;
+
+export const parseCapabilitySuccess = <Definition extends AnyReadCapabilityDefinition>(
+  definition: Definition,
+  value: unknown,
+): CapabilitySuccess<CapabilityData<Definition>> => {
+  const record = definitionRecord(definition);
+  const parsed = record.successParser(value);
+  if (!parsed.success) throw parsed.error;
+  const parsedData = record.dataParser(parsed.data.data);
+  if (!parsedData.success) throw parsedData.error;
+  record.validateDataContext(parsedData.data, {
+    evaluatedAt: parsed.data.meta.evaluatedAt,
+  });
+  return deepFreezeValue({
+    ...parsed.data,
+    data: parsedData.data,
+  }) as CapabilitySuccess<CapabilityData<Definition>>;
+};
 
 export const parseCapabilityDataAt = <Definition extends AnyReadCapabilityDefinition>(
   definition: Definition,
@@ -977,13 +996,68 @@ interface BindingRecord<
   readonly definition: Definition;
   readonly errorRegistry: ApplicationErrorRegistry;
   readonly invocationAuthority: CapabilityInvocationAuthority;
-  readonly ports: Ports;
+  readonly createInvocationPorts: () => Ports;
   readonly handler: (
     input: CapabilityInput<Definition>,
     context: HandlerInvocationContext<Ports>,
     observations: ObservationWriter,
   ) => Promise<unknown>;
 }
+
+const captureBindingRecord = <
+  Definition extends AnyReadCapabilityDefinition,
+  Ports extends InvocationBoundaryPorts,
+>(input: BindingRecord<Definition, Ports>): BindingRecord<Definition, Ports> => {
+  try {
+    if (Reflect.getPrototypeOf(input) !== Object.prototype) {
+      throw new TypeError();
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    const expectedKeys = [
+      "definition",
+      "errorRegistry",
+      "invocationAuthority",
+      "createInvocationPorts",
+      "handler",
+    ] as const;
+    const keys = Reflect.ownKeys(descriptors);
+    if (
+      keys.length !== expectedKeys.length ||
+      keys.some((key) => typeof key !== "string" || !expectedKeys.includes(key as never))
+    ) {
+      throw new TypeError();
+    }
+    for (const key of expectedKeys) {
+      const descriptor = descriptors[key];
+      if (
+        descriptor === undefined ||
+        !("value" in descriptor) ||
+        descriptor.enumerable !== true ||
+        descriptor.get !== undefined ||
+        descriptor.set !== undefined
+      ) {
+        throw new TypeError();
+      }
+    }
+    const definition = descriptors.definition?.value as Definition;
+    const errorRegistry = descriptors.errorRegistry?.value as ApplicationErrorRegistry;
+    const invocationAuthority = descriptors.invocationAuthority?.value as CapabilityInvocationAuthority;
+    const createInvocationPorts = descriptors.createInvocationPorts?.value as (() => Ports);
+    const handler = descriptors.handler?.value as BindingRecord<Definition, Ports>["handler"];
+    if (typeof createInvocationPorts !== "function" || typeof handler !== "function") {
+      throw new TypeError();
+    }
+    return Object.freeze({
+      definition,
+      errorRegistry,
+      invocationAuthority,
+      createInvocationPorts,
+      handler,
+    });
+  } catch {
+    throw new TypeError("Capability binding options are invalid.");
+  }
+};
 
 const bindingInternals = new WeakMap<object, BindingRecord<AnyReadCapabilityDefinition, InvocationBoundaryPorts>>();
 
@@ -1009,18 +1083,14 @@ export const bindCapability = <
   Definition extends AnyReadCapabilityDefinition,
   Ports extends InvocationBoundaryPorts,
 >(options: BindingRecord<Definition, Ports>): CapabilityBinding<Definition> => {
-  definitionRecord(options.definition);
-  assertApplicationErrorRegistry(options.errorRegistry);
-  const ports = captureInvocationPorts(options.ports);
-  createHandlerInvocationContext({
-    authority: options.invocationAuthority,
-    signal: new AbortController().signal,
-    ports,
-  });
+  const record = captureBindingRecord(options);
+  definitionRecord(record.definition);
+  assertApplicationErrorRegistry(record.errorRegistry);
+  assertCapabilityInvocationAuthority(record.invocationAuthority);
   const binding = Object.freeze({}) as CapabilityBinding<Definition>;
   bindingInternals.set(
     binding,
-    Object.freeze({ ...options, ports }) as unknown as BindingRecord<AnyReadCapabilityDefinition, InvocationBoundaryPorts>,
+    record as unknown as BindingRecord<AnyReadCapabilityDefinition, InvocationBoundaryPorts>,
   );
   return binding;
 };
@@ -1034,11 +1104,6 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
     CapabilityInput<Definition>,
     CapabilityData<Definition>
   >;
-  const context = createHandlerInvocationContext({
-    authority: record.invocationAuthority,
-    signal,
-    ports: record.ports,
-  });
   const normalizedInput = safeNormalize(input);
   if (!normalizedInput.ok) return createApplicationFailure(record.errorRegistry, "invalid_input");
   const parsedInput = definition.inputParser(normalizedInput.value);
@@ -1046,6 +1111,18 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
     return createApplicationFailure(record.errorRegistry, "invalid_input", zodIssues(parsedInput.error));
   }
   const validatedInput = deepFreezeValue(parsedInput.data);
+
+  let context: HandlerInvocationContext<InvocationBoundaryPorts>;
+  try {
+    const ports = captureInvocationPorts(record.createInvocationPorts());
+    context = createHandlerInvocationContext({
+      authority: record.invocationAuthority,
+      signal,
+      ports,
+    });
+  } catch {
+    return internalFailure(record.errorRegistry);
+  }
 
   let observations: InvocationObservations;
   let slots: readonly ObservationSlot[];

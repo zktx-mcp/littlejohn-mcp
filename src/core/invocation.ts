@@ -161,6 +161,16 @@ export interface CapabilityInvocationAuthority {
 
 const invocationAuthorityStates = new WeakMap<object, { readonly clock: CanonicalClock }>();
 
+export const assertCapabilityInvocationAuthority = (
+  authority: CapabilityInvocationAuthority,
+): CanonicalClock => {
+  const state = typeof authority === "object" && authority !== null
+    ? invocationAuthorityStates.get(authority)
+    : undefined;
+  if (state === undefined) throw new TypeError("Invocation authority provenance is invalid.");
+  return state.clock;
+};
+
 export const createCapabilityInvocationAuthority = (
   clock: CanonicalClock,
 ): CapabilityInvocationAuthority => {
@@ -182,15 +192,12 @@ export const createHandlerInvocationContext = <Ports extends InvocationBoundaryP
   readonly signal: AbortSignal;
   readonly ports: Ports;
 }): HandlerInvocationContext<Ports> => {
-  const state = typeof input.authority === "object" && input.authority !== null
-    ? invocationAuthorityStates.get(input.authority)
-    : undefined;
-  if (state === undefined) throw new TypeError("Invocation authority provenance is invalid.");
-  if (!input.ports.observations.uses(state.clock)) {
+  const clock = assertCapabilityInvocationAuthority(input.authority);
+  if (!input.ports.observations.uses(clock)) {
     throw new TypeError("Invocation ports use a different canonical clock.");
   }
   return Object.freeze({
-    clock: state.clock,
+    clock,
     chainScope: robinhoodChainIdentity,
     signal: input.signal,
     ports: input.ports,
