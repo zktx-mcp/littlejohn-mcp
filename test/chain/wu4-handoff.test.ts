@@ -33,7 +33,7 @@ interface WU4HandoffFixture {
 }
 
 const fixturePath = "test/fixtures/wu4-handoff.json";
-const fixtureDigest = "08d0e3efc5df3f09fb784192e6126a5cabee2e8c71c848e1ec65ee29523f93ef";
+const fixtureDigest = "3323bff36d98022faed34977b204465498ef5ccd93a2adb2ef75886e48308185";
 const excludedChainTests = new Set([
   "test/chain/current-support.test.ts",
   "test/chain/wu4-handoff.test.ts",

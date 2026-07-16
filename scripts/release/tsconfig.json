@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "noImplicitAny": false,
+    "sourceMap": false
+  },
+  "include": [
+    "../release-check.mjs",
+    "./*.mjs"
+  ]
+}

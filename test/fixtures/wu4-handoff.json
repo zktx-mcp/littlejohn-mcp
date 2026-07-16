@@ -22,7 +22,7 @@
   "dependencyRoots": {
     "viem": "2.55.0"
   },
-  "dependencyClosureDigest": "6ca024b14df135e78559d67681f8c8360bc78f23677c249e918a196269365b3c",
+  "dependencyClosureDigest": "551ff4e0b145481f525944f1e63fab7d900eb38ecdfcb84d67541d46e53ad4e6",
   "chainErrorProjection": [
     {
       "code": "not_found",

@@ -4906,9 +4906,9 @@
       "license": "ISC"
     },
     "node_modules/ws": {
-      "version": "7.5.11",
-      "resolved": "https://registry.npmjs.org/ws/-/ws-7.5.11.tgz",
-      "integrity": "sha512-zS54Oen9bITtp7kp2XM3AydrCIq1D+HwJOuH+c+e4LfpL/lotP5osijd+UoMnxwAam1GN8R4KtLAyIrIcBNpiA==",
+      "version": "7.5.12",
+      "resolved": "https://registry.npmjs.org/ws/-/ws-7.5.12.tgz",
+      "integrity": "sha512-1xGnbYN3zbog9CwuNDQULNRrTCLIn46/WmpR1f0w6PsCYQHkylZr5vkd6kfMZYV6pRnQkcPNRyiA8LsrNKyhpg==",
       "license": "MIT",
       "engines": {
         "node": ">=8.3.0"
