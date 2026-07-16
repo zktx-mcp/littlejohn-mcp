@@ -10,7 +10,7 @@ import { ProductDatabase } from "../../src/runtime/database.js";
 import {
   FixedHttpOwner,
   type HttpOwnerApplicationContext,
-  type OwnerOperationResponse,
+  type RuntimeDispatchResponse,
 } from "../../src/runtime/http-owner.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
 
@@ -49,7 +49,7 @@ interface WorkerStartResult extends WorkerSnapshot {
 }
 
 interface WorkerOperationResult extends WorkerSnapshot {
-  readonly response: OwnerOperationResponse;
+  readonly response: RuntimeDispatchResponse;
 }
 
 let database: ProductDatabase | undefined;
@@ -172,7 +172,7 @@ const start = async (command: PreparedStart, notBeforeEpochMs: number): Promise<
 const operate = async (notBeforeEpochMs: number): Promise<WorkerOperationResult> => {
   if (owner === undefined) throw new TypeError("Worker runtime is unavailable.");
   await waitUntil(notBeforeEpochMs);
-  const response = await owner.executeOwnerOperation({
+  const response = await owner.dispatchRuntimeRequest({ requestClass: "local_control",
     method: "GET",
     path: "/api/v1/internal/control/process-owner",
   });

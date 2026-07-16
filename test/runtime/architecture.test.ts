@@ -19,6 +19,15 @@ import { loadPackageManifest, loadWu1HandoffFixture } from "./wu1-handoff-fixtur
 const repositoryRoot = resolve(".");
 const sourceRoot = resolve(repositoryRoot, "src");
 const coreRoot = resolve("src/core");
+const browserCoreConsumers = new Set([
+  "interfaces/browser-contract.ts",
+  "interfaces/browser-error-response.ts",
+  "interfaces/browser-responses.ts",
+  "interfaces/web/main.tsx",
+  "interfaces/web/wallet-operation-page.tsx",
+  "runtime/error-definitions.ts",
+  "wallet/operation-contract.ts",
+]);
 
 const loadPackagePolicy = async () => {
   const [{ fixture }, manifest, sourceFiles] = await Promise.all([
@@ -55,15 +64,19 @@ describe("WU2 architecture boundary", () => {
     expect(violations).toEqual([]);
   });
 
-  it("requires every non-core product consumer to use the frozen curated core entry point", async () => {
+  it("requires every non-core product consumer to use its exact curated core entry point", async () => {
     const violations: string[] = [];
     for (const file of await collectSourceFiles(sourceRoot)) {
       if (file.startsWith(`${coreRoot}${sep}`)) continue;
       for (const reference of (await inspectSourceFile(file)).moduleImports) {
         if (reference.specifier === undefined) continue;
         const target = resolvesInsideCore(file, reference.specifier);
-        if (target !== undefined && target !== "index.js") {
-          violations.push(`${relative(sourceRoot, file)}:${reference.specifier}`);
+        if (target !== undefined) {
+          const consumer = relative(sourceRoot, file).split(sep).join("/");
+          const allowed = browserCoreConsumers.has(consumer)
+            ? target === "browser.js"
+            : target === "index.js";
+          if (!allowed) violations.push(`${consumer}:${reference.specifier}`);
         }
       }
     }

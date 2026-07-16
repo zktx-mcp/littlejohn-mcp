@@ -13,7 +13,7 @@ import {
   type Wu1HandoffFixture,
 } from "./wu1-handoff-fixture.js";
 
-const sourceExtensions = new Set([
+const codeSourceExtensions = new Set([
   ".cjs",
   ".cts",
   ".js",
@@ -22,6 +22,13 @@ const sourceExtensions = new Set([
   ".mts",
   ".ts",
   ".tsx",
+]);
+
+const terminalModuleExtensions = new Set([".css"]);
+
+const auditedModuleExtensions = new Set([
+  ...codeSourceExtensions,
+  ...terminalModuleExtensions,
 ]);
 
 const commonJsSourceExtensions = new Set([".cjs", ".cts"]);
@@ -581,6 +588,9 @@ const directCodeExecutionReferences = (
 };
 
 export const inspectSource = (source: string, path: string): SourceAudit => {
+  if (terminalModuleExtensions.has(extname(path))) {
+    return { moduleImports: [], directCodeExecutions: [] };
+  }
   const context = createSourceContext(source, path);
   const moduleImports = moduleImportReferences(context);
   return {
@@ -611,7 +621,7 @@ export const collectSourceFiles = async (directory: string): Promise<readonly st
   for (const entry of entries) {
     const path = resolve(directory, entry.name);
     if (entry.isDirectory()) files.push(...await collectSourceFiles(path));
-    else if (entry.isFile() && sourceExtensions.has(extname(entry.name))) files.push(path);
+    else if (entry.isFile() && auditedModuleExtensions.has(extname(entry.name))) files.push(path);
     else if (entry.isSymbolicLink()) throw new TypeError(`Source audit does not follow symbolic links: ${path}`);
   }
   return files.sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
@@ -627,8 +637,8 @@ export const collectProductSourceFiles = async (
   const rootEntries = await readdir(repositoryRoot, { withFileTypes: true });
   for (const entry of rootEntries) {
     const path = resolve(repositoryRoot, entry.name);
-    if (entry.isFile() && sourceExtensions.has(extname(entry.name))) files.push(path);
-    else if (entry.isSymbolicLink() && sourceExtensions.has(extname(entry.name))) {
+    if (entry.isFile() && auditedModuleExtensions.has(extname(entry.name))) files.push(path);
+    else if (entry.isSymbolicLink() && auditedModuleExtensions.has(extname(entry.name))) {
       throw new TypeError(`Source audit does not follow symbolic links: ${path}`);
     }
   }
@@ -660,7 +670,7 @@ const auditedSourceCandidates = (target: string): readonly string[] => {
   const extension = extname(target);
   const stem = target.slice(0, target.length - extension.length);
   switch (extension) {
-    case ".js": return [target, `${stem}.ts`, `${stem}.tsx`];
+    case ".js": return [target, `${stem}.jsx`, `${stem}.ts`, `${stem}.tsx`];
     case ".jsx": return [target, `${stem}.tsx`];
     case ".mjs": return [target, `${stem}.mts`];
     case ".cjs": return [target, `${stem}.cts`];
@@ -683,7 +693,7 @@ const isAuditedRelativeTarget = (
   } catch {
     return false;
   }
-  if (!isWithin(target, repositoryRoot) || !sourceExtensions.has(extname(target))) return false;
+  if (!isWithin(target, repositoryRoot) || !auditedModuleExtensions.has(extname(target))) return false;
   const auditedTargets = auditedSourceCandidates(target)
     .filter((candidate) => policy.auditedSourceFiles.has(resolve(candidate)));
   if (auditedTargets.length !== 1) return false;

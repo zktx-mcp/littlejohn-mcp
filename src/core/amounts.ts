@@ -10,6 +10,45 @@ import {
   type ChainAnchor,
 } from "./primitives.js";
 
+export const maximumTokenDecimals = 255;
+
+// Preserve the numeric maximum in emitted JSON Schema instead of enforcing it only at runtime.
+export const canonicalUnsignedDecimalMaximumPattern = (maximum: number): string => {
+  if (!Number.isSafeInteger(maximum) || maximum < 0) {
+    throw new TypeError("The unsigned-decimal maximum must be a non-negative safe integer.");
+  }
+  if (maximum === 0) return "^(?:0)$";
+
+  const maximumDigits = String(maximum);
+  const alternatives: string[] = [];
+  for (let length = 1; length < maximumDigits.length; length += 1) {
+    const remaining = length - 1;
+    alternatives.push(length === 1
+      ? "[0-9]"
+      : `[1-9]${remaining === 1 ? "[0-9]" : `[0-9]{${remaining}}`}`);
+  }
+
+  let prefix = "";
+  for (let index = 0; index < maximumDigits.length; index += 1) {
+    const maximumDigit = Number(maximumDigits[index]);
+    const lower = maximumDigits.length === 1 ? 0 : index === 0 ? 1 : 0;
+    const upper = index === maximumDigits.length - 1 ? maximumDigit : maximumDigit - 1;
+    if (lower <= upper) {
+      const digit = lower === upper
+        ? String(lower)
+        : upper === lower + 1
+          ? `[${lower}${upper}]`
+          : `[${lower}-${upper}]`;
+      const remaining = maximumDigits.length - index - 1;
+      alternatives.push(`${prefix}${digit}${
+        remaining === 0 ? "" : remaining === 1 ? "[0-9]" : `[0-9]{${remaining}}`
+      }`);
+    }
+    prefix += maximumDigits[index];
+  }
+  return `^(?:${alternatives.join("|")})$`;
+};
+
 export const createAmountSchemaSet = () => {
   const primitives = createPrimitiveSchemaSet();
   const observationId = prefixedCanonicalBase64UrlSchema("obs:", 32).brand("ObservationId");
@@ -24,7 +63,10 @@ export const createAmountSchemaSet = () => {
   }).strict();
   const assetIdentity = z.discriminatedUnion("kind", [nativeAssetIdentity, erc20AssetIdentity]);
   const tokenDecimals = z.string()
-    .regex(/^(?:[0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$/, "Token decimals must be between 0 and 255.")
+    .regex(
+      new RegExp(canonicalUnsignedDecimalMaximumPattern(maximumTokenDecimals), "u"),
+      `Token decimals must be between 0 and ${maximumTokenDecimals}.`,
+    )
     .brand("UnsignedDecimal");
   const orderedObservationIds = (minimum: number) => z.array(observationId)
     .min(minimum)
@@ -214,7 +256,9 @@ export const assertCanonicalAmountBindings = (
   } else {
     if (
       decimalValues.some((value) =>
-        typeof value !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(value) || BigInt(value) > 255n) ||
+        typeof value !== "string" ||
+        !/^(?:0|[1-9][0-9]*)$/.test(value) ||
+        BigInt(value) > BigInt(maximumTokenDecimals)) ||
       new Set(decimalValues.map((value) => canonicalJsonStringify(value))).size < 2
     ) {
       throw new TypeError("Conflicting decimals observations must bind distinct canonical values.");

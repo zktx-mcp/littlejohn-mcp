@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "immutableFiles": {
+    "src/chain/application.ts": "26a3bd184e9f20ba489acdf7d00f2654f1bca06a86672c2a272d3bc6817c3915",
+    "src/chain/erc20-calls.ts": "2ad00c77401f70dc76846f0cdeb4b7d5161d4517f49da1dabf387ce1f51d2764",
+    "src/chain/errors.ts": "703e886b4a0bb8621386c8d08d6dfd723b88155445df3be3d3dff92cdc6a9560",
+    "src/chain/external-modules.cts": "2f6e2c69681e1159e592ed2434e3c2c75eb465469b99a69349dfa24516a31d06",
+    "src/chain/handlers.ts": "2c29c9bbc8be30f237ca945896c3bb94762613636ff6f2e2312478d447b3c658",
+    "src/chain/index.ts": "bd4ecb6abf7e5915c23149a037e5cc6a295a014225baf2f7fe4ea3012c33e50d",
+    "src/chain/limits.ts": "eeeb054963968bbad92e637c293ff30285e91687f68458014b738468032a1e2d",
+    "src/chain/normalization.ts": "dbec622022f8b300d1fc70fd3ff2381034c45293655ee58a8062b09d9244fc56",
+    "src/chain/rpc.ts": "b8fffe3daaf754c26698f35f40a6d44b35def4741a498ae8b831790d2356d9b9",
+    "test/chain/application.test.ts": "537d15934731f34349a2faa95f8d89e2bb4c9c2059d520ab995f3bb5f762ac53",
+    "test/chain/erc20-calls.test.ts": "fd7df55352ae9d547f6ec3d10dba8249e0845a252d4a3336e7176d2f94064928",
+    "test/chain/errors.test.ts": "a791c97fb3b6c4f612ee4df3431eca7f9ff2e4b373523857a9751162d1a93ab8",
+    "test/chain/handler-harness.ts": "839d179a7c771b91a7e31b4f1ffedbdd60d33eae80c77f82cfddb73fe87ceaf2",
+    "test/chain/handlers.test.ts": "b6e15cc6be8e6cd6726953e050b3ef9a07f118adbcdae87baef917840d745ea6",
+    "test/chain/normalization.test.ts": "66674f40c49d35ec9781682068a5b10df9769146fafa8dd5542c2fd8d39b829d",
+    "test/chain/rpc.test.ts": "21ce7ae2f6c432bd90009977eef27be127933ee0f439ec9d3db54cac1e629e7e"
+  },
+  "immutableFilesDigest": "0739b7b929dba4fa6805d98c226908d2d1b06360c02b35910d8532ba4b4fa443",
+  "dependencyRoots": {
+    "viem": "2.55.0"
+  },
+  "dependencyClosureDigest": "6ca024b14df135e78559d67681f8c8360bc78f23677c249e918a196269365b3c",
+  "chainErrorProjection": [
+    {
+      "code": "not_found",
+      "category": "domain",
+      "message": "The requested data was not found.",
+      "retryable": false,
+      "httpStatus": 404,
+      "problemTitle": "Data not found",
+      "cliExitCode": 3
+    },
+    {
+      "code": "rate_limited",
+      "category": "source",
+      "message": "A required data source rate-limited the request.",
+      "retryable": true,
+      "httpStatus": 429,
+      "problemTitle": "Rate limited",
+      "cliExitCode": 4
+    },
+    {
+      "code": "source_inconsistent",
+      "category": "source",
+      "message": "Required source evidence is inconsistent.",
+      "retryable": false,
+      "httpStatus": 502,
+      "problemTitle": "Source inconsistent",
+      "cliExitCode": 4
+    },
+    {
+      "code": "source_unavailable",
+      "category": "source",
+      "message": "A required data source is unavailable.",
+      "retryable": true,
+      "httpStatus": 503,
+      "problemTitle": "Source unavailable",
+      "cliExitCode": 4
+    },
+    {
+      "code": "unsupported_capability",
+      "category": "domain",
+      "message": "The requested capability is not supported.",
+      "retryable": false,
+      "httpStatus": 422,
+      "problemTitle": "Unsupported capability",
+      "cliExitCode": 3
+    }
+  ],
+  "chainErrorProjectionDigest": "b88863b5bb9e9dffb520eb1a3a2d599257ddc2daeb8cef61d6141ff2981f5998",
+  "chainSupportProjection": [
+    {
+      "capabilityId": "account.balance",
+      "availability": {
+        "overall": "internal",
+        "direct": "internal",
+        "http": "unavailable",
+        "mcp": "unavailable",
+        "cli": "unavailable",
+        "web": "unavailable"
+      }
+    },
+    {
+      "capabilityId": "chain.status",
+      "availability": {
+        "overall": "internal",
+        "direct": "internal",
+        "http": "unavailable",
+        "mcp": "unavailable",
+        "cli": "unavailable",
+        "web": "unavailable"
+      }
+    },
+    {
+      "capabilityId": "contract.inspect",
+      "availability": {
+        "overall": "internal",
+        "direct": "internal",
+        "http": "unavailable",
+        "mcp": "unavailable",
+        "cli": "unavailable",
+        "web": "unavailable"
+      }
+    },
+    {
+      "capabilityId": "transaction.inspect",
+      "availability": {
+        "overall": "internal",
+        "direct": "internal",
+        "http": "unavailable",
+        "mcp": "unavailable",
+        "cli": "unavailable",
+        "web": "unavailable"
+      }
+    }
+  ],
+  "chainSupportProjectionDigest": "02b273b6200b5444128b59908d68a31f6555e8fa57356414fb2e1f2e29ebbaeb",
+  "chainPublicValueExports": [
+    "chainErrorRegistry",
+    "chainInterfaceErrorMappings",
+    "chainInvocationDeadlineMs",
+    "createBoundedRpcRequester",
+    "createChainOwnerApplication",
+    "createChainOwnerApplicationFactory",
+    "createChainReadService",
+    "createErc20CallEncoder",
+    "extendChainSupportManifest",
+    "rpcConcurrencyLimit",
+    "rpcRequestTimeoutMs",
+    "rpcResponseByteLimit"
+  ]
+}

@@ -27,6 +27,7 @@ export interface RequestAuthenticationInput {
   readonly authorization: readonly string[];
   readonly cookie: readonly string[];
   readonly csrfToken: readonly string[];
+  readonly params: Readonly<Record<string, string>>;
 }
 
 export interface RequestEnvelopeSecurityInput {

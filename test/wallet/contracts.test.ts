@@ -1,18 +1,28 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  isWalletOperationTerminalState,
   parseWalletManagementOperation,
   parseWalletOperationConfirmation,
+  parseWalletOperationId,
   parseWalletOperationPresentation,
+  parseWalletOperationPresentationAccess,
+  parseWalletQrMatrix,
   parseWalletOperationResponse,
-  walletOperationStates,
+  walletOperationAllowsQr,
+  walletOperationIdByteLength,
+  walletQrMatrixSizeLimits,
   type WalletOperationConfirmationPort,
   type WalletOperationPresentationPort,
 } from "../../src/wallet/contracts.js";
+import {
+  isWalletOperationCancellableState,
+  isWalletOperationConfirmableState,
+  isWalletOperationTerminalState,
+  walletOperationStates,
+} from "../../src/wallet/operation-state.js";
 import { createWalletFailure } from "../../src/wallet/errors.js";
 
-const operationId = Buffer.alloc(32, 7).toString("base64url");
+const operationId = Buffer.alloc(walletOperationIdByteLength, 7).toString("base64url");
 const disconnected = Object.freeze({ status: "disconnected", reason: "no_session" });
 const connected = Object.freeze({
   status: "connected",
@@ -38,6 +48,45 @@ const operation = (overrides: Readonly<Record<string, unknown>> = {}) => ({
 });
 
 describe("wallet management contracts", () => {
+  it("owns canonical operation identifiers and presentation access", () => {
+    expect(parseWalletOperationId(operationId)).toBe(operationId);
+    for (const invalidOperationId of [
+      Buffer.alloc(walletOperationIdByteLength - 1, 7).toString("base64url"),
+      Buffer.alloc(walletOperationIdByteLength + 1, 7).toString("base64url"),
+      `${operationId}=`,
+      `${operationId.slice(0, -1)}+`,
+    ]) expect(() => parseWalletOperationId(invalidOperationId)).toThrow();
+
+    expect(parseWalletOperationPresentationAccess("interactive")).toBe("interactive");
+    expect(parseWalletOperationPresentationAccess("read_only")).toBe("read_only");
+    expect(() => parseWalletOperationPresentationAccess("owner")).toThrow();
+  });
+
+  it("owns one frozen QR matrix dimension contract", () => {
+    expect(walletQrMatrixSizeLimits).toEqual({ minimum: 21, maximum: 177 });
+    expect(Object.isFrozen(walletQrMatrixSizeLimits)).toBe(true);
+
+    for (const size of [
+      walletQrMatrixSizeLimits.minimum,
+      walletQrMatrixSizeLimits.maximum,
+    ]) {
+      expect(parseWalletQrMatrix({
+        size,
+        rows: Array.from({ length: size }, () => "0".repeat(size)),
+      }).size).toBe(size);
+    }
+
+    for (const size of [
+      walletQrMatrixSizeLimits.minimum - 1,
+      walletQrMatrixSizeLimits.maximum + 1,
+    ]) {
+      expect(() => parseWalletQrMatrix({
+        size,
+        rows: Array.from({ length: size }, () => "0".repeat(size)),
+      })).toThrow();
+    }
+  });
+
   it("binds terminal results to the operation kind and canonical connection state", () => {
     const parsed = parseWalletManagementOperation(operation());
     expect(parsed.result).toEqual({ outcome: "already_disconnected", connection: disconnected });
@@ -91,6 +140,10 @@ describe("wallet management contracts", () => {
       ["failed", true],
       ["expired", true],
     ]);
+    expect(walletOperationStates.filter(isWalletOperationConfirmableState))
+      .toEqual(["awaiting_confirmation"]);
+    expect(walletOperationStates.filter(isWalletOperationCancellableState))
+      .toEqual(["awaiting_confirmation", "awaiting_wallet_approval"]);
   });
 
   it("binds each operation kind to exactly its reachable lifecycle states", () => {
@@ -192,6 +245,8 @@ describe("wallet management contracts", () => {
       state: "awaiting_wallet_approval",
       result: null,
     });
+    expect(walletOperationAllowsQr(parseWalletManagementOperation(pending))).toBe(true);
+    expect(walletOperationAllowsQr(parseWalletManagementOperation(operation()))).toBe(false);
     const response = parseWalletOperationResponse({ operation: pending, qr });
     expect(response.qr).toEqual(qr);
     expect("qr" in response.operation).toBe(false);

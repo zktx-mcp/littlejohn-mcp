@@ -2,7 +2,7 @@
 
 ## Current State
 
-Littlejohn has a Node.js `>=22.12.0` ESM TypeScript package, canonical core
+Little John has a Node.js `>=22.12.0` ESM TypeScript package, canonical core
 contracts, five semantic read-capability definitions, generated JSON Schema and
 descriptor projections, deterministic runtime build identity, owner-only POSIX
 application-data permissions, SQLite product state, local control credentials,
@@ -22,25 +22,71 @@ before constructing or starting the fixed-port owner. The implemented owner,
 application composition, and CLI shutdown behavior follows
 [`Runtime Lifecycle`](#runtime-lifecycle).
 
-The `littlejohn` package binary composes the wallet module into the fixed-port
-owner. The owner opens one WalletConnect Sign Client on the owner-only SDK
-private store, reconciles SDK sessions into the SQLite wallet-connection
-projection, and serves authenticated internal wallet connection and operation
-resources. One coordinator enforces the single-session and serialized wallet
-operation contracts defined below.
+The `littlejohn` package binary composes the wallet and chain modules into the
+fixed-port owner. The owner opens one WalletConnect Sign Client on the
+owner-only SDK private store, reconciles SDK sessions into the SQLite
+wallet-connection projection, and serves authenticated internal wallet
+connection and operation resources. One coordinator enforces the single-session
+and serialized wallet operation contracts defined below.
+
+The owner also opens one bounded RPC reader for the configured Robinhood Chain
+endpoint. `chain.status`, `contract.inspect`, `transaction.inspect`, and
+`account.balance` are complete internal direct capabilities. Every invocation
+checks chain ID `4663`; pins dependent state reads to one observed canonical
+block hash using [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898); preserves
+integers as base-10 strings; validates transaction, receipt, log, and block
+identity; preserves the signed access-list sequence and multiplicity; and
+records source-scoped evidence. ERC-20 `balanceOf(address)` and `decimals()`
+calls use locally encoded calldata whose complete bytes are independently
+checked before the RPC request. Explicit account reads do not consume wallet
+state. Only `account.balance` with `active_wallet` captures the current validated
+WalletConnect account.
 
 The interactive CLI implements `wallet status`, `wallet connect`, `wallet
-disconnect`, `wallet operation`, and `wallet cancel` under
-[`CLI Surface`](#cli-surface). The coordinator exposes one atomic operation
-presentation containing the canonical operation, web control access, and an
-optional QR matrix. No browser route currently consumes the presentation.
-The wallet application extends the runtime support manifest; the public
-availability projection remains owned by
-`docs/PRODUCT_POLICY.md#current-support`.
+disconnect`, `wallet operation`, and `wallet cancel`, plus `read chain-status`,
+`read contract`, `read transaction`, and `read balance`, under
+[`CLI Surface`](#cli-surface). Read commands expose the canonical result as
+human-readable text or exact JSON without recomputing domain meaning.
+`littlejohn --help` projects the same command identities consumed by the CLI
+parsers and does not start the runtime.
 
-No RPC consumer, chain-read handler, MCP server or tool, React or browser wallet
-interface, public wallet HTTP route, signature request, or transaction request
-is implemented.
+Public loopback resources expose the four chain reads, the wallet connection
+projection, and the generated capability catalog. A no-argument `littlejohn`
+process runs one stdio MCP connection while sharing or taking over the same
+fixed-port owner. Its ten convention-validated tools expose the five read
+capabilities, the catalog, and four wallet-operation projections. MCP wallet
+tools can start, read, or cancel an operation and return a fixed local
+management URL. They never confirm an operation or receive QR, pairing, topic,
+credential, signing, or transaction material.
+
+The fixed-origin React page consumes the coordinator's operation presentation
+through operation-scoped browser credentials. Its compiled content-hashed
+assets contain no inline executable or style content. The browser build accepts
+only its closed first-party contract set and pinned browser runtime packages; its
+first-party source uses a closed set of browser globals and intrinsic elements.
+The fixed CSP remains the runtime boundary for dynamic code execution,
+connections, resources, frames, and forms. The source policy rejects top-level
+navigation and permits only the reviewed browser globals and elements without
+rejecting inert diagnostic or XML namespace text. The bootstrap issues an
+`HttpOnly`, `SameSite=Strict` cookie scoped to the exact operation API path and
+an independent CSRF token; Host, Origin, operation identity, expiry, cookie,
+and CSRF checks precede browser control. The page has no product navigation and
+cannot start an operation. An `interactive` presentation can confirm or cancel
+only the operation in its path. A `read_only` presentation displays that
+operation and cannot confirm or cancel it. Both presentations display the
+canonical operation, optional QR matrix, result, and resulting wallet
+connection. Browser response envelopes delegate operation, connection, failure,
+and QR validation to the same browser-safe canonical contract consumed by the
+server. A monotonic request authority prevents an older poll or a duplicate
+control action from replacing a newer operation view.
+
+The interface layer projects the completed wallet and chain ports into
+HTTP, MCP, CLI, and the React wallet-operation page. The runtime support
+manifest remains the machine authority for binding availability, and its
+public projection is
+`docs/PRODUCT_POLICY.md#current-support`. No signature request, transaction
+construction, broadcast, receipt verification, or protocol adapter is
+implemented.
 
 This document is the sole authority for repository ownership, module
 dependencies, local processes, persistence, browser and CLI surfaces,
@@ -104,6 +150,10 @@ transaction material, WalletConnect state, or private settings.
 
 - `core` imports no provider, protocol SDK, wallet SDK, React, HTTP, or SQLite
   implementation.
+- Server modules consume the curated `core/index` entry point. Browser-safe
+  error definitions, the shared wallet operation contract, and the React web
+  surface consume the curated browser-safe `core/browser` entry point. No other
+  module imports a core leaf directly.
 - Concrete SDK, database, HTTP, and adapter implementations enter through
   `runtime` composition.
 - React consumes server-created read models and never calls chain RPC, quote
@@ -119,7 +169,7 @@ transaction material, WalletConnect state, or private settings.
 
 ## Local Process Model
 
-- Codex and Claude may each start a local Littlejohn stdio MCP process through
+- Codex and Claude may each start a local Little John stdio MCP process through
   `npx`.
 - Every process uses the same local SQLite database and the fixed origin
   `http://127.0.0.1:46630`.
@@ -239,7 +289,7 @@ to contain a malicious process already running with the same user authority.
 - One wallet coordinator owns the WalletConnect Sign Client, relay connection,
   session lifecycle, wallet-management-operation lifecycle, and request
   lifecycle.
-- A local Littlejohn profile has zero or one live WalletConnect session and zero
+- A local Little John profile has zero or one live WalletConnect session and zero
   or one nonterminal wallet management operation. A pending pairing proposal is
   operation state and is not a WalletConnect session.
 - MCP, web, and CLI send commands to the coordinator and consume its connection
@@ -267,13 +317,13 @@ to contain a malicious process already running with the same user authority.
 
 Required runtime persistence uses two stores with different authority:
 
-1. The product SQLite database stores shared Littlejohn state.
+1. The product SQLite database stores shared Little John state.
 2. The WalletConnect SDK private store contains WalletConnect protocol state
    and secrets.
 
 The SQLite main database and WAL are the durable product-state authority. The
 SQLite shared-memory file is owner-only transient coordination state. SQLite
-may create or reconstruct it from the WAL after a crash; Littlejohn never uses
+may create or reconstruct it from the WAL after a crash; Little John never uses
 its presence or bytes as product-state evidence.
 
 Fresh-database publication staging is never product state or a recovery input.
@@ -311,13 +361,13 @@ The WalletConnect SDK private store is authoritative for:
 - relay subscription and protocol state; and
 - WalletConnect JSON-RPC history required by the SDK.
 
-Littlejohn never copies a pairing URI, session topic, symmetric key, relay
+Little John never copies a pairing URI, session topic, symmetric key, relay
 credential, raw WalletConnect session record, raw signature, or raw signed
 transaction into SQLite. SQLite does not implement, inspect, migrate, or repair
 the WalletConnect SDK's private schema.
 
 Only the HTTP-owner process opens the WalletConnect SDK private store. Other
-Littlejohn processes consume the owner-provided connection read model and do
+Little John processes consume the owner-provided connection read model and do
 not open or copy that store.
 
 SQLite connection state is a derived projection and never proves that a wallet
@@ -332,7 +382,7 @@ is currently connected. On startup or ownership takeover, the coordinator:
 
 No valid session produces a disconnected projection. More than one live
 session violates the single-session invariant and produces an unresolved state;
-Littlejohn never chooses one, exposes session selection as a normal operation,
+Little John never chooses one, exposes session selection as a normal operation,
 or silently revokes sessions. The user must explicitly confirm disconnection or
 replacement of every stored session. Until reconciliation completes, the shared
 projection is unknown and cannot authorize a wallet request.
@@ -341,17 +391,17 @@ A wallet-originated deletion, expiry, account removal, chain removal, or
 unusable SDK store invalidates the SQLite projection. Historical connection
 events are not retained merely as an activity log.
 
-Both stores live under the Littlejohn application-data directory rather than
-the repository or browser storage. Littlejohn restricts their filesystem
+Both stores live under the Little John application-data directory rather than
+the repository or browser storage. Little John restricts their filesystem
 access to the current operating-system user and excludes their contents from
 application logs, exports, and diagnostic bundles.
 
 ## Browser Surfaces
 
-- A desktop AI host uses MCP for text interaction and opens a Littlejohn local
+- A desktop AI host uses MCP for text interaction and opens a Little John local
   URL in its controlled built-in browser when the user requests a visual page
   or an intent requires review.
-- Littlejohn owns the local page state and URL. The desktop host owns browser
+- Little John owns the local page state and URL. The desktop host owns browser
   display, focus, and navigation to that URL.
 - An intent review page contains the wallet connection and contract-execution
   flow for one review session and contains no links to other product pages.
@@ -364,9 +414,10 @@ application logs, exports, and diagnostic bundles.
   transaction.
 - Transaction authorization requirements are defined in
   `docs/TRANSACTION_POLICY.md`.
-- Host integrations open the local URL in their controlled browser when that
-  capability is available and otherwise present the same URL as a clickable
-  link.
+- Host integrations open the local URL only in their controlled built-in
+  browser and never launch a separate system browser. When the host cannot
+  display its built-in browser, it returns the URL as text and the web surface
+  remains unavailable in that host.
 
 ## Interface Selection
 
@@ -419,7 +470,7 @@ application logs, exports, and diagnostic bundles.
 - Pairing URIs and terminal QR output never enter MCP responses, redirected
   stdout, product-controlled logs, shell command arguments, durable evidence,
   or activity records. An external terminal transcript can record terminal
-  output and is outside Littlejohn's control.
+  output and is outside Little John's control.
 - The CLI confines QR output to an alternate terminal screen with the cursor
   hidden and restores the primary screen after pairing, rejection,
   cancellation, expiry, resize below the required dimensions, or controlled
@@ -489,7 +540,7 @@ application logs, exports, and diagnostic bundles.
   shown to the user. A changed revision makes the confirmation stale and causes
   no session mutation.
 - One target-chain account is required in an approved session. Zero or multiple
-  `eip155:4663` accounts fail validation; Littlejohn never selects an account
+  `eip155:4663` accounts fail validation; Little John never selects an account
   silently.
 - The coordinator derives accounts, chains, methods, and events from the
   approved session namespaces as defined by the
@@ -514,7 +565,7 @@ application logs, exports, and diagnostic bundles.
 
 These credentials have separate authority and are never interchangeable:
 
-- A `local control credential` authenticates a native Littlejohn process or CLI
+- A `local control credential` authenticates a native Little John process or CLI
   to the HTTP owner. It permits only the control route's declared operation and
   never proves the direct user action required for wallet connection and never
   authorizes signature or transaction execution. Its persisted representation
@@ -535,7 +586,7 @@ These credentials have separate authority and are never interchangeable:
   the selected flow.
 - A `WalletConnect session` is SDK-owned protocol state for approved namespaces,
   accounts, methods, events, and expiry. It is neither local HTTP authentication
-  nor explicit confirmation of a Littlejohn wallet operation.
+  nor explicit confirmation of a Little John wallet operation.
 
 Local control credentials, browser request credentials, confirmation grants,
 and grant references are unguessable and scope-limited. They are excluded from

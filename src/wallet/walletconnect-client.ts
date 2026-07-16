@@ -5,12 +5,17 @@ import {
   canonicalJsonStringify,
   codePointLength,
   compareCodePointSequences,
+  fixedIdentifierSchema,
   isSafeSingleLineText,
   parseEvmAddress,
+  robinhoodChainIdentity,
   robinhoodWalletNamespaceRequirements,
 } from "../core/index.js";
 import type { CanonicalJson, EvmAddress } from "../core/index.js";
-import type { WalletConnectConfiguration } from "../runtime/configuration.js";
+import {
+  walletConnectProjectIdSchema,
+  type WalletConnectConfiguration,
+} from "../runtime/configuration.js";
 import {
   createResourceOwnershipScope,
   type OwnedResource,
@@ -18,7 +23,11 @@ import {
   type OwnedResourceRegistry,
   type ResourceOwnershipScope,
 } from "../runtime/resource-ownership.js";
-import { parseWalletQrMatrix, type WalletQrMatrix } from "./contracts.js";
+import {
+  parseWalletQrMatrix,
+  walletQrMatrixSizeLimits,
+  type WalletQrMatrix,
+} from "./contracts.js";
 import walletExternalModulesValue from "./external-modules.cjs";
 
 export type WalletExternalModuleLoader = (
@@ -50,10 +59,9 @@ const sdkEventNames = Object.freeze([
   "session_event",
 ] as const);
 
-const topicPattern = /^[0-9a-f]{64}$/u;
-const projectIdPattern = /^[0-9a-f]{32}$/u;
-const pairingUriPattern = /^wc:([0-9a-f]{64})@2\?([^\s#]+)$/u;
-const fixedIdentifierPattern = /^[\x21-\x7e]{1,64}$/u;
+const topicPatternSource = "[0-9a-f]{64}";
+const topicPattern = new RegExp(`^${topicPatternSource}$`, "u");
+const pairingUriPattern = new RegExp(`^wc:(${topicPatternSource})@2\\?([^\\s#]+)$`, "u");
 const maximumNamespaceCount = 16;
 const maximumNamespaceArrayLength = 64;
 const maximumSdkStoreRecordCount = 256;
@@ -79,7 +87,8 @@ export interface WalletConnectSessionSnapshot {
   readonly namespaces: Readonly<Record<string, WalletConnectNamespaceSnapshot>>;
 }
 
-export type WalletConnectAccountReference = `eip155:4663:${EvmAddress}`;
+export type WalletConnectAccountReference =
+  `${typeof robinhoodChainIdentity.caip2}:${EvmAddress}`;
 
 export type WalletConnectAttemptOutcome =
   | { readonly status: "approved"; readonly session: WalletConnectSessionSnapshot }
@@ -122,6 +131,8 @@ export const walletConnectClientErrorCodes = Object.freeze([
 
 export type WalletConnectClientErrorCode = typeof walletConnectClientErrorCodes[number];
 
+const walletConnectClientErrors = new WeakSet<object>();
+
 const walletConnectClientErrorMessages = Object.freeze({
   client_closed: "The WalletConnect client is closed.",
   connection_attempt_active: "A WalletConnect connection attempt is already active.",
@@ -137,6 +148,7 @@ export class WalletConnectClientError extends Error {
     super(walletConnectClientErrorMessages[code]);
     this.name = "WalletConnectClientError";
     this.code = code;
+    walletConnectClientErrors.add(this);
     Object.freeze(this);
   }
 }
@@ -144,11 +156,7 @@ export class WalletConnectClientError extends Error {
 export const isWalletConnectClientError = (
   error: unknown,
 ): error is WalletConnectClientError => {
-  try {
-    return error instanceof WalletConnectClientError;
-  } catch {
-    return false;
-  }
+  return typeof error === "object" && error !== null && walletConnectClientErrors.has(error);
 };
 
 export interface WalletConnectClientPort {
@@ -200,9 +208,9 @@ export interface WalletConnectSdkInitOptions {
 export interface WalletConnectSdkConnectInput {
   readonly requiredNamespaces: {
     readonly eip155: {
-      readonly chains: readonly "eip155:4663"[];
-      readonly methods: readonly "eth_sendTransaction"[];
-      readonly events: readonly ("accountsChanged" | "chainChanged")[];
+      readonly chains: readonly (typeof robinhoodWalletNamespaceRequirements.chainId)[];
+      readonly methods: readonly (typeof robinhoodWalletNamespaceRequirements.methods[number])[];
+      readonly events: readonly (typeof robinhoodWalletNamespaceRequirements.events[number])[];
     };
   };
 }
@@ -728,7 +736,7 @@ const normalizeNamespaces = (
   const namespaceNames = (keys as string[]).sort(compareCodePointSequences);
   const output = Object.create(null) as Record<string, WalletConnectNamespaceSnapshot>;
   for (const namespace of namespaceNames) {
-    if (!fixedIdentifierPattern.test(namespace)) throw invalidSdkData();
+    if (!fixedIdentifierSchema.safeParse(namespace).success) throw invalidSdkData();
     const descriptor = descriptors[namespace];
     if (
       descriptor === undefined ||
@@ -1609,7 +1617,7 @@ const pairingTopicFromUri = (uri: string): string => {
     if (
       methodValues.length === 0 ||
       methodValues.length > maximumNamespaceArrayLength ||
-      methodValues.some((method) => !fixedIdentifierPattern.test(method)) ||
+      methodValues.some((method) => !fixedIdentifierSchema.safeParse(method).success) ||
       new Set(methodValues).size !== methodValues.length
     ) {
       throw invalidSdkData();
@@ -1625,8 +1633,8 @@ const qrMatrixFromValue = (value: unknown): WalletQrMatrix => {
   if (
     typeof size !== "number" ||
     !Number.isSafeInteger(size) ||
-    size < 21 ||
-    size > 177 ||
+    size < walletQrMatrixSizeLimits.minimum ||
+    size > walletQrMatrixSizeLimits.maximum ||
     !ArrayBuffer.isView(data) ||
     Reflect.getPrototypeOf(data) !== Uint8Array.prototype
   ) {
@@ -2694,7 +2702,7 @@ export const createWalletConnectClient = async (
   moduleLoader: WalletExternalModuleLoader = loadWalletExternalModule,
 ): Promise<WalletConnectClientAcquisition> => {
   if (
-    !projectIdPattern.test(configuration.projectId) ||
+    !walletConnectProjectIdSchema.safeParse(configuration.projectId).success ||
     !isAbsolute(configuration.privateStoreDirectory) ||
     configuration.privateStoreDirectory.includes("\0")
   ) {

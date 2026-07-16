@@ -4,6 +4,7 @@ import { createApplicationFailure } from "../../src/core/index.js";
 import {
   RuntimeOperationError,
   assertDirectInterfaceErrorMappingRegistryExtension,
+  createRuntimeFailure,
   normalizeRuntimeError,
   problemDetailsSchema,
   runtimeErrorRegistry,
@@ -274,6 +275,8 @@ describe("interface error authority", () => {
       issues: [],
     };
     expect(toProblemDetails(failure)).toEqual(expected);
+    expect(toProblemDetails(createRuntimeFailure("port_conflict")).detail)
+      .toBe("The fixed Little John port is owned by an incompatible process.");
     const runtime = (problemDetailsSchema as unknown as { _zod: { run: unknown } })._zod;
     const original = runtime.run;
     try {

@@ -10,6 +10,7 @@ import {
   createCanonicalClock,
   createCapabilityInvocationAuthority,
   createObservationAuthority,
+  getCapabilityDefinitionSnapshot,
   parseCapabilityDataAt,
   parseUtcTimestamp,
   sourceReferenceSchema,
@@ -39,6 +40,9 @@ import {
 import {
   createWalletOwnerApplicationFactory,
 } from "../../src/wallet/application.js";
+import {
+  walletManagementCapabilityIdList,
+} from "../../src/wallet/contracts.js";
 import { walletControlRoutes } from "../../src/wallet/routes.js";
 import type {
   WalletConnectClientAcquisition,
@@ -240,12 +244,8 @@ const availability = Object.freeze({
   cli: "available",
   web: "unavailable",
 });
-const expectedWalletManagementCapabilityIds = Object.freeze([
-  "wallet.cancel_operation",
-  "wallet.connect",
-  "wallet.disconnect",
-  "wallet.operation",
-] as const);
+const walletConnectionCapabilityId =
+  getCapabilityDefinitionSnapshot(walletConnectionCapability).capabilityId;
 
 describe("wallet owner application composition", () => {
   it("wires one prepared private store, client, coordinator, routes, manifest, and typed handoffs", async () => {
@@ -287,15 +287,15 @@ describe("wallet owner application composition", () => {
     expect(manifest.capabilities
       .filter((entry) => !parent.capabilities.some((parentEntry) =>
         parentEntry.capabilityId === entry.capabilityId))
-      .map((entry) => entry.capabilityId)).toEqual(expectedWalletManagementCapabilityIds);
+      .map((entry) => entry.capabilityId)).toEqual(walletManagementCapabilityIdList);
     expect(manifest.capabilities)
-      .toHaveLength(parent.capabilities.length + expectedWalletManagementCapabilityIds.length);
+      .toHaveLength(parent.capabilities.length + walletManagementCapabilityIdList.length);
     for (const parentEntry of parent.capabilities) {
-      if (parentEntry.capabilityId === "wallet.connection") continue;
+      if (parentEntry.capabilityId === walletConnectionCapabilityId) continue;
       expect(manifest.capabilities.find((entry) => entry.capabilityId === parentEntry.capabilityId))
         .toEqual(parentEntry);
     }
-    for (const capabilityId of [...expectedWalletManagementCapabilityIds, "wallet.connection"]) {
+    for (const capabilityId of [...walletManagementCapabilityIdList, walletConnectionCapabilityId]) {
       expect(manifest.capabilities.find((entry) => entry.capabilityId === capabilityId)?.availability)
         .toEqual(availability);
     }

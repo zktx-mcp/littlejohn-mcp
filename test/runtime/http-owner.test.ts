@@ -28,7 +28,13 @@ import {
 } from "../../src/runtime/http-owner.js";
 import { createResourceOwnershipScope } from "../../src/runtime/resource-ownership.js";
 import type { OwnerIdentity } from "../../src/runtime/runtime-identity.js";
-import { fixedHost, fixedHostHeader, fixedPort } from "../../src/runtime/http-boundary.js";
+import {
+  fixedHost,
+  fixedHostHeader,
+  fixedPort,
+  internalResponseLimitBytes,
+  publicReadResponseLimitBytes,
+} from "../../src/runtime/http-boundary.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
 
 const directories: string[] = [];
@@ -38,6 +44,26 @@ const servers: Server[] = [];
 const processWorkers: ProcessWorker[] = [];
 const now = parseUtcTimestamp("2026-07-12T10:16:02.000Z");
 const buildDigest = "a".repeat(64);
+const ownerIdentityPath = "/api/v1/runtime-identity";
+const ownerOperationMethod = "GET";
+const ownerOperationPath = "/api/v1/internal/control/example";
+
+type RawPeerRequestKind = "identity" | "operation" | "unrelated";
+
+const classifyRawPeerRequest = (request: Pick<IncomingMessage, "method" | "url">): RawPeerRequestKind => {
+  if (request.method === "GET" && request.url === ownerIdentityPath) return "identity";
+  if (request.method === ownerOperationMethod && request.url === ownerOperationPath) return "operation";
+  return "unrelated";
+};
+
+const rejectRawPeerRequest = (response: ServerResponse): void => {
+  response.writeHead(404, {
+    "Content-Length": "0",
+    "Cache-Control": "no-store",
+    Connection: "close",
+  });
+  response.end();
+};
 
 afterEach(async () => {
   await Promise.all(processWorkers.splice(0).map((worker) => worker.terminate()));
@@ -74,6 +100,7 @@ const listen = (server: Server): Promise<void> => new Promise((resolveListen, re
 const close = (server: Server): Promise<void> => new Promise((resolveClose, reject) => {
   if (!server.listening) return resolveClose();
   server.close((error) => error === undefined ? resolveClose() : reject(error));
+  server.closeAllConnections();
 });
 
 const requestJson = (
@@ -858,7 +885,13 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     test.database.ownerStore().publishOwner(Buffer.alloc(16, 12).toString("base64url"), now);
     let resolveAuthentication!: () => void;
     const authenticationStarted = new Promise<void>((resolveStarted) => { resolveAuthentication = resolveStarted; });
-    const foreign = createServer(() => { resolveAuthentication(); });
+    const foreign = createServer((request, response) => {
+      if (classifyRawPeerRequest(request) !== "identity") {
+        rejectRawPeerRequest(response);
+        return;
+      }
+      resolveAuthentication();
+    });
     servers.push(foreign);
     await listen(foreign);
     const candidate = new FixedHttpOwner({
@@ -874,22 +907,36 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     expect(candidate.state).toBe("stopped");
   });
 
-  it("defers compatible processes, uses the authenticated owner, and takes over only before operation delivery", async () => {
+  it("dispatches explicit request classes through one verified owner and takes over before delivery", async () => {
     const test = await fixture();
     const secondDatabase = await ProductDatabase.open(test.paths.database, now);
     databases.push(secondDatabase);
     let executions = 0;
     const applicationFactory = ({ routes }: HttpOwnerApplicationContext) => ({
-      routes: routes.extend([{
-        method: "GET",
-        pathPattern: "/api/v1/internal/control/example",
-        mutation: "none" as const,
-        response: "canonical_json" as const, successStatus: 200,
-        handler: async () => {
-          executions += 1;
-          return { ok: true as const, body: { executions } };
+      routes: routes.extend([
+        {
+          method: "GET",
+          pathPattern: "/api/v1/internal/control/example",
+          mutation: "none" as const,
+          response: "canonical_json" as const,
+          successStatus: 200,
+          handler: async () => {
+            executions += 1;
+            return { ok: true as const, body: { executions, resource: "control" } };
+          },
         },
-      }]),
+        {
+          method: "GET",
+          pathPattern: "/api/v1/dispatch-example",
+          mutation: "none" as const,
+          response: "canonical_json" as const,
+          successStatus: 200,
+          handler: async () => {
+            executions += 1;
+            return { ok: true as const, body: { executions, resource: "public" } };
+          },
+        },
+      ]),
       close: () => undefined,
     });
     const first = new FixedHttpOwner({
@@ -903,12 +950,90 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     owners.push(first, second);
     expect(await first.start()).toBe("owner");
     expect(await second.start()).toBe("deferred");
-    expect(await second.executeOwnerOperation({ method: "GET", path: "/api/v1/internal/control/example" }))
-      .toEqual({ status: 200, body: { executions: 1 } });
+    expect(await second.dispatchRuntimeRequest({
+      requestClass: "public_read",
+      method: "GET",
+      path: "/api/v1/dispatch-example",
+    })).toEqual({ status: 200, body: { executions: 1, resource: "public" } });
+    expect(await second.dispatchRuntimeRequest({
+      requestClass: "public_read",
+      method: "GET",
+      path: "/api/v1/internal/control/example",
+    })).toMatchObject({ status: 401, body: { code: "unauthorized" } });
+    expect(await second.dispatchRuntimeRequest({
+      requestClass: "local_control",
+      method: "GET",
+      path: "/api/v1/dispatch-example",
+    })).toMatchObject({ status: 401, body: { code: "unauthorized" } });
+    expect(executions).toBe(1);
+    expect(await second.dispatchRuntimeRequest({
+      requestClass: "local_control",
+      method: "GET",
+      path: "/api/v1/internal/control/example",
+    })).toEqual({ status: 200, body: { executions: 2, resource: "control" } });
     await first.stop();
-    expect(await second.executeOwnerOperation({ method: "GET", path: "/api/v1/internal/control/example" }))
-      .toEqual({ status: 200, body: { executions: 2 } });
+    expect(await second.dispatchRuntimeRequest({
+      requestClass: "public_read",
+      method: "GET",
+      path: "/api/v1/dispatch-example",
+    })).toEqual({ status: 200, body: { executions: 3, resource: "public" } });
     expect(second.state).toBe("owner");
+  });
+
+  it("enforces the exact byte-counted public read response limit across a deferred owner", async () => {
+    const test = await fixture();
+    const secondDatabase = await ProductDatabase.open(test.paths.database, now);
+    databases.push(secondDatabase);
+    const envelopeBytes = Buffer.byteLength('{"value":"€"}\n');
+    const value = `€${"x".repeat(publicReadResponseLimitBytes - envelopeBytes)}`;
+    const oversizedValue = `${value}x`;
+    expect(Buffer.byteLength(`${canonicalJsonStringify({ value })}\n`)).toBe(publicReadResponseLimitBytes);
+    expect(Buffer.byteLength(`${canonicalJsonStringify({ value: oversizedValue })}\n`))
+      .toBe(publicReadResponseLimitBytes + 1);
+    expect(Buffer.byteLength(value)).toBeGreaterThan(internalResponseLimitBytes);
+    const applicationFactory = ({ routes }: HttpOwnerApplicationContext) => ({
+      routes: routes.extend([
+        {
+          method: "GET",
+          pathPattern: "/api/v1/public-read-at-limit",
+          mutation: "none" as const,
+          response: "canonical_json" as const,
+          successStatus: 200,
+          handler: async () => ({ ok: true as const, body: { value } }),
+        },
+        {
+          method: "GET",
+          pathPattern: "/api/v1/public-read-over-limit",
+          mutation: "none" as const,
+          response: "canonical_json" as const,
+          successStatus: 200,
+          handler: async () => ({ ok: true as const, body: { value: oversizedValue } }),
+        },
+      ]),
+      close: () => undefined,
+    });
+    const first = new FixedHttpOwner({
+      ownerStore: test.database.ownerStore(), credential: test.credential,
+      runtimeBuildDigest: buildDigest, now: () => now, applicationFactory,
+    });
+    const second = new FixedHttpOwner({
+      ownerStore: secondDatabase.ownerStore(), credential: test.credential,
+      runtimeBuildDigest: buildDigest, now: () => now, applicationFactory,
+    });
+    owners.push(first, second);
+
+    expect(await first.start()).toBe("owner");
+    expect(await second.start()).toBe("deferred");
+    expect(await second.dispatchRuntimeRequest({
+      requestClass: "public_read",
+      method: "GET",
+      path: "/api/v1/public-read-at-limit",
+    })).toEqual({ status: 200, body: { value } });
+    expect(await second.dispatchRuntimeRequest({
+      requestClass: "public_read",
+      method: "GET",
+      path: "/api/v1/public-read-over-limit",
+    })).toMatchObject({ status: 500, body: { code: "internal_error" } });
   });
 
   it("serves browser content through fixed headers without exposing an arbitrary header channel", async () => {
@@ -974,6 +1099,84 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     expect(response.headers["set-cookie"]).toEqual([cookie]);
   });
 
+  it("binds browser authentication to the immutable matched path parameters before dispatch", async () => {
+    const test = await fixture();
+    let handlerCalls = 0;
+    const owner = new FixedHttpOwner({
+      ownerStore: test.database.ownerStore(), credential: test.credential,
+      runtimeBuildDigest: buildDigest, now: () => now,
+      applicationFactory: ({ routes }) => {
+        const securedRoutes = routes.extendRequestPolicies({
+          authenticationVerifiers: [{
+            authentication: "browser_operation",
+            verify: (input) => input.authorization.length === 0 &&
+              input.cookie.length === 1 && input.cookie[0] === "littlejohn_browser=credential" &&
+              input.csrfToken.length === 0 && Object.isFrozen(input.params) &&
+              Object.getPrototypeOf(input.params) === null &&
+              input.params["operationId"] === "authorized-operation",
+          }],
+          policies: [{
+            requestClass: "browser_read", host: "fixed", origin: "absent_or_fixed",
+            authentication: "browser_operation", body: "none",
+            responseLimitBytes: 65_536, mutation: "none",
+          }],
+        }, [{
+          kind: "route", method: "GET",
+          pathPattern: "/api/v1/wallet/operations/{operationId}",
+          requestClass: "browser_read",
+        }]);
+        return {
+          routes: securedRoutes.extend([{
+            method: "GET", mutation: "none",
+            pathPattern: "/api/v1/wallet/operations/{operationId}",
+            response: "canonical_json", successStatus: 200,
+            handler: async () => {
+              handlerCalls += 1;
+              return { ok: true, body: { authorized: true } };
+            },
+          }]),
+          close: () => undefined,
+        };
+      },
+    });
+    owners.push(owner);
+    expect(await owner.start()).toBe("owner");
+
+    const cookie = { Cookie: "littlejohn_browser=credential" };
+    const accepted = await requestJson(
+      "/api/v1/wallet/operations/authorized-operation",
+      "GET",
+      cookie,
+    );
+    expect(accepted).toMatchObject({ status: 200, body: { authorized: true } });
+
+    const foreign = await requestJson(
+      "/api/v1/wallet/operations/foreign-operation",
+      "GET",
+      cookie,
+    );
+    expect(foreign).toMatchObject({ status: 401, body: { code: "unauthorized" } });
+
+    const acceptedMethodRejection = await requestJson(
+      "/api/v1/wallet/operations/authorized-operation",
+      "POST",
+      cookie,
+    );
+    expect(acceptedMethodRejection.status).toBe(405);
+    expect(acceptedMethodRejection.headers["allow"]).toBe("GET");
+
+    const foreignMethodRejection = await requestJson(
+      "/api/v1/wallet/operations/foreign-operation",
+      "POST",
+      cookie,
+    );
+    expect(foreignMethodRejection).toMatchObject({
+      status: 401,
+      body: { code: "unauthorized" },
+    });
+    expect(handlerCalls).toBe(1);
+  });
+
   it("sends the credential-bearing operation on the exact socket that authenticated the owner", async () => {
     const key = new Uint8Array(32).fill(16);
     const test = await fixture(key);
@@ -983,7 +1186,12 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     let operationSocket: IncomingMessage["socket"] | undefined;
     const authorizations: string[] = [];
     const compatible = createServer((request, response) => {
-      if (request.url === "/api/v1/runtime-identity") {
+      const requestKind = classifyRawPeerRequest(request);
+      if (requestKind === "unrelated") {
+        rejectRawPeerRequest(response);
+        return;
+      }
+      if (requestKind === "identity") {
         identityRequests += 1;
         if (identityRequests === 2) authenticatedSocket = request.socket;
         const identityWithoutProof = {
@@ -1013,7 +1221,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     });
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
-    expect(await candidate.executeOwnerOperation({ method: "GET", path: "/api/v1/internal/control/example" }))
+    expect(await candidate.dispatchRuntimeRequest({ requestClass: "local_control", method: "GET", path: "/api/v1/internal/control/example" }))
       .toEqual({ status: 200, body: { served: true } });
     expect(identityRequests).toBe(2);
     expect(authenticatedSocket).toBeDefined();
@@ -1028,7 +1236,12 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     let identityRequests = 0;
     let operationRequests = 0;
     const compatible = createServer((request, response) => {
-      if (request.url === "/api/v1/runtime-identity") {
+      const requestKind = classifyRawPeerRequest(request);
+      if (requestKind === "unrelated") {
+        rejectRawPeerRequest(response);
+        return;
+      }
+      if (requestKind === "identity") {
         identityRequests += 1;
         const identityWithoutProof = {
           profileId: record.profileId,
@@ -1055,7 +1268,9 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     });
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
-    expect(await candidate.executeOwnerOperation({ method: "GET", path: "/api/v1/internal/control/example" }))
+    expect(await requestText(`/api/v1/wallet/operations/${"A".repeat(43)}`))
+      .toMatchObject({ status: 404, body: "" });
+    expect(await candidate.dispatchRuntimeRequest({ requestClass: "local_control", method: "GET", path: "/api/v1/internal/control/example" }))
       .toEqual({ status: 200, body: { completed: true } });
     expect(identityRequests).toBe(2);
     expect(operationRequests).toBe(1);
@@ -1073,14 +1288,19 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     const originalAuthorizations: string[] = [];
     const replacementAuthorizations: string[] = [];
     const original = createServer((request, response) => {
-      if (replacementMode && request.socket !== authenticatedSocket) {
+      const requestKind = classifyRawPeerRequest(request);
+      if (requestKind === "unrelated") {
+        rejectRawPeerRequest(response);
+        return;
+      }
+      if (requestKind === "operation" && replacementMode && request.socket !== authenticatedSocket) {
         replacementRequests += 1;
         const authorization = request.headers["authorization"];
         if (typeof authorization === "string") replacementAuthorizations.push(authorization);
         request.socket.destroy();
         return;
       }
-      if (request.url !== "/api/v1/runtime-identity") {
+      if (requestKind === "operation") {
         originalOperationRequests += 1;
         const authorization = request.headers["authorization"];
         if (typeof authorization === "string") originalAuthorizations.push(authorization);
@@ -1127,7 +1347,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     });
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
-    const operation = candidate.executeOwnerOperation({
+    const operation = candidate.dispatchRuntimeRequest({ requestClass: "local_control",
       method: "GET", path: "/api/v1/internal/control/example",
     }).then(
       (value) => ({ kind: "settled" as const, value }),
@@ -1176,8 +1396,17 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     let firstChallenge: string | undefined;
     const authorizations: string[] = [];
     const foreign = createServer((request, response) => {
+      const requestKind = classifyRawPeerRequest(request);
+      if (requestKind === "unrelated") {
+        rejectRawPeerRequest(response);
+        return;
+      }
       const authorization = request.headers["authorization"];
       if (typeof authorization === "string") authorizations.push(authorization);
+      if (requestKind === "operation") {
+        rejectRawPeerRequest(response);
+        return;
+      }
       const current = request.headers["littlejohn-identity-challenge"] as string;
       firstChallenge ??= current;
       const identityWithoutProof = {
@@ -1201,7 +1430,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     });
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
-    await expect(candidate.executeOwnerOperation({ method: "GET", path: "/api/v1/internal/control/example" }))
+    await expect(candidate.dispatchRuntimeRequest({ requestClass: "local_control", method: "GET", path: "/api/v1/internal/control/example" }))
       .rejects.toMatchObject({ failure: { error: { code: "port_conflict" } } });
     expect(authorizations).toEqual([]);
   });
@@ -1315,8 +1544,17 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     for (const testCase of cases) {
       const authorizations: string[] = [];
       const foreign = createServer((request, response) => {
+        const requestKind = classifyRawPeerRequest(request);
+        if (requestKind === "unrelated") {
+          rejectRawPeerRequest(response);
+          return;
+        }
         const authorization = request.headers["authorization"];
         if (typeof authorization === "string") authorizations.push(authorization);
+        if (requestKind === "operation") {
+          rejectRawPeerRequest(response);
+          return;
+        }
         const valid: IndependentProofFields = {
           profileId: record.profileId,
           ownerInstanceId: record.ownerInstanceId,
@@ -1356,6 +1594,10 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       rejectStreaming = rejectFinished;
     });
     const foreign = createServer((request, response) => {
+      if (classifyRawPeerRequest(request) !== "identity") {
+        rejectRawPeerRequest(response);
+        return;
+      }
       let closed = false;
       response.once("close", () => {
         closed = true;
@@ -1409,7 +1651,12 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     let identityRequests = 0;
     let operationRequests = 0;
     const foreign = createServer((request, response) => {
-      if (request.url === "/api/v1/runtime-identity") {
+      const requestKind = classifyRawPeerRequest(request);
+      if (requestKind === "unrelated") {
+        rejectRawPeerRequest(response);
+        return;
+      }
+      if (requestKind === "identity") {
         identityRequests += 1;
         const identityWithoutProof = {
           profileId: record.profileId,
@@ -1436,7 +1683,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     });
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
-    await expect(candidate.executeOwnerOperation({ method: "GET", path: "/api/v1/internal/control/example" }))
+    await expect(candidate.dispatchRuntimeRequest({ requestClass: "local_control", method: "GET", path: "/api/v1/internal/control/example" }))
       .rejects.toMatchObject({ failure: { error: { code: "runtime_state_unavailable" } } });
     expect(identityRequests).toBe(2);
     expect(operationRequests).toBe(1);
@@ -1451,8 +1698,17 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     let resolveAuthentication!: () => void;
     const authenticationStarted = new Promise<void>((resolveStarted) => { resolveAuthentication = resolveStarted; });
     const foreign = createServer((request, response) => {
+      const requestKind = classifyRawPeerRequest(request);
+      if (requestKind === "unrelated") {
+        rejectRawPeerRequest(response);
+        return;
+      }
       const authorization = request.headers["authorization"];
       if (typeof authorization === "string") authorizations.push(authorization);
+      if (requestKind === "operation") {
+        rejectRawPeerRequest(response);
+        return;
+      }
       identityRequests += 1;
       if (identityRequests === 2) {
         resolveAuthentication();
@@ -1479,7 +1735,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     });
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
-    const operationOutcome = candidate.executeOwnerOperation({
+    const operationOutcome = candidate.dispatchRuntimeRequest({ requestClass: "local_control",
       method: "GET", path: "/api/v1/internal/control/example",
     }).then((value) => value, (error: unknown) => error);
     await authenticationStarted;
@@ -1500,7 +1756,12 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     let resolveDelivery!: () => void;
     const delivered = new Promise<void>((resolveDelivered) => { resolveDelivery = resolveDelivered; });
     const foreign = createServer((request, response) => {
-      if (request.url === "/api/v1/runtime-identity") {
+      const requestKind = classifyRawPeerRequest(request);
+      if (requestKind === "unrelated") {
+        rejectRawPeerRequest(response);
+        return;
+      }
+      if (requestKind === "identity") {
         identityRequests += 1;
         const identityWithoutProof = {
           profileId: record.profileId,
@@ -1528,7 +1789,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
     let operationSettled = false;
-    const operationOutcome = candidate.executeOwnerOperation({
+    const operationOutcome = candidate.dispatchRuntimeRequest({ requestClass: "local_control",
       method: "GET", path: "/api/v1/internal/control/example",
     }).then(
       (value) => { operationSettled = true; return value; },

@@ -8,7 +8,7 @@ behavior, and adapter verification policy.
 
 - Candidate evidence follows `docs/EVIDENCE_POLICY.md`. A candidate first
   satisfies the platform-owned gates referenced below.
-- Among candidates that satisfy those mandatory gates, Littlejohn prioritizes
+- Among candidates that satisfy those mandatory gates, Little John prioritizes
   integrations with an officially documented and technically verifiable revenue
   mechanism.
 - Revenue capability affects integration work priority only. It never grants a
@@ -26,7 +26,7 @@ behavior, and adapter verification policy.
 ## Package Boundary
 
 - Each supported DEX integration is an independent workspace package included
-  in the published Littlejohn package.
+  in the published `littlejohn-mcp` package.
 - The running `npx` service does not discover, download, install, or load DEX
   code dynamically.
 - A package contains its pinned official SDK integration and keeps every SDK
@@ -80,12 +80,12 @@ feature gates.
 
 ## Names And Semantics
 
-Littlejohn does not use SDK method names or contract function names as the
+Little John does not use SDK method names or contract function names as the
 cross-protocol abstraction.
 
 Each action adapter keeps two explicit descriptions:
 
-- the Littlejohn action contract, defined by user meaning, exact inputs, units,
+- the Little John action contract, defined by user meaning, exact inputs, units,
   constraints, expected effects, and verification requirements; and
 - the protocol-native operation, defined by the official SDK method, contract
   function, ABI signature, protocol terms, and native parameter names.
@@ -96,10 +96,10 @@ diagnostics.
 
 Mapping follows these rules:
 
-- Different native names map to one Littlejohn action only when their input
+- Different native names map to one Little John action only when their input
   meaning, execution model, effects, failure behavior, and required guarantees
   are equivalent.
-- The same native name maps to separate Littlejohn actions when its meaning,
+- The same native name maps to separate Little John actions when its meaning,
   amount mode, execution model, authorization, or effects differ.
 - Partially overlapping operations use separate action contracts and share only
   the exact common evidence and numeric types.
@@ -109,15 +109,15 @@ Mapping follows these rules:
 
 ## Parameter Contracts
 
-Every action adapter defines a discriminated, versioned Littlejohn input schema
-and a separate protocol-native parameter mapping. The Littlejohn input contains:
+Every action adapter defines a discriminated, versioned Little John input schema
+and a separate protocol-native parameter mapping. The Little John input contains:
 
 - a common envelope for chain, sender, recipient, token identities, exact raw
   amounts, limits, expiry, and user selections when those concepts apply; and
 - an action-specific payload for the exact protocol-independent semantics.
 
 The protocol-native mapping remains inside the adapter package and translates
-the validated Littlejohn input into exact SDK and calldata parameters.
+the validated Little John input into exact SDK and calldata parameters.
 
 The common envelope contains no meaningless placeholder fields. An action that
 does not use a common concept omits it through a different action schema rather
@@ -139,7 +139,7 @@ For every transaction-critical parameter, the adapter declares:
   or protocol-required; and
 - the calldata or value field that consumes it.
 
-SDK defaults never supply a transaction-critical value implicitly. Littlejohn
+SDK defaults never supply a transaction-critical value implicitly. Little John
 resolves the value explicitly, includes it in review and commitments when it can
 change meaning, and blocks the action when it cannot be resolved.
 
@@ -163,7 +163,7 @@ The package descriptor declares for each capability:
   availability.
 
 Intent resolution targets a semantic capability. When the request is ambiguous
-between capabilities or protocols, Littlejohn asks for the missing choice and
+between capabilities or protocols, Little John asks for the missing choice and
 does not infer it from similar names.
 
 ## Mapping Output

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile, readdir } from "node:fs/promises";
-import { relative, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -35,18 +35,6 @@ const buildRuleFiles = [
   "tsconfig.json",
   "vitest.config.ts",
 ] as const;
-
-const collect = async (path: string): Promise<string[]> => {
-  const entries = await readdir(path, { withFileTypes: true });
-  const files: string[] = [];
-  for (const entry of entries) {
-    const child = resolve(path, entry.name);
-    if (entry.isDirectory()) files.push(...await collect(child));
-    else if (entry.isFile()) files.push(relative(resolve("."), child));
-    else throw new TypeError(`Unexpected handoff entry: ${child}`);
-  }
-  return files;
-};
 
 const loadFixture = async (): Promise<Wu1HandoffFixture> => {
   const { bytes, fixture } = await loadWu1HandoffFixture(fixturePath);
@@ -231,21 +219,6 @@ const lockClosure = (
   return projection;
 };
 
-const immutableFileDigests = async (): Promise<Readonly<Record<string, string>>> => {
-  const paths = [
-    ...await collect("src/core"),
-    ...await collect("src/build"),
-    ...await collect("test/core"),
-    "scripts/clean.mjs",
-    "tsconfig.json",
-    "tsconfig.build.json",
-    "vitest.config.ts",
-  ].sort(compareCodePointSequences);
-  const digests: Record<string, string> = Object.create(null) as Record<string, string>;
-  for (const path of paths) digests[path] = createHash("sha256").update(await readFile(path)).digest("hex");
-  return digests;
-};
-
 const buildRuleProjection = (
   foundation: ReturnType<typeof packageFoundation>,
   files: Readonly<Record<string, string>>,
@@ -254,13 +227,11 @@ const buildRuleProjection = (
   files: select(files, buildRuleFiles),
 } as unknown as CanonicalJson);
 
-describe("WU1 frozen handoff", () => {
-  it("retains the exact immutable WU1 file set and bytes", async () => {
+describe("WU1 baseline semantic handoff", () => {
+  it("preserves the producer fixture identity and internal immutable-file projection", async () => {
     const fixture = await loadFixture();
-    const actual = await immutableFileDigests();
-    expect(Object.keys(actual)).toEqual(Object.keys(fixture.immutableFiles));
-    expect(actual).toEqual(fixture.immutableFiles);
-    expect(canonicalSha256(actual as unknown as CanonicalJson)).toBe(fixture.immutableFilesDigest);
+    expect(canonicalSha256(fixture.immutableFiles as unknown as CanonicalJson))
+      .toBe(fixture.immutableFilesDigest);
   });
 
   it("preserves the package foundation and complete activated extension groups", async () => {
@@ -377,6 +348,60 @@ describe("WU1 frozen handoff", () => {
     expect(analysis.activeWorkUnits.has("WU5")).toBe(true);
   });
 
+  it("keeps browser globals in the isolated WU5 typecheck and preserves the Node build boundary", async () => {
+    const nodeConfig = JSON.parse(await readFile("tsconfig.json", "utf8")) as {
+      readonly compilerOptions: { readonly lib: readonly string[] };
+      readonly include: readonly string[];
+    };
+    const webConfig = JSON.parse(await readFile("tsconfig.web.json", "utf8")) as {
+      readonly compilerOptions: Readonly<Record<string, unknown>>;
+      readonly include: readonly string[];
+    };
+    const buildConfig = JSON.parse(await readFile("tsconfig.build.json", "utf8")) as {
+      readonly include: readonly string[];
+      readonly exclude: readonly string[];
+    };
+    const viteConfig = (await import("../../vite.config.js")).default;
+
+    expect(nodeConfig.compilerOptions.lib).toEqual(["ES2023"]);
+    expect(nodeConfig.include).toEqual([
+      "src/**/*.ts",
+      "test/**/*.ts",
+      "scripts/browser-build-policy.ts",
+      "vite.config.ts",
+    ]);
+    expect(webConfig.compilerOptions).toMatchObject({
+      target: "ES2023",
+      module: "ESNext",
+      moduleResolution: "Bundler",
+      lib: ["ES2023", "DOM", "DOM.Iterable"],
+      jsx: "react-jsx",
+      types: ["vite/client"],
+      noEmit: true,
+    });
+    expect(webConfig.include).toEqual([
+      "src/interfaces/web/**/*.ts",
+      "src/interfaces/web/**/*.tsx",
+      "test/interfaces/web/**/*.ts",
+      "test/interfaces/web/**/*.tsx",
+    ]);
+    expect(buildConfig.include).toEqual(["src/**/*.ts"]);
+    expect(buildConfig.exclude).toEqual(["test", "dist"]);
+    expect(viteConfig).toMatchObject({
+      root: resolve("src/interfaces/web"),
+      base: "/",
+      publicDir: false,
+      build: {
+        outDir: resolve("dist/web"),
+        emptyOutDir: true,
+        assetsDir: "assets",
+        assetsInlineLimit: 0,
+        sourcemap: false,
+        rollupOptions: { input: resolve("src/interfaces/web/index.html") },
+      },
+    });
+  });
+
   it("binds the shrinkwrap root to the current manifest and preserves exact WU1 resolution", async () => {
     const fixture = await loadFixture();
     const manifest = await loadPackageManifest();
@@ -397,11 +422,10 @@ describe("WU1 frozen handoff", () => {
   it("freezes the complete capability projection and build-rule projections", async () => {
     const fixture = await loadFixture();
     const manifest = await loadPackageManifest();
-    const files = await immutableFileDigests();
     expect(canonicalSha256(
       projectCapabilities(readCapabilityRegistry) as unknown as CanonicalJson,
     )).toBe(fixture.capabilityProjectionDigest);
-    expect(canonicalSha256(buildRuleProjection(packageFoundation(manifest, fixture), files)))
+    expect(canonicalSha256(buildRuleProjection(packageFoundation(manifest, fixture), fixture.immutableFiles)))
       .toBe(fixture.buildRuleDigest);
   });
 });

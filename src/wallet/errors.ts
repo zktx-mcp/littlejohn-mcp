@@ -2,84 +2,26 @@ import {
   createApplicationFailure,
   type ApplicationFailure,
 } from "../core/index.js";
+import { getRuntimeOperationFailure } from "../runtime/errors.js";
+import { runtimeErrorRegistry, runtimeInterfaceErrorMappings } from "../runtime/index.js";
 import {
-  RuntimeOperationError,
-  runtimeErrorRegistry,
-  runtimeInterfaceErrorMappings,
-} from "../runtime/index.js";
+  walletErrorDefinitions,
+  walletInterfaceErrorMappingDefinitions,
+} from "./error-definitions.js";
 
-const walletDefinitions = [
-  {
-    code: "wallet_not_connected",
-    category: "wallet",
-    message: "No usable Robinhood Wallet connection is active.",
-    retryable: false,
-  },
-  {
-    code: "wallet_session_unusable",
-    category: "wallet",
-    message: "The WalletConnect session cannot satisfy this request.",
-    retryable: false,
-  },
-  {
-    code: "wallet_user_rejected",
-    category: "wallet",
-    message: "The user rejected the wallet request.",
-    retryable: false,
-  },
-  {
-    code: "wallet_timeout",
-    category: "wallet",
-    message: "The wallet request timed out.",
-    retryable: true,
-  },
-  {
-    code: "interactive_terminal_required",
-    category: "input",
-    message: "This command requires an interactive terminal.",
-    retryable: false,
-  },
-] as const;
+export type WalletErrorCode = typeof walletErrorDefinitions[number]["code"];
 
-export type WalletErrorCode = typeof walletDefinitions[number]["code"];
+export const walletErrorRegistry = runtimeErrorRegistry.extend(walletErrorDefinitions);
 
-export const walletErrorRegistry = runtimeErrorRegistry.extend(walletDefinitions);
-
-export const walletInterfaceErrorMappings = runtimeInterfaceErrorMappings.extend(walletErrorRegistry, [
-  {
-    code: "wallet_not_connected",
-    httpStatus: 409,
-    problemTitle: "Wallet not connected",
-    cliExitCode: 5,
-  },
-  {
-    code: "wallet_session_unusable",
-    httpStatus: 409,
-    problemTitle: "Wallet session unusable",
-    cliExitCode: 5,
-  },
-  {
-    code: "wallet_user_rejected",
-    httpStatus: 409,
-    problemTitle: "Wallet request rejected",
-    cliExitCode: 5,
-  },
-  {
-    code: "wallet_timeout",
-    httpStatus: 504,
-    problemTitle: "Wallet request timed out",
-    cliExitCode: 4,
-  },
-  {
-    code: "interactive_terminal_required",
-    httpStatus: 422,
-    problemTitle: "Interactive terminal required",
-    cliExitCode: 2,
-  },
-]);
+export const walletInterfaceErrorMappings = runtimeInterfaceErrorMappings.extend(
+  walletErrorRegistry,
+  walletInterfaceErrorMappingDefinitions,
+);
 
 export const createWalletFailure = (code: string): ApplicationFailure =>
   createApplicationFailure(walletErrorRegistry, code);
+
+const walletOperationFailures = new WeakMap<object, ApplicationFailure>();
 
 export class WalletOperationError extends Error {
   readonly failure: ApplicationFailure;
@@ -89,13 +31,18 @@ export class WalletOperationError extends Error {
     super(failure.error.message);
     this.name = "WalletOperationError";
     this.failure = failure;
+    walletOperationFailures.set(this, failure);
     Object.freeze(this);
   }
 }
 
-export const normalizeWalletError = (error: unknown): WalletOperationError =>
-  error instanceof WalletOperationError
-    ? error
-    : error instanceof RuntimeOperationError
-      ? new WalletOperationError(error.failure.error.code)
-      : new WalletOperationError("internal_error");
+export const getWalletOperationFailure = (error: unknown): ApplicationFailure | undefined =>
+  typeof error === "object" && error !== null
+    ? walletOperationFailures.get(error)
+    : undefined;
+
+export const normalizeWalletError = (error: unknown): WalletOperationError => {
+  if (getWalletOperationFailure(error) !== undefined) return error as WalletOperationError;
+  const runtimeFailure = getRuntimeOperationFailure(error);
+  return new WalletOperationError(runtimeFailure?.error.code ?? "internal_error");
+};

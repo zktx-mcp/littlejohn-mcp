@@ -85,7 +85,7 @@ into a positive conclusion.
   session record, namespaces, accounts, methods, events, and expiry described by
   the [official WalletConnect session model](https://docs.walletconnect.network/wallet-sdk/web/usage).
   It does not establish address ownership, present connectivity, or approval of
-  a Littlejohn wallet request.
+  a Little John wallet request.
 - Threat and reputation signals are advisory facts, not identity or safety
   decisions.
 - Absence from an allowlist, denylist, or threat registry is an observation, not

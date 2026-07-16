@@ -6,6 +6,7 @@ export {
   gasUnitsSchema,
   nativeAssetIdentitySchema,
   nativeGasRateSchema,
+  maximumTokenDecimals,
 } from "./amounts.js";
 export type {
   AssetIdentity,
@@ -22,6 +23,8 @@ export {
 } from "./canonical-json.js";
 export type { CanonicalJson } from "./canonical-json.js";
 export { coreContractVersion } from "./contract.js";
+export { createSha256HexSchema } from "./digests.js";
+export { productDisplayName } from "./product-identity.js";
 export {
   buildPathSchema,
   createRuntimeBuildIdentity,
@@ -32,8 +35,11 @@ export {
 export type { RuntimeBuildIdentity } from "./build-identity.js";
 export {
   accountBalanceCapability,
+  chainReadCapabilities,
   chainStatusCapability,
   contractInspectCapability,
+  createAccountBalanceTokenEvidenceIdentity,
+  readCapabilityLimits,
   readCapabilityRegistry,
   transactionInspectCapability,
   walletConnectionCapability,
@@ -47,9 +53,12 @@ export type {
   ContractInspectInput,
   TransactionInspectData,
   TransactionInspectInput,
-  WalletConnectionData,
   WalletConnectionInput,
 } from "./capabilities.js";
+export {
+  walletConnectionDataSchema,
+} from "./wallet-connection.js";
+export type { WalletConnectionData } from "./wallet-connection.js";
 export {
   CapabilityBindingRegistry,
   CapabilityRegistry,

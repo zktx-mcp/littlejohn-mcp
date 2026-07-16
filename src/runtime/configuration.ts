@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { productDisplayName } from "../core/index.js";
 import { fixedOrigin } from "./http-boundary.js";
 
 export const defaultRpcUrl = "https://rpc.mainnet.chain.robinhood.com";
@@ -21,7 +22,7 @@ const configuredRpcStates = new WeakMap<object, ConfiguredRpcEndpointState>();
 export interface WalletConnectConfiguration {
   readonly projectId: string;
   readonly metadata: {
-    readonly name: "Littlejohn";
+    readonly name: typeof productDisplayName;
     readonly description: "Local Robinhood Chain wallet connection";
     readonly url: typeof fixedOrigin;
     readonly icons: readonly [];
@@ -33,7 +34,7 @@ export interface RuntimeConfiguration {
   readonly wallet: WalletConnectConfiguration;
 }
 
-const walletConnectProjectIdSchema = z.string().regex(/^[0-9a-f]{32}$/);
+export const walletConnectProjectIdSchema = z.string().regex(/^[0-9a-f]{32}$/);
 const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -91,7 +92,7 @@ export const readRuntimeConfiguration = (
   const wallet = Object.freeze({
     projectId,
     metadata: Object.freeze({
-      name: "Littlejohn" as const,
+      name: productDisplayName,
       description: "Local Robinhood Chain wallet connection" as const,
       url: fixedOrigin,
       icons: Object.freeze([]) as readonly [],

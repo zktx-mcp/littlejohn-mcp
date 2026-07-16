@@ -348,8 +348,19 @@ export const renderCurrentSupportSection = (manifest: RuntimeSupportManifest): s
   const availableCapabilities = snapshot.capabilities
     .filter((entry) => entry.availability.overall === "available")
     .map((entry) => `\`${entry.capabilityId}\``);
-  const walletCliAvailable = snapshot.capabilities
-    .find((entry) => entry.capabilityId === walletConnectionCapabilityId)?.availability.cli === "available";
+  const walletConnectionAvailability = snapshot.capabilities
+    .find((entry) => entry.capabilityId === walletConnectionCapabilityId)?.availability;
+  const walletCapabilities = snapshot.capabilities
+    .filter((entry) => entry.capabilityId.startsWith("wallet."));
+  const exposedBindingLabels = (availability: CapabilityAvailability): readonly string[] => Object.freeze([
+    availability.http === "available" ? "HTTP" : undefined,
+    availability.mcp === "available" ? "MCP" : undefined,
+    availability.cli === "available" ? "CLI" : undefined,
+    availability.web === "available" ? "web" : undefined,
+  ].filter((value): value is string => value !== undefined));
+  const walletSupport = walletCapabilities
+    .filter((entry) => entry.availability.overall === "available")
+    .map((entry) => `\`${entry.capabilityId}\` (${exposedBindingLabels(entry.availability).join(", ")})`);
   const displayLevel = (level: string): string => level.replace("_", " ");
   const protocols = snapshot.protocols.map((entry) => `\`${entry.protocolId}\` (${displayLevel(entry.supportLevel)})`);
   const transactionActions = snapshot.transactionActions.map((entry) => `\`${entry.actionId}\` (${displayLevel(entry.supportLevel)})`);
@@ -366,9 +377,9 @@ export const renderCurrentSupportSection = (manifest: RuntimeSupportManifest): s
     `  Source owner: ${chain.evidence.sourceOwner}. Coverage: ${chain.evidence.coverage}`,
     `  Unsupported conclusions: ${chain.evidence.unsupportedConclusions.join(" ")}`,
     protocols.length === 0 ? "- Implemented protocol support: none." : `- Implemented protocol support: ${protocols.join(", ")}.`,
-    walletCliAvailable
-      ? "- Implemented wallet support: WalletConnect connection through the interactive CLI."
-      : "- Implemented wallet support: none.",
+    walletSupport.length === 0
+      ? "- Implemented wallet support: none."
+      : `- Implemented wallet support: ${walletSupport.join("; ")}.`,
     transactionActions.length === 0
       ? "- Implemented transaction actions: none."
       : `- Implemented transaction actions: ${transactionActions.join(", ")}.`,

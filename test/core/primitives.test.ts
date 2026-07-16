@@ -124,6 +124,7 @@ describe("canonical primitives", () => {
 
   it("canonicalizes key order independently of insertion order", () => {
     expect(canonicalJsonStringify({ b: 2, a: 1 })).toBe('{"a":1,"b":2}');
+    expect(canonicalJsonStringify({ "2": 2, "10": 1 })).toBe('{"10":1,"2":2}');
     expect(canonicalJsonStringify({ "\uffff": 1, "\u{10000}": 2 })).toBe('{"￿":1,"𐀀":2}');
   });
 

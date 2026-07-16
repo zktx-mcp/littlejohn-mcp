@@ -42,6 +42,7 @@ const base: RequestSecurityInput = {
   authorization: [],
   cookie: [],
   csrfToken: [],
+  params: Object.freeze({}),
   contentType: [],
   query: "",
   bodyLength: 0,
@@ -141,7 +142,7 @@ describe("HTTP request-class and route authority", () => {
     if (internal.status !== "matched") return;
     expect(internal.route.requestClass).toBe("local_control");
     expect(internal.route.acceptsBody).toBe(false);
-    expect(routes.validateSecurity(internal.route, {
+    expect(routes.validateSecurity(internal, {
       host: ["127.0.0.1:46630"], origin: [], authorization: [authorization],
       cookie: [], csrfToken: [], contentType: [], query: "", bodyLength: 0,
     })).toEqual({ ok: true });
@@ -174,9 +175,15 @@ describe("HTTP request-class and route authority", () => {
     const extension = {
       authenticationVerifiers: [{
         authentication: "browser_session",
-        verify: (input: { cookie: readonly string[]; csrfToken: readonly string[] }) =>
+        verify: (input: {
+          cookie: readonly string[];
+          csrfToken: readonly string[];
+          params: Readonly<Record<string, string>>;
+        }) =>
           input.cookie.length === 1 && input.cookie[0] === "browser=session" &&
-          input.csrfToken.length === 1 && input.csrfToken[0] === "token",
+          input.csrfToken.length === 1 && input.csrfToken[0] === "token" &&
+          input.params["operationId"] === "op-1" && Object.isFrozen(input.params) &&
+          Object.getPrototypeOf(input.params) === null,
       }],
       policies: [policy],
     };
@@ -206,12 +213,34 @@ describe("HTTP request-class and route authority", () => {
     const match = withRoute.match("POST", "/api/v1/wallet/operations/op-1/confirmations");
     expect(match.status).toBe("matched");
     if (match.status !== "matched") return;
-    expect(withRoute.validateSecurity(match.route, {
+    expect(withRoute.validateSecurity(match, {
       host: ["127.0.0.1:46630"], origin: ["http://127.0.0.1:46630"], authorization: [],
       cookie: ["browser=session"], csrfToken: ["token"], contentType: ["application/json"],
       query: "", bodyLength: 2,
     })).toEqual({ ok: true });
-    expect(withRoute.validateSecurity(match.route, {
+    const foreignOperation = withRoute.match(
+      "POST",
+      "/api/v1/wallet/operations/op-2/confirmations",
+    );
+    expect(foreignOperation.status).toBe("matched");
+    if (foreignOperation.status === "matched") {
+      expect(withRoute.validateSecurity(foreignOperation, {
+        host: ["127.0.0.1:46630"], origin: ["http://127.0.0.1:46630"], authorization: [],
+        cookie: ["browser=session"], csrfToken: ["token"], contentType: ["application/json"],
+        query: "", bodyLength: 2,
+      })).toEqual({ ok: false, code: "unauthorized" });
+      expect(() => withRoute.validateSecurity({
+        ...foreignOperation,
+        params: Object.freeze(Object.assign(Object.create(null) as Record<string, string>, {
+          operationId: "op-1",
+        })),
+      }, {
+        host: ["127.0.0.1:46630"], origin: ["http://127.0.0.1:46630"], authorization: [],
+        cookie: ["browser=session"], csrfToken: ["token"], contentType: ["application/json"],
+        query: "", bodyLength: 2,
+      })).toThrow("provenance");
+    }
+    expect(withRoute.validateSecurity(match, {
       host: ["127.0.0.1:46630"], origin: ["http://127.0.0.1:46630"], authorization: [],
       cookie: ["browser=session"], csrfToken: [], contentType: ["application/json"],
       query: "", bodyLength: 2,
@@ -290,7 +319,7 @@ describe("HTTP request-class and route authority", () => {
     const throwingMatch = throwingVerifier.match("GET", "/api/v1/throwing/example");
     expect(throwingMatch.status).toBe("matched");
     if (throwingMatch.status === "matched") {
-      expect(throwingVerifier.validateSecurity(throwingMatch.route, {
+      expect(throwingVerifier.validateSecurity(throwingMatch, {
         host: ["127.0.0.1:46630"], origin: [], authorization: [], cookie: [], csrfToken: [],
         contentType: [], query: "", bodyLength: 0,
       })).toEqual({ ok: false, code: "unauthorized" });
@@ -305,13 +334,15 @@ describe("HTTP request-class and route authority", () => {
           {
             authentication: "browser_session",
             verify: (input) => input.authorization.length === 0 &&
-              input.cookie.length === 1 && input.cookie[0] === "browser=session",
+              input.cookie.length === 1 && input.cookie[0] === "browser=session" &&
+              input.params["readOperationId"] === "op-1",
           },
           {
             authentication: "browser_state",
             verify: (input) => input.authorization.length === 0 &&
               input.cookie.length === 1 && input.cookie[0] === "browser=session" &&
-              input.csrfToken.length === 1 && input.csrfToken[0] === "token",
+              input.csrfToken.length === 1 && input.csrfToken[0] === "token" &&
+              input.params["operationId"] === "op-1",
           },
         ],
         policies: [
@@ -331,7 +362,7 @@ describe("HTTP request-class and route authority", () => {
           requestClass: "browser_state_change",
         },
         {
-          kind: "route", method: "GET", pathPattern: "/api/v1/wallet/operations/{operationId}",
+          kind: "route", method: "GET", pathPattern: "/api/v1/wallet/operations/{readOperationId}",
           requestClass: "browser_session_read",
         },
       ])
@@ -341,7 +372,7 @@ describe("HTTP request-class and route authority", () => {
           response: "canonical_json" as const, successStatus: 200, handler: success,
         },
         {
-          method: "GET", mutation: "none", pathPattern: "/api/v1/wallet/operations/{operationId}",
+          method: "GET", mutation: "none", pathPattern: "/api/v1/wallet/operations/{readOperationId}",
           response: "canonical_json" as const, successStatus: 200, handler: success,
         },
       ]);
@@ -349,12 +380,25 @@ describe("HTTP request-class and route authority", () => {
     expect(match.status).toBe("method_not_allowed");
     if (match.status !== "method_not_allowed") return;
     expect(match.allow).toEqual(["DELETE", "GET"]);
-    expect(routes.validateMethodRejection(match.routes, {
+    expect(match.candidates.map((candidate) => candidate.params)).toEqual([
+      { operationId: "op-1" },
+      { readOperationId: "op-1" },
+    ]);
+    expect(match.candidates.every((candidate) => Object.isFrozen(candidate.params))).toBe(true);
+    expect(routes.validateMethodRejection(match, {
       origin: [], authorization: [], cookie: ["browser=session"], csrfToken: [],
     })).toEqual({ ok: true });
-    expect(routes.validateMethodRejection(match.routes, {
+    expect(routes.validateMethodRejection(match, {
       origin: ["https://evil.example"], authorization: [], cookie: [], csrfToken: [],
     })).toEqual({ ok: false, code: "invalid_origin" });
+    const foreignOperation = routes.match("POST", "/api/v1/wallet/operations/op-2");
+    expect(foreignOperation.status).toBe("method_not_allowed");
+    if (foreignOperation.status === "method_not_allowed") {
+      expect(routes.validateMethodRejection(foreignOperation, {
+        origin: ["http://127.0.0.1:46630"], authorization: [],
+        cookie: ["browser=session"], csrfToken: [],
+      })).toEqual({ ok: false, code: "unauthorized" });
+    }
   });
 
   it("rejects malformed definitions, undeclared legacy paths, and ambiguous routes", async () => {

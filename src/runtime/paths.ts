@@ -11,6 +11,8 @@ import { lstat, mkdir, open, unlink, type FileHandle } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { resolve } from "node:path";
 
+import { productDisplayName } from "../core/index.js";
+
 export interface RuntimePaths {
   readonly dataDirectory: string;
   readonly database: string;
@@ -209,7 +211,7 @@ export const resolveApplicationDataDirectory = (
     }
     return resolve(localAppData, "Littlejohn");
   }
-  throw new TypeError("The operating system has no Littlejohn data-directory contract.");
+  throw new TypeError(`The operating system has no ${productDisplayName} data-directory contract.`);
 };
 
 export const runtimePaths = (dataDirectory: string): RuntimePaths => Object.freeze({

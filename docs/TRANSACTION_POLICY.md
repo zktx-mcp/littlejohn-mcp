@@ -10,7 +10,7 @@ and transaction security claims.
   SDK output, quotes, simulations, and reputation signals follow the authority
   and trust rules in `docs/EVIDENCE_POLICY.md`.
 - MCP and AI clients never sign, hold signing authority, or autonomously execute.
-- Littlejohn never stores private keys, seed phrases, mnemonics, or raw
+- Little John never stores private keys, seed phrases, mnemonics, or raw
   signatures.
 - MCP responses and ordinary review responses never contain WalletConnect
   secrets, raw signed transactions, or a new transaction's signable request.
@@ -35,7 +35,7 @@ and transaction security claims.
 
 ## Confirmation Authority
 
-A `confirmation grant` is the only Littlejohn authority to hand a reviewed
+A `confirmation grant` is the only Little John authority to hand a reviewed
 transaction to a wallet. It is separate from local HTTP authentication, direct
 wallet-connection commands, and a WalletConnect session.
 
@@ -60,12 +60,12 @@ wallet-connection commands, and a WalletConnect session.
 
 ## Transaction Construction
 
-- Littlejohn builds a supported transaction locally or independently verifies
+- Little John builds a supported transaction locally or independently verifies
   every transaction-critical field.
 - Construction uses approved deployments, current chain state, exact deployed
   code and ABI identity, fresh execution inputs, exact numeric values, and
   explicit user choices.
-- Littlejohn never silently selects an asset, venue, route, bridge, spender,
+- Little John never silently selects an asset, venue, route, bridge, spender,
   slippage, recipient, paymaster, delegate, or settlement token.
 - Only protocol action adapters build protocol-specific requests.
 - Module dependency restrictions are defined only in
@@ -88,7 +88,7 @@ wallet-connection commands, and a WalletConnect session.
 
 ## Commitments
 
-Littlejohn maintains two versioned canonical commitments.
+Little John maintains two versioned canonical commitments.
 
 `semanticCommitment` binds:
 
@@ -173,7 +173,7 @@ localized values, unordered fields, or approximate numeric values.
 ## Broadcast And Receipt
 
 - A wallet-returned transaction hash is not success evidence by itself.
-- Littlejohn re-reads the transaction and receipt from Robinhood Chain.
+- Little John re-reads the transaction and receipt from Robinhood Chain.
 - The receipt path verifies transaction hard-bound fields, status, block,
   finality state, logs, actual asset deltas, fees, allowances, and other
   persistent state affected by the supported action.

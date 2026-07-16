@@ -47,21 +47,24 @@ export const decodeCanonicalBase64Url = (value: string, byteLength: number): Uin
   if (!new RegExp(canonicalBase64UrlPattern(byteLength), "u").test(value)) {
     throw new TypeError("Expected canonical unpadded base64url.");
   }
-  const bytes = Buffer.from(value, "base64url");
-  if (bytes.length !== byteLength || bytes.toString("base64url") !== value) {
+  let decoded: string;
+  try {
+    const base64 = value.replace(/-/g, "+").replace(/_/g, "/") +
+      "=".repeat((4 - value.length % 4) % 4);
+    decoded = globalThis.atob(base64);
+  } catch {
     throw new TypeError("Expected canonical unpadded base64url.");
   }
-  return new Uint8Array(bytes);
+  if (decoded.length !== byteLength) throw new TypeError("Expected canonical unpadded base64url.");
+  return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
 };
 
-export const canonicalBase64UrlSchema = (byteLength: number) =>
-  z.string().superRefine((value, context) => {
-    try {
-      decodeCanonicalBase64Url(value, byteLength);
-    } catch {
-      context.addIssue({ code: "custom", message: "Expected canonical unpadded base64url." });
-    }
-  }).meta({ pattern: canonicalBase64UrlPattern(byteLength) });
+export const canonicalBase64UrlSchema = (byteLength: number) => {
+  const pattern = canonicalBase64UrlPattern(byteLength);
+  return z.string()
+    .regex(new RegExp(pattern, "u"), "Expected canonical unpadded base64url.")
+    .meta({ pattern });
+};
 
 export const base64UrlSha256Schema = canonicalBase64UrlSchema(32);
 

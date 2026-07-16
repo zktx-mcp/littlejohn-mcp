@@ -1,6 +1,6 @@
 # Product Policy
 
-This document is the sole authority for Littlejohn's product identity, scope,
+This document is the sole authority for Little John's product identity, scope,
 philosophy, responsibilities, support-level meanings, capability-availability
 meanings, and public current-support presentation. Required behavior in this
 document does not claim implementation.
@@ -8,10 +8,20 @@ document does not claim implementation.
 The runtime support manifest is the sole machine authority for implemented
 support values. `Current Support` is its deterministic public projection.
 
+## Product Name
+
+- The human-facing product name is `Little John`.
+- Human-readable UI, wallet metadata, errors, evidence labels, and prose use
+  the exact human-facing name.
+- The technical identifier stem is `littlejohn`. Package and server IDs, the
+  executable, environment variables, URNs, HTTP headers, cookies, files,
+  directories, cryptographic domain labels, and code identifiers keep the stem
+  unspaced and apply the casing and delimiters required by their technical role.
+- A technical identifier is never presented as an alternate product name.
+
 ## Product Scope
 
-- The product is Littlejohn, a local Robinhood Chain MCP and transaction review
-  application.
+- Little John is a local Robinhood Chain MCP and transaction review application.
 - Chain scope is Robinhood Chain only.
 - The current wallet transport contract is WalletConnect.
 - Users access one local runtime through MCP text interaction, a host-controlled
@@ -40,7 +50,7 @@ support values. `Current Support` is its deterministic public projection.
 
 ## Product Responsibilities
 
-Littlejohn is responsible for:
+Little John is responsible for:
 
 - identifying canonical Robinhood Chain assets and protocol deployments;
 - inspecting contracts, signatures, calldata, transactions, and receipts;
@@ -68,9 +78,9 @@ authority and execution requirements are owned by
   Source owner: Robinhood. Coverage: Published Robinhood Chain network identity and chain ID.
   Unsupported conclusions: Endpoint availability. Runtime availability. Safety.
 - Implemented protocol support: none.
-- Implemented wallet support: WalletConnect connection through the interactive CLI.
+- Implemented wallet support: `wallet.cancel_operation` (MCP, CLI, web); `wallet.connect` (MCP, CLI); `wallet.connection` (HTTP, MCP, CLI, web); `wallet.disconnect` (MCP, CLI); `wallet.operation` (MCP, CLI, web).
 - Implemented transaction actions: none.
-- Available user-facing capabilities: `wallet.cancel_operation`, `wallet.connect`, `wallet.connection`, `wallet.disconnect`, `wallet.operation`.
+- Available user-facing capabilities: `account.balance`, `chain.status`, `contract.inspect`, `transaction.inspect`, `wallet.cancel_operation`, `wallet.connect`, `wallet.connection`, `wallet.disconnect`, `wallet.operation`.
 - Experiments and collected research do not establish product support.
 
 ## Support Levels
@@ -80,7 +90,7 @@ Assign one support level to each exact chain, protocol, and transaction action:
 - `L0 discovered`: official existence is confirmed.
 - `L1 analyzed`: deployed contracts and transactions can be decoded.
 - `L2 reviewed`: a proposal can be decoded, simulated, and checked by policy.
-- `L3 executable`: Littlejohn builds and verifies the request and can hand it to
+- `L3 executable`: Little John builds and verifies the request and can hand it to
   the supported wallet transport through an implemented confirmation interface.
 - `L4 receipt_verified`: the actual transaction and state changes are verified
   against the reviewed request.

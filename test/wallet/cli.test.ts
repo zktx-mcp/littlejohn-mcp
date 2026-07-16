@@ -14,8 +14,8 @@ import {
   LocalRuntime,
   RuntimeOperationError,
   toProblemDetails,
-  type OwnerOperation,
-  type OwnerOperationResponse,
+  type RuntimeDispatchRequest,
+  type RuntimeDispatchResponse,
 } from "../../src/runtime/index.js";
 import {
   createProcessTerminal,
@@ -31,6 +31,7 @@ import {
   type WalletManagementOperation,
 } from "../../src/wallet/contracts.js";
 import {
+  WalletOperationError,
   createWalletFailure,
   walletInterfaceErrorMappings,
 } from "../../src/wallet/errors.js";
@@ -100,12 +101,12 @@ const operation = (
   ...overrides,
 });
 
-const successResponse = (status: 200 | 201, body: unknown): OwnerOperationResponse => Object.freeze({
+const successResponse = (status: 200 | 201, body: unknown): RuntimeDispatchResponse => Object.freeze({
   status,
   body: captureCanonicalJson(body),
 });
 
-const failureResponse = (code: string): OwnerOperationResponse => {
+const failureResponse = (code: string): RuntimeDispatchResponse => {
   const problem = toProblemDetails(createWalletFailure(code), walletInterfaceErrorMappings);
   return Object.freeze({ status: problem.status, body: problem as unknown as CanonicalJson });
 };
@@ -136,15 +137,15 @@ const disconnectedSuccess = (): Promise<CanonicalJson> => walletConnectionSucces
 
 class FakeRuntime implements CliRuntimePort {
   ownerState: CliRuntimePort["ownerState"];
-  readonly requests: OwnerOperation[] = [];
+  readonly requests: RuntimeDispatchRequest[] = [];
   stopCount = 0;
   startCount = 0;
-  readonly #handle: (operation: OwnerOperation, requestIndex: number) => OwnerOperationResponse | Promise<OwnerOperationResponse>;
+  readonly #handle: (operation: RuntimeDispatchRequest, requestIndex: number) => RuntimeDispatchResponse | Promise<RuntimeDispatchResponse>;
   readonly #stopError: Error | undefined;
   readonly #startError: Error | undefined;
 
   constructor(
-    handle: (operation: OwnerOperation, requestIndex: number) => OwnerOperationResponse | Promise<OwnerOperationResponse>,
+    handle: (operation: RuntimeDispatchRequest, requestIndex: number) => RuntimeDispatchResponse | Promise<RuntimeDispatchResponse>,
     ownerState: CliRuntimePort["ownerState"] = "deferred",
     stopError?: Error,
     startError?: Error,
@@ -155,7 +156,7 @@ class FakeRuntime implements CliRuntimePort {
     this.#startError = startError;
   }
 
-  async executeOwnerOperation(input: OwnerOperation): Promise<OwnerOperationResponse> {
+  async dispatchRuntimeRequest(input: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse> {
     const request = Object.freeze({ ...input });
     this.requests.push(request);
     return this.#handle(request, this.requests.length - 1);
@@ -410,7 +411,7 @@ describe("wallet CLI", () => {
     ] as const) {
       const startEntered = deferred<void>();
       const startResult = deferred<void>();
-      const requests: OwnerOperation[] = [];
+      const requests: RuntimeDispatchRequest[] = [];
       let stopCount = 0;
       const runtime: CliRuntimePort = {
         ownerState: "starting",
@@ -418,7 +419,7 @@ describe("wallet CLI", () => {
           startEntered.resolve(undefined);
           return startResult.promise;
         },
-        executeOwnerOperation(request): Promise<OwnerOperationResponse> {
+        dispatchRuntimeRequest(request): Promise<RuntimeDispatchResponse> {
           requests.push(request);
           throw new Error("operation must not run");
         },
@@ -460,7 +461,7 @@ describe("wallet CLI", () => {
         startEntered.resolve(undefined);
         return startCompletion.promise;
       },
-      async executeOwnerOperation(): Promise<OwnerOperationResponse> {
+      async dispatchRuntimeRequest(): Promise<RuntimeDispatchResponse> {
         events.push("owner:operation");
         throw new Error("operation must not run");
       },
@@ -509,7 +510,7 @@ describe("wallet CLI", () => {
     const cancelled = operation({ kind: "connect", state: "cancelled", result: null });
     const events: string[] = [];
     const getEntered = deferred<void>();
-    const pendingGet = deferred<OwnerOperationResponse>();
+    const pendingGet = deferred<RuntimeDispatchResponse>();
     const getSettled = deferred<void>();
     void pendingGet.promise.then(
       () => { events.push("owner:get-settled"); getSettled.resolve(undefined); },
@@ -526,7 +527,7 @@ describe("wallet CLI", () => {
       async start(): Promise<void> {
         events.push("owner:start");
       },
-      executeOwnerOperation(request: OwnerOperation): Promise<OwnerOperationResponse> {
+      dispatchRuntimeRequest(request: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse> {
         if (request.method === "POST") {
           events.push("owner:post");
           return Promise.resolve(successResponse(201, { operation: awaiting, qr }));
@@ -601,7 +602,6 @@ describe("wallet CLI", () => {
 
   it("uses a closed wallet-command grammar and never starts the runtime for invalid input", async () => {
     const invalidCommands = [
-      [],
       ["read", "status"],
       ["wallet", "status", "--json", "--json"],
       ["wallet", "connect", "--json"],
@@ -626,6 +626,36 @@ describe("wallet CLI", () => {
     }
   });
 
+  it("runs no-argument stdio MCP without requiring a TTY and closes the shared runtime", async () => {
+    const runtime = new FakeRuntime(() => { throw new Error("MCP must not dispatch during startup."); });
+    const terminal = fakeTerminal({ inputIsTTY: false, outputIsTTY: false });
+    let starts = 0;
+    let closes = 0;
+
+    expect(await runCli([], {
+      createRuntime: async () => runtime,
+      terminal: terminal.terminal,
+      waitForPoll: async () => undefined,
+      terminateProcess: () => undefined,
+      startMcp: async (selectedRuntime) => {
+        starts += 1;
+        expect(selectedRuntime).toBe(runtime);
+        return Object.freeze({
+          closed: Promise.resolve(),
+          close: async (): Promise<void> => { closes += 1; },
+        });
+      },
+    })).toBe(0);
+
+    expect(starts).toBe(1);
+    expect(closes).toBe(1);
+    expect(runtime.startCount).toBe(1);
+    expect(runtime.stopCount).toBe(1);
+    expect(terminal.disposed()).toBe(true);
+    expect(terminal.output).toEqual([]);
+    expect(terminal.errors).toEqual([]);
+  });
+
   it("parses canonical operation identifiers independently from exact CLI flags", async () => {
     expect(hyphenLeadingOperationId).toMatch(/^--[A-Za-z0-9_-]{41}$/u);
     const retained = operation({ operationId: hyphenLeadingOperationId });
@@ -642,6 +672,7 @@ describe("wallet CLI", () => {
       dependencies(operationRuntime, operationTerminal),
     )).toBe(0);
     expect(operationRuntime.requests).toEqual([{
+      requestClass: "local_control",
       method: "GET",
       path: walletControlRoutes.operation(hyphenLeadingOperationId),
     }]);
@@ -652,6 +683,7 @@ describe("wallet CLI", () => {
       dependencies(cancelRuntime),
     )).toBe(0);
     expect(cancelRuntime.requests).toEqual([{
+      requestClass: "local_control",
       method: "DELETE",
       path: walletControlRoutes.operation(hyphenLeadingOperationId),
     }]);
@@ -711,11 +743,12 @@ describe("wallet CLI", () => {
     expect(await runCli(["wallet", "connect"], dependencies(runtime, tty))).toBe(0);
     expect(runtime.requests).toEqual([
       {
+        requestClass: "local_control",
         method: "POST",
         path: walletControlRoutes.operations,
         body: { kind: "connect", interactionInterface: "cli" },
       },
-      { method: "GET", path: walletControlRoutes.operation(operationId) },
+      { requestClass: "local_control", method: "GET", path: walletControlRoutes.operation(operationId) },
     ]);
     expect(tty.output.some((value) => value.includes("\u001b[47m\u001b[30m"))).toBe(true);
     expect(tty.output.some((value) => value.includes("\u001b[?1049h\u001b[?25l"))).toBe(true);
@@ -822,6 +855,7 @@ describe("wallet CLI", () => {
     expect(tty.prompts[0]).toContain("Every existing wallet session will be disconnected");
     expect(tty.prompts[0]).toContain("this profile will remain disconnected");
     expect(runtime.requests.at(-1)).toEqual({
+      requestClass: "local_control",
       method: "DELETE",
       path: walletControlRoutes.operation(operationId),
     });
@@ -856,6 +890,7 @@ describe("wallet CLI", () => {
 
     expect(await runCli(["wallet", "connect"], dependencies(runtime, tty))).toBe(0);
     expect(runtime.requests.at(-1)).toEqual({
+      requestClass: "local_control",
       method: "POST",
       path: walletControlRoutes.confirmation(operationId),
       body: { connectionRevision: "91" },
@@ -908,6 +943,7 @@ describe("wallet CLI", () => {
       dependencies(promptFailure, promptTerminal),
     )).toBe(1);
     expect(promptFailure.requests.at(-1)).toEqual({
+      requestClass: "local_control",
       method: "DELETE",
       path: walletControlRoutes.operation(operationId),
     });
@@ -973,7 +1009,7 @@ describe("wallet CLI", () => {
       result: null,
     });
     const cancelled = operation({ kind: "connect", state: "cancelled", result: null });
-    const connectionRead = deferred<OwnerOperationResponse>();
+    const connectionRead = deferred<RuntimeDispatchResponse>();
     const connectionReadEntered = deferred<void>();
     const cancellationEntered = deferred<void>();
     const terminal = fakeTerminal({ confirmation: true });
@@ -1051,7 +1087,7 @@ describe("wallet CLI", () => {
       result: null,
     });
     const cancelled = operation({ kind: "connect", state: "cancelled", result: null });
-    const creation = deferred<OwnerOperationResponse>();
+    const creation = deferred<RuntimeDispatchResponse>();
     const creationEntered = deferred<void>();
     const cancellationEntered = deferred<void>();
     const terminal = fakeTerminal();
@@ -1106,6 +1142,7 @@ describe("wallet CLI", () => {
     )).toBe(5);
     expect(runtime.requests.some(({ method }) => method === "DELETE")).toBe(false);
     expect(runtime.requests.at(-1)).toEqual({
+      requestClass: "local_control",
       method: "POST",
       path: walletControlRoutes.confirmation(operationId),
       body: { connectionRevision: "4" },
@@ -1123,6 +1160,7 @@ describe("wallet CLI", () => {
       dependencies(disconnectRuntime, disconnectTerminal),
     )).toBe(0);
     expect(disconnectRuntime.requests).toEqual([{
+      requestClass: "local_control",
       method: "POST",
       path: walletControlRoutes.operations,
       body: { kind: "disconnect", interactionInterface: "cli" },
@@ -1137,6 +1175,7 @@ describe("wallet CLI", () => {
       dependencies(cancelRuntime, cancelTerminal),
     )).toBe(0);
     expect(cancelRuntime.requests).toEqual([{
+      requestClass: "local_control",
       method: "DELETE",
       path: walletControlRoutes.operation(operationId),
     }]);
@@ -1165,6 +1204,7 @@ describe("wallet CLI", () => {
 
     expect(await runCli(["wallet", "connect"], dependencies(runtime, tty))).toBe(0);
     expect(runtime.requests.at(-1)).toEqual({
+      requestClass: "local_control",
       method: "DELETE",
       path: walletControlRoutes.operation(operationId),
     });
@@ -1340,7 +1380,7 @@ describe("wallet CLI", () => {
       result: null,
     });
     const cancelled = operation({ kind: "connect", state: "cancelled", result: null });
-    const observation = deferred<OwnerOperationResponse>();
+    const observation = deferred<RuntimeDispatchResponse>();
     const observationEntered = deferred<void>();
     const cancellationEntered = deferred<void>();
     const terminal = fakeTerminal();
@@ -1482,6 +1522,7 @@ describe("wallet CLI", () => {
 
       expect(exitCode).toBe(failurePoint === "observation" ? 7 : 1);
       expect(runtime.requests.filter(({ method }) => method === "DELETE")).toEqual([{
+        requestClass: "local_control",
         method: "DELETE",
         path: walletControlRoutes.operation(operationId),
       }]);
@@ -1612,6 +1653,41 @@ describe("wallet CLI", () => {
     expect(runtime.stopCount).toBe(1);
     expect(terminal.disposed()).toBe(true);
     expect(terminal.errors.join("")).toBe("internal_error: The request could not be completed.\n");
+  });
+
+  it("does not inspect forged or proxied wallet error objects from the runtime boundary", async () => {
+    let getterReads = 0;
+    const forged = Object.create(WalletOperationError.prototype) as Record<string, unknown>;
+    Object.defineProperty(forged, "failure", {
+      enumerable: true,
+      get: () => {
+        getterReads += 1;
+        throw new Error("secret-forged-failure");
+      },
+    });
+    let proxyReads = 0;
+    const proxied = new Proxy(new WalletOperationError("state_conflict"), {
+      get: () => {
+        proxyReads += 1;
+        throw new Error("secret-proxy-failure");
+      },
+      getPrototypeOf: () => {
+        proxyReads += 1;
+        throw new Error("secret-proxy-failure");
+      },
+    });
+
+    for (const hostile of [forged, proxied]) {
+      const runtime = new FakeRuntime(() => { throw hostile; });
+      const terminal = fakeTerminal();
+      expect(await runCli(["wallet", "status"], dependencies(runtime, terminal))).toBe(1);
+      expect(terminal.errors.join(""))
+        .toBe("internal_error: The request could not be completed.\n");
+      expect(runtime.stopCount).toBe(1);
+      expect(terminal.disposed()).toBe(true);
+    }
+    expect(getterReads).toBe(0);
+    expect(proxyReads).toBe(0);
   });
 
   it("preserves the command failure while still attempting a failing terminal disposal", async () => {

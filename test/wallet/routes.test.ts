@@ -202,7 +202,7 @@ describe("authenticated wallet control routes", () => {
 
     const connection = registry.match("GET", "/api/v1/internal/control/wallet/connection");
     if (connection.status !== "matched") throw new Error("Expected connection route match.");
-    expect(registry.validateSecurity(connection.route, {
+    expect(registry.validateSecurity(connection, {
       host: ["127.0.0.1:46630"],
       origin: [],
       authorization: [],

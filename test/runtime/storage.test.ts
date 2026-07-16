@@ -26,6 +26,7 @@ import {
   createCanonicalClock,
   parseCapabilityDataAt,
   parseUtcTimestamp,
+  productDisplayName,
   walletConnectionCapability,
 } from "../../src/core/index.js";
 import {
@@ -956,7 +957,7 @@ describe("configuration and source authority", () => {
     expect(configuration.wallet).toEqual({
       projectId: "cd33d6deaa901b3c96185d9cb1f320ef",
       metadata: {
-        name: "Littlejohn",
+        name: productDisplayName,
         description: "Local Robinhood Chain wallet connection",
         url: "http://127.0.0.1:46630",
         icons: [],

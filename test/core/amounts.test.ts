@@ -10,6 +10,8 @@ import {
 } from "../../src/core/index.js";
 import {
   assertCanonicalAmountBindings,
+  canonicalUnsignedDecimalMaximumPattern,
+  maximumTokenDecimals,
   type ObservationClaimBinding,
 } from "../../src/core/amounts.js";
 
@@ -34,6 +36,29 @@ const availableAmount = (quantity: ReturnType<typeof id>, decimals: ReturnType<t
 });
 
 describe("amount observation commitments", () => {
+  it("derives canonical unsigned-decimal bounds without widening the schema range", () => {
+    for (const maximum of [0, 1, 9, 10, 99, 100, 127, maximumTokenDecimals, 1_000]) {
+      const pattern = new RegExp(canonicalUnsignedDecimalMaximumPattern(maximum), "u");
+      for (let value = 0; value <= maximum; value += 1) {
+        expect(pattern.test(String(value))).toBe(true);
+      }
+      expect(pattern.test(String(maximum + 1))).toBe(false);
+      for (const malformed of ["", "-1", "00", "01", "1.0", "1e2", `0${maximum}`]) {
+        expect(pattern.test(malformed)).toBe(false);
+      }
+    }
+    for (const invalid of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => canonicalUnsignedDecimalMaximumPattern(invalid)).toThrow(TypeError);
+    }
+    const maximumSafePattern = new RegExp(
+      canonicalUnsignedDecimalMaximumPattern(Number.MAX_SAFE_INTEGER),
+      "u",
+    );
+    expect(maximumSafePattern.test(String(Number.MAX_SAFE_INTEGER))).toBe(true);
+    expect(maximumSafePattern.test(String(Number.MAX_SAFE_INTEGER - 1))).toBe(true);
+    expect(maximumSafePattern.test("9007199254740992")).toBe(false);
+  });
+
   it("binds quantity and decimals role, value, asset, and chain anchor", () => {
     const quantity = id("A");
     const decimals = id("B");

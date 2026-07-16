@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   accountBalanceCapability,
   chainAnchorSchema,
+  createAccountBalanceTokenEvidenceIdentity,
   evmAddressSchema,
   transactionInspectCapability,
   walletConnectionCapability,
@@ -73,41 +74,101 @@ const pendingData = (transactionHash: string, observationId: string) => {
   };
 };
 
-const transactionClaims = (data: ReturnType<typeof pendingData>): readonly ObservationClaim[] => [
-  {
-    role: "transaction",
-    value: {
-      ...data,
-      value: sourceAmount,
-      gasLimit: { raw: data.gasLimit.raw },
-      fee: {
-        kind: "legacy",
-        gasPrice: {
-          numerator: { ...sourceAmount, raw: "2" },
-          denominator: { unit: "gas", raw: "1" },
-        },
+const dynamicPendingData = (transactionHash: string, observationId: string) => {
+  const legacy = pendingData(transactionHash, observationId);
+  const amount = { ...sourceAmount, quantityObservationId: observationId };
+  return {
+    ...legacy,
+    type: "2",
+    accessList: {
+      kind: "entries" as const,
+      entries: [
+        { address: token, storageKeys: [`0x${"f".repeat(64)}`, `0x${"f".repeat(64)}`] },
+        { address: token, storageKeys: [] },
+      ],
+    },
+    fee: {
+      kind: "dynamic" as const,
+      maxFeePerGas: {
+        numerator: { ...amount, raw: "3" },
+        denominator: { unit: "gas" as const, raw: "1" as const },
+        observationId,
+      },
+      maxPriorityFeePerGas: {
+        numerator: { ...amount, raw: "2" },
+        denominator: { unit: "gas" as const, raw: "1" as const },
+        observationId,
       },
     },
-  },
-  { role: "transaction_value", value: "1", asset: sourceAmount.asset },
-  { role: "transaction_gas_limit", value: "21000" },
-  { role: "transaction_gas_price", value: "2", asset: sourceAmount.asset },
-];
+  };
+};
+
+type PendingData = ReturnType<typeof pendingData> | ReturnType<typeof dynamicPendingData>;
+
+const transactionClaims = (data: PendingData): readonly ObservationClaim[] => {
+  const fee = data.fee.kind === "legacy"
+    ? {
+        kind: "legacy" as const,
+        gasPrice: {
+          numerator: { ...sourceAmount, raw: data.fee.gasPrice.numerator.raw },
+          denominator: { unit: "gas" as const, raw: "1" as const },
+        },
+      }
+    : {
+        kind: "dynamic" as const,
+        maxFeePerGas: {
+          numerator: { ...sourceAmount, raw: data.fee.maxFeePerGas.numerator.raw },
+          denominator: { unit: "gas" as const, raw: "1" as const },
+        },
+        maxPriorityFeePerGas: {
+          numerator: { ...sourceAmount, raw: data.fee.maxPriorityFeePerGas.numerator.raw },
+          denominator: { unit: "gas" as const, raw: "1" as const },
+        },
+      };
+  return [
+    {
+      role: "transaction",
+      value: {
+        ...data,
+        value: sourceAmount,
+        gasLimit: { raw: data.gasLimit.raw },
+        fee,
+      },
+    },
+    { role: "transaction_value", value: "1", asset: sourceAmount.asset },
+    { role: "transaction_gas_limit", value: "21000" },
+    ...(data.fee.kind === "legacy"
+      ? [{ role: "transaction_gas_price", value: data.fee.gasPrice.numerator.raw, asset: sourceAmount.asset }]
+      : [
+          {
+            role: "transaction_max_fee_per_gas",
+            value: data.fee.maxFeePerGas.numerator.raw,
+            asset: sourceAmount.asset,
+          },
+          {
+            role: "transaction_max_priority_fee_per_gas",
+            value: data.fee.maxPriorityFeePerGas.numerator.raw,
+            asset: sourceAmount.asset,
+          },
+        ]),
+  ];
+};
 
 describe("capability semantic and evidence authority", () => {
   it("rejects an amount whose raw value differs from its source claim", async () => {
     const harness = createCapabilityHarness();
     const binding = bindForHarness(accountBalanceCapability, harness, async (_input, context, observations) => {
+      const identity = createAccountBalanceTokenEvidenceIdentity(token);
       record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: "4663" }]);
       record(context, observations, "chain_rpc", "block", [{ role: "balance_block", value: block, chainAnchor: block }]);
-      const quantity = record(context, observations, "chain_rpc", `token_balance:${token}:balance`, [{
-        role: `token_balance:${token}`,
+      const quantity = record(context, observations, "chain_rpc", identity.balanceSlotId, [{
+        role: identity.balanceClaimRole,
         value: "2",
         asset: { kind: "erc20", chainId: "4663", address: token },
         chainAnchor: block,
       }]);
-      const decimals = record(context, observations, "chain_rpc", `token_balance:${token}:decimals`, [{
-        role: `token_decimals:${token}`,
+      const decimals = record(context, observations, "chain_rpc", identity.decimalsSlotId, [{
+        role: identity.decimalsClaimRole,
         value: "6",
         asset: { kind: "erc20", chainId: "4663", address: token },
         chainAnchor: block,
@@ -200,6 +261,89 @@ describe("capability semantic and evidence authority", () => {
       };
     });
     expect((await invokeBinding(transactionInspectCapability, binding, { transactionHash })).ok).toBe(false);
+
+    const duplicateHarness = createCapabilityHarness();
+    const duplicateBinding = bindForHarness(
+      transactionInspectCapability,
+      duplicateHarness,
+      async (_input, context, observations) => {
+        record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: "4663" }]);
+        const provisional = dynamicPendingData(transactionHash, `obs:${"A".repeat(43)}`);
+        const transactionId = record(
+          context,
+          observations,
+          "chain_rpc",
+          "transaction",
+          transactionClaims(provisional),
+        );
+        return { status: "success", data: dynamicPendingData(transactionHash, transactionId) };
+      },
+    );
+    const duplicateResult = await invokeBinding(
+      transactionInspectCapability,
+      duplicateBinding,
+      { transactionHash },
+    );
+    expect(duplicateResult.ok).toBe(true);
+
+    const invalidFeeHarness = createCapabilityHarness();
+    const invalidFeeBinding = bindForHarness(
+      transactionInspectCapability,
+      invalidFeeHarness,
+      async (_input, context, observations) => {
+        record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: "4663" }]);
+        const provisional = dynamicPendingData(transactionHash, `obs:${"A".repeat(43)}`);
+        const invalid = {
+          ...provisional,
+          fee: {
+            ...provisional.fee,
+            maxFeePerGas: {
+              ...provisional.fee.maxFeePerGas,
+              numerator: { ...provisional.fee.maxFeePerGas.numerator, raw: "1" },
+            },
+          },
+        };
+        const transactionId = record(
+          context,
+          observations,
+          "chain_rpc",
+          "transaction",
+          transactionClaims(invalid),
+        );
+        return {
+          status: "success",
+          data: {
+            ...invalid,
+            value: { ...invalid.value, quantityObservationId: transactionId },
+            gasLimit: { ...invalid.gasLimit, observationId: transactionId },
+            fee: {
+              ...invalid.fee,
+              maxFeePerGas: {
+                ...invalid.fee.maxFeePerGas,
+                numerator: {
+                  ...invalid.fee.maxFeePerGas.numerator,
+                  quantityObservationId: transactionId,
+                },
+                observationId: transactionId,
+              },
+              maxPriorityFeePerGas: {
+                ...invalid.fee.maxPriorityFeePerGas,
+                numerator: {
+                  ...invalid.fee.maxPriorityFeePerGas.numerator,
+                  quantityObservationId: transactionId,
+                },
+                observationId: transactionId,
+              },
+            },
+          },
+        };
+      },
+    );
+    expect((await invokeBinding(
+      transactionInspectCapability,
+      invalidFeeBinding,
+      { transactionHash },
+    )).ok).toBe(false);
   });
 
   it("requires connected wallet state to bind both SDK and exact session authority", async () => {

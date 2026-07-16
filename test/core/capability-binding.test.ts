@@ -22,6 +22,7 @@ import {
   evmAddressSchema,
   getCapabilityDefinitionSnapshot,
   parseCapabilitySuccess,
+  productDisplayName,
   safeParseCapabilityInput,
   safeParseCapabilityData,
   sourceReferenceSchema,
@@ -306,6 +307,70 @@ describe("capability binding authority", () => {
     const handlerFailure = await invokeBinding(chainStatusCapability, binding, {});
     expect(handlerFailure.ok).toBe(false);
     expect(JSON.stringify(handlerFailure)).not.toContain("secret-provider-payload");
+  });
+
+  it("fixes definition slot order before input-dependent invocation ports perform work", async () => {
+    const events: string[] = [];
+    const definition = defineReadCapability<{ values: string[] }, { values: string[] }>({
+      capabilityId: "test.portlifecycle",
+      inputSchema: z.object({ values: z.array(z.string()).min(1) }).strict(),
+      dataSchema: z.object({ values: z.array(z.string()).min(1) }).strict(),
+      normalizeInput: (input) => ({ values: [...input.values].sort() }),
+      conclusionIds: ["input_validated"],
+      observationSlots: (input) => {
+        events.push(`slots:${input.values.join(",")}`);
+        return [{
+          slotId: "input",
+          factId: "input",
+          kind: "validated_input" as const,
+          purpose: "validated_input",
+        }];
+      },
+      observationExpectations: (input) => [{
+        slotId: "input",
+        claims: [{ role: "validated_input", value: input as never }],
+      }],
+      factRequirements: () => [{
+        factId: "input",
+        observationSlotIds: ["input"],
+        requiredObservationSlotIds: ["input"],
+        minimumObservationCount: 1,
+        outcome: "validated_input" as const,
+      }],
+      deriveConclusions: () => [{
+        id: "input_validated",
+        outcomeFactId: "input",
+        evidenceFactIds: ["input"],
+        freshnessRuleId: "validated_input_current" as const,
+      }],
+      deriveWarnings: () => [],
+      validateInvocation: (input, data) => {
+        if (input.values.join("\0") !== data.values.join("\0")) throw new TypeError("Input mismatch.");
+      },
+      warningCodes: [],
+      staticScopeExclusions: [],
+    });
+    const harness = createCapabilityHarness();
+    const binding = bindCapability({
+      definition,
+      errorRegistry: coreErrorRegistry,
+      invocationAuthority: harness.invocationAuthority,
+      createInvocationPorts: (input) => {
+        events.push(`ports:${input.values.join(",")}`);
+        return harness.ports;
+      },
+      handler: async (input) => {
+        events.push(`handler:${input.values.join(",")}`);
+        return { status: "success", data: input };
+      },
+    });
+
+    expect((await invokeBinding(definition, binding, { values: ["b", "a"] })).ok).toBe(true);
+    expect(events).toEqual(["slots:a,b", "ports:a,b", "handler:a,b"]);
+
+    events.length = 0;
+    expect((await invokeBinding(definition, binding, { values: [] })).ok).toBe(false);
+    expect(events).toEqual([]);
   });
 
   it("does not accept handler-controlled issue messages or value-derived paths", async () => {
@@ -742,7 +807,11 @@ describe("capability binding authority", () => {
     }));
     const result = await invokeBinding(definition, binding, { value: "safe" });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.data.value).toBe("safe");
+    if (result.ok) {
+      expect(result.data.value).toBe("safe");
+      expect(result.evidence.sources.find((source) => source.sourceClass === "validated_input")?.owner)
+        .toBe(`${productDisplayName} validated input`);
+    }
     expect(dataMutationRejected).toBe(true);
     expect(factMutationRejected).toBe(true);
     expect(factSetExposed).toBe(false);

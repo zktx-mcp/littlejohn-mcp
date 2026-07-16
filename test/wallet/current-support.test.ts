@@ -1,17 +1,22 @@
-import { readFile } from "node:fs/promises";
-
 import { describe, expect, it } from "vitest";
 
 import {
   initialRuntimeSupportManifest,
-  verifyCurrentSupportDocument,
+  renderCurrentSupportSection,
 } from "../../src/runtime/index.js";
 import { extendWalletSupportManifest } from "../../src/wallet/application.js";
 
 describe("wallet Current Support projection", () => {
-  it("keeps the public Current Support section equal to the wallet runtime manifest", async () => {
-    const document = await readFile("docs/PRODUCT_POLICY.md", "utf8");
+  it("projects the complete wallet-scoped support state without owning the later public projection", async () => {
     const manifest = extendWalletSupportManifest(initialRuntimeSupportManifest);
-    expect(() => verifyCurrentSupportDocument(document, manifest)).not.toThrow();
+    const section = renderCurrentSupportSection(manifest);
+    expect(section).toContain("`wallet.connection`");
+    expect(section).not.toContain("`chain.status`");
+    expect(section).toContain(
+      "Implemented wallet support: `wallet.cancel_operation` (CLI); `wallet.connect` (CLI); " +
+        "`wallet.connection` (CLI); `wallet.disconnect` (CLI); `wallet.operation` (CLI).",
+    );
+    expect(section).not.toContain("MCP");
+    expect(section).not.toContain("web");
   });
 });

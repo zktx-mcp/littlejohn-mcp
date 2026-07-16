@@ -18,24 +18,32 @@
   ],
   "scripts": {
     "clean": "node scripts/clean.mjs",
-    "build": "npm run clean && tsc -p tsconfig.build.json && node dist/build/generate-contracts.js && node dist/build/generate-build-identity.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "npm run clean && tsc -p tsconfig.build.json && tsc -p tsconfig.web.json --noEmit && vite build --config vite.config.ts && node dist/build/generate-contracts.js && node dist/build/generate-build-identity.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@walletconnect/sign-client": "2.23.10",
     "better-sqlite3": "12.11.1",
     "qrcode": "1.5.4",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "viem": "2.55.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "7.6.13",
     "@types/node": "22.20.1",
     "@types/qrcode": "1.5.6",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
     "ajv": "8.20.0",
     "fast-check": "4.9.0",
     "tsx": "4.23.0",
     "typescript": "6.0.3",
+    "vite": "8.1.4",
     "vitest": "4.1.10"
   }
 }

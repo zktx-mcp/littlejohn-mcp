@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import {
   canonicalBase64UrlSchema,
+  createSha256HexSchema,
   parseUnsignedDecimal,
   unsignedDecimalSchema,
   type UnsignedDecimal,
@@ -19,7 +20,7 @@ export const runtimeIdentityProofByteLength = 32 as const;
 const createRuntimeIdentitySchemaSet = () => {
   const profileId = canonicalBase64UrlSchema(runtimeIdentifierByteLength).brand("ProfileId");
   const ownerInstanceId = canonicalBase64UrlSchema(runtimeIdentifierByteLength).brand("OwnerInstanceId");
-  const runtimeBuildDigest = z.string().regex(/^[0-9a-f]{64}$/).brand("RuntimeBuildDigest");
+  const runtimeBuildDigest = createSha256HexSchema().brand("RuntimeBuildDigest");
   const challenge = canonicalBase64UrlSchema(runtimeIdentityChallengeByteLength)
     .brand("RuntimeIdentityChallenge");
   const proof = canonicalBase64UrlSchema(runtimeIdentityProofByteLength).brand("RuntimeIdentityProof");

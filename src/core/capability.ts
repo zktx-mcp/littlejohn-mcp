@@ -28,6 +28,7 @@ import {
 import { robinhoodChainIdentity } from "./identities.js";
 import { deepFreezeValue } from "./immutability.js";
 import { jsonObject } from "./json-object.js";
+import { productDisplayName } from "./product-identity.js";
 import {
   assertCapabilityInvocationAuthority,
   createHandlerInvocationContext,
@@ -754,7 +755,7 @@ class InvocationObservations implements ObservationWriter {
 
   constructor(
     capabilityId: CapabilityId,
-    slots: readonly ObservationSlot[],
+    slots: readonly (ObservationSlot & { readonly ordinal: string })[],
     input: unknown,
     invocationId: InvocationId,
     clock: CanonicalClock,
@@ -763,19 +764,14 @@ class InvocationObservations implements ObservationWriter {
     this.#clock = clock;
     this.#invocationId = invocationId;
     this.#authorities = authorities;
-    if (canonicalUnique(slots.map((slot) => slot.slotId)).length !== slots.length) {
-      throw new TypeError("Duplicate observation slot identity.");
-    }
     const map = new Map<string, ObservationSlot & { readonly ordinal: string }>();
-    slots.forEach((slot, index) => {
-      map.set(slot.slotId, Object.freeze({ ...slot, ordinal: String(index) }));
-    });
+    for (const slot of slots) map.set(slot.slotId, slot);
     this.#slots = map;
     for (const slot of map.values()) {
       if (slot.kind === "validated_input") {
         this.#recordDetails(slot.slotId, {
           sourceClass: "validated_input",
-          owner: "Littlejohn validated input",
+          owner: `${productDisplayName} validated input`,
           observedAt: readCanonicalClock(clock),
           reference: {
             kind: "validated_input",
@@ -996,7 +992,7 @@ interface BindingRecord<
   readonly definition: Definition;
   readonly errorRegistry: ApplicationErrorRegistry;
   readonly invocationAuthority: CapabilityInvocationAuthority;
-  readonly createInvocationPorts: () => Ports;
+  readonly createInvocationPorts: (input: CapabilityInput<Definition>) => Ports;
   readonly handler: (
     input: CapabilityInput<Definition>,
     context: HandlerInvocationContext<Ports>,
@@ -1042,7 +1038,9 @@ const captureBindingRecord = <
     const definition = descriptors.definition?.value as Definition;
     const errorRegistry = descriptors.errorRegistry?.value as ApplicationErrorRegistry;
     const invocationAuthority = descriptors.invocationAuthority?.value as CapabilityInvocationAuthority;
-    const createInvocationPorts = descriptors.createInvocationPorts?.value as (() => Ports);
+    const createInvocationPorts = descriptors.createInvocationPorts?.value as (
+      (input: CapabilityInput<Definition>) => Ports
+    );
     const handler = descriptors.handler?.value as BindingRecord<Definition, Ports>["handler"];
     if (typeof createInvocationPorts !== "function" || typeof handler !== "function") {
       throw new TypeError();
@@ -1079,6 +1077,18 @@ const captureInvocationPorts = <Ports extends InvocationBoundaryPorts>(ports: Po
   return Object.freeze(captured) as Ports;
 };
 
+const prepareObservationSlots = (
+  slots: readonly ObservationSlot[],
+): readonly (ObservationSlot & { readonly ordinal: string })[] => {
+  if (canonicalUnique(slots.map((slot) => slot.slotId)).length !== slots.length) {
+    throw new TypeError("Duplicate observation slot identity.");
+  }
+  return Object.freeze(slots.map((slot, index) => Object.freeze({
+    ...slot,
+    ordinal: String(index),
+  })));
+};
+
 export const bindCapability = <
   Definition extends AnyReadCapabilityDefinition,
   Ports extends InvocationBoundaryPorts,
@@ -1112,9 +1122,23 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
   }
   const validatedInput = deepFreezeValue(parsedInput.data);
 
+  let invocationId: InvocationId;
+  let slots: readonly (ObservationSlot & { readonly ordinal: string })[];
+  try {
+    invocationId = binderEvidenceSchemas.invocationId.parse(
+      `inv:${randomBytes(32).toString("base64url")}`,
+    );
+    slots = prepareObservationSlots(parseDefinitionArray(
+      observationSlotAuthoritySchema,
+      definition.observationSlots(validatedInput),
+    ) as readonly ObservationSlot[]);
+  } catch {
+    return internalFailure(record.errorRegistry);
+  }
+
   let context: HandlerInvocationContext<InvocationBoundaryPorts>;
   try {
-    const ports = captureInvocationPorts(record.createInvocationPorts());
+    const ports = captureInvocationPorts(record.createInvocationPorts(validatedInput));
     context = createHandlerInvocationContext({
       authority: record.invocationAuthority,
       signal,
@@ -1125,15 +1149,7 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
   }
 
   let observations: InvocationObservations;
-  let slots: readonly ObservationSlot[];
   try {
-    const invocationId = binderEvidenceSchemas.invocationId.parse(
-      `inv:${randomBytes(32).toString("base64url")}`,
-    );
-    slots = parseDefinitionArray(
-      observationSlotAuthoritySchema,
-      definition.observationSlots(validatedInput),
-    ) as readonly ObservationSlot[];
     observations = new InvocationObservations(
       definition.capabilityId,
       slots,
@@ -1197,7 +1213,8 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
       }
       const observedSlots = requirement.observationSlotIds
         .map((slotId) => slotById.get(slotId))
-        .filter((slot): slot is ObservationSlot => slot !== undefined && observations.hasSlot(slot.slotId));
+        .filter((slot): slot is ObservationSlot & { readonly ordinal: string } =>
+          slot !== undefined && observations.hasSlot(slot.slotId));
       const evidenceAuthority = factOutcomeDefinitions[requirement.outcome].evidenceAuthority;
       if (evidenceAuthority === "none" && observedSlots.length !== 0) {
         throw new TypeError("Fact outcome must not claim evidence.");

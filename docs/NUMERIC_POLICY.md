@@ -73,7 +73,7 @@ the same asset and observation identity.
 - A chain decimals observation binds the exact token identity and chain anchor.
 - A registry decimals observation binds the registry identifier, release
   version, record identifier, and canonical record digest.
-- Littlejohn never assumes `18`, infers decimals from a symbol or name, or
+- Little John never assumes `18`, infers decimals from a symbol or name, or
   reuses decimals from another deployment.
 - Missing decimals, conflicting authoritative sources, or changed verified
   decimals invalidate dependent caches, quotes, reviews, simulations, and

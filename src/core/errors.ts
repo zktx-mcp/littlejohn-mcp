@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { createEvidenceSchemaSet, type FieldIssue } from "./evidence.js";
+import { coreErrorDefinitions } from "./error-definitions.js";
 import { deepFreezeValue } from "./immutability.js";
 import { guardJsonSchema, jsonObject } from "./json-object.js";
 import { compareCodePointSequences, createPrimitiveSchemaSet } from "./primitives.js";
@@ -116,20 +117,7 @@ export const assertDirectApplicationErrorRegistryExtension = (
   }
 };
 
-export const coreErrorRegistry = createRegistry([
-  {
-    code: "invalid_input",
-    category: "input",
-    message: "The request input is invalid.",
-    retryable: false,
-  },
-  {
-    code: "internal_error",
-    category: "internal",
-    message: "The request could not be completed.",
-    retryable: false,
-  },
-]);
+export const coreErrorRegistry = createRegistry(coreErrorDefinitions);
 
 export const createApplicationFailure = (
   registry: ApplicationErrorRegistry,

@@ -294,10 +294,24 @@ export type RouteMatch =
   | { readonly status: "matched"; readonly route: CompiledRoute; readonly params: Readonly<Record<string, string>> }
   | {
       readonly status: "method_not_allowed";
-      readonly routes: readonly CompiledRoute[];
+      readonly candidates: readonly {
+        readonly route: CompiledRoute;
+        readonly params: Readonly<Record<string, string>>;
+      }[];
       readonly allow: readonly RouteMethod[];
     }
   | { readonly status: "not_found" };
+
+const routeMatchRegistries = new WeakMap<object, RuntimeRouteRegistry>();
+
+const createRouteMatch = <Match extends RouteMatch>(
+  registry: RuntimeRouteRegistry,
+  input: Match,
+): Match => {
+  const match = Object.freeze(input);
+  routeMatchRegistries.set(match, registry);
+  return match;
+};
 
 export type NormalizedRouteResult =
   | { readonly ok: true; readonly response: "canonical_json"; readonly body: CanonicalJson }
@@ -426,44 +440,56 @@ export class RuntimeRouteRegistry {
       .filter((candidate): candidate is { route: CompiledRoute; params: Readonly<Record<string, string>> } =>
         candidate.params !== undefined);
     const matched = pathMatches.find((candidate) => candidate.route.method === method);
-    if (matched !== undefined) return { status: "matched", route: matched.route, params: matched.params };
+    if (matched !== undefined) {
+      return createRouteMatch(this, {
+        status: "matched",
+        route: matched.route,
+        params: matched.params,
+      });
+    }
     if (pathMatches.length !== 0) {
-      return {
+      return createRouteMatch(this, {
         status: "method_not_allowed",
-        routes: Object.freeze(pathMatches.map((candidate) => candidate.route)),
+        candidates: Object.freeze(pathMatches.map((candidate) => Object.freeze({
+          route: candidate.route,
+          params: candidate.params,
+        }))),
         allow: Object.freeze([...new Set(pathMatches.map((candidate) => candidate.route.method))]
           .sort(compareCodePointSequences)),
-      };
+      });
     }
-    return { status: "not_found" };
+    return createRouteMatch(this, { status: "not_found" });
   }
 
   validateSecurity(
-    route: CompiledRoute,
-    input: Omit<RequestSecurityInput, "requestClass" | "acceptsBody">,
+    match: Extract<RouteMatch, { readonly status: "matched" }>,
+    input: Omit<RequestSecurityInput, "requestClass" | "acceptsBody" | "params">,
   ): RequestSecurityResult {
     const state = routeRegistryState(this);
-    if (!state.routes.includes(route)) throw new TypeError("Route provenance is invalid.");
+    if (routeMatchRegistries.get(match) !== this || !state.routes.includes(match.route)) {
+      throw new TypeError("Route match provenance is invalid.");
+    }
     return state.requestPolicies.validate({
       ...input,
-      requestClass: route.requestClass,
-      acceptsBody: route.acceptsBody,
+      params: match.params,
+      requestClass: match.route.requestClass,
+      acceptsBody: match.route.acceptsBody,
     });
   }
 
   validateMethodRejection(
-    routes: readonly CompiledRoute[],
-    input: Omit<RequestClassSecurityInput, "requestClass">,
+    match: Extract<RouteMatch, { readonly status: "method_not_allowed" }>,
+    input: Omit<RequestClassSecurityInput, "requestClass" | "params">,
   ): RequestSecurityResult {
     const state = routeRegistryState(this);
-    if (routes.length === 0 || routes.some((route) => !state.routes.includes(route))) {
-      throw new TypeError("Route provenance is invalid.");
+    if (routeMatchRegistries.get(match) !== this || match.candidates.length === 0 ||
+      match.candidates.some((candidate) => !state.routes.includes(candidate.route))) {
+      throw new TypeError("Route match provenance is invalid.");
     }
-    const requestClasses = [...new Set(routes.map((route) => route.requestClass))]
-      .sort(compareCodePointSequences);
-    const results = requestClasses.map((requestClass) => state.requestPolicies.validateClass({
+    const results = match.candidates.map((candidate) => state.requestPolicies.validateClass({
       ...input,
-      requestClass,
+      params: candidate.params,
+      requestClass: candidate.route.requestClass,
     }));
     if (results.some((result) => result.ok)) return { ok: true };
     return results[0] as Exclude<RequestSecurityResult, { readonly ok: true }>;

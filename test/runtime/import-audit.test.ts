@@ -173,10 +173,15 @@ describe("module import audit", () => {
     expect(policy.toolPackages.has("typescript")).toBe(true);
     expect(policy.toolPackages.has("@types/qrcode")).toBe(true);
 
+    const missingWu5Entry = Object.entries(fixture.extensionsByWorkUnit.WU5.dependencies)[0];
+    if (missingWu5Entry === undefined) throw new TypeError("WU5 dependency fixture is empty");
+    const [missingWu5Package, missingWu5Version] = missingWu5Entry;
+    const incompleteWu5Dependencies = { ...manifest.dependencies };
+    delete incompleteWu5Dependencies[missingWu5Package];
     expect(() => createPackageImportPolicy(fixture, {
       ...manifest,
-      dependencies: { ...manifest.dependencies, react: "19.2.7" },
-    })).toThrow("WU5:missing:dependencies:@modelcontextprotocol/sdk@1.29.0");
+      dependencies: incompleteWu5Dependencies,
+    })).toThrow(`WU5:missing:dependencies:${missingWu5Package}@${missingWu5Version}`);
     expect(() => createPackageImportPolicy(fixture, {
       ...manifest,
       dependencies: { ...manifest.dependencies, "qrcode-extra": "1.0.0" },
@@ -356,12 +361,20 @@ describe("module import audit", () => {
       ["src/wallet/client.ts", "../runtime/index.js"],
       ["scripts/release-check.mjs", "../src/core/index.js"],
       ["vite.config.ts", "./vitest.config.ts"],
+      ["src/interfaces/web/main.tsx", "./wallet-operation-page.js"],
+      ["src/interfaces/web/main.tsx", "./styles.css"],
+      ["src/runtime/esm-consumer.mts", "./esm-target.mjs"],
+      ["src/runtime/cjs-consumer.cts", "./cjs-target.cjs"],
     ] as const;
     const auditedFiles = [
       ...allowed.map(([fileName]) => resolve(fileName)),
       resolve("src/runtime/index.ts"),
       resolve("src/core/index.ts"),
       resolve("vitest.config.ts"),
+      resolve("src/interfaces/web/wallet-operation-page.tsx"),
+      resolve("src/interfaces/web/styles.css"),
+      resolve("src/runtime/esm-target.mts"),
+      resolve("src/runtime/cjs-target.cts"),
     ];
     const policy = testPolicy(new Map(), new Set(), repositoryRoot, auditedFiles);
     for (const [fileName, specifier] of allowed) {
@@ -387,11 +400,23 @@ describe("module import audit", () => {
         policy,
       )).toContain(`${fileName}:module:relative_outside_audit`);
     }
+
+    const ambiguousPolicy = testPolicy(new Map(), new Set(), repositoryRoot, [
+      resolve("src/interfaces/consumer.ts"),
+      resolve("src/interfaces/target.ts"),
+      resolve("src/interfaces/target.tsx"),
+    ]);
+    expect(moduleViolations(
+      'import "./target.js";',
+      resolve("src/interfaces/consumer.ts"),
+      ambiguousPolicy,
+    )).toContain("src/interfaces/consumer.ts:module:relative_outside_audit");
   });
 
   it("collects product sources without generated or ignored work material", async () => {
     const files = await collectProductSourceFiles(resolve("."));
     expect(files).toContain(resolve("src/cli.ts"));
+    expect(files).toContain(resolve("src/interfaces/web/styles.css"));
     expect(files).toContain(resolve("scripts/clean.mjs"));
     expect(files).toContain(resolve("vitest.config.ts"));
     expect(files.some((file) => file.includes("/dist/"))).toBe(false);

@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   assertCanonicalAmountBindings,
+  canonicalUnsignedDecimalMaximumPattern,
   createAmountSchemaSet,
   type CanonicalAmount,
   type NativeGasRate,
@@ -29,7 +30,24 @@ import { robinhoodChainIdentity, robinhoodWalletNamespaceRequirements } from "./
 import {
   compareCodePointSequences,
   createPrimitiveSchemaSet,
+  type EvmAddress,
 } from "./primitives.js";
+import {
+  assertCanonicalWalletConnection,
+  walletConnectionDataSchema,
+  type WalletConnectionData,
+} from "./wallet-connection.js";
+
+export const readCapabilityLimits = Object.freeze({
+  runtimeCodeBytes: 262_144,
+  transactionCalldataBytes: 2_097_152,
+  transactionLogTopics: 4,
+  transactionReceiptLogs: 4_096,
+  transactionAccessListEntries: 1_024,
+  transactionAccessListStorageKeyOccurrences: 4_096,
+  transactionType: 127,
+  accountTokenAddresses: 50,
+});
 
 const capabilityPrimitives = createPrimitiveSchemaSet();
 const capabilityAmounts = createAmountSchemaSet();
@@ -66,7 +84,7 @@ const contractInspectDataSchema = jsonObject({
     jsonObject({ status: z.literal("empty") }).strict(),
     jsonObject({
       status: z.literal("present"),
-      bytecode: hexBytesSchema.max(524_290),
+      bytecode: hexBytesSchema.max(readCapabilityLimits.runtimeCodeBytes * 2 + 2),
       byteLength: unsignedDecimalSchema,
       codeHash: hash32Schema,
     }).strict(),
@@ -75,7 +93,7 @@ const contractInspectDataSchema = jsonObject({
 
 const transactionLogSchema = jsonObject({
   address: evmAddressSchema,
-  topics: z.array(hash32Schema).max(4),
+  topics: z.array(hash32Schema).max(readCapabilityLimits.transactionLogTopics),
   data: hexBytesSchema,
   logIndex: unsignedDecimalSchema,
   transactionIndex: unsignedDecimalSchema,
@@ -104,8 +122,9 @@ const accessListSchema = z.discriminatedUnion("kind", [
     kind: z.literal("entries"),
     entries: z.array(jsonObject({
       address: evmAddressSchema,
-      storageKeys: z.array(hash32Schema).max(4096),
-    }).strict()).max(1024),
+      storageKeys: z.array(hash32Schema)
+        .max(readCapabilityLimits.transactionAccessListStorageKeyOccurrences),
+    }).strict()).max(readCapabilityLimits.transactionAccessListEntries),
   }).strict(),
 ]);
 
@@ -118,12 +137,15 @@ const receiptSchema = jsonObject({
     jsonObject({ kind: z.literal("none") }).strict(),
     jsonObject({ kind: z.literal("address"), address: evmAddressSchema }).strict(),
   ]),
-  logs: z.array(transactionLogSchema).max(4096),
+  logs: z.array(transactionLogSchema).max(readCapabilityLimits.transactionReceiptLogs),
 }).strict();
 
 const transactionInspectInputSchema = jsonObject({ transactionHash: hash32Schema }).strict();
 const transactionTypeSchema = z.string()
-  .regex(/^(?:[0-9]|[1-9][0-9]|1[01][0-9]|12[0-7])$/, "Transaction type is out of range.")
+  .regex(
+    new RegExp(canonicalUnsignedDecimalMaximumPattern(readCapabilityLimits.transactionType), "u"),
+    "Transaction type is out of range.",
+  )
   .brand("UnsignedDecimal");
 const transactionInspectDataSchema = jsonObject({
   transactionHash: hash32Schema,
@@ -134,7 +156,10 @@ const transactionInspectDataSchema = jsonObject({
     jsonObject({ kind: z.literal("contract_creation") }).strict(),
   ]),
   value: canonicalAmountSchema,
-  input: hexBytesSchema.max(4_194_306, "Transaction calldata exceeds the supported size."),
+  input: hexBytesSchema.max(
+    readCapabilityLimits.transactionCalldataBytes * 2 + 2,
+    "Transaction calldata exceeds the supported size.",
+  ),
   nonce: unsignedDecimalSchema,
   gasLimit: gasUnitsSchema,
   type: transactionTypeSchema,
@@ -165,7 +190,7 @@ const accountSelectorSchema = z.discriminatedUnion("kind", [
 ]);
 const canonicalTokenInputSchema = (minimum: 0 | 1) => z.array(evmAddressSchema)
   .min(minimum)
-  .max(50)
+  .max(readCapabilityLimits.accountTokenAddresses)
   .meta({ uniqueItems: true });
 
 const accountBalanceInputSchema = z.discriminatedUnion("includeNative", [
@@ -201,30 +226,10 @@ const accountBalanceDataSchema = jsonObject({
     jsonObject({ status: z.literal("not_requested") }).strict(),
     jsonObject({ status: z.literal("available"), amount: canonicalAmountSchema }).strict(),
   ]),
-  tokens: z.array(tokenBalanceResultSchema).max(50),
+  tokens: z.array(tokenBalanceResultSchema).max(readCapabilityLimits.accountTokenAddresses),
 }).strict();
 
-const walletIdentifierSchema = capabilityPrimitives.fixedIdentifier;
-const eligibleSessionCountSchema = unsignedDecimalSchema
-  .regex(/^(?:[2-9]|[1-9][0-9]+)$/, "Unresolved wallet state requires at least two eligible sessions.");
 const walletConnectionInputSchema = noInputSchema;
-const walletConnectionDataSchema = z.discriminatedUnion("status", [
-  jsonObject({ status: z.literal("unknown"), reason: z.enum(["reconciling", "owner_unavailable"]) }).strict(),
-  jsonObject({
-    status: z.literal("disconnected"),
-    reason: z.enum(["no_session", "expired", "deleted", "disconnected", "unusable_store"]),
-  }).strict(),
-  jsonObject({ status: z.literal("unresolved"), eligibleSessionCount: eligibleSessionCountSchema }).strict(),
-  jsonObject({
-    status: z.literal("connected"),
-    account: z.string(),
-    address: evmAddressSchema,
-    chainId: z.literal(robinhoodChainIdentity.caip2),
-    approvedMethods: z.array(walletIdentifierSchema).max(64),
-    approvedEvents: z.array(walletIdentifierSchema).max(64),
-    expiresAt: utcTimestampSchema,
-  }).strict(),
-]);
 
 export type ChainStatusInput = z.infer<typeof chainStatusInputSchema>;
 export type ChainStatusData = z.infer<typeof chainStatusDataSchema>;
@@ -235,7 +240,7 @@ export type TransactionInspectData = z.infer<typeof transactionInspectDataSchema
 export type AccountBalanceInput = z.infer<typeof accountBalanceInputSchema>;
 export type AccountBalanceData = z.infer<typeof accountBalanceDataSchema>;
 export type WalletConnectionInput = z.infer<typeof walletConnectionInputSchema>;
-export type WalletConnectionData = z.infer<typeof walletConnectionDataSchema>;
+export type { WalletConnectionData } from "./wallet-connection.js";
 
 const exclusion = (id: string, message: string): StaticScopeExclusion =>
   Object.freeze({ id, message }) as StaticScopeExclusion;
@@ -289,6 +294,17 @@ const expectation = (slotId: string, claims: readonly ObservationClaim[]): Obser
 });
 
 const asJson = (value: unknown): CanonicalJson => value as CanonicalJson;
+
+export const createAccountBalanceTokenEvidenceIdentity = (address: EvmAddress) => {
+  const factId = capabilityPrimitives.fixedIdentifier.parse(`token_balance:${address}`);
+  return Object.freeze({
+    factId,
+    balanceSlotId: capabilityPrimitives.fixedIdentifier.parse(`token:${address}:balance`),
+    decimalsSlotId: capabilityPrimitives.fixedIdentifier.parse(`token:${address}:decimals`),
+    balanceClaimRole: factId,
+    decimalsClaimRole: capabilityPrimitives.fixedIdentifier.parse(`token_decimals:${address}`),
+  });
+};
 
 const assertOrderedUnique = (values: readonly string[], label: string): void => {
   for (let index = 1; index < values.length; index += 1) {
@@ -389,7 +405,7 @@ export const contractInspectCapability = defineReadCapability<ContractInspectInp
       const byteLength = BigInt((data.runtimeCode.bytecode.length - 2) / 2);
       if (
         data.runtimeCode.bytecode === "0x" ||
-        byteLength > 262_144n ||
+        byteLength > BigInt(readCapabilityLimits.runtimeCodeBytes) ||
         byteLength.toString(10) !== data.runtimeCode.byteLength ||
         keccak256Hex(data.runtimeCode.bytecode) !== data.runtimeCode.codeHash
       ) {
@@ -580,6 +596,12 @@ const validateTransactionIntrinsicData = (
   if (data.type === "0" && data.accessList.kind !== "none") {
     throw new TypeError("Type 0 transaction access-list meaning is invalid.");
   }
+  if (
+    (data.type === "1" || data.type === "2" || data.type === "3" || data.type === "4") &&
+    data.accessList.kind !== "entries"
+  ) {
+    throw new TypeError("Typed transaction access-list meaning is invalid.");
+  }
   const expectedFee = data.type === "0" || data.type === "1"
     ? "legacy"
     : data.type === "2"
@@ -589,13 +611,13 @@ const validateTransactionIntrinsicData = (
     throw new TypeError("Transaction fee meaning is inconsistent with its type.");
   }
   if (data.accessList.kind === "entries") {
-    assertOrderedUnique(data.accessList.entries.map((entry) => entry.address), "Access-list addresses");
     let storageKeyCount = 0;
     for (const entry of data.accessList.entries) {
-      assertOrderedUnique(entry.storageKeys, "Access-list storage keys");
       storageKeyCount += entry.storageKeys.length;
     }
-    if (storageKeyCount > 4_096) throw new TypeError("Access list has too many storage keys.");
+    if (storageKeyCount > readCapabilityLimits.transactionAccessListStorageKeyOccurrences) {
+      throw new TypeError("Access list has too many storage keys.");
+    }
   }
   assertNativeAmountIdentity(data.value, transactionNativeDecimalsExclusion, context);
   if (data.fee.kind === "legacy") {
@@ -603,6 +625,12 @@ const validateTransactionIntrinsicData = (
   } else if (data.fee.kind === "dynamic") {
     assertNativeAmountIdentity(data.fee.maxFeePerGas.numerator, transactionNativeDecimalsExclusion, context);
     assertNativeAmountIdentity(data.fee.maxPriorityFeePerGas.numerator, transactionNativeDecimalsExclusion, context);
+    if (
+      BigInt(data.fee.maxPriorityFeePerGas.numerator.raw) >
+      BigInt(data.fee.maxFeePerGas.numerator.raw)
+    ) {
+      throw new TypeError("Dynamic fee limits are inconsistent.");
+    }
   }
   if (data.inclusion.status !== "included") return;
   const receipt = data.inclusion.receipt;
@@ -754,10 +782,13 @@ const accountObservationSlots = (input: AccountBalanceInput): ObservationSlot[] 
     ? [inputSlot("account", "account", "account_input")]
     : [sourceSlot("account", "account", "active_wallet_account", "wallet_session")]),
   ...(input.includeNative ? [sourceSlot("native_balance", "native_balance", "native_balance", "chain_rpc")] : []),
-  ...input.tokens.flatMap((address) => [
-    sourceSlot(`token_balance:${address}:balance`, `token_balance:${address}`, "token_balance", "chain_rpc"),
-    sourceSlot(`token_balance:${address}:decimals`, `token_balance:${address}`, "token_decimals", "chain_rpc"),
-  ]),
+  ...input.tokens.flatMap((address) => {
+    const identity = createAccountBalanceTokenEvidenceIdentity(address);
+    return [
+      sourceSlot(identity.balanceSlotId, identity.factId, "token_balance", "chain_rpc"),
+      sourceSlot(identity.decimalsSlotId, identity.factId, "token_decimals", "chain_rpc"),
+    ];
+  }),
 ];
 
 const accountObservationExpectations = (
@@ -778,14 +809,18 @@ const accountObservationExpectations = (
     })]));
   }
   for (const token of data.tokens) {
-    const address = token.asset.address;
-    const balanceSlot = `token_balance:${address}:balance`;
-    const decimalsSlot = `token_balance:${address}:decimals`;
+    const identity = createAccountBalanceTokenEvidenceIdentity(token.asset.address);
     if (token.result.status === "unavailable") {
       const failed = asJson({ status: "unavailable", errorCode: token.result.errorCode });
       expectations.push(
-        expectation(balanceSlot, [claim(`token_balance:${address}`, failed, { asset: token.asset, chainAnchor: data.block })]),
-        expectation(decimalsSlot, [claim(`token_decimals:${address}`, failed, { asset: token.asset, chainAnchor: data.block })]),
+        expectation(identity.balanceSlotId, [claim(identity.balanceClaimRole, failed, {
+          asset: token.asset,
+          chainAnchor: data.block,
+        })]),
+        expectation(identity.decimalsSlotId, [claim(identity.decimalsClaimRole, failed, {
+          asset: token.asset,
+          chainAnchor: data.block,
+        })]),
       );
       continue;
     }
@@ -795,11 +830,11 @@ const accountObservationExpectations = (
     }
     const decimalsValue = amount.decimals.status === "available" ? amount.decimals.value : null;
     expectations.push(
-      expectation(balanceSlot, [claim(`token_balance:${address}`, amount.raw, {
+      expectation(identity.balanceSlotId, [claim(identity.balanceClaimRole, amount.raw, {
         asset: amount.asset,
         chainAnchor: data.block,
       })]),
-      expectation(decimalsSlot, [claim(`token_decimals:${address}`, decimalsValue, {
+      expectation(identity.decimalsSlotId, [claim(identity.decimalsClaimRole, decimalsValue, {
         asset: amount.asset,
         chainAnchor: data.block,
       })]),
@@ -822,7 +857,7 @@ export const accountBalanceCapability = defineReadCapability<AccountBalanceInput
   expectedConclusionIds: (input) => [
     "account_bound",
     ...(input.includeNative ? ["native_balance_observed"] : []),
-    ...input.tokens.map((address) => `token_balance:${address}`),
+    ...input.tokens.map((address) => createAccountBalanceTokenEvidenceIdentity(address).factId),
   ],
   observationSlots: accountObservationSlots,
   observationExpectations: accountObservationExpectations,
@@ -832,15 +867,13 @@ export const accountBalanceCapability = defineReadCapability<AccountBalanceInput
     ...(input.includeNative ? [requirement("native_balance", "observed", ["native_balance"])] : []),
     requirement("rpc_chain_id", "observed", ["rpc_chain_id"]),
     ...data.tokens.map((token) => {
-      const slots = [
-        `token_balance:${token.asset.address}:balance`,
-        `token_balance:${token.asset.address}:decimals`,
-      ];
+      const identity = createAccountBalanceTokenEvidenceIdentity(token.asset.address);
+      const slots = [identity.balanceSlotId, identity.decimalsSlotId];
       if (token.result.status === "available") {
-        return requirement(`token_balance:${token.asset.address}`, "observed", slots);
+        return requirement(identity.factId, "observed", slots);
       }
       return requirement(
-        `token_balance:${token.asset.address}`,
+        identity.factId,
         token.result.errorCode === "source_inconsistent" ? "source_inconsistent" : "source_failed",
         slots,
         [],
@@ -854,8 +887,10 @@ export const accountBalanceCapability = defineReadCapability<AccountBalanceInput
     ...(input.includeNative
       ? [conclusionFromFact("native_balance_observed", "native_balance", facts, "chain_anchor_exact")]
       : []),
-    ...input.tokens.map((address) =>
-      conclusionFromFact(`token_balance:${address}`, `token_balance:${address}`, facts, "chain_anchor_exact")),
+    ...input.tokens.map((address) => {
+      const identity = createAccountBalanceTokenEvidenceIdentity(address);
+      return conclusionFromFact(identity.factId, identity.factId, facts, "chain_anchor_exact");
+    }),
   ],
   deriveWarnings: (_input, data) => {
     const warnings: WarningRequirement[] = [];
@@ -863,7 +898,7 @@ export const accountBalanceCapability = defineReadCapability<AccountBalanceInput
       warnings.push({ code: "decimals_unavailable", factIds: ["native_balance"] });
     }
     for (const token of data.tokens) {
-      const factId = `token_balance:${token.asset.address}`;
+      const factId = createAccountBalanceTokenEvidenceIdentity(token.asset.address).factId;
       if (token.result.status === "unavailable") {
         warnings.push({ code: "partial_result", factIds: [factId] });
       } else if (token.result.amount.decimals.status !== "available") {
@@ -905,9 +940,10 @@ export const accountBalanceCapability = defineReadCapability<AccountBalanceInput
     }
     for (const token of data.tokens) {
       if (token.result.status === "available") {
+        const identity = createAccountBalanceTokenEvidenceIdentity(token.asset.address);
         assertCanonicalAmountBindings(token.result.amount, context.observationClaims, new Set(), {
-          quantity: `token_balance:${token.asset.address}`,
-          decimals: `token_decimals:${token.asset.address}`,
+          quantity: identity.balanceClaimRole,
+          decimals: identity.decimalsClaimRole,
         });
       }
     }
@@ -950,21 +986,7 @@ export const walletConnectionCapability = defineReadCapability<WalletConnectionI
     conclusionFromFact("wallet_connection_state", "wallet_connection", facts, "wallet_session_current"),
   ],
   deriveWarnings: () => [],
-  validateIntrinsicData: (data) => {
-    if (data.status === "connected") {
-      if (data.account !== `${robinhoodChainIdentity.caip2}:${data.address}`) {
-        throw new TypeError("The CAIP-10 account does not match the address.");
-      }
-      assertOrderedUnique(data.approvedMethods, "Approved wallet methods");
-      assertOrderedUnique(data.approvedEvents, "Approved wallet events");
-      if (
-        !robinhoodWalletNamespaceRequirements.methods.every((method) =>
-          data.approvedMethods.some((approved) => approved === method)) ||
-        !robinhoodWalletNamespaceRequirements.events.every((event) =>
-          data.approvedEvents.some((approved) => approved === event))
-      ) throw new TypeError("Required wallet namespace approval is incomplete.");
-    }
-  },
+  validateIntrinsicData: assertCanonicalWalletConnection,
   validateDataContext: (data, context) => {
     if (data.status === "connected" && Date.parse(data.expiresAt) <= Date.parse(context.evaluatedAt)) {
         throw new TypeError("A connected wallet session must expire after evaluation.");
@@ -981,10 +1003,14 @@ export const walletConnectionCapability = defineReadCapability<WalletConnectionI
   ],
 });
 
+export const chainReadCapabilities = Object.freeze([
+  accountBalanceCapability,
+  chainStatusCapability,
+  contractInspectCapability,
+  transactionInspectCapability,
+] as const);
+
 export const readCapabilityRegistry = new CapabilityRegistry([
-  accountBalanceCapability as unknown as AnyReadCapabilityDefinition,
-  chainStatusCapability as unknown as AnyReadCapabilityDefinition,
-  contractInspectCapability as unknown as AnyReadCapabilityDefinition,
-  transactionInspectCapability as unknown as AnyReadCapabilityDefinition,
+  ...chainReadCapabilities.map((definition) => definition as unknown as AnyReadCapabilityDefinition),
   walletConnectionCapability as unknown as AnyReadCapabilityDefinition,
 ]);

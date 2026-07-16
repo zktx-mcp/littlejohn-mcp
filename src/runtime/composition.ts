@@ -7,6 +7,7 @@ import {
   CapabilityRegistry,
   ObservationAuthorityRegistry,
   accountBalanceCapability,
+  chainReadCapabilities,
   chainStatusCapability,
   contractInspectCapability,
   createCanonicalClock,
@@ -40,8 +41,8 @@ import {
   type HttpOwnerApplicationContext,
   type HttpOwnerReleasePermit,
   type HttpOwnerStartupResourceRegistry,
-  type OwnerOperation,
-  type OwnerOperationResponse,
+  type RuntimeDispatchRequest,
+  type RuntimeDispatchResponse,
 } from "./http-owner.js";
 import {
   createResourceOwnershipScope,
@@ -78,13 +79,7 @@ import {
 } from "./support-manifest.js";
 
 const walletConnectionCapabilityId = getCapabilityDefinitionSnapshot(walletConnectionCapability).capabilityId;
-const chainReadCapabilityDefinitions = Object.freeze([
-  accountBalanceCapability,
-  chainStatusCapability,
-  contractInspectCapability,
-  transactionInspectCapability,
-] as const);
-const chainReadCapabilityIds = Object.freeze(chainReadCapabilityDefinitions.map((definition) =>
+const chainReadCapabilityIds = Object.freeze(chainReadCapabilities.map((definition) =>
   getCapabilityDefinitionSnapshot(definition).capabilityId));
 
 export interface WalletCapabilityAuthorityPort {
@@ -637,11 +632,11 @@ export class LocalRuntime {
     return tracked;
   }
 
-  executeOwnerOperation(operation: OwnerOperation): Promise<OwnerOperationResponse> {
+  dispatchRuntimeRequest(request: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse> {
     const owner = this.#httpOwner;
     return owner === undefined
       ? Promise.reject(new RuntimeOperationError("state_conflict"))
-      : owner.executeOwnerOperation(operation);
+      : owner.dispatchRuntimeRequest(request);
   }
 
   stop(): Promise<void> {

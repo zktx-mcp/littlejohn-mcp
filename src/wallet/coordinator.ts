@@ -33,12 +33,12 @@ import {
   parseWalletOperationId,
   parseWalletOperationPresentation,
   parseWalletOperationResponse,
+  walletOperationIdByteLength,
   type WalletManagementOperation,
   type WalletOperationConfirmationPort,
   type WalletOperationConfirmation,
   type WalletOperationCreate,
   type WalletOperationFailureCode,
-  type WalletOperationKind,
   type WalletLocalControlOperationPort,
   type WalletOperationPresentation,
   type WalletOperationPresentationPort,
@@ -46,6 +46,7 @@ import {
   type WalletOperationResponse,
   type WalletOperationResult,
 } from "./contracts.js";
+import type { WalletOperationKind } from "./operation-state.js";
 import {
   WalletOperationError,
   createWalletFailure,
@@ -488,7 +489,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       definition: walletConnectionCapability,
       errorRegistry: walletErrorRegistry,
       invocationAuthority: wallet.capabilityAuthority.invocationAuthority,
-      createInvocationPorts: (): WalletConnectionInvocationPorts => {
+      createInvocationPorts: (_input: Record<string, never>): WalletConnectionInvocationPorts => {
         const walletSnapshot = this.#captureActiveWallet();
         return Object.freeze({
           ...wallet.capabilityAuthority.createInvocationPorts(walletSnapshot.sessionSource),
@@ -970,7 +971,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
 
   #createOperationEntry(input: WalletOperationCreate, connectionRevision: string): OperationEntry {
     let operationId: string;
-    do { operationId = randomBytes(32).toString("base64url"); }
+    do { operationId = randomBytes(walletOperationIdByteLength).toString("base64url"); }
     while (this.#operations.has(operationId));
     const createdAt = this.#now();
     const userActionDeadline = addMilliseconds(createdAt, userActionWaitMilliseconds);

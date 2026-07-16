@@ -8,12 +8,14 @@ import { performance } from "node:perf_hooks";
 import { describe, expect, it, vi } from "vitest";
 
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
+import { walletQrMatrixSizeLimits } from "../../src/wallet/contracts.js";
 
 import {
   createWalletConnectClient,
   createWalletConnectAcquisitionScope,
   isWalletConnectClientError,
   loadWalletConnectProductionDependencies,
+  WalletConnectClientError,
   type WalletConnectClientAcquisition,
   type WalletConnectClientEvent,
   type WalletConnectClientPort,
@@ -491,6 +493,27 @@ describe("WalletConnect client adapter", () => {
     const proxyFailure = await qrFailure(proxied);
     expect(proxyFailure).toMatchObject({ code: "invalid_sdk_data" });
     expect(proxyPrototypeRead).toBe(false);
+  });
+
+  it("rejects QR dimensions outside the canonical matrix limits", async () => {
+    class TestSignClient {
+      static async init(): Promise<unknown> {
+        return {};
+      }
+    }
+    for (const size of [
+      walletQrMatrixSizeLimits.minimum - 1,
+      walletQrMatrixSizeLimits.maximum + 1,
+    ]) {
+      const dependencies = await loadWalletConnectProductionDependencies(async (key) =>
+        key === "signClient"
+          ? { SignClient: TestSignClient }
+          : { create: () => ({ modules: { size, data: new Uint8Array(0) } }) },
+      );
+      expect(captureFailure(() => dependencies.qrEncoder(pairingUri))).toMatchObject({
+        code: "invalid_sdk_data",
+      });
+    }
   });
 
   it("captures the production SDK port once and closes an initialized malformed client", async () => {
@@ -1266,7 +1289,8 @@ describe("WalletConnect client adapter", () => {
     expect(Object.isFrozen(firstOutcome.session)).toBe(true);
     expect(Object.isFrozen(firstOutcome.session.namespaces["eip155"]?.accounts)).toBe(true);
     rawSession.namespaces.eip155.accounts[0] = "mutated";
-    expect(firstOutcome.session.namespaces["eip155"]?.accounts[0]).toContain("0x111111");
+    expect(firstOutcome.session.namespaces["eip155"]?.accounts[0])
+      .toBe("eip155:4663:0x1111111111111111111111111111111111111111");
 
     expect(await attempt.cancel()).toBe(firstOutcome);
     expect(sdk.pairingDisconnects).toEqual([]);
@@ -1319,6 +1343,7 @@ describe("WalletConnect client adapter", () => {
     });
     expect(() => isWalletConnectClientError(hostileUnknown)).not.toThrow();
     expect(isWalletConnectClientError(hostileUnknown)).toBe(false);
+    expect(isWalletConnectClientError(Object.create(WalletConnectClientError.prototype))).toBe(false);
 
     const configurationScope = createWalletConnectAcquisitionScope();
     const configurationFailure = await createWalletConnectClient(

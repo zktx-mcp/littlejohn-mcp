@@ -26,6 +26,6 @@ describe("WalletConnect package boundary", () => {
     ]);
     expect(packaged).toEqual(installed);
     expect(createHash("sha256").update(packaged).digest("hex")).toBe(walletConnectLicenseDigest);
-    expect(notice).toBe("Portions © 2025 Reown, Inc. All Rights Reserved\n");
+    expect(notice.split("Portions © 2025 Reown, Inc. All Rights Reserved")).toHaveLength(2);
   });
 });

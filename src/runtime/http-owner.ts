@@ -16,6 +16,7 @@ import {
   type CanonicalJson,
   type UtcTimestamp,
 } from "../core/index.js";
+import { browserCsrfHeaderName } from "../interfaces/browser-contract.js";
 import {
   createControlAuthorizationHeader,
   createControlCredentialVerifier,
@@ -43,6 +44,7 @@ import {
   noStoreCacheControl,
   parseRequestTarget,
   problemJsonContentType,
+  publicReadResponseLimitBytes,
   requestBodyLimitBytes,
   type BrowserContentType,
   type RequestTarget,
@@ -82,6 +84,8 @@ const headerValues = (request: IncomingMessage, name: string): string[] => {
   if (value === undefined) return [];
   return Array.isArray(value) ? value : [value];
 };
+
+const browserCsrfHeaderKey = browserCsrfHeaderName.toLowerCase();
 
 const writeJson = (
   response: ServerResponse,
@@ -411,32 +415,47 @@ const openAuthenticatedOwnerChannel = async (input: {
   }
 };
 
-export interface OwnerOperation {
+export type RuntimeDispatchRequestClass = "local_control" | "public_read";
+
+export interface RuntimeDispatchRequest {
+  readonly requestClass: RuntimeDispatchRequestClass;
   readonly method: RouteMethod;
   readonly path: string;
   readonly body?: CanonicalJson;
+  readonly signal?: AbortSignal;
 }
 
-export interface OwnerOperationResponse {
+export interface RuntimeDispatchResponse {
   readonly status: number;
   readonly body: CanonicalJson;
 }
 
-const validateOwnerOperation = (operation: OwnerOperation): OwnerOperation => {
-  const target = parseRequestTarget(operation.path);
-  if (target === undefined || target.query !== "" || !target.pathname.startsWith("/api/v1/internal/control/")) {
-    throw new TypeError("Owner operation path is invalid.");
+const validateRuntimeDispatchRequest = (request: RuntimeDispatchRequest): RuntimeDispatchRequest => {
+  const target = parseRequestTarget(request.path);
+  if (target === undefined || target.query !== "") {
+    throw new TypeError("Runtime dispatch path is invalid.");
   }
-  if (operation.method === "POST" && operation.body === undefined) {
-    throw new TypeError("POST owner operations require a canonical JSON body.");
+  if (request.requestClass !== "local_control" && request.requestClass !== "public_read") {
+    throw new TypeError("Runtime dispatch request class is invalid.");
   }
-  if (operation.method !== "POST" && operation.body !== undefined) {
-    throw new TypeError("GET and DELETE owner operations cannot contain a body.");
+  if (request.method === "POST" && request.body === undefined) {
+    throw new TypeError("POST runtime dispatch requests require a canonical JSON body.");
+  }
+  if (request.method !== "POST" && request.body !== undefined) {
+    throw new TypeError("GET and DELETE runtime dispatch requests cannot contain a body.");
+  }
+  if (request.method !== "GET" && request.method !== "POST" && request.method !== "DELETE") {
+    throw new TypeError("Runtime dispatch method is invalid.");
+  }
+  if (request.signal !== undefined && !(request.signal instanceof AbortSignal)) {
+    throw new TypeError("Runtime dispatch signal is invalid.");
   }
   return Object.freeze({
-    method: operation.method,
+    requestClass: request.requestClass,
+    method: request.method,
     path: target.pathname,
-    ...(operation.body === undefined ? {} : { body: captureCanonicalJson(operation.body) }),
+    ...(request.body === undefined ? {} : { body: captureCanonicalJson(request.body) }),
+    ...(request.signal === undefined ? {} : { signal: request.signal }),
   });
 };
 
@@ -652,13 +671,18 @@ export class FixedHttpOwner {
     }
   }
 
-  async executeOwnerOperation(operationInput: OwnerOperation): Promise<OwnerOperationResponse> {
-    const operation = validateOwnerOperation(operationInput);
+  async dispatchRuntimeRequest(requestInput: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse> {
+    const request = validateRuntimeDispatchRequest(requestInput);
     const active = createLifecycleWork();
+    const abort = (): void => active.controller.abort();
+    if (request.signal?.aborted === true) abort();
+    else request.signal?.addEventListener("abort", abort, { once: true });
     let registered = false;
     try {
       await this.#serialize(async () => {
-        if (this.#stopRequested) throw new RuntimeOperationError("request_aborted");
+        if (this.#stopRequested || active.controller.signal.aborted) {
+          throw new RuntimeOperationError("request_aborted");
+        }
         if (this.#phase === "stopped") await this.#startLocked();
         if (this.#phase !== "owner" && this.#phase !== "deferred") {
           throw new RuntimeOperationError("runtime_busy");
@@ -668,7 +692,7 @@ export class FixedHttpOwner {
         registered = true;
       });
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        this.#assertActiveOwnerOperation(active);
+        this.#assertActiveRuntimeDispatch(active);
         let channel: AuthenticatedOwnerChannel | undefined;
         try {
           channel = await openAuthenticatedOwnerChannel({
@@ -676,22 +700,26 @@ export class FixedHttpOwner {
             credential: this.#credential,
             runtimeBuildDigest: this.#runtimeBuildDigest,
           }, active.controller.signal);
-          this.#assertActiveOwnerOperation(active);
-          const body = operation.body === undefined ? undefined : `${canonicalJsonStringify(operation.body)}\n`;
+          this.#assertActiveRuntimeDispatch(active);
+          const body = request.body === undefined ? undefined : `${canonicalJsonStringify(request.body)}\n`;
           const packet = await requestPacket(channel, {
-            method: operation.method,
-            path: operation.path,
+            method: request.method,
+            path: request.path,
             headers: {
               Host: fixedHostHeader,
-              Authorization: createControlAuthorizationHeader(this.#credential),
+              ...(request.requestClass === "local_control"
+                ? { Authorization: createControlAuthorizationHeader(this.#credential) }
+                : {}),
               ...(body === undefined ? {} : {
                 "Content-Type": jsonContentType,
                 "Content-Length": Buffer.byteLength(body),
               }),
             },
             ...(body === undefined ? {} : { body }),
-          }, internalResponseLimitBytes, "dispatch", active.controller.signal);
-          this.#assertActiveOwnerOperation(active);
+          }, request.requestClass === "public_read"
+            ? publicReadResponseLimitBytes
+            : internalResponseLimitBytes, "dispatch", active.controller.signal);
+          this.#assertActiveRuntimeDispatch(active);
           return Object.freeze({ status: packet.status, body: parseCanonicalHttpJson(packet.bytes) });
         } catch (error) {
           if (active.controller.signal.aborted || error instanceof RuntimeOperationError &&
@@ -703,7 +731,7 @@ export class FixedHttpOwner {
             throw new RuntimeOperationError("runtime_state_unavailable");
           }
           await this.#serialize(async () => {
-            this.#assertActiveOwnerOperation(active);
+            this.#assertActiveRuntimeDispatch(active);
             if (this.#phase === "deferred") {
               this.#phase = "stopped";
               this.#lifecycleController?.abort();
@@ -715,13 +743,14 @@ export class FixedHttpOwner {
       }
       throw new RuntimeOperationError("runtime_state_unavailable");
     } finally {
+      request.signal?.removeEventListener("abort", abort);
       if (registered) {
         this.#finishLifecycleWork(active);
       }
     }
   }
 
-  #assertActiveOwnerOperation(active: LifecycleWork): void {
+  #assertActiveRuntimeDispatch(active: LifecycleWork): void {
     if (
       active.controller.signal.aborted ||
       !this.#lifecycleWork.has(active) ||
@@ -977,11 +1006,12 @@ export class FixedHttpOwner {
   async #handleIdentity(request: IncomingMessage, response: ServerResponse, target: RequestTarget): Promise<void> {
     const security = validateRequestSecurity({
       requestClass: "owner_identity",
+      params: Object.freeze({}),
       host: headerValues(request, "host"),
       origin: headerValues(request, "origin"),
       authorization: headerValues(request, "authorization"),
       cookie: headerValues(request, "cookie"),
-      csrfToken: headerValues(request, "littlejohn-csrf-token"),
+      csrfToken: headerValues(request, browserCsrfHeaderKey),
       contentType: headerValues(request, "content-type"),
       query: target.query,
       bodyLength: readBodySize(request),
@@ -1034,22 +1064,22 @@ export class FixedHttpOwner {
     const match = this.#routes.match(request.method, target.pathname);
     if (match.status === "not_found") return writeFailure(response, "route_not_found", this.#routes);
     if (match.status === "method_not_allowed") {
-      const classSecurity = this.#routes.validateMethodRejection(match.routes, {
+      const classSecurity = this.#routes.validateMethodRejection(match, {
         origin: headerValues(request, "origin"),
         authorization: headerValues(request, "authorization"),
         cookie: headerValues(request, "cookie"),
-        csrfToken: headerValues(request, "littlejohn-csrf-token"),
+        csrfToken: headerValues(request, browserCsrfHeaderKey),
       });
       if (!classSecurity.ok) return writeFailure(response, classSecurity.code, this.#routes);
       response.setHeader("Allow", match.allow.join(", "));
       return writeFailure(response, "method_not_allowed", this.#routes);
     }
-    const security = this.#routes.validateSecurity(match.route, {
+    const security = this.#routes.validateSecurity(match, {
       host: headerValues(request, "host"),
       origin: headerValues(request, "origin"),
       authorization: headerValues(request, "authorization"),
       cookie: headerValues(request, "cookie"),
-      csrfToken: headerValues(request, "littlejohn-csrf-token"),
+      csrfToken: headerValues(request, browserCsrfHeaderKey),
       contentType: headerValues(request, "content-type"),
       query: target.query,
       bodyLength,

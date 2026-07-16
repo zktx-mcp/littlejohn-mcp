@@ -9,7 +9,6 @@ import { fileURLToPath } from "node:url";
 import {
   canonicalJsonStringify,
   captureCanonicalJson,
-  createApplicationFailure,
   parseCapabilitySuccess,
   walletConnectionCapability,
   type ApplicationFailure,
@@ -17,26 +16,41 @@ import {
   type CapabilitySuccess,
   type WalletConnectionData,
 } from "./core/index.js";
+import { createChainOwnerApplication } from "./chain/application.js";
+import {
+  createInterfaceOwnerApplication,
+  cliHelpText,
+  normalizeProblemDetailsFailure,
+  parseReadCliCommand,
+  runReadCliCommand,
+  startStdioMcp,
+  walletConnectionInterface,
+  walletToolInterfaces,
+  type ReadCliCommand,
+  type StdioMcpHandle,
+} from "./interfaces/index.js";
 import {
   LocalRuntime,
-  RuntimeOperationError,
-  problemDetailsSchema,
-  toProblemDetails,
-  type OwnerOperation,
-  type OwnerOperationResponse,
+  type RuntimeDispatchRequest,
+  type RuntimeDispatchResponse,
 } from "./runtime/index.js";
+import { getRuntimeOperationFailure } from "./runtime/errors.js";
 import { createWalletOwnerApplication } from "./wallet/application.js";
 import {
-  isWalletOperationTerminalState,
   parseWalletOperationId,
   parseWalletOperationResponse,
   type WalletManagementOperation,
-  type WalletOperationKind,
   type WalletOperationResponse,
 } from "./wallet/contracts.js";
 import {
+  isWalletOperationConfirmableState,
+  isWalletOperationTerminalState,
+  type WalletOperationKind,
+} from "./wallet/operation-state.js";
+import {
   WalletOperationError,
   createWalletFailure,
+  getWalletOperationFailure,
   normalizeWalletError,
   walletErrorRegistry,
   walletInterfaceErrorMappings,
@@ -53,7 +67,7 @@ type WalletConnectionSuccess = CapabilitySuccess<WalletConnectionData>;
 export interface CliRuntimePort {
   readonly ownerState: LocalRuntime["ownerState"];
   start(): Promise<void>;
-  executeOwnerOperation(operation: OwnerOperation): Promise<OwnerOperationResponse>;
+  dispatchRuntimeRequest(request: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse>;
   stop(): Promise<void>;
 }
 
@@ -76,6 +90,7 @@ export interface CliDependencies {
   readonly terminal: CliTerminalPort;
   readonly waitForPoll: () => Promise<void>;
   readonly terminateProcess: (exitCode: number) => void;
+  readonly startMcp?: (runtime: CliRuntimePort) => Promise<StdioMcpHandle>;
 }
 
 type CliProcessEvent = "exit" | "SIGINT" | "SIGTERM" | "SIGHUP";
@@ -92,14 +107,18 @@ export interface CliProcessPort {
   removeListener(event: CliProcessEvent, listener: () => void): unknown;
 }
 
-type CliCommand =
+type WalletCliCommand =
   | { readonly kind: "status"; readonly json: boolean }
   | { readonly kind: "connect"; readonly json: false }
   | { readonly kind: "disconnect"; readonly json: false }
   | { readonly kind: "operation"; readonly operationId: string; readonly json: boolean }
   | { readonly kind: "cancel"; readonly operationId: string; readonly json: false };
 
+type CliCommand = WalletCliCommand | { readonly kind: "help"; readonly json: false };
+
 const invalidInput = (): never => { throw new WalletOperationError("invalid_input"); };
+
+const cliApplicationFailures = new WeakMap<object, ApplicationFailure>();
 
 class CliApplicationFailure extends Error {
   readonly failure: ApplicationFailure;
@@ -108,9 +127,15 @@ class CliApplicationFailure extends Error {
     super(failure.error.message);
     this.name = "CliApplicationFailure";
     this.failure = failure;
+    cliApplicationFailures.set(this, failure);
     Object.freeze(this);
   }
 }
+
+const getCliApplicationFailure = (error: unknown): ApplicationFailure | undefined =>
+  typeof error === "object" && error !== null
+    ? cliApplicationFailures.get(error)
+    : undefined;
 
 const parseJsonFlag = (tokens: readonly string[]): boolean => {
   if (tokens.length === 0) return false;
@@ -129,17 +154,28 @@ const parseOperationCommand = (tokens: readonly string[]): CliCommand => {
 };
 
 const parseCommand = (argumentsInput: readonly string[]): CliCommand => {
+  if (argumentsInput.length === 1 && argumentsInput[0] === "--help") {
+    return Object.freeze({ kind: "help", json: false });
+  }
   const [domain, command, ...tokens] = argumentsInput;
-  if (domain !== "wallet" || command === undefined) return invalidInput();
-  if (command === "status") {
+  if (command === undefined) return invalidInput();
+  if (domain === walletConnectionInterface.cli.domain && command === walletConnectionInterface.cli.command) {
     return Object.freeze({ kind: "status", json: parseJsonFlag(tokens) });
   }
-  if (command === "connect" || command === "disconnect") {
+  if (domain === walletToolInterfaces.startConnection.cli.domain &&
+    command === walletToolInterfaces.startConnection.cli.command) {
     if (tokens.length !== 0) return invalidInput();
-    return Object.freeze({ kind: command, json: false });
+    return Object.freeze({ kind: "connect", json: false });
   }
-  if (command === "operation") return parseOperationCommand(tokens);
-  if (command === "cancel") {
+  if (domain === walletToolInterfaces.startDisconnection.cli.domain &&
+    command === walletToolInterfaces.startDisconnection.cli.command) {
+    if (tokens.length !== 0) return invalidInput();
+    return Object.freeze({ kind: "disconnect", json: false });
+  }
+  if (domain === walletToolInterfaces.getOperation.cli.domain &&
+    command === walletToolInterfaces.getOperation.cli.command) return parseOperationCommand(tokens);
+  if (domain === walletToolInterfaces.cancelOperation.cli.domain &&
+    command === walletToolInterfaces.cancelOperation.cli.command) {
     if (tokens.length !== 1) return invalidInput();
     try {
       return Object.freeze({ kind: "cancel", operationId: parseWalletOperationId(tokens[0]), json: false });
@@ -149,30 +185,20 @@ const parseCommand = (argumentsInput: readonly string[]): CliCommand => {
 };
 
 const canonicalFailureFromResponse = (
-  response: OwnerOperationResponse,
-): CliApplicationFailure | WalletOperationError => {
-  try {
-    const problem = problemDetailsSchema.parse(captureCanonicalJson(response.body));
-    const failure = createApplicationFailure(walletErrorRegistry, problem.code, problem.issues);
-    const expected = toProblemDetails(failure, walletInterfaceErrorMappings);
-    if (response.status !== problem.status ||
-      canonicalJsonStringify(problem as unknown as CanonicalJson) !==
-        canonicalJsonStringify(expected as unknown as CanonicalJson)) {
-      throw new TypeError("Problem details do not match their error authority.");
-    }
-    return new CliApplicationFailure(failure);
-  } catch (error) {
-    if (error instanceof CliApplicationFailure || error instanceof WalletOperationError) return error;
-    return new WalletOperationError("runtime_state_unavailable");
-  }
-};
+  response: RuntimeDispatchResponse,
+): CliApplicationFailure => new CliApplicationFailure(normalizeProblemDetailsFailure(
+  response,
+  walletErrorRegistry,
+  walletInterfaceErrorMappings,
+  "runtime_state_unavailable",
+));
 
 const execute = async (
   runtime: CliRuntimePort,
   expectedStatus: 200 | 201,
-  operation: OwnerOperation,
+  request: Omit<RuntimeDispatchRequest, "requestClass">,
 ): Promise<CanonicalJson> => {
-  const response = await runtime.executeOwnerOperation(operation);
+  const response = await runtime.dispatchRuntimeRequest({ requestClass: "local_control", ...request });
   if (response.status >= 400) throw canonicalFailureFromResponse(response);
   if (response.status !== expectedStatus) throw new WalletOperationError("runtime_state_unavailable");
   return response.body;
@@ -426,8 +452,7 @@ type ExactCancellationResolution = Readonly<{
 }>;
 
 const isStateConflict = (error: unknown): boolean =>
-  (error instanceof WalletOperationError || error instanceof CliApplicationFailure) &&
-  error.failure.error.code === "state_conflict";
+  (getWalletOperationFailure(error) ?? getCliApplicationFailure(error))?.error.code === "state_conflict";
 
 const observeAuthoritativeTransition = async (
   runtime: CliRuntimePort,
@@ -553,7 +578,7 @@ const runWalletTransition = async (
 ): Promise<void> => {
   let response = await startOperation(runtime, kind);
   let resolvedOperation: WalletManagementOperation | undefined;
-  if (response.operation.state === "awaiting_confirmation") {
+  if (isWalletOperationConfirmableState(response.operation.state)) {
     let decision: "confirm" | "decline" | "interrupt" | undefined;
     try {
       if (dependencies.terminal.interruptSignal.aborted) {
@@ -646,8 +671,7 @@ const startRuntimeForCommand = async (
   if (stopResult.status === "rejected") throw stopResult.reason;
   if (
     startResult.status === "rejected" &&
-    !(startResult.reason instanceof RuntimeOperationError &&
-      startResult.reason.failure.error.code === "request_aborted")
+    getRuntimeOperationFailure(startResult.reason)?.error.code !== "request_aborted"
   ) throw startResult.reason;
   return "stopped";
 };
@@ -663,16 +687,13 @@ const reportFailure = (
 };
 
 const normalizeCliFailure = (error: unknown): ApplicationFailure =>
-  error instanceof CliApplicationFailure
-    ? error.failure
-    : error instanceof WalletOperationError
-      ? error.failure
-      : error instanceof RuntimeOperationError
-        ? normalizeWalletError(error).failure
-        : createWalletFailure("internal_error");
+  getCliApplicationFailure(error) ??
+  getWalletOperationFailure(error) ??
+  getRuntimeOperationFailure(error) ??
+  createWalletFailure("internal_error");
 
 const runCommand = async (
-  command: CliCommand,
+  command: WalletCliCommand,
   runtime: CliRuntimePort,
   dependencies: CliDependencies,
 ): Promise<void> => {
@@ -705,7 +726,11 @@ export const runCli = async (
   dependencies: CliDependencies,
 ): Promise<number> => {
   let command: CliCommand | undefined;
+  let readCommand: ReadCliCommand | undefined;
+  const mcpMode = argumentsInput.length === 0;
   let runtime: CliRuntimePort | undefined;
+  let mcp: StdioMcpHandle | undefined;
+  let readExitCode: number | undefined;
   let runtimeStopped = false;
   let failure: ApplicationFailure | undefined;
   let runtimeCleanupFailed = false;
@@ -713,21 +738,46 @@ export const runCli = async (
     failure ??= normalizeCliFailure(error);
   };
   try {
-    command = parseCommand(argumentsInput);
-    if (!dependencies.terminal.inputIsTTY || !dependencies.terminal.outputIsTTY) {
+    if (!mcpMode && argumentsInput[0] === "read") {
+      try { readCommand = parseReadCliCommand(argumentsInput); }
+      catch { throw new WalletOperationError("invalid_input"); }
+    } else if (!mcpMode) command = parseCommand(argumentsInput);
+    if (command !== undefined && command.kind !== "help" &&
+      (!dependencies.terminal.inputIsTTY || !dependencies.terminal.outputIsTTY)) {
       throw new WalletOperationError("interactive_terminal_required");
     }
-    if (!dependencies.terminal.interruptSignal.aborted) {
+    if (command?.kind === "help") {
+      dependencies.terminal.writeOutput(cliHelpText);
+    } else if (!dependencies.terminal.interruptSignal.aborted) {
       runtime = await dependencies.createRuntime();
       const startResult = await startRuntimeForCommand(runtime, dependencies.terminal.interruptSignal);
       runtimeStopped = startResult === "stopped";
       if (startResult === "started" && !dependencies.terminal.interruptSignal.aborted) {
-        await runCommand(command, runtime, dependencies);
+        if (mcpMode) {
+          if (dependencies.startMcp === undefined) throw new WalletOperationError("internal_error");
+          mcp = await dependencies.startMcp(runtime);
+          const decision = await raceWithInterrupt(() => mcp?.closed ?? Promise.resolve(),
+            dependencies.terminal.interruptSignal);
+          if (decision.kind === "interrupted") await mcp.close();
+        } else if (readCommand !== undefined) {
+          readExitCode = await runReadCliCommand(
+            runtime,
+            readCommand,
+            dependencies.terminal,
+            dependencies.terminal.interruptSignal,
+          );
+        } else if (command !== undefined) {
+          await runCommand(command, runtime, dependencies);
+        }
       }
     }
   } catch (error) {
     retainFailure(error);
   } finally {
+    if (mcp !== undefined) {
+      try { await mcp.close(); }
+      catch (error) { retainFailure(error); }
+    }
     if (runtime !== undefined && !runtimeStopped) {
       try { await runtime.stop(); }
       catch (error) {
@@ -738,7 +788,7 @@ export const runCli = async (
     try { dependencies.terminal.dispose(); }
     catch (error) { retainFailure(error); }
   }
-  if (failure === undefined) return 0;
+  if (failure === undefined) return readExitCode ?? 0;
   let exitCode: number;
   try {
     exitCode = reportFailure(failure, command?.json ?? false, dependencies.terminal);
@@ -838,10 +888,15 @@ export const createProcessTerminal = (
 };
 
 const createDefaultDependencies = (): CliDependencies => Object.freeze({
-  createRuntime: () => LocalRuntime.create({ walletApplicationFactory: createWalletOwnerApplication }),
+  createRuntime: () => LocalRuntime.create({
+    walletApplicationFactory: createWalletOwnerApplication,
+    chainApplicationFactory: createChainOwnerApplication,
+    interfaceApplicationFactory: createInterfaceOwnerApplication,
+  }),
   terminal: createProcessTerminal(),
   waitForPoll: () => new Promise<void>((resolvePoll) => { setTimeout(resolvePoll, 100); }),
   terminateProcess: (exitCode: number) => { exitProcess(exitCode); },
+  startMcp: (runtime: CliRuntimePort) => startStdioMcp(runtime),
 });
 
 const isDirectExecution = (): boolean => {

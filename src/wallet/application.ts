@@ -7,7 +7,11 @@ import type {
 } from "../runtime/index.js";
 import { extendWalletRuntimeSupportManifest } from "../runtime/index.js";
 import {
-  walletManagementCapabilityIds,
+  getCapabilityDefinitionSnapshot,
+  walletConnectionCapability,
+} from "../core/index.js";
+import {
+  walletManagementCapabilityIdList,
   type WalletInterfaceOperations,
 } from "./contracts.js";
 import {
@@ -40,11 +44,14 @@ const walletAvailability = Object.freeze({
 export const extendWalletSupportManifest = (
   parent: InitialRuntimeSupportManifest,
 ): WalletRuntimeSupportManifest => extendWalletRuntimeSupportManifest(parent, {
-  registrations: walletManagementCapabilityIds.map((capabilityId) => ({
+  registrations: walletManagementCapabilityIdList.map((capabilityId) => ({
     capabilityId,
     availability: walletAvailability,
   })),
-  changes: [{ capabilityId: "wallet.connection", availability: walletAvailability }],
+  changes: [{
+    capabilityId: getCapabilityDefinitionSnapshot(walletConnectionCapability).capabilityId,
+    availability: walletAvailability,
+  }],
 });
 
 type WalletConnectClientFactory = (

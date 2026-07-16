@@ -57,6 +57,7 @@ describe("runtime build identity", () => {
       "2": "b".repeat(64),
       "10": "a".repeat(64),
     });
+    expect(identity.digest).toBe("7aa25b719076c5c344ed80b9237a0ca84416ccd1db5e792777f3ce2645260663");
     expect(parseRuntimeBuildIdentity(identity)).toEqual(identity);
   });
 });
