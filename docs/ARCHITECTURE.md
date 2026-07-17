@@ -6,8 +6,9 @@ Little John has a Node.js `>=22.12.0` ESM TypeScript package, canonical core
 contracts, five semantic read-capability definitions, registry-derived JSON
 Schema and descriptor projections, owner-only POSIX
 application-data permissions, SQLite product state, local control credentials,
-secret-safe source identity, a runtime support manifest, and one authenticated
-fixed-port HTTP owner with compatible peer deferral and demand-driven takeover.
+source identifiers that do not expose credentials, a runtime support manifest,
+and one authenticated fixed-port HTTP owner with compatible peer deferral and
+demand-driven takeover.
 The owner identity resource is `GET /api/v1/runtime-identity`; authenticated
 process control is confined to `/api/v1/internal/control/*`. SQLite row adapters
 alias SQL snake-case names to lower-camel TypeScript fields. Immutable

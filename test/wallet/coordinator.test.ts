@@ -535,7 +535,7 @@ describe("WalletCoordinator", () => {
     await coordinator.close();
   });
 
-  it("serializes connected evidence with secret-safe local source identity only", async () => {
+  it("serializes connected evidence without exposing the private source value", async () => {
     const { coordinator } = await createSubject([session(topicA, addressA)]);
     const result = await invokeWalletConnection(coordinator);
     expect(result.ok).toBe(true);

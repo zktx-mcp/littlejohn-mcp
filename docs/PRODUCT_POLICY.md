@@ -31,21 +31,21 @@ support values. `Current Support` is its deterministic public projection.
 
 ## Product Philosophy
 
-- Local-first: user-specific data and review material stay on the user's device.
-- User-controlled: only the user authorizes a wallet request and signature.
-- Evidence-first: conclusions expose their source, freshness, and coverage under
+- User-specific data and review material stay on the user's device.
+- Only the user authorizes a wallet request and signature.
+- Conclusions expose their source, freshness, and coverage under
   `docs/EVIDENCE_POLICY.md`.
-- Independent verification: external proposals and SDK output are not trusted
-  by default.
-- Exact review: the wallet receives the same hard-bound request the user saw.
-- Explicit choice: transaction-critical choices are never selected silently.
-- Explicit uncertainty: unknown, stale, incomplete, and conflicting evidence
+- External proposals and SDK output require independent verification and are
+  not trusted by default.
+- The wallet receives the exact request the user reviewed.
+- Transaction-critical choices are never selected silently.
+- Unknown, stale, incomplete, and conflicting evidence
   remains visible.
-- Fail closed: unresolved identity, meaning, or authorization cannot become an
+- Unresolved identity, meaning, or authorization cannot become an
   executable request.
-- No safety theater: simulation, official identity, and reputation signals are
+- Simulation, official identity, and reputation signals are
   scoped evidence, not guarantees.
-- Receipt accountability: claimed execution results are checked against chain
+- Claimed execution results are checked against chain
   state and the reviewed request.
 
 ## Product Responsibilities

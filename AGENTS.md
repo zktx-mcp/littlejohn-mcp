@@ -63,7 +63,11 @@ owner and does not paraphrase the rule.
   documents, and product documents use English by default.
 - Ignored files under `.WORK/` may use any language. Rewrite material in English
   before moving it to a repository-visible surface.
-- Use plain, common technical terms. Remove coined, ambiguous, duplicate, and
+- Use plain, common technical terms in this file, binding documents, task plans,
+  progress and research files, code, schemas, tests, and interfaces. Do not
+  create a repository-specific term when a standard technical term or a direct
+  descriptive phrase expresses the same meaning. Define an unavoidable domain
+  term at its single owning source. Remove coined, ambiguous, duplicate, and
   legacy names.
 
 ## Naming Policy
@@ -248,24 +252,26 @@ Task files are:
   convenience.
 - Every work unit consumes complete dependency outputs and produces a complete,
   independently reviewable input for its dependents.
-- Every work unit defines the limit of its output: the authority it completes,
-  the concerns it does not own, and the exact input its dependents receive.
+- Every work unit defines the limit of its output: the contract, policy, state
+  model, or port it completes; the concerns it does not own; and the exact input
+  its dependents receive.
   Work-unit boundaries have no value when a dependent must rediscover or
   reinterpret those limits.
-- A passed work-unit output is the sole task authority for the contract,
-  policy, state model, or port that it owns. Dependent units consume that output
+- A passed work-unit output is the single task source for the contract, policy,
+  state model, or port that it owns. Dependent units consume that output
   without redefining, repairing, weakening, or bypassing its meaning.
 - A work unit fixes every downstream-relevant invariant, failure behavior, and
   extension point that belongs to its output. A dependent unit may add only the
   implementations and entries permitted by those declared extension points.
 - If a dependent unit requires an unstated choice, a new bypass, or a change to
-  a passed dependency, the dependency handoff was incomplete. Stop at that
-  boundary; do not patch the missing authority in the dependent unit.
-- Each planned work unit identifies its owned authority, frozen handoff,
-  permitted downstream extensions, prohibited downstream changes, consumers,
-  and independent handoff verification.
+  a passed dependency, the dependency output was incomplete. Stop at that
+  boundary; do not patch the missing contract in the dependent unit.
+- Each planned work unit identifies the contract, policy, state model, or port
+  it completes; the fixed output its dependents receive; permitted downstream
+  extensions; prohibited downstream changes; consumers; and independent
+  verification of that output.
 - A passed unit leaves the minimum reproducible handoff evidence needed to
-  prove that dependent work did not alter its frozen output. Use canonical
+  prove that dependent work did not alter that fixed output. Use canonical
   schema or artifact digests and owned-path manifests only when they reduce that
   uncertainty; retain them in the progress document as current dependency
   evidence, not as a chronological log.

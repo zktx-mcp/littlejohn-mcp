@@ -52,8 +52,8 @@ every applicable evidence field above.
 
 An exact source reference never exposes a credential. A public source uses its
 canonical public URI. A configured source whose URI contains user information,
-path credentials, query credentials, or fragments uses a secret-safe endpoint
-identity containing:
+path credentials, query credentials, or fragments uses a keyed endpoint
+identifier that does not expose those values and contains:
 
 - the normalized public origin;
 - an HMAC-SHA-256 digest of the exact configured URI bytes using a

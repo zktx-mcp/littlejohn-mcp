@@ -41,7 +41,7 @@ Decimals state is exactly one of:
 
 - `available`: an authoritative decimals value and the observation that
   supplied it;
-- `not_observed`: a definition-owned static scope-exclusion identifier proving
+- `not_observed`: a reason code declared by the capability definition, proving
   that the capability did not request or claim decimals evidence; or
 - `unavailable`: `missing` or `conflicting` decimals evidence and the exact
   source observations that establish that result.
@@ -58,10 +58,10 @@ Asset identity is one of:
 - contract-token identity: chain ID and contract address.
 
 A raw chain quantity remains reportable when decimals are not observed or are
-unavailable. It is not an interpreted amount and cannot be formatted, compared,
-valued, quoted, or used for transaction construction. An interpreted amount
-exists only when the required authoritative decimals are present and bound to
-the same asset and observation identity.
+unavailable. It is not an amount with verified decimals and cannot be formatted,
+compared, valued, quoted, or used for transaction construction. An amount with
+verified decimals exists only when the required authoritative decimals are
+present and bound to the same asset and observation identity.
 
 ## Token Identity And Decimals
 

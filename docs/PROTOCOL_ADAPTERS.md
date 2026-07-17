@@ -1,19 +1,20 @@
 # Protocol Adapters
 
-This document defines the binding package and activation contract. It is the
-sole authority for protocol package, capability mapping, activation, commercial
-behavior, and adapter verification policy.
+This document defines protocol integration packages and their activation
+contract. It is the sole authority for protocol package structure, capability
+mapping, activation, commercial behavior, and adapter verification policy.
 
 ## Candidate Selection Policy
 
 - Candidate evidence follows `docs/EVIDENCE_POLICY.md`. A candidate first
-  satisfies the platform-owned gates referenced below.
+  satisfies the repository-wide requirements referenced below.
 - Among candidates that satisfy those mandatory gates, Little John prioritizes
   integrations with an officially documented and technically verifiable revenue
   mechanism.
 - Revenue capability affects integration work priority only. It never grants a
   support level, activates an adapter, ranks an executable quote, selects a
-  venue, changes a security conclusion, or weakens a platform gate.
+  venue, changes a security conclusion, or weakens a repository-wide
+  requirement.
 - Direct DEX protocols, same-chain aggregators, and managed vaults remain
   distinct integration classes. Commercial similarity never collapses their
   execution semantics or responsibilities.
@@ -25,8 +26,8 @@ behavior, and adapter verification policy.
 
 ## Package Boundary
 
-- Each supported DEX integration is an independent workspace package included
-  in the published `littlejohn-mcp` package.
+- Each supported DEX integration is an independent protocol integration package
+  included in the published `littlejohn-mcp` package.
 - The running `npx` service does not discover, download, install, or load DEX
   code dynamically.
 - A package contains its pinned official SDK integration and keeps every SDK
@@ -39,7 +40,7 @@ behavior, and adapter verification policy.
 
 ## Registration Model
 
-One protocol package descriptor contains:
+One protocol integration package descriptor contains:
 
 - contract version;
 - protocol identifier and display metadata;
@@ -50,9 +51,8 @@ One protocol package descriptor contains:
 - read capability descriptors; and
 - action adapter descriptors.
 
-The package descriptor is a registration root, not a single large adapter
-implementation. Each read capability and action adapter implements a narrow
-contract.
+The top-level package descriptor is not a single large adapter implementation.
+Each read capability and action adapter implements a narrow contract.
 
 ## Capability And Action Units
 
@@ -179,7 +179,7 @@ Canonical evidence never discards a protocol distinction that can change
 calldata, authorization, asset flow, price limit, fees, expiry, expected effects,
 or receipt interpretation.
 
-## Platform-Owned Gates
+## Repository-Wide Requirements
 
 Protocol packages cannot replace or weaken platform rules owned by:
 

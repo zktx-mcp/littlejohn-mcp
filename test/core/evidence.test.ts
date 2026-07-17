@@ -26,7 +26,7 @@ const validEvidenceSource = () => ({
 });
 
 describe("evidence identity", () => {
-  it("binds secret-safe source identifiers to their keyed digests", () => {
+  it("binds source identifiers to keyed digests without exposing private values", () => {
     const digest = "A".repeat(43);
     expect(sourceReferenceSchema.safeParse({
       kind: "configured_rpc",

@@ -114,8 +114,8 @@ review walletRequestCommitment
 After broadcast:
 
 ```text
-actual transaction hard-bound fields
-  == reviewed wallet request hard-bound fields
+actual transaction fields included in the commitment
+  == reviewed wallet request fields included in the commitment
 ```
 
 Canonical encodings are versioned. Commitments never hash presentation JSON,
@@ -165,7 +165,8 @@ localized values, unordered fields, or approximate numeric values.
 
 - A wallet-returned transaction hash is not success evidence by itself.
 - Little John re-reads the transaction and receipt from Robinhood Chain.
-- The receipt path verifies transaction hard-bound fields, status, block,
+- The receipt path verifies transaction fields included in the commitment,
+  status, block,
   finality state, logs, actual asset deltas, fees, allowances, and other
   persistent state affected by the supported action.
 - Actual effects are compared with the reviewed request and expected effects.
