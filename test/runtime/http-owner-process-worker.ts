@@ -20,7 +20,6 @@ type WorkerCommand =
       readonly command: "prepare_start";
       readonly dataDirectory: string;
       readonly now: string;
-      readonly runtimeBuildDigest: string;
     }
   | { readonly requestId: string; readonly command: "release_start"; readonly notBeforeEpochMs: number }
   | { readonly requestId: string; readonly command: "prepare_operate" }
@@ -31,7 +30,6 @@ type WorkerCommand =
 interface PreparedStart {
   readonly dataDirectory: string;
   readonly now: string;
-  readonly runtimeBuildDigest: string;
 }
 
 interface WorkerSnapshot {
@@ -73,15 +71,13 @@ const parseCommand = (value: unknown): WorkerCommand => {
   if (value["command"] === "prepare_start") {
     if (
       typeof value["dataDirectory"] !== "string" ||
-      typeof value["now"] !== "string" ||
-      typeof value["runtimeBuildDigest"] !== "string"
+      typeof value["now"] !== "string"
     ) throw new TypeError("Worker start command is invalid.");
     return {
       requestId: value["requestId"],
       command: "prepare_start",
       dataDirectory: value["dataDirectory"],
       now: value["now"],
-      runtimeBuildDigest: value["runtimeBuildDigest"],
     };
   }
   if (value["command"] === "release_start" || value["command"] === "release_operate") {
@@ -161,7 +157,6 @@ const start = async (command: PreparedStart, notBeforeEpochMs: number): Promise<
   owner = new FixedHttpOwner({
     ownerStore: database.ownerStore(),
     credential,
-    runtimeBuildDigest: command.runtimeBuildDigest,
     now: () => now,
     applicationFactory,
   });
@@ -202,7 +197,6 @@ const handle = async (input: unknown): Promise<void> => {
       preparedStart = Object.freeze({
         dataDirectory: command.dataDirectory,
         now: command.now,
-        runtimeBuildDigest: command.runtimeBuildDigest,
       });
       send({ requestId, ok: true, result: { processId: process.pid } });
       return;

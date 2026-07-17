@@ -14,6 +14,3 @@ export type { CanonicalJson } from "./canonical-json-value.js";
 
 export const canonicalSha256 = (value: CanonicalJson): string =>
   createHash(sha256Algorithm).update(canonicalJsonStringify(value), "utf8").digest("hex");
-
-export const sha256Bytes = (value: Uint8Array): string =>
-  createHash(sha256Algorithm).update(value).digest("hex");

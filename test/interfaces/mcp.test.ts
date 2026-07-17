@@ -2,15 +2,26 @@ import { readFileSync } from "node:fs";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { canonicalJsonStringify, captureCanonicalJson } from "../../src/core/index.js";
+import {
+  canonicalJsonStringify,
+  captureCanonicalJson,
+  getCapabilityDefinitionSnapshot,
+} from "../../src/core/index.js";
 import { extendChainSupportManifest } from "../../src/chain/application.js";
+import { chainErrorRegistry, createChainFailure } from "../../src/chain/errors.js";
 import {
   createMcpServer,
   mcpToolNames,
   parseMcpToolName,
 } from "../../src/interfaces/mcp.js";
+import {
+  capabilityCatalogInterface,
+  readInterfaceIdentities,
+  walletInterfaceBindingList,
+} from "../../src/interfaces/identities.js";
 import { extendInterfaceSupportManifest } from "../../src/interfaces/support.js";
 import type { RuntimeDispatchPort } from "../../src/interfaces/http-client.js";
 import type {
@@ -20,6 +31,7 @@ import type {
 import {
   composeCapabilityCatalog,
   initialRuntimeSupportManifest,
+  toProblemDetails,
 } from "../../src/runtime/index.js";
 import { extendWalletSupportManifest } from "../../src/wallet/application.js";
 import {
@@ -27,16 +39,30 @@ import {
   walletOperationIdByteLength,
   type WalletManagementOperation,
 } from "../../src/wallet/contracts.js";
+import {
+  createWalletFailure,
+  walletErrorRegistry,
+  walletInterfaceErrorMappings,
+} from "../../src/wallet/errors.js";
 import { walletControlRoutes } from "../../src/wallet/routes.js";
 
 const operationId = Buffer.alloc(walletOperationIdByteLength, 31).toString("base64url");
+const connected = Object.freeze({
+  status: "connected" as const,
+  account: "eip155:4663:0x1111111111111111111111111111111111111111",
+  address: "0x1111111111111111111111111111111111111111",
+  chainId: "eip155:4663" as const,
+  approvedMethods: Object.freeze(["eth_sendTransaction"]),
+  approvedEvents: Object.freeze(["accountsChanged", "chainChanged"]),
+  expiresAt: "2026-07-15T06:00:00.000Z",
+});
 const catalog = composeCapabilityCatalog(extendInterfaceSupportManifest(
   extendChainSupportManifest(extendWalletSupportManifest(initialRuntimeSupportManifest)),
 ));
 const operation = (): WalletManagementOperation => parseWalletManagementOperation({
   operationId,
   kind: "connect",
-  state: "awaiting_confirmation",
+  state: "awaiting_wallet_approval",
   connectionRevision: "5",
   expiresAt: "2026-07-15T05:00:00.000Z",
   result: null,
@@ -49,9 +75,9 @@ class FakeRuntime implements RuntimeDispatchPort {
 
   constructor(handler?: FakeRuntime["handler"]) {
     this.handler = handler ?? ((request) => Object.freeze({
-      status: request.path === walletControlRoutes.operations ? 201 : 200,
+      status: 200,
       body: captureCanonicalJson(request.path === walletControlRoutes.operations
-        ? { operation: operation() }
+        ? { result: { status: "operation_started", operation: operation() } }
         : catalog),
     }));
   }
@@ -135,6 +161,7 @@ describe("MCP interface", () => {
         openWorldHint: true,
       },
       inputSchema: { type: "object", additionalProperties: false },
+      outputSchema: { type: "object", anyOf: expect.any(Array) },
     });
     const cancel = listed.tools.find((tool) => tool.name === "wallet_cancel_operation");
     const getOperation = listed.tools.find((tool) => tool.name === "wallet_get_operation");
@@ -144,6 +171,117 @@ describe("MCP interface", () => {
       required: ["operationId"],
     });
     expect(getOperation?.inputSchema).toEqual(cancel?.inputSchema);
+    const connectTool = listed.tools.find((tool) => tool.name === "wallet_start_connection");
+    const disconnectTool = listed.tools.find((tool) => tool.name === "wallet_start_disconnection");
+    expect(connectTool?.inputSchema).toEqual(disconnectTool?.inputSchema);
+    const connectOutput = JSON.stringify(connectTool?.outputSchema);
+    const disconnectOutput = JSON.stringify(disconnectTool?.outputSchema);
+    expect(connectOutput).toContain('"current_connection"');
+    expect(connectOutput).toContain('"const":"connect"');
+    expect(disconnectOutput).not.toContain('"current_connection"');
+    expect(disconnectOutput).toContain('"const":"disconnect"');
+  });
+
+  it("keeps actual wallet tool output schemas equivalent to canonical management failures", async () => {
+    const runtimeBusy = createWalletFailure("runtime_busy");
+    const runtimeBusyProblem = toProblemDetails(runtimeBusy, walletInterfaceErrorMappings);
+    const runtime = new FakeRuntime(() => ({
+      status: runtimeBusyProblem.status,
+      body: captureCanonicalJson(runtimeBusyProblem),
+    }));
+    const { client } = await connect(runtime);
+    const listed = await client.listTools();
+
+    for (const binding of walletInterfaceBindingList) {
+      if (binding.mcp === undefined) continue;
+      const tool = listed.tools.find((candidate) => candidate.name === binding.mcp?.name);
+      if (tool?.outputSchema === undefined) {
+        throw new TypeError("Wallet MCP tool schema is unavailable.");
+      }
+      const validate = new Ajv2020({
+        strict: true,
+        formats: { uri: true, "date-time": true },
+      }).compile(tool.outputSchema);
+      for (const definition of walletErrorRegistry.values()) {
+        const declared = binding.contract.failureCodes.includes(definition.code);
+        const canonicalFailure = createWalletFailure(definition.code);
+        expect(validate(canonicalFailure)).toBe(declared);
+        expect(validate({
+          ...canonicalFailure,
+          error: { ...canonicalFailure.error, message: "Forged failure meaning." },
+        })).toBe(false);
+      }
+    }
+
+    const dispatched = await client.callTool({
+      name: "wallet_start_connection",
+      arguments: {},
+    });
+    expect(dispatched.isError).toBe(true);
+    expect(dispatched.structuredContent).toEqual(runtimeBusy);
+    const startTool = listed.tools.find((tool) => tool.name === "wallet_start_connection");
+    if (startTool?.outputSchema === undefined) {
+      throw new TypeError("Wallet start tool schema is unavailable.");
+    }
+    expect(new Ajv2020({ strict: true }).compile(startTool.outputSchema)(
+      dispatched.structuredContent,
+    )).toBe(true);
+  });
+
+  it("keeps read and catalog output schemas equivalent to their canonical failure contracts", async () => {
+    const { client } = await connect(new FakeRuntime());
+    const listed = await client.listTools();
+    const contracts = [
+      ...readInterfaceIdentities.map((identity) => ({
+        name: identity.mcp.name,
+        failureCodes: getCapabilityDefinitionSnapshot(identity.definition).failureCodes,
+      })),
+      {
+        name: capabilityCatalogInterface.mcp.name,
+        failureCodes: capabilityCatalogInterface.failureCodes,
+      },
+    ];
+    const unownedFailure = {
+      ok: false,
+      error: {
+        code: "totally_unowned_code",
+        category: "internal",
+        message: "The request could not be completed.",
+        retryable: false,
+        issues: [],
+      },
+    };
+
+    for (const contract of contracts) {
+      const tool = listed.tools.find((candidate) => candidate.name === contract.name);
+      if (tool?.outputSchema === undefined) throw new TypeError("MCP output schema is unavailable.");
+      const validate = new Ajv2020({
+        strict: true,
+        formats: { uri: true, "date-time": true },
+      }).compile(tool.outputSchema);
+      for (const definition of chainErrorRegistry.values()) {
+        const declared = contract.failureCodes.includes(definition.code);
+        const canonicalFailure = createChainFailure(definition.code);
+        expect(validate(canonicalFailure)).toBe(declared);
+        expect(validate({
+          ...canonicalFailure,
+          error: { ...canonicalFailure.error, retryable: !canonicalFailure.error.retryable },
+        })).toBe(false);
+      }
+      expect(validate(unownedFailure)).toBe(false);
+    }
+  });
+
+  it("fails closed when a runtime returns a registry-known failure outside the tool contract", async () => {
+    const stateConflict = createChainFailure("state_conflict");
+    const problem = toProblemDetails(stateConflict, walletInterfaceErrorMappings);
+    const { client } = await connect(new FakeRuntime(() => ({
+      status: problem.status,
+      body: captureCanonicalJson(problem),
+    })));
+    const result = await client.callTool({ name: "read_get_chain_status", arguments: {} });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toEqual(createChainFailure("internal_error"));
   });
 
   it("uses one canonical operation identifier contract for reads and cancellations", async () => {
@@ -194,6 +332,7 @@ describe("MCP interface", () => {
   it("rejects undeclared input before dispatch and keeps structured content identical to canonical text", async () => {
     const runtime = new FakeRuntime();
     const { client } = await connect(runtime);
+    await client.listTools();
     const invalid = await client.callTool({
       name: "read_get_chain_status",
       arguments: { unexpected: true },
@@ -214,14 +353,14 @@ describe("MCP interface", () => {
     }]);
   });
 
-  it("starts only a web-confirmed wallet operation and returns a secret-free fixed management URL", async () => {
+  it("starts web-confirmed wallet operations and returns only the canonical result plus fixed root URL", async () => {
     const runtime = new FakeRuntime();
     const { client } = await connect(runtime);
     const result = await client.callTool({ name: "wallet_start_connection", arguments: {} });
     expect(result.isError).not.toBe(true);
     expect(result.structuredContent).toEqual({
-      operation: operation(),
-      managementUrl: `http://127.0.0.1:46630/wallet/operations/${operationId}`,
+      result: { status: "operation_started", operation: operation() },
+      displayUrl: "http://127.0.0.1:46630/",
     });
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain("qr");
@@ -233,10 +372,123 @@ describe("MCP interface", () => {
       requestClass: "local_control",
       method: "POST",
       path: walletControlRoutes.operations,
-      body: { kind: "connect", interactionInterface: "web" },
+      body: { kind: "connect", interactionInterface: "web", connectionRevision: null },
       signal: expect.any(AbortSignal),
     }]);
     expect(runtime.requests.some((request) => request.path.endsWith("/confirmation"))).toBe(false);
+  });
+
+  it("projects idempotent connection reads and explicit disconnection as distinct MCP actions", async () => {
+    const disconnection = parseWalletManagementOperation({
+      operationId,
+      kind: "disconnect",
+      state: "awaiting_confirmation",
+      connectionRevision: "6",
+      expiresAt: "2026-07-15T05:00:00.000Z",
+      result: null,
+      failure: null,
+    });
+    const runtime = new FakeRuntime((request) => {
+      if (request.path !== walletControlRoutes.operations) throw new Error("Unexpected route.");
+      const requestKind = typeof request.body === "object" && request.body !== null &&
+        !Array.isArray(request.body) ? request.body["kind"] : undefined;
+      if (requestKind === "connect") {
+        return {
+          status: 200,
+          body: captureCanonicalJson({
+            result: {
+              status: "current_connection",
+              connectionRevision: "6",
+              connection: connected,
+            },
+          }),
+        };
+      }
+      return {
+        status: 200,
+        body: captureCanonicalJson({
+          result: { status: "operation_started", operation: disconnection },
+        }),
+      };
+    });
+    const { client } = await connect(runtime);
+
+    const current = await client.callTool({ name: "wallet_start_connection", arguments: {} });
+    expect(current.structuredContent).toEqual({
+      result: {
+        status: "current_connection",
+        connectionRevision: "6",
+        connection: connected,
+      },
+      displayUrl: "http://127.0.0.1:46630/",
+    });
+
+    const disconnect = await client.callTool({ name: "wallet_start_disconnection", arguments: {} });
+    expect(disconnect.structuredContent).toEqual({
+      result: { status: "operation_started", operation: disconnection },
+      displayUrl: "http://127.0.0.1:46630/",
+    });
+    expect(runtime.requests.map((request) => request.body)).toEqual([
+      { kind: "connect", interactionInterface: "web", connectionRevision: null },
+      { kind: "disconnect", interactionInterface: "web", connectionRevision: null },
+    ]);
+  });
+
+  it("rejects QR material at the MCP boundary without exposing it", async () => {
+    const secretRow = "1".repeat(21);
+    const runtime = new FakeRuntime(() => ({
+      status: 200,
+      body: captureCanonicalJson({
+        result: { status: "operation_started", operation: operation() },
+        qr: { size: 21, rows: Array.from({ length: 21 }, () => secretRow) },
+      }),
+    }));
+    const { client } = await connect(runtime);
+    const result = await client.callTool({ name: "wallet_start_connection", arguments: {} });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      ok: false,
+      error: { code: "internal_error" },
+    });
+    expect(JSON.stringify(result)).not.toContain(secretRow);
+  });
+
+  it("enforces canonical start-kind and operation-identifier correlation", async () => {
+    const otherOperationId = Buffer.alloc(walletOperationIdByteLength, 32).toString("base64url");
+    const runtime = new FakeRuntime((request) => ({
+      status: 200,
+      body: captureCanonicalJson(request.path === walletControlRoutes.operations
+        ? {
+            result: {
+              status: "operation_started",
+              operation: {
+                ...operation(),
+                kind: "disconnect",
+                state: "awaiting_confirmation",
+              },
+            },
+          }
+        : {
+            operation: {
+              ...operation(),
+              operationId: otherOperationId,
+            },
+          }),
+    }));
+    const { client } = await connect(runtime);
+
+    for (const request of [
+      { name: "wallet_start_connection", arguments: {} },
+      { name: "wallet_get_operation", arguments: { operationId } },
+      { name: "wallet_cancel_operation", arguments: { operationId } },
+    ]) {
+      const result = await client.callTool(request);
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        ok: false,
+        error: { code: "internal_error" },
+      });
+    }
   });
 
   it("normalizes dispatcher exceptions without exposing their text", async () => {

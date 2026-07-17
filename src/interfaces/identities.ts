@@ -1,16 +1,19 @@
 import {
   accountBalanceCapability,
-  capabilityIdSchema,
   chainStatusCapability,
   compareCodePointSequences,
   contractInspectCapability,
   getCapabilityDefinitionSnapshot,
+  readCapabilityCommonFailureCodes,
   transactionInspectCapability,
   walletConnectionCapability,
   type AnyReadCapabilityDefinition,
-  type CapabilityId,
 } from "../core/index.js";
-import { walletManagementCapabilityIds } from "../wallet/contracts.js";
+import {
+  walletManagementContracts,
+  type AnyWalletManagementContract,
+} from "../wallet/management-contracts.js";
+import type { WalletOperationKind } from "../wallet/operation-state.js";
 import { walletControlRoutes } from "../wallet/routes.js";
 
 export interface InterfaceToolAnnotations {
@@ -52,7 +55,7 @@ const identity = <Definition extends AnyReadCapabilityDefinition>(input: {
     readonly openWorldHint: boolean;
   };
   readonly cli: ReadInterfaceIdentity["cli"];
-}): ReadInterfaceIdentity => Object.freeze({
+}): ReadInterfaceIdentity & { readonly definition: Definition } => Object.freeze({
   definition: input.definition,
   capabilityId: getCapabilityDefinitionSnapshot(input.definition).capabilityId,
   http: Object.freeze(input.http),
@@ -136,6 +139,7 @@ export const readInterfaceIdentities = Object.freeze([
 ]);
 
 export const capabilityCatalogInterface = Object.freeze({
+  failureCodes: readCapabilityCommonFailureCodes,
   http: Object.freeze({ method: "GET" as const, path: "/api/v1/capabilities" }),
   mcp: Object.freeze({
     name: "read_list_capabilities",
@@ -144,27 +148,32 @@ export const capabilityCatalogInterface = Object.freeze({
   }),
 });
 
-interface WalletToolInterfaceIdentity {
-  readonly capabilityId: CapabilityId;
-  readonly name: string;
-  readonly description: string;
-  readonly annotations: InterfaceToolAnnotations;
-  readonly http: Readonly<{
+export interface WalletInterfaceBinding {
+  readonly action: "start" | "get_operation" | "cancel_operation" | "current_operation";
+  readonly contract: AnyWalletManagementContract;
+  readonly control?: Readonly<{
     readonly method: "GET" | "POST" | "DELETE";
     readonly path: string | ((operationId: string) => string);
   }>;
-  readonly cli: Readonly<CliInterfaceIdentity>;
-  readonly operationKind?: "connect" | "disconnect";
+  readonly mcp?: Readonly<{
+    readonly name: string;
+    readonly description: string;
+    readonly annotations: InterfaceToolAnnotations;
+  }>;
+  readonly cli?: Readonly<CliInterfaceIdentity>;
+  readonly operationKind?: WalletOperationKind;
+  readonly web?: "start" | "current" | "operation" | "cancel";
 }
 
-const walletToolIdentity = (input: Omit<WalletToolInterfaceIdentity, "capabilityId"> & {
-  readonly capabilityId: string;
-}): WalletToolInterfaceIdentity => Object.freeze({
+const walletBinding = <const Binding extends WalletInterfaceBinding>(
+  input: Binding,
+): Readonly<Binding> => Object.freeze({
   ...input,
-  capabilityId: capabilityIdSchema.parse(input.capabilityId),
-  http: Object.freeze(input.http),
-  cli: Object.freeze(input.cli),
-});
+  contract: input.contract,
+  ...(input.control === undefined ? {} : { control: Object.freeze(input.control) }),
+  ...(input.mcp === undefined ? {} : { mcp: Object.freeze(input.mcp) }),
+  ...(input.cli === undefined ? {} : { cli: Object.freeze(input.cli) }),
+}) as Readonly<Binding>;
 
 const startAnnotations = (openWorldHint: boolean): InterfaceToolAnnotations => Object.freeze({
   readOnlyHint: false,
@@ -173,47 +182,72 @@ const startAnnotations = (openWorldHint: boolean): InterfaceToolAnnotations => O
   openWorldHint,
 });
 
-export const walletToolInterfaces = Object.freeze({
-  startConnection: walletToolIdentity({
-    capabilityId: walletManagementCapabilityIds.connect,
-    name: "wallet_start_connection",
-    description: "Start a Robinhood Wallet connection operation for local browser review.",
-    annotations: startAnnotations(true),
-    http: { method: "POST", path: walletControlRoutes.operations },
+export const walletInterfaceBindings = Object.freeze({
+  connect: walletBinding({
+    action: "start",
+    contract: walletManagementContracts.connect,
+    control: { method: "POST", path: walletControlRoutes.operations },
+    mcp: {
+      name: "wallet_start_connection",
+      description: "Connect Robinhood Wallet or return the current valid connection.",
+      annotations: startAnnotations(true),
+    },
     cli: { domain: "wallet", command: "connect", argumentSyntax: "" },
     operationKind: "connect",
+    web: "start",
   }),
-  startDisconnection: walletToolIdentity({
-    capabilityId: walletManagementCapabilityIds.disconnect,
-    name: "wallet_start_disconnection",
-    description: "Start a Robinhood Wallet disconnection operation for local browser review.",
-    annotations: startAnnotations(false),
-    http: { method: "POST", path: walletControlRoutes.operations },
+  disconnect: walletBinding({
+    action: "start",
+    contract: walletManagementContracts.disconnect,
+    control: { method: "POST", path: walletControlRoutes.operations },
+    mcp: {
+      name: "wallet_start_disconnection",
+      description: "Start a Robinhood Wallet disconnection operation for local browser confirmation.",
+      annotations: startAnnotations(false),
+    },
     cli: { domain: "wallet", command: "disconnect", argumentSyntax: "" },
     operationKind: "disconnect",
+    web: "start",
   }),
-  getOperation: walletToolIdentity({
-    capabilityId: walletManagementCapabilityIds.operation,
-    name: "wallet_get_operation",
-    description: "Read one retained wallet management operation.",
-    annotations: readAnnotations(false),
-    http: { method: "GET", path: walletControlRoutes.operation },
+  operation: walletBinding({
+    action: "get_operation",
+    contract: walletManagementContracts.operation,
+    control: { method: "GET", path: walletControlRoutes.operation },
+    mcp: {
+      name: "wallet_get_operation",
+      description: "Read one retained wallet management operation.",
+      annotations: readAnnotations(false),
+    },
     cli: { domain: "wallet", command: "operation", argumentSyntax: "<operation-id> [--json]" },
+    web: "operation",
   }),
-  cancelOperation: walletToolIdentity({
-    capabilityId: walletManagementCapabilityIds.cancelOperation,
-    name: "wallet_cancel_operation",
-    description: "Cancel one cancellable wallet management operation.",
-    annotations: Object.freeze({
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: true,
-    }),
-    http: { method: "DELETE", path: walletControlRoutes.operation },
+  cancelOperation: walletBinding({
+    action: "cancel_operation",
+    contract: walletManagementContracts.cancelOperation,
+    control: { method: "DELETE", path: walletControlRoutes.operation },
+    mcp: {
+      name: "wallet_cancel_operation",
+      description: "Cancel one cancellable wallet management operation.",
+      annotations: Object.freeze({
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      }),
+    },
     cli: { domain: "wallet", command: "cancel", argumentSyntax: "<operation-id>" },
+    web: "cancel",
+  }),
+  currentOperation: walletBinding({
+    action: "current_operation",
+    contract: walletManagementContracts.currentOperation,
+    web: "current",
   }),
 });
+
+export const walletInterfaceBindingList: readonly WalletInterfaceBinding[] = Object.freeze(
+  Object.values(walletInterfaceBindings),
+);
 
 export const declaredCliCommandIdentities = Object.freeze([
   chainStatusInterface.cli,
@@ -221,10 +255,8 @@ export const declaredCliCommandIdentities = Object.freeze([
   transactionInspectInterface.cli,
   accountBalanceInterface.cli,
   walletConnectionInterface.cli,
-  walletToolInterfaces.startConnection.cli,
-  walletToolInterfaces.startDisconnection.cli,
-  walletToolInterfaces.getOperation.cli,
-  walletToolInterfaces.cancelOperation.cli,
+  ...walletInterfaceBindingList.flatMap((binding) =>
+    binding.cli === undefined ? [] : [binding.cli]),
 ]);
 
 const cliExecutableName = "littlejohn" as const;
@@ -244,8 +276,6 @@ export const cliHelpText = [
 export const declaredMcpToolNames = Object.freeze([
   ...readInterfaceIdentities.map((entry) => entry.mcp.name),
   capabilityCatalogInterface.mcp.name,
-  walletToolInterfaces.startConnection.name,
-  walletToolInterfaces.startDisconnection.name,
-  walletToolInterfaces.getOperation.name,
-  walletToolInterfaces.cancelOperation.name,
+  ...walletInterfaceBindingList.flatMap((binding) =>
+    binding.mcp === undefined ? [] : [binding.mcp.name]),
 ].sort(compareCodePointSequences));

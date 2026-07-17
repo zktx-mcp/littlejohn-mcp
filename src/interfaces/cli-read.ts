@@ -2,6 +2,7 @@ import {
   accountBalanceCapability,
   canonicalJsonStringify,
   contractInspectCapability,
+  getCapabilityDefinitionSnapshot,
   parseCapabilityInput,
   parseCapabilitySuccess,
   transactionInspectCapability,
@@ -19,6 +20,7 @@ import { chainInterfaceErrorMappings } from "../chain/errors.js";
 import type { RuntimeDispatchRequest } from "../runtime/index.js";
 import {
   createInterfaceFailure,
+  constrainInterfaceFailure,
   dispatchCanonical,
   type RuntimeDispatchPort,
 } from "./http-client.js";
@@ -27,6 +29,7 @@ import {
   chainStatusInterface,
   contractInspectInterface,
   transactionInspectInterface,
+  type ReadInterfaceIdentity,
 } from "./identities.js";
 
 type ReadCommandBase = { readonly json: boolean };
@@ -239,46 +242,27 @@ const balanceHuman = (data: AccountBalanceData): string => [
     : `Token ${token.asset.address}: unavailable (${token.result.errorCode})`),
 ].join("\n");
 
-const requestForCommand = (command: ReadCliCommand): RuntimeDispatchRequest => {
+const interfaceForCommand = (command: ReadCliCommand): ReadInterfaceIdentity => {
   switch (command.kind) {
-    case "chain_status":
-      return {
-        requestClass: "public_read",
-        method: chainStatusInterface.http.method,
-        path: chainStatusInterface.http.path,
-      };
-    case "contract":
-      return {
-        requestClass: "public_read",
-        method: contractInspectInterface.http.method,
-        path: contractInspectInterface.http.path,
-        body: command.input,
-      };
-    case "transaction":
-      return {
-        requestClass: "public_read",
-        method: transactionInspectInterface.http.method,
-        path: transactionInspectInterface.http.path,
-        body: command.input,
-      };
-    case "balance":
-      return {
-        requestClass: "public_read",
-        method: accountBalanceInterface.http.method,
-        path: accountBalanceInterface.http.path,
-        body: command.input,
-      };
+    case "chain_status": return chainStatusInterface;
+    case "contract": return contractInspectInterface;
+    case "transaction": return transactionInspectInterface;
+    case "balance": return accountBalanceInterface;
   }
 };
 
-const parseSuccess = (command: ReadCliCommand, value: unknown): CapabilitySuccess<unknown> => {
-  switch (command.kind) {
-    case "chain_status": return parseCapabilitySuccess(chainStatusCapability, value);
-    case "contract": return parseCapabilitySuccess(contractInspectCapability, value);
-    case "transaction": return parseCapabilitySuccess(transactionInspectCapability, value);
-    case "balance": return parseCapabilitySuccess(accountBalanceCapability, value);
-  }
-};
+const requestForCommand = (
+  command: ReadCliCommand,
+  identity: ReadInterfaceIdentity,
+): RuntimeDispatchRequest => ({
+  requestClass: "public_read",
+  method: identity.http.method,
+  path: identity.http.path,
+  ...(command.kind === "chain_status" ? {} : { body: command.input }),
+});
+
+const parseSuccess = (identity: ReadInterfaceIdentity, value: unknown): CapabilitySuccess<unknown> =>
+  parseCapabilitySuccess(identity.definition, value);
 
 const humanSuccess = (command: ReadCliCommand, success: CapabilitySuccess<unknown>): string => {
   switch (command.kind) {
@@ -295,11 +279,12 @@ export const runReadCliCommand = async (
   output: ReadCliOutputPort,
   signal?: AbortSignal,
 ): Promise<number> => {
-  const request = requestForCommand(command);
-  const result = await dispatchCanonical(runtime, {
+  const identity = interfaceForCommand(command);
+  const request = requestForCommand(command, identity);
+  const result = constrainInterfaceFailure(await dispatchCanonical(runtime, {
     ...request,
     ...(signal === undefined ? {} : { signal }),
-  }, 200);
+  }, 200), getCapabilityDefinitionSnapshot(identity.definition).failureCodes);
   if (!result.ok) {
     if (command.json) {
       output.writeOutput(`${canonicalJsonStringify(result.failure as unknown as CanonicalJson)}\n`);
@@ -308,7 +293,7 @@ export const runReadCliCommand = async (
     return chainInterfaceErrorMappings.get(result.failure.error.code).cliExitCode;
   }
   try {
-    const parsed = parseSuccess(command, result.value);
+    const parsed = parseSuccess(identity, result.value);
     output.writeOutput(command.json
       ? `${canonicalJsonStringify(result.value)}\n`
       : `${humanSuccess(command, parsed)}\n`);

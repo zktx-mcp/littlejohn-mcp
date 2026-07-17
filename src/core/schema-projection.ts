@@ -20,7 +20,7 @@ const createCapabilityProjectionSchemaSet = () => {
   const evidence = createEvidenceSchemaSet();
   const schemaDigest = createSha256HexSchema();
   const schemaId = z.string().regex(new RegExp(
-    "^urn:littlejohn:capability:" + capabilityIdPatternSource + ":(?:input|data):v1$",
+    "^urn:littlejohn:capability:" + capabilityIdPatternSource + ":(?:input|data|success):v1$",
   ));
   const projectedSchema = jsonObject({
       schemaId,
@@ -33,6 +33,8 @@ const createCapabilityProjectionSchemaSet = () => {
       contractVersion: z.literal(coreContractVersion),
       input: projectedSchema,
       data: projectedSchema,
+      success: projectedSchema,
+      failureCodes: z.array(primitive.snakeCaseCode),
       conclusionIds: z.array(primitive.fixedIdentifier),
       warningCodes: z.array(evidence.warningCode),
       staticScopeExclusions: z.array(evidence.staticScopeExclusion),
@@ -64,6 +66,8 @@ const projectCapability = (definition: AnyReadCapabilityDefinition): CapabilityS
     contractVersion: coreContractVersion,
     input: projectSchema(snapshot.inputSchema, base + ":input:v1"),
     data: projectSchema(snapshot.dataSchema, base + ":data:v1"),
+    success: projectSchema(snapshot.successSchema, base + ":success:v1"),
+    failureCodes: snapshot.failureCodes,
     conclusionIds: snapshot.conclusionIds,
     warningCodes: snapshot.warningCodes,
     staticScopeExclusions: snapshot.staticScopeExclusions,

@@ -36,7 +36,8 @@ const repositoryRoot = resolve(".");
 const nodeModulesRoot = resolve(repositoryRoot, "node_modules");
 const webSourceRoot = resolve(repositoryRoot, "src/interfaces/web");
 const browserContractSource = resolve(repositoryRoot, "src/interfaces/browser-contract.ts");
-const operationClientSource = resolve(webSourceRoot, "operation-client.ts");
+const webApplicationSource = resolve(webSourceRoot, "app.tsx");
+const walletClientSource = resolve(webSourceRoot, "wallet-client.ts");
 const operationStateSource = resolve(repositoryRoot, "src/wallet/operation-state.ts");
 const allowedVirtualModules = new Set([
   "\0commonjsHelpers.js",
@@ -95,9 +96,14 @@ describe("browser runtime dependency boundary", () => {
       `globalThis["fetch"]("/outside", {});`,
       `const send = globalThis.fetch; send("/outside", {});`,
       `window["open"]("https://example.invalid");`,
+      `window.close();`,
+      `window.location.reload();`,
       `document.createElement("img");`,
       `const image = <img src="/outside" />;`,
+      `const link = <a href="/outside">outside</a>;`,
       `window.location["href"] = "https://example.invalid";`,
+      `const storage = window.sessionStorage; storage.setItem("outside", "value");`,
+      `window.sessionStorage.setItem("outside", "value");`,
       `const worker = new Worker("/worker.js");`,
       `node.setAttribute("src", "/outside");`,
       `open("https://example.invalid");`,
@@ -149,18 +155,51 @@ describe("browser runtime dependency boundary", () => {
       resolve(webSourceRoot, "inert-text.ts"),
     )).toEqual([]);
     expect(auditBrowserSourceModule(
-      await readFile(operationClientSource, "utf8"),
-      operationClientSource,
+      await readFile(walletClientSource, "utf8"),
+      walletClientSource,
     )).toEqual([]);
-    const operationClient = await readFile(operationClientSource, "utf8");
-    const substitutedFetchInputs = operationClient.replace(
+    expect(auditBrowserSourceModule(
+      `export const requestCurrentPageClose = (): void => { window.close(); };`,
+      resolve(webSourceRoot, "forged-lifecycle.ts"),
+    )).not.toEqual([]);
+    expect(auditBrowserSourceModule(
+      `export const reloadOutsideBootstrapOwner = (): void => { window.location.reload(); };`,
+      resolve(webSourceRoot, "forged-reload.ts"),
+    )).not.toEqual([]);
+    expect(auditBrowserSourceModule(
+      `export const readStorageOutsideOwner = (): Storage => window.sessionStorage;`,
+      resolve(webSourceRoot, "forged-storage.ts"),
+    )).not.toEqual([]);
+    expect(auditBrowserSourceModule(
+      await readFile(webApplicationSource, "utf8"),
+      webApplicationSource,
+    )).toEqual([]);
+    const webApplication = await readFile(webApplicationSource, "utf8");
+    const shadowedObservationKey = webApplication.replace(
+      "read: (): string | null => window.sessionStorage.getItem(walletObservationStorageKey),",
+      "read: (): string | null => {\n" +
+      "    const walletObservationStorageKey = \"outside\";\n" +
+      "    return window.sessionStorage.getItem(walletObservationStorageKey);\n" +
+      "  },",
+    );
+    expect(shadowedObservationKey).not.toBe(webApplication);
+    expect(auditBrowserSourceModule(shadowedObservationKey, webApplicationSource)).not.toEqual([]);
+    const shadowedObservationValue = webApplication.replace(
+      "window.sessionStorage.setItem(walletObservationStorageKey, operationId);",
+      "{ const operationId = \"outside\"; " +
+      "window.sessionStorage.setItem(walletObservationStorageKey, operationId); }",
+    );
+    expect(shadowedObservationValue).not.toBe(webApplication);
+    expect(auditBrowserSourceModule(shadowedObservationValue, webApplicationSource)).not.toEqual([]);
+    const walletClient = await readFile(walletClientSource, "utf8");
+    const substitutedFetchInputs = walletClient.replace(
       "const defaultBrowserFetch: BrowserFetch = (input, init) => globalThis.fetch(input, init);",
       "const input = \"https://example.invalid\";\n" +
       "const init = { method: \"GET\", credentials: \"same-origin\", cache: \"no-store\" } as const;\n" +
       "const defaultBrowserFetch: BrowserFetch = (_input, _init) => globalThis.fetch(input, init);",
     );
-    expect(substitutedFetchInputs).not.toBe(operationClient);
-    expect(auditBrowserSourceModule(substitutedFetchInputs, operationClientSource)).not.toEqual([]);
+    expect(substitutedFetchInputs).not.toBe(walletClient);
+    expect(auditBrowserSourceModule(substitutedFetchInputs, walletClientSource)).not.toEqual([]);
     for (const declaration of [
       "let defaultBrowserFetch: BrowserFetch = (input, init) => globalThis.fetch(input, init);",
       "{ const defaultBrowserFetch: BrowserFetch = (input, init) => globalThis.fetch(input, init); }",
@@ -169,12 +208,12 @@ describe("browser runtime dependency boundary", () => {
       "const defaultBrowserFetch: BrowserFetch = (input, init) => globalThis.fetch(input, init);\n" +
         "const duplicateBrowserFetch: BrowserFetch = (input, init) => globalThis.fetch(input, init);",
     ]) {
-      const mutated = operationClient.replace(
+      const mutated = walletClient.replace(
         "const defaultBrowserFetch: BrowserFetch = (input, init) => globalThis.fetch(input, init);",
         declaration,
       );
-      expect(mutated).not.toBe(operationClient);
-      expect(auditBrowserSourceModule(mutated, operationClientSource), declaration).not.toEqual([]);
+      expect(mutated).not.toBe(walletClient);
+      expect(auditBrowserSourceModule(mutated, walletClientSource), declaration).not.toEqual([]);
     }
     expect(auditBrowserSourceModule(
       "export {}; const Error = RTCPeerConnection; new Error();",
@@ -240,7 +279,9 @@ describe("browser runtime dependency boundary", () => {
 
       const moduleIds = chunks.flatMap((chunk) => Object.keys(chunk.modules)).sort();
       expect(moduleIds).toContain(browserContractSource);
-      expect(moduleIds).toContain(operationClientSource);
+      expect(moduleIds).toContain(walletClientSource);
+      expect(moduleIds).toContain(webApplicationSource);
+      expect(moduleIds).toContain(resolve(webSourceRoot, "wallet-dialog-view.ts"));
       expect(moduleIds).toContain(operationStateSource);
       expect(moduleIds).toContain(resolve(repositoryRoot, "src/wallet/operation-contract.ts"));
       expect(moduleIds).toContain(resolve(repositoryRoot, "src/core/wallet-connection.ts"));

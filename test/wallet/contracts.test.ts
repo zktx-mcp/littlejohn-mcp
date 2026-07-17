@@ -2,12 +2,16 @@ import { describe, expect, it } from "vitest";
 
 import {
   parseWalletManagementOperation,
+  parseWalletCurrentOperationProjection,
   parseWalletOperationConfirmation,
+  parseWalletOperationCreate,
   parseWalletOperationId,
   parseWalletOperationPresentation,
   parseWalletOperationPresentationAccess,
   parseWalletQrMatrix,
   parseWalletOperationResponse,
+  parseWalletOperationStartResponse,
+  parseWalletWebOperationCreate,
   walletOperationAllowsQr,
   walletOperationIdByteLength,
   walletQrMatrixSizeLimits,
@@ -130,9 +134,11 @@ describe("wallet management contracts", () => {
 
   it("owns terminal-state classification with the operation-state authority", () => {
     expect(walletOperationStates.map((state) => [state, isWalletOperationTerminalState(state)])).toEqual([
+      ["starting_connection", false],
       ["awaiting_confirmation", false],
       ["awaiting_wallet_approval", false],
       ["disconnecting", false],
+      ["cancelling", false],
       ["validating_session", false],
       ["completed", true],
       ["cancelled", true],
@@ -143,15 +149,15 @@ describe("wallet management contracts", () => {
     expect(walletOperationStates.filter(isWalletOperationConfirmableState))
       .toEqual(["awaiting_confirmation"]);
     expect(walletOperationStates.filter(isWalletOperationCancellableState))
-      .toEqual(["awaiting_confirmation", "awaiting_wallet_approval"]);
+      .toEqual(["starting_connection", "awaiting_confirmation", "awaiting_wallet_approval"]);
   });
 
   it("binds each operation kind to exactly its reachable lifecycle states", () => {
     const allowedStates = {
       connect: [
-        "awaiting_confirmation",
+        "starting_connection",
         "awaiting_wallet_approval",
-        "disconnecting",
+        "cancelling",
         "validating_session",
         "completed",
         "cancelled",
@@ -176,9 +182,9 @@ describe("wallet management contracts", () => {
           kind,
           state,
           result: state === "completed"
-            ? kind === "connect"
-              ? { outcome: "connected", connection: connected }
-              : { outcome: "already_disconnected", connection: disconnected }
+            ? kind === "disconnect"
+              ? { outcome: "already_disconnected", connection: disconnected }
+              : { outcome: "connected", connection: connected }
             : null,
           failure: state === "failed" ? failure : null,
         });
@@ -261,6 +267,103 @@ describe("wallet management contracts", () => {
     })).toThrow();
   });
 
+  it("owns strict start and current-operation contracts without assuming every start creates an operation", () => {
+    expect(parseWalletOperationCreate({
+      kind: "connect",
+      interactionInterface: "cli",
+      connectionRevision: null,
+    })).toEqual({
+      kind: "connect",
+      interactionInterface: "cli",
+      connectionRevision: null,
+    });
+    expect(() => parseWalletOperationCreate({
+      kind: "other",
+      interactionInterface: "web",
+      connectionRevision: "3",
+    })).toThrow();
+    expect(() => parseWalletOperationCreate({
+      kind: "connect",
+      interactionInterface: "web",
+    })).toThrow();
+    expect(parseWalletWebOperationCreate({
+      kind: "connect",
+      connectionRevision: "3",
+    })).toEqual({ kind: "connect", connectionRevision: "3" });
+    expect(() => parseWalletWebOperationCreate({ kind: "connect" })).toThrow();
+    expect(() => parseWalletWebOperationCreate({
+      kind: "connect",
+      connectionRevision: "3",
+      extra: true,
+    })).toThrow();
+
+    const current = parseWalletOperationStartResponse({
+      result: {
+        status: "current_connection",
+        connectionRevision: "3",
+        connection: connected,
+      },
+    });
+    expect(current.result).toEqual({
+      status: "current_connection",
+      connectionRevision: "3",
+      connection: connected,
+    });
+    expect(() => parseWalletOperationStartResponse({ ...current, qr: {
+      size: 21,
+      rows: Array.from({ length: 21 }, () => "0".repeat(21)),
+    } })).toThrow();
+
+    const startedOperation = operation({
+      kind: "disconnect",
+      state: "awaiting_confirmation",
+      result: null,
+    });
+    expect(parseWalletOperationStartResponse({
+      result: { status: "operation_started", operation: startedOperation },
+    }).result).toEqual({ status: "operation_started", operation: startedOperation });
+
+    expect(parseWalletCurrentOperationProjection({
+      status: "absent",
+      connectionRevision: "3",
+      connection: connected,
+    })).toEqual({
+      status: "absent",
+      connectionRevision: "3",
+      connection: connected,
+    });
+    const presentation = parseWalletOperationPresentation({
+      operation: startedOperation,
+      access: "interactive",
+    });
+    expect(parseWalletCurrentOperationProjection({
+      status: "present",
+      connectionRevision: "4",
+      connection: disconnected,
+      presentation,
+    })).toEqual({
+      status: "present",
+      connectionRevision: "4",
+      connection: disconnected,
+      presentation,
+    });
+    const terminalPresentation = parseWalletOperationPresentation({
+      operation: operation({
+        kind: "connect",
+        state: "cancelled",
+        result: null,
+      }),
+      access: "interactive",
+    });
+    expect(terminalPresentation.operation.state).toBe("cancelled");
+    expect(() => parseWalletCurrentOperationProjection({
+      status: "present",
+      connectionRevision: "4",
+      connection: disconnected,
+      presentation: terminalPresentation,
+    })).toThrow();
+  });
+
   it("binds operation, interface access, and optional QR into one exact presentation snapshot", async () => {
     const qr = { size: 21, rows: Array.from({ length: 21 }, () => "0".repeat(21)) };
     const pending = operation({
@@ -284,7 +387,7 @@ describe("wallet management contracts", () => {
     expect(Object.isFrozen(presentation.qr?.rows)).toBe(true);
 
     const confirmation = operation({
-      kind: "connect",
+      kind: "disconnect",
       state: "awaiting_confirmation",
       result: null,
     });

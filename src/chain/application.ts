@@ -10,7 +10,7 @@ import {
   type WalletRuntimeSupportManifest,
 } from "../runtime/index.js";
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
-import { createErc20CallEncoder, type Erc20CallEncoder } from "./erc20-calls.js";
+import { createErc20CallEncoder, type Erc20CallEncoder } from "./evm-standard.js";
 import { createChainReadService } from "./handlers.js";
 import { createBoundedRpcRequester, type RpcRequester } from "./rpc.js";
 

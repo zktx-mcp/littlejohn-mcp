@@ -1,9 +1,6 @@
 import {
   blockSelectorSchema,
   chainAnchorSchema,
-  decodeCanonicalErc20Event,
-  keccak256Hex,
-  maximumTokenDecimals,
   parseEvmAddress,
   parseHash32,
   parseHexBytes,
@@ -18,6 +15,12 @@ import {
   type HexBytes,
   type UnsignedDecimal,
 } from "../core/index.js";
+import {
+  decodeCanonicalErc20Event,
+  decodeErc20BalanceOfResult,
+  decodeErc20DecimalsResult,
+  hashEvmBytes,
+} from "./evm-standard.js";
 import { maximumBlockTransactionHashes } from "./limits.js";
 
 const maxUint256 = (1n << 256n) - 1n;
@@ -161,21 +164,15 @@ export const normalizeRpcRuntimeCode = (input: unknown): NormalizedRuntimeCode =
     status: "present" as const,
     bytecode,
     byteLength: parseUnsignedDecimal(String((bytecode.length - 2) / 2)),
-    codeHash: parseHash32(keccak256Hex(bytecode)),
+    codeHash: hashEvmBytes(bytecode),
   });
 };
 
-export const normalizeAbiUint256 = (input: unknown): UnsignedDecimal => {
-  const word = normalizeBytes(input);
-  if (word.length !== 66) return invalid();
-  return parseUnsignedDecimal(BigInt(word).toString(10));
-};
+export const normalizeAbiUint256 = (input: unknown): UnsignedDecimal =>
+  decodeErc20BalanceOfResult(normalizeBytes(input));
 
-export const normalizeAbiDecimals = (input: unknown): UnsignedDecimal => {
-  const value = normalizeAbiUint256(input);
-  if (BigInt(value) > BigInt(maximumTokenDecimals)) return invalid();
-  return value;
-};
+export const normalizeAbiDecimals = (input: unknown): UnsignedDecimal =>
+  decodeErc20DecimalsResult(normalizeBytes(input));
 
 export type NormalizedAccessList =
   | { readonly kind: "none" }

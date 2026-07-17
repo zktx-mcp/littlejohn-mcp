@@ -1,29 +1,29 @@
-export interface WalletOperationRequest {
+export interface BrowserRequest {
   readonly epoch: number;
   readonly kind: "poll" | "control";
   readonly signal?: AbortSignal;
 }
 
-export interface WalletOperationRequestAuthority {
+export interface BrowserRequestAuthority {
   activate(): void;
-  beginPoll(): WalletOperationRequest | undefined;
-  beginControl(): WalletOperationRequest | undefined;
-  isCurrent(request: WalletOperationRequest): boolean;
-  cancelPoll(request: WalletOperationRequest): void;
-  finishControl(request: WalletOperationRequest): void;
+  beginPoll(): BrowserRequest | undefined;
+  beginControl(): BrowserRequest | undefined;
+  isCurrent(request: BrowserRequest): boolean;
+  cancelPoll(request: BrowserRequest): void;
+  finishControl(request: BrowserRequest): void;
   close(): void;
 }
 
-export const createWalletOperationRequestAuthority = (): WalletOperationRequestAuthority => {
+export const createBrowserRequestAuthority = (): BrowserRequestAuthority => {
   let epoch = 0;
   let closed = false;
   let controlInFlight = false;
   let activePoll: {
-    readonly request: WalletOperationRequest;
+    readonly request: BrowserRequest;
     readonly controller: AbortController;
   } | undefined;
 
-  const isCurrent = (request: WalletOperationRequest): boolean =>
+  const isCurrent = (request: BrowserRequest): boolean =>
     !closed && request.epoch === epoch && request.signal?.aborted !== true;
 
   return Object.freeze({
@@ -32,7 +32,7 @@ export const createWalletOperationRequestAuthority = (): WalletOperationRequestA
       closed = false;
       epoch += 1;
     },
-    beginPoll: (): WalletOperationRequest | undefined => {
+    beginPoll: (): BrowserRequest | undefined => {
       if (closed || controlInFlight) return undefined;
       activePoll?.controller.abort();
       const controller = new AbortController();
@@ -44,7 +44,7 @@ export const createWalletOperationRequestAuthority = (): WalletOperationRequestA
       activePoll = Object.freeze({ request, controller });
       return request;
     },
-    beginControl: (): WalletOperationRequest | undefined => {
+    beginControl: (): BrowserRequest | undefined => {
       if (closed || controlInFlight) return undefined;
       controlInFlight = true;
       activePoll?.controller.abort();
@@ -52,13 +52,13 @@ export const createWalletOperationRequestAuthority = (): WalletOperationRequestA
       return Object.freeze({ epoch: ++epoch, kind: "control" as const });
     },
     isCurrent,
-    cancelPoll: (request: WalletOperationRequest): void => {
+    cancelPoll: (request: BrowserRequest): void => {
       if (request.kind !== "poll" || activePoll?.request !== request) return;
       activePoll.controller.abort();
       activePoll = undefined;
       epoch += 1;
     },
-    finishControl: (request: WalletOperationRequest): void => {
+    finishControl: (request: BrowserRequest): void => {
       if (request.kind !== "control" || !isCurrent(request)) return;
       controlInFlight = false;
     },

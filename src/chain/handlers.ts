@@ -40,7 +40,7 @@ import {
   ChainOperationError,
   getChainOperationFailure,
 } from "./errors.js";
-import type { Erc20CallEncoder } from "./erc20-calls.js";
+import type { Erc20CallEncoder } from "./evm-standard.js";
 import {
   blockSelectorToRpcTag,
   normalizeAbiDecimals,

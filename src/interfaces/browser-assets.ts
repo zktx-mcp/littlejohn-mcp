@@ -2,11 +2,12 @@ import { readFile, readdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { productDisplayName } from "../core/index.js";
 import type { BrowserContentType } from "../runtime/index.js";
 import { browserAssetContentViolation } from "./browser-asset-policy.js";
 import {
   browserCsrfMetaName,
-  parseBrowserRequestToken,
+  parseBrowserCsrfToken,
 } from "./browser-contract.js";
 
 export const csrfTemplatePlaceholder = "__LITTLEJOHN_CSRF_TOKEN__";
@@ -22,7 +23,7 @@ export interface BrowserAssetBundle {
   paths(): readonly string[];
 }
 
-const hashedAssetName = /^[a-z0-9][a-z0-9_-]*-[A-Za-z0-9_-]{8,}\.(?:css|js)$/;
+const hashedAssetName = /^[a-z0-9][a-z0-9_-]*-[A-Za-z0-9_-]{8,}\.(?:css|js|svg)$/;
 
 const validateAssetBody = (name: string, body: string): void => {
   if (browserAssetContentViolation(name, body) !== undefined) {
@@ -30,14 +31,22 @@ const validateAssetBody = (name: string, body: string): void => {
   }
 };
 
-const compiledShell = (javascriptPath: string, stylesheetPath: string): string => [
+const csrfMetaLine =
+  `    <meta name="${browserCsrfMetaName}" content="${csrfTemplatePlaceholder}" />`;
+
+const compiledShell = (
+  javascriptPath: string,
+  stylesheetPath: string,
+  faviconPath: string,
+): string => [
   "<!doctype html>",
   '<html lang="en">',
   "  <head>",
   '    <meta charset="UTF-8" />',
   '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />',
-  `    <meta name="${browserCsrfMetaName}" content="${csrfTemplatePlaceholder}" />`,
-  "    <title>Wallet Operation</title>",
+  csrfMetaLine,
+  `    <title>${productDisplayName}</title>`,
+  `    <link rel="icon" type="image/svg+xml" href="${faviconPath}" />`,
   `    <script type="module" crossorigin src="${javascriptPath}"></script>`,
   `    <link rel="stylesheet" crossorigin href="${stylesheetPath}">`,
   "  </head>",
@@ -52,8 +61,13 @@ const validateHtml = (html: string, assets: ReadonlyMap<string, BrowserAsset>): 
   const paths = [...assets.keys()];
   const javascript = paths.filter((path) => path.endsWith(".js"));
   const stylesheets = paths.filter((path) => path.endsWith(".css"));
-  if (javascript.length !== 1 || stylesheets.length !== 1 ||
-    html !== compiledShell(javascript[0] as string, stylesheets[0] as string)) {
+  const favicons = paths.filter((path) => path.endsWith(".svg"));
+  if (javascript.length !== 1 || stylesheets.length !== 1 || favicons.length !== 1 ||
+    html !== compiledShell(
+      javascript[0] as string,
+      stylesheets[0] as string,
+      favicons[0] as string,
+    )) {
     throw new TypeError("Compiled browser shell violates its static asset contract.");
   }
 };
@@ -77,7 +91,9 @@ export const loadBrowserAssetBundle = async (
     const path = `/assets/${entry.name}`;
     const contentType: BrowserContentType = entry.name.endsWith(".css")
       ? "text/css; charset=utf-8"
-      : "text/javascript; charset=utf-8";
+      : entry.name.endsWith(".js")
+        ? "text/javascript; charset=utf-8"
+        : "image/svg+xml";
     const body = await readFile(resolve(webRoot, "assets", entry.name), "utf8");
     validateAssetBody(entry.name, body);
     assets.set(path, Object.freeze({
@@ -88,11 +104,15 @@ export const loadBrowserAssetBundle = async (
   const html = await readFile(resolve(webRoot, "index.html"), "utf8");
   validateHtml(html, assets);
   const paths = Object.freeze([...assets.keys()].sort());
-
+  const javascriptPath = paths.find((path) => path.endsWith(".js"));
+  const stylesheetPath = paths.find((path) => path.endsWith(".css"));
+  if (javascriptPath === undefined || stylesheetPath === undefined) {
+    throw new TypeError("Compiled browser shell asset identity is incomplete.");
+  }
   return Object.freeze({
     renderShell: (csrfToken: string): string => {
       let canonicalToken;
-      try { canonicalToken = parseBrowserRequestToken(csrfToken); }
+      try { canonicalToken = parseBrowserCsrfToken(csrfToken); }
       catch { throw new TypeError("Browser CSRF token is invalid."); }
       const rendered = html.replace(csrfTemplatePlaceholder, canonicalToken);
       if (rendered.includes(csrfTemplatePlaceholder)) throw new TypeError("Browser shell substitution is incomplete.");

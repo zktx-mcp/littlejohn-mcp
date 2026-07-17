@@ -21,7 +21,11 @@ const resolvesInsideCore = (importingFile: string, specifier: string): boolean =
 };
 
 const allowed = (importingFile: string, specifier: string): boolean =>
-  specifier === "zod" || specifier === "node:crypto" || resolvesInsideCore(importingFile, specifier);
+  specifier === "zod" ||
+  specifier === "node:crypto" ||
+  specifier === "@noble/hashes/sha3.js" ||
+  specifier === "@noble/hashes/utils.js" ||
+  resolvesInsideCore(importingFile, specifier);
 
 const auditImports = (source: string, importingFile = resolve("src/core/audit.ts")): string[] => {
   const sourceFile = ts.createSourceFile("audit.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -100,33 +104,6 @@ const importsTrustedConstructor = (source: string): boolean => {
   return violation;
 };
 
-const coreConsumerImportViolations = (source: string, importingFile: string): readonly string[] => {
-  const sourceFile = ts.createSourceFile(importingFile, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const violations: string[] = [];
-  const check = (specifier: ts.Expression | undefined): void => {
-    if (specifier === undefined || !ts.isStringLiteralLike(specifier)) return;
-    let target: string;
-    try {
-      target = fileURLToPath(new URL(specifier.text, pathToFileURL(importingFile)));
-    } catch {
-      return;
-    }
-    const fromCore = relative(coreDirectory, target);
-    const insideCore = fromCore === "" || (!isAbsolute(fromCore) && fromCore !== ".." && !fromCore.startsWith(`..${sep}`));
-    if (insideCore && fromCore.split(sep).join("/") !== "index.js") violations.push(specifier.text);
-  };
-  const visit = (node: ts.Node): void => {
-    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) check(node.moduleSpecifier);
-    else if (ts.isCallExpression(node)) {
-      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) check(node.arguments[0]);
-      if (ts.isIdentifier(node.expression) && node.expression.text === "require") check(node.arguments[0]);
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-  return violations;
-};
-
 describe("core dependency boundary", () => {
   it("exposes only explicit public core symbols", async () => {
     const indexSource = await readFile(resolve("src/core/index.ts"), "utf8");
@@ -166,18 +143,6 @@ describe("core dependency boundary", () => {
     ]) expect(Object.hasOwn(publicCore, compositionName)).toBe(true);
   });
 
-  it("requires build consumers to use the curated core entry point", async () => {
-    const violations: string[] = [];
-    for (const file of await collectTypeScriptFiles(resolve("src/build"))) {
-      violations.push(...coreConsumerImportViolations(await readFile(file, "utf8"), file));
-    }
-    expect(violations).toEqual([]);
-    const synthetic = resolve("src/build/synthetic.ts");
-    expect(coreConsumerImportViolations('import "../core/index.js";', synthetic)).toEqual([]);
-    expect(coreConsumerImportViolations('import "../core/capability.js";', synthetic))
-      .toEqual(["../core/capability.js"]);
-  });
-
   it("reserves the trusted capability-definition constructor for the five built-in definitions", async () => {
     const allowedOwner = resolve("src/core/capabilities.ts");
     const violations: string[] = [];
@@ -188,7 +153,7 @@ describe("core dependency boundary", () => {
     expect(importsTrustedConstructor(await readFile(allowedOwner, "utf8"))).toBe(true);
   });
 
-  it("allows only zod, node:crypto, and sibling core modules", async () => {
+  it("allows only the declared narrow hash utilities, zod, node:crypto, and sibling core modules", async () => {
     const directory = resolve("src/core");
     const violations: string[] = [];
     for (const file of await collectTypeScriptFiles(directory)) {
@@ -202,6 +167,8 @@ describe("core dependency boundary", () => {
     expect(auditImports('import("better-sqlite3");')).toEqual(["dynamic_import:better-sqlite3"]);
     expect(auditImports("const target = 'node:http'; import(target);")).toEqual(["dynamic_import:non_literal"]);
     expect(auditImports('require("react");')).toEqual(["require:react"]);
+    expect(auditImports('import "@noble/hashes";')).toEqual(["module:@noble/hashes"]);
+    expect(auditImports('import "@noble/hashes/sha2.js";')).toEqual(["module:@noble/hashes/sha2.js"]);
     expect(auditImports('import "../runtime/database.js";')).toEqual(["module:../runtime/database.js"]);
     expect(auditImports('import "./../runtime/database.js";')).toEqual(["module:./../runtime/database.js"]);
     expect(auditImports('import "./sub/../../runtime/database.js";')).toEqual(["module:./sub/../../runtime/database.js"]);

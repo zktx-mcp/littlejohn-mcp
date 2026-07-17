@@ -31,6 +31,7 @@ import {
   type ObservationWriter,
 } from "../../src/core/index.js";
 import { defineReadCapability } from "../../src/core/capability.js";
+import { chainErrorRegistry } from "../../src/chain/errors.js";
 import {
   bindForHarness,
   createCapabilityHarness,
@@ -315,6 +316,7 @@ describe("capability binding authority", () => {
       capabilityId: "test.portlifecycle",
       inputSchema: z.object({ values: z.array(z.string()).min(1) }).strict(),
       dataSchema: z.object({ values: z.array(z.string()).min(1) }).strict(),
+      failureCodes: ["internal_error", "invalid_input"],
       normalizeInput: (input) => ({ values: [...input.values].sort() }),
       conclusionIds: ["input_validated"],
       observationSlots: (input) => {
@@ -353,7 +355,7 @@ describe("capability binding authority", () => {
     const harness = createCapabilityHarness();
     const binding = bindCapability({
       definition,
-      errorRegistry: coreErrorRegistry,
+      errorRegistry: chainErrorRegistry,
       invocationAuthority: harness.invocationAuthority,
       createInvocationPorts: (input) => {
         events.push(`ports:${input.values.join(",")}`);
@@ -416,6 +418,27 @@ describe("capability binding authority", () => {
     if (!arrayPropertyFailure.ok) expect(arrayPropertyFailure.error.code).toBe("internal_error");
   });
 
+  it("exposes only failures declared by the exact capability", async () => {
+    const harness = createCapabilityHarness();
+    const declared = bindForHarness(chainStatusCapability, harness, async () => ({
+      status: "failure",
+      code: "source_unavailable",
+      issues: [],
+    }));
+    const undeclared = bindForHarness(chainStatusCapability, harness, async () => ({
+      status: "failure",
+      code: "not_found",
+      issues: [],
+    }));
+
+    const declaredResult = await invokeBinding(chainStatusCapability, declared, {});
+    const undeclaredResult = await invokeBinding(chainStatusCapability, undeclared, {});
+    expect(declaredResult.ok).toBe(false);
+    if (!declaredResult.ok) expect(declaredResult.error.code).toBe("source_unavailable");
+    expect(undeclaredResult.ok).toBe(false);
+    if (!undeclaredResult.ok) expect(undeclaredResult.error.code).toBe("internal_error");
+  });
+
   it("bounds high-cardinality input issues without rejecting the invocation promise", async () => {
     const harness = createCapabilityHarness();
     const binding = bindForHarness(accountBalanceCapability, harness, async () => {
@@ -435,6 +458,18 @@ describe("capability binding authority", () => {
     expect(Reflect.ownKeys(chainStatusCapability)).toEqual([]);
     const snapshot = getCapabilityDefinitionSnapshot(chainStatusCapability);
     expect(snapshot.capabilityId).toBe("chain.status");
+    expect(snapshot.failureCodes).toEqual([
+      "internal_error",
+      "invalid_input",
+      "port_conflict",
+      "rate_limited",
+      "request_aborted",
+      "runtime_busy",
+      "runtime_state_unavailable",
+      "source_inconsistent",
+      "source_unavailable",
+    ]);
+    expect(Object.isFrozen(snapshot.failureCodes)).toBe(true);
     expect(Object.isFrozen(snapshot)).toBe(true);
     expect(Object.values(snapshot).some((value) => typeof value === "function")).toBe(false);
     expect(() => new CapabilityRegistry([{} as never])).toThrow("provenance");
@@ -541,12 +576,23 @@ describe("capability binding authority", () => {
     })).toThrow("provenance");
   });
 
+  it("rejects a registry that does not cover the capability failure contract", () => {
+    const harness = createCapabilityHarness();
+    expect(() => bindCapability({
+      definition: chainStatusCapability,
+      errorRegistry: coreErrorRegistry,
+      invocationAuthority: harness.invocationAuthority,
+      createInvocationPorts: () => harness.ports,
+      handler: async () => ({ status: "failure", code: "internal_error", issues: [] }),
+    })).toThrow("does not cover");
+  });
+
   it("creates and captures invocation ports exactly once after input validation", async () => {
     const base = createCapabilityHarness();
     let calls = 0;
     const binding = bindCapability({
       definition: chainStatusCapability,
-      errorRegistry: coreErrorRegistry,
+      errorRegistry: chainErrorRegistry,
       invocationAuthority: base.invocationAuthority,
       createInvocationPorts: () => {
         calls += 1;
@@ -590,7 +636,7 @@ describe("capability binding authority", () => {
       let handlerCalls = 0;
       const binding = bindCapability({
         definition: chainStatusCapability,
-        errorRegistry: coreErrorRegistry,
+        errorRegistry: chainErrorRegistry,
         invocationAuthority: base.invocationAuthority,
         createInvocationPorts: createInvocationPorts as () => typeof base.ports,
         handler: async (_input, context, observations) => {
@@ -630,7 +676,7 @@ describe("capability binding authority", () => {
     const mutablePorts = { observations: firstRegistry };
     const binding = bindCapability({
       definition: chainStatusCapability,
-      errorRegistry: coreErrorRegistry,
+      errorRegistry: chainErrorRegistry,
       invocationAuthority,
       createInvocationPorts: () => mutablePorts,
       handler: async (_input, context, observations) => {
@@ -753,6 +799,7 @@ describe("capability binding authority", () => {
       capabilityId: "test.validated",
       inputSchema: z.object({ value: z.string() }).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
+      failureCodes: ["internal_error", "invalid_input"],
       conclusionIds: ["input_validated"],
       observationSlots: () => [{
         slotId: "input",
@@ -823,6 +870,7 @@ describe("capability binding authority", () => {
       capabilityId: "test.dynamicconclusion",
       inputSchema: z.object({ address: z.string().regex(/^0x[0-9a-f]{40}$/) }).strict(),
       dataSchema: z.object({ address: z.string().regex(/^0x[0-9a-f]{40}$/) }).strict(),
+      failureCodes: ["internal_error", "invalid_input"],
       conclusionIds: ["address_observed:<address>"],
       expectedConclusionIds: (input) => [`address_observed:${input.address}`],
       observationSlots: () => [{
@@ -867,6 +915,7 @@ describe("capability binding authority", () => {
       capabilityId: "test.scopeexclusion",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
+      failureCodes: ["internal_error", "invalid_input"],
       conclusionIds: ["value_observed"],
       observationSlots: () => [],
       observationExpectations: () => [],
@@ -889,6 +938,7 @@ describe("capability binding authority", () => {
       capabilityId: "test.slotownership",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
+      failureCodes: ["internal_error", "invalid_input"],
       conclusionIds: ["value_observed"],
       observationSlots: () => [
         { slotId: "used", factId: "value", kind: "source", purpose: "used", sourceClass: "chain_rpc" },
@@ -930,6 +980,7 @@ describe("capability binding authority", () => {
       capabilityId: "test.factauthority",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
+      failureCodes: ["internal_error", "invalid_input"],
       conclusionIds: ["input_validated"],
       observationSlots: () => [
         { slotId: "input", factId: "input", kind: "validated_input", purpose: "validated_input" },
@@ -970,6 +1021,7 @@ describe("capability binding authority", () => {
       capabilityId: "test.emptyevidence",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
+      failureCodes: ["internal_error", "invalid_input"],
       conclusionIds: ["value_not_present"],
       observationSlots: () => [{
         slotId: "value",

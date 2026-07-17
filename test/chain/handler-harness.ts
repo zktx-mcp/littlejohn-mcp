@@ -19,7 +19,7 @@ import {
   type UtcTimestamp,
   type WalletConnectionData,
 } from "../../src/core/index.js";
-import type { Erc20CallEncoder } from "../../src/chain/erc20-calls.js";
+import type { Erc20CallEncoder } from "../../src/chain/evm-standard.js";
 import { createChainReadService, type ChainReadService } from "../../src/chain/handlers.js";
 import {
   ChainRpcError,

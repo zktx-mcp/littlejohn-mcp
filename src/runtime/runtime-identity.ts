@@ -4,7 +4,6 @@ import { z } from "zod";
 
 import {
   canonicalBase64UrlSchema,
-  createSha256HexSchema,
   parseUnsignedDecimal,
   unsignedDecimalSchema,
   type UnsignedDecimal,
@@ -20,7 +19,6 @@ export const runtimeIdentityProofByteLength = 32 as const;
 const createRuntimeIdentitySchemaSet = () => {
   const profileId = canonicalBase64UrlSchema(runtimeIdentifierByteLength).brand("ProfileId");
   const ownerInstanceId = canonicalBase64UrlSchema(runtimeIdentifierByteLength).brand("OwnerInstanceId");
-  const runtimeBuildDigest = createSha256HexSchema().brand("RuntimeBuildDigest");
   const challenge = canonicalBase64UrlSchema(runtimeIdentityChallengeByteLength)
     .brand("RuntimeIdentityChallenge");
   const proof = canonicalBase64UrlSchema(runtimeIdentityProofByteLength).brand("RuntimeIdentityProof");
@@ -28,7 +26,6 @@ const createRuntimeIdentitySchemaSet = () => {
     profileId,
     ownerInstanceId,
     runtimeProtocolVersion: z.literal(runtimeProtocolVersion),
-    runtimeBuildDigest,
     challenge,
     ownerRevision: unsignedDecimalSchema,
   }).strict();
@@ -36,7 +33,6 @@ const createRuntimeIdentitySchemaSet = () => {
   return Object.freeze({
     profileId,
     ownerInstanceId,
-    runtimeBuildDigest,
     challenge,
     unsignedIdentity,
     ownerIdentity,
@@ -52,13 +48,11 @@ export type UnsignedOwnerIdentity = Omit<OwnerIdentity, "proof">;
 
 export type ProfileId = ReturnType<typeof parseProfileId>;
 export type OwnerInstanceId = ReturnType<typeof parseOwnerInstanceId>;
-export type RuntimeBuildDigest = ReturnType<typeof parseRuntimeBuildDigest>;
 export type RuntimeIdentityChallenge = ReturnType<typeof parseRuntimeIdentityChallenge>;
 export type RuntimeRevision = UnsignedDecimal;
 
 export const parseProfileId = (value: unknown) => authoritySchemas.profileId.parse(value);
 export const parseOwnerInstanceId = (value: unknown) => authoritySchemas.ownerInstanceId.parse(value);
-export const parseRuntimeBuildDigest = (value: unknown) => authoritySchemas.runtimeBuildDigest.parse(value);
 export const parseRuntimeIdentityChallenge = (value: unknown) => authoritySchemas.challenge.parse(value);
 export const parseRuntimeRevision = (value: unknown): RuntimeRevision => parseUnsignedDecimal(value);
 export const parseOwnerIdentity = (value: unknown): OwnerIdentity =>
@@ -79,7 +73,6 @@ const identityFields = (identity: UnsignedOwnerIdentity): readonly string[] => [
   identity.profileId,
   identity.ownerInstanceId,
   String(identity.runtimeProtocolVersion),
-  identity.runtimeBuildDigest,
   identity.challenge,
   identity.ownerRevision,
 ];

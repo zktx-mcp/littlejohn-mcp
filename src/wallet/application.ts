@@ -11,9 +11,9 @@ import {
   walletConnectionCapability,
 } from "../core/index.js";
 import {
-  walletManagementCapabilityIdList,
   type WalletInterfaceOperations,
 } from "./contracts.js";
+import { walletManagementCapabilityIdList } from "./management-contracts.js";
 import {
   createWalletCoordinator,
   type ActiveWalletReadPort,
@@ -32,12 +32,12 @@ import {
   secureWalletConnectPrivateStore,
 } from "./private-store.js";
 
-const walletAvailability = Object.freeze({
-  overall: "available" as const,
+const walletInternalAvailability = Object.freeze({
+  overall: "internal" as const,
   direct: "internal" as const,
   http: "internal" as const,
   mcp: "unavailable" as const,
-  cli: "available" as const,
+  cli: "unavailable" as const,
   web: "unavailable" as const,
 });
 
@@ -46,11 +46,11 @@ export const extendWalletSupportManifest = (
 ): WalletRuntimeSupportManifest => extendWalletRuntimeSupportManifest(parent, {
   registrations: walletManagementCapabilityIdList.map((capabilityId) => ({
     capabilityId,
-    availability: walletAvailability,
+    availability: walletInternalAvailability,
   })),
   changes: [{
     capabilityId: getCapabilityDefinitionSnapshot(walletConnectionCapability).capabilityId,
-    availability: walletAvailability,
+    availability: walletInternalAvailability,
   }],
 });
 
@@ -96,6 +96,7 @@ export const createWalletOwnerApplicationFactory = (
         operation: createdCoordinator.operation,
         confirmation: createdCoordinator.webConfirmation,
         presentation: createdCoordinator.operationPresentation,
+        currentProjection: createdCoordinator.currentOperationProjection,
       });
       let coordinatorClosed = false;
       let applicationClosed = false;

@@ -53,6 +53,7 @@ import {
   sortUniqueStrings,
   createPrimitiveSchemaSet,
   type ChainAnchor,
+  type SnakeCaseCode,
   type UtcTimestamp,
 } from "./primitives.js";
 
@@ -228,6 +229,7 @@ export interface CapabilitySuccess<Data> {
 interface InternalReadCapabilityDefinition<Input, Data> {
   readonly capabilityId: CapabilityId;
   readonly contractVersion: typeof coreContractVersion;
+  readonly failureCodes: readonly SnakeCaseCode[];
   readonly conclusionIds: readonly string[];
   readonly conclusionIdMatchers: readonly ((value: string) => boolean)[];
   expectedConclusionIds(input: Input, data: Data): readonly string[];
@@ -376,8 +378,10 @@ export interface CapabilityDefinitionSnapshot {
   readonly capabilityId: CapabilityId;
   readonly contractVersion: typeof coreContractVersion;
   readonly chain: typeof robinhoodChainIdentity;
+  readonly failureCodes: readonly SnakeCaseCode[];
   readonly inputSchema: CanonicalJson;
   readonly dataSchema: CanonicalJson;
+  readonly successSchema: CanonicalJson;
   readonly conclusionIds: readonly string[];
   readonly warningCodes: readonly Warning["code"][];
   readonly staticScopeExclusions: readonly StaticScopeExclusion[];
@@ -575,10 +579,18 @@ export const defineReadCapability = <Input, Data>(options: {
   readonly validateIntrinsicData?: InternalReadCapabilityDefinition<Input, Data>["validateIntrinsicData"];
   readonly validateDataContext?: InternalReadCapabilityDefinition<Input, Data>["validateDataContext"];
   readonly validateInvocation: InternalReadCapabilityDefinition<Input, Data>["validateInvocation"];
+  readonly failureCodes: readonly string[];
   readonly warningCodes: readonly Warning["code"][];
   readonly staticScopeExclusions: readonly StaticScopeExclusion[];
 }) => {
   const capabilityId = capabilityIdAuthoritySchema.parse(options.capabilityId);
+  const failureCodeInput = options.failureCodes.map((code) => binderPrimitiveSchemas.snakeCaseCode.parse(code));
+  const failureCodes = canonicalUnique(failureCodeInput) as readonly SnakeCaseCode[];
+  if (failureCodes.length !== failureCodeInput.length) throw new TypeError("Duplicate capability failure code.");
+  if (!failureCodes.includes("invalid_input" as SnakeCaseCode) ||
+    !failureCodes.includes("internal_error" as SnakeCaseCode)) {
+    throw new TypeError("Capability failure codes must include canonical boundary failures.");
+  }
   const conclusionIdInput = options.conclusionIds.map((id) => binderPrimitiveSchemas.fixedIdentifier.parse(id));
   const conclusionIds = canonicalUnique(conclusionIdInput);
   if (conclusionIds.length !== conclusionIdInput.length) throw new TypeError("Duplicate conclusion identity.");
@@ -617,6 +629,7 @@ export const defineReadCapability = <Input, Data>(options: {
   const successSchema = createSuccessSchema(capabilityId, options.dataSchema);
   const inputSchemaSnapshot = structuralSchemaSnapshot(options.inputSchema, "input");
   const dataSchemaSnapshot = structuralSchemaSnapshot(options.dataSchema, "output");
+  const successSchemaSnapshot = structuralSchemaSnapshot(successSchema, "output");
   const normalizeInput = options.normalizeInput ?? ((input: Input): Input => input);
   const structuralFailure = <Value>(path: readonly PropertyKey[]): z.ZodSafeParseResult<Value> => ({
     success: false,
@@ -661,8 +674,10 @@ export const defineReadCapability = <Input, Data>(options: {
     capabilityId,
     contractVersion: coreContractVersion,
     chain: robinhoodChainIdentity,
+    failureCodes,
     inputSchema: inputSchemaSnapshot,
     dataSchema: dataSchemaSnapshot,
+    successSchema: successSchemaSnapshot,
     conclusionIds,
     warningCodes,
     staticScopeExclusions: Object.freeze(staticScopeExclusions.map((entry) => Object.freeze(entry))),
@@ -670,6 +685,7 @@ export const defineReadCapability = <Input, Data>(options: {
   const internal: InternalDefinitionRecord<Input, Data> = Object.freeze({
     capabilityId,
     contractVersion: coreContractVersion,
+    failureCodes,
     conclusionIds,
     conclusionIdMatchers,
     expectedConclusionIds: options.expectedConclusionIds ?? (() => conclusionIds),
@@ -1094,8 +1110,13 @@ export const bindCapability = <
   Ports extends InvocationBoundaryPorts,
 >(options: BindingRecord<Definition, Ports>): CapabilityBinding<Definition> => {
   const record = captureBindingRecord(options);
-  definitionRecord(record.definition);
+  const definition = definitionRecord(record.definition);
   assertApplicationErrorRegistry(record.errorRegistry);
+  try {
+    for (const code of definition.failureCodes) record.errorRegistry.get(code);
+  } catch {
+    throw new TypeError("Capability error registry does not cover the declared failure codes.");
+  }
   assertCapabilityInvocationAuthority(record.invocationAuthority);
   const binding = Object.freeze({}) as CapabilityBinding<Definition>;
   bindingInternals.set(
@@ -1172,6 +1193,9 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
   if (result === null) return internalFailure(record.errorRegistry);
   if (result.status === "failure") {
     try {
+      if (!definition.failureCodes.includes(result.code as SnakeCaseCode)) {
+        return internalFailure(record.errorRegistry);
+      }
       if (result.issues.some((issue) => !issuePathBelongsToInput(issue.path, validatedInput))) {
         return internalFailure(record.errorRegistry);
       }

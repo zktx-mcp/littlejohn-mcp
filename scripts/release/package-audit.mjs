@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, relative, resolve, sep } from "node:path";
 
 import {
+  assertExactFileBytes,
   assertExactPaths,
   canonicalRelativePath,
   collectRegularFiles,
@@ -22,7 +23,6 @@ import {
   sha256,
 } from "./release-support.mjs";
 
-const runtimeIdentityRelativePath = "dist/generated/runtime-build-identity.json";
 const walletConnectLicenseRelativePath = "LICENSES/WALLETCONNECT-COMMUNITY-LICENSE.md";
 const walletConnectLicenseDigest =
   "1cb6f8cfe21f54ab1105105717eaa2ba08343037a2a9c41dfd5ab09e3ce270fc";
@@ -57,20 +57,6 @@ export const parseReleasePackageIdentity = (value) => {
   });
 };
 
-const runtimeIdentityProbe = `
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import { verifyRuntimeBuildIdentityFiles } from "./dist/build/runtime-file-set.js";
-const rootInput = process.env.LITTLEJOHN_RELEASE_PACKAGE_ROOT;
-if (typeof rootInput !== "string") throw new TypeError("Release package root is unavailable.");
-const root = resolve(rootInput);
-const dist = resolve(root, "dist");
-const identityPath = resolve(root, ${JSON.stringify(runtimeIdentityRelativePath)});
-const input = JSON.parse(await readFile(identityPath, "utf8"));
-const identity = await verifyRuntimeBuildIdentityFiles(input, root, dist, identityPath);
-process.stdout.write(JSON.stringify(identity));
-`;
-
 const isolatedNpmEnvironment = (base, inherited = process.env) => Object.freeze({
   ...inherited,
   HOME: resolve(base, "home"),
@@ -80,53 +66,36 @@ const isolatedNpmEnvironment = (base, inherited = process.env) => Object.freeze(
   npm_config_update_notifier: "false",
 });
 
-const verifyRuntimeIdentity = async (
-  packageRoot,
-  environment,
-  verifierRoot = packageRoot,
-) => {
-  const result = await runCommand(
-    process.execPath,
-    ["--input-type=module", "--eval", runtimeIdentityProbe],
-    {
-      cwd: verifierRoot,
-      env: {
-        ...environment,
-        LITTLEJOHN_RELEASE_PACKAGE_ROOT: packageRoot,
-      },
-      output: "capture",
-    },
-  );
-  let identity;
-  try { identity = JSON.parse(result.stdout.toString("utf8")); }
-  catch { throw new TypeError("Runtime build identity probe returned invalid JSON."); }
-  if (
-    typeof identity !== "object" ||
-    identity === null ||
-    Array.isArray(identity) ||
-    typeof identity.files !== "object" ||
-    identity.files === null ||
-    Array.isArray(identity.files)
-  ) throw new TypeError("Runtime build identity probe returned an invalid identity.");
-  return identity;
-};
-
-const expectedPackagePaths = (identity) => Object.freeze([
-  ...Object.keys(identity.files),
-  runtimeIdentityRelativePath,
-].sort());
-
 const assertPackagePathClasses = (paths) => {
   for (const path of paths) {
     if (
       path === "package.json" ||
-      path === "npm-shrinkwrap.json" ||
       path === "THIRD_PARTY_NOTICES.txt" ||
       path === walletConnectLicenseRelativePath ||
       path.startsWith("dist/")
     ) continue;
     throw new TypeError(`npm package contains a prohibited path: ${path}`);
   }
+};
+
+const expectedPackagePaths = async (sourceRoot) => {
+  const fixedPaths = [
+    "package.json",
+    "THIRD_PARTY_NOTICES.txt",
+    walletConnectLicenseRelativePath,
+  ];
+  const distPaths = (await collectRegularFiles(resolve(sourceRoot, "dist")))
+    .map((path) => canonicalRelativePath(`dist/${path}`));
+  if (distPaths.length === 0) throw new TypeError("Built package dist tree is empty.");
+  for (const path of fixedPaths) {
+    const details = await lstat(resolve(sourceRoot, path));
+    if (!details.isFile() || details.isSymbolicLink()) {
+      throw new TypeError(`Source package artifact must be a regular file: ${path}`);
+    }
+  }
+  const paths = Object.freeze([...fixedPaths, ...distPaths].sort());
+  assertPackagePathClasses(paths);
+  return paths;
 };
 
 const exactPackageDirectory = async (extractionRoot) => {
@@ -139,132 +108,6 @@ const exactPackageDirectory = async (extractionRoot) => {
     entries[0].isSymbolicLink()
   ) throw new TypeError("Extracted tarball must contain exactly one package directory.");
   return resolve(extractionRoot, "package");
-};
-
-const normalizeDependencyNode = (value, expectedName) => {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError("npm dependency graph is invalid.");
-  }
-  if (Object.keys(value).length === 0) return undefined;
-  const name = typeof value.name === "string" ? value.name : expectedName;
-  const version = value.version;
-  if (name !== expectedName || typeof version !== "string") {
-    throw new TypeError("npm dependency graph identity is invalid.");
-  }
-  const dependencies = value.dependencies;
-  const normalized = {};
-  if (dependencies !== undefined) {
-    if (typeof dependencies !== "object" || dependencies === null || Array.isArray(dependencies)) {
-      throw new TypeError("npm dependency graph children are invalid.");
-    }
-    for (const dependencyName of Object.keys(dependencies).sort()) {
-      const child = normalizeDependencyNode(
-        dependencies[dependencyName],
-        dependencyName,
-      );
-      if (child !== undefined) normalized[dependencyName] = child;
-    }
-  }
-  const peerDependenciesMeta = value.peerDependenciesMeta;
-  const optionalPeerDependencies = [];
-  if (peerDependenciesMeta !== undefined) {
-    if (
-      typeof peerDependenciesMeta !== "object" ||
-      peerDependenciesMeta === null ||
-      Array.isArray(peerDependenciesMeta)
-    ) throw new TypeError("npm dependency graph peer metadata is invalid.");
-    for (const dependencyName of Object.keys(peerDependenciesMeta).sort()) {
-      const metadata = peerDependenciesMeta[dependencyName];
-      if (
-        typeof metadata !== "object" ||
-        metadata === null ||
-        Array.isArray(metadata)
-      ) throw new TypeError("npm dependency graph peer metadata entry is invalid.");
-      if (metadata.optional === true) optionalPeerDependencies.push(dependencyName);
-    }
-  }
-  return Object.freeze({
-    name,
-    version,
-    dependencies: Object.freeze(normalized),
-    optionalPeerDependencies: Object.freeze(optionalPeerDependencies),
-  });
-};
-
-/** @type {typeof import("./package-audit.d.mts").dependencyGraphDifferences} */
-export const dependencyGraphDifferences = (
-  repository,
-  consumer,
-) => {
-  const differences = [];
-  const visit = (repositoryNode, consumerNode, path) => {
-    if (repositoryNode === undefined || consumerNode === undefined) {
-      differences.push(
-        `${path}: repository=${repositoryNode?.version ?? "absent"}, consumer=${consumerNode?.version ?? "absent"}`,
-      );
-      return;
-    }
-    if (
-      repositoryNode.name !== consumerNode.name ||
-      repositoryNode.version !== consumerNode.version
-    ) {
-      differences.push(
-        `${path}: repository=${repositoryNode.name}@${repositoryNode.version}, consumer=${consumerNode.name}@${consumerNode.version}`,
-      );
-    }
-    const dependencyNames = [...new Set([
-      ...Object.keys(repositoryNode.dependencies),
-      ...Object.keys(consumerNode.dependencies),
-    ])].sort();
-    for (const dependencyName of dependencyNames) {
-      const repositoryDependency = repositoryNode.dependencies[dependencyName];
-      const consumerDependency = consumerNode.dependencies[dependencyName];
-      if (
-        repositoryDependency !== undefined &&
-        consumerDependency === undefined &&
-        repositoryNode.optionalPeerDependencies.includes(dependencyName)
-      ) continue;
-      visit(
-        repositoryDependency,
-        consumerDependency,
-        `${path} > ${dependencyName}`,
-      );
-    }
-  };
-  visit(repository, consumer, repository.name);
-  return Object.freeze(differences);
-};
-
-const readDependencyGraph = async (
-  cwd,
-  environment,
-  packageName,
-  packageLockOnly = false,
-) => {
-  const result = await runCommand(
-    "npm",
-    [
-      "ls",
-      "--all",
-      "--long",
-      "--omit=dev",
-      ...(packageLockOnly ? ["--package-lock-only"] : []),
-      "--json",
-    ],
-    { cwd, env: environment, output: "capture" },
-  );
-  let value;
-  try { value = JSON.parse(result.stdout.toString("utf8")); }
-  catch { throw new TypeError("npm dependency graph output is invalid JSON."); }
-  if (value.name === packageName) {
-    const root = normalizeDependencyNode(value, packageName);
-    if (root === undefined) throw new TypeError("npm dependency graph root is unavailable.");
-    return root;
-  }
-  const dependency = value.dependencies?.[packageName];
-  const root = normalizeDependencyNode(dependency, packageName);
-  if (root === undefined) throw new TypeError("npm dependency graph package is unavailable.");
-  return root;
 };
 
 const assertDeclarationTargets = async (packageRoot, paths) => {
@@ -296,7 +139,6 @@ const assertDeclarationTargets = async (packageRoot, paths) => {
 const assertDistributionArtifacts = async (sourceRoot, packageRoot) => {
   for (const path of [
     "package.json",
-    "npm-shrinkwrap.json",
     "THIRD_PARTY_NOTICES.txt",
     walletConnectLicenseRelativePath,
   ]) {
@@ -362,22 +204,11 @@ export const prepareReleasePackage = async (repositoryRoot) => {
     await copyRepositorySource(repositoryRoot, sourceRoot);
     const sourceManifest = await readJsonFile(resolve(sourceRoot, "package.json"));
     const packageIdentity = parseReleasePackageIdentity(sourceManifest);
-    const sourceDependencies =
-      typeof sourceManifest === "object" &&
-      sourceManifest !== null &&
-      !Array.isArray(sourceManifest)
-        ? Object.getOwnPropertyDescriptor(sourceManifest, "dependencies")?.value
-        : undefined;
-    if (
-      typeof sourceDependencies !== "object" ||
-      sourceDependencies === null ||
-      Array.isArray(sourceDependencies)
-    ) throw new TypeError("Source dependency manifest is invalid.");
-    const shrinkwrapBefore = await readFile(resolve(sourceRoot, "npm-shrinkwrap.json"));
+    const lockBefore = await readFile(resolve(sourceRoot, "package-lock.json"));
     await runCommand("npm", ["ci"], { cwd: sourceRoot, env: environment });
-    const shrinkwrapAfter = await readFile(resolve(sourceRoot, "npm-shrinkwrap.json"));
-    if (!shrinkwrapBefore.equals(shrinkwrapAfter)) {
-      throw new TypeError("npm ci changed the repository shrinkwrap.");
+    const lockAfter = await readFile(resolve(sourceRoot, "package-lock.json"));
+    if (!lockBefore.equals(lockAfter)) {
+      throw new TypeError("npm ci changed the repository dependency lock.");
     }
     await runCommand(process.execPath, [
       resolve(sourceRoot, "node_modules/typescript/bin/tsc"),
@@ -388,7 +219,7 @@ export const prepareReleasePackage = async (repositoryRoot) => {
     await runCommand("npm", ["test"], { cwd: sourceRoot, env: environment });
     await runCommand("npm", ["run", "build"], { cwd: sourceRoot, env: environment });
 
-    const sourceIdentity = await verifyRuntimeIdentity(sourceRoot, environment);
+    const expectedPaths = await expectedPackagePaths(sourceRoot);
     const packResult = parsePackOutput((await runCommand("npm", [
       "pack",
       "--json",
@@ -401,7 +232,6 @@ export const prepareReleasePackage = async (repositoryRoot) => {
     if (!tarballDetails.isFile() || tarballDetails.isSymbolicLink() || tarballDetails.size === 0) {
       throw new TypeError("npm pack did not create a regular tarball.");
     }
-    const expectedPaths = expectedPackagePaths(sourceIdentity);
     assertPackagePathClasses(packResult.paths);
     assertExactPaths(packResult.paths, expectedPaths, "npm pack");
 
@@ -409,7 +239,7 @@ export const prepareReleasePackage = async (repositoryRoot) => {
     const extractedPackageRoot = await exactPackageDirectory(extractionRoot);
     const extractedPaths = await collectRegularFiles(extractedPackageRoot);
     assertExactPaths(extractedPaths, expectedPaths, "extracted package");
-    await verifyRuntimeIdentity(extractedPackageRoot, environment, sourceRoot);
+    await assertExactFileBytes(sourceRoot, extractedPackageRoot, expectedPaths, "extracted package");
     await assertDistributionArtifacts(sourceRoot, extractedPackageRoot);
     await assertDeclarationTargets(extractedPackageRoot, extractedPaths);
 
@@ -426,20 +256,11 @@ export const prepareReleasePackage = async (repositoryRoot) => {
       tarballPath,
     ], { cwd: installRoot, env: environment });
     const installedPackageRoot = resolve(installRoot, packageIdentity.installRelativePath);
-    await verifyRuntimeIdentity(installedPackageRoot, environment);
+    const installedPaths = await collectRegularFiles(installedPackageRoot);
+    assertExactPaths(installedPaths, expectedPaths, "installed package");
+    await assertExactFileBytes(sourceRoot, installedPackageRoot, expectedPaths, "installed package");
     await assertDistributionArtifacts(sourceRoot, installedPackageRoot);
     await assertInstalledBinary(installRoot, installedPackageRoot);
-
-    const [sourceGraph, installedGraph] = await Promise.all([
-      readDependencyGraph(sourceRoot, environment, packageIdentity.name, true),
-      readDependencyGraph(installRoot, environment, packageIdentity.name),
-    ]);
-    const dependencyDifferences = dependencyGraphDifferences(sourceGraph, installedGraph);
-    if (dependencyDifferences.length > 0) {
-      throw new TypeError(
-        `Installed runtime dependency graph differs from the repository shrinkwrap:\n${dependencyDifferences.join("\n")}`,
-      );
-    }
 
     if ((await readdir(npxRoot)).length !== 0) {
       throw new TypeError("Local tarball npx smoke must start from an empty directory.");

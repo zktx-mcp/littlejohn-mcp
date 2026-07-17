@@ -7,16 +7,12 @@ import {
 import { extendWalletSupportManifest } from "../../src/wallet/application.js";
 
 describe("wallet Current Support projection", () => {
-  it("projects the complete wallet-scoped support state without owning the later public projection", async () => {
+  it("keeps wallet capabilities internal until the interface-owned final projection", async () => {
     const manifest = extendWalletSupportManifest(initialRuntimeSupportManifest);
     const section = renderCurrentSupportSection(manifest);
-    expect(section).toContain("`wallet.connection`");
+    expect(section).toContain("Implemented wallet support: none.");
+    expect(section).toContain("Available user-facing capabilities: none.");
     expect(section).not.toContain("`chain.status`");
-    expect(section).toContain(
-      "Implemented wallet support: `wallet.cancel_operation` (CLI); `wallet.connect` (CLI); " +
-        "`wallet.connection` (CLI); `wallet.disconnect` (CLI); `wallet.operation` (CLI).",
-    );
-    expect(section).not.toContain("MCP");
-    expect(section).not.toContain("web");
+    expect(section).not.toContain("`wallet.connection`");
   });
 });

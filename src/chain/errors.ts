@@ -12,12 +12,6 @@ const chainDefinitions = [
     retryable: false,
   },
   {
-    code: "unsupported_capability",
-    category: "domain",
-    message: "The requested capability is not supported.",
-    retryable: false,
-  },
-  {
     code: "source_unavailable",
     category: "source",
     message: "A required data source is unavailable.",
@@ -43,12 +37,6 @@ export const chainErrorRegistry = walletErrorRegistry.extend(chainDefinitions);
 
 export const chainInterfaceErrorMappings = walletInterfaceErrorMappings.extend(chainErrorRegistry, [
   { code: "not_found", httpStatus: 404, problemTitle: "Data not found", cliExitCode: 3 },
-  {
-    code: "unsupported_capability",
-    httpStatus: 422,
-    problemTitle: "Unsupported capability",
-    cliExitCode: 3,
-  },
   {
     code: "source_unavailable",
     httpStatus: 503,

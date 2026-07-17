@@ -1,149 +1,239 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
-  browserOperationResourcePath,
+  browserCsrfTokenByteLength,
+  browserWalletApiRoot,
 } from "../../src/interfaces/browser-contract.js";
 import {
-  browserOperationCookieName,
+  browserSessionCookieName,
+  browserSessionLifetimeSeconds,
   createBrowserRequestCredentialAuthority,
 } from "../../src/interfaces/browser-credentials.js";
 import type { RequestAuthenticationInput } from "../../src/runtime/index.js";
 
+const issuedAt = Date.parse("2026-07-15T02:00:00.000Z");
 const operationId = Buffer.alloc(32, 7).toString("base64url");
 const foreignOperationId = Buffer.alloc(32, 8).toString("base64url");
-const expiry = "2026-07-15T03:00:00.000Z";
-const issuedAt = Date.parse("2026-07-15T02:00:00.000Z");
 
 const cookiePair = (setCookie: string): string => setCookie.split(";", 1)[0] as string;
 
 const authenticationInput = (
-  id: string,
   cookie: string,
   csrfToken: readonly string[] = [],
+  params: Readonly<Record<string, string>> = Object.freeze({}),
 ): RequestAuthenticationInput => Object.freeze({
   authorization: Object.freeze([]),
   cookie: Object.freeze([cookie]),
   csrfToken: Object.freeze([...csrfToken]),
-  params: Object.freeze({ operationId: id }),
+  params,
 });
 
-describe("browser operation credential authority", () => {
-  it("binds independent credentials and CSRF tokens to one operation and exact expiry", () => {
+const verifier = (
+  authority: ReturnType<typeof createBrowserRequestCredentialAuthority>,
+  authentication: "browser_session" | "browser_session_csrf",
+) => authority.requestPolicyExtension.authenticationVerifiers
+  .find((entry) => entry.authentication === authentication)?.verify;
+
+const tamperBase64Url = (value: string): string => {
+  const bytes = Buffer.from(value, "base64url");
+  bytes[bytes.length - 1] = (bytes[bytes.length - 1] as number) ^ 1;
+  return bytes.toString("base64url");
+};
+
+describe("browser session credential authority", () => {
+  it("issues one-hour session authority independently from operation identity", () => {
     let entropy = 0;
     const authority = createBrowserRequestCredentialAuthority({
       now: () => issuedAt,
       randomBytes: (size) => Buffer.alloc(size, ++entropy),
     });
-    const issue = authority.issue(operationId, expiry, "interactive");
+    const issue = authority.issue();
     const cookie = cookiePair(issue.setCookie);
-    const readVerifier = authority.requestPolicyExtension.authenticationVerifiers
-      .find((entry) => entry.authentication === "browser_request")?.verify;
-    const controlVerifier = authority.requestPolicyExtension.authenticationVerifiers
-      .find((entry) => entry.authentication === "browser_request_csrf")?.verify;
+    const cookieValue = cookie.split("=")[1] as string;
+    const readVerifier = verifier(authority, "browser_session");
+    const controlVerifier = verifier(authority, "browser_session_csrf");
 
     expect(readVerifier).toBeTypeOf("function");
     expect(controlVerifier).toBeTypeOf("function");
-    expect(issue.csrfToken).not.toBe(cookie.split("=")[1]);
+    expect(browserSessionLifetimeSeconds).toBe(3_600);
     expect(issue.setCookie).toBe(
-      `${browserOperationCookieName}=${cookie.split("=")[1]}; ` +
-      `Path=${browserOperationResourcePath(operationId)}; HttpOnly; SameSite=Strict; Max-Age=3600`,
+      `${browserSessionCookieName}=${cookieValue}; ` +
+      `Path=${browserWalletApiRoot}; HttpOnly; SameSite=Strict; ` +
+      `Max-Age=${browserSessionLifetimeSeconds}`,
     );
     expect(issue.setCookie).not.toContain("Domain=");
     expect(issue.setCookie).not.toContain("Secure");
-    expect(readVerifier?.(authenticationInput(operationId, cookie))).toBe(true);
-    expect(controlVerifier?.(authenticationInput(operationId, cookie, [issue.csrfToken]))).toBe(true);
-    expect(readVerifier?.(authenticationInput(foreignOperationId, cookie))).toBe(false);
-    expect(controlVerifier?.(authenticationInput(operationId, cookie, []))).toBe(false);
-    expect(controlVerifier?.(authenticationInput(operationId, cookie, [Buffer.alloc(32, 9).toString("base64url")]))).toBe(false);
+    expect(cookieValue).toMatch(/^[A-Za-z0-9_-]+$/u);
+    expect(issue.csrfToken).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    expect(Buffer.from(issue.csrfToken, "base64url")).toHaveLength(browserCsrfTokenByteLength);
+    const credentialBytes = Buffer.from(cookieValue, "base64url");
+    const cookieMac = credentialBytes.subarray(
+      credentialBytes.byteLength - browserCsrfTokenByteLength,
+    );
+    expect(cookieMac.equals(Buffer.from(issue.csrfToken, "base64url"))).toBe(false);
+
+    expect(readVerifier?.(authenticationInput(
+      cookie,
+      [],
+      Object.freeze({ operationId }),
+    ))).toBe(true);
+    expect(readVerifier?.(authenticationInput(
+      cookie,
+      [],
+      Object.freeze({ operationId: foreignOperationId }),
+    ))).toBe(true);
+    expect(readVerifier?.(authenticationInput(cookie))).toBe(true);
+    expect(controlVerifier?.(authenticationInput(
+      cookie,
+      [issue.csrfToken],
+      Object.freeze({ operationId }),
+    ))).toBe(true);
+
+    expect(readVerifier?.(authenticationInput(cookie, [issue.csrfToken]))).toBe(false);
+    expect(controlVerifier?.(authenticationInput(cookie))).toBe(false);
+    expect(controlVerifier?.(authenticationInput(
+      cookie,
+      [Buffer.alloc(browserCsrfTokenByteLength, 9).toString("base64url")],
+    ))).toBe(false);
     expect(controlVerifier?.({
-      ...authenticationInput(operationId, cookie, [issue.csrfToken]),
+      ...authenticationInput(cookie, [issue.csrfToken]),
       authorization: ["Bearer forbidden"],
     })).toBe(false);
+
+    authority.close();
   });
 
-  it("invalidates a replaced credential, rejects malformed cookies, expires records, and closes cleanly", () => {
+  it("reuses one cookie and CSRF pair across bootstrap requests", () => {
     let now = issuedAt;
     let entropy = 10;
     const authority = createBrowserRequestCredentialAuthority({
       now: () => now,
       randomBytes: (size) => Buffer.alloc(size, ++entropy),
     });
-    const first = authority.issue(operationId, expiry, "interactive");
+    const first = authority.issue();
+    const second = authority.issue();
     const firstCookie = cookiePair(first.setCookie);
-    const second = authority.issue(operationId, expiry, "interactive");
     const secondCookie = cookiePair(second.setCookie);
-    const readVerifier = authority.requestPolicyExtension.authenticationVerifiers
-      .find((entry) => entry.authentication === "browser_request")?.verify;
+    const readVerifier = verifier(authority, "browser_session");
+    const controlVerifier = verifier(authority, "browser_session_csrf");
 
-    expect(readVerifier?.(authenticationInput(operationId, firstCookie))).toBe(false);
-    expect(readVerifier?.(authenticationInput(operationId, secondCookie))).toBe(true);
-    expect(readVerifier?.({
-      ...authenticationInput(operationId, secondCookie),
-      cookie: [`${secondCookie}; ${browserOperationCookieName}=duplicate`],
-    })).toBe(false);
-    expect(readVerifier?.({
-      ...authenticationInput(operationId, secondCookie),
-      params: Object.freeze({ operationId, extra: "forbidden" }),
-    })).toBe(false);
+    expect(firstCookie).toBe(secondCookie);
+    expect(first.csrfToken).toBe(second.csrfToken);
+    expect(readVerifier?.(authenticationInput(firstCookie))).toBe(true);
+    expect(readVerifier?.(authenticationInput(secondCookie))).toBe(true);
+    expect(controlVerifier?.(authenticationInput(firstCookie, [first.csrfToken]))).toBe(true);
+    expect(controlVerifier?.(authenticationInput(secondCookie, [second.csrfToken]))).toBe(true);
 
-    now = Date.parse(expiry);
-    expect(readVerifier?.(authenticationInput(operationId, secondCookie))).toBe(false);
-    expect(() => authority.issue(operationId, expiry, "interactive"))
-      .toThrow("Browser credential expiry is invalid.");
+    now += 1_500;
+    const later = authority.issue();
+    expect(cookiePair(later.setCookie)).toBe(firstCookie);
+    expect(later.csrfToken).toBe(first.csrfToken);
+    expect(later.setCookie).toContain("Max-Age=3599");
 
-    authority.close();
-    authority.close();
-    expect(readVerifier?.(authenticationInput(operationId, secondCookie))).toBe(false);
-    expect(() => authority.issue(operationId, "2026-07-15T04:00:00.000Z", "interactive"))
-      .toThrow("Browser credential authority is closed.");
-  });
+    const firstValue = firstCookie.split("=")[1] as string;
+    expect(readVerifier?.(authenticationInput(
+      `${browserSessionCookieName}=${tamperBase64Url(firstValue)}`,
+    ))).toBe(false);
+    expect(controlVerifier?.(authenticationInput(
+      firstCookie,
+      [tamperBase64Url(first.csrfToken)],
+    ))).toBe(false);
+    expect(readVerifier?.(authenticationInput(
+      `${firstCookie}; ${browserSessionCookieName}=duplicate`,
+    ))).toBe(false);
 
-  it("allows a read-only presentation to read but never to use browser control", () => {
-    let entropy = 13;
-    const authority = createBrowserRequestCredentialAuthority({
+    const otherAuthority = createBrowserRequestCredentialAuthority({
       now: () => issuedAt,
-      randomBytes: (size) => Buffer.alloc(size, entropy++),
+      randomBytes: (size) => Buffer.alloc(size, 99),
     });
-    const issue = authority.issue(operationId, expiry, "read_only");
-    const cookie = cookiePair(issue.setCookie);
-    const readVerifier = authority.requestPolicyExtension.authenticationVerifiers
-      .find((entry) => entry.authentication === "browser_request")?.verify;
-    const controlVerifier = authority.requestPolicyExtension.authenticationVerifiers
-      .find((entry) => entry.authentication === "browser_request_csrf")?.verify;
+    expect(verifier(otherAuthority, "browser_session")?.(
+      authenticationInput(firstCookie),
+    )).toBe(false);
 
-    expect(readVerifier?.(authenticationInput(operationId, cookie))).toBe(true);
-    expect(controlVerifier?.(authenticationInput(operationId, cookie, [issue.csrfToken]))).toBe(false);
+    otherAuthority.close();
+    authority.close();
   });
 
-  it("sweeps and zeroes unrelated expired records before issuing another credential", () => {
+  it("rotates at the encoded deadline and fails closed for clock rollback", () => {
     let now = issuedAt;
     let entropy = 20;
     const authority = createBrowserRequestCredentialAuthority({
       now: () => now,
-      randomBytes: (size) => Buffer.from(
-        Uint8Array.from({ length: size }, () => ++entropy % 255),
-      ),
+      randomBytes: (size) => Buffer.alloc(size, ++entropy),
     });
-    authority.issue(operationId, expiry, "interactive");
+    const issue = authority.issue();
+    const cookie = cookiePair(issue.setCookie);
+    const readVerifier = verifier(authority, "browser_session");
 
-    now = Date.parse(expiry);
-    const fill = vi.spyOn(Buffer.prototype, "fill");
-    authority.issue(foreignOperationId, "2026-07-15T04:00:00.000Z", "interactive");
+    now = issuedAt + browserSessionLifetimeSeconds * 1_000 - 1;
+    expect(readVerifier?.(authenticationInput(cookie))).toBe(true);
+    now = issuedAt + browserSessionLifetimeSeconds * 1_000;
+    expect(readVerifier?.(authenticationInput(cookie))).toBe(false);
+    const rotated = authority.issue();
+    const rotatedCookie = cookiePair(rotated.setCookie);
+    expect(rotatedCookie).not.toBe(cookie);
+    expect(rotated.csrfToken).not.toBe(issue.csrfToken);
+    expect(readVerifier?.(authenticationInput(rotatedCookie))).toBe(true);
+    expect(readVerifier?.(authenticationInput(cookie))).toBe(false);
+    now = issuedAt - 1_000;
+    expect(readVerifier?.(authenticationInput(rotatedCookie))).toBe(false);
+    expect(() => authority.issue()).toThrow("Browser session clock is invalid.");
 
-    expect(fill.mock.calls).toEqual([[0], [0]]);
-    fill.mockRestore();
     authority.close();
   });
 
-  it("rejects presentation access outside the wallet operation contract", () => {
+  it("zeroes its secret on close and rejects every later issue or verification", () => {
+    let secret: Buffer | undefined;
+    let calls = 0;
     const authority = createBrowserRequestCredentialAuthority({
       now: () => issuedAt,
-      randomBytes: (size) => Buffer.alloc(size, 13),
+      randomBytes: (size) => {
+        const value = Buffer.alloc(size, ++calls);
+        if (calls === 1) secret = value;
+        return value;
+      },
     });
-    expect(() => authority.issue(operationId, expiry, "owner" as never)).toThrow();
+    const issue = authority.issue();
+    const cookie = cookiePair(issue.setCookie);
+    const readVerifier = verifier(authority, "browser_session");
+
+    expect(secret).toBeDefined();
+    expect(readVerifier?.(authenticationInput(cookie))).toBe(true);
+    authority.close();
+    authority.close();
+
+    expect([...secret as Buffer].every((value) => value === 0)).toBe(true);
+    expect(readVerifier?.(authenticationInput(cookie))).toBe(false);
+    expect(() => authority.issue()).toThrow("Browser credential authority is closed.");
   });
 
-  it("declares only the three browser request classes with their distinct authorities", () => {
+  it("rejects invalid entropy and issue-time clocks", () => {
+    expect(() => createBrowserRequestCredentialAuthority({
+      randomBytes: () => Buffer.alloc(31),
+    })).toThrow("Browser credential entropy source is invalid.");
+
+    const invalidNonceAuthority = createBrowserRequestCredentialAuthority({
+      now: () => issuedAt,
+      randomBytes: (() => {
+        let call = 0;
+        return (size: number) => Buffer.alloc(call++ === 0 ? size : size - 1);
+      })(),
+    });
+    expect(() => invalidNonceAuthority.issue())
+      .toThrow("Browser credential entropy source is invalid.");
+    invalidNonceAuthority.close();
+
+    for (const invalidNow of [Number.NaN, -1]) {
+      const authority = createBrowserRequestCredentialAuthority({
+        now: () => invalidNow,
+        randomBytes: (size) => Buffer.alloc(size, 1),
+      });
+      expect(() => authority.issue()).toThrow("Browser session clock is invalid.");
+      authority.close();
+    }
+  });
+
+  it("declares only the three browser request classes with separate session and CSRF authority", () => {
     const authority = createBrowserRequestCredentialAuthority({
       now: () => issuedAt,
       randomBytes: (size) => Buffer.alloc(size, 12),
@@ -162,7 +252,7 @@ describe("browser operation credential authority", () => {
         requestClass: "browser_read",
         host: "fixed",
         origin: "absent_or_fixed",
-        authentication: "browser_request",
+        authentication: "browser_session",
         body: "none",
         responseLimitBytes: 8 * 1024 * 1024,
         mutation: "none",
@@ -171,11 +261,12 @@ describe("browser operation credential authority", () => {
         requestClass: "browser_control",
         host: "fixed",
         origin: "fixed",
-        authentication: "browser_request_csrf",
+        authentication: "browser_session_csrf",
         body: "route_json",
         responseLimitBytes: 64 * 1024,
         mutation: "declared_control",
       },
     ]);
+    authority.close();
   });
 });

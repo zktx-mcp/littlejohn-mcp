@@ -3,8 +3,8 @@
 ## Current State
 
 Little John has a Node.js `>=22.12.0` ESM TypeScript package, canonical core
-contracts, five semantic read-capability definitions, generated JSON Schema and
-descriptor projections, deterministic runtime build identity, owner-only POSIX
+contracts, five semantic read-capability definitions, registry-derived JSON
+Schema and descriptor projections, owner-only POSIX
 application-data permissions, SQLite product state, local control credentials,
 secret-safe source identity, a runtime support manifest, and one authenticated
 fixed-port HTTP owner with compatible peer deferral and demand-driven takeover.
@@ -12,7 +12,7 @@ The owner identity resource is `GET /api/v1/runtime-identity`; authenticated
 process control is confined to `/api/v1/internal/control/*`. SQLite row adapters
 alias SQL snake-case names to lower-camel TypeScript fields. Immutable
 request-policy, resource-path, route, support-manifest, and interface-mapping
-registries accept only complete first-consumer extensions. Route responses are
+registries accept only complete declared extensions. Route responses are
 either canonical JSON or bounded browser text with fixed CSP, content-type,
 opener, referrer, and no-store headers; no route can supply arbitrary response
 headers.
@@ -36,54 +36,79 @@ checks chain ID `4663`; pins dependent state reads to one observed canonical
 block hash using [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898); preserves
 integers as base-10 strings; validates transaction, receipt, log, and block
 identity; preserves the signed access-list sequence and multiplicity; and
-records source-scoped evidence. ERC-20 `balanceOf(address)` and `decimals()`
-calls use locally encoded calldata whose complete bytes are independently
-checked before the RPC request. Explicit account reads do not consume wallet
-state. Only `account.balance` with `active_wallet` captures the current validated
+records source-scoped evidence. The chain boundary uses viem for EVM Keccak and
+ERC-20 ABI encoding and decoding, then applies exact word, topic, padding,
+length, and range checks. Core independently verifies code hashes with
+`@noble/hashes` and reconstructs claimed ERC-20 event words instead of reusing
+the chain decoder. Explicit account reads do not consume wallet state. Only
+`account.balance` with `active_wallet` captures the current validated
 WalletConnect account.
 
 The interactive CLI implements `wallet status`, `wallet connect`, `wallet
-disconnect`, `wallet operation`, and `wallet cancel`, plus `read chain-status`,
-`read contract`, `read transaction`, and `read balance`, under
-[`CLI Surface`](#cli-surface). Read commands expose the canonical result as
+disconnect`, `wallet operation`, and `wallet cancel`, plus
+`read chain-status`, `read contract`, `read transaction`, and `read balance`,
+under [`CLI Surface`](#cli-surface). Read commands expose the canonical result as
 human-readable text or exact JSON without recomputing domain meaning.
 `littlejohn --help` projects the same command identities consumed by the CLI
 parsers and does not start the runtime.
 
 Public loopback resources expose the four chain reads, the wallet connection
-projection, and the generated capability catalog. A no-argument `littlejohn`
+projection, and the registry-derived capability catalog. A no-argument `littlejohn`
 process runs one stdio MCP connection while sharing or taking over the same
 fixed-port owner. Its ten convention-validated tools expose the five read
-capabilities, the catalog, and four wallet-operation projections. MCP wallet
-tools can start, read, or cancel an operation and return a fixed local
-management URL. They never confirm an operation or receive QR, pairing, topic,
+capabilities, the catalog, and four wallet-management bindings. MCP wallet tools
+can start connection or disconnection; read or cancel one exact operation; and
+return the fixed root URL for browser display. They never confirm an operation
+or receive QR, pairing, topic, browser request cookie, CSRF token, local control
 credential, signing, or transaction material.
 
-The fixed-origin React page consumes the coordinator's operation presentation
-through operation-scoped browser credentials. Its compiled content-hashed
-assets contain no inline executable or style content. The browser build accepts
-only its closed first-party contract set and pinned browser runtime packages; its
-first-party source uses a closed set of browser globals and intrinsic elements.
-The fixed CSP remains the runtime boundary for dynamic code execution,
-connections, resources, frames, and forms. The source policy rejects top-level
-navigation and permits only the reviewed browser globals and elements without
-rejecting inert diagnostic or XML namespace text. The bootstrap issues an
-`HttpOnly`, `SameSite=Strict` cookie scoped to the exact operation API path and
-an independent CSRF token; Host, Origin, operation identity, expiry, cookie,
-and CSRF checks precede browser control. The page has no product navigation and
-cannot start an operation. An `interactive` presentation can confirm or cancel
-only the operation in its path. A `read_only` presentation displays that
-operation and cannot confirm or cancel it. Both presentations display the
-canonical operation, optional QR matrix, result, and resulting wallet
-connection. Browser response envelopes delegate operation, connection, failure,
-and QR validation to the same browser-safe canonical contract consumed by the
-server. A monotonic request authority prevents an older poll or a duplicate
-control action from replacing a newer operation view.
+The fixed-origin React surface serves one root application shell with a global
+wallet dialog. The product identity remains at the left of the navigation bar
+and the wallet control remains at the right. The dialog consumes the root
+composite projection defined under [`Browser Surfaces`](#browser-surfaces) and
+presents the current QR matrix when its operation owns pairing material. It
+starts an operation only after a direct user action. Connect returns the current
+valid connection without
+creating an operation when the profile is already connected. Changing wallets
+requires completing Disconnect before starting Connect. After discovering or
+starting an operation, the browser reads that exact retained operation until it
+reaches a terminal state.
+Nonterminal work remains in the dialog. On terminal observation, the dialog
+returns to the ordinary root state and presents the exact outcome once as a
+transient non-modal notification.
 
-The interface layer projects the completed wallet and chain ports into
-HTTP, MCP, CLI, and the React wallet-operation page. The runtime support
-manifest remains the machine authority for binding availability, and its
-public projection is
+The root bootstrap issues an `HttpOnly`, `SameSite=Strict` browser-session
+cookie scoped to `/api/v1/wallet` and an independent CSRF token.
+Neither credential contains an operation identifier or enters a URL or browser
+storage. Host, Origin, credential, CSRF, operation identity, connection
+revision, and expiry checks precede browser control. The browser uses exactly
+these wallet-operation resources:
+
+- `POST /api/v1/wallet/operations`;
+- `GET /api/v1/wallet/current-operation`;
+- `GET /api/v1/wallet/operations/{operationId}`;
+- `POST /api/v1/wallet/operations/{operationId}/confirmation`; and
+- `POST /api/v1/wallet/operations/{operationId}/cancellation`.
+
+There is no human wallet-path namespace, separate QR resource, or browser
+`DELETE` cancellation route. The compiled content-hashed
+assets contain no inline executable or style content. The browser build accepts
+only its closed first-party contract set and pinned browser runtime packages;
+its first-party source uses a closed set of browser globals and intrinsic
+elements. The fixed CSP remains the runtime boundary for dynamic code
+execution, connections, resources, frames, and forms. A monotonic request
+authority prevents an older poll or duplicate control action from replacing a
+newer wallet dialog view.
+
+The wallet module owns one canonical management-contract registry containing
+each identifier, version, input schema, success schema, failure-code set, and
+state meaning. One canonical interface-binding catalog maps those contracts to
+MCP, loopback HTTP, CLI, and web bindings. Transport adapters and the runtime
+support manifest derive from these sources rather than maintaining parallel
+tool, schema, route, or availability lists. The interface layer projects the
+completed wallet and chain ports into HTTP, MCP, CLI, and the React root dialog.
+The runtime support manifest remains the machine authority for binding
+availability, and its public projection is
 `docs/PRODUCT_POLICY.md#current-support`. No signature request, transaction
 construction, broadcast, receipt verification, or protocol adapter is
 implemented.
@@ -100,8 +125,7 @@ authority are owned by `docs/TRANSACTION_POLICY.md`.
 
 The complete product runtime is a modular monolith with MCP over stdio, local
 HTTP and React over loopback, an interactive CLI, local SQLite product state,
-and the WalletConnect session boundary defined here. A task may implement a
-dependency-complete subset of this architecture. An absent surface remains
+and the WalletConnect session boundary defined here. An absent surface remains
 unavailable and is not replaced by a different process, store, transport, or
 authority model.
 
@@ -156,6 +180,9 @@ transaction material, WalletConnect state, or private settings.
   module imports a core leaf directly.
 - Concrete SDK, database, HTTP, and adapter implementations enter through
   `runtime` composition.
+- `package-lock.json` fixes repository clean installs only. It is not packaged,
+  does not define consumer dependency resolution, and does not participate in
+  process compatibility.
 - React consumes server-created read models and never calls chain RPC, quote
   providers, protocol SDKs, or protocol adapters directly.
 - React and CLI never initialize WalletConnect or own WalletConnect sessions.
@@ -166,6 +193,35 @@ transaction material, WalletConnect state, or private settings.
 - Short-lived wallet request material remains separate from durable evidence
   and receipts.
 - Cached and collected data never replaces execution-time chain verification.
+
+## Interface Contract Model
+
+- Canonical semantic contract ownership and projection follow
+  `../AGENTS.md#interface-contract-policy`. This section owns only Little John's
+  runtime binding, registry, transport, path, and correlation architecture.
+- MCP uses the protocol's
+  [JSON-RPC tool surface](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
+  through the official SDK. Little John does not define a second agent JSON-RPC
+  protocol or duplicate MCP tool catalog.
+- The browser is not an MCP client. It uses same-origin HTTP resources that
+  consume the same canonical contracts while retaining browser-specific Host,
+  Origin, cookie, CSRF, content, and presentation boundaries.
+- Compatible-process control resources are private owner IPC consumed by MCP and
+  CLI adapters. They are not agent-facing URLs and do not redefine the MCP
+  contract.
+- One canonical binding catalog maps each canonical contract to its declared
+  MCP, HTTP, CLI, and web bindings and availability. Role-specific registries
+  own their exact names, paths, security classes, parsing, and presentation
+  contracts while consuming that catalog. Tool-name sets, route coverage, CLI
+  help, and support projections derive from the catalog and their owning
+  registries rather than parallel lists.
+- Page paths are owned separately from browser API and compatible-process
+  control paths. A page path identifies human navigation; an API path identifies
+  a backend resource; an MCP tool name identifies an agent operation.
+- Each invocation may carry a transient local request identifier for diagnostic
+  correlation. An asynchronous operation uses its canonical operation identifier
+  for lifecycle tracking. Neither identifier grants user, wallet, or transaction
+  authority.
 
 ## Local Process Model
 
@@ -235,7 +291,9 @@ to contain a malicious process already running with the same user authority.
 
 - The local control credential contains 256 random bits, is encoded as
   unpadded base64url, and remains stable across compatible owner takeover.
-- The runtime protocol version is `1`. Profile ID and owner instance ID each
+- The runtime protocol version is `1`. It identifies the compatible local-owner
+  wire contract and current database schema; an incompatible change replaces
+  this value. Profile ID and owner instance ID each
   contain 128 random bits encoded as unpadded base64url. Owner revision is an
   unsigned base-10 integer string.
 - A process first attempts to bind `127.0.0.1:46630`.
@@ -246,14 +304,13 @@ to contain a malicious process already running with the same user authority.
   `Littlejohn-Identity-Challenge` header of
   `GET /api/v1/runtime-identity`.
 - The owner returns the strict fields `profileId`, `ownerInstanceId`,
-  `runtimeProtocolVersion`, `runtimeBuildDigest`, echoed `challenge`,
+  `runtimeProtocolVersion`, echoed `challenge`,
   `ownerRevision`, and `proof`. The proof is HMAC-SHA-256 over the version-1
   length-prefixed UTF-8 encoding of those preceding fields in that order using
   the local control credential. Each length prefix is the unsigned 32-bit
   big-endian byte length of the following UTF-8 field.
-- The peer verifies the challenge, proof, profile ID, protocol version, and exact
-  runtime build digest before deferring ownership or sending any authenticated
-  control request.
+- The peer verifies the challenge, proof, profile ID, and protocol version
+  before deferring ownership or sending any authenticated control request.
 - A credential-bearing owner operation is assigned only to the exact socket
   that completed identity verification. A replacement socket receives no
   credential until it completes a new identity verification.
@@ -284,6 +341,10 @@ to contain a malicious process already running with the same user authority.
 - Browser cookies, local storage, and session storage are host-local UI state.
 - Browser storage never contains wallet secrets, signing material, transaction
   authority, or the authoritative cross-host state.
+- The root browser tab retains only the validated identifier of the operation it
+  is observing in session storage. This non-authorizing cursor survives browser
+  credential reload, selects the exact retained operation resource, and is
+  removed when terminal observation or canonical retention expiry completes.
 - Store and wallet-coordinator transitions own lifecycle rules. MCP, HTTP,
   React, and CLI map those transitions and do not reimplement them.
 - One wallet coordinator owns the WalletConnect Sign Client, relay connection,
@@ -327,11 +388,18 @@ may create or reconstruct it from the WAL after a crash; Little John never uses
 its presence or bytes as product-state evidence.
 
 Fresh-database publication staging is never product state or a recovery input.
-The runtime validates and leases the final database before removing exact
-owner-only staging artifacts. An unsafe artifact in the reserved staging
-namespace fails startup without changing the final database. Concurrent
-creators converge on the validated final database rather than choosing or
-repairing a staging database.
+The runtime leases the final database and reads its required current rows before
+removing exact owner-only staging artifacts. An unsafe artifact in the reserved
+staging namespace fails startup without changing the final database. Concurrent
+creators converge on the final database rather than choosing or repairing a
+staging database.
+
+SQLite has one current schema definition. Standard SQLite `user_version` equals
+`runtimeProtocolVersion`, and the exact current table set must be present. A
+mismatch fails closed and never invokes a migration, old-schema reader,
+conversion, repair, or automatic replacement. A development schema change
+requires deleting the isolated local data directory before starting the current
+runtime.
 
 The product SQLite database stores:
 
@@ -383,9 +451,10 @@ is currently connected. On startup or ownership takeover, the coordinator:
 No valid session produces a disconnected projection. More than one live
 session violates the single-session invariant and produces an unresolved state;
 Little John never chooses one, exposes session selection as a normal operation,
-or silently revokes sessions. The user must explicitly confirm disconnection or
-replacement of every stored session. Until reconciliation completes, the shared
-projection is unknown and cannot authorize a wallet request.
+or silently revokes sessions. The user must explicitly confirm disconnection of
+every stored session before starting a new connection. Until reconciliation
+completes, the shared projection is unknown and cannot authorize a wallet
+request.
 
 A wallet-originated deletion, expiry, account removal, chain removal, or
 unusable SDK store invalidates the SQLite projection. Historical connection
@@ -401,13 +470,69 @@ application logs, exports, and diagnostic bundles.
 - A desktop AI host uses MCP for text interaction and opens a Little John local
   URL in its controlled built-in browser when the user requests a visual page
   or an intent requires review.
+- A user may manually open the fixed local origin in another browser.
+  Little John never asks a host integration to launch a separate system browser.
 - Little John owns the local page state and URL. The desktop host owns browser
   display, focus, and navigation to that URL.
+- The fixed root is the shared application shell. Wallet connection state and
+  controls appear in one global dialog available from shared-navigation pages.
+  Wallet connection, disconnection, and operation identifiers do not create
+  human page-path namespaces.
+- Opening the root or the wallet dialog does not connect, disconnect, or
+  confirm a wallet operation. A direct user action in the dialog may request one
+  permitted coordinator transition through browser-scoped authority.
+- Wallet connection and wallet-operation state are independent canonical
+  contracts. The root browser projection atomically composes their current
+  values for presentation; it is not a third state and changes neither
+  lifecycle.
+- The dialog consumes that root projection. It never derives lifecycle meaning
+  from page location and never creates a second nonterminal operation.
+- The wallet dialog is a native modal dialog. Opening it moves keyboard focus
+  into the dialog and makes the application behind it inert; closing it returns
+  focus to the Wallet navigation control. Escape may close a connection-state
+  view but never cancels or changes a wallet operation.
+- The dialog offers Connect only while cleanly disconnected. A disconnected
+  `unusable_store` state offers Disconnect so the coordinator can remove any
+  remaining SDK session before another Connect. Connected and unresolved states
+  also offer Disconnect; unknown state permits no mutation, and unresolved
+  state never selects one session. The browser start request contains
+  `connect` or `disconnect` plus the connection revision displayed to the user;
+  the coordinator rejects a stale revision, reads the actual current state, and
+  applies that direct action atomically. An ordinary Connect request returns the
+  current valid connection when one exists. A direct browser Disconnect begins
+  disconnection without a second confirmation view. Changing wallets requires a
+  completed Disconnect followed by a new Connect action.
+- A successful browser control request returns after the coordinator commits
+  the operation's first canonical state. WalletConnect acquisition, approval,
+  cancellation, validation, and session deletion continue under coordinator
+  ownership while the browser observes those canonical states. The initiating
+  browser never waits inside the control request for an SDK effect to finish.
+- An MCP wallet-management tool returns the fixed root URL for browser display.
+  The MCP operation identifier remains available to the agent for exact polling
+  and cancellation but does not appear in the human page path.
+- The browser reads the one current operation through the current-operation
+  resource declared in Current State, then reads the exact retained operation
+  by identifier until terminal so the root dialog can present the result without
+  inferring it from disappearance. Confirmation and cancellation carry that
+  operation identifier in their action-resource paths for exact identity,
+  revision, and stale-tab checks. The identifier is not navigation state or
+  browser authority.
+- Exact-operation observation finishes before the browser adopts a successor
+  operation. Canonical retention expiry clears the old observation without
+  inventing a terminal result. Browser-session expiry or compatible-owner
+  replacement reloads the root once to obtain a new browser request credential
+  and CSRF token. A transport failure is not credential evidence and exposes no
+  browser-generated error text.
+- When the exact retained operation first reaches a terminal state, the browser
+  presents at most one transient non-modal notification for that operation
+  identifier. The notification preserves the canonical kind, state, result, and
+  failure meaning. Its visual expiry is browser presentation only and never
+  changes the operation, its retention, or the wallet connection.
+- A background observation failure is not a wallet-operation result. Polling
+  retries it without a notification. A failed direct browser control request
+  produces an error notification without inventing a terminal operation.
 - An intent review page contains the wallet connection and contract-execution
   flow for one review session and contains no links to other product pages.
-- A wallet management operation page shows only the requested connection,
-  replacement, disconnection, or cancellation flow and contains no links to
-  other product pages. Opening the page does not confirm its action.
 - A user-requested information page may use the shared navigation bar to move
   between information pages.
 - Opening any page does not connect a wallet, request a signature, or execute a
@@ -433,7 +558,7 @@ application logs, exports, and diagnostic bundles.
 - Terminal capacity changes only QR presentation. It never changes the
   operation's interaction or confirmation interface.
 - An authenticated browser may display the current QR for a CLI-owned operation
-  as a read-only presentation. It cannot confirm, cancel, transfer, replace, or
+  as a read-only presentation. It cannot confirm, cancel, transfer, or
   disconnect that operation.
 - The authenticated local-control cancellation resource cancels one exact
   cancellable operation independently of its presentation interface. This is a
@@ -448,7 +573,7 @@ application logs, exports, and diagnostic bundles.
 - MCP stdio remains a transport and session gateway. It is not a wallet
   confirmation interface.
 - An MCP wallet-management tool may create an operation and return its local
-  management-page URL. The tool call does not confirm the operation, and its
+  fixed-root display URL. The tool call does not confirm the operation, and its
   response never contains a pairing URI, QR matrix, session topic, or wallet
   secret.
 
@@ -483,7 +608,7 @@ application logs, exports, and diagnostic bundles.
   are known and sufficient. Otherwise it renders no QR, reports the current or
   unknown dimensions and the exact required dimensions, and continues observing
   the same operation. Terminal size alone does not authorize cancellation or a
-  replacement operation.
+  second operation.
 - A catchable termination signal is latched before readline or terminal cleanup.
   Before operation admission it prevents a wallet command from starting and
   drains any acquired runtime. During a cancellable wallet operation it starts
@@ -491,7 +616,7 @@ application logs, exports, and diagnostic bundles.
 - A terminal presentation, polling, or operation-observation failure uses the
   same exact cancellation transition while the operation remains cancellable.
   Failure to confirm cancellation is reported as unavailable runtime state and
-  never authorizes a replacement operation.
+  never authorizes another operation.
 - After a connection operation completes, a catchable termination signal stops
   the direct CLI runtime without disconnecting or deleting the approved wallet
   session.
@@ -499,9 +624,8 @@ application logs, exports, and diagnostic bundles.
   scanability is claimed only for terminal profiles that pass the physical
   wallet check; ambiguous-width terminal configurations are not inferred from
   locale or static text width.
-- The CLI prints the same operation's fixed-origin browser URL only when the
-  authenticated browser presentation binding is available. It never opens the
-  URL automatically.
+- The CLI prints the fixed-root browser URL only when the authenticated browser
+  presentation binding is available. It never opens the URL automatically.
 - CLI transaction authorization is defined in `docs/TRANSACTION_POLICY.md`.
 
 ## Wallet Connection Lifecycle
@@ -516,29 +640,48 @@ application logs, exports, and diagnostic bundles.
   is pending. A second interface receives `read_only`; presentation does not
   grant confirmation, cancellation, or wallet authority.
 - The wallet coordinator owns one operation state machine for connection,
-  replacement, disconnection, and cancellation. Operation kinds are `connect`
-  and `disconnect`. Nonterminal states are `awaiting_confirmation`,
-  `awaiting_wallet_approval`, `disconnecting`, and `validating_session`.
-  Terminal states are `completed`, `cancelled`, `rejected`, `failed`, and
-  `expired`.
+  disconnection, and cancellation. Operation kinds are `connect` and
+  `disconnect`. Connect uses nonterminal `starting_connection`,
+  `awaiting_wallet_approval`, `cancelling`, and `validating_session`, then
+  terminal `completed`, `cancelled`, `rejected`, `failed`, or `expired`.
+  Disconnect uses nonterminal
+  `awaiting_confirmation` and `disconnecting`, then terminal `completed`,
+  `cancelled`, `failed`, or `expired`.
+- Each nonterminal state has one role. `starting_connection` acquires one exact
+  SDK Connect attempt; `awaiting_wallet_approval` observes that acquired
+  attempt; `cancelling` performs bounded cleanup of acquisition or that exact
+  attempt; and `validating_session` owns approved-topic validation, persistence,
+  and cleanup authority.
+  `awaiting_confirmation` waits for direct authorization of Disconnect, and
+  `disconnecting` performs its bounded SDK session deletion.
+- A successful, cancelled, rejected, or expired terminal operation is published
+  only after its exact SDK postcondition and authoritative reconciliation are
+  known. An SDK failure or deadline may publish `failed` after invalidating
+  connection evidence and fencing the still-running effect; that effect cannot
+  authorize state, and any late success is cleaned up before evidence becomes
+  available again. An approved topic is placed under revocation authority
+  before validation or persistence, and every validation failure removes the
+  topic before terminal publication.
 - A connection instruction with no live session starts pairing. A connection
-  instruction with one or more live sessions first shows the current
-  connection or conflicting-session count and the consequence that a failed
-  new approval leaves the profile disconnected. Cancellation before
-  confirmation preserves every existing session. Confirmation disconnects
-  every existing session, waits for SDK deletion, and only then starts a new
-  pairing. Failed deletion starts no pairing. A rejected, cancelled, failed, or
-  expired new pairing never restores a deleted session silently.
+  instruction with one valid live session returns the current connection and
+  creates no operation. A connection instruction while session state is
+  unresolved performs no mutation and never selects or deletes a session.
+- Changing wallets is two operations: Disconnect completes the existing-session
+  removal, then Connect starts a new pairing. A failed disconnection starts no
+  pairing, and Connect never removes or silently selects an existing session.
 - A disconnection instruction with no live session completes successfully with
   the `already_disconnected` outcome and performs no session mutation. With one
   live session, a direct interactive CLI instruction may start disconnection;
-  an MCP-created operation requires direct confirmation in its local web page.
-  With multiple live sessions, every interface requires explicit confirmation
-  before disconnecting every session. A confirmed disconnection waits for SDK
-  deletion before completing.
+  an MCP-created operation requires direct confirmation in the global browser
+  dialog. A browser-originated disconnection requires the user's direct dialog
+  action for that exact connection revision. With multiple live sessions, every
+  interface requires explicit confirmation before disconnecting every session.
+  A confirmed disconnection waits for SDK deletion before completing.
 - Every confirmation binds the operation identifier and the connection revision
   shown to the user. A changed revision makes the confirmation stale and causes
-  no session mutation.
+  no session mutation. Cancellation binds the operation identifier and the
+  connection revision captured by that operation; a later connection projection
+  revision does not make the independent operation impossible to cancel.
 - One target-chain account is required in an approved session. Zero or multiple
   `eip155:4663` accounts fail validation; Little John never selects an account
   silently.
@@ -549,6 +692,9 @@ application logs, exports, and diagnostic bundles.
   expired, and still contains `eip155:4663`, the account, and the required
   method. Robinhood documents `4663` as the mainnet chain ID in its
   [official network configuration](https://docs.robinhood.com/chain/connecting/).
+- Connection expiry and evidence availability are evaluated by one coordinator
+  transition before either agent reads or the browser composite projection is
+  produced. Consumers do not apply separate freshness rules.
 - A connected-address cache is display and lookup data only.
 - An approved active session carries later transaction requests through the
   WalletConnect relay. A new QR is not created for each transaction.
@@ -571,11 +717,11 @@ These credentials have separate authority and are never interchangeable:
   authorizes signature or transaction execution. Its persisted representation
   is an owner-only file in the application-data directory.
 - A `browser request credential` authenticates a browser instance to the fixed
-  local origin for operation-scoped browser reads and state changes. It is
-  bound to the browser session and one wallet management operation through an
-  `HttpOnly`, `SameSite=Strict` cookie, works with Host, Origin, and CSRF
-  validation, and expires no later than that operation's bounded retention. It
-  never authorizes a wallet action by itself.
+  local origin for browser reads and declared state changes. It is bound to the
+  browser session through an `HttpOnly`, `SameSite=Strict` cookie, works with
+  Host, Origin, and CSRF validation, and has a bounded expiry. An operation
+  mutation additionally binds the exact operation identifier and connection
+  revision. The credential never authorizes a wallet action by itself.
 - A `wallet management operation identifier` selects owner-memory operation
   state for status, cancellation, and confirmation. It is not a credential and
   cannot authorize a state change without the applicable browser or direct CLI
@@ -592,9 +738,9 @@ Local control credentials, browser request credentials, confirmation grants,
 and grant references are unguessable and scope-limited. They are excluded from
 URLs, logs, durable product evidence, browser local storage, browser session
 storage, and WalletConnect storage. A non-authorizing wallet management
-operation identifier may appear as a local path segment. The browser request
-credential exists only in its session cookie. WalletConnect secrets remain only
-in the SDK-owned store.
+operation identifier may appear in an API resource or canonical payload but not
+in a human page path. The browser request credential exists only in its session
+cookie. WalletConnect secrets remain only in the SDK-owned store.
 
 ## HTTP Boundary
 
@@ -605,6 +751,10 @@ in the SDK-owned store.
   confirmation.
 - Browser state changes require a valid browser request credential, exact Host
   and Origin validation, and CSRF validation.
+- Request bodies accept standard UTF-8 JSON under RFC 8259 and are then captured
+  and validated by the owning schema. Whitespace and object-member order carry
+  no authority. Deterministic serialization is an output and narrow digest
+  concern, not an HTTP input requirement.
 - A transaction handoff additionally requires the confirmation grant defined by
   `docs/TRANSACTION_POLICY.md#confirmation-authority`.
 - No local credential or confirmation-grant reference appears in a query string.
@@ -617,7 +767,7 @@ Request-class security is fixed as follows:
 | Owner identity | Exact fixed Host | Must be absent | None; challenge proof is the response | No |
 | Public read | Exact fixed Host | Absent for native clients or exact fixed Origin for browser clients | None | No |
 | Compatible-process control | Exact fixed Host | Must be absent | Local control credential | Only the declared control transition |
-| Browser bootstrap | Exact fixed Host | Must be absent | None; validates the operation identifier before issuing a scoped browser request credential | No |
+| Browser bootstrap | Exact fixed Host | Must be absent | None; issues one bounded browser-session request credential and independent CSRF authority | No |
 | Browser session read | Exact fixed Host | Absent or exact fixed Origin | Scoped browser request credential | No |
 | Browser state change | Exact fixed Host | Exact fixed Origin | Browser request credential and CSRF validation | Only the declared browser transition |
 
@@ -630,6 +780,6 @@ one request class.
 Implementation verification covers module dependency direction, fixed-port
 ownership and takeover, foreign-process conflict, store separation, the
 single-session invariant, wallet-operation serialization and expiry, stale
-confirmation, replacement failure, session restoration and invalidation,
+confirmation, disconnection failure, session restoration and invalidation,
 shared MCP, web, and CLI state, credential separation, Host and Origin
 validation, CSRF, request limits, and secret-leak boundaries.

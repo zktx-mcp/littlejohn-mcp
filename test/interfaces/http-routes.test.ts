@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { createErc20CallEncoder, type Erc20CallEncoder } from "../../src/chain/erc20-calls.js";
+import { createErc20CallEncoder, type Erc20CallEncoder } from "../../src/chain/evm-standard.js";
 import { extendChainSupportManifest } from "../../src/chain/application.js";
 import {
   walletConnectionCapability,

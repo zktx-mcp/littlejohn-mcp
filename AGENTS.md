@@ -83,6 +83,21 @@ owner and does not paraphrase the rule.
   `cancel` for cancellation. Do not use `prepare`, `manage`, `handle`, or
   `process` as substitutes for an exact effect.
 
+## Interface Contract Policy
+
+- The module that owns a capability or operation owns its canonical identifier,
+  contract version, input schema, success schema, failure codes, and state
+  transitions.
+- TypeScript types, JSON Schema, MCP tool schemas, HTTP request and response
+  bodies, CLI JSON, browser read models, support projections, and generated
+  documentation derive from that canonical contract. An interface never
+  rewrites the domain contract.
+- Protocol envelopes are transport concerns. MCP JSON-RPC, HTTP status and
+  headers, CLI presentation, and browser navigation may differ without changing
+  the canonical input, result, failure, or operation meaning.
+- Runtime binding, registry, path, and correlation architecture is owned only by
+  `docs/ARCHITECTURE.md#interface-contract-model`.
+
 ## Policy Conflict Resolution
 
 Resolve conflicts by authority, not by convenience:
@@ -129,6 +144,11 @@ the required correction changes an accepted plan.
 - Implement the simplest complete structure that satisfies the accepted goal
   and closes the affected boundary. Complete authority, lifecycle, failure, and
   handoff logic takes priority over minimizing changed lines or code size.
+- Use the current ecosystem-standard manifest, protocol, encoding, and package
+  behavior when it completely expresses the required boundary. A custom
+  artifact may own only product-specific meaning that the standard does not
+  express; verification evidence never becomes package-manager state, runtime
+  compatibility, or a public contract.
 - Do not add unrelated refactors or formatting.
 - Do not invent scripts, addresses, liquidity, quotes, evidence, or support.
 - Do not weaken binding policy or its verification without explicit user
@@ -228,6 +248,10 @@ Task files are:
   convenience.
 - Every work unit consumes complete dependency outputs and produces a complete,
   independently reviewable input for its dependents.
+- Every work unit defines the limit of its output: the authority it completes,
+  the concerns it does not own, and the exact input its dependents receive.
+  Work-unit boundaries have no value when a dependent must rediscover or
+  reinterpret those limits.
 - A passed work-unit output is the sole task authority for the contract,
   policy, state model, or port that it owns. Dependent units consume that output
   without redefining, repairing, weakening, or bypassing its meaning.
@@ -245,6 +269,10 @@ Task files are:
   schema or artifact digests and owned-path manifests only when they reduce that
   uncertainty; retain them in the progress document as current dependency
   evidence, not as a chronological log.
+- Work-unit order and historical source bytes are never repository architecture
+  or product authority. After every dependent boundary closes, current owning
+  modules, canonical contracts, generated projections, and final package
+  behavior replace temporary handoff evidence as the verification target.
 - Every work unit terminates with `passed` or `failed`.
 - Do not implement a later work unit early. Early implementation blocks the
   task even when it appears useful or passes tests.

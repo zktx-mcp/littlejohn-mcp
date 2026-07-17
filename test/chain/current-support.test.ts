@@ -13,7 +13,9 @@ describe("chain current-support projection", () => {
       extendWalletSupportManifest(initialRuntimeSupportManifest),
     );
     const section = renderCurrentSupportSection(manifest);
-    expect(section).toContain("`wallet.connection`");
+    expect(section).toContain("Implemented wallet support: none.");
+    expect(section).toContain("Available user-facing capabilities: none.");
+    expect(section).not.toContain("`wallet.connection`");
     expect(section).not.toContain("`chain.status`");
   });
 });

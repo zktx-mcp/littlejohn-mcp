@@ -1,12 +1,19 @@
 export const walletOperationKinds = Object.freeze(["connect", "disconnect"] as const);
 
 export const walletOperationStateDefinitions = Object.freeze({
+  starting_connection: Object.freeze({
+    terminal: false,
+    confirmable: false,
+    cancellable: true,
+    payload: "none",
+    kinds: Object.freeze(["connect"] as const),
+  }),
   awaiting_confirmation: Object.freeze({
     terminal: false,
     confirmable: true,
     cancellable: true,
     payload: "none",
-    kinds: Object.freeze(["connect", "disconnect"] as const),
+    kinds: Object.freeze(["disconnect"] as const),
   }),
   awaiting_wallet_approval: Object.freeze({
     terminal: false,
@@ -20,7 +27,14 @@ export const walletOperationStateDefinitions = Object.freeze({
     confirmable: false,
     cancellable: false,
     payload: "none",
-    kinds: Object.freeze(["connect", "disconnect"] as const),
+    kinds: Object.freeze(["disconnect"] as const),
+  }),
+  cancelling: Object.freeze({
+    terminal: false,
+    confirmable: false,
+    cancellable: false,
+    payload: "none",
+    kinds: Object.freeze(["connect"] as const),
   }),
   validating_session: Object.freeze({
     terminal: false,
@@ -70,6 +84,10 @@ export const walletInteractionInterfaces = Object.freeze(["cli", "web"] as const
 
 export type WalletOperationKind = typeof walletOperationKinds[number];
 export type WalletOperationState = keyof typeof walletOperationStateDefinitions;
+export type WalletNonterminalOperationState = {
+  [State in WalletOperationState]:
+    typeof walletOperationStateDefinitions[State]["terminal"] extends false ? State : never;
+}[WalletOperationState];
 export type WalletOperationStateForKind<Kind extends WalletOperationKind> = {
   [State in WalletOperationState]: Kind extends
   typeof walletOperationStateDefinitions[State]["kinds"][number] ? State : never;

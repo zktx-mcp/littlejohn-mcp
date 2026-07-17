@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   applicationErrorDefinitionSchema,
   applicationFailureSchema,
+  applicationFailureSchemaFor,
   assertDirectApplicationErrorRegistryExtension,
   coreErrorRegistry,
   createApplicationFailure,
@@ -75,5 +76,21 @@ describe("application error authority", () => {
     }]);
     expect(() => assertDirectApplicationErrorRegistryExtension(extended, sibling)).toThrow("ancestry");
     expect(() => coreErrorRegistry.extend([])).toThrow("empty");
+  });
+
+  it("projects selected registry definitions as exact failure variants", () => {
+    const schema = applicationFailureSchemaFor(coreErrorRegistry, ["internal_error"]);
+    const failure = createApplicationFailure(coreErrorRegistry, "internal_error");
+    expect(schema.parse(failure)).toEqual(failure);
+    expect(schema.safeParse({
+      ...failure,
+      error: { ...failure.error, message: "Forged failure meaning." },
+    }).success).toBe(false);
+    expect(() => applicationFailureSchemaFor(coreErrorRegistry, [])).toThrow("codes");
+    expect(() => applicationFailureSchemaFor(
+      coreErrorRegistry,
+      ["internal_error", "internal_error"],
+    )).toThrow("codes");
+    expect(() => applicationFailureSchemaFor(coreErrorRegistry, ["unknown_error"])).toThrow("Unknown");
   });
 });

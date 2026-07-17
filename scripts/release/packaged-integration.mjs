@@ -350,8 +350,23 @@ const problemCode = (value) => {
   return typeof code === "string" ? code : undefined;
 };
 
+const startToolResult = (toolResult) => {
+  const result = toolResult?.structuredContent?.result;
+  if (typeof result !== "object" || result === null) {
+    throw new TypeError("MCP wallet start result is unavailable.");
+  }
+  if (toolResult.structuredContent?.displayUrl !== `${fixedOrigin}/`) {
+    throw new TypeError("MCP wallet display URL is not the fixed browser root.");
+  }
+  return result;
+};
+
 const startedToolOperation = (toolResult) => {
-  const operation = toolResult?.structuredContent?.operation;
+  const result = startToolResult(toolResult);
+  if (result.status !== "operation_started") {
+    throw new TypeError("MCP wallet start did not create an operation.");
+  }
+  const operation = result.operation;
   if (typeof operation !== "object" || operation === null) {
     throw new TypeError("MCP wallet start operation is unavailable.");
   }
@@ -383,20 +398,7 @@ const operationIdFrom = (toolResult) => {
   return operationId;
 };
 
-const browserSession = async (managementUrl) => {
-  const page = await fetch(managementUrl, { redirect: "error" });
-  if (page.status !== 200) throw new TypeError("Packaged browser page did not load.");
-  const shell = await page.text();
-  const cookie = page.headers.get("set-cookie")?.split(";", 1)[0];
-  const csrf = shell.match(/<meta name="littlejohn-csrf-token" content="([^"]+)"/u)?.[1];
-  const csp = page.headers.get("content-security-policy");
-  if (
-    cookie === undefined ||
-    csrf === undefined ||
-    csp === null ||
-    !csp.includes("default-src 'none'") ||
-    /https?:\/\/(?!127\.0\.0\.1:46630)/u.test(shell)
-  ) throw new TypeError("Packaged browser shell security metadata is invalid.");
+const assertBrowserAssets = async (shell) => {
   const assets = [...shell.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/gu)]
     .map((match) => match[1])
     .filter((value) => value !== undefined);
@@ -406,13 +408,69 @@ const browserSession = async (managementUrl) => {
     if (asset.status !== 200) throw new TypeError(`Packaged browser asset failed: ${path}`);
     await asset.arrayBuffer();
   }
+};
+
+const browserSession = async () => {
+  const page = await fetch(`${fixedOrigin}/`, { redirect: "error" });
+  if (page.status !== 200) throw new TypeError("Packaged browser root did not load.");
+  const shell = await page.text();
+  const cookie = page.headers.get("set-cookie")?.split(";", 1)[0];
+  const csrf = shell.match(/<meta name="littlejohn-csrf-token" content="([^"]+)"/u)?.[1];
+  const csp = page.headers.get("content-security-policy");
+  if (
+    cookie === undefined ||
+    csrf === undefined ||
+    csp === null ||
+    !csp.includes("default-src 'none'") ||
+    /https?:\/\/(?!127\.0\.0\.1:46630)/u.test(shell) ||
+    shell.includes("__LITTLEJOHN_CSRF_TOKEN__")
+  ) throw new TypeError("Packaged browser root security metadata is invalid.");
+  await assertBrowserAssets(shell);
   return Object.freeze({ cookie, csrf, shell });
 };
 
-const browserRead = (operationId, browser, suffix = "") => fetch(
-  `${fixedOrigin}/api/v1/wallet/operations/${operationId}${suffix}`,
+const browserCurrent = (browser) => fetch(
+  `${fixedOrigin}/api/v1/wallet/current-operation`,
   { headers: { Cookie: browser.cookie }, redirect: "error" },
 );
+
+const browserOperation = (operationId, browser) => fetch(
+  `${fixedOrigin}/api/v1/wallet/operations/${operationId}`,
+  { headers: { Cookie: browser.cookie }, redirect: "error" },
+);
+
+const browserStart = (kind, connectionRevision, browser) => fetch(
+  `${fixedOrigin}/api/v1/wallet/operations`,
+  {
+    method: "POST",
+    headers: {
+      Cookie: browser.cookie,
+      Origin: fixedOrigin,
+      [csrfHeaderName]: browser.csrf,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ kind, connectionRevision }),
+    redirect: "error",
+  },
+);
+
+const browserStartFromCurrentState = async (kind, browser) => {
+  const state = await jsonResponse(await browserCurrent(browser));
+  if (typeof state?.connectionRevision !== "string") {
+    throw new TypeError("Packaged browser connection revision is unavailable.");
+  }
+  const response = await browserStart(kind, state.connectionRevision, browser);
+  if (response.status !== 200) {
+    const problem = await response.json();
+    const after = await jsonResponse(await browserCurrent(browser));
+    throw new Error(
+      `HTTP ${response.status}: ${JSON.stringify(problem)}; ` +
+      `before=${JSON.stringify(state)}; after=${JSON.stringify(after)}`,
+    );
+  }
+  const result = await jsonResponse(response);
+  return Object.freeze({ state, result });
+};
 
 const browserConfirm = (operationId, revision, browser) => fetch(
   `${fixedOrigin}/api/v1/wallet/operations/${operationId}/confirmation`,
@@ -429,15 +487,17 @@ const browserConfirm = (operationId, revision, browser) => fetch(
   },
 );
 
-const browserCancel = (operationId, browser) => fetch(
-  `${fixedOrigin}/api/v1/wallet/operations/${operationId}`,
+const browserCancel = (operationId, revision, browser) => fetch(
+  `${fixedOrigin}/api/v1/wallet/operations/${operationId}/cancellation`,
   {
-    method: "DELETE",
+    method: "POST",
     headers: {
       Cookie: browser.cookie,
       Origin: fixedOrigin,
       [csrfHeaderName]: browser.csrf,
+      "Content-Type": "application/json",
     },
+    body: JSON.stringify({ connectionRevision: revision }),
     redirect: "error",
   },
 );
@@ -460,13 +520,6 @@ const internalOperation = (worker, operationId) => dispatch(worker, {
   requestClass: "local_control",
   method: "GET",
   path: `/api/v1/internal/control/wallet/operations/${operationId}`,
-});
-
-const startInternalConnection = (worker) => dispatch(worker, {
-  requestClass: "local_control",
-  method: "POST",
-  path: "/api/v1/internal/control/wallet/operations",
-  body: { kind: "connect", interactionInterface: "web" },
 });
 
 const assertFixedPortReleased = async () => {
@@ -529,6 +582,12 @@ export const verifyPackagedIntegration = async (prepared) => {
     if (JSON.stringify(names) !== JSON.stringify([...expectedToolNames].sort())) {
       throw new TypeError("Packaged MCP tool registry is incomplete.");
     }
+    if (tools.some((tool) =>
+      typeof tool?.inputSchema !== "object" ||
+      tool.inputSchema === null ||
+      typeof tool?.outputSchema !== "object" ||
+      tool.outputSchema === null
+    )) throw new TypeError("Packaged MCP tools do not expose complete canonical schemas.");
     const catalog = await firstMcp.callTool("read_list_capabilities");
     const catalogEntries = catalog.structuredContent?.capabilities;
     if (!Array.isArray(catalogEntries)) {
@@ -550,6 +609,18 @@ export const verifyPackagedIntegration = async (prepared) => {
       httpChainStatus.data?.chainId !== "4663" ||
       httpChainStatus.data?.latestBlock?.blockHash !== `0x${"88".repeat(32)}`
     ) throw new TypeError("Packaged HTTP chain status is invalid.");
+    const browser = await browserSession();
+    const unauthorizedCurrent = await fetch(
+      `${fixedOrigin}/api/v1/wallet/current-operation`,
+      { redirect: "error" },
+    );
+    const unauthorizedCurrentProblem = await unauthorizedCurrent.json();
+    if (
+      unauthorizedCurrent.status !== 401 ||
+      problemCode(unauthorizedCurrentProblem) !== "unauthorized"
+    ) {
+      throw new TypeError("Packaged browser wallet state is readable without session authority.");
+    }
 
     const cli = await runCommand(process.execPath, [
       resolve(prepared.installedPackageRoot, "dist/cli.js"),
@@ -563,14 +634,58 @@ export const verifyPackagedIntegration = async (prepared) => {
       cliStatus.data?.latestBlock?.blockHash !== `0x${"88".repeat(32)}`
     ) throw new TypeError("Packaged CLI chain status is invalid.");
 
+    const {
+      state: cancellableConnectionState,
+      result: cancellableConnection,
+    } = await browserStartFromCurrentState("connect", browser);
+    if (
+      cancellableConnectionState.status !== "absent" ||
+      cancellableConnectionState.connection?.status !== "disconnected" ||
+      cancellableConnection.status !== "operation_started" ||
+      cancellableConnection.operation?.kind !== "connect" ||
+      typeof cancellableConnection.operation?.operationId !== "string"
+    ) throw new TypeError("Browser connection cancellation precondition is invalid.");
+    const cancellablePresentation = await waitFor(
+      async () => jsonResponse(await browserOperation(
+        cancellableConnection.operation.operationId,
+        browser,
+      )),
+      (value) => value.operation?.state === "awaiting_wallet_approval",
+      "Browser connection cancellation operation",
+    );
+    const cancellationAccepted = await jsonResponse(await browserCancel(
+      cancellableConnection.operation.operationId,
+      cancellablePresentation.operation.connectionRevision,
+      browser,
+    ));
+    if (
+      cancellationAccepted.operationId !== cancellableConnection.operation.operationId ||
+      cancellationAccepted.connectionRevision !== cancellablePresentation.operation.connectionRevision
+    ) throw new TypeError("Browser cancellation did not retain the exact operation identity.");
+    const cancelledConnection = (await waitFor(
+      async () => jsonResponse(await browserOperation(
+        cancellableConnection.operation.operationId,
+        browser,
+      )),
+      (value) => value.operation?.state === "cancelled",
+      "Browser connection cancellation",
+    )).operation;
+    if (cancelledConnection.state !== "cancelled") throw new TypeError("Browser cancellation did not settle.");
+    const stateAfterCancellation = await jsonResponse(await browserCurrent(browser));
+    if (
+      stateAfterCancellation.status !== "absent" ||
+      stateAfterCancellation.connection?.status !== "disconnected"
+    ) throw new TypeError("Cancelled browser connection changed wallet state.");
+
     const started = await firstMcp.callTool("wallet_start_connection");
     const operationId = operationIdFrom(started);
-    const managementUrl = started.structuredContent?.managementUrl;
-    if (managementUrl !== `${fixedOrigin}/wallet/operations/${operationId}`) {
-      throw new TypeError("Packaged MCP management URL is invalid.");
-    }
     const serializedStart = JSON.stringify(started);
-    for (const secretWord of ["pairing", "topic", "credential", "\"qr\""]) {
+    for (const secretWord of [
+      "pairing",
+      "topic",
+      "credential",
+      "\"qr\"",
+    ]) {
       if (serializedStart.includes(secretWord)) {
         throw new TypeError("Packaged MCP wallet start leaked private connection material.");
       }
@@ -600,23 +715,49 @@ export const verifyPackagedIntegration = async (prepared) => {
         "Packaged CLI did not preserve the MCP-created wallet operation exactly.",
       );
     }
-    const browser = await browserSession(managementUrl);
-    const browserOperation = await jsonResponse(await browserRead(operationId, browser));
-    if ("qr" in browserOperation) {
-      throw new TypeError("Packaged browser operation read exposed QR data.");
-    }
-    const qr = await jsonResponse(await browserRead(operationId, browser, "/qr"));
+    const browserState = await jsonResponse(await browserCurrent(browser));
+    if (
+      browserState.status !== "present" ||
+      browserState.presentation?.operation?.operationId !== operationId ||
+      browserState.presentation?.access !== "interactive"
+    ) throw new TypeError("Packaged browser current-operation projection is invalid.");
+    const qr = browserState.presentation;
     if (
       typeof qr.qr?.size !== "number" ||
       !Array.isArray(qr.qr?.rows) ||
       qr.qr.rows.length !== qr.qr.size
     ) throw new TypeError("Packaged browser QR projection is invalid.");
-    const unauthorizedQr = await fetch(
-      `${fixedOrigin}/api/v1/wallet/operations/${operationId}/qr`,
-      { redirect: "error" },
-    );
-    if (unauthorizedQr.status < 400) {
-      throw new TypeError("Packaged browser QR is readable without operation credentials.");
+    for (const { method, path, status, headers } of [
+      {
+        method: "GET",
+        path: `${fixedOrigin}/wallet`,
+        status: 404,
+        headers: undefined,
+      },
+      {
+        method: "GET",
+        path: `${fixedOrigin}/api/v1/wallet/operations/${operationId}/qr`,
+        status: 404,
+        headers: undefined,
+      },
+      {
+        method: "DELETE",
+        path: `${fixedOrigin}/api/v1/wallet/operations/${operationId}`,
+        status: 405,
+        headers: { Cookie: browser.cookie },
+      },
+    ]) {
+      const undeclared = await fetch(path, {
+        method,
+        ...(headers === undefined ? {} : { headers }),
+        redirect: "error",
+      });
+      if (undeclared.status !== status) {
+        throw new TypeError(
+          `Packaged browser undeclared-resource status mismatch: ` +
+          `${method} ${path} expected ${status}, received ${undeclared.status}.`,
+        );
+      }
     }
 
     await owner.request("approve");
@@ -628,10 +769,21 @@ export const verifyPackagedIntegration = async (prepared) => {
     if (readToolOperation(completed).result?.outcome !== "connected") {
       throw new TypeError("Packaged fake wallet approval did not connect.");
     }
+    const completedBrowserOperation =
+      await jsonResponse(await browserOperation(operationId, browser));
+    if (
+      completedBrowserOperation.operation?.state !== "completed" ||
+      completedBrowserOperation.operation?.result?.outcome !== "connected"
+    ) throw new TypeError("Packaged browser lost the completed connection result.");
     const firstConnection = await firstMcp.callTool("wallet_get_connection");
     if (firstConnection.structuredContent?.data?.status !== "connected") {
       throw new TypeError("Packaged MCP wallet connection is not connected.");
     }
+    const connectedBrowserState = await jsonResponse(await browserCurrent(browser));
+    if (
+      connectedBrowserState.status !== "absent" ||
+      connectedBrowserState.connection?.status !== "connected"
+    ) throw new TypeError("Packaged browser did not settle to the connected global wallet state.");
 
     const secondMcp = await startNpxMcp(prepared, environment);
     mcpClients.push(secondMcp);
@@ -641,34 +793,169 @@ export const verifyPackagedIntegration = async (prepared) => {
       JSON.stringify(firstConnection.structuredContent?.data)
     ) throw new TypeError("Compatible MCP processes do not share one wallet projection.");
 
-    const replacement = await firstMcp.callTool("wallet_start_connection");
-    const replacementId = operationIdFrom(replacement);
-    const replacementOperation = startedToolOperation(replacement);
-    if (replacementOperation.state !== "awaiting_confirmation") {
-      throw new TypeError("Connected replacement did not require explicit confirmation.");
-    }
-    const replacementBrowser = await browserSession(
-      `${fixedOrigin}/wallet/operations/${replacementId}`,
+    const idempotentConnection = startToolResult(
+      await firstMcp.callTool("wallet_start_connection"),
     );
+    if (
+      idempotentConnection.status !== "current_connection" ||
+      JSON.stringify(idempotentConnection.connection) !==
+        JSON.stringify(firstConnection.structuredContent?.data)
+    ) throw new TypeError("Connected MCP Connect did not return the current connection.");
+
+    const { result: browserConnection } =
+      await browserStartFromCurrentState("connect", browser);
+    if (
+      browserConnection.status !== "current_connection" ||
+      JSON.stringify(browserConnection.connection) !==
+        JSON.stringify(firstConnection.structuredContent?.data)
+    ) throw new TypeError("Connected browser Connect did not return the current connection.");
+
+    const staleDisconnection = await firstMcp.callTool("wallet_start_disconnection");
+    const staleDisconnectionId = operationIdFrom(staleDisconnection);
+    const staleDisconnectionOperation = startedToolOperation(staleDisconnection);
+    if (
+      staleDisconnectionOperation.kind !== "disconnect" ||
+      staleDisconnectionOperation.state !== "awaiting_confirmation"
+    ) {
+      throw new TypeError("Connected disconnection did not require explicit confirmation.");
+    }
     await owner.request("touch_session");
     const staleConfirmation = await browserConfirm(
-      replacementId,
-      replacementOperation.connectionRevision,
-      replacementBrowser,
+      staleDisconnectionId,
+      staleDisconnectionOperation.connectionRevision,
+      browser,
     );
     const staleProblem = await staleConfirmation.json();
     if (staleConfirmation.status < 400 || problemCode(staleProblem) !== "state_conflict") {
       throw new TypeError("Stale browser confirmation was not rejected.");
     }
-    const cancelledReplacement = await jsonResponse(
-      await browserCancel(replacementId, replacementBrowser),
-    );
-    if (cancelledReplacement.operation?.state !== "cancelled") {
-      throw new TypeError("Replacement cancellation did not preserve the active session.");
+    const disconnectionCancellationAccepted = await jsonResponse(await browserCancel(
+      staleDisconnectionId,
+      staleDisconnectionOperation.connectionRevision,
+      browser,
+    ));
+    if (
+      disconnectionCancellationAccepted.operationId !== staleDisconnectionId ||
+      disconnectionCancellationAccepted.connectionRevision !==
+        staleDisconnectionOperation.connectionRevision ||
+      disconnectionCancellationAccepted.kind !== "disconnect"
+    ) {
+      throw new TypeError("Browser disconnection cancellation lost its exact operation identity.");
+    }
+    const cancelledDisconnection = (await waitFor(
+      async () => jsonResponse(await browserOperation(staleDisconnectionId, browser)),
+      (value) => value.operation?.state === "cancelled",
+      "Browser disconnection cancellation",
+    )).operation;
+    if (cancelledDisconnection.state !== "cancelled") {
+      throw new TypeError("Browser disconnection cancellation did not settle.");
     }
     const preservedConnection = await firstMcp.callTool("wallet_get_connection");
     if (preservedConnection.structuredContent?.data?.status !== "connected") {
-      throw new TypeError("Cancelled replacement changed the active wallet session.");
+      throw new TypeError("Cancelled disconnection changed the active wallet session.");
+    }
+
+    const {
+      state: disconnectState,
+      result: disconnectStart,
+    } = await browserStartFromCurrentState("disconnect", browser);
+    if (
+      disconnectState.status !== "absent" ||
+      disconnectState.connection?.status !== "connected"
+    ) throw new TypeError("Browser disconnection precondition is invalid.");
+    if (
+      disconnectStart.status !== "operation_started" ||
+      disconnectStart.operation?.kind !== "disconnect" ||
+      typeof disconnectStart.operation?.operationId !== "string"
+    ) throw new TypeError("Direct browser disconnection did not start exactly once.");
+    const completedDisconnection = await waitFor(
+      async () => jsonResponse(await browserOperation(
+        disconnectStart.operation.operationId,
+        browser,
+      )),
+      (value) => value.operation?.state === "completed",
+      "Direct browser disconnection",
+    );
+    if (
+      completedDisconnection.operation?.state !== "completed" ||
+      completedDisconnection.operation?.result?.outcome !== "disconnected"
+    ) throw new TypeError("Packaged browser lost the completed disconnection result.");
+
+    const {
+      state: expiringState,
+      result: expiringStart,
+    } = await browserStartFromCurrentState("connect", browser);
+    if (
+      expiringState.status !== "absent" ||
+      expiringState.connection?.status !== "disconnected"
+    ) throw new TypeError("Browser pairing expiry precondition is invalid.");
+    if (
+      expiringStart.status !== "operation_started" ||
+      expiringStart.operation?.kind !== "connect" ||
+      typeof expiringStart.operation?.operationId !== "string"
+    ) throw new TypeError("Browser pairing expiry scenario did not start a connection.");
+    const expiringOperation = (await waitFor(
+      async () => jsonResponse(await browserOperation(
+        expiringStart.operation.operationId,
+        browser,
+      )),
+      (value) => value.operation?.state === "awaiting_wallet_approval",
+      "Browser pairing expiry operation",
+    )).operation;
+    const expiringPresentation = await jsonResponse(await browserCurrent(browser));
+    if (
+      expiringPresentation.status !== "present" ||
+      expiringPresentation.presentation?.operation?.operationId !== expiringOperation.operationId ||
+      expiringPresentation.presentation?.qr === undefined
+    ) throw new TypeError("Browser pairing expiry scenario did not expose one atomic QR snapshot.");
+    const currentTime = (await readFile(clockPath, "utf8")).trim();
+    const currentTimeMs = Date.parse(currentTime);
+    if (!Number.isFinite(currentTimeMs)) {
+      throw new TypeError("Packaged integration clock is invalid.");
+    }
+    const clock = new Date(currentTimeMs + 6 * 60 * 1_000);
+    await writeFile(clockPath, `${clock.toISOString()}\n`, { mode: 0o600 });
+    const expired = await internalOperation(owner, expiringOperation.operationId);
+    if (expired.response?.body?.operation?.state !== "expired") {
+      throw new TypeError("Packaged wallet operation did not expire at its canonical deadline.");
+    }
+    const expiredBrowserOperation = await jsonResponse(await browserOperation(
+      expiringOperation.operationId,
+      browser,
+    ));
+    if (
+      expiredBrowserOperation.operation?.state !== "expired" ||
+      JSON.stringify(expiredBrowserOperation).includes("\"qr\"")
+    ) throw new TypeError("Packaged browser retained QR authority after operation expiry.");
+    const stateAfterExpiry = await jsonResponse(await browserCurrent(browser));
+    if (
+      stateAfterExpiry.status !== "absent" ||
+      stateAfterExpiry.connection?.status !== "disconnected" ||
+      JSON.stringify(stateAfterExpiry).includes("\"qr\"")
+    ) throw new TypeError("Expired packaged operation retained browser QR authority.");
+
+    const { result: reconnect } =
+      await browserStartFromCurrentState("connect", browser);
+    if (
+      reconnect.status !== "operation_started" ||
+      reconnect.operation?.kind !== "connect" ||
+      typeof reconnect.operation?.operationId !== "string"
+    ) throw new TypeError("Browser reconnect did not start a connection.");
+    await waitFor(
+      async () => jsonResponse(await browserOperation(reconnect.operation.operationId, browser)),
+      (value) => value.operation?.state === "awaiting_wallet_approval",
+      "Browser reconnect wallet approval",
+    );
+    await owner.request("approve");
+    const reconnected = await waitFor(
+      () => firstMcp.callTool("wallet_get_operation", {
+        operationId: reconnect.operation.operationId,
+      }),
+      (result) => readToolOperation(result).state === "completed",
+      "Browser-started wallet reconnect",
+    );
+    if (readToolOperation(reconnected).result?.outcome !== "connected") {
+      throw new TypeError("Browser-started wallet reconnect did not complete.");
     }
 
     await Promise.all(mcpClients.splice(0).map((client) => client.close()));
@@ -679,6 +966,18 @@ export const verifyPackagedIntegration = async (prepared) => {
       restored.response?.body?.data?.status !== "connected"
     ) throw new TypeError("Deferred packaged process did not restore the persisted wallet session.");
 
+    const staleBrowserResponse = await browserCurrent(browser);
+    const staleBrowserProblem = await staleBrowserResponse.json();
+    if (
+      staleBrowserResponse.status !== 401 ||
+      problemCode(staleBrowserProblem) !== "unauthorized"
+    ) throw new TypeError("Owner takeover did not invalidate the previous browser session.");
+    const renewedBrowser = await browserSession();
+    const renewedBrowserState = await jsonResponse(await browserCurrent(renewedBrowser));
+    if (renewedBrowserState.connection?.status !== "connected") {
+      throw new TypeError("Browser bootstrap did not recover after owner takeover.");
+    }
+
     await deferred.request("delete_session");
     const deleted = await waitFor(
       () => publicWalletConnection(deferred),
@@ -688,46 +987,6 @@ export const verifyPackagedIntegration = async (prepared) => {
     );
     if (deleted.ownerState !== "owner") {
       throw new TypeError("Wallet-side deletion was not observed by the fixed owner.");
-    }
-
-    const cancellable = await startInternalConnection(deferred);
-    const cancellableOperation = cancellable.response?.body?.operation;
-    if (cancellableOperation?.state !== "awaiting_wallet_approval") {
-      throw new TypeError("Packaged browser cancellation scenario did not reach wallet approval.");
-    }
-    const cancellableBrowser = await browserSession(
-      `${fixedOrigin}/wallet/operations/${cancellableOperation.operationId}`,
-    );
-    const cancelled = await jsonResponse(
-      await browserCancel(cancellableOperation.operationId, cancellableBrowser),
-    );
-    if (cancelled.operation?.state !== "cancelled") {
-      throw new TypeError("Packaged browser cancellation did not settle exactly.");
-    }
-
-    const expiring = await startInternalConnection(deferred);
-    const expiringOperation = expiring.response?.body?.operation;
-    if (expiringOperation?.state !== "awaiting_wallet_approval") {
-      throw new TypeError("Packaged browser expiry scenario did not reach wallet approval.");
-    }
-    const expiringBrowser = await browserSession(
-      `${fixedOrigin}/wallet/operations/${expiringOperation.operationId}`,
-    );
-    const currentTime = (await readFile(clockPath, "utf8")).trim();
-    const currentTimeMs = Date.parse(currentTime);
-    if (!Number.isFinite(currentTimeMs)) {
-      throw new TypeError("Packaged integration clock is invalid.");
-    }
-    const clock = new Date(currentTimeMs + 6 * 60 * 1_000);
-    await writeFile(clockPath, `${clock.toISOString()}\n`, { mode: 0o600 });
-    const expired = await internalOperation(deferred, expiringOperation.operationId);
-    if (expired.response?.body?.operation?.state !== "expired") {
-      throw new TypeError("Packaged wallet operation did not expire at its canonical deadline.");
-    }
-    const expiredQr = await browserRead(expiringOperation.operationId, expiringBrowser, "/qr");
-    const expiredProblem = await expiredQr.json();
-    if (expiredQr.status < 400 || problemCode(expiredProblem) !== "state_conflict") {
-      throw new TypeError("Expired packaged operation retained QR authority.");
     }
 
     await deferred.stop();

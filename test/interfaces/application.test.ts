@@ -33,7 +33,9 @@ import {
 } from "../../src/runtime/index.js";
 import { extendWalletSupportManifest } from "../../src/wallet/application.js";
 import {
+  parseWalletCurrentOperationProjection,
   parseWalletManagementOperation,
+  parseWalletOperationStartResult,
   type WalletInterfaceOperations,
 } from "../../src/wallet/contracts.js";
 import { walletInterfaceErrorMappings } from "../../src/wallet/errors.js";
@@ -66,7 +68,7 @@ const capabilityPorts = (): {
 const walletOperations = (): WalletInterfaceOperations => {
   const operation = parseWalletManagementOperation({
     operationId,
-    kind: "connect",
+    kind: "disconnect",
     state: "awaiting_confirmation",
     connectionRevision: "1",
     expiresAt: "2026-07-15T06:00:00.000Z",
@@ -75,8 +77,10 @@ const walletOperations = (): WalletInterfaceOperations => {
   });
   return Object.freeze({
     operation: Object.freeze({
-      start: async () => operation,
-      get: async () => operation,
+      start: async () => parseWalletOperationStartResult({
+        status: "operation_started",
+        operation,
+      }),
       cancel: async () => parseWalletManagementOperation({
         ...operation, state: "cancelled", result: null, failure: null,
       }),
@@ -87,6 +91,14 @@ const walletOperations = (): WalletInterfaceOperations => {
     }),
     presentation: Object.freeze({
       get: async () => Object.freeze({ operation, access: "interactive" as const }),
+    }),
+    currentProjection: Object.freeze({
+      get: async () => parseWalletCurrentOperationProjection({
+        status: "present",
+        connectionRevision: "1",
+        connection: { status: "disconnected", reason: "no_session" },
+        presentation: { operation, access: "interactive" },
+      }),
     }),
   });
 };
@@ -139,9 +151,15 @@ describe("interface owner application", () => {
       ["GET", "/api/v1/chain-status"],
       ["GET", "/api/v1/wallet/connection"],
       ["GET", "/api/v1/capabilities"],
-      ["GET", `/wallet/operations/${operationId}`],
+      ["GET", "/"],
+      ["POST", "/api/v1/wallet/operations"],
+      ["GET", "/api/v1/wallet/current-operation"],
+      ["GET", `/api/v1/wallet/operations/${operationId}`],
       ["POST", `/api/v1/wallet/operations/${operationId}/confirmation`],
+      ["POST", `/api/v1/wallet/operations/${operationId}/cancellation`],
     ] as const) expect(application.routes.match(method, path).status).toBe("matched");
+    expect(application.routes.match("GET", "/wallet").status)
+      .toBe("not_found");
 
     const supportSnapshot = readRuntimeSupportManifest(application.supportManifest);
     const availability = new Map<string, typeof supportSnapshot.capabilities[number]["availability"]>(
@@ -155,10 +173,13 @@ describe("interface owner application", () => {
     });
     expect(availability.get("wallet.connection")).toEqual({
       overall: "available", direct: "internal", http: "available",
-      mcp: "available", cli: "available", web: "available",
+      mcp: "available", cli: "available", web: "unavailable",
     });
     expect(availability.get("wallet.connect")?.http).toBe("internal");
-    expect(availability.get("wallet.connect")?.web).toBe("unavailable");
+    expect(availability.get("wallet.connect")?.web).toBe("available");
+    expect(availability.get("wallet.disconnect")?.web).toBe("available");
+    expect(availability.get("wallet.current_operation")?.web).toBe("available");
+    expect(availability.get("wallet.cancel_operation")?.web).toBe("available");
     expect(availability.get("wallet.operation")?.web).toBe("available");
 
     await application.close();

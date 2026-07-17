@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,11 +8,14 @@ import {
   csrfTemplatePlaceholder,
   loadBrowserAssetBundle,
 } from "../../src/interfaces/browser-assets.js";
+import { productDisplayName } from "../../src/core/index.js";
 import { browserCsrfMetaName } from "../../src/interfaces/browser-contract.js";
 
 const roots: string[] = [];
+const canonicalFavicon = await readFile("src/interfaces/web/favicon.svg", "utf8");
 
 const createOutput = async (input: {
+  readonly faviconName?: string;
   readonly html?: string;
   readonly javascriptName?: string;
   readonly javascriptBody?: string;
@@ -24,24 +27,35 @@ const createOutput = async (input: {
   await mkdir(join(root, "assets"));
   const javascriptName = input.javascriptName ?? "index-Abcdef12.js";
   const stylesheetName = input.stylesheetName ?? "index-Abcdef12.css";
+  const faviconName = input.faviconName ?? "favicon-Abcdef12.svg";
   await writeFile(join(root, "assets", javascriptName), input.javascriptBody ?? "export{};", "utf8");
   await writeFile(join(root, "assets", stylesheetName), input.stylesheetBody ?? ".panel{}", "utf8");
+  await writeFile(join(root, "assets", faviconName), canonicalFavicon, "utf8");
   await writeFile(
     join(root, "index.html"),
-    input.html ?? canonicalHtml(`/assets/${javascriptName}`, `/assets/${stylesheetName}`),
+    input.html ?? canonicalHtml(
+      `/assets/${javascriptName}`,
+      `/assets/${stylesheetName}`,
+      `/assets/${faviconName}`,
+    ),
     "utf8",
   );
   return root;
 };
 
-const canonicalHtml = (javascriptPath: string, stylesheetPath: string): string => [
+const canonicalHtml = (
+  javascriptPath: string,
+  stylesheetPath: string,
+  faviconPath: string,
+): string => [
   "<!doctype html>",
   '<html lang="en">',
   "  <head>",
   '    <meta charset="UTF-8" />',
   '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />',
   `    <meta name="${browserCsrfMetaName}" content="${csrfTemplatePlaceholder}" />`,
-  "    <title>Wallet Operation</title>",
+  `    <title>${productDisplayName}</title>`,
+  `    <link rel="icon" type="image/svg+xml" href="${faviconPath}" />`,
   `    <script type="module" crossorigin src="${javascriptPath}"></script>`,
   `    <link rel="stylesheet" crossorigin href="${stylesheetPath}">`,
   "  </head>",
@@ -63,6 +77,7 @@ describe("compiled browser asset authority", () => {
     const token = Buffer.alloc(32, 4).toString("base64url");
 
     expect(bundle.paths()).toEqual([
+      "/assets/favicon-Abcdef12.svg",
       "/assets/index-Abcdef12.css",
       "/assets/index-Abcdef12.js",
     ]);
@@ -70,29 +85,35 @@ describe("compiled browser asset authority", () => {
       body: "export{};",
       contentType: "text/javascript; charset=utf-8",
     });
+    expect(bundle.get("/assets/favicon-Abcdef12.svg")).toEqual({
+      body: canonicalFavicon,
+      contentType: "image/svg+xml",
+    });
     expect(bundle.get("/assets/missing.js")).toBeUndefined();
-    expect(bundle.renderShell(token)).toContain(`content="${token}"`);
-    expect(bundle.renderShell(token)).not.toContain(csrfTemplatePlaceholder);
+    const rendered = bundle.renderShell(token);
+    expect(rendered).toContain(`name="${browserCsrfMetaName}" content="${token}"`);
+    expect(rendered.match(new RegExp(token, "gu"))).toHaveLength(1);
+    expect(rendered).not.toContain(csrfTemplatePlaceholder);
     expect(() => bundle.renderShell("not-a-token")).toThrow("Browser CSRF token is invalid.");
   });
 
   it.each([
     ["an entity-encoded meta refresh", (html: string) => html.replace(
-      "    <title>Wallet Operation</title>",
+      `    <title>${productDisplayName}</title>`,
       '    <meta http-equiv="re&#102;resh" content="0;url=https://example.invalid">\n' +
-      "    <title>Wallet Operation</title>",
+      `    <title>${productDisplayName}</title>`,
     )],
     ["an inline script", (html: string) => html.replace(
-      "    <title>Wallet Operation</title>",
-      "    <script>danger()</script>\n    <title>Wallet Operation</title>",
+      `    <title>${productDisplayName}</title>`,
+      `    <script>danger()</script>\n    <title>${productDisplayName}</title>`,
     )],
     ["a remote resource", (html: string) => html.replace(
-      "    <title>Wallet Operation</title>",
-      '    <link rel="preload" href="https://example.invalid/a.js">\n    <title>Wallet Operation</title>',
+      `    <title>${productDisplayName}</title>`,
+      `    <link rel="preload" href="https://example.invalid/a.js">\n    <title>${productDisplayName}</title>`,
     )],
     ["a second CSRF placeholder", (html: string) => html.replace(
-      "    <title>Wallet Operation</title>",
-      `    <meta content="${csrfTemplatePlaceholder}">\n    <title>Wallet Operation</title>`,
+      `    <title>${productDisplayName}</title>`,
+      `    <meta content="${csrfTemplatePlaceholder}">\n    <title>${productDisplayName}</title>`,
     )],
     ["an unknown asset", (html: string) => html.replace(
       "/assets/index-Abcdef12.js",
@@ -102,6 +123,7 @@ describe("compiled browser asset authority", () => {
     const html = canonicalHtml(
       "/assets/index-Abcdef12.js",
       "/assets/index-Abcdef12.css",
+      "/assets/favicon-Abcdef12.svg",
     );
     const root = await createOutput({ html: mutate(html) });
     await expect(loadBrowserAssetBundle(root))

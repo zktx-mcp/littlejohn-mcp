@@ -11,15 +11,14 @@ const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const nodeModulesRoot = resolve(repositoryRoot, "node_modules");
 const webSourceRoot = resolve(repositoryRoot, "src/interfaces/web");
 const webEntrySource = resolve(webSourceRoot, "main.tsx");
-const operationClientSource = resolve(webSourceRoot, "operation-client.ts");
-const walletOperationPageSource = resolve(webSourceRoot, "wallet-operation-page.tsx");
+const webApplicationSource = resolve(webSourceRoot, "app.tsx");
+const walletClientSource = resolve(webSourceRoot, "wallet-client.ts");
 const canonicalJsonValueSource = resolve(repositoryRoot, "src/core/canonical-json-value.ts");
 const jsonObjectSource = resolve(repositoryRoot, "src/core/json-object.ts");
 const immutabilitySource = resolve(repositoryRoot, "src/core/immutability.ts");
 const sharedContractSources = new Set([
   "src/interfaces/browser-contract.ts",
   "src/interfaces/browser-error-response.ts",
-  "src/interfaces/browser-responses.ts",
   "src/core/canonical-json-value.ts",
   "src/core/browser.ts",
   "src/core/error-definitions.ts",
@@ -37,14 +36,14 @@ const sharedContractSources = new Set([
 
 const allowedRuntimePackages = new Set(["react", "react-dom", "scheduler", "zod"]);
 const allowedWebPackageImports = new Map([
-  ["react", new Set(["StrictMode", "useCallback", "useEffect", "useState"])],
+  ["react", new Set(["StrictMode", "useCallback", "useEffect", "useRef", "useState"])],
   ["react-dom/client", new Set(["createRoot"])],
 ]);
 const allowedWebConstructorsBySource = new Map([
   [webEntrySource, new Set(["Error"])],
-  [operationClientSource, new Set(["BrowserResponseError"])],
+  [webApplicationSource, new Set(["Error"])],
+  [walletClientSource, new Set(["BrowserResponseError", "TypeError"])],
   [resolve(webSourceRoot, "request-authority.ts"), new Set(["AbortController"])],
-  [walletOperationPageSource, new Set(["Error"])],
 ]);
 const allowedVirtualModules = new Set([
   "\0commonjsHelpers.js",
@@ -53,11 +52,11 @@ const allowedVirtualModules = new Set([
 ]);
 const codeSourceExtensions = new Set([".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"]);
 const allowedIntrinsicElements = new Set([
-  "button", "dd", "div", "dl", "dt", "h1", "header", "p", "rect", "section", "strong", "svg",
+  "button", "dd", "dialog", "div", "dl", "dt", "h1", "header", "nav", "p", "rect", "section", "strong", "svg",
 ]);
 const allowedIntrinsicAttributes = new Set([
-  "aria-label", "className", "disabled", "fill", "height", "key", "onClick", "role",
-  "shapeRendering", "type", "viewBox", "width", "x", "y",
+  "aria-expanded", "aria-label", "aria-modal", "className", "disabled", "fill", "height", "key", "onCancel",
+  "onClick", "ref", "role", "shapeRendering", "tabIndex", "type", "viewBox", "width", "x", "y",
 ]);
 const forbiddenGlobalIdentifiers = new Set([
   "Audio", "BroadcastChannel", "DOMParser", "EventSource", "Function", "Image", "SharedWorker",
@@ -84,7 +83,10 @@ const allowedGlobalMembers = new Set([
   "Reflect.getPrototypeOf",
   "Reflect.ownKeys",
   "window.clearTimeout",
-  "window.location.pathname",
+  "window.location.reload",
+  "window.sessionStorage.getItem",
+  "window.sessionStorage.removeItem",
+  "window.sessionStorage.setItem",
   "window.setTimeout",
 ]);
 const callableGlobalMembers = new Set([
@@ -103,6 +105,10 @@ const callableGlobalMembers = new Set([
   "Reflect.getPrototypeOf",
   "Reflect.ownKeys",
   "window.clearTimeout",
+  "window.location.reload",
+  "window.sessionStorage.getItem",
+  "window.sessionStorage.removeItem",
+  "window.sessionStorage.setItem",
   "window.setTimeout",
 ]);
 const sensitiveGlobalMemberSources = new Map([
@@ -113,6 +119,10 @@ const sensitiveGlobalMemberSources = new Map([
   ])],
   ["Reflect.getPrototypeOf", new Set([canonicalJsonValueSource])],
   ["Reflect.ownKeys", new Set([canonicalJsonValueSource, jsonObjectSource])],
+  ["window.location.reload", new Set([webApplicationSource])],
+  ["window.sessionStorage.getItem", new Set([webApplicationSource])],
+  ["window.sessionStorage.removeItem", new Set([webApplicationSource])],
+  ["window.sessionStorage.setItem", new Set([webApplicationSource])],
 ]);
 const allowedDomRuntimeIdentifiers = new Set(["AbortController", "document", "window"]);
 const protectedRuntimeBindings = new Set([
@@ -121,7 +131,7 @@ const protectedRuntimeBindings = new Set([
   "document", "window",
 ]);
 const forbiddenJsxAttributes = new Set([
-  "action", "dangerouslySetInnerHTML", "formAction", "href", "poster", "src", "srcDoc", "style",
+  "action", "dangerouslySetInnerHTML", "formAction", "poster", "src", "srcDoc", "style",
 ]);
 const forbiddenAssignedMembers = new Set([
   "action", "formAction", "href", "innerHTML", "outerHTML", "poster", "src", "srcdoc",
@@ -335,7 +345,9 @@ const approvedConstructorBinding = (
 ): boolean => {
   if (!ts.isIdentifier(expression) ||
     allowedWebConstructorsBySource.get(resolve(sourceFile.fileName))?.has(expression.text) !== true) return false;
-  if (expression.text === "Error") return symbolIsDeclaredIn(checker, expression, "lib.es5.d.ts");
+  if (expression.text === "Error" || expression.text === "TypeError") {
+    return symbolIsDeclaredIn(checker, expression, "lib.es5.d.ts");
+  }
   if (expression.text === "AbortController") return symbolIsDeclaredIn(checker, expression, "lib.dom.d.ts");
   if (expression.text !== "BrowserResponseError") return false;
   return checker.getSymbolAtLocation(expression)?.declarations?.some((declaration) =>
@@ -349,7 +361,7 @@ const sourceLocation = (sourceFile: ts.SourceFile, node: ts.Node): string => {
 };
 
 const approvedFetch = (node: ts.CallExpression, sourceFile: ts.SourceFile): boolean => {
-  if (resolve(sourceFile.fileName) !== operationClientSource || node.arguments.length !== 2) return false;
+  if (resolve(sourceFile.fileName) !== walletClientSource || node.arguments.length !== 2) return false;
   const arrow = node.parent;
   if (!ts.isArrowFunction(arrow) || arrow.body !== node || arrow.modifiers !== undefined ||
     arrow.parameters.length !== 2) return false;
@@ -408,7 +420,7 @@ const approvedSelectorCall = (node: ts.CallExpression, sourceFile: ts.SourceFile
   }
   if (key === "document.querySelector") {
     const access = node.parent;
-    return path === walletOperationPageSource && node.arguments.length === 1 &&
+    return path === webApplicationSource && node.arguments.length === 1 &&
       csrfSelectorArgument(node.arguments[0]) && ts.isPropertyAccessExpression(access) &&
       access.expression === node && access.questionDotToken !== undefined && access.name.text === "content";
   }
@@ -449,23 +461,70 @@ const browserPackageImportViolation = (node: ts.ImportDeclaration, sourceFile: t
   });
 };
 
-const approvedClickHandler = (attribute: ts.JsxAttribute, sourceFile: ts.SourceFile): boolean => {
-  if (resolve(sourceFile.fileName) !== walletOperationPageSource || attribute.name.getText(sourceFile) !== "onClick" ||
+const approvedClickHandler = (
+  attribute: ts.JsxAttribute,
+  sourceFile: ts.SourceFile,
+): boolean => {
+  if (resolve(sourceFile.fileName) !== webApplicationSource ||
+    attribute.name.getText(sourceFile) !== "onClick" ||
     attribute.initializer === undefined || !ts.isJsxExpression(attribute.initializer) ||
     attribute.initializer.expression === undefined) return false;
   const expression = unwrap(attribute.initializer.expression);
   if (!ts.isArrowFunction(expression) || expression.parameters.length !== 0 || !ts.isBlock(expression.body) ||
     expression.body.statements.length !== 1) return false;
   const statement = expression.body.statements[0];
-  if (statement === undefined || !ts.isExpressionStatement(statement) ||
-    !ts.isVoidExpression(statement.expression)) return false;
-  const call = unwrap(statement.expression.expression);
-  if (!ts.isCallExpression(call) || call.arguments.length !== 1) return false;
+  if (statement === undefined || !ts.isExpressionStatement(statement)) return false;
+  const call = unwrap(statement.expression);
+  if (!ts.isCallExpression(call)) return false;
   const callee = unwrap(call.expression);
+  if (!ts.isIdentifier(callee)) return false;
+  if (
+    call.arguments.length === 0 &&
+    (callee.text === "activateWalletNavigation" ||
+      callee.text === "onClose")
+  ) return true;
+  if (call.arguments.length !== 1) return false;
   const argument = call.arguments[0];
-  return ts.isIdentifier(callee) && callee.text === "control" &&
-    argument !== undefined && ts.isStringLiteral(argument) &&
-    (argument.text === "POST" || argument.text === "DELETE");
+  if (argument === undefined || ts.isSpreadElement(argument)) return false;
+  if (callee.text === "onAction" && ts.isStringLiteral(argument)) {
+    return new Set(["cancel", "confirm", "connect", "disconnect"])
+      .has(argument.text);
+  }
+  return false;
+};
+
+const approvedObservationStorageCall = (
+  checker: ts.TypeChecker,
+  node: ts.CallExpression,
+  sourceFile: ts.SourceFile,
+): boolean => {
+  if (resolve(sourceFile.fileName) !== webApplicationSource) return false;
+  const path = memberPath(node.expression)?.parts.join(".");
+  const key = node.arguments[0];
+  if (key === undefined || ts.isSpreadElement(key)) return false;
+  const canonicalKey = unwrap(key);
+  if (!ts.isIdentifier(canonicalKey) || canonicalKey.text !== "walletObservationStorageKey") return false;
+  const keyDeclaration = checker.getSymbolAtLocation(canonicalKey)?.declarations?.find(ts.isImportSpecifier);
+  if (keyDeclaration === undefined || keyDeclaration.name.text !== "walletObservationStorageKey" ||
+    keyDeclaration.propertyName !== undefined) return false;
+  const keyImport = keyDeclaration.parent.parent.parent;
+  if (!ts.isImportDeclaration(keyImport) || !ts.isStringLiteral(keyImport.moduleSpecifier) ||
+    keyImport.moduleSpecifier.text !== "./wallet-observation.js") return false;
+  if (path === "window.sessionStorage.getItem" || path === "window.sessionStorage.removeItem") {
+    return node.arguments.length === 1;
+  }
+  if (path !== "window.sessionStorage.setItem" || node.arguments.length !== 2) return false;
+  const operationId = node.arguments[1];
+  if (operationId === undefined || ts.isSpreadElement(operationId)) return false;
+  const canonicalOperationId = unwrap(operationId);
+  if (!ts.isIdentifier(canonicalOperationId) || canonicalOperationId.text !== "operationId") return false;
+  return checker.getSymbolAtLocation(canonicalOperationId)?.declarations?.some((declaration) => {
+    if (!ts.isParameter(declaration) || !ts.isIdentifier(declaration.name) ||
+      declaration.name.text !== "operationId" || !ts.isArrowFunction(declaration.parent)) return false;
+    const property = declaration.parent.parent;
+    return ts.isPropertyAssignment(property) && property.initializer === declaration.parent &&
+      property.name.getText(sourceFile) === "write";
+  }) === true;
 };
 
 export const auditBrowserSourceModule = (source: string, pathInput: string): readonly string[] => {
@@ -497,6 +556,13 @@ export const auditBrowserSourceModule = (source: string, pathInput: string): rea
       if (key === "globalThis.fetch" && !fetchApproved) reject(node, "unapproved fetch");
       if (key === "window.setTimeout" && !approvedTimerCallback(node)) {
         reject(node, "non-function timer callback");
+      }
+      if (key === "window.location.reload" && node.arguments.length !== 0) {
+        reject(node, "invalid browser bootstrap reload");
+      }
+      if (key?.startsWith("window.sessionStorage.") === true &&
+        !approvedObservationStorageCall(checker, node, sourceFile)) {
+        reject(node, "browser storage outside its observation owner");
       }
       if (member !== undefined && restrictedAuthorityCallMembers.has(member) &&
         !fetchApproved &&
@@ -612,7 +678,7 @@ export const auditBrowserSourceModule = (source: string, pathInput: string): rea
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-  if (path === operationClientSource && approvedFetchCount !== 1) {
+  if (path === walletClientSource && approvedFetchCount !== 1) {
     violations.push(`${path}:expected one canonical browser fetch bridge`);
   }
   return Object.freeze(violations);

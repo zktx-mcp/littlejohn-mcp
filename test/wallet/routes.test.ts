@@ -31,6 +31,7 @@ import {
   type WalletLocalControlOperationPort,
   type WalletManagementOperation,
   type WalletOperationResponse,
+  type WalletOperationStartResponse,
 } from "../../src/wallet/contracts.js";
 import { WalletOperationError } from "../../src/wallet/errors.js";
 import { extendWalletControlRouteRegistry } from "../../src/wallet/routes.js";
@@ -44,6 +45,15 @@ afterEach(async () => {
 
 const operationId = Buffer.alloc(32, 11).toString("base64url");
 const disconnected = Object.freeze({ status: "disconnected" as const, reason: "no_session" as const });
+const connected = Object.freeze({
+  status: "connected" as const,
+  account: "eip155:4663:0x1111111111111111111111111111111111111111",
+  address: "0x1111111111111111111111111111111111111111",
+  chainId: "eip155:4663" as const,
+  approvedMethods: ["eth_sendTransaction"],
+  approvedEvents: ["accountsChanged", "chainChanged"],
+  expiresAt: "2026-07-15T06:00:00.000Z",
+});
 
 const operation = (overrides: Readonly<Record<string, unknown>> = {}): WalletManagementOperation =>
   parseWalletManagementOperation({
@@ -74,6 +84,13 @@ interface ConfirmationCalls {
 
 const fakeOperations = (
   response: () => WalletOperationResponse = () => ({ operation: operation() }),
+  startResponse: () => WalletOperationStartResponse = () => {
+    const value = response();
+    return {
+      result: { status: "operation_started", operation: value.operation },
+      ...(value.qr === undefined ? {} : { qr: value.qr }),
+    };
+  },
 ): { readonly operations: WalletLocalControlOperationPort; readonly calls: OperationCalls } => {
   const calls: OperationCalls = { creates: [], reads: [], cancellations: [] };
   return {
@@ -81,7 +98,7 @@ const fakeOperations = (
     operations: Object.freeze({
       async start(input: WalletOperationCreate) {
         calls.creates.push(input);
-        return response();
+        return startResponse();
       },
       async get(id: string) {
         calls.reads.push(id);
@@ -173,7 +190,7 @@ describe("authenticated wallet control routes", () => {
     const { operations } = fakeOperations();
     const registry = await routes(operations);
     const expected = [
-      ["POST", "/api/v1/internal/control/wallet/operations", "declared_control", 201, true],
+      ["POST", "/api/v1/internal/control/wallet/operations", "declared_control", 200, true],
       ["GET", `/api/v1/internal/control/wallet/operations/${operationId}`, "none", 200, false],
       ["POST", `/api/v1/internal/control/wallet/operations/${operationId}/confirmation`, "declared_control", 200, true],
       ["DELETE", `/api/v1/internal/control/wallet/operations/${operationId}`, "declared_control", 200, false],
@@ -220,15 +237,25 @@ describe("authenticated wallet control routes", () => {
     const registry = await routes(operations, walletConnection(), confirmations.confirmation);
 
     const created = await invoke(registry, "POST", "/api/v1/internal/control/wallet/operations", {
-      kind: "connect",
+      kind: "disconnect",
       interactionInterface: "cli",
+      connectionRevision: null,
     });
-    expect(created).toEqual({ ok: true, response: "canonical_json", body: { operation: operation() } });
-    expect(calls.creates).toEqual([{ kind: "connect", interactionInterface: "cli" }]);
+    expect(created).toEqual({
+      ok: true,
+      response: "canonical_json",
+      body: { result: { status: "operation_started", operation: operation() } },
+    });
+    expect(calls.creates).toEqual([{
+      kind: "disconnect",
+      interactionInterface: "cli",
+      connectionRevision: null,
+    }]);
 
     const extraCreate = await invoke(registry, "POST", "/api/v1/internal/control/wallet/operations", {
       kind: "connect",
       interactionInterface: "cli",
+      connectionRevision: null,
       session: "forbidden",
     });
     expect(extraCreate.ok).toBe(false);
@@ -236,7 +263,7 @@ describe("authenticated wallet control routes", () => {
     expect(calls.creates).toHaveLength(1);
 
     let accessorRead = false;
-    const hostileCreate = { kind: "connect", interactionInterface: "cli" };
+    const hostileCreate = { kind: "connect", interactionInterface: "cli", connectionRevision: null };
     Object.defineProperty(hostileCreate, "kind", {
       enumerable: true,
       get() {
@@ -274,6 +301,36 @@ describe("authenticated wallet control routes", () => {
     expect(extraConfirmation.ok).toBe(false);
     if (!extraConfirmation.ok) expect(extraConfirmation.problem.code).toBe("invalid_input");
     expect(confirmations.calls.confirmations).toHaveLength(1);
+  });
+
+  it("returns a canonical current connection without inventing an operation resource", async () => {
+    const subject = fakeOperations(
+      () => ({ operation: operation() }),
+      () => ({
+        result: {
+          status: "current_connection",
+          connectionRevision: "4" as never,
+          connection: connected as never,
+        },
+      }),
+    );
+    const registry = await routes(subject.operations);
+    const result = await invoke(registry, "POST", "/api/v1/internal/control/wallet/operations", {
+      kind: "connect",
+      interactionInterface: "web",
+      connectionRevision: "4",
+    });
+    expect(result).toEqual({
+      ok: true,
+      response: "canonical_json",
+      body: {
+        result: {
+          status: "current_connection",
+          connectionRevision: "4",
+          connection: connected,
+        },
+      },
+    });
   });
 
   it("validates operation identifiers and never passes an invalid path identity to the coordinator", async () => {
@@ -323,17 +380,28 @@ describe("authenticated wallet control routes", () => {
     const cli = await invoke(cliRegistry, "POST", "/api/v1/internal/control/wallet/operations", {
       kind: "connect",
       interactionInterface: "cli",
+      connectionRevision: null,
     });
-    expect(cli).toEqual({ ok: true, response: "canonical_json", body: { operation: pending, qr } });
+    expect(cli).toEqual({
+      ok: true,
+      response: "canonical_json",
+      body: {
+        result: { status: "operation_started", operation: pending },
+        qr,
+      },
+    });
     if (cli.ok && cli.response === "canonical_json") {
       expect("qr" in (cli.body as Record<string, unknown>)).toBe(true);
-      expect("qr" in ((cli.body as { operation: Record<string, unknown> }).operation)).toBe(false);
+      expect("qr" in ((cli.body as {
+        result: { operation: Record<string, unknown> };
+      }).result.operation)).toBe(false);
     }
 
     const webRegistry = await routes(withQr.operations);
     const web = await invoke(webRegistry, "POST", "/api/v1/internal/control/wallet/operations", {
       kind: "connect",
       interactionInterface: "web",
+      connectionRevision: null,
     });
     expect(web.ok).toBe(false);
     if (!web.ok) expect(web.problem.code).toBe("internal_error");

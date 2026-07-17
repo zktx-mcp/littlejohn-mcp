@@ -25,7 +25,7 @@ import {
 import {
   createChainOwnerApplicationFactory,
 } from "../../src/chain/application.js";
-import type { Erc20CallEncoder } from "../../src/chain/erc20-calls.js";
+import type { Erc20CallEncoder } from "../../src/chain/evm-standard.js";
 import {
   ChainRpcError,
   type ChainRpcMethod,

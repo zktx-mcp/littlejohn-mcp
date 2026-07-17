@@ -16,22 +16,13 @@ and transaction security claims.
   secrets, raw signed transactions, or a new transaction's signable request.
 - A wallet transport never weakens explicit user confirmation, non-custodial
   authority, reviewed-request equality, or receipt verification.
-- Natural-language and MCP requests may create a wallet management operation
-  and identify the local page where the user can act. They never confirm that
-  operation when its lifecycle requires local confirmation. A fresh connection
-  with no live session may proceed to WalletConnect proposal approval without
-  replacing session state. A disconnection request with no live session may
-  complete without mutation. Replacing live sessions and an MCP-originated
-  disconnection of live sessions require a direct user action in the local web
-  interface. An interactive CLI wallet command supplies the direct action for
-  its own operation subject to the lifecycle's explicit-confirmation rules.
-  Wallet approval remains separate. Signing and execution require the separate
-  transaction confirmation defined below.
+- Wallet management operations, local wallet-management confirmation, and
+  WalletConnect approval follow
+  `docs/ARCHITECTURE.md#wallet-connection-lifecycle`. None creates transaction
+  authority. Wallet approval remains separate from the transaction confirmation
+  defined below.
 - MCP, piped CLI input, redirected CLI input, environment variables, saved
   settings, and command flags never authorize a wallet request.
-- Wallet management operation state, confirmation, and the single-session
-  invariant are defined only in `docs/ARCHITECTURE.md#wallet-connection-lifecycle`.
-  A wallet management confirmation never creates transaction authority.
 
 ## Confirmation Authority
 

@@ -115,6 +115,7 @@ type RouteSegment =
   | { readonly kind: "parameter"; readonly name: string };
 
 const parseRouteSegments = (pathPattern: string): readonly RouteSegment[] => {
+  if (pathPattern === "/") return Object.freeze([]);
   if (!pathPattern.startsWith("/") || pathPattern.includes("//") || pathPattern.endsWith("/") ||
     pathPattern === "/api/v1/runtime-identity") {
     throw new TypeError("Route path pattern is invalid.");

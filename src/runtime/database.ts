@@ -1,17 +1,15 @@
 import { constants } from "node:fs";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { link, lstat, open, readdir, unlink } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 
 import Database from "better-sqlite3";
 
 import {
-  canonicalJsonStringify,
   decodeCanonicalBase64Url,
   parseCapabilityDataAt,
   parseUtcTimestamp,
   walletConnectionCapability,
-  type CanonicalJson,
   type UtcTimestamp,
   type WalletConnectionData,
 } from "../core/index.js";
@@ -20,7 +18,6 @@ import {
   attestOwnerOnlyStateFile,
   acquireOwnerOnlyStateFileLease,
   createOwnerOnlyStateFile,
-  openOwnerOnlyStateFileForRead,
   type OwnerOnlyStateFileLease,
   type OwnerOnlyStateFileLeaseFactory,
 } from "./paths.js";
@@ -43,13 +40,7 @@ import {
   type WalletConnectionStorageRow,
 } from "./wallet-connection-storage.js";
 
-const migrationSql = `
-CREATE TABLE schema_migrations (
-  version INTEGER PRIMARY KEY CHECK (version > 0),
-  digest TEXT NOT NULL CHECK (length(digest) = 64),
-  applied_at TEXT NOT NULL
-);
-CREATE TABLE local_profile (
+const schemaSql = `CREATE TABLE local_profile (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   profile_id TEXT NOT NULL UNIQUE CHECK (length(profile_id) = ${runtimeIdentifierEncodedLength}),
   created_at TEXT NOT NULL
@@ -80,7 +71,12 @@ CREATE TABLE wallet_connection (
   ${walletConnectionFieldPresenceCheckSql}
 );`;
 
-const migrationDigest = createHash("sha256").update(migrationSql, "utf8").digest("hex");
+const currentTableNames = Object.freeze([
+  "local_profile",
+  "runtime_owner",
+  "wallet_connection",
+]);
+
 export interface LocalProfile {
   readonly profileId: ProfileId;
   readonly createdAt: UtcTimestamp;
@@ -116,7 +112,6 @@ export interface WalletProjectionStore {
   ): WalletConnectionRecord;
 }
 
-interface MigrationRow { version: number; digest: string; appliedAt: string }
 interface ProfileRow { singleton: number; profileId: string; createdAt: string }
 interface OwnerRow {
   singleton: number;
@@ -132,7 +127,6 @@ interface WalletRow extends WalletConnectionStorageRow {
   revision: string;
   updatedAt: string;
 }
-interface SchemaRow { readonly type: string; readonly name: string; readonly tableName: string; readonly sql: string }
 
 const sqliteContentionCodes: ReadonlySet<string> = new Set([
   "SQLITE_BUSY",
@@ -168,38 +162,20 @@ const tableNames = (database: Database.Database): string[] =>
   (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
     .all() as { name: string }[]).map((row) => row.name);
 
-const schemaRows = (database: Database.Database): SchemaRow[] =>
-  database.prepare(`SELECT type, name, tbl_name AS tableName, sql
-    FROM sqlite_schema
-    WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
-    ORDER BY type, name`).all() as SchemaRow[];
-
-const schemaIdentity = (database: Database.Database): string =>
-  createHash("sha256")
-    .update(canonicalJsonStringify(schemaRows(database) as unknown as CanonicalJson), "utf8")
-    .digest("hex");
-
-const expectedSchemaIdentity = (() => {
-  const database = new Database(":memory:");
-  try {
-    database.exec(migrationSql);
-    return schemaIdentity(database);
-  } finally { database.close(); }
-})();
+const assertCurrentSchema = (database: Database.Database): void => {
+  if (database.pragma("user_version", { simple: true }) !== runtimeProtocolVersion) {
+    throw new Error("SQLite schema protocol is incompatible.");
+  }
+  if (JSON.stringify(tableNames(database)) !== JSON.stringify(currentTableNames)) {
+    throw new Error("SQLite table set is incompatible.");
+  }
+};
 
 const configureConnection = (database: Database.Database): void => {
   database.pragma("foreign_keys = ON");
   if (database.pragma("foreign_keys", { simple: true }) !== 1) throw new Error("SQLite foreign keys are unavailable.");
   database.pragma("busy_timeout = 5000");
   if (database.pragma("busy_timeout", { simple: true }) !== 5_000) throw new Error("SQLite busy timeout is unavailable.");
-};
-
-const configureValidationConnection = (database: Database.Database): void => {
-  configureConnection(database);
-  database.pragma("temp_store = MEMORY");
-  if (database.pragma("temp_store", { simple: true }) !== 2) {
-    throw new Error("SQLite in-memory validation workspace is unavailable.");
-  }
 };
 
 const assertExistingWalMode = (database: Database.Database): void => {
@@ -217,11 +193,6 @@ const configureFreshDatabase = (database: Database.Database): void => {
 
 const configureExistingDatabase = (database: Database.Database): void => {
   configureConnection(database);
-  assertExistingWalMode(database);
-};
-
-const configureExistingValidation = (database: Database.Database): void => {
-  configureValidationConnection(database);
   assertExistingWalMode(database);
 };
 
@@ -292,20 +263,7 @@ const readWalletRaw = (database: Database.Database): WalletConnectionRecord => {
 };
 
 const validateDatabaseState = (database: Database.Database): void => {
-  const integrity = database.pragma("integrity_check", { simple: true }) as string;
-  if (integrity !== "ok") throw new Error("Database integrity failed.");
-  if ((database.pragma("foreign_key_check") as unknown[]).length !== 0) throw new Error("Database foreign keys are invalid.");
-  const expectedTables = ["local_profile", "runtime_owner", "schema_migrations", "wallet_connection"];
-  if (tableNames(database).join("\0") !== expectedTables.join("\0")) throw new Error("Database table set is invalid.");
-  if (schemaIdentity(database) !== expectedSchemaIdentity) throw new Error("Database schema identity is invalid.");
-  const migrations = database.prepare(`SELECT version, digest, applied_at AS appliedAt
-    FROM schema_migrations ORDER BY version`).all() as MigrationRow[];
-  if (
-    migrations.length !== 1 ||
-    migrations[0]?.version !== 1 ||
-    migrations[0].digest !== migrationDigest
-  ) throw new Error("Database migration identity is invalid.");
-  parseUtcTimestamp(migrations[0].appliedAt);
+  assertCurrentSchema(database);
   readProfileRaw(database);
   readOwnerRaw(database);
   readWalletRaw(database);
@@ -314,9 +272,8 @@ const validateDatabaseState = (database: Database.Database): void => {
 const bootstrapFreshDatabase = (database: Database.Database, now: UtcTimestamp): void => {
   exclusive(database, () => {
     if (tableNames(database).length !== 0) throw new Error("Fresh SQLite state is not empty.");
-    database.exec(migrationSql);
-    database.prepare("INSERT INTO schema_migrations(version, digest, applied_at) VALUES (1, ?, ?)")
-      .run(migrationDigest, now);
+    database.exec(schemaSql);
+    database.pragma(`user_version = ${runtimeProtocolVersion}`);
     database.prepare("INSERT INTO local_profile(singleton, profile_id, created_at) VALUES (1, ?, ?)")
       .run(createProfileId(), now);
     const initialWallet = encodeWalletConnectionStorage({ status: "unknown", reason: "reconciling" });
@@ -359,7 +316,6 @@ const removeIfPresent = async (path: string): Promise<boolean> => {
   }
 };
 
-const sqliteMainHeaderLength = 100;
 const sqliteArtifactSuffixes = Object.freeze(["", "-wal", "-shm"] as const);
 const publicationStagingSuffixPattern = /^([1-9][0-9]*)-([A-Za-z0-9_-]{22})(?:-(wal|shm))?$/u;
 
@@ -394,7 +350,6 @@ const reconcilePublicationStaging = async (path: string): Promise<void> => {
 
 interface SqliteArtifactSet {
   readonly state: "fresh" | "existing";
-  readonly hasWal: boolean;
 }
 
 const artifactExists = async (path: string): Promise<boolean> => {
@@ -407,41 +362,16 @@ const artifactExists = async (path: string): Promise<boolean> => {
   }
 };
 
-const assertWalMainHeader = (bytes: Uint8Array): void => {
-  if (
-    bytes.length < 20 ||
-    !Buffer.from(bytes.subarray(0, 16)).equals(Buffer.from("SQLite format 3\0", "binary")) ||
-    bytes[18] !== 2 ||
-    bytes[19] !== 2
-  ) throw new Error("Existing SQLite main file is not a complete WAL database.");
-};
-
-const assertWalDatabaseHeader = async (path: string): Promise<void> => {
-  const details = await lstat(path);
-  if (details.size < sqliteMainHeaderLength) throw new Error("Existing SQLite main file is incomplete.");
-  const handle = await openOwnerOnlyStateFileForRead(path);
-  try {
-    const header = Buffer.alloc(20);
-    const { bytesRead } = await handle.read(header, 0, header.length, 0);
-    if (bytesRead !== header.length) throw new Error("Existing SQLite main file is incomplete.");
-    assertWalMainHeader(header);
-  } finally { await handle.close(); }
-};
-
 const inspectSqliteArtifactSet = async (path: string): Promise<SqliteArtifactSet> => {
   const paths = sqliteArtifactSuffixes.map((suffix) => `${path}${suffix}`);
   const present = await Promise.all(paths.map(artifactExists));
   if (present.every((value) => !value)) {
-    return Object.freeze({ state: "fresh", hasWal: false });
+    return Object.freeze({ state: "fresh" });
   }
   if (!present[0]) throw new Error("SQLite artifact set has no main database.");
   const existingPaths = paths.filter((_candidate, index) => present[index] === true);
   for (const artifact of existingPaths) await attestOwnerOnlyStateFile(artifact);
-  await assertWalDatabaseHeader(path);
-  return Object.freeze({
-    state: "existing",
-    hasWal: present[1] === true,
-  });
+  return Object.freeze({ state: "existing" });
 };
 
 const settleSqliteArtifactSet = async (path: string): Promise<SqliteArtifactSet> => {
@@ -456,171 +386,32 @@ const settleSqliteArtifactSet = async (path: string): Promise<SqliteArtifactSet>
   throw failure;
 };
 
-const sameStableFileState = (
-  left: ReturnType<OwnerOnlyStateFileLease["stat"]>,
-  right: ReturnType<OwnerOnlyStateFileLease["stat"]>,
-): boolean => left.dev === right.dev && left.ino === right.ino && left.size === right.size &&
-  left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
-
-const readStableMainImage = (lease: OwnerOnlyStateFileLease): Buffer => {
-  const before = lease.stat();
-  if (!Number.isSafeInteger(before.size) || before.size < sqliteMainHeaderLength) {
-    throw new Error("Existing SQLite main file is incomplete.");
-  }
-  const image = Buffer.alloc(before.size);
-  let position = 0;
-  while (position < image.length) {
-    const bytesRead = lease.read(image, position, image.length - position, position);
-    if (bytesRead === 0) throw new Error("SQLite main file changed while reading.");
-    position += bytesRead;
-  }
-  if (!sameStableFileState(before, lease.stat())) throw new Error("SQLite main file changed while reading.");
-  return image;
-};
-
-interface ValidatedExistingState {
-  readonly mainLease: OwnerOnlyStateFileLease;
-  readonly readConnection?: Database.Database;
-}
-
-const closeReadConnection = (state: ValidatedExistingState, transactionOpen: boolean): void => {
-  let failure: unknown;
-  if (state.readConnection !== undefined) {
-    if (transactionOpen) {
-      try { state.readConnection.exec("ROLLBACK"); } catch (error) { failure = error; }
-    }
-    try { state.readConnection.close(); } catch (error) { failure ??= error; }
-  }
-  if (failure !== undefined) throw failure;
-};
-
-const validateCheckpointedMain = (
-  mainLease: OwnerOnlyStateFileLease,
-): ValidatedExistingState => {
-  const image = readStableMainImage(mainLease);
-  assertWalMainHeader(image);
-
-  const validationImage = Buffer.from(image);
-  validationImage[18] = 1;
-  validationImage[19] = 1;
-  const validation = new Database(validationImage, { readonly: true });
-  try {
-    configureValidationConnection(validation);
-    validateDatabaseState(validation);
-  } finally { validation.close(); }
-  mainLease.assertCurrent();
-  return Object.freeze({ mainLease });
-};
-
-const prepareActiveWalValidation = async (
-  path: string,
-  mainLease: OwnerOnlyStateFileLease,
-): Promise<ValidatedExistingState> => {
-  mainLease.assertCurrent();
-  const validation = new Database(path, { readonly: true, fileMustExist: true, timeout: 5_000 });
-  try {
-    configureExistingValidation(validation);
-    const opened = await settleSqliteArtifactSet(path);
-    if (opened.state !== "existing") throw new Error("SQLite artifact set changed while opening.");
-    mainLease.assertCurrent();
-    return Object.freeze({ mainLease, readConnection: validation });
-  } catch (error) {
-    try { validation.close(); } catch { /* Preserve the validation failure. */ }
-    throw error;
-  }
-};
-
-const acquireValidatedExistingState = async (
-  path: string,
-  leaseFactory: OwnerOnlyStateFileLeaseFactory,
-): Promise<ValidatedExistingState> => {
-  const inspection = await settleSqliteArtifactSet(path);
-  if (inspection.state !== "existing") throw new Error("Existing SQLite state is unavailable.");
-  const mainLease = leaseFactory(path);
-  try {
-    mainLease.assertCurrent();
-    return inspection.hasWal
-      ? await prepareActiveWalValidation(path, mainLease)
-      : validateCheckpointedMain(mainLease);
-  } catch (error) {
-    try { mainLease.close(); } catch { /* Preserve the validation failure. */ }
-    throw error;
-  }
-};
-
-interface OpenedValidatedDatabase {
+interface OpenedDatabase {
   readonly database: Database.Database;
   readonly mainLease: OwnerOnlyStateFileLease;
 }
 
-const openValidatedConnection = (
-  path: string,
-  validated: ValidatedExistingState,
-): Database.Database => {
-  let database: Database.Database | undefined;
-  let writerTransaction = false;
-  let readTransaction = false;
-  let readConnectionClosed = false;
-  try {
-    validated.mainLease.assertCurrent();
-    if (validated.readConnection !== undefined) {
-      validated.readConnection.exec("BEGIN");
-      readTransaction = true;
-      validateDatabaseState(validated.readConnection);
-      validated.mainLease.assertCurrent();
-    }
-    database = new Database(path, { fileMustExist: true, timeout: 5_000 });
-    configureExistingDatabase(database);
-    validated.mainLease.assertCurrent();
-    database.exec("BEGIN IMMEDIATE");
-    writerTransaction = true;
-    try {
-      validated.mainLease.assertCurrent();
-      validateDatabaseState(database);
-      validated.mainLease.assertCurrent();
-      database.exec("COMMIT");
-      writerTransaction = false;
-    } catch (error) {
-      try { database.exec("ROLLBACK"); } catch { /* Preserve the original failure. */ }
-      writerTransaction = false;
-      throw error;
-    }
-    validated.mainLease.assertCurrent();
-    closeReadConnection(validated, readTransaction);
-    readTransaction = false;
-    readConnectionClosed = true;
-    validated.mainLease.assertCurrent();
-    return database;
-  } catch (error) {
-    if (writerTransaction) {
-      try { database?.exec("ROLLBACK"); } catch { /* Preserve the original failure. */ }
-    }
-    try { database?.close(); } catch { /* Preserve the original failure. */ }
-    if (!readConnectionClosed) {
-      try { closeReadConnection(validated, readTransaction); } catch { /* Preserve the original failure. */ }
-    }
-    try { validated.mainLease.close(); } catch { /* Preserve the original failure. */ }
-    throw error;
-  }
-};
-
-const openValidatedDatabase = async (
+const openCurrentDatabase = async (
   path: string,
   leaseFactory: OwnerOnlyStateFileLeaseFactory,
-): Promise<OpenedValidatedDatabase> => {
-  const validated = await acquireValidatedExistingState(path, leaseFactory);
+): Promise<OpenedDatabase> => {
+  const inspection = await settleSqliteArtifactSet(path);
+  if (inspection.state !== "existing") throw new Error("Existing SQLite state is unavailable.");
+  const mainLease = leaseFactory(path);
   let database: Database.Database | undefined;
   try {
-    database = openValidatedConnection(path, validated);
-    const opened = await settleSqliteArtifactSet(path);
-    if (opened.state !== "existing") throw new Error("SQLite artifact set changed while opening.");
-    validated.mainLease.assertCurrent();
+    mainLease.assertCurrent();
+    database = new Database(path, { fileMustExist: true, timeout: 5_000 });
+    configureExistingDatabase(database);
+    mainLease.assertCurrent();
+    validateDatabaseState(database);
+    mainLease.assertCurrent();
     await reconcilePublicationStaging(path);
-    validated.mainLease.assertCurrent();
-    return Object.freeze({ database, mainLease: validated.mainLease });
+    mainLease.assertCurrent();
+    return Object.freeze({ database, mainLease });
   } catch (error) {
     try { database?.close(); } catch { /* Preserve the original failure. */ }
-    try { validated.mainLease.close(); } catch { /* Preserve the original failure. */ }
+    try { mainLease.close(); } catch { /* Preserve the original failure. */ }
     throw error;
   }
 };
@@ -633,7 +424,6 @@ const createAndPublishFreshDatabase = async (path: string, now: UtcTimestamp): P
     database = new Database(pending, { fileMustExist: true, timeout: 5_000 });
     configureFreshDatabase(database);
     await attestOwnerOnlyStateFile(pending);
-    await assertWalDatabaseHeader(pending);
     bootstrapFreshDatabase(database, now);
     database.pragma("wal_checkpoint(TRUNCATE)");
     database.close();
@@ -674,7 +464,7 @@ export class ProductDatabase {
   #databaseClosed = false;
   #mainLeaseClosed = false;
 
-  private constructor(opened: OpenedValidatedDatabase) {
+  private constructor(opened: OpenedDatabase) {
     this.#database = opened.database;
     this.#mainLease = opened.mainLease;
     this.#ownerStore = Object.freeze({
@@ -704,10 +494,10 @@ export class ProductDatabase {
         catch (error) { publicationFailure = error; }
       }
       if (publicationFailure !== undefined) {
-        try { return new ProductDatabase(await openValidatedDatabase(path, stateFileAuthority.acquireMainLease)); }
+        try { return new ProductDatabase(await openCurrentDatabase(path, stateFileAuthority.acquireMainLease)); }
         catch { throw publicationFailure; }
       }
-      return new ProductDatabase(await openValidatedDatabase(path, stateFileAuthority.acquireMainLease));
+      return new ProductDatabase(await openCurrentDatabase(path, stateFileAuthority.acquireMainLease));
     } catch (error) { throw storageError(error); }
   }
 
@@ -827,9 +617,3 @@ export class ProductDatabase {
     } catch (error) { throw storageError(error); }
   }
 }
-
-export const databaseMigrationIdentity = Object.freeze({
-  version: 1,
-  digest: migrationDigest,
-  schemaIdentity: expectedSchemaIdentity,
-});

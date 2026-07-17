@@ -132,7 +132,12 @@ describe("RPC normalization", () => {
       blockTimestamp: "2024-01-01T00:00:00.000Z",
     });
     expect(normalizeRpcRuntimeCode("0x")).toEqual({ status: "empty" });
-    expect(normalizeRpcRuntimeCode("0xAABB")).toMatchObject({ status: "present", bytecode: "0xaabb", byteLength: "2" });
+    expect(normalizeRpcRuntimeCode("0xAABB")).toEqual({
+      status: "present",
+      bytecode: "0xaabb",
+      byteLength: "2",
+      codeHash: "0x65b043cdd93fde12ee6629de2d9ce786ba7d5b4c514afecea4d1b4b2c740087c",
+    });
     expect(() => normalizeRpcRuntimeCode(`0x${"00".repeat(262_145)}`)).toThrow(TypeError);
   });
 
@@ -141,6 +146,7 @@ describe("RPC normalization", () => {
     expect(normalizeAbiDecimals(word(255n))).toBe("255");
     expect(() => normalizeAbiDecimals(word(256n))).toThrow(TypeError);
     expect(() => normalizeAbiUint256("0x01")).toThrow(TypeError);
+    expect(() => normalizeAbiUint256(`${word(1n)}${word(2n).slice(2)}`)).toThrow(TypeError);
   });
 
   it("normalizes transaction fees and preserves the exact access-list sequence and multiplicity", () => {

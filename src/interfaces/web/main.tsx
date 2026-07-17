@@ -2,16 +2,16 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { productDisplayName } from "../../core/browser.js";
-import { WalletOperationPage } from "./wallet-operation-page.js";
+import { App } from "./app.js";
 import "./styles.css";
 
-document.title = `${productDisplayName} Wallet Operation`;
+document.title = productDisplayName;
 
 const root = document.getElementById("root");
-if (root === null) throw new Error("Wallet operation application root is unavailable.");
+if (root === null) throw new Error("Browser application root is unavailable.");
 
 createRoot(root).render(
   <StrictMode>
-    <WalletOperationPage />
+    <App />
   </StrictMode>,
 );

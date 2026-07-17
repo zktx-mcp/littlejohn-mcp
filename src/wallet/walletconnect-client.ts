@@ -1712,7 +1712,20 @@ interface ProductionSdkLifecycle {
   close(): Promise<void>;
 }
 
+const capturePendingTransportSettlement = (
+  relayer: unknown,
+): Promise<void> | undefined => {
+  const pendingTransport = readOptionalOwnDataProperty(relayer, "connectPromise");
+  if (pendingTransport === undefined) return undefined;
+  const then = captureDataMethod(pendingTransport, "then", 1, false);
+  return Promise.resolve(invokeMethod(then, [
+    () => undefined,
+    () => undefined,
+  ])).then(() => undefined);
+};
+
 const createProductionSdkClose = (
+  relayer: unknown,
   transportClose: CapturedMethod | undefined,
   heartbeatStop: CapturedMethod | undefined,
 ): (() => Promise<void>) => {
@@ -1723,12 +1736,28 @@ const createProductionSdkClose = (
   const closeRemaining = async (): Promise<void> => {
     let failed = false;
     if (!transportClosed && transportClose !== undefined) {
+      let pendingTransport: Promise<void> | undefined;
+      let transportFailed = false;
+      try {
+        pendingTransport = capturePendingTransportSettlement(relayer);
+      } catch {
+        transportFailed = true;
+      }
       try {
         await invokeMethod(transportClose, []);
-        transportClosed = true;
       } catch {
-        failed = true;
+        transportFailed = true;
       }
+      if (pendingTransport !== undefined) {
+        try {
+          await pendingTransport;
+          await invokeMethod(transportClose, []);
+        } catch {
+          transportFailed = true;
+        }
+      }
+      if (transportFailed) failed = true;
+      else transportClosed = true;
     }
     if (!heartbeatStopped && heartbeatStop !== undefined) {
       try {
@@ -1760,6 +1789,7 @@ const captureProductionSdkLifecycle = (
   const core = readOwnDataProperty(client, "core");
   let heartbeatStop: CapturedMethod | undefined;
   let transportClose: CapturedMethod | undefined;
+  let relayer: unknown;
   let complete = true;
   try {
     const heartbeat = readOwnDataProperty(core, "heartbeat");
@@ -1768,12 +1798,12 @@ const captureProductionSdkLifecycle = (
     complete = false;
   }
   try {
-    const relayer = readOwnDataProperty(core, "relayer");
+    relayer = readOwnDataProperty(core, "relayer");
     transportClose = captureDataMethod(relayer, "transportClose", 1, false);
   } catch {
     complete = false;
   }
-  const close = createProductionSdkClose(transportClose, heartbeatStop);
+  const close = createProductionSdkClose(relayer, transportClose, heartbeatStop);
   acquisition.retainCleanup(close);
   if (!complete) throw invalidSdkData();
   return Object.freeze({ core, close });

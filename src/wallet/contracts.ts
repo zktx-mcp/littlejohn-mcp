@@ -4,33 +4,39 @@ import {
 } from "./operation-state.js";
 import type {
   WalletManagementOperation,
+  WalletCurrentOperationProjection,
   WalletOperationConfirmation,
   WalletOperationCreate,
+  WalletOperationStartResponse,
+  WalletOperationStartResult,
   WalletOperationResponse,
   WalletOperationPresentation,
+  WalletWebOperationCreate,
 } from "./operation-contract.js";
 
 export * from "./operation-contract.js";
-export const walletManagementCapabilityIds = Object.freeze({
-  cancelOperation: "wallet.cancel_operation",
-  connect: "wallet.connect",
-  disconnect: "wallet.disconnect",
-  operation: "wallet.operation",
-} as const);
-export const walletManagementCapabilityIdList = Object.freeze(
-  Object.values(walletManagementCapabilityIds),
-);
+export {
+  walletManagementCapabilityIdList,
+  walletManagementContractList,
+  walletManagementContracts,
+} from "./management-contracts.js";
+export type {
+  AnyWalletManagementContract,
+  WalletManagementContractDefinition,
+} from "./management-contracts.js";
 
 export interface WalletLocalControlOperationPort {
-  start(input: WalletOperationCreate): Promise<WalletOperationResponse>;
+  start(input: WalletOperationCreate): Promise<WalletOperationStartResponse>;
   get(operationId: string): Promise<WalletOperationResponse>;
   cancel(operationId: string): Promise<WalletOperationResponse>;
 }
 
 export interface WalletWebOperationPort {
-  start(kind: WalletOperationKind): Promise<WalletManagementOperation>;
-  get(operationId: string): Promise<WalletManagementOperation>;
-  cancel(operationId: string): Promise<WalletManagementOperation>;
+  start(input: WalletWebOperationCreate): Promise<WalletOperationStartResult>;
+  cancel(
+    operationId: string,
+    input: WalletOperationConfirmation,
+  ): Promise<WalletManagementOperation>;
 }
 
 export interface WalletOperationConfirmationPort<
@@ -47,8 +53,13 @@ export interface WalletOperationPresentationPort {
   get(operationId: string): Promise<WalletOperationPresentation>;
 }
 
+export interface WalletCurrentOperationProjectionPort {
+  get(): Promise<WalletCurrentOperationProjection>;
+}
+
 export interface WalletInterfaceOperations {
   readonly operation: WalletWebOperationPort;
   readonly confirmation: WalletOperationConfirmationPort<"web">;
   readonly presentation: WalletOperationPresentationPort;
+  readonly currentProjection: WalletCurrentOperationProjectionPort;
 }

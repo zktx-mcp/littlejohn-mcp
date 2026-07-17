@@ -10,20 +10,12 @@ import {
   inspectDirectCodeExecution,
   inspectModuleImports,
   inspectSource,
+  loadPackageManifest,
   moduleImportPolicyViolations,
   packageRoot,
+  runtimePackageSourceRoots,
   type PackageImportPolicy,
 } from "./import-audit.js";
-import {
-  analyzePackageExtensions,
-  extensionWorkUnits,
-  loadPackageManifest,
-  loadWu1HandoffFixture,
-  parseWu1HandoffFixture,
-  type ExtensionWorkUnit,
-  type PackageManifest,
-  type Wu1HandoffFixture,
-} from "./wu1-handoff-fixture.js";
 
 const testPolicy = (
   runtimePackageOwners: ReadonlyMap<string, string> = new Map(),
@@ -31,52 +23,11 @@ const testPolicy = (
   repositoryRoot = resolve("src"),
   auditedSourceFiles: readonly string[] = [],
 ): PackageImportPolicy => ({
-  activeWorkUnits: new Set(),
-  activeRuntimePackages: new Set(runtimePackageOwners.keys()),
   auditedSourceFiles: new Set(auditedSourceFiles.map((path) => resolve(path))),
   repositoryRoot,
   runtimePackageOwners,
   toolPackages,
 });
-
-const withExtensions = (
-  manifest: PackageManifest,
-  fixture: Wu1HandoffFixture,
-  workUnits: readonly ExtensionWorkUnit[],
-): PackageManifest => {
-  let scripts = { ...manifest.scripts };
-  let dependencies = { ...manifest.dependencies };
-  let devDependencies = { ...manifest.devDependencies };
-  for (const workUnit of workUnits) {
-    const extension = fixture.extensionsByWorkUnit[workUnit];
-    scripts = { ...scripts, ...extension.scripts };
-    dependencies = { ...dependencies, ...extension.dependencies };
-    devDependencies = { ...devDependencies, ...extension.devDependencies };
-  }
-  return { ...manifest, scripts, dependencies, devDependencies };
-};
-
-const withoutExtensions = (
-  manifest: PackageManifest,
-  fixture: Wu1HandoffFixture,
-  workUnits: readonly ExtensionWorkUnit[],
-): PackageManifest => {
-  const scripts = { ...manifest.scripts };
-  const dependencies = { ...manifest.dependencies };
-  const devDependencies = { ...manifest.devDependencies };
-  for (const workUnit of workUnits) {
-    const extension = fixture.extensionsByWorkUnit[workUnit];
-    for (const name of Object.keys(extension.dependencies)) delete dependencies[name];
-    for (const name of Object.keys(extension.devDependencies)) delete devDependencies[name];
-    for (const [name, value] of Object.entries(extension.scripts)) {
-      if (scripts[name] !== value) continue;
-      const foundationValue = fixture.packageFoundation.scripts[name];
-      if (foundationValue === undefined) delete scripts[name];
-      else scripts[name] = foundationValue;
-    }
-  }
-  return { ...manifest, scripts, dependencies, devDependencies };
-};
 
 const moduleViolations = (
   source: string,
@@ -127,72 +78,31 @@ describe("module import audit", () => {
     ]) expect(classifyModuleSpecifier(forbidden)).toBe("forbidden");
   });
 
-  it("derives the complete work-unit fixture schema and iteration from one key tuple", async () => {
-    expect(extensionWorkUnits).toEqual(["WU2", "WU3", "WU4", "WU5", "WU6"]);
-    const { fixture } = await loadWu1HandoffFixture();
-    expect(parseWu1HandoffFixture(fixture)).toEqual(fixture);
-    expect(() => parseWu1HandoffFixture({ ...fixture, unexpected: true })).toThrow();
-    expect(() => parseWu1HandoffFixture({
-      ...fixture,
-      extensionsByWorkUnit: {
-        ...fixture.extensionsByWorkUnit,
-        WU3: { ...fixture.extensionsByWorkUnit.WU3, unexpected: true },
-      },
-    })).toThrow();
-    const { devDependencies: removedSection, ...incompleteWu3 } = fixture.extensionsByWorkUnit.WU3;
-    void removedSection;
-    expect(() => parseWu1HandoffFixture({
-      ...fixture,
-      extensionsByWorkUnit: { ...fixture.extensionsByWorkUnit, WU3: incompleteWu3 },
-    })).toThrow();
-    expect(() => parseWu1HandoffFixture({
-      ...fixture,
-      extensionsByWorkUnit: { ...fixture.extensionsByWorkUnit, WU7: fixture.extensionsByWorkUnit.WU6 },
-    })).toThrow();
-    const { WU6: removed, ...withoutWu6 } = fixture.extensionsByWorkUnit;
-    void removed;
-    expect(() => parseWu1HandoffFixture({ ...fixture, extensionsByWorkUnit: withoutWu6 })).toThrow();
-  });
-
-  it("derives package owners from the foundation and complete active extensions", async () => {
-    const [{ fixture }, manifest] = await Promise.all([
-      loadWu1HandoffFixture(),
-      loadPackageManifest(),
-    ]);
-    const policy = createPackageImportPolicy(fixture, manifest);
-    const analyzed = analyzePackageExtensions(fixture, manifest);
-    expect(policy.activeWorkUnits).toEqual(analyzed.activeWorkUnits);
-    expect(policy.runtimePackageOwners.get("zod")).toBe(resolve("."));
+  it("derives every current package classification from package.json and one ownership map", async () => {
+    const manifest = await loadPackageManifest();
+    const policy = createPackageImportPolicy(manifest);
+    expect(Object.keys(runtimePackageSourceRoots).sort()).toEqual(Object.keys(manifest.dependencies).sort());
+    expect(policy.runtimePackageOwners.get("zod")).toBe(resolve("src"));
+    expect(policy.runtimePackageOwners.get("@noble/hashes")).toBe(resolve("src/core"));
     expect(policy.runtimePackageOwners.get("better-sqlite3")).toBe(resolve("src/runtime"));
     expect(policy.runtimePackageOwners.get("@walletconnect/sign-client")).toBe(resolve("src/wallet"));
     expect(policy.runtimePackageOwners.get("qrcode")).toBe(resolve("src/wallet"));
     expect(policy.runtimePackageOwners.get("viem")).toBe(resolve("src/chain"));
     expect(policy.runtimePackageOwners.get("react")).toBe(resolve("src/interfaces"));
-    expect(policy.activeRuntimePackages.has("viem")).toBe(policy.activeWorkUnits.has("WU4"));
-    expect(policy.activeRuntimePackages.has("react")).toBe(policy.activeWorkUnits.has("WU5"));
     expect(policy.toolPackages.has("typescript")).toBe(true);
-    expect(policy.toolPackages.has("@types/qrcode")).toBe(true);
 
-    const missingWu5Entry = Object.entries(fixture.extensionsByWorkUnit.WU5.dependencies)[0];
-    if (missingWu5Entry === undefined) throw new TypeError("WU5 dependency fixture is empty");
-    const [missingWu5Package, missingWu5Version] = missingWu5Entry;
-    const incompleteWu5Dependencies = { ...manifest.dependencies };
-    delete incompleteWu5Dependencies[missingWu5Package];
-    expect(() => createPackageImportPolicy(fixture, {
-      ...manifest,
-      dependencies: incompleteWu5Dependencies,
-    })).toThrow(`WU5:missing:dependencies:${missingWu5Package}@${missingWu5Version}`);
-    expect(() => createPackageImportPolicy(fixture, {
+    const missingReact = { ...manifest.dependencies };
+    delete missingReact["react"];
+    expect(() => createPackageImportPolicy({ ...manifest, dependencies: missingReact }))
+      .toThrow("Runtime package owner is undeclared: react");
+    expect(() => createPackageImportPolicy({
       ...manifest,
       dependencies: { ...manifest.dependencies, "qrcode-extra": "1.0.0" },
-    })).toThrow("dependencies:qrcode-extra@1.0.0");
+    })).toThrow("Runtime package has no source owner: qrcode-extra");
     expect(() => createPackageImportPolicy({
-      ...fixture,
-      extensionsByWorkUnit: {
-        ...fixture.extensionsByWorkUnit,
-        WU3: { ...fixture.extensionsByWorkUnit.WU3, sourceRoot: "../outside" },
-      },
-    }, manifest)).toThrow("Package source root is outside the repository: WU3:../outside");
+      ...manifest,
+      devDependencies: { ...manifest.devDependencies, react: manifest.dependencies["react"] as string },
+    })).toThrow("Package is both runtime and development dependency: react");
   });
 
   it("collects literal imports, exports, import types, import-equals, dynamic imports, and direct require", () => {
@@ -236,16 +146,9 @@ describe("module import audit", () => {
     }
   });
 
-  it("rejects undeclared, inactive, misplaced, and development-only packages", async () => {
+  it("rejects undeclared, misplaced, and development-only packages", async () => {
     const sourceRoot = resolve("src");
-    const [{ fixture }, manifest] = await Promise.all([
-      loadWu1HandoffFixture(),
-      loadPackageManifest(),
-    ]);
-    const policy = createPackageImportPolicy(
-      fixture,
-      withoutExtensions(manifest, fixture, ["WU4", "WU5", "WU6"]),
-    );
+    const policy = createPackageImportPolicy(await loadPackageManifest());
     expect(moduleViolations(`
       import SignClient from "@walletconnect/sign-client";
       import QRCode from "qrcode";
@@ -256,12 +159,12 @@ describe("module import audit", () => {
       `import extra from "qrcode-extra"; void extra;`,
       resolve("src/wallet/client.ts"),
       policy,
-    )).toEqual(["src/wallet/client.ts:qrcode-extra:undeclared_or_inactive"]);
+    )).toEqual(["src/wallet/client.ts:qrcode-extra:undeclared"]);
     expect(moduleViolations(
       `import type { PublicClient } from "viem";`,
       resolve("src/chain/client.ts"),
       policy,
-    )).toEqual(["src/chain/client.ts:viem:undeclared_or_inactive"]);
+    )).toEqual([]);
     expect(moduleViolations(`
       import SignClient from "@walletconnect/sign-client";
       import QRCode from "qrcode";
@@ -276,39 +179,6 @@ describe("module import audit", () => {
     )).toEqual(["src/runtime/bypass.ts:typescript:development_only"]);
     expect(policy.repositoryRoot).toBe(resolve("."));
     expect(sourceRoot).toBe(resolve("src"));
-  });
-
-  it("activates every future work-unit package group without analyzer edits or path exceptions", async () => {
-    const [{ fixture }, manifest] = await Promise.all([
-      loadWu1HandoffFixture(),
-      loadPackageManifest(),
-    ]);
-    const futureWorkUnits = extensionWorkUnits.filter((workUnit) => workUnit !== "WU2");
-    const baseline = withoutExtensions(manifest, fixture, futureWorkUnits);
-    const baselinePolicy = createPackageImportPolicy(fixture, baseline);
-
-    for (const workUnit of futureWorkUnits) {
-      const extension = fixture.extensionsByWorkUnit[workUnit];
-      const activeManifest = withExtensions(baseline, fixture, [workUnit]);
-      const activePolicy = createPackageImportPolicy(fixture, activeManifest);
-      expect(activePolicy.activeWorkUnits.has(workUnit)).toBe(true);
-      for (const name of Object.keys(extension.dependencies)) {
-        const ownerFile = resolve(extension.sourceRoot, "consumer.ts");
-        const source = `import ${JSON.stringify(name)};`;
-        expect(activePolicy.runtimePackageOwners.get(name)).toBe(resolve(extension.sourceRoot));
-        expect(moduleViolations(source, ownerFile, activePolicy)).toEqual([]);
-        expect(moduleViolations(source, ownerFile, baselinePolicy))
-          .toContain(`${extension.sourceRoot}/consumer.ts:${name}:undeclared_or_inactive`);
-        expect(moduleViolations(source, resolve("src/unowned/consumer.ts"), activePolicy))
-          .toContain(`src/unowned/consumer.ts:${name}:${extension.sourceRoot}`);
-      }
-      for (const name of Object.keys(extension.devDependencies)) {
-        const source = `import ${JSON.stringify(name)};`;
-        expect(moduleViolations(source, resolve("scripts/consumer.mjs"), activePolicy)).toEqual([]);
-        expect(moduleViolations(source, resolve(extension.sourceRoot, "consumer.ts"), activePolicy))
-          .toContain(`${extension.sourceRoot}/consumer.ts:${name}:development_only`);
-      }
-    }
   });
 
   it("rejects nonliteral and forbidden module specifiers without claiming indirect execution coverage", () => {
@@ -361,7 +231,7 @@ describe("module import audit", () => {
       ["src/wallet/client.ts", "../runtime/index.js"],
       ["scripts/release-check.mjs", "../src/core/index.js"],
       ["vite.config.ts", "./vitest.config.ts"],
-      ["src/interfaces/web/main.tsx", "./wallet-operation-page.js"],
+      ["src/interfaces/web/main.tsx", "./app.js"],
       ["src/interfaces/web/main.tsx", "./styles.css"],
       ["src/runtime/esm-consumer.mts", "./esm-target.mjs"],
       ["src/runtime/cjs-consumer.cts", "./cjs-target.cjs"],
@@ -371,7 +241,7 @@ describe("module import audit", () => {
       resolve("src/runtime/index.ts"),
       resolve("src/core/index.ts"),
       resolve("vitest.config.ts"),
-      resolve("src/interfaces/web/wallet-operation-page.tsx"),
+      resolve("src/interfaces/web/app.tsx"),
       resolve("src/interfaces/web/styles.css"),
       resolve("src/runtime/esm-target.mts"),
       resolve("src/runtime/cjs-target.cts"),

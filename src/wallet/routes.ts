@@ -16,9 +16,12 @@ import {
   parseWalletOperationCreate,
   parseWalletOperationId,
   parseWalletOperationResponse,
+  parseWalletOperationStartResponse,
+  walletManagementContracts,
   type WalletOperationConfirmationPort,
   type WalletLocalControlOperationPort,
 } from "./contracts.js";
+import type { WalletOperationKind } from "./operation-state.js";
 import {
   createWalletFailure,
   normalizeWalletError,
@@ -55,6 +58,22 @@ const normalizeFailure = (error: unknown): RouteResult => failure(normalizeWalle
 
 const operationId = (context: RouteContext): string => parseWalletOperationId(context.params["operationId"]);
 
+const startContract = (kind: WalletOperationKind) =>
+  walletManagementContracts[kind];
+
+const validatedOperationResponse = (
+  contract: typeof walletManagementContracts.operation |
+    typeof walletManagementContracts.cancelOperation,
+  id: string,
+  value: unknown,
+) => {
+  const response = parseWalletOperationResponse(value);
+  return Object.freeze({
+    ...response,
+    operation: contract.parseSuccess({ operationId: id }, response.operation),
+  });
+};
+
 export const extendWalletControlRouteRegistry = (input: {
   readonly routes: RuntimeRouteRegistry;
   readonly operations: WalletLocalControlOperationPort;
@@ -79,7 +98,7 @@ export const extendWalletControlRouteRegistry = (input: {
       mutation: "declared_control",
       pathPattern: walletControlRoutes.operations,
       response: "canonical_json",
-      successStatus: 201,
+      successStatus: 200,
       handler: async (context) => {
         let createInput;
         try {
@@ -88,11 +107,14 @@ export const extendWalletControlRouteRegistry = (input: {
           return invalidInput();
         }
         try {
-          const response = parseWalletOperationResponse(await operations.start(createInput));
+          const response = parseWalletOperationStartResponse(await operations.start(createInput));
           if (createInput.interactionInterface !== "cli" && response.qr !== undefined) {
             throw new TypeError("QR material is not available to this interaction interface.");
           }
-          return success(response);
+          return success({
+            ...response,
+            result: startContract(createInput.kind).parseSuccess({}, response.result),
+          });
         } catch (error) {
           return normalizeFailure(error);
         }
@@ -112,7 +134,11 @@ export const extendWalletControlRouteRegistry = (input: {
           return invalidInput();
         }
         try {
-          return success(parseWalletOperationResponse(await operations.get(id)));
+          return success(validatedOperationResponse(
+            walletManagementContracts.operation,
+            id,
+            await operations.get(id),
+          ));
         } catch (error) {
           return normalizeFailure(error);
         }
@@ -134,7 +160,11 @@ export const extendWalletControlRouteRegistry = (input: {
           return invalidInput();
         }
         try {
-          return success(parseWalletOperationResponse(await cliConfirmation.confirm(id, confirmation)));
+          return success(validatedOperationResponse(
+            walletManagementContracts.operation,
+            id,
+            await cliConfirmation.confirm(id, confirmation),
+          ));
         } catch (error) {
           return normalizeFailure(error);
         }
@@ -154,7 +184,11 @@ export const extendWalletControlRouteRegistry = (input: {
           return invalidInput();
         }
         try {
-          return success(parseWalletOperationResponse(await operations.cancel(id)));
+          return success(validatedOperationResponse(
+            walletManagementContracts.cancelOperation,
+            id,
+            await operations.cancel(id),
+          ));
         } catch (error) {
           return normalizeFailure(error);
         }

@@ -1,4 +1,7 @@
 import {
+  compareCodePointSequences,
+} from "../core/index.js";
+import {
   extendInterfaceRuntimeSupportManifest,
   type CapabilityAvailabilityInput,
   type ChainRuntimeSupportManifest,
@@ -6,8 +9,8 @@ import {
 } from "../runtime/index.js";
 import {
   readInterfaceIdentities,
-  walletConnectionInterface,
-  walletToolInterfaces,
+  walletInterfaceBindingList,
+  type WalletInterfaceBinding,
 } from "./identities.js";
 
 const readAvailability: CapabilityAvailabilityInput = Object.freeze({
@@ -19,61 +22,32 @@ const readAvailability: CapabilityAvailabilityInput = Object.freeze({
   web: "unavailable",
 });
 
-const walletConnectionAvailability: CapabilityAvailabilityInput = Object.freeze({
-  overall: "available",
-  direct: "internal",
-  http: "available",
-  mcp: "available",
-  cli: "available",
-  web: "available",
-});
-
-const walletOperationAvailability: CapabilityAvailabilityInput = Object.freeze({
-  overall: "available",
+const walletBindingAvailability = (
+  binding: WalletInterfaceBinding,
+): CapabilityAvailabilityInput => Object.freeze({
+  overall: binding.mcp !== undefined || binding.cli !== undefined || binding.web !== undefined
+    ? "available"
+    : "internal",
   direct: "internal",
   http: "internal",
-  mcp: "available",
-  cli: "available",
-  web: "available",
-});
-
-const walletStartAvailability: CapabilityAvailabilityInput = Object.freeze({
-  overall: "available",
-  direct: "internal",
-  http: "internal",
-  mcp: "available",
-  cli: "available",
-  web: "unavailable",
+  mcp: binding.mcp === undefined ? "unavailable" : "available",
+  cli: binding.cli === undefined ? "unavailable" : "available",
+  web: binding.web === undefined ? "unavailable" : "available",
 });
 
 export const extendInterfaceSupportManifest = (
   parent: ChainRuntimeSupportManifest,
 ): InterfaceRuntimeSupportManifest => extendInterfaceRuntimeSupportManifest(parent, {
   registrations: [],
-  changes: [
+  changes: Object.freeze([
     ...readInterfaceIdentities
-      .filter((identity) => identity !== walletConnectionInterface)
-      .map((identity) => identity.capabilityId),
-  ].map((capabilityId) => ({ capabilityId, availability: readAvailability })).concat([
-    {
-      capabilityId: walletToolInterfaces.cancelOperation.capabilityId,
-      availability: walletOperationAvailability,
-    },
-    {
-      capabilityId: walletToolInterfaces.startConnection.capabilityId,
-      availability: walletStartAvailability,
-    },
-    {
-      capabilityId: walletConnectionInterface.capabilityId,
-      availability: walletConnectionAvailability,
-    },
-    {
-      capabilityId: walletToolInterfaces.startDisconnection.capabilityId,
-      availability: walletStartAvailability,
-    },
-    {
-      capabilityId: walletToolInterfaces.getOperation.capabilityId,
-      availability: walletOperationAvailability,
-    },
-  ]),
+      .map((identity) => ({
+        capabilityId: identity.capabilityId,
+        availability: readAvailability,
+      })),
+    ...walletInterfaceBindingList.map((binding) => ({
+      capabilityId: binding.contract.capabilityId,
+      availability: walletBindingAvailability(binding),
+    })),
+  ].sort((left, right) => compareCodePointSequences(left.capabilityId, right.capabilityId))),
 });

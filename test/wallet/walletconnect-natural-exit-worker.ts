@@ -73,15 +73,103 @@ const exerciseHeartbeat = async (core: unknown): Promise<void> => {
 };
 await exerciseHeartbeat(firstCore);
 
+const exerciseRelayerCloseRace = async (core: unknown): Promise<void> => {
+  if (typeof core !== "object" || core === null) {
+    throw new TypeError("The pinned Sign Client Core is unavailable.");
+  }
+  const relayer = Object.getOwnPropertyDescriptor(core, "relayer")?.value as unknown;
+  if (typeof relayer !== "object" || relayer === null) {
+    throw new TypeError("The pinned Sign Client relayer is unavailable.");
+  }
+  const prototype = Reflect.getPrototypeOf(relayer) as object | null;
+  const transportOpen = prototype === null
+    ? undefined
+    : Object.getOwnPropertyDescriptor(prototype, "transportOpen")?.value as unknown;
+  const transportClose = prototype === null
+    ? undefined
+    : Object.getOwnPropertyDescriptor(prototype, "transportClose")?.value as unknown;
+  if (typeof transportOpen !== "function" || typeof transportClose !== "function") {
+    throw new TypeError("The pinned Sign Client relayer lifecycle is unavailable.");
+  }
+
+  let releaseConnection: (() => void) | undefined;
+  const connectionGate = new Promise<void>((resolveGate) => {
+    releaseConnection = resolveGate;
+  });
+  let disconnectCalls = 0;
+  const socket = { readyState: 0 };
+  const currentDisconnectCalls = (): number => disconnectCalls;
+  const currentSocketState = (): number => socket.readyState;
+  const relayerRecord = relayer as Record<string, unknown>;
+  relayerRecord["provider"] = {
+    connection: { socket },
+    disconnect: async () => {
+      disconnectCalls += 1;
+      socket.readyState = 3;
+    },
+  };
+  relayerRecord["subscriber"] = {
+    hasAnyTopics: true,
+    stop: async () => undefined,
+  };
+  relayerRecord["connect"] = async () => {
+    await connectionGate;
+    socket.readyState = 1;
+  };
+
+  const opening = (Reflect.apply(transportOpen, relayer, []) as Promise<void>)
+    .catch(() => undefined);
+  const pending = Object.getOwnPropertyDescriptor(relayer, "connectPromise")?.value as unknown;
+  if (!(pending instanceof Promise)) {
+    throw new TypeError("The pinned Sign Client did not expose its active relay work.");
+  }
+  const pendingSettlement = pending.then(() => undefined, () => undefined);
+
+  await Reflect.apply(transportClose, relayer, []) as Promise<void>;
+  if (currentDisconnectCalls() !== 0 || currentSocketState() !== 0) {
+    throw new TypeError("The relay close race did not enter the expected connecting state.");
+  }
+  releaseConnection?.();
+  await Promise.all([opening, pendingSettlement]);
+  if (currentDisconnectCalls() !== 0 || currentSocketState() !== 1) {
+    throw new TypeError("The relay transport did not open after its first close.");
+  }
+  await Reflect.apply(transportClose, relayer, []) as Promise<void>;
+  if (currentDisconnectCalls() !== 1 || currentSocketState() !== 3) {
+    throw new TypeError("The second relay close did not release the late transport.");
+  }
+};
+
 const secondSignClient = new SignClient(constructorOptions);
 const secondCore = Object.getOwnPropertyDescriptor(secondSignClient, "core")?.value as unknown;
 if (typeof firstCore !== "object" || firstCore === null || firstCore === secondCore) {
   throw new TypeError("The pinned Sign Client reused one global Core instance.");
 }
 await exerciseHeartbeat(secondCore);
+await exerciseRelayerCloseRace(secondCore);
+
+let lateTransportInterval: ReturnType<typeof setInterval> | undefined;
+let lateTransportConnected = false;
+let releaseLateTransport: (() => void) | undefined;
+const lateTransportGate = new Promise<void>((resolveGate) => {
+  releaseLateTransport = resolveGate;
+});
 
 class TestRelayer {
-  async transportClose(): Promise<void> {}
+  readonly connectPromise = lateTransportGate.then(() => {
+    lateTransportConnected = true;
+    lateTransportInterval = setInterval(() => undefined, 60_000);
+  });
+
+  async transportClose(): Promise<void> {
+    if (!lateTransportConnected) {
+      releaseLateTransport?.();
+      return;
+    }
+    if (lateTransportInterval !== undefined) clearInterval(lateTransportInterval);
+    lateTransportInterval = undefined;
+    lateTransportConnected = false;
+  }
 }
 
 class TestHeartbeat {
@@ -205,3 +293,6 @@ const approvalSettlement = connection.lifecycle.waitForApproval().then(
 await connection.lifecycle.cancel();
 await approvalSettlement;
 await sdk.close();
+if (lateTransportConnected || lateTransportInterval !== undefined) {
+  throw new TypeError("The late WalletConnect transport was not released.");
+}

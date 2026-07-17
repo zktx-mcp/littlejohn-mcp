@@ -124,7 +124,7 @@ describe("HTTP request-class and route authority", () => {
       },
       {
         method: "POST",
-        pathPattern: "/api/v1/internal/control/wallet/operations",
+        pathPattern: "/api/v1/internal/control/examples",
         mutation: "declared_control" as const,
         response: "canonical_json" as const, successStatus: 201,
         handler: success,
@@ -147,7 +147,7 @@ describe("HTTP request-class and route authority", () => {
       cookie: [], csrfToken: [], contentType: [], query: "", bodyLength: 0,
     })).toEqual({ ok: true });
 
-    const operation = routes.match("POST", "/api/v1/internal/control/wallet/operations");
+    const operation = routes.match("POST", "/api/v1/internal/control/examples");
     expect(operation.status).toBe("matched");
     if (operation.status !== "matched") return;
     expect(operation.route.successStatus).toBe(201);
@@ -191,7 +191,7 @@ describe("HTTP request-class and route authority", () => {
       {
         kind: "route",
         method: "POST",
-        pathPattern: "/api/v1/wallet/operations/{operationId}/confirmations",
+        pathPattern: "/api/v1/examples/{operationId}/confirmations",
         requestClass: "browser_state_change",
       },
       { kind: "prefix", pathPrefix: "/assets/", requestClass: "public_read" },
@@ -199,7 +199,7 @@ describe("HTTP request-class and route authority", () => {
     const withRoute = withPolicy.extend([
       {
         method: "POST",
-        pathPattern: "/api/v1/wallet/operations/{operationId}/confirmations",
+        pathPattern: "/api/v1/examples/{operationId}/confirmations",
         mutation: "declared_control" as const,
         response: "canonical_json" as const, successStatus: 200,
         handler: success,
@@ -209,8 +209,8 @@ describe("HTTP request-class and route authority", () => {
         response: "canonical_json" as const, successStatus: 200, handler: success,
       },
     ]);
-    expect(initial.match("POST", "/api/v1/wallet/operations/op-1/confirmations").status).toBe("not_found");
-    const match = withRoute.match("POST", "/api/v1/wallet/operations/op-1/confirmations");
+    expect(initial.match("POST", "/api/v1/examples/op-1/confirmations").status).toBe("not_found");
+    const match = withRoute.match("POST", "/api/v1/examples/op-1/confirmations");
     expect(match.status).toBe("matched");
     if (match.status !== "matched") return;
     expect(withRoute.validateSecurity(match, {
@@ -220,7 +220,7 @@ describe("HTTP request-class and route authority", () => {
     })).toEqual({ ok: true });
     const foreignOperation = withRoute.match(
       "POST",
-      "/api/v1/wallet/operations/op-2/confirmations",
+      "/api/v1/examples/op-2/confirmations",
     );
     expect(foreignOperation.status).toBe("matched");
     if (foreignOperation.status === "matched") {
@@ -264,7 +264,7 @@ describe("HTTP request-class and route authority", () => {
     }, [{ kind: "prefix", pathPrefix: "/api/v1/unknown/", requestClass: "unknown_auth" }]))
       .toThrow("Unknown authentication verifier");
     expect(() => initial.extendRequestPolicies(extension, [{
-      kind: "route", method: "POST", pathPattern: "/api/v1/wallet/operations",
+      kind: "route", method: "POST", pathPattern: "/api/v1/examples",
       requestClass: "public_read",
     }])).toThrow("Every new request class requires an owned resource");
     expect(() => initial.extendRequestPolicies({
@@ -274,11 +274,11 @@ describe("HTTP request-class and route authority", () => {
       ],
       policies: [policy],
     }, [{
-      kind: "route", method: "POST", pathPattern: "/api/v1/wallet/operations",
+      kind: "route", method: "POST", pathPattern: "/api/v1/examples",
       requestClass: "browser_state_change",
     }])).toThrow("requires a request policy consumer");
     expect(() => initial.extendRequestPolicies(extension, [{
-      kind: "route", method: "POST", pathPattern: "/api/v1/internal/control/wallet/operations",
+      kind: "route", method: "POST", pathPattern: "/api/v1/internal/control/examples",
       requestClass: "browser_state_change",
     }])).toThrow("cannot replace");
     const hostileResources = new Proxy([], {
@@ -291,7 +291,7 @@ describe("HTTP request-class and route authority", () => {
       .toThrow("cannot be inspected safely");
     expect(() => withPolicy.extend([{
       method: "GET",
-      pathPattern: "/api/v1/wallet/operations/{operationId}/confirmations",
+      pathPattern: "/api/v1/examples/{operationId}/confirmations",
       mutation: "none" as const,
       response: "canonical_json" as const, successStatus: 200,
       handler: success,
@@ -358,25 +358,25 @@ describe("HTTP request-class and route authority", () => {
         ],
       }, [
         {
-          kind: "route", method: "DELETE", pathPattern: "/api/v1/wallet/operations/{operationId}",
+          kind: "route", method: "DELETE", pathPattern: "/api/v1/examples/{operationId}",
           requestClass: "browser_state_change",
         },
         {
-          kind: "route", method: "GET", pathPattern: "/api/v1/wallet/operations/{readOperationId}",
+          kind: "route", method: "GET", pathPattern: "/api/v1/examples/{readOperationId}",
           requestClass: "browser_session_read",
         },
       ])
       .extend([
         {
-          method: "DELETE", mutation: "declared_control", pathPattern: "/api/v1/wallet/operations/{operationId}",
+          method: "DELETE", mutation: "declared_control", pathPattern: "/api/v1/examples/{operationId}",
           response: "canonical_json" as const, successStatus: 200, handler: success,
         },
         {
-          method: "GET", mutation: "none", pathPattern: "/api/v1/wallet/operations/{readOperationId}",
+          method: "GET", mutation: "none", pathPattern: "/api/v1/examples/{readOperationId}",
           response: "canonical_json" as const, successStatus: 200, handler: success,
         },
       ]);
-    const match = routes.match("POST", "/api/v1/wallet/operations/op-1");
+    const match = routes.match("POST", "/api/v1/examples/op-1");
     expect(match.status).toBe("method_not_allowed");
     if (match.status !== "method_not_allowed") return;
     expect(match.allow).toEqual(["DELETE", "GET"]);
@@ -391,7 +391,7 @@ describe("HTTP request-class and route authority", () => {
     expect(routes.validateMethodRejection(match, {
       origin: ["https://evil.example"], authorization: [], cookie: [], csrfToken: [],
     })).toEqual({ ok: false, code: "invalid_origin" });
-    const foreignOperation = routes.match("POST", "/api/v1/wallet/operations/op-2");
+    const foreignOperation = routes.match("POST", "/api/v1/examples/op-2");
     expect(foreignOperation.status).toBe("method_not_allowed");
     if (foreignOperation.status === "method_not_allowed") {
       expect(routes.validateMethodRejection(foreignOperation, {
@@ -517,12 +517,12 @@ describe("HTTP request-class and route authority", () => {
       }, [{
         kind: "route",
         method: "GET",
-        pathPattern: "/wallet/operations/{operationId}",
+        pathPattern: "/examples/{operationId}",
         requestClass: "browser_bootstrap",
       }])
       .extend([{
         method: "GET",
-        pathPattern: "/wallet/operations/{operationId}",
+        pathPattern: "/examples/{operationId}",
         mutation: "none",
         response: "browser_content",
         successStatus: 200,
@@ -532,7 +532,7 @@ describe("HTTP request-class and route authority", () => {
           contentType: "text/html; charset=utf-8",
         }),
       }]);
-    const match = registry.match("GET", "/wallet/operations/example");
+    const match = registry.match("GET", "/examples/example");
     expect(match.status).toBe("matched");
     if (match.status !== "matched") return;
 
@@ -540,13 +540,13 @@ describe("HTTP request-class and route authority", () => {
       ok: true,
       body: "<html></html>",
       contentType: "text/html; charset=utf-8",
-      setCookie: "littlejohn_browser=token; Path=/api/v1/wallet/operations/example; Max-Age=60; HttpOnly; SameSite=Strict",
+      setCookie: "example_session=token; Path=/api/v1/examples/example; Max-Age=60; HttpOnly; SameSite=Strict",
     })).toEqual({
       ok: true,
       response: "browser_content",
       body: "<html></html>",
       contentType: "text/html; charset=utf-8",
-      setCookie: "littlejohn_browser=token; Path=/api/v1/wallet/operations/example; Max-Age=60; HttpOnly; SameSite=Strict",
+      setCookie: "example_session=token; Path=/api/v1/examples/example; Max-Age=60; HttpOnly; SameSite=Strict",
     });
     expect(() => registry.normalizeResult(match.route, {
       ok: true,

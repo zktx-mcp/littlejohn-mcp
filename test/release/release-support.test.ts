@@ -1,20 +1,30 @@
-import { lstat, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  assertExactFileBytes,
   assertExactPaths,
   canonicalRelativePath,
   collectRegularFiles,
+  copyRepositorySource,
   parsePackOutput,
+  runCommand,
   stageVerifiedTarball,
 } from "../../scripts/release/release-support.mjs";
 import {
-  dependencyGraphDifferences,
   parseReleasePackageIdentity,
-  type ReleaseDependencyNode,
 } from "../../scripts/release/package-audit.mjs";
 
 const directories: string[] = [];
@@ -143,6 +153,28 @@ describe("release verification support", () => {
     expect(() => assertExactPaths(["a", "b"], ["a"], "test")).toThrow();
   });
 
+  it("compares packaged file bytes directly with their source", async () => {
+    const root = resolve(tmpdir(), `littlejohn-release-bytes-${process.pid}-${directories.length}`);
+    directories.push(root);
+    const source = resolve(root, "source");
+    const candidate = resolve(root, "candidate");
+    await Promise.all([
+      mkdir(resolve(source, "dist"), { recursive: true }),
+      mkdir(resolve(candidate, "dist"), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(resolve(source, "dist/cli.js"), "source bytes\n"),
+      writeFile(resolve(candidate, "dist/cli.js"), "source bytes\n"),
+    ]);
+    await expect(assertExactFileBytes(source, candidate, ["dist/cli.js"], "test package"))
+      .resolves.toBeUndefined();
+    await writeFile(resolve(candidate, "dist/cli.js"), "changed bytes\n");
+    await expect(assertExactFileBytes(source, candidate, ["dist/cli.js"], "test package"))
+      .rejects.toThrow("differs from its source");
+    await expect(assertExactFileBytes(source, candidate, ["../escape"], "test package"))
+      .rejects.toThrow("canonical relative path");
+  });
+
   it("stages the verified tarball as one private regular file", async () => {
     const root = resolve(tmpdir(), `littlejohn-release-output-${process.pid}-${directories.length}`);
     directories.push(root);
@@ -160,47 +192,103 @@ describe("release verification support", () => {
     if (process.platform !== "win32") expect(details.mode & 0o777).toBe(0o600);
   });
 
-  it("reports every runtime dependency version and structural difference", () => {
-    const node = (
-      name: string,
-      version: string,
-      dependencies: Readonly<Record<string, ReleaseDependencyNode>> = {},
-      optionalPeerDependencies: readonly string[] = [],
-    ): ReleaseDependencyNode => ({
-      name,
-      version,
-      dependencies,
-      optionalPeerDependencies,
-    });
-    const repository = node("product", "1.0.0", {
-      alpha: node("alpha", "1.0.0"),
-      beta: node("beta", "2.0.0"),
-    });
-    const consumer = node("product", "1.0.0", {
-      alpha: node("alpha", "1.0.1"),
-      gamma: node("gamma", "3.0.0"),
-    });
-    expect(dependencyGraphDifferences(repository, consumer)).toEqual([
-      "product > alpha: repository=alpha@1.0.0, consumer=alpha@1.0.1",
-      "product > beta: repository=2.0.0, consumer=absent",
-      "product > gamma: repository=absent, consumer=3.0.0",
+  it("copies the current worktree while preserving additions and excluding tracked deletions", async () => {
+    const root = resolve(tmpdir(), `littlejohn-release-copy-${process.pid}-${directories.length}`);
+    directories.push(root);
+    const repository = resolve(root, "repository");
+    const destination = resolve(root, "copy");
+    const stagedDestination = resolve(root, "staged-copy");
+    await mkdir(repository, { recursive: true });
+    await Promise.all([
+      writeFile(resolve(repository, ".gitignore"), "ignored.txt\n"),
+      writeFile(resolve(repository, "tracked.txt"), "tracked\n"),
+      writeFile(resolve(repository, "deleted.txt"), "deleted\n"),
+      writeFile(resolve(repository, "rename-old.txt"), "renamed\n"),
     ]);
-    const nestedRepository = node("product", "1.0.0", {
-      runtime: node("runtime", "1.0.0", {
-        typescript: node("typescript", "6.0.3"),
-      }),
+    await runCommand("git", ["init", "--quiet"], {
+      cwd: repository,
+      output: "capture",
     });
-    const nestedConsumer = node("product", "1.0.0", {
-      runtime: node("runtime", "1.0.0"),
+    await runCommand("git", ["add", "."], {
+      cwd: repository,
+      output: "capture",
     });
-    expect(dependencyGraphDifferences(nestedRepository, nestedConsumer)).toEqual([
-      "product > runtime > typescript: repository=6.0.3, consumer=absent",
+    await Promise.all([
+      unlink(resolve(repository, "deleted.txt")),
+      rename(
+        resolve(repository, "rename-old.txt"),
+        resolve(repository, "rename-new.txt"),
+      ),
+      writeFile(resolve(repository, "tracked.txt"), "modified\n"),
+      writeFile(resolve(repository, "untracked.txt"), "untracked\n"),
+      writeFile(resolve(repository, "ignored.txt"), "ignored\n"),
     ]);
-    const optionalPeerRepository = node("product", "1.0.0", {
-      runtime: node("runtime", "1.0.0", {
-        typescript: node("typescript", "6.0.3"),
-      }, ["typescript"]),
+
+    await expect(copyRepositorySource(repository, destination)).resolves.toEqual([
+      ".gitignore",
+      "rename-new.txt",
+      "tracked.txt",
+      "untracked.txt",
+    ]);
+    await expect(readFile(resolve(destination, "tracked.txt"), "utf8"))
+      .resolves.toBe("modified\n");
+    await expect(readFile(resolve(destination, "rename-new.txt"), "utf8"))
+      .resolves.toBe("renamed\n");
+    await expect(readFile(resolve(destination, "untracked.txt"), "utf8"))
+      .resolves.toBe("untracked\n");
+    await expect(lstat(resolve(destination, "deleted.txt"))).rejects.toMatchObject({
+      code: "ENOENT",
     });
-    expect(dependencyGraphDifferences(optionalPeerRepository, nestedConsumer)).toEqual([]);
+    await expect(lstat(resolve(destination, "rename-old.txt"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(lstat(resolve(destination, "ignored.txt"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+
+    await runCommand("git", ["add", "--all"], {
+      cwd: repository,
+      output: "capture",
+    });
+    await expect(copyRepositorySource(repository, stagedDestination)).resolves.toEqual([
+      ".gitignore",
+      "rename-new.txt",
+      "tracked.txt",
+      "untracked.txt",
+    ]);
+    await expect(readFile(resolve(stagedDestination, "tracked.txt"), "utf8"))
+      .resolves.toBe("modified\n");
   });
+
+  it("rejects tracked replacements and untracked additions that are symbolic links", async () => {
+    for (const tracked of [true, false]) {
+      const root = resolve(
+        tmpdir(),
+        `littlejohn-release-link-${tracked ? "tracked" : "untracked"}-${process.pid}-${directories.length}`,
+      );
+      directories.push(root);
+      const repository = resolve(root, "repository");
+      const destination = resolve(root, "copy");
+      const link = resolve(repository, "link.txt");
+      await mkdir(repository, { recursive: true });
+      await Promise.all([
+        writeFile(resolve(repository, "target.txt"), "target\n"),
+        ...(tracked ? [writeFile(link, "tracked\n")] : []),
+      ]);
+      await runCommand("git", ["init", "--quiet"], {
+        cwd: repository,
+        output: "capture",
+      });
+      await runCommand("git", ["add", "."], {
+        cwd: repository,
+        output: "capture",
+      });
+      if (tracked) await unlink(link);
+      await symlink(resolve(repository, "target.txt"), link);
+
+      await expect(copyRepositorySource(repository, destination))
+        .rejects.toThrow("regular file");
+    }
+  });
+
 });

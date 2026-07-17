@@ -32,6 +32,13 @@ import {
   type WalletCoordinator,
 } from "../../src/wallet/coordinator.js";
 import {
+  parseWalletOperationResponse,
+  parseWalletWebOperationCreate,
+  type WalletOperationCreate,
+  type WalletOperationResponse,
+} from "../../src/wallet/contracts.js";
+import { parseWalletOperationConfirmation } from "../../src/wallet/operation-contract.js";
+import {
   WalletConnectClientError,
   type WalletConnectAccountReference,
   type WalletConnectAttemptOutcome,
@@ -343,6 +350,46 @@ const drainCoordinator = async (): Promise<void> => {
 const operationState = async (coordinator: WalletCoordinator, operationId: string): Promise<string> =>
   (await coordinator.get(operationId)).operation.state;
 
+const observeOperation = async (
+  coordinator: WalletCoordinator,
+  operationId: string,
+  predicate: (operation: WalletOperationResponse["operation"]) => boolean,
+): Promise<WalletOperationResponse["operation"]> => {
+  let last: WalletOperationResponse["operation"] | undefined;
+  for (let index = 0; index < 64; index += 1) {
+    await drainCoordinator();
+    last = (await coordinator.get(operationId)).operation;
+    if (predicate(last)) return last;
+  }
+  throw new Error(`Wallet operation did not reach the expected state; last state was ${last?.state ?? "absent"}.`);
+};
+
+const observeOperationState = (
+  coordinator: WalletCoordinator,
+  operationId: string,
+  state: WalletOperationResponse["operation"]["state"],
+): Promise<WalletOperationResponse["operation"]> =>
+  observeOperation(coordinator, operationId, (operation) => operation.state === state);
+
+const startOperation = async (
+  coordinator: WalletCoordinator,
+  input: Omit<WalletOperationCreate, "connectionRevision"> & {
+    readonly connectionRevision?: WalletOperationCreate["connectionRevision"];
+  },
+): Promise<WalletOperationResponse> => {
+  const response = await coordinator.start({
+    ...input,
+    connectionRevision: input.connectionRevision ?? null,
+  });
+  if (response.result.status !== "operation_started") {
+    throw new Error("Expected a wallet operation to start.");
+  }
+  return parseWalletOperationResponse({
+    operation: response.result.operation,
+    ...(response.qr === undefined ? {} : { qr: response.qr }),
+  });
+};
+
 const expectWalletCode = async (action: Promise<unknown>, code: string): Promise<void> => {
   await expect(action).rejects.toMatchObject({ failure: { error: { code } } });
 };
@@ -382,6 +429,110 @@ describe("WalletCoordinator", () => {
     expect(client.closed).toBe(true);
     expect(client.disconnectTopics).toEqual([]);
     expect(client.sessions).toHaveLength(1);
+  });
+
+  it("expires a connected session once when the browser current projection reads first", async () => {
+    const expiring = session(topicA, addressA, {
+      expiry: Date.parse("2026-07-14T00:01:00.000Z") / 1_000,
+    });
+    const { client, coordinator, projection } = await createSubject([expiring]);
+    const initialRevision = projection.read().revision;
+    vi.setSystemTime(new Date("2026-07-14T00:01:00.000Z"));
+
+    const current = await coordinator.currentOperationProjection.get();
+    expect(current).toMatchObject({
+      status: "absent",
+      connection: disconnected("expired"),
+    });
+    expect(current.connectionRevision).toBe(String(BigInt(initialRevision) + 1n));
+    expect(projection.read()).toMatchObject({
+      revision: current.connectionRevision,
+      connection: disconnected("expired"),
+    });
+    expect(coordinator.activeWallet.capture()).toEqual({
+      connection: disconnected("expired"),
+    });
+    expect(client.disconnectTopics).toEqual([topicA]);
+    expect(client.sessions).toEqual([]);
+    await coordinator.close();
+  });
+
+  it("shares the same persisted expiry transition when the active-wallet read starts it", async () => {
+    const expiring = session(topicA, addressA, {
+      expiry: Date.parse("2026-07-14T00:01:00.000Z") / 1_000,
+    });
+    const { client, coordinator, projection } = await createSubject([expiring]);
+    const initialRevision = projection.read().revision;
+    const cleanupGate = deferred<void>();
+    client.disconnectWaits.push(cleanupGate);
+    vi.setSystemTime(new Date("2026-07-14T00:01:00.000Z"));
+
+    expect(coordinator.activeWallet.capture()).toEqual({
+      connection: disconnected("expired"),
+    });
+    const duringCleanup = await coordinator.currentOperationProjection.get();
+    expect(duringCleanup).toEqual({
+      status: "absent",
+      connectionRevision: String(BigInt(initialRevision) + 1n),
+      connection: disconnected("expired"),
+    });
+    expect(projection.read()).toEqual({
+      revision: duringCleanup.connectionRevision,
+      connection: disconnected("expired"),
+      updatedAt: "2026-07-14T00:01:00.000Z",
+    });
+    expect(coordinator.activeWallet.capture()).toEqual({
+      connection: disconnected("expired"),
+    });
+    expect(client.disconnectTopics).toEqual([topicA]);
+    expect(client.sessions.map(({ topic }) => topic)).toEqual([topicA]);
+
+    cleanupGate.resolve();
+    await drainCoordinator();
+    expect(await coordinator.currentOperationProjection.get()).toEqual(duringCleanup);
+    expect(projection.read().revision).toBe(duringCleanup.connectionRevision);
+    expect(client.sessions).toEqual([]);
+    await coordinator.close();
+  });
+
+  it("moves both readers to one unavailable revision when expiry cleanup cannot be proven", async () => {
+    const expiring = session(topicA, addressA, {
+      expiry: Date.parse("2026-07-14T00:01:00.000Z") / 1_000,
+    });
+    const { client, coordinator, projection } = await createSubject([expiring]);
+    const initialRevision = projection.read().revision;
+    const cleanupGate = deferred<void>();
+    client.disconnectWaits.push(cleanupGate);
+    client.disconnectFailures.add(topicA);
+    vi.setSystemTime(new Date("2026-07-14T00:01:00.000Z"));
+
+    expect(coordinator.activeWallet.capture()).toEqual({
+      connection: disconnected("expired"),
+    });
+    expect(await coordinator.currentOperationProjection.get()).toEqual({
+      status: "absent",
+      connectionRevision: String(BigInt(initialRevision) + 1n),
+      connection: disconnected("expired"),
+    });
+
+    cleanupGate.resolve();
+    await drainCoordinator();
+    const unavailable = await coordinator.currentOperationProjection.get();
+    expect(unavailable).toEqual({
+      status: "absent",
+      connectionRevision: String(BigInt(initialRevision) + 2n),
+      connection: disconnected("unusable_store"),
+    });
+    expect(projection.read()).toMatchObject({
+      revision: unavailable.connectionRevision,
+      connection: disconnected("unusable_store"),
+    });
+    expect(coordinator.activeWallet.capture()).toEqual({
+      connection: disconnected("unusable_store"),
+    });
+    expect(client.sessions.map(({ topic }) => topic)).toEqual([topicA]);
+    client.disconnectFailures.delete(topicA);
+    await coordinator.close();
   });
 
   it("serializes connected evidence with secret-safe local source identity only", async () => {
@@ -437,7 +588,7 @@ describe("WalletCoordinator", () => {
       session(topicA, addressA),
       session(topicB, addressB),
     ]);
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "web" });
+    const pending = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "web" });
     const originalRevision = pending.operation.connectionRevision;
 
     client.sessions = [session(topicC, addressA), session(topicD, addressB)];
@@ -449,7 +600,7 @@ describe("WalletCoordinator", () => {
       connectionRevision: originalRevision,
     }), "state_conflict");
     expect(client.disconnectTopics).toEqual([]);
-    await coordinator.operation.cancel(pending.operation.operationId);
+    await coordinator.cancel(pending.operation.operationId);
     await coordinator.close();
   });
 
@@ -466,7 +617,7 @@ describe("WalletCoordinator", () => {
     replacement,
   ) => {
     const { client, coordinator, projection } = await createSubject([session(topicA, addressA)]);
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "web" });
+    const pending = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "web" });
     expect(pending.operation.state).toBe("awaiting_confirmation");
     const originalRevision = projection.read().revision;
 
@@ -486,13 +637,13 @@ describe("WalletCoordinator", () => {
     expect(client.attempts).toHaveLength(0);
     expect(projection.read().revision).not.toBe(originalRevision);
     expect(await operationState(coordinator, pending.operation.operationId)).toBe("awaiting_confirmation");
-    await coordinator.operation.cancel(pending.operation.operationId);
+    await coordinator.cancel(pending.operation.operationId);
     await coordinator.close();
   });
 
   it("admits only one of two concurrent confirmations for the same operation revision", async () => {
     const { client, coordinator } = await createSubject([session(topicA, addressA)]);
-    const pending = await coordinator.start({ kind: "disconnect", interactionInterface: "web" });
+    const pending = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "web" });
     const confirmation = {
       connectionRevision: pending.operation.connectionRevision,
     };
@@ -509,21 +660,36 @@ describe("WalletCoordinator", () => {
     if (fulfilled?.status !== "fulfilled" || rejected?.status !== "rejected") {
       throw new Error("Concurrent confirmation must produce one success and one rejection.");
     }
-    expect(fulfilled.value).toMatchObject({ state: "completed" });
+    expect(fulfilled.value).toMatchObject({ state: "disconnecting" });
     expect(rejected.reason).toMatchObject({
       failure: { error: { code: "state_conflict" } },
     });
+    expect(await observeOperationState(
+      coordinator,
+      pending.operation.operationId,
+      "completed",
+    )).toMatchObject({ result: { outcome: "disconnected" } });
     expect(client.disconnectTopics).toEqual([topicA]);
     await coordinator.close();
   });
 
   it("connects from zero sessions only after the approved session is independently observed", async () => {
     const { client, coordinator, projection } = await createSubject();
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const pending = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
 
-    expect(pending.operation.state).toBe("awaiting_wallet_approval");
-    expect(pending.qr).toEqual(qr);
+    expect(pending.operation.state).toBe("starting_connection");
+    expect(pending).not.toHaveProperty("qr");
     expect("qr" in pending.operation).toBe(false);
+    const awaiting = await observeOperationState(
+      coordinator,
+      pending.operation.operationId,
+      "awaiting_wallet_approval",
+    );
+    expect(await coordinator.operationPresentation.get(pending.operation.operationId)).toEqual({
+      operation: awaiting,
+      qr,
+      access: "read_only",
+    });
     const attempt = client.attempts[0] as FakeConnectionAttempt;
     const approved = session();
     client.sessions = [approved];
@@ -543,80 +709,286 @@ describe("WalletCoordinator", () => {
     await coordinator.close();
   });
 
-  it("preserves an existing session on cancellation and replaces it only after a revision-bound confirmation", async () => {
+  it("returns the current valid connection without creating or mutating an operation", async () => {
     const { client, coordinator, projection } = await createSubject([session()]);
-    const beforeReplacement = await invokeWalletConnection(coordinator);
-    expect(beforeReplacement.ok).toBe(true);
-    if (!beforeReplacement.ok) throw new Error("Expected the initial wallet connection.");
-    expect(beforeReplacement.data).toMatchObject({ status: "connected", address: addressA });
-    expect(beforeReplacement.evidence.sources
+    const revision = projection.read().revision;
+    const listCount = client.listSessionsCount;
+
+    const result = await coordinator.start({
+      kind: "connect",
+      interactionInterface: "web",
+      connectionRevision: revision,
+    });
+
+    expect(result).toEqual({
+      result: {
+        status: "current_connection",
+        connectionRevision: revision,
+        connection: expect.objectContaining({ status: "connected", address: addressA }),
+      },
+    });
+    expect(client.attempts).toEqual([]);
+    expect(client.disconnectTopics).toEqual([]);
+    expect(projection.read().revision).toBe(revision);
+    expect(client.listSessionsCount).toBeGreaterThan(listCount);
+    expect(await coordinator.currentOperationProjection.get()).toEqual({
+      status: "absent",
+      connectionRevision: revision,
+      connection: expect.objectContaining({ status: "connected", address: addressA }),
+    });
+    await coordinator.close();
+  });
+
+  it("fails an unresolved connection request closed without selecting, deleting, or creating an operation", async () => {
+    const { client, coordinator, projection } = await createSubject([
+      session(topicA, addressA),
+      session(topicB, addressB),
+    ]);
+    const revision = projection.read().revision;
+
+    await expectWalletCode(coordinator.start({
+      kind: "connect",
+      interactionInterface: "web",
+      connectionRevision: revision,
+    }), "state_conflict");
+
+    expect(client.attempts).toEqual([]);
+    expect(client.disconnectTopics).toEqual([]);
+    expect(client.sessions.map(({ topic }) => topic)).toEqual([topicA, topicB]);
+    expect(await coordinator.currentOperationProjection.get()).toEqual({
+      status: "absent",
+      connectionRevision: revision,
+      connection: { status: "unresolved", eligibleSessionCount: "2" },
+    });
+    await coordinator.close();
+  });
+
+  it("keeps browser cancellation bound to its operation identity across connection revision drift", async () => {
+    const { client, coordinator } = await createSubject();
+    const initial = await coordinator.currentOperationProjection.get();
+    expect(initial.status).toBe("absent");
+
+    await expectWalletCode(coordinator.operation.start(parseWalletWebOperationCreate({
+      kind: "connect",
+      connectionRevision: "999",
+    })), "state_conflict");
+    expect(client.attempts).toEqual([]);
+
+    const started = await coordinator.operation.start({
+      kind: "connect",
+      connectionRevision: initial.connectionRevision,
+    });
+    expect(started).toMatchObject({
+      status: "operation_started",
+      operation: { kind: "connect", state: "starting_connection" },
+    });
+    if (started.status !== "operation_started") {
+      throw new Error("Expected a browser-owned wallet operation.");
+    }
+    const awaiting = await observeOperationState(
+      coordinator,
+      started.operation.operationId,
+      "awaiting_wallet_approval",
+    );
+    expect(await coordinator.currentOperationProjection.get()).toEqual({
+      status: "present",
+      connectionRevision: initial.connectionRevision,
+      connection: disconnected("unusable_store"),
+      presentation: {
+        operation: awaiting,
+        qr,
+        access: "interactive",
+      },
+    });
+
+    client.sessions = [session()];
+    client.emit({ kind: "session_changed", topic: topicA });
+    await drainCoordinator();
+    const changed = await coordinator.currentOperationProjection.get();
+    expect(changed.connectionRevision).not.toBe(started.operation.connectionRevision);
+    await expectWalletCode(coordinator.operation.cancel(
+      started.operation.operationId,
+      parseWalletOperationConfirmation({ connectionRevision: "999" }),
+    ), "state_conflict");
+    expect((client.attempts[0] as FakeConnectionAttempt).cancelCount).toBe(0);
+    await coordinator.operation.cancel(
+      started.operation.operationId,
+      { connectionRevision: started.operation.connectionRevision },
+    );
+    await observeOperationState(coordinator, started.operation.operationId, "cancelled");
+    expect((client.attempts[0] as FakeConnectionAttempt).cancelCount).toBe(1);
+    await coordinator.close();
+  });
+
+  it("executes a browser disconnect as one direct action while generic web start still awaits confirmation", async () => {
+    const direct = await createSubject([session()]);
+    const disconnectGate = deferred<void>();
+    direct.client.disconnectWaits.push(disconnectGate);
+    await expectWalletCode(direct.coordinator.operation.start(parseWalletWebOperationCreate({
+      kind: "disconnect",
+      connectionRevision: "999",
+    })), "state_conflict");
+    expect(direct.client.disconnectTopics).toEqual([]);
+    let directSettled = false;
+    const directAction = direct.coordinator.operation.start({
+      kind: "disconnect",
+      connectionRevision: direct.projection.read().revision,
+    }).then((result) => {
+      directSettled = true;
+      return result;
+    });
+    await drainCoordinator();
+
+    expect(directSettled).toBe(true);
+    await expect(directAction).resolves.toMatchObject({
+      status: "operation_started",
+      operation: { state: "disconnecting" },
+    });
+    const active = await direct.coordinator.currentOperationProjection.get();
+    if (active.status !== "present") throw new Error("Expected a direct browser operation.");
+    expect(active.presentation.operation.state).toBe("disconnecting");
+    expect(direct.client.disconnectTopics).toEqual([topicA]);
+
+    disconnectGate.resolve();
+    expect(await observeOperationState(
+      direct.coordinator,
+      active.presentation.operation.operationId,
+      "completed",
+    )).toMatchObject({ result: { outcome: "disconnected" } });
+    await direct.coordinator.close();
+
+    const delegated = await createSubject([session()]);
+    const pending = await delegated.coordinator.start({
+      kind: "disconnect",
+      interactionInterface: "web",
+      connectionRevision: delegated.projection.read().revision,
+    });
+    expect(pending.result).toMatchObject({
+      status: "operation_started",
+      operation: { state: "awaiting_confirmation" },
+    });
+    expect(delegated.client.disconnectTopics).toEqual([]);
+    if (pending.result.status !== "operation_started") {
+      throw new Error("Expected a confirmation-dependent operation.");
+    }
+    await delegated.coordinator.cancel(pending.result.operation.operationId);
+    await delegated.coordinator.close();
+  });
+
+  it("preserves a cancelled disconnection and changes wallets only after disconnect then connect", async () => {
+    const { client, coordinator, projection } = await createSubject([session()]);
+    const beforeDisconnect = await invokeWalletConnection(coordinator);
+    expect(beforeDisconnect.ok).toBe(true);
+    if (!beforeDisconnect.ok) throw new Error("Expected the initial wallet connection.");
+    expect(beforeDisconnect.data).toMatchObject({ status: "connected", address: addressA });
+    expect(beforeDisconnect.evidence.sources
       .find(({ sourceClass }) => sourceClass === "wallet_session")?.reference)
       .toMatchObject({ topicDigest: topicDigest(topicA) });
-    const cancelled = await coordinator.start({ kind: "connect", interactionInterface: "web" });
+    const cancelled = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "web" });
 
     expect(cancelled.operation.state).toBe("awaiting_confirmation");
     expect(cancelled).not.toHaveProperty("qr");
-    const firstCancellation = await coordinator.operation.cancel(cancelled.operation.operationId);
+    const firstCancellation = await coordinator.operation.cancel(
+      cancelled.operation.operationId,
+      { connectionRevision: cancelled.operation.connectionRevision },
+    );
     expect(firstCancellation.state).toBe("cancelled");
-    expect(await coordinator.operation.cancel(cancelled.operation.operationId)).toEqual(firstCancellation);
+    expect(await coordinator.operation.cancel(
+      cancelled.operation.operationId,
+      { connectionRevision: cancelled.operation.connectionRevision },
+    )).toEqual(firstCancellation);
     expect(client.disconnectTopics).toEqual([]);
     expect(client.sessions.map(({ topic }) => topic)).toEqual([topicA]);
 
-    const stale = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
-    projection.bumpRevision();
-    await expectWalletCode(
-      coordinator.cliConfirmation.confirm(stale.operation.operationId, {
-        connectionRevision: stale.operation.connectionRevision,
-      }),
-      "state_conflict",
-    );
-    expect(client.disconnectTopics).toEqual([]);
-    await coordinator.cancel(stale.operation.operationId);
-
-    const replacement = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
-    const pairing = await coordinator.cliConfirmation.confirm(replacement.operation.operationId, {
-      connectionRevision: replacement.operation.connectionRevision,
+    const disconnection = await startOperation(coordinator, {
+      kind: "disconnect",
+      interactionInterface: "web",
     });
-    expect(pairing.operation.state).toBe("awaiting_wallet_approval");
-    expect(pairing.qr).toEqual(qr);
+    const disconnectedResult = await coordinator.webConfirmation.confirm(
+      disconnection.operation.operationId,
+      {
+        connectionRevision: disconnection.operation.connectionRevision,
+      },
+    );
+    expect(disconnectedResult).toMatchObject({
+      state: "disconnecting",
+    });
+    expect(await observeOperationState(
+      coordinator,
+      disconnection.operation.operationId,
+      "completed",
+    )).toMatchObject({
+      result: { outcome: "disconnected", connection: { status: "disconnected" } },
+    });
     expect(client.disconnectTopics).toEqual([topicA]);
+    expect(client.sessions).toEqual([]);
+    expect(client.attempts).toEqual([]);
+    expect(projection.read().connection).toEqual(disconnected("disconnected"));
+    expect(await coordinator.operation.cancel(
+      cancelled.operation.operationId,
+      { connectionRevision: cancelled.operation.connectionRevision },
+    )).toEqual(firstCancellation);
+    expect(client.disconnectTopics).toEqual([topicA]);
+
+    const connection = await startOperation(coordinator, {
+      kind: "connect",
+      interactionInterface: "cli",
+      connectionRevision: projection.read().revision,
+    });
+    expect(connection.operation.state).toBe("starting_connection");
+    expect(projection.read().connection).toEqual(disconnected("disconnected"));
+    const awaitingConnection = await observeOperationState(
+      coordinator,
+      connection.operation.operationId,
+      "awaiting_wallet_approval",
+    );
+    expect(await coordinator.operationPresentation.get(connection.operation.operationId)).toEqual({
+      operation: awaitingConnection,
+      qr,
+      access: "read_only",
+    });
     const attempt = client.attempts[0] as FakeConnectionAttempt;
     const next = session(topicB, addressB);
     client.sessions = [next];
     attempt.settle(Object.freeze({ status: "approved", session: next }));
     await drainCoordinator();
 
-    expect((await coordinator.get(replacement.operation.operationId)).operation).toMatchObject({
+    expect((await coordinator.get(connection.operation.operationId)).operation).toMatchObject({
       state: "completed",
       result: { outcome: "connected", connection: { address: addressB } },
     });
     expect(projection.read().connection).toMatchObject({ status: "connected", address: addressB });
-    const afterReplacement = await invokeWalletConnection(coordinator);
-    expect(afterReplacement.ok).toBe(true);
-    if (!afterReplacement.ok) throw new Error("Expected the replacement wallet connection.");
-    expect(afterReplacement.data).toMatchObject({ status: "connected", address: addressB });
-    expect(afterReplacement.evidence.sources
+    const afterConnect = await invokeWalletConnection(coordinator);
+    expect(afterConnect.ok).toBe(true);
+    if (!afterConnect.ok) throw new Error("Expected the new wallet connection.");
+    expect(afterConnect.data).toMatchObject({ status: "connected", address: addressB });
+    expect(afterConnect.evidence.sources
       .find(({ sourceClass }) => sourceClass === "wallet_session")?.reference)
       .toMatchObject({ topicDigest: topicDigest(topicB) });
-    expect(beforeReplacement.data).toMatchObject({ status: "connected", address: addressA });
-    expect(beforeReplacement.evidence.sources
+    expect(beforeDisconnect.data).toMatchObject({ status: "connected", address: addressA });
+    expect(beforeDisconnect.evidence.sources
       .find(({ sourceClass }) => sourceClass === "wallet_session")?.reference)
       .toMatchObject({ topicDigest: topicDigest(topicA) });
     await coordinator.close();
   });
 
-  it("does not start replacement pairing when any existing session cannot be deleted", async () => {
+  it("fails disconnection without starting pairing when any existing session cannot be deleted", async () => {
     const { client, coordinator, projection } = await createSubject([
       session(topicA, addressA),
       session(topicB, addressB),
     ]);
     client.disconnectFailures.add(topicB);
-    const replacement = await coordinator.start({ kind: "connect", interactionInterface: "web" });
+    const disconnection = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "web" });
 
-    const result = await coordinator.webConfirmation.confirm(replacement.operation.operationId, {
-      connectionRevision: replacement.operation.connectionRevision,
+    const result = await coordinator.webConfirmation.confirm(disconnection.operation.operationId, {
+      connectionRevision: disconnection.operation.connectionRevision,
     });
-    expect(result).toMatchObject({
+    expect(result).toMatchObject({ state: "disconnecting" });
+    expect(await observeOperationState(
+      coordinator,
+      disconnection.operation.operationId,
+      "failed",
+    )).toMatchObject({
       state: "failed",
       failure: { error: { code: "runtime_state_unavailable" } },
     });
@@ -627,49 +999,98 @@ describe("WalletCoordinator", () => {
     await coordinator.close();
   });
 
-  it("does not restore a deleted session when replacement approval is rejected", async () => {
+  it("does not restore a disconnected session when the following connection is rejected", async () => {
     const { client, coordinator, projection } = await createSubject([session()]);
-    const replacement = await coordinator.start({ kind: "connect", interactionInterface: "web" });
-    const pendingApproval = await coordinator.webConfirmation.confirm(replacement.operation.operationId, {
-      connectionRevision: replacement.operation.connectionRevision,
-    });
-    expect(pendingApproval.state).toBe("awaiting_wallet_approval");
+    const disconnection = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "web" });
+    expect(await coordinator.webConfirmation.confirm(disconnection.operation.operationId, {
+      connectionRevision: disconnection.operation.connectionRevision,
+    })).toMatchObject({ state: "disconnecting" });
+    await observeOperationState(coordinator, disconnection.operation.operationId, "completed");
     expect(client.sessions).toEqual([]);
 
+    const connection = await startOperation(coordinator, { kind: "connect", interactionInterface: "web" });
+    expect(connection.operation.state).toBe("starting_connection");
+    await observeOperationState(coordinator, connection.operation.operationId, "awaiting_wallet_approval");
     (client.attempts[0] as FakeConnectionAttempt).settle(Object.freeze({ status: "rejected" }));
     await drainCoordinator();
-    expect(await operationState(coordinator, replacement.operation.operationId)).toBe("rejected");
+    expect(await operationState(coordinator, connection.operation.operationId)).toBe("rejected");
     expect(client.sessions).toEqual([]);
     expect(projection.read().connection).toEqual(disconnected("no_session"));
     await coordinator.close();
   });
 
+  it("cancels connection while the public wallet-approval state is acquiring its exact attempt", async () => {
+    const { client, coordinator } = await createSubject();
+    const startGate = deferred<void>();
+    client.startWaits.push(startGate);
+
+    const starting = await coordinator.start({
+      kind: "connect",
+      interactionInterface: "web",
+      connectionRevision: null,
+    });
+    expect(starting).toMatchObject({
+      result: { status: "operation_started", operation: { state: "starting_connection" } },
+    });
+    const current = await coordinator.currentOperationProjection.get();
+    if (current.status !== "present") throw new Error("Expected an active connection operation.");
+    expect(current.presentation.operation).toMatchObject({
+      kind: "connect",
+      state: "starting_connection",
+    });
+    expect(current.presentation).not.toHaveProperty("qr");
+    expect(client.sessions).toEqual([]);
+    expect(client.attempts).toEqual([]);
+
+    const cancellation = await coordinator.cancel(current.presentation.operation.operationId);
+    expect(cancellation.operation.state).toBe("cancelling");
+    const cancelling = await coordinator.currentOperationProjection.get();
+    if (cancelling.status !== "present") throw new Error("Expected a cancelling operation.");
+    expect(cancelling.presentation.operation.state).toBe("cancelling");
+
+    startGate.resolve();
+    const cancelled = await observeOperationState(
+      coordinator,
+      current.presentation.operation.operationId,
+      "cancelled",
+    );
+    expect(cancelled.state).toBe("cancelled");
+    expect(client.attempts).toHaveLength(1);
+    expect((client.attempts[0] as FakeConnectionAttempt).cancelCount).toBe(1);
+    expect(client.sessions).toEqual([]);
+    await coordinator.close();
+  });
+
   it("bounds disconnection by the operation deadline, reconciles, and releases the operation slot", async () => {
     const { client, coordinator } = await createSubject([session()]);
-    const operation = await coordinator.start({ kind: "disconnect", interactionInterface: "web" });
+    const operation = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "web" });
     const lateDisconnect = deferred<void>();
     client.disconnectWaits.push(lateDisconnect);
-    const confirmation = coordinator.webConfirmation.confirm(operation.operation.operationId, {
+    const confirmation = await coordinator.webConfirmation.confirm(operation.operation.operationId, {
       connectionRevision: operation.operation.connectionRevision,
     });
-    await drainCoordinator();
+    expect(confirmation.state).toBe("disconnecting");
     expect(await operationState(coordinator, operation.operation.operationId)).toBe("disconnecting");
 
     await vi.advanceTimersByTimeAsync(5 * 60 * 1_000);
-    const failed = await confirmation;
+    const failed = await observeOperationState(
+      coordinator,
+      operation.operation.operationId,
+      "failed",
+    );
     expect(failed).toMatchObject({
       state: "failed",
       failure: { error: { code: "wallet_timeout" } },
     });
     expect(client.sessions.map(({ topic }) => topic)).toEqual([topicA]);
     await expectWalletCode(
-      coordinator.start({ kind: "disconnect", interactionInterface: "cli" }),
+      startOperation(coordinator, { kind: "disconnect", interactionInterface: "cli" }),
       "runtime_state_unavailable",
     );
 
     lateDisconnect.resolve();
     await drainCoordinator();
-    const next = await coordinator.start({ kind: "disconnect", interactionInterface: "cli" });
+    const next = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "cli" });
     expect(next.operation).toMatchObject({
       state: "completed",
       result: { outcome: "already_disconnected" },
@@ -679,7 +1100,7 @@ describe("WalletCoordinator", () => {
 
   it("bounds invalid-session revocation, reconciles the SDK store, and releases the operation slot", async () => {
     const { client, coordinator } = await createSubject();
-    const operation = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const operation = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
     const approved = session(topicA, addressA, { accounts: [] });
     client.sessions = [approved];
     const lateRevocation = deferred<void>();
@@ -694,16 +1115,16 @@ describe("WalletCoordinator", () => {
     await drainCoordinator();
     expect((await coordinator.get(operation.operation.operationId)).operation).toMatchObject({
       state: "failed",
-      failure: { error: { code: "wallet_timeout" } },
+      failure: { error: { code: "runtime_state_unavailable" } },
     });
     await expectWalletCode(
-      coordinator.start({ kind: "disconnect", interactionInterface: "cli" }),
+      startOperation(coordinator, { kind: "disconnect", interactionInterface: "cli" }),
       "runtime_state_unavailable",
     );
 
     lateRevocation.resolve();
     await drainCoordinator();
-    const next = await coordinator.start({ kind: "disconnect", interactionInterface: "cli" });
+    const next = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "cli" });
     expect(next.operation).toMatchObject({
       state: "completed",
       result: { outcome: "already_disconnected" },
@@ -713,7 +1134,7 @@ describe("WalletCoordinator", () => {
 
   it("implements zero, one, and conflicting-session disconnect rules without selecting a session", async () => {
     const empty = await createSubject();
-    const noSession = await empty.coordinator.start({ kind: "disconnect", interactionInterface: "web" });
+    const noSession = await startOperation(empty.coordinator, { kind: "disconnect", interactionInterface: "web" });
     expect(noSession.operation).toMatchObject({
       state: "completed",
       result: { outcome: "already_disconnected", connection: disconnected("no_session") },
@@ -722,20 +1143,30 @@ describe("WalletCoordinator", () => {
     await empty.coordinator.close();
 
     const one = await createSubject([session()]);
-    const direct = await one.coordinator.start({ kind: "disconnect", interactionInterface: "cli" });
-    expect(direct.operation).toMatchObject({ state: "completed", result: { outcome: "disconnected" } });
+    const direct = await startOperation(one.coordinator, { kind: "disconnect", interactionInterface: "cli" });
+    expect(direct.operation).toMatchObject({ state: "disconnecting" });
+    expect(await observeOperationState(
+      one.coordinator,
+      direct.operation.operationId,
+      "completed",
+    )).toMatchObject({ result: { outcome: "disconnected" } });
     expect(one.client.disconnectTopics).toEqual([topicA]);
     await one.coordinator.close();
 
     const many = await createSubject([session(topicB, addressB), session()]);
     expect(many.projection.read().connection).toEqual({ status: "unresolved", eligibleSessionCount: "2" });
-    const guarded = await many.coordinator.start({ kind: "disconnect", interactionInterface: "cli" });
+    const guarded = await startOperation(many.coordinator, { kind: "disconnect", interactionInterface: "cli" });
     expect(guarded.operation.state).toBe("awaiting_confirmation");
     expect(many.client.disconnectTopics).toEqual([]);
     const completed = await many.coordinator.cliConfirmation.confirm(guarded.operation.operationId, {
       connectionRevision: guarded.operation.connectionRevision,
     });
-    expect(completed.operation).toMatchObject({ state: "completed", result: { outcome: "disconnected" } });
+    expect(completed.operation).toMatchObject({ state: "disconnecting" });
+    expect(await observeOperationState(
+      many.coordinator,
+      guarded.operation.operationId,
+      "completed",
+    )).toMatchObject({ result: { outcome: "disconnected" } });
     expect(new Set(many.client.disconnectTopics)).toEqual(new Set([topicA, topicB]));
     expect(many.client.sessions).toEqual([]);
     await many.coordinator.close();
@@ -745,9 +1176,14 @@ describe("WalletCoordinator", () => {
     const { client, coordinator, projection } = await createSubject([session()]);
     client.disconnectKeepsTopics.add(topicA);
 
-    const operation = await coordinator.start({ kind: "disconnect", interactionInterface: "cli" });
+    const operation = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "cli" });
 
-    expect(operation.operation).toMatchObject({
+    expect(operation.operation).toMatchObject({ state: "disconnecting" });
+    expect(await observeOperationState(
+      coordinator,
+      operation.operation.operationId,
+      "failed",
+    )).toMatchObject({
       state: "failed",
       failure: { error: { code: "runtime_state_unavailable" } },
     });
@@ -759,18 +1195,22 @@ describe("WalletCoordinator", () => {
 
   it("never deletes a session that appears after explicit disconnect authority is captured", async () => {
     const { client, coordinator, projection } = await createSubject([session(topicA, addressA)]);
-    const pending = await coordinator.start({ kind: "disconnect", interactionInterface: "web" });
+    const pending = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "web" });
     const disconnectGate = deferred<void>();
     client.disconnectWaits.push(disconnectGate);
 
-    const confirmation = coordinator.webConfirmation.confirm(pending.operation.operationId, {
+    const confirmation = await coordinator.webConfirmation.confirm(pending.operation.operationId, {
       connectionRevision: pending.operation.connectionRevision,
     });
-    await drainCoordinator();
+    expect(confirmation.state).toBe("disconnecting");
     client.sessions = [session(topicA, addressA), session(topicB, addressB)];
     disconnectGate.resolve();
 
-    await expect(confirmation).resolves.toMatchObject({
+    expect(await observeOperationState(
+      coordinator,
+      pending.operation.operationId,
+      "failed",
+    )).toMatchObject({
       state: "failed",
       failure: { error: { code: "runtime_state_unavailable" } },
     });
@@ -782,15 +1222,16 @@ describe("WalletCoordinator", () => {
 
   it("serializes one nonterminal operation and keeps cancellation scoped to its exact proposal", async () => {
     const { client, coordinator } = await createSubject();
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const pending = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
 
     await expectWalletCode(
-      coordinator.start({ kind: "disconnect", interactionInterface: "cli" }),
+      startOperation(coordinator, { kind: "disconnect", interactionInterface: "cli" }),
       "state_conflict",
     );
     const attempt = client.attempts[0] as FakeConnectionAttempt;
     const cancelled = await coordinator.cancel(pending.operation.operationId);
-    expect(cancelled.operation.state).toBe("cancelled");
+    expect(cancelled.operation.state).toBe("cancelling");
+    await observeOperationState(coordinator, pending.operation.operationId, "cancelled");
     expect(attempt.cancelCount).toBe(1);
     expect(client.disconnectTopics).toEqual([]);
     await coordinator.close();
@@ -799,15 +1240,16 @@ describe("WalletCoordinator", () => {
   it("rejects a second create without reading an SDK store locked by the active attempt", async () => {
     const { client, coordinator } = await createSubject();
     client.lockSessionReadsWhileAttemptPending = true;
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const pending = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
     const readsBeforeSecondCreate = client.listSessionsCount;
 
     await expectWalletCode(
-      coordinator.start({ kind: "disconnect", interactionInterface: "cli" }),
+      startOperation(coordinator, { kind: "disconnect", interactionInterface: "cli" }),
       "state_conflict",
     );
 
-    expect(pending.operation.state).toBe("awaiting_wallet_approval");
+    expect(pending.operation.state).toBe("starting_connection");
+    await observeOperationState(coordinator, pending.operation.operationId, "awaiting_wallet_approval");
     expect(client.listSessionsCount).toBe(readsBeforeSecondCreate);
     await coordinator.cancel(pending.operation.operationId);
     await coordinator.close();
@@ -817,11 +1259,11 @@ describe("WalletCoordinator", () => {
     const { client, coordinator } = await createSubject();
 
     const outcomes = await Promise.allSettled([
-      coordinator.start({ kind: "connect", interactionInterface: "cli" }),
-      coordinator.start({ kind: "connect", interactionInterface: "cli" }),
+      startOperation(coordinator, { kind: "connect", interactionInterface: "cli" }),
+      startOperation(coordinator, { kind: "connect", interactionInterface: "cli" }),
     ]);
     const fulfilled = outcomes.find(
-      (outcome): outcome is PromiseFulfilledResult<Awaited<ReturnType<WalletCoordinator["start"]>>> =>
+      (outcome): outcome is PromiseFulfilledResult<WalletOperationResponse> =>
         outcome.status === "fulfilled",
     );
     const rejected = outcomes.find(
@@ -830,7 +1272,7 @@ describe("WalletCoordinator", () => {
 
     expect(outcomes.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
     expect(outcomes.filter(({ status }) => status === "rejected")).toHaveLength(1);
-    expect(fulfilled?.value.operation.state).toBe("awaiting_wallet_approval");
+    expect(fulfilled?.value.operation.state).toBe("starting_connection");
     expect(rejected?.reason).toMatchObject({
       failure: { error: { code: "state_conflict" } },
     });
@@ -844,23 +1286,28 @@ describe("WalletCoordinator", () => {
     const { client, coordinator } = await createSubject();
     const lateStart = deferred<void>();
     client.startWaits.push(lateStart);
-    const creating = coordinator.start({ kind: "connect", interactionInterface: "cli" });
-    await drainCoordinator();
+    const creating = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
+    expect(creating.operation.state).toBe("starting_connection");
 
     await vi.advanceTimersByTimeAsync(5 * 60 * 1_000);
-    const failed = await creating;
-    expect(failed.operation).toMatchObject({
+    await drainCoordinator();
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1_000);
+    expect(await observeOperationState(
+      coordinator,
+      creating.operation.operationId,
+      "failed",
+    )).toMatchObject({
       state: "failed",
       failure: { error: { code: "wallet_timeout" } },
     });
     await expectWalletCode(
-      coordinator.start({ kind: "disconnect", interactionInterface: "cli" }),
+      startOperation(coordinator, { kind: "disconnect", interactionInterface: "cli" }),
       "runtime_state_unavailable",
     );
 
     lateStart.resolve();
     await drainCoordinator();
-    const next = await coordinator.start({ kind: "disconnect", interactionInterface: "cli" });
+    const next = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "cli" });
     expect(next.operation).toMatchObject({
       state: "completed",
       result: { outcome: "already_disconnected" },
@@ -870,23 +1317,32 @@ describe("WalletCoordinator", () => {
 
   it("normalizes proposal cancellation failure without exposing adapter errors", async () => {
     const { client, coordinator } = await createSubject();
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const pending = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
+    await observeOperationState(coordinator, pending.operation.operationId, "awaiting_wallet_approval");
     const attempt = client.attempts[0] as FakeConnectionAttempt;
     attempt.cancelError = new WalletConnectClientError("sdk_unavailable");
 
-    await expectWalletCode(coordinator.cancel(pending.operation.operationId), "runtime_state_unavailable");
-    expect(await operationState(coordinator, pending.operation.operationId)).toBe("awaiting_wallet_approval");
+    expect(await coordinator.cancel(pending.operation.operationId)).toMatchObject({
+      operation: { state: "cancelling" },
+    });
+    expect(await observeOperationState(
+      coordinator,
+      pending.operation.operationId,
+      "awaiting_wallet_approval",
+    )).toMatchObject({ failure: null });
     await coordinator.close();
   });
 
   it("maps rejection and transport failure to distinct terminal states", async () => {
     const { client, coordinator } = await createSubject();
-    const rejected = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const rejected = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
+    await observeOperationState(coordinator, rejected.operation.operationId, "awaiting_wallet_approval");
     (client.attempts[0] as FakeConnectionAttempt).settle(Object.freeze({ status: "rejected" }));
     await drainCoordinator();
     expect(await operationState(coordinator, rejected.operation.operationId)).toBe("rejected");
 
-    const failed = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const failed = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
+    await observeOperationState(coordinator, failed.operation.operationId, "awaiting_wallet_approval");
     (client.attempts[1] as FakeConnectionAttempt).settle(Object.freeze({ status: "failed" }));
     await drainCoordinator();
     expect((await coordinator.get(failed.operation.operationId)).operation).toMatchObject({
@@ -906,18 +1362,23 @@ describe("WalletCoordinator", () => {
     expect(connectionRead).toMatchObject({ ok: false, error: { code: "runtime_state_unavailable" } });
     expect(JSON.stringify(connectionRead)).not.toContain("wallet_sdk_state");
     await expectWalletCode(
-      coordinator.start({ kind: "connect", interactionInterface: "cli" }),
+      startOperation(coordinator, { kind: "connect", interactionInterface: "cli" }),
       "runtime_state_unavailable",
     );
     await coordinator.close();
 
     const startFailure = await createSubject();
     startFailure.client.startError = new WalletConnectClientError("sdk_unavailable");
-    const operation = await startFailure.coordinator.start({
+    const operation = await startOperation(startFailure.coordinator, {
       kind: "connect",
       interactionInterface: "cli",
     });
-    expect(operation.operation).toMatchObject({
+    expect(operation.operation).toMatchObject({ state: "starting_connection" });
+    expect(await observeOperationState(
+      startFailure.coordinator,
+      operation.operation.operationId,
+      "failed",
+    )).toMatchObject({
       state: "failed",
       failure: { error: { code: "runtime_state_unavailable" } },
     });
@@ -960,14 +1421,18 @@ describe("WalletCoordinator", () => {
     ["expired session", session(topicA, addressA, { expiry: Date.parse(initialTime) / 1_000 })],
   ])("revokes an approved session with %s", async (_case, invalid) => {
     const { client, coordinator, projection } = await createSubject();
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const pending = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
     client.sessions = [invalid];
     (client.attempts[0] as FakeConnectionAttempt).settle(
       Object.freeze({ status: "approved", session: invalid }),
     );
     await drainCoordinator();
 
-    expect((await coordinator.get(pending.operation.operationId)).operation).toMatchObject({
+    expect(await observeOperationState(
+      coordinator,
+      pending.operation.operationId,
+      "failed",
+    )).toMatchObject({
       state: "failed",
       failure: { error: { code: "wallet_session_unusable" } },
     });
@@ -979,8 +1444,10 @@ describe("WalletCoordinator", () => {
 
   it("terminates approval settlement on an unexpected projection invariant failure", async () => {
     const { client, coordinator, projection } = await createSubject();
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const pending = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
     const approved = session();
+    const cleanupGate = deferred<void>();
+    client.disconnectWaits.push(cleanupGate);
     client.sessions = [approved];
     projection.replaceError = new Error("secret unexpected projection invariant");
     (client.attempts[0] as FakeConnectionAttempt).settle(
@@ -988,17 +1455,93 @@ describe("WalletCoordinator", () => {
     );
     await drainCoordinator();
 
-    expect((await coordinator.get(pending.operation.operationId)).operation).toMatchObject({
+    expect(await operationState(coordinator, pending.operation.operationId)).toBe("validating_session");
+    expect(client.sessions.map(({ topic }) => topic)).toEqual([topicA]);
+    cleanupGate.resolve();
+    await drainCoordinator();
+
+    expect(await observeOperationState(
+      coordinator,
+      pending.operation.operationId,
+      "failed",
+    )).toMatchObject({
+      state: "failed",
+      failure: { error: { code: "runtime_state_unavailable" } },
+    });
+    expect(client.disconnectTopics).toEqual([topicA]);
+    expect(client.sessions).toEqual([]);
+    projection.replaceError = undefined;
+    await coordinator.close();
+  });
+
+  it("revokes the exact approved topic when session-store validation throws", async () => {
+    const { client, coordinator } = await createSubject();
+    const pending = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
+    const approved = session();
+    const cleanupGate = deferred<void>();
+    client.disconnectWaits.push(cleanupGate);
+    client.sessions = [approved];
+    client.listError = new WalletConnectClientError("sdk_unavailable");
+    (client.attempts[0] as FakeConnectionAttempt).settle(
+      Object.freeze({ status: "approved", session: approved }),
+    );
+    await drainCoordinator();
+
+    expect(client.disconnectTopics).toEqual([topicA]);
+    expect(await operationState(coordinator, pending.operation.operationId)).toBe("validating_session");
+    expect(client.sessions.map(({ topic }) => topic)).toEqual([topicA]);
+    cleanupGate.resolve();
+    await drainCoordinator();
+    expect(client.sessions).toEqual([]);
+    client.listError = undefined;
+    expect(await observeOperationState(
+      coordinator,
+      pending.operation.operationId,
+      "failed",
+    )).toMatchObject({
+      state: "failed",
+      failure: { error: { code: "runtime_state_unavailable" } },
+    });
+    await coordinator.close();
+  });
+
+  it("revokes the exact approved topic when canonical session validation throws", async () => {
+    const { client, coordinator } = await createSubject();
+    const pending = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
+    const approved = session();
+    const hostile = Object.freeze({
+      ...approved,
+      namespaces: new Proxy(approved.namespaces, {
+        ownKeys() { throw new Error("secret invalid namespace store"); },
+      }),
+    }) as WalletConnectSessionSnapshot;
+    const cleanupGate = deferred<void>();
+    client.disconnectWaits.push(cleanupGate);
+    client.sessions = [hostile];
+    (client.attempts[0] as FakeConnectionAttempt).settle(
+      Object.freeze({ status: "approved", session: hostile }),
+    );
+    await drainCoordinator();
+
+    expect(client.disconnectTopics).toEqual([topicA]);
+    expect(await operationState(coordinator, pending.operation.operationId)).toBe("validating_session");
+    cleanupGate.resolve();
+    await drainCoordinator();
+    expect(client.sessions).toEqual([]);
+    expect(await observeOperationState(
+      coordinator,
+      pending.operation.operationId,
+      "failed",
+    )).toMatchObject({
       state: "failed",
       failure: { error: { code: "internal_error" } },
     });
-    projection.replaceError = undefined;
     await coordinator.close();
   });
 
   it("rejects approval when the SDK store contains an extra session", async () => {
     const { client, coordinator } = await createSubject();
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const pending = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
     const approved = session();
     client.sessions = [approved, session(topicB, addressB)];
     (client.attempts[0] as FakeConnectionAttempt).settle(
@@ -1006,23 +1549,28 @@ describe("WalletCoordinator", () => {
     );
     await drainCoordinator();
 
-    expect((await coordinator.get(pending.operation.operationId)).operation).toMatchObject({
+    expect(await observeOperationState(
+      coordinator,
+      pending.operation.operationId,
+      "failed",
+    )).toMatchObject({
       state: "failed",
       failure: { error: { code: "wallet_session_unusable" } },
     });
     expect(client.disconnectTopics).toEqual([topicA]);
     expect(client.sessions.map(({ topic }) => topic)).toEqual([topicB]);
     expect(coordinator.activeWallet.capture().connection).toEqual(disconnected("unusable_store"));
-    const explicitReplacement = await coordinator.start({ kind: "connect", interactionInterface: "web" });
-    expect(explicitReplacement.operation.state).toBe("awaiting_confirmation");
-    await coordinator.operation.cancel(explicitReplacement.operation.operationId);
+    await expectWalletCode(
+      startOperation(coordinator, { kind: "connect", interactionInterface: "web" }),
+      "state_conflict",
+    );
     expect(client.sessions.map(({ topic }) => topic)).toEqual([topicB]);
     await coordinator.close();
   });
 
   it("keeps an absent approved topic quarantined until a late store appearance is cleaned", async () => {
     const { client, coordinator, projection } = await createSubject();
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const pending = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
     const approved = session(topicA, addressA);
     (client.attempts[0] as FakeConnectionAttempt).settle(
       Object.freeze({ status: "approved", session: approved }),
@@ -1047,7 +1595,7 @@ describe("WalletCoordinator", () => {
 
   it("never revokes an unrelated session when rejected approval cleanup fails", async () => {
     const { client, coordinator } = await createSubject();
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const pending = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
     const approved = session(topicA, addressA);
     client.sessions = [approved, session(topicB, addressB)];
     client.disconnectFailures.add(topicA);
@@ -1056,23 +1604,32 @@ describe("WalletCoordinator", () => {
     );
     await drainCoordinator();
 
-    expect((await coordinator.get(pending.operation.operationId)).operation).toMatchObject({
+    expect(await observeOperationState(
+      coordinator,
+      pending.operation.operationId,
+      "failed",
+    )).toMatchObject({
       state: "failed",
       failure: { error: { code: "runtime_state_unavailable" } },
     });
     expect(client.disconnectTopics).toEqual([topicA]);
     expect(client.sessions.map(({ topic }) => topic)).toEqual([topicA, topicB]);
     await expectWalletCode(
-      coordinator.start({ kind: "connect", interactionInterface: "web" }),
+      startOperation(coordinator, { kind: "connect", interactionInterface: "web" }),
       "runtime_state_unavailable",
     );
 
     client.disconnectFailures.delete(topicA);
-    const retry = await coordinator.start({ kind: "connect", interactionInterface: "web" });
-    expect(retry.operation.state).toBe("awaiting_confirmation");
+    await expectWalletCode(
+      coordinator.start({
+        kind: "connect",
+        interactionInterface: "web",
+        connectionRevision: null,
+      }),
+      "state_conflict",
+    );
     expect(client.disconnectTopics).toEqual([topicA, topicA, topicA]);
     expect(client.sessions.map(({ topic }) => topic)).toEqual([topicB]);
-    await coordinator.operation.cancel(retry.operation.operationId);
     await coordinator.close();
   });
 
@@ -1191,7 +1748,7 @@ describe("WalletCoordinator", () => {
 
     lateRevocation.resolve();
     await drainCoordinator();
-    const next = await coordinator.start({ kind: "disconnect", interactionInterface: "cli" });
+    const next = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "cli" });
     expect(next.operation).toMatchObject({
       state: "completed",
       result: { outcome: "already_disconnected" },
@@ -1226,7 +1783,7 @@ describe("WalletCoordinator", () => {
     expect(coordinator.activeWallet.capture().connection).toEqual(disconnected("unusable_store"));
     expect(client.disconnectTopics).toEqual([topicA]);
     await expectWalletCode(
-      coordinator.start({ kind: "disconnect", interactionInterface: "cli" }),
+      startOperation(coordinator, { kind: "disconnect", interactionInterface: "cli" }),
       "runtime_state_unavailable",
     );
     projection.replaceError = undefined;
@@ -1235,7 +1792,7 @@ describe("WalletCoordinator", () => {
 
   it("expires pending operations, cancels their exact proposal, and retains terminal state for five minutes", async () => {
     const { client, coordinator } = await createSubject();
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const pending = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
     const attempt = client.attempts[0] as FakeConnectionAttempt;
 
     await vi.advanceTimersByTimeAsync(5 * 60 * 1_000);
@@ -1251,7 +1808,7 @@ describe("WalletCoordinator", () => {
 
   it("uses the canonical clock at the exact confirmation deadline without waiting for the timer callback", async () => {
     const { client, coordinator } = await createSubject([session()]);
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "web" });
+    const pending = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "web" });
     vi.setSystemTime(new Date(pending.operation.expiresAt));
 
     const current = await coordinator.get(pending.operation.operationId);
@@ -1266,7 +1823,7 @@ describe("WalletCoordinator", () => {
 
   it("cancels an approval attempt before publishing canonical-clock expiry without timer delivery", async () => {
     const { client, coordinator } = await createSubject();
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const pending = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
     const attempt = client.attempts[0] as FakeConnectionAttempt;
     vi.setSystemTime(new Date(pending.operation.expiresAt));
 
@@ -1279,7 +1836,7 @@ describe("WalletCoordinator", () => {
 
   it("publishes an expired presentation after cancelling the exact attempt at the canonical deadline", async () => {
     const { client, coordinator } = await createSubject();
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "web" });
+    const pending = await startOperation(coordinator, { kind: "connect", interactionInterface: "web" });
     const attempt = client.attempts[0] as FakeConnectionAttempt;
     vi.setSystemTime(new Date(pending.operation.expiresAt));
 
@@ -1288,13 +1845,17 @@ describe("WalletCoordinator", () => {
       access: "interactive",
     });
     expect(attempt.cancelCount).toBe(1);
-    expect((await coordinator.get(pending.operation.operationId)).operation.state).toBe("expired");
+    expect((await observeOperationState(
+      coordinator,
+      pending.operation.operationId,
+      "expired",
+    )).state).toBe("expired");
     await coordinator.close();
   });
 
   it("quarantines approval settled after the canonical deadline instead of connecting", async () => {
     const { client, coordinator, projection } = await createSubject();
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const pending = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
     const attempt = client.attempts[0] as FakeConnectionAttempt;
     const approved = session();
     vi.setSystemTime(new Date(pending.operation.expiresAt));
@@ -1302,7 +1863,11 @@ describe("WalletCoordinator", () => {
     attempt.settle(Object.freeze({ status: "approved", session: approved }));
     await drainCoordinator();
 
-    expect((await coordinator.get(pending.operation.operationId)).operation.state).toBe("expired");
+    expect((await observeOperationState(
+      coordinator,
+      pending.operation.operationId,
+      "expired",
+    )).state).toBe("expired");
     expect(client.sessions).toEqual([]);
     expect(projection.read().connection).toEqual(disconnected("no_session"));
     await coordinator.close();
@@ -1310,18 +1875,22 @@ describe("WalletCoordinator", () => {
 
   it("rejects an SDK mutation that resolves after its canonical deadline without timer delivery", async () => {
     const { client, coordinator } = await createSubject([session()]);
-    const operation = await coordinator.start({ kind: "disconnect", interactionInterface: "web" });
+    const operation = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "web" });
     const lateDisconnect = deferred<void>();
     client.disconnectWaits.push(lateDisconnect);
-    const confirmation = coordinator.webConfirmation.confirm(operation.operation.operationId, {
+    const confirmation = await coordinator.webConfirmation.confirm(operation.operation.operationId, {
       connectionRevision: operation.operation.connectionRevision,
     });
-    await drainCoordinator();
+    expect(confirmation.state).toBe("disconnecting");
     const active = await coordinator.get(operation.operation.operationId);
     vi.setSystemTime(new Date(active.operation.expiresAt));
     lateDisconnect.resolve();
 
-    const failed = await confirmation;
+    const failed = await observeOperationState(
+      coordinator,
+      operation.operation.operationId,
+      "failed",
+    );
     expect(failed).toMatchObject({
       state: "failed",
       failure: { error: { code: "wallet_timeout" } },
@@ -1332,14 +1901,14 @@ describe("WalletCoordinator", () => {
 
   it("assigns a fresh SDK deadline when confirmation enters disconnection", async () => {
     const { client, coordinator } = await createSubject([session()]);
-    const operation = await coordinator.start({ kind: "disconnect", interactionInterface: "web" });
+    const operation = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "web" });
     vi.setSystemTime(new Date("2026-07-14T00:04:59.000Z"));
     const disconnectGate = deferred<void>();
     client.disconnectWaits.push(disconnectGate);
-    const confirmation = coordinator.webConfirmation.confirm(operation.operation.operationId, {
+    const confirmation = await coordinator.webConfirmation.confirm(operation.operation.operationId, {
       connectionRevision: operation.operation.connectionRevision,
     });
-    await drainCoordinator();
+    expect(confirmation.state).toBe("disconnecting");
 
     const active = await coordinator.get(operation.operation.operationId);
     expect(active.operation).toMatchObject({
@@ -1347,13 +1916,17 @@ describe("WalletCoordinator", () => {
       expiresAt: "2026-07-14T00:09:59.000Z",
     });
     disconnectGate.resolve();
-    await expect(confirmation).resolves.toMatchObject({ state: "completed" });
+    expect(await observeOperationState(
+      coordinator,
+      operation.operation.operationId,
+      "completed",
+    )).toMatchObject({ state: "completed" });
     await coordinator.close();
   });
 
   it("removes terminal operations by canonical retention time without timer delivery", async () => {
     const { coordinator } = await createSubject();
-    const completed = await coordinator.start({ kind: "disconnect", interactionInterface: "cli" });
+    const completed = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "cli" });
     vi.setSystemTime(new Date(completed.operation.expiresAt));
 
     await expect(coordinator.get(completed.operation.operationId)).rejects.toThrowError();
@@ -1362,13 +1935,13 @@ describe("WalletCoordinator", () => {
 
   it("ends user waiting at five minutes and fences a stalled expiry cancellation", async () => {
     const { client, coordinator } = await createSubject();
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const pending = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
     const attempt = client.attempts[0] as FakeConnectionAttempt;
     const lateCancellation = deferred<void>();
     attempt.cancelWait = lateCancellation;
 
     await vi.advanceTimersByTimeAsync(5 * 60 * 1_000);
-    expect(await operationState(coordinator, pending.operation.operationId)).toBe("disconnecting");
+    expect(await operationState(coordinator, pending.operation.operationId)).toBe("cancelling");
     expect(attempt.cancelCount).toBe(1);
 
     await vi.advanceTimersByTimeAsync(5 * 60 * 1_000);
@@ -1377,13 +1950,13 @@ describe("WalletCoordinator", () => {
       failure: { error: { code: "wallet_timeout" } },
     });
     await expectWalletCode(
-      coordinator.start({ kind: "disconnect", interactionInterface: "cli" }),
+      startOperation(coordinator, { kind: "disconnect", interactionInterface: "cli" }),
       "runtime_state_unavailable",
     );
 
     lateCancellation.resolve();
     await drainCoordinator();
-    const next = await coordinator.start({ kind: "disconnect", interactionInterface: "cli" });
+    const next = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "cli" });
     expect(next.operation).toMatchObject({
       state: "completed",
       result: { outcome: "already_disconnected" },
@@ -1393,18 +1966,17 @@ describe("WalletCoordinator", () => {
 
   it("owns one attempt cancellation across cancel, expiry, and a retryable finite close", async () => {
     const { client, coordinator } = await createSubject();
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const pending = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
     const attempt = client.attempts[0] as FakeConnectionAttempt;
     const lateCancellation = deferred<void>();
     attempt.cancelWait = lateCancellation;
 
-    const cancelling = coordinator.cancel(pending.operation.operationId);
-    const cancellationFailure = expectWalletCode(cancelling, "wallet_timeout");
-    await drainCoordinator();
+    const cancelling = await coordinator.cancel(pending.operation.operationId);
+    expect(cancelling.operation.state).toBe("cancelling");
     expect(attempt.cancelCount).toBe(1);
+    expect(await operationState(coordinator, pending.operation.operationId)).toBe("cancelling");
 
     await vi.advanceTimersByTimeAsync(5 * 60 * 1_000);
-    await cancellationFailure;
     expect((await coordinator.get(pending.operation.operationId)).operation).toMatchObject({
       state: "failed",
       failure: { error: { code: "wallet_timeout" } },
@@ -1427,7 +1999,7 @@ describe("WalletCoordinator", () => {
 
   it("expires confirmation without mutating the existing session", async () => {
     const { client, coordinator } = await createSubject([session()]);
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "web" });
+    const pending = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "web" });
 
     await vi.advanceTimersByTimeAsync(5 * 60 * 1_000);
     expect(await operationState(coordinator, pending.operation.operationId)).toBe("expired");
@@ -1438,7 +2010,7 @@ describe("WalletCoordinator", () => {
 
   it("binds confirmation authority to the operation interaction interface", async () => {
     const web = await createSubject([session()]);
-    const webOperation = await web.coordinator.start({
+    const webOperation = await startOperation(web.coordinator, {
       kind: "disconnect",
       interactionInterface: "web",
     });
@@ -1447,15 +2019,19 @@ describe("WalletCoordinator", () => {
       { connectionRevision: webOperation.operation.connectionRevision },
     ), "state_conflict");
     expect(web.client.disconnectTopics).toEqual([]);
-    await expect(web.coordinator.webConfirmation.confirm(
+    expect(await web.coordinator.webConfirmation.confirm(
       webOperation.operation.operationId,
       { connectionRevision: webOperation.operation.connectionRevision },
-    )).resolves.toMatchObject({ state: "completed" });
+    )).toMatchObject({ state: "disconnecting" });
+    await observeOperationState(web.coordinator, webOperation.operation.operationId, "completed");
     await web.coordinator.close();
 
-    const cli = await createSubject([session()]);
-    const cliOperation = await cli.coordinator.start({
-      kind: "connect",
+    const cli = await createSubject([
+      session(topicA, addressA),
+      session(topicB, addressB),
+    ]);
+    const cliOperation = await startOperation(cli.coordinator, {
+      kind: "disconnect",
       interactionInterface: "cli",
     });
     await expectWalletCode(cli.coordinator.webConfirmation.confirm(
@@ -1469,19 +2045,31 @@ describe("WalletCoordinator", () => {
 
   it("atomically presents operation access and QR while preserving browser control scope", async () => {
     const cli = await createSubject();
-    const cliPending = await cli.coordinator.start({ kind: "connect", interactionInterface: "cli" });
-    expect(cliPending.qr).toEqual(qr);
+    const cliPending = await startOperation(cli.coordinator, { kind: "connect", interactionInterface: "cli" });
+    expect(cliPending.operation.state).toBe("starting_connection");
+    expect(cliPending).not.toHaveProperty("qr");
+    const cliAwaiting = await observeOperationState(
+      cli.coordinator,
+      cliPending.operation.operationId,
+      "awaiting_wallet_approval",
+    );
     expect(await cli.coordinator.operationPresentation.get(cliPending.operation.operationId)).toEqual({
-      operation: cliPending.operation,
+      operation: cliAwaiting,
       qr,
       access: "read_only",
     });
     await expectWalletCode(
-      cli.coordinator.operation.cancel(cliPending.operation.operationId),
+      cli.coordinator.operation.cancel(
+        cliPending.operation.operationId,
+        { connectionRevision: cliPending.operation.connectionRevision },
+      ),
       "state_conflict",
     );
     expect((cli.client.attempts[0] as FakeConnectionAttempt).cancelCount).toBe(0);
-    await cli.coordinator.cancel(cliPending.operation.operationId);
+    expect(await cli.coordinator.cancel(cliPending.operation.operationId)).toMatchObject({
+      operation: { state: "cancelling" },
+    });
+    await observeOperationState(cli.coordinator, cliPending.operation.operationId, "cancelled");
     expect(await cli.coordinator.operationPresentation.get(cliPending.operation.operationId)).toEqual({
       operation: expect.objectContaining({ state: "cancelled" }),
       access: "read_only",
@@ -1489,20 +2077,28 @@ describe("WalletCoordinator", () => {
     await cli.coordinator.close();
 
     const web = await createSubject();
-    const webPending = await web.coordinator.start({ kind: "connect", interactionInterface: "web" });
-    expect(webPending.operation.state).toBe("awaiting_wallet_approval");
+    const webPending = await startOperation(web.coordinator, { kind: "connect", interactionInterface: "web" });
+    expect(webPending.operation.state).toBe("starting_connection");
     expect(webPending).not.toHaveProperty("qr");
+    const webAwaiting = await observeOperationState(
+      web.coordinator,
+      webPending.operation.operationId,
+      "awaiting_wallet_approval",
+    );
     expect(await web.coordinator.get(webPending.operation.operationId)).not.toHaveProperty("qr");
     expect(await web.coordinator.operationPresentation.get(webPending.operation.operationId)).toEqual({
-      operation: webPending.operation,
+      operation: webAwaiting,
       qr,
       access: "interactive",
     });
-    expect(Object.keys(web.coordinator.operation).sort()).toEqual(["cancel", "get", "start"]);
+    expect(Object.keys(web.coordinator.operation).sort()).toEqual(["cancel", "start"]);
     expect(Object.keys(web.coordinator.operationPresentation)).toEqual(["get"]);
     expect(Object.keys(web.coordinator.cliConfirmation).sort()).toEqual(["confirm", "interactionInterface"]);
     expect(Object.keys(web.coordinator.webConfirmation).sort()).toEqual(["confirm", "interactionInterface"]);
-    await web.coordinator.cancel(webPending.operation.operationId);
+    expect(await web.coordinator.cancel(webPending.operation.operationId)).toMatchObject({
+      operation: { state: "cancelling" },
+    });
+    await observeOperationState(web.coordinator, webPending.operation.operationId, "cancelled");
     expect((web.client.attempts[0] as FakeConnectionAttempt).cancelCount).toBe(1);
     expect(await web.coordinator.operationPresentation.get(webPending.operation.operationId)).toEqual({
       operation: expect.objectContaining({ state: "cancelled" }),
@@ -1513,7 +2109,7 @@ describe("WalletCoordinator", () => {
 
   it("presents confirmation state and access without requiring QR material", async () => {
     const web = await createSubject([session()]);
-    const webPending = await web.coordinator.start({ kind: "connect", interactionInterface: "web" });
+    const webPending = await startOperation(web.coordinator, { kind: "disconnect", interactionInterface: "web" });
     expect(webPending.operation.state).toBe("awaiting_confirmation");
     expect(await web.coordinator.operationPresentation.get(webPending.operation.operationId)).toEqual({
       operation: webPending.operation,
@@ -1522,8 +2118,11 @@ describe("WalletCoordinator", () => {
     await web.coordinator.cancel(webPending.operation.operationId);
     await web.coordinator.close();
 
-    const cli = await createSubject([session()]);
-    const cliPending = await cli.coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const cli = await createSubject([
+      session(topicA, addressA),
+      session(topicB, addressB),
+    ]);
+    const cliPending = await startOperation(cli.coordinator, { kind: "disconnect", interactionInterface: "cli" });
     expect(cliPending.operation.state).toBe("awaiting_confirmation");
     expect(await cli.coordinator.operationPresentation.get(cliPending.operation.operationId)).toEqual({
       operation: cliPending.operation,
@@ -1535,7 +2134,7 @@ describe("WalletCoordinator", () => {
 
   it("cancels a pending proposal on owner close without revoking an approved session", async () => {
     const pendingOwner = await createSubject();
-    const pending = await pendingOwner.coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const pending = await startOperation(pendingOwner.coordinator, { kind: "connect", interactionInterface: "cli" });
     const attempt = pendingOwner.client.attempts[0] as FakeConnectionAttempt;
     await pendingOwner.coordinator.close();
     expect(attempt.cancelCount).toBe(1);
@@ -1569,7 +2168,7 @@ describe("WalletCoordinator", () => {
 
   it("drains approval settlement racing with close without post-close client or projection access", async () => {
     const { client, coordinator, projection } = await createSubject();
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const pending = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
     const attempt = client.attempts[0] as FakeConnectionAttempt;
     const approved = session(topicA, addressA);
     client.sessions = [approved];
@@ -1579,14 +2178,14 @@ describe("WalletCoordinator", () => {
     const finalRecord = projection.read();
     await drainCoordinator();
 
-    expect(pending.operation.state).toBe("awaiting_wallet_approval");
+    expect(pending.operation.state).toBe("starting_connection");
     expect(client.callsAfterClose).toEqual([]);
     expect(projection.read()).toBe(finalRecord);
   });
 
   it("drains a deadline wake racing with close without post-close client or projection access", async () => {
     const { client, coordinator, projection } = await createSubject();
-    await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
     const attempt = client.attempts[0] as FakeConnectionAttempt;
 
     vi.advanceTimersByTime(5 * 60 * 1_000);
@@ -1603,13 +2202,13 @@ describe("WalletCoordinator", () => {
     const { client, coordinator } = await createSubject();
     const startGate = deferred<void>();
     client.startWaits.push(startGate);
-    const creating = coordinator.start({ kind: "connect", interactionInterface: "cli" });
-    await drainCoordinator();
+    const creating = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
+    expect(creating.operation.state).toBe("starting_connection");
 
     let closeSettled = false;
     const closing = coordinator.close().then(() => { closeSettled = true; });
     let followupSettled = false;
-    const followup = coordinator.start({ kind: "disconnect", interactionInterface: "cli" })
+    const followup = startOperation(coordinator, { kind: "disconnect", interactionInterface: "cli" })
       .then(
         () => undefined,
         (error: unknown) => {
@@ -1622,7 +2221,6 @@ describe("WalletCoordinator", () => {
     const followupSettledBeforeSdkRelease = followupSettled;
 
     startGate.resolve();
-    await expectWalletCode(creating, "runtime_state_unavailable");
     await closing;
     const followupError = await followup;
 
@@ -1637,18 +2235,18 @@ describe("WalletCoordinator", () => {
 
   it("finishes local close and promptly rejects new operations while proposal cancellation remains pending", async () => {
     const { client, coordinator } = await createSubject();
-    const pending = await coordinator.start({ kind: "connect", interactionInterface: "cli" });
+    const pending = await startOperation(coordinator, { kind: "connect", interactionInterface: "cli" });
     const attempt = client.attempts[0] as FakeConnectionAttempt;
     const cancellationGate = deferred<void>();
     attempt.cancelWait = cancellationGate;
-    const cancelling = coordinator.cancel(pending.operation.operationId);
-    await drainCoordinator();
+    const cancelling = await coordinator.cancel(pending.operation.operationId);
+    expect(cancelling.operation.state).toBe("cancelling");
     expect(attempt.cancelCount).toBe(1);
 
     let closeSettled = false;
     const closing = coordinator.close().then(() => { closeSettled = true; });
     let followupSettled = false;
-    const followup = coordinator.start({ kind: "disconnect", interactionInterface: "cli" })
+    const followup = startOperation(coordinator, { kind: "disconnect", interactionInterface: "cli" })
       .then(
         () => undefined,
         (error: unknown) => {
@@ -1661,7 +2259,6 @@ describe("WalletCoordinator", () => {
     const followupSettledBeforeSdkRelease = followupSettled;
 
     cancellationGate.resolve();
-    await expectWalletCode(cancelling, "runtime_state_unavailable");
     await closing;
     const followupError = await followup;
 
@@ -1678,8 +2275,8 @@ describe("WalletCoordinator", () => {
     const { client, coordinator } = await createSubject([session()]);
     const disconnectGate = deferred<void>();
     client.disconnectWaits.push(disconnectGate);
-    const disconnecting = coordinator.start({ kind: "disconnect", interactionInterface: "cli" });
-    await drainCoordinator();
+    const disconnecting = await startOperation(coordinator, { kind: "disconnect", interactionInterface: "cli" });
+    expect(disconnecting.operation.state).toBe("disconnecting");
     expect(client.disconnectTopics).toEqual([topicA]);
 
     const closing = coordinator.close();
@@ -1687,7 +2284,6 @@ describe("WalletCoordinator", () => {
     expect(client.closeCount).toBe(0);
 
     disconnectGate.resolve();
-    await expectWalletCode(disconnecting, "runtime_state_unavailable");
     await expect(closing).resolves.toBeUndefined();
     expect(client.closeCount).toBe(1);
   });

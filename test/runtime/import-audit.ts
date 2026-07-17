@@ -4,15 +4,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import ts from "typescript";
 
-import {
-  analyzePackageExtensions,
-  extensionEntries,
-  packageRootFromSpecifier,
-  parsePackageManifest,
-  type ExtensionWorkUnit,
-  type Wu1HandoffFixture,
-} from "./wu1-handoff-fixture.js";
-
 const codeSourceExtensions = new Set([
   ".cjs",
   ".cts",
@@ -71,13 +62,28 @@ export interface SourceAudit {
 export type ModuleSpecifierClass = "forbidden" | "node_builtin" | "package" | "relative";
 
 export interface PackageImportPolicy {
-  readonly activeWorkUnits: ReadonlySet<ExtensionWorkUnit>;
-  readonly activeRuntimePackages: ReadonlySet<string>;
   readonly auditedSourceFiles: ReadonlySet<string>;
   readonly repositoryRoot: string;
   readonly runtimePackageOwners: ReadonlyMap<string, string>;
   readonly toolPackages: ReadonlySet<string>;
 }
+
+export interface PackageManifest {
+  readonly dependencies: Readonly<Record<string, string>>;
+  readonly devDependencies: Readonly<Record<string, string>>;
+}
+
+export const runtimePackageSourceRoots = Object.freeze({
+  "@modelcontextprotocol/sdk": "src/interfaces",
+  "@noble/hashes": "src/core",
+  "@walletconnect/sign-client": "src/wallet",
+  "better-sqlite3": "src/runtime",
+  qrcode: "src/wallet",
+  react: "src/interfaces",
+  "react-dom": "src/interfaces",
+  viem: "src/chain",
+  zod: "src",
+} satisfies Readonly<Record<string, string>>);
 
 interface SourceContext {
   readonly checker: ts.TypeChecker;
@@ -136,6 +142,36 @@ const createSourceContext = (source: string, path: string): SourceContext => {
   };
 };
 
+const forbiddenPackageSegmentCharacterPattern = /[\\\0@:#?%]/;
+const externalPackageSchemePattern = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+
+const validPackageSegment = (value: string): boolean =>
+  value.length > 0 && value !== "." && value !== ".." &&
+  !forbiddenPackageSegmentCharacterPattern.test(value);
+
+const packageRootFromSpecifier = (specifier: string): string | undefined => {
+  if (
+    specifier.length === 0 ||
+    specifier.startsWith(".") ||
+    specifier.startsWith("/") ||
+    specifier.startsWith("\\") ||
+    specifier.startsWith("#") ||
+    externalPackageSchemePattern.test(specifier)
+  ) return undefined;
+
+  const parts = specifier.split("/");
+  const first = parts[0];
+  if (first === undefined) return undefined;
+  if (first.startsWith("@")) {
+    const name = parts[1];
+    return first.length > 1 && name !== undefined && validPackageSegment(first.slice(1)) &&
+      parts.slice(1).every(validPackageSegment)
+      ? `${first}/${name}`
+      : undefined;
+  }
+  return parts.every(validPackageSegment) ? first : undefined;
+};
+
 export const packageRoot = packageRootFromSpecifier;
 
 const hasNodeModulesSegment = (specifier: string): boolean =>
@@ -162,10 +198,8 @@ export const classifyModuleSpecifier = (specifier: string): ModuleSpecifierClass
   return packageRoot(specifier) === undefined ? "forbidden" : "package";
 };
 
-const packageSections = ["dependencies", "devDependencies"] as const;
-
 const validatedSourceRoot = (
-  workUnit: ExtensionWorkUnit,
+  packageName: string,
   sourceRoot: string,
   repositoryRoot = resolve("."),
 ): string => {
@@ -175,56 +209,66 @@ const validatedSourceRoot = (
     isAbsolute(fromRepository) ||
     fromRepository === ".." ||
     fromRepository.startsWith(`..${sep}`)
-  ) throw new TypeError(`Package source root is outside the repository: ${workUnit}:${sourceRoot}`);
+  ) throw new TypeError(`Package source root is outside the repository: ${packageName}:${sourceRoot}`);
   return owner;
 };
 
+const packageSection = (value: unknown, section: "dependencies" | "devDependencies"):
+Readonly<Record<string, string>> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("Package manifest must be an object");
+  }
+  const candidate = (value as Record<string, unknown>)[section];
+  if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
+    throw new TypeError(`Package manifest ${section} must be an object`);
+  }
+  const result: Record<string, string> = {};
+  for (const [name, version] of Object.entries(candidate)) {
+    if (packageRootFromSpecifier(name) !== name || typeof version !== "string" || version.length === 0) {
+      throw new TypeError(`Invalid ${section} declaration: ${name}`);
+    }
+    result[name] = version;
+  }
+  return result;
+};
+
+const parsePackageManifest = (value: unknown): PackageManifest => ({
+  dependencies: packageSection(value, "dependencies"),
+  devDependencies: packageSection(value, "devDependencies"),
+});
+
+export const loadPackageManifest = async (
+  path = "package.json",
+): Promise<PackageManifest> => parsePackageManifest(JSON.parse(await readFile(path, "utf8")));
+
 export const createPackageImportPolicy = (
-  fixture: Wu1HandoffFixture,
   manifestValue: unknown,
   repositoryRoot = resolve("."),
   auditedSourceFiles: readonly string[] = [],
 ): PackageImportPolicy => {
   const manifest = parsePackageManifest(manifestValue);
-  const extensionAnalysis = analyzePackageExtensions(fixture, manifest);
-  if (extensionAnalysis.errors.length !== 0) throw new TypeError(extensionAnalysis.errors[0]);
   const runtimePackageOwners = new Map<string, string>();
-  const activeRuntimePackages = new Set<string>();
-  const toolPackages = new Set<string>();
-  for (const section of packageSections) {
-    for (const [name, version] of Object.entries(fixture.packageFoundation[section])) {
-      if (manifest[section][name] !== version) {
-        throw new TypeError(`Package foundation mismatch: ${section}:${name}@${version}`);
-      }
-      if (section === "dependencies") {
-        runtimePackageOwners.set(name, repositoryRoot);
-        activeRuntimePackages.add(name);
-      } else toolPackages.add(name);
+  for (const name of Object.keys(manifest.dependencies)) {
+    const sourceRoot = runtimePackageSourceRoots[name as keyof typeof runtimePackageSourceRoots];
+    if (sourceRoot === undefined) throw new TypeError(`Runtime package has no source owner: ${name}`);
+    runtimePackageOwners.set(name, validatedSourceRoot(name, sourceRoot, repositoryRoot));
+  }
+  for (const name of Object.keys(runtimePackageSourceRoots)) {
+    if (!Object.hasOwn(manifest.dependencies, name)) {
+      throw new TypeError(`Runtime package owner is undeclared: ${name}`);
+    }
+  }
+  for (const name of Object.keys(manifest.devDependencies)) {
+    if (Object.hasOwn(manifest.dependencies, name)) {
+      throw new TypeError(`Package is both runtime and development dependency: ${name}`);
     }
   }
 
-  const extensionRoots = new Map<ExtensionWorkUnit, string>();
-  for (const [workUnit, extension] of extensionEntries(fixture)) {
-    extensionRoots.set(workUnit, validatedSourceRoot(workUnit, extension.sourceRoot, repositoryRoot));
-  }
-
-  const activeWorkUnits = new Set(extensionAnalysis.activeWorkUnits);
-  for (const [workUnit, extension] of extensionEntries(fixture)) {
-    const owner = extensionRoots.get(workUnit);
-    if (owner === undefined) throw new TypeError(`Missing package source root: ${workUnit}`);
-    for (const name of Object.keys(extension.dependencies)) runtimePackageOwners.set(name, owner);
-    if (!activeWorkUnits.has(workUnit)) continue;
-    for (const name of Object.keys(extension.dependencies)) activeRuntimePackages.add(name);
-    for (const name of Object.keys(extension.devDependencies)) toolPackages.add(name);
-  }
-
   return {
-    activeWorkUnits,
-    activeRuntimePackages,
     auditedSourceFiles: new Set(auditedSourceFiles.map((sourcePath) => resolve(sourcePath))),
     repositoryRoot,
     runtimePackageOwners,
-    toolPackages,
+    toolPackages: new Set(Object.keys(manifest.devDependencies)),
   };
 };
 
@@ -747,15 +791,12 @@ export const moduleImportPolicyViolations = (
           violations.push(`${name}:${reference.packageRoot}:${relative(policy.repositoryRoot, owner)
             .split(sep).join("/")}`);
         }
-        if (!policy.activeRuntimePackages.has(reference.packageRoot)) {
-          violations.push(`${name}:${reference.packageRoot}:undeclared_or_inactive`);
-        }
       } else if (policy.toolPackages.has(reference.packageRoot)) {
         if (!isToolSource(file, policy.repositoryRoot)) {
           violations.push(`${name}:${reference.packageRoot}:development_only`);
         }
       } else {
-        violations.push(`${name}:${reference.packageRoot}:undeclared_or_inactive`);
+        violations.push(`${name}:${reference.packageRoot}:undeclared`);
       }
     }
   }

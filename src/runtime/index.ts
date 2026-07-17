@@ -66,7 +66,6 @@ export type {
   OwnerIdentity,
   OwnerInstanceId,
   ProfileId,
-  RuntimeBuildDigest,
   RuntimeIdentityChallenge,
   RuntimeRevision,
 } from "./runtime-identity.js";

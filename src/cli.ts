@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
 import {
   canonicalJsonStringify,
   captureCanonicalJson,
+  getCapabilityDefinitionSnapshot,
   parseCapabilitySuccess,
-  walletConnectionCapability,
   type ApplicationFailure,
   type CanonicalJson,
   type CapabilitySuccess,
@@ -25,7 +25,7 @@ import {
   runReadCliCommand,
   startStdioMcp,
   walletConnectionInterface,
-  walletToolInterfaces,
+  walletInterfaceBindings,
   type ReadCliCommand,
   type StdioMcpHandle,
 } from "./interfaces/index.js";
@@ -39,8 +39,11 @@ import { createWalletOwnerApplication } from "./wallet/application.js";
 import {
   parseWalletOperationId,
   parseWalletOperationResponse,
+  parseWalletOperationStartResponse,
+  walletTerminalStateFailureCodes,
   type WalletManagementOperation,
   type WalletOperationResponse,
+  type WalletOperationStartResponse,
 } from "./wallet/contracts.js";
 import {
   isWalletOperationConfirmableState,
@@ -162,20 +165,20 @@ const parseCommand = (argumentsInput: readonly string[]): CliCommand => {
   if (domain === walletConnectionInterface.cli.domain && command === walletConnectionInterface.cli.command) {
     return Object.freeze({ kind: "status", json: parseJsonFlag(tokens) });
   }
-  if (domain === walletToolInterfaces.startConnection.cli.domain &&
-    command === walletToolInterfaces.startConnection.cli.command) {
+  if (domain === walletInterfaceBindings.connect.cli?.domain &&
+    command === walletInterfaceBindings.connect.cli.command) {
     if (tokens.length !== 0) return invalidInput();
     return Object.freeze({ kind: "connect", json: false });
   }
-  if (domain === walletToolInterfaces.startDisconnection.cli.domain &&
-    command === walletToolInterfaces.startDisconnection.cli.command) {
+  if (domain === walletInterfaceBindings.disconnect.cli?.domain &&
+    command === walletInterfaceBindings.disconnect.cli.command) {
     if (tokens.length !== 0) return invalidInput();
     return Object.freeze({ kind: "disconnect", json: false });
   }
-  if (domain === walletToolInterfaces.getOperation.cli.domain &&
-    command === walletToolInterfaces.getOperation.cli.command) return parseOperationCommand(tokens);
-  if (domain === walletToolInterfaces.cancelOperation.cli.domain &&
-    command === walletToolInterfaces.cancelOperation.cli.command) {
+  if (domain === walletInterfaceBindings.operation.cli?.domain &&
+    command === walletInterfaceBindings.operation.cli.command) return parseOperationCommand(tokens);
+  if (domain === walletInterfaceBindings.cancelOperation.cli?.domain &&
+    command === walletInterfaceBindings.cancelOperation.cli.command) {
     if (tokens.length !== 1) return invalidInput();
     try {
       return Object.freeze({ kind: "cancel", operationId: parseWalletOperationId(tokens[0]), json: false });
@@ -184,65 +187,124 @@ const parseCommand = (argumentsInput: readonly string[]): CliCommand => {
   return invalidInput();
 };
 
+const constrainCliDispatchFailure = (
+  failure: ApplicationFailure,
+  failureCodes: readonly string[],
+): ApplicationFailure => failureCodes.includes(failure.error.code)
+  ? failure
+  : createWalletFailure("internal_error");
+
 const canonicalFailureFromResponse = (
   response: RuntimeDispatchResponse,
-): CliApplicationFailure => new CliApplicationFailure(normalizeProblemDetailsFailure(
-  response,
-  walletErrorRegistry,
-  walletInterfaceErrorMappings,
-  "runtime_state_unavailable",
+  failureCodes: readonly string[],
+): CliApplicationFailure => new CliApplicationFailure(constrainCliDispatchFailure(
+  normalizeProblemDetailsFailure(
+    response,
+    walletErrorRegistry,
+    walletInterfaceErrorMappings,
+    "runtime_state_unavailable",
+  ),
+  failureCodes,
 ));
 
 const execute = async (
   runtime: CliRuntimePort,
-  expectedStatus: 200 | 201,
+  failureCodes: readonly string[],
   request: Omit<RuntimeDispatchRequest, "requestClass">,
 ): Promise<CanonicalJson> => {
-  const response = await runtime.dispatchRuntimeRequest({ requestClass: "local_control", ...request });
-  if (response.status >= 400) throw canonicalFailureFromResponse(response);
-  if (response.status !== expectedStatus) throw new WalletOperationError("runtime_state_unavailable");
+  let response: RuntimeDispatchResponse;
+  try {
+    response = await runtime.dispatchRuntimeRequest({ requestClass: "local_control", ...request });
+  } catch (error) {
+    throw new CliApplicationFailure(constrainCliDispatchFailure(
+      normalizeWalletError(error).failure,
+      failureCodes,
+    ));
+  }
+  if (response.status >= 400) throw canonicalFailureFromResponse(response, failureCodes);
+  if (response.status !== 200) {
+    throw new CliApplicationFailure(constrainCliDispatchFailure(
+      createWalletFailure("runtime_state_unavailable"),
+      failureCodes,
+    ));
+  }
   return response.body;
 };
 
 const startOperation = async (
   runtime: CliRuntimePort,
   kind: WalletOperationKind,
-): Promise<WalletOperationResponse> => parseWalletOperationResponse(await execute(runtime, 201, {
-  method: "POST",
-  path: walletControlRoutes.operations,
-  body: { kind, interactionInterface: "cli" },
-}));
+): Promise<WalletOperationStartResponse> => {
+  const binding = walletInterfaceBindings[kind];
+  const response = parseWalletOperationStartResponse(await execute(runtime, binding.contract.failureCodes, {
+    method: "POST",
+    path: walletControlRoutes.operations,
+    body: { kind, interactionInterface: "cli", connectionRevision: null },
+  }));
+  return Object.freeze({
+    ...response,
+    result: binding.contract.parseSuccess({}, response.result),
+  });
+};
 
 const getOperation = async (
   runtime: CliRuntimePort,
   operationId: string,
-): Promise<WalletOperationResponse> => parseWalletOperationResponse(await execute(runtime, 200, {
-  method: "GET",
-  path: walletControlRoutes.operation(operationId),
-}));
+): Promise<WalletOperationResponse> => {
+  const contract = walletInterfaceBindings.operation.contract;
+  const response = parseWalletOperationResponse(await execute(runtime, contract.failureCodes, {
+    method: "GET",
+    path: walletControlRoutes.operation(operationId),
+  }));
+  return Object.freeze({
+    ...response,
+    operation: contract.parseSuccess(
+      { operationId },
+      response.operation,
+    ),
+  });
+};
 
 const confirmOperation = async (
   runtime: CliRuntimePort,
   operation: WalletManagementOperation,
-): Promise<WalletOperationResponse> => parseWalletOperationResponse(await execute(runtime, 200, {
-  method: "POST",
-  path: walletControlRoutes.confirmation(operation.operationId),
-  body: { connectionRevision: operation.connectionRevision },
-}));
+): Promise<WalletOperationResponse> => parseWalletOperationResponse(await execute(
+  runtime,
+  walletInterfaceBindings.operation.contract.failureCodes,
+  {
+    method: "POST",
+    path: walletControlRoutes.confirmation(operation.operationId),
+    body: { connectionRevision: operation.connectionRevision },
+  },
+));
 
 const cancelOperation = async (
   runtime: CliRuntimePort,
   operationId: string,
-): Promise<WalletOperationResponse> => parseWalletOperationResponse(await execute(runtime, 200, {
-  method: "DELETE",
-  path: walletControlRoutes.operation(operationId),
-}));
+): Promise<WalletOperationResponse> => {
+  const contract = walletInterfaceBindings.cancelOperation.contract;
+  const response = parseWalletOperationResponse(await execute(runtime, contract.failureCodes, {
+    method: "DELETE",
+    path: walletControlRoutes.operation(operationId),
+  }));
+  return Object.freeze({
+    ...response,
+    operation: contract.parseSuccess(
+      { operationId },
+      response.operation,
+    ),
+  });
+};
 
 const readConnection = async (runtime: CliRuntimePort): Promise<WalletConnectionSuccess> =>
-  parseCapabilitySuccess(walletConnectionCapability, await execute(runtime, 200, {
-    method: "GET",
-    path: walletControlRoutes.connection,
-  }));
+  parseCapabilitySuccess(walletConnectionInterface.definition, await execute(
+    runtime,
+    getCapabilityDefinitionSnapshot(walletConnectionInterface.definition).failureCodes,
+    {
+      method: "GET",
+      path: walletControlRoutes.connection,
+    },
+  ));
 
 const writeCanonical = (terminal: CliTerminalPort, value: unknown): void => {
   terminal.writeOutput(`${canonicalJsonStringify(captureCanonicalJson(value))}\n`);
@@ -276,20 +338,17 @@ const writeOperationHuman = (terminal: CliTerminalPort, operation: WalletManagem
 const confirmationPrompt = (
   operation: WalletManagementOperation,
   connection: WalletConnectionData,
-): string => operation.kind === "connect"
-  ? [
-      connectionSummary(connection),
-      `Connection revision: ${operation.connectionRevision}`,
-      "Every existing wallet session will be disconnected before a new connection is requested.",
-      "If the new wallet approval fails, this profile will remain disconnected.",
-      "Replace every existing wallet session? [y/N] ",
-    ].join("\n")
-  : [
+): string => {
+  if (operation.kind === "disconnect") {
+    return [
       connectionSummary(connection),
       `Connection revision: ${operation.connectionRevision}`,
       "Every existing wallet session for this profile will be disconnected.",
       "Disconnect every existing wallet session? [y/N] ",
     ].join("\n");
+  }
+  throw new WalletOperationError("runtime_state_unavailable");
+};
 
 const cancelledResponse = async (
   runtime: CliRuntimePort,
@@ -566,8 +625,9 @@ const operationFailure = (operation: WalletManagementOperation): ApplicationFail
   if (operation.state === "failed") {
     return operation.failure ?? createWalletFailure("runtime_state_unavailable");
   }
-  if (operation.state === "rejected") return createWalletFailure("wallet_user_rejected");
-  if (operation.state === "expired") return createWalletFailure("wallet_timeout");
+  if (operation.state === "rejected" || operation.state === "expired") {
+    return createWalletFailure(walletTerminalStateFailureCodes[operation.state]);
+  }
   return undefined;
 };
 
@@ -576,7 +636,16 @@ const runWalletTransition = async (
   kind: WalletOperationKind,
   dependencies: CliDependencies,
 ): Promise<void> => {
-  let response = await startOperation(runtime, kind);
+  const startResponse = await startOperation(runtime, kind);
+  if (startResponse.result.status === "current_connection") {
+    if (kind !== "connect") throw new WalletOperationError("runtime_state_unavailable");
+    writeConnectionHuman(dependencies.terminal, startResponse.result.connection);
+    return;
+  }
+  let response: WalletOperationResponse = Object.freeze({
+    operation: startResponse.result.operation,
+    ...(startResponse.qr === undefined ? {} : { qr: startResponse.qr }),
+  });
   let resolvedOperation: WalletManagementOperation | undefined;
   if (isWalletOperationConfirmableState(response.operation.state)) {
     let decision: "confirm" | "decline" | "interrupt" | undefined;
@@ -643,7 +712,6 @@ const runWalletTransition = async (
   if (failure !== undefined) throw new CliApplicationFailure(failure);
   writeOperationHuman(dependencies.terminal, operation);
   if (
-    kind === "connect" &&
     operation.result?.outcome === "connected" &&
     runtime.ownerState === "owner"
   ) {

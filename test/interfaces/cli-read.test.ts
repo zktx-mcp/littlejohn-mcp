@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { createErc20CallEncoder, type Erc20CallEncoder } from "../../src/chain/erc20-calls.js";
+import { createErc20CallEncoder, type Erc20CallEncoder } from "../../src/chain/evm-standard.js";
 import { chainErrorRegistry, chainInterfaceErrorMappings } from "../../src/chain/errors.js";
 import {
   canonicalJsonStringify,
@@ -204,6 +204,21 @@ describe("read CLI", () => {
     )).toBe(chainInterfaceErrorMappings.get("source_unavailable").cliExitCode);
     expect(output.output).toEqual([]);
     expect(output.errors).toEqual(["source_unavailable: A required data source is unavailable.\n"]);
+  });
+
+  it("does not expose registry errors outside the selected capability contract", async () => {
+    const failure = createApplicationFailure(chainErrorRegistry, "not_found");
+    const problem = toProblemDetails(failure, chainInterfaceErrorMappings);
+    const output = outputPort();
+    expect(await runReadCliCommand(
+      new FakeRuntime(Object.freeze({
+        status: problem.status,
+        body: problem as unknown as CanonicalJson,
+      })),
+      parseReadCliCommand(["read", "chain-status"]),
+      output,
+    )).toBe(chainInterfaceErrorMappings.get("internal_error").cliExitCode);
+    expect(output.errors).toEqual(["internal_error: The request could not be completed.\n"]);
   });
 
   it("runs a valid read through the product CLI without requiring an interactive terminal", async () => {

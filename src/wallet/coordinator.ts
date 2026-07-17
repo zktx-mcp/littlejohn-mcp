@@ -27,13 +27,17 @@ import type {
 import {
   isWalletOperationFailureCode,
   operationFailure,
+  parseWalletCurrentOperationProjection,
   parseWalletManagementOperation,
   parseWalletOperationConfirmation,
   parseWalletOperationCreate,
   parseWalletOperationId,
   parseWalletOperationPresentation,
   parseWalletOperationResponse,
+  parseWalletOperationStartResponse,
+  parseWalletWebOperationCreate,
   walletOperationIdByteLength,
+  type WalletCurrentOperationProjection,
   type WalletManagementOperation,
   type WalletOperationConfirmationPort,
   type WalletOperationConfirmation,
@@ -45,6 +49,10 @@ import {
   type WalletWebOperationPort,
   type WalletOperationResponse,
   type WalletOperationResult,
+  type WalletOperationStartResponse,
+  type WalletOperationStartResult,
+  type WalletCurrentOperationProjectionPort,
+  type WalletWebOperationCreate,
 } from "./contracts.js";
 import type { WalletOperationKind } from "./operation-state.js";
 import {
@@ -176,10 +184,11 @@ interface ConnectionSnapshot {
 
 type EmptyConnectionReason = "no_session" | "expired" | "deleted" | "disconnected";
 
-type ReconciliationAuthority =
-  | { readonly kind: "startup_restore"; readonly emptyReason: EmptyConnectionReason }
-  | { readonly kind: "runtime_continuity"; readonly emptyReason: EmptyConnectionReason }
-  | { readonly kind: "explicit_cleanup"; readonly emptyReason: EmptyConnectionReason };
+interface ReconciliationAuthority {
+  readonly kind: "startup_restore" | "runtime_continuity" | "explicit_cleanup";
+  readonly emptyReason: EmptyConnectionReason;
+  readonly committedConnectionRevision?: string;
+}
 
 interface SessionContinuity {
   readonly topic: string;
@@ -235,17 +244,24 @@ interface AttemptLease {
   readonly attempt: WalletConnectConnectionAttemptPort;
 }
 
-type DisconnectPurpose =
-  | {
-      readonly kind: "explicit_disconnect";
-      readonly targetTopics: readonly string[];
-      readonly continueWithPairing: boolean;
-    }
-  | {
-      readonly kind: "attempt_termination";
-      readonly intent: "cancelled" | "expired";
-      readonly attempt: AttemptLease;
-    };
+interface ExplicitDisconnectPurpose {
+  readonly targetTopics: readonly string[];
+}
+
+interface AttemptTerminationPurpose {
+  readonly intent: "cancelled" | "expired";
+  readonly attempt: AttemptLease;
+}
+
+interface StartingTerminationPurpose {
+  readonly intent: "cancelled" | "expired";
+}
+
+interface StartingTerminationHandle {
+  readonly startEffect: EffectHandle<WalletConnectConnectionAttemptPort>;
+  readonly deadline: UtcTimestamp;
+  readonly work: Promise<void>;
+}
 
 type OperationPhase =
   | { readonly tag: "awaiting_confirmation"; readonly deadline: UtcTimestamp }
@@ -260,10 +276,22 @@ type OperationPhase =
       readonly attempt: AttemptLease;
     }
   | {
+      readonly tag: "terminating_start";
+      readonly deadline: UtcTimestamp;
+      readonly purpose: StartingTerminationPurpose;
+      readonly termination: StartingTerminationHandle;
+    }
+  | {
       readonly tag: "disconnecting";
       readonly deadline: UtcTimestamp;
-      readonly purpose: DisconnectPurpose;
-      readonly effect: EffectHandle<unknown>;
+      readonly purpose: ExplicitDisconnectPurpose;
+      readonly effect: EffectHandle<void>;
+    }
+  | {
+      readonly tag: "terminating_attempt";
+      readonly deadline: UtcTimestamp;
+      readonly purpose: AttemptTerminationPurpose;
+      readonly effect: EffectHandle<WalletConnectAttemptOutcome>;
     }
   | {
       readonly tag: "validating_session";
@@ -365,6 +393,7 @@ type StableReconciliationState = "current" | "changed" | "unavailable";
 
 type OperationStartAction =
   | { readonly kind: "retry" }
+  | { readonly kind: "current_connection"; readonly result: WalletOperationStartResult }
   | { readonly kind: "immediate"; readonly operationId: string }
   | {
       readonly kind: "start_pairing";
@@ -375,19 +404,44 @@ type OperationStartAction =
       readonly kind: "disconnect";
       readonly operationId: string;
       readonly effect: EffectHandle<void>;
-      readonly purpose: Extract<DisconnectPurpose, { readonly kind: "explicit_disconnect" }>;
+      readonly purpose: ExplicitDisconnectPurpose;
     };
 
-type ConfirmationAction = Exclude<OperationStartAction, { readonly kind: "retry" }>;
+type ConfirmationAction = Extract<
+  OperationStartAction,
+  { readonly kind: "immediate" } | { readonly kind: "disconnect" }
+>;
 
 type DeadlineSynchronization =
   | { readonly kind: "ready"; readonly response: WalletOperationResponse }
   | {
+      readonly kind: "terminate_start";
+      readonly operationId: string;
+      readonly phaseVersion: number;
+      readonly termination: StartingTerminationHandle;
+      readonly purpose: StartingTerminationPurpose;
+    }
+  | {
       readonly kind: "terminate_attempt";
       readonly operationId: string;
       readonly effect: EffectHandle<WalletConnectAttemptOutcome>;
-      readonly purpose: Extract<DisconnectPurpose, { readonly kind: "attempt_termination" }>;
+      readonly purpose: AttemptTerminationPurpose;
     };
+
+interface StartingTerminationAction {
+  readonly kind: "terminate_start";
+  readonly operationId: string;
+  readonly phaseVersion: number;
+  readonly termination: StartingTerminationHandle;
+  readonly purpose: StartingTerminationPurpose;
+}
+
+interface AttemptTerminationAction {
+  readonly kind: "terminate_attempt";
+  readonly operationId: string;
+  readonly effect: EffectHandle<WalletConnectAttemptOutcome>;
+  readonly purpose: AttemptTerminationPurpose;
+}
 
 type ApprovedValidationAction =
   | { readonly kind: "complete" }
@@ -396,6 +450,7 @@ type ApprovedValidationAction =
       readonly operationId: string;
       readonly phaseVersion: number;
       readonly approvedTopic: string;
+      readonly failureCode: WalletOperationFailureCode;
       readonly effect?: EffectHandle<void>;
     };
 
@@ -406,6 +461,7 @@ export interface WalletCoordinatorPort extends WalletLocalControlOperationPort {
   readonly cliConfirmation: WalletOperationConfirmationPort<"cli">;
   readonly webConfirmation: WalletOperationConfirmationPort<"web">;
   readonly operationPresentation: WalletOperationPresentationPort;
+  readonly currentOperationProjection: WalletCurrentOperationProjectionPort;
   close(): Promise<void>;
 }
 
@@ -416,11 +472,13 @@ const unrefTimer = (timer: ReturnType<typeof setTimeout>): void => {
 };
 
 const legalPhaseTransitions = Object.freeze({
-  awaiting_confirmation: Object.freeze(["approval_starting", "disconnecting", "terminal"] as const),
-  approval_starting: Object.freeze(["approval_waiting", "terminal"] as const),
-  approval_waiting: Object.freeze(["disconnecting", "validating_session", "terminal"] as const),
-  disconnecting: Object.freeze(["approval_starting", "approval_waiting", "terminal"] as const),
-  validating_session: Object.freeze(["terminal"] as const),
+  awaiting_confirmation: Object.freeze(["disconnecting", "terminal"] as const),
+  approval_starting: Object.freeze(["approval_waiting", "terminating_start", "terminal"] as const),
+  approval_waiting: Object.freeze(["terminating_attempt", "validating_session", "terminal"] as const),
+  terminating_start: Object.freeze(["terminal"] as const),
+  disconnecting: Object.freeze(["terminal"] as const),
+  terminating_attempt: Object.freeze(["approval_waiting", "terminal"] as const),
+  validating_session: Object.freeze(["validating_session", "terminal"] as const),
   terminal: Object.freeze([] as const),
 } satisfies Readonly<Record<OperationPhase["tag"], readonly OperationPhase["tag"][]>>);
 
@@ -431,6 +489,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   readonly cliConfirmation: WalletOperationConfirmationPort<"cli">;
   readonly webConfirmation: WalletOperationConfirmationPort<"web">;
   readonly operationPresentation: WalletOperationPresentationPort;
+  readonly currentOperationProjection: WalletCurrentOperationProjectionPort;
 
   readonly #client: WalletConnectClientPort;
   readonly #wallet: WalletOwnerBootstrapPort;
@@ -455,6 +514,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   #mailboxScheduled = false;
   #mutationTail: Promise<void> = Promise.resolve();
   #reconciliationTail: Promise<void> = Promise.resolve();
+  #expiryReconciliation: Promise<void> | undefined;
   #unsubscribe: (() => void) | undefined;
   #closingRequested = false;
   #closeWork: Promise<void> | undefined;
@@ -466,10 +526,16 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     this.#connectionSnapshot = Object.freeze({ record: wallet.projection.read() });
     this.activeWallet = Object.freeze({ capture: () => this.#captureActiveWallet() });
     this.operation = Object.freeze({
-      start: async (kind: WalletOperationKind) =>
-        (await this.start({ kind, interactionInterface: "web" })).operation,
-      get: async (operationId: string) => (await this.get(operationId)).operation,
-      cancel: async (operationId: string) => (await this.#cancel("web", operationId)).operation,
+      start: async (input: WalletWebOperationCreate) => {
+        const parsed = parseWalletWebOperationCreate(input);
+        return (await this.#startOperationRequest({
+          ...parsed,
+          interactionInterface: "web",
+          connectionRevision: parsed.connectionRevision,
+        }, true)).result;
+      },
+      cancel: async (operationId: string, input: WalletOperationConfirmation) =>
+        (await this.#cancel("web", operationId, input)).operation,
     });
     this.cliConfirmation = Object.freeze({
       interactionInterface: "cli",
@@ -483,6 +549,9 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     });
     this.operationPresentation = Object.freeze({
       get: (operationId: string) => this.#readPresentation(operationId),
+    });
+    this.currentOperationProjection = Object.freeze({
+      get: () => this.#readCurrentProjection(),
     });
 
     const binding: CapabilityBinding<typeof walletConnectionCapability> = bindCapability({
@@ -540,36 +609,64 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     return coordinator;
   }
 
-  async start(input: WalletOperationCreate): Promise<WalletOperationResponse> {
+  async start(input: WalletOperationCreate): Promise<WalletOperationStartResponse> {
     const parsed = parseWalletOperationCreate(input);
+    return this.#startOperationRequest(parsed, false);
+  }
+
+  async #startOperationRequest(
+    parsed: WalletOperationCreate,
+    directBrowserAction: boolean,
+  ): Promise<WalletOperationStartResponse> {
     this.#assertOpen();
     const admission = await this.#actor(() => this.#beginCreateAdmission());
     try {
       for (;;) {
-        const stable = await this.#reconcile({ kind: "explicit_cleanup", emptyReason: "no_session" });
+        const emptyReason = await this.#actor(() => this.#operationEmptyReason());
+        const stable = await this.#reconcile({ kind: "explicit_cleanup", emptyReason });
         this.#assertOpen();
         if (stable === undefined) throw new WalletOperationError("runtime_state_unavailable");
-        const action = await this.#actor(() => this.#startOperation(parsed, stable, admission));
+        const action = await this.#actor(() => this.#startOperation(
+          parsed,
+          stable,
+          admission,
+          directBrowserAction,
+        ));
         if (action.kind === "retry") continue;
-        if (action.kind === "immediate") return this.#readResponse(action.operationId);
-        if (action.kind === "start_pairing") {
-          await this.#settlePairingStart(action.operationId, action.effect);
-          this.#assertOpen();
-          return this.#readResponse(action.operationId);
+        if (action.kind === "current_connection") {
+          return parseWalletOperationStartResponse({ result: action.result });
         }
-        await this.#settleExplicitDisconnect(action.operationId, action.effect, action.purpose);
-        this.#assertOpen();
-        return this.#readResponse(action.operationId);
+        if (action.kind === "immediate") return this.#readStartResponse(action.operationId);
+        if (action.kind === "start_pairing") {
+          this.#trackBackground(this.#settlePairingStart(action.operationId, action.effect));
+          return this.#readStartResponse(action.operationId);
+        }
+        this.#trackBackground(
+          this.#settleExplicitDisconnect(action.operationId, action.effect, action.purpose),
+        );
+        return this.#readStartResponse(action.operationId);
       }
     } finally {
       await this.#actor(() => this.#releaseLifecycleAdmission(admission));
     }
   }
 
+  #operationEmptyReason(): EmptyConnectionReason {
+    const connection = this.#connectionSnapshot.record.connection;
+    return connection.status === "disconnected" && connection.reason !== "unusable_store"
+      ? connection.reason
+      : "no_session";
+  }
+
   async get(operationId: string): Promise<WalletOperationResponse> {
     this.#assertOpen();
     const id = parseWalletOperationId(operationId);
     const synchronization = await this.#actor(() => this.#synchronizeOperation(id));
+    if (synchronization.kind === "terminate_start") {
+      await this.#settleStartingTermination(synchronization);
+      this.#assertOpen();
+      return this.#readResponse(id);
+    }
     if (synchronization.kind === "terminate_attempt") {
       await this.#settleAttemptTermination(
         synchronization.operationId,
@@ -586,7 +683,9 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     this.#assertOpen();
     const id = parseWalletOperationId(operationId);
     const synchronization = await this.#actor(() => this.#synchronizeOperation(id));
-    if (synchronization.kind === "terminate_attempt") {
+    if (synchronization.kind === "terminate_start") {
+      await this.#settleStartingTermination(synchronization);
+    } else if (synchronization.kind === "terminate_attempt") {
       await this.#settleAttemptTermination(
         synchronization.operationId,
         synchronization.effect,
@@ -595,14 +694,47 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     }
     return this.#actor(() => {
       this.#assertOpen();
-      const entry = this.#operationEntry(id);
-      return parseWalletOperationPresentation({
-        operation: this.#operationModel(entry),
-        access: entry.identity.interactionInterface === "web" ? "interactive" : "read_only",
-        ...(entry.phase.tag === "approval_waiting"
-          ? { qr: entry.phase.attempt.attempt.qr }
-          : {}),
-      });
+      return this.#operationPresentation(this.#operationEntry(id));
+    });
+  }
+
+  async #readCurrentProjection(): Promise<WalletCurrentOperationProjection> {
+    this.#assertOpen();
+    await this.#actor(() => { this.#beginExpiryReconciliationIfNeeded(); });
+    const activeOperationId = await this.#actor(() => {
+      this.#assertOpen();
+      this.#pruneExpiredTerminalOperations();
+      return this.#activeOperationId;
+    });
+    if (activeOperationId !== undefined) {
+      const synchronization = await this.#actor(() => this.#synchronizeOperation(activeOperationId));
+      if (synchronization.kind === "terminate_start") {
+        await this.#settleStartingTermination(synchronization);
+      } else if (synchronization.kind === "terminate_attempt") {
+        await this.#settleAttemptTermination(
+          synchronization.operationId,
+          synchronization.effect,
+          synchronization.purpose,
+        );
+      }
+    }
+    return this.#actor(() => {
+      this.#assertOpen();
+      this.#pruneExpiredTerminalOperations();
+      const record = this.#connectionSnapshot.record;
+      const operationId = this.#activeOperationId;
+      return parseWalletCurrentOperationProjection(operationId === undefined
+        ? {
+            status: "absent",
+            connectionRevision: record.revision,
+            connection: record.connection,
+          }
+        : {
+            status: "present",
+            connectionRevision: record.revision,
+            connection: record.connection,
+            presentation: this.#operationPresentation(this.#operationEntry(operationId)),
+          });
     });
   }
 
@@ -615,6 +747,10 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     const confirmation = parseWalletOperationConfirmation(input);
     this.#assertOpen();
     const synchronized = await this.#actor(() => this.#synchronizeOperation(id));
+    if (synchronized.kind === "terminate_start") {
+      await this.#settleStartingTermination(synchronized);
+      throw new WalletOperationError("state_conflict");
+    }
     if (synchronized.kind === "terminate_attempt") {
       await this.#settleAttemptTermination(id, synchronized.effect, synchronized.purpose);
       throw new WalletOperationError("state_conflict");
@@ -625,7 +761,8 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       confirmation,
     ));
     try {
-      const stable = await this.#reconcile({ kind: "explicit_cleanup", emptyReason: "no_session" });
+      const emptyReason = await this.#actor(() => this.#operationEmptyReason());
+      const stable = await this.#reconcile({ kind: "explicit_cleanup", emptyReason });
       this.#assertOpen();
       if (stable === undefined) throw new WalletOperationError("runtime_state_unavailable");
       const action = await this.#actor(() => this.#confirmOperation(
@@ -636,22 +773,9 @@ export class WalletCoordinator implements WalletCoordinatorPort {
         admission,
       ));
       if (action.kind === "immediate") return this.#readResponse(id);
-      if (action.kind === "start_pairing") {
-        await this.#settlePairingStart(id, action.effect);
-        this.#assertOpen();
-        return this.#readResponse(id);
-      }
-      const disconnectedCompletely = await this.#settleExplicitDisconnect(
-        id,
-        action.effect,
-        action.purpose,
+      this.#trackBackground(
+        this.#settleExplicitDisconnect(id, action.effect, action.purpose),
       );
-      this.#assertOpen();
-      if (disconnectedCompletely && action.purpose.continueWithPairing) {
-        const pairing = await this.#actor(() => this.#beginPairing(id));
-        await this.#settlePairingStart(id, pairing);
-      }
-      this.#assertOpen();
       return this.#readResponse(id);
     } finally {
       await this.#actor(() => this.#releaseLifecycleAdmission(admission));
@@ -665,22 +789,31 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   async #cancel(
     interactionInterface: WalletOperationCreate["interactionInterface"] | undefined,
     operationId: string,
+    confirmationInput?: WalletOperationConfirmation,
   ): Promise<WalletOperationResponse> {
     const id = parseWalletOperationId(operationId);
+    const confirmation = interactionInterface === undefined
+      ? undefined
+      : parseWalletOperationConfirmation(confirmationInput);
     this.#assertOpen();
     const synchronized = await this.#actor(() => this.#synchronizeOperation(id));
+    if (synchronized.kind === "terminate_start") {
+      await this.#settleStartingTermination(synchronized);
+      throw new WalletOperationError("state_conflict");
+    }
     if (synchronized.kind === "terminate_attempt") {
       await this.#settleAttemptTermination(id, synchronized.effect, synchronized.purpose);
       throw new WalletOperationError("state_conflict");
     }
-    const action = await this.#actor(() => this.#cancelOperation(interactionInterface, id));
+    const action = await this.#actor(() => this.#cancelOperation(
+      interactionInterface,
+      id,
+      confirmation,
+    ));
     if (action === undefined) return this.#readResponse(id);
-    try {
-      await this.#settleAttemptTermination(id, action.effect, action.purpose);
-    } catch (error) {
-      throw new WalletOperationError(walletFailureCode(error));
-    }
-    this.#assertOpen();
+    this.#trackBackground(action.kind === "terminate_start"
+      ? this.#settleStartingTermination(action)
+      : this.#settleAttemptTermination(id, action.effect, action.purpose));
     return this.#readResponse(id);
   }
 
@@ -848,20 +981,77 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   }
 
   #captureActiveWallet(): ActiveWalletReadSnapshot {
-    const snapshot = this.#connectionSnapshot;
-    if (this.#closingRequested || !this.#connectionEvidenceAvailable) {
+    if (this.#closingRequested) {
       return Object.freeze({ connection: disconnected("unusable_store") });
     }
-    if (snapshot.record.connection.status === "connected" &&
-      Date.parse(snapshot.record.connection.expiresAt) <= Date.parse(this.#now())) {
-      this.#quiesceEvidence();
-      this.#trackBackground(this.#reconcile({ kind: "runtime_continuity", emptyReason: "expired" }));
-      return Object.freeze({ connection: disconnected("expired") });
+    if (this.#beginExpiryReconciliationIfNeeded() !== undefined) {
+      return Object.freeze({ connection: this.#connectionSnapshot.record.connection });
     }
+    if (!this.#connectionEvidenceAvailable) {
+      return Object.freeze({ connection: disconnected("unusable_store") });
+    }
+    const snapshot = this.#connectionSnapshot;
     return Object.freeze({
       connection: snapshot.record.connection,
       ...(snapshot.sessionSource === undefined ? {} : { sessionSource: snapshot.sessionSource }),
     });
+  }
+
+  #beginExpiryReconciliationIfNeeded(): Promise<void> | undefined {
+    if (this.#expiryReconciliation !== undefined) return this.#expiryReconciliation;
+    if (!this.#connectionEvidenceAvailable) return undefined;
+    const connection = this.#connectionSnapshot.record.connection;
+    if (
+      connection.status !== "connected" ||
+      Date.parse(connection.expiresAt) > Date.parse(this.#now())
+    ) return undefined;
+    const committedConnectionRevision = this.#commitExpiredConnection();
+    let work: Promise<void>;
+    work = this.#reconcile({
+      kind: "runtime_continuity",
+      emptyReason: "expired",
+      ...(committedConnectionRevision === undefined ? {} : { committedConnectionRevision }),
+    })
+      .then(async (stable) => {
+        if (stable === undefined) {
+          await this.#actor(() => this.#persistUnavailableLocalState());
+        }
+      }, async () => {
+        await this.#actor(() => this.#persistUnavailableLocalState());
+      })
+      .finally(() => this.#actor(() => {
+        if (this.#expiryReconciliation === work) this.#expiryReconciliation = undefined;
+      }));
+    this.#expiryReconciliation = work;
+    this.#trackBackground(work);
+    return work;
+  }
+
+  #commitExpiredConnection(): string | undefined {
+    this.#connectionEvidenceEpoch += 1;
+    this.#connectionEvidenceAvailable = false;
+    const continuity = this.#sessionContinuity;
+    if (continuity !== undefined) {
+      this.#revocationAuthorities.set(continuity.topic, "active_invalidation");
+    }
+    try {
+      const evaluatedAt = this.#now();
+      const expired = parseCapabilityDataAt(
+        walletConnectionCapability,
+        disconnected("expired"),
+        evaluatedAt,
+      );
+      const current = this.#wallet.projection.read();
+      const record = sameConnection(current.connection, expired)
+        ? current
+        : this.#wallet.projection.replace(current.revision, expired, evaluatedAt);
+      this.#connectionEvidenceAvailable = true;
+      this.#connectionSnapshot = Object.freeze({ record });
+      return record.revision;
+    } catch {
+      this.#markLocalStateUnavailable();
+      return undefined;
+    }
   }
 
   #markLocalStateUnavailable(): void {
@@ -877,16 +1067,18 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     });
   }
 
-  #quiesceEvidence(): number {
+  #quiesceEvidence(preserveConnectionSnapshot = false): number {
     this.#connectionEvidenceEpoch += 1;
     this.#connectionEvidenceAvailable = false;
     const current = this.#connectionSnapshot.record;
     this.#connectionSnapshot = Object.freeze({
-      record: Object.freeze({
-        revision: current.revision,
-        connection: disconnected("unusable_store"),
-        updatedAt: this.#now(),
-      }),
+      record: preserveConnectionSnapshot
+        ? current
+        : Object.freeze({
+            revision: current.revision,
+            connection: disconnected("unusable_store"),
+            updatedAt: this.#now(),
+          }),
     });
     return this.#connectionEvidenceEpoch;
   }
@@ -913,6 +1105,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     sessions: readonly WalletConnectSessionSnapshot[],
     evidenceEpoch: number,
     activeTopic?: string,
+    committedConnectionRevision?: string,
   ): boolean {
     if (evidenceEpoch !== this.#connectionEvidenceEpoch || this.#activeMutations.size !== 0) {
       this.#connectionEvidenceAvailable = false;
@@ -940,9 +1133,15 @@ export class WalletCoordinator implements WalletCoordinatorPort {
         throw new TypeError("A non-connected wallet projection cannot select a session.");
       }
       let record = this.#wallet.projection.read();
+      const connectionChanged = !sameConnection(record.connection, canonical);
+      const sessionSetChanged = this.#observedSessionSetIdentity !== sessionSetIdentity;
+      const committedConnectionStillCurrent =
+        committedConnectionRevision !== undefined &&
+        committedConnectionRevision === record.revision &&
+        !connectionChanged;
       if (
-        !sameConnection(record.connection, canonical) ||
-        this.#observedSessionSetIdentity !== sessionSetIdentity
+        connectionChanged ||
+        (sessionSetChanged && !committedConnectionStillCurrent)
       ) {
         record = this.#wallet.projection.replace(record.revision, canonical, evaluatedAt);
       }
@@ -969,29 +1168,69 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     catch { this.#markLocalStateUnavailable(); }
   }
 
-  #createOperationEntry(input: WalletOperationCreate, connectionRevision: string): OperationEntry {
+  #createOperationIdentity(input: WalletOperationCreate, connectionRevision: string): OperationIdentity {
     let operationId: string;
     do { operationId = randomBytes(walletOperationIdByteLength).toString("base64url"); }
     while (this.#operations.has(operationId));
     const createdAt = this.#now();
     const userActionDeadline = addMilliseconds(createdAt, userActionWaitMilliseconds);
+    return Object.freeze({
+      operationId,
+      kind: input.kind,
+      interactionInterface: input.interactionInterface,
+      connectionRevision,
+      createdAt,
+      userActionDeadline,
+    });
+  }
+
+  #registerOperationEntry(
+    identity: OperationIdentity,
+    phase: OperationPhase,
+    phaseVersion = 0,
+  ): OperationEntry {
     const entry: OperationEntry = {
-      identity: Object.freeze({
-        operationId,
-        kind: input.kind,
-        interactionInterface: input.interactionInterface,
-        connectionRevision,
-        createdAt,
-        userActionDeadline,
-      }),
-      phaseVersion: 0,
-      phase: Object.freeze({ tag: "awaiting_confirmation", deadline: userActionDeadline }),
+      identity,
+      phaseVersion,
+      phase,
     };
     this.#operationModel(entry);
-    this.#operations.set(operationId, entry);
-    this.#activeOperationId = operationId;
+    this.#operations.set(identity.operationId, entry);
+    this.#activeOperationId = identity.operationId;
     this.#armOperationWake(entry);
     return entry;
+  }
+
+  #createOperationEntry(input: WalletOperationCreate, connectionRevision: string): OperationEntry {
+    const identity = this.#createOperationIdentity(input, connectionRevision);
+    return this.#registerOperationEntry(
+      identity,
+      Object.freeze({ tag: "awaiting_confirmation", deadline: identity.userActionDeadline }),
+    );
+  }
+
+  #startConnectionOperation(
+    input: WalletOperationCreate,
+    connectionRevision: string,
+  ): {
+    readonly operationId: string;
+    readonly effect: EffectHandle<WalletConnectConnectionAttemptPort>;
+  } {
+    const identity = this.#createOperationIdentity(input, connectionRevision);
+    const effect = this.#launchMutation({
+      operationId: identity.operationId,
+      phaseVersion: 0,
+      kind: "start_connection",
+      deadline: identity.userActionDeadline,
+      run: async () => this.#client.startConnection(),
+      lateSuccess: async (attempt) => this.#cleanupLateAttempt(attempt),
+    });
+    this.#registerOperationEntry(identity, Object.freeze({
+      tag: "approval_starting",
+      deadline: identity.userActionDeadline,
+      effect,
+    }));
+    return Object.freeze({ operationId: identity.operationId, effect });
   }
 
   #operationModel(entry: OperationEntry): WalletManagementOperation {
@@ -1028,11 +1267,13 @@ export class WalletCoordinator implements WalletCoordinatorPort {
         failure: null,
       });
     }
-    const state = phase.tag === "awaiting_confirmation"
-      ? "awaiting_confirmation"
-      : phase.tag === "approval_starting" || phase.tag === "approval_waiting"
+    const state = phase.tag === "approval_starting"
+      ? "starting_connection"
+      : phase.tag === "approval_waiting"
         ? "awaiting_wallet_approval"
-        : phase.tag;
+        : phase.tag === "terminating_start" || phase.tag === "terminating_attempt"
+          ? "cancelling"
+          : phase.tag;
     return parseWalletManagementOperation({
       ...base,
       state,
@@ -1053,6 +1294,27 @@ export class WalletCoordinator implements WalletCoordinatorPort {
 
   #readResponse(operationId: string): WalletOperationResponse {
     return this.#operationResponse(this.#operationEntry(operationId));
+  }
+
+  #readStartResponse(operationId: string): WalletOperationStartResponse {
+    const response = this.#readResponse(operationId);
+    return parseWalletOperationStartResponse({
+      result: {
+        status: "operation_started",
+        operation: response.operation,
+      },
+      ...(response.qr === undefined ? {} : { qr: response.qr }),
+    });
+  }
+
+  #operationPresentation(entry: OperationEntry): WalletOperationPresentation {
+    return parseWalletOperationPresentation({
+      operation: this.#operationModel(entry),
+      access: entry.identity.interactionInterface === "web" ? "interactive" : "read_only",
+      ...(entry.phase.tag === "approval_waiting"
+        ? { qr: entry.phase.attempt.attempt.qr }
+        : {}),
+    });
   }
 
   #operationEntry(operationId: string): OperationEntry {
@@ -1108,7 +1370,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   #complete(entry: OperationEntry, outcome: "connected" | "disconnected" | "already_disconnected"): OperationEntry {
     const connection = this.#connectionSnapshot.record.connection;
     let result: WalletOperationResult;
-    if (entry.identity.kind === "connect") {
+    if (entry.identity.kind !== "disconnect") {
       if (outcome !== "connected" || connection.status !== "connected") {
         this.#persistUnavailableLocalState();
         return this.#fail(entry, "runtime_state_unavailable");
@@ -1217,6 +1479,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     readonly run: (checkDeadline: () => void) => Promise<Result>;
     readonly cleanupTopics?: readonly string[];
     readonly lateSuccess?: (value: Result) => Promise<void>;
+    readonly preserveConnectionSnapshot?: boolean;
   }): EffectHandle<Result> {
     const token: EffectToken = Object.freeze({
       id: this.#nextEffectId,
@@ -1225,7 +1488,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       kind: input.kind,
     });
     this.#nextEffectId += 1;
-    this.#quiesceEvidence();
+    this.#quiesceEvidence(input.preserveConnectionSnapshot === true);
     this.#activeMutations.add(token.id);
     const execute = async (): Promise<EffectSettlement<Result>> => {
       const checkDeadline = (): void => {
@@ -1365,8 +1628,10 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       .map(({ topic }) => topic)
       .filter((topic) => this.#revocationAuthorities.has(topic)));
     if (revokeTopics.length !== 0) {
-      try { this.#publishSdkState(disconnected("unusable_store"), sessions, evidenceEpoch); }
-      catch { this.#markLocalStateUnavailable(); }
+      if (authority.emptyReason !== "expired") {
+        try { this.#publishSdkState(disconnected("unusable_store"), sessions, evidenceEpoch); }
+        catch { this.#markLocalStateUnavailable(); }
+      }
       return Object.freeze({ sessions, sessionSetIdentity, revokeTopics });
     }
 
@@ -1384,7 +1649,15 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       return Object.freeze({ sessions, sessionSetIdentity, revokeTopics: Object.freeze([]) });
     }
     if (sessions.length === 0) {
-      try { this.#publishSdkState(disconnected(authority.emptyReason), sessions, evidenceEpoch); }
+      try {
+        this.#publishSdkState(
+          disconnected(authority.emptyReason),
+          sessions,
+          evidenceEpoch,
+          undefined,
+          authority.committedConnectionRevision,
+        );
+      }
       catch { return undefined; }
       return Object.freeze({ sessions, sessionSetIdentity, revokeTopics: Object.freeze([]) });
     }
@@ -1414,8 +1687,10 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     } else {
       this.#deferredSessionTopics.add(session.topic);
     }
-    try { this.#publishSdkState(disconnected("unusable_store"), sessions, evidenceEpoch); }
-    catch { this.#markLocalStateUnavailable(); }
+    if (authority.emptyReason !== "expired" || revokeTopics.length === 0) {
+      try { this.#publishSdkState(disconnected("unusable_store"), sessions, evidenceEpoch); }
+      catch { this.#markLocalStateUnavailable(); }
+    }
     return Object.freeze({ sessions, sessionSetIdentity, revokeTopics });
   }
 
@@ -1460,6 +1735,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       kind: "reconcile_sessions",
       deadline,
       cleanupTopics,
+      preserveConnectionSnapshot: authority.committedConnectionRevision !== undefined,
       run: async (checkDeadline) => {
         for (const topic of cleanupTopics) {
           checkDeadline();
@@ -1527,6 +1803,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     input: WalletOperationCreate,
     stable: StableReconciliation,
     admission: Extract<LifecycleAdmission, { readonly kind: "create" }>,
+    directBrowserAction: boolean,
   ): OperationStartAction {
     this.#assertOpen();
     this.#assertLifecycleAdmission(admission);
@@ -1538,20 +1815,39 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       throw new WalletOperationError("runtime_state_unavailable");
     }
     if (reconciliationState === "changed") return Object.freeze({ kind: "retry" });
-    const entry = this.#createOperationEntry(input, this.#connectionSnapshot.record.revision);
+    const record = this.#connectionSnapshot.record;
+    if (input.connectionRevision !== null && input.connectionRevision !== record.revision) {
+      throw new WalletOperationError("state_conflict");
+    }
     if (input.kind === "connect") {
       if (stable.sessions.length === 0) {
-        const effect = this.#beginPairing(entry.identity.operationId);
-        return Object.freeze({ kind: "start_pairing", operationId: entry.identity.operationId, effect });
+        const started = this.#startConnectionOperation(input, record.revision);
+        return Object.freeze({ kind: "start_pairing", ...started });
       }
-      return Object.freeze({ kind: "immediate", operationId: entry.identity.operationId });
+      if (stable.sessions.length !== 1 || record.connection.status !== "connected") {
+        throw new WalletOperationError("state_conflict");
+      }
+      return Object.freeze({
+        kind: "current_connection",
+        result: parseWalletOperationStartResponse({
+          result: {
+            status: "current_connection",
+            connectionRevision: record.revision,
+            connection: record.connection,
+          },
+        }).result,
+      });
     }
+    const entry = this.#createOperationEntry(input, record.revision);
     if (stable.sessions.length === 0) {
       this.#complete(entry, "already_disconnected");
       return Object.freeze({ kind: "immediate", operationId: entry.identity.operationId });
     }
-    if (stable.sessions.length === 1 && input.interactionInterface === "cli") {
-      const started = this.#beginExplicitDisconnect(entry, stable.sessions, false);
+    if (
+      directBrowserAction ||
+      (stable.sessions.length === 1 && input.interactionInterface === "cli")
+    ) {
+      const started = this.#beginExplicitDisconnect(entry, stable.sessions);
       return Object.freeze({ kind: "disconnect", operationId: entry.identity.operationId, ...started });
     }
     return Object.freeze({ kind: "immediate", operationId: entry.identity.operationId });
@@ -1586,45 +1882,15 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       );
       throw new WalletOperationError("state_conflict");
     }
-    if (entry.identity.kind === "connect" && stable.sessions.length === 0) {
-      const effect = this.#beginPairing(operationId);
-      return Object.freeze({ kind: "start_pairing", operationId, effect });
-    }
     if (entry.identity.kind === "disconnect" && stable.sessions.length === 0) {
       this.#complete(entry, "already_disconnected");
       return Object.freeze({ kind: "immediate", operationId });
     }
-    const started = this.#beginExplicitDisconnect(
-      entry,
-      stable.sessions,
-      entry.identity.kind === "connect",
-    );
-    return Object.freeze({ kind: "disconnect", operationId, ...started });
-  }
-
-  #beginPairing(operationId: string): EffectHandle<WalletConnectConnectionAttemptPort> {
-    const entry = this.#operationEntry(operationId);
-    if (entry.phase.tag !== "awaiting_confirmation" && entry.phase.tag !== "disconnecting") {
-      throw new WalletOperationError("state_conflict");
+    if (entry.identity.kind === "disconnect") {
+      const started = this.#beginExplicitDisconnect(entry, stable.sessions);
+      return Object.freeze({ kind: "disconnect", operationId, ...started });
     }
-    if (this.#deadlineReached(entry.identity.userActionDeadline)) {
-      this.#finish(entry, "expired");
-      throw new WalletOperationError("state_conflict");
-    }
-    const effect = this.#launchMutation({
-      operationId,
-      phaseVersion: entry.phaseVersion + 1,
-      kind: "start_connection",
-      deadline: entry.identity.userActionDeadline,
-      run: async () => this.#client.startConnection(),
-      lateSuccess: async (attempt) => this.#cleanupLateAttempt(attempt),
-    });
-    this.#transition(entry, Object.freeze({
-      tag: "approval_starting",
-      deadline: entry.identity.userActionDeadline,
-      effect,
-    }));
-    return effect;
+    throw new WalletOperationError("state_conflict");
   }
 
   async #cleanupLateAttempt(attempt: WalletConnectConnectionAttemptPort): Promise<void> {
@@ -1652,7 +1918,13 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       throw new WalletOperationError("runtime_state_unavailable");
     }
     if (visible.status === "deadline") {
-      await this.#actor(() => this.#timeoutEffect(operationId, effect));
+      const termination = await this.#actor(() => {
+        const entry = this.#entryOwningEffect(operationId, effect);
+        return entry?.phase.tag === "approval_starting"
+          ? this.#beginStartingTermination(entry, "expired")
+          : undefined;
+      });
+      if (termination !== undefined) await this.#settleStartingTermination(termination);
       return;
     }
     const settlement = visible.settlement;
@@ -1674,17 +1946,27 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       attempt,
     });
     this.#nextAttemptGeneration += 1;
-    const accepted = await this.#actor(() => {
+    const disposition = await this.#actor(() => {
       const entry = this.#entryOwningEffect(operationId, effect);
-      if (entry === undefined || entry.phase.tag !== "approval_starting") return false;
-      this.#transition(entry, Object.freeze({
-        tag: "approval_waiting",
-        deadline: entry.identity.userActionDeadline,
-        attempt: lease,
-      }));
-      return true;
+      if (entry?.phase.tag === "approval_starting") {
+        this.#transition(entry, Object.freeze({
+          tag: "approval_waiting",
+          deadline: entry.identity.userActionDeadline,
+          attempt: lease,
+        }));
+        return "accepted" as const;
+      }
+      const current = this.#operations.get(operationId);
+      if (
+        current?.phase.tag === "terminating_start" &&
+        current.phase.termination.startEffect === effect
+      ) {
+        return "termination_owns" as const;
+      }
+      return "orphan" as const;
     });
-    if (!accepted) {
+    if (disposition === "termination_owns") return;
+    if (disposition === "orphan") {
       this.#fenceEffect(effect);
       return;
     }
@@ -1713,17 +1995,14 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   #beginExplicitDisconnect(
     entry: OperationEntry,
     sessions: readonly WalletConnectSessionSnapshot[],
-    continueWithPairing: boolean,
   ): {
     readonly effect: EffectHandle<void>;
-    readonly purpose: Extract<DisconnectPurpose, { readonly kind: "explicit_disconnect" }>;
+    readonly purpose: ExplicitDisconnectPurpose;
   } {
     const topics = canonicalUnique(sessions.map(({ topic }) => topic));
     if (topics === undefined) throw new WalletOperationError("runtime_state_unavailable");
     const purpose = Object.freeze({
-      kind: "explicit_disconnect" as const,
       targetTopics: topics,
-      continueWithPairing,
     });
     for (const topic of topics) {
       this.#revocationAuthorities.set(topic, "explicit_operation");
@@ -1746,7 +2025,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       tag: "disconnecting",
       deadline,
       purpose,
-      effect: effect as EffectHandle<unknown>,
+      effect,
     }));
     return Object.freeze({ effect, purpose });
   }
@@ -1754,13 +2033,13 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   async #settleExplicitDisconnect(
     operationId: string,
     effect: EffectHandle<void>,
-    purpose: Extract<DisconnectPurpose, { readonly kind: "explicit_disconnect" }>,
-  ): Promise<boolean> {
+    purpose: ExplicitDisconnectPurpose,
+  ): Promise<void> {
     const visible = await effect.visible;
-    if (this.#closingRequested) return false;
+    if (this.#closingRequested) return;
     if (visible.status === "deadline") {
       await this.#actor(() => this.#timeoutEffect(operationId, effect));
-      return false;
+      return;
     }
     const settlement = visible.settlement;
     if (settlement.status === "rejected") {
@@ -1771,7 +2050,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
           this.#fail(entry, walletFailureCode(settlement.error));
         }
       });
-      return false;
+      return;
     }
     const reconciliation = await this.#actor(() => this.#observeAfterExactCleanup(
       { kind: "explicit_cleanup", emptyReason: "disconnected" },
@@ -1782,20 +2061,122 @@ export class WalletCoordinator implements WalletCoordinatorPort {
         const entry = this.#entryOwningEffect(operationId, effect);
         if (entry !== undefined) this.#fail(entry, "runtime_state_unavailable");
       });
-      return false;
+      return;
     }
     const postcondition = reconciliation.sessions.length === 0;
-    return this.#actor(() => {
+    await this.#actor(() => {
       const entry = this.#entryOwningEffect(operationId, effect);
-      if (entry === undefined) return false;
+      if (entry === undefined) return;
       if (!postcondition) {
         this.#fail(entry, "runtime_state_unavailable");
-        return false;
+        return;
       }
       for (const topic of purpose.targetTopics) this.#deferredSessionTopics.delete(topic);
-      if (!purpose.continueWithPairing) this.#complete(entry, "disconnected");
-      return true;
+      this.#complete(entry, "disconnected");
     });
+  }
+
+  #beginStartingTermination(
+    entry: OperationEntry,
+    intent: "cancelled" | "expired",
+  ): StartingTerminationAction {
+    if (entry.phase.tag !== "approval_starting") {
+      throw new WalletOperationError("state_conflict");
+    }
+    const purpose = Object.freeze({ intent });
+    const deadline = addMilliseconds(this.#now(), walletSdkOperationMilliseconds);
+    const startEffect = entry.phase.effect;
+    let work: Promise<void>;
+    work = this.#terminateStartingConnection(startEffect)
+      .finally(() => { this.#fences.delete(work); });
+    this.#fences.add(work);
+    const termination = Object.freeze({ startEffect, deadline, work });
+    const terminating = this.#transition(entry, Object.freeze({
+      tag: "terminating_start",
+      deadline,
+      purpose,
+      termination,
+    }));
+    return Object.freeze({
+      kind: "terminate_start",
+      operationId: entry.identity.operationId,
+      phaseVersion: terminating.phaseVersion,
+      termination,
+      purpose,
+    });
+  }
+
+  async #terminateStartingConnection(
+    startEffect: EffectHandle<WalletConnectConnectionAttemptPort>,
+  ): Promise<void> {
+    const startSettlement = await startEffect.actual;
+    if (startSettlement.status === "rejected") {
+      const observation = await this.#actor(() => this.#observeSdkStore({
+        kind: "runtime_continuity",
+        emptyReason: "no_session",
+      }));
+      if (observation === undefined || observation.revokeTopics.length !== 0) {
+        throw new WalletSdkMutationUnavailableError();
+      }
+      return;
+    }
+
+    const outcome = await startSettlement.value.cancel();
+    if (outcome.status === "failed") throw new WalletSdkMutationUnavailableError();
+    if (outcome.status === "approved") {
+      await this.#actor(() => {
+        this.#revocationAuthorities.set(outcome.session.topic, "approved_attempt");
+      });
+      await this.#client.disconnectSession(outcome.session.topic);
+      const reconciliation = await this.#actor(() => this.#observeAfterExactCleanup(
+        { kind: "runtime_continuity", emptyReason: "no_session" },
+        Object.freeze([outcome.session.topic]),
+      ));
+      if (
+        reconciliation === undefined ||
+        reconciliation.sessions.some(({ topic }) => topic === outcome.session.topic)
+      ) throw new WalletSdkMutationUnavailableError();
+      return;
+    }
+
+    const observation = await this.#actor(() => this.#observeSdkStore({
+      kind: "runtime_continuity",
+      emptyReason: "no_session",
+    }));
+    if (observation === undefined || observation.revokeTopics.length !== 0) {
+      throw new WalletSdkMutationUnavailableError();
+    }
+  }
+
+  async #settleStartingTermination(action: StartingTerminationAction): Promise<void> {
+    const visible = await this.#waitForCanonicalDeadline(
+      action.termination.work,
+      action.termination.deadline,
+    );
+    await this.#actor(() => {
+      const entry = this.#entryWithStartingTermination(action);
+      if (entry === undefined) return;
+      if (visible.status === "deadline") {
+        this.#persistUnavailableLocalState();
+        this.#fail(entry, "wallet_timeout");
+        return;
+      }
+      if (visible.settlement.status === "rejected") {
+        this.#persistUnavailableLocalState();
+        this.#fail(entry, walletFailureCode(visible.settlement.error));
+        return;
+      }
+      this.#finish(entry, action.purpose.intent);
+    });
+  }
+
+  #entryWithStartingTermination(action: StartingTerminationAction): OperationEntry | undefined {
+    const entry = this.#operations.get(action.operationId);
+    return entry?.phase.tag === "terminating_start" &&
+      entry.phaseVersion === action.phaseVersion &&
+      entry.phase.termination === action.termination
+      ? entry
+      : undefined;
   }
 
   #beginAttemptTermination(
@@ -1803,11 +2184,11 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     intent: "cancelled" | "expired",
   ): {
     readonly effect: EffectHandle<WalletConnectAttemptOutcome>;
-    readonly purpose: Extract<DisconnectPurpose, { readonly kind: "attempt_termination" }>;
+    readonly purpose: AttemptTerminationPurpose;
   } {
     if (entry.phase.tag !== "approval_waiting") throw new WalletOperationError("state_conflict");
     const attempt = entry.phase.attempt;
-    const purpose = Object.freeze({ kind: "attempt_termination" as const, intent, attempt });
+    const purpose = Object.freeze({ intent, attempt });
     const deadline = addMilliseconds(this.#now(), walletSdkOperationMilliseconds);
     const effect = this.#launchMutation({
       operationId: entry.identity.operationId,
@@ -1835,10 +2216,10 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       },
     });
     this.#transition(entry, Object.freeze({
-      tag: "disconnecting",
+      tag: "terminating_attempt",
       deadline,
       purpose,
-      effect: effect as EffectHandle<unknown>,
+      effect,
     }));
     return Object.freeze({ effect, purpose });
   }
@@ -1846,7 +2227,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   async #settleAttemptTermination(
     operationId: string,
     effect: EffectHandle<WalletConnectAttemptOutcome>,
-    purpose: Extract<DisconnectPurpose, { readonly kind: "attempt_termination" }>,
+    purpose: AttemptTerminationPurpose,
   ): Promise<void> {
     const visible = await effect.visible;
     if (this.#closingRequested) throw new WalletOperationError("runtime_state_unavailable");
@@ -1929,18 +2310,11 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     try {
       validation = await this.#actor(() => this.#beginApprovedValidation(operationId, attempt, outcome.session));
     } catch (error) {
-      await this.#actor(() => {
-        this.#markLocalStateUnavailable();
-        const entry = this.#operations.get(operationId);
-        if (
-          entry !== undefined &&
-          entry.phase.tag !== "terminal" &&
-          this.#activeOperationId === operationId
-        ) {
-          this.#fail(entry, walletFailureCode(error));
-        }
-      });
-      return;
+      validation = await this.#actor(() => this.#beginApprovedExceptionCleanup(
+        operationId,
+        outcome.session.topic,
+        walletFailureCode(error),
+      ));
     }
     if (validation.kind === "complete") return;
     await this.#settleApprovedValidation(validation);
@@ -1955,21 +2329,21 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     const entry = this.#entryWithAttempt(operationId, attempt);
     if (entry === undefined) return Object.freeze({ kind: "complete" });
     const deadline = addMilliseconds(this.#now(), walletSdkOperationMilliseconds);
+    this.#revocationAuthorities.set(outcomeSession.topic, "approved_attempt");
     const evidenceEpoch = this.#quiesceEvidence();
+    const validating = this.#transition(entry, Object.freeze({
+      tag: "validating_session",
+      deadline,
+      approvedTopic: outcomeSession.topic,
+    }));
     const sessions = this.#client.listSessions();
     const approved = sessions.find(({ topic }) => topic === outcomeSession.topic);
     const connection = sessions.length === 1 && approved !== undefined
       ? validateSession(approved, this.#now())
       : undefined;
     if (connection !== undefined && approved !== undefined) {
-      const validating = this.#transition(entry, Object.freeze({
-        tag: "validating_session",
-        deadline,
-        approvedTopic: approved.topic,
-      }));
       if (!this.#publishSdkState(connection, sessions, evidenceEpoch, approved.topic)) {
-        this.#fail(validating, "runtime_state_unavailable");
-        return Object.freeze({ kind: "complete" });
+        throw new WalletSdkMutationUnavailableError();
       }
       this.#deferredSessionTopics.delete(approved.topic);
       this.#revocationAuthorities.delete(approved.topic);
@@ -1977,7 +2351,6 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       return Object.freeze({ kind: "complete" });
     }
 
-    this.#revocationAuthorities.set(outcomeSession.topic, "approved_attempt");
     for (const session of sessions) {
       if (session.topic !== outcomeSession.topic) this.#deferredSessionTopics.add(session.topic);
     }
@@ -1986,25 +2359,77 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     if (approved !== undefined) {
       effect = this.#launchMutation({
         operationId,
-        phaseVersion: entry.phaseVersion + 1,
+        phaseVersion: validating.phaseVersion + 1,
         kind: "revoke_approved_session",
         deadline,
         cleanupTopics: Object.freeze([approved.topic]),
         run: async () => { await this.#client.disconnectSession(approved.topic); },
       });
     }
-    const validating = this.#transition(entry, Object.freeze({
+    const cleanupEntry = effect === undefined
+      ? validating
+      : this.#transition(validating, Object.freeze({
+          tag: "validating_session",
+          deadline,
+          approvedTopic: outcomeSession.topic,
+          effect: effect as EffectHandle<unknown>,
+        }));
+    return Object.freeze({
+      kind: "cleanup",
+      operationId,
+      phaseVersion: cleanupEntry.phaseVersion,
+      approvedTopic: outcomeSession.topic,
+      failureCode: "wallet_session_unusable",
+      ...(effect === undefined ? {} : { effect }),
+    });
+  }
+
+  #beginApprovedExceptionCleanup(
+    operationId: string,
+    approvedTopic: string,
+    failureCode: WalletOperationFailureCode,
+  ): ApprovedValidationAction {
+    if (this.#closingRequested) return Object.freeze({ kind: "complete" });
+    const entry = this.#operations.get(operationId);
+    if (
+      entry === undefined ||
+      entry.phase.tag === "terminal" ||
+      this.#activeOperationId !== operationId
+    ) {
+      return Object.freeze({ kind: "complete" });
+    }
+    if (
+      (entry.phase.tag !== "approval_waiting" && entry.phase.tag !== "validating_session") ||
+      (entry.phase.tag === "validating_session" && entry.phase.effect !== undefined)
+    ) {
+      this.#persistUnavailableLocalState();
+      this.#fail(entry, failureCode);
+      return Object.freeze({ kind: "complete" });
+    }
+    this.#revocationAuthorities.set(approvedTopic, "approved_attempt");
+    this.#persistUnavailableLocalState();
+    const deadline = addMilliseconds(this.#now(), walletSdkOperationMilliseconds);
+    const effect = this.#launchMutation({
+      operationId,
+      phaseVersion: entry.phaseVersion + 1,
+      kind: "revoke_approved_session",
+      deadline,
+      cleanupTopics: Object.freeze([approvedTopic]),
+      run: async () => { await this.#client.disconnectSession(approvedTopic); },
+    });
+    const cleanupEntry = this.#transition(entry, Object.freeze({
       tag: "validating_session",
       deadline,
-      approvedTopic: outcomeSession.topic,
-      ...(effect === undefined ? {} : { effect: effect as EffectHandle<unknown> }),
+      approvedTopic,
+      effect: effect as EffectHandle<unknown>,
     }));
     return Object.freeze({
       kind: "cleanup",
       operationId,
-      phaseVersion: validating.phaseVersion,
-      approvedTopic: outcomeSession.topic,
-      ...(effect === undefined ? {} : { effect }),
+      phaseVersion: cleanupEntry.phaseVersion,
+      approvedTopic,
+      failureCode,
+      effect,
     });
   }
 
@@ -2012,7 +2437,14 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     if (action.effect !== undefined) {
       const visible = await action.effect.visible;
       if (visible.status === "deadline") {
-        await this.#actor(() => this.#timeoutEffect(action.operationId, action.effect as EffectHandle<unknown>));
+        this.#fenceEffect(action.effect);
+        await this.#actor(() => {
+          this.#persistUnavailableLocalState();
+          const entry = this.#operations.get(action.operationId);
+          if (entry?.phaseVersion === action.phaseVersion && entry.phase.tag === "validating_session") {
+            this.#fail(entry, "runtime_state_unavailable");
+          }
+        });
         return;
       }
       const settlement = visible.settlement;
@@ -2042,19 +2474,26 @@ export class WalletCoordinator implements WalletCoordinatorPort {
         return;
       }
       if (action.effect !== undefined) this.#revocationAuthorities.delete(action.approvedTopic);
-      this.#fail(entry, "wallet_session_unusable");
+      this.#fail(entry, action.failureCode);
     });
   }
 
   #cancelOperation(
     interactionInterface: WalletOperationCreate["interactionInterface"] | undefined,
     operationId: string,
-  ): {
-    readonly effect: EffectHandle<WalletConnectAttemptOutcome>;
-    readonly purpose: Extract<DisconnectPurpose, { readonly kind: "attempt_termination" }>;
-  } | undefined {
+    confirmation: WalletOperationConfirmation | undefined,
+  ): StartingTerminationAction | AttemptTerminationAction | undefined {
     const entry = this.#operationEntry(operationId);
     if (interactionInterface !== undefined && entry.identity.interactionInterface !== interactionInterface) {
+      throw new WalletOperationError("state_conflict");
+    }
+    if (
+      interactionInterface !== undefined &&
+      (
+        confirmation === undefined ||
+        confirmation.connectionRevision !== entry.identity.connectionRevision
+      )
+    ) {
       throw new WalletOperationError("state_conflict");
     }
     if (entry.phase.tag === "terminal" && entry.phase.state === "cancelled") return undefined;
@@ -2062,8 +2501,17 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       this.#finish(entry, "cancelled");
       return undefined;
     }
+    if (entry.phase.tag === "approval_starting") {
+      return this.#beginStartingTermination(entry, "cancelled");
+    }
     if (entry.phase.tag !== "approval_waiting") throw new WalletOperationError("state_conflict");
-    return this.#beginAttemptTermination(entry, "cancelled");
+    const termination = this.#beginAttemptTermination(entry, "cancelled");
+    return Object.freeze({
+      kind: "terminate_attempt",
+      operationId,
+      effect: termination.effect,
+      purpose: termination.purpose,
+    });
   }
 
   #synchronizeOperation(operationId: string): DeadlineSynchronization {
@@ -2087,8 +2535,18 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       });
     }
     if (phase.tag === "approval_starting") {
-      this.#timeoutEffect(operationId, phase.effect);
+      return this.#beginStartingTermination(entry, "expired");
+    } else if (phase.tag === "terminating_start") {
+      return Object.freeze({
+        kind: "terminate_start",
+        operationId,
+        phaseVersion: entry.phaseVersion,
+        termination: phase.termination,
+        purpose: phase.purpose,
+      });
     } else if (phase.tag === "disconnecting") {
+      this.#timeoutEffect(operationId, phase.effect);
+    } else if (phase.tag === "terminating_attempt") {
       this.#timeoutEffect(operationId, phase.effect);
     } else if (phase.effect !== undefined) {
       this.#timeoutEffect(operationId, phase.effect);
@@ -2109,7 +2567,12 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     const entry = this.#operations.get(operationId);
     if (entry === undefined || entry.phaseVersion !== effect.token.phaseVersion) return undefined;
     const phase = entry.phase;
-    if (phase.tag === "approval_starting" || phase.tag === "disconnecting" || phase.tag === "validating_session") {
+    if (
+      phase.tag === "approval_starting" ||
+      phase.tag === "disconnecting" ||
+      phase.tag === "terminating_attempt" ||
+      phase.tag === "validating_session"
+    ) {
       return phase.effect?.token.id === effect.token.id ? entry : undefined;
     }
     return undefined;

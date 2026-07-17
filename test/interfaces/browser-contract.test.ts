@@ -1,55 +1,73 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  browserAssetPaths,
   browserCsrfHeaderName,
   browserCsrfMetaName,
-  browserInterfacePaths,
+  browserCsrfTokenByteLength,
+  browserOperationCancellationPath,
   browserOperationConfirmationPath,
-  browserOperationPagePath,
-  browserOperationQrPath,
-  browserOperationResourcePath,
-  browserRequestTokenByteLength,
-  parseBrowserOperationPagePath,
-  parseBrowserRequestToken,
+  browserOperationPath,
+  browserPagePaths,
+  browserWalletApiRoot,
+  browserWalletApiPaths,
+  parseBrowserCsrfToken,
 } from "../../src/interfaces/browser-contract.js";
 
 const operationId = Buffer.alloc(32, 18).toString("base64url");
 
 describe("browser interface contract", () => {
-  it("owns the exact browser names and operation resource paths", () => {
+  it("separates the root page, wallet API resources, and immutable assets", () => {
     expect(browserCsrfHeaderName).toBe("Littlejohn-CSRF-Token");
     expect(browserCsrfMetaName).toBe("littlejohn-csrf-token");
-    expect(browserInterfacePaths).toEqual({
-      operationPagePattern: "/wallet/operations/{operationId}",
+    expect(browserPagePaths).toEqual({ root: "/" });
+    expect(browserWalletApiRoot).toBe("/api/v1/wallet");
+    expect(browserWalletApiPaths).toEqual({
+      operations: "/api/v1/wallet/operations",
+      currentOperation: "/api/v1/wallet/current-operation",
       operationPattern: "/api/v1/wallet/operations/{operationId}",
-      qrPattern: "/api/v1/wallet/operations/{operationId}/qr",
       confirmationPattern: "/api/v1/wallet/operations/{operationId}/confirmation",
-      assetPattern: "/assets/{assetName}",
+      cancellationPattern: "/api/v1/wallet/operations/{operationId}/cancellation",
     });
-    expect(browserOperationPagePath(operationId)).toBe(`/wallet/operations/${operationId}`);
-    expect(browserOperationResourcePath(operationId)).toBe(`/api/v1/wallet/operations/${operationId}`);
-    expect(browserOperationQrPath(operationId)).toBe(`/api/v1/wallet/operations/${operationId}/qr`);
-    expect(browserOperationConfirmationPath(operationId))
-      .toBe(`/api/v1/wallet/operations/${operationId}/confirmation`);
-    expect(parseBrowserOperationPagePath(browserOperationPagePath(operationId))).toBe(operationId);
+    expect(browserAssetPaths).toEqual({ pattern: "/assets/{assetName}" });
+
+    expect(Object.values(browserPagePaths)).toEqual(["/"]);
+    expect(JSON.stringify(browserPagePaths)).not.toContain("operationId");
+    expect(JSON.stringify(browserWalletApiPaths)).not.toContain("mcp");
+    expect(JSON.stringify(browserWalletApiPaths)).not.toContain("cli");
   });
 
-  it("rejects non-canonical tokens, operation identifiers, and page path variants", () => {
-    expect(browserRequestTokenByteLength).toBe(32);
-    const token = Buffer.alloc(browserRequestTokenByteLength, 19).toString("base64url");
-    expect(parseBrowserRequestToken(token)).toBe(token);
+  it("constructs the exact operation read and control resources from a canonical identifier", () => {
+    expect(browserOperationPath(operationId))
+      .toBe(`/api/v1/wallet/operations/${operationId}`);
+    expect(browserOperationConfirmationPath(operationId))
+      .toBe(`/api/v1/wallet/operations/${operationId}/confirmation`);
+    expect(browserOperationCancellationPath(operationId))
+      .toBe(`/api/v1/wallet/operations/${operationId}/cancellation`);
+
     for (const invalid of [
-      Buffer.alloc(browserRequestTokenByteLength - 1, 19).toString("base64url"),
-      Buffer.alloc(browserRequestTokenByteLength + 1, 19).toString("base64url"),
+      "not-canonical",
+      `${operationId}=`,
+      Buffer.alloc(31, 18).toString("base64url"),
+      Buffer.alloc(33, 18).toString("base64url"),
+      undefined,
+    ]) {
+      expect(() => browserOperationPath(invalid)).toThrow();
+      expect(() => browserOperationConfirmationPath(invalid)).toThrow();
+      expect(() => browserOperationCancellationPath(invalid)).toThrow();
+    }
+  });
+
+  it("accepts only canonical fixed-length CSRF tokens", () => {
+    expect(browserCsrfTokenByteLength).toBe(32);
+    const token = Buffer.alloc(browserCsrfTokenByteLength, 19).toString("base64url");
+    expect(parseBrowserCsrfToken(token)).toBe(token);
+
+    for (const invalid of [
+      Buffer.alloc(browserCsrfTokenByteLength - 1, 19).toString("base64url"),
+      Buffer.alloc(browserCsrfTokenByteLength + 1, 19).toString("base64url"),
       `${token}=`,
       undefined,
-    ]) expect(() => parseBrowserRequestToken(invalid)).toThrow();
-
-    for (const invalidPath of [
-      `/wallet/operations/${operationId}/extra`,
-      `/wallet/operations//${operationId}`,
-      `/api/v1/wallet/operations/${operationId}`,
-      "/wallet/operations/not-canonical",
-    ]) expect(() => parseBrowserOperationPagePath(invalidPath)).toThrow();
+    ]) expect(() => parseBrowserCsrfToken(invalid)).toThrow();
   });
 });

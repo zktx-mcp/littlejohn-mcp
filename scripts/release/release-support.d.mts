@@ -38,4 +38,10 @@ export function assertExactPaths(
   expected: readonly string[],
   label: string,
 ): void;
+export function assertExactFileBytes(
+  authorityRoot: string,
+  candidateRoot: string,
+  paths: readonly string[],
+  label: string,
+): Promise<void>;
 export function readJsonFile(path: string): Promise<unknown>;

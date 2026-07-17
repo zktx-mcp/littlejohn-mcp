@@ -21,6 +21,7 @@ export const browserContentTypes = Object.freeze([
   "text/html; charset=utf-8",
   "text/css; charset=utf-8",
   "text/javascript; charset=utf-8",
+  "image/svg+xml",
 ] as const);
 
 export type BrowserContentType = (typeof browserContentTypes)[number];

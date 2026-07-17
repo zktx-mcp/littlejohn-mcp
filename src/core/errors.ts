@@ -34,7 +34,12 @@ const createApplicationErrorSchemaSet = () => {
       error: applicationErrorDefinition.extend({ issues: z.array(evidence.fieldIssue).max(64) }).strict(),
     })
     .strict();
-  return Object.freeze({ errorCategory, applicationErrorDefinition, applicationFailure });
+  return Object.freeze({
+    errorCategory,
+    applicationErrorDefinition,
+    applicationFailure,
+    fieldIssue: evidence.fieldIssue,
+  });
 };
 
 const publicSchemas = createApplicationErrorSchemaSet();
@@ -105,6 +110,36 @@ export class ApplicationErrorRegistry {
 
 export const assertApplicationErrorRegistry = (registry: ApplicationErrorRegistry): void => {
   registryState(registry);
+};
+
+export const applicationFailureSchemaFor = (
+  registry: ApplicationErrorRegistry,
+  codes: readonly string[],
+): z.ZodType<ApplicationFailure> => {
+  assertApplicationErrorRegistry(registry);
+  if (codes.length === 0 || new Set(codes).size !== codes.length) {
+    throw new TypeError("Application failure schema codes are invalid.");
+  }
+  const variants = codes.map((code) => {
+    const definition = registry.get(code);
+    return jsonObject({
+      ok: z.literal(false),
+      error: jsonObject({
+        code: z.literal(definition.code),
+        category: z.literal(definition.category),
+        message: z.literal(definition.message),
+        retryable: z.literal(definition.retryable),
+        issues: z.array(publicSchemas.fieldIssue).max(64),
+      }).strict(),
+    }).strict();
+  });
+  const first = variants[0];
+  if (first === undefined) throw new TypeError("Application failure schema codes are invalid.");
+  const second = variants[1];
+  const schema = second === undefined
+    ? first
+    : z.union([first, second, ...variants.slice(2)]);
+  return guardJsonSchema(schema as z.ZodType<ApplicationFailure>);
 };
 
 export const assertDirectApplicationErrorRegistryExtension = (

@@ -12,9 +12,9 @@ import {
   createPackageImportPolicy,
   directCodeExecutionViolations,
   inspectSourceFile,
+  loadPackageManifest,
   moduleImportPolicyViolations,
 } from "./import-audit.js";
-import { loadPackageManifest, loadWu1HandoffFixture } from "./wu1-handoff-fixture.js";
 
 const repositoryRoot = resolve(".");
 const sourceRoot = resolve(repositoryRoot, "src");
@@ -22,20 +22,19 @@ const coreRoot = resolve("src/core");
 const browserCoreConsumers = new Set([
   "interfaces/browser-contract.ts",
   "interfaces/browser-error-response.ts",
-  "interfaces/browser-responses.ts",
+  "interfaces/web/app.tsx",
   "interfaces/web/main.tsx",
-  "interfaces/web/wallet-operation-page.tsx",
+  "interfaces/web/wallet-dialog-view.ts",
   "runtime/error-definitions.ts",
   "wallet/operation-contract.ts",
 ]);
 
 const loadPackagePolicy = async () => {
-  const [{ fixture }, manifest, sourceFiles] = await Promise.all([
-    loadWu1HandoffFixture(),
+  const [manifest, sourceFiles] = await Promise.all([
     loadPackageManifest(),
     collectProductSourceFiles(repositoryRoot),
   ]);
-  return createPackageImportPolicy(fixture, manifest, repositoryRoot, sourceFiles);
+  return createPackageImportPolicy(manifest, repositoryRoot, sourceFiles);
 };
 
 const resolvesInsideCore = (file: string, specifier: string): string | undefined => {
@@ -48,8 +47,8 @@ const resolvesInsideCore = (file: string, specifier: string): string | undefined
   return inside ? fromCore.split(sep).join("/") : undefined;
 };
 
-describe("WU2 architecture boundary", () => {
-  it("enforces foundation and fully active extension package owners without stage-specific exceptions", async () => {
+describe("runtime architecture boundary", () => {
+  it("enforces current package owners without stage-specific exceptions", async () => {
     const policy = await loadPackagePolicy();
     const violations: string[] = [];
     for (const file of await collectProductSourceFiles(repositoryRoot)) {
@@ -106,7 +105,7 @@ describe("WU2 architecture boundary", () => {
     ]) expect(Object.hasOwn(runtimePublic, forbidden)).toBe(false);
   });
 
-  it("limits raw authority imports to their declared WU2 owners", async () => {
+  it("limits raw authority imports to their declared runtime owners", async () => {
     const allowedCredentialConsumers = new Set([
       "composition.ts",
       "http-owner.ts",
@@ -126,10 +125,9 @@ describe("WU2 architecture boundary", () => {
     expect(violations).toEqual([]);
   });
 
-  it("keeps future support values and broad owner bootstrap ports out of WU2", async () => {
+  it("keeps unavailable support values and broad owner bootstrap ports out of the runtime foundation", async () => {
     const support = await readFile(resolve("src/runtime/support-manifest.ts"), "utf8");
     const composition = await readFile(resolve("src/runtime/composition.ts"), "utf8");
-    expect(support).not.toMatch(/\bWU[3-5]\b/);
     expect(support).not.toContain("walletAvailable");
     expect(support).not.toContain("readAvailable");
     expect(support).not.toContain("extendRuntimeSupportManifest");

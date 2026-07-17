@@ -9,10 +9,14 @@ import type {
   RuntimeRouteRegistry,
 } from "../runtime/index.js";
 import {
+  parseWalletCurrentOperationProjection,
   parseWalletManagementOperation,
   parseWalletOperationConfirmation,
   parseWalletOperationId,
   parseWalletOperationPresentation,
+  parseWalletOperationStartResult,
+  parseWalletWebOperationCreate,
+  walletManagementContracts,
   type WalletInterfaceOperations,
 } from "../wallet/contracts.js";
 import {
@@ -20,13 +24,12 @@ import {
   normalizeWalletError,
 } from "../wallet/errors.js";
 import type { BrowserAssetBundle } from "./browser-assets.js";
-import { browserInterfacePaths } from "./browser-contract.js";
-import type { BrowserRequestCredentialAuthority } from "./browser-credentials.js";
 import {
-  createOperationControlResponse,
-  createOperationReadResponse,
-  createQrResponse,
-} from "./browser-responses.js";
+  browserAssetPaths,
+  browserPagePaths,
+  browserWalletApiPaths,
+} from "./browser-contract.js";
+import type { BrowserRequestCredentialAuthority } from "./browser-credentials.js";
 
 const success = (body: unknown): RouteResult => ({
   ok: true,
@@ -39,7 +42,8 @@ const failure = (applicationFailure: ApplicationFailure): RouteResult => ({
 });
 
 const invalidInput = (): RouteResult => failure(createWalletFailure("invalid_input"));
-const normalizeFailure = (error: unknown): RouteResult => failure(normalizeWalletError(error).failure);
+const normalizeFailure = (error: unknown): RouteResult =>
+  failure(normalizeWalletError(error).failure);
 
 const operationId = (context: RouteContext): string =>
   parseWalletOperationId(context.params["operationId"]);
@@ -54,49 +58,70 @@ const operationForId = (id: string, value: unknown) => {
 
 const presentationForId = (id: string, value: unknown) => {
   const presentation = parseWalletOperationPresentation(value);
-  if (presentation.operation.operationId !== id) {
-    throw new TypeError("Wallet operation presentation identity does not match the requested resource.");
-  }
-  return presentation;
+  return Object.freeze({
+    ...presentation,
+    operation: walletManagementContracts.operation.parseSuccess(
+      { operationId: id },
+      presentation.operation,
+    ),
+  });
 };
 
-const resourceDefinitions: readonly ResourcePathDefinition[] = Object.freeze([
+const browserPageResources: readonly ResourcePathDefinition[] = Object.freeze([
   Object.freeze({
     kind: "route",
     method: "GET",
-    pathPattern: browserInterfacePaths.operationPagePattern,
+    pathPattern: browserPagePaths.root,
     requestClass: "browser_bootstrap",
+  }),
+]);
+
+const browserApiResources: readonly ResourcePathDefinition[] = Object.freeze([
+  Object.freeze({
+    kind: "route",
+    method: "POST",
+    pathPattern: browserWalletApiPaths.operations,
+    requestClass: "browser_control",
   }),
   Object.freeze({
     kind: "route",
     method: "GET",
-    pathPattern: browserInterfacePaths.operationPattern,
+    pathPattern: browserWalletApiPaths.currentOperation,
     requestClass: "browser_read",
   }),
   Object.freeze({
     kind: "route",
     method: "GET",
-    pathPattern: browserInterfacePaths.qrPattern,
+    pathPattern: browserWalletApiPaths.operationPattern,
     requestClass: "browser_read",
   }),
   Object.freeze({
     kind: "route",
     method: "POST",
-    pathPattern: browserInterfacePaths.confirmationPattern,
+    pathPattern: browserWalletApiPaths.confirmationPattern,
     requestClass: "browser_control",
   }),
   Object.freeze({
     kind: "route",
-    method: "DELETE",
-    pathPattern: browserInterfacePaths.operationPattern,
+    method: "POST",
+    pathPattern: browserWalletApiPaths.cancellationPattern,
     requestClass: "browser_control",
   }),
+]);
+
+const browserAssetResources: readonly ResourcePathDefinition[] = Object.freeze([
   Object.freeze({
     kind: "route",
     method: "GET",
-    pathPattern: browserInterfacePaths.assetPattern,
+    pathPattern: browserAssetPaths.pattern,
     requestClass: "public_read",
   }),
+]);
+
+const browserResources: readonly ResourcePathDefinition[] = Object.freeze([
+  ...browserPageResources,
+  ...browserApiResources,
+  ...browserAssetResources,
 ]);
 
 export const extendBrowserInterfaceRoutes = (input: {
@@ -107,11 +132,12 @@ export const extendBrowserInterfaceRoutes = (input: {
 }): RuntimeRouteRegistry => {
   const securedRoutes = input.routes.extendRequestPolicies(
     input.credentials.requestPolicyExtension,
-    resourceDefinitions,
+    browserResources,
   );
-  const presentation = input.walletOperations.presentation;
   const operations = input.walletOperations.operation;
   const confirmation = input.walletOperations.confirmation;
+  const presentation = input.walletOperations.presentation;
+  const currentProjection = input.walletOperations.currentProjection;
   if (confirmation.interactionInterface !== "web") {
     throw new TypeError("Browser confirmation requires the web confirmation port.");
   }
@@ -120,69 +146,83 @@ export const extendBrowserInterfaceRoutes = (input: {
     {
       method: "GET",
       mutation: "none",
-      pathPattern: browserInterfacePaths.operationPagePattern,
+      pathPattern: browserPagePaths.root,
       response: "browser_content",
       successStatus: 200,
-      handler: async (context) => {
-        let id;
-        try { id = operationId(context); }
-        catch { return invalidInput(); }
+      handler: async () => {
         try {
-          const snapshot = presentationForId(id, await presentation.get(id));
-          const issued = input.credentials.issue(
-            id,
-            snapshot.operation.expiresAt,
-            snapshot.access,
-          );
+          const issued = input.credentials.issue();
           return {
             ok: true,
             body: input.assets.renderShell(issued.csrfToken),
             contentType: "text/html; charset=utf-8",
             setCookie: issued.setCookie,
           };
-        } catch (error) { return normalizeFailure(error); }
-      },
-    },
-    {
-      method: "GET",
-      mutation: "none",
-      pathPattern: browserInterfacePaths.operationPattern,
-      response: "canonical_json",
-      successStatus: 200,
-      handler: async (context) => {
-        let id;
-        try { id = operationId(context); }
-        catch { return invalidInput(); }
-        try {
-          const snapshot = presentationForId(id, await presentation.get(id));
-          return success(createOperationReadResponse(
-            snapshot.operation,
-            snapshot.access,
-          ));
-        } catch (error) { return normalizeFailure(error); }
-      },
-    },
-    {
-      method: "GET",
-      mutation: "none",
-      pathPattern: browserInterfacePaths.qrPattern,
-      response: "canonical_json",
-      successStatus: 200,
-      handler: async (context) => {
-        let id;
-        try { id = operationId(context); }
-        catch { return invalidInput(); }
-        try {
-          const snapshot = presentationForId(id, await presentation.get(id));
-          if (snapshot.qr === undefined) return failure(createWalletFailure("state_conflict"));
-          return success(createQrResponse(snapshot.qr));
-        } catch (error) { return normalizeFailure(error); }
+        } catch (error) {
+          return normalizeFailure(error);
+        }
       },
     },
     {
       method: "POST",
       mutation: "declared_control",
-      pathPattern: browserInterfacePaths.confirmationPattern,
+      pathPattern: browserWalletApiPaths.operations,
+      response: "canonical_json",
+      successStatus: 200,
+      handler: async (context) => {
+        let request;
+        try {
+          request = parseWalletWebOperationCreate(context.body);
+        } catch {
+          return invalidInput();
+        }
+        try {
+          const result = parseWalletOperationStartResult(await operations.start(request));
+          return success(walletManagementContracts[request.kind].parseSuccess({}, result));
+        } catch (error) {
+          return normalizeFailure(error);
+        }
+      },
+    },
+    {
+      method: "GET",
+      mutation: "none",
+      pathPattern: browserWalletApiPaths.currentOperation,
+      response: "canonical_json",
+      successStatus: 200,
+      handler: async () => {
+        try {
+          const current = parseWalletCurrentOperationProjection(await currentProjection.get());
+          return success(walletManagementContracts.currentOperation.parseSuccess({}, current));
+        } catch (error) {
+          return normalizeFailure(error);
+        }
+      },
+    },
+    {
+      method: "GET",
+      mutation: "none",
+      pathPattern: browserWalletApiPaths.operationPattern,
+      response: "canonical_json",
+      successStatus: 200,
+      handler: async (context) => {
+        let id;
+        try {
+          id = operationId(context);
+        } catch {
+          return invalidInput();
+        }
+        try {
+          return success(presentationForId(id, await presentation.get(id)));
+        } catch (error) {
+          return normalizeFailure(error);
+        }
+      },
+    },
+    {
+      method: "POST",
+      mutation: "declared_control",
+      pathPattern: browserWalletApiPaths.confirmationPattern,
       response: "canonical_json",
       successStatus: 200,
       handler: async (context) => {
@@ -191,35 +231,52 @@ export const extendBrowserInterfaceRoutes = (input: {
         try {
           id = operationId(context);
           request = parseWalletOperationConfirmation(context.body);
-        } catch { return invalidInput(); }
+        } catch {
+          return invalidInput();
+        }
         try {
-          return success(createOperationControlResponse(
-            operationForId(id, await confirmation.confirm(id, request)),
+          return success(operationForId(
+            id,
+            await confirmation.confirm(id, request),
           ));
-        } catch (error) { return normalizeFailure(error); }
+        } catch (error) {
+          return normalizeFailure(error);
+        }
       },
     },
     {
-      method: "DELETE",
+      method: "POST",
       mutation: "declared_control",
-      pathPattern: browserInterfacePaths.operationPattern,
+      pathPattern: browserWalletApiPaths.cancellationPattern,
       response: "canonical_json",
       successStatus: 200,
       handler: async (context) => {
         let id;
-        try { id = operationId(context); }
-        catch { return invalidInput(); }
+        let request;
         try {
-          return success(createOperationControlResponse(
-            operationForId(id, await operations.cancel(id)),
+          id = operationId(context);
+          request = parseWalletOperationConfirmation(context.body);
+        } catch {
+          return invalidInput();
+        }
+        try {
+          const operation = operationForId(
+            id,
+            await operations.cancel(id, request),
+          );
+          return success(walletManagementContracts.cancelOperation.parseSuccess(
+            { operationId: id },
+            operation,
           ));
-        } catch (error) { return normalizeFailure(error); }
+        } catch (error) {
+          return normalizeFailure(error);
+        }
       },
     },
     {
       method: "GET",
       mutation: "none",
-      pathPattern: browserInterfacePaths.assetPattern,
+      pathPattern: browserAssetPaths.pattern,
       response: "browser_content",
       successStatus: 200,
       handler: async (context) => {

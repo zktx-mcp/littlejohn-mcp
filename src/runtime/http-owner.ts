@@ -71,7 +71,6 @@ import {
   createRuntimeIdentityChallenge,
   encodeOwnerProofPayload,
   parseOwnerIdentity,
-  parseRuntimeBuildDigest,
   parseRuntimeIdentityChallenge,
   parseUnsignedOwnerIdentity,
   runtimeProtocolVersion,
@@ -198,14 +197,8 @@ const readIncomingBytes = async (
   return Buffer.concat(chunks);
 };
 
-const parseCanonicalHttpJson = (bytes: Uint8Array): CanonicalJson => {
-  const text = fatalUtf8(bytes);
-  if (!text.endsWith("\n")) throw new TypeError("HTTP JSON is not canonical.");
-  const parsed: unknown = JSON.parse(text.slice(0, -1));
-  const canonical = captureCanonicalJson(parsed);
-  if (`${canonicalJsonStringify(canonical)}\n` !== text) throw new TypeError("HTTP JSON is not canonical.");
-  return canonical;
-};
+const parseHttpJson = (bytes: Uint8Array): CanonicalJson =>
+  captureCanonicalJson(JSON.parse(fatalUtf8(bytes)) as unknown);
 
 class PeerUnavailableError extends Error {}
 class PeerIncompatibleError extends Error {}
@@ -371,7 +364,6 @@ const requestPacket = (
 const openAuthenticatedOwnerChannel = async (input: {
   readonly ownerStore: RuntimeOwnerStore;
   readonly credential: LocalControlCredentialAuthority;
-  readonly runtimeBuildDigest: string;
 }, signal?: AbortSignal): Promise<AuthenticatedOwnerChannel> => {
   const channel = await connectPinnedAgent(signal);
   const challenge = createRuntimeIdentityChallenge();
@@ -389,14 +381,13 @@ const openAuthenticatedOwnerChannel = async (input: {
       packet.headers["content-type"] !== jsonContentType ||
       packet.headers["cache-control"] !== noStoreCacheControl
     ) throw new PeerIncompatibleError("Owner identity request failed.");
-    const identity = parseOwnerIdentity(parseCanonicalHttpJson(packet.bytes));
+    const identity = parseOwnerIdentity(parseHttpJson(packet.bytes));
     const profile = input.ownerStore.readProfile();
     const recorded = input.ownerStore.readOwner();
     if (
       identity.challenge !== challenge ||
       identity.profileId !== profile.profileId ||
       identity.runtimeProtocolVersion !== runtimeProtocolVersion ||
-      identity.runtimeBuildDigest !== input.runtimeBuildDigest ||
       recorded === undefined ||
       identity.ownerInstanceId !== recorded.ownerInstanceId ||
       identity.ownerRevision !== recorded.ownerRevision
@@ -478,7 +469,6 @@ export interface HttpOwnerApplicationContext {
 export interface HttpOwnerOptions {
   readonly ownerStore: RuntimeOwnerStore;
   readonly credential: LocalControlCredentialAuthority;
-  readonly runtimeBuildDigest: string;
   readonly now: () => UtcTimestamp;
   readonly applicationFactory?: (
     context: HttpOwnerApplicationContext,
@@ -520,7 +510,6 @@ const createLifecycleWork = (): LifecycleWork => {
 export class FixedHttpOwner {
   readonly #ownerStore: RuntimeOwnerStore;
   readonly #credential: LocalControlCredentialAuthority;
-  readonly #runtimeBuildDigest: string;
   readonly #now: () => UtcTimestamp;
   readonly #baseRoutes: RuntimeRouteRegistry;
   readonly #applicationFactory: HttpOwnerOptions["applicationFactory"];
@@ -545,7 +534,6 @@ export class FixedHttpOwner {
   constructor(options: HttpOwnerOptions) {
     this.#ownerStore = options.ownerStore;
     this.#credential = options.credential;
-    this.#runtimeBuildDigest = parseRuntimeBuildDigest(options.runtimeBuildDigest);
     this.#now = options.now;
     this.#baseRoutes = createRuntimeRouteRegistry({
       controlVerifier: createControlCredentialVerifier(options.credential),
@@ -589,7 +577,6 @@ export class FixedHttpOwner {
           const channel = await openAuthenticatedOwnerChannel({
             ownerStore: this.#ownerStore,
             credential: this.#credential,
-            runtimeBuildDigest: this.#runtimeBuildDigest,
           }, lifecycle.signal);
           channel.close();
           this.#lifecycleController = lifecycle;
@@ -698,7 +685,6 @@ export class FixedHttpOwner {
           channel = await openAuthenticatedOwnerChannel({
             ownerStore: this.#ownerStore,
             credential: this.#credential,
-            runtimeBuildDigest: this.#runtimeBuildDigest,
           }, active.controller.signal);
           this.#assertActiveRuntimeDispatch(active);
           const body = request.body === undefined ? undefined : `${canonicalJsonStringify(request.body)}\n`;
@@ -720,7 +706,7 @@ export class FixedHttpOwner {
             ? publicReadResponseLimitBytes
             : internalResponseLimitBytes, "dispatch", active.controller.signal);
           this.#assertActiveRuntimeDispatch(active);
-          return Object.freeze({ status: packet.status, body: parseCanonicalHttpJson(packet.bytes) });
+          return Object.freeze({ status: packet.status, body: parseHttpJson(packet.bytes) });
         } catch (error) {
           if (active.controller.signal.aborted || error instanceof RuntimeOperationError &&
             error.failure.error.code === "request_aborted") {
@@ -1035,7 +1021,6 @@ export class FixedHttpOwner {
       profileId: owner.profileId,
       ownerInstanceId: owner.ownerInstanceId,
       runtimeProtocolVersion,
-      runtimeBuildDigest: this.#runtimeBuildDigest,
       challenge,
       ownerRevision: owner.ownerRevision,
     };

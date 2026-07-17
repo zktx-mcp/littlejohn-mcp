@@ -67,6 +67,33 @@ describe("capability schemas", () => {
     }).success).toBe(false);
   });
 
+  it("independently verifies runtime-code length and Keccak identity", () => {
+    const data = {
+      address: address1,
+      block: {
+        chainId: "4663",
+        blockNumber: "1",
+        blockHash: `0x${"a".repeat(64)}`,
+        blockTimestamp: "2026-07-12T10:16:02.000Z",
+      },
+      runtimeCode: {
+        status: "present",
+        bytecode: "0x00",
+        byteLength: "1",
+        codeHash: "0xbc36789e7a1e281436464229828f817d6612f7b477d66591ff96a9e064bcc98a",
+      },
+    };
+    expect(safeParseCapabilityData(contractInspectCapability, data).success).toBe(true);
+    expect(safeParseCapabilityData(contractInspectCapability, {
+      ...data,
+      runtimeCode: { ...data.runtimeCode, byteLength: "2" },
+    }).success).toBe(false);
+    expect(safeParseCapabilityData(contractInspectCapability, {
+      ...data,
+      runtimeCode: { ...data.runtimeCode, codeHash: `0x${"0".repeat(64)}` },
+    }).success).toBe(false);
+  });
+
   it("rejects duplicate account tokens and canonicalizes their input order", () => {
     const base = {
       account: { kind: "address", address: address1 },
@@ -215,5 +242,18 @@ describe("capability schemas", () => {
         },
       },
     }).success).toBe(false);
+    for (const malformedLog of [
+      { ...log, topics: [...log.topics, `0x${"0".repeat(64)}`] },
+      { ...log, topics: [log.topics[0], `0x1${"0".repeat(23)}${address1.slice(2)}`, log.topics[2]] },
+      { ...log, data: `${log.data}${"0".repeat(64)}` },
+    ]) {
+      expect(safeParseCapabilityData(transactionInspectCapability, {
+        ...included,
+        inclusion: {
+          ...included.inclusion,
+          receipt: { ...included.inclusion.receipt, logs: [malformedLog] },
+        },
+      }).success).toBe(false);
+    }
   });
 });

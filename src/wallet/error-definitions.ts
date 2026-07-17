@@ -12,6 +12,13 @@ export const walletTimeoutErrorDefinition = Object.freeze({
   retryable: true,
 } as const);
 
+export const walletUserRejectedErrorDefinition = Object.freeze({
+  code: "wallet_user_rejected",
+  category: "wallet",
+  message: "The user rejected the wallet request.",
+  retryable: false,
+} as const);
+
 export const walletErrorDefinitions = Object.freeze([
   {
     code: "wallet_not_connected",
@@ -20,12 +27,7 @@ export const walletErrorDefinitions = Object.freeze([
     retryable: false,
   },
   walletSessionUnusableErrorDefinition,
-  {
-    code: "wallet_user_rejected",
-    category: "wallet",
-    message: "The user rejected the wallet request.",
-    retryable: false,
-  },
+  walletUserRejectedErrorDefinition,
   walletTimeoutErrorDefinition,
   {
     code: "interactive_terminal_required",

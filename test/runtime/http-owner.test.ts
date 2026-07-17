@@ -43,7 +43,6 @@ const databases: ProductDatabase[] = [];
 const servers: Server[] = [];
 const processWorkers: ProcessWorker[] = [];
 const now = parseUtcTimestamp("2026-07-12T10:16:02.000Z");
-const buildDigest = "a".repeat(64);
 const ownerIdentityPath = "/api/v1/runtime-identity";
 const ownerOperationMethod = "GET";
 const ownerOperationPath = "/api/v1/internal/control/example";
@@ -165,7 +164,6 @@ interface IndependentProofFields {
   readonly profileId: string;
   readonly ownerInstanceId: string;
   readonly runtimeProtocolVersion: number;
-  readonly runtimeBuildDigest: string;
   readonly challenge: string;
   readonly ownerRevision: string;
 }
@@ -175,7 +173,6 @@ const independentProofPayload = (identity: IndependentProofFields): Uint8Array =
     identity.profileId,
     identity.ownerInstanceId,
     String(identity.runtimeProtocolVersion),
-    identity.runtimeBuildDigest,
     identity.challenge,
     identity.ownerRevision,
   ].map((value) => Buffer.from(value, "utf8"));
@@ -195,6 +192,16 @@ const independentProof = (key: Uint8Array, identity: IndependentProofFields): st
 
 const canonicalResponse = (response: ServerResponse, status: number, value: CanonicalJson): void => {
   const body = `${canonicalJsonStringify(value)}\n`;
+  response.writeHead(status, {
+    "Content-Type": status >= 400 ? "application/problem+json" : "application/json",
+    "Content-Length": Buffer.byteLength(body),
+    "Cache-Control": "no-store",
+  });
+  response.end(body);
+};
+
+const formattedJsonResponse = (response: ServerResponse, status: number, value: unknown): void => {
+  const body = JSON.stringify(value, null, 2);
   response.writeHead(status, {
     "Content-Type": status >= 400 ? "application/problem+json" : "application/json",
     "Content-Length": Buffer.byteLength(body),
@@ -367,14 +374,12 @@ class ProcessWorker {
 }
 
 const readProcessDatabase = (path: string): {
-  readonly migrationCount: number;
   readonly profileId: string;
   readonly ownerProcessId: number;
   readonly ownerRevision: string;
 } => {
   const database = new Database(path, { readonly: true, fileMustExist: true });
   try {
-    const migration = database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number };
     const profile = database.prepare("SELECT profile_id AS profileId FROM local_profile WHERE singleton = 1").get() as {
       profileId: string;
     };
@@ -382,7 +387,6 @@ const readProcessDatabase = (path: string): {
       "SELECT process_id AS processId, owner_revision AS ownerRevision FROM runtime_owner WHERE singleton = 1",
     ).get() as { processId: number; ownerRevision: string };
     return Object.freeze({
-      migrationCount: migration.count,
       profileId: profile.profileId,
       ownerProcessId: owner.processId,
       ownerRevision: owner.ownerRevision,
@@ -407,7 +411,6 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       command: "prepare_start",
       dataDirectory: directory,
       now,
-      runtimeBuildDigest: buildDigest,
     })));
     expect(preparedStarts.map((prepared) => prepared.processId).sort((left, right) => left - right)).toEqual(
       workers.map((worker) => worker.child.pid as number).sort((left, right) => left - right),
@@ -450,7 +453,6 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     const databaseDetails = await lstat(paths.database);
     const initialDatabase = readProcessDatabase(paths.database);
     expect(initialDatabase).toEqual({
-      migrationCount: 1,
       profileId: initialOwner.profileId,
       ownerProcessId: initialOwner.processId,
       ownerRevision: initialOwner.recordedOwnerRevision,
@@ -508,7 +510,6 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     expect(finalDatabaseDetails.ino).toBe(databaseDetails.ino);
     expect(await readFile(paths.controlCredential, "utf8")).toBe(credentialContent);
     const finalDatabase = readProcessDatabase(paths.database);
-    expect(finalDatabase.migrationCount).toBe(1);
     expect(finalDatabase.profileId).toBe(initialDatabase.profileId);
     expect(finalDatabase.ownerProcessId).toBe(takeoverOwnerProcessId);
     expect(BigInt(finalDatabase.ownerRevision)).toBe(BigInt(initialDatabase.ownerRevision) + 1n);
@@ -528,7 +529,6 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     const owner = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(),
       credential: test.credential,
-      runtimeBuildDigest: buildDigest,
       now: () => now,
     });
     owners.push(owner);
@@ -721,7 +721,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     let closeCalls = 0;
     const owner = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
       applicationFactory: ({ routes }) => ({
         routes,
         close(): void {
@@ -732,7 +732,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     });
     const peer = new FixedHttpOwner({
       ownerStore: peerDatabase.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
     });
     owners.push(owner, peer);
     await owner.start();
@@ -766,7 +766,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     let closeCalls = 0;
     owner = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
       applicationFactory: ({ routes, signal }) => {
         signal.addEventListener("abort", () => { reentered = owner.stop(); }, { once: true });
         return { routes, close: () => { closeCalls += 1; } };
@@ -785,7 +785,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     const test = await fixture();
     const owner = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
     });
     owners.push(owner);
     await owner.start();
@@ -813,7 +813,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     let retainedRegistry!: HttpOwnerApplicationContext["startupResources"];
     const owner = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
       applicationFactory: ({ routes, startupResources }) => {
         retainedRegistry = startupResources;
         return { routes, close: () => undefined };
@@ -831,7 +831,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     const events: string[] = [];
     const owner = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
       applicationFactory: ({ routes, startupResources }) => {
         startupResources.register({ close(): void { events.push("startup:close"); } });
         return { routes, close: () => { events.push("application:close"); } };
@@ -850,7 +850,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     let closeCalls = 0;
     const owner = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
       applicationFactory: ({ routes, startupResources }) => {
         const application = { routes, close: () => { closeCalls += 1; } };
         startupResources.register(application);
@@ -869,7 +869,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     const applicationFailure = Object.assign(new Error("application startup failed"), { code: "EADDRINUSE" });
     const owner = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
       applicationFactory: () => { throw applicationFailure; },
     });
     owners.push(owner);
@@ -896,7 +896,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     await listen(foreign);
     const candidate = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
     });
     owners.push(candidate);
     const startOutcome = candidate.start().then((value) => value, (error: unknown) => error);
@@ -941,11 +941,11 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     });
     const first = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now, applicationFactory,
+      now: () => now, applicationFactory,
     });
     const second = new FixedHttpOwner({
       ownerStore: secondDatabase.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now, applicationFactory,
+      now: () => now, applicationFactory,
     });
     owners.push(first, second);
     expect(await first.start()).toBe("owner");
@@ -1014,11 +1014,11 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     });
     const first = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now, applicationFactory,
+      now: () => now, applicationFactory,
     });
     const second = new FixedHttpOwner({
       ownerStore: secondDatabase.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now, applicationFactory,
+      now: () => now, applicationFactory,
     });
     owners.push(first, second);
 
@@ -1040,10 +1040,10 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     const test = await fixture();
     const shell = "<!doctype html><html><head></head><body><div id=\"root\"></div></body></html>";
     const cookie =
-      "littlejohn_browser=token; Path=/api/v1/wallet/operations/example; Max-Age=60; HttpOnly; SameSite=Strict";
+      "example_session=token; Path=/api/v1/examples/example; Max-Age=60; HttpOnly; SameSite=Strict";
     const owner = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
       applicationFactory: ({ routes }) => {
         const browserRoutes = routes.extendRequestPolicies({
           authenticationVerifiers: [],
@@ -1059,13 +1059,13 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         }, [{
           kind: "route",
           method: "GET",
-          pathPattern: "/wallet/operations/{operationId}",
+          pathPattern: "/examples/{operationId}",
           requestClass: "browser_bootstrap",
         }]);
         return {
           routes: browserRoutes.extend([{
             method: "GET",
-            pathPattern: "/wallet/operations/{operationId}",
+            pathPattern: "/examples/{operationId}",
             mutation: "none",
             response: "browser_content",
             successStatus: 200,
@@ -1083,7 +1083,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     owners.push(owner);
     expect(await owner.start()).toBe("owner");
 
-    const response = await requestText("/wallet/operations/example");
+    const response = await requestText("/examples/example");
     expect(response.status).toBe(200);
     expect(response.body).toBe(shell);
     expect(response.headers["content-type"]).toBe("text/html; charset=utf-8");
@@ -1104,31 +1104,31 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     let handlerCalls = 0;
     const owner = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
       applicationFactory: ({ routes }) => {
         const securedRoutes = routes.extendRequestPolicies({
           authenticationVerifiers: [{
-            authentication: "browser_operation",
+            authentication: "browser_resource",
             verify: (input) => input.authorization.length === 0 &&
-              input.cookie.length === 1 && input.cookie[0] === "littlejohn_browser=credential" &&
+              input.cookie.length === 1 && input.cookie[0] === "example_session=credential" &&
               input.csrfToken.length === 0 && Object.isFrozen(input.params) &&
               Object.getPrototypeOf(input.params) === null &&
-              input.params["operationId"] === "authorized-operation",
+              input.params["resourceId"] === "authorized-resource",
           }],
           policies: [{
             requestClass: "browser_read", host: "fixed", origin: "absent_or_fixed",
-            authentication: "browser_operation", body: "none",
+            authentication: "browser_resource", body: "none",
             responseLimitBytes: 65_536, mutation: "none",
           }],
         }, [{
           kind: "route", method: "GET",
-          pathPattern: "/api/v1/wallet/operations/{operationId}",
+          pathPattern: "/api/v1/examples/{resourceId}",
           requestClass: "browser_read",
         }]);
         return {
           routes: securedRoutes.extend([{
             method: "GET", mutation: "none",
-            pathPattern: "/api/v1/wallet/operations/{operationId}",
+            pathPattern: "/api/v1/examples/{resourceId}",
             response: "canonical_json", successStatus: 200,
             handler: async () => {
               handlerCalls += 1;
@@ -1142,23 +1142,23 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     owners.push(owner);
     expect(await owner.start()).toBe("owner");
 
-    const cookie = { Cookie: "littlejohn_browser=credential" };
+    const cookie = { Cookie: "example_session=credential" };
     const accepted = await requestJson(
-      "/api/v1/wallet/operations/authorized-operation",
+      "/api/v1/examples/authorized-resource",
       "GET",
       cookie,
     );
     expect(accepted).toMatchObject({ status: 200, body: { authorized: true } });
 
     const foreign = await requestJson(
-      "/api/v1/wallet/operations/foreign-operation",
+      "/api/v1/examples/foreign-resource",
       "GET",
       cookie,
     );
     expect(foreign).toMatchObject({ status: 401, body: { code: "unauthorized" } });
 
     const acceptedMethodRejection = await requestJson(
-      "/api/v1/wallet/operations/authorized-operation",
+      "/api/v1/examples/authorized-resource",
       "POST",
       cookie,
     );
@@ -1166,7 +1166,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     expect(acceptedMethodRejection.headers["allow"]).toBe("GET");
 
     const foreignMethodRejection = await requestJson(
-      "/api/v1/wallet/operations/foreign-operation",
+      "/api/v1/examples/foreign-resource",
       "POST",
       cookie,
     );
@@ -1177,7 +1177,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     expect(handlerCalls).toBe(1);
   });
 
-  it("sends the credential-bearing operation on the exact socket that authenticated the owner", async () => {
+  it("accepts standard formatted JSON while pinning the operation to the authenticated socket", async () => {
     const key = new Uint8Array(32).fill(16);
     const test = await fixture(key);
     const record = test.database.ownerStore().publishOwner(Buffer.alloc(16, 17).toString("base64url"), now);
@@ -1198,26 +1198,25 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
           profileId: record.profileId,
           ownerInstanceId: record.ownerInstanceId,
           runtimeProtocolVersion: 1 as const,
-          runtimeBuildDigest: buildDigest,
           challenge: request.headers["littlejohn-identity-challenge"] as string,
           ownerRevision: record.ownerRevision,
         };
-        canonicalResponse(response, 200, {
+        formattedJsonResponse(response, 200, {
           ...identityWithoutProof,
           proof: independentProof(key, identityWithoutProof),
-        } as unknown as CanonicalJson);
+        });
         return;
       }
       operationSocket = request.socket;
       const authorization = request.headers["authorization"];
       if (typeof authorization === "string") authorizations.push(authorization);
-      canonicalResponse(response, 200, { served: true });
+      formattedJsonResponse(response, 200, { served: true });
     });
     servers.push(compatible);
     await listen(compatible);
     const candidate = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
     });
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
@@ -1247,7 +1246,6 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
           profileId: record.profileId,
           ownerInstanceId: record.ownerInstanceId,
           runtimeProtocolVersion: 1 as const,
-          runtimeBuildDigest: buildDigest,
           challenge: request.headers["littlejohn-identity-challenge"] as string,
           ownerRevision: record.ownerRevision,
         };
@@ -1264,11 +1262,11 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     await listen(compatible);
     const candidate = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
     });
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
-    expect(await requestText(`/api/v1/wallet/operations/${"A".repeat(43)}`))
+    expect(await requestText(`/api/v1/examples/${"A".repeat(43)}`))
       .toMatchObject({ status: 404, body: "" });
     expect(await candidate.dispatchRuntimeRequest({ requestClass: "local_control", method: "GET", path: "/api/v1/internal/control/example" }))
       .toEqual({ status: 200, body: { completed: true } });
@@ -1312,7 +1310,6 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         profileId: record.profileId,
         ownerInstanceId: record.ownerInstanceId,
         runtimeProtocolVersion: 1 as const,
-        runtimeBuildDigest: buildDigest,
         challenge: request.headers["littlejohn-identity-challenge"] as string,
         ownerRevision: record.ownerRevision,
       };
@@ -1343,7 +1340,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     await listen(original);
     const candidate = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
     });
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
@@ -1413,7 +1410,6 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         profileId: record.profileId,
         ownerInstanceId: record.ownerInstanceId,
         runtimeProtocolVersion: 1 as const,
-        runtimeBuildDigest: buildDigest,
         challenge: firstChallenge,
         ownerRevision: record.ownerRevision,
       };
@@ -1426,7 +1422,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     await listen(foreign);
     const candidate = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
     });
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
@@ -1469,13 +1465,6 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         },
       },
       {
-        name: "build digest",
-        response: (_request, response, valid) => {
-          const changed = { ...valid, runtimeBuildDigest: "b".repeat(64) };
-          canonicalResponse(response, 200, { ...changed, proof: independentProof(key, changed) } as unknown as CanonicalJson);
-        },
-      },
-      {
         name: "owner instance",
         response: (_request, response, valid) => {
           const changed = { ...valid, ownerInstanceId: Buffer.alloc(16, 3).toString("base64url") };
@@ -1503,18 +1492,6 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
           proof: independentProof(key, valid),
           extra: "forged",
         } as unknown as CanonicalJson),
-      },
-      {
-        name: "noncanonical JSON",
-        response: (_request, response, valid) => {
-          const body = `${JSON.stringify({ ...valid, proof: independentProof(key, valid) }, null, 2)}\n`;
-          response.writeHead(200, {
-            "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(body),
-            "Cache-Control": "no-store",
-          });
-          response.end(body);
-        },
       },
       {
         name: "content type",
@@ -1559,7 +1536,6 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
           profileId: record.profileId,
           ownerInstanceId: record.ownerInstanceId,
           runtimeProtocolVersion: 1,
-          runtimeBuildDigest: buildDigest,
           challenge: request.headers["littlejohn-identity-challenge"] as string,
           ownerRevision: record.ownerRevision,
         };
@@ -1569,7 +1545,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       await listen(foreign);
       const candidate = new FixedHttpOwner({
         ownerStore: test.database.ownerStore(), credential: test.credential,
-        runtimeBuildDigest: buildDigest, now: () => now,
+        now: () => now,
       });
       owners.push(candidate);
       await expect(candidate.start(), testCase.name)
@@ -1633,7 +1609,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     await listen(foreign);
     const candidate = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
     });
     owners.push(candidate);
     await expect(candidate.start())
@@ -1662,7 +1638,6 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
           profileId: record.profileId,
           ownerInstanceId: record.ownerInstanceId,
           runtimeProtocolVersion: 1 as const,
-          runtimeBuildDigest: buildDigest,
           challenge: request.headers["littlejohn-identity-challenge"] as string,
           ownerRevision: record.ownerRevision,
         };
@@ -1679,7 +1654,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     await listen(foreign);
     const candidate = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
     });
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
@@ -1718,7 +1693,6 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         profileId: record.profileId,
         ownerInstanceId: record.ownerInstanceId,
         runtimeProtocolVersion: 1 as const,
-        runtimeBuildDigest: buildDigest,
         challenge: request.headers["littlejohn-identity-challenge"] as string,
         ownerRevision: record.ownerRevision,
       };
@@ -1731,7 +1705,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     await listen(foreign);
     const candidate = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
     });
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
@@ -1767,7 +1741,6 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
           profileId: record.profileId,
           ownerInstanceId: record.ownerInstanceId,
           runtimeProtocolVersion: 1 as const,
-          runtimeBuildDigest: buildDigest,
           challenge: request.headers["littlejohn-identity-challenge"] as string,
           ownerRevision: record.ownerRevision,
         };
@@ -1784,7 +1757,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     await listen(foreign);
     const candidate = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
     });
     owners.push(candidate);
     expect(await candidate.start()).toBe("deferred");
@@ -1812,7 +1785,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     const pending = new Promise<void>((resolvePending) => { release = resolvePending; });
     const owner = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
       applicationFactory: async (input) => {
         context = input;
         await pending;
@@ -1850,7 +1823,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     } | undefined;
     const owner = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
       applicationFactory: async (input) => {
         context = input;
         application = {
@@ -1892,7 +1865,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     const lifecycleEvents: string[] = [];
     const owner = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
       applicationFactory: ({ routes }) => ({
         routes: routes.extend([{
           method: "GET",
@@ -1950,11 +1923,11 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     let handlerCalls = 0;
     const owner = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
       applicationFactory: ({ routes }) => ({
         routes: routes.extend([{
           method: "POST",
-          pathPattern: "/api/v1/internal/control/wallet/operations",
+          pathPattern: "/api/v1/internal/control/examples",
           mutation: "declared_control" as const,
           response: "canonical_json" as const, successStatus: 201,
           handler: async () => {
@@ -1969,7 +1942,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     await owner.start();
     const authorization = await credentialAuthorization(test.paths.controlCredential);
     const malformed = await requestJson(
-      "/api/v1/internal/control/wallet/operations",
+      "/api/v1/internal/control/examples",
       "POST",
       { Authorization: authorization, "Content-Type": "application/json", "Content-Length": "1" },
       Buffer.from([0xff]),
@@ -1979,7 +1952,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
 
     const body = "{}";
     const accepted = await requestJson(
-      "/api/v1/internal/control/wallet/operations",
+      "/api/v1/internal/control/examples",
       "POST",
       { Authorization: authorization, "Content-Type": "application/json", "Content-Length": String(Buffer.byteLength(body)) },
       body,
@@ -1992,7 +1965,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     const test = await fixture();
     const owner = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
       applicationFactory: ({ routes }) => ({
         routes: routes.extend([{
           method: "GET",
@@ -2044,11 +2017,11 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     let handlerCalls = 0;
     const owner = new FixedHttpOwner({
       ownerStore: test.database.ownerStore(), credential: test.credential,
-      runtimeBuildDigest: buildDigest, now: () => now,
+      now: () => now,
       applicationFactory: ({ routes }) => ({
         routes: routes.extend([{
           method: "POST",
-          pathPattern: "/api/v1/internal/control/wallet/operations",
+          pathPattern: "/api/v1/internal/control/examples",
           mutation: "declared_control" as const,
           response: "canonical_json" as const, successStatus: 201,
           handler: async () => {
@@ -2068,7 +2041,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       socket.once("error", reject);
     });
     socket.write([
-      "POST /api/v1/internal/control/wallet/operations HTTP/1.1",
+      "POST /api/v1/internal/control/examples HTTP/1.1",
       `Host: ${fixedHostHeader}`,
       `Authorization: ${authorization}`,
       "Content-Type: application/json",

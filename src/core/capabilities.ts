@@ -22,7 +22,10 @@ import {
 } from "./capability.js";
 import type { CanonicalJson } from "./canonical-json.js";
 import type { ExternalSourceClass, FactOutcome, Freshness, StaticScopeExclusion } from "./evidence.js";
-import { decodeCanonicalErc20Event } from "./erc20-events.js";
+import {
+  canonicalErc20EventEncodingKind,
+  matchesCanonicalErc20EventEvidence,
+} from "./erc20-events.js";
 import type { ObservationClaim } from "./invocation.js";
 import { jsonObject } from "./json-object.js";
 import { keccak256Hex } from "./keccak256.js";
@@ -30,7 +33,9 @@ import { robinhoodChainIdentity, robinhoodWalletNamespaceRequirements } from "./
 import {
   compareCodePointSequences,
   createPrimitiveSchemaSet,
+  sortUniqueStrings,
   type EvmAddress,
+  type SnakeCaseCode,
 } from "./primitives.js";
 import {
   assertCanonicalWalletConnection,
@@ -51,6 +56,28 @@ export const readCapabilityLimits = Object.freeze({
 
 const capabilityPrimitives = createPrimitiveSchemaSet();
 const capabilityAmounts = createAmountSchemaSet();
+
+const canonicalFailureCodes = (codes: readonly string[]): readonly SnakeCaseCode[] => Object.freeze(
+  sortUniqueStrings(codes.map((code) => capabilityPrimitives.snakeCaseCode.parse(code))),
+);
+
+export const readCapabilityCommonFailureCodes = canonicalFailureCodes([
+  "internal_error",
+  "invalid_input",
+  "port_conflict",
+  "request_aborted",
+  "runtime_busy",
+  "runtime_state_unavailable",
+]);
+
+const rpcReadFailureCodes = canonicalFailureCodes([
+  ...readCapabilityCommonFailureCodes,
+  "rate_limited",
+  "source_inconsistent",
+  "source_unavailable",
+]);
+const transactionReadFailureCodes = canonicalFailureCodes([...rpcReadFailureCodes, "not_found"]);
+const accountReadFailureCodes = canonicalFailureCodes([...rpcReadFailureCodes, "wallet_not_connected"]);
 const {
   blockSelector: blockSelectorSchema,
   chainAnchor: chainAnchorSchema,
@@ -335,6 +362,7 @@ export const chainStatusCapability = defineReadCapability<ChainStatusInput, Chai
   capabilityId: "chain.status",
   inputSchema: chainStatusInputSchema,
   dataSchema: chainStatusDataSchema,
+  failureCodes: rpcReadFailureCodes,
   conclusionIds: ["latest_block_observed", "rpc_chain_id_matches_scope"],
   observationSlots: () => [
     sourceSlot("rpc_chain_id", "rpc_chain_id", "chain_id", "chain_rpc"),
@@ -374,6 +402,7 @@ export const contractInspectCapability = defineReadCapability<ContractInspectInp
   capabilityId: "contract.inspect",
   inputSchema: contractInspectInputSchema,
   dataSchema: contractInspectDataSchema,
+  failureCodes: rpcReadFailureCodes,
   conclusionIds: ["account_observed", "runtime_code_observed"],
   observationSlots: () => [
     sourceSlot("rpc_chain_id", "rpc_chain_id", "chain_id", "chain_rpc"),
@@ -646,29 +675,38 @@ const validateTransactionIntrinsicData = (
     if (log.transactionIndex !== data.inclusion.transactionIndex) {
       throw new TypeError("Receipt log transaction mismatch.");
     }
-    const decoded = decodeCanonicalErc20Event(log.topics, log.data);
-    if (decoded === null) {
+    const encodedKind = canonicalErc20EventEncodingKind(log.topics, log.data);
+    if (encodedKind === null) {
       if (log.decodedEvent.kind !== "not_decoded") throw new TypeError("Malformed log cannot carry a decoded event.");
       continue;
     }
+    if (log.decodedEvent.kind === "not_decoded") {
+      throw new TypeError("Canonical ERC-20 event encoding must carry its decoded evidence.");
+    }
     if (
-      log.decodedEvent.kind !== decoded.kind ||
+      log.decodedEvent.kind !== encodedKind ||
       log.decodedEvent.token !== log.address ||
       log.decodedEvent.amount.asset.kind !== "erc20" ||
       log.decodedEvent.amount.asset.address !== log.address ||
-      log.decodedEvent.amount.raw !== decoded.amountRaw ||
       log.decodedEvent.amount.decimals.status !== "not_observed" ||
       log.decodedEvent.amount.decimals.scopeExclusionId !== transactionEventDecimalsExclusion.id ||
-      (decoded.kind === "erc20_transfer" && (
-        log.decodedEvent.kind !== "erc20_transfer" ||
-        log.decodedEvent.from !== decoded.from ||
-        log.decodedEvent.to !== decoded.to
-      )) ||
-      (decoded.kind === "erc20_approval" && (
-        log.decodedEvent.kind !== "erc20_approval" ||
-        log.decodedEvent.owner !== decoded.owner ||
-        log.decodedEvent.spender !== decoded.spender
-      ))
+      !matchesCanonicalErc20EventEvidence(
+        log.topics,
+        log.data,
+        log.decodedEvent.kind === "erc20_transfer"
+          ? {
+              kind: "erc20_transfer",
+              from: log.decodedEvent.from,
+              to: log.decodedEvent.to,
+              amountRaw: log.decodedEvent.amount.raw,
+            }
+          : {
+              kind: "erc20_approval",
+              owner: log.decodedEvent.owner,
+              spender: log.decodedEvent.spender,
+              amountRaw: log.decodedEvent.amount.raw,
+            },
+      )
     ) throw new TypeError("Decoded event does not match its canonical log encoding.");
     context.assertDeclaredScopeExclusion(transactionEventDecimalsExclusion);
   }
@@ -690,6 +728,7 @@ export const transactionInspectCapability = defineReadCapability<TransactionInsp
   capabilityId: "transaction.inspect",
   inputSchema: transactionInspectInputSchema,
   dataSchema: transactionInspectDataSchema,
+  failureCodes: transactionReadFailureCodes,
   conclusionIds: ["inclusion_observed", "receipt_observed", "standard_events_decoded", "transaction_observed"],
   observationSlots: () => [
     sourceSlot("rpc_chain_id", "rpc_chain_id", "chain_id", "chain_rpc"),
@@ -847,6 +886,7 @@ export const accountBalanceCapability = defineReadCapability<AccountBalanceInput
   capabilityId: "account.balance",
   inputSchema: accountBalanceInputSchema,
   dataSchema: accountBalanceDataSchema,
+  failureCodes: accountReadFailureCodes,
   normalizeInput: (input) => {
     if (new Set(input.tokens).size !== input.tokens.length) {
       throw new TypeError("Token addresses must be unique.");
@@ -964,6 +1004,7 @@ export const walletConnectionCapability = defineReadCapability<WalletConnectionI
   capabilityId: "wallet.connection",
   inputSchema: walletConnectionInputSchema,
   dataSchema: walletConnectionDataSchema,
+  failureCodes: readCapabilityCommonFailureCodes,
   conclusionIds: ["wallet_connection_state"],
   observationSlots: () => [
     sourceSlot("wallet_sdk", "wallet_connection", "wallet_sdk_sessions", "wallet_sdk"),

@@ -1,8 +1,11 @@
 import type {
+  WalletCurrentOperationProjection,
   WalletManagementOperation,
   WalletOperationFailure,
+  WalletOperationPresentation,
   WalletOperationResult,
 } from "../../src/wallet/contracts.js";
+import type { WalletNonterminalOperationState } from "../../src/wallet/operation-state.js";
 
 type Equal<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends
@@ -22,6 +25,37 @@ type _OtherFailure = Assert<Equal<OtherOperation["failure"], null>>;
 type _DisconnectRejected = Assert<Equal<
   Extract<WalletManagementOperation, { readonly kind: "disconnect"; readonly state: "rejected" }>,
   never
+>>;
+type _ConnectNeverDisconnects = Assert<Equal<
+  Extract<WalletManagementOperation, { readonly kind: "connect"; readonly state: "disconnecting" }>,
+  never
+>>;
+type _DisconnectNeverCancelsAttempt = Assert<Equal<
+  Extract<WalletManagementOperation, { readonly kind: "disconnect"; readonly state: "cancelling" }>,
+  never
+>>;
+type CurrentOperation = Extract<
+  WalletCurrentOperationProjection,
+  { readonly status: "present" }
+>["presentation"]["operation"];
+type _CurrentOperationStates = Assert<
+  Equal<CurrentOperation["state"], WalletNonterminalOperationState>
+>;
+type _CurrentOperationRejectsTerminalStates = Assert<Equal<
+  Extract<CurrentOperation, {
+    readonly state: "completed" | "cancelled" | "rejected" | "failed" | "expired";
+  }>,
+  never
+>>;
+type _RetainedOperationKeepsTerminalStates = Assert<Equal<
+  Extract<
+    WalletOperationPresentation["operation"],
+    { readonly state: "completed" | "cancelled" | "rejected" | "failed" | "expired" }
+  >,
+  Extract<
+    WalletManagementOperation,
+    { readonly state: "completed" | "cancelled" | "rejected" | "failed" | "expired" }
+  >
 >>;
 
 const consumeNarrowedOperation = (operation: WalletManagementOperation): void => {
@@ -52,6 +86,11 @@ export type WalletOperationTypeContracts =
   | _FailedFailure
   | _OtherResult
   | _OtherFailure
-  | _DisconnectRejected;
+  | _DisconnectRejected
+  | _ConnectNeverDisconnects
+  | _DisconnectNeverCancelsAttempt
+  | _CurrentOperationStates
+  | _CurrentOperationRejectsTerminalStates
+  | _RetainedOperationKeepsTerminalStates;
 
 export { consumeNarrowedOperation };

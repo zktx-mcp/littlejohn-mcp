@@ -23,7 +23,6 @@ describe("chain error authority", () => {
         "rate_limited",
         "source_inconsistent",
         "source_unavailable",
-        "unsupported_capability",
       ]),
     );
   });

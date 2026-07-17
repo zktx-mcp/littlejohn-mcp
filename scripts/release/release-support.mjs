@@ -120,16 +120,31 @@ export const assertSupportedNode = () => {
 };
 
 const gitSourcePaths = async (repositoryRoot) => {
-  const result = await runCommand(
-    "git",
-    ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-    { cwd: repositoryRoot, output: "capture" },
+  const [listedResult, deletedResult] = await Promise.all([
+    runCommand(
+      "git",
+      ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+      { cwd: repositoryRoot, output: "capture" },
+    ),
+    runCommand(
+      "git",
+      ["ls-files", "--deleted", "-z"],
+      { cwd: repositoryRoot, output: "capture" },
+    ),
+  ]);
+  const deletedPaths = new Set(
+    utf8Decoder.decode(deletedResult.stdout)
+      .split("\0")
+      .filter((value) => value.length !== 0)
+      .map(canonicalRelativePath),
   );
-  const decoded = utf8Decoder.decode(result.stdout);
-  const paths = decoded.split("\0").filter((value) => value.length !== 0);
+  const paths = utf8Decoder.decode(listedResult.stdout)
+    .split("\0")
+    .filter((value) => value.length !== 0);
   const unique = new Set();
   for (const path of paths) {
     const canonical = canonicalRelativePath(path);
+    if (deletedPaths.has(canonical)) continue;
     if (unique.has(canonical)) throw new TypeError("Repository source path is duplicated.");
     unique.add(canonical);
   }
@@ -229,6 +244,37 @@ export const assertExactPaths = (actual, expected, label) => {
   const right = [...expected].sort();
   if (JSON.stringify(left) !== JSON.stringify(right)) {
     throw new TypeError(`${label} file set does not match its authority.`);
+  }
+};
+
+/** @type {typeof import("./release-support.d.mts").assertExactFileBytes} */
+export const assertExactFileBytes = async (authorityRoot, candidateRoot, paths, label) => {
+  const authority = resolve(authorityRoot);
+  const candidate = resolve(candidateRoot);
+  const seen = new Set();
+  for (const input of paths) {
+    const path = canonicalRelativePath(input);
+    if (seen.has(path)) throw new TypeError(`${label} contains a duplicate file path.`);
+    seen.add(path);
+    const authorityPath = resolve(authority, path);
+    const candidatePath = resolve(candidate, path);
+    const [authorityDetails, candidateDetails] = await Promise.all([
+      lstat(authorityPath),
+      lstat(candidatePath),
+    ]);
+    if (
+      !authorityDetails.isFile() ||
+      authorityDetails.isSymbolicLink() ||
+      !candidateDetails.isFile() ||
+      candidateDetails.isSymbolicLink()
+    ) throw new TypeError(`${label} must contain only regular files.`);
+    const [authorityBytes, candidateBytes] = await Promise.all([
+      readFile(authorityPath),
+      readFile(candidatePath),
+    ]);
+    if (!authorityBytes.equals(candidateBytes)) {
+      throw new TypeError(`${label} file differs from its source: ${path}`);
+    }
   }
 };
 

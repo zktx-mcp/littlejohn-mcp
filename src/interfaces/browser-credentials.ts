@@ -1,6 +1,10 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import {
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from "node:crypto";
 
-import { parseUtcTimestamp } from "../core/index.js";
+import { canonicalBase64UrlSchema } from "../core/index.js";
 import type {
   AuthenticationVerifierDefinition,
   RequestAuthenticationInput,
@@ -11,24 +15,24 @@ import {
   publicReadResponseLimitBytes,
 } from "../runtime/index.js";
 import {
-  parseWalletOperationId,
-  parseWalletOperationPresentationAccess,
-  type WalletOperationPresentation,
-} from "../wallet/contracts.js";
-import {
-  browserRequestTokenByteLength,
-  browserOperationResourcePath,
-  parseBrowserRequestToken,
+  browserCsrfTokenByteLength,
+  browserWalletApiRoot,
+  parseBrowserCsrfToken,
 } from "./browser-contract.js";
 
-export const browserOperationCookieName = "littlejohn_wallet_operation";
+export const browserSessionCookieName = "littlejohn_browser_session";
+export const browserSessionLifetimeSeconds = 60 * 60;
 
-interface CredentialRecord {
-  readonly credentialDigest: Buffer;
-  readonly csrfDigest: Buffer;
-  readonly expiresAtMilliseconds: number;
-  readonly access: WalletOperationPresentation["access"];
-}
+const browserSessionSecretByteLength = 32;
+const browserSessionNonceByteLength = 32;
+const browserSessionExpiryByteLength = 8;
+const browserSessionMacByteLength = 32;
+const browserSessionCredentialByteLength =
+  browserSessionExpiryByteLength +
+  browserSessionNonceByteLength +
+  browserSessionMacByteLength;
+const browserSessionCredentialSchema =
+  canonicalBase64UrlSchema(browserSessionCredentialByteLength);
 
 export interface BrowserCredentialIssue {
   readonly csrfToken: string;
@@ -37,11 +41,7 @@ export interface BrowserCredentialIssue {
 
 export interface BrowserRequestCredentialAuthority {
   readonly requestPolicyExtension: RequestPolicyExtension;
-  issue(
-    operationId: string,
-    expiresAt: string,
-    access: WalletOperationPresentation["access"],
-  ): BrowserCredentialIssue;
+  issue(): BrowserCredentialIssue;
   close(): void;
 }
 
@@ -49,12 +49,6 @@ export interface BrowserCredentialAuthorityOptions {
   readonly now?: () => number;
   readonly randomBytes?: (size: number) => Buffer;
 }
-
-const digest = (value: string): Buffer => createHash("sha256").update(value, "ascii").digest();
-const digestByteLength = digest("").byteLength;
-
-const equalDigest = (left: Buffer, right: Buffer): boolean =>
-  left.length === right.length && timingSafeEqual(left, right);
 
 const parseCookieHeader = (values: readonly string[]): ReadonlyMap<string, string> | undefined => {
   if (values.length !== 1) return undefined;
@@ -71,24 +65,34 @@ const parseCookieHeader = (values: readonly string[]): ReadonlyMap<string, strin
     ) return undefined;
     const name = trimmed.slice(0, separator);
     const value = trimmed.slice(separator + 1);
-    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) ||
+    if (
+      !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) ||
       !/^[!#$%&'()*+\-./:<=>?@\[\]^_`{|}~0-9A-Za-z]+$/.test(value) ||
-      cookies.has(name)) return undefined;
+      cookies.has(name)
+    ) return undefined;
     cookies.set(name, value);
   }
   return cookies;
 };
 
-const captureOperationId = (input: RequestAuthenticationInput): string | undefined => {
-  const keys = Object.keys(input.params);
-  if (keys.length !== 1 || keys[0] !== "operationId") return undefined;
-  try { return parseWalletOperationId(input.params["operationId"]); }
-  catch { return undefined; }
+const equalBytes = (left: Buffer, right: Buffer): boolean =>
+  left.byteLength === right.byteLength && timingSafeEqual(left, right);
+
+const expiryBytes = (expiresAtSeconds: number): Buffer => {
+  if (!Number.isSafeInteger(expiresAtSeconds) || expiresAtSeconds <= 0) {
+    throw new TypeError("Browser session expiry is invalid.");
+  }
+  const encoded = Buffer.alloc(browserSessionExpiryByteLength);
+  encoded.writeBigUInt64BE(BigInt(expiresAtSeconds));
+  return encoded;
 };
 
-const canonicalRequestToken = (input: unknown): string | undefined => {
-  try { return parseBrowserRequestToken(input); }
-  catch { return undefined; }
+const browserSessionCredential = (input: unknown): Buffer | undefined => {
+  try {
+    return Buffer.from(browserSessionCredentialSchema.parse(input), "base64url");
+  } catch {
+    return undefined;
+  }
 };
 
 export const createBrowserRequestCredentialAuthority = (
@@ -96,54 +100,85 @@ export const createBrowserRequestCredentialAuthority = (
 ): BrowserRequestCredentialAuthority => {
   const now = options.now ?? Date.now;
   const random = options.randomBytes ?? randomBytes;
-  const records = new Map<string, CredentialRecord>();
+  const secret = random(browserSessionSecretByteLength);
+  if (secret.byteLength !== browserSessionSecretByteLength) {
+    throw new TypeError("Browser credential entropy source is invalid.");
+  }
   let closed = false;
+  let lastObservedMilliseconds: number | undefined;
+  let active: {
+    readonly credential: Buffer;
+    readonly csrfToken: Buffer;
+    readonly expiresAtSeconds: number;
+  } | undefined;
 
-  const remove = (operationId: string): void => {
-    const record = records.get(operationId);
-    if (record === undefined) return;
-    records.delete(operationId);
-    record.credentialDigest.fill(0);
-    record.csrfDigest.fill(0);
+  const currentSeconds = (): number => {
+    const currentMilliseconds = now();
+    if (
+      !Number.isSafeInteger(currentMilliseconds) ||
+      currentMilliseconds < 0 ||
+      (lastObservedMilliseconds !== undefined &&
+        currentMilliseconds < lastObservedMilliseconds)
+    ) throw new TypeError("Browser session clock is invalid.");
+    lastObservedMilliseconds = currentMilliseconds;
+    return Math.floor(currentMilliseconds / 1_000);
   };
 
-  const removeExpired = (currentTime: number): void => {
-    for (const [operationId, record] of records) {
-      if (currentTime >= record.expiresAtMilliseconds) remove(operationId);
-    }
+  const clearActive = (): void => {
+    if (active === undefined) return;
+    active.credential.fill(0);
+    active.csrfToken.fill(0);
+    active = undefined;
   };
+
+  const sign = (purpose: "cookie" | "csrf", payload: Buffer): Buffer =>
+    createHmac("sha256", secret)
+      .update(`littlejohn-browser-${purpose}\0`, "ascii")
+      .update(payload)
+      .digest();
 
   const verify = (input: RequestAuthenticationInput, requiresCsrf: boolean): boolean => {
-    if (closed) return false;
-    const currentTime = now();
-    removeExpired(currentTime);
-    if (input.authorization.length !== 0) return false;
-    const operationId = captureOperationId(input);
+    if (closed || input.authorization.length !== 0) return false;
     const cookies = parseCookieHeader(input.cookie);
-    if (operationId === undefined || cookies === undefined) return false;
-    const credential = canonicalRequestToken(cookies.get(browserOperationCookieName));
+    if (cookies === undefined) return false;
+    const credential = browserSessionCredential(cookies.get(browserSessionCookieName));
     if (credential === undefined) return false;
-    const record = records.get(operationId);
-    if (record === undefined) {
-      equalDigest(digest(credential), Buffer.alloc(digestByteLength));
+
+    const payload = credential.subarray(
+      0,
+      browserSessionExpiryByteLength + browserSessionNonceByteLength,
+    );
+    const suppliedMac = credential.subarray(payload.byteLength);
+    if (!equalBytes(sign("cookie", payload), suppliedMac)) return false;
+
+    let observedSeconds: number;
+    try { observedSeconds = currentSeconds(); }
+    catch { return false; }
+    const expiresAtSeconds = Number(payload.readBigUInt64BE(0));
+    if (
+      !Number.isSafeInteger(expiresAtSeconds) ||
+      expiresAtSeconds <= observedSeconds ||
+      expiresAtSeconds > observedSeconds + browserSessionLifetimeSeconds
+    ) return false;
+
+    if (!requiresCsrf) return input.csrfToken.length === 0;
+    if (input.csrfToken.length !== 1) return false;
+    let suppliedCsrf: Buffer;
+    try {
+      suppliedCsrf = Buffer.from(parseBrowserCsrfToken(input.csrfToken[0]), "base64url");
+    } catch {
       return false;
     }
-    if (!equalDigest(digest(credential), record.credentialDigest)) return false;
-    if (!requiresCsrf) return input.csrfToken.length === 0;
-    if (record.access !== "interactive") return false;
-    if (input.csrfToken.length !== 1) return false;
-    const csrfToken = canonicalRequestToken(input.csrfToken[0]);
-    return csrfToken !== undefined &&
-      equalDigest(digest(csrfToken), record.csrfDigest);
+    return equalBytes(sign("csrf", payload), suppliedCsrf);
   };
 
   const authenticationVerifiers = Object.freeze<AuthenticationVerifierDefinition[]>([
     Object.freeze({
-      authentication: "browser_request",
+      authentication: "browser_session",
       verify: (input: RequestAuthenticationInput) => verify(input, false),
     }),
     Object.freeze({
-      authentication: "browser_request_csrf",
+      authentication: "browser_session_csrf",
       verify: (input: RequestAuthenticationInput) => verify(input, true),
     }),
   ]);
@@ -164,7 +199,7 @@ export const createBrowserRequestCredentialAuthority = (
         requestClass: "browser_read",
         host: "fixed",
         origin: "absent_or_fixed",
-        authentication: "browser_request",
+        authentication: "browser_session",
         body: "none",
         responseLimitBytes: publicReadResponseLimitBytes,
         mutation: "none",
@@ -173,7 +208,7 @@ export const createBrowserRequestCredentialAuthority = (
         requestClass: "browser_control",
         host: "fixed",
         origin: "fixed",
-        authentication: "browser_request_csrf",
+        authentication: "browser_session_csrf",
         body: "route_json",
         responseLimitBytes: internalResponseLimitBytes,
         mutation: "declared_control",
@@ -183,48 +218,45 @@ export const createBrowserRequestCredentialAuthority = (
 
   return Object.freeze({
     requestPolicyExtension,
-    issue: (
-      operationIdInput: string,
-      expiresAtInput: string,
-      access: WalletOperationPresentation["access"],
-    ): BrowserCredentialIssue => {
+    issue: (): BrowserCredentialIssue => {
       if (closed) throw new TypeError("Browser credential authority is closed.");
-      const currentTime = now();
-      removeExpired(currentTime);
-      const operationId = parseWalletOperationId(operationIdInput);
-      const canonicalAccess = parseWalletOperationPresentationAccess(access);
-      const expiresAt = parseUtcTimestamp(expiresAtInput);
-      const expiresAtMilliseconds = Date.parse(expiresAt);
-      const remainingSeconds = Math.floor((expiresAtMilliseconds - currentTime) / 1_000);
-      if (!Number.isSafeInteger(remainingSeconds) || remainingSeconds <= 0) {
-        throw new TypeError("Browser credential expiry is invalid.");
+      const observedSeconds = currentSeconds();
+      if (active !== undefined && active.expiresAtSeconds <= observedSeconds) {
+        clearActive();
       }
-      const credential = random(browserRequestTokenByteLength).toString("base64url");
-      const csrfToken = random(browserRequestTokenByteLength).toString("base64url");
-      if (
-        canonicalRequestToken(credential) === undefined ||
-        canonicalRequestToken(csrfToken) === undefined ||
-        credential === csrfToken
-      ) {
-        throw new TypeError("Browser credential entropy source is invalid.");
+      if (active === undefined) {
+        const expiresAtSeconds = observedSeconds + browserSessionLifetimeSeconds;
+        const nonce = random(browserSessionNonceByteLength);
+        if (nonce.byteLength !== browserSessionNonceByteLength) {
+          nonce.fill(0);
+          throw new TypeError("Browser credential entropy source is invalid.");
+        }
+        const payload = Buffer.concat([expiryBytes(expiresAtSeconds), nonce]);
+        nonce.fill(0);
+        const credential = Buffer.concat([payload, sign("cookie", payload)]);
+        const csrfToken = sign("csrf", payload);
+        payload.fill(0);
+        active = Object.freeze({ credential, csrfToken, expiresAtSeconds });
       }
-      remove(operationId);
-      records.set(operationId, Object.freeze({
-        credentialDigest: digest(credential),
-        csrfDigest: digest(csrfToken),
-        expiresAtMilliseconds,
-        access: canonicalAccess,
-      }));
+      const credential = active.credential.toString("base64url");
+      const csrfToken = active.csrfToken.toString("base64url");
+      browserSessionCredentialSchema.parse(credential);
+      if (Buffer.from(parseBrowserCsrfToken(csrfToken), "base64url").byteLength !== browserCsrfTokenByteLength) {
+        throw new TypeError("Browser CSRF authority is invalid.");
+      }
+      const remainingSeconds = active.expiresAtSeconds - observedSeconds;
       return Object.freeze({
         csrfToken,
-        setCookie: `${browserOperationCookieName}=${credential}; ` +
-          `Path=${browserOperationResourcePath(operationId)}; HttpOnly; SameSite=Strict; Max-Age=${remainingSeconds}`,
+        setCookie: `${browserSessionCookieName}=${credential}; ` +
+          `Path=${browserWalletApiRoot}; HttpOnly; SameSite=Strict; ` +
+          `Max-Age=${remainingSeconds}`,
       });
     },
     close: (): void => {
       if (closed) return;
       closed = true;
-      for (const operationId of [...records.keys()]) remove(operationId);
+      clearActive();
+      secret.fill(0);
     },
   });
 };

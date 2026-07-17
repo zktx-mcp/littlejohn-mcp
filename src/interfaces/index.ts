@@ -4,18 +4,21 @@ export {
 } from "./application.js";
 export type { InterfaceApplicationDependencies } from "./application.js";
 export {
+  browserAssetPaths,
   browserCsrfHeaderName,
   browserCsrfMetaName,
-  browserInterfacePaths,
+  browserCsrfTokenByteLength,
+  browserPagePaths,
+  browserOperationCancellationPath,
   browserOperationConfirmationPath,
-  browserOperationPagePath,
-  browserOperationQrPath,
-  browserOperationResourcePath,
-  parseBrowserOperationPagePath,
-  parseBrowserRequestToken,
+  browserOperationPath,
+  browserWalletApiRoot,
+  browserWalletApiPaths,
+  parseBrowserCsrfToken,
 } from "./browser-contract.js";
 export {
-  browserOperationCookieName,
+  browserSessionCookieName,
+  browserSessionLifetimeSeconds,
   createBrowserRequestCredentialAuthority,
 } from "./browser-credentials.js";
 export type {
@@ -41,8 +44,12 @@ export type {
 export {
   cliHelpText,
   declaredCliCommandIdentities,
+  walletInterfaceBindingList,
+  walletInterfaceBindings,
   walletConnectionInterface,
-  walletToolInterfaces,
 } from "./identities.js";
-export type { CliInterfaceIdentity } from "./identities.js";
+export type {
+  CliInterfaceIdentity,
+  WalletInterfaceBinding,
+} from "./identities.js";
 export { normalizeProblemDetailsFailure } from "./http-client.js";

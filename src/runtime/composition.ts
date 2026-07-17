@@ -1,7 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { basename, dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
 import {
   CapabilityBindingRegistry,
   CapabilityRegistry,
@@ -21,10 +17,8 @@ import {
   type CanonicalClock,
   type CapabilityInvocationAuthority,
   type InvocationBoundaryPorts,
-  type RuntimeBuildIdentity,
   type UtcTimestamp,
 } from "../core/index.js";
-import { verifyRuntimeBuildIdentityFiles } from "../build/runtime-file-set.js";
 import {
   readConfiguredRpcEndpoint,
   readRuntimeConfiguration,
@@ -462,18 +456,6 @@ export const composeOwnerApplicationStages = async <
   }
 };
 
-const loadBuildIdentity = async (): Promise<RuntimeBuildIdentity> => {
-  const runtimeDirectory = dirname(fileURLToPath(import.meta.url));
-  const distDirectory = resolve(runtimeDirectory, "..");
-  if (basename(dirname(runtimeDirectory)) === "src") {
-    throw new TypeError("The local runtime starts only from a verified compiled package.");
-  }
-  const packageRoot = resolve(distDirectory, "..");
-  const path = resolve(distDirectory, "generated/runtime-build-identity.json");
-  const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
-  return verifyRuntimeBuildIdentityFiles(parsed, packageRoot, distDirectory, path);
-};
-
 export class LocalRuntime {
   readonly #database: ProductDatabase;
   readonly #createHttpOwner: (database: ProductDatabase) => FixedHttpOwner;
@@ -512,7 +494,6 @@ export class LocalRuntime {
     }
     await ensureRuntimeStateDirectory(paths.dataDirectory);
     const credential = await loadOrCreateControlCredential(paths.dataDirectory, paths.controlCredential);
-    const buildIdentity = await loadBuildIdentity();
     const createHttpOwner = (database: ProductDatabase): FixedHttpOwner => {
       const ownerStore = database.ownerStore();
       const walletProjection = database.walletStore();
@@ -596,7 +577,6 @@ export class LocalRuntime {
       return new FixedHttpOwner({
         ownerStore,
         credential,
-        runtimeBuildDigest: buildIdentity.digest,
         now,
         ...(applicationFactory === undefined ? {} : { applicationFactory }),
       });

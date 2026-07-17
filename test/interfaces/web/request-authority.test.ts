@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { createWalletOperationRequestAuthority } from
+import { createBrowserRequestAuthority } from
   "../../../src/interfaces/web/request-authority.js";
 
-describe("wallet operation browser request authority", () => {
+describe("browser request authority", () => {
   it("makes only the newest poll authoritative", () => {
-    const authority = createWalletOperationRequestAuthority();
+    const authority = createBrowserRequestAuthority();
     const first = authority.beginPoll();
     const second = authority.beginPoll();
 
@@ -20,7 +20,7 @@ describe("wallet operation browser request authority", () => {
   });
 
   it("invalidates polling and rejects duplicate controls until completion", () => {
-    const authority = createWalletOperationRequestAuthority();
+    const authority = createBrowserRequestAuthority();
     const poll = authority.beginPoll();
     const control = authority.beginControl();
 
@@ -37,7 +37,7 @@ describe("wallet operation browser request authority", () => {
   });
 
   it("invalidates requests across close and Strict Mode reactivation", () => {
-    const authority = createWalletOperationRequestAuthority();
+    const authority = createBrowserRequestAuthority();
     const beforeClose = authority.beginPoll();
     authority.close();
 

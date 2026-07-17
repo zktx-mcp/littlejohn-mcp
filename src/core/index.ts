@@ -19,26 +19,18 @@ export {
   canonicalJsonStringify,
   canonicalSha256,
   captureCanonicalJson,
-  sha256Bytes,
 } from "./canonical-json.js";
 export type { CanonicalJson } from "./canonical-json.js";
 export { coreContractVersion } from "./contract.js";
 export { createSha256HexSchema } from "./digests.js";
 export { productDisplayName } from "./product-identity.js";
 export {
-  buildPathSchema,
-  createRuntimeBuildIdentity,
-  parseRuntimeBuildIdentity,
-  runtimeBuildDigest,
-  runtimeBuildIdentitySchema,
-} from "./build-identity.js";
-export type { RuntimeBuildIdentity } from "./build-identity.js";
-export {
   accountBalanceCapability,
   chainReadCapabilities,
   chainStatusCapability,
   contractInspectCapability,
   createAccountBalanceTokenEvidenceIdentity,
+  readCapabilityCommonFailureCodes,
   readCapabilityLimits,
   readCapabilityRegistry,
   transactionInspectCapability,
@@ -96,24 +88,23 @@ export {
   ApplicationErrorRegistry,
   applicationErrorDefinitionSchema,
   applicationFailureSchema,
+  applicationFailureSchemaFor,
   assertDirectApplicationErrorRegistryExtension,
   coreErrorRegistry,
   createApplicationFailure,
   errorCategorySchema,
 } from "./errors.js";
+export { coreErrorDefinitions } from "./error-definitions.js";
 export type {
   ApplicationErrorDefinition,
   ApplicationFailure,
   ErrorCategory,
 } from "./errors.js";
+export { deepFreezeValue } from "./immutability.js";
 export {
-  decodeCanonicalErc20Event,
-  erc20ApprovalSignature,
   erc20ApprovalTopic0,
-  erc20TransferSignature,
   erc20TransferTopic0,
 } from "./erc20-events.js";
-export type { CanonicalErc20Event } from "./erc20-events.js";
 export {
   conclusionSchema,
   coverageSchema,

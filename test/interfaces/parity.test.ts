@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { createErc20CallEncoder, type Erc20CallEncoder } from "../../src/chain/erc20-calls.js";
+import { createErc20CallEncoder, type Erc20CallEncoder } from "../../src/chain/evm-standard.js";
 import { extendChainSupportManifest } from "../../src/chain/application.js";
 import {
   accountBalanceCapability,
@@ -47,7 +47,6 @@ import {
   type ReadInterfaceIdentity,
 } from "../../src/interfaces/identities.js";
 import { createMcpServer } from "../../src/interfaces/mcp.js";
-import { parseOperationReadResponse } from "../../src/interfaces/browser-responses.js";
 import { extendInterfaceSupportManifest } from "../../src/interfaces/support.js";
 import { parseReadCliCommand, runReadCliCommand } from "../../src/interfaces/cli-read.js";
 import {
@@ -68,7 +67,9 @@ import {
 } from "../../src/runtime/index.js";
 import { extendWalletSupportManifest } from "../../src/wallet/application.js";
 import {
+  parseWalletCurrentOperationProjection,
   parseWalletManagementOperation,
+  parseWalletOperationStartResult,
   type WalletInterfaceOperations,
   type WalletManagementOperation,
 } from "../../src/wallet/contracts.js";
@@ -388,7 +389,7 @@ const createReadParityCases = async (): Promise<readonly ReadParityCase[]> => {
 
 const operation = (): WalletManagementOperation => parseWalletManagementOperation({
   operationId,
-  kind: "connect",
+  kind: "disconnect",
   state: "awaiting_confirmation",
   connectionRevision: "17",
   expiresAt: "2026-07-16T00:00:00.000Z",
@@ -404,8 +405,10 @@ const browserAssets: BrowserAssetBundle = Object.freeze({
 
 const browserOperations = (value: WalletManagementOperation): WalletInterfaceOperations => Object.freeze({
   operation: Object.freeze({
-    start: async () => value,
-    get: async () => value,
+    start: async () => parseWalletOperationStartResult({
+      status: "operation_started",
+      operation: value,
+    }),
     cancel: async () => value,
   }),
   confirmation: Object.freeze({
@@ -414,6 +417,14 @@ const browserOperations = (value: WalletManagementOperation): WalletInterfaceOpe
   }),
   presentation: Object.freeze({
     get: async () => Object.freeze({ operation: value, access: "interactive" as const }),
+  }),
+  currentProjection: Object.freeze({
+    get: async () => parseWalletCurrentOperationProjection({
+      status: "present",
+      connectionRevision: value.connectionRevision,
+      connection: { status: "disconnected", reason: "no_session" },
+      presentation: { operation: value, access: "interactive" },
+    }),
   }),
 });
 
@@ -613,7 +624,7 @@ describe("interface parity", () => {
     }
   });
 
-  it("preserves pending, completed, and failed WU3 operations through every interface", async () => {
+  it("preserves retained operations through native interfaces and the current operation through web", async () => {
     const cases = [
       operation(),
       parseWalletManagementOperation({
@@ -681,6 +692,8 @@ describe("interface parity", () => {
       expect(cliError).toEqual([]);
       expect(JSON.parse(cliOutput.join(""))).toEqual(direct);
 
+      if (direct.state !== "awaiting_confirmation") continue;
+
       const root = await mkdtemp(resolve(tmpdir(), "littlejohn-parity-"));
       roots.push(root);
       const paths = runtimePaths(root);
@@ -699,7 +712,7 @@ describe("interface parity", () => {
         walletOperations: browserOperations(direct),
       });
       try {
-        const match = routes.match("GET", `/api/v1/wallet/operations/${operationId}`);
+        const match = routes.match("GET", "/api/v1/wallet/current-operation");
         expect(match.status).toBe("matched");
         if (match.status !== "matched") throw new Error("The web operation route is unavailable.");
         const response = routes.normalizeResult(match.route, await match.route.handler({
@@ -710,14 +723,42 @@ describe("interface parity", () => {
         expect(response).toEqual({
           ok: true,
           response: "canonical_json",
-          body: { operation: direct, access: "interactive" },
+          body: {
+            status: "present",
+            connectionRevision: direct.connectionRevision,
+            connection: { status: "disconnected", reason: "no_session" },
+            presentation: { operation: direct, access: "interactive" },
+          },
         });
         if (!response.ok || response.response !== "canonical_json") {
           throw new Error("The web operation parity response is unavailable.");
         }
-        expect(parseOperationReadResponse(response.body, operationId)).toEqual({
-          operation: direct,
-          access: "interactive",
+        expect(parseWalletCurrentOperationProjection(response.body)).toEqual({
+          status: "present",
+          connectionRevision: direct.connectionRevision,
+          connection: { status: "disconnected", reason: "no_session" },
+          presentation: { operation: direct, access: "interactive" },
+        });
+        const exactMatch = routes.match(
+          "GET",
+          `/api/v1/wallet/operations/${operationId}`,
+        );
+        expect(exactMatch.status).toBe("matched");
+        if (exactMatch.status !== "matched") {
+          throw new Error("The exact web operation route is unavailable.");
+        }
+        const exactResponse = routes.normalizeResult(
+          exactMatch.route,
+          await exactMatch.route.handler({
+            params: exactMatch.params,
+            body: {},
+            signal: new AbortController().signal,
+          }),
+        );
+        expect(exactResponse).toEqual({
+          ok: true,
+          response: "canonical_json",
+          body: { operation: direct, access: "interactive" },
         });
       } finally {
         credentials.close();

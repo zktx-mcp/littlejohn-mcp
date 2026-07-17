@@ -237,11 +237,11 @@ const acquireFakeClient = (
 };
 
 const availability = Object.freeze({
-  overall: "available",
+  overall: "internal",
   direct: "internal",
   http: "internal",
   mcp: "unavailable",
-  cli: "available",
+  cli: "unavailable",
   web: "unavailable",
 });
 const walletConnectionCapabilityId =
@@ -278,6 +278,7 @@ describe("wallet owner application composition", () => {
     expect(application).not.toHaveProperty("client");
     expect(Object.keys(application.walletOperations).sort()).toEqual([
       "confirmation",
+      "currentProjection",
       "operation",
       "presentation",
     ]);
@@ -300,7 +301,14 @@ describe("wallet owner application composition", () => {
         .toEqual(availability);
     }
 
-    const operation = await application.walletOperations.operation.start("disconnect");
+    const current = await application.walletOperations.currentProjection.get();
+    const started = await application.walletOperations.operation.start({
+      kind: "disconnect",
+      connectionRevision: current.connectionRevision,
+    });
+    expect(started.status).toBe("operation_started");
+    if (started.status !== "operation_started") throw new Error("Expected a disconnection operation.");
+    const operation = started.operation;
     expect(operation).toMatchObject({
       state: "completed",
       result: { outcome: "already_disconnected", connection: { status: "disconnected" } },

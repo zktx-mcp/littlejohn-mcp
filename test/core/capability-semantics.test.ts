@@ -421,6 +421,7 @@ describe("capability semantic and evidence authority", () => {
       capabilityId: "test.anchors",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
+      failureCodes: ["internal_error", "invalid_input"],
       conclusionIds: ["value_observed"],
       observationSlots: () => [
         { slotId: "first", factId: "value", kind: "source" as const, purpose: "first", sourceClass: "chain_rpc" as const },

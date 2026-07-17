@@ -694,6 +694,116 @@ describe("WalletConnect client adapter", () => {
     ]);
   });
 
+  it("waits for an in-flight relay connection and closes a late transport", async () => {
+    const bootstrapSdk = new FakeSdk();
+    const { client: bootstrapClient, init } = await clientWith(bootstrapSdk);
+    await bootstrapClient.close();
+    const connectionGate = deferred<void>();
+    const lifecycleEvents: string[] = [];
+    let connected = false;
+    class TestRelayer {
+      readonly connectPromise = connectionGate.promise.then(() => {
+        connected = true;
+        lifecycleEvents.push("transport:late-open");
+      });
+
+      async transportClose(): Promise<void> {
+        lifecycleEvents.push("transport:close");
+        if (!connected) {
+          connectionGate.resolve();
+          return;
+        }
+        connected = false;
+        lifecycleEvents.push("transport:closed");
+      }
+    }
+    class TestHeartbeat {
+      stop(): void {
+        lifecycleEvents.push("heartbeat:stop");
+      }
+    }
+    const initializedClient = productionClientShape(
+      new TestHeartbeat(),
+      new TestRelayer(),
+    );
+    class TestSignClient {
+      static async init(): Promise<unknown> {
+        return initializedClient;
+      }
+    }
+    const dependencies = await loadWalletConnectProductionDependencies(async (key) =>
+      key === "signClient"
+        ? { SignClient: TestSignClient }
+        : { create: () => ({}) },
+    );
+    const sdk = await dependencies.sdkFactory(init, { retainCleanup: () => undefined });
+
+    await expect(sdk.close()).resolves.toBeUndefined();
+    expect(connected).toBe(false);
+    expect(lifecycleEvents).toEqual([
+      "transport:close",
+      "transport:late-open",
+      "transport:close",
+      "transport:closed",
+      "heartbeat:stop",
+    ]);
+  });
+
+  it("retains a late relay transport for cleanup retry", async () => {
+    const bootstrapSdk = new FakeSdk();
+    const { client: bootstrapClient, init } = await clientWith(bootstrapSdk);
+    await bootstrapClient.close();
+    const connectionGate = deferred<void>();
+    let connected = false;
+    let closeCalls = 0;
+    let failLateClose = true;
+    let heartbeatStopCalls = 0;
+    class TestRelayer {
+      readonly connectPromise = connectionGate.promise.then(() => { connected = true; });
+
+      async transportClose(): Promise<void> {
+        closeCalls += 1;
+        if (!connected) {
+          connectionGate.resolve();
+          return;
+        }
+        if (failLateClose) throw new Error("late transport close failed");
+        connected = false;
+      }
+    }
+    class TestHeartbeat {
+      stop(): void {
+        heartbeatStopCalls += 1;
+      }
+    }
+    const initializedClient = productionClientShape(
+      new TestHeartbeat(),
+      new TestRelayer(),
+    );
+    class TestSignClient {
+      static async init(): Promise<unknown> {
+        return initializedClient;
+      }
+    }
+    const dependencies = await loadWalletConnectProductionDependencies(async (key) =>
+      key === "signClient"
+        ? { SignClient: TestSignClient }
+        : { create: () => ({}) },
+    );
+    const sdk = await dependencies.sdkFactory(init, { retainCleanup: () => undefined });
+
+    await expect(sdk.close()).rejects.toMatchObject({ code: "sdk_unavailable" });
+    expect(connected).toBe(true);
+    expect(closeCalls).toBe(2);
+    expect(heartbeatStopCalls).toBe(1);
+
+    failLateClose = false;
+    await expect(sdk.close()).resolves.toBeUndefined();
+    expect(connected).toBe(false);
+    expect(closeCalls).toBe(4);
+    expect(heartbeatStopCalls).toBe(1);
+  });
+
   it("lets a production-shaped child process exit naturally after SDK close", async () => {
     const workerPath = fileURLToPath(
       new URL("./walletconnect-natural-exit-worker.ts", import.meta.url),

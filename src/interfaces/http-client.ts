@@ -34,6 +34,13 @@ export const createInterfaceFailure = (
   catch { return createApplicationFailure(chainErrorRegistry, "internal_error"); }
 };
 
+export const constrainInterfaceFailure = (
+  result: InterfaceInvocationResult,
+  failureCodes: readonly string[],
+): InterfaceInvocationResult => result.ok || failureCodes.includes(result.failure.error.code)
+  ? result
+  : Object.freeze({ ok: false, failure: createInterfaceFailure("internal_error") });
+
 export const normalizeProblemDetailsFailure = (
   response: RuntimeDispatchResponse,
   applicationErrors: ApplicationErrorRegistry,

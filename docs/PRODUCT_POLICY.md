@@ -78,9 +78,9 @@ authority and execution requirements are owned by
   Source owner: Robinhood. Coverage: Published Robinhood Chain network identity and chain ID.
   Unsupported conclusions: Endpoint availability. Runtime availability. Safety.
 - Implemented protocol support: none.
-- Implemented wallet support: `wallet.cancel_operation` (MCP, CLI, web); `wallet.connect` (MCP, CLI); `wallet.connection` (HTTP, MCP, CLI, web); `wallet.disconnect` (MCP, CLI); `wallet.operation` (MCP, CLI, web).
+- Implemented wallet support: `wallet.cancel_operation` (MCP, CLI, web); `wallet.connect` (MCP, CLI, web); `wallet.connection` (HTTP, MCP, CLI); `wallet.current_operation` (web); `wallet.disconnect` (MCP, CLI, web); `wallet.operation` (MCP, CLI, web).
 - Implemented transaction actions: none.
-- Available user-facing capabilities: `account.balance`, `chain.status`, `contract.inspect`, `transaction.inspect`, `wallet.cancel_operation`, `wallet.connect`, `wallet.connection`, `wallet.disconnect`, `wallet.operation`.
+- Available user-facing capabilities: `account.balance`, `chain.status`, `contract.inspect`, `transaction.inspect`, `wallet.cancel_operation`, `wallet.connect`, `wallet.connection`, `wallet.current_operation`, `wallet.disconnect`, `wallet.operation`.
 - Experiments and collected research do not establish product support.
 
 ## Support Levels

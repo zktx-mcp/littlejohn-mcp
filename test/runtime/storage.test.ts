@@ -387,7 +387,7 @@ describe("SQLite product state", () => {
     database.close();
   });
 
-  it("publishes one complete four-table database and preserves one profile", async () => {
+  it("publishes one complete current-schema database and preserves one profile", async () => {
     const directory = await temporaryDirectory();
     await ensureOwnerOnlyDirectory(directory);
     const path = runtimePaths(directory).database;
@@ -403,17 +403,38 @@ describe("SQLite product state", () => {
       database.close();
     }
     const inspection = new Database(path, { readonly: true });
+    expect(inspection.pragma("user_version", { simple: true })).toBe(runtimeProtocolVersion);
     expect(inspection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all())
       .toEqual([
         { name: "local_profile" },
         { name: "runtime_owner" },
-        { name: "schema_migrations" },
         { name: "wallet_connection" },
       ]);
-    expect(inspection.prepare("SELECT count(*) AS count FROM schema_migrations").get()).toEqual({ count: 1 });
     inspection.close();
     if (process.platform !== "win32") {
       expect((await stat(path)).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it("opens only the exact current schema and never repairs incompatible state", async () => {
+    for (const mutation of [
+      (database: Database.Database) => { database.pragma("user_version = 0"); },
+      (database: Database.Database) => { database.exec("CREATE TABLE obsolete_state(value TEXT)"); },
+    ]) {
+      const directory = await temporaryDirectory();
+      await ensureOwnerOnlyDirectory(directory);
+      const path = runtimePaths(directory).database;
+      const initialized = await ProductDatabase.open(path, observedAt);
+      initialized.close();
+
+      const incompatible = new Database(path);
+      mutation(incompatible);
+      incompatible.close();
+      if (process.platform !== "win32") await chmod(path, 0o600);
+      const before = await sqliteDurableArtifactSnapshot(path);
+
+      await expectRuntimeCode(ProductDatabase.open(path, observedAt), "runtime_state_unavailable");
+      expect(await sqliteDurableArtifactSnapshot(path)).toEqual(before);
     }
   });
 
@@ -485,22 +506,6 @@ describe("SQLite product state", () => {
     expect((await lstat(linkedStaging)).isSymbolicLink()).toBe(true);
   });
 
-  it("validates the final database before removing validly named publication staging", async () => {
-    const directory = await temporaryDirectory();
-    await ensureOwnerOnlyDirectory(directory);
-    const path = runtimePaths(directory).database;
-    const initialized = await ProductDatabase.open(path, observedAt);
-    initialized.close();
-    const staging = publicationStagingPath(path, 5);
-    await writeFile(staging, "staging evidence", { mode: 0o600 });
-    await writeFile(path, "invalid final database", { mode: 0o600 });
-    const before = await sqliteDurableArtifactSnapshot(path);
-
-    await expectRuntimeCode(ProductDatabase.open(path, observedAt), "runtime_state_unavailable");
-    expect(await sqliteDurableArtifactSnapshot(path)).toEqual(before);
-    expect(await readFile(staging, "utf8")).toBe("staging evidence");
-  });
-
   it("uses stored update time for wallet meaning, canonicalizes arrays, and enforces CAS", async () => {
     const directory = await temporaryDirectory();
     await ensureOwnerOnlyDirectory(directory);
@@ -536,91 +541,7 @@ describe("SQLite product state", () => {
     reopened.close();
   });
 
-  it("rejects missing or semantically corrupt existing state without repair", async () => {
-    const cases: readonly {
-      readonly name: string;
-      readonly tamper: (database: Database.Database) => void;
-      readonly verify: (database: Database.Database) => void;
-    }[] = [
-      {
-        name: "missing profile",
-        tamper: (database) => { database.prepare("DELETE FROM local_profile").run(); },
-        verify: (database) => expect(database.prepare("SELECT count(*) AS count FROM local_profile").get()).toEqual({ count: 0 }),
-      },
-      {
-        name: "invalid migration time",
-        tamper: (database) => { database.prepare("UPDATE schema_migrations SET applied_at='bad'").run(); },
-        verify: (database) => expect(database.prepare("SELECT applied_at FROM schema_migrations").get()).toEqual({ applied_at: "bad" }),
-      },
-      {
-        name: "orphan owner",
-        tamper: (database) => {
-          database.pragma("foreign_keys=OFF");
-          database.prepare(`INSERT INTO runtime_owner(singleton, profile_id, owner_instance_id, protocol_version,
-            process_id, owner_revision, acquired_at) VALUES (1, ?, ?, 1, 1, '1', ?)`)
-            .run(Buffer.alloc(16, 8).toString("base64url"), Buffer.alloc(16, 9).toString("base64url"), observedAt);
-        },
-        verify: (database) => expect((database.pragma("foreign_key_check") as unknown[]).length).toBe(1),
-      },
-    ];
-    for (const testCase of cases) {
-      const directory = await temporaryDirectory();
-      await ensureOwnerOnlyDirectory(directory);
-      const path = runtimePaths(directory).database;
-      const product = await ProductDatabase.open(path, observedAt);
-      product.close();
-      const tamper = new Database(path);
-      testCase.tamper(tamper);
-      tamper.close();
-      await expectRuntimeCode(ProductDatabase.open(path, observedAt), "runtime_state_unavailable");
-      const verify = new Database(path, { readonly: true });
-      testCase.verify(verify);
-      verify.close();
-    }
-  });
-
-  it("rejects noncanonical stored JSON without rewriting it", async () => {
-    const directory = await temporaryDirectory();
-    await ensureOwnerOnlyDirectory(directory);
-    const path = runtimePaths(directory).database;
-    const database = await ProductDatabase.open(path, observedAt);
-    database.walletStore().replace("0", connected(), observedAt);
-    database.close();
-    const tamper = new Database(path);
-    const noncanonical = '[ "eth_sendTransaction", "personal_sign" ]';
-    tamper.prepare("UPDATE wallet_connection SET approved_methods_json=?").run(noncanonical);
-    tamper.close();
-    await expectRuntimeCode(ProductDatabase.open(path, observedAt), "runtime_state_unavailable");
-    const verify = new Database(path, { readonly: true });
-    expect((verify.prepare("SELECT approved_methods_json FROM wallet_connection").get() as { approved_methods_json: string }).approved_methods_json)
-      .toBe(noncanonical);
-    verify.close();
-  });
-
-  it("keeps wallet semantics in the core parser while SQLite enforces only the storage projection", async () => {
-    const directory = await temporaryDirectory();
-    await ensureOwnerOnlyDirectory(directory);
-    const path = runtimePaths(directory).database;
-    const database = await ProductDatabase.open(path, observedAt);
-    database.close();
-
-    const raw = new Database(path);
-    const schema = (raw.prepare("SELECT sql FROM sqlite_schema WHERE name='wallet_connection'").get() as { sql: string }).sql;
-    expect(schema).not.toContain("owner_unavailable");
-    expect(schema).not.toContain("unusable_store");
-    expect(schema).not.toContain("eip155:4663");
-    expect(raw.prepare(`UPDATE wallet_connection SET
-      status='unresolved', reason=NULL, account=NULL, address=NULL, chain_id=NULL,
-      approved_methods_json=NULL, approved_events_json=NULL, expires_at=NULL,
-      eligible_session_count='1' WHERE singleton=1`).run().changes).toBe(1);
-    raw.close();
-
-    const before = await sqliteArtifactSnapshot(path);
-    await expectRuntimeCode(ProductDatabase.open(path, observedAt), "runtime_state_unavailable");
-    expect(await sqliteArtifactSnapshot(path)).toEqual(before);
-  });
-
-  it("treats only a wholly absent SQLite artifact set as fresh and preserves rejected durable artifacts", async () => {
+  it("never initializes over an existing SQLite artifact set", async () => {
     const cases: readonly {
       readonly name: string;
       readonly prepare: (path: string) => Promise<void>;
@@ -660,45 +581,27 @@ describe("SQLite product state", () => {
       await ensureOwnerOnlyDirectory(directory);
       const path = runtimePaths(directory).database;
       await testCase.prepare(path);
-      const before = await sqliteDurableArtifactSnapshot(path);
+      const beforeMainInode = await lstat(path).then(
+        (details) => details.ino,
+        (error: unknown) => {
+          if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+          throw error;
+        },
+      );
       await expectRuntimeCode(ProductDatabase.open(path, observedAt), "runtime_state_unavailable");
-      expect(await sqliteDurableArtifactSnapshot(path), testCase.name).toEqual(before);
+      const afterMainInode = await lstat(path).then(
+        (details) => details.ino,
+        (error: unknown) => {
+          if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+          throw error;
+        },
+      );
+      expect(afterMainInode, testCase.name).toBe(beforeMainInode);
       expect((await readdir(directory)).every((name) => [
         "littlejohn.sqlite3",
         "littlejohn.sqlite3-wal",
         "littlejohn.sqlite3-shm",
       ].includes(name)), testCase.name).toBe(true);
-    }
-  });
-
-  it("rejects migration identity and schema corruption without repairing persistent bytes", async () => {
-    const cases: readonly {
-      readonly name: string;
-      readonly corrupt: (database: Database.Database) => void;
-    }[] = [
-      {
-        name: "migration digest",
-        corrupt: (database) => {
-          database.prepare("UPDATE schema_migrations SET digest=? WHERE version=1").run("b".repeat(64));
-        },
-      },
-      {
-        name: "schema identity",
-        corrupt: (database) => { database.exec("ALTER TABLE wallet_connection ADD COLUMN extra TEXT"); },
-      },
-    ];
-    for (const testCase of cases) {
-      const directory = await temporaryDirectory();
-      await ensureOwnerOnlyDirectory(directory);
-      const path = runtimePaths(directory).database;
-      const product = await ProductDatabase.open(path, observedAt);
-      product.close();
-      const corrupt = new Database(path);
-      testCase.corrupt(corrupt);
-      corrupt.close();
-      const before = await sqliteArtifactSnapshot(path);
-      await expectRuntimeCode(ProductDatabase.open(path, observedAt), "runtime_state_unavailable");
-      expect(await sqliteArtifactSnapshot(path), testCase.name).toEqual(before);
     }
   });
 
@@ -759,13 +662,13 @@ describe("SQLite product state", () => {
     const before = await sqliteDurableArtifactSnapshot(path);
     await unlink(`${path}-shm`);
 
-    const recovered = await ProductDatabase.open(path, observedAt);
-    expect(recovered.walletStore().read().connection.status).toBe("connected");
+    const reopened = await ProductDatabase.open(path, observedAt);
+    expect(reopened.walletStore().read().connection.status).toBe("connected");
     expect(await sqliteDurableArtifactSnapshot(path)).toEqual(before);
     const sharedMemory = await lstat(`${path}-shm`);
     expect(sharedMemory.isFile()).toBe(true);
     if (process.platform !== "win32") expect(sharedMemory.mode & 0o777).toBe(0o600);
-    recovered.close();
+    reopened.close();
   });
 
   it("does not treat transient SHM without WAL as product-state authority", async () => {
@@ -782,56 +685,8 @@ describe("SQLite product state", () => {
     reopened.close();
   });
 
-  it("rejects invalid active-WAL state without changing durable database bytes", async () => {
-    const directory = await temporaryDirectory();
-    await ensureOwnerOnlyDirectory(directory);
-    const path = runtimePaths(directory).database;
-    const active = await ProductDatabase.open(path, observedAt);
-    const tamper = new Database(path);
-    tamper.prepare(`UPDATE wallet_connection SET
-      status='unresolved', reason=NULL, account=NULL, address=NULL, chain_id=NULL,
-      approved_methods_json=NULL, approved_events_json=NULL, expires_at=NULL,
-      eligible_session_count='1' WHERE singleton=1`).run();
-    tamper.close();
-
-    const before = await sqliteDurableArtifactSnapshot(path);
-    await expectRuntimeCode(ProductDatabase.open(path, observedAt), "runtime_state_unavailable");
-    expect(await sqliteDurableArtifactSnapshot(path)).toEqual(before);
-    const verify = new Database(path, { readonly: true });
-    expect(verify.prepare("SELECT status, eligible_session_count FROM wallet_connection").get())
-      .toEqual({ status: "unresolved", eligible_session_count: "1" });
-    verify.close();
-    active.close();
-  });
-
-  it("rejects physical B-tree corruption without changing any SQLite artifact", async () => {
-    const directory = await temporaryDirectory();
-    await ensureOwnerOnlyDirectory(directory);
-    const path = runtimePaths(directory).database;
-    const initialized = await ProductDatabase.open(path, observedAt);
-    initialized.close();
-
-    const inspection = new Database(path, { readonly: true, fileMustExist: true });
-    const pageSize = inspection.pragma("page_size", { simple: true }) as number;
-    const rootPage = (inspection.prepare("SELECT rootpage FROM sqlite_schema WHERE name='wallet_connection'").get() as {
-      rootpage: number;
-    }).rootpage;
-    inspection.close();
-    const corrupted = Buffer.from(await readFile(path));
-    const pageHeaderOffset = (rootPage - 1) * pageSize;
-    expect(corrupted[pageHeaderOffset]).not.toBe(0);
-    corrupted[pageHeaderOffset] = 0;
-    await writeFile(path, corrupted, { mode: 0o600 });
-    const inode = (await lstat(path)).ino;
-    const before = await sqliteArtifactSnapshot(path);
-
-    await expectRuntimeCode(ProductDatabase.open(path, observedAt), "runtime_state_unavailable");
-    expect(await sqliteArtifactSnapshot(path)).toEqual(before);
-    expect((await lstat(path)).ino).toBe(inode);
-  });
-
-  it("rejects main-file replacement before and after writable validation", async () => {
-    for (const replaceOnAssertion of [4, 7]) {
+  it("rejects main-file replacement across current-state opening", async () => {
+    for (const replaceOnAssertion of [1, 4]) {
       const directory = await temporaryDirectory();
       await ensureOwnerOnlyDirectory(directory);
       const path = runtimePaths(directory).database;

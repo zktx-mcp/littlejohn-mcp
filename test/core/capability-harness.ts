@@ -3,7 +3,6 @@ import {
   CapabilityRegistry,
   ObservationAuthorityRegistry,
   bindCapability,
-  coreErrorRegistry,
   createCanonicalClock,
   createCapabilityInvocationAuthority,
   createObservationAuthority,
@@ -15,6 +14,7 @@ import {
   type InvocationBoundaryPorts,
   type ObservationWriter,
 } from "../../src/core/index.js";
+import { chainErrorRegistry } from "../../src/chain/errors.js";
 
 export const fixedEvaluationTime = "2026-07-12T10:16:02.000Z";
 
@@ -74,7 +74,7 @@ export const bindForHarness = <Definition extends AnyReadCapabilityDefinition>(
   ) => Promise<unknown>,
 ): CapabilityBinding<Definition> => bindCapability({
   definition,
-  errorRegistry: coreErrorRegistry,
+  errorRegistry: chainErrorRegistry,
   invocationAuthority: harness.invocationAuthority,
   createInvocationPorts: (_input) => harness.ports,
   handler,

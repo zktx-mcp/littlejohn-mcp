@@ -6,11 +6,17 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { BrowserAssetBundle } from "../../src/interfaces/browser-assets.js";
 import {
+  browserAssetPaths,
+  browserCsrfHeaderName,
   browserCsrfMetaName,
-  browserInterfacePaths,
+  browserOperationCancellationPath,
+  browserOperationConfirmationPath,
+  browserOperationPath,
+  browserPagePaths,
+  browserWalletApiPaths,
 } from "../../src/interfaces/browser-contract.js";
 import {
-  browserOperationCookieName,
+  browserSessionCookieName,
   createBrowserRequestCredentialAuthority,
 } from "../../src/interfaces/browser-credentials.js";
 import {
@@ -26,35 +32,51 @@ import {
   type RouteMethod,
   type RuntimeRouteRegistry,
 } from "../../src/runtime/http-routing.js";
-import { fixedHostHeader, fixedOrigin, jsonContentType } from "../../src/runtime/http-boundary.js";
+import {
+  fixedHostHeader,
+  fixedOrigin,
+  jsonContentType,
+} from "../../src/runtime/http-boundary.js";
 import { runtimePaths } from "../../src/runtime/paths.js";
 import {
+  parseWalletCurrentOperationProjection,
   parseWalletManagementOperation,
+  parseWalletOperationStartResult,
   parseWalletQrMatrix,
+  type WalletCurrentOperationProjection,
   type WalletInterfaceOperations,
   type WalletManagementOperation,
-  type WalletOperationPresentation,
+  type WalletOperationConfirmation,
+  type WalletOperationStartResult,
+  type WalletWebOperationCreate,
 } from "../../src/wallet/contracts.js";
+import { WalletOperationError } from "../../src/wallet/errors.js";
 
 const directories: string[] = [];
 const operationId = Buffer.alloc(32, 13).toString("base64url");
 const foreignOperationId = Buffer.alloc(32, 14).toString("base64url");
 const expiresAt = "2026-07-15T04:00:00.000Z";
 const now = Date.parse("2026-07-15T03:00:00.000Z");
+const connectionRevision = "7";
+const disconnected = Object.freeze({
+  status: "disconnected" as const,
+  reason: "no_session" as const,
+});
 
 afterEach(async () => {
-  await Promise.all(directories.splice(0).map((directory) => rm(directory, { force: true, recursive: true })));
+  await Promise.all(directories.splice(0).map((directory) =>
+    rm(directory, { force: true, recursive: true })));
 });
 
 const operation = (
-  state: WalletManagementOperation["state"],
+  state: "awaiting_confirmation" | "awaiting_wallet_approval" | "cancelled",
   id = operationId,
 ): WalletManagementOperation =>
   parseWalletManagementOperation({
     operationId: id,
-    kind: "connect",
+    kind: state === "awaiting_confirmation" ? "disconnect" : "connect",
     state,
-    connectionRevision: "7",
+    connectionRevision,
     expiresAt,
     result: null,
     failure: null,
@@ -63,49 +85,116 @@ const operation = (
 const qr = parseWalletQrMatrix({
   size: 21,
   rows: Array.from({ length: 21 }, (_unused, row) =>
-    Array.from({ length: 21 }, (_other, column) => (row + column) % 2 === 0 ? "1" : "0").join("")),
+    Array.from({ length: 21 }, (_other, column) =>
+      (row + column) % 2 === 0 ? "1" : "0").join("")),
+});
+
+const currentPresent = (
+  value: WalletManagementOperation = operation("awaiting_wallet_approval"),
+): WalletCurrentOperationProjection => parseWalletCurrentOperationProjection({
+  status: "present",
+  connectionRevision,
+  connection: disconnected,
+  presentation: {
+    operation: value,
+    access: "interactive",
+    ...(value.state === "awaiting_wallet_approval" ? { qr } : {}),
+  },
+});
+
+const currentAbsent = (): WalletCurrentOperationProjection =>
+  parseWalletCurrentOperationProjection({
+    status: "absent",
+    connectionRevision,
+    connection: disconnected,
+  });
+
+const started = (
+  value: WalletManagementOperation = operation("awaiting_wallet_approval"),
+): WalletOperationStartResult => parseWalletOperationStartResult({
+  status: "operation_started",
+  operation: value,
 });
 
 const assets: BrowserAssetBundle = Object.freeze({
-  renderShell: (token: string) => `<meta name="${browserCsrfMetaName}" content="${token}">`,
+  renderShell: (token: string) =>
+    `<meta name="${browserCsrfMetaName}" content="${token}">`,
   get: (path: string) => path === "/assets/index-Abcdef12.js"
-    ? Object.freeze({ body: "export{};", contentType: "text/javascript; charset=utf-8" as const })
+    ? Object.freeze({
+        body: "export{};",
+        contentType: "text/javascript; charset=utf-8" as const,
+      })
     : undefined,
   paths: () => Object.freeze(["/assets/index-Abcdef12.js"]),
 });
 
 interface WalletCalls {
-  readonly reads: string[];
+  readonly starts: WalletWebOperationCreate[];
+  readonly currentReads: string[];
+  readonly exactReads: string[];
   readonly confirmations: unknown[];
-  readonly cancellations: string[];
+  readonly cancellations: unknown[];
 }
 
-const walletOperations = (
-  current: () => WalletOperationPresentation,
-): { readonly port: WalletInterfaceOperations; readonly calls: WalletCalls } => {
-  const calls: WalletCalls = { reads: [], confirmations: [], cancellations: [] };
+const walletOperations = (input: {
+  readonly current?: () => WalletCurrentOperationProjection;
+  readonly start?: () => WalletOperationStartResult;
+  readonly operationResult?: () => WalletManagementOperation;
+  readonly expectedRevision?: string;
+} = {}): { readonly port: WalletInterfaceOperations; readonly calls: WalletCalls } => {
+  const calls: WalletCalls = {
+    starts: [],
+    currentReads: [],
+    exactReads: [],
+    confirmations: [],
+    cancellations: [],
+  };
+  const expectedRevision = input.expectedRevision ?? connectionRevision;
+  const assertRevision = (value: unknown): void => {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      (value as { readonly connectionRevision?: unknown }).connectionRevision !== expectedRevision
+    ) throw new WalletOperationError("state_conflict");
+  };
+  const result = input.operationResult ?? (() => operation("cancelled"));
   return Object.freeze({
     calls,
     port: Object.freeze({
+      currentProjection: Object.freeze({
+        async get() {
+          calls.currentReads.push("current");
+          return (input.current ?? currentPresent)();
+        },
+      }),
       presentation: Object.freeze({
         async get(id: string) {
-          calls.reads.push(id);
-          return current();
+          calls.exactReads.push(id);
+          const exact = result();
+          return {
+            operation: exact,
+            access: "interactive" as const,
+            ...(exact.state === "awaiting_wallet_approval" ? { qr } : {}),
+          };
         },
       }),
       operation: Object.freeze({
-        async start() { throw new Error("The browser cannot start an operation."); },
-        async get() { throw new Error("The browser reads through the presentation port."); },
-        async cancel(id: string) {
-          calls.cancellations.push(id);
-          return operation("cancelled");
+        async start(value: WalletWebOperationCreate) {
+          calls.starts.push(value);
+          return (input.start ?? started)();
+        },
+        async cancel(id: string, value: WalletOperationConfirmation) {
+          assertRevision(value);
+          calls.cancellations.push({ id, input: value });
+          return result();
         },
       }),
       confirmation: Object.freeze({
         interactionInterface: "web" as const,
-        async confirm(id: string, input: unknown) {
-          calls.confirmations.push({ id, input });
-          return operation("awaiting_wallet_approval");
+        async confirm(id: string, value: WalletOperationConfirmation) {
+          assertRevision(value);
+          calls.confirmations.push({ id, input: value });
+          return result();
         },
       }),
     }),
@@ -117,7 +206,9 @@ const baseRoutes = async (): Promise<RuntimeRouteRegistry> => {
   directories.push(directory);
   const paths = runtimePaths(directory);
   const credential = await loadOrCreateControlCredential(directory, paths.controlCredential);
-  return createRuntimeRouteRegistry({ controlVerifier: createControlCredentialVerifier(credential) });
+  return createRuntimeRouteRegistry({
+    controlVerifier: createControlCredentialVerifier(credential),
+  });
 };
 
 const invoke = async (
@@ -136,246 +227,492 @@ const invoke = async (
   }));
 };
 
-const csrfFromShell = (shell: string): string => {
-  const token = /content="([A-Za-z0-9_-]{43})"/.exec(shell)?.[1];
-  if (token === undefined) throw new Error("Expected a CSRF token in the shell.");
-  return token;
+const bootstrap = async (
+  registry: RuntimeRouteRegistry,
+): Promise<{ readonly cookie: string; readonly csrfToken: string }> => {
+  const page = await invoke(registry, "GET", browserPagePaths.root);
+  if (!page.ok || page.response !== "browser_content" || page.setCookie === undefined) {
+    throw new Error("Expected a credentialed root shell.");
+  }
+  const cookie = page.setCookie.split(";", 1)[0] as string;
+  const csrfToken = /content="([A-Za-z0-9_-]{43})"/.exec(page.body)?.[1];
+  if (csrfToken === undefined) throw new Error("Expected a CSRF token in the root shell.");
+  return Object.freeze({ cookie, csrfToken });
 };
 
-describe("wallet operation browser routes", () => {
-  it("registers the exact bootstrap, read, control, and immutable asset resources", async () => {
+describe("wallet browser routes", () => {
+  it("registers only the root page, wallet session API, and immutable asset resources", async () => {
     const credentials = createBrowserRequestCredentialAuthority({
       now: () => now,
       randomBytes: (size) => Buffer.alloc(size, 15),
     });
-    const wallet = walletOperations(() => ({
-      operation: operation("awaiting_confirmation"),
-      access: "interactive",
-    }));
+    const wallet = walletOperations();
     const registry = extendBrowserInterfaceRoutes({
-      routes: await baseRoutes(), credentials, assets, walletOperations: wallet.port,
+      routes: await baseRoutes(),
+      credentials,
+      assets,
+      walletOperations: wallet.port,
     });
     const expected = [
-      ["GET", `/wallet/operations/${operationId}`, "browser_bootstrap", "browser_content", "none"],
-      ["GET", `/api/v1/wallet/operations/${operationId}`, "browser_read", "canonical_json", "none"],
-      ["GET", `/api/v1/wallet/operations/${operationId}/qr`, "browser_read", "canonical_json", "none"],
-      ["POST", `/api/v1/wallet/operations/${operationId}/confirmation`, "browser_control", "canonical_json", "declared_control"],
-      ["DELETE", `/api/v1/wallet/operations/${operationId}`, "browser_control", "canonical_json", "declared_control"],
+      ["GET", "/", "browser_bootstrap", "browser_content", "none"],
+      ["POST", browserWalletApiPaths.operations, "browser_control", "canonical_json", "declared_control"],
+      ["GET", browserWalletApiPaths.currentOperation, "browser_read", "canonical_json", "none"],
+      ["GET", browserOperationPath(operationId), "browser_read", "canonical_json", "none"],
+      ["POST", browserOperationConfirmationPath(operationId), "browser_control", "canonical_json", "declared_control"],
+      ["POST", browserOperationCancellationPath(operationId), "browser_control", "canonical_json", "declared_control"],
       ["GET", "/assets/index-Abcdef12.js", "public_read", "browser_content", "none"],
     ] as const;
     for (const [method, path, requestClass, response, mutation] of expected) {
       const match = registry.match(method, path);
       expect(match.status).toBe("matched");
       if (match.status === "matched") {
-        expect(match.route).toMatchObject({ method, requestClass, response, mutation, successStatus: 200 });
+        expect(match.route).toMatchObject({
+          method,
+          requestClass,
+          response,
+          mutation,
+          successStatus: 200,
+        });
       }
     }
-    expect(registry.match("POST", `/wallet/operations/${operationId}`).status).toBe("method_not_allowed");
-    expect(registry.match("GET", "/wallet/operations").status).toBe("not_found");
+
+    expect(registry.match("GET", "/wallet").status).toBe("not_found");
+    expect(registry.match(
+      "GET",
+      `/api/v1/wallet/operations/${operationId}/qr`,
+    ).status).toBe("not_found");
+    expect(registry.match(
+      "DELETE",
+      `/api/v1/wallet/operations/${operationId}`,
+    ).status).toBe("method_not_allowed");
+
+    const page = await invoke(registry, "GET", "/");
+    expect(page.ok).toBe(true);
+    if (!page.ok || page.response !== "browser_content") {
+      throw new Error("Expected the browser root shell.");
+    }
+    expect(page.setCookie?.startsWith(`${browserSessionCookieName}=`)).toBe(true);
+    expect(page.body).toContain(`name="${browserCsrfMetaName}"`);
+    expect(wallet.calls).toEqual({
+      starts: [],
+      currentReads: [],
+      exactReads: [],
+      confirmations: [],
+      cancellations: [],
+    });
     credentials.close();
   });
 
-  it("binds one page credential to the path operation and enforces Host, Origin, cookie, and CSRF", async () => {
+  it("issues session authority only at the root and enforces Host, Origin, cookie, and CSRF", async () => {
     let entropy = 20;
     const credentials = createBrowserRequestCredentialAuthority({
       now: () => now,
       randomBytes: (size) => Buffer.alloc(size, ++entropy),
     });
-    const wallet = walletOperations(() => ({
-      operation: operation("awaiting_confirmation"),
-      access: "interactive",
-    }));
+    const wallet = walletOperations();
     const registry = extendBrowserInterfaceRoutes({
-      routes: await baseRoutes(), credentials, assets, walletOperations: wallet.port,
+      routes: await baseRoutes(),
+      credentials,
+      assets,
+      walletOperations: wallet.port,
     });
-    const page = await invoke(registry, "GET", `/wallet/operations/${operationId}`);
-    expect(page.ok).toBe(true);
-    if (!page.ok || page.response !== "browser_content") throw new Error("Expected browser content.");
-    const cookie = page.setCookie?.split(";", 1)[0];
-    if (cookie === undefined) throw new Error("Expected a browser operation cookie.");
-    expect(cookie.startsWith(`${browserOperationCookieName}=`)).toBe(true);
-    const csrfToken = csrfFromShell(page.body);
+    const rootMatch = registry.match("GET", browserPagePaths.root);
+    if (rootMatch.status !== "matched") throw new Error("Expected the root bootstrap route.");
+    const noAuthority = {
+      host: [fixedHostHeader],
+      origin: [],
+      authorization: [],
+      cookie: [],
+      csrfToken: [],
+      contentType: [],
+      query: "",
+      bodyLength: 0,
+    } as const;
+    expect(registry.validateSecurity(rootMatch, noAuthority)).toEqual({ ok: true });
+    expect(registry.validateSecurity(rootMatch, {
+      ...noAuthority,
+      origin: [fixedOrigin],
+    })).toEqual({ ok: false, code: "invalid_origin" });
 
-    const readMatch = registry.match("GET", `/api/v1/wallet/operations/${operationId}`);
-    if (readMatch.status !== "matched") throw new Error("Expected operation read route.");
+    const { cookie, csrfToken } = await bootstrap(registry);
+    const secondBootstrap = await bootstrap(registry);
+    expect(secondBootstrap).toEqual({ cookie, csrfToken });
+    const currentMatch = registry.match("GET", browserWalletApiPaths.currentOperation);
+    const startMatch = registry.match("POST", browserWalletApiPaths.operations);
+    if (currentMatch.status !== "matched" || startMatch.status !== "matched") {
+      throw new Error("Expected wallet browser API routes.");
+    }
     const readInput = {
-      host: [fixedHostHeader], origin: [], authorization: [], cookie: [cookie], csrfToken: [],
-      contentType: [], query: "", bodyLength: 0,
+      host: [fixedHostHeader],
+      origin: [],
+      authorization: [],
+      cookie: [cookie],
+      csrfToken: [],
+      contentType: [],
+      query: "",
+      bodyLength: 0,
     } as const;
-    expect(registry.validateSecurity(readMatch, readInput)).toEqual({ ok: true });
-    expect(registry.validateSecurity(readMatch, { ...readInput, host: ["localhost:46630"] }))
-      .toEqual({ ok: false, code: "invalid_host" });
-    expect(registry.validateSecurity(readMatch, { ...readInput, cookie: [] }))
-      .toEqual({ ok: false, code: "unauthorized" });
-
-    const foreignMatch = registry.match("GET", `/api/v1/wallet/operations/${foreignOperationId}`);
-    if (foreignMatch.status !== "matched") throw new Error("Expected foreign operation route shape.");
-    expect(registry.validateSecurity(foreignMatch, readInput))
-      .toEqual({ ok: false, code: "unauthorized" });
-
-    const controlMatch = registry.match("POST", `/api/v1/wallet/operations/${operationId}/confirmation`);
-    if (controlMatch.status !== "matched") throw new Error("Expected confirmation route.");
-    const controlInput = {
-      host: [fixedHostHeader], origin: [fixedOrigin], authorization: [], cookie: [cookie],
-      csrfToken: [csrfToken], contentType: [jsonContentType], query: "", bodyLength: 26,
-    } as const;
-    expect(registry.validateSecurity(controlMatch, controlInput)).toEqual({ ok: true });
-    expect(registry.validateSecurity(controlMatch, { ...controlInput, origin: [] }))
-      .toEqual({ ok: false, code: "invalid_origin" });
-    expect(registry.validateSecurity(controlMatch, { ...controlInput, csrfToken: [] }))
-      .toEqual({ ok: false, code: "unauthorized" });
-    credentials.close();
-  });
-
-  it("preserves WU3 read-only access in the issued browser credential", async () => {
-    let entropy = 24;
-    const credentials = createBrowserRequestCredentialAuthority({
-      now: () => now,
-      randomBytes: (size) => Buffer.alloc(size, entropy++),
-    });
-    const wallet = walletOperations(() => ({
-      operation: operation("awaiting_confirmation"),
-      access: "read_only",
-    }));
-    const registry = extendBrowserInterfaceRoutes({
-      routes: await baseRoutes(), credentials, assets, walletOperations: wallet.port,
-    });
-    const page = await invoke(registry, "GET", `/wallet/operations/${operationId}`);
-    if (!page.ok || page.response !== "browser_content" || page.setCookie === undefined) {
-      throw new Error("Expected a read-only browser page credential.");
-    }
-    const cookie = page.setCookie.split(";", 1)[0] as string;
-    const csrfToken = csrfFromShell(page.body);
-    const readMatch = registry.match("GET", `/api/v1/wallet/operations/${operationId}`);
-    const controlMatch = registry.match("POST", `/api/v1/wallet/operations/${operationId}/confirmation`);
-    if (readMatch.status !== "matched" || controlMatch.status !== "matched") {
-      throw new Error("Expected the browser operation resources.");
-    }
-    const common = {
-      host: [fixedHostHeader], authorization: [], cookie: [cookie], query: "", bodyLength: 0,
-    } as const;
-    expect(registry.validateSecurity(readMatch, {
-      ...common, origin: [], csrfToken: [], contentType: [],
+    expect(registry.validateSecurity(currentMatch, readInput)).toEqual({ ok: true });
+    expect(registry.validateSecurity(currentMatch, {
+      ...readInput,
+      origin: [fixedOrigin],
     })).toEqual({ ok: true });
-    expect(registry.validateSecurity(controlMatch, {
-      ...common,
+    expect(registry.validateSecurity(currentMatch, {
+      ...readInput,
+      host: ["localhost:46630"],
+    })).toEqual({ ok: false, code: "invalid_host" });
+    expect(registry.validateSecurity(currentMatch, {
+      ...readInput,
+      cookie: [],
+    })).toEqual({ ok: false, code: "unauthorized" });
+
+    const controlInput = {
+      ...readInput,
       origin: [fixedOrigin],
       csrfToken: [csrfToken],
       contentType: [jsonContentType],
-      bodyLength: 26,
+      bodyLength: 43,
+    } as const;
+    expect(registry.validateSecurity(startMatch, controlInput)).toEqual({ ok: true });
+    expect(registry.validateSecurity(startMatch, {
+      ...controlInput,
+      origin: [],
+    })).toEqual({ ok: false, code: "invalid_origin" });
+    expect(registry.validateSecurity(startMatch, {
+      ...controlInput,
+      csrfToken: [],
     })).toEqual({ ok: false, code: "unauthorized" });
     credentials.close();
   });
 
-  it("projects the canonical operation and QR and delegates confirmation and cancellation once", async () => {
-    let current: WalletOperationPresentation = {
-      operation: operation("awaiting_wallet_approval"),
-      access: "interactive",
-      qr,
-    };
+  it("returns the current operation atomically and one exact retained presentation", async () => {
     const credentials = createBrowserRequestCredentialAuthority({
       now: () => now,
       randomBytes: (size) => Buffer.alloc(size, 25),
     });
-    const wallet = walletOperations(() => current);
+    const present = currentPresent();
+    const wallet = walletOperations({ current: () => present });
     const registry = extendBrowserInterfaceRoutes({
-      routes: await baseRoutes(), credentials, assets, walletOperations: wallet.port,
+      routes: await baseRoutes(),
+      credentials,
+      assets,
+      walletOperations: wallet.port,
     });
 
-    const read = await invoke(registry, "GET", `/api/v1/wallet/operations/${operationId}`);
-    expect(read).toEqual({
+    expect(await invoke(
+      registry,
+      "GET",
+      browserWalletApiPaths.currentOperation,
+    )).toEqual({
       ok: true,
       response: "canonical_json",
-      body: {
-        operation: operation("awaiting_wallet_approval"),
-        access: "interactive",
-      },
+      body: present,
     });
-    const qrRead = await invoke(registry, "GET", `/api/v1/wallet/operations/${operationId}/qr`);
-    expect(qrRead).toEqual({ ok: true, response: "canonical_json", body: { qr } });
+    expect(wallet.calls.currentReads).toEqual(["current"]);
+    expect(wallet.calls.exactReads).toEqual([]);
 
-    current = { operation: operation("awaiting_confirmation"), access: "interactive" };
-    const missingQr = await invoke(registry, "GET", `/api/v1/wallet/operations/${operationId}/qr`);
-    expect(missingQr.ok).toBe(false);
-    if (!missingQr.ok) expect(missingQr.problem.code).toBe("state_conflict");
+    const exact = {
+      operation: operation("cancelled"),
+      access: "interactive",
+    } as const;
+    expect(await invoke(
+      registry,
+      "GET",
+      browserOperationPath(operationId),
+    )).toEqual({
+      ok: true,
+      response: "canonical_json",
+      body: exact,
+    });
+    expect(wallet.calls.exactReads).toEqual([operationId]);
 
-    const confirmed = await invoke(
+    const absent = currentAbsent();
+    const absentWallet = walletOperations({ current: () => absent });
+    const absentCredentials = createBrowserRequestCredentialAuthority({
+      now: () => now,
+      randomBytes: (size) => Buffer.alloc(size, 26),
+    });
+    const absentRegistry = extendBrowserInterfaceRoutes({
+      routes: await baseRoutes(),
+      credentials: absentCredentials,
+      assets,
+      walletOperations: absentWallet.port,
+    });
+    expect(await invoke(
+      absentRegistry,
+      "GET",
+      browserWalletApiPaths.currentOperation,
+    )).toEqual({
+      ok: true,
+      response: "canonical_json",
+      body: absent,
+    });
+    absentCredentials.close();
+    credentials.close();
+  });
+
+  it("parses state-based start and exact revision-bound follow-up commands", async () => {
+    const credentials = createBrowserRequestCredentialAuthority({
+      now: () => now,
+      randomBytes: (size) => Buffer.alloc(size, 27),
+    });
+    let startResult = started();
+    const controlResult = operation("cancelled");
+    const wallet = walletOperations({
+      start: () => startResult,
+      operationResult: () => controlResult,
+    });
+    const registry = extendBrowserInterfaceRoutes({
+      routes: await baseRoutes(),
+      credentials,
+      assets,
+      walletOperations: wallet.port,
+    });
+    const startInput = { kind: "connect", connectionRevision } as const;
+    expect(await invoke(
       registry,
       "POST",
-      `/api/v1/wallet/operations/${operationId}/confirmation`,
-      { connectionRevision: "7" },
-    );
-    expect(confirmed.ok).toBe(true);
-    expect(wallet.calls.confirmations).toEqual([{ id: operationId, input: { connectionRevision: "7" } }]);
+      browserWalletApiPaths.operations,
+      startInput,
+    )).toEqual({
+      ok: true,
+      response: "canonical_json",
+      body: startResult,
+    });
+    expect(await invoke(
+      registry,
+      "POST",
+      browserOperationConfirmationPath(operationId),
+      { connectionRevision },
+    )).toEqual({
+      ok: true,
+      response: "canonical_json",
+      body: controlResult,
+    });
+    expect(await invoke(
+      registry,
+      "POST",
+      browserOperationCancellationPath(operationId),
+      { connectionRevision },
+    )).toEqual({
+      ok: true,
+      response: "canonical_json",
+      body: controlResult,
+    });
+    expect(wallet.calls.starts).toEqual([startInput]);
+    expect(wallet.calls.confirmations).toEqual([{
+      id: operationId,
+      input: { connectionRevision },
+    }]);
+    expect(wallet.calls.cancellations).toEqual([{
+      id: operationId,
+      input: { connectionRevision },
+    }]);
 
-    const cancelled = await invoke(registry, "DELETE", `/api/v1/wallet/operations/${operationId}`);
-    expect(cancelled.ok).toBe(true);
-    expect(wallet.calls.cancellations).toEqual([operationId]);
-    expect(wallet.calls.reads).toEqual([operationId, operationId, operationId]);
+    startResult = started(operation("awaiting_confirmation"));
+    const disconnectInput = { kind: "disconnect", connectionRevision } as const;
+    expect(await invoke(
+      registry,
+      "POST",
+      browserWalletApiPaths.operations,
+      disconnectInput,
+    )).toEqual({
+      ok: true,
+      response: "canonical_json",
+      body: startResult,
+    });
+    expect(wallet.calls.starts).toEqual([startInput, disconnectInput]);
+
+    startResult = parseWalletOperationStartResult({
+      status: "current_connection",
+      connectionRevision,
+      connection: {
+        status: "connected",
+        account: "eip155:4663:0x1111111111111111111111111111111111111111",
+        address: "0x1111111111111111111111111111111111111111",
+        chainId: "eip155:4663",
+        approvedMethods: ["eth_sendTransaction"],
+        approvedEvents: ["accountsChanged", "chainChanged"],
+        expiresAt: "2026-07-22T00:00:00.000Z",
+      },
+    });
+    expect(await invoke(
+      registry,
+      "POST",
+      browserWalletApiPaths.operations,
+      startInput,
+    )).toEqual({
+      ok: true,
+      response: "canonical_json",
+      body: startResult,
+    });
     credentials.close();
   });
 
-  it("rejects an invalid operation path before any wallet port is called", async () => {
+  it("rejects malformed commands before ports and preserves stale-revision failures", async () => {
     const credentials = createBrowserRequestCredentialAuthority({
       now: () => now,
-      randomBytes: (size) => Buffer.alloc(size, 30),
+      randomBytes: (size) => Buffer.alloc(size, 28),
     });
-    const wallet = walletOperations(() => ({
-      operation: operation("awaiting_confirmation"), access: "interactive",
-    }));
+    const wallet = walletOperations();
     const registry = extendBrowserInterfaceRoutes({
-      routes: await baseRoutes(), credentials, assets, walletOperations: wallet.port,
+      routes: await baseRoutes(),
+      credentials,
+      assets,
+      walletOperations: wallet.port,
     });
-    const result = await invoke(registry, "GET", "/api/v1/wallet/operations/not-canonical");
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.problem.code).toBe("invalid_input");
-    expect(wallet.calls.reads).toEqual([]);
+
+    for (const [path, body] of [
+      [browserWalletApiPaths.operations, {
+        kind: "connect",
+        connectionRevision,
+        extra: true,
+      }],
+      [browserWalletApiPaths.operations, {
+        kind: "unknown",
+        connectionRevision,
+      }],
+      [browserWalletApiPaths.operations, {
+        kind: "connect",
+      }],
+      [browserOperationConfirmationPath(operationId), {
+        connectionRevision,
+        extra: true,
+      }],
+      [browserOperationCancellationPath(operationId), {
+        connectionRevision: "-1",
+      }],
+    ] as const) {
+      const result = await invoke(registry, "POST", path, body);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.problem.code).toBe("invalid_input");
+    }
+    expect(wallet.calls.starts).toEqual([]);
     expect(wallet.calls.confirmations).toEqual([]);
     expect(wallet.calls.cancellations).toEqual([]);
-    credentials.close();
-  });
 
-  it("rejects every port result whose operation identity differs from the requested resource", async () => {
-    const credentials = createBrowserRequestCredentialAuthority({
-      now: () => now,
-      randomBytes: (size) => Buffer.alloc(size, 31),
+    const staleStartWallet = walletOperations({
+      start: () => { throw new WalletOperationError("state_conflict"); },
     });
-    const foreign = operation("awaiting_confirmation", foreignOperationId);
-    const wallet: WalletInterfaceOperations = Object.freeze({
-      presentation: Object.freeze({
-        get: async () => Object.freeze({ operation: foreign, access: "interactive" as const, qr }),
-      }),
-      operation: Object.freeze({
-        start: async () => foreign,
-        get: async () => foreign,
-        cancel: async () => foreign,
-      }),
-      confirmation: Object.freeze({
-        interactionInterface: "web" as const,
-        confirm: async () => foreign,
-      }),
+    const staleStartRegistry = extendBrowserInterfaceRoutes({
+      routes: await baseRoutes(),
+      credentials,
+      assets,
+      walletOperations: staleStartWallet.port,
     });
-    const registry = extendBrowserInterfaceRoutes({
-      routes: await baseRoutes(), credentials, assets, walletOperations: wallet,
-    });
+    const staleStart = await invoke(
+      staleStartRegistry,
+      "POST",
+      browserWalletApiPaths.operations,
+      { kind: "connect", connectionRevision },
+    );
+    expect(staleStart.ok).toBe(false);
+    if (!staleStart.ok) expect(staleStart.problem.code).toBe("state_conflict");
 
-    for (const [method, path, body] of [
-      ["GET", `/wallet/operations/${operationId}`, {}],
-      ["GET", `/api/v1/wallet/operations/${operationId}`, {}],
-      ["GET", `/api/v1/wallet/operations/${operationId}/qr`, {}],
-      ["POST", `/api/v1/wallet/operations/${operationId}/confirmation`, { connectionRevision: "7" }],
-      ["DELETE", `/api/v1/wallet/operations/${operationId}`, {}],
-    ] as const) {
-      const result = await invoke(registry, method, path, body);
+    for (const path of [
+      browserOperationConfirmationPath(operationId),
+      browserOperationCancellationPath(operationId),
+    ]) {
+      const result = await invoke(
+        registry,
+        "POST",
+        path,
+        { connectionRevision: "8" },
+      );
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.problem.code).toBe("internal_error");
+      if (!result.ok) expect(result.problem.code).toBe("state_conflict");
     }
     credentials.close();
   });
 
-  it("keeps route names resource-oriented and caller-neutral", () => {
-    expect(JSON.stringify(browserInterfacePaths)).not.toContain("mcp");
-    expect(JSON.stringify(browserInterfacePaths)).not.toContain("cli");
-    for (const path of Object.values(browserInterfacePaths)) expect(path).toMatch(/^\//u);
+  it("fails closed for invalid operation identities and hostile port results", async () => {
+    const credentials = createBrowserRequestCredentialAuthority({
+      now: () => now,
+      randomBytes: (size) => Buffer.alloc(size, 29),
+    });
+    const foreign = operation("cancelled", foreignOperationId);
+    const wallet = walletOperations({
+      current: () => ({ status: "present" } as never),
+      start: () => ({
+        status: "operation_started",
+        operation: foreign,
+        extra: true,
+      } as never),
+      operationResult: () => foreign,
+    });
+    const registry = extendBrowserInterfaceRoutes({
+      routes: await baseRoutes(),
+      credentials,
+      assets,
+      walletOperations: wallet.port,
+    });
+
+    const current = await invoke(
+      registry,
+      "GET",
+      browserWalletApiPaths.currentOperation,
+    );
+    expect(current.ok).toBe(false);
+    if (!current.ok) expect(current.problem.code).toBe("internal_error");
+
+    const exact = await invoke(
+      registry,
+      "GET",
+      browserOperationPath(operationId),
+    );
+    expect(exact.ok).toBe(false);
+    if (!exact.ok) expect(exact.problem.code).toBe("internal_error");
+
+    const start = await invoke(
+      registry,
+      "POST",
+      browserWalletApiPaths.operations,
+      { kind: "connect", connectionRevision },
+    );
+    expect(start.ok).toBe(false);
+    if (!start.ok) expect(start.problem.code).toBe("internal_error");
+
+    for (const path of [
+      browserOperationConfirmationPath(operationId),
+      browserOperationCancellationPath(operationId),
+    ]) {
+      const result = await invoke(
+        registry,
+        "POST",
+        path,
+        { connectionRevision },
+      );
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.problem.code).toBe("internal_error");
+    }
+
+    for (const [method, path] of [
+      ["GET", "/api/v1/wallet/operations/not-canonical"],
+      ["POST", "/api/v1/wallet/operations/not-canonical/confirmation"],
+      ["POST", "/api/v1/wallet/operations/not-canonical/cancellation"],
+    ] as const) {
+      const result = await invoke(
+        registry,
+        method,
+        path,
+        { connectionRevision },
+      );
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.problem.code).toBe("invalid_input");
+    }
+    credentials.close();
+  });
+
+  it("keeps page, API, and asset registries resource-oriented and caller-neutral", () => {
+    expect(browserPagePaths).toEqual({ root: "/" });
+    expect(JSON.stringify(browserWalletApiPaths)).not.toContain("mcp");
+    expect(JSON.stringify(browserWalletApiPaths)).not.toContain("cli");
+    expect(JSON.stringify(browserAssetPaths)).not.toContain("wallet");
+    for (const path of [
+      ...Object.values(browserPagePaths),
+      ...Object.values(browserWalletApiPaths),
+      ...Object.values(browserAssetPaths),
+    ]) expect(path).toMatch(/^\//u);
+    expect(browserCsrfHeaderName).toBe("Littlejohn-CSRF-Token");
   });
 });
