@@ -19,8 +19,9 @@ const createCapabilityProjectionSchemaSet = () => {
   const primitive = createPrimitiveSchemaSet();
   const evidence = createEvidenceSchemaSet();
   const schemaDigest = createSha256HexSchema();
+  const schemaVersion = `v${coreContractVersion}`;
   const schemaId = z.string().regex(new RegExp(
-    "^urn:littlejohn:capability:" + capabilityIdPatternSource + ":(?:input|data|success):v1$",
+    "^urn:littlejohn:capability:" + capabilityIdPatternSource + ":(?:input|data|success):" + schemaVersion + "$",
   ));
   const projectedSchema = jsonObject({
       schemaId,
@@ -61,12 +62,13 @@ const projectSchema = (schema: CanonicalJson, schemaId: string) => {
 const projectCapability = (definition: AnyReadCapabilityDefinition): CapabilitySchemaProjection => {
   const snapshot = getCapabilityDefinitionSnapshot(definition);
   const base = "urn:littlejohn:capability:" + snapshot.capabilityId;
+  const schemaVersion = `v${coreContractVersion}`;
   return authoritySchemas.capabilitySchemaProjection.parse({
     capabilityId: snapshot.capabilityId,
     contractVersion: coreContractVersion,
-    input: projectSchema(snapshot.inputSchema, base + ":input:v1"),
-    data: projectSchema(snapshot.dataSchema, base + ":data:v1"),
-    success: projectSchema(snapshot.successSchema, base + ":success:v1"),
+    input: projectSchema(snapshot.inputSchema, `${base}:input:${schemaVersion}`),
+    data: projectSchema(snapshot.dataSchema, `${base}:data:${schemaVersion}`),
+    success: projectSchema(snapshot.successSchema, `${base}:success:${schemaVersion}`),
     failureCodes: snapshot.failureCodes,
     conclusionIds: snapshot.conclusionIds,
     warningCodes: snapshot.warningCodes,

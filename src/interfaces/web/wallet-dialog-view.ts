@@ -118,7 +118,7 @@ export const walletConnectionCopy = (
     case "unresolved":
       return Object.freeze({
         heading: "Wallet connection needs attention",
-        message: `Little John found ${connection.eligibleSessionCount} wallet sessions and cannot select one automatically.`,
+        message: `Little John found ${connection.sessionCount} wallet sessions and cannot select one automatically.`,
       });
   }
 };

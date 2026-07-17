@@ -175,6 +175,44 @@ describe("read CLI", () => {
     }]);
   });
 
+  it("rejects the removed parallel chain identity instead of printing legacy JSON", async () => {
+    const success = JSON.parse(JSON.stringify(await chainStatusSuccess())) as {
+      data: Record<string, unknown>;
+    };
+    success.data["caip2"] = "eip155:4663";
+    const output = outputPort();
+    expect(await runReadCliCommand(
+      new FakeRuntime(Object.freeze({ status: 200, body: captureCanonicalJson(success) })),
+      parseReadCliCommand(["read", "chain-status", "--json"]),
+      output,
+    )).toBe(chainInterfaceErrorMappings.get("internal_error").cliExitCode);
+    expect(output.errors).toEqual([]);
+    expect(JSON.parse(output.output.join(""))).toMatchObject({
+      ok: false,
+      error: { code: "internal_error" },
+    });
+    expect(output.output.join("")).not.toContain("caip2");
+  });
+
+  it("rejects a structurally valid success from a different chain scope", async () => {
+    const success = JSON.parse(JSON.stringify(await chainStatusSuccess())) as {
+      data: { chainId: string; latestBlock: { chainId: string } };
+    };
+    success.data.chainId = "eip155:1";
+    success.data.latestBlock.chainId = "eip155:1";
+    const output = outputPort();
+    expect(await runReadCliCommand(
+      new FakeRuntime(Object.freeze({ status: 200, body: captureCanonicalJson(success) })),
+      parseReadCliCommand(["read", "chain-status", "--json"]),
+      output,
+    )).toBe(chainInterfaceErrorMappings.get("internal_error").cliExitCode);
+    expect(JSON.parse(output.output.join(""))).toMatchObject({
+      ok: false,
+      error: { code: "internal_error" },
+    });
+    expect(output.output.join("")).not.toContain("eip155:1");
+  });
+
   it("uses exact integer text in human output without display arithmetic", async () => {
     const success = await chainStatusSuccess();
     const runtime = new FakeRuntime(Object.freeze({ status: 200, body: success }));

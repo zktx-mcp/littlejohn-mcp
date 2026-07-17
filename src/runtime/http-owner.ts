@@ -74,6 +74,7 @@ import {
   parseRuntimeIdentityChallenge,
   parseUnsignedOwnerIdentity,
   runtimeProtocolVersion,
+  type RuntimeConfigurationMac,
 } from "./runtime-identity.js";
 
 const headerValues = (request: IncomingMessage, name: string): string[] => {
@@ -364,6 +365,7 @@ const requestPacket = (
 const openAuthenticatedOwnerChannel = async (input: {
   readonly ownerStore: RuntimeOwnerStore;
   readonly credential: LocalControlCredentialAuthority;
+  readonly configurationMac: RuntimeConfigurationMac;
 }, signal?: AbortSignal): Promise<AuthenticatedOwnerChannel> => {
   const channel = await connectPinnedAgent(signal);
   const challenge = createRuntimeIdentityChallenge();
@@ -388,8 +390,10 @@ const openAuthenticatedOwnerChannel = async (input: {
       identity.challenge !== challenge ||
       identity.profileId !== profile.profileId ||
       identity.runtimeProtocolVersion !== runtimeProtocolVersion ||
+      identity.configurationMac !== input.configurationMac ||
       recorded === undefined ||
       identity.ownerInstanceId !== recorded.ownerInstanceId ||
+      recorded.configurationMac !== input.configurationMac ||
       identity.ownerRevision !== recorded.ownerRevision
     ) throw new PeerIncompatibleError("Owner identity is incompatible.");
     const { proof, ...identityWithoutProof } = identity;
@@ -469,7 +473,9 @@ export interface HttpOwnerApplicationContext {
 export interface HttpOwnerOptions {
   readonly ownerStore: RuntimeOwnerStore;
   readonly credential: LocalControlCredentialAuthority;
+  readonly configurationMac: RuntimeConfigurationMac;
   readonly now: () => UtcTimestamp;
+  readonly onPortOwnershipAcquired: () => Promise<void> | void;
   readonly applicationFactory?: (
     context: HttpOwnerApplicationContext,
   ) => Promise<HttpOwnerApplication> | HttpOwnerApplication;
@@ -510,7 +516,9 @@ const createLifecycleWork = (): LifecycleWork => {
 export class FixedHttpOwner {
   readonly #ownerStore: RuntimeOwnerStore;
   readonly #credential: LocalControlCredentialAuthority;
+  readonly #configurationMac: RuntimeConfigurationMac;
   readonly #now: () => UtcTimestamp;
+  readonly #onPortOwnershipAcquired: HttpOwnerOptions["onPortOwnershipAcquired"];
   readonly #baseRoutes: RuntimeRouteRegistry;
   readonly #applicationFactory: HttpOwnerOptions["applicationFactory"];
   readonly #lifecycleWork = new Set<LifecycleWork>();
@@ -534,7 +542,9 @@ export class FixedHttpOwner {
   constructor(options: HttpOwnerOptions) {
     this.#ownerStore = options.ownerStore;
     this.#credential = options.credential;
+    this.#configurationMac = options.configurationMac;
     this.#now = options.now;
+    this.#onPortOwnershipAcquired = options.onPortOwnershipAcquired;
     this.#baseRoutes = createRuntimeRouteRegistry({
       controlVerifier: createControlCredentialVerifier(options.credential),
     });
@@ -577,6 +587,7 @@ export class FixedHttpOwner {
           const channel = await openAuthenticatedOwnerChannel({
             ownerStore: this.#ownerStore,
             credential: this.#credential,
+            configurationMac: this.#configurationMac,
           }, lifecycle.signal);
           channel.close();
           this.#lifecycleController = lifecycle;
@@ -598,7 +609,14 @@ export class FixedHttpOwner {
     try {
       if (lifecycle.signal.aborted || generation !== this.#generation) throw new RuntimeOperationError("request_aborted");
       const ownerInstanceId = createOwnerInstanceId();
-      this.#ownerRecord = this.#ownerStore.publishOwner(ownerInstanceId, parseUtcTimestamp(this.#now()));
+      this.#ownerRecord = this.#ownerStore.publishOwner(
+        ownerInstanceId,
+        this.#configurationMac,
+        parseUtcTimestamp(this.#now()),
+      );
+      if (lifecycle.signal.aborted || generation !== this.#generation) throw new RuntimeOperationError("request_aborted");
+      await this.#onPortOwnershipAcquired();
+      if (lifecycle.signal.aborted || generation !== this.#generation) throw new RuntimeOperationError("request_aborted");
       if (this.#applicationFactory !== undefined) {
         const initialization = createLifecycleWork();
         initialization.generation = generation;
@@ -654,6 +672,18 @@ export class FixedHttpOwner {
       return "owner";
     } catch (error) {
       this.#beginStoppingLocked();
+      try {
+        await Promise.all([...this.#lifecycleWork].map((work) => work.completion));
+        startupResources.seal();
+        await this.#closeApplicationResources();
+        await this.#closeServerResource();
+        this.#resetStopped();
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "HTTP owner startup failed and acquired resources could not be released.",
+        );
+      }
       throw error;
     }
   }
@@ -685,6 +715,7 @@ export class FixedHttpOwner {
           channel = await openAuthenticatedOwnerChannel({
             ownerStore: this.#ownerStore,
             credential: this.#credential,
+            configurationMac: this.#configurationMac,
           }, active.controller.signal);
           this.#assertActiveRuntimeDispatch(active);
           const body = request.body === undefined ? undefined : `${canonicalJsonStringify(request.body)}\n`;
@@ -1021,6 +1052,7 @@ export class FixedHttpOwner {
       profileId: owner.profileId,
       ownerInstanceId: owner.ownerInstanceId,
       runtimeProtocolVersion,
+      configurationMac: owner.configurationMac,
       challenge,
       ownerRevision: owner.ownerRevision,
     };

@@ -7,7 +7,10 @@ import { performance } from "node:perf_hooks";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
+import {
+  readRuntimeConfiguration,
+  walletConnectProjectIdSchema,
+} from "../../src/runtime/configuration.js";
 import { walletQrMatrixSizeLimits } from "../../src/wallet/contracts.js";
 
 import {
@@ -17,6 +20,7 @@ import {
   loadWalletConnectProductionDependencies,
   WalletConnectClientError,
   type WalletConnectClientAcquisition,
+  type WalletConnectClientConfiguration,
   type WalletConnectClientEvent,
   type WalletConnectClientPort,
   type WalletConnectAcquisitionScope,
@@ -28,8 +32,10 @@ import {
   type WalletConnectSdkPort,
 } from "../../src/wallet/walletconnect-client.js";
 
-const projectId = "1".repeat(32);
-const metadata = readRuntimeConfiguration({}).wallet.metadata;
+const configuredWallet = readRuntimeConfiguration({}).wallet;
+const projectId = walletConnectProjectIdSchema.parse("1".repeat(32));
+const wallet = Object.freeze({ ...configuredWallet, projectId });
+const metadata = wallet.metadata;
 const pairingTopic = "2".repeat(64);
 const firstSessionTopic = "3".repeat(64);
 const secondSessionTopic = "4".repeat(64);
@@ -364,7 +370,7 @@ const clientWith = async (sdk: FakeSdk): Promise<{
   };
   const scope = createWalletConnectAcquisitionScope();
   const acquisition = await createWalletConnectClient(
-    { projectId, metadata, privateStoreDirectory },
+    { wallet, privateStoreDirectory },
     scope.resources,
     ownerSignal(),
     factory,
@@ -545,7 +551,7 @@ describe("WalletConnect client adapter", () => {
 
     const successfulScope = createWalletConnectAcquisitionScope();
     const acquisition = await createWalletConnectClient(
-      { projectId, metadata, privateStoreDirectory },
+      { wallet, privateStoreDirectory },
       successfulScope.resources,
       ownerSignal(),
       undefined,
@@ -569,7 +575,7 @@ describe("WalletConnect client adapter", () => {
     };
     const malformedScope = createWalletConnectAcquisitionScope();
     await expect(createWalletConnectClient(
-      { projectId, metadata, privateStoreDirectory },
+      { wallet, privateStoreDirectory },
       malformedScope.resources,
       ownerSignal(),
       undefined,
@@ -593,7 +599,7 @@ describe("WalletConnect client adapter", () => {
     initializedClient = productionClientShape(heartbeat, relayer, hostilePairing);
     const hostileScope = createWalletConnectAcquisitionScope();
     await expect(createWalletConnectClient(
-      { projectId, metadata, privateStoreDirectory },
+      { wallet, privateStoreDirectory },
       hostileScope.resources,
       ownerSignal(),
       undefined,
@@ -615,7 +621,7 @@ describe("WalletConnect client adapter", () => {
     };
     const missingRelayerScope = createWalletConnectAcquisitionScope();
     await expect(createWalletConnectClient(
-      { projectId, metadata, privateStoreDirectory },
+      { wallet, privateStoreDirectory },
       missingRelayerScope.resources,
       ownerSignal(),
       undefined,
@@ -636,7 +642,7 @@ describe("WalletConnect client adapter", () => {
     };
     const missingHeartbeatScope = createWalletConnectAcquisitionScope();
     await expect(createWalletConnectClient(
-      { projectId, metadata, privateStoreDirectory },
+      { wallet, privateStoreDirectory },
       missingHeartbeatScope.resources,
       ownerSignal(),
       undefined,
@@ -913,7 +919,7 @@ describe("WalletConnect client adapter", () => {
 
     const failedScope = createWalletConnectAcquisitionScope();
     const normalizationFailure = await createWalletConnectClient(
-      { projectId, metadata, privateStoreDirectory: storeDirectory },
+      { wallet, privateStoreDirectory: storeDirectory },
       failedScope.resources,
       ownerSignal(),
       undefined,
@@ -947,7 +953,7 @@ describe("WalletConnect client adapter", () => {
 
     const successfulScope = createWalletConnectAcquisitionScope();
     const acquisition = await createWalletConnectClient(
-      { projectId, metadata, privateStoreDirectory: storeDirectory },
+      { wallet, privateStoreDirectory: storeDirectory },
       successfulScope.resources,
       ownerSignal(),
       undefined,
@@ -962,7 +968,7 @@ describe("WalletConnect client adapter", () => {
     heartbeatFails = true;
     const heartbeatFailureScope = createWalletConnectAcquisitionScope();
     const heartbeatFailureAcquisition = await createWalletConnectClient(
-      { projectId, metadata, privateStoreDirectory: storeDirectory },
+      { wallet, privateStoreDirectory: storeDirectory },
       heartbeatFailureScope.resources,
       ownerSignal(),
       undefined,
@@ -989,7 +995,7 @@ describe("WalletConnect client adapter", () => {
     const now = vi.spyOn(performance, "now").mockReturnValue(100);
     try {
       const creation = createWalletConnectClient(
-        { projectId, metadata, privateStoreDirectory },
+        { wallet, privateStoreDirectory },
         scope.resources,
         ownerSignal(),
         async () => {
@@ -1083,7 +1089,7 @@ describe("WalletConnect client adapter", () => {
     const now = vi.spyOn(performance, "now").mockImplementation(() => monotonicNow);
     try {
       const creation = createWalletConnectClient(
-        { projectId, metadata, privateStoreDirectory },
+        { wallet, privateStoreDirectory },
         scope.resources,
         controller.signal,
         async () => {
@@ -1134,7 +1140,7 @@ describe("WalletConnect client adapter", () => {
     const controller = new AbortController();
     let factoryCalls = 0;
     const creation = createWalletConnectClient(
-      { projectId, metadata, privateStoreDirectory },
+      { wallet, privateStoreDirectory },
       scope.resources,
       controller.signal,
       async () => {
@@ -1179,7 +1185,7 @@ describe("WalletConnect client adapter", () => {
     const scope = createWalletConnectAcquisitionScope();
     const controller = new AbortController();
     const creation = createWalletConnectClient(
-      { projectId, metadata, privateStoreDirectory },
+      { wallet, privateStoreDirectory },
       scope.resources,
       controller.signal,
       undefined,
@@ -1212,7 +1218,7 @@ describe("WalletConnect client adapter", () => {
       const fulfilledScope = createWalletConnectAcquisitionScope();
       let fulfilledFactoryCalls = 0;
       const fulfilledCreation = createWalletConnectClient(
-        { projectId, metadata, privateStoreDirectory },
+        { wallet, privateStoreDirectory },
         fulfilledScope.resources,
         ownerSignal(),
         async () => {
@@ -1240,7 +1246,7 @@ describe("WalletConnect client adapter", () => {
     const scope = createWalletConnectAcquisitionScope();
     let factoryCalls = 0;
     const creation = createWalletConnectClient(
-      { projectId, metadata, privateStoreDirectory },
+      { wallet, privateStoreDirectory },
       scope.resources,
       ownerSignal(),
       async () => {
@@ -1264,7 +1270,7 @@ describe("WalletConnect client adapter", () => {
     const scope = createWalletConnectAcquisitionScope();
     const controller = new AbortController();
     const acquisition = await createWalletConnectClient(
-      { projectId, metadata, privateStoreDirectory },
+      { wallet, privateStoreDirectory },
       scope.resources,
       controller.signal,
       async () => sdk,
@@ -1456,8 +1462,12 @@ describe("WalletConnect client adapter", () => {
     expect(isWalletConnectClientError(Object.create(WalletConnectClientError.prototype))).toBe(false);
 
     const configurationScope = createWalletConnectAcquisitionScope();
+    const invalidConfiguration = Object.freeze({
+      wallet: Object.freeze({ ...wallet, projectId: "not-a-project-id" }),
+      privateStoreDirectory,
+    }) as unknown as WalletConnectClientConfiguration;
     const configurationFailure = await createWalletConnectClient(
-      { projectId: "not-a-project-id", metadata, privateStoreDirectory },
+      invalidConfiguration,
       configurationScope.resources,
       ownerSignal(),
       async () => sdk,
@@ -1624,7 +1634,7 @@ describe("WalletConnect client adapter", () => {
 
     const failedScope = createWalletConnectAcquisitionScope();
     await expect(createWalletConnectClient(
-      { projectId, metadata, privateStoreDirectory: storeDirectory },
+      { wallet, privateStoreDirectory: storeDirectory },
       failedScope.resources,
       ownerSignal(),
       async () => firstSdk,
@@ -1638,7 +1648,7 @@ describe("WalletConnect client adapter", () => {
     let secondFactoryCalls = 0;
     const successfulScope = createWalletConnectAcquisitionScope();
     const acquisition = await createWalletConnectClient(
-      { projectId, metadata, privateStoreDirectory: storeDirectory },
+      { wallet, privateStoreDirectory: storeDirectory },
       successfulScope.resources,
       ownerSignal(),
       async () => {
@@ -2319,6 +2329,36 @@ describe("WalletConnect client adapter", () => {
     unsubscribe();
     sdk.emit("session_delete", { topic: secondSessionTopic });
     expect(events).toHaveLength(10);
+  });
+
+  it("normalizes a checksummed accountsChanged value to canonical CAIP-10", async () => {
+    const sdk = new FakeSdk();
+    const { client } = await clientWith(sdk);
+    const events: WalletConnectClientEvent[] = [];
+    const unsubscribe = client.subscribe((event) => events.push(event));
+    const checksummedAddress = "0x5AEDA56215b167893e80B4fE645BA6d5Bab767DE";
+    const canonicalAddress = checksummedAddress.toLowerCase();
+
+    sdk.emit("session_event", {
+      topic: firstSessionTopic,
+      params: {
+        chainId: wallet.chain.chainId,
+        event: {
+          name: "accountsChanged",
+          data: [`${wallet.chain.chainId}:${checksummedAddress}`],
+        },
+      },
+    });
+
+    expect(events).toEqual([{
+      kind: "session_event",
+      topic: firstSessionTopic,
+      eventName: "accountsChanged",
+      data: [`${wallet.chain.chainId}:${canonicalAddress}`],
+    }]);
+
+    unsubscribe();
+    await client.close();
   });
 
   it("rejects an unreadable startup session without evaluating its topic accessor", async () => {

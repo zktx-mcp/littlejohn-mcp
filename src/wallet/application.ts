@@ -82,8 +82,7 @@ export const createWalletOwnerApplicationFactory = (
     const startupRegistration = context.startupResources.register(acquisitionScope);
     try {
       const acquisition = await createClient(Object.freeze({
-        projectId: context.wallet.configuration.projectId,
-        metadata: context.wallet.configuration.metadata,
+        wallet: context.wallet.configuration,
         privateStoreDirectory,
       }), acquisitionScope.resources, context.signal);
       await assertWalletConnectPrivateStore(privateStoreDirectory);

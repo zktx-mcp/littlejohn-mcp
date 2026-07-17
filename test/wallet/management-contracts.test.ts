@@ -14,7 +14,6 @@ const operationId = Buffer.alloc(walletOperationIdByteLength, 61).toString("base
 const otherOperationId = Buffer.alloc(walletOperationIdByteLength, 62).toString("base64url");
 const connected = Object.freeze({
   status: "connected" as const,
-  account: "eip155:4663:0x1111111111111111111111111111111111111111",
   address: "0x1111111111111111111111111111111111111111",
   chainId: "eip155:4663" as const,
   approvedMethods: Object.freeze(["eth_sendTransaction"]),

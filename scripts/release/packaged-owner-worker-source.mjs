@@ -15,6 +15,7 @@ import { resolve } from "node:path";
 
 import { createChainOwnerApplication } from ${packageModule("chain/application.js")};
 import { createInterfaceOwnerApplication } from ${packageModule("interfaces/application.js")};
+import { ProductDatabase } from ${packageModule("runtime/database.js")};
 import { LocalRuntime } from ${packageModule("runtime/index.js")};
 import { createWalletOwnerApplicationFactory } from ${packageModule("wallet/application.js")};
 
@@ -25,7 +26,7 @@ if (typeof dataDirectory !== "string" || typeof clockPath !== "string") {
 }
 
 const sessionTopic = "a".repeat(64);
-const account = "eip155:4663:0x1111111111111111111111111111111111111111";
+const sessionAccount = "eip155:4663:0x1111111111111111111111111111111111111111";
 const now = () => readFileSync(clockPath, "utf8").trim();
 const sessionExpiry = () => Math.floor(Date.parse(now()) / 1000) + 7 * 24 * 60 * 60;
 
@@ -35,7 +36,7 @@ const session = (expiry = sessionExpiry()) => Object.freeze({
   namespaces: Object.freeze({
     eip155: Object.freeze({
       chains: Object.freeze(["eip155:4663"]),
-      accounts: Object.freeze([account]),
+      accounts: Object.freeze([sessionAccount]),
       methods: Object.freeze(["eth_sendTransaction"]),
       events: Object.freeze(["accountsChanged", "chainChanged"]),
     }),
@@ -65,6 +66,21 @@ const persistSessions = async (path, sessions) => {
   await writeFile(temporary, JSON.stringify(sessions) + "\n", { mode: 0o600 });
   if (process.platform !== "win32") await chmod(temporary, 0o600);
   await rename(temporary, path);
+};
+
+const inspectPersistence = async () => {
+  const database = await ProductDatabase.open(
+    resolve(dataDirectory, "littlejohn.sqlite3"),
+    now(),
+  );
+  try {
+    return {
+      owner: database.ownerStore().readOwner() ?? null,
+      connection: database.walletStore().read(),
+    };
+  } finally {
+    database.close();
+  }
 };
 
 class FakeWalletConnectClient {
@@ -217,6 +233,12 @@ const handle = async (message) => {
   if (message.command === "stop") {
     await runtime.stop();
     send({ requestId, ok: true, result: null });
+    setImmediate(() => process.exit(0));
+    return;
+  }
+  if (message.command === "stop_and_inspect_persistence") {
+    await runtime.stop();
+    send({ requestId, ok: true, result: await inspectPersistence() });
     setImmediate(() => process.exit(0));
     return;
   }

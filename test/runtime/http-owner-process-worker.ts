@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 
 import { captureCanonicalJson, parseUtcTimestamp } from "../../src/core/index.js";
+import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import {
   createControlAuthorizationHeader,
+  deriveRuntimeConfigurationMac,
   loadOrCreateControlCredential,
   type LocalControlCredentialAuthority,
 } from "../../src/runtime/control-credential.js";
@@ -154,10 +156,16 @@ const start = async (command: PreparedStart, notBeforeEpochMs: number): Promise<
     .digest("hex");
   database = await ProductDatabase.open(paths.database, now);
   profileId = database.ownerStore().readProfile().profileId;
+  const configuration = readRuntimeConfiguration({});
+  const activeDatabase = database;
   owner = new FixedHttpOwner({
-    ownerStore: database.ownerStore(),
+    ownerStore: activeDatabase.ownerStore(),
     credential,
+    configurationMac: deriveRuntimeConfigurationMac(credential, configuration),
     now: () => now,
+    onPortOwnershipAcquired: () => {
+      activeDatabase.configuredChainStore().insertConfiguredChainIfAbsent(configuration.chain.chainId);
+    },
     applicationFactory,
   });
   const outcome = await owner.start();

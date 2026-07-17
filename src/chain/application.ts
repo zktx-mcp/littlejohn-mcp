@@ -4,6 +4,7 @@ import {
 } from "../core/index.js";
 import {
   extendChainRuntimeSupportManifest,
+  readConfiguredRpcEndpoint,
   type ChainOwnerApplication,
   type ChainOwnerApplicationFactory,
   type ChainRuntimeSupportManifest,
@@ -44,7 +45,9 @@ export const createChainOwnerApplicationFactory = (
     throw new TypeError("Chain application factories are invalid.");
   }
   return async (context): Promise<ChainOwnerApplication> => {
-    const rpc = createRequester(context.chain.configuredRpcUri);
+    const rpc = createRequester(
+      readConfiguredRpcEndpoint(context.chain.configuration.endpoint).exactUri,
+    );
     if (typeof rpc !== "object" || rpc === null || typeof rpc.request !== "function") {
       throw new TypeError("Chain RPC requester is invalid.");
     }

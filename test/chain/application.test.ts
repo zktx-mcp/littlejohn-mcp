@@ -16,6 +16,7 @@ import {
   createObservationAuthority,
   getCapabilityDefinitionSnapshot,
   parseCapabilityDataAt,
+  parseEvmChainId,
   parseHexBytes,
   parseUtcTimestamp,
   sourceReferenceSchema,
@@ -39,10 +40,11 @@ import { createRuntimeRouteRegistry } from "../../src/runtime/http-routing.js";
 import { runtimePaths } from "../../src/runtime/paths.js";
 import { createResourceOwnershipScope } from "../../src/runtime/resource-ownership.js";
 import {
-  initialRuntimeSupportManifest,
+  createInitialRuntimeSupportManifest,
   readRuntimeSupportManifest,
   type ChainOwnerApplicationContext,
 } from "../../src/runtime/index.js";
+import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import { extendWalletSupportManifest } from "../../src/wallet/application.js";
 import type {
   ActiveWalletReadPort,
@@ -53,6 +55,8 @@ import { bindForHarness, createCapabilityHarness } from "../core/capability-harn
 const directories: string[] = [];
 const observedAt = parseUtcTimestamp("2026-07-15T12:00:00.000Z");
 const exactRpcUrl = "https://rpc-user:rpc-password@rpc.example/private/path?project=secret";
+const configuredChainId = parseEvmChainId("eip155:4663");
+const runtimeConfiguration = readRuntimeConfiguration({ LITTLEJOHN_RPC_URL: exactRpcUrl });
 
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) =>
@@ -142,11 +146,13 @@ const createContext = async () => {
     routes,
     signal: ownerController.signal,
     startupResources: startupScope.resources,
-    supportManifest: extendWalletSupportManifest(initialRuntimeSupportManifest),
+    supportManifest: extendWalletSupportManifest(
+      createInitialRuntimeSupportManifest(runtimeConfiguration.chain),
+    ),
     walletConnection: Object.freeze({ connection: walletConnection }),
     activeWallet,
     chain: Object.freeze({
-      configuredRpcUri: exactRpcUrl,
+      configuration: runtimeConfiguration.rpc,
       sourceAuthority: Object.freeze({
         sourceOwner: "user_configured" as const,
         publicOrigin: "https://rpc.example",
@@ -156,7 +162,7 @@ const createContext = async () => {
       }),
       capabilityAuthority: Object.freeze({
         clock,
-        invocationAuthority: createCapabilityInvocationAuthority(clock),
+        invocationAuthority: createCapabilityInvocationAuthority(clock, configuredChainId),
         invocationPorts: Object.freeze({
           observations: new ObservationAuthorityRegistry(clock, [rpcAuthority]),
         }),

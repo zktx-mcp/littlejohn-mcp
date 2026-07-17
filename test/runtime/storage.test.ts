@@ -1,4 +1,5 @@
 import { fork, type ChildProcess } from "node:child_process";
+import { createHmac, hkdfSync } from "node:crypto";
 import { chmodSync, copyFileSync, renameSync } from "node:fs";
 import {
   chmod,
@@ -24,6 +25,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ObservationAuthorityRegistry,
   createCanonicalClock,
+  parseEvmChainId,
   parseCapabilityDataAt,
   parseUtcTimestamp,
   productDisplayName,
@@ -31,10 +33,12 @@ import {
 } from "../../src/core/index.js";
 import {
   createControlCredentialVerifier,
+  deriveRuntimeConfigurationMac,
   loadOrCreateControlCredential,
   validateControlCredential,
 } from "../../src/runtime/control-credential.js";
 import {
+  decodeWalletAccountRecordKey,
   ProductDatabase,
   type ProductDatabaseStateFileAuthority,
 } from "../../src/runtime/database.js";
@@ -64,6 +68,7 @@ import {
   parseRuntimeRevision,
   runtimeProtocolVersion,
 } from "../../src/runtime/runtime-identity.js";
+import { canonicalSqlTextCheck } from "../../src/runtime/sqlite-schema.js";
 
 const directories: string[] = [];
 const childProcesses: ChildProcess[] = [];
@@ -73,6 +78,9 @@ const temporaryDirectory = async (): Promise<string> => {
   return directory;
 };
 const observedAt = parseUtcTimestamp("2026-07-12T10:16:02.000Z");
+const configurationMac = Buffer.alloc(32, 3).toString("base64url");
+const configuredChainId = parseEvmChainId("eip155:4663");
+const alternateChainId = parseEvmChainId("eip155:1");
 const publicationStagingPath = (
   databasePath: string,
   tokenByte: number,
@@ -119,9 +127,12 @@ const sqliteArtifactSnapshot = async (path: string): Promise<readonly {
 const sqliteDurableArtifactSnapshot = async (path: string) =>
   (await sqliteArtifactSnapshot(path)).filter((artifact) => artifact.suffix !== "-shm");
 
-const launchSqliteCrashWorker = async (directory: string): Promise<ChildProcess> => {
+const launchSqliteCrashWorker = async (
+  directory: string,
+  mode: "committed" | "interrupted" = "committed",
+): Promise<ChildProcess> => {
   const workerPath = fileURLToPath(new URL("./sqlite-crash-worker.ts", import.meta.url));
-  const child = fork(workerPath, [directory], {
+  const child = fork(workerPath, [directory, mode], {
     execArgv: ["--import", "tsx"],
     stdio: ["ignore", "ignore", "pipe", "ipc"],
   });
@@ -192,9 +203,8 @@ const replacingStateFileAuthority = (
 
 const connectedInput = (expiresAt = "2026-07-18T17:39:16.000Z") => ({
   status: "connected" as const,
-  account: "eip155:4663:0x1111111111111111111111111111111111111111",
   address: "0x1111111111111111111111111111111111111111",
-  chainId: "eip155:4663" as const,
+  chainId: configuredChainId,
   approvedMethods: ["eth_sendTransaction", "personal_sign"],
   approvedEvents: ["accountsChanged", "chainChanged"],
   expiresAt,
@@ -202,6 +212,13 @@ const connectedInput = (expiresAt = "2026-07-18T17:39:16.000Z") => ({
 
 const connected = (expiresAt = "2026-07-18T17:39:16.000Z") =>
   parseCapabilityDataAt(walletConnectionCapability, connectedInput(expiresAt), observedAt);
+
+const connectedFor = (chainId: string, address: string) =>
+  parseCapabilityDataAt(walletConnectionCapability, {
+    ...connectedInput(),
+    chainId,
+    address,
+  }, observedAt);
 
 describe("application data and local credential", () => {
   it("resolves fixed data locations and rejects an unsafe existing directory without repairing it", async () => {
@@ -368,7 +385,7 @@ describe("SQLite product state", () => {
     expect(parseProfileId(profileId)).toBe(profileId);
     expect(parseOwnerInstanceId(ownerInstanceId)).toBe(ownerInstanceId);
     expect(parseRuntimeRevision("0")).toBe("0");
-    expect(runtimeProtocolVersion).toBe(1);
+    expect(runtimeProtocolVersion).toBe(2);
     const noncanonicalTail = `${"A".repeat(21)}B`;
     expect(() => parseProfileId(noncanonicalTail)).toThrow();
     expect(() => parseOwnerInstanceId(noncanonicalTail)).toThrow();
@@ -377,10 +394,11 @@ describe("SQLite product state", () => {
     const directory = await temporaryDirectory();
     await ensureOwnerOnlyDirectory(directory);
     const database = await ProductDatabase.open(runtimePaths(directory).database, observedAt);
-    const record = database.ownerStore().publishOwner(ownerInstanceId, observedAt);
+    const record = database.ownerStore().publishOwner(ownerInstanceId, configurationMac, observedAt);
     expect(record).toMatchObject({
       profileId: database.ownerStore().readProfile().profileId,
       ownerInstanceId,
+      configurationMac,
       protocolVersion: runtimeProtocolVersion,
       ownerRevision: "1",
     });
@@ -406,14 +424,116 @@ describe("SQLite product state", () => {
     expect(inspection.pragma("user_version", { simple: true })).toBe(runtimeProtocolVersion);
     expect(inspection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all())
       .toEqual([
+        { name: "chain" },
+        { name: "contract" },
+        { name: "current_wallet_connection" },
         { name: "local_profile" },
         { name: "runtime_owner" },
-        { name: "wallet_connection" },
+        { name: "token_contract" },
+        { name: "wallet_account" },
       ]);
     inspection.close();
     if (process.platform !== "win32") {
       expect((await stat(path)).mode & 0o777).toBe(0o600);
     }
+  });
+
+  it("uses the exact seven-table relational options and restrictive foreign keys", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const database = await ProductDatabase.open(path, observedAt);
+    database.close();
+
+    const inspection = new Database(path, { readonly: true });
+    const tableOptions = (inspection.pragma("table_list") as {
+      name: string;
+      type: string;
+      wr: number;
+      strict: number;
+    }[]).filter((row) => row.type === "table" && !row.name.startsWith("sqlite_"));
+    expect(tableOptions.map(({ name, wr, strict }) => ({ name, wr, strict })).sort((a, b) =>
+      a.name.localeCompare(b.name))).toEqual([
+      { name: "chain", wr: 1, strict: 1 },
+      { name: "contract", wr: 1, strict: 1 },
+      { name: "current_wallet_connection", wr: 0, strict: 1 },
+      { name: "local_profile", wr: 0, strict: 1 },
+      { name: "runtime_owner", wr: 0, strict: 1 },
+      { name: "token_contract", wr: 1, strict: 1 },
+      { name: "wallet_account", wr: 1, strict: 1 },
+    ]);
+    for (const table of ["runtime_owner", "contract", "token_contract", "wallet_account", "current_wallet_connection"]) {
+      const foreignKeys = inspection.pragma(`foreign_key_list(${table})`) as {
+        on_update: string;
+        on_delete: string;
+      }[];
+      expect(foreignKeys.length, table).toBeGreaterThan(0);
+      expect(foreignKeys.every((key) => key.on_update === "RESTRICT" && key.on_delete === "RESTRICT"), table)
+        .toBe(true);
+    }
+    expect(inspection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(inspection.prepare("PRAGMA integrity_check").all()).toEqual([{ integrity_check: "ok" }]);
+    inspection.close();
+  });
+
+  it("proves bundled SQLite NUL behavior and rejects it through the shared SQL check", () => {
+    const database = new Database(":memory:");
+    const value = "eip155:4663\0suffix";
+    const observed = database.prepare(`SELECT hex(?) AS encoded, length(?) AS textLength,
+      instr(?, char(0)) AS nulPosition`).get(value, value, value) as {
+      encoded: string;
+      textLength: number;
+      nulPosition: number;
+    };
+    expect(observed.encoded).toBe(Buffer.from(value, "utf8").toString("hex").toUpperCase());
+    expect(observed.textLength).toBe("eip155:4663".length);
+    expect(observed.nulPosition).toBe("eip155:4663".length + 1);
+    database.exec(`CREATE TABLE checked_text(value TEXT NOT NULL CHECK (${canonicalSqlTextCheck("value")})) STRICT`);
+    expect(() => database.prepare("INSERT INTO checked_text(value) VALUES (?)").run(value)).toThrow();
+    database.close();
+  });
+
+  it("rejects embedded NUL across actual identity, owner, revision, count, and address columns", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const database = await ProductDatabase.open(path, observedAt);
+    database.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
+    const profileId = database.ownerStore().readProfile().profileId;
+    database.close();
+
+    const raw = new Database(path);
+    raw.pragma("foreign_keys = ON");
+    expect(() => raw.prepare("UPDATE local_profile SET profile_id = ? WHERE singleton = 1")
+      .run(`${profileId}\0suffix`)).toThrow();
+    expect(() => raw.prepare("INSERT INTO chain(chain_id) VALUES (?)")
+      .run(`${configuredChainId}\0suffix`)).toThrow();
+    expect(() => raw.prepare(`INSERT INTO runtime_owner(singleton, profile_id, owner_instance_id,
+      configuration_mac, protocol_version, process_id, owner_revision, acquired_at)
+      VALUES (1, ?, ?, ?, 2, 1, '0', ?)`)
+      .run(profileId, `${createOwnerInstanceId()}\0suffix`, configurationMac, observedAt)).toThrow();
+    expect(() => raw.prepare(`INSERT INTO runtime_owner(singleton, profile_id, owner_instance_id,
+      configuration_mac, protocol_version, process_id, owner_revision, acquired_at)
+      VALUES (1, ?, ?, ?, 2, 1, '0', ?)`)
+      .run(profileId, createOwnerInstanceId(), `${configurationMac}\0suffix`, observedAt)).toThrow();
+    expect(() => raw.prepare("UPDATE current_wallet_connection SET revision = ? WHERE singleton = 1")
+      .run("1\0suffix")).toThrow();
+    expect(() => raw.prepare(`UPDATE current_wallet_connection SET status = 'unresolved', reason = NULL,
+      session_count = ?, chain_id = NULL, wallet_address = NULL, approved_methods_json = NULL,
+      approved_events_json = NULL, expires_at = NULL WHERE singleton = 1`)
+      .run("2\0suffix")).toThrow();
+    expect(() => raw.prepare("UPDATE current_wallet_connection SET reason = 'no_session' WHERE singleton = 1")
+      .run()).toThrow();
+    expect(() => raw.prepare(`UPDATE current_wallet_connection SET status = 'unresolved', reason = NULL,
+      session_count = '1', chain_id = NULL, wallet_address = NULL, approved_methods_json = NULL,
+      approved_events_json = NULL, expires_at = NULL WHERE singleton = 1`).run()).toThrow();
+    expect(() => raw.prepare(`INSERT INTO wallet_account(profile_id, chain_id, wallet_address)
+      VALUES (?, ?, ?)`)
+      .run(profileId, configuredChainId, "0x1111111111111111111111111111111111111111\0suffix")).toThrow();
+    expect(() => raw.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
+      .run("eip155:10", "0x1111111111111111111111111111111111111111")).toThrow();
+    expect(raw.prepare("SELECT COUNT(*) AS count FROM wallet_account").get()).toEqual({ count: 0 });
+    raw.close();
   });
 
   it("opens only the exact current schema and never repairs incompatible state", async () => {
@@ -436,6 +556,52 @@ describe("SQLite product state", () => {
       await expectRuntimeCode(ProductDatabase.open(path, observedAt), "runtime_state_unavailable");
       expect(await sqliteDurableArtifactSnapshot(path)).toEqual(before);
     }
+  });
+
+  it("fails closed when canonical time or array bytes are written outside the row adapter", async () => {
+    for (const mutate of [
+      (database: Database.Database) => database.prepare(
+        "UPDATE current_wallet_connection SET updated_at = '2026-02-30T00:00:00.000Z' WHERE singleton = 1",
+      ).run(),
+      (database: Database.Database) => database.prepare(
+        "UPDATE current_wallet_connection SET approved_methods_json = '[\"personal_sign\", \"eth_sendTransaction\"]' WHERE singleton = 1",
+      ).run(),
+    ]) {
+      const directory = await temporaryDirectory();
+      await ensureOwnerOnlyDirectory(directory);
+      const path = runtimePaths(directory).database;
+      const database = await ProductDatabase.open(path, observedAt);
+      database.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
+      database.walletStore().replace("0", connected(), observedAt);
+      database.close();
+      const raw = new Database(path);
+      mutate(raw);
+      raw.close();
+      if (process.platform !== "win32") await chmod(path, 0o600);
+      const before = await sqliteDurableArtifactSnapshot(path);
+      await expectRuntimeCode(ProductDatabase.open(path, observedAt), "runtime_state_unavailable");
+      expect(await sqliteDurableArtifactSnapshot(path)).toEqual(before);
+    }
+  });
+
+  it("decodes valid contract and token parent rows on reopen", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const database = await ProductDatabase.open(path, observedAt);
+    database.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
+    database.close();
+    const address = "0x1111111111111111111111111111111111111111";
+    const raw = new Database(path);
+    raw.pragma("foreign_keys = ON");
+    raw.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(configuredChainId, address);
+    raw.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(configuredChainId, address);
+    raw.close();
+    const reopened = await ProductDatabase.open(path, observedAt);
+    expect(reopened.walletStore().read().connection).toEqual({ status: "unknown", reason: "reconciling" });
+    reopened.close();
   });
 
   it("never treats publication staging as product authority and removes exact stale artifacts", async () => {
@@ -511,6 +677,7 @@ describe("SQLite product state", () => {
     await ensureOwnerOnlyDirectory(directory);
     const path = runtimePaths(directory).database;
     const database = await ProductDatabase.open(path, observedAt);
+    database.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
     const wallet = database.walletStore();
     const value = connected();
     const first = wallet.replace("0", value, observedAt);
@@ -525,10 +692,14 @@ describe("SQLite product state", () => {
       "runtime_state_unavailable",
     );
     expect(wallet.read()).toEqual(beforeInvalid);
+    const accountRows = new Database(path, { readonly: true });
+    expect(accountRows.prepare(`SELECT profile_id AS profileId, chain_id AS chainId,
+      wallet_address AS walletAddress FROM wallet_account`).all()).toHaveLength(1);
+    accountRows.close();
     database.close();
 
     const raw = new Database(path, { readonly: true });
-    const stored = raw.prepare("SELECT approved_methods_json, approved_events_json FROM wallet_connection").get() as {
+    const stored = raw.prepare("SELECT approved_methods_json, approved_events_json FROM current_wallet_connection").get() as {
       approved_methods_json: string;
       approved_events_json: string;
     };
@@ -538,6 +709,196 @@ describe("SQLite product state", () => {
 
     const reopened = await ProductDatabase.open(path, parseUtcTimestamp("2030-01-01T00:00:00.000Z"));
     expect(reopened.walletStore().read()).toEqual(first);
+    reopened.close();
+  });
+
+  it("preserves chain-scoped wallet accounts across disconnect, address switch, and chain switch", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const database = await ProductDatabase.open(path, observedAt);
+    const chains = database.configuredChainStore();
+    chains.insertConfiguredChainIfAbsent(configuredChainId);
+    chains.insertConfiguredChainIfAbsent(configuredChainId);
+    chains.insertConfiguredChainIfAbsent(alternateChainId);
+    const wallet = database.walletStore();
+    const addressA = "0x1111111111111111111111111111111111111111";
+    const addressB = "0x2222222222222222222222222222222222222222";
+
+    wallet.replace("0", connectedFor(configuredChainId, addressA), observedAt);
+    wallet.replace("1", { status: "disconnected", reason: "disconnected" }, observedAt);
+    wallet.replace("2", connectedFor(configuredChainId, addressB), observedAt);
+    wallet.replace("3", { status: "disconnected", reason: "no_session" }, observedAt);
+    wallet.replace("4", connectedFor("eip155:1", addressA), observedAt);
+    wallet.replace("5", { status: "disconnected", reason: "deleted" }, observedAt);
+    wallet.replace("6", connectedFor(configuredChainId, addressA), observedAt);
+
+    const raw = new Database(path, { readonly: true });
+    const rows = raw.prepare(`SELECT profile_id AS profileId, chain_id AS chainId,
+      wallet_address AS walletAddress FROM wallet_account
+      ORDER BY chain_id, wallet_address`).all() as {
+      profileId: string;
+      chainId: string;
+      walletAddress: string;
+    }[];
+    expect(rows.map(decodeWalletAccountRecordKey)).toEqual([
+      {
+        profileId: database.ownerStore().readProfile().profileId,
+        account: { chainId: "eip155:1", address: addressA },
+      },
+      {
+        profileId: database.ownerStore().readProfile().profileId,
+        account: { chainId: configuredChainId, address: addressA },
+      },
+      {
+        profileId: database.ownerStore().readProfile().profileId,
+        account: { chainId: configuredChainId, address: addressB },
+      },
+    ]);
+    expect(raw.prepare("SELECT chain_id AS chainId FROM chain ORDER BY chain_id").all())
+      .toEqual([{ chainId: "eip155:1" }, { chainId: configuredChainId }]);
+    expect(raw.prepare("SELECT COUNT(*) AS count FROM contract").get()).toEqual({ count: 0 });
+    expect(raw.prepare("SELECT COUNT(*) AS count FROM token_contract").get()).toEqual({ count: 0 });
+    raw.close();
+    expect(wallet.read().connection).toMatchObject({
+      status: "connected",
+      chainId: configuredChainId,
+      address: addressA,
+    });
+    database.close();
+  });
+
+  it("rolls back account creation when the connection revision or chain parent is invalid", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const database = await ProductDatabase.open(path, observedAt);
+    database.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
+    const wallet = database.walletStore();
+    const addressA = "0x1111111111111111111111111111111111111111";
+    const addressB = "0x2222222222222222222222222222222222222222";
+    wallet.replace("0", connectedFor(configuredChainId, addressA), observedAt);
+    await expectRuntimeCode(
+      Promise.resolve().then(() => wallet.replace("0", connectedFor(configuredChainId, addressB), observedAt)),
+      "state_conflict",
+    );
+    await expectRuntimeCode(
+      Promise.resolve().then(() => wallet.replace("1", connectedFor("eip155:10", addressB), observedAt)),
+      "runtime_state_unavailable",
+    );
+    expect(wallet.read()).toMatchObject({
+      revision: "1",
+      connection: { status: "connected", chainId: configuredChainId, address: addressA },
+    });
+    const raw = new Database(path, { readonly: true });
+    expect(raw.prepare("SELECT chain_id AS chainId, wallet_address AS walletAddress FROM wallet_account").all())
+      .toEqual([{ chainId: configuredChainId, walletAddress: addressA }]);
+    expect(raw.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    raw.close();
+    database.close();
+  });
+
+  it("admits one first connected projection and one matching account for a shared revision", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const database = await ProductDatabase.open(path, observedAt);
+    database.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
+    const wallet = database.walletStore();
+    const addressA = "0x1111111111111111111111111111111111111111";
+    const addressB = "0x2222222222222222222222222222222222222222";
+
+    const results = await Promise.allSettled([
+      Promise.resolve().then(() => wallet.replace(
+        "0",
+        connectedFor(configuredChainId, addressA),
+        observedAt,
+      )),
+      Promise.resolve().then(() => wallet.replace(
+        "0",
+        connectedFor(configuredChainId, addressB),
+        observedAt,
+      )),
+    ]);
+    expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find(({ status }) => status === "rejected");
+    expect(rejected?.status).toBe("rejected");
+    if (rejected?.status !== "rejected") throw new TypeError("A stale connection write was not rejected.");
+    expect(rejected.reason).toBeInstanceOf(RuntimeOperationError);
+    expect((rejected.reason as RuntimeOperationError).failure.error.code).toBe("state_conflict");
+
+    const current = wallet.read();
+    expect(current.revision).toBe("1");
+    expect(current.connection.status).toBe("connected");
+    const raw = new Database(path, { readonly: true });
+    const accounts = raw.prepare(`SELECT chain_id AS chainId, wallet_address AS walletAddress
+      FROM wallet_account ORDER BY chain_id, wallet_address`).all();
+    expect(accounts).toEqual([{
+      chainId: configuredChainId,
+      walletAddress: current.connection.status === "connected" ? current.connection.address : "unreachable",
+    }]);
+    expect(raw.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    raw.close();
+    database.close();
+  });
+
+  it("rolls back the account insert when the projection write fails", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const database = await ProductDatabase.open(path, observedAt);
+    database.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
+    const raw = new Database(path);
+    raw.exec(`CREATE TRIGGER force_connection_write_failure
+      BEFORE UPDATE ON current_wallet_connection
+      BEGIN SELECT RAISE(ABORT, 'forced connection write failure'); END`);
+    raw.close();
+
+    await expectRuntimeCode(
+      Promise.resolve().then(() => database.walletStore().replace(
+        "0",
+        connectedFor(
+          configuredChainId,
+          "0x1111111111111111111111111111111111111111",
+        ),
+        observedAt,
+      )),
+      "runtime_state_unavailable",
+    );
+    expect(database.walletStore().read()).toMatchObject({
+      revision: "0",
+      connection: { status: "unknown", reason: "reconciling" },
+    });
+    const inspection = new Database(path, { readonly: true });
+    expect(inspection.prepare("SELECT COUNT(*) AS count FROM wallet_account").get())
+      .toEqual({ count: 0 });
+    expect(inspection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    inspection.close();
+    database.close();
+  });
+
+  it("rolls back an uncommitted account when the process stops before the projection write", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const initialized = await ProductDatabase.open(path, observedAt);
+    initialized.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
+    initialized.close();
+
+    const child = await launchSqliteCrashWorker(directory, "interrupted");
+    await killSqliteCrashWorker(child);
+
+    const reopened = await ProductDatabase.open(path, observedAt);
+    expect(reopened.walletStore().read()).toMatchObject({
+      revision: "0",
+      connection: { status: "unknown", reason: "reconciling" },
+    });
+    const inspection = new Database(path, { readonly: true });
+    expect(inspection.prepare("SELECT COUNT(*) AS count FROM wallet_account").get())
+      .toEqual({ count: 0 });
+    expect(inspection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(inspection.pragma("integrity_check", { simple: true })).toBe("ok");
+    inspection.close();
     reopened.close();
   });
 
@@ -610,6 +971,7 @@ describe("SQLite product state", () => {
     await ensureOwnerOnlyDirectory(directory);
     const path = runtimePaths(directory).database;
     const first = await ProductDatabase.open(path, observedAt);
+    first.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
     const expected = first.walletStore().replace("0", connected(), observedAt);
     expect((await lstat(`${path}-wal`)).isFile()).toBe(true);
     expect((await lstat(`${path}-shm`)).isFile()).toBe(true);
@@ -638,7 +1000,7 @@ describe("SQLite product state", () => {
     let commitsWhileOpening = 0;
     const writing = (async () => {
       for (let index = 0; index < 128; index += 1) {
-        writer.ownerStore().publishOwner(createOwnerInstanceId(), observedAt);
+        writer.ownerStore().publishOwner(createOwnerInstanceId(), configurationMac, observedAt);
         if (!openingSettled) commitsWhileOpening += 1;
         await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
       }
@@ -811,6 +1173,9 @@ describe("configuration and source authority", () => {
     const configuration = readRuntimeConfiguration({});
     expect(configuration.wallet).toEqual({
       projectId: "cd33d6deaa901b3c96185d9cb1f320ef",
+      chain: { chainId: "eip155:4663" },
+      requiredMethods: ["eth_sendTransaction"],
+      requiredEvents: ["accountsChanged", "chainChanged"],
       metadata: {
         name: productDisplayName,
         description: "Local Robinhood Chain wallet connection",
@@ -818,7 +1183,34 @@ describe("configuration and source authority", () => {
         icons: [],
       },
     });
-    const rpc = createRpcSourceAuthority({ credential, endpoint: configuration.rpc, clock });
+    const configurationFields = [
+      Buffer.from(configuration.chain.chainId, "utf8"),
+      Buffer.from(readConfiguredRpcEndpoint(configuration.rpc.endpoint).exactUri, "utf8"),
+      Buffer.from(configuration.wallet.projectId, "utf8"),
+    ];
+    const payload = Buffer.alloc(configurationFields.reduce((sum, field) => sum + 4 + field.length, 0));
+    let payloadOffset = 0;
+    for (const field of configurationFields) {
+      payload.writeUInt32BE(field.length, payloadOffset);
+      payloadOffset += 4;
+      field.copy(payload, payloadOffset);
+      payloadOffset += field.length;
+    }
+    const independentConfigurationMac = createHmac("sha256", Buffer.from(hkdfSync(
+      "sha256",
+      Buffer.alloc(32, 1),
+      Buffer.alloc(0),
+      Buffer.from("littlejohn/runtime-configuration/v2", "utf8"),
+      32,
+    ))).update(payload).digest("base64url");
+    expect(deriveRuntimeConfigurationMac(credential, configuration)).toBe(independentConfigurationMac);
+    const forgedChain = Object.freeze({ chainId: configuration.chain.chainId });
+    expect(() => deriveRuntimeConfigurationMac(credential, {
+      chain: forgedChain,
+      rpc: Object.freeze({ chain: forgedChain, endpoint: configuration.rpc.endpoint }),
+      wallet: Object.freeze({ ...configuration.wallet, chain: forgedChain }),
+    } as never)).toThrow("provenance");
+    const rpc = createRpcSourceAuthority({ credential, endpoint: configuration.rpc.endpoint, clock });
     expect(rpc.configurationDigest).toBe("oA40Nw__Im-Kx0Tp9zCwwDLic15a7IjDaVCesNOhEuA");
     expect(rpc.sourceOwner).toBe("Robinhood");
     expect(rpc.publicOrigin).toBe("https://rpc.mainnet.chain.robinhood.com");
@@ -826,17 +1218,18 @@ describe("configuration and source authority", () => {
     const secretConfiguration = readRuntimeConfiguration({
       LITTLEJOHN_RPC_URL: "https://user:password@rpc.example/private?key=secret",
     });
-    const secretSafe = createRpcSourceAuthority({ credential, endpoint: secretConfiguration.rpc, clock });
+    const secretSafe = createRpcSourceAuthority({ credential, endpoint: secretConfiguration.rpc.endpoint, clock });
     expect(secretSafe.publicOrigin).toBe("https://rpc.example");
     expect(JSON.stringify(secretSafe)).not.toContain("password");
     expect(JSON.stringify(secretSafe)).not.toContain("private");
     expect(JSON.stringify(secretSafe)).not.toContain("secret");
 
     const slashConfiguration = readRuntimeConfiguration({ LITTLEJOHN_RPC_URL: "https://rpc.mainnet.chain.robinhood.com/" });
-    const slash = createRpcSourceAuthority({ credential, endpoint: slashConfiguration.rpc, clock });
+    const slash = createRpcSourceAuthority({ credential, endpoint: slashConfiguration.rpc.endpoint, clock });
     expect(slash.configurationDigest).toBe("5VnFZF1HaHhd_PK5drKjmVZbZ21ca8n_QrhkoS3pR-o");
     expect(slash.sourceOwner).toBe("Robinhood");
-    expect(readConfiguredRpcEndpoint(slashConfiguration.rpc).exactUri).toBe("https://rpc.mainnet.chain.robinhood.com/");
+    expect(readConfiguredRpcEndpoint(slashConfiguration.rpc.endpoint).exactUri)
+      .toBe("https://rpc.mainnet.chain.robinhood.com/");
 
     const profileId = Buffer.alloc(16, 2).toString("base64url") as never;
     const wallet = createWalletSourceAuthority({ credential, profileId, clock });

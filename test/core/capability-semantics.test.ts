@@ -6,6 +6,7 @@ import {
   chainAnchorSchema,
   createAccountBalanceTokenEvidenceIdentity,
   evmAddressSchema,
+  evmChainIdSchema,
   transactionInspectCapability,
   walletConnectionCapability,
   type HandlerInvocationContext,
@@ -15,19 +16,21 @@ import {
 import { defineReadCapability } from "../../src/core/capability.js";
 import {
   bindForHarness,
+  configuredChainId,
   createCapabilityHarness,
   fixedEvaluationTime,
   invokeBinding,
 } from "./capability-harness.js";
 
 const block = chainAnchorSchema.parse({
-  chainId: "4663",
+  chainId: configuredChainId,
   blockNumber: "10",
   blockHash: `0x${"a".repeat(64)}`,
   blockTimestamp: fixedEvaluationTime,
 });
 const address = evmAddressSchema.parse(`0x${"1".repeat(40)}`);
 const token = evmAddressSchema.parse(`0x${"2".repeat(40)}`);
+const otherChainId = evmChainIdSchema.parse("eip155:1");
 
 const record = (
   context: HandlerInvocationContext,
@@ -41,7 +44,7 @@ const record = (
 });
 
 const sourceAmount = {
-  asset: { kind: "native" as const, chainId: "4663" as const },
+  asset: { kind: "native" as const, chainId: configuredChainId },
   raw: "1",
   decimals: {
     status: "not_observed" as const,
@@ -53,7 +56,7 @@ const pendingData = (transactionHash: string, observationId: string) => {
   const amount = { ...sourceAmount, quantityObservationId: observationId };
   return {
     transactionHash,
-    chainId: "4663" as const,
+    chainId: configuredChainId,
     from: address,
     recipient: { kind: "call" as const, address: token },
     value: amount,
@@ -159,18 +162,18 @@ describe("capability semantic and evidence authority", () => {
     const harness = createCapabilityHarness();
     const binding = bindForHarness(accountBalanceCapability, harness, async (_input, context, observations) => {
       const identity = createAccountBalanceTokenEvidenceIdentity(token);
-      record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: "4663" }]);
+      record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
       record(context, observations, "chain_rpc", "block", [{ role: "balance_block", value: block, chainAnchor: block }]);
       const quantity = record(context, observations, "chain_rpc", identity.balanceSlotId, [{
         role: identity.balanceClaimRole,
         value: "2",
-        asset: { kind: "erc20", chainId: "4663", address: token },
+        asset: { kind: "erc20", chainId: configuredChainId, address: token },
         chainAnchor: block,
       }]);
       const decimals = record(context, observations, "chain_rpc", identity.decimalsSlotId, [{
         role: identity.decimalsClaimRole,
         value: "6",
-        asset: { kind: "erc20", chainId: "4663", address: token },
+        asset: { kind: "erc20", chainId: configuredChainId, address: token },
         chainAnchor: block,
       }]);
       return {
@@ -180,11 +183,11 @@ describe("capability semantic and evidence authority", () => {
           block,
           native: { status: "not_requested" },
           tokens: [{
-            asset: { kind: "erc20", chainId: "4663", address: token },
+            asset: { kind: "erc20", chainId: configuredChainId, address: token },
             result: {
               status: "available",
               amount: {
-                asset: { kind: "erc20", chainId: "4663", address: token },
+                asset: { kind: "erc20", chainId: configuredChainId, address: token },
                 raw: "1",
                 decimals: { status: "available", value: "6", observationId: decimals },
                 quantityObservationId: quantity,
@@ -207,7 +210,7 @@ describe("capability semantic and evidence authority", () => {
     const harness = createCapabilityHarness();
     const requestedHash = `0x${"c".repeat(64)}`;
     const binding = bindForHarness(transactionInspectCapability, harness, async (_input, context, observations) => {
-      record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: "4663" }]);
+      record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
       const provisional = pendingData(`0x${"f".repeat(64)}`, `obs:${"A".repeat(43)}`);
       const transactionId = record(
         context,
@@ -228,7 +231,7 @@ describe("capability semantic and evidence authority", () => {
     const transactionHash = `0x${"d".repeat(64)}`;
     let transactionId = "";
     const binding = bindForHarness(transactionInspectCapability, harness, async (_input, context, observations) => {
-      record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: "4663" }]);
+      record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
       const provisional = pendingData(transactionHash, `obs:${"A".repeat(43)}`);
       transactionId = record(context, observations, "chain_rpc", "transaction", transactionClaims(provisional));
       return { status: "success", data: pendingData(transactionHash, transactionId) };
@@ -248,7 +251,7 @@ describe("capability semantic and evidence authority", () => {
     const harness = createCapabilityHarness();
     const transactionHash = `0x${"e".repeat(64)}`;
     const binding = bindForHarness(transactionInspectCapability, harness, async (_input, context, observations) => {
-      record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: "4663" }]);
+      record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
       const provisional = pendingData(transactionHash, `obs:${"A".repeat(43)}`);
       const transactionId = record(context, observations, "chain_rpc", "transaction", transactionClaims(provisional));
       const data = pendingData(transactionHash, transactionId);
@@ -267,7 +270,7 @@ describe("capability semantic and evidence authority", () => {
       transactionInspectCapability,
       duplicateHarness,
       async (_input, context, observations) => {
-        record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: "4663" }]);
+        record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
         const provisional = dynamicPendingData(transactionHash, `obs:${"A".repeat(43)}`);
         const transactionId = record(
           context,
@@ -291,7 +294,7 @@ describe("capability semantic and evidence authority", () => {
       transactionInspectCapability,
       invalidFeeHarness,
       async (_input, context, observations) => {
-        record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: "4663" }]);
+        record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
         const provisional = dynamicPendingData(transactionHash, `obs:${"A".repeat(43)}`);
         const invalid = {
           ...provisional,
@@ -349,9 +352,8 @@ describe("capability semantic and evidence authority", () => {
   it("requires connected wallet state to bind both SDK and exact session authority", async () => {
     const connected = {
       status: "connected" as const,
-      account: `eip155:4663:${address}`,
       address,
-      chainId: "eip155:4663" as const,
+      chainId: configuredChainId,
       approvedMethods: ["eth_sendTransaction"],
       approvedEvents: ["accountsChanged", "chainChanged"],
       expiresAt: "2026-07-13T10:16:02.000Z",
@@ -371,32 +373,29 @@ describe("capability semantic and evidence authority", () => {
     expect((await invokeBinding(walletConnectionCapability, complete, {})).ok).toBe(true);
   });
 
-  it("rejects mismatched, incomplete, and expired connected-wallet semantics", async () => {
+  it("rejects mismatched, non-canonical, and expired connected-wallet semantics", async () => {
     const harness = createCapabilityHarness();
     for (const data of [
       {
         status: "connected" as const,
-        account: `eip155:4663:${token}`,
         address,
-        chainId: "eip155:4663" as const,
+        chainId: otherChainId,
         approvedMethods: ["eth_sendTransaction"],
         approvedEvents: ["accountsChanged", "chainChanged"],
         expiresAt: "2026-07-13T10:16:02.000Z",
       },
       {
         status: "connected" as const,
-        account: `eip155:4663:${address}`,
         address,
-        chainId: "eip155:4663" as const,
-        approvedMethods: [],
+        chainId: configuredChainId,
+        approvedMethods: ["eth_sendTransaction", "eth_sendTransaction"],
         approvedEvents: ["accountsChanged", "chainChanged"],
         expiresAt: "2026-07-13T10:16:02.000Z",
       },
       {
         status: "connected" as const,
-        account: `eip155:4663:${address}`,
         address,
-        chainId: "eip155:4663" as const,
+        chainId: configuredChainId,
         approvedMethods: ["eth_sendTransaction"],
         approvedEvents: ["accountsChanged", "chainChanged"],
         expiresAt: fixedEvaluationTime,
@@ -445,7 +444,6 @@ describe("capability semantic and evidence authority", () => {
         freshnessRuleId: "chain_anchor_exact" as const,
       }],
       deriveWarnings: () => [],
-      validateInvocation: () => {},
       warningCodes: [],
       staticScopeExclusions: [],
     });

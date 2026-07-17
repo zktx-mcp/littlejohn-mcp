@@ -55,11 +55,10 @@ const hyphenLeadingOperationId = Buffer.concat([
 const disconnected = Object.freeze({ status: "disconnected" as const, reason: "no_session" as const });
 const unresolved = parseCapabilityData(walletConnectionCapability, {
   status: "unresolved",
-  eligibleSessionCount: "2",
+  sessionCount: "2",
 });
 const connected = parseCapabilityData(walletConnectionCapability, {
   status: "connected",
-  account: "eip155:4663:0x1111111111111111111111111111111111111111",
   address: "0x1111111111111111111111111111111111111111",
   chainId: "eip155:4663",
   approvedMethods: ["eth_sendTransaction"],

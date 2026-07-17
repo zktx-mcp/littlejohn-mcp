@@ -5,19 +5,34 @@ import {
   blockSelectorToRpcTag,
   normalizeAbiDecimals,
   normalizeAbiUint256,
-  normalizeIncludedTransaction,
+  normalizeIncludedTransaction as normalizeIncludedTransactionForChain,
   normalizeRpcAccessList,
   normalizeRpcAddress,
-  normalizeRpcBlockAnchor,
+  normalizeRpcBlockAnchor as normalizeRpcBlockAnchorForChain,
   normalizeRpcHash,
   normalizeRpcReceipt,
   normalizeRpcRuntimeCode,
-  normalizeRpcTransaction,
+  normalizeRpcTransaction as normalizeRpcTransactionForChain,
   parseRpcQuantity,
   rpcQuantityToUnsignedDecimal,
   unsignedDecimalToRpcQuantity,
 } from "../../src/chain/normalization.js";
-import { erc20TransferTopic0, parseUnsignedDecimal } from "../../src/core/index.js";
+import {
+  erc20TransferTopic0,
+  parseEvmChainId,
+  parseUnsignedDecimal,
+} from "../../src/core/index.js";
+
+const configuredChainId = parseEvmChainId("eip155:4663");
+const normalizeRpcBlockAnchor = (input: unknown) =>
+  normalizeRpcBlockAnchorForChain(input, configuredChainId);
+const normalizeRpcTransaction = (input: unknown) =>
+  normalizeRpcTransactionForChain(input, configuredChainId);
+const normalizeIncludedTransaction = (
+  transaction: unknown,
+  receipt: unknown,
+  block: unknown,
+) => normalizeIncludedTransactionForChain(transaction, receipt, block, configuredChainId);
 
 const addressA = `0x${"a".repeat(40)}`;
 const addressB = `0x${"b".repeat(40)}`;
@@ -126,7 +141,7 @@ describe("RPC normalization", () => {
     expect(blockSelectorToRpcTag({ kind: "latest" })).toBe("latest");
     expect(blockSelectorToRpcTag({ kind: "number", blockNumber: "9007199254740993" })).toBe("0x20000000000001");
     expect(normalizeRpcBlockAnchor(block())).toEqual({
-      chainId: "4663",
+      chainId: configuredChainId,
       blockNumber: "9007199254740993",
       blockHash,
       blockTimestamp: "2024-01-01T00:00:00.000Z",

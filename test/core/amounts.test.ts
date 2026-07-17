@@ -18,10 +18,10 @@ import {
 const id = (character: string) => observationIdSchema.parse(
   `obs:${Buffer.alloc(32, character.codePointAt(0) ?? 0).toString("base64url")}`,
 );
-const assetA = assetIdentitySchema.parse({ kind: "erc20", chainId: "4663", address: `0x${"1".repeat(40)}` });
-const assetB = assetIdentitySchema.parse({ kind: "erc20", chainId: "4663", address: `0x${"2".repeat(40)}` });
+const assetA = assetIdentitySchema.parse({ kind: "erc20", chainId: "eip155:4663", address: `0x${"1".repeat(40)}` });
+const assetB = assetIdentitySchema.parse({ kind: "erc20", chainId: "eip155:4663", address: `0x${"2".repeat(40)}` });
 const anchor = chainAnchorSchema.parse({
-  chainId: "4663",
+  chainId: "eip155:4663",
   blockNumber: "10",
   blockHash: `0x${"a".repeat(64)}`,
   blockTimestamp: "2026-07-12T10:16:02.000Z",
@@ -164,12 +164,12 @@ describe("amount observation commitments", () => {
   it("accepts not_observed only for the exact owned amount-field exclusion", () => {
     const quantity = id("A");
     const amount = {
-      asset: { kind: "native", chainId: "4663" },
+      asset: { kind: "native", chainId: "eip155:4663" },
       raw: "1",
       decimals: { status: "not_observed", scopeExclusionId: "account_native_decimals_not_observed" },
       quantityObservationId: quantity,
     };
-    const native = assetIdentitySchema.parse({ kind: "native", chainId: "4663" });
+    const native = assetIdentitySchema.parse({ kind: "native", chainId: "eip155:4663" });
     const bindings: ObservationClaimBinding[] = [
       { observationId: quantity, role: "native_balance", value: "1", asset: native, chainAnchor: anchor },
     ];
@@ -209,7 +209,7 @@ describe("amount observation commitments", () => {
       decimals: { status: "available", value: "6", observationId: quantity },
       quantityObservationId: quantity,
     }).success).toBe(false);
-    const native = { kind: "native", chainId: "4663" };
+    const native = { kind: "native", chainId: "eip155:4663" };
     const numerator = {
       asset: native,
       raw: "1",

@@ -1,1 +1,1 @@
-export const coreContractVersion = "1" as const;
+export const coreContractVersion = "2" as const;

@@ -28,8 +28,9 @@ import {
 } from "./erc20-events.js";
 import type { ObservationClaim } from "./invocation.js";
 import { jsonObject } from "./json-object.js";
-import { keccak256Hex } from "./keccak256.js";
-import { robinhoodChainIdentity, robinhoodWalletNamespaceRequirements } from "./identities.js";
+import { evmAddressInputSchema } from "./evm-address-input.js";
+import { evmChainIdSchema, type EvmChainId } from "./identities.js";
+import { keccak256FromHex } from "./keccak256.js";
 import {
   compareCodePointSequences,
   createPrimitiveSchemaSet,
@@ -98,12 +99,14 @@ const noInputSchema = jsonObject({}).strict();
 
 const chainStatusInputSchema = noInputSchema;
 const chainStatusDataSchema = jsonObject({
-  chainId: z.literal(robinhoodChainIdentity.chainId),
-  caip2: z.literal(robinhoodChainIdentity.caip2),
+  chainId: evmChainIdSchema,
   latestBlock: chainAnchorSchema,
 }).strict();
 
-const contractInspectInputSchema = jsonObject({ address: evmAddressSchema, block: blockSelectorSchema }).strict();
+const contractInspectInputSchema = jsonObject({
+  address: evmAddressInputSchema,
+  block: blockSelectorSchema,
+}).strict();
 const contractInspectDataSchema = jsonObject({
   address: evmAddressSchema,
   block: chainAnchorSchema,
@@ -176,7 +179,7 @@ const transactionTypeSchema = z.string()
   .brand("UnsignedDecimal");
 const transactionInspectDataSchema = jsonObject({
   transactionHash: hash32Schema,
-  chainId: z.literal(robinhoodChainIdentity.chainId),
+  chainId: evmChainIdSchema,
   from: evmAddressSchema,
   recipient: z.discriminatedUnion("kind", [
     jsonObject({ kind: z.literal("call"), address: evmAddressSchema }).strict(),
@@ -212,10 +215,10 @@ const transactionInspectDataSchema = jsonObject({
 }).strict();
 
 const accountSelectorSchema = z.discriminatedUnion("kind", [
-  jsonObject({ kind: z.literal("address"), address: evmAddressSchema }).strict(),
+  jsonObject({ kind: z.literal("address"), address: evmAddressInputSchema }).strict(),
   jsonObject({ kind: z.literal("active_wallet") }).strict(),
 ]);
-const canonicalTokenInputSchema = (minimum: 0 | 1) => z.array(evmAddressSchema)
+const canonicalTokenInputSchema = (minimum: 0 | 1) => z.array(evmAddressInputSchema)
   .min(minimum)
   .max(readCapabilityLimits.accountTokenAddresses)
   .meta({ uniqueItems: true });
@@ -387,7 +390,9 @@ export const chainStatusCapability = defineReadCapability<ChainStatusInput, Chai
   validateIntrinsicData: (data) => {
     if (data.latestBlock.chainId !== data.chainId) throw new TypeError("Chain status anchor mismatch.");
   },
-  validateInvocation: () => undefined,
+  validateSuccess: (data, context) => {
+    if (data.chainId !== context.chainId) throw new TypeError("Chain status scope mismatch.");
+  },
   warningCodes: [],
   staticScopeExclusions: [
     exclusion("execution_readiness", "This capability does not establish execution readiness."),
@@ -410,7 +415,7 @@ export const contractInspectCapability = defineReadCapability<ContractInspectInp
     sourceSlot("runtime_code", "runtime_code", "runtime_code", "chain_rpc"),
   ],
   observationExpectations: (_input, data) => [
-    expectation("rpc_chain_id", [claim("chain_id", robinhoodChainIdentity.chainId)]),
+    expectation("rpc_chain_id", [claim("chain_id", data.block.chainId)]),
     expectation("block", [claim("contract_block", asJson({ address: data.address, block: data.block }), {
       chainAnchor: data.block,
     })]),
@@ -436,13 +441,16 @@ export const contractInspectCapability = defineReadCapability<ContractInspectInp
         data.runtimeCode.bytecode === "0x" ||
         byteLength > BigInt(readCapabilityLimits.runtimeCodeBytes) ||
         byteLength.toString(10) !== data.runtimeCode.byteLength ||
-        keccak256Hex(data.runtimeCode.bytecode) !== data.runtimeCode.codeHash
+        keccak256FromHex(data.runtimeCode.bytecode) !== data.runtimeCode.codeHash
       ) {
         throw new TypeError("Runtime code identity mismatch.");
       }
     }
   },
-  validateInvocation: (input, data) => {
+  validateSuccess: (data, context) => {
+    if (data.block.chainId !== context.chainId) throw new TypeError("Contract chain scope mismatch.");
+  },
+  validateRequest: (input, data) => {
     if (input.address !== data.address) throw new TypeError("Contract target mismatch.");
     if (input.block.kind === "number" && input.block.blockNumber !== data.block.blockNumber) {
       throw new TypeError("Contract block selector mismatch.");
@@ -471,6 +479,14 @@ const assertNativeAmount = (
     quantity: quantityRole,
     decimals: decimalsRole,
   });
+};
+
+const assertAmountChain = (amount: CanonicalAmount, chainId: EvmChainId): void => {
+  if (amount.asset.chainId !== chainId) throw new TypeError("Amount chain scope mismatch.");
+};
+
+const assertNativeGasRateChain = (rate: NativeGasRate, chainId: EvmChainId): void => {
+  assertAmountChain(rate.numerator, chainId);
 };
 
 const assertNativeAmountIdentity = (
@@ -585,7 +601,7 @@ const transactionObservationExpectations = (
     );
   }
   const expectations: ObservationExpectation[] = [
-    expectation("rpc_chain_id", [claim("chain_id", robinhoodChainIdentity.chainId)]),
+    expectation("rpc_chain_id", [claim("chain_id", data.chainId)]),
     expectation("transaction", transactionClaims),
   ];
   if (data.inclusion.status === "included") {
@@ -765,8 +781,31 @@ export const transactionInspectCapability = defineReadCapability<TransactionInsp
       : []),
   ],
   validateIntrinsicData: validateTransactionIntrinsicData,
-  validateInvocation: (input, data, context) => {
+  validateSuccess: (data, context) => {
+    if (data.chainId !== context.chainId) throw new TypeError("Transaction chain scope mismatch.");
+    assertAmountChain(data.value, context.chainId);
+    if (data.fee.kind === "legacy") {
+      assertNativeGasRateChain(data.fee.gasPrice, context.chainId);
+    } else if (data.fee.kind === "dynamic") {
+      assertNativeGasRateChain(data.fee.maxFeePerGas, context.chainId);
+      assertNativeGasRateChain(data.fee.maxPriorityFeePerGas, context.chainId);
+    }
+    if (data.inclusion.status === "included") {
+      if (data.inclusion.block.chainId !== context.chainId) {
+        throw new TypeError("Transaction block chain scope mismatch.");
+      }
+      assertNativeGasRateChain(data.inclusion.receipt.effectiveGasPrice, context.chainId);
+      for (const log of data.inclusion.receipt.logs) {
+        if (log.decodedEvent.kind !== "not_decoded") {
+          assertAmountChain(log.decodedEvent.amount, context.chainId);
+        }
+      }
+    }
+  },
+  validateRequest: (input, data) => {
     if (input.transactionHash !== data.transactionHash) throw new TypeError("Transaction target mismatch.");
+  },
+  validateEvidence: (_input, data, context) => {
     const bindings = context.observationClaims;
     assertNativeAmount(data.value, bindings, transactionNativeDecimalsExclusion,
       "transaction_value", "transaction_value_decimals");
@@ -835,7 +874,7 @@ const accountObservationExpectations = (
   data: AccountBalanceData,
 ): ObservationExpectation[] => {
   const expectations: ObservationExpectation[] = [
-    expectation("rpc_chain_id", [claim("chain_id", robinhoodChainIdentity.chainId)]),
+    expectation("rpc_chain_id", [claim("chain_id", data.block.chainId)]),
     expectation("block", [claim("balance_block", asJson(data.block), { chainAnchor: data.block })]),
     expectation("account", input.account.kind === "address"
       ? [claim("validated_input", asJson(input))]
@@ -961,7 +1000,15 @@ export const accountBalanceCapability = defineReadCapability<AccountBalanceInput
       )) throw new TypeError("Token result amount identity is inconsistent.");
     }
   },
-  validateInvocation: (input, data, context) => {
+  validateSuccess: (data, context) => {
+    if (data.block.chainId !== context.chainId) throw new TypeError("Account chain scope mismatch.");
+    if (data.native.status === "available") assertAmountChain(data.native.amount, context.chainId);
+    for (const token of data.tokens) {
+      if (token.asset.chainId !== context.chainId) throw new TypeError("Token chain scope mismatch.");
+      if (token.result.status === "available") assertAmountChain(token.result.amount, context.chainId);
+    }
+  },
+  validateRequest: (input, data) => {
     if (input.account.kind === "address" && input.account.address !== data.account) throw new TypeError("Account target mismatch.");
     if (input.block.kind === "number" && input.block.blockNumber !== data.block.blockNumber) {
       throw new TypeError("Account block selector mismatch.");
@@ -969,6 +1016,8 @@ export const accountBalanceCapability = defineReadCapability<AccountBalanceInput
     if (input.includeNative !== (data.native.status === "available")) throw new TypeError("Native result selection mismatch.");
     const resultAddresses = data.tokens.map((entry) => entry.asset.address);
     if (resultAddresses.join("\0") !== input.tokens.join("\0")) throw new TypeError("Token result selection mismatch.");
+  },
+  validateEvidence: (_input, data, context) => {
     if (data.native.status === "available") {
       assertNativeAmount(
         data.native.amount,
@@ -1033,7 +1082,11 @@ export const walletConnectionCapability = defineReadCapability<WalletConnectionI
         throw new TypeError("A connected wallet session must expire after evaluation.");
     }
   },
-  validateInvocation: () => undefined,
+  validateSuccess: (data, context) => {
+    if (data.status === "connected" && data.chainId !== context.chainId) {
+      throw new TypeError("Wallet connection chain scope mismatch.");
+    }
+  },
   warningCodes: [],
   staticScopeExclusions: [
     exclusion("address_ownership", "Connection state does not prove address ownership."),

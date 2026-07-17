@@ -5,16 +5,21 @@ import {
   capabilityIdSchema,
   compareCodePointSequences,
   coreContractVersion,
+  evmChainIdSchema,
   extendCapabilitySchemaProjection,
   fixedIdentifierSchema,
   generalSingleLineTextSchema,
   getCapabilityDefinitionSnapshot,
+  parseEvmChainId,
   projectCapabilities,
   readCapabilityRegistry,
-  robinhoodChainIdentity,
   walletConnectionCapability,
   type CanonicalJson,
 } from "../core/index.js";
+import {
+  readRuntimeChainConfiguration,
+  type RuntimeChainConfiguration,
+} from "./configuration.js";
 import { guardRuntimeJsonSchema, parseRuntimeAuthority } from "./schema-authority.js";
 
 const readCapabilityIds = Object.freeze(readCapabilityRegistry.values().map((definition) =>
@@ -56,8 +61,7 @@ const createSupportSchemaSet = () => {
     }
   });
   const chainSupport = z.object({
-    chainId: z.literal(robinhoodChainIdentity.chainId),
-    caip2: z.literal(robinhoodChainIdentity.caip2),
+    chainId: evmChainIdSchema,
     supportLevel: z.literal("L0_discovered"),
     evidence: z.object({
       position: z.literal("source_defined"),
@@ -189,24 +193,28 @@ const unavailable = Object.freeze({
   cli: "unavailable",
   web: "unavailable",
 } as const);
-export const initialRuntimeSupportManifest = createManifest("initial", {
-  contractVersion: coreContractVersion,
-  chains: [{
-    chainId: robinhoodChainIdentity.chainId,
-    caip2: robinhoodChainIdentity.caip2,
-    supportLevel: "L0_discovered",
-    evidence: {
-      position: "source_defined",
-      sourceOwner: "Robinhood",
-      canonicalUri: "https://docs.robinhood.com/chain/connecting/",
-      coverage: "Published Robinhood Chain network identity and chain ID.",
-      unsupportedConclusions: ["Endpoint availability.", "Runtime availability.", "Safety."],
-    },
-  }],
-  protocols: [],
-  transactionActions: [],
-  capabilities: readCapabilityIds.map((capabilityId) => ({ capabilityId, availability: unavailable })),
-}) as InitialRuntimeSupportManifest;
+export const createInitialRuntimeSupportManifest = (
+  chain: RuntimeChainConfiguration,
+): InitialRuntimeSupportManifest => {
+  const chainId = parseEvmChainId(readRuntimeChainConfiguration(chain).chainId);
+  return createManifest("initial", {
+    contractVersion: coreContractVersion,
+    chains: [{
+      chainId,
+      supportLevel: "L0_discovered",
+      evidence: {
+        position: "source_defined",
+        sourceOwner: "Robinhood",
+        canonicalUri: "https://docs.robinhood.com/chain/connecting/",
+        coverage: "Published Robinhood Chain network identity and chain ID.",
+        unsupportedConclusions: ["Endpoint availability.", "Runtime availability.", "Safety."],
+      },
+    }],
+    protocols: [],
+    transactionActions: [],
+    capabilities: readCapabilityIds.map((capabilityId) => ({ capabilityId, availability: unavailable })),
+  }) as InitialRuntimeSupportManifest;
+};
 
 export const readRuntimeSupportManifest = (
   manifest: RuntimeSupportManifest,
@@ -372,8 +380,8 @@ export const renderCurrentSupportSection = (manifest: RuntimeSupportManifest): s
     "- Runtime support manifest: implemented as the sole machine authority for the",
     "  values in this section.",
     `- Robinhood Chain: \`${displayLevel(chain.supportLevel)}\`. The official network configuration identifies`,
-    `  Robinhood Chain mainnet with chain ID \`${chain.chainId}\` in the`,
-    `  [Robinhood Chain documentation](${chain.evidence.canonicalUri}).`,
+    `  Robinhood Chain mainnet in the [Robinhood Chain documentation](${chain.evidence.canonicalUri}).`,
+    `  Little John's canonical chain ID for that network is \`${chain.chainId}\`.`,
     `  Source owner: ${chain.evidence.sourceOwner}. Coverage: ${chain.evidence.coverage}`,
     `  Unsupported conclusions: ${chain.evidence.unsupportedConclusions.join(" ")}`,
     protocols.length === 0 ? "- Implemented protocol support: none." : `- Implemented protocol support: ${protocols.join(", ")}.`,

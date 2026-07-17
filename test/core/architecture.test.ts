@@ -130,6 +130,7 @@ describe("core dependency boundary", () => {
       "deriveCoverage",
       "factOutcomeDefinitions",
       "freshnessRuleDefinitions",
+      "keccak256FromUtf8",
       "parseInvocationId",
       "readObservationAuthority",
       "sourceClassDefinitions",
@@ -160,6 +161,15 @@ describe("core dependency boundary", () => {
       violations.push(...auditImports(await readFile(file, "utf8"), file));
     }
     expect(violations).toEqual([]);
+  });
+
+  it("keeps the Noble Keccak implementation behind the one core hash module", async () => {
+    const importers: string[] = [];
+    for (const file of await collectTypeScriptFiles(coreDirectory)) {
+      const source = await readFile(file, "utf8");
+      if (source.includes('from "@noble/hashes/')) importers.push(relative(coreDirectory, file));
+    }
+    expect(importers).toEqual(["keccak256.ts"]);
   });
 
   it("detects literal and computed forbidden imports", () => {

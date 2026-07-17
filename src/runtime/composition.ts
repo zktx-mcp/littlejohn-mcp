@@ -20,11 +20,14 @@ import {
   type UtcTimestamp,
 } from "../core/index.js";
 import {
-  readConfiguredRpcEndpoint,
   readRuntimeConfiguration,
+  type RuntimeRpcConfiguration,
   type WalletConnectConfiguration,
 } from "./configuration.js";
-import { loadOrCreateControlCredential } from "./control-credential.js";
+import {
+  deriveRuntimeConfigurationMac,
+  loadOrCreateControlCredential,
+} from "./control-credential.js";
 import {
   ProductDatabase,
   type WalletProjectionStore,
@@ -64,7 +67,7 @@ import {
   assertChainRuntimeSupportManifestExtension,
   assertInterfaceRuntimeSupportManifestExtension,
   assertWalletRuntimeSupportManifestExtension,
-  initialRuntimeSupportManifest,
+  createInitialRuntimeSupportManifest,
   readRuntimeSupportManifest,
   type ChainRuntimeSupportManifest,
   type InitialRuntimeSupportManifest,
@@ -101,7 +104,7 @@ export interface WalletPrivateStoreDirectoryPort {
 }
 
 export interface ChainOwnerBootstrapPort {
-  readonly configuredRpcUri: string;
+  readonly configuration: RuntimeRpcConfiguration;
   readonly sourceAuthority: RpcSourceAuthorityPort;
   readonly capabilityAuthority: ChainCapabilityAuthorityPort;
 }
@@ -343,6 +346,7 @@ export const composeOwnerApplicationStages = async <
   WalletOperations extends object,
 >(
   context: HttpOwnerApplicationContext,
+  initialSupportManifest: InitialRuntimeSupportManifest,
   stages: OwnerApplicationStages<ActiveWallet, WalletOperations>,
 ): Promise<HttpOwnerApplication> => {
   const applications = createResourceOwnershipScope();
@@ -356,7 +360,7 @@ export const composeOwnerApplicationStages = async <
       startupResources,
     }), (wallet) => {
       assertRuntimeRouteRegistryDescendant(walletRoutes, wallet.routes);
-      assertWalletRuntimeSupportManifestExtension(initialRuntimeSupportManifest, wallet.supportManifest);
+      assertWalletRuntimeSupportManifestExtension(initialSupportManifest, wallet.supportManifest);
       const walletConnection = snapshotWalletConnection(wallet.walletConnection);
       const activeWallet = wallet.activeWallet;
       const activeWalletType = typeof activeWallet;
@@ -484,6 +488,7 @@ export class LocalRuntime {
     const environment = options.environment ?? process.env;
     const now = options.now ?? systemNow;
     const configuration = readRuntimeConfiguration(environment);
+    const initialSupportManifest = createInitialRuntimeSupportManifest(configuration.chain);
     const paths = runtimePaths(resolveApplicationDataDirectory(environment));
     const walletApplicationFactory = options.walletApplicationFactory;
     const chainApplicationFactory = options.chainApplicationFactory;
@@ -494,13 +499,18 @@ export class LocalRuntime {
     }
     await ensureRuntimeStateDirectory(paths.dataDirectory);
     const credential = await loadOrCreateControlCredential(paths.dataDirectory, paths.controlCredential);
+    const configurationMac = deriveRuntimeConfigurationMac(credential, configuration);
     const createHttpOwner = (database: ProductDatabase): FixedHttpOwner => {
       const ownerStore = database.ownerStore();
       const walletProjection = database.walletStore();
       const profile = ownerStore.readProfile();
       const clock = createCanonicalClock(now);
-      const invocationAuthority = createCapabilityInvocationAuthority(clock);
-      const rpcSource = createRpcSourceAuthority({ credential, endpoint: configuration.rpc, clock });
+      const invocationAuthority = createCapabilityInvocationAuthority(clock, configuration.chain.chainId);
+      const rpcSource = createRpcSourceAuthority({
+        credential,
+        endpoint: configuration.rpc.endpoint,
+        clock,
+      });
       const walletSource = createWalletSourceAuthority({ credential, profileId: profile.profileId, clock });
       const chainPorts = Object.freeze({
         observations: new ObservationAuthorityRegistry(clock, [rpcSource.observationAuthority]),
@@ -521,7 +531,7 @@ export class LocalRuntime {
             routes,
             signal,
             startupResources,
-            supportManifest: initialRuntimeSupportManifest,
+            supportManifest: initialSupportManifest,
             wallet: Object.freeze({
               configuration: configuration.wallet,
               privateStoreDirectory: createWalletPrivateStoreDirectoryPort(
@@ -543,7 +553,7 @@ export class LocalRuntime {
           walletConnection: wallet.walletConnection,
           activeWallet: wallet.activeWallet,
           chain: Object.freeze({
-            configuredRpcUri: readConfiguredRpcEndpoint(configuration.rpc).exactUri,
+            configuration: configuration.rpc,
             sourceAuthority: rpcSource,
             capabilityAuthority: Object.freeze({
               clock,
@@ -573,11 +583,19 @@ export class LocalRuntime {
             : [walletStage, chainStage, interfaceStage];
       const applicationFactory = stages === undefined
         ? undefined
-        : (context: HttpOwnerApplicationContext) => composeOwnerApplicationStages(context, stages);
+        : (context: HttpOwnerApplicationContext) => composeOwnerApplicationStages(
+          context,
+          initialSupportManifest,
+          stages,
+        );
       return new FixedHttpOwner({
         ownerStore,
         credential,
+        configurationMac,
         now,
+        onPortOwnershipAcquired: () => {
+          database.configuredChainStore().insertConfiguredChainIfAbsent(configuration.chain.chainId);
+        },
         ...(applicationFactory === undefined ? {} : { applicationFactory }),
       });
     };

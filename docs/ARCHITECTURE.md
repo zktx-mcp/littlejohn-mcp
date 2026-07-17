@@ -33,7 +33,7 @@ and serialized wallet operation contracts defined below.
 The owner also opens one bounded RPC reader for the configured Robinhood Chain
 endpoint. `chain.status`, `contract.inspect`, `transaction.inspect`, and
 `account.balance` are complete internal direct capabilities. Every invocation
-checks chain ID `4663`; pins dependent state reads to one observed canonical
+checks canonical chain ID `eip155:4663`; pins dependent state reads to one observed canonical
 block hash using [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898); preserves
 integers as base-10 strings; validates transaction, receipt, log, and block
 identity; preserves the signed access-list sequence and multiplicity; and
@@ -108,6 +108,10 @@ MCP, loopback HTTP, CLI, and web bindings. Transport adapters and the runtime
 support manifest derive from these sources rather than maintaining parallel
 tool, schema, route, or availability lists. The interface layer projects the
 completed wallet and chain ports into HTTP, MCP, CLI, and the React root dialog.
+Read-result consumers revalidate the normalized request, result chain scope,
+and evidence-anchor chain scope through the same definition-owned checks used
+by the local producer. Observation-claim binding remains producer-only because
+those claims do not cross the transport boundary.
 The runtime support manifest remains the machine authority for binding
 availability, and its public projection is
 `docs/PRODUCT_POLICY.md#current-support`. No signature request, transaction
@@ -292,26 +296,42 @@ to contain a malicious process already running with the same user authority.
 
 - The local control credential contains 256 random bits, is encoded as
   unpadded base64url, and remains stable across compatible owner takeover.
-- The runtime protocol version is `1`. It identifies the compatible local-owner
+- The runtime protocol version is `2`. It identifies the compatible local-owner
   wire contract and current database schema; an incompatible change replaces
   this value. Profile ID and owner instance ID each
   contain 128 random bits encoded as unpadded base64url. Owner revision is an
   unsigned base-10 integer string.
 - A process first attempts to bind `127.0.0.1:46630`.
-- After a successful bind, the process transactionally publishes its profile ID,
-  owner instance ID, runtime protocol version, process ID, and owner revision to
-  SQLite.
+- Runtime configuration contains one canonical chain identity, the exact RPC
+  URI bytes, and the WalletConnect project ID. Each process derives a keyed
+  HMAC-SHA-256 configuration identifier from those values and the local control
+  credential. The identifier reveals none of its inputs.
+- The configuration key is the 32-byte HKDF-SHA-256 output derived from the
+  decoded control credential with an empty salt and exact UTF-8 information
+  `littlejohn/runtime-configuration/v2`. The HMAC payload contains the
+  canonical chain ID, exact RPC URI bytes, and WalletConnect project ID in that
+  order, each preceded by its unsigned 32-bit big-endian byte length. The
+  result is canonical unpadded base64url for 32 bytes.
+- After a successful bind, the process transactionally publishes its profile
+  ID, owner instance ID, runtime protocol version, configuration identifier,
+  process ID, and owner revision to SQLite. It then inserts its trusted
+  configured chain before application construction and before entering the
+  owner phase. A chain-insertion failure closes the listener; the published row
+  remains a projection and never proves liveness.
 - On `EADDRINUSE`, a peer sends a fresh 256-bit base64url challenge in the
   `Littlejohn-Identity-Challenge` header of
   `GET /api/v1/runtime-identity`.
 - The owner returns the strict fields `profileId`, `ownerInstanceId`,
-  `runtimeProtocolVersion`, echoed `challenge`,
-  `ownerRevision`, and `proof`. The proof is HMAC-SHA-256 over the version-1
+  `runtimeProtocolVersion`, `configurationMac`, echoed `challenge`,
+  `ownerRevision`, and `proof`. The proof is HMAC-SHA-256 over the
   length-prefixed UTF-8 encoding of those preceding fields in that order using
   the local control credential. Each length prefix is the unsigned 32-bit
   big-endian byte length of the following UTF-8 field.
-- The peer verifies the challenge, proof, profile ID, and protocol version
-  before deferring ownership or sending any authenticated control request.
+- The peer verifies the challenge, proof, profile ID, protocol version, and
+  configuration identifier before deferring ownership or sending any
+  authenticated control request. A process with a different exact RPC URI,
+  WalletConnect project ID, or chain configuration is incompatible and never
+  shares the active fixed-port server.
 - A credential-bearing owner operation is assigned only to the exact socket
   that completed identity verification. A replacement socket receives no
   credential until it completes a new identity verification.
@@ -359,10 +379,13 @@ to contain a malicious process already running with the same user authority.
   authority into interface state.
 - The WalletConnect SDK's private storage is authoritative for pairings,
   sessions, topics, namespaces, expiry, and session key material.
-- The selected Robinhood Chain account is a CAIP-10 account reference bound to
-  the active session topic under the
+- A connected wallet projection contains one canonical EIP-155 chain identity
+  and one canonical lowercase EVM address. The coordinator derives their
+  CAIP-10 account reference only at WalletConnect protocol and internal session
+  continuity boundaries under the
   [CAIP-10 account identifier specification](https://standards.chainagnostic.org/CAIPs/caip-10).
-  An address stored without its active session is not a connected account.
+  A persistent wallet-account row is local account identity only; it never
+  proves a live session, address control, or wallet authority.
 - The process that owns the fixed local HTTP origin owns the wallet coordinator.
 - The owner keeps the coordinator and relay connection active while it serves
   wallet operations.
@@ -402,16 +425,24 @@ conversion, repair, or automatic replacement. A development schema change
 requires deleting the isolated local data directory before starting the current
 runtime.
 
-The product SQLite database stores:
+The current product SQLite schema contains exactly seven tables:
 
-- the local profile identity;
-- HTTP-owner identity, compatibility version, and liveness state;
-- the selected CAIP-10 account reference;
-- the normalized wallet connection state and revision;
-- derived chain, account, approved-method, approved-event, and expiry display
-  facts after coordinator validation; and
-- product-owned settings, read models, review state, and evidence that are
-  independently permitted by their owning modules.
+- `local_profile` stores the local profile identity;
+- `runtime_owner` stores the HTTP-owner identity, compatibility version,
+  configuration identifier, process projection, and owner revision;
+- `chain` stores trusted canonical EIP-155 chain identities inserted only from
+  runtime configuration after fixed-port ownership is acquired;
+- `contract` and `token_contract` are empty chain-scoped parent-identity tables
+  with no current product writer;
+- `wallet_account` stores persistent `(profile, chain, address)` identities that
+  survive disconnect, account change, session deletion, and owner takeover; and
+- `current_wallet_connection` stores the secret-free current connection
+  projection and revision.
+
+The connection projection is not the durable owner of account identity. A
+validated connected transition inserts or reuses its exact wallet-account row
+and replaces the projection in one transaction. A nonconnected transition
+changes only the projection and never deletes a wallet-account row.
 
 The current wallet management operation is owner-memory coordination state. It
 contains its opaque identifier, kind, state, starting connection revision,
@@ -444,7 +475,7 @@ is currently connected. On startup or ownership takeover, the coordinator:
 
 1. initializes the WalletConnect SDK against its private store;
 2. reads sessions through the SDK API;
-3. validates expiry, `eip155:4663`, approved account, required methods, and
+3. validates expiry, the configured canonical chain, approved account, required methods, and
    current session usability;
 4. subscribes to session lifecycle events; and
 5. transactionally replaces the SQLite connection projection.

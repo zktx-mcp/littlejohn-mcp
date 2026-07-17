@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { canonicalJsonStringify, type CanonicalJson } from "./canonical-json.js";
 import { isStrictlyOrderedUnique, type ObservationId } from "./evidence.js";
-import { robinhoodChainIdentity } from "./identities.js";
+import { evmChainIdSchema } from "./identities.js";
 import { guardJsonSchema, jsonObject } from "./json-object.js";
 import {
   createPrimitiveSchemaSet,
@@ -54,11 +54,11 @@ export const createAmountSchemaSet = () => {
   const observationId = prefixedCanonicalBase64UrlSchema("obs:", 32).brand("ObservationId");
   const nativeAssetIdentity = jsonObject({
     kind: z.literal("native"),
-    chainId: z.literal(robinhoodChainIdentity.chainId),
+    chainId: evmChainIdSchema,
   }).strict();
   const erc20AssetIdentity = jsonObject({
     kind: z.literal("erc20"),
-    chainId: z.literal(robinhoodChainIdentity.chainId),
+    chainId: evmChainIdSchema,
     address: primitives.evmAddress,
   }).strict();
   const assetIdentity = z.discriminatedUnion("kind", [nativeAssetIdentity, erc20AssetIdentity]);

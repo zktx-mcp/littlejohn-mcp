@@ -29,7 +29,7 @@ import { runtimePaths } from "../../src/runtime/paths.js";
 import { parseRuntimeRevision } from "../../src/runtime/runtime-identity.js";
 import { createResourceOwnershipScope } from "../../src/runtime/resource-ownership.js";
 import {
-  initialRuntimeSupportManifest,
+  createInitialRuntimeSupportManifest,
   readRuntimeSupportManifest,
   type WalletConnectionRecord,
   type WalletOwnerApplicationContext,
@@ -135,6 +135,7 @@ class FakeWalletConnectClient implements WalletConnectClientPort {
 
 const createBootstrap = (privateStoreDirectory: string): WalletOwnerBootstrapPort => {
   const clock = createCanonicalClock(() => observedAt);
+  const configuration = readRuntimeConfiguration({}).wallet;
   const sdkStoreAuthority = createObservationAuthority({
     clock,
     sourceClass: "wallet_sdk",
@@ -144,9 +145,9 @@ const createBootstrap = (privateStoreDirectory: string): WalletOwnerBootstrapPor
       sourceId: `wallet-sdk:${"A".repeat(22)}`,
     }),
   });
-  const invocationAuthority = createCapabilityInvocationAuthority(clock);
+  const invocationAuthority = createCapabilityInvocationAuthority(clock, configuration.chain.chainId);
   return Object.freeze({
-    configuration: readRuntimeConfiguration({}).wallet,
+    configuration,
     privateStoreDirectory: Object.freeze({ ensureDirectory: async () => privateStoreDirectory }),
     projection: new MemoryWalletProjection(),
     sourceAuthority: Object.freeze({
@@ -201,11 +202,12 @@ const createContextWithScope = async (
   if (process.platform !== "win32") await chmod(privateStoreDirectory, 0o700);
   directories.push(privateStoreDirectory);
   const startupScope = createResourceOwnershipScope();
+  const configuration = readRuntimeConfiguration({});
   const context: WalletOwnerApplicationContext = Object.freeze({
     routes: routes ?? await createRoutes(),
     signal: new AbortController().signal,
     startupResources: startupScope.resources,
-    supportManifest: initialRuntimeSupportManifest,
+    supportManifest: createInitialRuntimeSupportManifest(configuration.chain),
     wallet: createBootstrap(privateStoreDirectory),
   });
   return Object.freeze({ context, startupScope });
@@ -260,8 +262,7 @@ describe("wallet owner application composition", () => {
     const application = await createApplication(context);
 
     expect(configurations).toEqual([{
-      projectId: readRuntimeConfiguration({}).wallet.projectId,
-      metadata: readRuntimeConfiguration({}).wallet.metadata,
+      wallet: readRuntimeConfiguration({}).wallet,
       privateStoreDirectory,
     }]);
     expect(Object.isFrozen(configurations[0])).toBe(true);

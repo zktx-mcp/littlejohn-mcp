@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createApplicationFailure } from "../../src/core/index.js";
+import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import {
   RuntimeOperationError,
   assertDirectInterfaceErrorMappingRegistryExtension,
@@ -20,7 +21,7 @@ import {
   extendChainRuntimeSupportManifest,
   extendInterfaceRuntimeSupportManifest,
   extendWalletRuntimeSupportManifest,
-  initialRuntimeSupportManifest,
+  createInitialRuntimeSupportManifest,
   projectCurrentSupportDocument,
   readRuntimeSupportManifest,
   renderCurrentSupportSection,
@@ -28,6 +29,10 @@ import {
   type RuntimeSupportManifestExtensionInput,
   verifyCurrentSupportDocument,
 } from "../../src/runtime/support-manifest.js";
+
+const initialRuntimeSupportManifest = createInitialRuntimeSupportManifest(
+  readRuntimeConfiguration({}).chain,
+);
 
 const unavailable = {
   overall: "unavailable",
@@ -77,10 +82,9 @@ const chainExtensionInput = {
 describe("runtime support manifest authority", () => {
   it("starts with only the five canonical read identities and official L0 evidence", () => {
     const snapshot = readRuntimeSupportManifest(initialRuntimeSupportManifest);
-    expect(snapshot.contractVersion).toBe("1");
+    expect(snapshot.contractVersion).toBe("2");
     expect(snapshot.chains).toEqual([{
-      chainId: "4663",
-      caip2: "eip155:4663",
+      chainId: "eip155:4663",
       supportLevel: "L0_discovered",
       evidence: {
         position: "source_defined",
@@ -100,6 +104,16 @@ describe("runtime support manifest authority", () => {
     expect(snapshot.capabilities.every((entry) => entry.availability.overall === "unavailable")).toBe(true);
     expect(Object.isFrozen(snapshot)).toBe(true);
     expect(Object.isFrozen(snapshot.capabilities)).toBe(true);
+  });
+
+  it("rejects a structurally forged chain configuration before it enters support", () => {
+    for (const chain of [
+      { chainId: "4663" },
+      { chainId: "eip155:04663" },
+      { chainId: "eip155:0" },
+      { chainId: "eip155:1" },
+      { chainId: "eip155:4663" },
+    ]) expect(() => createInitialRuntimeSupportManifest(chain as never)).toThrow();
   });
 
   it("accepts the complete first-consumer capability set without predeclaring it", () => {
@@ -203,8 +217,8 @@ describe("runtime support manifest authority", () => {
     try {
       manifestRuntime.run = () => ({ value: { forged: true }, issues: [] });
       catalogRuntime.run = () => ({ value: { forged: true }, issues: [] });
-      expect(readRuntimeSupportManifest(initialRuntimeSupportManifest).chains[0]?.chainId).toBe("4663");
-      expect(composeCapabilityCatalog(initialRuntimeSupportManifest).contractVersion).toBe("1");
+      expect(readRuntimeSupportManifest(initialRuntimeSupportManifest).chains[0]?.chainId).toBe("eip155:4663");
+      expect(composeCapabilityCatalog(initialRuntimeSupportManifest).contractVersion).toBe("2");
     } finally {
       manifestRuntime.run = manifestRun;
       catalogRuntime.run = catalogRun;

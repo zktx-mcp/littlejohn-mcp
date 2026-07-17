@@ -7,7 +7,7 @@ import {
   type ExternalSourceClass,
   type SourceReference,
 } from "./evidence.js";
-import { robinhoodChainIdentity } from "./identities.js";
+import { parseEvmChainId, type EvmChainId } from "./identities.js";
 import {
   createPrimitiveSchemaSet,
   parseUtcTimestamp,
@@ -159,30 +159,35 @@ export interface CapabilityInvocationAuthority {
   readonly __capabilityInvocationAuthority: unique symbol;
 }
 
-const invocationAuthorityStates = new WeakMap<object, { readonly clock: CanonicalClock }>();
+const invocationAuthorityStates = new WeakMap<object, {
+  readonly clock: CanonicalClock;
+  readonly chainId: EvmChainId;
+}>();
 
 export const assertCapabilityInvocationAuthority = (
   authority: CapabilityInvocationAuthority,
-): CanonicalClock => {
+): Readonly<{ clock: CanonicalClock; chainId: EvmChainId }> => {
   const state = typeof authority === "object" && authority !== null
     ? invocationAuthorityStates.get(authority)
     : undefined;
   if (state === undefined) throw new TypeError("Invocation authority provenance is invalid.");
-  return state.clock;
+  return state;
 };
 
 export const createCapabilityInvocationAuthority = (
   clock: CanonicalClock,
+  chainIdInput: EvmChainId,
 ): CapabilityInvocationAuthority => {
   assertCanonicalClock(clock);
+  const chainId = parseEvmChainId(chainIdInput);
   const authority = Object.freeze({}) as CapabilityInvocationAuthority;
-  invocationAuthorityStates.set(authority, { clock });
+  invocationAuthorityStates.set(authority, Object.freeze({ clock, chainId }));
   return authority;
 };
 
 export interface HandlerInvocationContext<Ports extends InvocationBoundaryPorts = InvocationBoundaryPorts> {
   readonly clock: CanonicalClock;
-  readonly chainScope: typeof robinhoodChainIdentity;
+  readonly chainScope: EvmChainId;
   readonly signal: AbortSignal;
   readonly ports: Ports;
 }
@@ -192,13 +197,13 @@ export const createHandlerInvocationContext = <Ports extends InvocationBoundaryP
   readonly signal: AbortSignal;
   readonly ports: Ports;
 }): HandlerInvocationContext<Ports> => {
-  const clock = assertCapabilityInvocationAuthority(input.authority);
+  const { clock, chainId } = assertCapabilityInvocationAuthority(input.authority);
   if (!input.ports.observations.uses(clock)) {
     throw new TypeError("Invocation ports use a different canonical clock.");
   }
   return Object.freeze({
     clock,
-    chainScope: robinhoodChainIdentity,
+    chainScope: chainId,
     signal: input.signal,
     ports: input.ports,
   });

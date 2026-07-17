@@ -17,7 +17,7 @@ const address1 = `0x${"1".repeat(40)}`;
 const address2 = `0x${"2".repeat(40)}`;
 const observationId = `obs:${"A".repeat(43)}`;
 const nativeAmount = {
-  asset: { kind: "native", chainId: "4663" },
+  asset: { kind: "native", chainId: "eip155:4663" },
   raw: "1",
   decimals: { status: "not_observed", scopeExclusionId: "transaction_native_decimals_not_observed" },
   quantityObservationId: observationId,
@@ -58,7 +58,7 @@ describe("capability schemas", () => {
     expect(safeParseCapabilityData(contractInspectCapability, {
       address: address1,
       block: {
-        chainId: "4663",
+        chainId: "eip155:4663",
         blockNumber: "1",
         blockHash: `0x${"a".repeat(64)}`,
         blockTimestamp: "2026-07-12T10:16:02.000Z",
@@ -71,7 +71,7 @@ describe("capability schemas", () => {
     const data = {
       address: address1,
       block: {
-        chainId: "4663",
+        chainId: "eip155:4663",
         blockNumber: "1",
         blockHash: `0x${"a".repeat(64)}`,
         blockTimestamp: "2026-07-12T10:16:02.000Z",
@@ -106,10 +106,31 @@ describe("capability schemas", () => {
     expect(safeParseCapabilityInput(accountBalanceCapability, { ...base, tokens: [] }).success).toBe(false);
   });
 
+  it("normalizes human-entered EVM addresses before invoking a capability", () => {
+    const checksummed = "0x52908400098527886E0F7030069857D2E4169EE7";
+    expect(parseCapabilityInput(contractInspectCapability, {
+      address: checksummed,
+      block: { kind: "latest" },
+    }).address).toBe(checksummed.toLowerCase());
+    expect(parseCapabilityInput(accountBalanceCapability, {
+      account: { kind: "address", address: `0x${"A".repeat(40)}` },
+      includeNative: false,
+      tokens: [checksummed],
+      block: { kind: "latest" },
+    })).toMatchObject({
+      account: { kind: "address", address: `0x${"a".repeat(40)}` },
+      tokens: [checksummed.toLowerCase()],
+    });
+    expect(safeParseCapabilityInput(contractInspectCapability, {
+      address: "0x52908400098527886e0F7030069857D2E4169EE7",
+      block: { kind: "latest" },
+    }).success).toBe(false);
+  });
+
   it("binds transaction type, fee form, access-list form, and native amount mode", () => {
     const transaction = {
       transactionHash: `0x${"a".repeat(64)}`,
-      chainId: "4663",
+      chainId: "eip155:4663",
       from: address1,
       recipient: { kind: "call", address: address2 },
       value: nativeAmount,
@@ -137,10 +158,9 @@ describe("capability schemas", () => {
     expect(safeParseCapabilityData(transactionInspectCapability, { ...transaction, type: "128" }).success).toBe(false);
   });
 
-  it("binds connected wallet state to one canonical CAIP-10 account and excludes secrets", () => {
+  it("binds connected wallet state to one canonical chain-address identity and excludes secrets", () => {
     const connected = {
       status: "connected",
-      account: `eip155:4663:${address1}`,
       address: address1,
       chainId: "eip155:4663",
       approvedMethods: ["eth_sendTransaction"],
@@ -162,13 +182,13 @@ describe("capability schemas", () => {
 
   it("accepts a decoded ERC-20 event only when every canonical log word matches", () => {
     const block = {
-      chainId: "4663",
+      chainId: "eip155:4663",
       blockNumber: "1",
       blockHash: `0x${"b".repeat(64)}`,
       blockTimestamp: "2026-07-12T10:16:02.000Z",
     };
     const amount = {
-      asset: { kind: "erc20", chainId: "4663", address: address2 },
+      asset: { kind: "erc20", chainId: "eip155:4663", address: address2 },
       raw: "5",
       decimals: { status: "not_observed", scopeExclusionId: "transaction_event_decimals_not_observed" },
       quantityObservationId: observationId,
@@ -187,7 +207,7 @@ describe("capability schemas", () => {
     };
     const included = {
       transactionHash: `0x${"c".repeat(64)}`,
-      chainId: "4663",
+      chainId: "eip155:4663",
       from: address1,
       recipient: { kind: "call", address: address2 },
       value: nativeAmount,

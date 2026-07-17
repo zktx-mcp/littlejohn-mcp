@@ -7,11 +7,9 @@ import {
   compareCodePointSequences,
   fixedIdentifierSchema,
   isSafeSingleLineText,
-  parseEvmAddress,
-  robinhoodChainIdentity,
-  robinhoodWalletNamespaceRequirements,
+  parseEvmAddressInput,
 } from "../core/index.js";
-import type { CanonicalJson, EvmAddress } from "../core/index.js";
+import type { CanonicalJson, EvmAddress, EvmChainId } from "../core/index.js";
 import {
   walletConnectProjectIdSchema,
   type WalletConnectConfiguration,
@@ -42,14 +40,6 @@ const walletExternalModules = walletExternalModulesValue as unknown as Readonly<
 const loadWalletExternalModule: WalletExternalModuleLoader = (key) => key === "signClient"
   ? walletExternalModules.loadSignClientModule()
   : walletExternalModules.loadQrCodeModule();
-
-const walletConnectRequiredNamespaces = Object.freeze({
-  eip155: Object.freeze({
-    chains: Object.freeze([robinhoodWalletNamespaceRequirements.chainId]),
-    methods: Object.freeze([...robinhoodWalletNamespaceRequirements.methods]),
-    events: Object.freeze([...robinhoodWalletNamespaceRequirements.events]),
-  }),
-});
 
 const sdkEventNames = Object.freeze([
   "session_update",
@@ -88,7 +78,7 @@ export interface WalletConnectSessionSnapshot {
 }
 
 export type WalletConnectAccountReference =
-  `${typeof robinhoodChainIdentity.caip2}:${EvmAddress}`;
+  `${EvmChainId}:${EvmAddress}`;
 
 export type WalletConnectAttemptOutcome =
   | { readonly status: "approved"; readonly session: WalletConnectSessionSnapshot }
@@ -168,8 +158,7 @@ export interface WalletConnectClientPort {
 }
 
 export interface WalletConnectClientConfiguration {
-  readonly projectId: string;
-  readonly metadata: WalletConnectConfiguration["metadata"];
+  readonly wallet: WalletConnectConfiguration;
   readonly privateStoreDirectory: string;
 }
 
@@ -208,9 +197,9 @@ export interface WalletConnectSdkInitOptions {
 export interface WalletConnectSdkConnectInput {
   readonly requiredNamespaces: {
     readonly eip155: {
-      readonly chains: readonly (typeof robinhoodWalletNamespaceRequirements.chainId)[];
-      readonly methods: readonly (typeof robinhoodWalletNamespaceRequirements.methods[number])[];
-      readonly events: readonly (typeof robinhoodWalletNamespaceRequirements.events[number])[];
+      readonly chains: readonly EvmChainId[];
+      readonly methods: WalletConnectConfiguration["requiredMethods"];
+      readonly events: WalletConnectConfiguration["requiredEvents"];
     };
   };
 }
@@ -1673,15 +1662,16 @@ const qrMatrixFromValue = (value: unknown): WalletQrMatrix => {
   return parseWalletQrMatrix({ size, rows });
 };
 
-const normalizeChangedAccounts = (value: unknown): readonly WalletConnectAccountReference[] => {
+const normalizeChangedAccounts = (
+  value: unknown,
+  chainId: EvmChainId,
+): readonly WalletConnectAccountReference[] => {
   const accounts = copySdkStringArray(value);
-  const prefix = `${robinhoodWalletNamespaceRequirements.chainId}:`;
+  const prefix = `${chainId}:`;
   return Object.freeze(accounts.map((account) => {
     const addressValue = account.startsWith(prefix) ? account.slice(prefix.length) : account;
-    const address = parseEvmAddress(addressValue);
-    const normalized = `${prefix}${address}` as WalletConnectAccountReference;
-    if (account !== address && account !== normalized) throw invalidSdkData();
-    return normalized;
+    const address = parseEvmAddressInput(addressValue);
+    return `${prefix}${address}` as WalletConnectAccountReference;
   }));
 };
 
@@ -2191,6 +2181,7 @@ class WalletConnectClient implements WalletConnectClientPort {
   constructor(
     private readonly sdk: WalletConnectSdkPort,
     private readonly qrEncoder: WalletQrEncoder,
+    private readonly configuration: WalletConnectConfiguration,
   ) {}
 
   async initialize(): Promise<void> {
@@ -2279,7 +2270,13 @@ class WalletConnectClient implements WalletConnectClientPort {
       const rawStart = await this.runSdkCommand(async () => {
         sdkStartInvoked = true;
         const result = await this.sdk.startConnection({
-          requiredNamespaces: walletConnectRequiredNamespaces,
+          requiredNamespaces: Object.freeze({
+            eip155: Object.freeze({
+              chains: Object.freeze([this.configuration.chain.chainId]),
+              methods: this.configuration.requiredMethods,
+              events: this.configuration.requiredEvents,
+            }),
+          }),
         });
         return result;
       });
@@ -2610,7 +2607,7 @@ class WalletConnectClient implements WalletConnectClientPort {
     try {
       const parameters = readOwnDataProperty(event, "params");
       const chainId = readOwnDataProperty(parameters, "chainId");
-      if (chainId !== robinhoodWalletNamespaceRequirements.chainId) throw invalidSdkData();
+      if (chainId !== this.configuration.chain.chainId) throw invalidSdkData();
       const sdkEvent = readOwnDataProperty(parameters, "event");
       const name = readOwnDataProperty(sdkEvent, "name");
       const data = readOwnDataProperty(sdkEvent, "data");
@@ -2619,7 +2616,7 @@ class WalletConnectClient implements WalletConnectClientPort {
           kind: "session_event",
           topic,
           eventName: "accountsChanged",
-          data: normalizeChangedAccounts(data),
+          data: normalizeChangedAccounts(data, this.configuration.chain.chainId),
         }));
         return;
       }
@@ -2732,7 +2729,7 @@ export const createWalletConnectClient = async (
   moduleLoader: WalletExternalModuleLoader = loadWalletExternalModule,
 ): Promise<WalletConnectClientAcquisition> => {
   if (
-    !walletConnectProjectIdSchema.safeParse(configuration.projectId).success ||
+    !walletConnectProjectIdSchema.safeParse(configuration.wallet.projectId).success ||
     !isAbsolute(configuration.privateStoreDirectory) ||
     configuration.privateStoreDirectory.includes("\0")
   ) {
@@ -2752,9 +2749,9 @@ export const createWalletConnectClient = async (
     const sdk = await acquisitionBudget.run(() => {
       const factoryResult = Promise.resolve()
         .then(() => (sdkFactory ?? productionDependencies.sdkFactory)({
-        projectId: configuration.projectId,
-        name: configuration.metadata.name,
-        metadata: configuration.metadata,
+        projectId: configuration.wallet.projectId,
+        name: configuration.wallet.metadata.name,
+        metadata: configuration.wallet.metadata,
         storageOptions: { database: configuration.privateStoreDirectory },
         telemetryEnabled: false,
         logger,
@@ -2770,7 +2767,11 @@ export const createWalletConnectClient = async (
         },
       );
     });
-    const client = new WalletConnectClient(sdk, productionDependencies.qrEncoder);
+    const client = new WalletConnectClient(
+      sdk,
+      productionDependencies.qrEncoder,
+      configuration.wallet,
+    );
     acquisitionResource.retainCleanup(async () => client.close());
     await acquisitionBudget.run(() => client.initialize());
     acquisitionResource.markReady();

@@ -20,6 +20,7 @@ import {
   createCapabilityInvocationAuthority,
   createObservationAuthority,
   evmAddressSchema,
+  evmChainIdSchema,
   getCapabilityDefinitionSnapshot,
   parseCapabilitySuccess,
   productDisplayName,
@@ -34,6 +35,7 @@ import { defineReadCapability } from "../../src/core/capability.js";
 import { chainErrorRegistry } from "../../src/chain/errors.js";
 import {
   bindForHarness,
+  configuredChainId,
   createCapabilityHarness,
   fixedEvaluationTime,
   invokeBinding,
@@ -57,7 +59,7 @@ const runInvocationRngChild = async (mode: "success" | "failure") => {
 };
 
 const block = chainAnchorSchema.parse({
-  chainId: "4663",
+  chainId: configuredChainId,
   blockNumber: "10",
   blockHash: `0x${"a".repeat(64)}`,
   blockTimestamp: fixedEvaluationTime,
@@ -77,7 +79,7 @@ const successfulHandler = (
   context: Parameters<Parameters<typeof bindForHarness>[2]>[1],
   observations: ObservationWriter,
 ) => {
-  recordRpc(context, observations, "rpc_chain_id", [{ role: "chain_id", value: "4663" }]);
+  recordRpc(context, observations, "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
   recordRpc(context, observations, "latest_block", [{
     role: "latest_block",
     value: block,
@@ -85,7 +87,7 @@ const successfulHandler = (
   }]);
   return {
     status: "success",
-    data: { chainId: "4663", caip2: "eip155:4663", latestBlock: block },
+    data: { chainId: configuredChainId, latestBlock: block },
   };
 };
 
@@ -98,6 +100,7 @@ describe("capability binding authority", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.evidence.coverage.status).toBe("complete");
+    expect(result.meta.chainId).toBe(configuredChainId);
     expect(result.evidence.conclusions.map((item) => item.id)).toEqual([
       "latest_block_observed",
       "rpc_chain_id_matches_scope",
@@ -177,6 +180,24 @@ describe("capability binding authority", () => {
     if (!result.ok) expect(result.error.code).toBe("internal_error");
   });
 
+  it("rejects internally consistent data from a different invocation chain", async () => {
+    const otherChainId = evmChainIdSchema.parse("eip155:1");
+    const otherBlock = chainAnchorSchema.parse({ ...block, chainId: otherChainId });
+    const harness = createCapabilityHarness();
+    const binding = bindForHarness(chainStatusCapability, harness, async (_input, context, observations) => {
+      recordRpc(context, observations, "rpc_chain_id", [{ role: "chain_id", value: otherChainId }]);
+      recordRpc(context, observations, "latest_block", [{
+        role: "latest_block",
+        value: otherBlock,
+        chainAnchor: otherBlock,
+      }]);
+      return { status: "success", data: { chainId: otherChainId, latestBlock: otherBlock } };
+    });
+    const result = await invokeBinding(chainStatusCapability, binding, {});
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("internal_error");
+  });
+
   it("contains hostile handler wrappers without reading getters or disclosing values", async () => {
     const harness = createCapabilityHarness();
     const extra = bindForHarness(chainStatusCapability, harness, async (_input, context, observations) => ({
@@ -246,10 +267,9 @@ describe("capability binding authority", () => {
     const prototypeData = bindForHarness(chainStatusCapability, harness, async () => JSON.parse(`{
       "status":"success",
       "data":{
-        "chainId":"4663",
-        "caip2":"eip155:4663",
+        "chainId":"eip155:4663",
         "latestBlock":{
-          "chainId":"4663",
+          "chainId":"eip155:4663",
           "blockNumber":"10",
           "blockHash":"0x${"a".repeat(64)}",
           "blockTimestamp":"${fixedEvaluationTime}"
@@ -264,7 +284,7 @@ describe("capability binding authority", () => {
     const harness = createCapabilityHarness();
     const forged = bindForHarness(chainStatusCapability, harness, async (_input, _context, observations) => {
       observations.record("rpc_chain_id", {} as never);
-      return { status: "success", data: { chainId: "4663", caip2: "eip155:4663", latestBlock: block } };
+      return { status: "success", data: { chainId: configuredChainId, latestBlock: block } };
     });
     expect((await invokeBinding(chainStatusCapability, forged, {})).ok).toBe(false);
 
@@ -281,9 +301,9 @@ describe("capability binding authority", () => {
       });
       observations.record("rpc_chain_id", {
         source,
-        claims: [{ role: "chain_id", value: "4663" }],
+        claims: [{ role: "chain_id", value: configuredChainId }],
       });
-      return { status: "success", data: { chainId: "4663", caip2: "eip155:4663", latestBlock: block } };
+      return { status: "success", data: { chainId: configuredChainId, latestBlock: block } };
     });
     expect((await invokeBinding(chainStatusCapability, unregistered, {})).ok).toBe(false);
 
@@ -346,7 +366,7 @@ describe("capability binding authority", () => {
         freshnessRuleId: "validated_input_current" as const,
       }],
       deriveWarnings: () => [],
-      validateInvocation: (input, data) => {
+      validateRequest: (input, data) => {
         if (input.values.join("\0") !== data.values.join("\0")) throw new TypeError("Input mismatch.");
       },
       warningCodes: [],
@@ -516,7 +536,7 @@ describe("capability binding authority", () => {
       } catch {
         mutationRejected = true;
       }
-      recordRpc(context, observations, "rpc_chain_id", [{ role: "chain_id", value: "4663" }]);
+      recordRpc(context, observations, "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
       recordRpc(context, observations, "block", [{
         role: "contract_block",
         value: { address: input.address, block },
@@ -656,7 +676,7 @@ describe("capability binding authority", () => {
 
   it("keeps each invocation on the one captured authority snapshot", async () => {
     const clock = createCanonicalClock(() => fixedEvaluationTime);
-    const invocationAuthority = createCapabilityInvocationAuthority(clock);
+    const invocationAuthority = createCapabilityInvocationAuthority(clock, configuredChainId);
     const registry = (label: string) => new ObservationAuthorityRegistry(clock, [
       createObservationAuthority({
         clock,
@@ -703,7 +723,6 @@ describe("capability binding authority", () => {
     const harness = createCapabilityHarness(() => "2026-07-12T10:16:02.000Z");
     const connected = {
       status: "connected" as const,
-      account: "eip155:4663:0x1111111111111111111111111111111111111111",
       address: "0x1111111111111111111111111111111111111111",
       chainId: "eip155:4663" as const,
       approvedMethods: ["eth_sendTransaction"],
@@ -725,24 +744,24 @@ describe("capability binding authority", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    const parsed = parseCapabilitySuccess(walletConnectionCapability, result);
+    const parsed = parseCapabilitySuccess(walletConnectionCapability, {}, result);
     expect(parsed).toEqual(result);
     expect(Object.isFrozen(parsed)).toBe(true);
     expect(Object.isFrozen(parsed.data)).toBe(true);
 
-    expect(() => parseCapabilitySuccess(walletConnectionCapability, {
+    expect(() => parseCapabilitySuccess(walletConnectionCapability, {}, {
       ...result,
       unexpected: true,
     })).toThrow();
-    expect(() => parseCapabilitySuccess(walletConnectionCapability, {
+    expect(() => parseCapabilitySuccess(walletConnectionCapability, {}, {
       ...result,
       meta: { ...result.meta, capabilityId: "chain.status" },
     })).toThrow();
-    expect(() => parseCapabilitySuccess(walletConnectionCapability, {
+    expect(() => parseCapabilitySuccess(walletConnectionCapability, {}, {
       ...result,
       data: { ...result.data, account: `eip155:4663:0x${"2".repeat(40)}` },
     })).toThrow();
-    expect(() => parseCapabilitySuccess(walletConnectionCapability, {
+    expect(() => parseCapabilitySuccess(walletConnectionCapability, {}, {
       ...result,
       meta: { ...result.meta, evaluatedAt: connected.expiresAt },
     })).toThrow();
@@ -755,11 +774,72 @@ describe("capability binding authority", () => {
         throw new Error("secret transport value");
       },
     });
-    expect(() => parseCapabilitySuccess(walletConnectionCapability, hostile)).toThrow();
+    expect(() => parseCapabilitySuccess(walletConnectionCapability, {}, hostile)).toThrow();
     expect(getterReads).toBe(0);
-    expect(() => parseCapabilitySuccess(walletConnectionCapability, new Proxy({}, {
+    expect(() => parseCapabilitySuccess(walletConnectionCapability, {}, new Proxy({}, {
       ownKeys(): never { throw new Error("secret transport proxy"); },
     }))).toThrow();
+  });
+
+  it("binds a transport success to its chain scope, evidence anchors, and request", async () => {
+    const chainHarness = createCapabilityHarness();
+    const chainBinding = bindForHarness(chainStatusCapability, chainHarness, async (_input, context, observations) =>
+      successfulHandler(context, observations));
+    const chainResult = await invokeBinding(chainStatusCapability, chainBinding, {});
+    expect(chainResult.ok).toBe(true);
+    if (!chainResult.ok) return;
+
+    const otherChainId = "eip155:1";
+    expect(() => parseCapabilitySuccess(chainStatusCapability, {}, {
+      ...chainResult,
+      data: {
+        chainId: otherChainId,
+        latestBlock: { ...chainResult.data.latestBlock, chainId: otherChainId },
+      },
+    })).toThrow("scope");
+    expect(() => parseCapabilitySuccess(chainStatusCapability, {}, {
+      ...chainResult,
+      evidence: {
+        ...chainResult.evidence,
+        sources: chainResult.evidence.sources.map((source) => source.chainAnchor === undefined
+          ? source
+          : { ...source, chainAnchor: { ...source.chainAnchor, chainId: otherChainId } }),
+      },
+    })).toThrow("Evidence chain scope");
+
+    const address = `0x${"1".repeat(40)}`;
+    const otherAddress = `0x${"2".repeat(40)}`;
+    const contractHarness = createCapabilityHarness();
+    const contractBinding = bindForHarness(contractInspectCapability, contractHarness,
+      async (_input, context, observations) => {
+        recordRpc(context, observations, "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
+        recordRpc(context, observations, "block", [{
+          role: "contract_block",
+          value: { address, block },
+          chainAnchor: block,
+        }]);
+        recordRpc(context, observations, "runtime_code", [{
+          role: "runtime_code",
+          value: { address, runtimeCode: { status: "empty" } },
+          chainAnchor: block,
+        }]);
+        return {
+          status: "success",
+          data: { address, block, runtimeCode: { status: "empty" as const } },
+        };
+      });
+    const contractResult = await invokeBinding(
+      contractInspectCapability,
+      contractBinding,
+      { address, block: { kind: "latest" } },
+    );
+    expect(contractResult.ok).toBe(true);
+    if (!contractResult.ok) return;
+    expect(() => parseCapabilitySuccess(
+      contractInspectCapability,
+      { address: otherAddress, block: { kind: "latest" } },
+      contractResult,
+    )).toThrow("target");
   });
 
   it("rejects a capability target that differs from its validated request", async () => {
@@ -767,7 +847,7 @@ describe("capability binding authority", () => {
     const outputAddress = `0x${"2".repeat(40)}`;
     const harness = createCapabilityHarness();
     const binding = bindForHarness(contractInspectCapability, harness, async (_input, context, observations) => {
-      recordRpc(context, observations, "rpc_chain_id", [{ role: "chain_id", value: "4663" }]);
+      recordRpc(context, observations, "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
       recordRpc(context, observations, "block", [{
         role: "contract_block",
         value: { address: outputAddress, block },
@@ -841,7 +921,7 @@ describe("capability binding authority", () => {
         }];
       },
       deriveWarnings: () => [],
-      validateInvocation: (input, data) => {
+      validateRequest: (input, data) => {
         if (input.value !== data.value) throw new TypeError("Input mismatch.");
       },
       warningCodes: [],
@@ -897,7 +977,7 @@ describe("capability binding authority", () => {
         freshnessRuleId: "validated_input_current" as const,
       }],
       deriveWarnings: () => [],
-      validateInvocation: (input, data) => {
+      validateRequest: (input, data) => {
         if (input.address !== data.address) throw new TypeError("Address mismatch.");
       },
       warningCodes: [],
@@ -926,7 +1006,6 @@ describe("capability binding authority", () => {
         id: "missing_exclusion" as never,
         message: "This exclusion is not declared.",
       }),
-      validateInvocation: () => undefined,
       warningCodes: [],
       staticScopeExclusions: [],
     });
@@ -962,7 +1041,6 @@ describe("capability binding authority", () => {
         freshnessRuleId: "chain_anchor_exact",
       }],
       deriveWarnings: () => [],
-      validateInvocation: () => undefined,
       warningCodes: [],
       staticScopeExclusions: [],
     });
@@ -1004,7 +1082,6 @@ describe("capability binding authority", () => {
         freshnessRuleId: "validated_input_current",
       }],
       deriveWarnings: () => [],
-      validateInvocation: () => undefined,
       warningCodes: [],
       staticScopeExclusions: [],
     });
@@ -1045,7 +1122,6 @@ describe("capability binding authority", () => {
         freshnessRuleId: "chain_anchor_exact",
       }],
       deriveWarnings: () => [],
-      validateInvocation: () => undefined,
       warningCodes: [],
       staticScopeExclusions: [],
     });

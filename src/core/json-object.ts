@@ -1,42 +1,77 @@
 import { z, type ZodRawShape } from "zod";
 
 const rejectedJsonObject = Symbol("rejectedJsonObject");
+const maximumJsonDepth = 64;
+const maximumJsonArrayLength = 8_192;
 
-const hasSafePrototypeKeys = (input: unknown): boolean => {
-  const active = new WeakSet<object>();
-  const verified = new WeakSet<object>();
-  const stack: { readonly value: unknown; readonly exit: boolean }[] = [{ value: input, exit: false }];
-  while (stack.length > 0) {
-    const entry = stack.pop();
-    if (entry === undefined || typeof entry.value !== "object" || entry.value === null) continue;
-    if (entry.exit) {
-      active.delete(entry.value);
-      verified.add(entry.value);
-      continue;
-    }
-    if (verified.has(entry.value)) continue;
-    if (active.has(entry.value)) return false;
-    let descriptors: Record<PropertyKey, PropertyDescriptor>;
-    try {
-      descriptors = Object.getOwnPropertyDescriptors(entry.value) as Record<PropertyKey, PropertyDescriptor>;
-    } catch {
-      return false;
-    }
-    const keys = Reflect.ownKeys(descriptors);
-    if (keys.some((key) => typeof key === "symbol" || key === "__proto__")) return false;
-    active.add(entry.value);
-    stack.push({ value: entry.value, exit: true });
-    for (const key of keys) {
-      const descriptor = descriptors[key];
-      if (descriptor === undefined || !("value" in descriptor)) return false;
-      stack.push({ value: descriptor.value, exit: false });
-    }
+const captureJsonInput = (input: unknown, active: WeakSet<object>, depth: number): unknown => {
+  if (depth > maximumJsonDepth) throw new TypeError("JSON input nesting is excessive.");
+  if (typeof input !== "object" || input === null) return input;
+  if (active.has(input)) throw new TypeError("JSON input cannot contain a cycle.");
+  let descriptors: Record<PropertyKey, PropertyDescriptor>;
+  try {
+    descriptors = Object.getOwnPropertyDescriptors(input) as Record<PropertyKey, PropertyDescriptor>;
+  } catch {
+    throw new TypeError("JSON input cannot be inspected safely.");
   }
-  return true;
+  active.add(input);
+  try {
+    if (Array.isArray(input)) {
+      const lengthDescriptor = descriptors["length"];
+      const length = lengthDescriptor !== undefined && "value" in lengthDescriptor
+        ? lengthDescriptor.value as unknown
+        : undefined;
+      if (
+        typeof length !== "number" ||
+        !Number.isSafeInteger(length) ||
+        length < 0 ||
+        length > maximumJsonArrayLength
+      ) throw new TypeError("JSON array length is invalid.");
+      const permitted = new Set<PropertyKey>(["length"]);
+      const output: unknown[] = [];
+      for (let index = 0; index < length; index += 1) {
+        const key = String(index);
+        permitted.add(key);
+        const descriptor = descriptors[key];
+        if (
+          descriptor === undefined ||
+          !("value" in descriptor) ||
+          descriptor.enumerable !== true
+        ) throw new TypeError("JSON arrays require enumerable data elements.");
+        output.push(captureJsonInput(descriptor.value, active, depth + 1));
+      }
+      if (Reflect.ownKeys(descriptors).some((key) => !permitted.has(key))) {
+        throw new TypeError("JSON arrays cannot contain additional properties.");
+      }
+      return output;
+    }
+    const output: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    for (const key of Reflect.ownKeys(descriptors)) {
+      if (typeof key !== "string" || key === "__proto__") {
+        throw new TypeError("JSON objects require safe string keys.");
+      }
+      const descriptor = descriptors[key];
+      if (
+        descriptor === undefined ||
+        !("value" in descriptor) ||
+        descriptor.enumerable !== true
+      ) throw new TypeError("JSON objects require enumerable data fields.");
+      output[key] = captureJsonInput(descriptor.value, active, depth + 1);
+    }
+    return output;
+  } finally {
+    active.delete(input);
+  }
 };
 
 export const guardJsonSchema = <Schema extends z.ZodType>(schema: Schema) =>
-  z.preprocess((input) => hasSafePrototypeKeys(input) ? input : rejectedJsonObject, schema) as z.ZodType<
+  z.preprocess((input) => {
+    try {
+      return captureJsonInput(input, new WeakSet<object>(), 0);
+    } catch {
+      return rejectedJsonObject;
+    }
+  }, schema) as z.ZodType<
     z.output<Schema>,
     z.input<Schema>
   >;

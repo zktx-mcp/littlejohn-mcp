@@ -528,7 +528,6 @@ describe("wallet browser routes", () => {
       connectionRevision,
       connection: {
         status: "connected",
-        account: "eip155:4663:0x1111111111111111111111111111111111111111",
         address: "0x1111111111111111111111111111111111111111",
         chainId: "eip155:4663",
         approvedMethods: ["eth_sendTransaction"],

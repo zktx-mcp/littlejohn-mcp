@@ -48,6 +48,7 @@ export type {
   WalletConnectionInput,
 } from "./capabilities.js";
 export {
+  walletConnectionStatusDefinitions,
   walletConnectionDataSchema,
 } from "./wallet-connection.js";
 export type { WalletConnectionData } from "./wallet-connection.js";
@@ -74,14 +75,15 @@ export type {
   CapabilitySuccess,
   ConclusionDraft,
   DataValidationContext,
+  EvidenceValidationContext,
   FactRequirement,
-  InvocationValidationContext,
   IntrinsicDataValidationContext,
   ObservationExpectation,
   ObservationSlot,
   ObservationWriter,
   ObservedFact,
   ReadCapabilityDefinition,
+  SuccessValidationContext,
   WarningRequirement,
 } from "./capability.js";
 export {
@@ -141,8 +143,27 @@ export type {
   WarningCode,
 } from "./evidence.js";
 export {
-  robinhoodChainIdentity,
-  robinhoodWalletNamespaceRequirements,
+  evmAddressInputSchema,
+  parseCaip10EvmAccount,
+  parseEvmAddressInput,
+} from "./evm-address-input.js";
+export {
+  deriveCaip10Account,
+  deriveEip155Reference,
+  evmAccountIdentitySchema,
+  evmAddressSchema,
+  evmChainIdSchema,
+  evmContractIdentitySchema,
+  parseEvmAccountIdentity,
+  parseEvmAddress,
+  parseEvmChainId,
+  parseEvmContractIdentity,
+} from "./identities.js";
+export type {
+  EvmAccountIdentity,
+  EvmAddress,
+  EvmChainId,
+  EvmContractIdentity,
 } from "./identities.js";
 export {
   ObservationAuthorityRegistry,
@@ -158,7 +179,7 @@ export type {
   ObservationAuthority,
   ObservationClaim,
 } from "./invocation.js";
-export { keccak256Hex } from "./keccak256.js";
+export { keccak256FromHex } from "./keccak256.js";
 export {
   blockSelectorSchema,
   canonicalBase64UrlPattern,
@@ -167,13 +188,11 @@ export {
   codePointLength,
   compareCodePointSequences,
   decodeCanonicalBase64Url,
-  evmAddressSchema,
   fixedIdentifierSchema,
   generalSingleLineTextSchema,
   hash32Schema,
   hexBytesSchema,
   isSafeSingleLineText,
-  parseEvmAddress,
   parseHash32,
   parseHexBytes,
   parseUnsignedDecimal,
@@ -186,7 +205,6 @@ export {
 export type {
   BlockSelector,
   ChainAnchor,
-  EvmAddress,
   FixedIdentifier,
   Hash32,
   HexBytes,

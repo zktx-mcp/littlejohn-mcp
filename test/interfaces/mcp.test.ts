@@ -30,9 +30,10 @@ import type {
 } from "../../src/runtime/index.js";
 import {
   composeCapabilityCatalog,
-  initialRuntimeSupportManifest,
+  createInitialRuntimeSupportManifest,
   toProblemDetails,
 } from "../../src/runtime/index.js";
+import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import { extendWalletSupportManifest } from "../../src/wallet/application.js";
 import {
   parseWalletManagementOperation,
@@ -49,7 +50,6 @@ import { walletControlRoutes } from "../../src/wallet/routes.js";
 const operationId = Buffer.alloc(walletOperationIdByteLength, 31).toString("base64url");
 const connected = Object.freeze({
   status: "connected" as const,
-  account: "eip155:4663:0x1111111111111111111111111111111111111111",
   address: "0x1111111111111111111111111111111111111111",
   chainId: "eip155:4663" as const,
   approvedMethods: Object.freeze(["eth_sendTransaction"]),
@@ -57,7 +57,9 @@ const connected = Object.freeze({
   expiresAt: "2026-07-15T06:00:00.000Z",
 });
 const catalog = composeCapabilityCatalog(extendInterfaceSupportManifest(
-  extendChainSupportManifest(extendWalletSupportManifest(initialRuntimeSupportManifest)),
+  extendChainSupportManifest(extendWalletSupportManifest(
+    createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
+  )),
 ));
 const operation = (): WalletManagementOperation => parseWalletManagementOperation({
   operationId,
@@ -180,6 +182,22 @@ describe("MCP interface", () => {
     expect(connectOutput).toContain('"const":"connect"');
     expect(disconnectOutput).not.toContain('"current_connection"');
     expect(disconnectOutput).toContain('"const":"disconnect"');
+    if (connectTool?.outputSchema === undefined) throw new TypeError("Wallet connection schema is unavailable.");
+    const validateConnectionStart = new Ajv2020({
+      strict: true,
+      formats: { uri: true, "date-time": true },
+    }).compile(connectTool.outputSchema);
+    expect(validateConnectionStart({
+      result: {
+        status: "current_connection",
+        connectionRevision: "1",
+        connection: {
+          ...connected,
+          account: `eip155:4663:${connected.address}`,
+        },
+      },
+      displayUrl: "http://127.0.0.1:46630/",
+    })).toBe(false);
   });
 
   it("keeps actual wallet tool output schemas equivalent to canonical management failures", async () => {

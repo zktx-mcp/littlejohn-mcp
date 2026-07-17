@@ -4,11 +4,11 @@ import {
   bindCapability,
   canonicalJsonStringify,
   compareCodePointSequences,
+  deriveCaip10Account,
+  deriveEip155Reference,
   parseCapabilityDataAt,
-  parseEvmAddress,
+  parseCaip10EvmAccount,
   parseUtcTimestamp,
-  robinhoodChainIdentity,
-  robinhoodWalletNamespaceRequirements,
   walletConnectionCapability,
   type CapabilityBinding,
   type CanonicalJson,
@@ -74,8 +74,6 @@ const userActionWaitMilliseconds = 5 * 60 * 1_000;
 const walletSdkOperationMilliseconds = 5 * 60 * 1_000;
 const terminalRetentionMilliseconds = 5 * 60 * 1_000;
 const targetNamespace = "eip155";
-const targetChainId = robinhoodChainIdentity.caip2;
-const targetChainHex = `0x${BigInt(robinhoodChainIdentity.chainId).toString(16)}`;
 
 class WalletSdkDeadlineError extends Error {
   constructor() {
@@ -137,7 +135,9 @@ const captureSessionSetIdentity = (
 const validateSession = (
   session: WalletConnectSessionSnapshot,
   evaluatedAt: UtcTimestamp,
+  configuration: WalletOwnerBootstrapPort["configuration"],
 ): WalletConnectionData | undefined => {
+  const targetChainId = configuration.chain.chainId;
   const namespaceKeys = Object.keys(session.namespaces).sort(compareCodePointSequences);
   const namespace = session.namespaces[targetNamespace];
   if (namespaceKeys.length !== 1 || namespaceKeys[0] !== targetNamespace || namespace === undefined ||
@@ -145,18 +145,16 @@ const validateSession = (
     !Number.isSafeInteger(session.expiry) || session.expiry <= 0) {
     return undefined;
   }
-  const account = namespace.accounts[0] as string;
-  const prefix = `${targetChainId}:`;
-  if (!account.startsWith(prefix)) return undefined;
-  let address: ReturnType<typeof parseEvmAddress>;
-  try { address = parseEvmAddress(account.slice(prefix.length)); }
+  const account = namespace.accounts[0];
+  let identity: ReturnType<typeof parseCaip10EvmAccount>;
+  try { identity = parseCaip10EvmAccount(account); }
   catch { return undefined; }
-  if (account !== `${prefix}${address}`) return undefined;
+  if (identity.chainId !== targetChainId) return undefined;
   const approvedMethods = canonicalUnique(namespace.methods);
   const approvedEvents = canonicalUnique(namespace.events);
   if (approvedMethods === undefined || approvedEvents === undefined ||
-    !robinhoodWalletNamespaceRequirements.methods.every((method) => approvedMethods.includes(method)) ||
-    !robinhoodWalletNamespaceRequirements.events.every((event) => approvedEvents.includes(event))) {
+    !configuration.requiredMethods.every((method) => approvedMethods.includes(method)) ||
+    !configuration.requiredEvents.every((event) => approvedEvents.includes(event))) {
     return undefined;
   }
   let expiresAt: UtcTimestamp;
@@ -165,8 +163,7 @@ const validateSession = (
   try {
     return parseCapabilityDataAt(walletConnectionCapability, {
       status: "connected",
-      account,
-      address,
+      address: identity.address,
       chainId: targetChainId,
       approvedMethods,
       approvedEvents,
@@ -1146,7 +1143,10 @@ export class WalletCoordinator implements WalletCoordinatorPort {
         record = this.#wallet.projection.replace(record.revision, canonical, evaluatedAt);
       }
       if (canonical.status === "connected" && activeTopic !== undefined) {
-        this.#sessionContinuity = Object.freeze({ topic: activeTopic, account: canonical.account });
+        this.#sessionContinuity = Object.freeze({
+          topic: activeTopic,
+          account: deriveCaip10Account({ chainId: canonical.chainId, address: canonical.address }),
+        });
       } else if (sessions.length === 0) {
         this.#sessionContinuity = undefined;
       }
@@ -1612,9 +1612,13 @@ export class WalletCoordinator implements WalletCoordinatorPort {
         if (continuousSession === undefined) {
           for (const session of sessions) this.#deferredSessionTopics.add(session.topic);
         } else {
-          const connection = validateSession(continuousSession, this.#now());
+          const connection = validateSession(
+            continuousSession,
+            this.#now(),
+            this.#wallet.configuration,
+          );
           if (connection === undefined || connection.status !== "connected" ||
-            connection.account !== continuity.account) {
+            deriveCaip10Account({ chainId: connection.chainId, address: connection.address }) !== continuity.account) {
             this.#revocationAuthorities.set(continuousSession.topic, "active_invalidation");
           }
           for (const session of sessions) {
@@ -1640,7 +1644,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       try {
         this.#publishSdkState(
           sessions.length > 1
-            ? Object.freeze({ status: "unresolved", eligibleSessionCount: String(sessions.length) })
+            ? Object.freeze({ status: "unresolved", sessionCount: String(sessions.length) })
             : disconnected("unusable_store"),
           sessions,
           evidenceEpoch,
@@ -1665,14 +1669,14 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       try {
         this.#publishSdkState(Object.freeze({
           status: "unresolved",
-          eligibleSessionCount: String(sessions.length),
+          sessionCount: String(sessions.length),
         }), sessions, evidenceEpoch);
       } catch { return undefined; }
       return Object.freeze({ sessions, sessionSetIdentity, revokeTopics: Object.freeze([]) });
     }
 
     const session = sessions[0] as WalletConnectSessionSnapshot;
-    const connection = validateSession(session, this.#now());
+    const connection = validateSession(session, this.#now(), this.#wallet.configuration);
     if (connection !== undefined) {
       try { this.#publishSdkState(connection, sessions, evidenceEpoch, session.topic); }
       catch { return undefined; }
@@ -2339,7 +2343,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     const sessions = this.#client.listSessions();
     const approved = sessions.find(({ topic }) => topic === outcomeSession.topic);
     const connection = sessions.length === 1 && approved !== undefined
-      ? validateSession(approved, this.#now())
+      ? validateSession(approved, this.#now(), this.#wallet.configuration)
       : undefined;
     if (connection !== undefined && approved !== undefined) {
       if (!this.#publishSdkState(connection, sessions, evidenceEpoch, approved.topic)) {
@@ -2629,6 +2633,9 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       await this.#reconcile({ kind: "runtime_continuity", emptyReason: "no_session" });
       return;
     }
+    const targetChainHex = `0x${BigInt(
+      deriveEip155Reference(this.#wallet.configuration.chain.chainId),
+    ).toString(16)}`;
     if (event.data !== targetChainHex) {
       await this.#invalidateSession(activeTopic);
       return;

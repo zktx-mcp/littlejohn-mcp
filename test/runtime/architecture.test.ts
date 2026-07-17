@@ -101,7 +101,6 @@ describe("runtime architecture boundary", () => {
       "createRuntimeRouteRegistry",
       "LocalControlCredentialAuthority",
       "ControlCredentialVerifier",
-      "readConfiguredRpcEndpoint",
     ]) expect(Object.hasOwn(runtimePublic, forbidden)).toBe(false);
   });
 
@@ -167,12 +166,13 @@ describe("runtime architecture boundary", () => {
     for (const alias of [
       "profile_id AS profileId",
       "owner_instance_id AS ownerInstanceId",
+      "configuration_mac AS configurationMac",
       "protocol_version AS protocolVersion",
       "process_id AS processId",
       "owner_revision AS ownerRevision",
       "approved_methods_json AS approvedMethodsJson",
       "approved_events_json AS approvedEventsJson",
-      "eligible_session_count AS eligibleSessionCount",
+      "session_count AS sessionCount",
     ]) expect(database).toContain(alias);
   });
 });

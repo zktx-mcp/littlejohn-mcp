@@ -6,6 +6,7 @@ import {
   createCanonicalClock,
   createCapabilityInvocationAuthority,
   createObservationAuthority,
+  evmChainIdSchema,
   sourceReferenceSchema,
   type AnyReadCapabilityDefinition,
   type CapabilityBinding,
@@ -17,6 +18,7 @@ import {
 import { chainErrorRegistry } from "../../src/chain/errors.js";
 
 export const fixedEvaluationTime = "2026-07-12T10:16:02.000Z";
+export const configuredChainId = evmChainIdSchema.parse("eip155:4663");
 
 export interface CapabilityHarness {
   readonly invocationAuthority: ReturnType<typeof createCapabilityInvocationAuthority>;
@@ -59,7 +61,7 @@ export const createCapabilityHarness = (
     }),
   ];
   return Object.freeze({
-    invocationAuthority: createCapabilityInvocationAuthority(clock),
+    invocationAuthority: createCapabilityInvocationAuthority(clock, configuredChainId),
     ports: Object.freeze({ observations: new ObservationAuthorityRegistry(clock, authorities) }),
   });
 };

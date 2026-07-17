@@ -9,8 +9,9 @@ import {
   createAccountBalanceTokenEvidenceIdentity,
   erc20TransferTopic0,
   fixedIdentifierSchema,
-  keccak256Hex,
+  keccak256FromHex,
   parseEvmAddress,
+  parseEvmChainId,
   parseHash32,
   transactionInspectCapability,
   type EvmAddress,
@@ -19,6 +20,7 @@ import {
 import {
   ScriptedRpc,
   connectedWallet,
+  configuredChainId,
   createChainHandlerHarness,
   disconnectedWallet,
   rpcFailure,
@@ -172,10 +174,9 @@ describe("Robinhood Chain read handlers", () => {
     const result = await service.invoke(chainStatusCapability, {});
     expectSuccess(result);
     expect(result.data).toEqual({
-      chainId: "4663",
-      caip2: "eip155:4663",
+      chainId: configuredChainId,
       latestBlock: {
-        chainId: "4663",
+        chainId: configuredChainId,
         blockNumber: largeDecimal,
         blockHash,
         blockTimestamp: expectedBlockTimestamp,
@@ -187,10 +188,12 @@ describe("Robinhood Chain read handlers", () => {
     ]);
     expect(service.rpc.remainingSteps).toBe(0);
 
-    const mismatch = createHarness([rpcValue("eth_chainId", "0x1")]);
-    const rejected = await mismatch.invoke(chainStatusCapability, {});
-    expect(rejected).toMatchObject({ ok: false, error: { code: "source_inconsistent" } });
-    expect(mismatch.rpc.calls).toEqual([{ method: "eth_chainId", params: [] }]);
+    for (const incompatible of ["0x1", "0x01237", "0X1237", "4663", 4663, null]) {
+      const mismatch = createHarness([rpcValue("eth_chainId", incompatible)]);
+      const rejected = await mismatch.invoke(chainStatusCapability, {});
+      expect(rejected).toMatchObject({ ok: false, error: { code: "source_inconsistent" } });
+      expect(mismatch.rpc.calls).toEqual([{ method: "eth_chainId", params: [] }]);
+    }
   });
 
   it("anchors contract bytecode to the exact canonical block hash and computes exact code identity", async () => {
@@ -209,7 +212,7 @@ describe("Robinhood Chain read handlers", () => {
     expect(result.data).toEqual({
       address: contract,
       block: {
-        chainId: "4663",
+        chainId: configuredChainId,
         blockNumber: largeDecimal,
         blockHash,
         blockTimestamp: expectedBlockTimestamp,
@@ -218,7 +221,7 @@ describe("Robinhood Chain read handlers", () => {
         status: "present",
         bytecode,
         byteLength: "5",
-        codeHash: keccak256Hex(bytecode),
+        codeHash: keccak256FromHex(bytecode),
       },
     });
     expect(service.rpc.calls).toEqual([
@@ -317,6 +320,11 @@ describe("Robinhood Chain read handlers", () => {
     expectSuccess(result);
     expect(result.data.inclusion.status).toBe("included");
     if (result.data.inclusion.status !== "included") throw new TypeError("Expected included transaction.");
+    expect(result.data.chainId).toBe(configuredChainId);
+    expect(result.data.value.asset.chainId).toBe(configuredChainId);
+    expect(result.data.inclusion.block.chainId).toBe(configuredChainId);
+    expect(result.data.inclusion.receipt.effectiveGasPrice.numerator.asset.chainId)
+      .toBe(configuredChainId);
     expect(result.data.inclusion.block).toMatchObject({ blockNumber: "16", blockHash });
     expect(result.data.inclusion.receipt.cumulativeGasUsed.raw).toBe(largeDecimal);
     expect(result.data.inclusion.receipt.effectiveGasPrice.numerator.raw).toBe(largeDecimal);
@@ -327,7 +335,7 @@ describe("Robinhood Chain read handlers", () => {
       from: transferFrom,
       to: transferTo,
       amount: {
-        asset: { kind: "erc20", chainId: "4663", address: token },
+        asset: { kind: "erc20", chainId: configuredChainId, address: token },
         raw: largeDecimal,
         decimals: {
           status: "not_observed",
@@ -360,7 +368,7 @@ describe("Robinhood Chain read handlers", () => {
     expectSuccess(result);
     expect(wallet.captures()).toBe(0);
     expect(result.data.tokens).toEqual([{
-      asset: { kind: "erc20", chainId: "4663", address: token },
+      asset: { kind: "erc20", chainId: configuredChainId, address: token },
       result: { status: "unavailable", errorCode: "source_unavailable" },
     }]);
     expect(result.evidence.coverage.status).toBe("partial");
@@ -454,7 +462,7 @@ describe("Robinhood Chain read handlers", () => {
     expect(tokenResult?.status).toBe("available");
     if (tokenResult?.status !== "available") throw new TypeError("Expected available token balance.");
     expect(tokenResult.amount).toMatchObject({
-      asset: { kind: "erc20", chainId: "4663", address: token },
+      asset: { kind: "erc20", chainId: configuredChainId, address: token },
       raw: largeDecimal,
       decimals: { status: "available", value: "6" },
     });
@@ -546,6 +554,18 @@ describe("Robinhood Chain read handlers", () => {
     expect(rejected).toMatchObject({ ok: false, error: { code: "wallet_not_connected" } });
     expect(disconnected.captures()).toBe(1);
     expect(rejectedService.rpc.calls).toEqual([]);
+
+    const otherChain = connectedWallet(account, parseEvmChainId("eip155:1"));
+    const mismatchedService = createHarness([], otherChain);
+    const mismatched = await mismatchedService.invoke(accountBalanceCapability, {
+      account: { kind: "active_wallet" },
+      includeNative: true,
+      tokens: [],
+      block: { kind: "latest" },
+    });
+    expect(mismatched).toMatchObject({ ok: false, error: { code: "internal_error" } });
+    expect(otherChain.captures()).toBe(1);
+    expect(mismatchedService.rpc.calls).toEqual([]);
   });
 
   it("returns request_aborted and does not continue after caller cancellation", async () => {

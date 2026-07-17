@@ -1,14 +1,18 @@
 import { resolve } from "node:path";
 
-import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
+import {
+  readRuntimeConfiguration,
+  walletConnectProjectIdSchema,
+} from "../../src/runtime/configuration.js";
 import walletExternalModulesValue from "../../src/wallet/external-modules.cjs";
 import {
   loadWalletConnectProductionDependencies,
   type WalletConnectSdkInitOptions,
 } from "../../src/wallet/walletconnect-client.js";
 
-const projectId = "1".repeat(32);
-const metadata = readRuntimeConfiguration({}).wallet.metadata;
+const wallet = readRuntimeConfiguration({}).wallet;
+const projectId = walletConnectProjectIdSchema.parse("1".repeat(32));
+const metadata = wallet.metadata;
 const storeRoot = process.env["LITTLEJOHN_TEST_WALLETCONNECT_STORE_ROOT"];
 if (storeRoot === undefined || storeRoot.length === 0) {
   throw new TypeError("The test WalletConnect store root is unavailable.");
@@ -280,7 +284,7 @@ await sdk.initializeConnectionAttempts();
 const connection = await sdk.startConnection({
   requiredNamespaces: {
     eip155: {
-      chains: ["eip155:4663"],
+      chains: [wallet.chain.chainId],
       methods: ["eth_sendTransaction"],
       events: ["accountsChanged", "chainChanged"],
     },

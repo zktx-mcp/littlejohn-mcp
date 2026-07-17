@@ -8,6 +8,7 @@ import {
   createCanonicalClock,
   createCapabilityInvocationAuthority,
   createObservationAuthority,
+  parseEvmChainId,
   parseCapabilityDataAt,
   sourceReferenceSchema,
   transactionInspectCapability,
@@ -16,6 +17,7 @@ import {
   type CapabilityData,
   type CapabilitySuccess,
   type EvmAddress,
+  type EvmChainId,
   type UtcTimestamp,
   type WalletConnectionData,
 } from "../../src/core/index.js";
@@ -28,6 +30,7 @@ import {
   type RpcRequester,
 } from "../../src/chain/rpc.js";
 import type { ChainOwnerApplicationContext, WalletSessionSource } from "../../src/runtime/index.js";
+import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import type {
   ActiveWalletReadPort,
   ActiveWalletReadSnapshot,
@@ -35,6 +38,8 @@ import type {
 
 export const handlerEvaluationTime = "2026-07-15T06:00:00.000Z" as UtcTimestamp;
 const handlerClock = createCanonicalClock(() => handlerEvaluationTime);
+export const configuredChainId = parseEvmChainId("eip155:4663");
+const runtimeConfiguration = readRuntimeConfiguration({});
 
 export interface RecordedRpcCall {
   readonly method: ChainRpcMethod;
@@ -115,7 +120,10 @@ export const disconnectedWallet = (): ActiveWalletHarness => activeWallet(Object
   }, handlerEvaluationTime),
 }));
 
-export const connectedWallet = (address: EvmAddress): ActiveWalletHarness => {
+export const connectedWallet = (
+  address: EvmAddress,
+  chainId: EvmChainId = configuredChainId,
+): ActiveWalletHarness => {
   const topicDigest = "A".repeat(43);
   const sourceId = `wallet-session:${topicDigest}`;
   const observationAuthority = createObservationAuthority({
@@ -136,9 +144,8 @@ export const connectedWallet = (address: EvmAddress): ActiveWalletHarness => {
   });
   const connection: WalletConnectionData = parseCapabilityDataAt(walletConnectionCapability, {
     status: "connected",
-    account: `eip155:4663:${address}`,
     address,
-    chainId: "eip155:4663",
+    chainId,
     approvedMethods: ["eth_sendTransaction"],
     approvedEvents: ["accountsChanged", "chainChanged"],
     expiresAt: "2026-07-22T06:00:00.000Z",
@@ -181,13 +188,14 @@ export const createChainHandlerHarness = (input: {
       uri: "https://rpc.example/",
     }),
   });
-  const invocationAuthority = createCapabilityInvocationAuthority(handlerClock);
+  const invocationAuthority = createCapabilityInvocationAuthority(handlerClock, configuredChainId);
   const wallet = input.wallet ?? disconnectedWallet();
   const owner = new AbortController();
   const context = {
     activeWallet: wallet.port,
     signal: owner.signal,
     chain: {
+      configuration: runtimeConfiguration.rpc,
       sourceAuthority: { observationAuthority: rpcAuthority },
       capabilityAuthority: {
         clock: handlerClock,

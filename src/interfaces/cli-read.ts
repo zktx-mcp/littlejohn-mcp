@@ -196,7 +196,7 @@ const amountSummary = (amount: CanonicalAmount): string => {
 };
 
 const chainStatusHuman = (data: ChainStatusData): string => [
-  `Chain: ${data.caip2}`,
+  `Chain: ${data.chainId}`,
   `Latest block: ${data.latestBlock.blockNumber}`,
   `Block hash: ${data.latestBlock.blockHash}`,
   `Block timestamp: ${data.latestBlock.blockTimestamp}`,
@@ -261,8 +261,16 @@ const requestForCommand = (
   ...(command.kind === "chain_status" ? {} : { body: command.input }),
 });
 
-const parseSuccess = (identity: ReadInterfaceIdentity, value: unknown): CapabilitySuccess<unknown> =>
-  parseCapabilitySuccess(identity.definition, value);
+const parseSuccess = (
+  identity: ReadInterfaceIdentity,
+  command: ReadCliCommand,
+  value: unknown,
+): CapabilitySuccess<unknown> =>
+  parseCapabilitySuccess(
+    identity.definition,
+    command.kind === "chain_status" ? {} : command.input,
+    value,
+  );
 
 const humanSuccess = (command: ReadCliCommand, success: CapabilitySuccess<unknown>): string => {
   switch (command.kind) {
@@ -293,9 +301,9 @@ export const runReadCliCommand = async (
     return chainInterfaceErrorMappings.get(result.failure.error.code).cliExitCode;
   }
   try {
-    const parsed = parseSuccess(identity, result.value);
+    const parsed = parseSuccess(identity, command, result.value);
     output.writeOutput(command.json
-      ? `${canonicalJsonStringify(result.value)}\n`
+      ? `${canonicalJsonStringify(parsed as unknown as CanonicalJson)}\n`
       : `${humanSuccess(command, parsed)}\n`);
     return 0;
   } catch {

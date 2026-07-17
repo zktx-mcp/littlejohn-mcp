@@ -21,6 +21,15 @@ export type {
   WalletPrivateStoreDirectoryPort,
 } from "./composition.js";
 export type { WalletSessionSource } from "./source-identity.js";
+export { readConfiguredRpcEndpoint } from "./configuration.js";
+export type {
+  ConfiguredRpcEndpoint,
+  RuntimeChainConfiguration,
+  RuntimeConfiguration,
+  RuntimeRpcConfiguration,
+  WalletConnectConfiguration,
+  WalletConnectProjectId,
+} from "./configuration.js";
 export {
   RuntimeOperationError,
   runtimeErrorRegistry,
@@ -84,11 +93,15 @@ export type {
   RequestPolicyExtension,
 } from "./request-security.js";
 export type {
+  ConfiguredChainStore,
   RuntimeOwnerRecord,
   RuntimeOwnerStore,
+  WalletAccountRecordKey,
+  WalletAccountStorageRow,
   WalletConnectionRecord,
   WalletProjectionStore,
 } from "./database.js";
+export { decodeWalletAccountRecordKey } from "./database.js";
 export {
   capabilityCatalogSchema,
   composeCapabilityCatalog,
@@ -98,7 +111,7 @@ export {
   extendChainRuntimeSupportManifest,
   extendInterfaceRuntimeSupportManifest,
   extendWalletRuntimeSupportManifest,
-  initialRuntimeSupportManifest,
+  createInitialRuntimeSupportManifest,
   projectCurrentSupportDocument,
   readRuntimeSupportManifest,
   renderCurrentSupportSection,

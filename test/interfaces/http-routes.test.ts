@@ -30,9 +30,10 @@ import { fixedHostHeader } from "../../src/runtime/http-boundary.js";
 import { runtimePaths } from "../../src/runtime/paths.js";
 import {
   composeCapabilityCatalog,
-  initialRuntimeSupportManifest,
+  createInitialRuntimeSupportManifest,
   type WalletConnectionReadCapabilityPort,
 } from "../../src/runtime/index.js";
+import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import { extendWalletSupportManifest } from "../../src/wallet/application.js";
 import { walletInterfaceErrorMappings } from "../../src/wallet/errors.js";
 import { bindForHarness, createCapabilityHarness } from "../core/capability-harness.js";
@@ -56,7 +57,9 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { force: true, recursive: true })));
 });
 
-const walletConnection = (): WalletConnectionReadCapabilityPort => {
+const walletConnection = (
+  data: unknown = { status: "disconnected" as const, reason: "no_session" as const },
+): WalletConnectionReadCapabilityPort => {
   const harness = createCapabilityHarness(() => "2026-07-15T06:00:00.000Z");
   return Object.freeze({
     connection: bindForHarness(
@@ -67,12 +70,11 @@ const walletConnection = (): WalletConnectionReadCapabilityPort => {
         context: HandlerInvocationContext,
         observations: ObservationWriter,
       ) => {
-        const data = { status: "disconnected" as const, reason: "no_session" as const };
         observations.record("wallet_sdk", {
           source: context.ports.observations.get("wallet_sdk"),
-          claims: [{ role: "wallet_sdk_state", value: data }],
+          claims: [{ role: "wallet_sdk_state", value: data as never }],
         });
-        return { status: "success" as const, data };
+        return { status: "success" as const, data: data as never };
       },
     ),
   });
@@ -90,10 +92,10 @@ const baseRoutes = async (): Promise<RuntimeRouteRegistry> => {
 };
 
 const interfaceManifest = () => extendInterfaceSupportManifest(extendChainSupportManifest(
-  extendWalletSupportManifest(initialRuntimeSupportManifest),
+  extendWalletSupportManifest(createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain)),
 ));
 
-const createRoutes = async (): Promise<{
+const createRoutes = async (walletData?: unknown): Promise<{
   readonly routes: RuntimeRouteRegistry;
   readonly chain: ChainHandlerHarness;
   readonly manifest: ReturnType<typeof interfaceManifest>;
@@ -119,7 +121,7 @@ const createRoutes = async (): Promise<{
     routes: extendPublicInterfaceRoutes({
       routes: await baseRoutes(),
       chainReads: chain.service.chainReads,
-      walletConnection: walletConnection(),
+      walletConnection: walletConnection(walletData),
       supportManifest: manifest,
     }),
   });
@@ -178,13 +180,13 @@ describe("public read HTTP routes", () => {
     if (!result.ok || result.response !== "canonical_json") throw new Error("Expected canonical JSON.");
     expect(result.body).toMatchObject({
       ok: true,
-      meta: { capabilityId: "chain.status", chainId: "4663" },
+      meta: { capabilityId: "chain.status", chainId: "eip155:4663" },
       data: {
-        chainId: "4663",
-        caip2: "eip155:4663",
-        latestBlock: { chainId: "4663", blockNumber: "16", blockHash },
+        chainId: "eip155:4663",
+        latestBlock: { chainId: "eip155:4663", blockNumber: "16", blockHash },
       },
     });
+    expect(JSON.stringify(result.body)).not.toContain('"caip2"');
     expect(chain.rpc.calls).toEqual([
       { method: "eth_chainId", params: [] },
       { method: "eth_getBlockByNumber", params: ["latest", false] },
@@ -202,6 +204,26 @@ describe("public read HTTP routes", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.problem.code).toBe("invalid_input");
     expect(chain.rpc.calls).toEqual([]);
+  });
+
+  it("rejects legacy wallet identity and session-count fields instead of projecting them", async () => {
+    for (const legacyConnection of [
+      {
+        status: "connected",
+        account: "eip155:4663:0x1111111111111111111111111111111111111111",
+        address: "0x1111111111111111111111111111111111111111",
+        chainId: "eip155:4663",
+        approvedMethods: ["eth_sendTransaction"],
+        approvedEvents: ["accountsChanged", "chainChanged"],
+        expiresAt: "2026-07-22T00:00:00.000Z",
+      },
+      { status: "unresolved", eligibleSessionCount: "2" },
+    ]) {
+      const { routes } = await createRoutes(legacyConnection);
+      const result = await invoke(routes, "GET", publicInterfaceRoutes.walletConnection);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.problem.code).toBe("internal_error");
+    }
   });
 
   it("exposes the generated catalog from the same support manifest and accepts no query", async () => {

@@ -14,7 +14,7 @@ import {
   captureCanonicalJson,
   chainStatusCapability,
   contractInspectCapability,
-  keccak256Hex,
+  keccak256FromHex,
   projectCapabilities,
   readCapabilityRegistry,
   transactionInspectCapability,
@@ -61,10 +61,11 @@ import type {
 } from "../../src/runtime/index.js";
 import {
   composeCapabilityCatalog,
-  initialRuntimeSupportManifest,
+  createInitialRuntimeSupportManifest,
   readRuntimeSupportManifest,
   toProblemDetails,
 } from "../../src/runtime/index.js";
+import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import { extendWalletSupportManifest } from "../../src/wallet/application.js";
 import {
   parseWalletCurrentOperationProjection,
@@ -347,7 +348,7 @@ const createReadParityCases = async (): Promise<readonly ReadParityCase[]> => {
         `Block: ${blockNumber}`,
         "Runtime code: present",
         "Byte length: 5",
-        `Code hash: ${keccak256Hex(bytecode)}`,
+        `Code hash: ${keccak256FromHex(bytecode)}`,
         "",
       ].join("\n"),
     }),
@@ -360,7 +361,7 @@ const createReadParityCases = async (): Promise<readonly ReadParityCase[]> => {
         `Transaction: ${transactionHash}`,
         `From: ${account}`,
         `To: ${recipient}`,
-        `Value: native:4663 raw=${blockNumber} decimals=not_observed`,
+        `Value: native:eip155:4663 raw=${blockNumber} decimals=not_observed`,
         `Nonce: ${blockNumber}`,
         `Gas limit: ${blockNumber}`,
         "Type: 2",
@@ -379,8 +380,8 @@ const createReadParityCases = async (): Promise<readonly ReadParityCase[]> => {
       humanOutput: [
         `Account: ${account}`,
         `Block: ${blockNumber}`,
-        `Native balance: native:4663 raw=${blockNumber} decimals=not_observed`,
-        `Token ${token}: erc20:4663:${token} raw=${blockNumber} decimals=6`,
+        `Native balance: native:eip155:4663 raw=${blockNumber} decimals=not_observed`,
+        `Token ${token}: erc20:eip155:4663:${token} raw=${blockNumber} decimals=6`,
         "",
       ].join("\n"),
     }),
@@ -541,7 +542,9 @@ describe("interface parity", () => {
 
   it("projects one canonical capability catalog through HTTP and MCP without changing core scope or support", async () => {
     const manifest = extendInterfaceSupportManifest(extendChainSupportManifest(
-      extendWalletSupportManifest(initialRuntimeSupportManifest),
+      extendWalletSupportManifest(
+        createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
+      ),
     ));
     const catalog = composeCapabilityCatalog(manifest);
     const runtime = new CanonicalRuntime([Object.freeze({
@@ -637,7 +640,6 @@ describe("interface parity", () => {
           outcome: "connected",
           connection: {
             status: "connected",
-            account: `eip155:4663:${account}`,
             address: account,
             chainId: "eip155:4663",
             approvedMethods: ["eth_sendTransaction"],

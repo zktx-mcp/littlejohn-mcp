@@ -33,7 +33,6 @@ const operationBase = Object.freeze({
 const connectedAddress = "0x1111111111111111111111111111111111111111";
 const connected = walletConnectionDataSchema.parse({
   status: "connected",
-  account: `eip155:4663:${connectedAddress}`,
   address: connectedAddress,
   chainId: "eip155:4663",
   approvedMethods: ["eth_sendTransaction"],
@@ -59,10 +58,21 @@ const operation = (
 });
 
 describe("wallet dialog view", () => {
+  it("rejects removed wallet identity and session-count fields", () => {
+    expect(() => walletConnectionDataSchema.parse({
+      ...connected,
+      account: `eip155:4663:${connectedAddress}`,
+    })).toThrow();
+    expect(() => walletConnectionDataSchema.parse({
+      status: "unresolved",
+      eligibleSessionCount: "2",
+    })).toThrow();
+  });
+
   it("uses the concise navigation label and exact connection actions", () => {
     const live = absent(connected);
     const unknown = absent({ status: "unknown", reason: "reconciling" });
-    const unresolved = absent({ status: "unresolved", eligibleSessionCount: "2" });
+    const unresolved = absent({ status: "unresolved", sessionCount: "2" });
     const unusableStore = absent({ status: "disconnected", reason: "unusable_store" });
 
     expect(walletNavigationLabel(undefined)).toBe("Wallet");

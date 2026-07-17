@@ -73,8 +73,8 @@ authority and execution requirements are owned by
 - Runtime support manifest: implemented as the sole machine authority for the
   values in this section.
 - Robinhood Chain: `L0 discovered`. The official network configuration identifies
-  Robinhood Chain mainnet with chain ID `4663` in the
-  [Robinhood Chain documentation](https://docs.robinhood.com/chain/connecting/).
+  Robinhood Chain mainnet in the [Robinhood Chain documentation](https://docs.robinhood.com/chain/connecting/).
+  Little John's canonical chain ID for that network is `eip155:4663`.
   Source owner: Robinhood. Coverage: Published Robinhood Chain network identity and chain ID.
   Unsupported conclusions: Endpoint availability. Runtime availability. Safety.
 - Implemented protocol support: none.

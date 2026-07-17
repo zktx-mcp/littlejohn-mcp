@@ -297,7 +297,7 @@ const cancelOperation = async (
 };
 
 const readConnection = async (runtime: CliRuntimePort): Promise<WalletConnectionSuccess> =>
-  parseCapabilitySuccess(walletConnectionInterface.definition, await execute(
+  parseCapabilitySuccess(walletConnectionInterface.definition, {}, await execute(
     runtime,
     getCapabilityDefinitionSnapshot(walletConnectionInterface.definition).failureCodes,
     {
@@ -315,7 +315,7 @@ const connectionSummary = (connection: WalletConnectionData): string => {
     case "connected":
       return `Connected address: ${connection.address}\nChain: ${connection.chainId}\nSession expiry: ${connection.expiresAt}`;
     case "unresolved":
-      return `Wallet state is unresolved because ${connection.eligibleSessionCount} eligible sessions exist.`;
+      return `Wallet state is unresolved because ${connection.sessionCount} sessions exist.`;
     case "disconnected":
       return `Disconnected (${connection.reason}).`;
     case "unknown":

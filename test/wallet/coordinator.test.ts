@@ -299,7 +299,7 @@ const createBootstrap = (): {
   };
   const projection = new MemoryWalletProjection(clock);
   const configuration = readRuntimeConfiguration({}).wallet;
-  const invocationAuthority = createCapabilityInvocationAuthority(clock);
+  const invocationAuthority = createCapabilityInvocationAuthority(clock, configuration.chain.chainId);
   return Object.freeze({
     projection,
     wallet: Object.freeze({
@@ -416,7 +416,6 @@ describe("WalletCoordinator", () => {
 
     expect(projection.read().connection).toMatchObject({
       status: "connected",
-      account: `eip155:4663:${addressA}`,
       address: addressA,
     });
     expect(coordinator.activeWallet.capture()).toMatchObject({
@@ -429,6 +428,45 @@ describe("WalletCoordinator", () => {
     expect(client.closed).toBe(true);
     expect(client.disconnectTopics).toEqual([]);
     expect(client.sessions).toHaveLength(1);
+  });
+
+  it("normalizes a checksummed WalletConnect account before publishing the connection", async () => {
+    const checksummedAddress = "0x5AEDA56215b167893e80B4fE645BA6d5Bab767DE";
+    const canonicalAddress = checksummedAddress.toLowerCase();
+    const { client, coordinator, projection } = await createSubject([
+      session(topicA, checksummedAddress),
+    ]);
+
+    expect(projection.read().connection).toMatchObject({
+      status: "connected",
+      address: canonicalAddress,
+      chainId: "eip155:4663",
+    });
+    expect(coordinator.activeWallet.capture().connection).toMatchObject({
+      status: "connected",
+      address: canonicalAddress,
+      chainId: "eip155:4663",
+    });
+    expect(client.disconnectTopics).toEqual([]);
+
+    await coordinator.close();
+  });
+
+  it("reports the exact stored session count without treating other-chain sessions as eligible", async () => {
+    const { client, coordinator, projection } = await createSubject([
+      session(topicA, addressA),
+      session(topicB, addressB),
+      session(topicC, addressA, {
+        chains: ["eip155:1"],
+        accounts: [`eip155:1:${addressA}`],
+      }),
+    ]);
+
+    expect(projection.read().connection).toEqual({ status: "unresolved", sessionCount: "3" });
+    expect(client.disconnectTopics).toEqual([]);
+    expect(client.sessions.map(({ topic }) => topic)).toEqual([topicA, topicB, topicC]);
+
+    await coordinator.close();
   });
 
   it("expires a connected session once when the browser current projection reads first", async () => {
@@ -758,7 +796,7 @@ describe("WalletCoordinator", () => {
     expect(await coordinator.currentOperationProjection.get()).toEqual({
       status: "absent",
       connectionRevision: revision,
-      connection: { status: "unresolved", eligibleSessionCount: "2" },
+      connection: { status: "unresolved", sessionCount: "2" },
     });
     await coordinator.close();
   });
@@ -1154,7 +1192,7 @@ describe("WalletCoordinator", () => {
     await one.coordinator.close();
 
     const many = await createSubject([session(topicB, addressB), session()]);
-    expect(many.projection.read().connection).toEqual({ status: "unresolved", eligibleSessionCount: "2" });
+    expect(many.projection.read().connection).toEqual({ status: "unresolved", sessionCount: "2" });
     const guarded = await startOperation(many.coordinator, { kind: "disconnect", interactionInterface: "cli" });
     expect(guarded.operation.state).toBe("awaiting_confirmation");
     expect(many.client.disconnectTopics).toEqual([]);
@@ -1414,6 +1452,13 @@ describe("WalletCoordinator", () => {
       "multiple target accounts",
       session(topicA, addressA, {
         accounts: [`eip155:4663:${addressA}`, `eip155:4663:${addressB}`],
+      }),
+    ],
+    [
+      "a session for another configured chain",
+      session(topicA, addressA, {
+        chains: ["eip155:1"],
+        accounts: [`eip155:1:${addressA}`],
       }),
     ],
     ["missing required method", session(topicA, addressA, { methods: [] })],

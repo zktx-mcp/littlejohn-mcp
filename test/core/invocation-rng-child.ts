@@ -29,7 +29,7 @@ try {
   } = await import("./capability-harness.js");
 
   const block = chainAnchorSchema.parse({
-    chainId: "4663",
+    chainId: "eip155:4663",
     blockNumber: "10",
     blockHash: `0x${"a".repeat(64)}`,
     blockTimestamp: "2026-07-12T10:16:02.000Z",
@@ -40,7 +40,7 @@ try {
     const source = context.ports.observations.get("chain_rpc");
     observations.record("rpc_chain_id", {
       source,
-      claims: [{ role: "chain_id", value: "4663" }],
+      claims: [{ role: "chain_id", value: "eip155:4663" }],
     });
     observations.record("latest_block", {
       source,
@@ -48,7 +48,7 @@ try {
     });
     return {
       status: "success",
-      data: { chainId: "4663", caip2: "eip155:4663", latestBlock: block },
+      data: { chainId: "eip155:4663", latestBlock: block },
     };
   });
   const result = await invokeBinding(chainStatusCapability, binding, {});

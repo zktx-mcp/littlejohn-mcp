@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   canonicalSha256,
+  coreContractVersion,
   getCapabilityDefinitionSnapshot,
   projectCapabilities,
   readCapabilityRegistry,
@@ -13,29 +14,29 @@ import {
 describe("generated capability projections", () => {
   const golden = {
     "account.balance": [
-      "fb9ecc3dab813f084291280ff8a88bc82f7d34dc125c36929c4cde1f2d3aaaae",
-      "d75f6d5245f13ced3b5894ea5f280b92e12ffacfde1e6e5533c83af228760526",
-      "c0d659f485f7ef6e533ae5eba6f00991d034f7ead60dd9b9a45219a51ba366ad",
+      "2b9096c03d4724a8515babfc1f3ab61d9257fbe2030cff1793d82a4028276da6",
+      "91ca675f32de59f748661099891fa7186a9def01cabbae059b59fc46d850e83c",
+      "4c6337e9bf40a57b2506bbc5a9aa530f2ea244237cb63d776ffa2171d48d276f",
     ],
     "chain.status": [
-      "e26cb5e8480ef708cd739ac63103c97908c1c9469d32ca96bfa7a51184490bcd",
-      "73971577577f702d1be32df067bb64f62729bc425ab6c7fc20925d72af4f8492",
-      "f2a3454e7a61b1808d577bbeffb724b426e651f4d925a578ebc64040f6c4811a",
+      "1a1b8e452b36db9afc0c1155f49d9b66f9cade69ece8d6f307d4637bca1b1b78",
+      "49edbc736d4368c7fbac1b6969bacaee58bd9d7013ac50ad5b1ed5966b38d000",
+      "2450c1ea5254b915f570c8d23028071eaff905d2f2a8d377352456e7bd171407",
     ],
     "contract.inspect": [
-      "94623c848b50fe567124714c5f6b0a169d7d285d9d047edfa517774c2755bdf6",
-      "964d4e514e82874152674569b4ea631e084880fa86715d4f2cf0078da18ad14d",
-      "f2cbc6ad97e8f4f614b396eb10d699216c3356a6e92fa6200d2caf74dcaa916b",
+      "cadfad8d9d998cf76bbf96f079a21d8c4d04af43b76366fcec00831a60b10040",
+      "071dac81023f0754c664e4e5b4433490a6a811a05305586676a7e4b4ab691306",
+      "bbb95e30cc0c8ecb3da00cca6a9cc2cc7ce177a37851c2433d4837488667f3f9",
     ],
     "transaction.inspect": [
-      "c229b4dfb207cbec37d109faa9fbdb95084fd4f43a9dba7ea2c1c9c8b80936f7",
-      "0225ce59075577bf72ac038c7ca79f7a71645e15b3744553ed0363843a708547",
-      "c5c03321877c232efedc0ad0f37825d382e979ac720ef955184f481985606492",
+      "cfdc6cc9c6004408db432907cf4fdcfffbec75b087251e682317200461d2c65b",
+      "c436822f5ea4c333903f92cfe6f26ffef0a48fe6cbf0284b1a98584ae30c7e11",
+      "74419ec745025be3c1870828a0e3ab4b339373b44c3e1282005906b4b99d91bd",
     ],
     "wallet.connection": [
-      "3c5e10f6236f85d6270dcca3742df813ab1d9a9e7fc575f025dc5f0a96679d4e",
-      "dcc87d007108306c6919099d572243d3ec4206b9eefb5d23e1b8f115236d3b6c",
-      "585d347855ffb491ab3e1acbbcd57c4fdc1c78d42b3c789100b760a8c40fe61f",
+      "fbf698855ee2a53c4d021e2a4a93784a189dca2bc471330fcc0d226b3d45ff73",
+      "a4955b7b89ea918e1bea1a9db8753c544f58c940dd0d267e43f63341331b0b44",
+      "e09bf7c894b2f83b2bb37d8a0dc4d934646a4ddfe73d207227823205ac58b1d7",
     ],
   } as const;
 
@@ -49,9 +50,10 @@ describe("generated capability projections", () => {
     expect(new Set(ids).size).toBe(ids.length);
     for (const projection of projections) {
       const definition = readCapabilityRegistry.get(projection.capabilityId);
-      expect(projection.input.schemaId).toBe(`urn:littlejohn:capability:${projection.capabilityId}:input:v1`);
-      expect(projection.data.schemaId).toBe(`urn:littlejohn:capability:${projection.capabilityId}:data:v1`);
-      expect(projection.success.schemaId).toBe(`urn:littlejohn:capability:${projection.capabilityId}:success:v1`);
+      expect(projection.input.schemaId).toBe(`urn:littlejohn:capability:${projection.capabilityId}:input:v2`);
+      expect(projection.data.schemaId).toBe(`urn:littlejohn:capability:${projection.capabilityId}:data:v2`);
+      expect(projection.success.schemaId).toBe(`urn:littlejohn:capability:${projection.capabilityId}:success:v2`);
+      expect(projection.contractVersion).toBe(coreContractVersion);
       expect(canonicalSha256(projection.input.schema)).toBe(projection.input.digest);
       expect(canonicalSha256(projection.data.schema)).toBe(projection.data.digest);
       expect(canonicalSha256(projection.success.schema)).toBe(projection.success.digest);
@@ -79,6 +81,10 @@ describe("generated capability projections", () => {
     const validate = ajv.compile(projection?.input.schema as object);
     expect(validate({ address: `0x${"1".repeat(40)}`, block: { kind: "latest" } })).toBe(true);
     expect(validate({ address: `0x${"1".repeat(40)}`, block: { kind: "latest" }, extra: true })).toBe(false);
+    expect(validate({
+      address: "0x52908400098527886E0F7030069857D2E4169EE7",
+      block: { kind: "latest" },
+    })).toBe(true);
   });
 
   it("keeps Zod and JSON Schema aligned for the JavaScript prototype key", () => {
@@ -135,7 +141,6 @@ describe("generated capability projections", () => {
     const address = `0x${"1".repeat(40)}`;
     const connected = {
       status: "connected",
-      account: `eip155:4663:${address}`,
       address,
       chainId: "eip155:4663",
       approvedMethods: ["eth_sendTransaction"],
@@ -144,10 +149,17 @@ describe("generated capability projections", () => {
     };
     expect(validate(connected)).toBe(true);
     expect(safeParseCapabilityData(readCapabilityRegistry.get("wallet.connection"), connected).success).toBe(true);
+    expect(validate({ ...connected, account: `${connected.chainId}:${connected.address}` })).toBe(false);
+    expect(validate({ ...connected, address: `0x${"A".repeat(40)}` })).toBe(false);
     const missingMethod = { ...connected, approvedMethods: [] };
     expect(validate(missingMethod)).toBe(true);
-    expect(safeParseCapabilityData(readCapabilityRegistry.get("wallet.connection"), missingMethod).success).toBe(false);
-    expect(validate({ status: "unresolved", eligibleSessionCount: "2" })).toBe(true);
-    expect(validate({ status: "unresolved", eligibleSessionCount: "1" })).toBe(false);
+    expect(safeParseCapabilityData(readCapabilityRegistry.get("wallet.connection"), missingMethod).success).toBe(true);
+    expect(validate({ status: "unresolved", sessionCount: "2" })).toBe(true);
+    expect(validate({ status: "unresolved", sessionCount: "1" })).toBe(false);
+    expect(validate({ status: "unresolved", eligibleSessionCount: "2" })).toBe(false);
+  });
+
+  it("contains no version-one schema identity", () => {
+    expect(JSON.stringify(projectCapabilities(readCapabilityRegistry))).not.toContain(":v1");
   });
 });

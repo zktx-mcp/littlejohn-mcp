@@ -287,6 +287,25 @@ describe("wallet browser client", () => {
       message: "The wallet state response is invalid.",
     });
 
+    const legacyConnection = queuedFetch([jsonResponse(200, {
+      status: "absent",
+      connectionRevision,
+      connection: {
+        status: "connected",
+        account: "eip155:4663:0x1111111111111111111111111111111111111111",
+        address: "0x1111111111111111111111111111111111111111",
+        chainId: "eip155:4663",
+        approvedMethods: ["eth_sendTransaction"],
+        approvedEvents: ["accountsChanged", "chainChanged"],
+        expiresAt: "2099-12-31T23:59:59.000Z",
+      },
+    })]);
+    await expect(loadWalletProjection({ request: legacyConnection.request })).rejects.toMatchObject({
+      name: "BrowserResponseError",
+      code: "internal_error",
+      message: "The wallet state response is invalid.",
+    });
+
     const forged = queuedFetch([
       jsonResponse(409, {
         ...problem({

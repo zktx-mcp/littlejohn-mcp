@@ -52,10 +52,11 @@ the referenced exclusion for that exact amount field. `missing` requires at
 least one attempted decimals-source observation. `conflicting` requires at
 least two disagreeing authoritative observations.
 
-Asset identity is one of:
+Asset identity uses one canonical EIP-155 CAIP-2 chain ID and is one of:
 
 - native asset identity: chain ID and the native-asset discriminator; or
-- contract-token identity: chain ID and contract address.
+- contract-token identity: chain ID and canonical lowercase EVM contract
+  address.
 
 A raw chain quantity remains reportable when decimals are not observed or are
 unavailable. It is not an amount with verified decimals and cannot be formatted,
@@ -65,7 +66,7 @@ present and bound to the same asset and observation identity.
 
 ## Token Identity And Decimals
 
-- Contract-token identity is `chainId + contract address`.
+- Contract-token identity is canonical EIP-155 `chainId + contract address`.
 - Symbol, name, logo, and legal underlying are separate display and registry
   metadata.
 - Decimals source authority follows `docs/EVIDENCE_POLICY.md`. Execution-critical

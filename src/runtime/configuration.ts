@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-import { productDisplayName } from "../core/index.js";
+import {
+  parseEvmChainId,
+  productDisplayName,
+  type EvmChainId,
+} from "../core/index.js";
 import { fixedOrigin } from "./http-boundary.js";
 
 export const defaultRpcUrl = "https://rpc.mainnet.chain.robinhood.com";
@@ -20,7 +24,10 @@ interface ConfiguredRpcEndpointState {
 const configuredRpcStates = new WeakMap<object, ConfiguredRpcEndpointState>();
 
 export interface WalletConnectConfiguration {
-  readonly projectId: string;
+  readonly projectId: WalletConnectProjectId;
+  readonly chain: RuntimeChainConfiguration;
+  readonly requiredMethods: readonly ["eth_sendTransaction"];
+  readonly requiredEvents: readonly ["accountsChanged", "chainChanged"];
   readonly metadata: {
     readonly name: typeof productDisplayName;
     readonly description: "Local Robinhood Chain wallet connection";
@@ -29,12 +36,43 @@ export interface WalletConnectConfiguration {
   };
 }
 
+export interface RuntimeChainConfiguration {
+  readonly chainId: EvmChainId;
+}
+
+export interface RuntimeRpcConfiguration {
+  readonly chain: RuntimeChainConfiguration;
+  readonly endpoint: ConfiguredRpcEndpoint;
+}
+
 export interface RuntimeConfiguration {
-  readonly rpc: ConfiguredRpcEndpoint;
+  readonly chain: RuntimeChainConfiguration;
+  readonly rpc: RuntimeRpcConfiguration;
   readonly wallet: WalletConnectConfiguration;
 }
 
-export const walletConnectProjectIdSchema = z.string().regex(/^[0-9a-f]{32}$/);
+const runtimeChainConfigurations = new WeakSet<object>();
+
+const createRuntimeChainConfiguration = (chainIdInput: unknown): RuntimeChainConfiguration => {
+  const chain = Object.freeze({ chainId: parseEvmChainId(chainIdInput) });
+  runtimeChainConfigurations.add(chain);
+  return chain;
+};
+
+export const readRuntimeChainConfiguration = (
+  chain: RuntimeChainConfiguration,
+): RuntimeChainConfiguration => {
+  if (
+    typeof chain !== "object" ||
+    chain === null ||
+    !runtimeChainConfigurations.has(chain)
+  ) throw new TypeError("Runtime chain configuration provenance is invalid.");
+  return chain;
+};
+
+export const walletConnectProjectIdSchema = z.string().regex(/^[0-9a-f]{32}$/)
+  .brand("WalletConnectProjectId");
+export type WalletConnectProjectId = z.infer<typeof walletConnectProjectIdSchema>;
 const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -85,12 +123,17 @@ export const readConfiguredRpcEndpoint = (
 export const readRuntimeConfiguration = (
   environment: Readonly<Record<string, string | undefined>>,
 ): RuntimeConfiguration => {
-  const rpc = parseConfiguredRpc(environment["LITTLEJOHN_RPC_URL"] ?? defaultRpcUrl);
+  const chain = createRuntimeChainConfiguration("eip155:4663");
+  const endpoint = parseConfiguredRpc(environment["LITTLEJOHN_RPC_URL"] ?? defaultRpcUrl);
+  const rpc = Object.freeze({ chain, endpoint });
   const projectId = walletConnectProjectIdSchema.parse(
     environment["LITTLEJOHN_WALLETCONNECT_PROJECT_ID"] ?? defaultWalletConnectProjectId,
   );
   const wallet = Object.freeze({
     projectId,
+    chain,
+    requiredMethods: Object.freeze(["eth_sendTransaction"] as const),
+    requiredEvents: Object.freeze(["accountsChanged", "chainChanged"] as const),
     metadata: Object.freeze({
       name: productDisplayName,
       description: "Local Robinhood Chain wallet connection" as const,
@@ -98,5 +141,5 @@ export const readRuntimeConfiguration = (
       icons: Object.freeze([]) as readonly [],
     }),
   });
-  return Object.freeze({ rpc, wallet });
+  return Object.freeze({ chain, rpc, wallet });
 };

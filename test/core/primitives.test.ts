@@ -8,6 +8,15 @@ import {
   compareCodePointSequences,
   decodeCanonicalBase64Url,
   evmAddressSchema,
+  evmAddressInputSchema,
+  evmAccountIdentitySchema,
+  evmChainIdSchema,
+  evmContractIdentitySchema,
+  deriveCaip10Account,
+  parseCaip10EvmAccount,
+  parseEvmAccountIdentity,
+  parseEvmAddressInput,
+  parseEvmContractIdentity,
   hexBytesSchema,
   isSafeSingleLineText,
   unsignedDecimalSchema,
@@ -31,9 +40,110 @@ describe("canonical primitives", () => {
     expect(hexBytesSchema.safeParse("0xAA").success).toBe(false);
   });
 
+  it("accepts canonical EIP-155 chain identities only", () => {
+    for (const value of ["eip155:1", "eip155:4663", `eip155:${"9".repeat(32)}`]) {
+      expect(evmChainIdSchema.safeParse(value).success).toBe(true);
+    }
+    for (const value of ["eip155:0", "eip155:01", "eip155:0x1", "EIP155:1", "1", `eip155:${"9".repeat(33)}`, "eip155:1\0suffix"]) {
+      expect(evmChainIdSchema.safeParse(value).success).toBe(false);
+    }
+  });
+
+  it("normalizes external EVM addresses and verifies EIP-55 mixed case", () => {
+    const official = [
+      "0x52908400098527886E0F7030069857D2E4169EE7",
+      "0x8617E340B3D01FA5F11F306F4090FD50E238070D",
+      "0xde709f2102306220921060314715629080e2fb77",
+      "0x27b1fdb04752bbc536007a920d24acb045561c26",
+      "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
+      "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359",
+      "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB",
+      "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb",
+    ];
+    for (const value of official) {
+      expect(parseEvmAddressInput(value)).toBe(value.toLowerCase());
+    }
+    expect(parseEvmAddressInput(`0x${"A".repeat(40)}`)).toBe(`0x${"a".repeat(40)}`);
+    for (const value of [
+      "0x52908400098527886e0F7030069857D2E4169EE7",
+      `0X${"1".repeat(40)}`,
+      `0x${"1".repeat(39)}`,
+      `0x${"g".repeat(40)}`,
+      `0x${"1".repeat(40)}\0`,
+    ]) expect(evmAddressInputSchema.safeParse(value).success).toBe(false);
+  });
+
+  it("derives CAIP-10 account text from one chain-address identity", () => {
+    const identity = {
+      chainId: evmChainIdSchema.parse("eip155:4663"),
+      address: evmAddressSchema.parse(`0x${"1".repeat(40)}`),
+    };
+    const account = deriveCaip10Account(identity);
+    expect(account).toBe(`eip155:4663:0x${"1".repeat(40)}`);
+    expect(parseCaip10EvmAccount(account)).toEqual(identity);
+    expect(parseCaip10EvmAccount(`eip155:1:0x${"1".repeat(40)}`)).not.toEqual(identity);
+    for (const value of [
+      `eip155:01:0x${"1".repeat(40)}`,
+      `eip155:1:extra:0x${"1".repeat(40)}`,
+      `eip155:1:0X${"1".repeat(40)}`,
+      `eip155:1:0x${"1".repeat(39)}`,
+    ]) expect(() => parseCaip10EvmAccount(value)).toThrow("CAIP-10");
+    expect(evmContractIdentitySchema.parse({
+      chainId: "eip155:4663",
+      contractAddress: identity.address,
+    })).toEqual({ chainId: identity.chainId, contractAddress: identity.address });
+  });
+
+  it("guards public EVM identity object schemas against hostile own keys", () => {
+    const identity = {
+      chainId: "eip155:4663",
+      address: `0x${"1".repeat(40)}`,
+    };
+    const hostile = Object.defineProperty({ ...identity }, "__proto__", {
+      value: undefined,
+      enumerable: true,
+    });
+    expect(evmAccountIdentitySchema.safeParse(hostile).success).toBe(false);
+
+    let getterReads = 0;
+    const getterBacked = {
+      address: identity.address,
+    } as { address: string; chainId?: string };
+    Object.defineProperty(getterBacked, "chainId", {
+      enumerable: true,
+      get() {
+        getterReads += 1;
+        throw new Error("secret identity getter");
+      },
+    });
+    expect(() => parseEvmAccountIdentity(getterBacked)).toThrow();
+    expect(() => deriveCaip10Account(getterBacked as never)).toThrow();
+    expect(getterReads).toBe(0);
+
+    const inheritedFields = Object.create(Object.defineProperties({}, {
+      ["__proto__"]: { value: undefined },
+      chainId: { value: identity.chainId, enumerable: true },
+    })) as { address: string };
+    inheritedFields.address = identity.address;
+    expect(evmAccountIdentitySchema.safeParse(inheritedFields).success).toBe(false);
+    expect(() => parseEvmAccountIdentity(inheritedFields)).toThrow();
+
+    let contractGetterReads = 0;
+    const hostileContract = { chainId: identity.chainId } as { chainId: string; contractAddress?: string };
+    Object.defineProperty(hostileContract, "contractAddress", {
+      enumerable: true,
+      get() {
+        contractGetterReads += 1;
+        throw new Error("secret contract getter");
+      },
+    });
+    expect(() => parseEvmContractIdentity(hostileContract)).toThrow();
+    expect(contractGetterReads).toBe(0);
+  });
+
   it("rejects an own prototype key through direct public schema use", () => {
     const anchor = {
-      chainId: "4663",
+      chainId: "eip155:4663",
       blockNumber: "1",
       blockHash: `0x${"a".repeat(64)}`,
       blockTimestamp: "2026-07-12T10:16:02.000Z",

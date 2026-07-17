@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-import { robinhoodChainIdentity } from "./identities.js";
+import {
+  evmAddressSchema,
+  evmChainIdSchema,
+  parseEvmAddress,
+  type EvmAddress,
+} from "./identities.js";
 import { guardJsonSchema, jsonObject } from "./json-object.js";
 
 const unsafeSingleLineCodePoint = (codePoint: number): boolean =>
@@ -114,7 +119,6 @@ const brandedString = <Brand extends string>(
 ) => z.string().regex(pattern, message).brand(brand);
 
 const unsignedDecimalPattern = /^(?:0|[1-9][0-9]*)$/;
-const evmAddressPattern = /^0x[0-9a-f]{40}$/;
 const hexWord32Pattern = /^0x[0-9a-f]{64}$/;
 const hexBytesPattern = /^0x(?:[0-9a-f]{2})*$/;
 const fixedIdentifierPattern = /^[\x21-\x7e]+$/;
@@ -131,11 +135,7 @@ export const createPrimitiveSchemaSet = () => {
     "Expected a canonical unsigned base-10 integer string.",
     "UnsignedDecimal",
   );
-  const evmAddress = brandedString(
-    evmAddressPattern,
-    "Expected a canonical lowercase EVM address.",
-    "EvmAddress",
-  );
+  const evmAddress = evmAddressSchema;
   const hash32 = brandedString(
     hexWord32Pattern,
     "Expected a canonical lowercase 32-byte hash.",
@@ -173,7 +173,7 @@ export const createPrimitiveSchemaSet = () => {
     jsonObject({ kind: z.literal("number"), blockNumber: unsignedDecimal }).strict(),
   ]);
   const chainAnchor = jsonObject({
-    chainId: z.literal(robinhoodChainIdentity.chainId),
+    chainId: evmChainIdSchema,
     blockNumber: unsignedDecimal,
     blockHash: hash32,
     blockTimestamp: utcTimestamp,
@@ -199,8 +199,8 @@ const parserPrimitiveSchemas = createPrimitiveSchemaSet();
 export const unsignedDecimalSchema = primitiveSchemas.unsignedDecimal;
 export type UnsignedDecimal = z.infer<typeof unsignedDecimalSchema>;
 
-export const evmAddressSchema = primitiveSchemas.evmAddress;
-export type EvmAddress = z.infer<typeof evmAddressSchema>;
+export { evmAddressSchema, parseEvmAddress } from "./identities.js";
+export type { EvmAddress } from "./identities.js";
 
 export const hash32Schema = primitiveSchemas.hash32;
 export type Hash32 = z.infer<typeof hash32Schema>;
@@ -229,7 +229,6 @@ export type ChainAnchor = z.infer<typeof chainAnchorSchema>;
 
 export const parseUnsignedDecimal = (value: unknown): UnsignedDecimal =>
   parserPrimitiveSchemas.unsignedDecimal.parse(value);
-export const parseEvmAddress = (value: unknown): EvmAddress => parserPrimitiveSchemas.evmAddress.parse(value);
 export const parseHash32 = (value: unknown): Hash32 => parserPrimitiveSchemas.hash32.parse(value);
 export const parseHexBytes = (value: unknown): HexBytes => parserPrimitiveSchemas.hexBytes.parse(value);
 export const parseUtcTimestamp = (value: unknown): UtcTimestamp => parserPrimitiveSchemas.utcTimestamp.parse(value);

@@ -10,11 +10,12 @@ import {
 } from "../core/index.js";
 import { guardRuntimeJsonSchema, parseRuntimeAuthority } from "./schema-authority.js";
 
-export const runtimeProtocolVersion = 1 as const;
+export const runtimeProtocolVersion = 2 as const;
 export const runtimeIdentifierByteLength = 16 as const;
 export const runtimeIdentifierEncodedLength = Math.ceil(runtimeIdentifierByteLength * 4 / 3);
 export const runtimeIdentityChallengeByteLength = 32 as const;
 export const runtimeIdentityProofByteLength = 32 as const;
+export const runtimeConfigurationMacByteLength = 32 as const;
 
 const createRuntimeIdentitySchemaSet = () => {
   const profileId = canonicalBase64UrlSchema(runtimeIdentifierByteLength).brand("ProfileId");
@@ -22,10 +23,13 @@ const createRuntimeIdentitySchemaSet = () => {
   const challenge = canonicalBase64UrlSchema(runtimeIdentityChallengeByteLength)
     .brand("RuntimeIdentityChallenge");
   const proof = canonicalBase64UrlSchema(runtimeIdentityProofByteLength).brand("RuntimeIdentityProof");
+  const configurationMac = canonicalBase64UrlSchema(runtimeConfigurationMacByteLength)
+    .brand("RuntimeConfigurationMac");
   const unsignedIdentity = z.object({
     profileId,
     ownerInstanceId,
     runtimeProtocolVersion: z.literal(runtimeProtocolVersion),
+    configurationMac,
     challenge,
     ownerRevision: unsignedDecimalSchema,
   }).strict();
@@ -34,6 +38,7 @@ const createRuntimeIdentitySchemaSet = () => {
     profileId,
     ownerInstanceId,
     challenge,
+    configurationMac,
     unsignedIdentity,
     ownerIdentity,
   });
@@ -49,11 +54,14 @@ export type UnsignedOwnerIdentity = Omit<OwnerIdentity, "proof">;
 export type ProfileId = ReturnType<typeof parseProfileId>;
 export type OwnerInstanceId = ReturnType<typeof parseOwnerInstanceId>;
 export type RuntimeIdentityChallenge = ReturnType<typeof parseRuntimeIdentityChallenge>;
+export type RuntimeConfigurationMac = z.infer<typeof authoritySchemas.configurationMac>;
 export type RuntimeRevision = UnsignedDecimal;
 
 export const parseProfileId = (value: unknown) => authoritySchemas.profileId.parse(value);
 export const parseOwnerInstanceId = (value: unknown) => authoritySchemas.ownerInstanceId.parse(value);
 export const parseRuntimeIdentityChallenge = (value: unknown) => authoritySchemas.challenge.parse(value);
+export const parseRuntimeConfigurationMac = (value: unknown): RuntimeConfigurationMac =>
+  authoritySchemas.configurationMac.parse(value);
 export const parseRuntimeRevision = (value: unknown): RuntimeRevision => parseUnsignedDecimal(value);
 export const parseOwnerIdentity = (value: unknown): OwnerIdentity =>
   parseRuntimeAuthority(authoritySchemas.ownerIdentity, value);
@@ -73,6 +81,7 @@ const identityFields = (identity: UnsignedOwnerIdentity): readonly string[] => [
   identity.profileId,
   identity.ownerInstanceId,
   String(identity.runtimeProtocolVersion),
+  identity.configurationMac,
   identity.challenge,
   identity.ownerRevision,
 ];
@@ -90,9 +99,4 @@ export const encodeOwnerProofPayload = (input: UnsignedOwnerIdentity): Uint8Arra
     offset += field.length;
   }
   return output;
-};
-
-export const unsignedDecimalSqlCheck = (column: string): string => {
-  if (!/^[a-z][a-z0-9_]*$/.test(column)) throw new TypeError("SQLite identifier is invalid.");
-  return `${column} NOT GLOB '*[^0-9]*' AND (${column} = '0' OR ${column} GLOB '[1-9]*')`;
 };

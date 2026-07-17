@@ -1,4 +1,5 @@
 import { fork, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import {
   mkdir,
@@ -19,6 +20,9 @@ import { runCommand } from "./release-support.mjs";
 
 const fixedOrigin = "http://127.0.0.1:46630";
 const csrfHeaderName = "Littlejohn-CSRF-Token";
+const identityChallengeHeaderName = "Littlejohn-Identity-Challenge";
+const expectedChainId = "eip155:4663";
+const expectedWalletAddress = "0x1111111111111111111111111111111111111111";
 const requestTimeoutMs = 30_000;
 const childShutdownTimeoutMs = 5_000;
 const pollIntervalMs = 25;
@@ -149,6 +153,19 @@ class WorkerPeer {
     );
   }
 
+  async stopAndInspectPersistence() {
+    if (this.ownership.isTerminated()) {
+      throw new TypeError("Release worker terminated before persistence inspection.");
+    }
+    const result = await this.request("stop_and_inspect_persistence");
+    await waitForPromise(
+      this.ownership.termination,
+      requestTimeoutMs,
+      "Release worker persistence inspection shutdown",
+    );
+    return result;
+  }
+
   async terminate() {
     await this.ownership.terminate();
   }
@@ -201,6 +218,30 @@ const startWorkerPeer = async (workerPath, cwd, environment) => {
     "Release worker startup",
   );
   return new WorkerPeer(ownership, ready);
+};
+
+const assertIncompatibleWorkerConfiguration = async (
+  workerPath,
+  cwd,
+  environment,
+  privateConfigurationValues,
+) => {
+  let worker;
+  let startupFailure;
+  try { worker = await startWorkerPeer(workerPath, cwd, environment); }
+  catch (error) { startupFailure = error; }
+  if (worker !== undefined) {
+    try { await worker.stop(); }
+    finally { await worker.terminate(); }
+    throw new TypeError("Changed packaged runtime configuration shared the fixed owner.");
+  }
+  if (
+    !(startupFailure instanceof Error) ||
+    !startupFailure.message.includes("owned by an incompatible process")
+  ) throw startupFailure ?? new TypeError("Changed packaged runtime configuration did not fail.");
+  if (privateConfigurationValues.some((value) => startupFailure.message.includes(value))) {
+    throw new TypeError("Packaged configuration incompatibility exposed a private input.");
+  }
 };
 
 class RawMcpClient {
@@ -342,6 +383,63 @@ const jsonResponse = async (response, expectedStatus = 200) => {
     throw new Error(`HTTP ${response.status}: ${JSON.stringify(body)}`);
   }
   return body;
+};
+
+const jsonSchemaPropertyNames = (schema) => {
+  const names = new Set();
+  const pending = [schema];
+  const visited = new WeakSet();
+  while (pending.length !== 0) {
+    const value = pending.pop();
+    if (typeof value !== "object" || value === null || visited.has(value)) continue;
+    visited.add(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const properties = descriptors["properties"]?.value;
+    if (typeof properties === "object" && properties !== null && !Array.isArray(properties)) {
+      for (const name of Object.keys(properties)) names.add(name);
+    }
+    for (const descriptor of Object.values(descriptors)) {
+      if ("value" in descriptor) pending.push(descriptor.value);
+    }
+  }
+  return names;
+};
+
+const readPackagedRuntimeIdentity = async () => {
+  const challenge = randomBytes(32).toString("base64url");
+  const response = await fetch(`${fixedOrigin}/api/v1/runtime-identity`, {
+    headers: { [identityChallengeHeaderName]: challenge },
+    redirect: "error",
+  });
+  const identity = await jsonResponse(response);
+  const expectedFields = [
+    "challenge",
+    "configurationMac",
+    "ownerInstanceId",
+    "ownerRevision",
+    "profileId",
+    "proof",
+    "runtimeProtocolVersion",
+  ];
+  if (
+    typeof identity !== "object" ||
+    identity === null ||
+    Array.isArray(identity) ||
+    JSON.stringify(Object.keys(identity).sort()) !== JSON.stringify(expectedFields) ||
+    identity.challenge !== challenge ||
+    identity.runtimeProtocolVersion !== 2 ||
+    typeof identity.profileId !== "string" ||
+    !/^[A-Za-z0-9_-]{22}$/u.test(identity.profileId) ||
+    typeof identity.ownerInstanceId !== "string" ||
+    !/^[A-Za-z0-9_-]{22}$/u.test(identity.ownerInstanceId) ||
+    typeof identity.configurationMac !== "string" ||
+    !/^[A-Za-z0-9_-]{43}$/u.test(identity.configurationMac) ||
+    typeof identity.proof !== "string" ||
+    !/^[A-Za-z0-9_-]{43}$/u.test(identity.proof) ||
+    typeof identity.ownerRevision !== "string" ||
+    !/^(?:0|[1-9][0-9]*)$/u.test(identity.ownerRevision)
+  ) throw new TypeError("Packaged runtime identity is not the exact protocol-2 contract.");
+  return identity;
 };
 
 const problemCode = (value) => {
@@ -540,6 +638,31 @@ const assertFixedPortReleased = async () => {
   await closing;
 };
 
+const assertPackagedPersistence = (inspection, runtimeIdentity) => {
+  if (
+    typeof inspection !== "object" ||
+    inspection === null ||
+    Array.isArray(inspection)
+  ) throw new TypeError("Packaged SQLite reopen result is invalid.");
+  const owner = inspection.owner;
+  if (
+    typeof owner !== "object" ||
+    owner === null ||
+    Array.isArray(owner) ||
+    owner.profileId !== runtimeIdentity.profileId ||
+    owner.configurationMac !== runtimeIdentity.configurationMac ||
+    owner.protocolVersion !== 2
+  ) throw new TypeError("Packaged SQLite owner configuration identity is invalid.");
+  const connection = inspection.connection;
+  if (
+    typeof connection !== "object" ||
+    connection === null ||
+    Array.isArray(connection) ||
+    connection.connection?.status !== "disconnected" ||
+    connection.connection.reason !== "deleted"
+  ) throw new TypeError("Packaged SQLite current connection did not reopen exactly.");
+};
+
 /** @type {typeof import("./packaged-integration.d.mts").verifyPackagedIntegration} */
 export const verifyPackagedIntegration = async (prepared) => {
   const integrationRoot = resolve(prepared.workspace, "integration");
@@ -554,12 +677,13 @@ export const verifyPackagedIntegration = async (prepared) => {
     { mode: 0o600 },
   );
   const fakeRpc = await startFakeRpc();
+  const walletConnectProjectId = "1".repeat(32);
   const environment = Object.freeze({
     ...prepared.environment,
     LITTLEJOHN_DATA_DIR: dataDirectory,
     LITTLEJOHN_RELEASE_CLOCK: clockPath,
     LITTLEJOHN_RPC_URL: fakeRpc.url,
-    LITTLEJOHN_WALLETCONNECT_PROJECT_ID: "1".repeat(32),
+    LITTLEJOHN_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
   });
   const workers = [];
   const mcpClients = [];
@@ -574,6 +698,38 @@ export const verifyPackagedIntegration = async (prepared) => {
     if (deferred.ready?.ownerState !== "deferred") {
       throw new TypeError("Second packaged runtime process did not defer to the fixed owner.");
     }
+    const initialRuntimeIdentity = await readPackagedRuntimeIdentity();
+    const publicIdentityBytes = JSON.stringify(initialRuntimeIdentity);
+    if (
+      publicIdentityBytes.includes(fakeRpc.url) ||
+      publicIdentityBytes.includes(walletConnectProjectId)
+    ) throw new TypeError("Packaged runtime identity exposed configuration input.");
+    const changedRpcUrl = `${fakeRpc.url}/`;
+    await assertIncompatibleWorkerConfiguration(
+      workerPath,
+      prepared.installRoot,
+      Object.freeze({ ...environment, LITTLEJOHN_RPC_URL: changedRpcUrl }),
+      [changedRpcUrl, walletConnectProjectId],
+    );
+    const changedProjectId = "2".repeat(32);
+    await assertIncompatibleWorkerConfiguration(
+      workerPath,
+      prepared.installRoot,
+      Object.freeze({
+        ...environment,
+        LITTLEJOHN_WALLETCONNECT_PROJECT_ID: changedProjectId,
+      }),
+      [fakeRpc.url, changedProjectId],
+    );
+    const unchangedOwner = await owner.request("inspect");
+    const unchangedRuntimeIdentity = await readPackagedRuntimeIdentity();
+    if (
+      unchangedOwner?.ownerState !== "owner" ||
+      unchangedRuntimeIdentity.profileId !== initialRuntimeIdentity.profileId ||
+      unchangedRuntimeIdentity.ownerInstanceId !== initialRuntimeIdentity.ownerInstanceId ||
+      unchangedRuntimeIdentity.ownerRevision !== initialRuntimeIdentity.ownerRevision ||
+      unchangedRuntimeIdentity.configurationMac !== initialRuntimeIdentity.configurationMac
+    ) throw new TypeError("Incompatible packaged configuration changed the fixed owner.");
 
     const firstMcp = await startNpxMcp(prepared, environment);
     mcpClients.push(firstMcp);
@@ -588,6 +744,20 @@ export const verifyPackagedIntegration = async (prepared) => {
       typeof tool?.outputSchema !== "object" ||
       tool.outputSchema === null
     )) throw new TypeError("Packaged MCP tools do not expose complete canonical schemas.");
+    const walletConnectionTool = tools.find((tool) => tool.name === "wallet_get_connection");
+    const walletConnectionProperties = jsonSchemaPropertyNames(walletConnectionTool?.outputSchema);
+    if (
+      !walletConnectionProperties.has("chainId") ||
+      !walletConnectionProperties.has("address") ||
+      !walletConnectionProperties.has("sessionCount") ||
+      walletConnectionProperties.has("account") ||
+      walletConnectionProperties.has("eligibleSessionCount")
+    ) throw new TypeError("Packaged wallet connection schema contains a stale identity contract.");
+    const chainStatusTool = tools.find((tool) => tool.name === "read_get_chain_status");
+    const chainStatusProperties = jsonSchemaPropertyNames(chainStatusTool?.outputSchema);
+    if (!chainStatusProperties.has("chainId") || chainStatusProperties.has("caip2")) {
+      throw new TypeError("Packaged chain status schema contains a parallel chain identity.");
+    }
     const catalog = await firstMcp.callTool("read_list_capabilities");
     const catalogEntries = catalog.structuredContent?.capabilities;
     if (!Array.isArray(catalogEntries)) {
@@ -595,18 +765,19 @@ export const verifyPackagedIntegration = async (prepared) => {
     }
     const capabilityIds = catalogEntries.map((entry) => entry?.capabilityId);
     if (
-      catalog.structuredContent?.contractVersion !== "1" ||
+      catalog.structuredContent?.contractVersion !== "2" ||
       JSON.stringify(capabilityIds) !== JSON.stringify(expectedCapabilityIds)
     ) throw new TypeError("Packaged MCP capability catalog is not the exact canonical set.");
     const chainStatus = await firstMcp.callTool("read_get_chain_status");
     if (
-      chainStatus.structuredContent?.data?.chainId !== "4663" ||
-      chainStatus.structuredContent?.data?.caip2 !== "eip155:4663"
+      chainStatus.structuredContent?.data?.chainId !== expectedChainId ||
+      Object.hasOwn(chainStatus.structuredContent?.data ?? {}, "caip2")
     ) throw new TypeError("Packaged MCP chain status is invalid.");
 
     const httpChainStatus = await jsonResponse(await fetch(`${fixedOrigin}/api/v1/chain-status`));
     if (
-      httpChainStatus.data?.chainId !== "4663" ||
+      httpChainStatus.data?.chainId !== expectedChainId ||
+      Object.hasOwn(httpChainStatus.data ?? {}, "caip2") ||
       httpChainStatus.data?.latestBlock?.blockHash !== `0x${"88".repeat(32)}`
     ) throw new TypeError("Packaged HTTP chain status is invalid.");
     const browser = await browserSession();
@@ -630,7 +801,8 @@ export const verifyPackagedIntegration = async (prepared) => {
     ], { cwd: prepared.installRoot, env: environment, output: "capture" });
     const cliStatus = JSON.parse(cli.stdout.toString("utf8"));
     if (
-      cliStatus.data?.chainId !== "4663" ||
+      cliStatus.data?.chainId !== expectedChainId ||
+      Object.hasOwn(cliStatus.data ?? {}, "caip2") ||
       cliStatus.data?.latestBlock?.blockHash !== `0x${"88".repeat(32)}`
     ) throw new TypeError("Packaged CLI chain status is invalid.");
 
@@ -776,13 +948,22 @@ export const verifyPackagedIntegration = async (prepared) => {
       completedBrowserOperation.operation?.result?.outcome !== "connected"
     ) throw new TypeError("Packaged browser lost the completed connection result.");
     const firstConnection = await firstMcp.callTool("wallet_get_connection");
-    if (firstConnection.structuredContent?.data?.status !== "connected") {
+    const firstConnectionData = firstConnection.structuredContent?.data;
+    if (
+      firstConnectionData?.status !== "connected" ||
+      firstConnectionData.chainId !== expectedChainId ||
+      firstConnectionData.address !== expectedWalletAddress ||
+      Object.hasOwn(firstConnectionData, "account")
+    ) {
       throw new TypeError("Packaged MCP wallet connection is not connected.");
     }
     const connectedBrowserState = await jsonResponse(await browserCurrent(browser));
     if (
       connectedBrowserState.status !== "absent" ||
-      connectedBrowserState.connection?.status !== "connected"
+      connectedBrowserState.connection?.status !== "connected" ||
+      connectedBrowserState.connection.chainId !== expectedChainId ||
+      connectedBrowserState.connection.address !== expectedWalletAddress ||
+      Object.hasOwn(connectedBrowserState.connection, "account")
     ) throw new TypeError("Packaged browser did not settle to the connected global wallet state.");
 
     const secondMcp = await startNpxMcp(prepared, environment);
@@ -965,6 +1146,13 @@ export const verifyPackagedIntegration = async (prepared) => {
       restored.ownerState !== "owner" ||
       restored.response?.body?.data?.status !== "connected"
     ) throw new TypeError("Deferred packaged process did not restore the persisted wallet session.");
+    const restoredRuntimeIdentity = await readPackagedRuntimeIdentity();
+    if (
+      restoredRuntimeIdentity.profileId !== initialRuntimeIdentity.profileId ||
+      restoredRuntimeIdentity.configurationMac !== initialRuntimeIdentity.configurationMac ||
+      restoredRuntimeIdentity.ownerInstanceId === initialRuntimeIdentity.ownerInstanceId ||
+      BigInt(restoredRuntimeIdentity.ownerRevision) <= BigInt(initialRuntimeIdentity.ownerRevision)
+    ) throw new TypeError("Compatible packaged takeover changed configuration identity.");
 
     const staleBrowserResponse = await browserCurrent(browser);
     const staleBrowserProblem = await staleBrowserResponse.json();
@@ -989,7 +1177,8 @@ export const verifyPackagedIntegration = async (prepared) => {
       throw new TypeError("Wallet-side deletion was not observed by the fixed owner.");
     }
 
-    await deferred.stop();
+    const persistenceInspection = await deferred.stopAndInspectPersistence();
+    assertPackagedPersistence(persistenceInspection, restoredRuntimeIdentity);
     fakeRpc.assertNoUnexpectedMethods();
     const methods = fakeRpc.calls.map((call) => call.method);
     if (!methods.includes("eth_chainId") || !methods.includes("eth_getBlockByNumber")) {

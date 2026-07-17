@@ -30,7 +30,6 @@ const operationId = Buffer.alloc(walletOperationIdByteLength, 7).toString("base6
 const disconnected = Object.freeze({ status: "disconnected", reason: "no_session" });
 const connected = Object.freeze({
   status: "connected",
-  account: "eip155:4663:0x1111111111111111111111111111111111111111",
   address: "0x1111111111111111111111111111111111111111",
   chainId: "eip155:4663",
   approvedMethods: ["eth_sendTransaction"],
@@ -38,7 +37,7 @@ const connected = Object.freeze({
   expiresAt: "2026-07-14T01:10:00.000Z",
 });
 const unknown = Object.freeze({ status: "unknown", reason: "reconciling" });
-const unresolved = Object.freeze({ status: "unresolved", eligibleSessionCount: "2" });
+const unresolved = Object.freeze({ status: "unresolved", sessionCount: "2" });
 
 const operation = (overrides: Readonly<Record<string, unknown>> = {}) => ({
   operationId,

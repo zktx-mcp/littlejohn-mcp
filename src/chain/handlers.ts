@@ -6,8 +6,8 @@ import {
   chainStatusCapability,
   contractInspectCapability,
   createAccountBalanceTokenEvidenceIdentity,
+  deriveEip155Reference,
   getCapabilityDefinitionSnapshot,
-  robinhoodChainIdentity,
   transactionInspectCapability,
   type AccountBalanceData,
   type AccountBalanceInput,
@@ -19,6 +19,7 @@ import {
   type ContractInspectData,
   type ContractInspectInput,
   type EvmAddress,
+  type EvmChainId,
   type HandlerInvocationContext,
   type InvocationBoundaryPorts,
   type NativeGasRate,
@@ -66,7 +67,6 @@ import {
 
 export const chainInvocationDeadlineMs = 90_000;
 
-const nativeAsset = Object.freeze({ kind: "native" as const, chainId: robinhoodChainIdentity.chainId });
 const transactionDefinition = getCapabilityDefinitionSnapshot(transactionInspectCapability);
 const accountDefinition = getCapabilityDefinitionSnapshot(accountBalanceCapability);
 
@@ -103,6 +103,8 @@ interface HandlerDependencies {
   readonly rpc: RpcRequester;
   readonly encoder: Erc20CallEncoder;
   readonly rpcSource: ObservationAuthority;
+  readonly chainId: EvmChainId;
+  readonly nativeAsset: Readonly<{ readonly kind: "native"; readonly chainId: EvmChainId }>;
 }
 
 const asFailure = (code: string) => ({ status: "failure" as const, code, issues: Object.freeze([]) });
@@ -162,12 +164,12 @@ const recordChainId = async (
   observations: ObservationWriter,
 ): Promise<void> => {
   const result = await dependencies.rpc.request("eth_chainId", [], signal);
-  if (result !== unsignedDecimalToRpcQuantity(robinhoodChainIdentity.chainId)) {
+  if (result !== unsignedDecimalToRpcQuantity(deriveEip155Reference(dependencies.chainId))) {
     throw new ChainOperationError("source_inconsistent");
   }
   observations.record("rpc_chain_id", {
     source: dependencies.rpcSource,
-    claims: [{ role: "chain_id", value: robinhoodChainIdentity.chainId }],
+    claims: [{ role: "chain_id", value: dependencies.chainId }],
   });
 };
 
@@ -185,7 +187,7 @@ const resolveBlock = async (
     signal,
   );
   if (raw === null) throw new ChainOperationError("source_inconsistent");
-  const anchor = normalizeSourceValue(() => normalizeRpcBlockAnchor(raw));
+  const anchor = normalizeSourceValue(() => normalizeRpcBlockAnchor(raw, dependencies.chainId));
   if (selector.kind === "number" && selector.blockNumber !== anchor.blockNumber) {
     throw new ChainOperationError("source_inconsistent");
   }
@@ -199,8 +201,9 @@ const nativeAmount = (
   raw: UnsignedDecimal,
   observationId: CanonicalAmount["quantityObservationId"],
   exclusion: StaticScopeExclusion,
+  chainId: EvmChainId,
 ): CanonicalAmount => Object.freeze({
-  asset: nativeAsset,
+  asset: Object.freeze({ kind: "native" as const, chainId }),
   raw,
   decimals: Object.freeze({ status: "not_observed", scopeExclusionId: exclusion.id }),
   quantityObservationId: observationId,
@@ -209,32 +212,33 @@ const nativeAmount = (
 const gasRate = (
   raw: UnsignedDecimal,
   observationId: CanonicalAmount["quantityObservationId"],
+  chainId: EvmChainId,
 ): NativeGasRate => Object.freeze({
-  numerator: nativeAmount(raw, observationId, transactionNativeDecimals),
+  numerator: nativeAmount(raw, observationId, transactionNativeDecimals, chainId),
   denominator: Object.freeze({ unit: "gas", raw: "1" }),
   observationId,
 });
 
-const amountSourceValue = (raw: UnsignedDecimal, exclusion: StaticScopeExclusion) => ({
-  asset: nativeAsset,
+const amountSourceValue = (raw: UnsignedDecimal, exclusion: StaticScopeExclusion, chainId: EvmChainId) => ({
+  asset: { kind: "native" as const, chainId },
   raw,
   decimals: { status: "not_observed" as const, scopeExclusionId: exclusion.id },
 });
 
-const gasRateSourceValue = (raw: UnsignedDecimal) => ({
-  numerator: amountSourceValue(raw, transactionNativeDecimals),
+const gasRateSourceValue = (raw: UnsignedDecimal, chainId: EvmChainId) => ({
+  numerator: amountSourceValue(raw, transactionNativeDecimals, chainId),
   denominator: { unit: "gas" as const, raw: "1" as const },
 });
 
-const transactionFeeSourceValue = (transaction: NormalizedRpcTransaction) => {
+const transactionFeeSourceValue = (transaction: NormalizedRpcTransaction, chainId: EvmChainId) => {
   if (transaction.fee.kind === "legacy") {
-    return { kind: "legacy" as const, gasPrice: gasRateSourceValue(transaction.fee.gasPrice) };
+    return { kind: "legacy" as const, gasPrice: gasRateSourceValue(transaction.fee.gasPrice, chainId) };
   }
   if (transaction.fee.kind === "dynamic") {
     return {
       kind: "dynamic" as const,
-      maxFeePerGas: gasRateSourceValue(transaction.fee.maxFeePerGas),
-      maxPriorityFeePerGas: gasRateSourceValue(transaction.fee.maxPriorityFeePerGas),
+      maxFeePerGas: gasRateSourceValue(transaction.fee.maxFeePerGas, chainId),
+      maxPriorityFeePerGas: gasRateSourceValue(transaction.fee.maxPriorityFeePerGas, chainId),
     };
   }
   return { kind: "unsupported" as const, type: transaction.fee.type };
@@ -242,6 +246,7 @@ const transactionFeeSourceValue = (transaction: NormalizedRpcTransaction) => {
 
 const transactionClaims = (
   transaction: NormalizedRpcTransaction,
+  chainId: EvmChainId,
   anchor?: ChainAnchor,
 ): readonly ObservationClaim[] => {
   const anchorFields = anchor === undefined ? {} : { chainAnchor: anchor };
@@ -252,13 +257,13 @@ const transactionClaims = (
       chainId: transaction.chainScope,
       from: transaction.from,
       recipient: transaction.recipient,
-      value: amountSourceValue(transaction.value, transactionNativeDecimals),
+      value: amountSourceValue(transaction.value, transactionNativeDecimals, chainId),
       input: transaction.input,
       nonce: transaction.nonce,
       gasLimit: { raw: transaction.gasLimit },
       type: transaction.type,
       accessList: accessListData(transaction.accessList),
-      fee: transactionFeeSourceValue(transaction),
+      fee: transactionFeeSourceValue(transaction, chainId),
       inclusion: transaction.position.status === "pending"
         ? { status: "pending" as const }
         : {
@@ -272,7 +277,7 @@ const transactionClaims = (
   }, {
     role: "transaction_value",
     value: transaction.value,
-    asset: nativeAsset,
+    asset: { kind: "native", chainId },
     ...anchorFields,
   }, {
     role: "transaction_gas_limit",
@@ -283,19 +288,19 @@ const transactionClaims = (
     claims.push({
       role: "transaction_gas_price",
       value: transaction.fee.gasPrice,
-      asset: nativeAsset,
+      asset: { kind: "native", chainId },
       ...anchorFields,
     });
   } else if (transaction.fee.kind === "dynamic") {
     claims.push({
       role: "transaction_max_fee_per_gas",
       value: transaction.fee.maxFeePerGas,
-      asset: nativeAsset,
+      asset: { kind: "native", chainId },
       ...anchorFields,
     }, {
       role: "transaction_max_priority_fee_per_gas",
       value: transaction.fee.maxPriorityFeePerGas,
-      asset: nativeAsset,
+      asset: { kind: "native", chainId },
       ...anchorFields,
     });
   }
@@ -306,24 +311,25 @@ const transactionData = (
   transaction: NormalizedRpcTransaction,
   observationId: CanonicalAmount["quantityObservationId"],
   inclusion: TransactionInspectData["inclusion"],
+  chainId: EvmChainId,
 ): TransactionInspectData => ({
   transactionHash: transaction.transactionHash,
   chainId: transaction.chainScope,
   from: transaction.from,
   recipient: transaction.recipient,
-  value: nativeAmount(transaction.value, observationId, transactionNativeDecimals),
+  value: nativeAmount(transaction.value, observationId, transactionNativeDecimals, chainId),
   input: transaction.input,
   nonce: transaction.nonce,
   gasLimit: Object.freeze({ raw: transaction.gasLimit, observationId }),
   type: transaction.type,
   accessList: accessListData(transaction.accessList),
   fee: transaction.fee.kind === "legacy"
-    ? { kind: "legacy", gasPrice: gasRate(transaction.fee.gasPrice, observationId) }
+    ? { kind: "legacy", gasPrice: gasRate(transaction.fee.gasPrice, observationId, chainId) }
     : transaction.fee.kind === "dynamic"
       ? {
           kind: "dynamic",
-          maxFeePerGas: gasRate(transaction.fee.maxFeePerGas, observationId),
-          maxPriorityFeePerGas: gasRate(transaction.fee.maxPriorityFeePerGas, observationId),
+          maxFeePerGas: gasRate(transaction.fee.maxFeePerGas, observationId, chainId),
+          maxPriorityFeePerGas: gasRate(transaction.fee.maxPriorityFeePerGas, observationId, chainId),
         }
       : { kind: "unsupported", type: transaction.fee.type },
   inclusion,
@@ -331,11 +337,12 @@ const transactionData = (
 
 const decodedEventSourceValue = (
   log: NormalizedRpcReceipt["logs"][number],
+  chainId: EvmChainId,
 ): CanonicalJson => {
   const event = log.decodedEvent;
   if (event.kind === "not_decoded") return { kind: "not_decoded" };
   const amount = {
-    asset: { kind: "erc20" as const, chainId: robinhoodChainIdentity.chainId, address: log.address },
+    asset: { kind: "erc20" as const, chainId, address: log.address },
     raw: event.amountRaw,
     decimals: {
       status: "not_observed" as const,
@@ -353,11 +360,14 @@ const decodedEventSourceValue = (
       });
 };
 
-const receiptSourceValue = (receipt: NormalizedRpcReceipt): CanonicalJson => asCanonicalJson({
+const receiptSourceValue = (
+  receipt: NormalizedRpcReceipt,
+  chainId: EvmChainId,
+): CanonicalJson => asCanonicalJson({
   status: receipt.status,
   cumulativeGasUsed: { raw: receipt.cumulativeGasUsed },
   gasUsed: { raw: receipt.gasUsed },
-  effectiveGasPrice: gasRateSourceValue(receipt.effectiveGasPrice),
+  effectiveGasPrice: gasRateSourceValue(receipt.effectiveGasPrice, chainId),
   createdContract: receipt.createdContract,
   logs: receipt.logs.map((log) => ({
     address: log.address,
@@ -365,17 +375,18 @@ const receiptSourceValue = (receipt: NormalizedRpcReceipt): CanonicalJson => asC
     data: log.data,
     logIndex: log.logIndex,
     transactionIndex: log.transactionIndex,
-    decodedEvent: decodedEventSourceValue(log),
+    decodedEvent: decodedEventSourceValue(log, chainId),
   })),
 });
 
 const receiptClaims = (
   receipt: NormalizedRpcReceipt,
   block: ChainAnchor,
+  chainId: EvmChainId,
 ): readonly ObservationClaim[] => {
   const claims: ObservationClaim[] = [{
     role: "transaction_receipt",
-    value: receiptSourceValue(receipt),
+    value: receiptSourceValue(receipt, chainId),
     chainAnchor: block,
   }, {
     role: "receipt_cumulative_gas_used",
@@ -388,7 +399,7 @@ const receiptClaims = (
   }, {
     role: "receipt_effective_gas_price",
     value: receipt.effectiveGasPrice,
-    asset: nativeAsset,
+    asset: { kind: "native", chainId },
     chainAnchor: block,
   }];
   receipt.logs.forEach((log, index) => {
@@ -396,7 +407,7 @@ const receiptClaims = (
       claims.push({
         role: `receipt_log_amount:${index}`,
         value: log.decodedEvent.amountRaw,
-        asset: { kind: "erc20", chainId: robinhoodChainIdentity.chainId, address: log.address },
+        asset: { kind: "erc20", chainId, address: log.address },
         chainAnchor: block,
       });
     }
@@ -407,11 +418,12 @@ const receiptClaims = (
 const receiptData = (
   receipt: NormalizedRpcReceipt,
   observationId: CanonicalAmount["quantityObservationId"],
+  chainId: EvmChainId,
 ): Extract<TransactionInspectData["inclusion"], { status: "included" }>["receipt"] => ({
   status: receipt.status,
   cumulativeGasUsed: { raw: receipt.cumulativeGasUsed, observationId },
   gasUsed: { raw: receipt.gasUsed, observationId },
-  effectiveGasPrice: gasRate(receipt.effectiveGasPrice, observationId),
+  effectiveGasPrice: gasRate(receipt.effectiveGasPrice, observationId, chainId),
   createdContract: receipt.createdContract,
   logs: receipt.logs.map((log) => ({
     address: log.address,
@@ -428,7 +440,7 @@ const receiptData = (
             from: log.decodedEvent.from,
             to: log.decodedEvent.to,
             amount: {
-              asset: { kind: "erc20", chainId: robinhoodChainIdentity.chainId, address: log.address },
+              asset: { kind: "erc20", chainId, address: log.address },
               raw: log.decodedEvent.amountRaw,
               decimals: {
                 status: "not_observed",
@@ -443,7 +455,7 @@ const receiptData = (
             owner: log.decodedEvent.owner,
             spender: log.decodedEvent.spender,
             amount: {
-              asset: { kind: "erc20", chainId: robinhoodChainIdentity.chainId, address: log.address },
+              asset: { kind: "erc20", chainId, address: log.address },
               raw: log.decodedEvent.amountRaw,
               decimals: {
                 status: "not_observed",
@@ -458,7 +470,7 @@ const receiptData = (
 interface TokenReadResult {
   readonly asset: {
     readonly kind: "erc20";
-    readonly chainId: typeof robinhoodChainIdentity.chainId;
+    readonly chainId: EvmChainId;
     readonly address: EvmAddress;
   };
   readonly balance:
@@ -492,7 +504,7 @@ const readToken = async (
   block: RpcCanonicalBlockReference,
   signal: AbortSignal,
 ): Promise<TokenReadResult> => {
-  const asset = Object.freeze({ kind: "erc20" as const, chainId: robinhoodChainIdentity.chainId, address: token });
+  const asset = Object.freeze({ kind: "erc20" as const, chainId: dependencies.chainId, address: token });
   let raw: UnsignedDecimal;
   try {
     const result = await dependencies.rpc.request("eth_call", [{
@@ -569,7 +581,15 @@ export const createChainReadService = (input: {
   readonly encoder: Erc20CallEncoder;
 }): ChainReadService => {
   const rpcSource = input.context.chain.sourceAuthority.observationAuthority;
-  const dependencies: HandlerDependencies = Object.freeze({ rpc: input.rpc, encoder: input.encoder, rpcSource });
+  const chainId = input.context.chain.configuration.chain.chainId;
+  const nativeAsset = Object.freeze({ kind: "native" as const, chainId });
+  const dependencies: HandlerDependencies = Object.freeze({
+    rpc: input.rpc,
+    encoder: input.encoder,
+    rpcSource,
+    chainId,
+    nativeAsset,
+  });
   const basePorts = input.context.chain.capabilityAuthority.invocationPorts;
   const applicationAbort = new AbortController();
   const activeInvocations = new Set<Promise<unknown>>();
@@ -609,6 +629,9 @@ export const createChainReadService = (input: {
         account: Object.freeze({ status: "unavailable" as const }),
       });
     }
+    if (snapshot.connection.chainId !== chainId) {
+      throw new TypeError("Active wallet chain does not match the configured chain.");
+    }
     if (snapshot.sessionSource === undefined) throw new TypeError("Connected wallet source is unavailable.");
     return Object.freeze({
       observations: new ObservationAuthorityRegistry(
@@ -633,14 +656,13 @@ export const createChainReadService = (input: {
         await recordChainId(dependencies, signal, observations);
         const rawBlock = await dependencies.rpc.request("eth_getBlockByNumber", ["latest", false], signal);
         if (rawBlock === null) throw new ChainOperationError("source_inconsistent");
-        const latestBlock = normalizeSourceValue(() => normalizeRpcBlockAnchor(rawBlock));
+        const latestBlock = normalizeSourceValue(() => normalizeRpcBlockAnchor(rawBlock, chainId));
         observations.record("latest_block", {
           source: rpcSource,
           claims: [{ role: "latest_block", value: latestBlock, chainAnchor: latestBlock }],
         });
         const data: ChainStatusData = {
-          chainId: robinhoodChainIdentity.chainId,
-          caip2: robinhoodChainIdentity.caip2,
+          chainId,
           latestBlock,
         };
         return { status: "success", data };
@@ -693,16 +715,16 @@ export const createChainReadService = (input: {
           signal,
         );
         if (transactionRaw === null) throw new ChainOperationError("not_found");
-        const normalized = normalizeSourceValue(() => normalizeRpcTransaction(transactionRaw));
+        const normalized = normalizeSourceValue(() => normalizeRpcTransaction(transactionRaw, chainId));
         if (normalized.transactionHash !== request.transactionHash) {
           throw new ChainOperationError("source_inconsistent");
         }
         if (normalized.position.status === "pending") {
           const transactionObservationId = observations.record("transaction", {
             source: rpcSource,
-            claims: transactionClaims(normalized),
+            claims: transactionClaims(normalized, chainId),
           });
-          const data = transactionData(normalized, transactionObservationId, { status: "pending" });
+          const data = transactionData(normalized, transactionObservationId, { status: "pending" }, chainId);
           return { status: "success", data };
         }
         const receiptRaw = await dependencies.rpc.request(
@@ -721,27 +743,28 @@ export const createChainReadService = (input: {
           transactionRaw,
           receiptRaw,
           blockRaw,
+          chainId,
         ));
         const transactionObservationId = observations.record("transaction", {
           source: rpcSource,
-          claims: transactionClaims(included.transaction, included.block),
+          claims: transactionClaims(included.transaction, chainId, included.block),
         });
         const receiptObservationId = observations.record("receipt", {
           source: rpcSource,
-          claims: receiptClaims(included.receipt, included.block),
+          claims: receiptClaims(included.receipt, included.block, chainId),
         });
         observations.record("block", {
           source: rpcSource,
           claims: [{ role: "transaction_block", value: included.block, chainAnchor: included.block }],
         });
-        const receipt = receiptData(included.receipt, receiptObservationId);
+        const receipt = receiptData(included.receipt, receiptObservationId, chainId);
         const inclusion = {
           status: "included" as const,
           block: included.block,
           transactionIndex: included.transaction.position.transactionIndex,
           receipt,
         };
-        const data = transactionData(included.transaction, transactionObservationId, inclusion);
+        const data = transactionData(included.transaction, transactionObservationId, inclusion, chainId);
         return { status: "success", data };
       }),
   });
@@ -778,9 +801,12 @@ export const createChainReadService = (input: {
           const raw = normalizeSourceValue(() => rpcQuantityToUnsignedDecimal(rawBalance));
           const observationId = observations.record("native_balance", {
             source: rpcSource,
-            claims: [{ role: "native_balance", value: raw, asset: nativeAsset, chainAnchor: block.anchor }],
+            claims: [{ role: "native_balance", value: raw, asset: dependencies.nativeAsset, chainAnchor: block.anchor }],
           });
-          native = { status: "available", amount: nativeAmount(raw, observationId, accountNativeDecimals) };
+          native = {
+            status: "available",
+            amount: nativeAmount(raw, observationId, accountNativeDecimals, chainId),
+          };
         }
 
         const tokenReads = await readTokensBounded(

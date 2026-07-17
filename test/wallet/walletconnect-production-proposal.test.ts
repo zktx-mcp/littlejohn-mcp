@@ -2,15 +2,19 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
+import {
+  readRuntimeConfiguration,
+  walletConnectProjectIdSchema,
+} from "../../src/runtime/configuration.js";
 import {
   createWalletConnectClient,
   createWalletConnectAcquisitionScope,
   type WalletConnectClientAcquisition,
 } from "../../src/wallet/walletconnect-client.js";
 
-const projectId = "1".repeat(32);
-const metadata = readRuntimeConfiguration({}).wallet.metadata;
+const configuredWallet = readRuntimeConfiguration({}).wallet;
+const projectId = walletConnectProjectIdSchema.parse("1".repeat(32));
+const wallet = Object.freeze({ ...configuredWallet, projectId });
 const firstPairingTopic = "2".repeat(64);
 const secondPairingTopic = "6".repeat(64);
 const firstSessionTopic = "3".repeat(64);
@@ -374,7 +378,7 @@ const beginAcquisition = (harness: PinnedProtocolHarness): ManagedAcquisition =>
   }
   const scope = createWalletConnectAcquisitionScope();
   const outcome: Promise<AcquisitionOutcome> = createWalletConnectClient(
-    { projectId, metadata, privateStoreDirectory: storeDirectory },
+    { wallet, privateStoreDirectory: storeDirectory },
     scope.resources,
     new AbortController().signal,
     undefined,

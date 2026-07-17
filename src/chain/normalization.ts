@@ -1,16 +1,17 @@
 import {
   blockSelectorSchema,
   chainAnchorSchema,
+  deriveEip155Reference,
   parseEvmAddress,
   parseHash32,
   parseHexBytes,
   parseUnsignedDecimal,
   parseUtcTimestamp,
   readCapabilityLimits,
-  robinhoodChainIdentity,
   type BlockSelector,
   type ChainAnchor,
   type EvmAddress,
+  type EvmChainId,
   type Hash32,
   type HexBytes,
   type UnsignedDecimal,
@@ -135,13 +136,13 @@ export const blockSelectorToRpcTag = (input: unknown): "latest" | `0x${string}` 
   return selector.kind === "latest" ? "latest" : unsignedDecimalToRpcQuantity(selector.blockNumber);
 };
 
-export const normalizeRpcBlockAnchor = (input: unknown): ChainAnchor => {
+export const normalizeRpcBlockAnchor = (input: unknown, chainId: EvmChainId): ChainAnchor => {
   const fields = captureObject(input);
   const seconds = parseRpcQuantity(required(fields, "timestamp"));
   if (seconds > maximumTimestampSeconds) return invalid();
   const blockTimestamp = parseUtcTimestamp(new Date(Number(seconds * 1_000n)).toISOString());
   return chainAnchorSchema.parse(freezeNormalized({
-    chainId: robinhoodChainIdentity.chainId,
+    chainId,
     blockNumber: rpcQuantityToUnsignedDecimal(required(fields, "number")),
     blockHash: normalizeRpcHash(required(fields, "hash")),
     blockTimestamp,
@@ -224,7 +225,7 @@ type TransactionPosition =
 
 export interface NormalizedRpcTransaction {
   readonly transactionHash: Hash32;
-  readonly chainScope: typeof robinhoodChainIdentity.chainId;
+  readonly chainScope: EvmChainId;
   readonly from: EvmAddress;
   readonly recipient: NormalizedRecipient;
   readonly value: UnsignedDecimal;
@@ -243,7 +244,10 @@ const normalizeTransactionType = (input: unknown): UnsignedDecimal => {
   return type;
 };
 
-export const normalizeRpcTransaction = (input: unknown): NormalizedRpcTransaction => {
+export const normalizeRpcTransaction = (
+  input: unknown,
+  chainId: EvmChainId,
+): NormalizedRpcTransaction => {
   const fields = captureObject(input);
   const type = normalizeTransactionType(required(fields, "type"));
   const requiresTypedChainIdentity = type === "1" || type === "2" || type === "3" || type === "4";
@@ -252,7 +256,7 @@ export const normalizeRpcTransaction = (input: unknown): NormalizedRpcTransactio
     : undefined;
   if (
     (requiresTypedChainIdentity && observedChainId === undefined) ||
-    (observedChainId !== undefined && observedChainId !== robinhoodChainIdentity.chainId)
+    (observedChainId !== undefined && observedChainId !== deriveEip155Reference(chainId))
   ) return invalid();
   const blockNumber = required(fields, "blockNumber");
   const blockHash = required(fields, "blockHash");
@@ -282,7 +286,7 @@ export const normalizeRpcTransaction = (input: unknown): NormalizedRpcTransactio
   ) return invalid();
   return freezeNormalized({
     transactionHash: normalizeRpcHash(required(fields, "hash")),
-    chainScope: robinhoodChainIdentity.chainId,
+    chainScope: chainId,
     from: normalizeRpcAddress(required(fields, "from")),
     recipient: to === null
       ? { kind: "contract_creation" as const }
@@ -443,11 +447,12 @@ export const normalizeIncludedTransaction = (
   transactionInput: unknown,
   receiptInput: unknown,
   blockInput: unknown,
+  chainId: EvmChainId,
 ): NormalizedIncludedTransaction => {
-  const transaction = normalizeRpcTransaction(transactionInput);
+  const transaction = normalizeRpcTransaction(transactionInput, chainId);
   if (transaction.position.status !== "included") return invalid();
   const receipt = normalizeRpcReceipt(receiptInput);
-  const block = normalizeRpcBlockAnchor(blockInput);
+  const block = normalizeRpcBlockAnchor(blockInput, chainId);
   const blockFields = captureObject(blockInput);
   const blockTransactions = captureArray(
     required(blockFields, "transactions"),

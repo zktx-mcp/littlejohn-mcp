@@ -47,7 +47,6 @@ const operationId = Buffer.alloc(32, 11).toString("base64url");
 const disconnected = Object.freeze({ status: "disconnected" as const, reason: "no_session" as const });
 const connected = Object.freeze({
   status: "connected" as const,
-  account: "eip155:4663:0x1111111111111111111111111111111111111111",
   address: "0x1111111111111111111111111111111111111111",
   chainId: "eip155:4663" as const,
   approvedMethods: ["eth_sendTransaction"],
@@ -473,7 +472,7 @@ describe("authenticated wallet control routes", () => {
     if (!result.ok || result.response !== "canonical_json") return;
     expect(result.body).toMatchObject({
       ok: true,
-      meta: { capabilityId: "wallet.connection", contractVersion: "1", chainId: "4663" },
+      meta: { capabilityId: "wallet.connection", contractVersion: "2", chainId: "eip155:4663" },
       data: disconnected,
       warnings: [],
     });

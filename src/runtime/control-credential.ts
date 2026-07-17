@@ -5,12 +5,21 @@ import { basename, dirname, resolve } from "node:path";
 
 import { decodeCanonicalBase64Url } from "../core/index.js";
 import {
+  readConfiguredRpcEndpoint,
+  readRuntimeChainConfiguration,
+  type RuntimeConfiguration,
+} from "./configuration.js";
+import {
   createOwnerOnlyStateFileForWrite,
   ensureOwnerOnlyDirectory,
   openOwnerOnlyStateFileForRead,
   OwnerOnlyStateFileError,
 } from "./paths.js";
 import { RuntimeOperationError } from "./errors.js";
+import {
+  parseRuntimeConfigurationMac,
+  type RuntimeConfigurationMac,
+} from "./runtime-identity.js";
 
 export interface LocalControlCredentialAuthority {
   readonly __localControlCredentialAuthority: unique symbol;
@@ -232,3 +241,42 @@ export const deriveControlCredentialKey = (
   Buffer.from(label, "utf8"),
   32,
 ));
+
+const encodeLengthPrefixedFields = (fields: readonly Uint8Array[]): Uint8Array => {
+  const totalLength = fields.reduce((sum, field) => sum + 4 + field.length, 0);
+  const output = Buffer.alloc(totalLength);
+  let offset = 0;
+  for (const field of fields) {
+    output.writeUInt32BE(field.length, offset);
+    offset += 4;
+    Buffer.from(field).copy(output, offset);
+    offset += field.length;
+  }
+  return output;
+};
+
+export const deriveRuntimeConfigurationMac = (
+  credential: LocalControlCredentialAuthority,
+  configuration: RuntimeConfiguration,
+): RuntimeConfigurationMac => {
+  if (
+    configuration.rpc.chain !== configuration.chain ||
+    configuration.wallet.chain !== configuration.chain
+  ) throw new TypeError("Runtime configuration chain authority is inconsistent.");
+  const chain = readRuntimeChainConfiguration(configuration.chain);
+  const rpc = readConfiguredRpcEndpoint(configuration.rpc.endpoint);
+  const key = deriveControlCredentialKey(credential, "littlejohn/runtime-configuration/v2");
+  const payload = encodeLengthPrefixedFields([
+    Buffer.from(chain.chainId, "utf8"),
+    rpc.exactUtf8,
+    Buffer.from(configuration.wallet.projectId, "utf8"),
+  ]);
+  try {
+    return parseRuntimeConfigurationMac(
+      createHmac("sha256", key).update(payload).digest("base64url"),
+    );
+  } finally {
+    key.fill(0);
+    payload.fill(0);
+  }
+};

@@ -298,7 +298,7 @@ const readTool = (
         identity.http.method === "POST" ? captureCanonicalJson(value) : undefined,
       );
       if (!result.ok) return result;
-      try { return success(parseCapabilitySuccess(identity.definition, result.value)); }
+      try { return success(parseCapabilitySuccess(identity.definition, value, result.value)); }
       catch { return failure(); }
     },
   });

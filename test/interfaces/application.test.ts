@@ -26,11 +26,12 @@ import { createRuntimeRouteRegistry } from "../../src/runtime/http-routing.js";
 import { runtimePaths } from "../../src/runtime/paths.js";
 import { createResourceOwnershipScope } from "../../src/runtime/resource-ownership.js";
 import {
-  initialRuntimeSupportManifest,
+  createInitialRuntimeSupportManifest,
   readRuntimeSupportManifest,
   type ChainReadCapabilityPort,
   type WalletConnectionReadCapabilityPort,
 } from "../../src/runtime/index.js";
+import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import { extendWalletSupportManifest } from "../../src/wallet/application.js";
 import {
   parseWalletCurrentOperationProjection,
@@ -119,7 +120,9 @@ describe("interface owner application", () => {
       controlVerifier: createControlCredentialVerifier(controlCredential),
       errorMappings: walletInterfaceErrorMappings,
     });
-    const walletManifest = extendWalletSupportManifest(initialRuntimeSupportManifest);
+    const walletManifest = extendWalletSupportManifest(
+      createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
+    );
     const chainManifest = extendChainSupportManifest(walletManifest);
     const ports = capabilityPorts();
     let closes = 0;

@@ -25,7 +25,7 @@ import {
   type StaticScopeExclusion,
   type Warning,
 } from "./evidence.js";
-import { robinhoodChainIdentity } from "./identities.js";
+import { evmChainIdSchema, type EvmChainId } from "./identities.js";
 import { deepFreezeValue } from "./immutability.js";
 import { jsonObject } from "./json-object.js";
 import { productDisplayName } from "./product-identity.js";
@@ -129,9 +129,13 @@ export interface WarningRequirement {
   readonly factIds: readonly string[];
 }
 
-export interface InvocationValidationContext {
-  readonly observationClaims: readonly ObservationClaimBinding[];
+export interface SuccessValidationContext {
   readonly evaluatedAt: UtcTimestamp;
+  readonly chainId: EvmChainId;
+}
+
+export interface EvidenceValidationContext {
+  readonly observationClaims: readonly ObservationClaimBinding[];
 }
 
 export interface DataValidationContext {
@@ -214,7 +218,7 @@ export interface CapabilitySuccess<Data> {
   readonly meta: {
     readonly capabilityId: CapabilityId;
     readonly contractVersion: typeof coreContractVersion;
-    readonly chainId: typeof robinhoodChainIdentity.chainId;
+    readonly chainId: EvmChainId;
     readonly evaluatedAt: UtcTimestamp;
   };
   readonly data: Data;
@@ -248,7 +252,9 @@ interface InternalReadCapabilityDefinition<Input, Data> {
   ): readonly WarningRequirement[];
   validateIntrinsicData(data: Data, context: IntrinsicDataValidationContext): void;
   validateDataContext(data: Data, context: DataValidationContext): void;
-  validateInvocation(input: Input, data: Data, context: InvocationValidationContext): void;
+  validateSuccess(data: Data, context: SuccessValidationContext): void;
+  validateRequest(input: Input, data: Data): void;
+  validateEvidence(input: Input, data: Data, context: EvidenceValidationContext): void;
   readonly warningCodes: readonly Warning["code"][];
   readonly staticScopeExclusions: readonly StaticScopeExclusion[];
 }
@@ -314,7 +320,7 @@ const createSuccessSchema = <Data>(capabilityId: CapabilityId, dataSchema: ZodTy
       meta: jsonObject({
           capabilityId: z.literal(capabilityId),
           contractVersion: z.literal(coreContractVersion),
-          chainId: z.literal(robinhoodChainIdentity.chainId),
+          chainId: evmChainIdSchema,
           evaluatedAt: binderPrimitiveSchemas.utcTimestamp,
         })
         .strict(),
@@ -377,7 +383,6 @@ const compileConclusionIdMatcher = (declaration: string): ((value: string) => bo
 export interface CapabilityDefinitionSnapshot {
   readonly capabilityId: CapabilityId;
   readonly contractVersion: typeof coreContractVersion;
-  readonly chain: typeof robinhoodChainIdentity;
   readonly failureCodes: readonly SnakeCaseCode[];
   readonly inputSchema: CanonicalJson;
   readonly dataSchema: CanonicalJson;
@@ -442,22 +447,42 @@ export const safeParseCapabilityData = <Definition extends AnyReadCapabilityDefi
 ): z.ZodSafeParseResult<CapabilityData<Definition>> =>
   definitionRecord(definition).dataParser(value) as z.ZodSafeParseResult<CapabilityData<Definition>>;
 
+const validateSuccessEnvelope = <Input, Data>(
+  record: InternalDefinitionRecord<Input, Data>,
+  input: Input,
+  success: CapabilitySuccess<Data>,
+): CapabilitySuccess<Data> => {
+  const parsedData = record.dataParser(success.data);
+  if (!parsedData.success) throw parsedData.error;
+  const dataContext = Object.freeze({ evaluatedAt: success.meta.evaluatedAt });
+  const successContext = Object.freeze({
+    evaluatedAt: success.meta.evaluatedAt,
+    chainId: success.meta.chainId,
+  });
+  record.validateDataContext(parsedData.data, dataContext);
+  record.validateSuccess(parsedData.data, successContext);
+  record.validateRequest(input, parsedData.data);
+  if (success.evidence.sources.some((source) =>
+    source.chainAnchor !== undefined && source.chainAnchor.chainId !== success.meta.chainId)) {
+    throw new TypeError("Evidence chain scope mismatch.");
+  }
+  return deepFreezeValue({
+    ...success,
+    data: parsedData.data,
+  });
+};
+
 export const parseCapabilitySuccess = <Definition extends AnyReadCapabilityDefinition>(
   definition: Definition,
+  input: unknown,
   value: unknown,
 ): CapabilitySuccess<CapabilityData<Definition>> => {
   const record = definitionRecord(definition);
+  const parsedInput = record.inputParser(input);
+  if (!parsedInput.success) throw parsedInput.error;
   const parsed = record.successParser(value);
   if (!parsed.success) throw parsed.error;
-  const parsedData = record.dataParser(parsed.data.data);
-  if (!parsedData.success) throw parsedData.error;
-  record.validateDataContext(parsedData.data, {
-    evaluatedAt: parsed.data.meta.evaluatedAt,
-  });
-  return deepFreezeValue({
-    ...parsed.data,
-    data: parsedData.data,
-  }) as CapabilitySuccess<CapabilityData<Definition>>;
+  return validateSuccessEnvelope(record, parsedInput.data, parsed.data) as CapabilitySuccess<CapabilityData<Definition>>;
 };
 
 export const parseCapabilityDataAt = <Definition extends AnyReadCapabilityDefinition>(
@@ -578,7 +603,9 @@ export const defineReadCapability = <Input, Data>(options: {
   readonly deriveWarnings: InternalReadCapabilityDefinition<Input, Data>["deriveWarnings"];
   readonly validateIntrinsicData?: InternalReadCapabilityDefinition<Input, Data>["validateIntrinsicData"];
   readonly validateDataContext?: InternalReadCapabilityDefinition<Input, Data>["validateDataContext"];
-  readonly validateInvocation: InternalReadCapabilityDefinition<Input, Data>["validateInvocation"];
+  readonly validateSuccess?: InternalReadCapabilityDefinition<Input, Data>["validateSuccess"];
+  readonly validateRequest?: InternalReadCapabilityDefinition<Input, Data>["validateRequest"];
+  readonly validateEvidence?: InternalReadCapabilityDefinition<Input, Data>["validateEvidence"];
   readonly failureCodes: readonly string[];
   readonly warningCodes: readonly Warning["code"][];
   readonly staticScopeExclusions: readonly StaticScopeExclusion[];
@@ -673,7 +700,6 @@ export const defineReadCapability = <Input, Data>(options: {
   const snapshot = deepFreezeValue({
     capabilityId,
     contractVersion: coreContractVersion,
-    chain: robinhoodChainIdentity,
     failureCodes,
     inputSchema: inputSchemaSnapshot,
     dataSchema: dataSchemaSnapshot,
@@ -696,7 +722,9 @@ export const defineReadCapability = <Input, Data>(options: {
     deriveWarnings: options.deriveWarnings,
     validateIntrinsicData: options.validateIntrinsicData ?? (() => undefined),
     validateDataContext: options.validateDataContext ?? (() => undefined),
-    validateInvocation: options.validateInvocation,
+    validateSuccess: options.validateSuccess ?? (() => undefined),
+    validateRequest: options.validateRequest ?? (() => undefined),
+    validateEvidence: options.validateEvidence ?? (() => undefined),
     warningCodes,
     staticScopeExclusions: snapshot.staticScopeExclusions,
     inputParser,
@@ -1258,10 +1286,8 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
     if (facts.size !== requirements.length) throw new TypeError("Fact output is incomplete.");
     const factProjection = new ImmutableFactProjection(facts);
 
-    definition.validateDataContext(result.data, { evaluatedAt });
-    definition.validateInvocation(validatedInput, result.data, {
+    definition.validateEvidence(validatedInput, result.data, {
       observationClaims: observations.bindings(),
-      evaluatedAt,
     });
     const expectedConclusionIdInput = parseDefinitionArray(
       binderPrimitiveSchemas.fixedIdentifier,
@@ -1351,7 +1377,7 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
       meta: {
         capabilityId: definition.capabilityId,
         contractVersion: coreContractVersion,
-        chainId: robinhoodChainIdentity.chainId,
+        chainId: context.chainScope,
         evaluatedAt,
       },
       data: result.data,
@@ -1364,7 +1390,7 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
     };
     const parsed = definition.successParser(success);
     if (!parsed.success) return internalFailure(record.errorRegistry);
-    return deepFreezeValue(parsed.data) as CapabilitySuccess<CapabilityData<Definition>>;
+    return validateSuccessEnvelope(definition, validatedInput, parsed.data) as CapabilitySuccess<CapabilityData<Definition>>;
   } catch {
     return internalFailure(record.errorRegistry);
   }

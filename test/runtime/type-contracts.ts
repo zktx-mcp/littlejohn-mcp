@@ -15,6 +15,12 @@ import type {
   WalletOwnerHandoff,
   WalletPrivateStoreDirectoryPort,
 } from "../../src/runtime/composition.js";
+import type {
+  RuntimeChainConfiguration,
+  RuntimeConfiguration,
+  RuntimeRpcConfiguration,
+  WalletConnectConfiguration,
+} from "../../src/runtime/configuration.js";
 import type { LocalRuntime, WalletSessionSource } from "../../src/runtime/index.js";
 
 type Equal<Left, Right> =
@@ -71,11 +77,22 @@ type _WalletPortKeys = Assert<Equal<
   keyof WalletOwnerBootstrapPort,
   "configuration" | "privateStoreDirectory" | "projection" | "sourceAuthority" | "capabilityAuthority"
 >>;
+type _WalletPortConfiguration = Assert<Equal<
+  WalletOwnerBootstrapPort["configuration"],
+  WalletConnectConfiguration
+>>;
 type _PrivateStoreDirectoryKeys = Assert<Equal<keyof WalletPrivateStoreDirectoryPort, "ensureDirectory">>;
 type _ChainPortKeys = Assert<Equal<
   keyof ChainOwnerBootstrapPort,
-  "configuredRpcUri" | "sourceAuthority" | "capabilityAuthority"
+  "configuration" | "sourceAuthority" | "capabilityAuthority"
 >>;
+type _ChainPortConfiguration = Assert<Equal<
+  ChainOwnerBootstrapPort["configuration"],
+  RuntimeRpcConfiguration
+>>;
+type _RuntimeConfigurationKeys = Assert<Equal<keyof RuntimeConfiguration, "chain" | "rpc" | "wallet">>;
+type _RuntimeChainConfigurationKeys = Assert<Equal<keyof RuntimeChainConfiguration, "chainId">>;
+type _RuntimeRpcConfigurationKeys = Assert<Equal<keyof RuntimeRpcConfiguration, "chain" | "endpoint">>;
 type _WalletConnectionReadKeys = Assert<Equal<keyof WalletConnectionReadCapabilityPort, "connection">>;
 type _ChainReadKeys = Assert<Equal<
   keyof ChainReadCapabilityPort,
@@ -143,8 +160,13 @@ export type RuntimePortTypeContracts =
   | _InterfaceWalletOperations
   | _WalletApplicationKeys
   | _WalletPortKeys
+  | _WalletPortConfiguration
   | _PrivateStoreDirectoryKeys
   | _ChainPortKeys
+  | _ChainPortConfiguration
+  | _RuntimeConfigurationKeys
+  | _RuntimeChainConfigurationKeys
+  | _RuntimeRpcConfigurationKeys
   | _WalletConnectionReadKeys
   | _ChainReadKeys
   | _WalletHandoffKeys

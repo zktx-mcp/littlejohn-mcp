@@ -18,6 +18,9 @@ import {
   type WalletConnectionReadCapabilityPort,
 } from "../../src/runtime/composition.js";
 import {
+  readRuntimeConfiguration,
+} from "../../src/runtime/configuration.js";
+import {
   createControlCredentialVerifier,
   loadOrCreateControlCredential,
 } from "../../src/runtime/control-credential.js";
@@ -29,11 +32,22 @@ import {
   extendChainRuntimeSupportManifest,
   extendInterfaceRuntimeSupportManifest,
   extendWalletRuntimeSupportManifest,
-  initialRuntimeSupportManifest,
+  createInitialRuntimeSupportManifest,
 } from "../../src/runtime/support-manifest.js";
 import { bindForHarness, createCapabilityHarness } from "../core/capability-harness.js";
 
 const directories: string[] = [];
+const initialRuntimeSupportManifest = createInitialRuntimeSupportManifest(
+  readRuntimeConfiguration({}).chain,
+);
+
+const composeStages = <
+  ActiveWallet extends object,
+  WalletOperations extends object,
+>(
+  context: Parameters<typeof composeOwnerApplicationStages<ActiveWallet, WalletOperations>>[0],
+  stages: Parameters<typeof composeOwnerApplicationStages<ActiveWallet, WalletOperations>>[2],
+) => composeOwnerApplicationStages(context, initialRuntimeSupportManifest, stages);
 
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
@@ -251,7 +265,7 @@ describe("owner application composition", () => {
     const walletRoutes = routes.extend([route("/api/v1/internal/control/wallet")]);
     const chainRoutes = walletRoutes.extend([route("/api/v1/internal/control/chain")]);
     const interfaceRoutes = chainRoutes.extend([route("/api/v1/internal/control/interfaces")]);
-    const application = await composeOwnerApplicationStages(ownerContext(routes, signal), [
+    const application = await composeStages(ownerContext(routes, signal), [
       () => ({
         routes: walletRoutes,
         supportManifest: support.wallet,
@@ -296,7 +310,7 @@ describe("owner application composition", () => {
     const failure = new Error("interface close failed");
     let interfaceCloseCalls = 0;
     let reentered: Promise<void> | undefined;
-    const application = await composeOwnerApplicationStages(
+    const application = await composeStages(
       ownerContext(routes, new AbortController().signal),
       [
         () => ({
@@ -366,7 +380,7 @@ describe("owner application composition", () => {
         },
       })),
     });
-    await expect(composeOwnerApplicationStages(ownerContext(routes, signal), [
+    await expect(composeStages(ownerContext(routes, signal), [
       () => ({
         routes: walletRoutes,
         supportManifest: support.wallet,
@@ -391,7 +405,7 @@ describe("owner application composition", () => {
     const events: string[] = [];
     let partialCloseCalls = 0;
     const stageFailure = new Error("chain stage failed");
-    const composition = composeOwnerApplicationStages({
+    const composition = composeStages({
       routes,
       signal: new AbortController().signal,
       startupResources: outer.resources,
@@ -433,7 +447,7 @@ describe("owner application composition", () => {
     const support = manifests();
     const events: string[] = [];
 
-    await expect(composeOwnerApplicationStages(ownerContext(routes, new AbortController().signal), [
+    await expect(composeStages(ownerContext(routes, new AbortController().signal), [
       () => ({
         routes,
         supportManifest: support.wallet,
@@ -461,7 +475,7 @@ describe("owner application composition", () => {
     const support = manifests();
     const events: string[] = [];
 
-    await expect(composeOwnerApplicationStages(ownerContext(routes, new AbortController().signal), [
+    await expect(composeStages(ownerContext(routes, new AbortController().signal), [
       () => ({
         routes,
         supportManifest: support.wallet,
@@ -498,7 +512,7 @@ describe("owner application composition", () => {
       changes: [],
     });
     let closed = false;
-    await expect(composeOwnerApplicationStages(ownerContext(routes, new AbortController().signal), [
+    await expect(composeStages(ownerContext(routes, new AbortController().signal), [
       () => ({
         routes,
         supportManifest: wrongWallet,
@@ -516,7 +530,7 @@ describe("owner application composition", () => {
     const ports = capabilityPorts();
     const support = manifests();
     let closed = false;
-    await expect(composeOwnerApplicationStages(ownerContext(routes, new AbortController().signal), [
+    await expect(composeStages(ownerContext(routes, new AbortController().signal), [
       () => ({
         routes,
         supportManifest: support.wallet,
@@ -537,7 +551,7 @@ describe("owner application composition", () => {
     const support = manifests();
     let failure: unknown;
     try {
-      await composeOwnerApplicationStages(ownerContext(routes, lifecycle.signal), [
+      await composeStages(ownerContext(routes, lifecycle.signal), [
         () => {
           lifecycle.abort();
           return {
@@ -566,7 +580,7 @@ describe("owner application composition", () => {
     const support = manifests();
     for (const invalid of [undefined, null, "operation", 1]) {
       const events: string[] = [];
-      await expect(composeOwnerApplicationStages(ownerContext(routes, new AbortController().signal), [
+      await expect(composeStages(ownerContext(routes, new AbortController().signal), [
         () => ({
           routes,
           supportManifest: support.wallet,
@@ -595,7 +609,7 @@ describe("owner application composition", () => {
     const support = manifests();
     for (const invalid of [undefined, null, "wallet", 1]) {
       const events: string[] = [];
-      await expect(composeOwnerApplicationStages(ownerContext(routes, new AbortController().signal), [
+      await expect(composeStages(ownerContext(routes, new AbortController().signal), [
         () => ({
           routes,
           supportManifest: support.wallet,
