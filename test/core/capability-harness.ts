@@ -9,6 +9,7 @@ import {
   evmChainIdSchema,
   sourceReferenceSchema,
   type AnyReadCapabilityDefinition,
+  type ApplicationErrorRegistry,
   type CapabilityBinding,
   type CapabilityInput,
   type HandlerInvocationContext,
@@ -27,6 +28,7 @@ export interface CapabilityHarness {
 
 export const createCapabilityHarness = (
   now: () => unknown = () => fixedEvaluationTime,
+  chainId: string = configuredChainId,
 ): CapabilityHarness => {
   const clock = createCanonicalClock(now);
   const authorities = [
@@ -61,7 +63,7 @@ export const createCapabilityHarness = (
     }),
   ];
   return Object.freeze({
-    invocationAuthority: createCapabilityInvocationAuthority(clock, configuredChainId),
+    invocationAuthority: createCapabilityInvocationAuthority(clock, evmChainIdSchema.parse(chainId)),
     ports: Object.freeze({ observations: new ObservationAuthorityRegistry(clock, authorities) }),
   });
 };
@@ -74,9 +76,10 @@ export const bindForHarness = <Definition extends AnyReadCapabilityDefinition>(
     context: HandlerInvocationContext,
     observations: ObservationWriter,
   ) => Promise<unknown>,
+  errorRegistry: ApplicationErrorRegistry = chainErrorRegistry,
 ): CapabilityBinding<Definition> => bindCapability({
   definition,
-  errorRegistry: chainErrorRegistry,
+  errorRegistry,
   invocationAuthority: harness.invocationAuthority,
   createInvocationPorts: (_input) => harness.ports,
   handler,

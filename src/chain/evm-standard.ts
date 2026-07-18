@@ -22,7 +22,7 @@ type ViemStandardModule = Readonly<{
   }): unknown;
   decodeFunctionResult(input: {
     readonly abi: readonly unknown[];
-    readonly functionName: "balanceOf" | "decimals";
+    readonly functionName: "balanceOf" | "decimals" | "name" | "symbol" | "totalSupply";
     readonly data: string;
   }): unknown;
   encodeEventTopics(input: {
@@ -31,7 +31,7 @@ type ViemStandardModule = Readonly<{
   }): unknown;
   encodeFunctionData(input: {
     readonly abi: readonly unknown[];
-    readonly functionName: "balanceOf" | "decimals";
+    readonly functionName: "balanceOf" | "decimals" | "name" | "symbol" | "totalSupply";
     readonly args?: readonly unknown[];
   }): unknown;
   readonly erc20Abi: unknown;
@@ -46,6 +46,9 @@ const erc20Abi: readonly unknown[] = viemStandard.erc20Abi;
 
 const canonicalWordPattern = /^0x[0-9a-f]{64}$/u;
 const canonicalIndexedAddressWordPattern = /^0x0{24}[0-9a-f]{40}$/u;
+const abiWordByteLength = 32;
+const abiTextHeaderByteLength = abiWordByteLength * 2;
+const abiTextDecodeChunkByteLength = 4 * 1_024;
 
 const invalidStandardEncoding = (): never => {
   throw new TypeError("Invalid standard EVM encoding.");
@@ -135,6 +138,121 @@ export const decodeErc20DecimalsResult = (input: unknown): UnsignedDecimal => {
   return parseUnsignedDecimal(String(decoded));
 };
 
+export const decodeErc20TotalSupplyResult = (input: unknown): UnsignedDecimal =>
+  decodeErc20BalanceOfResult(input);
+
+const abiUint256At = (data: HexBytes, byteOffset: number): bigint => {
+  const hexOffset = 2 + byteOffset * 2;
+  return BigInt(`0x${data.slice(hexOffset, hexOffset + abiWordByteLength * 2)}`);
+};
+
+interface CanonicalAbiTextLayout {
+  readonly textByteLength: number;
+  readonly textHexOffset: number;
+}
+
+const canonicalAbiTextLayout = (data: HexBytes): CanonicalAbiTextLayout => {
+  const byteLength = (data.length - 2) / 2;
+  if (byteLength < abiTextHeaderByteLength || abiUint256At(data, 0) !== 32n) {
+    return invalidStandardEncoding();
+  }
+
+  const textByteLengthValue = abiUint256At(data, abiWordByteLength);
+  const availableByteLength = byteLength - abiTextHeaderByteLength;
+  if (textByteLengthValue > BigInt(availableByteLength)) return invalidStandardEncoding();
+
+  const textByteLength = Number(textByteLengthValue);
+  const paddedTextByteLength = Math.ceil(textByteLength / abiWordByteLength) * abiWordByteLength;
+  if (byteLength !== abiTextHeaderByteLength + paddedTextByteLength) {
+    return invalidStandardEncoding();
+  }
+
+  const textHexOffset = 2 + abiTextHeaderByteLength * 2;
+  const textHexEnd = textHexOffset + textByteLength * 2;
+  if (!/^0*$/u.test(data.slice(textHexEnd))) return invalidStandardEncoding();
+
+  return Object.freeze({ textByteLength, textHexOffset });
+};
+
+const decodeAbiTextUtf8 = (
+  data: HexBytes,
+  layout: CanonicalAbiTextLayout,
+  retainText: boolean,
+): string | undefined => {
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  let text = "";
+
+  if (layout.textByteLength === 0) return retainText ? decoder.decode() : undefined;
+
+  for (let start = 0; start < layout.textByteLength; start += abiTextDecodeChunkByteLength) {
+    const chunkByteLength = Math.min(
+      abiTextDecodeChunkByteLength,
+      layout.textByteLength - start,
+    );
+    const chunkHexOffset = layout.textHexOffset + start * 2;
+    const bytes = Buffer.from(
+      data.slice(chunkHexOffset, chunkHexOffset + chunkByteLength * 2),
+      "hex",
+    );
+    const decoded = decoder.decode(bytes, {
+      stream: start + chunkByteLength < layout.textByteLength,
+    });
+    if (retainText) text += decoded;
+  }
+
+  return retainText ? text : undefined;
+};
+
+export type Erc20TextDecodeResult =
+  | Readonly<{ status: "decoded"; value: string }>
+  | Readonly<{ status: "byte_limit_exceeded" }>;
+
+const byteLimitExceeded = Object.freeze({ status: "byte_limit_exceeded" as const });
+
+const decodeCanonicalAbiText = (
+  data: HexBytes,
+  maximumUtf8Bytes: number,
+): Erc20TextDecodeResult => {
+  const layout = canonicalAbiTextLayout(data);
+
+  try {
+    if (layout.textByteLength > maximumUtf8Bytes) {
+      decodeAbiTextUtf8(data, layout, false);
+      return byteLimitExceeded;
+    }
+    const value = decodeAbiTextUtf8(data, layout, true);
+    if (value === undefined) return invalidStandardEncoding();
+    return Object.freeze({ status: "decoded", value });
+  } catch {
+    return invalidStandardEncoding();
+  }
+};
+
+export const decodeErc20TextResult = (
+  input: unknown,
+  functionName: "name" | "symbol",
+  maximumUtf8Bytes: number,
+): Erc20TextDecodeResult => {
+  if (!Number.isSafeInteger(maximumUtf8Bytes) || maximumUtf8Bytes < 0) {
+    throw new TypeError("Maximum ERC-20 text byte length is invalid.");
+  }
+  const data = parseHexBytes(input);
+  const exact = decodeCanonicalAbiText(data, maximumUtf8Bytes);
+  if (exact.status === "byte_limit_exceeded") return exact;
+  let decoded: unknown;
+  try {
+    decoded = viemStandard.decodeFunctionResult({
+      abi: erc20Abi,
+      functionName,
+      data,
+    });
+  } catch {
+    return invalidStandardEncoding();
+  }
+  if (typeof decoded !== "string" || decoded !== exact.value) return invalidStandardEncoding();
+  return exact;
+};
+
 export type DecodedCanonicalErc20Event =
   | {
       readonly kind: "erc20_transfer";
@@ -207,6 +325,9 @@ export const decodeCanonicalErc20Event = (
 export interface Erc20CallEncoder {
   balanceOf(account: EvmAddress): HexBytes;
   decimals(): HexBytes;
+  name(): HexBytes;
+  symbol(): HexBytes;
+  totalSupply(): HexBytes;
 }
 
 const parseEncodedCall = (value: unknown, expected: string): HexBytes => {
@@ -220,6 +341,18 @@ export const createErc20CallEncoder = async (): Promise<Erc20CallEncoder> => {
     abi: erc20Abi,
     functionName: "decimals",
   }), "0x313ce567");
+  const nameCall = parseEncodedCall(viemStandard.encodeFunctionData({
+    abi: erc20Abi,
+    functionName: "name",
+  }), "0x06fdde03");
+  const symbolCall = parseEncodedCall(viemStandard.encodeFunctionData({
+    abi: erc20Abi,
+    functionName: "symbol",
+  }), "0x95d89b41");
+  const totalSupplyCall = parseEncodedCall(viemStandard.encodeFunctionData({
+    abi: erc20Abi,
+    functionName: "totalSupply",
+  }), "0x18160ddd");
   return Object.freeze({
     balanceOf(accountInput: EvmAddress): HexBytes {
       const account = parseEvmAddress(accountInput);
@@ -231,5 +364,8 @@ export const createErc20CallEncoder = async (): Promise<Erc20CallEncoder> => {
       }), expected);
     },
     decimals(): HexBytes { return decimalsCall; },
+    name(): HexBytes { return nameCall; },
+    symbol(): HexBytes { return symbolCall; },
+    totalSupply(): HexBytes { return totalSupplyCall; },
   });
 };

@@ -7,6 +7,7 @@ import type {
   InterfaceOwnerApplicationContext,
   InterfaceOwnerApplicationFactory,
   LocalRuntimeOptions,
+  TokenCatalogOwnerHandoff,
   WalletConnectionReadCapabilityPort,
   WalletOwnerApplication,
   WalletOwnerApplicationContext,
@@ -22,12 +23,29 @@ import type {
   WalletConnectConfiguration,
 } from "../../src/runtime/configuration.js";
 import type { LocalRuntime, WalletSessionSource } from "../../src/runtime/index.js";
+import { tokenCatalogConsumerPortContract } from "../../src/token-catalog/ports.js";
+import type {
+  TokenCatalogApplicationDependencies,
+  TokenCatalogBrowserOperationPort,
+  TokenCatalogInteractiveCliPort,
+  TokenCatalogNonInteractiveOperationPort,
+  TokenCatalogQueryApplicationPort,
+  TokenCatalogWebStartPort,
+} from "../../src/token-catalog/ports.js";
 
 type Equal<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends
   (<Value>() => Value extends Right ? 1 : 2) ? true : false;
 type Assert<Value extends true> = Value;
 type AssertFalse<Value extends false> = Value;
+type ConsumerPortKeys<Definition> = Definition extends Readonly<{
+  methods: readonly (infer Method extends string)[];
+  interactionInterface: string;
+}>
+  ? Method | "interactionInterface"
+  : Definition extends Readonly<{ methods: readonly (infer Method extends string)[] }>
+    ? Method
+    : never;
 
 interface TestWalletOperations {
   readOperation(): unknown;
@@ -63,7 +81,9 @@ type _ChainActiveWallet = Assert<Equal<
 >>;
 type _InterfaceContextKeys = Assert<Equal<
   keyof InterfaceOwnerApplicationContext<TestWalletOperations>,
-  "routes" | "signal" | "startupResources" | "supportManifest" | "walletConnection" | "walletOperations" | "chainReads"
+  "routes" | "signal" | "startupResources" | "supportManifest" | "walletConnection" | "walletOperations" |
+  "chainReads" | "tokenInspection" | "tokenCatalogQueries" | "tokenCatalogWebStart" |
+  "tokenCatalogBrowserOperations" | "tokenCatalogInteractiveCli" | "tokenCatalogNonInteractiveOperations"
 >>;
 type _InterfaceWalletOperations = Assert<Equal<
   InterfaceOwnerApplicationContext<TestWalletOperations>["walletOperations"],
@@ -108,7 +128,7 @@ type _WalletHandoffActiveWallet = Assert<Equal<
 >>;
 type _ChainHandoffKeys = Assert<Equal<
   keyof ChainOwnerHandoff,
-  "supportManifest" | "chainReads"
+  "supportManifest" | "chainReads" | "tokenInspection"
 >>;
 type _RuntimeHandleKeys = Assert<Equal<
   keyof LocalRuntime,
@@ -151,6 +171,34 @@ type _WalletSessionSourceKeys = Assert<Equal<
   keyof WalletSessionSource,
   "sourceId" | "candidateId" | "topicDigest" | "observationAuthority"
 >>;
+type _TokenCatalogApplicationStoreKeys = Assert<Equal<
+  keyof TokenCatalogApplicationDependencies["store"],
+  "getRegistration" | "listRegistrations"
+>>;
+type _TokenCatalogHandoffKeys = Assert<Equal<
+  keyof TokenCatalogOwnerHandoff,
+  "supportManifest" | keyof typeof tokenCatalogConsumerPortContract
+>>;
+type _TokenCatalogQueryKeys = Assert<Equal<
+  keyof TokenCatalogQueryApplicationPort,
+  ConsumerPortKeys<typeof tokenCatalogConsumerPortContract.tokenCatalogQueries>
+>>;
+type _TokenCatalogWebStartKeys = Assert<Equal<
+  keyof TokenCatalogWebStartPort,
+  ConsumerPortKeys<typeof tokenCatalogConsumerPortContract.tokenCatalogWebStart>
+>>;
+type _TokenCatalogBrowserOperationKeys = Assert<Equal<
+  keyof TokenCatalogBrowserOperationPort,
+  ConsumerPortKeys<typeof tokenCatalogConsumerPortContract.tokenCatalogBrowserOperations>
+>>;
+type _TokenCatalogInteractiveCliKeys = Assert<Equal<
+  keyof TokenCatalogInteractiveCliPort,
+  ConsumerPortKeys<typeof tokenCatalogConsumerPortContract.tokenCatalogInteractiveCli>
+>>;
+type _TokenCatalogNonInteractiveOperationKeys = Assert<Equal<
+  keyof TokenCatalogNonInteractiveOperationPort,
+  ConsumerPortKeys<typeof tokenCatalogConsumerPortContract.tokenCatalogNonInteractiveOperations>
+>>;
 
 export type RuntimePortTypeContracts =
   | _WalletContextKeys
@@ -182,4 +230,11 @@ export type RuntimePortTypeContracts =
   | _InterfaceWithoutChainRejected
   | _MismatchedInterfaceOperationsRejected
   | _MismatchedActiveWalletRejected
-  | _WalletSessionSourceKeys;
+  | _WalletSessionSourceKeys
+  | _TokenCatalogApplicationStoreKeys
+  | _TokenCatalogHandoffKeys
+  | _TokenCatalogQueryKeys
+  | _TokenCatalogWebStartKeys
+  | _TokenCatalogBrowserOperationKeys
+  | _TokenCatalogInteractiveCliKeys
+  | _TokenCatalogNonInteractiveOperationKeys;

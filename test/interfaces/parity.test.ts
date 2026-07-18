@@ -48,6 +48,7 @@ import {
 } from "../../src/interfaces/identities.js";
 import { createMcpServer } from "../../src/interfaces/mcp.js";
 import { extendInterfaceSupportManifest } from "../../src/interfaces/support.js";
+import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
 import { parseReadCliCommand, runReadCliCommand } from "../../src/interfaces/cli-read.js";
 import {
   createControlCredentialVerifier,
@@ -541,11 +542,11 @@ describe("interface parity", () => {
   });
 
   it("projects one canonical capability catalog through HTTP and MCP without changing core scope or support", async () => {
-    const manifest = extendInterfaceSupportManifest(extendChainSupportManifest(
+    const manifest = extendInterfaceSupportManifest(extendTokenCatalogSupportManifest(extendChainSupportManifest(
       extendWalletSupportManifest(
         createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
       ),
-    ));
+    )));
     const catalog = composeCapabilityCatalog(manifest);
     const runtime = new CanonicalRuntime([Object.freeze({
       method: capabilityCatalogInterface.http.method,

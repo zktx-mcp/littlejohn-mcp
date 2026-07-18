@@ -11,22 +11,50 @@ import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.
 const dataDirectory = process.argv[2];
 if (dataDirectory === undefined) throw new TypeError("SQLite crash-worker data directory is required.");
 const mode = process.argv[3];
-if (mode !== "committed" && mode !== "interrupted") {
+if (mode !== "committed" && mode !== "interrupted" && mode !== "catalog-interrupted") {
   throw new TypeError("SQLite crash-worker mode is invalid.");
 }
 
 const observedAt = parseUtcTimestamp("2026-07-12T10:16:02.000Z");
 await ensureOwnerOnlyDirectory(dataDirectory);
 const databasePath = runtimePaths(dataDirectory).database;
-if (mode === "interrupted") {
+if (mode === "interrupted" || mode === "catalog-interrupted") {
   const database = new Database(databasePath);
   database.pragma("foreign_keys = ON");
   database.exec("BEGIN EXCLUSIVE");
-  database.prepare(`INSERT INTO wallet_account(profile_id, chain_id, wallet_address)
-    SELECT profile_id, ?, ? FROM local_profile WHERE singleton = 1`).run(
-    "eip155:4663",
-    "0x1111111111111111111111111111111111111111",
-  );
+  if (mode === "interrupted") {
+    database.prepare(`INSERT INTO wallet_account(profile_id, chain_id, wallet_address)
+      SELECT profile_id, ?, ? FROM local_profile WHERE singleton = 1`).run(
+      "eip155:4663",
+      "0x1111111111111111111111111111111111111111",
+    );
+  } else {
+    const chainId = "eip155:4663";
+    const walletAddress = "0x1111111111111111111111111111111111111111";
+    const tokenAddress = "0x2222222222222222222222222222222222222222";
+    const inspectionDigest = `0x${"33".repeat(32)}`;
+    database.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(chainId, tokenAddress);
+    database.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(chainId, tokenAddress);
+    database.prepare(`INSERT INTO token_contract_inspection(
+      chain_id, contract_address, inspection_digest, result_json
+    ) VALUES (?, ?, ?, ?)`)
+      .run(chainId, tokenAddress, inspectionDigest, "{}");
+    database.prepare(`INSERT INTO wallet_token_registration(
+      profile_id, chain_id, wallet_address, token_address, revision, inspection_digest,
+      user_label, visibility, created_at, updated_at
+    ) SELECT profile_id, ?, ?, ?, ?, ?, NULL, 'visible', ?, ?
+      FROM local_profile WHERE singleton = 1`).run(
+        chainId,
+        walletAddress,
+        tokenAddress,
+        Buffer.alloc(16, 4).toString("base64url"),
+        inspectionDigest,
+        observedAt,
+        observedAt,
+      );
+  }
   process.send?.({ ready: true });
   setInterval(() => undefined, 60_000);
 } else {

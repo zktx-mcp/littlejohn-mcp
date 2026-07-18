@@ -20,6 +20,29 @@ import {
   type UtcTimestamp,
 } from "../core/index.js";
 import {
+  createTokenCatalogApplication,
+} from "../token-catalog/application.js";
+import {
+  TokenCatalogCoordinator,
+} from "../token-catalog/coordinator.js";
+import {
+  tokenCatalogCapabilityIds,
+  tokenInspectCapability,
+} from "../token-catalog/contracts.js";
+import {
+  type TokenCatalogBrowserOperationPort,
+  tokenCatalogConsumerPortContract,
+  type TokenCatalogInteractiveCliPort,
+  type TokenCatalogApplicationPort,
+  type TokenCatalogCoordinatorDependencies,
+  type TokenCatalogNonInteractiveOperationPort,
+  type TokenCatalogOperationCoordinatorPort,
+  type TokenCatalogQueryApplicationPort,
+  type TokenCatalogStartApplicationPort,
+  type TokenCatalogWebStartPort,
+} from "../token-catalog/ports.js";
+import { extendTokenCatalogSupportManifest } from "../token-catalog/support.js";
+import {
   readRuntimeConfiguration,
   type RuntimeRpcConfiguration,
   type WalletConnectConfiguration,
@@ -66,18 +89,21 @@ import {
 import {
   assertChainRuntimeSupportManifestExtension,
   assertInterfaceRuntimeSupportManifestExtension,
+  assertTokenCatalogRuntimeSupportManifestExtension,
   assertWalletRuntimeSupportManifestExtension,
   createInitialRuntimeSupportManifest,
   readRuntimeSupportManifest,
   type ChainRuntimeSupportManifest,
   type InitialRuntimeSupportManifest,
   type InterfaceRuntimeSupportManifest,
+  type TokenCatalogRuntimeSupportManifest,
   type WalletRuntimeSupportManifest,
 } from "./support-manifest.js";
 
 const walletConnectionCapabilityId = getCapabilityDefinitionSnapshot(walletConnectionCapability).capabilityId;
 const chainReadCapabilityIds = Object.freeze(chainReadCapabilities.map((definition) =>
   getCapabilityDefinitionSnapshot(definition).capabilityId));
+type ActiveWalletAuthorityPort = TokenCatalogCoordinatorDependencies["activeWallet"];
 
 export interface WalletCapabilityAuthorityPort {
   readonly clock: CanonicalClock;
@@ -120,6 +146,10 @@ export interface ChainReadCapabilityPort {
   readonly transactionInspect: CapabilityBinding<typeof transactionInspectCapability>;
 }
 
+export interface TokenInspectionReadCapabilityPort {
+  readonly tokenInspection: CapabilityBinding<typeof tokenInspectCapability>;
+}
+
 export interface WalletOwnerHandoff<ActiveWallet extends object> {
   readonly supportManifest: WalletRuntimeSupportManifest;
   readonly walletConnection: WalletConnectionReadCapabilityPort;
@@ -129,6 +159,19 @@ export interface WalletOwnerHandoff<ActiveWallet extends object> {
 export interface ChainOwnerHandoff {
   readonly supportManifest: ChainRuntimeSupportManifest;
   readonly chainReads: ChainReadCapabilityPort;
+  readonly tokenInspection: TokenInspectionReadCapabilityPort["tokenInspection"];
+}
+
+export interface TokenCatalogConsumerPorts {
+  readonly tokenCatalogQueries: TokenCatalogQueryApplicationPort;
+  readonly tokenCatalogWebStart: TokenCatalogWebStartPort;
+  readonly tokenCatalogBrowserOperations: TokenCatalogBrowserOperationPort;
+  readonly tokenCatalogInteractiveCli: TokenCatalogInteractiveCliPort;
+  readonly tokenCatalogNonInteractiveOperations: TokenCatalogNonInteractiveOperationPort;
+}
+
+export interface TokenCatalogOwnerHandoff extends TokenCatalogConsumerPorts {
+  readonly supportManifest: TokenCatalogRuntimeSupportManifest;
 }
 
 export interface WalletOwnerApplicationContext {
@@ -149,14 +192,16 @@ export interface ChainOwnerApplicationContext<ActiveWallet extends object> {
   readonly chain: ChainOwnerBootstrapPort;
 }
 
-export interface InterfaceOwnerApplicationContext<WalletOperations extends object> {
+export interface InterfaceOwnerApplicationContext<WalletOperations extends object>
+  extends TokenCatalogConsumerPorts {
   readonly routes: RuntimeRouteRegistry;
   readonly signal: AbortSignal;
   readonly startupResources: HttpOwnerStartupResourceRegistry;
-  readonly supportManifest: ChainRuntimeSupportManifest;
+  readonly supportManifest: TokenCatalogRuntimeSupportManifest;
   readonly walletConnection: WalletConnectionReadCapabilityPort;
   readonly walletOperations: WalletOperations;
   readonly chainReads: ChainReadCapabilityPort;
+  readonly tokenInspection: TokenInspectionReadCapabilityPort["tokenInspection"];
 }
 
 export interface WalletOwnerApplication<
@@ -172,6 +217,11 @@ export interface WalletOwnerApplication<
 export interface ChainOwnerApplication extends HttpOwnerApplication {
   readonly supportManifest: ChainRuntimeSupportManifest;
   readonly chainReads: ChainReadCapabilityPort;
+  readonly tokenInspection: TokenInspectionReadCapabilityPort["tokenInspection"];
+}
+
+export interface TokenCatalogOwnerApplication extends HttpOwnerApplication, TokenCatalogConsumerPorts {
+  readonly supportManifest: TokenCatalogRuntimeSupportManifest;
 }
 
 export interface InterfaceOwnerApplication extends HttpOwnerApplication {
@@ -234,6 +284,13 @@ const ensureRuntimeStateDirectory = async (path: string): Promise<void> => {
   catch { throw new RuntimeOperationError("runtime_state_unavailable"); }
 };
 
+const requireActiveWalletAuthority = (value: object): ActiveWalletAuthorityPort => {
+  if (!("capture" in value) || typeof value.capture !== "function") {
+    throw new TypeError("Active wallet read authority is unavailable.");
+  }
+  return value as ActiveWalletAuthorityPort;
+};
+
 export const createWalletPrivateStoreDirectoryPort = (
   path: string,
   signal: AbortSignal,
@@ -277,6 +334,11 @@ export type ChainOwnerApplicationStage<ActiveWallet extends object> = (
   context: HttpOwnerApplicationContext,
   wallet: WalletOwnerHandoff<ActiveWallet>,
 ) => Promise<ChainOwnerApplication> | ChainOwnerApplication;
+export type TokenCatalogOwnerApplicationStage<ActiveWallet extends object> = (
+  context: HttpOwnerApplicationContext,
+  wallet: WalletOwnerHandoff<ActiveWallet>,
+  chain: ChainOwnerHandoff,
+) => Promise<TokenCatalogOwnerApplication> | TokenCatalogOwnerApplication;
 export type InterfaceOwnerApplicationStage<
   ActiveWallet extends object,
   WalletOperations extends object,
@@ -284,6 +346,7 @@ export type InterfaceOwnerApplicationStage<
   context: HttpOwnerApplicationContext,
   wallet: WalletOwnerHandoff<ActiveWallet>,
   chain: ChainOwnerHandoff,
+  tokenCatalog: TokenCatalogOwnerHandoff,
   walletOperations: WalletOperations,
 ) => Promise<InterfaceOwnerApplication> | InterfaceOwnerApplication;
 
@@ -295,10 +358,12 @@ export type OwnerApplicationStages<
   | readonly [
       WalletOwnerApplicationStage<ActiveWallet, WalletOperations>,
       ChainOwnerApplicationStage<ActiveWallet>,
+      TokenCatalogOwnerApplicationStage<ActiveWallet>,
     ]
   | readonly [
       WalletOwnerApplicationStage<ActiveWallet, WalletOperations>,
       ChainOwnerApplicationStage<ActiveWallet>,
+      TokenCatalogOwnerApplicationStage<ActiveWallet>,
       InterfaceOwnerApplicationStage<ActiveWallet, WalletOperations>,
     ];
 
@@ -329,8 +394,166 @@ const snapshotChainReads = (input: ChainReadCapabilityPort): ChainReadCapability
   });
 };
 
+const snapshotTokenInspection = (
+  input: TokenInspectionReadCapabilityPort["tokenInspection"],
+): TokenInspectionReadCapabilityPort["tokenInspection"] => {
+  assertBindingProvenance(tokenInspectCapability, input);
+  return input;
+};
+
+const createTokenCatalogStartPort = <InteractionInterface extends "cli" | "web">(
+  application: TokenCatalogApplicationPort,
+  interactionInterface: InteractionInterface,
+): TokenCatalogStartApplicationPort<InteractionInterface> => Object.freeze({
+  interactionInterface,
+  startRegistration: (input: Parameters<TokenCatalogApplicationPort["startRegistration"]>[0]) =>
+    application.startRegistration(input, interactionInterface),
+  startRegistrationUpdate: (input: Parameters<TokenCatalogApplicationPort["startRegistrationUpdate"]>[0]) =>
+    application.startRegistrationUpdate(input, interactionInterface),
+  startUnregistration: (input: Parameters<TokenCatalogApplicationPort["startUnregistration"]>[0]) =>
+    application.startUnregistration(input, interactionInterface),
+});
+
+export const createTokenCatalogConsumerPorts = (
+  application: TokenCatalogApplicationPort,
+  coordinator: TokenCatalogOperationCoordinatorPort,
+): TokenCatalogConsumerPorts => {
+  const tokenCatalogQueries = Object.freeze({
+    getRegistration: (input: Parameters<TokenCatalogApplicationPort["getRegistration"]>[0]) =>
+      application.getRegistration(input),
+    listRegistrations: (input: Parameters<TokenCatalogApplicationPort["listRegistrations"]>[0]) =>
+      application.listRegistrations(input),
+  }) satisfies TokenCatalogQueryApplicationPort;
+  const tokenCatalogWebStart = createTokenCatalogStartPort(application, "web");
+  const cliStart = createTokenCatalogStartPort(application, "cli");
+  const tokenCatalogBrowserOperations = Object.freeze({
+    interactionInterface: "web",
+    getOperation: (input: Parameters<TokenCatalogApplicationPort["getOperation"]>[0]) =>
+      application.getOperation(input),
+    getCurrentOperation: () => coordinator.getCurrentOperation(),
+    confirm: (input: Parameters<TokenCatalogBrowserOperationPort["confirm"]>[0]) =>
+      coordinator.confirm("web", input),
+    cancel: (operationId: Parameters<TokenCatalogBrowserOperationPort["cancel"]>[0]) =>
+      coordinator.cancel(operationId, "web"),
+  }) satisfies TokenCatalogBrowserOperationPort;
+  const tokenCatalogInteractiveCli = Object.freeze({
+    ...cliStart,
+    interactionInterface: "cli",
+    confirm: (input: Parameters<TokenCatalogInteractiveCliPort["confirm"]>[0]) =>
+      coordinator.confirm("cli", input),
+  }) satisfies TokenCatalogInteractiveCliPort;
+  const tokenCatalogNonInteractiveOperations = Object.freeze({
+    getOperation: (input: Parameters<TokenCatalogApplicationPort["getOperation"]>[0]) =>
+      application.getOperation(input),
+    cancelOperation: (input: Parameters<TokenCatalogApplicationPort["cancelOperation"]>[0]) =>
+      application.cancelOperation(input),
+  }) satisfies TokenCatalogNonInteractiveOperationPort;
+  return Object.freeze({
+    tokenCatalogQueries,
+    tokenCatalogWebStart,
+    tokenCatalogBrowserOperations,
+    tokenCatalogInteractiveCli,
+    tokenCatalogNonInteractiveOperations,
+  });
+};
+
+const snapshotTokenCatalogConsumerPorts = (
+  input: TokenCatalogConsumerPorts,
+): TokenCatalogConsumerPorts => {
+  const assertPort = (
+    name: string,
+    port: object,
+    definition: Readonly<{
+      methods: readonly string[];
+      interactionInterface?: "cli" | "web";
+    }>,
+  ): void => {
+    const expectedKeys = [
+      ...definition.methods,
+      ...(definition.interactionInterface === undefined ? [] : ["interactionInterface"]),
+    ].sort();
+    const actualKeys = Reflect.ownKeys(port);
+    if (
+      actualKeys.some((key) => typeof key !== "string") ||
+      JSON.stringify(actualKeys.slice().sort()) !== JSON.stringify(expectedKeys) ||
+      definition.methods.some((method) => typeof (port as Record<string, unknown>)[method] !== "function") ||
+      (definition.interactionInterface !== undefined &&
+        (port as { interactionInterface?: unknown }).interactionInterface !== definition.interactionInterface)
+    ) throw new TypeError(`Token catalog ${name} authority is invalid.`);
+  };
+  assertPort(
+    "query",
+    input.tokenCatalogQueries,
+    tokenCatalogConsumerPortContract.tokenCatalogQueries,
+  );
+  assertPort(
+    "web start",
+    input.tokenCatalogWebStart,
+    tokenCatalogConsumerPortContract.tokenCatalogWebStart,
+  );
+  assertPort(
+    "browser operation",
+    input.tokenCatalogBrowserOperations,
+    tokenCatalogConsumerPortContract.tokenCatalogBrowserOperations,
+  );
+  assertPort(
+    "interactive CLI",
+    input.tokenCatalogInteractiveCli,
+    tokenCatalogConsumerPortContract.tokenCatalogInteractiveCli,
+  );
+  assertPort(
+    "non-interactive operation",
+    input.tokenCatalogNonInteractiveOperations,
+    tokenCatalogConsumerPortContract.tokenCatalogNonInteractiveOperations,
+  );
+  return Object.freeze({
+    tokenCatalogQueries: Object.freeze({
+      getRegistration: (request: Parameters<TokenCatalogQueryApplicationPort["getRegistration"]>[0]) =>
+        input.tokenCatalogQueries.getRegistration(request),
+      listRegistrations: (request: Parameters<TokenCatalogQueryApplicationPort["listRegistrations"]>[0]) =>
+        input.tokenCatalogQueries.listRegistrations(request),
+    }),
+    tokenCatalogWebStart: Object.freeze({
+      interactionInterface: "web",
+      startRegistration: (request: Parameters<TokenCatalogWebStartPort["startRegistration"]>[0]) =>
+        input.tokenCatalogWebStart.startRegistration(request),
+      startRegistrationUpdate: (request: Parameters<TokenCatalogWebStartPort["startRegistrationUpdate"]>[0]) =>
+        input.tokenCatalogWebStart.startRegistrationUpdate(request),
+      startUnregistration: (request: Parameters<TokenCatalogWebStartPort["startUnregistration"]>[0]) =>
+        input.tokenCatalogWebStart.startUnregistration(request),
+    }),
+    tokenCatalogBrowserOperations: Object.freeze({
+      interactionInterface: "web",
+      getOperation: (request: Parameters<TokenCatalogBrowserOperationPort["getOperation"]>[0]) =>
+        input.tokenCatalogBrowserOperations.getOperation(request),
+      getCurrentOperation: () => input.tokenCatalogBrowserOperations.getCurrentOperation(),
+      confirm: (request: Parameters<TokenCatalogBrowserOperationPort["confirm"]>[0]) =>
+        input.tokenCatalogBrowserOperations.confirm(request),
+      cancel: (operationId: Parameters<TokenCatalogBrowserOperationPort["cancel"]>[0]) =>
+        input.tokenCatalogBrowserOperations.cancel(operationId),
+    }),
+    tokenCatalogInteractiveCli: Object.freeze({
+      interactionInterface: "cli",
+      startRegistration: (request: Parameters<TokenCatalogInteractiveCliPort["startRegistration"]>[0]) =>
+        input.tokenCatalogInteractiveCli.startRegistration(request),
+      startRegistrationUpdate: (request: Parameters<TokenCatalogInteractiveCliPort["startRegistrationUpdate"]>[0]) =>
+        input.tokenCatalogInteractiveCli.startRegistrationUpdate(request),
+      startUnregistration: (request: Parameters<TokenCatalogInteractiveCliPort["startUnregistration"]>[0]) =>
+        input.tokenCatalogInteractiveCli.startUnregistration(request),
+      confirm: (request: Parameters<TokenCatalogInteractiveCliPort["confirm"]>[0]) =>
+        input.tokenCatalogInteractiveCli.confirm(request),
+    }),
+    tokenCatalogNonInteractiveOperations: Object.freeze({
+      getOperation: (request: Parameters<TokenCatalogNonInteractiveOperationPort["getOperation"]>[0]) =>
+        input.tokenCatalogNonInteractiveOperations.getOperation(request),
+      cancelOperation: (request: Parameters<TokenCatalogNonInteractiveOperationPort["cancelOperation"]>[0]) =>
+        input.tokenCatalogNonInteractiveOperations.cancelOperation(request),
+    }),
+  });
+};
+
 const assertCapabilityDirectSupport = (
-  manifest: WalletRuntimeSupportManifest | ChainRuntimeSupportManifest,
+  manifest: WalletRuntimeSupportManifest | ChainRuntimeSupportManifest | TokenCatalogRuntimeSupportManifest,
   capabilityIds: readonly string[],
 ): void => {
   const snapshot = readRuntimeSupportManifest(manifest);
@@ -403,6 +626,7 @@ export const composeOwnerApplicationStages = async <
         assertRuntimeRouteRegistryDescendant(chainRoutes, chainApplication.routes);
         assertChainRuntimeSupportManifestExtension(wallet.supportManifest, chainApplication.supportManifest);
         const reads = snapshotChainReads(chainApplication.chainReads);
+        const tokenInspection = snapshotTokenInspection(chainApplication.tokenInspection);
         assertCapabilityDirectSupport(chainApplication.supportManifest, chainReadCapabilityIds);
         if (context.signal.aborted) throw new RuntimeOperationError("request_aborted");
         return Object.freeze({
@@ -411,6 +635,7 @@ export const composeOwnerApplicationStages = async <
           handoff: Object.freeze({
             supportManifest: chainApplication.supportManifest,
             chainReads: reads,
+            tokenInspection,
           }) satisfies ChainOwnerHandoff,
         });
       });
@@ -420,9 +645,47 @@ export const composeOwnerApplicationStages = async <
       currentRoutes = chain.routes;
     }
 
-    const interfaceStage = stages[2];
+    const tokenCatalogStage = stages[2];
+    let tokenCatalogApplication: TokenCatalogOwnerApplication | undefined;
+    let tokenCatalogHandoff: TokenCatalogOwnerHandoff | undefined;
+    if (tokenCatalogStage !== undefined) {
+      if (chain === undefined || chainHandoff === undefined) {
+        throw new TypeError("Token catalog dependencies are unavailable.");
+      }
+      const tokenCatalogRoutes = currentRoutes;
+      const tokenCatalogResult = await runApplicationStage(
+        applications,
+        (startupResources) => tokenCatalogStage(
+          { routes: tokenCatalogRoutes, signal: context.signal, startupResources },
+          walletHandoff,
+          chainHandoff,
+        ),
+        (application) => {
+          assertRuntimeRouteRegistryDescendant(tokenCatalogRoutes, application.routes);
+          assertTokenCatalogRuntimeSupportManifestExtension(chain.supportManifest, application.supportManifest);
+          assertCapabilityDirectSupport(application.supportManifest, tokenCatalogCapabilityIds);
+          const consumerPorts = snapshotTokenCatalogConsumerPorts(application);
+          if (context.signal.aborted) throw new RuntimeOperationError("request_aborted");
+          return Object.freeze({
+            application,
+            handoff: Object.freeze({
+              supportManifest: application.supportManifest,
+              ...consumerPorts,
+            }) satisfies TokenCatalogOwnerHandoff,
+          });
+        },
+      );
+      tokenCatalogApplication = tokenCatalogResult.application;
+      tokenCatalogHandoff = tokenCatalogResult.handoff;
+      currentRoutes = tokenCatalogApplication.routes;
+    }
+
+    const interfaceStage = stages[3];
     if (interfaceStage !== undefined) {
-      if (chain === undefined || chainReads === undefined || chainHandoff === undefined) {
+      if (
+        chain === undefined || chainReads === undefined || chainHandoff === undefined ||
+        tokenCatalogApplication === undefined || tokenCatalogHandoff === undefined
+      ) {
         throw new TypeError("Interface application dependencies are unavailable.");
       }
       const interfaceRoutes = currentRoutes;
@@ -432,11 +695,15 @@ export const composeOwnerApplicationStages = async <
           { routes: interfaceRoutes, signal: context.signal, startupResources },
           walletHandoff,
           chainHandoff,
+          tokenCatalogHandoff,
           walletOperations,
         ),
         (application) => {
           assertRuntimeRouteRegistryDescendant(interfaceRoutes, application.routes);
-          assertInterfaceRuntimeSupportManifestExtension(chain.supportManifest, application.supportManifest);
+          assertInterfaceRuntimeSupportManifestExtension(
+            tokenCatalogApplication.supportManifest,
+            application.supportManifest,
+          );
           if (context.signal.aborted) throw new RuntimeOperationError("request_aborted");
           return application;
         },
@@ -562,25 +829,65 @@ export class LocalRuntime {
             }),
           }),
         });
+      const tokenCatalogStage: TokenCatalogOwnerApplicationStage<ActiveWallet> | undefined =
+        chainStage === undefined
+          ? undefined
+          : ({ routes, signal }, wallet, chain) => {
+            const activeWallet = requireActiveWalletAuthority(wallet.activeWallet);
+            const coordinator = new TokenCatalogCoordinator({
+              activeWallet,
+              inspection: chain.tokenInspection,
+              store: database.tokenCatalogStore(),
+              clock,
+              readWalletProjection: () => walletProjection.read(),
+              signal,
+            });
+            const tokenCatalog = createTokenCatalogApplication({
+              dependencies: {
+                activeWallet,
+                store: database.tokenCatalogReadStore(),
+              },
+              operations: coordinator,
+            });
+            const consumerPorts = createTokenCatalogConsumerPorts(tokenCatalog, coordinator);
+            const supportManifest = extendTokenCatalogSupportManifest(chain.supportManifest);
+            return Object.freeze({
+              routes,
+              supportManifest,
+              ...consumerPorts,
+              close: async () => { coordinator.close(); },
+            });
+          };
       const interfaceStage: InterfaceOwnerApplicationStage<ActiveWallet, WalletOperations> | undefined =
         interfaceApplicationFactory === undefined
           ? undefined
-          : ({ routes, signal, startupResources }, wallet, chain, walletOperations) => interfaceApplicationFactory({
+          : ({ routes, signal, startupResources }, wallet, chain, tokenCatalog, walletOperations) => interfaceApplicationFactory({
             routes,
             signal,
             startupResources,
-            supportManifest: chain.supportManifest,
+            supportManifest: tokenCatalog.supportManifest,
             walletConnection: wallet.walletConnection,
             walletOperations,
             chainReads: chain.chainReads,
+            tokenInspection: chain.tokenInspection,
+            tokenCatalogQueries: tokenCatalog.tokenCatalogQueries,
+            tokenCatalogWebStart: tokenCatalog.tokenCatalogWebStart,
+            tokenCatalogBrowserOperations: tokenCatalog.tokenCatalogBrowserOperations,
+            tokenCatalogInteractiveCli: tokenCatalog.tokenCatalogInteractiveCli,
+            tokenCatalogNonInteractiveOperations: tokenCatalog.tokenCatalogNonInteractiveOperations,
           });
       const stages: OwnerApplicationStages<ActiveWallet, WalletOperations> | undefined = walletStage === undefined
         ? undefined
         : chainStage === undefined
           ? [walletStage]
           : interfaceStage === undefined
-            ? [walletStage, chainStage]
-            : [walletStage, chainStage, interfaceStage];
+            ? [walletStage, chainStage, tokenCatalogStage as TokenCatalogOwnerApplicationStage<ActiveWallet>]
+            : [
+                walletStage,
+                chainStage,
+                tokenCatalogStage as TokenCatalogOwnerApplicationStage<ActiveWallet>,
+                interfaceStage,
+              ];
       const applicationFactory = stages === undefined
         ? undefined
         : (context: HttpOwnerApplicationContext) => composeOwnerApplicationStages(

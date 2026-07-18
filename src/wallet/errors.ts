@@ -2,8 +2,11 @@ import {
   createApplicationFailure,
   type ApplicationFailure,
 } from "../core/index.js";
-import { getRuntimeOperationFailure } from "../runtime/errors.js";
-import { runtimeErrorRegistry, runtimeInterfaceErrorMappings } from "../runtime/index.js";
+import {
+  getRuntimeOperationFailure,
+  runtimeErrorRegistry,
+  runtimeInterfaceErrorMappings,
+} from "../runtime/errors.js";
 import {
   walletErrorDefinitions,
   walletInterfaceErrorMappingDefinitions,

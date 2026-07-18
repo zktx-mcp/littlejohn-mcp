@@ -14,29 +14,29 @@ import {
 describe("generated capability projections", () => {
   const golden = {
     "account.balance": [
-      "2b9096c03d4724a8515babfc1f3ab61d9257fbe2030cff1793d82a4028276da6",
-      "91ca675f32de59f748661099891fa7186a9def01cabbae059b59fc46d850e83c",
-      "4c6337e9bf40a57b2506bbc5a9aa530f2ea244237cb63d776ffa2171d48d276f",
+      "41c9662ca7acbdc5652d0b4f3d49cbfa434cf6badc3bbc489d0f085e6d8edbf4",
+      "f962e0d2804dc1c8b206b3c3bf37b6f6a4904d24e438f1fc945d7947881db1a3",
+      "aab6c1489138a79f6c4586553b898c7487d64b7701a6250f7717ec948296757b",
     ],
     "chain.status": [
-      "1a1b8e452b36db9afc0c1155f49d9b66f9cade69ece8d6f307d4637bca1b1b78",
-      "49edbc736d4368c7fbac1b6969bacaee58bd9d7013ac50ad5b1ed5966b38d000",
-      "2450c1ea5254b915f570c8d23028071eaff905d2f2a8d377352456e7bd171407",
+      "bb6a63d43b5f19f017e9e2e04823af917caa5e374a92f18cfec874f6b53e28e3",
+      "6fcd5ab08180931cb6d0b893329a6e7226400217a16c32c6df8117a862cf5e90",
+      "0bd192d359fcf71b19797508d6aa2ef2dce41e0ea44664fc76774a033ff85619",
     ],
     "contract.inspect": [
-      "cadfad8d9d998cf76bbf96f079a21d8c4d04af43b76366fcec00831a60b10040",
-      "071dac81023f0754c664e4e5b4433490a6a811a05305586676a7e4b4ab691306",
-      "bbb95e30cc0c8ecb3da00cca6a9cc2cc7ce177a37851c2433d4837488667f3f9",
+      "058cfd8f6ed62c0c4c33a4b56cd836ff4d869739fd1384d98e08d699b717f2a0",
+      "4cbdc97f35fe51188082dc30310c6451f1ef0ba1ce9a86066abb7336fbc3c65e",
+      "69c021ed7e3efaa6727406fb1bbca336d49db072a1a0f14cb459f31e3b159000",
     ],
     "transaction.inspect": [
-      "cfdc6cc9c6004408db432907cf4fdcfffbec75b087251e682317200461d2c65b",
-      "c436822f5ea4c333903f92cfe6f26ffef0a48fe6cbf0284b1a98584ae30c7e11",
-      "74419ec745025be3c1870828a0e3ab4b339373b44c3e1282005906b4b99d91bd",
+      "0ecfeb303841825c120feccf67e964fa8e04ab35e791f6ab80b71ab75d55acc0",
+      "f71fe3d6f269cdc3bdb7cac1e7f5399235c53d2d20a2ff4c3e19f58885504658",
+      "a26f6e292042ce183c2b68cc9c16a20a0752063d35ecba3fce3cdd565d423ceb",
     ],
     "wallet.connection": [
-      "fbf698855ee2a53c4d021e2a4a93784a189dca2bc471330fcc0d226b3d45ff73",
-      "a4955b7b89ea918e1bea1a9db8753c544f58c940dd0d267e43f63341331b0b44",
-      "e09bf7c894b2f83b2bb37d8a0dc4d934646a4ddfe73d207227823205ac58b1d7",
+      "6e1fd389a915dd6f6bfb6683543f0d2a2f6bb1f5cccaf1dbed996900c057f729",
+      "236f6e2b2d6264965eaf286bc6a68673e31c6666d2f9cd438008ceb119498d78",
+      "62e0094fbcd92e28ed3565e9d73c956dcaa6301a6f03032755f78f73e1ed6875",
     ],
   } as const;
 
@@ -50,9 +50,15 @@ describe("generated capability projections", () => {
     expect(new Set(ids).size).toBe(ids.length);
     for (const projection of projections) {
       const definition = readCapabilityRegistry.get(projection.capabilityId);
-      expect(projection.input.schemaId).toBe(`urn:littlejohn:capability:${projection.capabilityId}:input:v2`);
-      expect(projection.data.schemaId).toBe(`urn:littlejohn:capability:${projection.capabilityId}:data:v2`);
-      expect(projection.success.schemaId).toBe(`urn:littlejohn:capability:${projection.capabilityId}:success:v2`);
+      expect(projection.input.schemaId).toBe(
+        `urn:littlejohn:capability:${projection.capabilityId}:input:v${coreContractVersion}`,
+      );
+      expect(projection.data.schemaId).toBe(
+        `urn:littlejohn:capability:${projection.capabilityId}:data:v${coreContractVersion}`,
+      );
+      expect(projection.success.schemaId).toBe(
+        `urn:littlejohn:capability:${projection.capabilityId}:success:v${coreContractVersion}`,
+      );
       expect(projection.contractVersion).toBe(coreContractVersion);
       expect(canonicalSha256(projection.input.schema)).toBe(projection.input.digest);
       expect(canonicalSha256(projection.data.schema)).toBe(projection.data.digest);

@@ -14,6 +14,7 @@ import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
 import { createErc20CallEncoder, type Erc20CallEncoder } from "./evm-standard.js";
 import { createChainReadService } from "./handlers.js";
 import { createBoundedRpcRequester, type RpcRequester } from "./rpc.js";
+import { createTokenInspectionService } from "./token-inspection.js";
 
 const internalReadAvailability = Object.freeze({
   overall: "internal" as const,
@@ -56,16 +57,29 @@ export const createChainOwnerApplicationFactory = (
       typeof encoder !== "object" ||
       encoder === null ||
       typeof encoder.balanceOf !== "function" ||
-      typeof encoder.decimals !== "function"
+      typeof encoder.decimals !== "function" ||
+      typeof encoder.name !== "function" ||
+      typeof encoder.symbol !== "function" ||
+      typeof encoder.totalSupply !== "function"
     ) {
       throw new TypeError("ERC-20 call encoder is invalid.");
     }
     const service = createChainReadService({ context, rpc, encoder });
+    let tokenInspection: ReturnType<typeof createTokenInspectionService>;
+    try {
+      tokenInspection = createTokenInspectionService({ context, rpc, encoder });
+    } catch (error) {
+      await service.close();
+      throw error;
+    }
     return Object.freeze({
       routes: context.routes,
       supportManifest: extendChainSupportManifest(context.supportManifest),
       chainReads: service.chainReads,
-      close: () => service.close(),
+      tokenInspection: tokenInspection.binding,
+      close: async () => {
+        await Promise.all([service.close(), tokenInspection.close()]);
+      },
     });
   };
 };

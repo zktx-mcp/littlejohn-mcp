@@ -19,6 +19,14 @@ import {
 const repositoryRoot = resolve(".");
 const sourceRoot = resolve(repositoryRoot, "src");
 const coreRoot = resolve("src/core");
+const tokenCatalogRoot = resolve(sourceRoot, "token-catalog");
+const interfaceConsumerRoots = Object.freeze([
+  resolve(sourceRoot, "interfaces"),
+  resolve(repositoryRoot, "scripts/release"),
+]);
+const interfaceConsumerEntryPoints = new Set([
+  resolve(sourceRoot, "cli.ts"),
+]);
 const browserCoreConsumers = new Set([
   "interfaces/browser-contract.ts",
   "interfaces/browser-error-response.ts",
@@ -45,6 +53,27 @@ const resolvesInsideCore = (file: string, specifier: string): string | undefined
   const fromCore = relative(coreRoot, target);
   const inside = fromCore === "" || (!isAbsolute(fromCore) && fromCore !== ".." && !fromCore.startsWith(`..${sep}`));
   return inside ? fromCore.split(sep).join("/") : undefined;
+};
+
+const isWithin = (file: string, directory: string): boolean => {
+  const fromDirectory = relative(directory, file);
+  return fromDirectory === "" || (!isAbsolute(fromDirectory) && fromDirectory !== ".." &&
+    !fromDirectory.startsWith(`..${sep}`));
+};
+
+const isInterfaceConsumer = (file: string): boolean =>
+  interfaceConsumerEntryPoints.has(file) ||
+  interfaceConsumerRoots.some((root) => isWithin(file, root));
+
+const resolvesInsideTokenCatalog = (file: string, specifier: string): string | undefined => {
+  if (!specifier.startsWith(".")) return undefined;
+  let target: string;
+  try { target = fileURLToPath(new URL(specifier, pathToFileURL(file))); }
+  catch { return undefined; }
+  const fromCatalog = relative(tokenCatalogRoot, target);
+  const inside = fromCatalog === "" || (!isAbsolute(fromCatalog) && fromCatalog !== ".." &&
+    !fromCatalog.startsWith(`..${sep}`));
+  return inside ? fromCatalog.split(sep).join("/") : undefined;
 };
 
 describe("runtime architecture boundary", () => {
@@ -76,6 +105,21 @@ describe("runtime architecture boundary", () => {
             ? target === "browser.js"
             : target === "index.js";
           if (!allowed) violations.push(`${consumer}:${reference.specifier}`);
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("requires interface and package consumers to enter the token catalog through its public handoff", async () => {
+    const violations: string[] = [];
+    for (const file of await collectProductSourceFiles(repositoryRoot)) {
+      if (!isInterfaceConsumer(file)) continue;
+      for (const reference of (await inspectSourceFile(file)).moduleImports) {
+        if (reference.specifier === undefined) continue;
+        const target = resolvesInsideTokenCatalog(file, reference.specifier);
+        if (target !== undefined && target !== "index.js") {
+          violations.push(`${relative(repositoryRoot, file).split(sep).join("/")}:${reference.specifier}`);
         }
       }
     }

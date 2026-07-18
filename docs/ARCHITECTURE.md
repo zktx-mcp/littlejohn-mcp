@@ -3,7 +3,7 @@
 ## Current State
 
 Little John has a Node.js `>=22.12.0` ESM TypeScript package, canonical core
-contracts, five semantic read-capability definitions, registry-derived JSON
+contracts, six semantic read-capability definitions, registry-derived JSON
 Schema and descriptor projections, owner-only POSIX
 application-data permissions, SQLite product state, local control credentials,
 source identifiers that do not expose credentials, a runtime support manifest,
@@ -44,6 +44,24 @@ length, and range checks. Core independently verifies code hashes with
 the chain decoder. Explicit account reads do not consume wallet state. Only
 `account.balance` with `active_wallet` captures the current validated
 WalletConnect account.
+
+The internal `token-catalog` module owns canonical token inspection,
+registration, settings, operation, error, and downstream port contracts. Its
+chain adapter inspects deployed code and ERC-20 `totalSupply`, optional `name`,
+optional `symbol`, and optional `decimals` at one EIP-1898 block reference. The
+standardized `eth_call` execution-reverted response makes an optional method
+unavailable; malformed, mismatched, transport, and source failures retain their
+own failure meaning. A fatal inspection call aborts and drains its sibling calls
+before the inspection returns or the owner closes. The catalog runtime persists
+an inspection only when a confirmed account registration commits. The query
+application receives only registration get and list storage methods. Exact get
+returns the registration and its inspection evidence; list returns bounded
+registration rows without duplicating inspection evidence. One owner-memory
+coordinator alone receives the mutation store, serializes catalog changes,
+binds confirmation to the captured live wallet session and connection revision
+through the canonical confirmation contract, and commits each change through
+one SQLite transaction. No catalog HTTP, MCP, CLI, React, or Current Support
+binding exists.
 
 The interactive CLI implements `wallet status`, `wallet connect`, `wallet
 disconnect`, `wallet operation`, and `wallet cancel`, plus
@@ -171,6 +189,7 @@ transaction material, WalletConnect state, or private settings.
 | `protocols` | Protocol package contract and protocol-specific capabilities and action adapters |
 | `review` | Intent, account binding, commitments, freshness, and review state |
 | `wallet` | WalletConnect sessions and exact reviewed-request handoff |
+| `token-catalog` | Token inspection and account-specific registration contracts |
 | `receipt-activity` | Transactions, receipts, traces, finality, and actual state deltas |
 | `interfaces` | MCP, loopback HTTP API, React read models, and interactive CLI |
 | `runtime` | Composition root, SQLite, configuration, HTTP ownership, and feature gates |
@@ -296,9 +315,9 @@ to contain a malicious process already running with the same user authority.
 
 - The local control credential contains 256 random bits, is encoded as
   unpadded base64url, and remains stable across compatible owner takeover.
-- The runtime protocol version is `2`. It identifies the compatible local-owner
-  wire contract and current database schema; an incompatible change replaces
-  this value. Profile ID and owner instance ID each
+- The runtime protocol version is `3`. It identifies the compatible local-owner
+  wire contract; an incompatible change replaces this value. Profile ID and
+  owner instance ID each
   contain 128 random bits encoded as unpadded base64url. Owner revision is an
   unsigned base-10 integer string.
 - A process first attempts to bind `127.0.0.1:46630`.
@@ -418,24 +437,37 @@ staging namespace fails startup without changing the final database. Concurrent
 creators converge on the final database rather than choosing or repairing a
 staging database.
 
-SQLite has one current schema definition. Standard SQLite `user_version` equals
-`runtimeProtocolVersion`, and the exact current table set must be present. A
-mismatch fails closed and never invokes a migration, old-schema reader,
-conversion, repair, or automatic replacement. A development schema change
-requires deleting the isolated local data directory before starting the current
-runtime.
+SQLite has one current schema definition. The SQLite schema module owns
+`databaseSchemaVersion`, currently `3`, and standard SQLite `user_version`
+equals that value. The exact current table set must also be present. A mismatch
+fails closed and never invokes a migration, old-schema reader, conversion,
+repair, or automatic replacement. A development schema change requires deleting
+the isolated local data directory before starting the current runtime. The
+database schema version and runtime protocol version have separate owners and
+advance only when their respective contracts change.
 
-The current product SQLite schema contains exactly seven tables:
+The stored owner protocol version is a projection of the process that last
+acquired the fixed port, not database schema identity. SQLite accepts a positive
+safe integer in that field. A new fixed-port owner replaces it with the current
+runtime protocol version before constructing the application. A deferred
+process accepts a live owner only when the stored projection, signed live-owner
+identity, and current runtime protocol version agree.
+
+The current product SQLite schema contains exactly nine tables:
 
 - `local_profile` stores the local profile identity;
 - `runtime_owner` stores the HTTP-owner identity, compatibility version,
   configuration identifier, process projection, and owner revision;
 - `chain` stores trusted canonical EIP-155 chain identities inserted only from
   runtime configuration after fixed-port ownership is acquired;
-- `contract` and `token_contract` are empty chain-scoped parent-identity tables
-  with no current product writer;
+- `contract` and `token_contract` store chain-scoped parent identities inserted
+  only by a confirmed token registration;
+- `token_contract_inspection` stores the exact canonical `token.inspect`
+  success selected by its digest;
 - `wallet_account` stores persistent `(profile, chain, address)` identities that
-  survive disconnect, account change, session deletion, and owner takeover; and
+  survive disconnect, account change, session deletion, and owner takeover;
+- `wallet_token_registration` stores account-specific token membership,
+  visibility, optional user label, revision, and inspection reference; and
 - `current_wallet_connection` stores the secret-free current connection
   projection and revision.
 
@@ -451,6 +483,14 @@ WalletConnect SDK store. A nonterminal operation has a fixed user-action
 deadline. A terminal operation has a fixed bounded retention period and is then
 removed. Pairing URI and QR material remain separate owner-memory secret state
 and never enter the operation read model.
+
+The current token-catalog operation is also owner-memory coordination state. A
+profile has at most one nonterminal catalog operation. Registration inspects the
+token before creating that operation; update and removal capture the exact
+current registration revision. Confirmation revalidates the same live wallet
+session, account, chain, and connection revision before one atomic registration
+transaction. Terminal operations have bounded memory retention and are not
+restored by a successor owner.
 
 The WalletConnect SDK private store is authoritative for:
 

@@ -57,6 +57,7 @@ export {
   CapabilityRegistry,
   bindCapability,
   capabilityIdSchema,
+  defineReadCapability,
   getCapabilityDefinitionSnapshot,
   parseCapabilityData,
   parseCapabilityDataAt,

@@ -5,8 +5,11 @@ import {
   decodeCanonicalErc20Event,
   decodeErc20BalanceOfResult,
   decodeErc20DecimalsResult,
+  decodeErc20TextResult,
+  decodeErc20TotalSupplyResult,
   hashEvmBytes,
 } from "../../src/chain/evm-standard.js";
+import { rpcResponseByteLimit } from "../../src/chain/rpc.js";
 import {
   erc20ApprovalTopic0,
   erc20TransferTopic0,
@@ -21,11 +24,22 @@ const indexedAddress = (address: string) =>
   hash32Schema.parse(`0x${"0".repeat(24)}${address.slice(2)}`);
 const word = (value: bigint) =>
   hexBytesSchema.parse(`0x${value.toString(16).padStart(64, "0")}`);
+const encodedTextBytes = (bytes: Uint8Array) => {
+  const padding = (32 - bytes.length % 32) % 32;
+  return hexBytesSchema.parse(
+    `${word(32n)}${word(BigInt(bytes.length)).slice(2)}${Buffer.from(bytes).toString("hex")}${"0".repeat(padding * 2)}`,
+  );
+};
+const encodedText = (value: string) => encodedTextBytes(Buffer.from(value, "utf8"));
+const textByteLimit = 512;
 
 describe("standard EVM boundary", () => {
   it("uses viem for exact ERC-20 call encoding", async () => {
     const encoder = await createErc20CallEncoder();
     expect(encoder.decimals()).toBe("0x313ce567");
+    expect(encoder.name()).toBe("0x06fdde03");
+    expect(encoder.symbol()).toBe("0x95d89b41");
+    expect(encoder.totalSupply()).toBe("0x18160ddd");
     expect(encoder.balanceOf(addressA)).toBe(
       `0x70a08231${"12".repeat(20).padStart(64, "0")}`,
     );
@@ -40,9 +54,85 @@ describe("standard EVM boundary", () => {
       ((1n << 255n) + 1n).toString(10),
     );
     expect(decodeErc20DecimalsResult(word(255n))).toBe("255");
+    expect(decodeErc20TotalSupplyResult(word((1n << 256n) - 1n))).toBe(
+      ((1n << 256n) - 1n).toString(10),
+    );
+    expect(decodeErc20TextResult(encodedText("Token name"), "name", textByteLimit)).toEqual({
+      status: "decoded",
+      value: "Token name",
+    });
+    expect(decodeErc20TextResult(encodedText("TKN"), "symbol", textByteLimit)).toEqual({
+      status: "decoded",
+      value: "TKN",
+    });
+    expect(decodeErc20TextResult(encodedText(""), "name", textByteLimit)).toEqual({
+      status: "decoded",
+      value: "",
+    });
+    expect(decodeErc20TextResult(encodedText("토큰 🪙"), "name", textByteLimit)).toEqual({
+      status: "decoded",
+      value: "토큰 🪙",
+    });
+    expect(decodeErc20TextResult(encodedText("x".repeat(33)), "name", textByteLimit)).toEqual({
+      status: "decoded",
+      value: "x".repeat(33),
+    });
     expect(() => decodeErc20BalanceOfResult(`${word(1n)}${word(2n).slice(2)}`)).toThrow(TypeError);
     expect(() => decodeErc20BalanceOfResult("0x01")).toThrow(TypeError);
     expect(() => decodeErc20DecimalsResult(word(256n))).toThrow(TypeError);
+    expect(() => decodeErc20TextResult(word(1n), "name", textByteLimit)).toThrow(TypeError);
+  });
+
+  it("bounds ERC-20 text before full-value decoding without changing UTF-8 meaning", () => {
+    const exactLimit = "🪙".repeat(128);
+    expect(Buffer.byteLength(exactLimit, "utf8")).toBe(textByteLimit);
+    expect(decodeErc20TextResult(encodedText(exactLimit), "name", textByteLimit)).toEqual({
+      status: "decoded",
+      value: exactLimit,
+    });
+
+    const oneByteOver = `${exactLimit}a`;
+    expect(Buffer.byteLength(oneByteOver, "utf8")).toBe(textByteLimit + 1);
+    expect(decodeErc20TextResult(encodedText(oneByteOver), "name", textByteLimit)).toEqual({
+      status: "byte_limit_exceeded",
+    });
+
+    const invalidOversizedUtf8 = new Uint8Array(textByteLimit + 1).fill(0x61);
+    invalidOversizedUtf8[0] = 0xc3;
+    invalidOversizedUtf8[1] = 0x28;
+    expect(() => decodeErc20TextResult(
+      encodedTextBytes(invalidOversizedUtf8),
+      "name",
+      textByteLimit,
+    )).toThrow(TypeError);
+
+    const largeCanonicalText = "x".repeat(Math.floor((rpcResponseByteLimit - 256) / 2));
+    expect(decodeErc20TextResult(
+      encodedText(largeCanonicalText),
+      "symbol",
+      textByteLimit,
+    )).toEqual({ status: "byte_limit_exceeded" });
+  });
+
+  it("rejects non-canonical or lossy ERC-20 text results", () => {
+    const canonicalA = encodedText("A");
+    const nonzeroPadding = hexBytesSchema.parse(`${canonicalA.slice(0, -2)}01`);
+    const trailingWord = hexBytesSchema.parse(`${canonicalA}${"0".repeat(64)}`);
+    const alternateOffsetWithJunk = hexBytesSchema.parse(
+      `${word(64n)}${word(0xdeadn).slice(2)}${word(1n).slice(2)}61${"0".repeat(62)}`,
+    );
+    const overstatedLength = hexBytesSchema.parse(
+      `${word(32n)}${word(33n).slice(2)}${"00".repeat(32)}`,
+    );
+    const invalidUtf8 = encodedTextBytes(Uint8Array.from([0xc3, 0x28]));
+    const truncatedPadding = hexBytesSchema.parse(canonicalA.slice(0, -2));
+
+    expect(() => decodeErc20TextResult(nonzeroPadding, "name", textByteLimit)).toThrow(TypeError);
+    expect(() => decodeErc20TextResult(trailingWord, "name", textByteLimit)).toThrow(TypeError);
+    expect(() => decodeErc20TextResult(alternateOffsetWithJunk, "name", textByteLimit)).toThrow(TypeError);
+    expect(() => decodeErc20TextResult(overstatedLength, "name", textByteLimit)).toThrow(TypeError);
+    expect(() => decodeErc20TextResult(invalidUtf8, "name", textByteLimit)).toThrow(TypeError);
+    expect(() => decodeErc20TextResult(truncatedPadding, "name", textByteLimit)).toThrow(TypeError);
   });
 
   it("decodes only exact canonical Transfer and Approval evidence", () => {

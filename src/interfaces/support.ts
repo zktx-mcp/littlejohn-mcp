@@ -4,8 +4,8 @@ import {
 import {
   extendInterfaceRuntimeSupportManifest,
   type CapabilityAvailabilityInput,
-  type ChainRuntimeSupportManifest,
   type InterfaceRuntimeSupportManifest,
+  type TokenCatalogRuntimeSupportManifest,
 } from "../runtime/index.js";
 import {
   readInterfaceIdentities,
@@ -36,7 +36,7 @@ const walletBindingAvailability = (
 });
 
 export const extendInterfaceSupportManifest = (
-  parent: ChainRuntimeSupportManifest,
+  parent: TokenCatalogRuntimeSupportManifest,
 ): InterfaceRuntimeSupportManifest => extendInterfaceRuntimeSupportManifest(parent, {
   registrations: [],
   changes: Object.freeze([

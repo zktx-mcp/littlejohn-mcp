@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createApplicationFailure } from "../../src/core/index.js";
+import { coreContractVersion, createApplicationFailure } from "../../src/core/index.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import {
   RuntimeOperationError,
@@ -29,6 +29,7 @@ import {
   type RuntimeSupportManifestExtensionInput,
   verifyCurrentSupportDocument,
 } from "../../src/runtime/support-manifest.js";
+import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
 
 const initialRuntimeSupportManifest = createInitialRuntimeSupportManifest(
   readRuntimeConfiguration({}).chain,
@@ -82,7 +83,7 @@ const chainExtensionInput = {
 describe("runtime support manifest authority", () => {
   it("starts with only the five canonical read identities and official L0 evidence", () => {
     const snapshot = readRuntimeSupportManifest(initialRuntimeSupportManifest);
-    expect(snapshot.contractVersion).toBe("2");
+    expect(snapshot.contractVersion).toBe(coreContractVersion);
     expect(snapshot.chains).toEqual([{
       chainId: "eip155:4663",
       supportLevel: "L0_discovered",
@@ -139,7 +140,8 @@ describe("runtime support manifest authority", () => {
       expect(readRuntimeSupportManifest(chain).capabilities
         .find((entry) => entry.capabilityId === capabilityId)?.availability).toEqual(internal);
     }
-    const interfaces = extendInterfaceRuntimeSupportManifest(chain, {
+    const tokenCatalog = extendTokenCatalogSupportManifest(chain);
+    const interfaces = extendInterfaceRuntimeSupportManifest(tokenCatalog, {
       registrations: [],
       changes: [{
         capabilityId: "wallet.operation",
@@ -149,7 +151,7 @@ describe("runtime support manifest authority", () => {
     expect(readRuntimeSupportManifest(interfaces).capabilities
       .find((entry) => entry.capabilityId === "wallet.operation")?.availability.web).toBe("available");
     expect(() => assertChainRuntimeSupportManifestExtension(wallet, chain)).not.toThrow();
-    expect(() => assertInterfaceRuntimeSupportManifestExtension(chain, interfaces)).not.toThrow();
+    expect(() => assertInterfaceRuntimeSupportManifestExtension(tokenCatalog, interfaces)).not.toThrow();
     expect(() => assertWalletRuntimeSupportManifestExtension(initialRuntimeSupportManifest, chain as never))
       .toThrow("scope lineage");
 
@@ -218,7 +220,7 @@ describe("runtime support manifest authority", () => {
       manifestRuntime.run = () => ({ value: { forged: true }, issues: [] });
       catalogRuntime.run = () => ({ value: { forged: true }, issues: [] });
       expect(readRuntimeSupportManifest(initialRuntimeSupportManifest).chains[0]?.chainId).toBe("eip155:4663");
-      expect(composeCapabilityCatalog(initialRuntimeSupportManifest).contractVersion).toBe("2");
+      expect(composeCapabilityCatalog(initialRuntimeSupportManifest).contractVersion).toBe(coreContractVersion);
     } finally {
       manifestRuntime.run = manifestRun;
       catalogRuntime.run = catalogRun;

@@ -6,19 +6,42 @@ import { basename, dirname, resolve } from "node:path";
 import Database from "better-sqlite3";
 
 import {
+  canonicalJsonStringify,
   decodeCanonicalBase64Url,
+  erc20AssetIdentitySchema,
+  evmAccountIdentitySchema,
   parseEvmAccountIdentity,
   parseEvmChainId,
   parseEvmContractIdentity,
   parseCapabilityDataAt,
   parseUtcTimestamp,
   walletConnectionCapability,
+  type CanonicalJson,
   type EvmAccountIdentity,
   type EvmChainId,
   type UtcTimestamp,
   type WalletConnectionData,
 } from "../core/index.js";
-import { RuntimeOperationError } from "./errors.js";
+import {
+  tokenCatalogContractLimits,
+  tokenInspectionDigest,
+  tokenInspectionSuccessSchema,
+  tokenRegistrationSchema,
+  tokenRegistrationRevisionSchema,
+  tokenRegistrationSettingsSchema,
+  tokenRegistrationWithInspectionSchema,
+  type TokenInspectionSuccess,
+  type TokenRegistration,
+  type TokenRegistrationSettings,
+  type TokenRegistrationWithInspection,
+} from "../token-catalog/contracts.js";
+import { TokenCatalogOperationError } from "../token-catalog/operation-error.js";
+import type {
+  TokenCatalogQueryStore,
+  TokenCatalogStore,
+  TokenRegistrationPage,
+} from "../token-catalog/ports.js";
+import { getRuntimeOperationFailure, RuntimeOperationError } from "./errors.js";
 import {
   attestOwnerOnlyStateFile,
   acquireOwnerOnlyStateFileLease,
@@ -41,6 +64,7 @@ import {
 import {
   currentSqliteSchemaSql,
   currentSqliteTableNames,
+  databaseSchemaVersion,
 } from "./sqlite-schema.js";
 import {
   decodeWalletConnectionStorage,
@@ -57,7 +81,7 @@ export interface RuntimeOwnerRecord {
   readonly profileId: ProfileId;
   readonly ownerInstanceId: OwnerInstanceId;
   readonly configurationMac: RuntimeConfigurationMac;
-  readonly protocolVersion: typeof runtimeProtocolVersion;
+  readonly protocolVersion: number;
   readonly processId: number;
   readonly ownerRevision: RuntimeRevision;
   readonly acquiredAt: UtcTimestamp;
@@ -112,6 +136,28 @@ interface WalletRow extends WalletConnectionStorageRow {
 
 interface ChainRow { readonly chainId: string }
 interface ContractRow { readonly chainId: string; readonly contractAddress: string }
+interface TokenInspectionRow {
+  readonly chainId: string;
+  readonly contractAddress: string;
+  readonly inspectionDigest: string;
+  readonly resultJson: string;
+}
+interface TokenRegistrationRecordRow {
+  readonly profileId: string;
+  readonly chainId: string;
+  readonly walletAddress: string;
+  readonly tokenAddress: string;
+  readonly revision: string;
+  readonly inspectionDigest: string;
+  readonly userLabel: string | null;
+  readonly visibility: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+interface TokenRegistrationRow extends TokenRegistrationRecordRow {
+  readonly contractAddress: string;
+  readonly resultJson: string;
+}
 export interface WalletAccountStorageRow {
   readonly profileId: string;
   readonly chainId: string;
@@ -128,6 +174,68 @@ export const decodeWalletAccountRecordKey = (row: WalletAccountStorageRow): Wall
     profileId: parseProfileId(row.profileId),
     account: parseEvmAccountIdentity({ chainId: row.chainId, address: row.walletAddress }),
   });
+
+const tokenCatalogStorageError = (error: unknown): Error => {
+  if (error instanceof TokenCatalogOperationError) return error;
+  const runtimeFailure = getRuntimeOperationFailure(error);
+  if (runtimeFailure !== undefined) return new TokenCatalogOperationError(
+    runtimeFailure.error.code === "runtime_busy" ? "runtime_state_unavailable" : runtimeFailure.error.code,
+  );
+  const normalized = storageError(error);
+  return new TokenCatalogOperationError(
+    getRuntimeOperationFailure(normalized)?.error.code ?? "runtime_state_unavailable",
+  );
+};
+
+const decodeInspectionRow = (row: TokenInspectionRow): TokenInspectionSuccess => {
+  const identity = parseEvmContractIdentity({
+    chainId: row.chainId,
+    contractAddress: row.contractAddress,
+  });
+  const parsedJson = JSON.parse(row.resultJson) as unknown;
+  const inspection = tokenInspectionSuccessSchema.parse(parsedJson);
+  if (
+    canonicalJsonStringify(inspection as unknown as CanonicalJson) !== row.resultJson ||
+    inspection.data.asset.chainId !== identity.chainId ||
+    inspection.data.asset.address !== identity.contractAddress ||
+    tokenInspectionDigest(inspection) !== row.inspectionDigest
+  ) throw new Error("Stored token inspection is invalid.");
+  return inspection;
+};
+
+const decodeTokenRegistrationRecordRow = (
+  row: TokenRegistrationRecordRow,
+  expectedProfileId?: ProfileId,
+): TokenRegistration => {
+  const profileId = parseProfileId(row.profileId);
+  if (expectedProfileId !== undefined && profileId !== expectedProfileId) {
+    throw new Error("Stored token registration profile is invalid.");
+  }
+  const account = parseEvmAccountIdentity({ chainId: row.chainId, address: row.walletAddress });
+  const asset = erc20AssetIdentitySchema.parse({
+    kind: "erc20",
+    chainId: row.chainId,
+    address: row.tokenAddress,
+  });
+  return tokenRegistrationSchema.parse({
+    account,
+    asset,
+    revision: tokenRegistrationRevisionSchema.parse(row.revision),
+    inspectionDigest: row.inspectionDigest,
+    userLabel: row.userLabel,
+    visibility: row.visibility,
+    createdAt: parseUtcTimestamp(row.createdAt),
+    updatedAt: parseUtcTimestamp(row.updatedAt),
+  });
+};
+
+const decodeTokenRegistrationRow = (
+  row: TokenRegistrationRow,
+  expectedProfileId?: ProfileId,
+): TokenRegistrationWithInspection => tokenRegistrationWithInspectionSchema.parse({
+  registration: decodeTokenRegistrationRecordRow(row, expectedProfileId),
+  inspection: decodeInspectionRow(row),
+});
 
 const sqliteContentionCodes: ReadonlySet<string> = new Set([
   "SQLITE_BUSY",
@@ -164,8 +272,8 @@ const tableNames = (database: Database.Database): string[] =>
     .all() as { name: string }[]).map((row) => row.name);
 
 const assertCurrentSchema = (database: Database.Database): void => {
-  if (database.pragma("user_version", { simple: true }) !== runtimeProtocolVersion) {
-    throw new Error("SQLite schema protocol is incompatible.");
+  if (database.pragma("user_version", { simple: true }) !== databaseSchemaVersion) {
+    throw new Error("SQLite schema version is incompatible.");
   }
   if (JSON.stringify(tableNames(database)) !== JSON.stringify(currentSqliteTableNames)) {
     throw new Error("SQLite table set is incompatible.");
@@ -209,7 +317,8 @@ const ownerFromRow = (row: OwnerRow, profile: LocalProfile): RuntimeOwnerRecord 
   if (
     row.singleton !== 1 ||
     row.profileId !== profile.profileId ||
-    row.protocolVersion !== runtimeProtocolVersion ||
+    !Number.isSafeInteger(row.protocolVersion) ||
+    row.protocolVersion <= 0 ||
     !Number.isSafeInteger(row.processId) ||
     row.processId <= 0
   ) throw new Error("Runtime owner projection is invalid.");
@@ -217,7 +326,7 @@ const ownerFromRow = (row: OwnerRow, profile: LocalProfile): RuntimeOwnerRecord 
     profileId: profile.profileId,
     ownerInstanceId: parseOwnerInstanceId(row.ownerInstanceId),
     configurationMac: parseRuntimeConfigurationMac(row.configurationMac),
-    protocolVersion: runtimeProtocolVersion,
+    protocolVersion: row.protocolVersion,
     processId: row.processId,
     ownerRevision: parseRuntimeRevision(row.ownerRevision),
     acquiredAt: parseUtcTimestamp(row.acquiredAt),
@@ -268,22 +377,55 @@ const readWalletRaw = (database: Database.Database): WalletConnectionRecord => {
   return walletFromRow(rows[0], readProfileRaw(database));
 };
 
-const readChainRows = (database: Database.Database): readonly EvmChainId[] =>
-  (database.prepare("SELECT chain_id AS chainId FROM chain ORDER BY chain_id").all() as ChainRow[])
-    .map((row) => parseEvmChainId(row.chainId));
+const readChainRows = (database: Database.Database): void => {
+  const rows = database.prepare("SELECT chain_id AS chainId FROM chain ORDER BY chain_id")
+    .iterate() as IterableIterator<ChainRow>;
+  for (const row of rows) parseEvmChainId(row.chainId);
+};
 
 const readContractRows = (database: Database.Database, table: "contract" | "token_contract"): void => {
   const rows = database.prepare(`SELECT chain_id AS chainId, contract_address AS contractAddress
-    FROM ${table} ORDER BY chain_id, contract_address`).all() as ContractRow[];
+    FROM ${table} ORDER BY chain_id, contract_address`).iterate() as IterableIterator<ContractRow>;
   for (const row of rows) {
     parseEvmContractIdentity({ chainId: row.chainId, contractAddress: row.contractAddress });
   }
 };
 
-const readWalletAccountRows = (database: Database.Database): readonly WalletAccountRecordKey[] =>
-  (database.prepare(`SELECT profile_id AS profileId, chain_id AS chainId, wallet_address AS walletAddress
-    FROM wallet_account ORDER BY profile_id, chain_id, wallet_address`).all() as WalletAccountStorageRow[])
-    .map(decodeWalletAccountRecordKey);
+const readWalletAccountRows = (database: Database.Database): void => {
+  const rows = database.prepare(`SELECT profile_id AS profileId, chain_id AS chainId,
+    wallet_address AS walletAddress
+    FROM wallet_account ORDER BY profile_id, chain_id, wallet_address`)
+    .iterate() as IterableIterator<WalletAccountStorageRow>;
+  for (const row of rows) decodeWalletAccountRecordKey(row);
+};
+
+const tokenRegistrationColumns = `r.profile_id AS profileId, r.chain_id AS chainId,
+  r.wallet_address AS walletAddress, r.token_address AS tokenAddress, r.revision,
+  r.inspection_digest AS inspectionDigest, r.user_label AS userLabel, r.visibility,
+  r.created_at AS createdAt, r.updated_at AS updatedAt`;
+
+const tokenRegistrationRecordSelect = `SELECT ${tokenRegistrationColumns}
+  FROM wallet_token_registration AS r`;
+
+const tokenRegistrationSelect = `SELECT ${tokenRegistrationColumns},
+  i.contract_address AS contractAddress, i.result_json AS resultJson
+  FROM wallet_token_registration AS r
+  JOIN token_contract_inspection AS i
+    ON i.chain_id = r.chain_id
+   AND i.contract_address = r.token_address
+   AND i.inspection_digest = r.inspection_digest`;
+
+const readTokenCatalogRows = (database: Database.Database): void => {
+  const inspections = database.prepare(`SELECT chain_id AS chainId,
+    contract_address AS contractAddress, inspection_digest AS inspectionDigest,
+    result_json AS resultJson FROM token_contract_inspection
+    ORDER BY chain_id, contract_address, inspection_digest`).iterate() as IterableIterator<TokenInspectionRow>;
+  for (const row of inspections) decodeInspectionRow(row);
+  const registrations = database.prepare(`${tokenRegistrationRecordSelect}
+    ORDER BY r.profile_id, r.chain_id, r.wallet_address, r.token_address`)
+    .iterate() as IterableIterator<TokenRegistrationRecordRow>;
+  for (const row of registrations) decodeTokenRegistrationRecordRow(row);
+};
 
 const validateDatabaseState = (database: Database.Database): void => {
   assertCurrentSchema(database);
@@ -293,6 +435,7 @@ const validateDatabaseState = (database: Database.Database): void => {
   readContractRows(database, "contract");
   readContractRows(database, "token_contract");
   readWalletAccountRows(database);
+  readTokenCatalogRows(database);
   readWalletRaw(database);
   if (database.prepare("PRAGMA foreign_key_check").all().length !== 0) {
     throw new Error("SQLite foreign-key state is invalid.");
@@ -303,7 +446,7 @@ const bootstrapFreshDatabase = (database: Database.Database, now: UtcTimestamp):
   exclusive(database, () => {
     if (tableNames(database).length !== 0) throw new Error("Fresh SQLite state is not empty.");
     database.exec(currentSqliteSchemaSql);
-    database.pragma(`user_version = ${runtimeProtocolVersion}`);
+    database.pragma(`user_version = ${databaseSchemaVersion}`);
     database.prepare("INSERT INTO local_profile(singleton, profile_id, created_at) VALUES (1, ?, ?)")
       .run(createProfileId(), now);
     const initialWallet = encodeWalletConnectionStorage({ status: "unknown", reason: "reconciling" });
@@ -493,6 +636,8 @@ export class ProductDatabase {
   readonly #ownerStore: RuntimeOwnerStore;
   readonly #configuredChainStore: ConfiguredChainStore;
   readonly #walletStore: WalletProjectionStore;
+  readonly #tokenCatalogReadStore: TokenCatalogQueryStore;
+  readonly #tokenCatalogStore: TokenCatalogStore;
   #databaseClosed = false;
   #mainLeaseClosed = false;
 
@@ -513,6 +658,17 @@ export class ProductDatabase {
       replace: (expectedRevision: string, connection: WalletConnectionData, updatedAt: UtcTimestamp) =>
         this.replaceWalletConnection(expectedRevision, connection, updatedAt),
     });
+    this.#tokenCatalogReadStore = Object.freeze({
+      getRegistration: (account, asset) => this.getTokenRegistration(account, asset),
+      listRegistrations: (input) => this.listTokenRegistrations(input),
+    } satisfies TokenCatalogQueryStore);
+    this.#tokenCatalogStore = Object.freeze({
+      getRegistration: (account, asset) => this.getTokenRegistration(account, asset),
+      listRegistrations: (input) => this.listTokenRegistrations(input),
+      register: (input) => this.registerToken(input),
+      update: (input) => this.updateTokenRegistration(input),
+      unregister: (input) => this.unregisterToken(input),
+    } satisfies TokenCatalogStore);
   }
 
   static async open(
@@ -539,6 +695,8 @@ export class ProductDatabase {
   ownerStore(): RuntimeOwnerStore { return this.#ownerStore; }
   configuredChainStore(): ConfiguredChainStore { return this.#configuredChainStore; }
   walletStore(): WalletProjectionStore { return this.#walletStore; }
+  tokenCatalogReadStore(): TokenCatalogQueryStore { return this.#tokenCatalogReadStore; }
+  tokenCatalogStore(): TokenCatalogStore { return this.#tokenCatalogStore; }
 
   close(): void {
     let failure: unknown;
@@ -687,5 +845,229 @@ export class ProductDatabase {
         return readWalletRaw(this.#database);
       });
     } catch (error) { throw storageError(error); }
+  }
+
+  private getTokenRegistration(
+    accountInput: EvmAccountIdentity,
+    assetInput: TokenRegistration["asset"],
+  ): TokenRegistrationWithInspection | undefined {
+    try {
+      const account = evmAccountIdentitySchema.parse(accountInput);
+      const asset = erc20AssetIdentitySchema.parse(assetInput);
+      if (account.chainId !== asset.chainId) throw new TokenCatalogOperationError("invalid_input");
+      return this.#readWithIdentity(() => {
+        const profile = readProfileRaw(this.#database);
+        const rows = this.#database.prepare(`${tokenRegistrationSelect}
+          WHERE r.profile_id = ? AND r.chain_id = ? AND r.wallet_address = ? AND r.token_address = ?`)
+          .all(profile.profileId, account.chainId, account.address, asset.address) as TokenRegistrationRow[];
+        if (rows.length > 1) throw new Error("Token registration identity is not unique.");
+        return rows[0] === undefined ? undefined : decodeTokenRegistrationRow(rows[0], profile.profileId);
+      });
+    } catch (error) { throw tokenCatalogStorageError(error); }
+  }
+
+  private listTokenRegistrations(input: Readonly<{
+    account: EvmAccountIdentity;
+    limit: number;
+    cursor: TokenRegistration["asset"]["address"] | null;
+  }>): TokenRegistrationPage {
+    try {
+      const account = evmAccountIdentitySchema.parse(input.account);
+      if (
+        !Number.isInteger(input.limit) || input.limit < 1 ||
+        input.limit > tokenCatalogContractLimits.listMaximumLimit
+      ) {
+        throw new TokenCatalogOperationError("invalid_input");
+      }
+      const cursor = input.cursor === null
+        ? null
+        : erc20AssetIdentitySchema.parse({ kind: "erc20", chainId: account.chainId, address: input.cursor }).address;
+      return this.#readWithIdentity(() => {
+        const profile = readProfileRaw(this.#database);
+        const rows = this.#database.prepare(`${tokenRegistrationRecordSelect}
+          WHERE r.profile_id = ? AND r.chain_id = ? AND r.wallet_address = ?
+            AND (? IS NULL OR r.token_address > ?)
+          ORDER BY r.token_address LIMIT ?`)
+          .all(
+            profile.profileId,
+            account.chainId,
+            account.address,
+            cursor,
+            cursor,
+            input.limit + 1,
+          ) as TokenRegistrationRecordRow[];
+        const hasMore = rows.length > input.limit;
+        const selected = rows.slice(0, input.limit)
+          .map((row) => decodeTokenRegistrationRecordRow(row, profile.profileId));
+        return Object.freeze({
+          registrations: Object.freeze(selected),
+          nextCursor: hasMore ? selected.at(-1)?.asset.address ?? null : null,
+        });
+      });
+    } catch (error) { throw tokenCatalogStorageError(error); }
+  }
+
+  private assertTokenCatalogConnection(
+    account: EvmAccountIdentity,
+    expectedRevision: RuntimeRevision,
+  ): void {
+    const current = readWalletRaw(this.#database);
+    if (
+      current.revision !== expectedRevision ||
+      current.connection.status !== "connected" ||
+      current.connection.chainId !== account.chainId ||
+      current.connection.address !== account.address
+    ) throw new RuntimeOperationError("state_conflict");
+  }
+
+  private registerToken(input: Readonly<{
+    account: EvmAccountIdentity;
+    expectedConnectionRevision: RuntimeRevision;
+    inspection: TokenInspectionSuccess;
+    settings: TokenRegistrationSettings;
+    revision: TokenRegistration["revision"];
+    now: UtcTimestamp;
+  }>): TokenRegistrationWithInspection {
+    try {
+      const account = evmAccountIdentitySchema.parse(input.account);
+      const inspection = tokenInspectionSuccessSchema.parse(input.inspection);
+      const asset = inspection.data.asset;
+      if (account.chainId !== asset.chainId) throw new TokenCatalogOperationError("invalid_input");
+      const expectedRevision = parseRuntimeRevision(input.expectedConnectionRevision);
+      const settings = tokenRegistrationSettingsSchema.parse(input.settings);
+      const revision = tokenRegistrationRevisionSchema.parse(input.revision);
+      const now = parseUtcTimestamp(input.now);
+      const inspectionDigest = tokenInspectionDigest(inspection);
+      const resultJson = canonicalJsonStringify(inspection as unknown as CanonicalJson);
+      return this.#writeWithIdentity(() => {
+        const profile = readProfileRaw(this.#database);
+        this.assertTokenCatalogConnection(account, expectedRevision);
+        const existing = this.#database.prepare(`SELECT revision FROM wallet_token_registration
+          WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? AND token_address = ?`)
+          .all(profile.profileId, account.chainId, account.address, asset.address) as { revision: string }[];
+        if (existing.length !== 0) throw new TokenCatalogOperationError("state_conflict");
+        this.#database.prepare(`INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)
+          ON CONFLICT(chain_id, contract_address) DO NOTHING`).run(asset.chainId, asset.address);
+        this.#database.prepare(`INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)
+          ON CONFLICT(chain_id, contract_address) DO NOTHING`).run(asset.chainId, asset.address);
+        const inspectionRows = this.#database.prepare(`SELECT chain_id AS chainId,
+          contract_address AS contractAddress, inspection_digest AS inspectionDigest,
+          result_json AS resultJson FROM token_contract_inspection
+          WHERE chain_id = ? AND contract_address = ? AND inspection_digest = ?`)
+          .all(asset.chainId, asset.address, inspectionDigest) as TokenInspectionRow[];
+        if (inspectionRows.length === 0) {
+          this.#database.prepare(`INSERT INTO token_contract_inspection(
+            chain_id, contract_address, inspection_digest, result_json
+          ) VALUES (?, ?, ?, ?)`).run(asset.chainId, asset.address, inspectionDigest, resultJson);
+        } else if (inspectionRows.length !== 1 || inspectionRows[0]?.resultJson !== resultJson) {
+          throw new Error("Token inspection digest collision detected.");
+        } else {
+          decodeInspectionRow(inspectionRows[0]);
+        }
+        this.#database.prepare(`INSERT INTO wallet_token_registration(
+          profile_id, chain_id, wallet_address, token_address, revision, inspection_digest,
+          user_label, visibility, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(
+            profile.profileId, account.chainId, account.address, asset.address, revision,
+            inspectionDigest, settings.userLabel, settings.visibility, now, now,
+          );
+        const stored = this.getTokenRegistrationRaw(profile.profileId, account, asset);
+        if (stored === undefined) throw new Error("Token registration persistence failed.");
+        return stored;
+      });
+    } catch (error) { throw tokenCatalogStorageError(error); }
+  }
+
+  private getTokenRegistrationRaw(
+    profileId: ProfileId,
+    account: EvmAccountIdentity,
+    asset: TokenRegistration["asset"],
+  ): TokenRegistrationWithInspection | undefined {
+    const rows = this.#database.prepare(`${tokenRegistrationSelect}
+      WHERE r.profile_id = ? AND r.chain_id = ? AND r.wallet_address = ? AND r.token_address = ?`)
+      .all(profileId, account.chainId, account.address, asset.address) as TokenRegistrationRow[];
+    if (rows.length > 1) throw new Error("Token registration identity is not unique.");
+    return rows[0] === undefined ? undefined : decodeTokenRegistrationRow(rows[0], profileId);
+  }
+
+  private updateTokenRegistration(input: Readonly<{
+    account: EvmAccountIdentity;
+    asset: TokenRegistration["asset"];
+    expectedConnectionRevision: RuntimeRevision;
+    expectedRegistrationRevision: TokenRegistration["revision"];
+    settings: TokenRegistrationSettings;
+    revision: TokenRegistration["revision"];
+    now: UtcTimestamp;
+  }>): TokenRegistrationWithInspection {
+    try {
+      const account = evmAccountIdentitySchema.parse(input.account);
+      const asset = erc20AssetIdentitySchema.parse(input.asset);
+      if (account.chainId !== asset.chainId) throw new TokenCatalogOperationError("invalid_input");
+      const expectedConnectionRevision = parseRuntimeRevision(input.expectedConnectionRevision);
+      const expectedRegistrationRevision = tokenRegistrationRevisionSchema.parse(input.expectedRegistrationRevision);
+      const settings = tokenRegistrationSettingsSchema.parse(input.settings);
+      const revision = tokenRegistrationRevisionSchema.parse(input.revision);
+      const now = parseUtcTimestamp(input.now);
+      if (revision === expectedRegistrationRevision) throw new RuntimeOperationError("state_conflict");
+      return this.#writeWithIdentity(() => {
+        const profile = readProfileRaw(this.#database);
+        this.assertTokenCatalogConnection(account, expectedConnectionRevision);
+        const current = this.getTokenRegistrationRaw(profile.profileId, account, asset);
+        if (current === undefined) throw new TokenCatalogOperationError("token_registration_revision_changed");
+        if (current.registration.revision !== expectedRegistrationRevision) {
+          throw new TokenCatalogOperationError("token_registration_revision_changed");
+        }
+        const result = this.#database.prepare(`UPDATE wallet_token_registration SET
+          revision = ?, user_label = ?, visibility = ?, updated_at = ?
+          WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? AND token_address = ? AND revision = ?`)
+          .run(
+            revision, settings.userLabel, settings.visibility, now, profile.profileId,
+            account.chainId, account.address, asset.address, expectedRegistrationRevision,
+          );
+        if (result.changes !== 1) throw new TokenCatalogOperationError("token_registration_revision_changed");
+        const stored = this.getTokenRegistrationRaw(profile.profileId, account, asset);
+        if (stored === undefined) throw new Error("Token registration update failed.");
+        return stored;
+      });
+    } catch (error) { throw tokenCatalogStorageError(error); }
+  }
+
+  private unregisterToken(input: Readonly<{
+    account: EvmAccountIdentity;
+    asset: TokenRegistration["asset"];
+    expectedConnectionRevision: RuntimeRevision;
+    expectedRegistrationRevision: TokenRegistration["revision"];
+  }>): Readonly<{ asset: TokenRegistration["asset"]; removedRevision: TokenRegistration["revision"] }> {
+    try {
+      const account = evmAccountIdentitySchema.parse(input.account);
+      const asset = erc20AssetIdentitySchema.parse(input.asset);
+      if (account.chainId !== asset.chainId) throw new TokenCatalogOperationError("invalid_input");
+      const expectedConnectionRevision = parseRuntimeRevision(input.expectedConnectionRevision);
+      const expectedRegistrationRevision = tokenRegistrationRevisionSchema.parse(input.expectedRegistrationRevision);
+      return this.#writeWithIdentity(() => {
+        const profile = readProfileRaw(this.#database);
+        this.assertTokenCatalogConnection(account, expectedConnectionRevision);
+        const current = this.getTokenRegistrationRaw(profile.profileId, account, asset);
+        if (current === undefined) throw new TokenCatalogOperationError("token_registration_revision_changed");
+        if (current.registration.revision !== expectedRegistrationRevision) {
+          throw new TokenCatalogOperationError("token_registration_revision_changed");
+        }
+        const result = this.#database.prepare(`DELETE FROM wallet_token_registration
+          WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? AND token_address = ? AND revision = ?`)
+          .run(profile.profileId, account.chainId, account.address, asset.address, expectedRegistrationRevision);
+        if (result.changes !== 1) throw new TokenCatalogOperationError("token_registration_revision_changed");
+        this.#database.prepare(`DELETE FROM token_contract_inspection
+          WHERE chain_id = ? AND contract_address = ? AND inspection_digest = ?
+            AND NOT EXISTS (
+              SELECT 1 FROM wallet_token_registration
+              WHERE chain_id = ? AND token_address = ? AND inspection_digest = ?
+            )`).run(
+              asset.chainId, asset.address, current.registration.inspectionDigest,
+              asset.chainId, asset.address, current.registration.inspectionDigest,
+            );
+        return Object.freeze({ asset, removedRevision: expectedRegistrationRevision });
+      });
+    } catch (error) { throw tokenCatalogStorageError(error); }
   }
 }

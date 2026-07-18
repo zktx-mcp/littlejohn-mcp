@@ -37,6 +37,7 @@ export type ChainRpcErrorCode =
   | "source_inconsistent";
 
 const chainRpcErrorCodes = new WeakMap<object, ChainRpcErrorCode>();
+const rpcExecutionRevertedErrors = new WeakSet<object>();
 
 export class ChainRpcError extends Error {
   override readonly name = "ChainRpcError";
@@ -54,6 +55,17 @@ export const getChainRpcErrorCode = (error: unknown): ChainRpcErrorCode | undefi
   typeof error === "object" && error !== null
     ? chainRpcErrorCodes.get(error)
     : undefined;
+
+const createRpcExecutionRevertedError = (): Error => {
+  const error = new Error("execution_reverted");
+  error.name = "RpcExecutionRevertedError";
+  rpcExecutionRevertedErrors.add(error);
+  Object.freeze(error);
+  return error;
+};
+
+export const isRpcExecutionRevertedError = (error: unknown): boolean =>
+  typeof error === "object" && error !== null && rpcExecutionRevertedErrors.has(error);
 
 export const normalizeChainRpcError = (
   error: unknown,
@@ -392,7 +404,11 @@ const readBoundedBody = async (response: Response, signal: AbortSignal): Promise
   }
 };
 
-const parseResponse = (body: string, expectedId: string): unknown => {
+const parseResponse = (
+  body: string,
+  expectedId: string,
+  method: ChainRpcMethod,
+): unknown => {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body) as unknown;
@@ -433,6 +449,12 @@ const parseResponse = (body: string, expectedId: string): unknown => {
 
   const code = rpcError["code"] as number;
   if (code === limitExceededRpcCode) throw new ChainRpcError("rate_limited");
+  if (method === "eth_call" && code === 3) {
+    if (errorKeys.length !== 3 || !canonicalRpcBytes(rpcError["data"])) {
+      throw new ChainRpcError("source_inconsistent");
+    }
+    throw createRpcExecutionRevertedError();
+  }
   if (inconsistentProviderErrorCodes.has(code)) throw new ChainRpcError("source_inconsistent");
   throw new ChainRpcError("source_unavailable");
 };
@@ -499,10 +521,11 @@ export const createBoundedRpcRequester = (
           throw new ChainRpcError("source_unavailable");
         }
         const responseBody = await readBoundedBody(response, controller.signal);
-        return parseResponse(responseBody, id);
+        return parseResponse(responseBody, id, method);
       } catch (error) {
         if (signal.aborted) throw new ChainRpcError("request_aborted");
         if (timedOut) throw new ChainRpcError("source_unavailable");
+        if (isRpcExecutionRevertedError(error)) throw error;
         throw normalizeChainRpcError(error);
       } finally {
         clearTimeout(timeout);

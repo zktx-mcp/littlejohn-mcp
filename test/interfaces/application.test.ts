@@ -18,6 +18,7 @@ import {
   type BrowserRequestCredentialAuthority,
 } from "../../src/interfaces/browser-credentials.js";
 import { createInterfaceOwnerApplicationFactory } from "../../src/interfaces/application.js";
+import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
 import {
   createControlCredentialVerifier,
   loadOrCreateControlCredential,
@@ -124,6 +125,7 @@ describe("interface owner application", () => {
       createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
     );
     const chainManifest = extendChainSupportManifest(walletManifest);
+    const tokenCatalogManifest = extendTokenCatalogSupportManifest(chainManifest);
     const ports = capabilityPorts();
     let closes = 0;
     const createCredentials = (): BrowserRequestCredentialAuthority => {
@@ -144,10 +146,16 @@ describe("interface owner application", () => {
       routes,
       signal: new AbortController().signal,
       startupResources: createResourceOwnershipScope().resources,
-      supportManifest: chainManifest,
+      supportManifest: tokenCatalogManifest,
       walletConnection: ports.wallet,
       walletOperations: walletOperations(),
       chainReads: ports.chain,
+      tokenInspection: {} as never,
+      tokenCatalogQueries: {} as never,
+      tokenCatalogWebStart: {} as never,
+      tokenCatalogBrowserOperations: {} as never,
+      tokenCatalogInteractiveCli: {} as never,
+      tokenCatalogNonInteractiveOperations: {} as never,
     });
 
     for (const [method, path] of [

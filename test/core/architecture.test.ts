@@ -1,12 +1,109 @@
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import * as publicCore from "../../src/core/index.js";
+import {
+  collectSourceFiles,
+  inspectSource,
+  inspectSourceFile,
+} from "../runtime/import-audit.js";
 
 const coreDirectory = resolve("src/core");
+const sourceDirectory = resolve("src");
+const capabilityDefinitionConstructor = "defineReadCapability";
+const capabilityDefinitionModules = new Set([
+  resolve("src/core/capability.js"),
+  resolve("src/core/index.js"),
+]);
+const capabilityDefinitionOwners = new Set([
+  resolve("src/core/capabilities.ts"),
+  resolve("src/token-catalog/contracts.ts"),
+]);
+const capabilityDefinitionReexporter = resolve("src/core/index.ts");
+
+const resolveModule = (importingFile: string, specifier: string): string | undefined => {
+  if (!specifier.startsWith(".")) return undefined;
+  try { return fileURLToPath(new URL(specifier, pathToFileURL(importingFile))); }
+  catch { return undefined; }
+};
+
+const capabilityDefinitionAuthorityViolations = (
+  source: string,
+  importingFile: string,
+): string[] => {
+  const file = resolve(importingFile);
+  const sourceFile = ts.createSourceFile(
+    file,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    file.endsWith(".tsx") ? ts.ScriptKind.TSX
+      : file.endsWith(".jsx") ? ts.ScriptKind.JSX
+        : file.endsWith(".js") || file.endsWith(".mjs") || file.endsWith(".cjs")
+          ? ts.ScriptKind.JS
+          : ts.ScriptKind.TS,
+  );
+  const violations: string[] = [];
+  const report = (kind: string): void => {
+    violations.push(`${relative(sourceDirectory, file).split(sep).join("/")}:${kind}`);
+  };
+  const isAuthorityModule = (specifier: ts.Expression | undefined): boolean =>
+    specifier !== undefined && ts.isStringLiteralLike(specifier) &&
+    capabilityDefinitionModules.has(resolveModule(file, specifier.text) ?? "");
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && isAuthorityModule(node.moduleSpecifier)) {
+      const bindings = node.importClause?.namedBindings;
+      if (bindings !== undefined && ts.isNamespaceImport(bindings)) {
+        if (!capabilityDefinitionOwners.has(file)) report("namespace_import");
+      } else if (bindings !== undefined && ts.isNamedImports(bindings)) {
+        const importsConstructor = bindings.elements.some(
+          (element) => (element.propertyName ?? element.name).text === capabilityDefinitionConstructor,
+        );
+        if (importsConstructor && !capabilityDefinitionOwners.has(file)) report("named_import");
+      }
+    } else if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference) &&
+      isAuthorityModule(node.moduleReference.expression) &&
+      !capabilityDefinitionOwners.has(file)
+    ) {
+      report("import_equals");
+    } else if (ts.isExportDeclaration(node) && isAuthorityModule(node.moduleSpecifier)) {
+      const exposesConstructor = node.exportClause === undefined ||
+        ts.isNamespaceExport(node.exportClause) ||
+        node.exportClause.elements.some(
+          (element) => (element.propertyName ?? element.name).text === capabilityDefinitionConstructor,
+        );
+      if (exposesConstructor && (
+        file !== capabilityDefinitionReexporter ||
+        node.exportClause === undefined ||
+        ts.isNamespaceExport(node.exportClause)
+      )) report("reexport");
+    } else if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      isAuthorityModule(node.arguments[0]) &&
+      !capabilityDefinitionOwners.has(file)
+    ) {
+      report("dynamic_import");
+    } else if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "require" &&
+      isAuthorityModule(node.arguments[0]) &&
+      !capabilityDefinitionOwners.has(file)
+    ) {
+      report("require");
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return violations;
+};
 
 const resolvesInsideCore = (importingFile: string, specifier: string): boolean => {
   if (!specifier.startsWith("./")) return false;
@@ -28,80 +125,24 @@ const allowed = (importingFile: string, specifier: string): boolean =>
   resolvesInsideCore(importingFile, specifier);
 
 const auditImports = (source: string, importingFile = resolve("src/core/audit.ts")): string[] => {
-  const sourceFile = ts.createSourceFile("audit.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const audit = inspectSource(source, importingFile);
   const violations: string[] = [];
-  const checkSpecifier = (node: ts.Expression | undefined, kind: string): void => {
-    if (node === undefined || !ts.isStringLiteralLike(node)) {
-      violations.push(`${kind}:non_literal`);
-      return;
+  for (const reference of audit.moduleImports) {
+    if (reference.kind === "parse_error") violations.push("parse_error");
+    else if (reference.specifier === undefined) violations.push(`${reference.kind}:non_literal`);
+    else if (!allowed(importingFile, reference.specifier)) {
+      violations.push(`${reference.kind}:${reference.specifier}`);
     }
-    if (!allowed(importingFile, node.text)) violations.push(`${kind}:${node.text}`);
-  };
-  const visit = (node: ts.Node): void => {
-    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
-      if (node.moduleSpecifier !== undefined) checkSpecifier(node.moduleSpecifier, "module");
-    } else if (ts.isCallExpression(node)) {
-      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) checkSpecifier(node.arguments[0], "dynamic_import");
-      if (ts.isIdentifier(node.expression) && node.expression.text === "require") checkSpecifier(node.arguments[0], "require");
-      if (ts.isIdentifier(node.expression) && (node.expression.text === "eval" || node.expression.text === "Function")) {
-        violations.push(`loader:${node.expression.text}`);
-      }
-      if (ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "getBuiltinModule") {
-        violations.push("loader:getBuiltinModule");
-      }
-      if (ts.isElementAccessExpression(node.expression) && ts.isStringLiteralLike(node.expression.argumentExpression) &&
-        node.expression.argumentExpression.text === "getBuiltinModule") {
-        violations.push("loader:getBuiltinModule");
-      }
-    } else if (ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "Function") {
-      violations.push("loader:Function");
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-  return violations;
-};
-
-const collectTypeScriptFiles = async (directory: string): Promise<string[]> => {
-  const entries = await readdir(directory, { withFileTypes: true });
-  const files: string[] = [];
-  for (const entry of entries) {
-    const path = resolve(directory, entry.name);
-    if (entry.isDirectory()) files.push(...await collectTypeScriptFiles(path));
-    else if (entry.isFile() && entry.name.endsWith(".ts")) files.push(path);
   }
-  return files;
-};
-
-const importsTrustedConstructor = (source: string): boolean => {
-  const sourceFile = ts.createSourceFile("audit.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  let violation = false;
-  const visit = (node: ts.Node): void => {
-    if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier) &&
-      node.moduleSpecifier.text.endsWith("/capability.js")) {
-      const bindings = node.importClause?.namedBindings;
-      if (bindings === undefined || ts.isNamespaceImport(bindings) ||
-        bindings.elements.some((element) => (element.propertyName ?? element.name).text === "defineReadCapability")) {
-        violation = true;
-      }
-    }
-    if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined &&
-      ts.isStringLiteralLike(node.moduleSpecifier) && node.moduleSpecifier.text.endsWith("/capability.js")) {
-      if (node.exportClause === undefined || (ts.isNamedExports(node.exportClause) &&
-        node.exportClause.elements.some((element) => (element.propertyName ?? element.name).text === "defineReadCapability"))) {
-        violation = true;
-      }
-    }
-    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-      const specifier = node.arguments[0];
-      if (specifier === undefined || !ts.isStringLiteralLike(specifier) || specifier.text.endsWith("/capability.js")) {
-        violation = true;
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-  return violation;
+  const executionLabels = {
+    global_eval: "eval",
+    global_function: "Function",
+    process_loader: "getBuiltinModule",
+  } as const;
+  for (const reference of audit.directCodeExecutions) {
+    violations.push(`loader:${executionLabels[reference.kind as keyof typeof executionLabels] ?? reference.kind}`);
+  }
+  return violations;
 };
 
 describe("core dependency boundary", () => {
@@ -126,7 +167,6 @@ describe("core dependency boundary", () => {
       "createWarning",
       "createCapabilityInvocationId",
       "createHandlerInvocationContext",
-      "defineReadCapability",
       "deriveCoverage",
       "factOutcomeDefinitions",
       "freshnessRuleDefinitions",
@@ -142,22 +182,51 @@ describe("core dependency boundary", () => {
       "createObservationAuthority",
       "ObservationAuthorityRegistry",
     ]) expect(Object.hasOwn(publicCore, compositionName)).toBe(true);
+    expect(Object.hasOwn(publicCore, "defineReadCapability")).toBe(true);
   });
 
-  it("reserves the trusted capability-definition constructor for the five built-in definitions", async () => {
-    const allowedOwner = resolve("src/core/capabilities.ts");
+  it("limits capability definition authoring to the two canonical contract owners", async () => {
     const violations: string[] = [];
-    for (const file of await collectTypeScriptFiles(resolve("src"))) {
-      if (file !== allowedOwner && importsTrustedConstructor(await readFile(file, "utf8"))) violations.push(file);
+    for (const file of await collectSourceFiles(sourceDirectory)) {
+      violations.push(...capabilityDefinitionAuthorityViolations(await readFile(file, "utf8"), file));
     }
     expect(violations).toEqual([]);
-    expect(importsTrustedConstructor(await readFile(allowedOwner, "utf8"))).toBe(true);
+
+    const outsideOwner = resolve("src/chain/unauthorized-capability.ts");
+    expect(capabilityDefinitionAuthorityViolations(
+      'import { defineReadCapability } from "../core/index.js";',
+      outsideOwner,
+    )).toEqual(["chain/unauthorized-capability.ts:named_import"]);
+    expect(capabilityDefinitionAuthorityViolations(
+      'import { defineReadCapability as defineCapability } from "../core/index.js";',
+      outsideOwner,
+    )).toEqual(["chain/unauthorized-capability.ts:named_import"]);
+    expect(capabilityDefinitionAuthorityViolations(
+      'import * as core from "../core/index.js"; core.defineReadCapability({});',
+      outsideOwner,
+    )).toEqual(["chain/unauthorized-capability.ts:namespace_import"]);
+    expect(capabilityDefinitionAuthorityViolations(
+      'export { defineReadCapability as defineCapability } from "../core/index.js";',
+      outsideOwner,
+    )).toEqual(["chain/unauthorized-capability.ts:reexport"]);
+    expect(capabilityDefinitionAuthorityViolations(
+      'void import("../core/index.js");',
+      outsideOwner,
+    )).toEqual(["chain/unauthorized-capability.ts:dynamic_import"]);
+    expect(capabilityDefinitionAuthorityViolations(
+      'const core = require("../core/index.js"); core.defineReadCapability({});',
+      outsideOwner,
+    )).toEqual(["chain/unauthorized-capability.ts:require"]);
+    expect(capabilityDefinitionAuthorityViolations(
+      'import core = require("../core/index.js"); core.defineReadCapability({});',
+      outsideOwner,
+    )).toEqual(["chain/unauthorized-capability.ts:import_equals"]);
   });
 
   it("allows only the declared narrow hash utilities, zod, node:crypto, and sibling core modules", async () => {
     const directory = resolve("src/core");
     const violations: string[] = [];
-    for (const file of await collectTypeScriptFiles(directory)) {
+    for (const file of await collectSourceFiles(directory)) {
       violations.push(...auditImports(await readFile(file, "utf8"), file));
     }
     expect(violations).toEqual([]);
@@ -165,9 +234,11 @@ describe("core dependency boundary", () => {
 
   it("keeps the Noble Keccak implementation behind the one core hash module", async () => {
     const importers: string[] = [];
-    for (const file of await collectTypeScriptFiles(coreDirectory)) {
-      const source = await readFile(file, "utf8");
-      if (source.includes('from "@noble/hashes/')) importers.push(relative(coreDirectory, file));
+    for (const file of await collectSourceFiles(coreDirectory)) {
+      const audit = await inspectSourceFile(file);
+      if (audit.moduleImports.some((reference) => reference.specifier?.startsWith("@noble/hashes/"))) {
+        importers.push(relative(coreDirectory, file));
+      }
     }
     expect(importers).toEqual(["keccak256.ts"]);
   });

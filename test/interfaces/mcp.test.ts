@@ -23,6 +23,7 @@ import {
   walletInterfaceBindingList,
 } from "../../src/interfaces/identities.js";
 import { extendInterfaceSupportManifest } from "../../src/interfaces/support.js";
+import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
 import type { RuntimeDispatchPort } from "../../src/interfaces/http-client.js";
 import type {
   RuntimeDispatchRequest,
@@ -57,9 +58,9 @@ const connected = Object.freeze({
   expiresAt: "2026-07-15T06:00:00.000Z",
 });
 const catalog = composeCapabilityCatalog(extendInterfaceSupportManifest(
-  extendChainSupportManifest(extendWalletSupportManifest(
+  extendTokenCatalogSupportManifest(extendChainSupportManifest(extendWalletSupportManifest(
     createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
-  )),
+  ))),
 ));
 const operation = (): WalletManagementOperation => parseWalletManagementOperation({
   operationId,

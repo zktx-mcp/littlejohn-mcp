@@ -4,13 +4,14 @@ import {
   canonicalBlockReference,
   ChainRpcError,
   createBoundedRpcRequester,
+  isRpcExecutionRevertedError,
   normalizeChainRpcError,
   rpcConcurrencyLimit,
   rpcRequestTimeoutMs,
   rpcResponseByteLimit,
   type RpcRequester,
 } from "../../src/chain/rpc.js";
-import { parseEvmAddress, parseHash32 } from "../../src/core/index.js";
+import { parseEvmAddress, parseHash32, parseHexBytes } from "../../src/core/index.js";
 
 const stateAddress = parseEvmAddress(`0x${"a".repeat(40)}`);
 const stateBlockHash = parseHash32(`0x${"b".repeat(64)}`);
@@ -52,6 +53,17 @@ const expectCode = async (
     return error as ChainRpcError;
   }
   throw new Error(`Expected ${code}.`);
+};
+
+const expectExecutionRevert = async (promise: Promise<unknown>): Promise<unknown> => {
+  try {
+    await promise;
+  } catch (error) {
+    expect(error).not.toBeInstanceOf(ChainRpcError);
+    expect(isRpcExecutionRevertedError(error)).toBe(true);
+    return error;
+  }
+  throw new Error("Expected an execution revert.");
 };
 
 describe("bounded RPC requester", () => {
@@ -411,6 +423,41 @@ describe("bounded RPC requester", () => {
       );
       expect(normalized.message).not.toContain("provider detail");
     }
+  });
+
+  it("preserves only a valid eth_call execution revert as a method failure", async () => {
+    let invocation = 0;
+    const requester = createBoundedRpcRequester({
+      url: "https://rpc.example",
+      fetch: fetchOf(async (_input, init) => {
+        const request = requestFrom(init);
+        invocation += 1;
+        const error = invocation === 1
+          ? { code: 3, message: "execution detail must not escape", data: "0x" }
+          : invocation === 2
+            ? { code: 3, message: "missing revert data" }
+            : { code: 3, message: "not an eth_call failure", data: "0x" };
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, error }));
+      }),
+    });
+
+    const reverted = await expectExecutionRevert(requester.request("eth_call", [{
+      to: stateAddress,
+      data: parseHexBytes("0x"),
+    }, stateReference], new AbortController().signal));
+    expect(String(reverted)).not.toContain("execution detail");
+
+    const malformed = await expectCode(requester.request("eth_call", [{
+      to: stateAddress,
+      data: parseHexBytes("0x"),
+    }, stateReference], new AbortController().signal), "source_inconsistent");
+    expect(isRpcExecutionRevertedError(malformed)).toBe(false);
+
+    const otherMethod = await expectCode(
+      requester.request("eth_chainId", [], new AbortController().signal),
+      "source_unavailable",
+    );
+    expect(isRpcExecutionRevertedError(otherMethod)).toBe(false);
   });
 
   it("does not retry failed HTTP work or expose response-stream failures", async () => {

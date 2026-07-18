@@ -39,7 +39,10 @@ import {
   type HttpOwnerOptions,
 } from "../../src/runtime/http-owner.js";
 import { createResourceOwnershipScope } from "../../src/runtime/resource-ownership.js";
-import type { OwnerIdentity } from "../../src/runtime/runtime-identity.js";
+import {
+  runtimeProtocolVersion,
+  type OwnerIdentity,
+} from "../../src/runtime/runtime-identity.js";
 import {
   fixedHost,
   fixedHostHeader,
@@ -1402,7 +1405,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         const identityWithoutProof = {
           profileId: record.profileId,
           ownerInstanceId: record.ownerInstanceId,
-          runtimeProtocolVersion: 2 as const,
+          runtimeProtocolVersion,
           configurationMac: record.configurationMac,
           challenge: request.headers["littlejohn-identity-challenge"] as string,
           ownerRevision: record.ownerRevision,
@@ -1452,7 +1455,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         const identityWithoutProof = {
           profileId: record.profileId,
           ownerInstanceId: record.ownerInstanceId,
-          runtimeProtocolVersion: 2 as const,
+          runtimeProtocolVersion,
           configurationMac: record.configurationMac,
           challenge: request.headers["littlejohn-identity-challenge"] as string,
           ownerRevision: record.ownerRevision,
@@ -1518,7 +1521,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       const identityWithoutProof = {
         profileId: record.profileId,
         ownerInstanceId: record.ownerInstanceId,
-        runtimeProtocolVersion: 2 as const,
+        runtimeProtocolVersion,
         configurationMac: record.configurationMac,
         challenge: request.headers["littlejohn-identity-challenge"] as string,
         ownerRevision: record.ownerRevision,
@@ -1620,7 +1623,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       const identityWithoutProof = {
         profileId: record.profileId,
         ownerInstanceId: record.ownerInstanceId,
-        runtimeProtocolVersion: 2 as const,
+        runtimeProtocolVersion,
         configurationMac: record.configurationMac,
         challenge: firstChallenge,
         ownerRevision: record.ownerRevision,
@@ -1639,6 +1642,58 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     expect(await candidate.start()).toBe("deferred");
     await expect(candidate.dispatchRuntimeRequest({ requestClass: "local_control", method: "GET", path: "/api/v1/internal/control/example" }))
       .rejects.toMatchObject({ failure: { error: { code: "port_conflict" } } });
+    expect(authorizations).toEqual([]);
+  });
+
+  it("rejects a live owner whose signed identity disagrees with the stored protocol projection", async () => {
+    const key = new Uint8Array(32).fill(9);
+    const test = await fixture(key);
+    const record = test.database.ownerStore().publishOwner(
+      Buffer.alloc(16, 10).toString("base64url"), test.configurationMac, now,
+    );
+    const authorizations: string[] = [];
+    let identityRequests = 0;
+    const foreign = createServer((request, response) => {
+      const requestKind = classifyRawPeerRequest(request);
+      if (requestKind !== "identity") {
+        rejectRawPeerRequest(response);
+        return;
+      }
+      identityRequests += 1;
+      const authorization = request.headers["authorization"];
+      if (typeof authorization === "string") authorizations.push(authorization);
+      const identityWithoutProof = {
+        profileId: record.profileId,
+        ownerInstanceId: record.ownerInstanceId,
+        runtimeProtocolVersion,
+        configurationMac: record.configurationMac,
+        challenge: request.headers["littlejohn-identity-challenge"] as string,
+        ownerRevision: record.ownerRevision,
+      };
+      canonicalResponse(response, 200, {
+        ...identityWithoutProof,
+        proof: independentProof(key, identityWithoutProof),
+      } as unknown as CanonicalJson);
+    });
+    servers.push(foreign);
+    await listen(foreign);
+    const ownerStore = test.database.ownerStore();
+    const candidate = new FixedHttpOwner({
+      ...fixedOwnerOptions(test),
+      ownerStore: Object.freeze({
+        ...ownerStore,
+        readOwner: () => Object.freeze({
+          ...record,
+          protocolVersion: runtimeProtocolVersion - 1,
+        }),
+      }),
+    });
+    owners.push(candidate);
+
+    await expect(candidate.start()).rejects.toMatchObject({
+      failure: { error: { code: "port_conflict" } },
+    });
+    expect(identityRequests).toBe(1);
     expect(authorizations).toEqual([]);
   });
 
@@ -1755,7 +1810,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         const valid: IndependentProofFields = {
           profileId: record.profileId,
           ownerInstanceId: record.ownerInstanceId,
-          runtimeProtocolVersion: 2,
+          runtimeProtocolVersion,
           configurationMac: record.configurationMac,
           challenge: request.headers["littlejohn-identity-challenge"] as string,
           ownerRevision: record.ownerRevision,
@@ -1858,7 +1913,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         const identityWithoutProof = {
           profileId: record.profileId,
           ownerInstanceId: record.ownerInstanceId,
-          runtimeProtocolVersion: 2 as const,
+          runtimeProtocolVersion,
           configurationMac: record.configurationMac,
           challenge: request.headers["littlejohn-identity-challenge"] as string,
           ownerRevision: record.ownerRevision,
@@ -1915,7 +1970,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       const identityWithoutProof = {
         profileId: record.profileId,
         ownerInstanceId: record.ownerInstanceId,
-        runtimeProtocolVersion: 2 as const,
+        runtimeProtocolVersion,
         configurationMac: record.configurationMac,
         challenge: request.headers["littlejohn-identity-challenge"] as string,
         ownerRevision: record.ownerRevision,
@@ -1965,7 +2020,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         const identityWithoutProof = {
           profileId: record.profileId,
           ownerInstanceId: record.ownerInstanceId,
-          runtimeProtocolVersion: 2 as const,
+          runtimeProtocolVersion,
           configurationMac: record.configurationMac,
           challenge: request.headers["littlejohn-identity-challenge"] as string,
           ownerRevision: record.ownerRevision,

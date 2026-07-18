@@ -393,6 +393,7 @@ const openAuthenticatedOwnerChannel = async (input: {
       identity.configurationMac !== input.configurationMac ||
       recorded === undefined ||
       identity.ownerInstanceId !== recorded.ownerInstanceId ||
+      recorded.protocolVersion !== identity.runtimeProtocolVersion ||
       recorded.configurationMac !== input.configurationMac ||
       identity.ownerRevision !== recorded.ownerRevision
     ) throw new PeerIncompatibleError("Owner identity is incompatible.");

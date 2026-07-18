@@ -68,7 +68,13 @@ import {
   parseRuntimeRevision,
   runtimeProtocolVersion,
 } from "../../src/runtime/runtime-identity.js";
-import { canonicalSqlTextCheck } from "../../src/runtime/sqlite-schema.js";
+import {
+  canonicalRegistrationRevisionSqlCheck,
+  canonicalRuntimeConfigurationMacSqlCheck,
+  canonicalRuntimeIdentifierSqlCheck,
+  canonicalSqlTextCheck,
+  databaseSchemaVersion,
+} from "../../src/runtime/sqlite-schema.js";
 
 const directories: string[] = [];
 const childProcesses: ChildProcess[] = [];
@@ -129,7 +135,7 @@ const sqliteDurableArtifactSnapshot = async (path: string) =>
 
 const launchSqliteCrashWorker = async (
   directory: string,
-  mode: "committed" | "interrupted" = "committed",
+  mode: "committed" | "interrupted" | "catalog-interrupted" = "committed",
 ): Promise<ChildProcess> => {
   const workerPath = fileURLToPath(new URL("./sqlite-crash-worker.ts", import.meta.url));
   const child = fork(workerPath, [directory, mode], {
@@ -379,13 +385,29 @@ describe("application data and local credential", () => {
 });
 
 describe("SQLite product state", () => {
+  it("exposes catalog queries through a runtime object without mutation methods", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const database = await ProductDatabase.open(runtimePaths(directory).database, observedAt);
+
+    const queries = database.tokenCatalogReadStore();
+    expect(Object.isFrozen(queries)).toBe(true);
+    expect(Reflect.ownKeys(queries).sort()).toEqual(["getRegistration", "listRegistrations"]);
+    expect(queries).not.toBe(database.tokenCatalogStore());
+    expect("register" in queries).toBe(false);
+    expect("update" in queries).toBe(false);
+    expect("unregister" in queries).toBe(false);
+
+    database.close();
+  });
+
   it("uses one canonical runtime identity authority for stored owner identity", async () => {
     const profileId = createProfileId();
     const ownerInstanceId = createOwnerInstanceId();
     expect(parseProfileId(profileId)).toBe(profileId);
     expect(parseOwnerInstanceId(ownerInstanceId)).toBe(ownerInstanceId);
     expect(parseRuntimeRevision("0")).toBe("0");
-    expect(runtimeProtocolVersion).toBe(2);
+    expect(runtimeProtocolVersion).toBe(3);
     const noncanonicalTail = `${"A".repeat(21)}B`;
     expect(() => parseProfileId(noncanonicalTail)).toThrow();
     expect(() => parseOwnerInstanceId(noncanonicalTail)).toThrow();
@@ -405,6 +427,36 @@ describe("SQLite product state", () => {
     database.close();
   });
 
+  it("keeps the database schema independent from a stale owner protocol projection", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const initial = await ProductDatabase.open(path, observedAt);
+    initial.ownerStore().publishOwner(createOwnerInstanceId(), configurationMac, observedAt);
+    initial.close();
+
+    const stale = new Database(path);
+    expect(() => stale.prepare("UPDATE runtime_owner SET protocol_version = 0 WHERE singleton = 1").run())
+      .toThrow();
+    expect(() => stale.prepare("UPDATE runtime_owner SET protocol_version = ? WHERE singleton = 1")
+      .run(Number.MAX_SAFE_INTEGER + 1)).toThrow();
+    stale.prepare("UPDATE runtime_owner SET protocol_version = ? WHERE singleton = 1")
+      .run(runtimeProtocolVersion - 1);
+    expect(stale.pragma("user_version", { simple: true })).toBe(databaseSchemaVersion);
+    stale.close();
+
+    const reopened = await ProductDatabase.open(path, observedAt);
+    expect(reopened.ownerStore().readOwner()?.protocolVersion).toBe(runtimeProtocolVersion - 1);
+    const current = reopened.ownerStore().publishOwner(
+      createOwnerInstanceId(),
+      configurationMac,
+      observedAt,
+    );
+    expect(current.protocolVersion).toBe(runtimeProtocolVersion);
+    expect(current.ownerRevision).toBe("2");
+    reopened.close();
+  });
+
   it("publishes one complete current-schema database and preserves one profile", async () => {
     const directory = await temporaryDirectory();
     await ensureOwnerOnlyDirectory(directory);
@@ -421,7 +473,7 @@ describe("SQLite product state", () => {
       database.close();
     }
     const inspection = new Database(path, { readonly: true });
-    expect(inspection.pragma("user_version", { simple: true })).toBe(runtimeProtocolVersion);
+    expect(inspection.pragma("user_version", { simple: true })).toBe(databaseSchemaVersion);
     expect(inspection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all())
       .toEqual([
         { name: "chain" },
@@ -430,7 +482,9 @@ describe("SQLite product state", () => {
         { name: "local_profile" },
         { name: "runtime_owner" },
         { name: "token_contract" },
+        { name: "token_contract_inspection" },
         { name: "wallet_account" },
+        { name: "wallet_token_registration" },
       ]);
     inspection.close();
     if (process.platform !== "win32") {
@@ -438,7 +492,7 @@ describe("SQLite product state", () => {
     }
   });
 
-  it("uses the exact seven-table relational options and restrictive foreign keys", async () => {
+  it("uses the exact nine-table relational options and restrictive foreign keys", async () => {
     const directory = await temporaryDirectory();
     await ensureOwnerOnlyDirectory(directory);
     const path = runtimePaths(directory).database;
@@ -460,9 +514,19 @@ describe("SQLite product state", () => {
       { name: "local_profile", wr: 0, strict: 1 },
       { name: "runtime_owner", wr: 0, strict: 1 },
       { name: "token_contract", wr: 1, strict: 1 },
+      { name: "token_contract_inspection", wr: 1, strict: 1 },
       { name: "wallet_account", wr: 1, strict: 1 },
+      { name: "wallet_token_registration", wr: 1, strict: 1 },
     ]);
-    for (const table of ["runtime_owner", "contract", "token_contract", "wallet_account", "current_wallet_connection"]) {
+    for (const table of [
+      "runtime_owner",
+      "contract",
+      "token_contract",
+      "token_contract_inspection",
+      "wallet_account",
+      "wallet_token_registration",
+      "current_wallet_connection",
+    ]) {
       const foreignKeys = inspection.pragma(`foreign_key_list(${table})`) as {
         on_update: string;
         on_delete: string;
@@ -493,6 +557,39 @@ describe("SQLite product state", () => {
     database.close();
   });
 
+  it("accepts only canonical base64url terminal characters for 16-byte and 32-byte schema values", () => {
+    const database = new Database(":memory:");
+    const base64UrlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const checks = [
+      { byteLength: 16, check: canonicalRuntimeIdentifierSqlCheck },
+      { byteLength: 16, check: canonicalRegistrationRevisionSqlCheck },
+      { byteLength: 32, check: canonicalRuntimeConfigurationMacSqlCheck },
+    ] as const;
+
+    for (const [index, { byteLength, check }] of checks.entries()) {
+      const table = `canonical_base64url_${index}`;
+      database.exec(`CREATE TABLE ${table}(value TEXT NOT NULL CHECK (${check("value")})) STRICT`);
+      const insert = database.prepare(`INSERT INTO ${table}(value) VALUES (?)`);
+      const encodedLength = Buffer.alloc(byteLength).toString("base64url").length;
+      const canonicalTerminalCharacters = new Set(Array.from({ length: 256 }, (_, lastByte) => {
+        const bytes = Buffer.alloc(byteLength);
+        bytes[byteLength - 1] = lastByte;
+        return bytes.toString("base64url").at(-1);
+      }));
+
+      for (const terminalCharacter of base64UrlAlphabet) {
+        const value = `${"A".repeat(encodedLength - 1)}${terminalCharacter}`;
+        if (canonicalTerminalCharacters.has(terminalCharacter)) {
+          expect(() => insert.run(value), `${byteLength} bytes ending in ${terminalCharacter}`).not.toThrow();
+        } else {
+          expect(() => insert.run(value), `${byteLength} bytes ending in ${terminalCharacter}`).toThrow();
+        }
+      }
+    }
+
+    database.close();
+  });
+
   it("rejects embedded NUL across actual identity, owner, revision, count, and address columns", async () => {
     const directory = await temporaryDirectory();
     await ensureOwnerOnlyDirectory(directory);
@@ -510,11 +607,11 @@ describe("SQLite product state", () => {
       .run(`${configuredChainId}\0suffix`)).toThrow();
     expect(() => raw.prepare(`INSERT INTO runtime_owner(singleton, profile_id, owner_instance_id,
       configuration_mac, protocol_version, process_id, owner_revision, acquired_at)
-      VALUES (1, ?, ?, ?, 2, 1, '0', ?)`)
+      VALUES (1, ?, ?, ?, ${runtimeProtocolVersion}, 1, '0', ?)`)
       .run(profileId, `${createOwnerInstanceId()}\0suffix`, configurationMac, observedAt)).toThrow();
     expect(() => raw.prepare(`INSERT INTO runtime_owner(singleton, profile_id, owner_instance_id,
       configuration_mac, protocol_version, process_id, owner_revision, acquired_at)
-      VALUES (1, ?, ?, ?, 2, 1, '0', ?)`)
+      VALUES (1, ?, ?, ?, ${runtimeProtocolVersion}, 1, '0', ?)`)
       .run(profileId, createOwnerInstanceId(), `${configurationMac}\0suffix`, observedAt)).toThrow();
     expect(() => raw.prepare("UPDATE current_wallet_connection SET revision = ? WHERE singleton = 1")
       .run("1\0suffix")).toThrow();
@@ -896,6 +993,39 @@ describe("SQLite product state", () => {
     const inspection = new Database(path, { readonly: true });
     expect(inspection.prepare("SELECT COUNT(*) AS count FROM wallet_account").get())
       .toEqual({ count: 0 });
+    expect(inspection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(inspection.pragma("integrity_check", { simple: true })).toBe("ok");
+    inspection.close();
+    reopened.close();
+  });
+
+  it("rolls back every uncommitted catalog row when the owner process stops", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const initialized = await ProductDatabase.open(path, observedAt);
+    initialized.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
+    initialized.walletStore().replace(
+      "0",
+      connectedFor(configuredChainId, "0x1111111111111111111111111111111111111111"),
+      observedAt,
+    );
+    initialized.close();
+
+    const child = await launchSqliteCrashWorker(directory, "catalog-interrupted");
+    await killSqliteCrashWorker(child);
+
+    const reopened = await ProductDatabase.open(path, observedAt);
+    const inspection = new Database(path, { readonly: true });
+    for (const table of [
+      "contract",
+      "token_contract",
+      "token_contract_inspection",
+      "wallet_token_registration",
+    ]) {
+      expect(inspection.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table)
+        .toEqual({ count: 0 });
+    }
     expect(inspection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(inspection.pragma("integrity_check", { simple: true })).toBe("ok");
     inspection.close();

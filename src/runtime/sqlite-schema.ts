@@ -1,12 +1,15 @@
 import { walletConnectionStatusDefinitions } from "../core/index.js";
+import { tokenCatalogContractLimits } from "../token-catalog/contracts.js";
 import {
   runtimeConfigurationMacByteLength,
-  runtimeIdentifierEncodedLength,
-  runtimeProtocolVersion,
+  runtimeIdentifierByteLength,
 } from "./runtime-identity.js";
 import { walletConnectionFieldPresenceCheckSql } from "./wallet-connection-storage.js";
 
 const sqlIdentifierPattern = /^[a-z][a-z0-9_]*$/u;
+const base64UrlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+export const databaseSchemaVersion = 3 as const;
 
 const sqlColumn = (column: string): string => {
   if (!sqlIdentifierPattern.test(column)) throw new TypeError("SQLite column identifier is invalid.");
@@ -28,18 +31,30 @@ export const canonicalUnsignedDecimalSqlCheck = (columnInput: string): string =>
     `${column} NOT GLOB '*[^0-9]*' AND (${column} = '0' OR substr(${column}, 1, 1) BETWEEN '1' AND '9'))`;
 };
 
-export const canonicalRuntimeIdentifierSqlCheck = (columnInput: string): string => {
+const canonicalBase64UrlSqlCheck = (columnInput: string, byteLength: number): string => {
   const column = sqlColumn(columnInput);
-  return `(${canonicalSqlTextCheck(column)} AND length(${column}) = ${runtimeIdentifierEncodedLength} AND ` +
-    `${column} NOT GLOB '*[^A-Za-z0-9_-]*' AND substr(${column}, ${runtimeIdentifierEncodedLength}, 1) GLOB '[AQgw]')`;
+  if (!Number.isSafeInteger(byteLength) || byteLength < 1) {
+    throw new TypeError("Base64url byte length must be a positive safe integer.");
+  }
+  const encodedLength = Math.ceil(byteLength * 4 / 3);
+  const trailingBytes = byteLength % 3;
+  const terminalStride = trailingBytes === 1 ? 16 : trailingBytes === 2 ? 4 : 1;
+  const terminalCharacters = Array.from(
+    { length: base64UrlAlphabet.length / terminalStride },
+    (_, index) => base64UrlAlphabet[index * terminalStride],
+  ).join("");
+  const terminalCheck = trailingBytes === 0
+    ? ""
+    : ` AND substr(${column}, ${encodedLength}, 1) GLOB '[${terminalCharacters}]'`;
+  return `(${canonicalSqlTextCheck(column)} AND length(${column}) = ${encodedLength} AND ` +
+    `${column} NOT GLOB '*[^A-Za-z0-9_-]*'${terminalCheck})`;
 };
 
-export const canonicalRuntimeConfigurationMacSqlCheck = (columnInput: string): string => {
-  const column = sqlColumn(columnInput);
-  const encodedLength = Math.ceil(runtimeConfigurationMacByteLength * 4 / 3);
-  return `(${canonicalSqlTextCheck(column)} AND length(${column}) = ${encodedLength} AND ` +
-    `${column} NOT GLOB '*[^A-Za-z0-9_-]*' AND substr(${column}, ${encodedLength}, 1) GLOB '[AEIMQUYcgkosw048]')`;
-};
+export const canonicalRuntimeIdentifierSqlCheck = (columnInput: string): string =>
+  canonicalBase64UrlSqlCheck(columnInput, runtimeIdentifierByteLength);
+
+export const canonicalRuntimeConfigurationMacSqlCheck = (columnInput: string): string =>
+  canonicalBase64UrlSqlCheck(columnInput, runtimeConfigurationMacByteLength);
 
 export const canonicalEvmChainIdSqlCheck = (columnInput: string): string => {
   const column = sqlColumn(columnInput);
@@ -55,6 +70,29 @@ export const canonicalEvmAddressSqlCheck = (columnInput: string): string => {
     `substr(${column}, 3) NOT GLOB '*[^0-9a-f]*')`;
 };
 
+export const canonicalHash32SqlCheck = (columnInput: string): string => {
+  const column = sqlColumn(columnInput);
+  return `(${canonicalSqlTextCheck(column)} AND length(${column}) = 66 AND ` +
+    `substr(${column}, 1, 2) = '0x' AND lower(${column}) = ${column} AND ` +
+    `substr(${column}, 3) NOT GLOB '*[^0-9a-f]*')`;
+};
+
+export const canonicalRegistrationRevisionSqlCheck = (columnInput: string): string =>
+  canonicalBase64UrlSqlCheck(columnInput, tokenCatalogContractLimits.registrationRevisionBytes);
+
+export const canonicalUserTokenLabelSqlCheck = (columnInput: string): string => {
+  const column = sqlColumn(columnInput);
+  return `(${canonicalSqlTextCheck(column)} AND length(${column}) BETWEEN 1 AND ` +
+    `${tokenCatalogContractLimits.displayTextCodePoints} AND ` +
+    `length(CAST(${column} AS BLOB)) BETWEEN 1 AND ${tokenCatalogContractLimits.displayTextUtf8Bytes})`;
+};
+
+export const canonicalJsonObjectSqlCheck = (columnInput: string): string => {
+  const column = sqlColumn(columnInput);
+  return `(${canonicalSqlTextCheck(column)} AND length(CAST(${column} AS BLOB)) BETWEEN 2 AND 65536 AND ` +
+    `json_valid(${column}) = 1 AND json_type(${column}) = 'object')`;
+};
+
 const walletStatuses = Object.freeze(Object.keys(walletConnectionStatusDefinitions));
 
 export const currentSqliteTableNames = Object.freeze([
@@ -64,7 +102,9 @@ export const currentSqliteTableNames = Object.freeze([
   "local_profile",
   "runtime_owner",
   "token_contract",
+  "token_contract_inspection",
   "wallet_account",
+  "wallet_token_registration",
 ] as const);
 
 export const currentSqliteSchemaSql = `CREATE TABLE local_profile (
@@ -77,7 +117,7 @@ CREATE TABLE runtime_owner (
   profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),
   owner_instance_id TEXT NOT NULL CHECK (${canonicalRuntimeIdentifierSqlCheck("owner_instance_id")}),
   configuration_mac TEXT NOT NULL CHECK (${canonicalRuntimeConfigurationMacSqlCheck("configuration_mac")}),
-  protocol_version INTEGER NOT NULL CHECK (protocol_version = ${runtimeProtocolVersion}),
+  protocol_version INTEGER NOT NULL CHECK (protocol_version BETWEEN 1 AND ${Number.MAX_SAFE_INTEGER}),
   process_id INTEGER NOT NULL CHECK (process_id > 0),
   owner_revision TEXT NOT NULL CHECK (${canonicalUnsignedDecimalSqlCheck("owner_revision")}),
   acquired_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("acquired_at")}),
@@ -99,6 +139,16 @@ CREATE TABLE token_contract (
   FOREIGN KEY (chain_id, contract_address) REFERENCES contract(chain_id, contract_address)
     ON UPDATE RESTRICT ON DELETE RESTRICT
 ) STRICT, WITHOUT ROWID;
+CREATE TABLE token_contract_inspection (
+  chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
+  contract_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("contract_address")}),
+  inspection_digest TEXT NOT NULL CHECK (${canonicalHash32SqlCheck("inspection_digest")}),
+  result_json TEXT NOT NULL CHECK (${canonicalJsonObjectSqlCheck("result_json")}),
+  PRIMARY KEY (chain_id, contract_address, inspection_digest),
+  FOREIGN KEY (chain_id, contract_address)
+    REFERENCES token_contract(chain_id, contract_address)
+    ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID;
 CREATE TABLE wallet_account (
   profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),
   chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
@@ -107,6 +157,32 @@ CREATE TABLE wallet_account (
   FOREIGN KEY (profile_id) REFERENCES local_profile(profile_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   FOREIGN KEY (chain_id) REFERENCES chain(chain_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 ) STRICT, WITHOUT ROWID;
+CREATE TABLE wallet_token_registration (
+  profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),
+  chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
+  wallet_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("wallet_address")}),
+  token_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("token_address")}),
+  revision TEXT NOT NULL CHECK (${canonicalRegistrationRevisionSqlCheck("revision")}),
+  inspection_digest TEXT NOT NULL CHECK (${canonicalHash32SqlCheck("inspection_digest")}),
+  user_label TEXT CHECK (user_label IS NULL OR ${canonicalUserTokenLabelSqlCheck("user_label")}),
+  visibility TEXT NOT NULL CHECK (
+    ${canonicalSqlTextCheck("visibility")} AND visibility IN ('hidden', 'visible')
+  ),
+  created_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("created_at")}),
+  updated_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("updated_at")}),
+  PRIMARY KEY (profile_id, chain_id, wallet_address, token_address),
+  FOREIGN KEY (profile_id, chain_id, wallet_address)
+    REFERENCES wallet_account(profile_id, chain_id, wallet_address)
+    ON UPDATE RESTRICT ON DELETE RESTRICT,
+  FOREIGN KEY (chain_id, token_address)
+    REFERENCES token_contract(chain_id, contract_address)
+    ON UPDATE RESTRICT ON DELETE RESTRICT,
+  FOREIGN KEY (chain_id, token_address, inspection_digest)
+    REFERENCES token_contract_inspection(chain_id, contract_address, inspection_digest)
+    ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID;
+CREATE INDEX wallet_token_registration_inspection_fk
+  ON wallet_token_registration(chain_id, token_address, inspection_digest);
 CREATE TABLE current_wallet_connection (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),

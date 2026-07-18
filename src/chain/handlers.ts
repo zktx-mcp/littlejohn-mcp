@@ -60,6 +60,7 @@ import {
   canonicalBlockReference,
   ChainRpcError,
   getChainRpcErrorCode,
+  isRpcExecutionRevertedError,
   rpcConcurrencyLimit,
   type RpcCanonicalBlockReference,
   type RpcRequester,
@@ -482,6 +483,7 @@ interface TokenReadResult {
 }
 
 const partialTokenError = (error: unknown): "source_unavailable" | "source_inconsistent" | undefined => {
+  if (isRpcExecutionRevertedError(error)) return "source_unavailable";
   const rpcCode = getChainRpcErrorCode(error);
   if (rpcCode !== undefined) {
     return rpcCode === "source_unavailable" || rpcCode === "source_inconsistent"
