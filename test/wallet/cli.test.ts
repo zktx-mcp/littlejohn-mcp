@@ -258,10 +258,10 @@ const fakeTerminal = (options: {
     },
     showQr: (rendering: TerminalQrRendering) => qrDisplay.show(rendering),
     hideQr: () => qrDisplay.hide(),
-    async readConfirmation(prompt: string): Promise<boolean> {
+    async readLine(prompt: string): Promise<string> {
       prompts.push(prompt);
       if (options.confirmationError !== undefined) throw options.confirmationError;
-      return options.confirmation ?? false;
+      return options.confirmation === true ? "y" : "n";
     },
     dispose(): void {
       qrDisplay.hide();
@@ -288,6 +288,7 @@ const fakeTerminal = (options: {
 const fakeProcessHost = (): {
   readonly host: CliProcessPort;
   readonly output: () => string;
+  readonly writeInput: (value: string) => void;
   readonly emit: (event: "exit" | "SIGINT" | "SIGTERM" | "SIGHUP") => void;
   readonly listenerCount: (event: "exit" | "SIGINT" | "SIGTERM" | "SIGHUP") => number;
 } => {
@@ -311,6 +312,7 @@ const fakeProcessHost = (): {
   return Object.freeze({
     host,
     output: () => output,
+    writeInput: (value: string) => { stdin.write(value); },
     emit: (event: "exit" | "SIGINT" | "SIGTERM" | "SIGHUP") => { events.emit(event); },
     listenerCount: (event: "exit" | "SIGINT" | "SIGTERM" | "SIGHUP") =>
       events.listenerCount(event),
@@ -330,6 +332,15 @@ const dependencies = (
 });
 
 describe("wallet CLI", () => {
+  it("returns raw terminal input so each command owns its confirmation grammar", async () => {
+    const processHost = fakeProcessHost();
+    const terminal = createProcessTerminal(processHost.host);
+    const answer = terminal.readLine("Answer: ");
+    processHost.writeInput("yes\n");
+    await expect(answer).resolves.toBe("yes");
+    terminal.dispose();
+  });
+
   it("latches catchable process signals without taking normal QR restoration authority", () => {
     for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
       const processHost = fakeProcessHost();

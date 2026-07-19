@@ -21,7 +21,7 @@ import {
   walletOperationActions,
   walletOperationCopy,
   walletOperationNotice,
-  walletOperationToast,
+  walletOperationNotification,
 } from "../../../src/interfaces/web/wallet-dialog-view.js";
 
 const operationBase = Object.freeze({
@@ -231,37 +231,37 @@ describe("wallet dialog view", () => {
       failure: createWalletFailure("wallet_timeout"),
     });
 
-    expect(walletOperationToast(connectedCompletion)).toEqual({
+    expect(walletOperationNotification(connectedCompletion)).toEqual({
       id: operationBase.operationId,
       tone: "success",
       heading: "Wallet connected",
       message: "The Robinhood Chain session is ready.",
     });
-    expect(walletOperationToast(disconnectedCompletion)).toEqual({
+    expect(walletOperationNotification(disconnectedCompletion)).toEqual({
       id: operationBase.operationId,
       tone: "success",
       heading: "Wallet disconnected",
       message: "No wallet session remains in this local profile.",
     });
-    expect(walletOperationToast(alreadyDisconnected)?.tone).toBe("neutral");
-    expect(walletOperationToast(operation("connect", "cancelled"))).toMatchObject({
+    expect(walletOperationNotification(alreadyDisconnected)?.tone).toBe("neutral");
+    expect(walletOperationNotification(operation("connect", "cancelled"))).toMatchObject({
       tone: "neutral",
       heading: "Wallet connection cancelled",
     });
-    expect(walletOperationToast(operation("connect", "rejected"))).toMatchObject({
+    expect(walletOperationNotification(operation("connect", "rejected"))).toMatchObject({
       tone: "error",
       heading: "Wallet connection rejected",
     });
-    expect(walletOperationToast(operation("connect", "expired"))).toMatchObject({
+    expect(walletOperationNotification(operation("connect", "expired"))).toMatchObject({
       tone: "error",
       heading: "Wallet connection expired",
     });
-    expect(walletOperationToast(failedConnection)).toMatchObject({
+    expect(walletOperationNotification(failedConnection)).toMatchObject({
       tone: "error",
       heading: "Wallet connection failed",
       message: createWalletFailure("wallet_timeout").error.message,
     });
-    expect(walletOperationToast(operation("connect", "awaiting_wallet_approval")))
+    expect(walletOperationNotification(operation("connect", "awaiting_wallet_approval")))
       .toBeUndefined();
   });
 });

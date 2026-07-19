@@ -2,6 +2,20 @@ import { createHash, randomBytes } from "node:crypto";
 import { z, type ZodType } from "zod";
 
 import { createAmountSchemaSet, type AssetIdentity, type ObservationClaimBinding } from "./amounts.js";
+import {
+  assertCapabilitySuccessChainScope,
+  capabilityIdSchema,
+  createCapabilityIdSchema,
+  createCapabilitySuccessSchema,
+  type CapabilityId,
+  type CapabilitySuccess,
+} from "./capability-contract.js";
+export {
+  capabilityIdPatternSource,
+  capabilityIdSchema,
+  createCapabilityIdSchema,
+} from "./capability-contract.js";
+export type { CapabilityId } from "./capability-contract.js";
 import { canonicalJsonStringify, captureCanonicalJson, type CanonicalJson } from "./canonical-json.js";
 import { coreContractVersion } from "./contract.js";
 import { sha256Algorithm } from "./digests.js";
@@ -61,19 +75,7 @@ const binderPrimitiveSchemas = createPrimitiveSchemaSet();
 const binderAmountSchemas = createAmountSchemaSet();
 const binderEvidenceSchemas = createEvidenceSchemaSet();
 
-export const capabilityIdPatternSource =
-  "[a-z][a-z0-9]*(?:_[a-z0-9]+)*\\.[a-z][a-z0-9]*(?:_[a-z0-9]+)*";
-
-export const createCapabilityIdSchema = () => z
-  .string()
-  .min(1)
-  .max(64)
-  .regex(new RegExp("^" + capabilityIdPatternSource + "$"))
-  .brand("CapabilityId");
-
-export const capabilityIdSchema = createCapabilityIdSchema();
 const capabilityIdAuthoritySchema = createCapabilityIdSchema();
-export type CapabilityId = z.infer<typeof capabilityIdSchema>;
 
 export interface FactRequirement {
   readonly factId: string;
@@ -213,23 +215,6 @@ export type CapabilityData<Definition> = Definition extends ReadCapabilityDefini
   ? Data
   : never;
 
-export interface CapabilitySuccess<Data> {
-  readonly ok: true;
-  readonly meta: {
-    readonly capabilityId: CapabilityId;
-    readonly contractVersion: typeof coreContractVersion;
-    readonly chainId: EvmChainId;
-    readonly evaluatedAt: UtcTimestamp;
-  };
-  readonly data: Data;
-  readonly evidence: {
-    readonly sources: readonly EvidenceSource[];
-    readonly conclusions: readonly Conclusion[];
-    readonly coverage: Coverage;
-  };
-  readonly warnings: readonly Warning[];
-}
-
 interface InternalReadCapabilityDefinition<Input, Data> {
   readonly capabilityId: CapabilityId;
   readonly contractVersion: typeof coreContractVersion;
@@ -313,27 +298,6 @@ const zodIssues = (error: z.ZodError): FieldIssue[] =>
       const pathOrder = compareCodePointSequences(left.path, right.path);
       return pathOrder === 0 ? compareCodePointSequences(left.code, right.code) : pathOrder;
     });
-
-const createSuccessSchema = <Data>(capabilityId: CapabilityId, dataSchema: ZodType<Data>) =>
-  jsonObject({
-      ok: z.literal(true),
-      meta: jsonObject({
-          capabilityId: z.literal(capabilityId),
-          contractVersion: z.literal(coreContractVersion),
-          chainId: evmChainIdSchema,
-          evaluatedAt: binderPrimitiveSchemas.utcTimestamp,
-        })
-        .strict(),
-      data: dataSchema,
-      evidence: jsonObject({
-          sources: z.array(binderEvidenceSchemas.evidenceSource).max(128),
-          conclusions: z.array(binderEvidenceSchemas.conclusion).max(64),
-          coverage: binderEvidenceSchemas.coverage,
-        })
-        .strict(),
-      warnings: z.array(binderEvidenceSchemas.warning).max(64),
-    })
-    .strict();
 
 const handlerEnvelopeSchema = z.discriminatedUnion("status", [
     jsonObject({
@@ -462,10 +426,7 @@ const validateSuccessEnvelope = <Input, Data>(
   record.validateDataContext(parsedData.data, dataContext);
   record.validateSuccess(parsedData.data, successContext);
   record.validateRequest(input, parsedData.data);
-  if (success.evidence.sources.some((source) =>
-    source.chainAnchor !== undefined && source.chainAnchor.chainId !== success.meta.chainId)) {
-    throw new TypeError("Evidence chain scope mismatch.");
-  }
+  assertCapabilitySuccessChainScope(success);
   return deepFreezeValue({
     ...success,
     data: parsedData.data,
@@ -653,7 +614,7 @@ export const defineReadCapability = <Input, Data>(options: {
       }
     },
   });
-  const successSchema = createSuccessSchema(capabilityId, options.dataSchema);
+  const successSchema = createCapabilitySuccessSchema(capabilityId, options.dataSchema);
   const inputSchemaSnapshot = structuralSchemaSnapshot(options.inputSchema, "input");
   const dataSchemaSnapshot = structuralSchemaSnapshot(options.dataSchema, "output");
   const successSchemaSnapshot = structuralSchemaSnapshot(successSchema, "output");

@@ -9,8 +9,16 @@ const browserCsrfTokenSchema = canonicalBase64UrlSchema(browserCsrfTokenByteLeng
 
 export const browserPagePaths = Object.freeze({
   root: "/",
+  tokens: "/tokens",
 });
+export type BrowserPagePath = typeof browserPagePaths[keyof typeof browserPagePaths];
 
+export const parseBrowserPagePath = (input: unknown): BrowserPagePath => {
+  if (input === browserPagePaths.root || input === browserPagePaths.tokens) return input;
+  throw new TypeError("Browser page path is invalid.");
+};
+
+export const browserApiRoot = "/api/v1";
 export const browserWalletApiRoot = "/api/v1/wallet";
 const walletOperationsRoot = `${browserWalletApiRoot}/operations`;
 

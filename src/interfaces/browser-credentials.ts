@@ -16,7 +16,7 @@ import {
 } from "../runtime/index.js";
 import {
   browserCsrfTokenByteLength,
-  browserWalletApiRoot,
+  browserApiRoot,
   parseBrowserCsrfToken,
 } from "./browser-contract.js";
 
@@ -205,6 +205,15 @@ export const createBrowserRequestCredentialAuthority = (
         mutation: "none",
       }),
       Object.freeze({
+        requestClass: "browser_query",
+        host: "fixed",
+        origin: "absent_or_fixed",
+        authentication: "browser_session",
+        body: "route_json",
+        responseLimitBytes: internalResponseLimitBytes,
+        mutation: "none",
+      }),
+      Object.freeze({
         requestClass: "browser_control",
         host: "fixed",
         origin: "fixed",
@@ -248,7 +257,7 @@ export const createBrowserRequestCredentialAuthority = (
       return Object.freeze({
         csrfToken,
         setCookie: `${browserSessionCookieName}=${credential}; ` +
-          `Path=${browserWalletApiRoot}; HttpOnly; SameSite=Strict; ` +
+          `Path=${browserApiRoot}; HttpOnly; SameSite=Strict; ` +
           `Max-Age=${remainingSeconds}`,
       });
     },

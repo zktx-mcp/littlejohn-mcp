@@ -2,24 +2,52 @@ import {
   compareCodePointSequences,
 } from "../core/index.js";
 import {
+  composeCapabilityCatalog,
+  createCapabilityCatalogSchema,
   extendInterfaceRuntimeSupportManifest,
+  type CapabilityCatalog,
   type CapabilityAvailabilityInput,
   type InterfaceRuntimeSupportManifest,
   type TokenCatalogRuntimeSupportManifest,
 } from "../runtime/index.js";
 import {
+  interfaceReadCapabilityRegistry,
   readInterfaceIdentities,
+  tokenCatalogInterfaceBindingList,
   walletInterfaceBindingList,
+  type ReadInterfaceIdentity,
+  type TokenCatalogInterfaceBinding,
   type WalletInterfaceBinding,
 } from "./identities.js";
 
-const readAvailability: CapabilityAvailabilityInput = Object.freeze({
+export const interfaceCapabilityCatalogSchema = createCapabilityCatalogSchema(
+  interfaceReadCapabilityRegistry,
+);
+
+export const composeInterfaceCapabilityCatalog = (
+  manifest: InterfaceRuntimeSupportManifest,
+): CapabilityCatalog => composeCapabilityCatalog(interfaceReadCapabilityRegistry, manifest);
+
+const readBindingAvailability = (
+  identity: ReadInterfaceIdentity,
+): CapabilityAvailabilityInput => Object.freeze({
   overall: "available",
   direct: "internal",
   http: "available",
   mcp: "available",
   cli: "available",
-  web: "unavailable",
+  web: identity.web === true ? "available" : "unavailable",
+});
+
+const tokenCatalogBindingAvailability = (
+  _binding: TokenCatalogInterfaceBinding,
+): CapabilityAvailabilityInput => Object.freeze({
+  overall: "available",
+  direct: "internal",
+  http: "internal",
+  mcp: "available",
+  cli: "available",
+  web: "available",
 });
 
 const walletBindingAvailability = (
@@ -43,8 +71,12 @@ export const extendInterfaceSupportManifest = (
     ...readInterfaceIdentities
       .map((identity) => ({
         capabilityId: identity.capabilityId,
-        availability: readAvailability,
+        availability: readBindingAvailability(identity),
       })),
+    ...tokenCatalogInterfaceBindingList.map((binding) => ({
+      capabilityId: binding.contract.capabilityId,
+      availability: tokenCatalogBindingAvailability(binding),
+    })),
     ...walletInterfaceBindingList.map((binding) => ({
       capabilityId: binding.contract.capabilityId,
       availability: walletBindingAvailability(binding),

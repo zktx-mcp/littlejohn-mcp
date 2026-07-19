@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export { readCapabilityLimits } from "./capability-contract.js";
+import { readCapabilityLimits } from "./capability-contract.js";
 import {
   assertCanonicalAmountBindings,
   canonicalUnsignedDecimalMaximumPattern,
@@ -43,17 +45,6 @@ import {
   walletConnectionDataSchema,
   type WalletConnectionData,
 } from "./wallet-connection.js";
-
-export const readCapabilityLimits = Object.freeze({
-  runtimeCodeBytes: 262_144,
-  transactionCalldataBytes: 2_097_152,
-  transactionLogTopics: 4,
-  transactionReceiptLogs: 4_096,
-  transactionAccessListEntries: 1_024,
-  transactionAccessListStorageKeyOccurrences: 4_096,
-  transactionType: 127,
-  accountTokenAddresses: 50,
-});
 
 const capabilityPrimitives = createPrimitiveSchemaSet();
 const capabilityAmounts = createAmountSchemaSet();

@@ -1,19 +1,20 @@
 import {
   CapabilityBindingRegistry,
   captureCanonicalJson,
-  readCapabilityRegistry,
   type AnyReadCapabilityDefinition,
   type ApplicationFailure,
   type CanonicalJson,
 } from "../core/index.js";
 import { chainInterfaceErrorMappings } from "../chain/errors.js";
+import { tokenCatalogInterfaceErrorMappings } from "../token-catalog/index.js";
+import { walletInterfaceErrorMappings } from "../wallet/errors.js";
 import {
-  composeCapabilityCatalog,
   type ChainReadCapabilityPort,
   type InterfaceRuntimeSupportManifest,
   type RouteContext,
   type RouteResult,
   type RuntimeRouteRegistry,
+  type TokenInspectionReadCapabilityPort,
   type WalletConnectionReadCapabilityPort,
 } from "../runtime/index.js";
 import {
@@ -21,16 +22,20 @@ import {
   capabilityCatalogInterface,
   chainStatusInterface,
   contractInspectInterface,
-  readInterfaceIdentities,
+  interfaceReadCapabilityRegistry,
+  tokenInspectInterface,
   transactionInspectInterface,
+  type ReadInterfaceIdentity,
   walletConnectionInterface,
 } from "./identities.js";
+import { composeInterfaceCapabilityCatalog } from "./support.js";
 
 export const publicInterfaceRoutes = Object.freeze({
   accountBalanceQueries: accountBalanceInterface.http.path,
   capabilities: capabilityCatalogInterface.http.path,
   chainStatus: chainStatusInterface.http.path,
   contractInspections: contractInspectInterface.http.path,
+  tokenInspections: tokenInspectInterface.http.path,
   transactionInspections: transactionInspectInterface.http.path,
   walletConnection: walletConnectionInterface.http.path,
 });
@@ -50,30 +55,47 @@ const invoke = async (
   return result.ok ? success(result) : failure(result);
 };
 
+const readRoutes = (
+  bindings: CapabilityBindingRegistry,
+  identities: readonly ReadInterfaceIdentity[],
+) => identities.map((identity) => ({
+  method: identity.http.method,
+  mutation: "none" as const,
+  pathPattern: identity.http.path,
+  response: "canonical_json" as const,
+  successStatus: 200 as const,
+  handler: (context: RouteContext) => invoke(bindings, identity.definition, context),
+}));
+
 export const extendPublicInterfaceRoutes = (input: {
   readonly routes: RuntimeRouteRegistry;
   readonly chainReads: ChainReadCapabilityPort;
   readonly walletConnection: WalletConnectionReadCapabilityPort;
+  readonly tokenInspection: TokenInspectionReadCapabilityPort["tokenInspection"];
   readonly supportManifest: InterfaceRuntimeSupportManifest;
 }): RuntimeRouteRegistry => {
-  const bindings = new CapabilityBindingRegistry(readCapabilityRegistry, [
+  const bindings = new CapabilityBindingRegistry(interfaceReadCapabilityRegistry, [
     input.chainReads.accountBalance,
     input.chainReads.chainStatus,
     input.chainReads.contractInspect,
+    input.tokenInspection,
     input.chainReads.transactionInspect,
     input.walletConnection.connection,
   ]);
-  const catalog = composeCapabilityCatalog(input.supportManifest);
+  const catalog = composeInterfaceCapabilityCatalog(input.supportManifest);
 
-  return input.routes.extend([
-    ...readInterfaceIdentities.map((identity) => ({
-      method: identity.http.method,
-      mutation: "none" as const,
-      pathPattern: identity.http.path,
-      response: "canonical_json" as const,
-      successStatus: 200 as const,
-      handler: (context: RouteContext) => invoke(bindings, identity.definition, context),
-    })),
+  const walletRoutes = input.routes.extend(
+    readRoutes(bindings, [walletConnectionInterface]),
+    walletInterfaceErrorMappings,
+  );
+  const chainRoutes = walletRoutes.extend(readRoutes(bindings, [
+    accountBalanceInterface,
+    chainStatusInterface,
+    contractInspectInterface,
+    transactionInspectInterface,
+  ]), chainInterfaceErrorMappings);
+  return chainRoutes.extend([
+    ...readRoutes(bindings, [tokenInspectInterface]),
     {
       method: capabilityCatalogInterface.http.method,
       mutation: "none",
@@ -82,5 +104,5 @@ export const extendPublicInterfaceRoutes = (input: {
       successStatus: 200,
       handler: async () => success(catalog as unknown as CanonicalJson),
     },
-  ], chainInterfaceErrorMappings);
+  ], tokenCatalogInterfaceErrorMappings);
 };

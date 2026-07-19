@@ -1,6 +1,5 @@
-import { createHash } from "node:crypto";
-
-import { sha256Algorithm } from "./digests.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import {
   canonicalJsonStringify,
   type CanonicalJson,
@@ -13,4 +12,6 @@ export {
 export type { CanonicalJson } from "./canonical-json-value.js";
 
 export const canonicalSha256 = (value: CanonicalJson): string =>
-  createHash(sha256Algorithm).update(canonicalJsonStringify(value), "utf8").digest("hex");
+  bytesToHex(sha256(utf8ToBytes(canonicalJsonStringify(value))));
+
+export const utf8ByteLength = (value: string): number => utf8ToBytes(value).length;

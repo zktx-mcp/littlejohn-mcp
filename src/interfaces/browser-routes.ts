@@ -1,4 +1,6 @@
 import {
+  CapabilityBindingRegistry,
+  CapabilityRegistry,
   captureCanonicalJson,
   type ApplicationFailure,
 } from "../core/index.js";
@@ -8,6 +10,29 @@ import type {
   RouteResult,
   RuntimeRouteRegistry,
 } from "../runtime/index.js";
+import {
+  parseTokenCatalogCancellationBody,
+  parseTokenCatalogConfirmationBody,
+  parseTokenCatalogOperationCreate,
+  parseTokenCatalogOperationPathId,
+  parseTokenCatalogRegistrationPathInput,
+  startTokenCatalogOperation,
+  tokenCatalogApplicationResult,
+  tokenCatalogApplicationContracts,
+  tokenCatalogBrowserRoutes,
+  tokenCatalogCurrentOperationSchema,
+  tokenCatalogOperationConfirmationContract,
+  tokenCatalogStartContract,
+  normalizeTokenCatalogError,
+  TokenCatalogOperationError,
+  tokenRegistrationListRequestBody,
+  tokenCatalogInterfaceErrorMappings,
+  tokenInspectCapability,
+  type TokenCatalogBrowserOperationPort,
+  type TokenCatalogInspectionPort,
+  type TokenCatalogQueryApplicationPort,
+  type TokenCatalogWebStartPort,
+} from "../token-catalog/index.js";
 import {
   parseWalletCurrentOperationProjection,
   parseWalletManagementOperation,
@@ -45,6 +70,12 @@ const invalidInput = (): RouteResult => failure(createWalletFailure("invalid_inp
 const normalizeFailure = (error: unknown): RouteResult =>
   failure(normalizeWalletError(error).failure);
 
+const tokenInvalidInput = (): RouteResult => failure(
+  new TokenCatalogOperationError("invalid_input").failure,
+);
+const normalizeTokenFailure = (error: unknown): RouteResult =>
+  failure(normalizeTokenCatalogError(error).failure);
+
 const operationId = (context: RouteContext): string =>
   parseWalletOperationId(context.params["operationId"]);
 
@@ -72,6 +103,12 @@ const browserPageResources: readonly ResourcePathDefinition[] = Object.freeze([
     kind: "route",
     method: "GET",
     pathPattern: browserPagePaths.root,
+    requestClass: "browser_bootstrap",
+  }),
+  Object.freeze({
+    kind: "route",
+    method: "GET",
+    pathPattern: browserPagePaths.tokens,
     requestClass: "browser_bootstrap",
   }),
 ]);
@@ -107,6 +144,54 @@ const browserApiResources: readonly ResourcePathDefinition[] = Object.freeze([
     pathPattern: browserWalletApiPaths.cancellationPattern,
     requestClass: "browser_control",
   }),
+  Object.freeze({
+    kind: "route",
+    method: "POST",
+    pathPattern: tokenCatalogBrowserRoutes.inspections,
+    requestClass: "browser_query",
+  }),
+  Object.freeze({
+    kind: "route",
+    method: "POST",
+    pathPattern: tokenCatalogBrowserRoutes.registrationQueries,
+    requestClass: "browser_query",
+  }),
+  Object.freeze({
+    kind: "route",
+    method: "GET",
+    pathPattern: tokenCatalogBrowserRoutes.registrationPattern,
+    requestClass: "browser_read",
+  }),
+  Object.freeze({
+    kind: "route",
+    method: "POST",
+    pathPattern: tokenCatalogBrowserRoutes.operations,
+    requestClass: "browser_control",
+  }),
+  Object.freeze({
+    kind: "route",
+    method: "GET",
+    pathPattern: tokenCatalogBrowserRoutes.currentOperation,
+    requestClass: "browser_read",
+  }),
+  Object.freeze({
+    kind: "route",
+    method: "GET",
+    pathPattern: tokenCatalogBrowserRoutes.operationPattern,
+    requestClass: "browser_read",
+  }),
+  Object.freeze({
+    kind: "route",
+    method: "POST",
+    pathPattern: tokenCatalogBrowserRoutes.confirmationPattern,
+    requestClass: "browser_control",
+  }),
+  Object.freeze({
+    kind: "route",
+    method: "POST",
+    pathPattern: tokenCatalogBrowserRoutes.cancellationPattern,
+    requestClass: "browser_control",
+  }),
 ]);
 
 const browserAssetResources: readonly ResourcePathDefinition[] = Object.freeze([
@@ -129,6 +214,10 @@ export const extendBrowserInterfaceRoutes = (input: {
   readonly credentials: BrowserRequestCredentialAuthority;
   readonly assets: BrowserAssetBundle;
   readonly walletOperations: WalletInterfaceOperations;
+  readonly tokenInspection: TokenCatalogInspectionPort;
+  readonly tokenCatalogQueries: TokenCatalogQueryApplicationPort;
+  readonly tokenCatalogWebStart: TokenCatalogWebStartPort;
+  readonly tokenCatalogBrowserOperations: TokenCatalogBrowserOperationPort;
 }): RuntimeRouteRegistry => {
   const securedRoutes = input.routes.extendRequestPolicies(
     input.credentials.requestPolicyExtension,
@@ -141,6 +230,27 @@ export const extendBrowserInterfaceRoutes = (input: {
   if (confirmation.interactionInterface !== "web") {
     throw new TypeError("Browser confirmation requires the web confirmation port.");
   }
+  if (input.tokenCatalogWebStart.interactionInterface !== "web" ||
+    input.tokenCatalogBrowserOperations.interactionInterface !== "web") {
+    throw new TypeError("Browser token catalog ports require the web interaction interface.");
+  }
+  const tokenInspections = new CapabilityBindingRegistry(
+    new CapabilityRegistry([tokenInspectCapability]),
+    [input.tokenInspection],
+  );
+  const bootstrap = async (): Promise<RouteResult> => {
+    try {
+      const issued = input.credentials.issue();
+      return {
+        ok: true,
+        body: input.assets.renderShell(issued.csrfToken),
+        contentType: "text/html; charset=utf-8",
+        setCookie: issued.setCookie,
+      };
+    } catch (error) {
+      return normalizeFailure(error);
+    }
+  };
 
   return securedRoutes.extend([
     {
@@ -149,19 +259,15 @@ export const extendBrowserInterfaceRoutes = (input: {
       pathPattern: browserPagePaths.root,
       response: "browser_content",
       successStatus: 200,
-      handler: async () => {
-        try {
-          const issued = input.credentials.issue();
-          return {
-            ok: true,
-            body: input.assets.renderShell(issued.csrfToken),
-            contentType: "text/html; charset=utf-8",
-            setCookie: issued.setCookie,
-          };
-        } catch (error) {
-          return normalizeFailure(error);
-        }
-      },
+      handler: bootstrap,
+    },
+    {
+      method: "GET",
+      mutation: "none",
+      pathPattern: browserPagePaths.tokens,
+      response: "browser_content",
+      successStatus: 200,
+      handler: bootstrap,
     },
     {
       method: "POST",
@@ -274,6 +380,170 @@ export const extendBrowserInterfaceRoutes = (input: {
       },
     },
     {
+      method: "POST",
+      mutation: "none",
+      pathPattern: tokenCatalogBrowserRoutes.inspections,
+      response: "canonical_json",
+      successStatus: 200,
+      handler: async (context) => {
+        try {
+          const result = await tokenInspections.invoke(
+            tokenInspectCapability,
+            context.body,
+            { signal: context.signal },
+          );
+          return result.ok ? success(result) : failure(result);
+        } catch (error) { return normalizeTokenFailure(error); }
+      },
+    },
+    {
+      method: "POST",
+      mutation: "none",
+      pathPattern: tokenCatalogBrowserRoutes.registrationQueries,
+      response: "canonical_json",
+      successStatus: 200,
+      handler: async (context) => {
+        const contract = tokenCatalogApplicationContracts.registrations;
+        let request;
+        try { request = contract.parseInput(context.body); }
+        catch { return tokenInvalidInput(); }
+        try {
+          return tokenCatalogApplicationResult(
+            contract,
+            request,
+            await input.tokenCatalogQueries.listRegistrations(
+              tokenRegistrationListRequestBody(request),
+            ),
+          );
+        } catch (error) { return normalizeTokenFailure(error); }
+      },
+    },
+    {
+      method: "GET",
+      mutation: "none",
+      pathPattern: tokenCatalogBrowserRoutes.registrationPattern,
+      response: "canonical_json",
+      successStatus: 200,
+      handler: async (context) => {
+        const contract = tokenCatalogApplicationContracts.registration;
+        let request;
+        try {
+          request = parseTokenCatalogRegistrationPathInput(
+            context.params["chainId"],
+            context.params["tokenAddress"],
+          );
+        } catch { return tokenInvalidInput(); }
+        try {
+          return tokenCatalogApplicationResult(
+            contract,
+            request,
+            await input.tokenCatalogQueries.getRegistration(request),
+          );
+        } catch (error) { return normalizeTokenFailure(error); }
+      },
+    },
+    {
+      method: "POST",
+      mutation: "declared_control",
+      pathPattern: tokenCatalogBrowserRoutes.operations,
+      response: "canonical_json",
+      successStatus: 200,
+      handler: async (context) => {
+        let create;
+        try { create = parseTokenCatalogOperationCreate(context.body); }
+        catch { return tokenInvalidInput(); }
+        const contract = tokenCatalogStartContract(create.kind);
+        try {
+          return tokenCatalogApplicationResult(
+            contract,
+            create.request,
+            await startTokenCatalogOperation(create, input.tokenCatalogWebStart),
+          );
+        } catch (error) { return normalizeTokenFailure(error); }
+      },
+    },
+    {
+      method: "GET",
+      mutation: "none",
+      pathPattern: tokenCatalogBrowserRoutes.currentOperation,
+      response: "canonical_json",
+      successStatus: 200,
+      handler: async () => {
+        try {
+          return success(tokenCatalogCurrentOperationSchema.parse({
+            operation: input.tokenCatalogBrowserOperations.getCurrentOperation(),
+          }));
+        } catch (error) { return normalizeTokenFailure(error); }
+      },
+    },
+    {
+      method: "GET",
+      mutation: "none",
+      pathPattern: tokenCatalogBrowserRoutes.operationPattern,
+      response: "canonical_json",
+      successStatus: 200,
+      handler: async (context) => {
+        const contract = tokenCatalogApplicationContracts.operation;
+        let request;
+        try {
+          request = contract.parseInput({
+            operationId: parseTokenCatalogOperationPathId(context.params["operationId"]),
+          });
+        } catch { return tokenInvalidInput(); }
+        try {
+          return tokenCatalogApplicationResult(
+            contract,
+            request,
+            await input.tokenCatalogBrowserOperations.getOperation(request),
+          );
+        } catch (error) { return normalizeTokenFailure(error); }
+      },
+    },
+    {
+      method: "POST",
+      mutation: "declared_control",
+      pathPattern: tokenCatalogBrowserRoutes.confirmationPattern,
+      response: "canonical_json",
+      successStatus: 200,
+      handler: async (context) => {
+        let request;
+        try {
+          request = parseTokenCatalogConfirmationBody(
+            parseTokenCatalogOperationPathId(context.params["operationId"]),
+            context.body,
+          );
+        } catch { return tokenInvalidInput(); }
+        try {
+          return success(tokenCatalogOperationConfirmationContract.parseSuccess(
+            request,
+            await input.tokenCatalogBrowserOperations.confirm(request),
+          ));
+        } catch (error) { return normalizeTokenFailure(error); }
+      },
+    },
+    {
+      method: "POST",
+      mutation: "declared_control",
+      pathPattern: tokenCatalogBrowserRoutes.cancellationPattern,
+      response: "canonical_json",
+      successStatus: 200,
+      handler: async (context) => {
+        const contract = tokenCatalogApplicationContracts.cancelOperation;
+        let request;
+        try {
+          parseTokenCatalogCancellationBody(context.body);
+          request = contract.parseInput({
+            operationId: parseTokenCatalogOperationPathId(context.params["operationId"]),
+          });
+        } catch { return tokenInvalidInput(); }
+        try {
+          return tokenCatalogApplicationResult(contract, request, {
+            operation: await input.tokenCatalogBrowserOperations.cancel(request.operationId),
+          });
+        } catch (error) { return normalizeTokenFailure(error); }
+      },
+    },
+    {
       method: "GET",
       mutation: "none",
       pathPattern: browserAssetPaths.pattern,
@@ -287,5 +557,5 @@ export const extendBrowserInterfaceRoutes = (input: {
           : { ok: true, body: asset.body, contentType: asset.contentType };
       },
     },
-  ]);
+  ], tokenCatalogInterfaceErrorMappings);
 };

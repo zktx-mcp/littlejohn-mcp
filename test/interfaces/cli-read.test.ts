@@ -90,7 +90,7 @@ const nonInteractiveTerminal = (): CliTerminalPort & {
     writeError: (value: string) => { errors.push(value); },
     showQr: () => { throw new Error("Read CLI must not show QR."); },
     hideQr: () => { throw new Error("Read CLI must not hide QR."); },
-    readConfirmation: async () => { throw new Error("Read CLI must not confirm."); },
+    readLine: async () => { throw new Error("Read CLI must not read terminal input."); },
     dispose: () => { disposed = true; },
     disposed: () => disposed,
   });

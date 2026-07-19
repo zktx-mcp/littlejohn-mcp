@@ -4,6 +4,38 @@ const blockHash = `0x${"88".repeat(32)}`;
 const blockTimestamp = "0x65a00000";
 const blockNumber = "0x20000000000001";
 const maximumRequestBytes = 32 * 1024;
+const tokenAddress = "0x2222222222222222222222222222222222222222";
+const canonicalBlockReference = Object.freeze({ blockHash, requireCanonical: true });
+
+const uint256Result = (value) => `0x${BigInt(value).toString(16).padStart(64, "0")}`;
+
+const textResult = (value) => {
+  const bytes = Buffer.from(value, "utf8");
+  const padding = Buffer.alloc((32 - (bytes.length % 32)) % 32);
+  return `0x${[
+    Buffer.from(uint256Result(32).slice(2), "hex"),
+    Buffer.from(uint256Result(bytes.length).slice(2), "hex"),
+    bytes,
+    padding,
+  ].map((part) => part.toString("hex")).join("")}`;
+};
+
+const fakeToken = Object.freeze({
+  chainId: "eip155:4663",
+  address: tokenAddress,
+  runtimeCode: "0x6001600055",
+  totalSupplyRaw: "1000000",
+  decimals: "18",
+  name: "Integration Token",
+  symbol: "INT",
+});
+
+const callResults = Object.freeze({
+  "0x18160ddd": uint256Result(fakeToken.totalSupplyRaw),
+  "0x06fdde03": textResult(fakeToken.name),
+  "0x95d89b41": textResult(fakeToken.symbol),
+  "0x313ce567": uint256Result(fakeToken.decimals),
+});
 
 const readBody = async (request) => {
   const chunks = [];
@@ -31,6 +63,14 @@ const parseRequest = (value) => {
   return parsed;
 };
 
+const exactBlockReference = (value) =>
+  typeof value === "object" &&
+  value !== null &&
+  !Array.isArray(value) &&
+  Object.keys(value).sort().join("\0") === "blockHash\0requireCanonical" &&
+  value.blockHash === canonicalBlockReference.blockHash &&
+  value.requireCanonical === true;
+
 const resultFor = (method, params) => {
   if (method === "eth_chainId" && params.length === 0) return "0x1237";
   if (
@@ -46,6 +86,24 @@ const resultFor = (method, params) => {
       transactions: [],
     };
   }
+  if (
+    method === "eth_getCode" &&
+    params.length === 2 &&
+    params[0] === fakeToken.address &&
+    exactBlockReference(params[1])
+  ) return fakeToken.runtimeCode;
+  if (
+    method === "eth_call" &&
+    params.length === 2 &&
+    exactBlockReference(params[1]) &&
+    typeof params[0] === "object" &&
+    params[0] !== null &&
+    !Array.isArray(params[0]) &&
+    Object.keys(params[0]).sort().join("\0") === "data\0to" &&
+    params[0].to === fakeToken.address &&
+    typeof params[0].data === "string" &&
+    Object.hasOwn(callResults, params[0].data)
+  ) return callResults[params[0].data];
   throw new TypeError(`Unexpected automated RPC method: ${method}`);
 };
 
@@ -95,6 +153,8 @@ export const startFakeRpc = async () => {
   }
   return Object.freeze({
     url: `http://127.0.0.1:${address.port}`,
+    token: fakeToken,
+    canonicalBlockReference,
     calls,
     assertNoUnexpectedMethods() {
       if (unexpectedMethods.length !== 0) {

@@ -19,13 +19,20 @@ import {
   fixedIdentifierSchema,
   parseCapabilityInput,
   parseCapabilitySuccess,
+  parseEvmAddress,
+  parseEvmChainId,
   projectCapabilities,
-  readCapabilityRegistry,
   type CanonicalJson,
   type CapabilityId,
 } from "../core/index.js";
-import { chainErrorRegistry } from "../chain/errors.js";
-import { capabilityCatalogSchema, fixedOrigin } from "../runtime/index.js";
+import { fixedOrigin } from "../runtime/index.js";
+import {
+  tokenCatalogErrorRegistry,
+  tokenCatalogOperationIdSchema,
+  tokenCatalogControlRoutes,
+  tokenRegistrationListRequestBody,
+  type AnyTokenCatalogApplicationContract,
+} from "../token-catalog/index.js";
 import {
   parseWalletOperationResponse,
   parseWalletOperationStartResponse,
@@ -42,12 +49,18 @@ import {
 import {
   capabilityCatalogInterface,
   declaredMcpToolNames,
+  interfaceReadCapabilityRegistry,
   readInterfaceIdentities,
+  tokenCatalogInterfaceBindings,
+  tokenCatalogInterfaceBindingList,
+  walletInterfaceBindings,
   walletInterfaceBindingList,
+  type TokenCatalogInterfaceBinding,
   type WalletInterfaceBinding,
   type InterfaceToolAnnotations,
   type ReadInterfaceIdentity,
 } from "./identities.js";
+import { interfaceCapabilityCatalogSchema } from "./support.js";
 
 const readMcpServerIdentity = (): Readonly<{ name: string; version: string }> => {
   let manifest: unknown;
@@ -174,11 +187,13 @@ const rebaseSchema = (value: unknown, prefix: string): RebasedSchema => {
 };
 
 const projectedCapabilities = new Map(
-  projectCapabilities(readCapabilityRegistry).map((projection) => [
+  projectCapabilities(interfaceReadCapabilityRegistry).map((projection) => [
     projection.capabilityId,
     projection,
   ]),
 );
+
+const capabilityCatalogSchema = interfaceCapabilityCatalogSchema;
 
 const capabilityInputSchema = (capabilityId: CapabilityId): Tool["inputSchema"] => {
   const projection = projectedCapabilities.get(capabilityId);
@@ -192,7 +207,7 @@ const successOrFailureSchema = (
 ): NonNullable<Tool["outputSchema"]> => {
   const success = rebaseSchema(successSchema, "success");
   const failure = rebaseSchema(
-    zodSchema(applicationFailureSchemaFor(chainErrorRegistry, failureCodes), "output"),
+    zodSchema(applicationFailureSchemaFor(tokenCatalogErrorRegistry, failureCodes), "output"),
     "failure",
   );
   return canonicalSchema<NonNullable<Tool["outputSchema"]>>({
@@ -216,24 +231,30 @@ const capabilityOutputSchema = (
   return successOrFailureSchema(projection.success.schema, projection.failureCodes);
 };
 
+type InterfaceApplicationContract =
+  | AnyWalletManagementContract
+  | AnyTokenCatalogApplicationContract;
+
 const contractInputSchema = (
-  contract: AnyWalletManagementContract,
+  contract: InterfaceApplicationContract,
 ): Tool["inputSchema"] =>
   canonicalSchema<Tool["inputSchema"]>(zodSchema(contract.inputSchema, "input"));
 
 const contractOutputSchema = (
-  contract: AnyWalletManagementContract,
+  contract: InterfaceApplicationContract,
 ): NonNullable<Tool["outputSchema"]> =>
   successOrFailureSchema(zodSchema(contract.successSchema, "output"), contract.failureCodes);
 
 const walletDisplayUrl = `${fixedOrigin}${browserPagePaths.root}`;
+const tokenCatalogDisplayUrl = `${fixedOrigin}${browserPagePaths.tokens}`;
 
 const startOutputSchema = (
-  contract: AnyWalletManagementContract,
+  contract: InterfaceApplicationContract,
+  displayUrl: string,
 ): NonNullable<Tool["outputSchema"]> =>
   successOrFailureSchema(zodSchema(z.object({
     result: contract.successSchema,
-    displayUrl: z.literal(walletDisplayUrl),
+    displayUrl: z.literal(displayUrl),
   }).strict(), "output"), contract.failureCodes);
 
 const annotations = (value: InterfaceToolAnnotations): ToolAnnotations => Object.freeze({ ...value });
@@ -265,15 +286,31 @@ const localControl = (
   method: "GET" | "POST" | "DELETE",
   path: string,
   expectedStatus: 200 | 201,
-  signal: AbortSignal,
+  signal: AbortSignal | undefined,
   body?: CanonicalJson,
 ): Promise<InterfaceInvocationResult> => dispatchCanonical(runtime, {
   requestClass: "local_control",
   method,
   path,
-  signal,
+  ...(signal === undefined ? {} : { signal }),
   ...(body === undefined ? {} : { body }),
 }, expectedStatus);
+
+const requestAborted = (): InterfaceInvocationResult => Object.freeze({
+  ok: false,
+  failure: createInterfaceFailure("request_aborted"),
+});
+
+const cancelSettledStart = async (
+  runtime: RuntimeDispatchPort,
+  path: string,
+): Promise<InterfaceInvocationResult> => localControl(
+  runtime,
+  "DELETE",
+  path,
+  200,
+  undefined,
+);
 
 const readTool = (
   runtime: RuntimeDispatchPort,
@@ -378,20 +415,46 @@ const walletTool = (
     const operationKind = binding.operationKind;
     return Object.freeze({
       ...common,
-      outputSchema: startOutputSchema(binding.contract),
-      invoke: async (value: unknown, signal: AbortSignal): Promise<InterfaceInvocationResult> =>
-        startOperationValue(binding.contract, value, await localControl(
+      outputSchema: startOutputSchema(binding.contract, walletDisplayUrl),
+      invoke: async (value: unknown, signal: AbortSignal): Promise<InterfaceInvocationResult> => {
+        const dispatched = await localControl(
           runtime,
           "POST",
           fixedWalletPath(binding),
           200,
-          signal,
+          undefined,
           {
             kind: operationKind,
             interactionInterface: "web" as const,
             connectionRevision: null,
           },
-        )),
+        );
+        if (!dispatched.ok) return signal.aborted ? requestAborted() : dispatched;
+        let response;
+        try { response = parseWalletOperationStartResponse(dispatched.value); }
+        catch { return failure(); }
+        if (signal.aborted && response.result.status === "operation_started") {
+          const cancellationInput = walletInterfaceBindings.cancelOperation.contract.parseInput({
+            operationId: response.result.operation.operationId,
+          });
+          const cancelled = await cancelSettledStart(
+            runtime,
+            operationWalletPath(
+              walletInterfaceBindings.cancelOperation,
+              response.result.operation.operationId,
+            ),
+          );
+          const validatedCancellation = operationValue(
+            walletInterfaceBindings.cancelOperation.contract,
+            cancellationInput,
+            cancelled,
+          );
+          if (!validatedCancellation.ok) return validatedCancellation;
+        }
+        return signal.aborted
+          ? requestAborted()
+          : startOperationValue(binding.contract, value, dispatched);
+      },
     });
   }
   if (binding.action === "get_operation" || binding.action === "cancel_operation") {
@@ -411,6 +474,169 @@ const walletTool = (
     });
   }
   throw new TypeError("Wallet MCP binding action is unsupported.");
+};
+
+const parsedTokenOperationId = (
+  value: unknown,
+): ReturnType<typeof tokenCatalogOperationIdSchema.parse> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value) ||
+    typeof (value as Readonly<Record<string, unknown>>)["operationId"] !== "string") {
+    throw new TypeError("Token operation identifier is unavailable.");
+  }
+  return tokenCatalogOperationIdSchema.parse(
+    (value as Readonly<Record<string, string>>)["operationId"],
+  );
+};
+
+const parsedTokenStartedOperationId = (
+  value: unknown,
+): ReturnType<typeof tokenCatalogOperationIdSchema.parse> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("Started token operation is unavailable.");
+  }
+  return parsedTokenOperationId(
+    (value as Readonly<Record<string, unknown>>)["operation"],
+  );
+};
+
+const parsedTokenAsset = (
+  value: unknown,
+): Readonly<{
+  chainId: ReturnType<typeof parseEvmChainId>;
+  address: ReturnType<typeof parseEvmAddress>;
+}> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("Token identity is unavailable.");
+  }
+  const asset = (value as Readonly<Record<string, unknown>>)["asset"];
+  if (typeof asset !== "object" || asset === null || Array.isArray(asset)) {
+    throw new TypeError("Token identity is unavailable.");
+  }
+  const record = asset as Readonly<Record<string, unknown>>;
+  if (typeof record["chainId"] !== "string" || typeof record["address"] !== "string") {
+    throw new TypeError("Token identity is unavailable.");
+  }
+  return Object.freeze({
+    chainId: parseEvmChainId(record["chainId"]),
+    address: parseEvmAddress(record["address"]),
+  });
+};
+
+const tokenCatalogValue = (
+  contract: AnyTokenCatalogApplicationContract,
+  input: unknown,
+  result: InterfaceInvocationResult,
+): InterfaceInvocationResult => {
+  if (!result.ok) return result;
+  try { return success(contract.parseSuccess(input, result.value)); }
+  catch { return failure(); }
+};
+
+const tokenCatalogTool = (
+  runtime: RuntimeDispatchPort,
+  binding: TokenCatalogInterfaceBinding,
+): McpToolDefinition => {
+  const common = {
+    name: parseMcpToolName(binding.mcp.name),
+    description: binding.mcp.description,
+    inputSchema: contractInputSchema(binding.contract),
+    failureCodes: binding.contract.failureCodes,
+    annotations: annotations(binding.mcp.annotations),
+    parseInput: (value: unknown): unknown => binding.contract.parseInput(value),
+  } as const;
+  if (binding.action === "get") {
+    return Object.freeze({
+      ...common,
+      outputSchema: contractOutputSchema(binding.contract),
+      invoke: async (value: unknown, signal: AbortSignal): Promise<InterfaceInvocationResult> => {
+        const asset = parsedTokenAsset(value);
+        return tokenCatalogValue(binding.contract, value, await localControl(
+          runtime,
+          "GET",
+          tokenCatalogControlRoutes.registration(asset.chainId, asset.address),
+          200,
+          signal,
+        ));
+      },
+    });
+  }
+  if (binding.action === "list") {
+    return Object.freeze({
+      ...common,
+      outputSchema: contractOutputSchema(binding.contract),
+      invoke: async (value: unknown, signal: AbortSignal): Promise<InterfaceInvocationResult> =>
+        tokenCatalogValue(binding.contract, value, await localControl(
+          runtime,
+          "POST",
+          tokenCatalogControlRoutes.registrationQueries,
+          200,
+          signal,
+          captureCanonicalJson(tokenRegistrationListRequestBody(
+            value as Parameters<typeof tokenRegistrationListRequestBody>[0],
+          )),
+        )),
+    });
+  }
+  if (binding.action === "start") {
+    if (binding.operationKind === undefined) {
+      throw new TypeError("Token operation start binding is incomplete.");
+    }
+    const operationKind = binding.operationKind;
+    return Object.freeze({
+      ...common,
+      outputSchema: startOutputSchema(binding.contract, tokenCatalogDisplayUrl),
+      invoke: async (value: unknown, signal: AbortSignal): Promise<InterfaceInvocationResult> => {
+        const dispatched = await localControl(
+          runtime,
+          "POST",
+          tokenCatalogControlRoutes.operations,
+          200,
+          undefined,
+          captureCanonicalJson({
+            interactionInterface: "web",
+            request: { kind: operationKind, ...(value as Readonly<Record<string, CanonicalJson>>) },
+          }),
+        );
+        if (!dispatched.ok) return signal.aborted ? requestAborted() : dispatched;
+        let result;
+        try { result = binding.contract.parseSuccess(value, dispatched.value); }
+        catch { return failure(); }
+        if (signal.aborted) {
+          const operationId = parsedTokenStartedOperationId(result);
+          const cancellationContract = tokenCatalogInterfaceBindings.cancelOperation.contract;
+          const cancellationInput = cancellationContract.parseInput({ operationId });
+          const cancelled = await cancelSettledStart(
+            runtime,
+            tokenCatalogControlRoutes.operation(operationId),
+          );
+          const validatedCancellation = tokenCatalogValue(
+            cancellationContract,
+            cancellationInput,
+            cancelled,
+          );
+          if (!validatedCancellation.ok) return validatedCancellation;
+          return requestAborted();
+        }
+        return success({ result, displayUrl: tokenCatalogDisplayUrl });
+      },
+    });
+  }
+  if (binding.action === "get_operation" || binding.action === "cancel_operation") {
+    const method = binding.action === "get_operation" ? "GET" : "DELETE";
+    return Object.freeze({
+      ...common,
+      outputSchema: contractOutputSchema(binding.contract),
+      invoke: async (value: unknown, signal: AbortSignal): Promise<InterfaceInvocationResult> =>
+        tokenCatalogValue(binding.contract, value, await localControl(
+          runtime,
+          method,
+          tokenCatalogControlRoutes.operation(parsedTokenOperationId(value)),
+          200,
+          signal,
+        )),
+    });
+  }
+  throw new TypeError("Token catalog MCP binding action is unsupported.");
 };
 
 const createToolDefinitions = (runtime: RuntimeDispatchPort): readonly McpToolDefinition[] => Object.freeze([
@@ -441,6 +667,7 @@ const createToolDefinitions = (runtime: RuntimeDispatchPort): readonly McpToolDe
   ...walletInterfaceBindingList
     .filter((binding) => binding.mcp !== undefined)
     .map((binding) => walletTool(runtime, binding)),
+  ...tokenCatalogInterfaceBindingList.map((binding) => tokenCatalogTool(runtime, binding)),
 ]);
 
 export class McpToolRegistry {
@@ -474,6 +701,9 @@ export class McpToolRegistry {
   }
 }
 
+export const createMcpToolRegistry = (runtime: RuntimeDispatchPort): McpToolRegistry =>
+  new McpToolRegistry(createToolDefinitions(runtime));
+
 const toolResult = (result: InterfaceInvocationResult): CallToolResult => {
   const value = result.ok ? result.value : result.failure as unknown as CanonicalJson;
   return {
@@ -489,10 +719,10 @@ const constrainedToolResult = (
 ): CallToolResult => toolResult(constrainInterfaceFailure(result, definition.failureCodes));
 
 export const createMcpServer = (runtime: RuntimeDispatchPort): Server => {
-  const registry = new McpToolRegistry(createToolDefinitions(runtime));
+  const registry = createMcpToolRegistry(runtime);
   const server = new Server(mcpServerIdentity, {
     capabilities: { tools: {} },
-    instructions: "Read Robinhood Chain data and manage local Robinhood Wallet connection operations without signing or transaction authority.",
+    instructions: "Read Robinhood Chain data, inspect token contracts, and manage local token catalog and Robinhood Wallet operations without establishing token safety or official status and without signing or transaction authority.",
   });
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({

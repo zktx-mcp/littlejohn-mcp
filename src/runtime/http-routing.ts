@@ -276,17 +276,17 @@ const matchSegments = (route: CompiledRoute, pathname: string): Readonly<Record<
     pathname.includes("//") ||
     (pathname.length > 1 && pathname.endsWith("/"))
   ) return undefined;
-  const encodedSegments = pathname === "/" ? [] : pathname.slice(1).split("/");
-  if (encodedSegments.length !== route.segments.length) return undefined;
+  const actualSegments = pathname === "/" ? [] : pathname.slice(1).split("/");
+  if (actualSegments.length !== route.segments.length) return undefined;
   const params: Record<string, string> = Object.create(null) as Record<string, string>;
   for (let index = 0; index < route.segments.length; index += 1) {
     const expected = route.segments[index];
-    const encoded = encodedSegments[index];
-    if (expected === undefined || encoded === undefined || encoded.length === 0 || encoded.length > 128 ||
-      !/^[A-Za-z0-9._~-]+$/.test(encoded)) return undefined;
+    const actual = actualSegments[index];
+    if (expected === undefined || actual === undefined || actual.length === 0 || actual.length > 128 ||
+      actual === "." || actual === ".." || !/^[A-Za-z0-9._~:-]+$/.test(actual)) return undefined;
     if (expected.kind === "literal") {
-      if (encoded !== expected.value) return undefined;
-    } else params[expected.name] = encoded;
+      if (actual !== expected.value) return undefined;
+    } else params[expected.name] = actual;
   }
   return Object.freeze(params);
 };

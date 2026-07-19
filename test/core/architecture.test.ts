@@ -23,6 +23,16 @@ const capabilityDefinitionOwners = new Set([
   resolve("src/token-catalog/contracts.ts"),
 ]);
 const capabilityDefinitionReexporter = resolve("src/core/index.ts");
+const nobleHashImportsByOwner = new Map([
+  [resolve("src/core/canonical-json.ts"), new Set([
+    "@noble/hashes/sha2.js",
+    "@noble/hashes/utils.js",
+  ])],
+  [resolve("src/core/keccak256.ts"), new Set([
+    "@noble/hashes/sha3.js",
+    "@noble/hashes/utils.js",
+  ])],
+]);
 
 const resolveModule = (importingFile: string, specifier: string): string | undefined => {
   if (!specifier.startsWith(".")) return undefined;
@@ -120,8 +130,7 @@ const resolvesInsideCore = (importingFile: string, specifier: string): boolean =
 const allowed = (importingFile: string, specifier: string): boolean =>
   specifier === "zod" ||
   specifier === "node:crypto" ||
-  specifier === "@noble/hashes/sha3.js" ||
-  specifier === "@noble/hashes/utils.js" ||
+  nobleHashImportsByOwner.get(resolve(importingFile))?.has(specifier) === true ||
   resolvesInsideCore(importingFile, specifier);
 
 const auditImports = (source: string, importingFile = resolve("src/core/audit.ts")): string[] => {
@@ -232,15 +241,21 @@ describe("core dependency boundary", () => {
     expect(violations).toEqual([]);
   });
 
-  it("keeps the Noble Keccak implementation behind the one core hash module", async () => {
-    const importers: string[] = [];
+  it("keeps each Noble hash primitive behind its exact core owner", async () => {
+    const importsByOwner: Record<string, string[]> = {};
     for (const file of await collectSourceFiles(coreDirectory)) {
       const audit = await inspectSourceFile(file);
-      if (audit.moduleImports.some((reference) => reference.specifier?.startsWith("@noble/hashes/"))) {
-        importers.push(relative(coreDirectory, file));
-      }
+      const imports = audit.moduleImports
+        .flatMap((reference) => reference.specifier?.startsWith("@noble/hashes/")
+          ? [reference.specifier]
+          : [])
+        .sort();
+      if (imports.length !== 0) importsByOwner[relative(coreDirectory, file)] = imports;
     }
-    expect(importers).toEqual(["keccak256.ts"]);
+    expect(importsByOwner).toEqual({
+      "canonical-json.ts": ["@noble/hashes/sha2.js", "@noble/hashes/utils.js"],
+      "keccak256.ts": ["@noble/hashes/sha3.js", "@noble/hashes/utils.js"],
+    });
   });
 
   it("detects literal and computed forbidden imports", () => {
@@ -250,6 +265,14 @@ describe("core dependency boundary", () => {
     expect(auditImports('require("react");')).toEqual(["require:react"]);
     expect(auditImports('import "@noble/hashes";')).toEqual(["module:@noble/hashes"]);
     expect(auditImports('import "@noble/hashes/sha2.js";')).toEqual(["module:@noble/hashes/sha2.js"]);
+    expect(auditImports(
+      'import { sha256 } from "@noble/hashes/sha2.js";',
+      resolve("src/core/canonical-json.ts"),
+    )).toEqual([]);
+    expect(auditImports(
+      'import { keccak_256 } from "@noble/hashes/sha3.js";',
+      resolve("src/core/canonical-json.ts"),
+    )).toEqual(["module:@noble/hashes/sha3.js"]);
     expect(auditImports('import "../runtime/database.js";')).toEqual(["module:../runtime/database.js"]);
     expect(auditImports('import "./../runtime/database.js";')).toEqual(["module:./../runtime/database.js"]);
     expect(auditImports('import "./sub/../../runtime/database.js";')).toEqual(["module:./sub/../../runtime/database.js"]);

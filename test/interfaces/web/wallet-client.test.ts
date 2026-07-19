@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vitest";
 
+import { fieldIssueSchema } from "../../../src/core/browser.js";
 import {
   BrowserResponseError,
-  browserControlFailureMessage,
+  browserActionFailureMessage,
   browserSessionRequiresReload,
+  type BrowserFetch,
+} from "../../../src/interfaces/web/browser-client.js";
+import {
   cancelWalletOperation,
   confirmWalletOperation,
   loadWalletOperation,
   loadWalletProjection,
   startWalletOperation,
-  type BrowserFetch,
 } from "../../../src/interfaces/web/wallet-client.js";
 import {
   browserCsrfHeaderName,
@@ -18,6 +21,7 @@ import {
   browserOperationPath,
   browserWalletApiPaths,
 } from "../../../src/interfaces/browser-contract.js";
+import { parseBrowserProblemDetails } from "../../../src/interfaces/browser-error-response.js";
 
 const operationId = "A".repeat(43);
 const csrfToken = "A".repeat(43);
@@ -69,6 +73,8 @@ const jsonResponse = (status: number, value: unknown): Response => new Response(
 const problem = (input: {
   readonly code: string;
   readonly detail: string;
+  readonly retryable?: boolean;
+  readonly issues?: readonly unknown[];
   readonly status: number;
   readonly title: string;
 }) => Object.freeze({
@@ -77,8 +83,8 @@ const problem = (input: {
   status: input.status,
   code: input.code,
   detail: input.detail,
-  retryable: false,
-  issues: Object.freeze([]),
+  retryable: input.retryable ?? false,
+  issues: Object.freeze([...(input.issues ?? [])]),
 });
 
 const queuedFetch = (responses: readonly Response[]) => {
@@ -172,6 +178,57 @@ describe("wallet browser client", () => {
     expect(transport.requests.map(({ path }) => path)).toEqual([
       browserOperationPath(operationId),
     ]);
+  });
+
+  it("preserves canonical chain failures without replacing their meaning", async () => {
+    const transport = queuedFetch([jsonResponse(503, problem({
+      code: "source_unavailable",
+      detail: "A required data source is unavailable.",
+      retryable: true,
+      status: 503,
+      title: "Source unavailable",
+    }))]);
+
+    await expect(loadWalletProjection({ request: transport.request })).rejects.toMatchObject({
+      name: "BrowserResponseError",
+      code: "source_unavailable",
+      message: "A required data source is unavailable.",
+    });
+  });
+
+  it("preserves canonical token catalog failures without a browser error copy", async () => {
+    const transport = queuedFetch([jsonResponse(409, problem({
+      code: "token_registration_already_exists",
+      detail: "The token is already registered for the current account.",
+      status: 409,
+      title: "Token already registered",
+    }))]);
+
+    await expect(loadWalletProjection({ request: transport.request })).rejects.toMatchObject({
+      name: "BrowserResponseError",
+      code: "token_registration_already_exists",
+      message: "The token is already registered for the current account.",
+    });
+  });
+
+  it("preserves canonical field issues and rejects malformed issue copies", () => {
+    const issue = fieldIssueSchema.parse({
+      path: "/asset/address",
+      code: "invalid_value",
+      message: "The field value is invalid.",
+    });
+    const response = problem({
+      code: "invalid_input",
+      detail: "The request input is invalid.",
+      status: 400,
+      title: "Invalid request",
+      issues: [issue],
+    });
+    expect(parseBrowserProblemDetails(response, 400).issues).toEqual(response.issues);
+    expect(() => parseBrowserProblemDetails({
+      ...response,
+      issues: [{ ...issue, code: "invented" }],
+    }, 400)).toThrow("invalid");
   });
 
   it("starts one canonical browser operation with state-based CSRF authority", async () => {
@@ -353,9 +410,9 @@ describe("wallet browser client", () => {
       code: "runtime_state_unavailable",
       message: "Local runtime state is unavailable.",
     });
-    expect(browserControlFailureMessage(error)).toBe("Local runtime state is unavailable.");
-    expect(browserControlFailureMessage(new Error("private detail")))
-      .toBe("The wallet operation could not be completed.");
+    expect(browserActionFailureMessage(error)).toBe("Local runtime state is unavailable.");
+    expect(browserActionFailureMessage(new Error("private detail")))
+      .toBe("The action could not be completed.");
   });
 
   it("classifies only authenticated-session loss as a root reload", () => {

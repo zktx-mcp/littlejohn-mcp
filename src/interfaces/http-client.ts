@@ -6,7 +6,10 @@ import {
   type ApplicationFailure,
   type CanonicalJson,
 } from "../core/index.js";
-import { chainErrorRegistry, chainInterfaceErrorMappings } from "../chain/errors.js";
+import {
+  tokenCatalogErrorRegistry,
+  tokenCatalogInterfaceErrorMappings,
+} from "../token-catalog/index.js";
 import {
   getRuntimeOperationFailure,
   problemDetailsSchema,
@@ -30,8 +33,8 @@ export const createInterfaceFailure = (
   code: string,
   issues: ApplicationFailure["error"]["issues"] = [],
 ): ApplicationFailure => {
-  try { return createApplicationFailure(chainErrorRegistry, code, issues); }
-  catch { return createApplicationFailure(chainErrorRegistry, "internal_error"); }
+  try { return createApplicationFailure(tokenCatalogErrorRegistry, code, issues); }
+  catch { return createApplicationFailure(tokenCatalogErrorRegistry, "internal_error"); }
 };
 
 export const constrainInterfaceFailure = (
@@ -67,8 +70,8 @@ export const normalizeProblemDetailsFailure = (
 const normalizeDispatchFailure = (response: RuntimeDispatchResponse): ApplicationFailure =>
   normalizeProblemDetailsFailure(
     response,
-    chainErrorRegistry,
-    chainInterfaceErrorMappings,
+    tokenCatalogErrorRegistry,
+    tokenCatalogInterfaceErrorMappings,
     "internal_error",
   );
 

@@ -5,6 +5,7 @@ export {
 export type { InterfaceApplicationDependencies } from "./application.js";
 export {
   browserAssetPaths,
+  browserApiRoot,
   browserCsrfHeaderName,
   browserCsrfMetaName,
   browserCsrfTokenByteLength,

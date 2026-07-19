@@ -1,4 +1,4 @@
-import { browserSessionRequiresReload } from "./wallet-client.js";
+import { browserSessionRequiresReload } from "./browser-client.js";
 
 export const createBrowserSessionRecovery = (
   reload: () => void,

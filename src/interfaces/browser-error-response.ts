@@ -1,12 +1,22 @@
 import {
   captureCanonicalJson,
   coreErrorDefinitions,
+  fieldIssueSchema,
   type CanonicalJson,
+  type FieldIssue,
 } from "../core/browser.js";
+import {
+  chainErrorDefinitions,
+  chainInterfaceErrorMappingDefinitions,
+} from "../chain/error-definitions.js";
 import {
   runtimeErrorDefinitions,
   runtimeInterfaceErrorMappingDefinitions,
 } from "../runtime/error-definitions.js";
+import {
+  tokenCatalogErrorDefinitions,
+  tokenCatalogInterfaceErrorMappingDefinitions,
+} from "../token-catalog/browser.js";
 import {
   walletErrorDefinitions,
   walletInterfaceErrorMappingDefinitions,
@@ -16,10 +26,14 @@ const browserErrorDefinitions = Object.freeze([
   ...coreErrorDefinitions,
   ...runtimeErrorDefinitions,
   ...walletErrorDefinitions,
+  ...chainErrorDefinitions,
+  ...tokenCatalogErrorDefinitions,
 ]);
 const browserInterfaceErrorMappingDefinitions = Object.freeze([
   ...runtimeInterfaceErrorMappingDefinitions,
   ...walletInterfaceErrorMappingDefinitions,
+  ...chainInterfaceErrorMappingDefinitions,
+  ...tokenCatalogInterfaceErrorMappingDefinitions,
 ]);
 
 export type BrowserErrorCode = typeof browserErrorDefinitions[number]["code"];
@@ -32,11 +46,7 @@ export interface BrowserProblemDetails {
   readonly code: BrowserErrorCode;
   readonly detail: string;
   readonly retryable: boolean;
-  readonly issues: readonly {
-    readonly path: string;
-    readonly code: string;
-    readonly message: string;
-  }[];
+  readonly issues: readonly FieldIssue[];
 }
 
 const definitionByCode: ReadonlyMap<string, BrowserErrorDefinition> = new Map<string, BrowserErrorDefinition>(
@@ -85,6 +95,9 @@ export const parseBrowserProblemDetails = (
   const { type, title, status, code, detail, retryable, issues } = captured;
   const definition = typeof code === "string" ? definitionByCode.get(code) : undefined;
   const mapping = typeof code === "string" ? mappingByCode.get(code) : undefined;
+  const parsedIssues = Array.isArray(issues)
+    ? fieldIssueSchema.array().max(64).safeParse(issues)
+    : undefined;
   if (
     type !== "about:blank" ||
     definition === undefined || mapping === undefined ||
@@ -92,8 +105,10 @@ export const parseBrowserProblemDetails = (
     status !== mapping.httpStatus || status !== responseStatus ||
     detail !== definition.message ||
     retryable !== definition.retryable ||
-    !Array.isArray(issues) || issues.length !== 0
+    parsedIssues === undefined || !parsedIssues.success
   ) throw new TypeError("The browser error response is invalid.");
+
+  const canonicalIssues = Object.freeze(parsedIssues.data.map((issue) => Object.freeze(issue)));
 
   return Object.freeze({
     type,
@@ -102,6 +117,6 @@ export const parseBrowserProblemDetails = (
     code: definition.code,
     detail: definition.message,
     retryable: definition.retryable,
-    issues: Object.freeze([]),
+    issues: canonicalIssues,
   });
 };

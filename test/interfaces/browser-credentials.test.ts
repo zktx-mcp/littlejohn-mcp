@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   browserCsrfTokenByteLength,
-  browserWalletApiRoot,
+  browserApiRoot,
 } from "../../src/interfaces/browser-contract.js";
 import {
   browserSessionCookieName,
@@ -58,7 +58,7 @@ describe("browser session credential authority", () => {
     expect(browserSessionLifetimeSeconds).toBe(3_600);
     expect(issue.setCookie).toBe(
       `${browserSessionCookieName}=${cookieValue}; ` +
-      `Path=${browserWalletApiRoot}; HttpOnly; SameSite=Strict; ` +
+      `Path=${browserApiRoot}; HttpOnly; SameSite=Strict; ` +
       `Max-Age=${browserSessionLifetimeSeconds}`,
     );
     expect(issue.setCookie).not.toContain("Domain=");
@@ -233,7 +233,7 @@ describe("browser session credential authority", () => {
     }
   });
 
-  it("declares only the three browser request classes with separate session and CSRF authority", () => {
+  it("separates bootstrap, bodyless reads, body queries, and CSRF-protected controls", () => {
     const authority = createBrowserRequestCredentialAuthority({
       now: () => issuedAt,
       randomBytes: (size) => Buffer.alloc(size, 12),
@@ -255,6 +255,15 @@ describe("browser session credential authority", () => {
         authentication: "browser_session",
         body: "none",
         responseLimitBytes: 8 * 1024 * 1024,
+        mutation: "none",
+      },
+      {
+        requestClass: "browser_query",
+        host: "fixed",
+        origin: "absent_or_fixed",
+        authentication: "browser_session",
+        body: "route_json",
+        responseLimitBytes: 64 * 1024,
         mutation: "none",
       },
       {

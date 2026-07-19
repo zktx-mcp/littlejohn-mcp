@@ -106,7 +106,7 @@ export type {
 } from "./database.js";
 export { decodeWalletAccountRecordKey } from "./database.js";
 export {
-  capabilityCatalogSchema,
+  createCapabilityCatalogSchema,
   composeCapabilityCatalog,
   assertChainRuntimeSupportManifestExtension,
   assertInterfaceRuntimeSupportManifestExtension,
@@ -127,6 +127,7 @@ export type {
   Availability,
   CapabilityAvailabilityInput,
   CapabilityCatalog,
+  CapabilityCatalogEntry,
   CapabilitySupportEntryInput,
   ChainRuntimeSupportManifest,
   InitialRuntimeSupportManifest,

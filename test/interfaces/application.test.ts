@@ -20,9 +20,14 @@ import {
 import { createInterfaceOwnerApplicationFactory } from "../../src/interfaces/application.js";
 import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
 import {
+  createControlAuthorizationHeader,
   createControlCredentialVerifier,
   loadOrCreateControlCredential,
 } from "../../src/runtime/control-credential.js";
+import {
+  fixedHostHeader,
+  jsonContentType,
+} from "../../src/runtime/http-boundary.js";
 import { createRuntimeRouteRegistry } from "../../src/runtime/http-routing.js";
 import { runtimePaths } from "../../src/runtime/paths.js";
 import { createResourceOwnershipScope } from "../../src/runtime/resource-ownership.js";
@@ -40,8 +45,8 @@ import {
   parseWalletOperationStartResult,
   type WalletInterfaceOperations,
 } from "../../src/wallet/contracts.js";
-import { walletInterfaceErrorMappings } from "../../src/wallet/errors.js";
 import { bindForHarness, createCapabilityHarness } from "../core/capability-harness.js";
+import { tokenCatalogInterfaceHarnessPorts } from "../token-catalog/interface-harness.js";
 
 const directories: string[] = [];
 const operationId = Buffer.alloc(32, 41).toString("base64url");
@@ -119,7 +124,6 @@ describe("interface owner application", () => {
     const controlCredential = await loadOrCreateControlCredential(directory, paths.controlCredential);
     const routes = createRuntimeRouteRegistry({
       controlVerifier: createControlCredentialVerifier(controlCredential),
-      errorMappings: walletInterfaceErrorMappings,
     });
     const walletManifest = extendWalletSupportManifest(
       createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
@@ -143,6 +147,7 @@ describe("interface owner application", () => {
       loadAssets: async () => assets,
       createCredentials,
     })({
+      ...tokenCatalogInterfaceHarnessPorts(),
       routes,
       signal: new AbortController().signal,
       startupResources: createResourceOwnershipScope().resources,
@@ -150,12 +155,6 @@ describe("interface owner application", () => {
       walletConnection: ports.wallet,
       walletOperations: walletOperations(),
       chainReads: ports.chain,
-      tokenInspection: {} as never,
-      tokenCatalogQueries: {} as never,
-      tokenCatalogWebStart: {} as never,
-      tokenCatalogBrowserOperations: {} as never,
-      tokenCatalogInteractiveCli: {} as never,
-      tokenCatalogNonInteractiveOperations: {} as never,
     });
 
     for (const [method, path] of [
@@ -163,6 +162,23 @@ describe("interface owner application", () => {
       ["GET", "/api/v1/wallet/connection"],
       ["GET", "/api/v1/capabilities"],
       ["GET", "/"],
+      ["GET", "/tokens"],
+      ["POST", "/api/v1/token-inspections"],
+      ["POST", "/api/v1/internal/control/token-catalog/inspections"],
+      ["POST", "/api/v1/internal/control/token-catalog/registration-queries"],
+      ["GET", "/api/v1/internal/control/token-catalog/registrations/eip155:4663/0x1111111111111111111111111111111111111111"],
+      ["POST", "/api/v1/internal/control/token-catalog/operations"],
+      ["GET", `/api/v1/internal/control/token-catalog/operations/${operationId}`],
+      ["POST", `/api/v1/internal/control/token-catalog/operations/${operationId}/confirmation`],
+      ["DELETE", `/api/v1/internal/control/token-catalog/operations/${operationId}`],
+      ["POST", "/api/v1/token-catalog/inspections"],
+      ["POST", "/api/v1/token-catalog/registration-queries"],
+      ["GET", "/api/v1/token-catalog/registrations/eip155:4663/0x1111111111111111111111111111111111111111"],
+      ["POST", "/api/v1/token-catalog/operations"],
+      ["GET", "/api/v1/token-catalog/current-operation"],
+      ["GET", `/api/v1/token-catalog/operations/${operationId}`],
+      ["POST", `/api/v1/token-catalog/operations/${operationId}/confirmation`],
+      ["POST", `/api/v1/token-catalog/operations/${operationId}/cancellation`],
       ["POST", "/api/v1/wallet/operations"],
       ["GET", "/api/v1/wallet/current-operation"],
       ["GET", `/api/v1/wallet/operations/${operationId}`],
@@ -171,6 +187,39 @@ describe("interface owner application", () => {
     ] as const) expect(application.routes.match(method, path).status).toBe("matched");
     expect(application.routes.match("GET", "/wallet").status)
       .toBe("not_found");
+
+    const root = application.routes.match("GET", "/");
+    if (root.status !== "matched") throw new Error("Expected browser bootstrap route.");
+    const bootstrapped = application.routes.normalizeResult(root.route, await root.route.handler({
+      params: root.params,
+      body: {},
+      signal: new AbortController().signal,
+    }));
+    if (!bootstrapped.ok || bootstrapped.response !== "browser_content" ||
+      bootstrapped.setCookie === undefined) throw new Error("Expected browser credential.");
+    const cookie = bootstrapped.setCookie.split(";", 1)[0] as string;
+    const securityBase = {
+      host: [fixedHostHeader], origin: [], csrfToken: [], query: "",
+      contentType: [jsonContentType], bodyLength: 2,
+    } as const;
+    const publicInspection = application.routes.match("POST", "/api/v1/token-inspections");
+    const controlInspection = application.routes.match(
+      "POST",
+      "/api/v1/internal/control/token-catalog/inspections",
+    );
+    if (publicInspection.status !== "matched" || controlInspection.status !== "matched") {
+      throw new Error("Expected token inspection routes.");
+    }
+    expect(application.routes.validateSecurity(publicInspection, {
+      ...securityBase, authorization: [], cookie: [cookie],
+    })).toEqual({ ok: false, code: "unauthorized" });
+    const authorization = createControlAuthorizationHeader(controlCredential);
+    expect(application.routes.validateSecurity(controlInspection, {
+      ...securityBase, authorization: [authorization], cookie: [cookie],
+    })).toEqual({ ok: false, code: "unauthorized" });
+    expect(application.routes.validateSecurity(controlInspection, {
+      ...securityBase, authorization: [authorization], cookie: [],
+    })).toEqual({ ok: true });
 
     const supportSnapshot = readRuntimeSupportManifest(application.supportManifest);
     const availability = new Map<string, typeof supportSnapshot.capabilities[number]["availability"]>(
@@ -192,6 +241,22 @@ describe("interface owner application", () => {
     expect(availability.get("wallet.current_operation")?.web).toBe("available");
     expect(availability.get("wallet.cancel_operation")?.web).toBe("available");
     expect(availability.get("wallet.operation")?.web).toBe("available");
+    expect(availability.get("token.inspect")).toEqual({
+      overall: "available", direct: "internal", http: "available",
+      mcp: "available", cli: "available", web: "available",
+    });
+    for (const capabilityId of [
+      "token.registration",
+      "token.registrations",
+      "token.start_registration",
+      "token.start_registration_update",
+      "token.start_unregistration",
+      "token.operation",
+      "token.cancel_operation",
+    ]) expect(availability.get(capabilityId)).toEqual({
+      overall: "available", direct: "internal", http: "internal",
+      mcp: "available", cli: "available", web: "available",
+    });
 
     await application.close();
     expect(closes).toBe(1);

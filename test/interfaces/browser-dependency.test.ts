@@ -38,7 +38,24 @@ const webSourceRoot = resolve(repositoryRoot, "src/interfaces/web");
 const browserContractSource = resolve(repositoryRoot, "src/interfaces/browser-contract.ts");
 const webApplicationSource = resolve(webSourceRoot, "app.tsx");
 const walletClientSource = resolve(webSourceRoot, "wallet-client.ts");
+const browserClientSource = resolve(webSourceRoot, "browser-client.ts");
+const tokenCatalogClientSource = resolve(webSourceRoot, "token-catalog-client.ts");
+const tokenCatalogPageSource = resolve(webSourceRoot, "token-catalog-page.tsx");
 const operationStateSource = resolve(repositoryRoot, "src/wallet/operation-state.ts");
+const chainErrorDefinitionsSource = resolve(repositoryRoot, "src/chain/error-definitions.ts");
+const tokenCatalogBrowserSource = resolve(repositoryRoot, "src/token-catalog/browser.ts");
+const tokenCatalogContractSchemaSource = resolve(
+  repositoryRoot,
+  "src/token-catalog/contract-schema.ts",
+);
+const tokenCatalogErrorDefinitionsSource = resolve(
+  repositoryRoot,
+  "src/token-catalog/error-definitions.ts",
+);
+const tokenCatalogHttpContractSource = resolve(
+  repositoryRoot,
+  "src/token-catalog/http-contract.ts",
+);
 const allowedVirtualModules = new Set([
   "\0commonjsHelpers.js",
   "\0rolldown/runtime.js",
@@ -65,6 +82,11 @@ describe("browser runtime dependency boundary", () => {
       operationStateSource,
       resolve(repositoryRoot, "src/wallet/operation-contract.ts"),
       resolve(repositoryRoot, "src/core/wallet-connection.ts"),
+      chainErrorDefinitionsSource,
+      tokenCatalogBrowserSource,
+      tokenCatalogContractSchemaSource,
+      tokenCatalogErrorDefinitionsSource,
+      tokenCatalogHttpContractSource,
       resolve(nodeModulesRoot, "react/index.js"),
       resolve(nodeModulesRoot, "react-dom/client.js"),
       resolve(nodeModulesRoot, "scheduler/index.js"),
@@ -79,6 +101,9 @@ describe("browser runtime dependency boundary", () => {
       resolve(repositoryRoot, "src/runtime/control-credential.ts"),
       resolve(repositoryRoot, "src/runtime/database.ts"),
       resolve(repositoryRoot, "src/chain/rpc.ts"),
+      resolve(repositoryRoot, "src/token-catalog/contracts.ts"),
+      resolve(repositoryRoot, "src/token-catalog/errors.ts"),
+      resolve(repositoryRoot, "src/token-catalog/index.ts"),
       resolve(repositoryRoot, "src/wallet/contracts.ts"),
       resolve(repositoryRoot, "src/wallet/coordinator.ts"),
       resolve(nodeModulesRoot, "@modelcontextprotocol/sdk/dist/esm/index.js"),
@@ -191,15 +216,15 @@ describe("browser runtime dependency boundary", () => {
     );
     expect(shadowedObservationValue).not.toBe(webApplication);
     expect(auditBrowserSourceModule(shadowedObservationValue, webApplicationSource)).not.toEqual([]);
-    const walletClient = await readFile(walletClientSource, "utf8");
-    const substitutedFetchInputs = walletClient.replace(
+    const browserClient = await readFile(browserClientSource, "utf8");
+    const substitutedFetchInputs = browserClient.replace(
       "const defaultBrowserFetch: BrowserFetch = (input, init) => globalThis.fetch(input, init);",
       "const input = \"https://example.invalid\";\n" +
       "const init = { method: \"GET\", credentials: \"same-origin\", cache: \"no-store\" } as const;\n" +
       "const defaultBrowserFetch: BrowserFetch = (_input, _init) => globalThis.fetch(input, init);",
     );
-    expect(substitutedFetchInputs).not.toBe(walletClient);
-    expect(auditBrowserSourceModule(substitutedFetchInputs, walletClientSource)).not.toEqual([]);
+    expect(substitutedFetchInputs).not.toBe(browserClient);
+    expect(auditBrowserSourceModule(substitutedFetchInputs, browserClientSource)).not.toEqual([]);
     for (const declaration of [
       "let defaultBrowserFetch: BrowserFetch = (input, init) => globalThis.fetch(input, init);",
       "{ const defaultBrowserFetch: BrowserFetch = (input, init) => globalThis.fetch(input, init); }",
@@ -208,12 +233,12 @@ describe("browser runtime dependency boundary", () => {
       "const defaultBrowserFetch: BrowserFetch = (input, init) => globalThis.fetch(input, init);\n" +
         "const duplicateBrowserFetch: BrowserFetch = (input, init) => globalThis.fetch(input, init);",
     ]) {
-      const mutated = walletClient.replace(
+      const mutated = browserClient.replace(
         "const defaultBrowserFetch: BrowserFetch = (input, init) => globalThis.fetch(input, init);",
         declaration,
       );
-      expect(mutated).not.toBe(walletClient);
-      expect(auditBrowserSourceModule(mutated, walletClientSource), declaration).not.toEqual([]);
+      expect(mutated).not.toBe(browserClient);
+      expect(auditBrowserSourceModule(mutated, browserClientSource), declaration).not.toEqual([]);
     }
     expect(auditBrowserSourceModule(
       "export {}; const Error = RTCPeerConnection; new Error();",
@@ -279,12 +304,19 @@ describe("browser runtime dependency boundary", () => {
 
       const moduleIds = chunks.flatMap((chunk) => Object.keys(chunk.modules)).sort();
       expect(moduleIds).toContain(browserContractSource);
+      expect(moduleIds).toContain(browserClientSource);
       expect(moduleIds).toContain(walletClientSource);
+      expect(moduleIds).toContain(tokenCatalogClientSource);
+      expect(moduleIds).toContain(tokenCatalogPageSource);
       expect(moduleIds).toContain(webApplicationSource);
       expect(moduleIds).toContain(resolve(webSourceRoot, "wallet-dialog-view.ts"));
       expect(moduleIds).toContain(operationStateSource);
       expect(moduleIds).toContain(resolve(repositoryRoot, "src/wallet/operation-contract.ts"));
       expect(moduleIds).toContain(resolve(repositoryRoot, "src/core/wallet-connection.ts"));
+      expect(moduleIds).toContain(chainErrorDefinitionsSource);
+      expect(moduleIds).toContain(tokenCatalogBrowserSource);
+      expect(moduleIds).toContain(tokenCatalogContractSchemaSource);
+      expect(moduleIds).toContain(tokenCatalogErrorDefinitionsSource);
       const zodRoot = resolve(nodeModulesRoot, "zod");
       expect(moduleIds.some((moduleId) =>
         moduleId === zodRoot || moduleId.startsWith(`${zodRoot}${sep}`))).toBe(true);

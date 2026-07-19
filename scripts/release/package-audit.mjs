@@ -272,7 +272,11 @@ export const prepareReleasePackage = async (repositoryRoot) => {
       "littlejohn",
       "--help",
     ], { cwd: npxRoot, env: environment, output: "capture" });
-    if (!help.stdout.toString("utf8").startsWith("Usage:\n  littlejohn read chain-status")) {
+    const directHelp = await runCommand(process.execPath, [
+      resolve(installedPackageRoot, "dist/cli.js"),
+      "--help",
+    ], { cwd: installRoot, env: environment, output: "capture" });
+    if (!help.stdout.equals(directHelp.stdout)) {
       throw new TypeError("Local tarball npx smoke returned an unexpected CLI surface.");
     }
 

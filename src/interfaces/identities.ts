@@ -1,5 +1,6 @@
 import {
   accountBalanceCapability,
+  CapabilityRegistry,
   chainStatusCapability,
   compareCodePointSequences,
   contractInspectCapability,
@@ -9,6 +10,12 @@ import {
   walletConnectionCapability,
   type AnyReadCapabilityDefinition,
 } from "../core/index.js";
+import {
+  tokenCatalogApplicationContracts,
+  tokenInspectCapability,
+  type TokenCatalogOperationKind,
+  type AnyTokenCatalogApplicationContract,
+} from "../token-catalog/index.js";
 import {
   walletManagementContracts,
   type AnyWalletManagementContract,
@@ -24,7 +31,7 @@ export interface InterfaceToolAnnotations {
 }
 
 export interface CliInterfaceIdentity {
-  readonly domain: "read" | "wallet";
+  readonly domain: "read" | "token" | "wallet";
   readonly command: string;
   readonly argumentSyntax: string;
 }
@@ -39,6 +46,7 @@ export interface ReadInterfaceIdentity {
     annotations: InterfaceToolAnnotations;
   }>;
   readonly cli: Readonly<CliInterfaceIdentity>;
+  readonly web?: true;
 }
 
 const readAnnotations = (openWorldHint: boolean): InterfaceToolAnnotations => Object.freeze({
@@ -55,6 +63,7 @@ const identity = <Definition extends AnyReadCapabilityDefinition>(input: {
     readonly openWorldHint: boolean;
   };
   readonly cli: ReadInterfaceIdentity["cli"];
+  readonly web?: true;
 }): ReadInterfaceIdentity & { readonly definition: Definition } => Object.freeze({
   definition: input.definition,
   capabilityId: getCapabilityDefinitionSnapshot(input.definition).capabilityId,
@@ -65,6 +74,7 @@ const identity = <Definition extends AnyReadCapabilityDefinition>(input: {
     annotations: readAnnotations(input.mcp.openWorldHint),
   }),
   cli: Object.freeze(input.cli),
+  ...(input.web === undefined ? {} : { web: true as const }),
 });
 
 export const chainStatusInterface = identity({
@@ -130,13 +140,34 @@ export const walletConnectionInterface = identity({
   cli: { domain: "wallet", command: "status", argumentSyntax: "[--json]" },
 });
 
+export const tokenInspectInterface = identity({
+  definition: tokenInspectCapability,
+  http: { method: "POST", path: "/api/v1/token-inspections" },
+  mcp: {
+    name: "token_inspect_contract",
+    description: "Inspect one token contract at one Robinhood Chain block.",
+    openWorldHint: true,
+  },
+  cli: {
+    domain: "token",
+    command: "inspect",
+    argumentSyntax: "<token-address> --block <latest|block-number> [--json]",
+  },
+  web: true,
+});
+
 export const readInterfaceIdentities = Object.freeze([
   accountBalanceInterface,
   chainStatusInterface,
   contractInspectInterface,
+  tokenInspectInterface,
   transactionInspectInterface,
   walletConnectionInterface,
-]);
+].sort((left, right) => compareCodePointSequences(left.capabilityId, right.capabilityId)));
+
+export const interfaceReadCapabilityRegistry = new CapabilityRegistry(
+  readInterfaceIdentities.map((identity) => identity.definition),
+);
 
 export const capabilityCatalogInterface = Object.freeze({
   failureCodes: readCapabilityCommonFailureCodes,
@@ -181,6 +212,137 @@ const startAnnotations = (openWorldHint: boolean): InterfaceToolAnnotations => O
   idempotentHint: false,
   openWorldHint,
 });
+
+export interface TokenCatalogInterfaceBinding {
+  readonly action: "get" | "list" | "start" | "get_operation" | "cancel_operation";
+  readonly contract: AnyTokenCatalogApplicationContract;
+  readonly mcp: Readonly<{
+    readonly name: string;
+    readonly description: string;
+    readonly annotations: InterfaceToolAnnotations;
+  }>;
+  readonly cli: Readonly<CliInterfaceIdentity>;
+  readonly operationKind?: TokenCatalogOperationKind;
+  readonly web: true;
+}
+
+const tokenCatalogBinding = <const Binding extends TokenCatalogInterfaceBinding>(
+  input: Binding,
+): Readonly<Binding> => Object.freeze({
+  ...input,
+  contract: input.contract,
+  mcp: Object.freeze(input.mcp),
+  cli: Object.freeze(input.cli),
+}) as Readonly<Binding>;
+
+export const tokenCatalogInterfaceBindings = Object.freeze({
+  registration: tokenCatalogBinding({
+    action: "get",
+    contract: tokenCatalogApplicationContracts.registration,
+    mcp: {
+      name: "token_get_registration",
+      description: "Read one token registration for the current wallet account.",
+      annotations: readAnnotations(false),
+    },
+    cli: { domain: "token", command: "get", argumentSyntax: "<token-address> [--json]" },
+    web: true,
+  }),
+  registrations: tokenCatalogBinding({
+    action: "list",
+    contract: tokenCatalogApplicationContracts.registrations,
+    mcp: {
+      name: "token_list_registrations",
+      description: "List token registrations for the current wallet account.",
+      annotations: readAnnotations(false),
+    },
+    cli: {
+      domain: "token",
+      command: "list",
+      argumentSyntax: "[--limit <1..25>] [--cursor <token-address>] [--json]",
+    },
+    web: true,
+  }),
+  startRegistration: tokenCatalogBinding({
+    action: "start",
+    contract: tokenCatalogApplicationContracts.startRegistration,
+    mcp: {
+      name: "token_start_registration",
+      description: "Start a token registration operation for local browser confirmation.",
+      annotations: startAnnotations(true),
+    },
+    cli: {
+      domain: "token",
+      command: "register",
+      argumentSyntax: "<token-address> [--label <text>] [--visibility <visible|hidden>]",
+    },
+    operationKind: "register",
+    web: true,
+  }),
+  startRegistrationUpdate: tokenCatalogBinding({
+    action: "start",
+    contract: tokenCatalogApplicationContracts.startRegistrationUpdate,
+    mcp: {
+      name: "token_start_registration_update",
+      description: "Start a token registration settings update for local browser confirmation.",
+      annotations: startAnnotations(false),
+    },
+    cli: {
+      domain: "token",
+      command: "update",
+      argumentSyntax: "<token-address> --revision <revision> [--label <text> | --clear-label] [--visibility <visible|hidden>]",
+    },
+    operationKind: "update_registration",
+    web: true,
+  }),
+  startUnregistration: tokenCatalogBinding({
+    action: "start",
+    contract: tokenCatalogApplicationContracts.startUnregistration,
+    mcp: {
+      name: "token_start_unregistration",
+      description: "Start token removal for local browser confirmation.",
+      annotations: startAnnotations(false),
+    },
+    cli: {
+      domain: "token",
+      command: "unregister",
+      argumentSyntax: "<token-address> --revision <revision>",
+    },
+    operationKind: "unregister",
+    web: true,
+  }),
+  operation: tokenCatalogBinding({
+    action: "get_operation",
+    contract: tokenCatalogApplicationContracts.operation,
+    mcp: {
+      name: "token_get_operation",
+      description: "Read one retained token catalog operation.",
+      annotations: readAnnotations(false),
+    },
+    cli: { domain: "token", command: "operation", argumentSyntax: "<operation-id> [--json]" },
+    web: true,
+  }),
+  cancelOperation: tokenCatalogBinding({
+    action: "cancel_operation",
+    contract: tokenCatalogApplicationContracts.cancelOperation,
+    mcp: {
+      name: "token_cancel_operation",
+      description: "Cancel one cancellable token catalog operation.",
+      annotations: Object.freeze({
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      }),
+    },
+    cli: { domain: "token", command: "cancel", argumentSyntax: "<operation-id> [--json]" },
+    web: true,
+  }),
+});
+
+export const tokenCatalogInterfaceBindingList: readonly TokenCatalogInterfaceBinding[] = Object.freeze(
+  Object.values(tokenCatalogInterfaceBindings)
+    .sort((left, right) => compareCodePointSequences(left.contract.capabilityId, right.contract.capabilityId)),
+);
 
 export const walletInterfaceBindings = Object.freeze({
   connect: walletBinding({
@@ -250,14 +412,14 @@ export const walletInterfaceBindingList: readonly WalletInterfaceBinding[] = Obj
 );
 
 export const declaredCliCommandIdentities = Object.freeze([
-  chainStatusInterface.cli,
-  contractInspectInterface.cli,
-  transactionInspectInterface.cli,
-  accountBalanceInterface.cli,
-  walletConnectionInterface.cli,
+  ...readInterfaceIdentities.map((identity) => identity.cli),
+  ...tokenCatalogInterfaceBindingList.map((binding) => binding.cli),
   ...walletInterfaceBindingList.flatMap((binding) =>
     binding.cli === undefined ? [] : [binding.cli]),
-]);
+].sort((left, right) => compareCodePointSequences(
+  `${left.domain}\0${left.command}`,
+  `${right.domain}\0${right.command}`,
+)));
 
 const cliExecutableName = "littlejohn" as const;
 
@@ -275,6 +437,7 @@ export const cliHelpText = [
 
 export const declaredMcpToolNames = Object.freeze([
   ...readInterfaceIdentities.map((entry) => entry.mcp.name),
+  ...tokenCatalogInterfaceBindingList.map((binding) => binding.mcp.name),
   capabilityCatalogInterface.mcp.name,
   ...walletInterfaceBindingList.flatMap((binding) =>
     binding.mcp === undefined ? [] : [binding.mcp.name]),

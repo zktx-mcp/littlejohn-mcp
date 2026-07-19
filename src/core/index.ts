@@ -22,6 +22,11 @@ export {
 } from "./canonical-json.js";
 export type { CanonicalJson } from "./canonical-json.js";
 export { coreContractVersion } from "./contract.js";
+export {
+  assertCapabilitySuccessChainScope,
+  createCapabilitySuccessSchema,
+} from "./capability-contract.js";
+export type { CapabilitySuccess } from "./capability-contract.js";
 export { createSha256HexSchema } from "./digests.js";
 export { productDisplayName } from "./product-identity.js";
 export {
@@ -73,7 +78,6 @@ export type {
   CapabilityDefinitionSnapshot,
   CapabilityId,
   CapabilityInput,
-  CapabilitySuccess,
   ConclusionDraft,
   DataValidationContext,
   EvidenceValidationContext,

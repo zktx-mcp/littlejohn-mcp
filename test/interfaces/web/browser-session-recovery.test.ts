@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createBrowserSessionRecovery } from
   "../../../src/interfaces/web/browser-session-recovery.js";
-import { BrowserResponseError } from "../../../src/interfaces/web/wallet-client.js";
+import { BrowserResponseError } from "../../../src/interfaces/web/browser-client.js";
 
 describe("browser session recovery", () => {
   it("requests one root reload for repeated authenticated-session loss", () => {

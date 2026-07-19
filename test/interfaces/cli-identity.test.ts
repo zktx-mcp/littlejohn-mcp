@@ -29,7 +29,7 @@ const helpTerminal = (): CliTerminalPort & {
     writeError: (value: string) => { errors.push(value); },
     showQr: () => { throw new Error("Help must not display a QR code."); },
     hideQr: () => { throw new Error("Help must not manage a QR code."); },
-    readConfirmation: async () => { throw new Error("Help must not request confirmation."); },
+    readLine: async () => { throw new Error("Help must not read terminal input."); },
     dispose: () => { isDisposed = true; },
     disposed: () => isDisposed,
   });
@@ -38,6 +38,11 @@ const helpTerminal = (): CliTerminalPort & {
 describe("CLI interface identity", () => {
   it("owns the complete command identity and exact accepted syntax in one projection", () => {
     expect(declaredCliCommandIdentities).toEqual([
+      {
+        domain: "read",
+        command: "balance",
+        argumentSyntax: "(--address <address> | --active) --native <true|false> [--token <address>]... --block <latest|block-number> [--json]",
+      },
       { domain: "read", command: "chain-status", argumentSyntax: "[--json]" },
       {
         domain: "read",
@@ -49,28 +54,59 @@ describe("CLI interface identity", () => {
         command: "transaction",
         argumentSyntax: "<transaction-hash> [--json]",
       },
+      { domain: "token", command: "cancel", argumentSyntax: "<operation-id> [--json]" },
+      { domain: "token", command: "get", argumentSyntax: "<token-address> [--json]" },
       {
-        domain: "read",
-        command: "balance",
-        argumentSyntax: "(--address <address> | --active) --native <true|false> [--token <address>]... --block <latest|block-number> [--json]",
+        domain: "token",
+        command: "inspect",
+        argumentSyntax: "<token-address> --block <latest|block-number> [--json]",
       },
-      { domain: "wallet", command: "status", argumentSyntax: "[--json]" },
+      {
+        domain: "token",
+        command: "list",
+        argumentSyntax: "[--limit <1..25>] [--cursor <token-address>] [--json]",
+      },
+      { domain: "token", command: "operation", argumentSyntax: "<operation-id> [--json]" },
+      {
+        domain: "token",
+        command: "register",
+        argumentSyntax: "<token-address> [--label <text>] [--visibility <visible|hidden>]",
+      },
+      {
+        domain: "token",
+        command: "unregister",
+        argumentSyntax: "<token-address> --revision <revision>",
+      },
+      {
+        domain: "token",
+        command: "update",
+        argumentSyntax: "<token-address> --revision <revision> [--label <text> | --clear-label] [--visibility <visible|hidden>]",
+      },
+      { domain: "wallet", command: "cancel", argumentSyntax: "<operation-id>" },
       { domain: "wallet", command: "connect", argumentSyntax: "" },
       { domain: "wallet", command: "disconnect", argumentSyntax: "" },
       { domain: "wallet", command: "operation", argumentSyntax: "<operation-id> [--json]" },
-      { domain: "wallet", command: "cancel", argumentSyntax: "<operation-id>" },
+      { domain: "wallet", command: "status", argumentSyntax: "[--json]" },
     ]);
     expect(cliHelpText).toBe([
       "Usage:",
+      "  littlejohn read balance (--address <address> | --active) --native <true|false> [--token <address>]... --block <latest|block-number> [--json]",
       "  littlejohn read chain-status [--json]",
       "  littlejohn read contract <address> --block <latest|block-number> [--json]",
       "  littlejohn read transaction <transaction-hash> [--json]",
-      "  littlejohn read balance (--address <address> | --active) --native <true|false> [--token <address>]... --block <latest|block-number> [--json]",
-      "  littlejohn wallet status [--json]",
+      "  littlejohn token cancel <operation-id> [--json]",
+      "  littlejohn token get <token-address> [--json]",
+      "  littlejohn token inspect <token-address> --block <latest|block-number> [--json]",
+      "  littlejohn token list [--limit <1..25>] [--cursor <token-address>] [--json]",
+      "  littlejohn token operation <operation-id> [--json]",
+      "  littlejohn token register <token-address> [--label <text>] [--visibility <visible|hidden>]",
+      "  littlejohn token unregister <token-address> --revision <revision>",
+      "  littlejohn token update <token-address> --revision <revision> [--label <text> | --clear-label] [--visibility <visible|hidden>]",
+      "  littlejohn wallet cancel <operation-id>",
       "  littlejohn wallet connect",
       "  littlejohn wallet disconnect",
       "  littlejohn wallet operation <operation-id> [--json]",
-      "  littlejohn wallet cancel <operation-id>",
+      "  littlejohn wallet status [--json]",
       "  littlejohn --help",
       "",
     ].join("\n"));

@@ -13,18 +13,22 @@ import type {
   WalletQrMatrix,
 } from "../../wallet/operation-contract.js";
 import {
+  browserPagePaths,
   browserCsrfMetaName,
   parseBrowserCsrfToken,
+  parseBrowserPagePath,
 } from "../browser-contract.js";
 import {
-  browserControlFailureMessage,
   cancelWalletOperation,
   confirmWalletOperation,
-  isBrowserResponseCode,
   loadWalletOperation,
   loadWalletProjection,
   startWalletOperation,
 } from "./wallet-client.js";
+import {
+  browserActionFailureMessage,
+  isBrowserResponseCode,
+} from "./browser-client.js";
 import {
   createWalletObservationStore,
   observeExactWalletOperation,
@@ -49,11 +53,12 @@ import {
   walletOperationConfirmationMessage,
   walletOperationCopy,
   walletOperationNotice,
-  walletOperationToast,
+  walletOperationNotification,
   type WalletConnectionAction,
   type WalletOperationAction,
-  type WalletToastNotice,
 } from "./wallet-dialog-view.js";
+import type { NotificationNotice } from "./notification.js";
+import { TokenCatalogPage } from "./token-catalog-page.js";
 
 type ReadyState = {
   readonly status: "ready";
@@ -64,8 +69,8 @@ type AppState =
   | { readonly status: "loading" }
   | ReadyState;
 
-type ActiveToast = {
-  readonly notice: WalletToastNotice;
+type ActiveNotification = {
+  readonly notice: NotificationNotice;
   readonly sequence: number;
   readonly phase: "visible" | "exiting";
 };
@@ -236,16 +241,16 @@ const OperationDetails = ({
   );
 };
 
-const WalletToast = ({
+const Notification = ({
   notice,
   exiting,
 }: {
-  readonly notice: WalletToastNotice;
+  readonly notice: NotificationNotice;
   readonly exiting: boolean;
 }) => (
-  <div className="wallet-toast-region">
+  <div className="notification-region">
     <div
-      className={`wallet-toast wallet-toast-${notice.tone}${exiting ? " wallet-toast-exiting" : ""}`}
+      className={`notification notification-${notice.tone}${exiting ? " notification-exiting" : ""}`}
       role={notice.tone === "error" ? "alert" : "status"}
     >
       <strong>{notice.heading}</strong>
@@ -271,6 +276,9 @@ const WalletDialog = ({
   const presentation = wallet.status === "present"
     ? wallet.presentation
     : undefined;
+  const closeWhenIdle = (): void => {
+    if (presentation === undefined) onClose();
+  };
   useEffect(() => {
     const element = dialog.current;
     if (element === null) return;
@@ -288,7 +296,12 @@ const WalletDialog = ({
       tabIndex={-1}
       onCancel={(event) => {
         event.preventDefault();
-        if (presentation === undefined) onClose();
+        closeWhenIdle();
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        closeWhenIdle();
       }}
     >
       {presentation === undefined
@@ -315,22 +328,22 @@ export const App = () => {
   const [state, setState] = useState<AppState>({ status: "loading" });
   const [connectionDialogOpen, setConnectionDialogOpen] = useState(false);
   const [requestPending, setRequestPending] = useState(false);
-  const [activeToast, setActiveToast] = useState<ActiveToast | undefined>(undefined);
+  const [activeNotification, setActiveNotification] = useState<ActiveNotification | undefined>(undefined);
   const [requestAuthority] = useState(createBrowserRequestAuthority);
   const [sessionRecovery] = useState(() => createBrowserSessionRecovery(
     () => { window.location.reload(); },
   ));
   const [observationStore] = useState(createBrowserWalletObservationStore);
-  const toastSequence = useRef(0);
+  const notificationSequence = useRef(0);
   const observation = useRef(observationStore.load());
   const walletNavigation = useRef<HTMLButtonElement>(null);
   const dialogHadFocus = useRef(false);
 
-  const publishToast = useCallback((notice: WalletToastNotice): void => {
-    toastSequence.current += 1;
-    setActiveToast(Object.freeze({
+  const publishNotification = useCallback((notice: NotificationNotice): void => {
+    notificationSequence.current += 1;
+    setActiveNotification(Object.freeze({
       notice,
-      sequence: toastSequence.current,
+      sequence: notificationSequence.current,
       phase: "visible",
     }));
   }, []);
@@ -338,19 +351,19 @@ export const App = () => {
   const publishTerminalToast = useCallback((
     operation: WalletManagementOperation,
   ): void => {
-    const notice = walletOperationToast(operation);
+    const notice = walletOperationNotification(operation);
     if (notice === undefined) return;
-    publishToast(notice);
-  }, [publishToast]);
+    publishNotification(notice);
+  }, [publishNotification]);
 
   const publishControlError = useCallback((error: unknown): void => {
-    publishToast(Object.freeze({
+    publishNotification(Object.freeze({
       id: "wallet-control-error",
       tone: "error",
       heading: "Wallet action failed",
-      message: browserControlFailureMessage(error),
+      message: browserActionFailureMessage(error),
     }));
-  }, [publishToast]);
+  }, [publishNotification]);
 
   const recoverBrowserSession = useCallback((error: unknown): boolean => {
     return sessionRecovery(error);
@@ -406,16 +419,16 @@ export const App = () => {
   }, [requestAuthority]);
 
   useEffect(() => {
-    if (activeToast === undefined) return;
-    const sequence = activeToast.sequence;
-    const phase = activeToast.phase;
+    if (activeNotification === undefined) return;
+    const sequence = activeNotification.sequence;
+    const phase = activeNotification.phase;
     const delay = phase === "exiting"
       ? toastExitMilliseconds
-      : activeToast.notice.tone === "error"
+      : activeNotification.notice.tone === "error"
         ? errorToastMilliseconds
         : standardToastMilliseconds;
     const timer = window.setTimeout(() => {
-      setActiveToast((current) => {
+      setActiveNotification((current) => {
         if (current?.sequence !== sequence || current.phase !== phase) return current;
         return phase === "visible"
           ? Object.freeze({ ...current, phase: "exiting" })
@@ -423,11 +436,11 @@ export const App = () => {
       });
     }, delay);
     return () => { window.clearTimeout(timer); };
-  }, [activeToast]);
+  }, [activeNotification]);
 
   useEffect(() => {
     if (requestPending) return;
-    const request = requestAuthority.beginPoll();
+    const request = requestAuthority.beginRead();
     if (request === undefined) return;
     let timer: number | undefined;
     const poll = async (): Promise<void> => {
@@ -437,7 +450,7 @@ export const App = () => {
     };
     void poll();
     return () => {
-      requestAuthority.cancelPoll(request);
+      requestAuthority.cancelRead(request);
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [refresh, requestAuthority, requestPending]);
@@ -529,10 +542,27 @@ export const App = () => {
     }
     setConnectionDialogOpen((current) => !current);
   };
+  const pagePath = parseBrowserPagePath(window.location.pathname);
   return (
     <div className="app-shell">
       <nav className="app-nav" aria-label="Primary">
-        <strong className="product-name">{productDisplayName}</strong>
+        <a className="product-name" href={browserPagePaths.root}>{productDisplayName}</a>
+        <div className="page-navigation">
+          <a
+            className={pagePath === browserPagePaths.root ? "page-link active" : "page-link"}
+            href={browserPagePaths.root}
+            aria-current={pagePath === browserPagePaths.root ? "page" : undefined}
+          >
+            Home
+          </a>
+          <a
+            className={pagePath === browserPagePaths.tokens ? "page-link active" : "page-link"}
+            href={browserPagePaths.tokens}
+            aria-current={pagePath === browserPagePaths.tokens ? "page" : undefined}
+          >
+            Tokens
+          </a>
+        </div>
         <button
           ref={walletNavigation}
           type="button"
@@ -544,11 +574,23 @@ export const App = () => {
           {walletNavigationLabel(wallet)}
         </button>
       </nav>
-      <section className="intro">
-        <p className="eyebrow">Robinhood Chain</p>
-        <h1>Local wallet connection</h1>
-        <p>Connect Robinhood Wallet to the local Little John runtime.</p>
-      </section>
+      {pagePath === browserPagePaths.root ? (
+        <section className="intro">
+          <p className="eyebrow">Robinhood Chain</p>
+          <h1>Local wallet connection</h1>
+          <p>Connect Robinhood Wallet to the local Little John runtime.</p>
+        </section>
+      ) : state.status === "ready" ? (
+        <TokenCatalogPage
+          wallet={state.wallet}
+          getCsrfToken={csrfToken}
+          recoverBrowserSession={recoverBrowserSession}
+          onOpenWallet={activateWalletNavigation}
+          onNotification={publishNotification}
+        />
+      ) : (
+        <section className="intro"><p>Loading token catalog…</p></section>
+      )}
       {dialogOpen && wallet !== undefined ? (
         <WalletDialog
           wallet={wallet}
@@ -558,11 +600,11 @@ export const App = () => {
           onClose={closeConnectionDialog}
         />
       ) : null}
-      {activeToast === undefined ? null : (
-        <WalletToast
-          key={activeToast.sequence}
-          notice={activeToast.notice}
-          exiting={activeToast.phase === "exiting"}
+      {activeNotification === undefined ? null : (
+        <Notification
+          key={activeNotification.sequence}
+          notice={activeNotification.notice}
+          exiting={activeNotification.phase === "exiting"}
         />
       )}
     </div>

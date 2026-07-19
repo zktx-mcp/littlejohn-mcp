@@ -160,6 +160,38 @@ describe("HTTP request-class and route authority", () => {
     expect(read.route.responseLimitBytes).toBe(8 * 1024 * 1024);
   });
 
+  it("matches one raw canonical CAIP-2 parameter without accepting encoded aliases", async () => {
+    const { verifier } = await credentialFixture();
+    const routes = createRuntimeRouteRegistry({ controlVerifier: verifier }).extend([{
+      method: "GET",
+      pathPattern: "/api/v1/internal/control/items/{chainId}",
+      mutation: "none" as const,
+      response: "canonical_json" as const,
+      successStatus: 200,
+      handler: success,
+    }]);
+
+    const canonical = routes.match("GET", "/api/v1/internal/control/items/eip155:4663");
+    expect(canonical.status).toBe("matched");
+    if (canonical.status === "matched") {
+      expect(canonical.params).toEqual({ chainId: "eip155:4663" });
+    }
+
+    for (const alias of [
+      "eip155%3A4663",
+      "eip155%3a4663",
+      "eip155%253A4663",
+      "eip155%2F4663",
+      ".",
+      "..",
+    ]) {
+      expect(routes.match("GET", `/api/v1/internal/control/items/${alias}`).status)
+        .toBe("not_found");
+    }
+    expect(routes.match("GET", "/api/v1/internal/control/items/eip155:4663/extra").status)
+      .toBe("not_found");
+  });
+
   it("extends policy and resource authority only as one complete immutable contract", async () => {
     const { verifier } = await credentialFixture();
     const initial = createRuntimeRouteRegistry({ controlVerifier: verifier });

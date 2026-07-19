@@ -65,10 +65,41 @@ describe("release fake boundaries", () => {
       await expect(rpcRequest(rpc.url, "eth_chainId", [])).resolves.toMatchObject({
         result: "0x1237",
       });
+      await expect(rpcRequest(rpc.url, "eth_getCode", [
+        rpc.token.address,
+        rpc.canonicalBlockReference,
+      ])).resolves.toMatchObject({ result: rpc.token.runtimeCode });
+      for (const [selector, result] of [
+        ["0x18160ddd", `0x${BigInt(rpc.token.totalSupplyRaw).toString(16).padStart(64, "0")}`],
+        ["0x313ce567", `0x${BigInt(rpc.token.decimals).toString(16).padStart(64, "0")}`],
+      ] as const) {
+        await expect(rpcRequest(rpc.url, "eth_call", [{
+          to: rpc.token.address,
+          data: selector,
+        }, rpc.canonicalBlockReference])).resolves.toMatchObject({ result });
+      }
       await expect(rpcRequest(rpc.url, "eth_sendTransaction", [{}])).resolves.toMatchObject({
         error: { code: -32601 },
       });
       expect(() => rpc.assertNoUnexpectedMethods()).toThrow("eth_sendTransaction");
+    } finally {
+      await rpc.close();
+    }
+  });
+
+  it("rejects token reads outside the exact address, selector, and canonical block", async () => {
+    const rpc = await startFakeRpc();
+    try {
+      for (const params of [
+        [{ to: `0x${"33".repeat(20)}`, data: "0x18160ddd" }, rpc.canonicalBlockReference],
+        [{ to: rpc.token.address, data: "0x70a08231" }, rpc.canonicalBlockReference],
+        [{ to: rpc.token.address, data: "0x18160ddd" }, "latest"],
+      ] as const) {
+        await expect(rpcRequest(rpc.url, "eth_call", params)).resolves.toMatchObject({
+          error: { code: -32601 },
+        });
+      }
+      expect(() => rpc.assertNoUnexpectedMethods()).toThrow("eth_call");
     } finally {
       await rpc.close();
     }

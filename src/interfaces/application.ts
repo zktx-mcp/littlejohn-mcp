@@ -3,6 +3,7 @@ import type {
   InterfaceOwnerApplicationFactory,
 } from "../runtime/index.js";
 import type { WalletInterfaceOperations } from "../wallet/contracts.js";
+import { extendTokenCatalogControlRouteRegistry } from "../token-catalog/index.js";
 import {
   loadBrowserAssetBundle,
   type BrowserAssetBundle,
@@ -36,13 +37,26 @@ export const createInterfaceOwnerApplicationFactory = (
       routes: context.routes,
       chainReads: context.chainReads,
       walletConnection: context.walletConnection,
+      tokenInspection: context.tokenInspection,
       supportManifest,
     });
-    const routes = extendBrowserInterfaceRoutes({
+    const controlRoutes = extendTokenCatalogControlRouteRegistry({
       routes: publicRoutes,
+      inspection: context.tokenInspection,
+      queries: context.tokenCatalogQueries,
+      webStart: context.tokenCatalogWebStart,
+      interactiveCli: context.tokenCatalogInteractiveCli,
+      nonInteractiveOperations: context.tokenCatalogNonInteractiveOperations,
+    });
+    const routes = extendBrowserInterfaceRoutes({
+      routes: controlRoutes,
       credentials,
       assets,
       walletOperations: context.walletOperations,
+      tokenInspection: context.tokenInspection,
+      tokenCatalogQueries: context.tokenCatalogQueries,
+      tokenCatalogWebStart: context.tokenCatalogWebStart,
+      tokenCatalogBrowserOperations: context.tokenCatalogBrowserOperations,
     });
     return Object.freeze({
       routes,

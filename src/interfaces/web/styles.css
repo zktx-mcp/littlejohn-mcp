@@ -35,6 +35,26 @@ body {
 .product-name {
   color: #f5f7f4;
   font-size: 18px;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.page-navigation {
+  display: flex;
+  gap: 8px;
+  margin-inline-start: 28px;
+}
+
+.page-link {
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: #a7b3aa;
+  text-decoration: none;
+}
+
+.page-link.active {
+  color: #f5f7f4;
+  background: #26302a;
 }
 
 .wallet-nav-control {
@@ -45,12 +65,14 @@ body {
   padding: 56px 4px 28px;
 }
 
-.wallet-dialog::backdrop {
+.wallet-dialog::backdrop,
+.token-dialog::backdrop {
   background: rgb(5 9 6 / 62%);
   backdrop-filter: blur(12px);
 }
 
-.wallet-dialog {
+.wallet-dialog,
+.token-dialog {
   width: min(calc(100% - 48px), 620px);
   max-height: calc(100vh - 48px);
   margin: auto;
@@ -115,6 +137,112 @@ dd:last-child { margin-bottom: 0; }
 
 .actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 26px; }
 
+.token-page {
+  padding: 48px 4px 72px;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 28px;
+}
+
+.page-header h1,
+.token-card h2,
+.empty-state h2 {
+  margin-bottom: 10px;
+}
+
+.account-line {
+  overflow-x: auto;
+  white-space: nowrap;
+  color: #cdd6cf;
+}
+
+.token-list {
+  display: grid;
+  gap: 14px;
+  margin-top: 24px;
+}
+
+.token-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px;
+  border: 1px solid #354139;
+  border-radius: 14px;
+  background: #171d19;
+}
+
+.token-card-copy {
+  min-width: 0;
+}
+
+.token-card-copy p {
+  max-width: 100%;
+  margin: 5px 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  color: #a7b3aa;
+}
+
+.compact-actions {
+  flex: 0 0 auto;
+  margin-top: 0;
+}
+
+.empty-state {
+  margin-top: 24px;
+  padding: 28px;
+  border: 1px solid #354139;
+  border-radius: 16px;
+  background: #171d19;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+  margin: 18px 0;
+  color: #cdd6cf;
+}
+
+input,
+select {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 12px;
+  border: 1px solid #46554b;
+  border-radius: 10px;
+  color: #f5f7f4;
+  background: #111512;
+  font: inherit;
+}
+
+input:disabled,
+select:disabled {
+  opacity: 0.65;
+}
+
+details {
+  margin-top: 22px;
+  padding: 14px 16px;
+  border: 1px solid #354139;
+  border-radius: 12px;
+}
+
+summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.technical-details {
+  margin-top: 18px;
+}
+
 button {
   min-height: 46px;
   padding: 0 20px;
@@ -131,7 +259,7 @@ button.secondary { color: #eef3ef; background: #303a33; }
 button.danger { color: #fff3f3; background: #8a3030; }
 button:disabled { cursor: not-allowed; opacity: 0.45; }
 
-.wallet-toast-region {
+.notification-region {
   position: fixed;
   right: 24px;
   bottom: 24px;
@@ -140,37 +268,37 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   pointer-events: none;
 }
 
-.wallet-toast {
+.notification {
   padding: 16px 18px;
   border: 1px solid;
   border-radius: 14px;
   background: #171d19;
   box-shadow: 0 18px 50px rgb(0 0 0 / 35%);
-  animation: wallet-toast-enter 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: notification-enter 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-.wallet-toast-exiting {
-  animation: wallet-toast-exit 180ms cubic-bezier(0.4, 0, 1, 1) both;
+.notification-exiting {
+  animation: notification-exit 180ms cubic-bezier(0.4, 0, 1, 1) both;
 }
 
-@keyframes wallet-toast-enter {
+@keyframes notification-enter {
   from { opacity: 0; transform: translateX(110%); }
   to { opacity: 1; transform: translateX(0); }
 }
 
-@keyframes wallet-toast-exit {
+@keyframes notification-exit {
   from { opacity: 1; transform: translateX(0); }
   to { opacity: 0; transform: translateX(110%); }
 }
 
-.wallet-toast p { margin: 6px 0 0; }
-.wallet-toast-success { color: #c8f7d2; border-color: #3f8150; }
-.wallet-toast-neutral { color: #e3eae5; border-color: #526158; }
-.wallet-toast-error { color: #ffd3d3; border-color: #8b3e3e; }
+.notification p { margin: 6px 0 0; }
+.notification-success { color: #c8f7d2; border-color: #3f8150; }
+.notification-neutral { color: #e3eae5; border-color: #526158; }
+.notification-error { color: #ffd3d3; border-color: #8b3e3e; }
 
 @media (prefers-reduced-motion: reduce) {
-  .wallet-toast,
-  .wallet-toast-exiting {
+  .notification,
+  .notification-exiting {
     animation-duration: 1ms;
   }
 }
@@ -178,14 +306,18 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 @media (max-width: 520px) {
   #root { padding: 20px 16px; }
   .app-nav { padding-bottom: 16px; }
+  .page-navigation { margin-inline-start: 14px; }
   .intro { padding-top: 40px; }
-  .wallet-dialog {
+  .wallet-dialog,
+  .token-dialog {
     width: calc(100% - 32px);
     max-height: calc(100vh - 32px);
     padding: 24px 20px;
   }
   .actions { flex-direction: column; align-items: flex-end; }
-  .wallet-toast-region {
+  .page-header,
+  .token-card { align-items: stretch; flex-direction: column; }
+  .notification-region {
     right: 16px;
     bottom: 16px;
     width: calc(100vw - 32px);

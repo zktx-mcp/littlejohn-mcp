@@ -14,6 +14,8 @@ import {
   projectCapabilities,
   readCapabilityRegistry,
   walletConnectionCapability,
+  type CapabilityRegistry,
+  type CapabilitySchemaProjection,
   type CanonicalJson,
 } from "../core/index.js";
 import {
@@ -22,7 +24,7 @@ import {
 } from "./configuration.js";
 import { guardRuntimeJsonSchema, parseRuntimeAuthority } from "./schema-authority.js";
 
-const readCapabilityIds = Object.freeze(readCapabilityRegistry.values().map((definition) =>
+const initialReadCapabilityIds = Object.freeze(readCapabilityRegistry.values().map((definition) =>
   getCapabilityDefinitionSnapshot(definition).capabilityId));
 const walletConnectionCapabilityId = getCapabilityDefinitionSnapshot(walletConnectionCapability).capabilityId;
 
@@ -79,7 +81,7 @@ const createSupportSchemaSet = () => {
     chains: z.array(chainSupport).length(1),
     protocols: z.array(protocolSupport).max(128),
     transactionActions: z.array(transactionActionSupport).max(256),
-    capabilities: z.array(capabilityManifestEntry).min(readCapabilityIds.length),
+    capabilities: z.array(capabilityManifestEntry).min(initialReadCapabilityIds.length),
   }).strict().superRefine((value, context) => {
     const ids = value.capabilities.map((entry) => entry.capabilityId);
     for (let index = 1; index < ids.length; index += 1) {
@@ -88,7 +90,7 @@ const createSupportSchemaSet = () => {
         break;
       }
     }
-    if (readCapabilityIds.some((capabilityId) => !ids.includes(capabilityId))) {
+    if (initialReadCapabilityIds.some((capabilityId) => !ids.includes(capabilityId))) {
       context.addIssue({ code: "custom", message: "A canonical read capability support identity is missing." });
     }
     for (const entries of [value.protocols, value.transactionActions]) {
@@ -213,7 +215,7 @@ export const createInitialRuntimeSupportManifest = (
     }],
     protocols: [],
     transactionActions: [],
-    capabilities: readCapabilityIds.map((capabilityId) => ({ capabilityId, availability: unavailable })),
+    capabilities: initialReadCapabilityIds.map((capabilityId) => ({ capabilityId, availability: unavailable })),
   }) as InitialRuntimeSupportManifest;
 };
 
@@ -447,33 +449,83 @@ export const verifyCurrentSupportDocument = (
   }
 };
 
-const publicCatalogEntrySchema = extendCapabilitySchemaProjection({ availability: publicSchemas.capabilityAvailability });
-const authorityCatalogEntrySchema = extendCapabilitySchemaProjection({ availability: authoritySchemas.capabilityAvailability });
-const publicCatalogSchema = z.object({
-  contractVersion: z.literal(coreContractVersion),
-  capabilities: z.array(publicCatalogEntrySchema).length(readCapabilityIds.length),
-}).strict();
-const authorityCatalogSchema = z.object({
-  contractVersion: z.literal(coreContractVersion),
-  capabilities: z.array(authorityCatalogEntrySchema).length(readCapabilityIds.length),
-}).strict();
+export type CapabilityCatalogEntry = CapabilitySchemaProjection & Readonly<{
+  availability: CapabilityAvailabilityInput;
+}>;
 
-export const capabilityCatalogSchema = guardRuntimeJsonSchema(publicCatalogSchema);
-export type CapabilityCatalog = z.infer<typeof capabilityCatalogSchema>;
+export interface CapabilityCatalog {
+  readonly contractVersion: typeof coreContractVersion;
+  readonly capabilities: readonly CapabilityCatalogEntry[];
+}
+
+const capabilityRegistryProjections = (
+  registry: CapabilityRegistry,
+): readonly CapabilitySchemaProjection[] => projectCapabilities(registry);
+
+const createCapabilityCatalogSchemaSet = (registry: CapabilityRegistry) => {
+  const expectedProjections = capabilityRegistryProjections(registry);
+  const expectedProjectionJson = expectedProjections.map((projection) =>
+    canonicalJsonStringify(projection as unknown as CanonicalJson));
+  const createSchema = (availability: typeof publicSchemas.capabilityAvailability) => {
+    const entry = extendCapabilitySchemaProjection({ availability });
+    return z.object({
+      contractVersion: z.literal(coreContractVersion),
+      capabilities: z.array(entry).length(expectedProjections.length),
+    }).strict().superRefine((value, context) => {
+      for (let index = 0; index < expectedProjections.length; index += 1) {
+        const expected = expectedProjections[index];
+        const actual = value.capabilities[index];
+        if (expected === undefined || actual === undefined) continue;
+        if (actual.capabilityId !== expected.capabilityId) {
+          context.addIssue({
+            code: "custom",
+            path: ["capabilities", index, "capabilityId"],
+            message: "Capability catalog identities must match the supplied registry in canonical order.",
+          });
+          continue;
+        }
+        const { availability: _availability, ...actualProjection } = actual;
+        if (
+          canonicalJsonStringify(actualProjection as unknown as CanonicalJson) !==
+          expectedProjectionJson[index]
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["capabilities", index],
+            message: "Capability catalog projection does not match the supplied registry.",
+          });
+        }
+      }
+    });
+  };
+  return Object.freeze({
+    expectedProjections,
+    publicSchema: createSchema(publicSchemas.capabilityAvailability),
+    authoritySchema: createSchema(authoritySchemas.capabilityAvailability),
+  });
+};
+
+export const createCapabilityCatalogSchema = (
+  registry: CapabilityRegistry,
+): z.ZodType<CapabilityCatalog> => guardRuntimeJsonSchema(
+  createCapabilityCatalogSchemaSet(registry).publicSchema,
+) as z.ZodType<CapabilityCatalog>;
 
 export const composeCapabilityCatalog = (
+  registry: CapabilityRegistry,
   manifest: RuntimeSupportManifest,
 ): CapabilityCatalog => {
+  const catalogSchemas = createCapabilityCatalogSchemaSet(registry);
   const snapshot = readRuntimeSupportManifest(manifest);
   const availability = new Map<string, RuntimeSupportManifestSnapshot["capabilities"][number]["availability"]>(
     snapshot.capabilities.map((entry) => [entry.capabilityId, entry.availability]),
   );
-  const capabilities = projectCapabilities(readCapabilityRegistry).map((projection) => {
+  const capabilities = catalogSchemas.expectedProjections.map((projection) => {
     const state = availability.get(projection.capabilityId);
     if (state === undefined) throw new TypeError("Registered capability has no support entry.");
     return { ...projection, availability: state };
   });
-  const catalog = parseRuntimeAuthority(authorityCatalogSchema, {
+  const catalog = parseRuntimeAuthority(catalogSchemas.authoritySchema, {
     contractVersion: coreContractVersion,
     capabilities,
   });

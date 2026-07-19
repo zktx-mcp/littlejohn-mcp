@@ -12,19 +12,14 @@ import {
   isWalletOperationTerminalState,
   type WalletOperationKind,
 } from "../../wallet/operation-state.js";
+import type { NotificationNotice } from "./notification.js";
 
 export type WalletConnectionAction = Extract<WalletOperationKind, "connect" | "disconnect">;
 export type WalletOperationAction = "confirm" | "cancel";
-export type WalletToastTone = "success" | "neutral" | "error";
 
 export interface WalletDialogCopy {
   readonly heading: string;
   readonly message: string;
-}
-
-export interface WalletToastNotice extends WalletDialogCopy {
-  readonly id: string;
-  readonly tone: WalletToastTone;
 }
 
 export interface WalletDialogField {
@@ -212,12 +207,12 @@ export const walletOperationCopy = (
   }
 };
 
-export const walletOperationToast = (
+export const walletOperationNotification = (
   operation: WalletManagementOperation,
-): WalletToastNotice | undefined => {
+): NotificationNotice | undefined => {
   if (!isWalletOperationTerminalState(operation.state)) return undefined;
   const copy = walletOperationCopy(operation);
-  const tone: WalletToastTone = operation.state === "completed"
+  const tone: NotificationNotice["tone"] = operation.state === "completed"
     ? operation.kind === "disconnect" &&
         operation.result.outcome === "already_disconnected"
       ? "neutral"

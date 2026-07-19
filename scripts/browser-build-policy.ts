@@ -13,6 +13,10 @@ const webSourceRoot = resolve(repositoryRoot, "src/interfaces/web");
 const webEntrySource = resolve(webSourceRoot, "main.tsx");
 const webApplicationSource = resolve(webSourceRoot, "app.tsx");
 const walletClientSource = resolve(webSourceRoot, "wallet-client.ts");
+const browserClientSource = resolve(webSourceRoot, "browser-client.ts");
+const canonicalJsonSource = resolve(repositoryRoot, "src/core/canonical-json.ts");
+const evidenceSource = resolve(repositoryRoot, "src/core/evidence.ts");
+const keccak256Source = resolve(repositoryRoot, "src/core/keccak256.ts");
 const canonicalJsonValueSource = resolve(repositoryRoot, "src/core/canonical-json-value.ts");
 const jsonObjectSource = resolve(repositoryRoot, "src/core/json-object.ts");
 const immutabilitySource = resolve(repositoryRoot, "src/core/immutability.ts");
@@ -20,21 +24,34 @@ const sharedContractSources = new Set([
   "src/interfaces/browser-contract.ts",
   "src/interfaces/browser-error-response.ts",
   "src/core/canonical-json-value.ts",
+  "src/core/canonical-json.ts",
+  "src/core/capability-contract.ts",
+  "src/core/amounts.ts",
   "src/core/browser.ts",
+  "src/core/contract.ts",
   "src/core/error-definitions.ts",
+  "src/core/evm-address-input.ts",
+  "src/core/evidence.ts",
   "src/core/identities.ts",
   "src/core/immutability.ts",
   "src/core/json-object.ts",
+  "src/core/keccak256.ts",
   "src/core/primitives.ts",
   "src/core/product-identity.ts",
   "src/core/wallet-connection.ts",
+  "src/chain/error-definitions.ts",
   "src/runtime/error-definitions.ts",
+  "src/token-catalog/browser.ts",
+  "src/token-catalog/contract-schema.ts",
+  "src/token-catalog/error-definitions.ts",
+  "src/token-catalog/http-contract.ts",
+  "src/token-catalog/state.ts",
   "src/wallet/error-definitions.ts",
   "src/wallet/operation-contract.ts",
   "src/wallet/operation-state.ts",
 ].map((path) => resolve(repositoryRoot, path)));
 
-const allowedRuntimePackages = new Set(["react", "react-dom", "scheduler", "zod"]);
+const allowedRuntimePackages = new Set(["@noble/hashes", "react", "react-dom", "scheduler", "zod"]);
 const allowedWebPackageImports = new Map([
   ["react", new Set(["StrictMode", "useCallback", "useEffect", "useRef", "useState"])],
   ["react-dom/client", new Set(["createRoot"])],
@@ -42,7 +59,7 @@ const allowedWebPackageImports = new Map([
 const allowedWebConstructorsBySource = new Map([
   [webEntrySource, new Set(["Error"])],
   [webApplicationSource, new Set(["Error"])],
-  [walletClientSource, new Set(["BrowserResponseError", "TypeError"])],
+  [browserClientSource, new Set(["BrowserResponseError", "TypeError"])],
   [resolve(webSourceRoot, "request-authority.ts"), new Set(["AbortController"])],
 ]);
 const allowedVirtualModules = new Set([
@@ -52,11 +69,13 @@ const allowedVirtualModules = new Set([
 ]);
 const codeSourceExtensions = new Set([".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"]);
 const allowedIntrinsicElements = new Set([
-  "button", "dd", "dialog", "div", "dl", "dt", "h1", "header", "nav", "p", "rect", "section", "strong", "svg",
+  "a", "article", "button", "dd", "details", "dialog", "div", "dl", "dt", "h1", "h2", "header",
+  "input", "label", "nav", "option", "p", "rect", "section", "select", "span", "strong", "summary", "svg",
 ]);
 const allowedIntrinsicAttributes = new Set([
-  "aria-expanded", "aria-label", "aria-modal", "className", "disabled", "fill", "height", "key", "onCancel",
-  "onClick", "ref", "role", "shapeRendering", "tabIndex", "type", "viewBox", "width", "x", "y",
+  "aria-current", "aria-expanded", "aria-label", "aria-modal", "autoComplete", "className", "disabled",
+  "fill", "height", "href", "key", "onCancel", "onChange", "onClick", "onKeyDown", "ref", "role",
+  "shapeRendering", "spellCheck", "tabIndex", "type", "value", "viewBox", "width", "x", "y",
 ]);
 const forbiddenGlobalIdentifiers = new Set([
   "Audio", "BroadcastChannel", "DOMParser", "EventSource", "Function", "Image", "SharedWorker",
@@ -84,6 +103,7 @@ const allowedGlobalMembers = new Set([
   "Reflect.ownKeys",
   "window.clearTimeout",
   "window.location.reload",
+  "window.location.pathname",
   "window.sessionStorage.getItem",
   "window.sessionStorage.removeItem",
   "window.sessionStorage.setItem",
@@ -120,6 +140,7 @@ const sensitiveGlobalMemberSources = new Map([
   ["Reflect.getPrototypeOf", new Set([canonicalJsonValueSource])],
   ["Reflect.ownKeys", new Set([canonicalJsonValueSource, jsonObjectSource])],
   ["window.location.reload", new Set([webApplicationSource])],
+  ["window.location.pathname", new Set([webApplicationSource])],
   ["window.sessionStorage.getItem", new Set([webApplicationSource])],
   ["window.sessionStorage.removeItem", new Set([webApplicationSource])],
   ["window.sessionStorage.setItem", new Set([webApplicationSource])],
@@ -361,7 +382,7 @@ const sourceLocation = (sourceFile: ts.SourceFile, node: ts.Node): string => {
 };
 
 const approvedFetch = (node: ts.CallExpression, sourceFile: ts.SourceFile): boolean => {
-  if (resolve(sourceFile.fileName) !== walletClientSource || node.arguments.length !== 2) return false;
+  if (resolve(sourceFile.fileName) !== browserClientSource || node.arguments.length !== 2) return false;
   const arrow = node.parent;
   if (!ts.isArrowFunction(arrow) || arrow.body !== node || arrow.modifiers !== undefined ||
     arrow.parameters.length !== 2) return false;
@@ -450,7 +471,14 @@ const browserPackageImportViolation = (node: ts.ImportDeclaration, sourceFile: t
   const allowed = isWithin(webSourceRoot, sourcePath)
     ? allowedWebPackageImports.get(specifier)
     : sharedContractSources.has(sourcePath) && specifier === "zod"
-      ? new Set(["ZodRawShape", "z"])
+      ? new Set(["ZodRawShape", "ZodType", "z"])
+      : sourcePath === canonicalJsonSource && specifier === "@noble/hashes/sha2.js"
+        ? new Set(["sha256"])
+        : (sourcePath === canonicalJsonSource || sourcePath === keccak256Source) &&
+            specifier === "@noble/hashes/utils.js"
+          ? new Set(["bytesToHex", "hexToBytes", "utf8ToBytes"])
+          : sourcePath === keccak256Source && specifier === "@noble/hashes/sha3.js"
+            ? new Set(["keccak_256"])
       : undefined;
   const clause = node.importClause;
   if (allowed === undefined || clause === undefined || clause.name !== undefined ||
@@ -461,36 +489,26 @@ const browserPackageImportViolation = (node: ts.ImportDeclaration, sourceFile: t
   });
 };
 
-const approvedClickHandler = (
+const approvedNavigationHref = (
+  checker: ts.TypeChecker,
   attribute: ts.JsxAttribute,
   sourceFile: ts.SourceFile,
 ): boolean => {
   if (resolve(sourceFile.fileName) !== webApplicationSource ||
-    attribute.name.getText(sourceFile) !== "onClick" ||
+    attribute.name.getText(sourceFile) !== "href" ||
     attribute.initializer === undefined || !ts.isJsxExpression(attribute.initializer) ||
     attribute.initializer.expression === undefined) return false;
   const expression = unwrap(attribute.initializer.expression);
-  if (!ts.isArrowFunction(expression) || expression.parameters.length !== 0 || !ts.isBlock(expression.body) ||
-    expression.body.statements.length !== 1) return false;
-  const statement = expression.body.statements[0];
-  if (statement === undefined || !ts.isExpressionStatement(statement)) return false;
-  const call = unwrap(statement.expression);
-  if (!ts.isCallExpression(call)) return false;
-  const callee = unwrap(call.expression);
-  if (!ts.isIdentifier(callee)) return false;
-  if (
-    call.arguments.length === 0 &&
-    (callee.text === "activateWalletNavigation" ||
-      callee.text === "onClose")
-  ) return true;
-  if (call.arguments.length !== 1) return false;
-  const argument = call.arguments[0];
-  if (argument === undefined || ts.isSpreadElement(argument)) return false;
-  if (callee.text === "onAction" && ts.isStringLiteral(argument)) {
-    return new Set(["cancel", "confirm", "connect", "disconnect"])
-      .has(argument.text);
-  }
-  return false;
+  if (!ts.isPropertyAccessExpression(expression) ||
+    !ts.isIdentifier(expression.expression) ||
+    expression.expression.text !== "browserPagePaths" ||
+    (expression.name.text !== "root" && expression.name.text !== "tokens")) return false;
+  const declaration = checker.getSymbolAtLocation(expression.expression)?.declarations?.find(ts.isImportSpecifier);
+  if (declaration === undefined || declaration.name.text !== "browserPagePaths" ||
+    declaration.propertyName !== undefined) return false;
+  const imported = declaration.parent.parent.parent;
+  return ts.isImportDeclaration(imported) && ts.isStringLiteral(imported.moduleSpecifier) &&
+    imported.moduleSpecifier.text === "../browser-contract.js";
 };
 
 const approvedObservationStorageCall = (
@@ -630,7 +648,8 @@ export const auditBrowserSourceModule = (source: string, pathInput: string): rea
       }
       if (!isPropertyName(node) && !isWithinTypePosition(node)) {
         if (symbolIsDeclaredIn(checker, node, "lib.dom.d.ts") &&
-          !allowedDomRuntimeIdentifiers.has(node.text)) {
+          !allowedDomRuntimeIdentifiers.has(node.text) &&
+          !(path === evidenceSource && node.text === "URL")) {
           reject(node, `unapproved DOM runtime global ${node.text}`);
         }
         if (node.text === "root" && resolve(sourceFile.fileName) === webEntrySource &&
@@ -667,8 +686,8 @@ export const auditBrowserSourceModule = (source: string, pathInput: string): rea
           const attributeName = property.name.getText(sourceFile);
           if (!allowedIntrinsicAttributes.has(attributeName)) {
             reject(property, `unapproved intrinsic attribute ${attributeName}`);
-          } else if (attributeName === "onClick" && !approvedClickHandler(property, sourceFile)) {
-            reject(property, "unapproved intrinsic event handler");
+          } else if (attributeName === "href" && !approvedNavigationHref(checker, property, sourceFile)) {
+            reject(property, "unapproved navigation target");
           } else if (forbiddenJsxAttributes.has(attributeName)) {
             reject(property, `resource attribute ${attributeName}`);
           }
@@ -678,7 +697,7 @@ export const auditBrowserSourceModule = (source: string, pathInput: string): rea
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-  if (path === walletClientSource && approvedFetchCount !== 1) {
+  if (path === browserClientSource && approvedFetchCount !== 1) {
     violations.push(`${path}:expected one canonical browser fetch bridge`);
   }
   return Object.freeze(violations);

@@ -63,6 +63,10 @@ export {
   tokenCatalogErrorRegistry,
   tokenCatalogInterfaceErrorMappings,
 } from "./errors.js";
+export {
+  normalizeTokenCatalogError,
+  TokenCatalogOperationError,
+} from "./operation-error.js";
 export { tokenCatalogConsumerPortContract } from "./ports.js";
 export type {
   TokenCatalogBrowserOperationPort,
@@ -80,6 +84,22 @@ export {
   tokenCatalogOperationStates,
   tokenRegistrationVisibilities,
 } from "./state.js";
+export {
+  extendTokenCatalogControlRouteRegistry,
+  parseTokenCatalogCancellationBody,
+  parseTokenCatalogConfirmationBody,
+  parseTokenCatalogControlOperationCreate,
+  parseTokenCatalogOperationCreate,
+  parseTokenCatalogOperationPathId,
+  parseTokenCatalogRegistrationPathInput,
+  startTokenCatalogOperation,
+  tokenCatalogApplicationResult,
+  tokenCatalogBrowserRoutes,
+  tokenCatalogControlRoutes,
+  tokenCatalogStartContract,
+  tokenRegistrationListRequestBody,
+} from "./routes.js";
+export type { TokenCatalogOperationCreate } from "./routes.js";
 export type {
   TokenCatalogInteractionInterface,
   TokenCatalogOperationKind,

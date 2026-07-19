@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { coreContractVersion, createApplicationFailure } from "../../src/core/index.js";
+import {
+  coreContractVersion,
+  createApplicationFailure,
+  readCapabilityRegistry,
+} from "../../src/core/index.js";
+import { interfaceReadCapabilityRegistry } from "../../src/interfaces/identities.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import {
   RuntimeOperationError,
@@ -16,7 +21,7 @@ import {
   assertChainRuntimeSupportManifestExtension,
   assertInterfaceRuntimeSupportManifestExtension,
   assertWalletRuntimeSupportManifestExtension,
-  capabilityCatalogSchema,
+  createCapabilityCatalogSchema,
   composeCapabilityCatalog,
   extendChainRuntimeSupportManifest,
   extendInterfaceRuntimeSupportManifest,
@@ -34,6 +39,8 @@ import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/suppo
 const initialRuntimeSupportManifest = createInitialRuntimeSupportManifest(
   readRuntimeConfiguration({}).chain,
 );
+const interfaceCapabilityCatalogSchema = createCapabilityCatalogSchema(interfaceReadCapabilityRegistry);
+const initialCapabilityCatalogSchema = createCapabilityCatalogSchema(readCapabilityRegistry);
 
 const unavailable = {
   overall: "unavailable",
@@ -155,9 +162,9 @@ describe("runtime support manifest authority", () => {
     expect(() => assertWalletRuntimeSupportManifestExtension(initialRuntimeSupportManifest, chain as never))
       .toThrow("scope lineage");
 
-    const catalog = composeCapabilityCatalog(interfaces);
+    const catalog = composeCapabilityCatalog(interfaceReadCapabilityRegistry, interfaces);
     expect(catalog.capabilities.map((entry) => entry.capabilityId)).toEqual([
-      "account.balance", "chain.status", "contract.inspect", "transaction.inspect", "wallet.connection",
+      "account.balance", "chain.status", "contract.inspect", "token.inspect", "transaction.inspect", "wallet.connection",
     ]);
   });
 
@@ -213,18 +220,51 @@ describe("runtime support manifest authority", () => {
     expect(String(hostileFailure)).not.toContain("secret-support-delta");
 
     const manifestRuntime = (runtimeSupportManifestSchema as unknown as { _zod: { run: unknown } })._zod;
-    const catalogRuntime = (capabilityCatalogSchema as unknown as { _zod: { run: unknown } })._zod;
+    const catalogRuntime = (initialCapabilityCatalogSchema as unknown as { _zod: { run: unknown } })._zod;
     const manifestRun = manifestRuntime.run;
     const catalogRun = catalogRuntime.run;
     try {
       manifestRuntime.run = () => ({ value: { forged: true }, issues: [] });
       catalogRuntime.run = () => ({ value: { forged: true }, issues: [] });
       expect(readRuntimeSupportManifest(initialRuntimeSupportManifest).chains[0]?.chainId).toBe("eip155:4663");
-      expect(composeCapabilityCatalog(initialRuntimeSupportManifest).contractVersion).toBe(coreContractVersion);
+      expect(composeCapabilityCatalog(readCapabilityRegistry, initialRuntimeSupportManifest).contractVersion)
+        .toBe(coreContractVersion);
     } finally {
       manifestRuntime.run = manifestRun;
       catalogRuntime.run = catalogRun;
     }
+  });
+
+  it("binds the capability catalog schema and projection to the exact supplied registry", () => {
+    const wallet = extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, walletExtensionInput);
+    const chain = extendChainRuntimeSupportManifest(wallet, chainExtensionInput);
+    const tokenCatalog = extendTokenCatalogSupportManifest(chain);
+    const interfaces = extendInterfaceRuntimeSupportManifest(tokenCatalog, {
+      registrations: [],
+      changes: [{
+        capabilityId: "token.inspect",
+        availability: {
+          overall: "available",
+          direct: "internal",
+          http: "available",
+          mcp: "available",
+          cli: "available",
+          web: "available",
+        },
+      }],
+    });
+    const catalog = composeCapabilityCatalog(interfaceReadCapabilityRegistry, interfaces);
+    expect(interfaceCapabilityCatalogSchema.parse(catalog)).toEqual(catalog);
+    expect(() => initialCapabilityCatalogSchema.parse(catalog)).toThrow();
+    expect(() => interfaceCapabilityCatalogSchema.parse({
+      ...catalog,
+      capabilities: [catalog.capabilities[1], catalog.capabilities[0], ...catalog.capabilities.slice(2)],
+    })).toThrow("canonical order");
+    const first = catalog.capabilities[0]!;
+    expect(() => interfaceCapabilityCatalogSchema.parse({
+      ...catalog,
+      capabilities: [{ ...first, input: { ...first.input, digest: `0x${"11".repeat(32)}` } }, ...catalog.capabilities.slice(1)],
+    })).toThrow("does not match");
   });
 
   it("projects exactly one generated Current Support section from the manifest", () => {

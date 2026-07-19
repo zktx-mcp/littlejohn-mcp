@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import {
   canonicalJsonStringify,
   captureCanonicalJson,
+  createApplicationFailure,
   getCapabilityDefinitionSnapshot,
   parseCapabilitySuccess,
   type ApplicationFailure,
@@ -29,6 +30,16 @@ import {
   type ReadCliCommand,
   type StdioMcpHandle,
 } from "./interfaces/index.js";
+import {
+  parseTokenCliCommand,
+  runTokenCliCommand,
+  tokenCliCommandRequiresInteractiveTerminal,
+  type TokenCliCommand,
+} from "./interfaces/cli-token.js";
+import {
+  tokenCatalogErrorRegistry,
+  tokenCatalogInterfaceErrorMappings,
+} from "./token-catalog/index.js";
 import {
   LocalRuntime,
   type RuntimeDispatchRequest,
@@ -84,7 +95,7 @@ export interface CliTerminalPort {
   writeError(value: string): void;
   showQr(rendering: TerminalQrRendering): void;
   hideQr(): void;
-  readConfirmation(prompt: string): Promise<boolean>;
+  readLine(prompt: string): Promise<string>;
   dispose(): void;
 }
 
@@ -661,14 +672,14 @@ const runWalletTransition = async (
           decision = "interrupt";
         } else {
           const confirmation = await raceWithInterrupt(
-            () => dependencies.terminal.readConfirmation(
+            () => dependencies.terminal.readLine(
               confirmationPrompt(response.operation, connection.result.data),
             ),
             dependencies.terminal.interruptSignal,
           );
           decision = confirmation.kind === "interrupted" || dependencies.terminal.interruptSignal.aborted
             ? "interrupt"
-            : confirmation.result
+            : /^(?:y|yes)$/iu.test(confirmation.result.trim())
               ? "confirm"
               : "decline";
         }
@@ -751,14 +762,14 @@ const reportFailure = (
 ): number => {
   if (json) writeCanonical(terminal, failure);
   else terminal.writeError(`${failure.error.code}: ${failure.error.message}\n`);
-  return walletInterfaceErrorMappings.get(failure.error.code).cliExitCode;
+  return tokenCatalogInterfaceErrorMappings.get(failure.error.code).cliExitCode;
 };
 
 const normalizeCliFailure = (error: unknown): ApplicationFailure =>
   getCliApplicationFailure(error) ??
   getWalletOperationFailure(error) ??
   getRuntimeOperationFailure(error) ??
-  createWalletFailure("internal_error");
+  createApplicationFailure(tokenCatalogErrorRegistry, "internal_error");
 
 const runCommand = async (
   command: WalletCliCommand,
@@ -795,10 +806,12 @@ export const runCli = async (
 ): Promise<number> => {
   let command: CliCommand | undefined;
   let readCommand: ReadCliCommand | undefined;
+  let tokenCommand: TokenCliCommand | undefined;
   const mcpMode = argumentsInput.length === 0;
   let runtime: CliRuntimePort | undefined;
   let mcp: StdioMcpHandle | undefined;
   let readExitCode: number | undefined;
+  let tokenExitCode: number | undefined;
   let runtimeStopped = false;
   let failure: ApplicationFailure | undefined;
   let runtimeCleanupFailed = false;
@@ -809,8 +822,15 @@ export const runCli = async (
     if (!mcpMode && argumentsInput[0] === "read") {
       try { readCommand = parseReadCliCommand(argumentsInput); }
       catch { throw new WalletOperationError("invalid_input"); }
+    } else if (!mcpMode && argumentsInput[0] === "token") {
+      try { tokenCommand = parseTokenCliCommand(argumentsInput); }
+      catch { throw new WalletOperationError("invalid_input"); }
     } else if (!mcpMode) command = parseCommand(argumentsInput);
     if (command !== undefined && command.kind !== "help" &&
+      (!dependencies.terminal.inputIsTTY || !dependencies.terminal.outputIsTTY)) {
+      throw new WalletOperationError("interactive_terminal_required");
+    }
+    if (tokenCommand !== undefined && tokenCliCommandRequiresInteractiveTerminal(tokenCommand) &&
       (!dependencies.terminal.inputIsTTY || !dependencies.terminal.outputIsTTY)) {
       throw new WalletOperationError("interactive_terminal_required");
     }
@@ -834,6 +854,15 @@ export const runCli = async (
             dependencies.terminal,
             dependencies.terminal.interruptSignal,
           );
+        } else if (tokenCommand !== undefined) {
+          tokenExitCode = await runTokenCliCommand(runtime, tokenCommand, Object.freeze({
+            inputIsTTY: dependencies.terminal.inputIsTTY,
+            outputIsTTY: dependencies.terminal.outputIsTTY,
+            interruptSignal: dependencies.terminal.interruptSignal,
+            writeOutput: (value: string) => { dependencies.terminal.writeOutput(value); },
+            writeError: (value: string) => { dependencies.terminal.writeError(value); },
+            readLine: (prompt: string) => dependencies.terminal.readLine(prompt),
+          }));
         } else if (command !== undefined) {
           await runCommand(command, runtime, dependencies);
         }
@@ -856,12 +885,16 @@ export const runCli = async (
     try { dependencies.terminal.dispose(); }
     catch (error) { retainFailure(error); }
   }
-  if (failure === undefined) return readExitCode ?? 0;
+  if (failure === undefined) return tokenExitCode ?? readExitCode ?? 0;
   let exitCode: number;
   try {
-    exitCode = reportFailure(failure, command?.json ?? false, dependencies.terminal);
+    exitCode = reportFailure(
+      failure,
+      tokenCommand?.json ?? command?.json ?? false,
+      dependencies.terminal,
+    );
   } catch {
-    exitCode = walletInterfaceErrorMappings.get("internal_error").cliExitCode;
+    exitCode = tokenCatalogInterfaceErrorMappings.get("internal_error").cliExitCode;
   }
   if (runtimeCleanupFailed) dependencies.terminateProcess(exitCode);
   return exitCode;
@@ -925,14 +958,13 @@ export const createProcessTerminal = (
     writeError(value: string): void { host.stderr.write(value); },
     showQr: (rendering: TerminalQrRendering) => qrDisplay.show(rendering),
     hideQr: () => qrDisplay.hide(),
-    async readConfirmation(prompt: string): Promise<boolean> {
+    async readLine(prompt: string): Promise<string> {
       const previousReadlineError = closeReadline();
       if (previousReadlineError !== undefined) throw previousReadlineError;
       const active = createInterface({ input: host.stdin, output: host.stdout, terminal: true });
       readline = active;
       try {
-        const answer = await active.question(prompt);
-        return /^(?:y|yes)$/i.test(answer.trim());
+        return await active.question(prompt);
       } finally {
         active.close();
         if (readline === active) readline = undefined;

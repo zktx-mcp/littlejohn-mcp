@@ -16,6 +16,7 @@ import {
   publicInterfaceRoutes,
 } from "../../src/interfaces/http-routes.js";
 import { extendInterfaceSupportManifest } from "../../src/interfaces/support.js";
+import { composeInterfaceCapabilityCatalog } from "../../src/interfaces/support.js";
 import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
 import {
   createControlCredentialVerifier,
@@ -30,13 +31,11 @@ import {
 import { fixedHostHeader } from "../../src/runtime/http-boundary.js";
 import { runtimePaths } from "../../src/runtime/paths.js";
 import {
-  composeCapabilityCatalog,
   createInitialRuntimeSupportManifest,
   type WalletConnectionReadCapabilityPort,
 } from "../../src/runtime/index.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import { extendWalletSupportManifest } from "../../src/wallet/application.js";
-import { walletInterfaceErrorMappings } from "../../src/wallet/errors.js";
 import { bindForHarness, createCapabilityHarness } from "../core/capability-harness.js";
 import {
   ScriptedRpc,
@@ -45,6 +44,7 @@ import {
   rpcValue,
   type ChainHandlerHarness,
 } from "../chain/handler-harness.js";
+import { tokenCatalogInterfaceHarnessPorts } from "../token-catalog/interface-harness.js";
 
 const directories: string[] = [];
 const blockHash = `0x${"88".repeat(32)}`;
@@ -88,7 +88,6 @@ const baseRoutes = async (): Promise<RuntimeRouteRegistry> => {
   const credential = await loadOrCreateControlCredential(directory, paths.controlCredential);
   return createRuntimeRouteRegistry({
     controlVerifier: createControlCredentialVerifier(credential),
-    errorMappings: walletInterfaceErrorMappings,
   });
 };
 
@@ -123,6 +122,7 @@ const createRoutes = async (walletData?: unknown): Promise<{
       routes: await baseRoutes(),
       chainReads: chain.service.chainReads,
       walletConnection: walletConnection(walletData),
+      tokenInspection: tokenCatalogInterfaceHarnessPorts().tokenInspection,
       supportManifest: manifest,
     }),
   });
@@ -152,6 +152,7 @@ describe("public read HTTP routes", () => {
       ["GET", publicInterfaceRoutes.capabilities],
       ["GET", publicInterfaceRoutes.chainStatus],
       ["POST", publicInterfaceRoutes.contractInspections],
+      ["POST", publicInterfaceRoutes.tokenInspections],
       ["POST", publicInterfaceRoutes.transactionInspections],
       ["GET", publicInterfaceRoutes.walletConnection],
     ] as const;
@@ -233,7 +234,7 @@ describe("public read HTTP routes", () => {
     expect(result).toEqual({
       ok: true,
       response: "canonical_json",
-      body: composeCapabilityCatalog(manifest),
+      body: composeInterfaceCapabilityCatalog(manifest),
     });
     const match = routes.match("GET", publicInterfaceRoutes.capabilities);
     if (match.status !== "matched") throw new Error("Expected catalog route.");

@@ -20,6 +20,7 @@ const repositoryRoot = resolve(".");
 const sourceRoot = resolve(repositoryRoot, "src");
 const coreRoot = resolve("src/core");
 const tokenCatalogRoot = resolve(sourceRoot, "token-catalog");
+const browserInterfaceRoot = resolve(sourceRoot, "interfaces/web");
 const interfaceConsumerRoots = Object.freeze([
   resolve(sourceRoot, "interfaces"),
   resolve(repositoryRoot, "scripts/release"),
@@ -32,9 +33,14 @@ const browserCoreConsumers = new Set([
   "interfaces/browser-error-response.ts",
   "interfaces/web/app.tsx",
   "interfaces/web/main.tsx",
+  "interfaces/web/token-catalog-client.ts",
   "interfaces/web/wallet-dialog-view.ts",
   "runtime/error-definitions.ts",
+  "token-catalog/contract-schema.ts",
   "wallet/operation-contract.ts",
+]);
+const browserTokenCatalogConsumers = new Set([
+  resolve(sourceRoot, "interfaces/browser-error-response.ts"),
 ]);
 
 const loadPackagePolicy = async () => {
@@ -111,14 +117,18 @@ describe("runtime architecture boundary", () => {
     expect(violations).toEqual([]);
   });
 
-  it("requires interface and package consumers to enter the token catalog through its public handoff", async () => {
+  it("requires interface and package consumers to enter the token catalog through their exact public handoff", async () => {
     const violations: string[] = [];
     for (const file of await collectProductSourceFiles(repositoryRoot)) {
       if (!isInterfaceConsumer(file)) continue;
       for (const reference of (await inspectSourceFile(file)).moduleImports) {
         if (reference.specifier === undefined) continue;
         const target = resolvesInsideTokenCatalog(file, reference.specifier);
-        if (target !== undefined && target !== "index.js") {
+        const expectedEntryPoint = browserTokenCatalogConsumers.has(file) ||
+          isWithin(file, browserInterfaceRoot)
+          ? "browser.js"
+          : "index.js";
+        if (target !== undefined && target !== expectedEntryPoint) {
           violations.push(`${relative(repositoryRoot, file).split(sep).join("/")}:${reference.specifier}`);
         }
       }

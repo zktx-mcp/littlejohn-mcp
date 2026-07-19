@@ -16,7 +16,6 @@ import {
   contractInspectCapability,
   keccak256FromHex,
   projectCapabilities,
-  readCapabilityRegistry,
   transactionInspectCapability,
   walletConnectionCapability,
   type AnyReadCapabilityDefinition,
@@ -36,32 +35,45 @@ import {
 import type { BrowserAssetBundle } from "../../src/interfaces/browser-assets.js";
 import { createBrowserRequestCredentialAuthority } from "../../src/interfaces/browser-credentials.js";
 import { extendBrowserInterfaceRoutes } from "../../src/interfaces/browser-routes.js";
+import { extendPublicInterfaceRoutes } from "../../src/interfaces/http-routes.js";
 import { dispatchCanonical, type RuntimeDispatchPort } from "../../src/interfaces/http-client.js";
 import {
   accountBalanceInterface,
   capabilityCatalogInterface,
   chainStatusInterface,
   contractInspectInterface,
+  interfaceReadCapabilityRegistry,
+  tokenCatalogInterfaceBindings,
+  tokenInspectInterface,
   transactionInspectInterface,
   walletConnectionInterface,
   type ReadInterfaceIdentity,
 } from "../../src/interfaces/identities.js";
 import { createMcpServer } from "../../src/interfaces/mcp.js";
-import { extendInterfaceSupportManifest } from "../../src/interfaces/support.js";
+import {
+  composeInterfaceCapabilityCatalog,
+  extendInterfaceSupportManifest,
+} from "../../src/interfaces/support.js";
 import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
 import { parseReadCliCommand, runReadCliCommand } from "../../src/interfaces/cli-read.js";
+import { parseTokenCliCommand, runTokenCliCommand } from "../../src/interfaces/cli-token.js";
 import {
   createControlCredentialVerifier,
   loadOrCreateControlCredential,
 } from "../../src/runtime/control-credential.js";
-import { createRuntimeRouteRegistry } from "../../src/runtime/http-routing.js";
+import {
+  createRuntimeRouteRegistry,
+  type NormalizedRouteResult,
+  type RouteMethod,
+  type RuntimeRouteRegistry,
+} from "../../src/runtime/http-routing.js";
 import { runtimePaths } from "../../src/runtime/paths.js";
 import type {
   RuntimeDispatchRequest,
   RuntimeDispatchResponse,
+  WalletConnectionReadCapabilityPort,
 } from "../../src/runtime/index.js";
 import {
-  composeCapabilityCatalog,
   createInitialRuntimeSupportManifest,
   readRuntimeSupportManifest,
   toProblemDetails,
@@ -69,13 +81,28 @@ import {
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import { extendWalletSupportManifest } from "../../src/wallet/application.js";
 import {
+  extendTokenCatalogControlRouteRegistry,
+  tokenCatalogApplicationContracts,
+  tokenCatalogBrowserRoutes,
+  tokenCatalogControlRoutes,
+  tokenCatalogOperationConfirmationContract,
+  tokenCatalogOperationSchema,
+  tokenInspectionDigest,
+  tokenRegistrationWithInspectionSchema,
+  type TokenCatalogBrowserOperationPort,
+  type TokenCatalogInteractiveCliPort,
+  type TokenCatalogNonInteractiveOperationPort,
+  type TokenCatalogOperation,
+  type TokenCatalogQueryApplicationPort,
+  type TokenCatalogWebStartPort,
+} from "../../src/token-catalog/index.js";
+import {
   parseWalletCurrentOperationProjection,
   parseWalletManagementOperation,
   parseWalletOperationStartResult,
   type WalletInterfaceOperations,
   type WalletManagementOperation,
 } from "../../src/wallet/contracts.js";
-import { walletInterfaceErrorMappings } from "../../src/wallet/errors.js";
 import { createWalletFailure } from "../../src/wallet/errors.js";
 import { walletControlRoutes } from "../../src/wallet/routes.js";
 import {
@@ -83,6 +110,14 @@ import {
   createCapabilityHarness,
   invokeBinding,
 } from "../core/capability-harness.js";
+import {
+  chainId as tokenChainId,
+  createInspectionBinding,
+  createInspectionSuccess,
+  tokenAddress,
+  walletAddress,
+} from "../token-catalog/harness.js";
+import { tokenCatalogInterfaceHarnessPorts } from "../token-catalog/interface-harness.js";
 import {
   ScriptedRpc,
   createChainHandlerHarness,
@@ -160,6 +195,78 @@ class CanonicalRuntime implements RuntimeDispatchPort, CliRuntimePort {
   }
 }
 
+class RouteRegistryRuntime implements RuntimeDispatchPort, CliRuntimePort {
+  readonly ownerState = "deferred" as const;
+
+  constructor(readonly routes: RuntimeRouteRegistry) {}
+
+  async start(): Promise<void> {}
+
+  async stop(): Promise<void> {}
+
+  async dispatchRuntimeRequest(request: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse> {
+    const match = this.routes.match(request.method, request.path);
+    if (match.status !== "matched") {
+      throw new Error("The token parity runtime received an unmatched request.");
+    }
+    if (match.route.requestClass !== request.requestClass) {
+      throw new Error("The token parity runtime received the wrong request class.");
+    }
+    const result = this.routes.normalizeResult(match.route, await match.route.handler({
+      params: match.params,
+      body: request.body ?? {},
+      signal: request.signal ?? new AbortController().signal,
+    }));
+    if (!result.ok) {
+      return Object.freeze({ status: result.problem.status, body: result.problem as unknown as CanonicalJson });
+    }
+    if (result.response !== "canonical_json") {
+      throw new Error("The token parity runtime returned browser content to a native interface.");
+    }
+    return Object.freeze({ status: match.route.successStatus, body: result.body });
+  }
+}
+
+const invokeRoute = async (
+  routes: RuntimeRouteRegistry,
+  method: RouteMethod,
+  path: string,
+  body: unknown = {},
+): Promise<NormalizedRouteResult> => {
+  const match = routes.match(method, path);
+  expect(match.status).toBe("matched");
+  if (match.status !== "matched") throw new Error("The token parity route is unavailable.");
+  return routes.normalizeResult(match.route, await match.route.handler({
+    params: match.params,
+    body,
+    signal: new AbortController().signal,
+  }));
+};
+
+const withoutInvocationCorrelation = (input: unknown, parentKey?: string): CanonicalJson => {
+  if (Array.isArray(input)) {
+    const values = input.map((value) => withoutInvocationCorrelation(value));
+    if (parentKey === "sources") {
+      values.sort((left, right) => {
+        const leftJson = canonicalJsonStringify(left);
+        const rightJson = canonicalJsonStringify(right);
+        return leftJson < rightJson ? -1 : leftJson > rightJson ? 1 : 0;
+      });
+    }
+    return values;
+  }
+  if (typeof input !== "object" || input === null) return input as CanonicalJson;
+  const omitted = new Set([
+    "invocationId",
+    "observationId",
+    "observationIds",
+    "quantityObservationId",
+  ]);
+  return Object.fromEntries(Object.entries(input)
+    .filter(([key]) => !omitted.has(key))
+    .map(([key, value]) => [key, withoutInvocationCorrelation(value, key)])) as CanonicalJson;
+};
+
 const outputPort = () => {
   const output: string[] = [];
   const error: string[] = [];
@@ -183,7 +290,7 @@ const terminalPort = (output: string[], error: string[]): CliTerminalPort => Obj
   writeError: (value: string) => { error.push(value); },
   showQr: () => { throw new Error("The operation read cannot display a QR code."); },
   hideQr: () => {},
-  readConfirmation: async () => { throw new Error("The operation read cannot request confirmation."); },
+  readLine: async () => { throw new Error("The operation read cannot read terminal input."); },
   dispose: () => {},
 });
 
@@ -259,9 +366,9 @@ const invokeChainRead = async (
   }
 };
 
-const directWalletConnection = async (): Promise<CanonicalJson> => {
+const createWalletConnectionBinding = () => {
   const harness = createCapabilityHarness();
-  const binding = bindForHarness(
+  return bindForHarness(
     walletConnectionCapability,
     harness,
     async (_input, context, observations: ObservationWriter) => {
@@ -273,10 +380,18 @@ const directWalletConnection = async (): Promise<CanonicalJson> => {
       return { status: "success" as const, data };
     },
   );
+};
+
+const directWalletConnection = async (): Promise<CanonicalJson> => {
+  const binding = createWalletConnectionBinding();
   const result = await invokeBinding(walletConnectionCapability, binding, {});
   if (!result.ok) throw new Error("The direct wallet connection parity read did not succeed.");
   return captureCanonicalJson(result);
 };
+
+const walletConnectionPort = (): WalletConnectionReadCapabilityPort => Object.freeze({
+  connection: createWalletConnectionBinding(),
+});
 
 interface ReadParityCase {
   readonly identity: ReadInterfaceIdentity;
@@ -430,6 +545,188 @@ const browserOperations = (value: WalletManagementOperation): WalletInterfaceOpe
   }),
 });
 
+const tokenOperationId = Buffer.alloc(32, 62).toString("base64url");
+const tokenCreatedAt = "2026-07-18T00:00:03.000Z";
+const tokenExpiresAt = "2026-07-18T00:05:03.000Z";
+
+const createTokenParityValues = async () => {
+  const inspection = await createInspectionSuccess();
+  const asset = inspection.data.asset;
+  const registrationWithInspection = tokenRegistrationWithInspectionSchema.parse({
+    registration: {
+      account: { chainId: tokenChainId, address: walletAddress },
+      asset,
+      revision: Buffer.alloc(16, 9).toString("base64url"),
+      inspectionDigest: tokenInspectionDigest(inspection),
+      userLabel: "Parity token",
+      visibility: "visible",
+      createdAt: tokenCreatedAt,
+      updatedAt: tokenCreatedAt,
+    },
+    inspection,
+  });
+  const operationFor = (interactionInterface: "web" | "cli", state: "awaiting_confirmation" | "cancelled") =>
+    tokenCatalogOperationSchema.parse({
+      operationId: tokenOperationId,
+      kind: "register",
+      state,
+      interactionInterface,
+      createdAt: tokenCreatedAt,
+      expiresAt: tokenExpiresAt,
+      account: registrationWithInspection.registration.account,
+      asset,
+      review: {
+        previousRegistration: null,
+        proposedSettings: { userLabel: "Parity token", visibility: "visible" },
+        inspection,
+        reviewDigest: `0x${"ef".repeat(32)}`,
+      },
+      result: null,
+      failure: null,
+    });
+  const startInput = { asset, settings: { userLabel: "Parity token", visibility: "visible" as const } };
+  const webAwaiting = tokenCatalogApplicationContracts.startRegistration.parseSuccess(
+    startInput,
+    { operation: operationFor("web", "awaiting_confirmation") },
+  ).operation;
+  const cliAwaiting = tokenCatalogApplicationContracts.startRegistration.parseSuccess(
+    startInput,
+    { operation: operationFor("cli", "awaiting_confirmation") },
+  ).operation;
+  const webCancelled = tokenCatalogApplicationContracts.cancelOperation.parseSuccess(
+    { operationId: tokenOperationId },
+    { operation: operationFor("web", "cancelled") },
+  ).operation;
+  const cliCompleted = tokenCatalogOperationConfirmationContract.parseSuccess(
+    { operationId: tokenOperationId, reviewDigest: cliAwaiting.review.reviewDigest },
+    tokenCatalogOperationSchema.parse({
+      ...cliAwaiting,
+      state: "completed",
+      result: registrationWithInspection,
+    }),
+  );
+  return Object.freeze({
+    asset,
+    inspection,
+    registrationWithInspection,
+    registrationList: Object.freeze({
+      registrations: [registrationWithInspection.registration],
+      nextCursor: null,
+    }),
+    webAwaiting,
+    cliAwaiting,
+    webCancelled,
+    cliCompleted,
+  });
+};
+
+type TokenParityValues = Awaited<ReturnType<typeof createTokenParityValues>>;
+
+const createTokenParityPorts = (values: TokenParityValues): Readonly<{
+  inspection: ReturnType<typeof createInspectionBinding>;
+  queries: TokenCatalogQueryApplicationPort;
+  webStart: TokenCatalogWebStartPort;
+  interactiveCli: TokenCatalogInteractiveCliPort;
+  operations: TokenCatalogNonInteractiveOperationPort;
+  browserOperations: TokenCatalogBrowserOperationPort;
+}> => {
+  const unavailable = async (): Promise<never> => {
+    throw new Error("The token parity test invoked an undeclared operation kind.");
+  };
+  return Object.freeze({
+    inspection: createInspectionBinding(),
+    queries: Object.freeze({
+      getRegistration: () => values.registrationWithInspection,
+      listRegistrations: () => values.registrationList,
+    }),
+    webStart: Object.freeze({
+      interactionInterface: "web" as const,
+      startRegistration: async () => Object.freeze({ operation: values.webAwaiting }),
+      startRegistrationUpdate: unavailable,
+      startUnregistration: unavailable,
+    }),
+    interactiveCli: Object.freeze({
+      interactionInterface: "cli" as const,
+      startRegistration: async () => Object.freeze({ operation: values.cliAwaiting }),
+      startRegistrationUpdate: unavailable,
+      startUnregistration: unavailable,
+      confirm: async () => values.cliCompleted,
+    }),
+    operations: Object.freeze({
+      getOperation: () => Object.freeze({ operation: values.webAwaiting }),
+      cancelOperation: async () => Object.freeze({ operation: values.webCancelled }),
+    }),
+    browserOperations: Object.freeze({
+      interactionInterface: "web" as const,
+      getOperation: () => Object.freeze({ operation: values.webAwaiting }),
+      getCurrentOperation: () => values.webAwaiting,
+      confirm: async () => { throw new Error("Token parity does not confirm through the browser."); },
+      cancel: async () => values.webCancelled,
+    }),
+  });
+};
+
+const createTokenParityContext = async () => {
+  const values = await createTokenParityValues();
+  const ports = createTokenParityPorts(values);
+  const root = await mkdtemp(resolve(tmpdir(), "littlejohn-token-parity-"));
+  roots.push(root);
+  const paths = runtimePaths(root);
+  const authority = await loadOrCreateControlCredential(root, paths.controlCredential);
+  const chain = createChainHandlerHarness({
+    rpc: new ScriptedRpc(Array.from({ length: 3 }).flatMap(() => [
+      rpcValue("eth_chainId", "0x1237"),
+      rpcValue("eth_getBlockByNumber", providerBlock()),
+    ])),
+    encoder: erc20Encoder,
+    wallet: disconnectedWallet(),
+  });
+  const manifest = extendInterfaceSupportManifest(extendTokenCatalogSupportManifest(extendChainSupportManifest(
+    extendWalletSupportManifest(createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain)),
+  )));
+  let routes = extendPublicInterfaceRoutes({
+    routes: createRuntimeRouteRegistry({
+      controlVerifier: createControlCredentialVerifier(authority),
+    }),
+    chainReads: chain.service.chainReads,
+    walletConnection: walletConnectionPort(),
+    tokenInspection: ports.inspection,
+    supportManifest: manifest,
+  });
+  routes = extendTokenCatalogControlRouteRegistry({
+    routes,
+    inspection: ports.inspection,
+    queries: ports.queries,
+    webStart: ports.webStart,
+    interactiveCli: ports.interactiveCli,
+    nonInteractiveOperations: ports.operations,
+  });
+  const credentials = createBrowserRequestCredentialAuthority({
+    now: () => Date.parse("2026-07-18T00:00:00.000Z"),
+    randomBytes: (size) => Buffer.alloc(size, 63),
+  });
+  routes = extendBrowserInterfaceRoutes({
+    routes,
+    credentials,
+    assets: browserAssets,
+    walletOperations: browserOperations(operation()),
+    tokenInspection: ports.inspection,
+    tokenCatalogQueries: ports.queries,
+    tokenCatalogWebStart: ports.webStart,
+    tokenCatalogBrowserOperations: ports.browserOperations,
+  });
+  return Object.freeze({
+    values,
+    ports,
+    routes,
+    runtime: new RouteRegistryRuntime(routes),
+    close: async () => {
+      credentials.close();
+      await chain.close();
+    },
+  });
+};
+
 describe("interface parity", () => {
   it("preserves every canonical chain read through HTTP, MCP, CLI JSON, and human CLI output", async () => {
     const cases = await createReadParityCases();
@@ -480,6 +777,272 @@ describe("interface parity", () => {
       }
     } finally {
       await mcp.close();
+    }
+  });
+
+  it("preserves token inspection through direct, public HTTP, MCP, CLI, and browser execution", async () => {
+    const context = await createTokenParityContext();
+    const input = captureCanonicalJson({ asset: context.values.asset, block: { kind: "latest" } });
+    const mcp = await connectMcp(context.runtime);
+    try {
+      const direct = await invokeBinding(tokenInspectInterface.definition, context.ports.inspection, input);
+      expect(direct.ok).toBe(true);
+      if (!direct.ok) throw new Error("The direct token inspection failed.");
+      expect(withoutInvocationCorrelation(direct)).toEqual(
+        withoutInvocationCorrelation(context.values.inspection),
+      );
+
+      const http = await invokeRoute(
+        context.routes,
+        tokenInspectInterface.http.method,
+        tokenInspectInterface.http.path,
+        input,
+      );
+      expect(http.ok).toBe(true);
+      if (!http.ok || http.response !== "canonical_json") {
+        throw new Error("The public token inspection did not return canonical JSON.");
+      }
+      expect(withoutInvocationCorrelation(http.body)).toEqual(
+        withoutInvocationCorrelation(context.values.inspection),
+      );
+
+      const mcpResult = await mcp.client.callTool({
+        name: tokenInspectInterface.mcp.name,
+        arguments: input as Readonly<Record<string, unknown>>,
+      });
+      expect(mcpResult.isError).not.toBe(true);
+      expect(withoutInvocationCorrelation(mcpResult.structuredContent)).toEqual(
+        withoutInvocationCorrelation(context.values.inspection),
+      );
+      expect(withoutInvocationCorrelation(JSON.parse(mcpText(mcpResult)))).toEqual(
+        withoutInvocationCorrelation(context.values.inspection),
+      );
+
+      const cliOutput: string[] = [];
+      const cliError: string[] = [];
+      expect(await runTokenCliCommand(
+        context.runtime,
+        parseTokenCliCommand(["token", "inspect", tokenAddress, "--block", "latest", "--json"]),
+        terminalPort(cliOutput, cliError),
+      )).toBe(0);
+      expect(cliError).toEqual([]);
+      expect(withoutInvocationCorrelation(JSON.parse(cliOutput.join("")))).toEqual(
+        withoutInvocationCorrelation(context.values.inspection),
+      );
+
+      const browser = await invokeRoute(
+        context.routes,
+        "POST",
+        tokenCatalogBrowserRoutes.inspections,
+        input,
+      );
+      expect(browser.ok).toBe(true);
+      if (!browser.ok || browser.response !== "canonical_json") {
+        throw new Error("The browser token inspection did not return canonical JSON.");
+      }
+      expect(withoutInvocationCorrelation(browser.body)).toEqual(
+        withoutInvocationCorrelation(context.values.inspection),
+      );
+    } finally {
+      await mcp.close();
+      await context.close();
+    }
+  });
+
+  it("preserves token registration reads through direct, local HTTP, MCP, CLI, and browser execution", async () => {
+    const context = await createTokenParityContext();
+    const registrationInput = tokenCatalogApplicationContracts.registration.parseInput({
+      asset: context.values.asset,
+    });
+    const listInput = tokenCatalogApplicationContracts.registrations.parseInput({});
+    const nativeRegistration = tokenCatalogApplicationContracts.registration.parseSuccess(
+      registrationInput,
+      context.ports.queries.getRegistration(registrationInput),
+    );
+    const nativeList = tokenCatalogApplicationContracts.registrations.parseSuccess(
+      listInput,
+      context.ports.queries.listRegistrations({}),
+    );
+    const mcp = await connectMcp(context.runtime);
+    try {
+      const registrationPath = tokenCatalogControlRoutes.registration(tokenChainId, tokenAddress);
+      expect(await invokeRoute(context.routes, "GET", registrationPath)).toEqual({
+        ok: true,
+        response: "canonical_json",
+        body: nativeRegistration,
+      });
+      expect(await invokeRoute(
+        context.routes,
+        "POST",
+        tokenCatalogControlRoutes.registrationQueries,
+        {},
+      )).toEqual({ ok: true, response: "canonical_json", body: nativeList });
+
+      const mcpRegistration = await mcp.client.callTool({
+        name: tokenCatalogInterfaceBindings.registration.mcp.name,
+        arguments: registrationInput as Readonly<Record<string, unknown>>,
+      });
+      const mcpList = await mcp.client.callTool({
+        name: tokenCatalogInterfaceBindings.registrations.mcp.name,
+        arguments: {},
+      });
+      expect(mcpRegistration.structuredContent).toEqual(nativeRegistration);
+      expect(mcpList.structuredContent).toEqual(nativeList);
+
+      const getOutput: string[] = [];
+      const getError: string[] = [];
+      expect(await runTokenCliCommand(
+        context.runtime,
+        parseTokenCliCommand(["token", "get", tokenAddress, "--json"]),
+        terminalPort(getOutput, getError),
+      )).toBe(0);
+      expect(getError).toEqual([]);
+      expect(JSON.parse(getOutput.join(""))).toEqual(nativeRegistration);
+
+      const listOutput: string[] = [];
+      const listError: string[] = [];
+      expect(await runTokenCliCommand(
+        context.runtime,
+        parseTokenCliCommand(["token", "list", "--json"]),
+        terminalPort(listOutput, listError),
+      )).toBe(0);
+      expect(listError).toEqual([]);
+      expect(JSON.parse(listOutput.join(""))).toEqual(nativeList);
+
+      expect(await invokeRoute(
+        context.routes,
+        "GET",
+        tokenCatalogBrowserRoutes.registration(tokenChainId, tokenAddress),
+      )).toEqual({ ok: true, response: "canonical_json", body: nativeRegistration });
+      expect(await invokeRoute(
+        context.routes,
+        "POST",
+        tokenCatalogBrowserRoutes.registrationQueries,
+        {},
+      )).toEqual({ ok: true, response: "canonical_json", body: nativeList });
+    } finally {
+      await mcp.close();
+      await context.close();
+    }
+  });
+
+  it("preserves token start, exact operation reads, and cancellation through every owning interface", async () => {
+    const context = await createTokenParityContext();
+    const startContract = tokenCatalogApplicationContracts.startRegistration;
+    const startInput = startContract.parseInput({
+      asset: context.values.asset,
+      settings: { userLabel: "Parity token", visibility: "visible" },
+    });
+    const nativeStart = startContract.parseSuccess(
+      startInput,
+      await context.ports.webStart.startRegistration(startInput),
+    );
+    const operationInput = tokenCatalogApplicationContracts.operation.parseInput({
+      operationId: tokenOperationId,
+    });
+    const nativeOperation = tokenCatalogApplicationContracts.operation.parseSuccess(
+      operationInput,
+      context.ports.operations.getOperation(operationInput),
+    );
+    const nativeCancellation = tokenCatalogApplicationContracts.cancelOperation.parseSuccess(
+      operationInput,
+      await context.ports.operations.cancelOperation(operationInput),
+    );
+    const mcp = await connectMcp(context.runtime);
+    try {
+      const httpStart = await invokeRoute(
+        context.routes,
+        "POST",
+        tokenCatalogControlRoutes.operations,
+        { interactionInterface: "web", request: { kind: "register", ...startInput } },
+      );
+      expect(httpStart).toEqual({ ok: true, response: "canonical_json", body: nativeStart });
+
+      const mcpStart = await mcp.client.callTool({
+        name: tokenCatalogInterfaceBindings.startRegistration.mcp.name,
+        arguments: startInput as Readonly<Record<string, unknown>>,
+      });
+      expect(mcpStart.isError).not.toBe(true);
+      expect(mcpStart.structuredContent).toEqual({
+        result: nativeStart,
+        displayUrl: "http://127.0.0.1:46630/tokens",
+      });
+
+      expect(await invokeRoute(
+        context.routes,
+        "POST",
+        tokenCatalogBrowserRoutes.operations,
+        { kind: "register", ...startInput },
+      )).toEqual({ ok: true, response: "canonical_json", body: nativeStart });
+
+      const cliOutput: string[] = [];
+      const cliError: string[] = [];
+      const cliTerminal = Object.freeze({
+        ...terminalPort(cliOutput, cliError),
+        readLine: async () => "y",
+      });
+      expect(await runTokenCliCommand(
+        context.runtime,
+        parseTokenCliCommand(["token", "register", tokenAddress, "--label", "Parity token"]),
+        cliTerminal,
+      )).toBe(0);
+      expect(cliError).toEqual([]);
+      expect(cliOutput.join("\n")).toContain("Token added.");
+
+      const operationPath = tokenCatalogControlRoutes.operation(tokenOperationId);
+      expect(await invokeRoute(context.routes, "GET", operationPath)).toEqual({
+        ok: true,
+        response: "canonical_json",
+        body: nativeOperation,
+      });
+      const mcpOperation = await mcp.client.callTool({
+        name: tokenCatalogInterfaceBindings.operation.mcp.name,
+        arguments: operationInput as Readonly<Record<string, unknown>>,
+      });
+      expect(mcpOperation.structuredContent).toEqual(nativeOperation);
+      const operationOutput: string[] = [];
+      const operationError: string[] = [];
+      expect(await runTokenCliCommand(
+        context.runtime,
+        parseTokenCliCommand(["token", "operation", tokenOperationId, "--json"]),
+        terminalPort(operationOutput, operationError),
+      )).toBe(0);
+      expect(operationError).toEqual([]);
+      expect(JSON.parse(operationOutput.join(""))).toEqual(nativeOperation);
+      expect(await invokeRoute(
+        context.routes,
+        "GET",
+        tokenCatalogBrowserRoutes.operation(tokenOperationId),
+      )).toEqual({ ok: true, response: "canonical_json", body: nativeOperation });
+
+      expect(await invokeRoute(context.routes, "DELETE", operationPath)).toEqual({
+        ok: true,
+        response: "canonical_json",
+        body: nativeCancellation,
+      });
+      const mcpCancellation = await mcp.client.callTool({
+        name: tokenCatalogInterfaceBindings.cancelOperation.mcp.name,
+        arguments: operationInput as Readonly<Record<string, unknown>>,
+      });
+      expect(mcpCancellation.structuredContent).toEqual(nativeCancellation);
+      const cancellationOutput: string[] = [];
+      const cancellationError: string[] = [];
+      expect(await runTokenCliCommand(
+        context.runtime,
+        parseTokenCliCommand(["token", "cancel", tokenOperationId, "--json"]),
+        terminalPort(cancellationOutput, cancellationError),
+      )).toBe(0);
+      expect(cancellationError).toEqual([]);
+      expect(JSON.parse(cancellationOutput.join(""))).toEqual(nativeCancellation);
+      expect(await invokeRoute(
+        context.routes,
+        "POST",
+        tokenCatalogBrowserRoutes.cancellation(tokenOperationId),
+        {},
+      )).toEqual({ ok: true, response: "canonical_json", body: nativeCancellation });
+    } finally {
+      await mcp.close();
+      await context.close();
     }
   });
 
@@ -547,7 +1110,7 @@ describe("interface parity", () => {
         createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
       ),
     )));
-    const catalog = composeCapabilityCatalog(manifest);
+    const catalog = composeInterfaceCapabilityCatalog(manifest);
     const runtime = new CanonicalRuntime([Object.freeze({
       method: capabilityCatalogInterface.http.method,
       path: capabilityCatalogInterface.http.path,
@@ -573,7 +1136,7 @@ describe("interface parity", () => {
       await mcp.close();
     }
 
-    const projections = new Map(projectCapabilities(readCapabilityRegistry).map((projection) => [
+    const projections = new Map(projectCapabilities(interfaceReadCapabilityRegistry).map((projection) => [
       projection.capabilityId,
       captureCanonicalJson(projection),
     ]));
@@ -706,9 +1269,10 @@ describe("interface parity", () => {
         randomBytes: (size) => Buffer.alloc(size, 52),
       });
       const routes = extendBrowserInterfaceRoutes({
+        ...tokenCatalogInterfaceHarnessPorts(),
         routes: createRuntimeRouteRegistry({
           controlVerifier: createControlCredentialVerifier(authority),
-          errorMappings: walletInterfaceErrorMappings,
+          errorMappings: chainInterfaceErrorMappings,
         }),
         credentials,
         assets: browserAssets,

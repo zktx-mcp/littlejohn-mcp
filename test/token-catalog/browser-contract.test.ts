@@ -1,0 +1,58 @@
+import { createHash } from "node:crypto";
+
+import { describe, expect, it } from "vitest";
+
+import {
+  canonicalJsonStringify,
+  canonicalSha256,
+  captureCanonicalJson,
+  type CanonicalJson,
+} from "../../src/core/browser.js";
+import * as browserContracts from "../../src/token-catalog/browser.js";
+import {
+  tokenCatalogApplicationContracts as serverApplicationContracts,
+  tokenCatalogContractProjectionDigest,
+  tokenCatalogOperationConfirmationContract as serverConfirmationContract,
+  tokenInspectionSuccessSchema as serverInspectionSuccessSchema,
+} from "../../src/token-catalog/contracts.js";
+import { createInspectionSuccess } from "./harness.js";
+
+describe("token catalog browser contract", () => {
+  it("uses one canonical parser owner in server and browser graphs", () => {
+    expect(browserContracts.tokenCatalogApplicationContracts).toBe(serverApplicationContracts);
+    expect(browserContracts.tokenCatalogOperationConfirmationContract).toBe(serverConfirmationContract);
+    expect(browserContracts.tokenInspectionSuccessSchema).toBe(serverInspectionSuccessSchema);
+    expect(tokenCatalogContractProjectionDigest).toBe(
+      "0xbbe4a4fdc1ec54ecb9e1751dd7deb82ba9cc08757d29280f43a1459aa323dec7",
+    );
+  });
+
+  it("preserves canonical SHA-256 bytes for ASCII, Unicode, and escaped NUL input", () => {
+    const values = [
+      captureCanonicalJson({ ascii: "token", count: 3 }),
+      captureCanonicalJson({ unicode: "토큰 🏹", nested: ["é", "e\u0301"] }),
+      captureCanonicalJson({ nul: "before\u0000after", escaped: "\\u0000" }),
+    ] as const;
+    for (const value of values) {
+      const expected = createHash("sha256")
+        .update(canonicalJsonStringify(value as CanonicalJson), "utf8")
+        .digest("hex");
+      expect(canonicalSha256(value as CanonicalJson)).toBe(expected);
+    }
+  });
+
+  it("rejects the same cross-identity inspection in both entry points", async () => {
+    const success = await createInspectionSuccess();
+    expect(browserContracts.tokenInspectionSuccessSchema.parse(success)).toEqual(
+      serverInspectionSuccessSchema.parse(success),
+    );
+    const invalid = JSON.parse(JSON.stringify(success)) as Record<string, unknown>;
+    const data = invalid["data"] as Record<string, unknown>;
+    data["asset"] = {
+      ...(data["asset"] as Record<string, unknown>),
+      address: `0x${"34".repeat(20)}`,
+    };
+    expect(() => browserContracts.tokenInspectionSuccessSchema.parse(invalid)).toThrow();
+    expect(() => serverInspectionSuccessSchema.parse(invalid)).toThrow();
+  });
+});
