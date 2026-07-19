@@ -191,6 +191,28 @@ the required correction changes an accepted plan.
   results.
 - Check final repository status and classify unexpected files.
 
+### Shared Process Ownership
+
+- When more than one code path performs the same ordered operation with the same
+  responsibilities, invariants, lifecycle, points at which changes become
+  durable or externally visible, terminal outcomes, failure behavior, and
+  cleanup requirements, implement that operation through one owner.
+- Sharing utility functions is not sufficient when each caller still controls
+  the order, validation, state changes, commit or rollback, error handling,
+  recovery, or cleanup.
+- Pass caller-specific data and external dependencies through narrow, validated
+  inputs. Do not make callers configure, bypass, reorder, or reproduce the
+  shared operation's internal rules.
+- Repeated syntax alone is not evidence of a shared process. Keep operations
+  separate when they have different responsibilities, state lifecycles,
+  durable or externally visible effects, terminal outcomes, failure meanings,
+  trust boundaries, or independent verification purposes.
+- Do not create a generic wrapper merely to remove repeated code. A wrapper that
+  only forwards calls or delegates its internal decisions back to callbacks
+  does not provide shared process ownership.
+- Do not hide different behavior behind a shared function name or a configurable
+  wrapper.
+
 ## Problem And Improvement Workflow
 
 Apply this workflow to every defect correction, hardening task, refactor, and
@@ -229,7 +251,7 @@ Task files are:
 
 ### Plan Baseline
 
-- The accepted plan is the fixed implementation baseline. Do not edit it during
+- The accepted plan is the fixed task contract. Do not edit it during
   implementation.
 - The plan defines one canonical task name, goal, exact scope, permanent
   boundaries, dependency-ordered work units, inputs, outputs, affected surfaces,
@@ -238,6 +260,10 @@ Task files are:
   language that makes an implementer choose unstated behavior.
 - The plan must be executable by a third party without conversation history,
   external narrative, or hidden decisions.
+- Do not record repository commit identifiers, plan digests, test counts, or
+  command transcripts as planning evidence unless a named verification or
+  dependent handoff consumes them. A record that only demonstrates activity is
+  not evidence.
 - Do not rename, split, narrow, replace, or reframe a task to present incomplete
   work as complete.
 - Do not delete or rewrite an active plan to escape its goal or reset
@@ -287,6 +313,14 @@ Task files are:
 - A review request contains one or more dependency-contiguous work units that
   form a meaningful behavioral or architectural result.
 - Do not combine unrelated work merely to enlarge a review request.
+- A review boundary is observational. Removing it from a plan must not change
+  the planned production structure or behavior.
+- A work unit must leave its production structure and behavior in the final
+  task output. Do not introduce a transitional result merely to create a review
+  boundary. If later evidence requires deleting, replacing, or bypassing that
+  result, the unit's completion is `0` and any prior `passed` conclusion is
+  invalid. Stop, record the conflict and alternatives, and implement the
+  correction only under an accepted replacement baseline.
 
 ### Plan Simulation
 
@@ -303,6 +337,18 @@ Reject or block the plan when either simulation finds a missing dependency,
 circular or contradictory work, incomplete handoff, hidden early
 implementation, weakened boundary, policy violation, unreviewable work unit, or
 completion condition that permits unresolved task debt.
+
+### Parallel Work
+
+- Parallelize only work whose results commute: every participant uses the same
+  fixed snapshot, has no dependency on another participant, owns a disjoint
+  write and decision surface, and produces the same integrated result
+  regardless of completion order.
+- One integrator reconciles the complete batch before the shared snapshot or
+  plan changes. Architecture decisions, plan editing, and dependency-connected
+  implementation remain sequential.
+- A changed shared premise invalidates every dependent parallel result. Recheck
+  it against the new snapshot; do not append stale findings in arrival order.
 
 ### Progress Document
 
@@ -361,6 +407,15 @@ completion condition that permits unresolved task debt.
 
 - Work-unit and final task outcomes are `passed` or `failed`. `blocked` is a
   current state, not success.
+- Completion is binary. It is `1` only when the original accepted boundary is
+  fully implemented and verified with no in-scope defect, technical debt,
+  required verification gap, or invalidated output. It is `0` otherwise.
+- A valid `passed` outcome has completion `1`. `blocked`, `failed`,
+  `partially complete`, `unverified`, `deferred`, and `known debt` only explain
+  why completion is `0`; they never establish a middle completion state or
+  support a completion claim.
+- An accepted replacement baseline does not preserve prior completion. It
+  defines the boundary that must later reach completion `1`.
 - A failed execution attempt leaves the original goal incomplete and never
   makes replacement planning the completed product.
 - Do not use partial success or positive wording to pass incomplete work.
@@ -373,7 +428,36 @@ completion condition that permits unresolved task debt.
 
 ## Test And Verification Policy
 
-- Test count has no authority.
+### Verification Order
+
+Review the affected boundary in this order:
+
+1. Define the correctness model first: responsibilities, invariants, allowed
+   state transitions, points at which changes become durable or externally
+   visible, terminal outcomes, rollback behavior where rollback is possible,
+   failure outcomes, recovery, and cleanup. Rigor means establishing whether the
+   correctness model and implementation remain valid under applicable
+   adversarial paths. It is not measured by the number of files or functions
+   reviewed.
+2. Derive boundary and adversarial checks from that model. Inspect malformed
+   input, parameter combinations, individual and aggregate size limits, numeric
+   limits, stale state, concurrency, cancellation, deadlines, ambiguous
+   outcomes such as lost responses, storage and memory limits, and error
+   precedence where they apply.
+3. Audit the tests independently. Do not accept a test as proof of the complete
+   boundary when it uses test-only production behavior, derives its oracle from
+   the implementation under test, bypasses production composition, manipulates
+   the outcome, or verifies only isolated components.
+
+Every layer is required. Boundary checks do not replace structural reasoning,
+and structural reasoning does not replace boundary checks. A counterexample
+that exposes an incomplete or incorrect correctness model must update that
+model and its checks.
+
+- Test quantity, branch quantity, and exhaustive parameter enumeration are not
+  proof of correctness. Choose checks for the distinct invariants they can
+  falsify, not to increase counts or enumerate combinations without a
+  correctness model.
 - Audit test code to determine the behavior, boundaries, and counterexamples it
   actually verifies.
 - Test schema rejection, normalization, exact numeric behavior, commitments,
