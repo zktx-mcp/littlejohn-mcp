@@ -20,28 +20,23 @@ import {
   type UtcTimestamp,
 } from "../core/index.js";
 import {
-  createTokenCatalogApplication,
-} from "../token-catalog/application.js";
-import {
-  TokenCatalogCoordinator,
-} from "../token-catalog/coordinator.js";
+  createTokenCatalogApplicationFactory,
+  type TokenCatalogApplication,
+} from "../token-catalog/application-factory.js";
 import {
   tokenCatalogCapabilityIds,
   tokenInspectCapability,
 } from "../token-catalog/contracts.js";
 import {
   type TokenCatalogBrowserOperationPort,
+  type TokenCatalogConsumerPorts,
   tokenCatalogConsumerPortContract,
   type TokenCatalogInteractiveCliPort,
-  type TokenCatalogApplicationPort,
   type TokenCatalogCoordinatorDependencies,
   type TokenCatalogNonInteractiveOperationPort,
-  type TokenCatalogOperationCoordinatorPort,
   type TokenCatalogQueryApplicationPort,
-  type TokenCatalogStartApplicationPort,
   type TokenCatalogWebStartPort,
 } from "../token-catalog/ports.js";
-import { extendTokenCatalogSupportManifest } from "../token-catalog/support.js";
 import {
   readRuntimeConfiguration,
   type RuntimeRpcConfiguration,
@@ -74,6 +69,7 @@ import {
   type RuntimeRouteRegistry,
 } from "./http-routing.js";
 import { normalizeRuntimeError, RuntimeOperationError } from "./errors.js";
+import type { RuntimeOwnerSession } from "./owner-session.js";
 import {
   ensureOwnerOnlyDirectory,
   resolveApplicationDataDirectory,
@@ -162,14 +158,6 @@ export interface ChainOwnerHandoff {
   readonly tokenInspection: TokenInspectionReadCapabilityPort["tokenInspection"];
 }
 
-export interface TokenCatalogConsumerPorts {
-  readonly tokenCatalogQueries: TokenCatalogQueryApplicationPort;
-  readonly tokenCatalogWebStart: TokenCatalogWebStartPort;
-  readonly tokenCatalogBrowserOperations: TokenCatalogBrowserOperationPort;
-  readonly tokenCatalogInteractiveCli: TokenCatalogInteractiveCliPort;
-  readonly tokenCatalogNonInteractiveOperations: TokenCatalogNonInteractiveOperationPort;
-}
-
 export interface TokenCatalogOwnerHandoff extends TokenCatalogConsumerPorts {
   readonly supportManifest: TokenCatalogRuntimeSupportManifest;
 }
@@ -218,10 +206,6 @@ export interface ChainOwnerApplication extends HttpOwnerApplication {
   readonly supportManifest: ChainRuntimeSupportManifest;
   readonly chainReads: ChainReadCapabilityPort;
   readonly tokenInspection: TokenInspectionReadCapabilityPort["tokenInspection"];
-}
-
-export interface TokenCatalogOwnerApplication extends HttpOwnerApplication, TokenCatalogConsumerPorts {
-  readonly supportManifest: TokenCatalogRuntimeSupportManifest;
 }
 
 export interface InterfaceOwnerApplication extends HttpOwnerApplication {
@@ -338,7 +322,7 @@ export type TokenCatalogOwnerApplicationStage<ActiveWallet extends object> = (
   context: HttpOwnerApplicationContext,
   wallet: WalletOwnerHandoff<ActiveWallet>,
   chain: ChainOwnerHandoff,
-) => Promise<TokenCatalogOwnerApplication> | TokenCatalogOwnerApplication;
+) => Promise<TokenCatalogApplication> | TokenCatalogApplication;
 export type InterfaceOwnerApplicationStage<
   ActiveWallet extends object,
   WalletOperations extends object,
@@ -401,62 +385,6 @@ const snapshotTokenInspection = (
   return input;
 };
 
-const createTokenCatalogStartPort = <InteractionInterface extends "cli" | "web">(
-  application: TokenCatalogApplicationPort,
-  interactionInterface: InteractionInterface,
-): TokenCatalogStartApplicationPort<InteractionInterface> => Object.freeze({
-  interactionInterface,
-  startRegistration: (input: Parameters<TokenCatalogApplicationPort["startRegistration"]>[0]) =>
-    application.startRegistration(input, interactionInterface),
-  startRegistrationUpdate: (input: Parameters<TokenCatalogApplicationPort["startRegistrationUpdate"]>[0]) =>
-    application.startRegistrationUpdate(input, interactionInterface),
-  startUnregistration: (input: Parameters<TokenCatalogApplicationPort["startUnregistration"]>[0]) =>
-    application.startUnregistration(input, interactionInterface),
-});
-
-export const createTokenCatalogConsumerPorts = (
-  application: TokenCatalogApplicationPort,
-  coordinator: TokenCatalogOperationCoordinatorPort,
-): TokenCatalogConsumerPorts => {
-  const tokenCatalogQueries = Object.freeze({
-    getRegistration: (input: Parameters<TokenCatalogApplicationPort["getRegistration"]>[0]) =>
-      application.getRegistration(input),
-    listRegistrations: (input: Parameters<TokenCatalogApplicationPort["listRegistrations"]>[0]) =>
-      application.listRegistrations(input),
-  }) satisfies TokenCatalogQueryApplicationPort;
-  const tokenCatalogWebStart = createTokenCatalogStartPort(application, "web");
-  const cliStart = createTokenCatalogStartPort(application, "cli");
-  const tokenCatalogBrowserOperations = Object.freeze({
-    interactionInterface: "web",
-    getOperation: (input: Parameters<TokenCatalogApplicationPort["getOperation"]>[0]) =>
-      application.getOperation(input),
-    getCurrentOperation: () => coordinator.getCurrentOperation(),
-    confirm: (input: Parameters<TokenCatalogBrowserOperationPort["confirm"]>[0]) =>
-      coordinator.confirm("web", input),
-    cancel: (operationId: Parameters<TokenCatalogBrowserOperationPort["cancel"]>[0]) =>
-      coordinator.cancel(operationId, "web"),
-  }) satisfies TokenCatalogBrowserOperationPort;
-  const tokenCatalogInteractiveCli = Object.freeze({
-    ...cliStart,
-    interactionInterface: "cli",
-    confirm: (input: Parameters<TokenCatalogInteractiveCliPort["confirm"]>[0]) =>
-      coordinator.confirm("cli", input),
-  }) satisfies TokenCatalogInteractiveCliPort;
-  const tokenCatalogNonInteractiveOperations = Object.freeze({
-    getOperation: (input: Parameters<TokenCatalogApplicationPort["getOperation"]>[0]) =>
-      application.getOperation(input),
-    cancelOperation: (input: Parameters<TokenCatalogApplicationPort["cancelOperation"]>[0]) =>
-      application.cancelOperation(input),
-  }) satisfies TokenCatalogNonInteractiveOperationPort;
-  return Object.freeze({
-    tokenCatalogQueries,
-    tokenCatalogWebStart,
-    tokenCatalogBrowserOperations,
-    tokenCatalogInteractiveCli,
-    tokenCatalogNonInteractiveOperations,
-  });
-};
-
 const snapshotTokenCatalogConsumerPorts = (
   input: TokenCatalogConsumerPorts,
 ): TokenCatalogConsumerPorts => {
@@ -515,12 +443,12 @@ const snapshotTokenCatalogConsumerPorts = (
     }),
     tokenCatalogWebStart: Object.freeze({
       interactionInterface: "web",
-      startRegistration: (request: Parameters<TokenCatalogWebStartPort["startRegistration"]>[0]) =>
-        input.tokenCatalogWebStart.startRegistration(request),
-      startRegistrationUpdate: (request: Parameters<TokenCatalogWebStartPort["startRegistrationUpdate"]>[0]) =>
-        input.tokenCatalogWebStart.startRegistrationUpdate(request),
-      startUnregistration: (request: Parameters<TokenCatalogWebStartPort["startUnregistration"]>[0]) =>
-        input.tokenCatalogWebStart.startUnregistration(request),
+      startRegistration: (...args: Parameters<TokenCatalogWebStartPort["startRegistration"]>) =>
+        input.tokenCatalogWebStart.startRegistration(...args),
+      startRegistrationUpdate: (...args: Parameters<TokenCatalogWebStartPort["startRegistrationUpdate"]>) =>
+        input.tokenCatalogWebStart.startRegistrationUpdate(...args),
+      startUnregistration: (...args: Parameters<TokenCatalogWebStartPort["startUnregistration"]>) =>
+        input.tokenCatalogWebStart.startUnregistration(...args),
     }),
     tokenCatalogBrowserOperations: Object.freeze({
       interactionInterface: "web",
@@ -534,12 +462,12 @@ const snapshotTokenCatalogConsumerPorts = (
     }),
     tokenCatalogInteractiveCli: Object.freeze({
       interactionInterface: "cli",
-      startRegistration: (request: Parameters<TokenCatalogInteractiveCliPort["startRegistration"]>[0]) =>
-        input.tokenCatalogInteractiveCli.startRegistration(request),
-      startRegistrationUpdate: (request: Parameters<TokenCatalogInteractiveCliPort["startRegistrationUpdate"]>[0]) =>
-        input.tokenCatalogInteractiveCli.startRegistrationUpdate(request),
-      startUnregistration: (request: Parameters<TokenCatalogInteractiveCliPort["startUnregistration"]>[0]) =>
-        input.tokenCatalogInteractiveCli.startUnregistration(request),
+      startRegistration: (...args: Parameters<TokenCatalogInteractiveCliPort["startRegistration"]>) =>
+        input.tokenCatalogInteractiveCli.startRegistration(...args),
+      startRegistrationUpdate: (...args: Parameters<TokenCatalogInteractiveCliPort["startRegistrationUpdate"]>) =>
+        input.tokenCatalogInteractiveCli.startRegistrationUpdate(...args),
+      startUnregistration: (...args: Parameters<TokenCatalogInteractiveCliPort["startUnregistration"]>) =>
+        input.tokenCatalogInteractiveCli.startUnregistration(...args),
       confirm: (request: Parameters<TokenCatalogInteractiveCliPort["confirm"]>[0]) =>
         input.tokenCatalogInteractiveCli.confirm(request),
     }),
@@ -646,7 +574,7 @@ export const composeOwnerApplicationStages = async <
     }
 
     const tokenCatalogStage = stages[2];
-    let tokenCatalogApplication: TokenCatalogOwnerApplication | undefined;
+    let tokenCatalogApplication: TokenCatalogApplication | undefined;
     let tokenCatalogHandoff: TokenCatalogOwnerHandoff | undefined;
     if (tokenCatalogStage !== undefined) {
       if (chain === undefined || chainHandoff === undefined) {
@@ -717,13 +645,18 @@ export const composeOwnerApplicationStages = async <
     });
     cleanupRegistration.transfer();
     return application;
-  } catch (error) {
+  } catch (startupError) {
     applications.seal();
     try {
       await applications.close();
       cleanupRegistration.transfer();
-    } catch { /* The HTTP owner retains failed cleanup authority. */ }
-    throw error;
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [startupError, cleanupError],
+        "Application startup and cleanup failed.",
+      );
+    }
+    throw startupError;
   }
 };
 
@@ -834,28 +767,15 @@ export class LocalRuntime {
           ? undefined
           : ({ routes, signal }, wallet, chain) => {
             const activeWallet = requireActiveWalletAuthority(wallet.activeWallet);
-            const coordinator = new TokenCatalogCoordinator({
+            return createTokenCatalogApplicationFactory({
+              routes,
+              supportManifest: chain.supportManifest,
               activeWallet,
               inspection: chain.tokenInspection,
               store: database.tokenCatalogStore(),
+              readStore: database.tokenCatalogReadStore(),
               clock,
-              readWalletProjection: () => walletProjection.read(),
               signal,
-            });
-            const tokenCatalog = createTokenCatalogApplication({
-              dependencies: {
-                activeWallet,
-                store: database.tokenCatalogReadStore(),
-              },
-              operations: coordinator,
-            });
-            const consumerPorts = createTokenCatalogConsumerPorts(tokenCatalog, coordinator);
-            const supportManifest = extendTokenCatalogSupportManifest(chain.supportManifest);
-            return Object.freeze({
-              routes,
-              supportManifest,
-              ...consumerPorts,
-              close: async () => { coordinator.close(); },
             });
           };
       const interfaceStage: InterfaceOwnerApplicationStage<ActiveWallet, WalletOperations> | undefined =
@@ -942,6 +862,13 @@ export class LocalRuntime {
     return owner === undefined
       ? Promise.reject(new RuntimeOperationError("state_conflict"))
       : owner.dispatchRuntimeRequest(request);
+  }
+
+  openOwnerSession(signal?: AbortSignal): Promise<RuntimeOwnerSession> {
+    const owner = this.#httpOwner;
+    return owner === undefined
+      ? Promise.reject(new RuntimeOperationError("state_conflict"))
+      : owner.openOwnerSession(signal);
   }
 
   stop(): Promise<void> {

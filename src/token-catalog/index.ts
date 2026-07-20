@@ -60,6 +60,7 @@ export {
   tokenCatalogInterfaceErrorMappingDefinitions,
 } from "./error-definitions.js";
 export {
+  createTokenCatalogFailure,
   tokenCatalogErrorRegistry,
   tokenCatalogInterfaceErrorMappings,
 } from "./errors.js";
@@ -67,9 +68,17 @@ export {
   normalizeTokenCatalogError,
   TokenCatalogOperationError,
 } from "./operation-error.js";
+export {
+  createTokenCatalogApplicationFactory,
+} from "./application-factory.js";
+export type {
+  TokenCatalogApplication,
+  TokenCatalogApplicationFactoryInput,
+} from "./application-factory.js";
 export { tokenCatalogConsumerPortContract } from "./ports.js";
 export type {
   TokenCatalogBrowserOperationPort,
+  TokenCatalogConsumerPorts,
   TokenCatalogInteractiveCliPort,
   TokenCatalogInspectionPort,
   TokenCatalogNonInteractiveOperationPort,

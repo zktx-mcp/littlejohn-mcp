@@ -132,7 +132,7 @@ type _ChainHandoffKeys = Assert<Equal<
 >>;
 type _RuntimeHandleKeys = Assert<Equal<
   keyof LocalRuntime,
-  "ownerState" | "start" | "dispatchRuntimeRequest" | "stop"
+  "ownerState" | "start" | "dispatchRuntimeRequest" | "openOwnerSession" | "stop"
 >>;
 type _RuntimeOptionKeys = Assert<Equal<
   keyof LocalRuntimeOptions<TestActiveWallet, TestWalletOperations>,

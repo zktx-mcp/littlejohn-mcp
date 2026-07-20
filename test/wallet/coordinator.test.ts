@@ -55,6 +55,12 @@ const topicA = "a".repeat(64);
 const topicB = "b".repeat(64);
 const topicC = "c".repeat(64);
 const topicD = "d".repeat(64);
+let operationIdSequence = 0;
+
+const nextOperationId = (): string => {
+  operationIdSequence += 1;
+  return Buffer.alloc(32, operationIdSequence).toString("base64url");
+};
 
 const qr = {
   size: 21,
@@ -373,12 +379,14 @@ const observeOperationState = (
 
 const startOperation = async (
   coordinator: WalletCoordinator,
-  input: Omit<WalletOperationCreate, "connectionRevision"> & {
+  input: Omit<WalletOperationCreate, "connectionRevision" | "operationId"> & {
     readonly connectionRevision?: WalletOperationCreate["connectionRevision"];
+    readonly operationId?: WalletOperationCreate["operationId"];
   },
 ): Promise<WalletOperationResponse> => {
   const response = await coordinator.start({
     ...input,
+    operationId: input.operationId ?? nextOperationId(),
     connectionRevision: input.connectionRevision ?? null,
   });
   if (response.result.status !== "operation_started") {
@@ -402,6 +410,7 @@ const invokeWalletConnection = (coordinator: WalletCoordinator) =>
 
 describe("WalletCoordinator", () => {
   beforeEach(() => {
+    operationIdSequence = 0;
     vi.useFakeTimers();
     vi.setSystemTime(new Date(initialTime));
   });
@@ -489,6 +498,7 @@ describe("WalletCoordinator", () => {
     });
     expect(coordinator.activeWallet.capture()).toEqual({
       connection: disconnected("expired"),
+      connectionRevision: current.connectionRevision,
     });
     expect(client.disconnectTopics).toEqual([topicA]);
     expect(client.sessions).toEqual([]);
@@ -507,6 +517,7 @@ describe("WalletCoordinator", () => {
 
     expect(coordinator.activeWallet.capture()).toEqual({
       connection: disconnected("expired"),
+      connectionRevision: String(BigInt(initialRevision) + 1n),
     });
     const duringCleanup = await coordinator.currentOperationProjection.get();
     expect(duringCleanup).toEqual({
@@ -521,6 +532,7 @@ describe("WalletCoordinator", () => {
     });
     expect(coordinator.activeWallet.capture()).toEqual({
       connection: disconnected("expired"),
+      connectionRevision: duringCleanup.connectionRevision,
     });
     expect(client.disconnectTopics).toEqual([topicA]);
     expect(client.sessions.map(({ topic }) => topic)).toEqual([topicA]);
@@ -546,6 +558,7 @@ describe("WalletCoordinator", () => {
 
     expect(coordinator.activeWallet.capture()).toEqual({
       connection: disconnected("expired"),
+      connectionRevision: String(BigInt(initialRevision) + 1n),
     });
     expect(await coordinator.currentOperationProjection.get()).toEqual({
       status: "absent",
@@ -567,6 +580,7 @@ describe("WalletCoordinator", () => {
     });
     expect(coordinator.activeWallet.capture()).toEqual({
       connection: disconnected("unusable_store"),
+      connectionRevision: unavailable.connectionRevision,
     });
     expect(client.sessions.map(({ topic }) => topic)).toEqual([topicA]);
     client.disconnectFailures.delete(topicA);
@@ -615,6 +629,7 @@ describe("WalletCoordinator", () => {
     });
     expect(coordinator.activeWallet.capture()).toEqual({
       connection: disconnected("unusable_store"),
+      connectionRevision: String(BigInt(firstRevision) + 1n),
     });
     expect(client.disconnectTopics).toEqual([]);
     expect(client.sessions.map(({ topic }) => topic)).toEqual([topicB]);
@@ -756,6 +771,7 @@ describe("WalletCoordinator", () => {
       kind: "connect",
       interactionInterface: "web",
       connectionRevision: revision,
+      operationId: nextOperationId(),
     });
 
     expect(result).toEqual({
@@ -788,6 +804,7 @@ describe("WalletCoordinator", () => {
       kind: "connect",
       interactionInterface: "web",
       connectionRevision: revision,
+      operationId: nextOperationId(),
     }), "state_conflict");
 
     expect(client.attempts).toEqual([]);
@@ -809,13 +826,13 @@ describe("WalletCoordinator", () => {
     await expectWalletCode(coordinator.operation.start(parseWalletWebOperationCreate({
       kind: "connect",
       connectionRevision: "999",
-    })), "state_conflict");
+    }), nextOperationId()), "state_conflict");
     expect(client.attempts).toEqual([]);
 
     const started = await coordinator.operation.start({
       kind: "connect",
       connectionRevision: initial.connectionRevision,
-    });
+    }, nextOperationId());
     expect(started).toMatchObject({
       status: "operation_started",
       operation: { kind: "connect", state: "starting_connection" },
@@ -865,13 +882,13 @@ describe("WalletCoordinator", () => {
     await expectWalletCode(direct.coordinator.operation.start(parseWalletWebOperationCreate({
       kind: "disconnect",
       connectionRevision: "999",
-    })), "state_conflict");
+    }), nextOperationId()), "state_conflict");
     expect(direct.client.disconnectTopics).toEqual([]);
     let directSettled = false;
     const directAction = direct.coordinator.operation.start({
       kind: "disconnect",
       connectionRevision: direct.projection.read().revision,
-    }).then((result) => {
+    }, nextOperationId()).then((result) => {
       directSettled = true;
       return result;
     });
@@ -900,6 +917,7 @@ describe("WalletCoordinator", () => {
       kind: "disconnect",
       interactionInterface: "web",
       connectionRevision: delegated.projection.read().revision,
+      operationId: nextOperationId(),
     });
     expect(pending.result).toMatchObject({
       status: "operation_started",
@@ -1066,6 +1084,7 @@ describe("WalletCoordinator", () => {
       kind: "connect",
       interactionInterface: "web",
       connectionRevision: null,
+      operationId: nextOperationId(),
     });
     expect(starting).toMatchObject({
       result: { status: "operation_started", operation: { state: "starting_connection" } },
@@ -1670,6 +1689,7 @@ describe("WalletCoordinator", () => {
         kind: "connect",
         interactionInterface: "web",
         connectionRevision: null,
+        operationId: nextOperationId(),
       }),
       "state_conflict",
     );

@@ -1190,6 +1190,119 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     expect(second.state).toBe("owner");
   });
 
+  it("reports exact authenticated owner-session send provenance", async () => {
+    const test = await fixture();
+    let fastExecutions = 0;
+    let enterAbort!: () => void;
+    const abortEntered = new Promise<void>((resolveEnter) => { enterAbort = resolveEnter; });
+    let releaseAbort!: () => void;
+    const abortRelease = new Promise<void>((resolveRelease) => { releaseAbort = resolveRelease; });
+    let enterTimeout!: () => void;
+    const timeoutEntered = new Promise<void>((resolveEnter) => { enterTimeout = resolveEnter; });
+    let releaseTimeout!: () => void;
+    const timeoutRelease = new Promise<void>((resolveRelease) => { releaseTimeout = resolveRelease; });
+    const owner = new FixedHttpOwner({
+      ...fixedOwnerOptions(test),
+      applicationFactory: ({ routes }) => ({
+        routes: routes.extend([
+          {
+            method: "GET",
+            pathPattern: "/api/v1/internal/control/session-fast",
+            mutation: "none" as const,
+            response: "canonical_json" as const,
+            successStatus: 200,
+            handler: async () => {
+              fastExecutions += 1;
+              return { ok: true as const, body: { value: "complete" } };
+            },
+          },
+          {
+            method: "GET",
+            pathPattern: "/api/v1/internal/control/session-abort",
+            mutation: "none" as const,
+            response: "canonical_json" as const,
+            successStatus: 200,
+            handler: async () => {
+              enterAbort();
+              await abortRelease;
+              return { ok: true as const, body: { value: "late" } };
+            },
+          },
+          {
+            method: "GET",
+            pathPattern: "/api/v1/internal/control/session-timeout",
+            mutation: "none" as const,
+            response: "canonical_json" as const,
+            successStatus: 200,
+            handler: async () => {
+              enterTimeout();
+              await timeoutRelease;
+              return { ok: true as const, body: { value: "late" } };
+            },
+          },
+        ]),
+        close: () => undefined,
+      }),
+    });
+    owners.push(owner);
+    expect(await owner.start()).toBe("owner");
+
+    const preAborted = new AbortController();
+    preAborted.abort();
+    const fastSession = await owner.openOwnerSession();
+    expect(await fastSession.send({
+      method: "GET",
+      path: "/api/v1/internal/control/session-fast",
+      maximumResponseBytes: 1_024,
+      responseDeadlineMilliseconds: 1_000,
+    }, preAborted.signal)).toEqual({
+      status: "request_not_sent",
+      reason: "request_aborted",
+    });
+    expect(fastExecutions).toBe(0);
+    const received = await fastSession.send({
+      method: "GET",
+      path: "/api/v1/internal/control/session-fast",
+      maximumResponseBytes: 1_024,
+      responseDeadlineMilliseconds: 1_000,
+    });
+    expect(received.status).toBe("response_received");
+    if (received.status !== "response_received") throw new Error("Expected owner response.");
+    expect(received.response).toMatchObject({
+      statusCode: 200,
+      contentType: "application/json",
+      cacheControl: "no-store",
+    });
+    expect(JSON.parse(new TextDecoder().decode(received.response.bytes))).toEqual({ value: "complete" });
+    fastSession.close();
+
+    const abortSession = await owner.openOwnerSession();
+    const afterSendAbort = new AbortController();
+    const aborted = abortSession.send({
+      method: "GET",
+      path: "/api/v1/internal/control/session-abort",
+      maximumResponseBytes: 1_024,
+      responseDeadlineMilliseconds: 1_000,
+    }, afterSendAbort.signal);
+    await abortEntered;
+    afterSendAbort.abort();
+    expect(await aborted).toEqual({ status: "response_unavailable_after_send_began" });
+    abortSession.close();
+    releaseAbort();
+
+    const timeoutSession = await owner.openOwnerSession();
+    const timedOut = timeoutSession.send({
+      method: "GET",
+      path: "/api/v1/internal/control/session-timeout",
+      maximumResponseBytes: 1_024,
+      responseDeadlineMilliseconds: 40,
+    });
+    await timeoutEntered;
+    expect(await timedOut).toEqual({ status: "response_unavailable_after_send_began" });
+    timeoutSession.close();
+    releaseTimeout();
+  });
+
   it("enforces the exact byte-counted public read response limit across a deferred owner", async () => {
     const test = await fixture();
     const secondDatabase = await ProductDatabase.open(test.paths.database, now);

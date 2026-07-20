@@ -106,18 +106,22 @@ export const parseTokenCatalogOperationCreate = (
 };
 
 export const parseTokenCatalogControlOperationCreate = (input: unknown): Readonly<{
+  operationId: TokenCatalogOperation["operationId"];
   interactionInterface: TokenCatalogInteractionInterface;
   request: TokenCatalogOperationCreate;
 }> => {
   const body = canonicalRecord(input);
-  exactKeys(body, ["interactionInterface", "request"]);
+  exactKeys(body, ["control", "request"]);
+  const control = canonicalRecord(body["control"]);
+  exactKeys(control, ["operationId", "interactionInterface"]);
   const interactionInterface = tokenCatalogInteractionInterfaces.find(
-    (candidate) => candidate === body["interactionInterface"],
+    (candidate) => candidate === control["interactionInterface"],
   );
   if (interactionInterface === undefined) {
     throw new TypeError("Token catalog interaction interface is invalid.");
   }
   return Object.freeze({
+    operationId: tokenCatalogOperationIdSchema.parse(control["operationId"]),
     interactionInterface,
     request: parseTokenCatalogOperationCreate(body["request"]),
   });
@@ -161,7 +165,7 @@ export const tokenCatalogApplicationResult = (
   request: unknown,
   value: unknown,
 ): RouteResult => {
-  try { return success(contract.parseSuccess(request, value)); }
+  try { return success(contract.parsePublicSuccess(request, value)); }
   catch {
     try { return failure(contract.parseFailure(value)); }
     catch { return normalizeFailure(value); }
@@ -197,11 +201,12 @@ const registrationRequest = (context: RouteContext) =>
 export const startTokenCatalogOperation = (
   input: TokenCatalogOperationCreate,
   port: TokenCatalogWebStartPort | TokenCatalogInteractiveCliPort,
+  operationIdInput: TokenCatalogOperation["operationId"],
 ): Promise<TokenCatalogOperationStartResult | ApplicationFailure> => {
   switch (input.kind) {
-    case "register": return port.startRegistration(input.request);
-    case "update_registration": return port.startRegistrationUpdate(input.request);
-    case "unregister": return port.startUnregistration(input.request);
+    case "register": return port.startRegistration(input.request, operationIdInput);
+    case "update_registration": return port.startRegistrationUpdate(input.request, operationIdInput);
+    case "unregister": return port.startUnregistration(input.request, operationIdInput);
   }
 };
 
@@ -305,11 +310,14 @@ export const extendTokenCatalogControlRouteRegistry = (input: {
           : input.interactiveCli;
         const contract = tokenCatalogStartContract(create.request.kind);
         try {
-          return tokenCatalogApplicationResult(
-            contract,
+          return success(contract.parseBoundSuccess(
             create.request.request,
-            await startTokenCatalogOperation(create.request, port),
-          );
+            {
+              operationId: create.operationId,
+              interactionInterface: create.interactionInterface,
+            },
+            await startTokenCatalogOperation(create.request, port, create.operationId),
+          ));
         } catch (error) { return normalizeFailure(error); }
       },
     },
@@ -346,7 +354,11 @@ export const extendTokenCatalogControlRouteRegistry = (input: {
         catch { return invalidInput(); }
         try {
           const value = await input.interactiveCli.confirm(request);
-          return success(tokenCatalogOperationConfirmationContract.parseSuccess(request, value));
+          return success(tokenCatalogOperationConfirmationContract.parseBoundSuccess(
+            request,
+            { operationId: request.operationId, interactionInterface: "cli" },
+            value,
+          ));
         } catch (error) { return normalizeFailure(error); }
       },
     },

@@ -31,6 +31,7 @@ import {
   rpcValue,
   type ChainHandlerHarness,
 } from "../chain/handler-harness.js";
+import { openTestOwnerSession } from "./owner-session-harness.js";
 
 const address = `0x${"11".repeat(20)}`;
 const tokenA = `0x${"22".repeat(20)}`;
@@ -53,6 +54,7 @@ class FakeRuntime implements CliRuntimePort {
   constructor(response: RuntimeDispatchResponse) { this.#response = response; }
   async start(): Promise<void> { this.startCount += 1; }
   async stop(): Promise<void> { this.stopCount += 1; }
+  openOwnerSession(signal?: AbortSignal) { return openTestOwnerSession(this, signal); }
   async dispatchRuntimeRequest(request: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse> {
     this.requests.push(request);
     return this.#response;
@@ -264,6 +266,7 @@ describe("read CLI", () => {
     const runtime = new FakeRuntime(Object.freeze({ status: 200, body: success }));
     const terminal = nonInteractiveTerminal();
     expect(await runCli(["read", "chain-status", "--json"], {
+      createOperationId: () => "A".repeat(43),
       createRuntime: async () => runtime,
       terminal,
       waitForPoll: async () => undefined,

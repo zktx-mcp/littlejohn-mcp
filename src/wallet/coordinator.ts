@@ -1,5 +1,3 @@
-import { randomBytes } from "node:crypto";
-
 import {
   bindCapability,
   canonicalJsonStringify,
@@ -15,6 +13,7 @@ import {
   type HandlerInvocationContext,
   type InvocationBoundaryPorts,
   type ObservationWriter,
+  type UnsignedDecimal,
   type UtcTimestamp,
   type WalletConnectionData,
 } from "../core/index.js";
@@ -30,13 +29,13 @@ import {
   parseWalletCurrentOperationProjection,
   parseWalletManagementOperation,
   parseWalletOperationConfirmation,
+  parseWalletOperationCommand,
   parseWalletOperationCreate,
   parseWalletOperationId,
   parseWalletOperationPresentation,
   parseWalletOperationResponse,
   parseWalletOperationStartResponse,
   parseWalletWebOperationCreate,
-  walletOperationIdByteLength,
   type WalletCurrentOperationProjection,
   type WalletManagementOperation,
   type WalletOperationConfirmationPort,
@@ -194,6 +193,7 @@ interface SessionContinuity {
 
 export interface ActiveWalletReadSnapshot {
   readonly connection: WalletConnectionData;
+  readonly connectionRevision: UnsignedDecimal;
   readonly sessionSource?: WalletSessionSource;
 }
 
@@ -234,6 +234,10 @@ interface EffectHandle<Result> {
   readonly cleanupTopics?: readonly string[];
   readonly lateSuccess?: (value: Result) => Promise<void>;
   fence?: Promise<void>;
+}
+
+interface ExactSessionRevocationEffect extends EffectHandle<void> {
+  readReconciliation(): StableReconciliation;
 }
 
 interface AttemptLease {
@@ -282,7 +286,7 @@ type OperationPhase =
       readonly tag: "disconnecting";
       readonly deadline: UtcTimestamp;
       readonly purpose: ExplicitDisconnectPurpose;
-      readonly effect: EffectHandle<void>;
+      readonly effect: ExactSessionRevocationEffect;
     }
   | {
       readonly tag: "terminating_attempt";
@@ -400,7 +404,7 @@ type OperationStartAction =
   | {
       readonly kind: "disconnect";
       readonly operationId: string;
-      readonly effect: EffectHandle<void>;
+      readonly effect: ExactSessionRevocationEffect;
       readonly purpose: ExplicitDisconnectPurpose;
     };
 
@@ -448,7 +452,7 @@ type ApprovedValidationAction =
       readonly phaseVersion: number;
       readonly approvedTopic: string;
       readonly failureCode: WalletOperationFailureCode;
-      readonly effect?: EffectHandle<void>;
+      readonly effect?: ExactSessionRevocationEffect;
     };
 
 export interface WalletCoordinatorPort extends WalletLocalControlOperationPort {
@@ -523,13 +527,12 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     this.#connectionSnapshot = Object.freeze({ record: wallet.projection.read() });
     this.activeWallet = Object.freeze({ capture: () => this.#captureActiveWallet() });
     this.operation = Object.freeze({
-      start: async (input: WalletWebOperationCreate) => {
+      start: async (input: WalletWebOperationCreate, operationId: string) => {
         const parsed = parseWalletWebOperationCreate(input);
-        return (await this.#startOperationRequest({
-          ...parsed,
-          interactionInterface: "web",
-          connectionRevision: parsed.connectionRevision,
-        }, true)).result;
+        return (await this.#startOperationRequest(parseWalletOperationCreate({
+          control: { operationId, interactionInterface: "web" },
+          request: parsed,
+        }), true)).result;
       },
       cancel: async (operationId: string, input: WalletOperationConfirmation) =>
         (await this.#cancel("web", operationId, input)).operation,
@@ -607,7 +610,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   }
 
   async start(input: WalletOperationCreate): Promise<WalletOperationStartResponse> {
-    const parsed = parseWalletOperationCreate(input);
+    const parsed = parseWalletOperationCommand(input);
     return this.#startOperationRequest(parsed, false);
   }
 
@@ -658,37 +661,13 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   async get(operationId: string): Promise<WalletOperationResponse> {
     this.#assertOpen();
     const id = parseWalletOperationId(operationId);
-    const synchronization = await this.#actor(() => this.#synchronizeOperation(id));
-    if (synchronization.kind === "terminate_start") {
-      await this.#settleStartingTermination(synchronization);
-      this.#assertOpen();
-      return this.#readResponse(id);
-    }
-    if (synchronization.kind === "terminate_attempt") {
-      await this.#settleAttemptTermination(
-        synchronization.operationId,
-        synchronization.effect,
-        synchronization.purpose,
-      );
-      this.#assertOpen();
-      return this.#readResponse(id);
-    }
-    return synchronization.response;
+    return this.#enterOperation(id);
   }
 
   async #readPresentation(operationId: string): Promise<WalletOperationPresentation> {
     this.#assertOpen();
     const id = parseWalletOperationId(operationId);
-    const synchronization = await this.#actor(() => this.#synchronizeOperation(id));
-    if (synchronization.kind === "terminate_start") {
-      await this.#settleStartingTermination(synchronization);
-    } else if (synchronization.kind === "terminate_attempt") {
-      await this.#settleAttemptTermination(
-        synchronization.operationId,
-        synchronization.effect,
-        synchronization.purpose,
-      );
-    }
+    await this.#enterOperation(id);
     return this.#actor(() => {
       this.#assertOpen();
       return this.#operationPresentation(this.#operationEntry(id));
@@ -704,16 +683,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       return this.#activeOperationId;
     });
     if (activeOperationId !== undefined) {
-      const synchronization = await this.#actor(() => this.#synchronizeOperation(activeOperationId));
-      if (synchronization.kind === "terminate_start") {
-        await this.#settleStartingTermination(synchronization);
-      } else if (synchronization.kind === "terminate_attempt") {
-        await this.#settleAttemptTermination(
-          synchronization.operationId,
-          synchronization.effect,
-          synchronization.purpose,
-        );
-      }
+      await this.#enterOperation(activeOperationId);
     }
     return this.#actor(() => {
       this.#assertOpen();
@@ -743,15 +713,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     const id = parseWalletOperationId(operationId);
     const confirmation = parseWalletOperationConfirmation(input);
     this.#assertOpen();
-    const synchronized = await this.#actor(() => this.#synchronizeOperation(id));
-    if (synchronized.kind === "terminate_start") {
-      await this.#settleStartingTermination(synchronized);
-      throw new WalletOperationError("state_conflict");
-    }
-    if (synchronized.kind === "terminate_attempt") {
-      await this.#settleAttemptTermination(id, synchronized.effect, synchronized.purpose);
-      throw new WalletOperationError("state_conflict");
-    }
+    await this.#enterOperation(id);
     const admission = await this.#actor(() => this.#beginConfirmationAdmission(
       interactionInterface,
       id,
@@ -793,15 +755,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       ? undefined
       : parseWalletOperationConfirmation(confirmationInput);
     this.#assertOpen();
-    const synchronized = await this.#actor(() => this.#synchronizeOperation(id));
-    if (synchronized.kind === "terminate_start") {
-      await this.#settleStartingTermination(synchronized);
-      throw new WalletOperationError("state_conflict");
-    }
-    if (synchronized.kind === "terminate_attempt") {
-      await this.#settleAttemptTermination(id, synchronized.effect, synchronized.purpose);
-      throw new WalletOperationError("state_conflict");
-    }
+    await this.#enterOperation(id);
     const action = await this.#actor(() => this.#cancelOperation(
       interactionInterface,
       id,
@@ -857,7 +811,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
 
   async #performClose(): Promise<void> {
     await this.#actor(() => this.#clearOperationWakes());
-    await this.#awaitOwnedWork(false);
+    await this.#awaitOwnedWork(true);
     await this.#client.close();
     await this.#awaitOwnedWork(true);
   }
@@ -978,18 +932,31 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   }
 
   #captureActiveWallet(): ActiveWalletReadSnapshot {
+    let snapshot = this.#connectionSnapshot;
     if (this.#closingRequested) {
-      return Object.freeze({ connection: disconnected("unusable_store") });
+      return Object.freeze({
+        connection: disconnected("unusable_store"),
+        connectionRevision: snapshot.record.revision,
+      });
     }
     if (this.#beginExpiryReconciliationIfNeeded() !== undefined) {
-      return Object.freeze({ connection: this.#connectionSnapshot.record.connection });
+      snapshot = this.#connectionSnapshot;
+      return Object.freeze({
+        connection: snapshot.record.connection,
+        connectionRevision: snapshot.record.revision,
+      });
     }
     if (!this.#connectionEvidenceAvailable) {
-      return Object.freeze({ connection: disconnected("unusable_store") });
+      snapshot = this.#connectionSnapshot;
+      return Object.freeze({
+        connection: disconnected("unusable_store"),
+        connectionRevision: snapshot.record.revision,
+      });
     }
-    const snapshot = this.#connectionSnapshot;
+    snapshot = this.#connectionSnapshot;
     return Object.freeze({
       connection: snapshot.record.connection,
+      connectionRevision: snapshot.record.revision,
       ...(snapshot.sessionSource === undefined ? {} : { sessionSource: snapshot.sessionSource }),
     });
   }
@@ -1169,13 +1136,10 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   }
 
   #createOperationIdentity(input: WalletOperationCreate, connectionRevision: string): OperationIdentity {
-    let operationId: string;
-    do { operationId = randomBytes(walletOperationIdByteLength).toString("base64url"); }
-    while (this.#operations.has(operationId));
     const createdAt = this.#now();
     const userActionDeadline = addMilliseconds(createdAt, userActionWaitMilliseconds);
     return Object.freeze({
-      operationId,
+      operationId: input.operationId,
       kind: input.kind,
       interactionInterface: input.interactionInterface,
       connectionRevision,
@@ -1479,6 +1443,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     readonly run: (checkDeadline: () => void) => Promise<Result>;
     readonly cleanupTopics?: readonly string[];
     readonly lateSuccess?: (value: Result) => Promise<void>;
+    readonly afterSuccess?: (value: Result) => Promise<void>;
     readonly preserveConnectionSnapshot?: boolean;
   }): EffectHandle<Result> {
     const token: EffectToken = Object.freeze({
@@ -1503,8 +1468,14 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       }
     };
     const actual = this.#mutationTail.then(execute, execute);
-    const finalized = actual.then((settlement) => {
+    const finalized = actual.then(async (settlement): Promise<EffectSettlement<Result>> => {
       this.#activeMutations.delete(token.id);
+      if (settlement.status === "fulfilled" && input.afterSuccess !== undefined) {
+        try { await input.afterSuccess(settlement.value); }
+        catch (error) {
+          return Object.freeze({ status: "rejected", error, settledAt: this.#now() });
+        }
+      }
       return settlement;
     });
     this.#mutationTail = finalized.then(() => undefined, () => undefined);
@@ -1733,19 +1704,14 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     }
 
     const cleanupTopics = observation.revokeTopics;
-    const effect = this.#launchMutation({
+    const effect = this.#launchExactSessionRevocation({
       operationId: null,
       phaseVersion: 0,
       kind: "reconcile_sessions",
       deadline,
-      cleanupTopics,
+      topics: cleanupTopics,
+      reconciliationAuthority: authority,
       preserveConnectionSnapshot: authority.committedConnectionRevision !== undefined,
-      run: async (checkDeadline) => {
-        for (const topic of cleanupTopics) {
-          checkDeadline();
-          await this.#client.disconnectSession(topic);
-        }
-      },
     });
     const visible = await effect.visible;
     if (visible.status === "deadline") {
@@ -1757,7 +1723,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       await this.#actor(() => this.#persistUnavailableLocalState());
       return undefined;
     }
-    return this.#actor(() => this.#observeAfterExactCleanup(authority, cleanupTopics));
+    return effect.readReconciliation();
   }
 
   #observeAfterExactCleanup(
@@ -1781,6 +1747,79 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       sessionSetIdentity: observation.sessionSetIdentity,
       evidenceEpoch: this.#connectionEvidenceEpoch,
     });
+  }
+
+  #launchExactSessionRevocation(input: Readonly<{
+    operationId: string | null;
+    phaseVersion: number;
+    kind: Extract<EffectToken["kind"], "disconnect_sessions" | "revoke_approved_session" | "reconcile_sessions">;
+    deadline: UtcTimestamp;
+    topics: readonly string[];
+    authority?: RevocationAuthority;
+    reconciliationAuthority: ReconciliationAuthority;
+    preserveConnectionSnapshot?: boolean;
+  }>): ExactSessionRevocationEffect {
+    const topics = canonicalUnique(input.topics);
+    if (topics === undefined || topics.length === 0) {
+      throw new WalletOperationError("runtime_state_unavailable");
+    }
+    for (const topic of topics) {
+      if (input.authority !== undefined) this.#revocationAuthorities.set(topic, input.authority);
+      else if (!this.#revocationAuthorities.has(topic)) {
+        throw new WalletOperationError("runtime_state_unavailable");
+      }
+    }
+    let reconciliation: StableReconciliation | undefined;
+    const effect = this.#launchMutation<void>({
+      operationId: input.operationId,
+      phaseVersion: input.phaseVersion,
+      kind: input.kind,
+      deadline: input.deadline,
+      cleanupTopics: topics,
+      ...(input.preserveConnectionSnapshot === undefined
+        ? {}
+        : { preserveConnectionSnapshot: input.preserveConnectionSnapshot }),
+      run: async (checkDeadline) => {
+        for (const topic of topics) {
+          checkDeadline();
+          await this.#client.disconnectSession(topic);
+        }
+      },
+      afterSuccess: async () => {
+        reconciliation = await this.#actor(() => this.#observeAfterExactCleanup(
+          input.reconciliationAuthority,
+          topics,
+        ));
+        if (reconciliation === undefined) throw new WalletSdkMutationUnavailableError();
+      },
+    });
+    return Object.assign(effect, {
+      readReconciliation(): StableReconciliation {
+        if (reconciliation === undefined) throw new WalletSdkMutationUnavailableError();
+        return reconciliation;
+      },
+    });
+  }
+
+  async #revokeExactSessions(input: Readonly<{
+    operationId: string | null;
+    phaseVersion: number;
+    deadline: UtcTimestamp;
+    topics: readonly string[];
+    authority: RevocationAuthority;
+    reconciliationAuthority: ReconciliationAuthority;
+  }>): Promise<StableReconciliation> {
+    const effect = await this.#actor(() => this.#launchExactSessionRevocation({
+      ...input,
+      kind: "revoke_approved_session",
+    }));
+    const visible = await effect.visible;
+    if (visible.status === "deadline") {
+      this.#fenceEffect(effect);
+      throw new WalletSdkDeadlineError();
+    }
+    if (visible.settlement.status === "rejected") throw visible.settlement.error;
+    return effect.readReconciliation();
   }
 
   #stableReconciliationState(stable: StableReconciliation): StableReconciliationState {
@@ -1812,6 +1851,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     this.#assertOpen();
     this.#assertLifecycleAdmission(admission);
     this.#pruneExpiredTerminalOperations();
+    if (this.#operations.has(input.operationId)) throw new WalletOperationError("state_conflict");
     if (this.#fences.size !== 0) throw new WalletOperationError("runtime_state_unavailable");
     if (this.#activeOperationId !== undefined) throw new WalletOperationError("state_conflict");
     const reconciliationState = this.#stableReconciliationState(stable);
@@ -1900,15 +1940,13 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   async #cleanupLateAttempt(attempt: WalletConnectConnectionAttemptPort): Promise<void> {
     const outcome = await attempt.cancel();
     if (outcome.status !== "approved") return;
-    await this.#actor(() => {
-      this.#revocationAuthorities.set(outcome.session.topic, "approved_attempt");
-    });
-    await this.#client.disconnectSession(outcome.session.topic);
-    await this.#actor(() => {
-      this.#observeAfterExactCleanup(
-        { kind: "runtime_continuity", emptyReason: "no_session" },
-        Object.freeze([outcome.session.topic]),
-      );
+    await this.#revokeExactSessions({
+      operationId: null,
+      phaseVersion: 0,
+      deadline: addMilliseconds(this.#now(), walletSdkOperationMilliseconds),
+      topics: Object.freeze([outcome.session.topic]),
+      authority: "approved_attempt",
+      reconciliationAuthority: { kind: "runtime_continuity", emptyReason: "no_session" },
     });
   }
 
@@ -2000,7 +2038,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     entry: OperationEntry,
     sessions: readonly WalletConnectSessionSnapshot[],
   ): {
-    readonly effect: EffectHandle<void>;
+    readonly effect: ExactSessionRevocationEffect;
     readonly purpose: ExplicitDisconnectPurpose;
   } {
     const topics = canonicalUnique(sessions.map(({ topic }) => topic));
@@ -2008,22 +2046,15 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     const purpose = Object.freeze({
       targetTopics: topics,
     });
-    for (const topic of topics) {
-      this.#revocationAuthorities.set(topic, "explicit_operation");
-    }
     const deadline = addMilliseconds(this.#now(), walletSdkOperationMilliseconds);
-    const effect = this.#launchMutation({
+    const effect = this.#launchExactSessionRevocation({
       operationId: entry.identity.operationId,
       phaseVersion: entry.phaseVersion + 1,
       kind: "disconnect_sessions",
       deadline,
-      cleanupTopics: topics,
-      run: async (checkDeadline) => {
-        for (const topic of topics) {
-          checkDeadline();
-          await this.#client.disconnectSession(topic);
-        }
-      },
+      topics,
+      authority: "explicit_operation",
+      reconciliationAuthority: { kind: "explicit_cleanup", emptyReason: "disconnected" },
     });
     this.#transition(entry, Object.freeze({
       tag: "disconnecting",
@@ -2036,7 +2067,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
 
   async #settleExplicitDisconnect(
     operationId: string,
-    effect: EffectHandle<void>,
+    effect: ExactSessionRevocationEffect,
     purpose: ExplicitDisconnectPurpose,
   ): Promise<void> {
     const visible = await effect.visible;
@@ -2056,17 +2087,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       });
       return;
     }
-    const reconciliation = await this.#actor(() => this.#observeAfterExactCleanup(
-      { kind: "explicit_cleanup", emptyReason: "disconnected" },
-      purpose.targetTopics,
-    ));
-    if (reconciliation === undefined) {
-      await this.#actor(() => {
-        const entry = this.#entryOwningEffect(operationId, effect);
-        if (entry !== undefined) this.#fail(entry, "runtime_state_unavailable");
-      });
-      return;
-    }
+    const reconciliation = effect.readReconciliation();
     const postcondition = reconciliation.sessions.length === 0;
     await this.#actor(() => {
       const entry = this.#entryOwningEffect(operationId, effect);
@@ -2091,7 +2112,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     const deadline = addMilliseconds(this.#now(), walletSdkOperationMilliseconds);
     const startEffect = entry.phase.effect;
     let work: Promise<void>;
-    work = this.#terminateStartingConnection(startEffect)
+    work = this.#terminateStartingConnection(startEffect, deadline)
       .finally(() => { this.#fences.delete(work); });
     this.#fences.add(work);
     const termination = Object.freeze({ startEffect, deadline, work });
@@ -2112,6 +2133,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
 
   async #terminateStartingConnection(
     startEffect: EffectHandle<WalletConnectConnectionAttemptPort>,
+    deadline: UtcTimestamp,
   ): Promise<void> {
     const startSettlement = await startEffect.actual;
     if (startSettlement.status === "rejected") {
@@ -2128,18 +2150,14 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     const outcome = await startSettlement.value.cancel();
     if (outcome.status === "failed") throw new WalletSdkMutationUnavailableError();
     if (outcome.status === "approved") {
-      await this.#actor(() => {
-        this.#revocationAuthorities.set(outcome.session.topic, "approved_attempt");
+      await this.#revokeExactSessions({
+        operationId: null,
+        phaseVersion: 0,
+        deadline,
+        topics: Object.freeze([outcome.session.topic]),
+        authority: "approved_attempt",
+        reconciliationAuthority: { kind: "runtime_continuity", emptyReason: "no_session" },
       });
-      await this.#client.disconnectSession(outcome.session.topic);
-      const reconciliation = await this.#actor(() => this.#observeAfterExactCleanup(
-        { kind: "runtime_continuity", emptyReason: "no_session" },
-        Object.freeze([outcome.session.topic]),
-      ));
-      if (
-        reconciliation === undefined ||
-        reconciliation.sessions.some(({ topic }) => topic === outcome.session.topic)
-      ) throw new WalletSdkMutationUnavailableError();
       return;
     }
 
@@ -2209,14 +2227,13 @@ export class WalletCoordinator implements WalletCoordinatorPort {
         }
         return outcome;
       },
-      lateSuccess: async (outcome) => {
+      afterSuccess: async (outcome) => {
         if (outcome.status !== "approved") return;
-        await this.#actor(() => {
-          this.#observeAfterExactCleanup(
-            { kind: "runtime_continuity", emptyReason: "no_session" },
-            Object.freeze([outcome.session.topic]),
-          );
-        });
+        const reconciliation = await this.#actor(() => this.#observeAfterExactCleanup(
+          { kind: "runtime_continuity", emptyReason: "no_session" },
+          Object.freeze([outcome.session.topic]),
+        ));
+        if (reconciliation === undefined) throw new WalletSdkMutationUnavailableError();
       },
     });
     this.#transition(entry, Object.freeze({
@@ -2359,15 +2376,16 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       if (session.topic !== outcomeSession.topic) this.#deferredSessionTopics.add(session.topic);
     }
     this.#persistUnavailableLocalState();
-    let effect: EffectHandle<void> | undefined;
+    let effect: ExactSessionRevocationEffect | undefined;
     if (approved !== undefined) {
-      effect = this.#launchMutation({
+      effect = this.#launchExactSessionRevocation({
         operationId,
         phaseVersion: validating.phaseVersion + 1,
         kind: "revoke_approved_session",
         deadline,
-        cleanupTopics: Object.freeze([approved.topic]),
-        run: async () => { await this.#client.disconnectSession(approved.topic); },
+        topics: Object.freeze([approved.topic]),
+        authority: "approved_attempt",
+        reconciliationAuthority: { kind: "explicit_cleanup", emptyReason: "no_session" },
       });
     }
     const cleanupEntry = effect === undefined
@@ -2410,16 +2428,16 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       this.#fail(entry, failureCode);
       return Object.freeze({ kind: "complete" });
     }
-    this.#revocationAuthorities.set(approvedTopic, "approved_attempt");
     this.#persistUnavailableLocalState();
     const deadline = addMilliseconds(this.#now(), walletSdkOperationMilliseconds);
-    const effect = this.#launchMutation({
+    const effect = this.#launchExactSessionRevocation({
       operationId,
       phaseVersion: entry.phaseVersion + 1,
       kind: "revoke_approved_session",
       deadline,
-      cleanupTopics: Object.freeze([approvedTopic]),
-      run: async () => { await this.#client.disconnectSession(approvedTopic); },
+      topics: Object.freeze([approvedTopic]),
+      authority: "approved_attempt",
+      reconciliationAuthority: { kind: "explicit_cleanup", emptyReason: "no_session" },
     });
     const cleanupEntry = this.#transition(entry, Object.freeze({
       tag: "validating_session",
@@ -2465,10 +2483,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     if (this.#closingRequested) return;
     const reconciliation = action.effect === undefined
       ? await this.#reconcile({ kind: "explicit_cleanup", emptyReason: "no_session" })
-      : await this.#actor(() => this.#observeAfterExactCleanup(
-          { kind: "explicit_cleanup", emptyReason: "no_session" },
-          Object.freeze([action.approvedTopic]),
-        ));
+      : action.effect.readReconciliation();
     await this.#actor(() => {
       const entry = this.#operations.get(action.operationId);
       if (entry?.phaseVersion !== action.phaseVersion || entry.phase.tag !== "validating_session") return;
@@ -2477,7 +2492,6 @@ export class WalletCoordinator implements WalletCoordinatorPort {
         this.#fail(entry, "runtime_state_unavailable");
         return;
       }
-      if (action.effect !== undefined) this.#revocationAuthorities.delete(action.approvedTopic);
       this.#fail(entry, action.failureCode);
     });
   }
@@ -2516,6 +2530,21 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       effect: termination.effect,
       purpose: termination.purpose,
     });
+  }
+
+  async #enterOperation(operationId: string): Promise<WalletOperationResponse> {
+    const synchronization = await this.#actor(() => this.#synchronizeOperation(operationId));
+    if (synchronization.kind === "terminate_start") {
+      await this.#settleStartingTermination(synchronization);
+    } else if (synchronization.kind === "terminate_attempt") {
+      await this.#settleAttemptTermination(
+        synchronization.operationId,
+        synchronization.effect,
+        synchronization.purpose,
+      );
+    }
+    this.#assertOpen();
+    return this.#readResponse(operationId);
   }
 
   #synchronizeOperation(operationId: string): DeadlineSynchronization {

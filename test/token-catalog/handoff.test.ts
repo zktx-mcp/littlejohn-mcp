@@ -56,11 +56,11 @@ const tableManifest = captureCanonicalJson([...currentSqliteTableNames].sort()) 
 describe("token catalog WU2 handoff", () => {
   it("fixes the exact schema, contract, consumer-port, operation-timing, and support projections", () => {
     expect(databaseSchemaVersion).toBe(3);
-    expect(runtimeProtocolVersion).toBe(3);
+    expect(runtimeProtocolVersion).toBe(4);
     expect(currentSqliteTableNames).toHaveLength(9);
     expect(schemaDigest).toBe("cf27079d42c4b3bbe70e3ac8a895478463103507d89a1d69fbf82fd984814183");
     expect(canonicalSha256(tableManifest)).toBe("b742c8773e71cd37ad5a9cd58ebb6b9b3d474f9575d046b8a9142a8fc4401512");
-    expect(canonicalSha256(internalProjection as CanonicalJson)).toBe("9888a28320ad8a003298ba3f61ef5abcb80d2e95da41db3b2838a38b02666515");
+    expect(canonicalSha256(internalProjection as CanonicalJson)).toBe("3dc1c8d71c15409c139f6e29315a6238f938bb0bc3c1ea3e2f1e16caa7af6916");
     expect(canonicalSha256(supportProjection as CanonicalJson)).toBe("f49676415ef62b233d2fb939d73e253a7d7404f80622160b3e34a718961f643c");
   });
 
@@ -87,7 +87,7 @@ describe("token catalog WU2 handoff", () => {
         createdAt,
         updatedAt: createdAt,
       }));
-    const validPage = tokenCatalogApplicationContracts.registrations.parseSuccess(
+    const validPage = tokenCatalogApplicationContracts.registrations.parsePublicSuccess(
       { limit: tokenCatalogContractLimits.listMaximumLimit, cursor: null },
       { registrations, nextCursor: null },
     );

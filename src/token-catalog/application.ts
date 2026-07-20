@@ -63,7 +63,7 @@ export const createTokenCatalogApplication = (input: Readonly<{
         const account = requireAccountAsset(input.dependencies, request.asset);
         const registration = input.dependencies.store.getRegistration(account, request.asset);
         if (registration === undefined) throw new TokenCatalogOperationError("token_registration_not_found");
-        const result = contract.parseSuccess(request, registration);
+        const result = contract.parsePublicSuccess(request, registration);
         if (!sameAccount(account, result.registration.account)) {
           throw new TokenCatalogOperationError("internal_error");
         }
@@ -81,7 +81,7 @@ export const createTokenCatalogApplication = (input: Readonly<{
       try {
         const { account } = captureConnectedWalletSession(input.dependencies.activeWallet);
         const page = input.dependencies.store.listRegistrations({ account, ...request });
-        const result = contract.parseSuccess(request, page);
+        const result = contract.parsePublicSuccess(request, page);
         if (result.registrations.some((entry) => !sameAccount(account, entry.account))) {
           throw new TokenCatalogOperationError("internal_error");
         }
@@ -91,47 +91,47 @@ export const createTokenCatalogApplication = (input: Readonly<{
       }
     },
 
-    async startRegistration(inputValue, interactionInterface: TokenCatalogInteractionInterface) {
+    async startRegistration(inputValue, control) {
       const contract = tokenCatalogApplicationContracts.startRegistration;
       let request;
       try { request = contract.parseInput(inputValue); }
       catch { return contract.parseFailure(invalidInput()); }
       try {
-        const result = await input.operations.startRegistration(request, interactionInterface);
+        const result = await input.operations.startRegistration(request, control);
         if ("ok" in result && result.ok === false) return normalizedFailure(contract, result);
         return requireInteractionInterface(
-          interactionInterface,
-          contract.parseSuccess(request, result),
+          control.interactionInterface,
+          contract.parseBoundSuccess(request, control, result),
         );
       } catch (error) { return normalizedFailure(contract, error); }
     },
 
-    async startRegistrationUpdate(inputValue, interactionInterface: TokenCatalogInteractionInterface) {
+    async startRegistrationUpdate(inputValue, control) {
       const contract = tokenCatalogApplicationContracts.startRegistrationUpdate;
       let request;
       try { request = contract.parseInput(inputValue); }
       catch { return contract.parseFailure(invalidInput()); }
       try {
-        const result = await input.operations.startRegistrationUpdate(request, interactionInterface);
+        const result = await input.operations.startRegistrationUpdate(request, control);
         if ("ok" in result && result.ok === false) return normalizedFailure(contract, result);
         return requireInteractionInterface(
-          interactionInterface,
-          contract.parseSuccess(request, result),
+          control.interactionInterface,
+          contract.parseBoundSuccess(request, control, result),
         );
       } catch (error) { return normalizedFailure(contract, error); }
     },
 
-    async startUnregistration(inputValue, interactionInterface: TokenCatalogInteractionInterface) {
+    async startUnregistration(inputValue, control) {
       const contract = tokenCatalogApplicationContracts.startUnregistration;
       let request;
       try { request = contract.parseInput(inputValue); }
       catch { return contract.parseFailure(invalidInput()); }
       try {
-        const result = await input.operations.startUnregistration(request, interactionInterface);
+        const result = await input.operations.startUnregistration(request, control);
         if ("ok" in result && result.ok === false) return normalizedFailure(contract, result);
         return requireInteractionInterface(
-          interactionInterface,
-          contract.parseSuccess(request, result),
+          control.interactionInterface,
+          contract.parseBoundSuccess(request, control, result),
         );
       } catch (error) { return normalizedFailure(contract, error); }
     },
@@ -142,7 +142,7 @@ export const createTokenCatalogApplication = (input: Readonly<{
       try { request = contract.parseInput(inputValue); }
       catch { return contract.parseFailure(invalidInput()); }
       try {
-        return contract.parseSuccess(request, {
+        return contract.parsePublicSuccess(request, {
           operation: input.operations.getOperation(request.operationId),
         });
       } catch (error) { return normalizedFailure(contract, error); }
@@ -154,7 +154,7 @@ export const createTokenCatalogApplication = (input: Readonly<{
       try { request = contract.parseInput(inputValue); }
       catch { return contract.parseFailure(invalidInput()); }
       try {
-        return contract.parseSuccess(request, {
+        return contract.parsePublicSuccess(request, {
           operation: await input.operations.cancel(request.operationId),
         });
       } catch (error) { return normalizedFailure(contract, error); }

@@ -6,6 +6,8 @@ import {
 } from "react";
 
 import { productDisplayName } from "../../core/browser.js";
+import type { DeliveryUnknown } from "../operation-delivery.js";
+import { isDeliveryUnknown } from "../operation-delivery.js";
 import type {
   WalletCurrentOperationProjection,
   WalletManagementOperation,
@@ -241,6 +243,28 @@ const OperationDetails = ({
   );
 };
 
+const WalletDeliveryUnknownDetails = ({
+  delivery,
+  onClose,
+}: {
+  readonly delivery: DeliveryUnknown;
+  readonly onClose: () => void;
+}) => (
+  <>
+    <header>
+      <h1>Wallet action status unknown</h1>
+      <p>The local browser did not receive a valid response after sending the wallet action.</p>
+    </header>
+    <div className="warning">
+      <strong>Do not repeat this action</strong>
+      <p>It may have occurred. Inspect operation {delivery.operationId} before making another wallet change.</p>
+    </div>
+    <div className="actions">
+      <button type="button" className="secondary" onClick={onClose}>Close</button>
+    </div>
+  </>
+);
+
 const Notification = ({
   notice,
   exiting,
@@ -265,19 +289,21 @@ const WalletDialog = ({
   onConnectionAction,
   onOperationAction,
   onClose,
+  deliveryUnknown,
 }: {
   readonly wallet: WalletCurrentOperationProjection;
   readonly requestPending: boolean;
   readonly onConnectionAction: (action: WalletConnectionAction) => void;
   readonly onOperationAction: (action: WalletOperationAction) => void;
   readonly onClose: () => void;
+  readonly deliveryUnknown: DeliveryUnknown | undefined;
 }) => {
   const dialog = useRef<HTMLDialogElement>(null);
   const presentation = wallet.status === "present"
     ? wallet.presentation
     : undefined;
   const closeWhenIdle = (): void => {
-    if (presentation === undefined) onClose();
+    if (deliveryUnknown !== undefined || presentation === undefined) onClose();
   };
   useEffect(() => {
     const element = dialog.current;
@@ -304,7 +330,9 @@ const WalletDialog = ({
         closeWhenIdle();
       }}
     >
-      {presentation === undefined
+      {deliveryUnknown !== undefined
+        ? <WalletDeliveryUnknownDetails delivery={deliveryUnknown} onClose={onClose} />
+        : presentation === undefined
         ? (
             <ConnectionDetails
               wallet={wallet}
@@ -327,6 +355,8 @@ const WalletDialog = ({
 export const App = () => {
   const [state, setState] = useState<AppState>({ status: "loading" });
   const [connectionDialogOpen, setConnectionDialogOpen] = useState(false);
+  const [walletDeliveryUnknown, setWalletDeliveryUnknown] = useState<DeliveryUnknown | undefined>(undefined);
+  const [walletDeliveryDialogOpen, setWalletDeliveryDialogOpen] = useState(false);
   const [requestPending, setRequestPending] = useState(false);
   const [activeNotification, setActiveNotification] = useState<ActiveNotification | undefined>(undefined);
   const [requestAuthority] = useState(createBrowserRequestAuthority);
@@ -439,7 +469,7 @@ export const App = () => {
   }, [activeNotification]);
 
   useEffect(() => {
-    if (requestPending) return;
+    if (requestPending || walletDeliveryUnknown !== undefined) return;
     const request = requestAuthority.beginRead();
     if (request === undefined) return;
     let timer: number | undefined;
@@ -453,7 +483,7 @@ export const App = () => {
       requestAuthority.cancelRead(request);
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [refresh, requestAuthority, requestPending]);
+  }, [refresh, requestAuthority, requestPending, walletDeliveryUnknown]);
 
   const trackOperationResult = useCallback((
     operation: WalletManagementOperation,
@@ -463,12 +493,13 @@ export const App = () => {
 
   const closeConnectionDialog = useCallback((): void => {
     setConnectionDialogOpen(false);
+    setWalletDeliveryDialogOpen(false);
   }, []);
 
   const runControl = useCallback(async (
     action: WalletConnectionAction | WalletOperationAction,
   ): Promise<void> => {
-    if (state.status !== "ready") return;
+    if (state.status !== "ready" || walletDeliveryUnknown !== undefined) return;
     const request = requestAuthority.beginControl();
     if (request === undefined) return;
     setRequestPending(true);
@@ -482,6 +513,11 @@ export const App = () => {
           state.wallet.connectionRevision,
           token,
         );
+        if (isDeliveryUnknown(result)) {
+          setWalletDeliveryUnknown(result);
+          setWalletDeliveryDialogOpen(true);
+          return;
+        }
         if (result.status === "operation_started") {
           trackOperationResult(result.operation);
         }
@@ -496,6 +532,11 @@ export const App = () => {
             operation.connectionRevision,
             csrfToken(),
           );
+          if (isDeliveryUnknown(confirmed)) {
+            setWalletDeliveryUnknown(confirmed);
+            setWalletDeliveryDialogOpen(true);
+            return;
+          }
           trackOperationResult(confirmed);
         } else {
           const cancelled = await cancelWalletOperation(
@@ -503,6 +544,11 @@ export const App = () => {
             operation.connectionRevision,
             csrfToken(),
           );
+          if (isDeliveryUnknown(cancelled)) {
+            setWalletDeliveryUnknown(cancelled);
+            setWalletDeliveryDialogOpen(true);
+            return;
+          }
           trackOperationResult(cancelled);
         }
       }
@@ -519,10 +565,10 @@ export const App = () => {
       requestAuthority.finishControl(request);
       if (requestAuthority.isCurrent(request)) setRequestPending(false);
     }
-  }, [publishControlError, recoverBrowserSession, refresh, requestAuthority, state, trackOperationResult]);
+  }, [publishControlError, recoverBrowserSession, refresh, requestAuthority, state, trackOperationResult, walletDeliveryUnknown]);
 
   const wallet = state.status === "ready" ? state.wallet : undefined;
-  const dialogOpen = wallet?.status === "present" ||
+  const dialogOpen = walletDeliveryDialogOpen || wallet?.status === "present" ||
     (wallet !== undefined && connectionDialogOpen);
   useEffect(() => {
     if (dialogOpen) {
@@ -568,7 +614,7 @@ export const App = () => {
           type="button"
           className="wallet-nav-control secondary"
           aria-expanded={dialogOpen}
-          disabled={wallet === undefined || requestPending}
+          disabled={wallet === undefined || requestPending || walletDeliveryUnknown !== undefined}
           onClick={() => { activateWalletNavigation(); }}
         >
           {walletNavigationLabel(wallet)}
@@ -598,6 +644,7 @@ export const App = () => {
           onConnectionAction={(action) => { void runControl(action); }}
           onOperationAction={(action) => { void runControl(action); }}
           onClose={closeConnectionDialog}
+          deliveryUnknown={walletDeliveryDialogOpen ? walletDeliveryUnknown : undefined}
         />
       ) : null}
       {activeNotification === undefined ? null : (

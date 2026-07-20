@@ -1,10 +1,11 @@
 import { z } from "zod";
 
 import {
-  canonicalBase64UrlSchema,
   captureCanonicalJson,
   deepFreezeValue,
   internalErrorDefinition,
+  operationIdByteLength,
+  operationIdSchema,
   snakeCaseCodeSchema,
   unsignedDecimalSchema,
   utcTimestampSchema,
@@ -30,8 +31,8 @@ import {
   type WalletOperationStateForKind,
 } from "./operation-state.js";
 
-export const walletOperationIdByteLength = 32;
-export const walletOperationIdSchema = canonicalBase64UrlSchema(walletOperationIdByteLength);
+export const walletOperationIdByteLength = operationIdByteLength;
+export const walletOperationIdSchema = operationIdSchema;
 
 type WalletConnectionForStatus<Status extends WalletConnectionData["status"]> =
   Extract<WalletConnectionData, { readonly status: Status }>;
@@ -216,12 +217,25 @@ export const walletNonterminalManagementOperationSchema =
   operationUnion(nonterminalOperationVariantSchemas) as
     z.ZodType<WalletNonterminalManagementOperation>;
 
-export const walletOperationCreateSchema = z.object({
-  kind: z.enum(walletOperationKinds),
+export const walletOperationControlSchema = z.object({
+  operationId: walletOperationIdSchema,
   interactionInterface: z.enum(walletInteractionInterfaces),
+}).strict();
+export type WalletOperationControl = z.infer<typeof walletOperationControlSchema>;
+
+const walletOperationCommandSchema = walletOperationControlSchema.extend({
+  kind: z.enum(walletOperationKinds),
   connectionRevision: unsignedDecimalSchema.nullable(),
 }).strict();
-export type WalletOperationCreate = z.infer<typeof walletOperationCreateSchema>;
+
+export const walletOperationCreateSchema = z.object({
+  control: walletOperationControlSchema,
+  request: z.object({
+    kind: z.enum(walletOperationKinds),
+    connectionRevision: unsignedDecimalSchema.nullable(),
+  }).strict(),
+}).strict().transform(({ control, request }) => walletOperationCommandSchema.parse({ ...control, ...request }));
+export type WalletOperationCreate = z.infer<typeof walletOperationCommandSchema>;
 
 export const walletWebOperationCreateSchema = z.object({
   kind: z.enum(walletOperationKinds),
@@ -349,6 +363,8 @@ export const parseWalletManagementOperation = (input: unknown): WalletManagement
   deepFreezeValue(walletManagementOperationSchema.parse(captureCanonicalJson(input)));
 export const parseWalletOperationCreate = (input: unknown): WalletOperationCreate =>
   deepFreezeValue(walletOperationCreateSchema.parse(captureCanonicalJson(input)));
+export const parseWalletOperationCommand = (input: unknown): WalletOperationCreate =>
+  deepFreezeValue(walletOperationCommandSchema.parse(captureCanonicalJson(input)));
 export const parseWalletWebOperationCreate = (input: unknown): WalletWebOperationCreate =>
   deepFreezeValue(walletWebOperationCreateSchema.parse(captureCanonicalJson(input)));
 export const parseWalletOperationConfirmation = (input: unknown): WalletOperationConfirmation =>

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { browserCsrfHeaderName } from "../../../src/interfaces/browser-contract.js";
 import {
@@ -30,6 +30,19 @@ import {
 } from "../../token-catalog/harness.js";
 
 const csrfToken = "A".repeat(43);
+const operationId = "A".repeat(43);
+let operationIdByte = 0;
+
+beforeEach(() => {
+  operationIdByte = 0;
+  vi.spyOn(globalThis.crypto, "getRandomValues").mockImplementation((array) => {
+    new Uint8Array(array.buffer, array.byteOffset, array.byteLength).fill(operationIdByte);
+    operationIdByte += 1;
+    return array;
+  });
+});
+
+afterEach(() => { vi.restoreAllMocks(); });
 
 const jsonResponse = (status: number, value: unknown): Response => new Response(
   JSON.stringify(value),
@@ -92,7 +105,7 @@ const operationFixtures = async () => {
   });
   const unregister = tokenCatalogOperationSchema.parse({
     ...common,
-    operationId: Buffer.alloc(32, 2).toString("base64url"),
+    operationId: Buffer.alloc(32, 1).toString("base64url"),
     kind: "unregister",
     review: {
       previousRegistration: previous,
@@ -188,27 +201,29 @@ describe("token catalog browser client", () => {
       csrfToken,
       { request: transport.request },
     )).resolves.toEqual({ operation });
-    expect(transport.requests).toEqual([{
-      path: tokenCatalogBrowserRoutes.operations,
-      init: {
-        method: "POST",
-        credentials: "same-origin",
-        cache: "no-store",
-        headers: {
-          [browserCsrfHeaderName]: csrfToken,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          kind: "register",
-          asset: inspection.data.asset,
-          settings,
-        }),
+    expect(transport.requests).toHaveLength(1);
+    expect(transport.requests[0]?.path).toBe(tokenCatalogBrowserRoutes.operations);
+    expect(transport.requests[0]?.init).toMatchObject({
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: {
+        [browserCsrfHeaderName]: csrfToken,
+        "Content-Type": "application/json",
       },
-    }]);
+    });
+    expect(transport.requests[0]?.init.signal).toBeInstanceOf(AbortSignal);
+    expect(parseRequestBody(transport.requests[0]?.init.body)).toEqual({
+      control: { operationId, interactionInterface: "web" },
+      request: {
+        kind: "register",
+        asset: inspection.data.asset,
+        settings,
+      },
+    });
   });
 
   it("preserves an unavailable exact-operation response for the page lifecycle", async () => {
-    const operationId = "A".repeat(43);
     const transport = queuedFetch([jsonResponse(404, {
       type: "about:blank",
       title: "Token operation not found",
@@ -282,10 +297,16 @@ describe("token catalog browser client", () => {
         method: "POST",
         csrf: csrfToken,
         body: {
-          kind: "update_registration",
-          asset: fixture.previous.asset,
-          expectedRevision: fixture.previous.revision,
-          changes: { userLabel: "New label", visibility: "hidden" },
+          control: {
+            operationId: fixture.update.operationId,
+            interactionInterface: "web",
+          },
+          request: {
+            kind: "update_registration",
+            asset: fixture.previous.asset,
+            expectedRevision: fixture.previous.revision,
+            changes: { userLabel: "New label", visibility: "hidden" },
+          },
         },
       },
       {
@@ -293,9 +314,15 @@ describe("token catalog browser client", () => {
         method: "POST",
         csrf: csrfToken,
         body: {
-          kind: "unregister",
-          asset: fixture.previous.asset,
-          expectedRevision: fixture.previous.revision,
+          control: {
+            operationId: fixture.unregister.operationId,
+            interactionInterface: "web",
+          },
+          request: {
+            kind: "unregister",
+            asset: fixture.previous.asset,
+            expectedRevision: fixture.previous.revision,
+          },
         },
       },
       {
@@ -327,9 +354,22 @@ describe("token catalog browser client", () => {
 
   it("rejects malformed responses for every browser catalog operation", async () => {
     const fixture = await operationFixtures();
-    const calls = [
+    const readCalls = [
       () => loadTokenRegistrations({}, { request: queuedFetch([jsonResponse(200, {})]).request }),
       () => loadTokenRegistration(chainId, tokenAddress, { request: queuedFetch([jsonResponse(200, {})]).request }),
+      () => loadCurrentTokenOperation({ request: queuedFetch([jsonResponse(200, {})]).request }),
+      () => loadTokenOperation(
+        fixture.update.operationId,
+        { request: queuedFetch([jsonResponse(200, {})]).request },
+      ),
+    ];
+    for (const call of readCalls) {
+      await expect(call()).rejects.toMatchObject({
+        message: "The token catalog response is invalid.",
+      });
+    }
+
+    const actionCalls = [
       () => startTokenRegistration(
         chainId,
         tokenAddress,
@@ -348,11 +388,6 @@ describe("token catalog browser client", () => {
         csrfToken,
         { request: queuedFetch([jsonResponse(200, {})]).request },
       ),
-      () => loadCurrentTokenOperation({ request: queuedFetch([jsonResponse(200, {})]).request }),
-      () => loadTokenOperation(
-        fixture.update.operationId,
-        { request: queuedFetch([jsonResponse(200, {})]).request },
-      ),
       () => confirmTokenOperation(
         fixture.update,
         csrfToken,
@@ -364,11 +399,35 @@ describe("token catalog browser client", () => {
         { request: queuedFetch([jsonResponse(200, {})]).request },
       ),
     ];
-    for (const call of calls) {
-      await expect(call()).rejects.toMatchObject({
-        message: "The token catalog response is invalid.",
+    for (const call of actionCalls) {
+      await expect(call()).resolves.toMatchObject({
+        status: "delivery_unknown",
+        resendAllowed: false,
       });
     }
+  });
+
+  it("does not trust a response body that imitates local delivery uncertainty", async () => {
+    const transport = queuedFetch([jsonResponse(200, {
+      status: "delivery_unknown",
+      action: "confirm",
+      operationId: "B".repeat(43),
+      resendAllowed: false,
+      extra: true,
+    })]);
+
+    await expect(startTokenRegistration(
+      chainId,
+      tokenAddress,
+      { userLabel: null, visibility: "visible" },
+      csrfToken,
+      { request: transport.request },
+    )).resolves.toEqual({
+      status: "delivery_unknown",
+      action: "start",
+      operationId,
+      resendAllowed: false,
+    });
   });
 
   it("passes one abort signal through every catalog read request", async () => {

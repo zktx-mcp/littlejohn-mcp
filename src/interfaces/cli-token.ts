@@ -14,11 +14,10 @@ import {
 } from "../core/index.js";
 import {
   tokenCatalogApplicationContracts,
+  createTokenCatalogFailure,
   tokenCatalogInterfaceErrorMappings,
   tokenCatalogOperationConfirmationContract,
   tokenCatalogOperationIdSchema,
-  tokenCatalogControlRoutes,
-  tokenRegistrationListRequestBody,
   tokenRegistrationRevisionSchema,
   tokenRegistrationVisibilities,
   tokenUserLabelSchema,
@@ -31,6 +30,14 @@ import {
 } from "../token-catalog/index.js";
 import type { RuntimeDispatchPort } from "./http-client.js";
 import {
+  LocalOperationClient,
+  type LocalOperationIdentity,
+} from "./operation-client.js";
+import {
+  deliveryUnknownCliExitCode,
+  type DeliveryUnknown,
+} from "./operation-delivery.js";
+import {
   constrainInterfaceFailure,
   createInterfaceFailure,
   dispatchCanonical,
@@ -39,6 +46,7 @@ import {
 import {
   chainStatusInterface,
   tokenCatalogInterfaceBindings,
+  tokenLocalOperationIdentities,
   tokenInspectInterface,
 } from "./identities.js";
 
@@ -281,25 +289,28 @@ const reportFailure = (
   return tokenCatalogInterfaceErrorMappings.get(failure.error.code).cliExitCode;
 };
 
-const invoke = async (
-  runtime: RuntimeDispatchPort,
-  contract: AnyTokenCatalogApplicationContract,
+class TokenCliDeliveryUnknown extends Error {
+  readonly delivery: DeliveryUnknown;
+
+  constructor(delivery: DeliveryUnknown) {
+    super("The local operation response is unavailable after sending began.");
+    this.name = "TokenCliDeliveryUnknown";
+    this.delivery = delivery;
+    Object.freeze(this);
+  }
+}
+
+const invokeLocal = async <Input, Success>(
+  client: LocalOperationClient,
+  identity: LocalOperationIdentity<Input, Success>,
   input: unknown,
-  request: Readonly<{
-    requestClass: "public_read" | "local_control";
-    method: "GET" | "POST" | "DELETE";
-    path: string;
-    body?: CanonicalJson;
-    signal?: AbortSignal;
-  }>,
+  signal?: AbortSignal,
 ): Promise<InterfaceInvocationResult> => {
-  const result = constrainInterfaceFailure(
-    await dispatchCanonical(runtime, request, 200),
-    contract.failureCodes,
-  );
-  if (!result.ok) return result;
-  try { return Object.freeze({ ok: true, value: captureCanonicalJson(contract.parseSuccess(input, result.value)) }); }
-  catch { return Object.freeze({ ok: false, failure: createInterfaceFailure("internal_error") }); }
+  const result = await client.invoke(identity, input, signal);
+  if ("status" in result) throw new TokenCliDeliveryUnknown(result);
+  return result.ok
+    ? Object.freeze({ ok: true, value: captureCanonicalJson(result.value) })
+    : result;
 };
 
 const configuredChainId = async (
@@ -311,7 +322,7 @@ const configuredChainId = async (
     method: chainStatusInterface.http.method,
     path: chainStatusInterface.http.path,
     signal,
-  }, 200), getCapabilityDefinitionSnapshot(chainStatusInterface.definition).failureCodes);
+  }, 200, chainStatusInterface.responseAuthority), getCapabilityDefinitionSnapshot(chainStatusInterface.definition).failureCodes);
   if (!result.ok) return result.failure;
   try { return parseCapabilitySuccess(chainStatusInterface.definition, {}, result.value).data.chainId; }
   catch { return createInterfaceFailure("internal_error"); }
@@ -473,20 +484,17 @@ const startInput = async (
 };
 
 const cancelStartedOperation = async (
-  runtime: RuntimeDispatchPort,
+  client: LocalOperationClient,
   operation: TokenCatalogOperation,
-): Promise<InterfaceInvocationResult> => {
-  const contract = tokenCatalogApplicationContracts.cancelOperation;
-  const input = contract.parseInput({ operationId: operation.operationId });
-  return invoke(runtime, contract, input, {
-    requestClass: "local_control",
-    method: "DELETE",
-    path: tokenCatalogControlRoutes.operation(operation.operationId),
-  });
-};
+): Promise<InterfaceInvocationResult> => invokeLocal(
+  client,
+  tokenLocalOperationIdentities.shared.cancel,
+  { operationId: operation.operationId },
+);
 
 const runInteractiveChange = async (
   runtime: RuntimeDispatchPort,
+  client: LocalOperationClient,
   command: Extract<TokenCliCommand, { kind: "register" | "update" | "unregister" }>,
   output: TokenCliOutputPort,
 ): Promise<number> => {
@@ -495,19 +503,30 @@ const runInteractiveChange = async (
   if (output.interruptSignal.aborted) {
     return reportFailure(output, createInterfaceFailure("request_aborted"), false);
   }
-  const start = await invoke(runtime, prepared.contract, prepared.request, {
-    requestClass: "local_control",
-    method: "POST",
-    path: tokenCatalogControlRoutes.operations,
-    body: captureCanonicalJson({
-      interactionInterface: "cli",
-      request: { kind: prepared.operationKind, ...prepared.request },
-    }),
-  });
+  const start = prepared.operationKind === "register"
+    ? await invokeLocal(
+      client,
+      tokenLocalOperationIdentities.cli.registration,
+      prepared.request,
+      output.interruptSignal,
+    )
+    : prepared.operationKind === "update_registration"
+      ? await invokeLocal(
+        client,
+        tokenLocalOperationIdentities.cli.registrationUpdate,
+        prepared.request,
+        output.interruptSignal,
+      )
+      : await invokeLocal(
+        client,
+        tokenLocalOperationIdentities.cli.unregistration,
+        prepared.request,
+        output.interruptSignal,
+      );
   if (!start.ok) return reportFailure(output, start.failure, false);
   const started = start.value as unknown as TokenCatalogOperationStartResult;
   if (output.interruptSignal.aborted) {
-    const cancelled = await cancelStartedOperation(runtime, started.operation);
+    const cancelled = await cancelStartedOperation(client, started.operation);
     if (!cancelled.ok) return reportFailure(output, cancelled.failure, false);
     return 0;
   }
@@ -520,7 +539,7 @@ const runInteractiveChange = async (
     decision = "decline";
   }
   if (decision !== "confirm" || output.interruptSignal.aborted) {
-    const cancelled = await cancelStartedOperation(runtime, started.operation);
+    const cancelled = await cancelStartedOperation(client, started.operation);
     if (!cancelled.ok) return reportFailure(output, cancelled.failure, false);
     const operation = (cancelled.value as unknown as { operation: TokenCatalogOperation }).operation;
     if (confirmationInputFailed) {
@@ -533,20 +552,16 @@ const runInteractiveChange = async (
     operationId: started.operation.operationId,
     reviewDigest: started.operation.review.reviewDigest,
   });
-  const confirmed = await dispatchCanonical(runtime, {
-    requestClass: "local_control",
-    method: "POST",
-    path: tokenCatalogControlRoutes.confirmation(started.operation.operationId),
-    body: captureCanonicalJson({ reviewDigest: started.operation.review.reviewDigest }),
-  }, 200);
-  const constrained = constrainInterfaceFailure(
-    confirmed,
-    tokenCatalogOperationConfirmationContract.failureCodes,
+  const constrained = await invokeLocal(
+    client,
+    tokenLocalOperationIdentities.cli.confirm,
+    confirmationInput,
+    output.interruptSignal,
   );
   if (!constrained.ok) return reportFailure(output, constrained.failure, false);
   let operation: TokenCatalogOperation;
   try {
-    operation = tokenCatalogOperationConfirmationContract.parseSuccess(
+    operation = tokenCatalogOperationConfirmationContract.parsePublicSuccess(
       confirmationInput,
       constrained.value,
     );
@@ -560,28 +575,31 @@ const runInteractiveChange = async (
 
 export const runTokenCliCommand = async (
   runtime: RuntimeDispatchPort,
+  client: LocalOperationClient,
   command: TokenCliCommand,
   output: TokenCliOutputPort,
 ): Promise<number> => {
   try {
     if (tokenCliCommandRequiresInteractiveTerminal(command) &&
       (!output.inputIsTTY || !output.outputIsTTY)) {
-      return reportFailure(output, createInterfaceFailure("interactive_terminal_required"), false);
+      return reportFailure(output, createTokenCatalogFailure("interactive_terminal_required"), false);
     }
     if (command.kind === "register" || command.kind === "update" || command.kind === "unregister") {
-      return await runInteractiveChange(runtime, command, output);
+      return await runInteractiveChange(runtime, client, command, output);
     }
     if (command.kind === "operation" || command.kind === "cancel") {
       const contract = command.kind === "operation"
         ? tokenCatalogApplicationContracts.operation
         : tokenCatalogApplicationContracts.cancelOperation;
       const input = contract.parseInput({ operationId: command.operationId });
-      const result = await invoke(runtime, contract, input, {
-        requestClass: "local_control",
-        method: command.kind === "operation" ? "GET" : "DELETE",
-        path: tokenCatalogControlRoutes.operation(command.operationId),
-        signal: output.interruptSignal,
-      });
+      const result = await invokeLocal(
+        client,
+        command.kind === "operation"
+          ? tokenLocalOperationIdentities.shared.operation
+          : tokenLocalOperationIdentities.shared.cancel,
+        input,
+        output.interruptSignal,
+      );
       if (!result.ok) return reportFailure(output, result.failure, command.json);
       if (command.json) canonical(output, result.value);
       else output.writeOutput(`${operationHuman(
@@ -591,17 +609,16 @@ export const runTokenCliCommand = async (
     }
     if (command.kind === "list") {
       const contract = tokenCatalogApplicationContracts.registrations;
-      const input = contract.parseInput({
+      const input = {
         ...(command.limit === undefined ? {} : { limit: command.limit }),
         ...(command.cursor === undefined ? {} : { cursor: command.cursor }),
-      });
-      const result = await invoke(runtime, contract, input, {
-        requestClass: "local_control",
-        method: "POST",
-        path: tokenCatalogControlRoutes.registrationQueries,
-        body: captureCanonicalJson(tokenRegistrationListRequestBody(input)),
-        signal: output.interruptSignal,
-      });
+      };
+      const result = await invokeLocal(
+        client,
+        tokenLocalOperationIdentities.shared.registrations,
+        input,
+        output.interruptSignal,
+      );
       if (!result.ok) return reportFailure(output, result.failure, command.json);
       if (command.json) canonical(output, result.value);
       else {
@@ -628,7 +645,7 @@ export const runTokenCliCommand = async (
         path: tokenInspectInterface.http.path,
         body: captureCanonicalJson(input),
         signal: output.interruptSignal,
-      }, 200), getCapabilityDefinitionSnapshot(tokenInspectInterface.definition).failureCodes);
+      }, 200, tokenInspectInterface.responseAuthority), getCapabilityDefinitionSnapshot(tokenInspectInterface.definition).failureCodes);
       if (!result.ok) return reportFailure(output, result.failure, command.json);
       try {
         const success = parseCapabilitySuccess(tokenInspectInterface.definition, input, result.value);
@@ -641,18 +658,28 @@ export const runTokenCliCommand = async (
     }
     const contract = tokenCatalogApplicationContracts.registration;
     const input = contract.parseInput({ asset: tokenAsset });
-    const result = await invoke(runtime, contract, input, {
-      requestClass: "local_control",
-      method: "GET",
-      path: tokenCatalogControlRoutes.registration(chainId, command.address),
-      signal: output.interruptSignal,
-    });
+    const result = await invokeLocal(
+      client,
+      tokenLocalOperationIdentities.shared.registration,
+      input,
+      output.interruptSignal,
+    );
     if (!result.ok) return reportFailure(output, result.failure, command.json);
     const registration = result.value as unknown as TokenRegistrationWithInspection;
     if (command.json) canonical(output, registration);
     else output.writeOutput(`${registrationHuman(registration.registration)}\n${inspectionHuman(registration.inspection)}\n`);
     return 0;
-  } catch {
+  } catch (error) {
+    if (error instanceof TokenCliDeliveryUnknown) {
+      if (command.json) canonical(output, error.delivery);
+      else output.writeError([
+        `Delivery unknown for ${error.delivery.action} operation ${error.delivery.operationId}.`,
+        "The action may have occurred. Do not repeat it.",
+        "Inspect that exact operation before another state change.",
+        "",
+      ].join("\n"));
+      return deliveryUnknownCliExitCode;
+    }
     return reportFailure(output, createInterfaceFailure("internal_error"), command.json);
   }
 };

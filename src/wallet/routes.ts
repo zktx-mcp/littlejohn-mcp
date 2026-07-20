@@ -18,6 +18,7 @@ import {
   parseWalletOperationResponse,
   parseWalletOperationStartResponse,
   walletManagementContracts,
+  walletOperationConfirmationContract,
   type WalletOperationConfirmationPort,
   type WalletLocalControlOperationPort,
 } from "./contracts.js";
@@ -70,7 +71,7 @@ const validatedOperationResponse = (
   const response = parseWalletOperationResponse(value);
   return Object.freeze({
     ...response,
-    operation: contract.parseSuccess({ operationId: id }, response.operation),
+    operation: contract.parsePublicSuccess({ operationId: id }, response.operation),
   });
 };
 
@@ -113,7 +114,14 @@ export const extendWalletControlRouteRegistry = (input: {
           }
           return success({
             ...response,
-            result: startContract(createInput.kind).parseSuccess({}, response.result),
+            result: startContract(createInput.kind).parseBoundSuccess(
+              {},
+              {
+                operationId: createInput.operationId,
+                interactionInterface: createInput.interactionInterface,
+              },
+              response.result,
+            ),
           });
         } catch (error) {
           return normalizeFailure(error);
@@ -160,11 +168,17 @@ export const extendWalletControlRouteRegistry = (input: {
           return invalidInput();
         }
         try {
-          return success(validatedOperationResponse(
-            walletManagementContracts.operation,
-            id,
+          const response = parseWalletOperationResponse(
             await cliConfirmation.confirm(id, confirmation),
-          ));
+          );
+          return success({
+            ...response,
+            operation: walletOperationConfirmationContract.parseBoundSuccess(
+              { operationId: id, connectionRevision: confirmation.connectionRevision },
+              { operationId: id, interactionInterface: "cli" },
+              response.operation,
+            ),
+          });
         } catch (error) {
           return normalizeFailure(error);
         }

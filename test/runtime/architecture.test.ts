@@ -31,12 +31,16 @@ const interfaceConsumerEntryPoints = new Set([
 const browserCoreConsumers = new Set([
   "interfaces/browser-contract.ts",
   "interfaces/browser-error-response.ts",
+  "interfaces/operation-delivery.ts",
   "interfaces/web/app.tsx",
+  "interfaces/web/browser-client.ts",
   "interfaces/web/main.tsx",
+  "interfaces/web/operation-id.ts",
   "interfaces/web/token-catalog-client.ts",
   "interfaces/web/wallet-dialog-view.ts",
   "runtime/error-definitions.ts",
   "token-catalog/contract-schema.ts",
+  "wallet/management-contracts.ts",
   "wallet/operation-contract.ts",
 ]);
 const browserTokenCatalogConsumers = new Set([
@@ -136,6 +140,25 @@ describe("runtime architecture boundary", () => {
     expect(violations).toEqual([]);
   });
 
+  it("confines local operation bindings and catalog resolution to their process owner", async () => {
+    const allowed = new Set([
+      resolve(sourceRoot, "interfaces/identities.ts"),
+      resolve(sourceRoot, "interfaces/operation-client.ts"),
+    ]);
+    const violations: string[] = [];
+    for (const file of await collectSourceFiles(sourceRoot)) {
+      const source = await readFile(file, "utf8");
+      if (!allowed.has(file) && source.includes("resolveLocalOperationIdentity")) {
+        violations.push(relative(sourceRoot, file).split(sep).join("/"));
+      }
+    }
+    expect(violations).toEqual([]);
+
+    const publicInterface = await readFile(resolve(sourceRoot, "interfaces/index.ts"), "utf8");
+    expect(publicInterface).not.toContain("LocalOperationBinding");
+    expect(publicInterface).not.toContain("LocalOperationContract");
+  });
+
   it("keeps credential, database, owner, and route construction out of the public runtime entry point", async () => {
     const index = await readFile(resolve("src/runtime/index.ts"), "utf8");
     const parsed = ts.createSourceFile("index.ts", index, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -191,6 +214,14 @@ describe("runtime architecture boundary", () => {
       "extendChainRuntimeSupportManifest",
       "extendInterfaceRuntimeSupportManifest",
     ]) expect(Object.hasOwn(runtimePublic, scopedAuthority)).toBe(true);
+  });
+
+  it("makes runtime composition consume the complete token catalog application", async () => {
+    const composition = await readFile(resolve("src/runtime/composition.ts"), "utf8");
+    expect(composition).toContain("createTokenCatalogApplicationFactory");
+    expect(composition).not.toContain("new TokenCatalogCoordinator");
+    expect(composition).not.toContain("createTokenCatalogApplication({");
+    expect(composition).not.toContain("createTokenCatalogConsumerPorts(");
   });
 
   it("confines SQLite snake-case row names to SQL aliases at the database adapter", async () => {

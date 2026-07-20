@@ -27,7 +27,6 @@ import type {
 import {
   LocalRuntime,
   composeOwnerApplicationStages,
-  createTokenCatalogConsumerPorts,
   type ChainReadCapabilityPort,
   type TokenCatalogOwnerApplicationStage,
   type WalletConnectionReadCapabilityPort,
@@ -57,6 +56,7 @@ const initialRuntimeSupportManifest = createInitialRuntimeSupportManifest(
 );
 
 const internalFailure = new TokenCatalogOperationError("internal_error").failure;
+const operationId = "A".repeat(43);
 
 const testTokenCatalog: TokenCatalogApplicationPort = Object.freeze({
   getRegistration: () => internalFailure,
@@ -85,32 +85,32 @@ const testTokenCatalogQueries = Object.freeze({
 }) satisfies TokenCatalogQueryApplicationPort;
 const testTokenCatalogWebStart = Object.freeze({
   interactionInterface: "web",
-  startRegistration: (input: Parameters<TokenCatalogApplicationPort["startRegistration"]>[0]) =>
-    testTokenCatalog.startRegistration(input, "web"),
-  startRegistrationUpdate: (input: Parameters<TokenCatalogApplicationPort["startRegistrationUpdate"]>[0]) =>
-    testTokenCatalog.startRegistrationUpdate(input, "web"),
-  startUnregistration: (input: Parameters<TokenCatalogApplicationPort["startUnregistration"]>[0]) =>
-    testTokenCatalog.startUnregistration(input, "web"),
+  startRegistration: (input: Parameters<TokenCatalogApplicationPort["startRegistration"]>[0], id: typeof operationId) =>
+    testTokenCatalog.startRegistration(input, { operationId: id, interactionInterface: "web" }),
+  startRegistrationUpdate: (input: Parameters<TokenCatalogApplicationPort["startRegistrationUpdate"]>[0], id: typeof operationId) =>
+    testTokenCatalog.startRegistrationUpdate(input, { operationId: id, interactionInterface: "web" }),
+  startUnregistration: (input: Parameters<TokenCatalogApplicationPort["startUnregistration"]>[0], id: typeof operationId) =>
+    testTokenCatalog.startUnregistration(input, { operationId: id, interactionInterface: "web" }),
 }) satisfies TokenCatalogWebStartPort;
 const testTokenCatalogBrowserOperations = Object.freeze({
   interactionInterface: "web",
   getOperation: testTokenCatalog.getOperation,
   getCurrentOperation: testTokenCatalogOperations.getCurrentOperation,
   confirm: (input: Parameters<TokenCatalogBrowserOperationPort["confirm"]>[0]) =>
-    testTokenCatalogOperations.confirm("web", input),
+    testTokenCatalogOperations.confirm({ operationId: input.operationId, interactionInterface: "web" }, input),
   cancel: (operationId: Parameters<TokenCatalogBrowserOperationPort["cancel"]>[0]) =>
     testTokenCatalogOperations.cancel(operationId, "web"),
 }) satisfies TokenCatalogBrowserOperationPort;
 const testTokenCatalogInteractiveCli = Object.freeze({
   interactionInterface: "cli",
-  startRegistration: (input: Parameters<TokenCatalogApplicationPort["startRegistration"]>[0]) =>
-    testTokenCatalog.startRegistration(input, "cli"),
-  startRegistrationUpdate: (input: Parameters<TokenCatalogApplicationPort["startRegistrationUpdate"]>[0]) =>
-    testTokenCatalog.startRegistrationUpdate(input, "cli"),
-  startUnregistration: (input: Parameters<TokenCatalogApplicationPort["startUnregistration"]>[0]) =>
-    testTokenCatalog.startUnregistration(input, "cli"),
+  startRegistration: (input: Parameters<TokenCatalogApplicationPort["startRegistration"]>[0], id: typeof operationId) =>
+    testTokenCatalog.startRegistration(input, { operationId: id, interactionInterface: "cli" }),
+  startRegistrationUpdate: (input: Parameters<TokenCatalogApplicationPort["startRegistrationUpdate"]>[0], id: typeof operationId) =>
+    testTokenCatalog.startRegistrationUpdate(input, { operationId: id, interactionInterface: "cli" }),
+  startUnregistration: (input: Parameters<TokenCatalogApplicationPort["startUnregistration"]>[0], id: typeof operationId) =>
+    testTokenCatalog.startUnregistration(input, { operationId: id, interactionInterface: "cli" }),
   confirm: (input: Parameters<TokenCatalogInteractiveCliPort["confirm"]>[0]) =>
-    testTokenCatalogOperations.confirm("cli", input),
+    testTokenCatalogOperations.confirm({ operationId: input.operationId, interactionInterface: "cli" }, input),
 }) satisfies TokenCatalogInteractiveCliPort;
 const testTokenCatalogNonInteractiveOperations = Object.freeze({
   getOperation: testTokenCatalog.getOperation,
@@ -134,7 +134,7 @@ const createTestTokenCatalogStage = <ActiveWallet extends object>(
   tokenCatalogBrowserOperations: testTokenCatalogBrowserOperations,
   tokenCatalogInteractiveCli: testTokenCatalogInteractiveCli,
   tokenCatalogNonInteractiveOperations: testTokenCatalogNonInteractiveOperations,
-  close,
+  close: async () => { close(); },
 });
 
 const extendTestInterfaceSupportManifest = (
@@ -461,136 +461,11 @@ describe("owner application composition", () => {
             ? { ...testTokenCatalogInteractiveCli, interactionInterface: "web" as never }
             : testTokenCatalogInteractiveCli,
           tokenCatalogNonInteractiveOperations: testTokenCatalogNonInteractiveOperations,
-          close: () => { events.push("catalog:close"); },
+          close: async () => { events.push("catalog:close"); },
         }),
       ])).rejects.toThrow("authority is invalid");
       expect(events).toEqual(["catalog:close", "chain:close", "wallet:close"]);
     }
-  });
-
-  it("delegates every catalog consumer port through its fixed authority", async () => {
-    const routes = await baseRoutes();
-    const ports = capabilityPorts();
-    const support = manifests();
-    const calls: string[] = [];
-    const operationFailure = new Error("operation fixture");
-    const request = Object.freeze({}) as never;
-    const operationId = "operation" as never;
-    const confirmation = Object.freeze({ operationId, reviewDigest: "digest" as never });
-    const application = Object.freeze({
-      getRegistration: (input: Parameters<TokenCatalogApplicationPort["getRegistration"]>[0]) => {
-        expect(input).toBe(request); calls.push("query:get"); return internalFailure;
-      },
-      listRegistrations: (input: Parameters<TokenCatalogApplicationPort["listRegistrations"]>[0]) => {
-        expect(input).toBe(request); calls.push("query:list"); return internalFailure;
-      },
-      startRegistration: async (
-        input: Parameters<TokenCatalogApplicationPort["startRegistration"]>[0],
-        authority: Parameters<TokenCatalogApplicationPort["startRegistration"]>[1],
-      ) => {
-        expect(input).toBe(request); calls.push(`start:register:${authority}`); return internalFailure;
-      },
-      startRegistrationUpdate: async (
-        input: Parameters<TokenCatalogApplicationPort["startRegistrationUpdate"]>[0],
-        authority: Parameters<TokenCatalogApplicationPort["startRegistrationUpdate"]>[1],
-      ) => {
-        expect(input).toBe(request); calls.push(`start:update:${authority}`); return internalFailure;
-      },
-      startUnregistration: async (
-        input: Parameters<TokenCatalogApplicationPort["startUnregistration"]>[0],
-        authority: Parameters<TokenCatalogApplicationPort["startUnregistration"]>[1],
-      ) => {
-        expect(input).toBe(request); calls.push(`start:unregister:${authority}`); return internalFailure;
-      },
-      getOperation: (input: Parameters<TokenCatalogApplicationPort["getOperation"]>[0]) => {
-        expect(input).toBe(request); calls.push("operation:get"); return internalFailure;
-      },
-      cancelOperation: async (input: Parameters<TokenCatalogApplicationPort["cancelOperation"]>[0]) => {
-        expect(input).toBe(request); calls.push("operation:cancel"); return internalFailure;
-      },
-    } satisfies TokenCatalogApplicationPort);
-    const coordinator = Object.freeze({
-      startRegistration: async () => internalFailure,
-      startRegistrationUpdate: async () => internalFailure,
-      startUnregistration: async () => internalFailure,
-      getOperation: () => { throw operationFailure; },
-      getCurrentOperation: () => { calls.push("browser:current"); return null; },
-      confirm: async (interactionInterface, input) => {
-        expect(input.operationId).toBe(operationId);
-        expect(input.reviewDigest).toBe(confirmation.reviewDigest);
-        calls.push(`confirm:${interactionInterface}`);
-        throw operationFailure;
-      },
-      cancel: async (inputOperationId, authority) => {
-        expect(inputOperationId).toBe(operationId);
-        calls.push(`cancel:${authority ?? "none"}`);
-        throw operationFailure;
-      },
-    } satisfies TokenCatalogOperationCoordinatorPort);
-    const consumerPorts = createTokenCatalogConsumerPorts(application, coordinator);
-    const composed = await composeStages(ownerContext(routes, new AbortController().signal), [
-      () => ({
-        routes,
-        supportManifest: support.wallet,
-        walletConnection: ports.wallet,
-        activeWallet: testActiveWallet(),
-        walletOperations: testWalletOperations(),
-        close: () => undefined,
-      }),
-      () => ({
-        routes,
-        supportManifest: support.chain,
-        chainReads: ports.chain,
-        tokenInspection: testTokenInspection(),
-        close: () => undefined,
-      }),
-      ({ routes: catalogRoutes }, _wallet, chain) => ({
-        routes: catalogRoutes,
-        supportManifest: extendTokenCatalogSupportManifest(chain.supportManifest),
-        ...consumerPorts,
-        close: () => undefined,
-      }),
-      async (_context, _wallet, _chain, catalog) => {
-        catalog.tokenCatalogQueries.getRegistration(request);
-        catalog.tokenCatalogQueries.listRegistrations(request);
-        await catalog.tokenCatalogWebStart.startRegistration(request);
-        await catalog.tokenCatalogWebStart.startRegistrationUpdate(request);
-        await catalog.tokenCatalogWebStart.startUnregistration(request);
-        await catalog.tokenCatalogInteractiveCli.startRegistration(request);
-        await catalog.tokenCatalogInteractiveCli.startRegistrationUpdate(request);
-        await catalog.tokenCatalogInteractiveCli.startUnregistration(request);
-        catalog.tokenCatalogBrowserOperations.getOperation(request);
-        catalog.tokenCatalogBrowserOperations.getCurrentOperation();
-        await expect(catalog.tokenCatalogBrowserOperations.confirm(confirmation)).rejects.toBe(operationFailure);
-        await expect(catalog.tokenCatalogBrowserOperations.cancel(operationId)).rejects.toBe(operationFailure);
-        await expect(catalog.tokenCatalogInteractiveCli.confirm(confirmation)).rejects.toBe(operationFailure);
-        catalog.tokenCatalogNonInteractiveOperations.getOperation(request);
-        await catalog.tokenCatalogNonInteractiveOperations.cancelOperation(request);
-        return {
-          routes,
-          supportManifest: extendTestInterfaceSupportManifest(catalog.supportManifest),
-          close: () => undefined,
-        };
-      },
-    ]);
-    await composed.close();
-    expect(calls).toEqual([
-      "query:get",
-      "query:list",
-      "start:register:web",
-      "start:update:web",
-      "start:unregister:web",
-      "start:register:cli",
-      "start:update:cli",
-      "start:unregister:cli",
-      "operation:get",
-      "browser:current",
-      "confirm:web",
-      "cancel:web",
-      "confirm:cli",
-      "operation:get",
-      "operation:cancel",
-    ]);
   });
 
   it("keeps stage dependencies alive when a dependent close must be retried", async () => {
@@ -728,7 +603,14 @@ describe("owner application composition", () => {
       createTestTokenCatalogStage(),
     ]);
 
-    await expect(composition).rejects.toBe(stageFailure);
+    let failure: unknown;
+    try { await composition; }
+    catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([
+      stageFailure,
+      expect.objectContaining({ message: "partial cleanup failed" }),
+    ]);
     expect(events).toEqual(["partial-chain:close"]);
     outer.seal();
     await outer.close();

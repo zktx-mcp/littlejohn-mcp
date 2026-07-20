@@ -21,12 +21,17 @@ import {
 } from "../../token-catalog/browser.js";
 import {
   BrowserResponseError,
-  controlBrowserJson,
+  controlBrowserActionJson,
   invalidBrowserResponse,
   queryBrowserJson,
   readBrowserJson,
   type BrowserRequestOptions,
 } from "./browser-client.js";
+import {
+  createDeliveryUnknown,
+  type DeliveryUnknown,
+} from "../operation-delivery.js";
+import { createBrowserOperationId } from "./operation-id.js";
 
 const invalidCatalogResponse = (): BrowserResponseError =>
   invalidBrowserResponse("The token catalog response is invalid.");
@@ -50,7 +55,7 @@ export const loadTokenRegistrations = async (
   const contract = tokenCatalogApplicationContracts.registrations;
   const request = contract.parseInput(input);
   try {
-    return contract.parseSuccess(
+    return contract.parsePublicSuccess(
       request,
       await queryBrowserJson(
         tokenCatalogBrowserRoutes.registrationQueries,
@@ -72,7 +77,7 @@ export const loadTokenRegistration = async (
   const contract = tokenCatalogApplicationContracts.registration;
   const request = contract.parseInput({ asset: tokenAsset(chainId, addressInput) });
   try {
-    return contract.parseSuccess(
+    return contract.parsePublicSuccess(
       request,
       await readBrowserJson(
         tokenCatalogBrowserRoutes.registration(request.asset.chainId, request.asset.address),
@@ -85,68 +90,89 @@ export const loadTokenRegistration = async (
   }
 };
 
-export const startTokenRegistration = (
+export const startTokenRegistration = async (
   chainId: TokenChainId,
   addressInput: unknown,
   settings: TokenRegistrationSettings,
   csrfToken: unknown,
   options: BrowserRequestOptions = {},
-): Promise<TokenCatalogOperationStartResult<"register">> => {
+): Promise<TokenCatalogOperationStartResult<"register"> | DeliveryUnknown> => {
   const contract = tokenCatalogApplicationContracts.startRegistration;
   const request = contract.parseInput({ asset: tokenAsset(chainId, addressInput), settings });
-  return controlBrowserJson(
+  const operationId = createBrowserOperationId();
+  const delivery = await controlBrowserActionJson(
+    "start",
+    operationId,
     tokenCatalogBrowserRoutes.operations,
-    { kind: "register", ...request },
+    {
+      control: { operationId, interactionInterface: "web" },
+      request: { kind: "register", ...request },
+    },
     csrfToken,
     options,
-  ).then((value) => {
-    try { return contract.parseSuccess(request, value); }
-    catch { throw invalidCatalogResponse(); }
-  });
+  );
+  if (delivery.status === "delivery_unknown") return delivery.delivery;
+  const value = delivery.value;
+  try { return contract.parseBoundSuccess(request, { operationId, interactionInterface: "web" }, value); }
+  catch { return createDeliveryUnknown("start", operationId); }
 };
 
-export const startTokenRegistrationUpdate = (
+export const startTokenRegistrationUpdate = async (
   registration: TokenRegistration,
   changes: TokenRegistrationChanges,
   csrfToken: unknown,
   options: BrowserRequestOptions = {},
-): Promise<TokenCatalogOperationStartResult<"update_registration">> => {
+): Promise<TokenCatalogOperationStartResult<"update_registration"> | DeliveryUnknown> => {
   const contract = tokenCatalogApplicationContracts.startRegistrationUpdate;
   const request = contract.parseInput({
     asset: registration.asset,
     expectedRevision: registration.revision,
     changes,
   });
-  return controlBrowserJson(
+  const operationId = createBrowserOperationId();
+  const delivery = await controlBrowserActionJson(
+    "start",
+    operationId,
     tokenCatalogBrowserRoutes.operations,
-    { kind: "update_registration", ...request },
+    {
+      control: { operationId, interactionInterface: "web" },
+      request: { kind: "update_registration", ...request },
+    },
     csrfToken,
     options,
-  ).then((value) => {
-    try { return contract.parseSuccess(request, value); }
-    catch { throw invalidCatalogResponse(); }
-  });
+  );
+  if (delivery.status === "delivery_unknown") return delivery.delivery;
+  const value = delivery.value;
+  try { return contract.parseBoundSuccess(request, { operationId, interactionInterface: "web" }, value); }
+  catch { return createDeliveryUnknown("start", operationId); }
 };
 
-export const startTokenUnregistration = (
+export const startTokenUnregistration = async (
   registration: TokenRegistration,
   csrfToken: unknown,
   options: BrowserRequestOptions = {},
-): Promise<TokenCatalogOperationStartResult<"unregister">> => {
+): Promise<TokenCatalogOperationStartResult<"unregister"> | DeliveryUnknown> => {
   const contract = tokenCatalogApplicationContracts.startUnregistration;
   const request = contract.parseInput({
     asset: registration.asset,
     expectedRevision: registration.revision,
   });
-  return controlBrowserJson(
+  const operationId = createBrowserOperationId();
+  const delivery = await controlBrowserActionJson(
+    "start",
+    operationId,
     tokenCatalogBrowserRoutes.operations,
-    { kind: "unregister", ...request },
+    {
+      control: { operationId, interactionInterface: "web" },
+      request: { kind: "unregister", ...request },
+    },
     csrfToken,
     options,
-  ).then((value) => {
-    try { return contract.parseSuccess(request, value); }
-    catch { throw invalidCatalogResponse(); }
-  });
+  );
+  if (delivery.status === "delivery_unknown") return delivery.delivery;
+  const value = delivery.value;
+  try { return contract.parseBoundSuccess(request, { operationId, interactionInterface: "web" }, value); }
+  catch { return createDeliveryUnknown("start", operationId); }
 };
 
 export const loadCurrentTokenOperation = async (
@@ -169,7 +195,7 @@ export const loadTokenOperation = async (
   const contract = tokenCatalogApplicationContracts.operation;
   const request = contract.parseInput({ operationId });
   try {
-    return contract.parseSuccess(
+    return contract.parsePublicSuccess(
       request,
       await readBrowserJson(tokenCatalogBrowserRoutes.operation(request.operationId), options),
     );
@@ -183,24 +209,31 @@ export const confirmTokenOperation = async (
   operation: TokenCatalogOperation,
   csrfToken: unknown,
   options: BrowserRequestOptions = {},
-): Promise<TokenCatalogConfirmedOperation> => {
+): Promise<TokenCatalogConfirmedOperation | DeliveryUnknown> => {
   const request = tokenCatalogOperationConfirmationContract.parseInput({
     operationId: operation.operationId,
     reviewDigest: operation.review.reviewDigest,
   });
+  const operationId = request.operationId;
+  const delivery = await controlBrowserActionJson(
+    "confirm",
+    operationId,
+    tokenCatalogBrowserRoutes.confirmation(operationId),
+    { reviewDigest: operation.review.reviewDigest },
+    csrfToken,
+    options,
+  );
+  if (delivery.status === "delivery_unknown") return delivery.delivery;
+  const value = delivery.value;
   try {
-    return tokenCatalogOperationConfirmationContract.parseSuccess(
+    return tokenCatalogOperationConfirmationContract.parseBoundSuccess(
       request,
-      await controlBrowserJson(
-        tokenCatalogBrowserRoutes.confirmation(operation.operationId),
-        { reviewDigest: operation.review.reviewDigest },
-        csrfToken,
-        options,
-      ),
+      { operationId, interactionInterface: "web" },
+      value,
     );
   } catch (error) {
     if (error instanceof BrowserResponseError) throw error;
-    throw invalidCatalogResponse();
+    return createDeliveryUnknown("confirm", operationId);
   }
 };
 
@@ -208,21 +241,30 @@ export const cancelTokenOperation = async (
   operationId: TokenCatalogOperation["operationId"],
   csrfToken: unknown,
   options: BrowserRequestOptions = {},
-): Promise<TokenCatalogCancellationResult> => {
+): Promise<TokenCatalogCancellationResult | DeliveryUnknown> => {
   const contract = tokenCatalogApplicationContracts.cancelOperation;
   const request = contract.parseInput({ operationId });
+  const delivery = await controlBrowserActionJson(
+    "cancel",
+    request.operationId,
+    tokenCatalogBrowserRoutes.cancellation(request.operationId),
+    {},
+    csrfToken,
+    options,
+  );
+  if (delivery.status === "delivery_unknown") return delivery.delivery;
+  const value = delivery.value;
   try {
-    return contract.parseSuccess(
+    const result = contract.parsePublicSuccess(
       request,
-      await controlBrowserJson(
-        tokenCatalogBrowserRoutes.cancellation(request.operationId),
-        {},
-        csrfToken,
-        options,
-      ),
+      value,
     );
+    if (result.operation.state !== "cancelled") {
+      return createDeliveryUnknown("cancel", request.operationId);
+    }
+    return result;
   } catch (error) {
     if (error instanceof BrowserResponseError) throw error;
-    throw invalidCatalogResponse();
+    return createDeliveryUnknown("cancel", request.operationId);
   }
 };

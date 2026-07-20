@@ -73,12 +73,12 @@ afterEach(async () => {
 });
 
 const operation = (
-  state: "awaiting_confirmation" | "awaiting_wallet_approval" | "cancelled",
+  state: "awaiting_confirmation" | "awaiting_wallet_approval" | "disconnecting" | "cancelled",
   id = operationId,
 ): WalletManagementOperation =>
   parseWalletManagementOperation({
     operationId: id,
-    kind: state === "awaiting_confirmation" ? "disconnect" : "connect",
+    kind: state === "awaiting_confirmation" || state === "disconnecting" ? "disconnect" : "connect",
     state,
     connectionRevision,
     expiresAt,
@@ -543,7 +543,10 @@ describe("wallet browser routes", () => {
         registry,
         "POST",
         tokenCatalogBrowserRoutes.operations,
-        request,
+        {
+          control: { operationId, interactionInterface: "web" },
+          request,
+        },
       );
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.problem.code).toBe("internal_error");
@@ -626,7 +629,7 @@ describe("wallet browser routes", () => {
       randomBytes: (size) => Buffer.alloc(size, 27),
     });
     let startResult = started();
-    const controlResult = operation("cancelled");
+    const controlResult = operation("disconnecting");
     const wallet = walletOperations({
       start: () => startResult,
       operationResult: () => controlResult,
@@ -639,11 +642,15 @@ describe("wallet browser routes", () => {
       walletOperations: wallet.port,
     });
     const startInput = { kind: "connect", connectionRevision } as const;
+    const startEnvelope = {
+      control: { operationId, interactionInterface: "web" },
+      request: startInput,
+    } as const;
     expect(await invoke(
       registry,
       "POST",
       browserWalletApiPaths.operations,
-      startInput,
+      startEnvelope,
     )).toEqual({
       ok: true,
       response: "canonical_json",
@@ -685,7 +692,10 @@ describe("wallet browser routes", () => {
       registry,
       "POST",
       browserWalletApiPaths.operations,
-      disconnectInput,
+      {
+        control: { operationId, interactionInterface: "web" },
+        request: disconnectInput,
+      },
     )).toEqual({
       ok: true,
       response: "canonical_json",
@@ -709,7 +719,7 @@ describe("wallet browser routes", () => {
       registry,
       "POST",
       browserWalletApiPaths.operations,
-      startInput,
+      startEnvelope,
     )).toEqual({
       ok: true,
       response: "canonical_json",
@@ -775,7 +785,10 @@ describe("wallet browser routes", () => {
       staleStartRegistry,
       "POST",
       browserWalletApiPaths.operations,
-      { kind: "connect", connectionRevision },
+      {
+        control: { operationId, interactionInterface: "web" },
+        request: { kind: "connect", connectionRevision },
+      },
     );
     expect(staleStart.ok).toBe(false);
     if (!staleStart.ok) expect(staleStart.problem.code).toBe("state_conflict");
@@ -839,7 +852,10 @@ describe("wallet browser routes", () => {
       registry,
       "POST",
       browserWalletApiPaths.operations,
-      { kind: "connect", connectionRevision },
+      {
+        control: { operationId, interactionInterface: "web" },
+        request: { kind: "connect", connectionRevision },
+      },
     );
     expect(start.ok).toBe(false);
     if (!start.ok) expect(start.problem.code).toBe("internal_error");

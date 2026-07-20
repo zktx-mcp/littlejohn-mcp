@@ -8,6 +8,7 @@ import Database from "better-sqlite3";
 import {
   canonicalJsonStringify,
   decodeCanonicalBase64Url,
+  deepFreezeValue,
   erc20AssetIdentitySchema,
   evmAccountIdentitySchema,
   parseEvmAccountIdentity,
@@ -24,20 +25,21 @@ import {
 } from "../core/index.js";
 import {
   tokenCatalogContractLimits,
+  tokenCatalogConfirmedOperationSchema,
+  tokenCatalogOperationSchema,
   tokenInspectionDigest,
   tokenInspectionSuccessSchema,
   tokenRegistrationSchema,
   tokenRegistrationRevisionSchema,
-  tokenRegistrationSettingsSchema,
   tokenRegistrationWithInspectionSchema,
   type TokenInspectionSuccess,
   type TokenRegistration,
-  type TokenRegistrationSettings,
   type TokenRegistrationWithInspection,
 } from "../token-catalog/contracts.js";
 import { TokenCatalogOperationError } from "../token-catalog/operation-error.js";
 import type {
   TokenCatalogQueryStore,
+  TokenCatalogConfirmationCommand,
   TokenCatalogStore,
   TokenRegistrationPage,
 } from "../token-catalog/ports.js";
@@ -665,9 +667,7 @@ export class ProductDatabase {
     this.#tokenCatalogStore = Object.freeze({
       getRegistration: (account, asset) => this.getTokenRegistration(account, asset),
       listRegistrations: (input) => this.listTokenRegistrations(input),
-      register: (input) => this.registerToken(input),
-      update: (input) => this.updateTokenRegistration(input),
-      unregister: (input) => this.unregisterToken(input),
+      applyConfirmation: (input) => this.applyTokenConfirmation(input),
     } satisfies TokenCatalogStore);
   }
 
@@ -920,61 +920,147 @@ export class ProductDatabase {
     ) throw new RuntimeOperationError("state_conflict");
   }
 
-  private registerToken(input: Readonly<{
-    account: EvmAccountIdentity;
-    expectedConnectionRevision: RuntimeRevision;
-    inspection: TokenInspectionSuccess;
-    settings: TokenRegistrationSettings;
-    revision: TokenRegistration["revision"];
-    now: UtcTimestamp;
-  }>): TokenRegistrationWithInspection {
+  private applyTokenConfirmation(
+    input: TokenCatalogConfirmationCommand,
+  ): ReturnType<TokenCatalogStore["applyConfirmation"]> {
     try {
-      const account = evmAccountIdentitySchema.parse(input.account);
-      const inspection = tokenInspectionSuccessSchema.parse(input.inspection);
-      const asset = inspection.data.asset;
-      if (account.chainId !== asset.chainId) throw new TokenCatalogOperationError("invalid_input");
-      const expectedRevision = parseRuntimeRevision(input.expectedConnectionRevision);
-      const settings = tokenRegistrationSettingsSchema.parse(input.settings);
-      const revision = tokenRegistrationRevisionSchema.parse(input.revision);
-      const now = parseUtcTimestamp(input.now);
-      const inspectionDigest = tokenInspectionDigest(inspection);
-      const resultJson = canonicalJsonStringify(inspection as unknown as CanonicalJson);
+      const operation = tokenCatalogOperationSchema.parse(input.operation);
+      if (operation.state !== "applying" || operation.kind !== input.kind) {
+        throw new TokenCatalogOperationError("invalid_input");
+      }
+      const account = evmAccountIdentitySchema.parse(operation.account);
+      const asset = erc20AssetIdentitySchema.parse(operation.asset);
+      const expectedConnectionRevision = parseRuntimeRevision(input.expectedConnectionRevision);
       return this.#writeWithIdentity(() => {
         const profile = readProfileRaw(this.#database);
-        this.assertTokenCatalogConnection(account, expectedRevision);
-        const existing = this.#database.prepare(`SELECT revision FROM wallet_token_registration
-          WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? AND token_address = ?`)
-          .all(profile.profileId, account.chainId, account.address, asset.address) as { revision: string }[];
-        if (existing.length !== 0) throw new TokenCatalogOperationError("state_conflict");
-        this.#database.prepare(`INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)
-          ON CONFLICT(chain_id, contract_address) DO NOTHING`).run(asset.chainId, asset.address);
-        this.#database.prepare(`INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)
-          ON CONFLICT(chain_id, contract_address) DO NOTHING`).run(asset.chainId, asset.address);
-        const inspectionRows = this.#database.prepare(`SELECT chain_id AS chainId,
-          contract_address AS contractAddress, inspection_digest AS inspectionDigest,
-          result_json AS resultJson FROM token_contract_inspection
-          WHERE chain_id = ? AND contract_address = ? AND inspection_digest = ?`)
-          .all(asset.chainId, asset.address, inspectionDigest) as TokenInspectionRow[];
-        if (inspectionRows.length === 0) {
-          this.#database.prepare(`INSERT INTO token_contract_inspection(
-            chain_id, contract_address, inspection_digest, result_json
-          ) VALUES (?, ?, ?, ?)`).run(asset.chainId, asset.address, inspectionDigest, resultJson);
-        } else if (inspectionRows.length !== 1 || inspectionRows[0]?.resultJson !== resultJson) {
-          throw new Error("Token inspection digest collision detected.");
+        this.assertTokenCatalogConnection(account, expectedConnectionRevision);
+        let result: NonNullable<ReturnType<TokenCatalogStore["applyConfirmation"]>["result"]>;
+
+        if (input.kind === "register" && operation.kind === "register") {
+          const settings = operation.review.proposedSettings;
+          if (settings === null) throw new TokenCatalogOperationError("internal_error");
+          const inspection = tokenInspectionSuccessSchema.parse(operation.review.inspection);
+          const revision = tokenRegistrationRevisionSchema.parse(input.registrationRevision);
+          const now = parseUtcTimestamp(input.now);
+          const inspectionDigest = tokenInspectionDigest(inspection);
+          const resultJson = canonicalJsonStringify(inspection as unknown as CanonicalJson);
+          const existing = this.#database.prepare(`SELECT revision FROM wallet_token_registration
+            WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? AND token_address = ?`)
+            .all(profile.profileId, account.chainId, account.address, asset.address) as { revision: string }[];
+          if (existing.length !== 0) throw new TokenCatalogOperationError("state_conflict");
+          this.#database.prepare(`INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)
+            ON CONFLICT(chain_id, contract_address) DO NOTHING`).run(asset.chainId, asset.address);
+          this.#database.prepare(`INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)
+            ON CONFLICT(chain_id, contract_address) DO NOTHING`).run(asset.chainId, asset.address);
+          const inspectionRows = this.#database.prepare(`SELECT chain_id AS chainId,
+            contract_address AS contractAddress, inspection_digest AS inspectionDigest,
+            result_json AS resultJson FROM token_contract_inspection
+            WHERE chain_id = ? AND contract_address = ? AND inspection_digest = ?`)
+            .all(asset.chainId, asset.address, inspectionDigest) as TokenInspectionRow[];
+          if (inspectionRows.length === 0) {
+            this.#database.prepare(`INSERT INTO token_contract_inspection(
+              chain_id, contract_address, inspection_digest, result_json
+            ) VALUES (?, ?, ?, ?)`).run(asset.chainId, asset.address, inspectionDigest, resultJson);
+          } else if (inspectionRows.length !== 1 || inspectionRows[0]?.resultJson !== resultJson) {
+            throw new Error("Token inspection digest collision detected.");
+          } else {
+            decodeInspectionRow(inspectionRows[0]);
+          }
+          this.#database.prepare(`INSERT INTO wallet_token_registration(
+            profile_id, chain_id, wallet_address, token_address, revision, inspection_digest,
+            user_label, visibility, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+            .run(
+              profile.profileId, account.chainId, account.address, asset.address, revision,
+              inspectionDigest, settings.userLabel, settings.visibility, now, now,
+            );
+          const stored = this.getTokenRegistrationRaw(profile.profileId, account, asset);
+          if (stored === undefined) throw new Error("Token registration persistence failed.");
+          result = stored;
+        } else if (input.kind === "update_registration" && operation.kind === "update_registration") {
+          const previous = operation.review.previousRegistration;
+          const settings = operation.review.proposedSettings;
+          if (previous === null || settings === null) {
+            throw new TokenCatalogOperationError("internal_error");
+          }
+          const revision = tokenRegistrationRevisionSchema.parse(input.registrationRevision);
+          const now = parseUtcTimestamp(input.now);
+          if (revision === previous.revision) throw new RuntimeOperationError("state_conflict");
+          const current = this.getTokenRegistrationRaw(profile.profileId, account, asset);
+          if (current === undefined || current.registration.revision !== previous.revision) {
+            throw new TokenCatalogOperationError("token_registration_revision_changed");
+          }
+          if (canonicalJsonStringify(current.registration as unknown as CanonicalJson) !==
+            canonicalJsonStringify(previous as unknown as CanonicalJson)) {
+            throw new Error("Token registration revision does not identify its durable state.");
+          }
+          const update = this.#database.prepare(`UPDATE wallet_token_registration SET
+            revision = ?, user_label = ?, visibility = ?, updated_at = ?
+            WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? AND token_address = ? AND revision = ?`)
+            .run(
+              revision, settings.userLabel, settings.visibility, now, profile.profileId,
+              account.chainId, account.address, asset.address, previous.revision,
+            );
+          if (update.changes !== 1) {
+            throw new TokenCatalogOperationError("token_registration_revision_changed");
+          }
+          const stored = this.getTokenRegistrationRaw(profile.profileId, account, asset);
+          if (stored === undefined) throw new Error("Token registration update failed.");
+          result = stored;
+        } else if (input.kind === "unregister" && operation.kind === "unregister") {
+          const previous = operation.review.previousRegistration;
+          if (previous === null) throw new TokenCatalogOperationError("internal_error");
+          const current = this.getTokenRegistrationRaw(profile.profileId, account, asset);
+          if (current === undefined || current.registration.revision !== previous.revision) {
+            throw new TokenCatalogOperationError("token_registration_revision_changed");
+          }
+          if (canonicalJsonStringify(current.registration as unknown as CanonicalJson) !==
+            canonicalJsonStringify(previous as unknown as CanonicalJson)) {
+            throw new Error("Token registration revision does not identify its durable state.");
+          }
+          const removal = this.#database.prepare(`DELETE FROM wallet_token_registration
+            WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? AND token_address = ? AND revision = ?`)
+            .run(profile.profileId, account.chainId, account.address, asset.address, previous.revision);
+          if (removal.changes !== 1) {
+            throw new TokenCatalogOperationError("token_registration_revision_changed");
+          }
+          this.#database.prepare(`DELETE FROM token_contract_inspection
+            WHERE chain_id = ? AND contract_address = ? AND inspection_digest = ?
+              AND NOT EXISTS (
+                SELECT 1 FROM wallet_token_registration
+                WHERE chain_id = ? AND token_address = ? AND inspection_digest = ?
+              )`).run(
+                asset.chainId, asset.address, previous.inspectionDigest,
+                asset.chainId, asset.address, previous.inspectionDigest,
+              );
+          if (this.getTokenRegistrationRaw(profile.profileId, account, asset) !== undefined) {
+            throw new Error("Token registration removal failed.");
+          }
+          const references = this.#database.prepare(`SELECT COUNT(*) AS count
+            FROM wallet_token_registration
+            WHERE chain_id = ? AND token_address = ? AND inspection_digest = ?`)
+            .get(asset.chainId, asset.address, previous.inspectionDigest) as { count: number };
+          const inspectionRows = this.#database.prepare(`SELECT chain_id AS chainId,
+            contract_address AS contractAddress, inspection_digest AS inspectionDigest,
+            result_json AS resultJson FROM token_contract_inspection
+            WHERE chain_id = ? AND contract_address = ? AND inspection_digest = ?`)
+            .all(asset.chainId, asset.address, previous.inspectionDigest) as TokenInspectionRow[];
+          if (
+            (references.count === 0 && inspectionRows.length !== 0) ||
+            (references.count > 0 && inspectionRows.length !== 1)
+          ) throw new Error("Token inspection collection postcondition failed.");
+          if (inspectionRows[0] !== undefined) decodeInspectionRow(inspectionRows[0]);
+          result = Object.freeze({ asset, removedRevision: previous.revision });
         } else {
-          decodeInspectionRow(inspectionRows[0]);
+          throw new TokenCatalogOperationError("invalid_input");
         }
-        this.#database.prepare(`INSERT INTO wallet_token_registration(
-          profile_id, chain_id, wallet_address, token_address, revision, inspection_digest,
-          user_label, visibility, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-          .run(
-            profile.profileId, account.chainId, account.address, asset.address, revision,
-            inspectionDigest, settings.userLabel, settings.visibility, now, now,
-          );
-        const stored = this.getTokenRegistrationRaw(profile.profileId, account, asset);
-        if (stored === undefined) throw new Error("Token registration persistence failed.");
-        return stored;
+
+        return deepFreezeValue(tokenCatalogConfirmedOperationSchema.parse({
+          ...operation,
+          state: "completed",
+          result,
+          failure: null,
+        }));
       });
     } catch (error) { throw tokenCatalogStorageError(error); }
   }
@@ -991,83 +1077,4 @@ export class ProductDatabase {
     return rows[0] === undefined ? undefined : decodeTokenRegistrationRow(rows[0], profileId);
   }
 
-  private updateTokenRegistration(input: Readonly<{
-    account: EvmAccountIdentity;
-    asset: TokenRegistration["asset"];
-    expectedConnectionRevision: RuntimeRevision;
-    expectedRegistrationRevision: TokenRegistration["revision"];
-    settings: TokenRegistrationSettings;
-    revision: TokenRegistration["revision"];
-    now: UtcTimestamp;
-  }>): TokenRegistrationWithInspection {
-    try {
-      const account = evmAccountIdentitySchema.parse(input.account);
-      const asset = erc20AssetIdentitySchema.parse(input.asset);
-      if (account.chainId !== asset.chainId) throw new TokenCatalogOperationError("invalid_input");
-      const expectedConnectionRevision = parseRuntimeRevision(input.expectedConnectionRevision);
-      const expectedRegistrationRevision = tokenRegistrationRevisionSchema.parse(input.expectedRegistrationRevision);
-      const settings = tokenRegistrationSettingsSchema.parse(input.settings);
-      const revision = tokenRegistrationRevisionSchema.parse(input.revision);
-      const now = parseUtcTimestamp(input.now);
-      if (revision === expectedRegistrationRevision) throw new RuntimeOperationError("state_conflict");
-      return this.#writeWithIdentity(() => {
-        const profile = readProfileRaw(this.#database);
-        this.assertTokenCatalogConnection(account, expectedConnectionRevision);
-        const current = this.getTokenRegistrationRaw(profile.profileId, account, asset);
-        if (current === undefined) throw new TokenCatalogOperationError("token_registration_revision_changed");
-        if (current.registration.revision !== expectedRegistrationRevision) {
-          throw new TokenCatalogOperationError("token_registration_revision_changed");
-        }
-        const result = this.#database.prepare(`UPDATE wallet_token_registration SET
-          revision = ?, user_label = ?, visibility = ?, updated_at = ?
-          WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? AND token_address = ? AND revision = ?`)
-          .run(
-            revision, settings.userLabel, settings.visibility, now, profile.profileId,
-            account.chainId, account.address, asset.address, expectedRegistrationRevision,
-          );
-        if (result.changes !== 1) throw new TokenCatalogOperationError("token_registration_revision_changed");
-        const stored = this.getTokenRegistrationRaw(profile.profileId, account, asset);
-        if (stored === undefined) throw new Error("Token registration update failed.");
-        return stored;
-      });
-    } catch (error) { throw tokenCatalogStorageError(error); }
-  }
-
-  private unregisterToken(input: Readonly<{
-    account: EvmAccountIdentity;
-    asset: TokenRegistration["asset"];
-    expectedConnectionRevision: RuntimeRevision;
-    expectedRegistrationRevision: TokenRegistration["revision"];
-  }>): Readonly<{ asset: TokenRegistration["asset"]; removedRevision: TokenRegistration["revision"] }> {
-    try {
-      const account = evmAccountIdentitySchema.parse(input.account);
-      const asset = erc20AssetIdentitySchema.parse(input.asset);
-      if (account.chainId !== asset.chainId) throw new TokenCatalogOperationError("invalid_input");
-      const expectedConnectionRevision = parseRuntimeRevision(input.expectedConnectionRevision);
-      const expectedRegistrationRevision = tokenRegistrationRevisionSchema.parse(input.expectedRegistrationRevision);
-      return this.#writeWithIdentity(() => {
-        const profile = readProfileRaw(this.#database);
-        this.assertTokenCatalogConnection(account, expectedConnectionRevision);
-        const current = this.getTokenRegistrationRaw(profile.profileId, account, asset);
-        if (current === undefined) throw new TokenCatalogOperationError("token_registration_revision_changed");
-        if (current.registration.revision !== expectedRegistrationRevision) {
-          throw new TokenCatalogOperationError("token_registration_revision_changed");
-        }
-        const result = this.#database.prepare(`DELETE FROM wallet_token_registration
-          WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? AND token_address = ? AND revision = ?`)
-          .run(profile.profileId, account.chainId, account.address, asset.address, expectedRegistrationRevision);
-        if (result.changes !== 1) throw new TokenCatalogOperationError("token_registration_revision_changed");
-        this.#database.prepare(`DELETE FROM token_contract_inspection
-          WHERE chain_id = ? AND contract_address = ? AND inspection_digest = ?
-            AND NOT EXISTS (
-              SELECT 1 FROM wallet_token_registration
-              WHERE chain_id = ? AND token_address = ? AND inspection_digest = ?
-            )`).run(
-              asset.chainId, asset.address, current.registration.inspectionDigest,
-              asset.chainId, asset.address, current.registration.inspectionDigest,
-            );
-        return Object.freeze({ asset, removedRevision: expectedRegistrationRevision });
-      });
-    } catch (error) { throw tokenCatalogStorageError(error); }
-  }
 }

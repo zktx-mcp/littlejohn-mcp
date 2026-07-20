@@ -299,7 +299,7 @@ describe("token catalog local control routes", () => {
   it("derives exact operation identities and accepts only strict transport bodies", async () => {
     const { routes, calls } = await createRoutes();
     const created = await invoke(routes, "POST", tokenCatalogControlRoutes.operations, {
-      interactionInterface: "cli",
+      control: { operationId, interactionInterface: "cli" },
       request: {
         kind: "register",
         asset: { kind: "erc20", chainId, address: tokenAddress },
@@ -327,7 +327,7 @@ describe("token catalog local control routes", () => {
       },
     ] as const) {
       const result = await invoke(routes, "POST", tokenCatalogControlRoutes.operations, {
-        interactionInterface: "web",
+        control: { operationId, interactionInterface: "web" },
         request,
       });
       expect(result.ok).toBe(false);
@@ -346,7 +346,7 @@ describe("token catalog local control routes", () => {
     ]);
 
     const extra = await invoke(routes, "POST", tokenCatalogControlRoutes.operations, {
-      interactionInterface: "cli",
+      control: { operationId, interactionInterface: "cli" },
       request: {
         kind: "register",
         asset: { kind: "erc20", chainId, address: tokenAddress },
@@ -416,7 +416,7 @@ describe("token catalog local control routes", () => {
     expect(list).toEqual({
       ok: true,
       response: "canonical_json",
-      body: tokenCatalogApplicationContracts.registrations.parseSuccess(
+      body: tokenCatalogApplicationContracts.registrations.parsePublicSuccess(
         { limit: 25, cursor: null },
         { registrations: [], nextCursor: null },
       ),

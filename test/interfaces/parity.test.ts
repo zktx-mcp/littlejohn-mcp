@@ -50,6 +50,7 @@ import {
   type ReadInterfaceIdentity,
 } from "../../src/interfaces/identities.js";
 import { createMcpServer } from "../../src/interfaces/mcp.js";
+import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
 import {
   composeInterfaceCapabilityCatalog,
   extendInterfaceSupportManifest,
@@ -57,6 +58,7 @@ import {
 import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
 import { parseReadCliCommand, runReadCliCommand } from "../../src/interfaces/cli-read.js";
 import { parseTokenCliCommand, runTokenCliCommand } from "../../src/interfaces/cli-token.js";
+import { openTestOwnerSession } from "./owner-session-harness.js";
 import {
   createControlCredentialVerifier,
   loadOrCreateControlCredential,
@@ -172,6 +174,8 @@ class CanonicalRuntime implements RuntimeDispatchPort, CliRuntimePort {
 
   async stop(): Promise<void> {}
 
+  openOwnerSession(signal?: AbortSignal) { return openTestOwnerSession(this, signal); }
+
   async dispatchRuntimeRequest(request: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse> {
     this.requests.push(request);
     if (request.method === "GET" && request.path === walletControlRoutes.operation(operationId)) {
@@ -203,6 +207,8 @@ class RouteRegistryRuntime implements RuntimeDispatchPort, CliRuntimePort {
   async start(): Promise<void> {}
 
   async stop(): Promise<void> {}
+
+  openOwnerSession(signal?: AbortSignal) { return openTestOwnerSession(this, signal); }
 
   async dispatchRuntimeRequest(request: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse> {
     const match = this.routes.match(request.method, request.path);
@@ -294,8 +300,14 @@ const terminalPort = (output: string[], error: string[]): CliTerminalPort => Obj
   dispose: () => {},
 });
 
-const connectMcp = async (runtime: RuntimeDispatchPort) => {
-  const server = createMcpServer(runtime);
+const connectMcp = async (
+  runtime: Parameters<typeof createMcpServer>[0],
+  createOperationId: () => string = () => operationId,
+) => {
+  const server = createMcpServer(runtime, new LocalOperationClient({
+    ownerSessions: runtime,
+    createOperationId,
+  }));
   const client = new Client({ name: "parity-test", version: "1.0.0" }, { capabilities: {} });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -306,6 +318,11 @@ const connectMcp = async (runtime: RuntimeDispatchPort) => {
     },
   });
 };
+
+const tokenOperationClient = (runtime: RouteRegistryRuntime) => new LocalOperationClient({
+  ownerSessions: runtime,
+  createOperationId: () => tokenOperationId,
+});
 
 const mcpText = (result: unknown): string => {
   if (typeof result !== "object" || result === null ||
@@ -585,19 +602,19 @@ const createTokenParityValues = async () => {
       failure: null,
     });
   const startInput = { asset, settings: { userLabel: "Parity token", visibility: "visible" as const } };
-  const webAwaiting = tokenCatalogApplicationContracts.startRegistration.parseSuccess(
+  const webAwaiting = tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess(
     startInput,
     { operation: operationFor("web", "awaiting_confirmation") },
   ).operation;
-  const cliAwaiting = tokenCatalogApplicationContracts.startRegistration.parseSuccess(
+  const cliAwaiting = tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess(
     startInput,
     { operation: operationFor("cli", "awaiting_confirmation") },
   ).operation;
-  const webCancelled = tokenCatalogApplicationContracts.cancelOperation.parseSuccess(
+  const webCancelled = tokenCatalogApplicationContracts.cancelOperation.parsePublicSuccess(
     { operationId: tokenOperationId },
     { operation: operationFor("web", "cancelled") },
   ).operation;
-  const cliCompleted = tokenCatalogOperationConfirmationContract.parseSuccess(
+  const cliCompleted = tokenCatalogOperationConfirmationContract.parsePublicSuccess(
     { operationId: tokenOperationId, reviewDigest: cliAwaiting.review.reviewDigest },
     tokenCatalogOperationSchema.parse({
       ...cliAwaiting,
@@ -745,7 +762,7 @@ describe("interface parity", () => {
           path: entry.identity.http.path,
           ...(entry.identity.http.method === "POST" ? { body: entry.input } : {}),
         };
-        const http = await dispatchCanonical(runtime, request, 200);
+        const http = await dispatchCanonical(runtime, request, 200, entry.identity.responseAuthority);
         expect(http).toEqual({ ok: true, value: entry.direct });
 
         const mcpResult = await mcp.client.callTool({
@@ -783,7 +800,7 @@ describe("interface parity", () => {
   it("preserves token inspection through direct, public HTTP, MCP, CLI, and browser execution", async () => {
     const context = await createTokenParityContext();
     const input = captureCanonicalJson({ asset: context.values.asset, block: { kind: "latest" } });
-    const mcp = await connectMcp(context.runtime);
+    const mcp = await connectMcp(context.runtime, () => tokenOperationId);
     try {
       const direct = await invokeBinding(tokenInspectInterface.definition, context.ports.inspection, input);
       expect(direct.ok).toBe(true);
@@ -822,6 +839,7 @@ describe("interface parity", () => {
       const cliError: string[] = [];
       expect(await runTokenCliCommand(
         context.runtime,
+        tokenOperationClient(context.runtime),
         parseTokenCliCommand(["token", "inspect", tokenAddress, "--block", "latest", "--json"]),
         terminalPort(cliOutput, cliError),
       )).toBe(0);
@@ -855,11 +873,11 @@ describe("interface parity", () => {
       asset: context.values.asset,
     });
     const listInput = tokenCatalogApplicationContracts.registrations.parseInput({});
-    const nativeRegistration = tokenCatalogApplicationContracts.registration.parseSuccess(
+    const nativeRegistration = tokenCatalogApplicationContracts.registration.parsePublicSuccess(
       registrationInput,
       context.ports.queries.getRegistration(registrationInput),
     );
-    const nativeList = tokenCatalogApplicationContracts.registrations.parseSuccess(
+    const nativeList = tokenCatalogApplicationContracts.registrations.parsePublicSuccess(
       listInput,
       context.ports.queries.listRegistrations({}),
     );
@@ -893,6 +911,7 @@ describe("interface parity", () => {
       const getError: string[] = [];
       expect(await runTokenCliCommand(
         context.runtime,
+        tokenOperationClient(context.runtime),
         parseTokenCliCommand(["token", "get", tokenAddress, "--json"]),
         terminalPort(getOutput, getError),
       )).toBe(0);
@@ -903,6 +922,7 @@ describe("interface parity", () => {
       const listError: string[] = [];
       expect(await runTokenCliCommand(
         context.runtime,
+        tokenOperationClient(context.runtime),
         parseTokenCliCommand(["token", "list", "--json"]),
         terminalPort(listOutput, listError),
       )).toBe(0);
@@ -933,28 +953,31 @@ describe("interface parity", () => {
       asset: context.values.asset,
       settings: { userLabel: "Parity token", visibility: "visible" },
     });
-    const nativeStart = startContract.parseSuccess(
+    const nativeStart = startContract.parsePublicSuccess(
       startInput,
-      await context.ports.webStart.startRegistration(startInput),
+      await context.ports.webStart.startRegistration(startInput, tokenOperationId),
     );
     const operationInput = tokenCatalogApplicationContracts.operation.parseInput({
       operationId: tokenOperationId,
     });
-    const nativeOperation = tokenCatalogApplicationContracts.operation.parseSuccess(
+    const nativeOperation = tokenCatalogApplicationContracts.operation.parsePublicSuccess(
       operationInput,
       context.ports.operations.getOperation(operationInput),
     );
-    const nativeCancellation = tokenCatalogApplicationContracts.cancelOperation.parseSuccess(
+    const nativeCancellation = tokenCatalogApplicationContracts.cancelOperation.parsePublicSuccess(
       operationInput,
       await context.ports.operations.cancelOperation(operationInput),
     );
-    const mcp = await connectMcp(context.runtime);
+    const mcp = await connectMcp(context.runtime, () => tokenOperationId);
     try {
       const httpStart = await invokeRoute(
         context.routes,
         "POST",
         tokenCatalogControlRoutes.operations,
-        { interactionInterface: "web", request: { kind: "register", ...startInput } },
+        {
+          control: { operationId: tokenOperationId, interactionInterface: "web" },
+          request: { kind: "register", ...startInput },
+        },
       );
       expect(httpStart).toEqual({ ok: true, response: "canonical_json", body: nativeStart });
 
@@ -972,7 +995,10 @@ describe("interface parity", () => {
         context.routes,
         "POST",
         tokenCatalogBrowserRoutes.operations,
-        { kind: "register", ...startInput },
+        {
+          control: { operationId: tokenOperationId, interactionInterface: "web" },
+          request: { kind: "register", ...startInput },
+        },
       )).toEqual({ ok: true, response: "canonical_json", body: nativeStart });
 
       const cliOutput: string[] = [];
@@ -983,6 +1009,7 @@ describe("interface parity", () => {
       });
       expect(await runTokenCliCommand(
         context.runtime,
+        tokenOperationClient(context.runtime),
         parseTokenCliCommand(["token", "register", tokenAddress, "--label", "Parity token"]),
         cliTerminal,
       )).toBe(0);
@@ -1004,6 +1031,7 @@ describe("interface parity", () => {
       const operationError: string[] = [];
       expect(await runTokenCliCommand(
         context.runtime,
+        tokenOperationClient(context.runtime),
         parseTokenCliCommand(["token", "operation", tokenOperationId, "--json"]),
         terminalPort(operationOutput, operationError),
       )).toBe(0);
@@ -1029,6 +1057,7 @@ describe("interface parity", () => {
       const cancellationError: string[] = [];
       expect(await runTokenCliCommand(
         context.runtime,
+        tokenOperationClient(context.runtime),
         parseTokenCliCommand(["token", "cancel", tokenOperationId, "--json"]),
         terminalPort(cancellationOutput, cancellationError),
       )).toBe(0);
@@ -1066,7 +1095,7 @@ describe("interface parity", () => {
       requestClass: "public_read",
       method: walletConnectionInterface.http.method,
       path: walletConnectionInterface.http.path,
-    }, 200)).toEqual({ ok: true, value: direct });
+    }, 200, walletConnectionInterface.responseAuthority)).toEqual({ ok: true, value: direct });
 
     const mcp = await connectMcp(runtime);
     try {
@@ -1084,6 +1113,7 @@ describe("interface parity", () => {
     const jsonOutput: string[] = [];
     const jsonError: string[] = [];
     expect(await runCli(["wallet", "status", "--json"], Object.freeze({
+      createOperationId: () => operationId,
       createRuntime: async () => runtime,
       terminal: terminalPort(jsonOutput, jsonError),
       waitForPoll: async () => {},
@@ -1095,6 +1125,7 @@ describe("interface parity", () => {
     const humanOutput: string[] = [];
     const humanError: string[] = [];
     expect(await runCli(["wallet", "status"], Object.freeze({
+      createOperationId: () => operationId,
       createRuntime: async () => runtime,
       terminal: terminalPort(humanOutput, humanError),
       waitForPoll: async () => {},
@@ -1121,7 +1152,7 @@ describe("interface parity", () => {
       requestClass: "public_read",
       method: capabilityCatalogInterface.http.method,
       path: capabilityCatalogInterface.http.path,
-    }, 200)).toEqual({ ok: true, value: catalog });
+    }, 200, capabilityCatalogInterface.responseAuthority)).toEqual({ ok: true, value: catalog });
 
     const mcp = await connectMcp(runtime);
     try {
@@ -1167,7 +1198,7 @@ describe("interface parity", () => {
       requestClass: "public_read",
       method: "GET",
       path: "/api/v1/chain-status",
-    }, 200);
+    }, 200, chainStatusInterface.responseAuthority);
     expect(http).toEqual({ ok: false, failure });
 
     const mcp = await connectMcp(runtime);
@@ -1230,7 +1261,7 @@ describe("interface parity", () => {
         requestClass: "local_control",
         method: "GET",
         path: walletControlRoutes.operation(operationId),
-      }, 200);
+      }, 200, walletConnectionInterface.responseAuthority);
       expect(internalHttp).toEqual({ ok: true, value: { operation: direct } });
 
       const mcp = await connectMcp(runtime);
@@ -1249,6 +1280,7 @@ describe("interface parity", () => {
       const cliOutput: string[] = [];
       const cliError: string[] = [];
       const dependencies: CliDependencies = Object.freeze({
+        createOperationId: () => operationId,
         createRuntime: async () => runtime,
         terminal: terminalPort(cliOutput, cliError),
         waitForPoll: async () => {},

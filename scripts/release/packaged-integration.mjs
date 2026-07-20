@@ -436,7 +436,7 @@ const readPackagedRuntimeIdentity = async () => {
     Array.isArray(identity) ||
     JSON.stringify(Object.keys(identity).sort()) !== JSON.stringify(expectedFields) ||
     identity.challenge !== challenge ||
-    identity.runtimeProtocolVersion !== 3 ||
+    identity.runtimeProtocolVersion !== 4 ||
     typeof identity.profileId !== "string" ||
     !/^[A-Za-z0-9_-]{22}$/u.test(identity.profileId) ||
     typeof identity.ownerInstanceId !== "string" ||
@@ -447,7 +447,7 @@ const readPackagedRuntimeIdentity = async () => {
     !/^[A-Za-z0-9_-]{43}$/u.test(identity.proof) ||
     typeof identity.ownerRevision !== "string" ||
     !/^(?:0|[1-9][0-9]*)$/u.test(identity.ownerRevision)
-  ) throw new TypeError("Packaged runtime identity is not the exact protocol-3 contract.");
+  ) throw new TypeError("Packaged runtime identity is not the exact protocol-4 contract.");
   return identity;
 };
 
@@ -627,7 +627,7 @@ const browserOperation = (operationId, browser) => fetch(
   { headers: { Cookie: browser.cookie }, redirect: "error" },
 );
 
-const browserStart = (kind, connectionRevision, browser) => fetch(
+const browserStart = (operationId, kind, connectionRevision, browser) => fetch(
   `${fixedOrigin}/api/v1/wallet/operations`,
   {
     method: "POST",
@@ -637,7 +637,10 @@ const browserStart = (kind, connectionRevision, browser) => fetch(
       [csrfHeaderName]: browser.csrf,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ kind, connectionRevision }),
+    body: JSON.stringify({
+      control: { operationId, interactionInterface: "web" },
+      request: { kind, connectionRevision },
+    }),
     redirect: "error",
   },
 );
@@ -647,7 +650,8 @@ const browserStartFromCurrentState = async (kind, browser) => {
   if (typeof state?.connectionRevision !== "string") {
     throw new TypeError("Packaged browser connection revision is unavailable.");
   }
-  const response = await browserStart(kind, state.connectionRevision, browser);
+  const operationId = randomBytes(32).toString("base64url");
+  const response = await browserStart(operationId, kind, state.connectionRevision, browser);
   if (response.status !== 200) {
     const problem = await response.json();
     const after = await jsonResponse(await browserCurrent(browser));
@@ -657,6 +661,9 @@ const browserStartFromCurrentState = async (kind, browser) => {
     );
   }
   const result = await jsonResponse(response);
+  if (result.status === "operation_started" && result.operation?.operationId !== operationId) {
+    throw new TypeError("Packaged browser start did not retain its operation identity.");
+  }
   return Object.freeze({ state, result });
 };
 
@@ -774,7 +781,7 @@ const assertPackagedPersistence = (inspection, runtimeIdentity) => {
     Array.isArray(owner) ||
     owner.profileId !== runtimeIdentity.profileId ||
     owner.configurationMac !== runtimeIdentity.configurationMac ||
-    owner.protocolVersion !== 3
+    owner.protocolVersion !== 4
   ) throw new TypeError("Packaged SQLite owner configuration identity is invalid.");
   const connection = inspection.connection;
   if (

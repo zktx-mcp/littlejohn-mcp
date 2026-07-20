@@ -5,6 +5,7 @@ import {
   parseEvmAddress,
   parseEvmChainId,
   parseUtcTimestamp,
+  parseUnsignedDecimal,
   walletConnectionCapability,
   type EvmAccountIdentity,
 } from "../../src/core/index.js";
@@ -27,6 +28,11 @@ import type { ActiveWalletReadPort } from "../../src/wallet/coordinator.js";
 import { chainId, createInspectionSuccess, tokenAddress, walletAddress } from "./harness.js";
 
 const now = parseUtcTimestamp("2026-07-18T00:00:03.000Z");
+const connectionRevision = parseUnsignedDecimal("0");
+const webControl = Object.freeze({
+  operationId: "A".repeat(43),
+  interactionInterface: "web" as const,
+});
 const connected = parseCapabilityDataAt(walletConnectionCapability, {
   status: "connected",
   chainId,
@@ -79,7 +85,7 @@ describe("token catalog internal application", () => {
     }) satisfies TokenCatalogApplicationDependencies["store"];
     const application = createTokenCatalogApplication({
       dependencies: {
-        activeWallet: { capture: () => ({ connection: connected, sessionSource: {} as never }) },
+        activeWallet: { capture: () => ({ connection: connected, connectionRevision, sessionSource: {} as never }) },
         store,
       },
       operations,
@@ -114,23 +120,23 @@ describe("token catalog internal application", () => {
       operations,
     });
 
-    expect(create(() => ({ connection: { status: "disconnected", reason: "no_session" } }))
+    expect(create(() => ({ connection: { status: "disconnected", reason: "no_session" }, connectionRevision }))
       .getRegistration({ asset: inspection.data.asset }))
       .toMatchObject({ ok: false, error: { code: "wallet_not_connected" } });
-    expect(create(() => ({ connection: connected }))
+    expect(create(() => ({ connection: connected, connectionRevision }))
       .getRegistration({ asset: inspection.data.asset }))
       .toMatchObject({ ok: false, error: { code: "wallet_session_unusable" } });
     expect(create(
-      () => ({ connection: connected, sessionSource: {} as never }),
+      () => ({ connection: connected, connectionRevision, sessionSource: {} as never }),
       () => { throw new TokenCatalogOperationError("runtime_state_unavailable"); },
     ).getRegistration({ asset: inspection.data.asset }))
       .toMatchObject({ ok: false, error: { code: "runtime_state_unavailable" } });
     expect(create(
-      () => ({ connection: connected, sessionSource: {} as never }),
+      () => ({ connection: connected, connectionRevision, sessionSource: {} as never }),
       () => { throw new RuntimeOperationError("runtime_state_unavailable"); },
     ).getRegistration({ asset: inspection.data.asset }))
       .toMatchObject({ ok: false, error: { code: "runtime_state_unavailable" } });
-    expect(create(() => ({ connection: connected, sessionSource: {} as never }))
+    expect(create(() => ({ connection: connected, connectionRevision, sessionSource: {} as never }))
       .getRegistration({ asset: { ...inspection.data.asset, chainId: parseEvmChainId("eip155:1") } }))
       .toMatchObject({ ok: false, error: { code: "invalid_input" } });
   });
@@ -153,7 +159,7 @@ describe("token catalog internal application", () => {
     const application = createTokenCatalogApplication({
       dependencies: {
         activeWallet: {
-          capture: () => ({ connection: connected, sessionSource: {} as never }),
+          capture: () => ({ connection: connected, connectionRevision, sessionSource: {} as never }),
         },
         store: {
           getRegistration: () => wrongAccountRegistration,
@@ -198,13 +204,13 @@ describe("token catalog internal application", () => {
     }) as unknown as TokenCatalogOperationCoordinatorPort;
     const application = createTokenCatalogApplication({
       dependencies: {
-        activeWallet: { capture: () => ({ connection: connected, sessionSource: {} as never }) },
+        activeWallet: { capture: () => ({ connection: connected, connectionRevision, sessionSource: {} as never }) },
         store: { getRegistration: unavailable, listRegistrations: unavailable },
       },
       operations: maliciousOperations,
     });
 
-    expect(await application.startRegistration({ asset: inspection.data.asset }, "web"))
+    expect(await application.startRegistration({ asset: inspection.data.asset }, webControl))
       .toMatchObject({ ok: false, error: { code: "internal_error" } });
   });
 
@@ -213,18 +219,18 @@ describe("token catalog internal application", () => {
     const create = (startRegistration: TokenCatalogOperationCoordinatorPort["startRegistration"]) =>
       createTokenCatalogApplication({
         dependencies: {
-          activeWallet: { capture: () => ({ connection: connected, sessionSource: {} as never }) },
+          activeWallet: { capture: () => ({ connection: connected, connectionRevision, sessionSource: {} as never }) },
           store: { getRegistration: unavailable, listRegistrations: unavailable },
         },
         operations: Object.freeze({ ...operations, startRegistration }),
       });
 
     const declared = new TokenCatalogOperationError("rate_limited").failure;
-    expect(await create(async () => declared).startRegistration({ asset: inspection.data.asset }, "web"))
+    expect(await create(async () => declared).startRegistration({ asset: inspection.data.asset }, webControl))
       .toEqual(declared);
 
     const undeclared = new TokenCatalogOperationError("token_operation_not_found").failure;
-    expect(await create(async () => undeclared).startRegistration({ asset: inspection.data.asset }, "web"))
+    expect(await create(async () => undeclared).startRegistration({ asset: inspection.data.asset }, webControl))
       .toMatchObject({ ok: false, error: { code: "internal_error" } });
 
     const malformed = {
@@ -232,7 +238,7 @@ describe("token catalog internal application", () => {
       error: { ...declared.error, message: "Forged failure message." },
     };
     expect(await create(async () => malformed as never)
-      .startRegistration({ asset: inspection.data.asset }, "web"))
+      .startRegistration({ asset: inspection.data.asset }, webControl))
       .toMatchObject({ ok: false, error: { code: "internal_error" } });
   });
 
@@ -277,14 +283,14 @@ describe("token catalog internal application", () => {
     }) satisfies TokenCatalogOperationCoordinatorPort;
     const application = createTokenCatalogApplication({
       dependencies: {
-        activeWallet: { capture: () => ({ connection: connected, sessionSource: {} as never }) },
+        activeWallet: { capture: () => ({ connection: connected, connectionRevision, sessionSource: {} as never }) },
         store: { getRegistration: unavailable, listRegistrations: unavailable },
       },
       operations: delayedOperations,
     });
 
     const startInput = { asset: { ...inspection.data.asset } };
-    const pendingStart = application.startRegistration(startInput, "web");
+    const pendingStart = application.startRegistration(startInput, webControl);
     startInput.asset = { ...startInput.asset, address: parseEvmAddress(`0x${"34".repeat(20)}`) };
     startGate.resolve({ operation });
     expect(await pendingStart).toEqual({ operation });
@@ -324,7 +330,7 @@ describe("token catalog internal application", () => {
     });
     const application = createTokenCatalogApplication({
       dependencies: {
-        activeWallet: { capture: () => ({ connection: connected, sessionSource: {} as never }) },
+        activeWallet: { capture: () => ({ connection: connected, connectionRevision, sessionSource: {} as never }) },
         store: { getRegistration: unavailable, listRegistrations: unavailable },
       },
       operations: Object.freeze({

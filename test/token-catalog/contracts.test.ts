@@ -193,22 +193,22 @@ describe("token catalog contracts", () => {
       ],
       nextCursor: secondAsset.address,
     };
-    expect(tokenCatalogApplicationContracts.registrations.parseSuccess(
+    expect(tokenCatalogApplicationContracts.registrations.parsePublicSuccess(
       tokenCatalogApplicationContracts.registrations.parseInput({ limit: 2 }),
       page,
     )).toEqual(page);
-    expect(() => tokenCatalogApplicationContracts.registrations.parseSuccess(
+    expect(() => tokenCatalogApplicationContracts.registrations.parsePublicSuccess(
       tokenCatalogApplicationContracts.registrations.parseInput({ limit: 1 }),
       page,
     )).toThrow();
-    expect(() => tokenCatalogApplicationContracts.registrations.parseSuccess(
+    expect(() => tokenCatalogApplicationContracts.registrations.parsePublicSuccess(
       tokenCatalogApplicationContracts.registrations.parseInput({
       limit: 2,
       cursor: asset.address,
       }),
       page,
     )).toThrow();
-    expect(() => tokenCatalogApplicationContracts.registrations.parseSuccess(
+    expect(() => tokenCatalogApplicationContracts.registrations.parsePublicSuccess(
       tokenCatalogApplicationContracts.registrations.parseInput({ limit: 3 }),
       page,
     )).toThrow();
@@ -221,15 +221,15 @@ describe("token catalog contracts", () => {
       proposedSettings: registerSettings,
     });
     const registerSuccess = { operation: register };
-    expect(tokenCatalogApplicationContracts.startRegistration.parseSuccess({
+    expect(tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess({
       asset,
       settings: registerSettings,
     }, registerSuccess)).toEqual(registerSuccess);
-    expect(() => tokenCatalogApplicationContracts.startRegistration.parseSuccess({
+    expect(() => tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess({
       asset,
       settings: { userLabel: null, visibility: "visible" },
     }, registerSuccess)).toThrow();
-    expect(() => tokenCatalogApplicationContracts.startRegistration.parseSuccess({
+    expect(() => tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess({
       asset: secondAsset,
       settings: registerSettings,
     }, registerSuccess)).toThrow();
@@ -243,12 +243,12 @@ describe("token catalog contracts", () => {
       proposedSettings,
     });
     const updateSuccess = { operation: update };
-    expect(tokenCatalogApplicationContracts.startRegistrationUpdate.parseSuccess({
+    expect(tokenCatalogApplicationContracts.startRegistrationUpdate.parsePublicSuccess({
       asset,
       expectedRevision: revisionA,
       changes: proposedSettings,
     }, updateSuccess)).toEqual(updateSuccess);
-    expect(() => tokenCatalogApplicationContracts.startRegistrationUpdate.parseSuccess({
+    expect(() => tokenCatalogApplicationContracts.startRegistrationUpdate.parsePublicSuccess({
       asset,
       expectedRevision: revisionB,
       changes: proposedSettings,
@@ -261,11 +261,11 @@ describe("token catalog contracts", () => {
       proposedSettings: null,
     });
     const unregisterSuccess = { operation: unregister };
-    expect(tokenCatalogApplicationContracts.startUnregistration.parseSuccess({
+    expect(tokenCatalogApplicationContracts.startUnregistration.parsePublicSuccess({
       asset,
       expectedRevision: revisionA,
     }, unregisterSuccess)).toEqual(unregisterSuccess);
-    expect(() => tokenCatalogApplicationContracts.startUnregistration.parseSuccess({
+    expect(() => tokenCatalogApplicationContracts.startUnregistration.parsePublicSuccess({
       asset,
       expectedRevision: revisionB,
     }, unregisterSuccess)).toThrow();
@@ -304,13 +304,13 @@ describe("token catalog contracts", () => {
       ...input,
       reviewDigest: input.reviewDigest.toUpperCase(),
     })).toThrow();
-    expect(tokenCatalogOperationConfirmationContract.parseSuccess(input, completed)).toEqual(completed);
-    expect(tokenCatalogOperationConfirmationContract.parseSuccess(input, failed)).toEqual(failed);
-    expect(() => tokenCatalogOperationConfirmationContract.parseSuccess({
+    expect(tokenCatalogOperationConfirmationContract.parsePublicSuccess(input, completed)).toEqual(completed);
+    expect(tokenCatalogOperationConfirmationContract.parsePublicSuccess(input, failed)).toEqual(failed);
+    expect(() => tokenCatalogOperationConfirmationContract.parsePublicSuccess({
       ...input,
       operationId: "B".repeat(43),
     }, completed)).toThrow();
-    expect(() => tokenCatalogOperationConfirmationContract.parseSuccess({
+    expect(() => tokenCatalogOperationConfirmationContract.parsePublicSuccess({
       ...input,
       reviewDigest: `0x${"cd".repeat(32)}`,
     }, completed)).toThrow();
@@ -350,28 +350,28 @@ describe("token catalog contracts", () => {
     const cancelled = tokenCatalogOperationSchema.parse({ ...awaiting, state: "cancelled" });
     const input = tokenCatalogApplicationContracts.startRegistration.parseInput({ asset });
 
-    expect(tokenCatalogApplicationContracts.startRegistration.parseSuccess(input, { operation: awaiting }))
+    expect(tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess(input, { operation: awaiting }))
       .toEqual({ operation: awaiting });
-    expect(() => tokenCatalogApplicationContracts.startRegistration.parseSuccess(input, {
+    expect(() => tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess(input, {
       operation: applying,
     })).toThrow();
-    expect(() => tokenCatalogApplicationContracts.startRegistration.parseSuccess(input, {
+    expect(() => tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess(input, {
       operation: awaiting,
       managementUrl: "http://127.0.0.1:46630/tokens",
     })).toThrow();
-    expect(tokenCatalogApplicationContracts.cancelOperation.parseSuccess(
+    expect(tokenCatalogApplicationContracts.cancelOperation.parsePublicSuccess(
       { operationId: cancelled.operationId },
       { operation: cancelled },
     )).toEqual({ operation: cancelled });
-    expect(() => tokenCatalogApplicationContracts.cancelOperation.parseSuccess(
+    expect(() => tokenCatalogApplicationContracts.cancelOperation.parsePublicSuccess(
       { operationId: awaiting.operationId },
       { operation: awaiting },
     )).toThrow();
-    expect(() => tokenCatalogApplicationContracts.cancelOperation.parseSuccess(
+    expect(() => tokenCatalogApplicationContracts.cancelOperation.parsePublicSuccess(
       { operationId: applying.operationId },
       { operation: applying },
     )).toThrow();
-    expect(() => tokenCatalogApplicationContracts.cancelOperation.parseSuccess(
+    expect(() => tokenCatalogApplicationContracts.cancelOperation.parsePublicSuccess(
       { operationId: "B".repeat(43) },
       { operation: cancelled },
     )).toThrow();

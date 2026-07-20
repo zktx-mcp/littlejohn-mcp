@@ -6,6 +6,12 @@ import {
   parseBrowserProblemDetails,
   type BrowserErrorCode,
 } from "../browser-error-response.js";
+import {
+  createDeliveryUnknown,
+  type DeliveryUnknown,
+  type OperationDeliveryAction,
+} from "../operation-delivery.js";
+import type { OperationId } from "../../core/browser.js";
 
 export interface BrowserFetchInit {
   readonly method: "GET" | "POST";
@@ -31,6 +37,10 @@ export interface BrowserRequestOptions {
   readonly request?: BrowserFetch;
   readonly signal?: AbortSignal;
 }
+
+export type BrowserActionDeliveryResult =
+  | Readonly<{ status: "response_received"; value: unknown }>
+  | Readonly<{ status: "delivery_unknown"; delivery: DeliveryUnknown }>;
 
 export class BrowserResponseError extends Error {
   readonly code: BrowserErrorCode;
@@ -77,6 +87,9 @@ export const browserActionFailureMessage = (error: unknown): string =>
     : "The action could not be completed.";
 
 const defaultBrowserFetch: BrowserFetch = (input, init) => globalThis.fetch(input, init);
+
+const browserActionResponseDeadlineMilliseconds = 5 * 60 * 1_000;
+const browserActionResponseUnavailable = Symbol("browser-action-response-unavailable");
 
 const requestFor = (options: BrowserRequestOptions): BrowserFetch =>
   options.request ?? defaultBrowserFetch;
@@ -142,3 +155,91 @@ export const controlBrowserJson = (
   },
   body: JSON.stringify(body),
 });
+
+export const controlBrowserActionJson = async (
+  action: OperationDeliveryAction,
+  operationId: OperationId,
+  path: string,
+  body: unknown,
+  csrfTokenInput: unknown,
+  options: BrowserRequestOptions = {},
+): Promise<BrowserActionDeliveryResult> => {
+  if (options.signal?.aborted === true) {
+    throw new BrowserResponseError(
+      "The request ended before completion.",
+      "request_aborted",
+    );
+  }
+  const csrfToken = parseBrowserCsrfToken(csrfTokenInput);
+  const controller = new AbortController();
+  let markUnavailable!: () => void;
+  const unavailable = new Promise<typeof browserActionResponseUnavailable>((resolve) => {
+    markUnavailable = () => { resolve(browserActionResponseUnavailable); };
+  });
+  const abort = (): void => {
+    controller.abort();
+    markUnavailable();
+  };
+  options.signal?.addEventListener("abort", abort, { once: true });
+  const deadline = globalThis.setTimeout(
+    () => { abort(); },
+    browserActionResponseDeadlineMilliseconds,
+  );
+  try {
+    let response: BrowserFetchResponse | typeof browserActionResponseUnavailable;
+    try {
+      response = await Promise.race([
+        requestFor(options)(path, {
+          ...requestInit("POST", controller.signal),
+          headers: {
+            [browserCsrfHeaderName]: csrfToken,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        }),
+        unavailable,
+      ]);
+    } catch {
+      return Object.freeze({
+        status: "delivery_unknown",
+        delivery: createDeliveryUnknown(action, operationId),
+      });
+    }
+    if (response === browserActionResponseUnavailable) {
+      return Object.freeze({
+        status: "delivery_unknown",
+        delivery: createDeliveryUnknown(action, operationId),
+      });
+    }
+
+    let value: unknown | typeof browserActionResponseUnavailable;
+    try { value = await Promise.race([response.json(), unavailable]); }
+    catch {
+      return Object.freeze({
+        status: "delivery_unknown",
+        delivery: createDeliveryUnknown(action, operationId),
+      });
+    }
+    if (value === browserActionResponseUnavailable) {
+      return Object.freeze({
+        status: "delivery_unknown",
+        delivery: createDeliveryUnknown(action, operationId),
+      });
+    }
+    if (response.ok) return Object.freeze({ status: "response_received", value });
+
+    try {
+      const problem = parseBrowserProblemDetails(value, response.status);
+      throw new BrowserResponseError(problem.detail, problem.code);
+    } catch (error) {
+      if (error instanceof BrowserResponseError) throw error;
+      return Object.freeze({
+        status: "delivery_unknown",
+        delivery: createDeliveryUnknown(action, operationId),
+      });
+    }
+  } finally {
+    globalThis.clearTimeout(deadline);
+    options.signal?.removeEventListener("abort", abort);
+  }
+};

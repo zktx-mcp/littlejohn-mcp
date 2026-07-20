@@ -268,22 +268,21 @@ describe("wallet management contracts", () => {
 
   it("owns strict start and current-operation contracts without assuming every start creates an operation", () => {
     expect(parseWalletOperationCreate({
-      kind: "connect",
-      interactionInterface: "cli",
-      connectionRevision: null,
+      control: { operationId, interactionInterface: "cli" },
+      request: { kind: "connect", connectionRevision: null },
     })).toEqual({
+      operationId,
       kind: "connect",
       interactionInterface: "cli",
       connectionRevision: null,
     });
     expect(() => parseWalletOperationCreate({
-      kind: "other",
-      interactionInterface: "web",
-      connectionRevision: "3",
+      control: { operationId, interactionInterface: "web" },
+      request: { kind: "other", connectionRevision: "3" },
     })).toThrow();
     expect(() => parseWalletOperationCreate({
-      kind: "connect",
-      interactionInterface: "web",
+      control: { operationId, interactionInterface: "web" },
+      request: { kind: "connect" },
     })).toThrow();
     expect(parseWalletWebOperationCreate({
       kind: "connect",

@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import {
   CapabilityBindingRegistry,
   CapabilityRegistry,
+  ObservationAuthorityRegistry,
   deepFreezeValue,
   parseUtcTimestamp,
   type ApplicationFailure,
@@ -10,7 +11,6 @@ import {
   type EvmAccountIdentity,
   type UnsignedDecimal,
   type UtcTimestamp,
-  type WalletConnectionData,
 } from "../core/index.js";
 import { captureConnectedWalletSession } from "./active-wallet.js";
 import {
@@ -55,7 +55,6 @@ export const tokenCatalogCoordinatorPolicy = Object.freeze({
 const addMilliseconds = (value: UtcTimestamp, milliseconds: number): UtcTimestamp =>
   parseUtcTimestamp(new Date(Date.parse(value) + milliseconds).toISOString());
 
-const createOperationId = () => randomBytes(tokenCatalogContractLimits.operationIdBytes).toString("base64url");
 const createRegistrationRevision = () => tokenRegistrationRevisionSchema.parse(
   randomBytes(tokenCatalogContractLimits.registrationRevisionBytes).toString("base64url"),
 );
@@ -63,34 +62,51 @@ const createRegistrationRevision = () => tokenRegistrationRevisionSchema.parse(
 interface CapturedWallet {
   readonly account: EvmAccountIdentity;
   readonly connectionRevision: UnsignedDecimal;
-  readonly sessionSource: NonNullable<
-    ReturnType<TokenCatalogCoordinatorDependencies["activeWallet"]["capture"]>["sessionSource"]
-  >;
+  readonly sessionSourceId: string;
+  readonly sessionTopicDigest: string;
 }
 
 interface OperationEntry {
   operation: TokenCatalogOperation;
   readonly connectionRevision: UnsignedDecimal;
-  readonly sessionSource: CapturedWallet["sessionSource"];
+  readonly sessionSourceId: CapturedWallet["sessionSourceId"];
+  readonly sessionTopicDigest: CapturedWallet["sessionTopicDigest"];
   terminalAt?: UtcTimestamp;
   readonly sequence: number;
 }
 
+type TokenStartCommand =
+  | Readonly<{
+      kind: "register";
+      input: TokenRegistrationStartRequest;
+      interactionInterface: TokenCatalogInteractionInterface;
+      operationId: TokenCatalogOperation["operationId"];
+    }>
+  | Readonly<{
+      kind: "update_registration";
+      input: TokenRegistrationUpdateStartInput;
+      interactionInterface: TokenCatalogInteractionInterface;
+      operationId: TokenCatalogOperation["operationId"];
+    }>
+  | Readonly<{
+      kind: "unregister";
+      input: TokenUnregistrationStartInput;
+      interactionInterface: TokenCatalogInteractionInterface;
+      operationId: TokenCatalogOperation["operationId"];
+    }>;
+
+type PreparedTokenStart = Readonly<{
+  kind: TokenCatalogOperationKind;
+  asset: TokenRegistration["asset"];
+  previousRegistration: TokenRegistration | null;
+  proposedSettings: TokenRegistrationSettings | null;
+  inspection: TokenInspectionSuccess;
+}>;
+
 export interface TokenCatalogCoordinatorRuntimeDependencies extends TokenCatalogCoordinatorDependencies {
   readonly clock: CanonicalClock;
-  readWalletProjection(): Readonly<{
-    revision: UnsignedDecimal;
-    connection: WalletConnectionData;
-    updatedAt: UtcTimestamp;
-  }>;
   readonly signal: AbortSignal;
 }
-
-const sameConnectedWallet = (
-  connection: WalletConnectionData,
-  account: EvmAccountIdentity,
-): boolean => connection.status === "connected" &&
-  connection.chainId === account.chainId && connection.address === account.address;
 
 const failureFor = (error: unknown): ApplicationFailure =>
   normalizeTokenCatalogError(error).failure;
@@ -105,9 +121,11 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
   readonly #inspections: CapabilityBindingRegistry;
   readonly #operations = new Map<string, OperationEntry>();
   readonly #inspectionControllers = new Set<AbortController>();
+  readonly #activeCalls = new Set<Promise<void>>();
   #starting = false;
   #sequence = 0;
-  #closed = false;
+  #lifecycleState: "open" | "closing" | "closed" = "open";
+  #closePromise?: Promise<void>;
 
   constructor(dependencies: TokenCatalogCoordinatorRuntimeDependencies) {
     this.#dependencies = dependencies;
@@ -118,121 +136,35 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
     Object.seal(this);
   }
 
-  async startRegistration(
+  startRegistration(
     input: TokenRegistrationStartRequest,
-    interactionInterface: TokenCatalogInteractionInterface,
+    control: import("./ports.js").TokenCatalogOperationControl,
   ): Promise<TokenCatalogOperationStartResult<"register"> | ApplicationFailure> {
-    let admitted = false;
-    const controller = new AbortController();
-    try {
-      this.#admitStart();
-      admitted = true;
-      this.#inspectionControllers.add(controller);
-      const wallet = this.#captureWallet();
-      if (input.asset.chainId !== wallet.account.chainId) throw new TokenCatalogOperationError("invalid_input");
-      if (this.#dependencies.store.getRegistration(wallet.account, input.asset) !== undefined) {
-        throw new TokenCatalogOperationError("token_registration_already_exists");
-      }
-      const signal = AbortSignal.any([this.#dependencies.signal, controller.signal]);
-      const inspection = await this.#inspections.invoke(
-        tokenInspectCapability,
-        { asset: input.asset, block: { kind: "latest" } },
-        { signal },
-      );
-      if ("ok" in inspection && inspection.ok === false) return inspection;
-      if (this.#closed || signal.aborted) throw new TokenCatalogOperationError("request_aborted");
-      this.#recaptureWallet(wallet);
-      return this.#createOperation({
-        kind: "register",
-        interactionInterface,
-        wallet,
-        asset: input.asset,
-        previousRegistration: null,
-        proposedSettings: tokenRegistrationSettingsSchema.parse(input.settings),
-        inspection,
-      });
-    } catch (error) {
-      return failureFor(error);
-    } finally {
-      this.#inspectionControllers.delete(controller);
-      if (admitted) this.#starting = false;
-    }
+    return this.#runAdmitted(() => this.#start({ kind: "register", input, ...control })) as Promise<
+      TokenCatalogOperationStartResult<"register"> | ApplicationFailure
+    >;
   }
 
-  async startRegistrationUpdate(
+  startRegistrationUpdate(
     input: TokenRegistrationUpdateStartInput,
-    interactionInterface: TokenCatalogInteractionInterface,
+    control: import("./ports.js").TokenCatalogOperationControl,
   ): Promise<TokenCatalogOperationStartResult<"update_registration"> | ApplicationFailure> {
-    let admitted = false;
-    try {
-      this.#admitStart();
-      admitted = true;
-      const wallet = this.#captureWallet();
-      if (input.asset.chainId !== wallet.account.chainId) throw new TokenCatalogOperationError("invalid_input");
-      const current = this.#dependencies.store.getRegistration(wallet.account, input.asset);
-      if (current === undefined) throw new TokenCatalogOperationError("token_registration_not_found");
-      if (current.registration.revision !== input.expectedRevision) {
-        throw new TokenCatalogOperationError("token_registration_revision_changed");
-      }
-      const changes = tokenRegistrationChangesSchema.parse(input.changes);
-      const proposedSettings = tokenRegistrationSettingsSchema.parse({
-        userLabel: changes.userLabel === undefined ? current.registration.userLabel : changes.userLabel,
-        visibility: changes.visibility === undefined ? current.registration.visibility : changes.visibility,
-      });
-      if (
-        proposedSettings.userLabel === current.registration.userLabel &&
-        proposedSettings.visibility === current.registration.visibility
-      ) throw new TokenCatalogOperationError("invalid_input");
-      this.#recaptureWallet(wallet);
-      return this.#createOperation({
-        kind: "update_registration",
-        interactionInterface,
-        wallet,
-        asset: input.asset,
-        previousRegistration: current.registration,
-        proposedSettings,
-        inspection: current.inspection,
-      });
-    } catch (error) {
-      return failureFor(error);
-    } finally {
-      if (admitted) this.#starting = false;
-    }
+    return this.#runAdmitted(() => this.#start({ kind: "update_registration", input, ...control })) as Promise<
+      TokenCatalogOperationStartResult<"update_registration"> | ApplicationFailure
+    >;
   }
 
-  async startUnregistration(
+  startUnregistration(
     input: TokenUnregistrationStartInput,
-    interactionInterface: TokenCatalogInteractionInterface,
+    control: import("./ports.js").TokenCatalogOperationControl,
   ): Promise<TokenCatalogOperationStartResult<"unregister"> | ApplicationFailure> {
-    let admitted = false;
-    try {
-      this.#admitStart();
-      admitted = true;
-      const wallet = this.#captureWallet();
-      if (input.asset.chainId !== wallet.account.chainId) throw new TokenCatalogOperationError("invalid_input");
-      const current = this.#dependencies.store.getRegistration(wallet.account, input.asset);
-      if (current === undefined) throw new TokenCatalogOperationError("token_registration_not_found");
-      if (current.registration.revision !== input.expectedRevision) {
-        throw new TokenCatalogOperationError("token_registration_revision_changed");
-      }
-      this.#recaptureWallet(wallet);
-      return this.#createOperation({
-        kind: "unregister",
-        interactionInterface,
-        wallet,
-        asset: input.asset,
-        previousRegistration: current.registration,
-        proposedSettings: null,
-        inspection: current.inspection,
-      });
-    } catch (error) {
-      return failureFor(error);
-    } finally {
-      if (admitted) this.#starting = false;
-    }
+    return this.#runAdmitted(() => this.#start({ kind: "unregister", input, ...control })) as Promise<
+      TokenCatalogOperationStartResult<"unregister"> | ApplicationFailure
+    >;
   }
 
   getOperation(operationId: TokenCatalogOperation["operationId"]): TokenCatalogOperation {
+    this.#assertOpen();
     this.#expireAndPurge();
     const entry = this.#operations.get(operationId);
     if (entry === undefined) throw new TokenCatalogOperationError("token_operation_not_found");
@@ -240,6 +172,7 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
   }
 
   getCurrentOperation(): TokenCatalogOperation | null {
+    this.#assertOpen();
     this.#expireAndPurge();
     let current: OperationEntry | undefined;
     for (const entry of this.#operations.values()) {
@@ -248,7 +181,17 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
     return current?.operation ?? null;
   }
 
-  async confirm(
+  confirm(
+    control: import("./ports.js").TokenCatalogOperationControl,
+    inputValue: TokenCatalogOperationConfirmationInput,
+  ): Promise<TokenCatalogConfirmedOperation> {
+    if (control.operationId !== inputValue.operationId) {
+      return Promise.reject(new TokenCatalogOperationError("state_conflict"));
+    }
+    return this.#runAdmitted(() => this.#confirm(control.interactionInterface, inputValue));
+  }
+
+  async #confirm(
     interactionInterfaceInput: TokenCatalogInteractionInterface,
     inputValue: TokenCatalogOperationConfirmationInput,
   ): Promise<TokenCatalogConfirmedOperation> {
@@ -274,48 +217,39 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
       this.#recaptureWallet({
         account: entry.operation.account,
         connectionRevision: entry.connectionRevision,
-        sessionSource: entry.sessionSource,
+        sessionSourceId: entry.sessionSourceId,
+        sessionTopicDigest: entry.sessionTopicDigest,
       });
     } catch (error) {
       throw normalizeTokenCatalogError(error);
     }
     entry.operation = this.#replaceOperation(entry.operation, { state: "applying" });
     try {
-      let result: TokenCatalogOperation["result"];
-      const previous = entry.operation.review.previousRegistration;
-      if (entry.operation.kind === "register") {
-        const settings = entry.operation.review.proposedSettings;
-        if (settings === null) throw new TokenCatalogOperationError("internal_error");
-        result = this.#dependencies.store.register({
-          account: entry.operation.account,
+      const applying = entry.operation;
+      if (applying.state !== "applying") throw new TokenCatalogOperationError("internal_error");
+      if (applying.kind === "register") {
+        entry.operation = this.#dependencies.store.applyConfirmation({
+          kind: applying.kind,
+          operation: applying,
           expectedConnectionRevision: entry.connectionRevision,
-          inspection: entry.operation.review.inspection,
-          settings,
-          revision: createRegistrationRevision(),
+          registrationRevision: createRegistrationRevision(),
           now: this.#now(),
         });
-      } else if (entry.operation.kind === "update_registration") {
-        const settings = entry.operation.review.proposedSettings;
-        if (settings === null || previous === null) throw new TokenCatalogOperationError("internal_error");
-        result = this.#dependencies.store.update({
-          account: entry.operation.account,
-          asset: entry.operation.asset,
+      } else if (applying.kind === "update_registration") {
+        entry.operation = this.#dependencies.store.applyConfirmation({
+          kind: applying.kind,
+          operation: applying,
           expectedConnectionRevision: entry.connectionRevision,
-          expectedRegistrationRevision: previous.revision,
-          settings,
-          revision: createRegistrationRevision(),
+          registrationRevision: createRegistrationRevision(),
           now: this.#now(),
         });
       } else {
-        if (previous === null) throw new TokenCatalogOperationError("internal_error");
-        result = this.#dependencies.store.unregister({
-          account: entry.operation.account,
-          asset: entry.operation.asset,
+        entry.operation = this.#dependencies.store.applyConfirmation({
+          kind: applying.kind,
+          operation: applying,
           expectedConnectionRevision: entry.connectionRevision,
-          expectedRegistrationRevision: previous.revision,
         });
       }
-      entry.operation = this.#replaceOperation(entry.operation, { state: "completed", result });
     } catch (error) {
       entry.operation = this.#replaceOperation(entry.operation, {
         state: "failed",
@@ -326,11 +260,18 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
     if (entry.operation.state !== "completed" && entry.operation.state !== "failed") {
       throw new TokenCatalogOperationError("internal_error");
     }
-    try { return tokenCatalogOperationConfirmationContract.parseSuccess(input, entry.operation); }
+    try { return tokenCatalogOperationConfirmationContract.parsePublicSuccess(input, entry.operation); }
     catch { throw new TokenCatalogOperationError("internal_error"); }
   }
 
-  async cancel(
+  cancel(
+    operationId: TokenCatalogOperation["operationId"],
+    interactionInterface?: TokenCatalogInteractionInterface,
+  ): Promise<TokenCatalogTerminalOperation> {
+    return this.#runAdmitted(() => this.#cancel(operationId, interactionInterface));
+  }
+
+  async #cancel(
     operationId: TokenCatalogOperation["operationId"],
     interactionInterface?: TokenCatalogInteractionInterface,
   ): Promise<TokenCatalogTerminalOperation> {
@@ -358,22 +299,134 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
     return cancelled;
   }
 
-  close(): void {
-    if (this.#closed) return;
-    this.#closed = true;
+  close(): Promise<void> {
+    if (this.#closePromise !== undefined) return this.#closePromise;
+    this.#lifecycleState = "closing";
     for (const controller of this.#inspectionControllers) controller.abort();
-    this.#inspectionControllers.clear();
-    this.#operations.clear();
-    this.#starting = false;
+    const closePromise = Promise.resolve().then(async () => {
+      await Promise.allSettled([...this.#activeCalls]);
+      this.#inspectionControllers.clear();
+      this.#operations.clear();
+      this.#starting = false;
+      this.#lifecycleState = "closed";
+    });
+    this.#closePromise = closePromise;
+    return closePromise;
+  }
+
+  #assertOpen(): void {
+    if (this.#lifecycleState !== "open") {
+      throw new TokenCatalogOperationError("runtime_state_unavailable");
+    }
+  }
+
+  #runAdmitted<Result>(operation: () => Promise<Result>): Promise<Result> {
+    try { this.#assertOpen(); }
+    catch (error) { return Promise.reject(error); }
+    const active = operation();
+    let settlement!: Promise<void>;
+    settlement = active.then(
+      () => undefined,
+      () => undefined,
+    ).finally(() => {
+      this.#activeCalls.delete(settlement);
+    });
+    this.#activeCalls.add(settlement);
+    return active;
+  }
+
+  async #start(command: TokenStartCommand): Promise<TokenCatalogOperationStartResult | ApplicationFailure> {
+    let admitted = false;
+    const controller = new AbortController();
+    try {
+      this.#admitStart(command.operationId);
+      admitted = true;
+      this.#inspectionControllers.add(controller);
+      const wallet = this.#captureWallet();
+      if (command.input.asset.chainId !== wallet.account.chainId) {
+        throw new TokenCatalogOperationError("invalid_input");
+      }
+      const signal = AbortSignal.any([this.#dependencies.signal, controller.signal]);
+      let prepared: PreparedTokenStart;
+      if (command.kind === "register") {
+        if (this.#dependencies.store.getRegistration(wallet.account, command.input.asset) !== undefined) {
+          throw new TokenCatalogOperationError("token_registration_already_exists");
+        }
+        const inspection = await this.#inspections.invoke(
+          tokenInspectCapability,
+          { asset: command.input.asset, block: { kind: "latest" } },
+          { signal },
+        );
+        if ("ok" in inspection && inspection.ok === false) return inspection;
+        prepared = Object.freeze({
+          kind: command.kind,
+          asset: command.input.asset,
+          previousRegistration: null,
+          proposedSettings: tokenRegistrationSettingsSchema.parse(command.input.settings),
+          inspection,
+        });
+      } else if (command.kind === "update_registration") {
+        const current = this.#dependencies.store.getRegistration(wallet.account, command.input.asset);
+        if (current === undefined) throw new TokenCatalogOperationError("token_registration_not_found");
+        if (current.registration.revision !== command.input.expectedRevision) {
+          throw new TokenCatalogOperationError("token_registration_revision_changed");
+        }
+        const changes = tokenRegistrationChangesSchema.parse(command.input.changes);
+        const proposedSettings = tokenRegistrationSettingsSchema.parse({
+          userLabel: changes.userLabel === undefined ? current.registration.userLabel : changes.userLabel,
+          visibility: changes.visibility === undefined ? current.registration.visibility : changes.visibility,
+        });
+        if (
+          proposedSettings.userLabel === current.registration.userLabel &&
+          proposedSettings.visibility === current.registration.visibility
+        ) throw new TokenCatalogOperationError("invalid_input");
+        prepared = Object.freeze({
+          kind: command.kind,
+          asset: command.input.asset,
+          previousRegistration: current.registration,
+          proposedSettings,
+          inspection: current.inspection,
+        });
+      } else {
+        const current = this.#dependencies.store.getRegistration(wallet.account, command.input.asset);
+        if (current === undefined) throw new TokenCatalogOperationError("token_registration_not_found");
+        if (current.registration.revision !== command.input.expectedRevision) {
+          throw new TokenCatalogOperationError("token_registration_revision_changed");
+        }
+        prepared = Object.freeze({
+          kind: command.kind,
+          asset: command.input.asset,
+          previousRegistration: current.registration,
+          proposedSettings: null,
+          inspection: current.inspection,
+        });
+      }
+      if (this.#lifecycleState !== "open" || signal.aborted) {
+        throw new TokenCatalogOperationError("request_aborted");
+      }
+      this.#recaptureWallet(wallet);
+      return this.#createOperation({
+        ...prepared,
+        interactionInterface: command.interactionInterface,
+        operationId: command.operationId,
+        wallet,
+      });
+    } catch (error) {
+      return failureFor(error);
+    } finally {
+      this.#inspectionControllers.delete(controller);
+      if (admitted) this.#starting = false;
+    }
   }
 
   #now(): UtcTimestamp {
     return this.#dependencies.clock.now();
   }
 
-  #admitStart(): void {
+  #admitStart(operationId: TokenCatalogOperation["operationId"]): void {
     this.#expireAndPurge();
-    if (this.#closed) throw new TokenCatalogOperationError("runtime_state_unavailable");
+    this.#assertOpen();
+    if (this.#operations.has(operationId)) throw new TokenCatalogOperationError("state_conflict");
     if (this.#starting || [...this.#operations.values()].some((entry) =>
       !isTokenCatalogOperationTerminal(entry.operation.state))) {
       throw new TokenCatalogOperationError("token_operation_conflict");
@@ -383,29 +436,46 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
 
   #captureWallet(): CapturedWallet {
     const active = captureConnectedWalletSession(this.#dependencies.activeWallet);
-    const projection = this.#dependencies.readWalletProjection();
-    if (!sameConnectedWallet(projection.connection, active.account)) {
-      throw new TokenCatalogOperationError("state_conflict");
+    try {
+      const authorities = new ObservationAuthorityRegistry(
+        this.#dependencies.clock,
+        [active.sessionSource.observationAuthority],
+      );
+      if (authorities.get("wallet_session") !== active.sessionSource.observationAuthority) {
+        throw new TypeError("Active wallet evidence authority is unavailable.");
+      }
+    } catch {
+      throw new TokenCatalogOperationError("wallet_session_unusable");
     }
     return Object.freeze({
       account: active.account,
-      connectionRevision: projection.revision,
-      sessionSource: active.sessionSource,
+      connectionRevision: active.connectionRevision,
+      sessionSourceId: active.sessionSource.sourceId,
+      sessionTopicDigest: active.sessionSource.topicDigest,
     });
   }
 
   #recaptureWallet(captured: CapturedWallet): void {
-    const active = this.#dependencies.activeWallet.capture();
-    const projection = this.#dependencies.readWalletProjection();
+    let active: CapturedWallet;
+    try { active = this.#captureWallet(); }
+    catch (error) {
+      const code = normalizeTokenCatalogError(error).failure.error.code;
+      if (code === "wallet_not_connected" || code === "wallet_session_unusable") {
+        throw new TokenCatalogOperationError("state_conflict");
+      }
+      throw error;
+    }
     if (
-      !sameConnectedWallet(active.connection, captured.account) ||
-      active.sessionSource !== captured.sessionSource ||
-      projection.revision !== captured.connectionRevision ||
-      !sameConnectedWallet(projection.connection, captured.account)
+      active.account.chainId !== captured.account.chainId ||
+      active.account.address !== captured.account.address ||
+      active.connectionRevision !== captured.connectionRevision ||
+      active.sessionSourceId !== captured.sessionSourceId ||
+      active.sessionTopicDigest !== captured.sessionTopicDigest
     ) throw new TokenCatalogOperationError("state_conflict");
   }
 
   #createOperation<Kind extends TokenCatalogOperationKind>(input: Readonly<{
+    operationId: TokenCatalogOperation["operationId"];
     kind: Kind;
     interactionInterface: TokenCatalogInteractionInterface;
     wallet: CapturedWallet;
@@ -416,9 +486,8 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
   }>): TokenCatalogOperationStartResult<Kind> {
     const createdAt = this.#now();
     const expiresAt = addMilliseconds(createdAt, tokenCatalogCoordinatorPolicy.userActionMilliseconds);
-    const operationId = createOperationId();
     const reviewDigest = tokenCatalogReviewDigest({
-      operationId,
+      operationId: input.operationId,
       kind: input.kind,
       account: input.wallet.account,
       connectionRevision: input.wallet.connectionRevision,
@@ -430,7 +499,7 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
       expiresAt,
     });
     const operation = deepFreezeValue(tokenCatalogOperationSchema.parse({
-      operationId,
+      operationId: input.operationId,
       kind: input.kind,
       state: "awaiting_confirmation",
       interactionInterface: input.interactionInterface,
@@ -450,7 +519,8 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
     const entry: OperationEntry = {
       operation,
       connectionRevision: input.wallet.connectionRevision,
-      sessionSource: input.wallet.sessionSource,
+      sessionSourceId: input.wallet.sessionSourceId,
+      sessionTopicDigest: input.wallet.sessionTopicDigest,
       sequence: ++this.#sequence,
     };
     this.#operations.set(operation.operationId, entry);

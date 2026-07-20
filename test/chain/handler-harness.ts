@@ -10,6 +10,7 @@ import {
   createObservationAuthority,
   parseEvmChainId,
   parseCapabilityDataAt,
+  parseUnsignedDecimal,
   sourceReferenceSchema,
   transactionInspectCapability,
   walletConnectionCapability,
@@ -23,6 +24,7 @@ import {
 } from "../../src/core/index.js";
 import type { Erc20CallEncoder } from "../../src/chain/evm-standard.js";
 import { createChainReadService, type ChainReadService } from "../../src/chain/handlers.js";
+import { createChainInvocationLifecycle } from "../../src/chain/invocation-lifecycle.js";
 import {
   ChainRpcError,
   type ChainRpcMethod,
@@ -118,6 +120,7 @@ export const disconnectedWallet = (): ActiveWalletHarness => activeWallet(Object
     status: "disconnected",
     reason: "no_session",
   }, handlerEvaluationTime),
+  connectionRevision: parseUnsignedDecimal("0"),
 }));
 
 export const connectedWallet = (
@@ -150,7 +153,11 @@ export const connectedWallet = (
     approvedEvents: ["accountsChanged", "chainChanged"],
     expiresAt: "2026-07-22T06:00:00.000Z",
   }, handlerEvaluationTime);
-  return activeWallet(Object.freeze({ connection, sessionSource }));
+  return activeWallet(Object.freeze({
+    connection,
+    connectionRevision: parseUnsignedDecimal("0"),
+    sessionSource,
+  }));
 };
 
 const definitions = Object.freeze([
@@ -206,7 +213,13 @@ export const createChainHandlerHarness = (input: {
       },
     },
   } as unknown as ChainOwnerApplicationContext<ActiveWalletReadPort>;
-  const service = createChainReadService({ context, rpc: input.rpc, encoder: input.encoder });
+  const lifecycle = createChainInvocationLifecycle(owner.signal);
+  const service = createChainReadService({
+    context,
+    rpc: input.rpc,
+    encoder: input.encoder,
+    lifecycle,
+  });
   const bindings = service.chainReads;
   const registry = new CapabilityBindingRegistry(
     new CapabilityRegistry(definitions),
@@ -224,6 +237,6 @@ export const createChainHandlerHarness = (input: {
     ) {
       return registry.invoke(definition, request, { signal });
     },
-    close: () => service.close(),
+    close: () => lifecycle.close(),
   });
 };

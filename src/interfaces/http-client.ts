@@ -7,12 +7,9 @@ import {
   type CanonicalJson,
 } from "../core/index.js";
 import {
-  tokenCatalogErrorRegistry,
-  tokenCatalogInterfaceErrorMappings,
-} from "../token-catalog/index.js";
-import {
   getRuntimeOperationFailure,
   problemDetailsSchema,
+  runtimeErrorRegistry,
   toProblemDetails,
   type InterfaceErrorMappingRegistry,
 } from "../runtime/errors.js";
@@ -33,8 +30,8 @@ export const createInterfaceFailure = (
   code: string,
   issues: ApplicationFailure["error"]["issues"] = [],
 ): ApplicationFailure => {
-  try { return createApplicationFailure(tokenCatalogErrorRegistry, code, issues); }
-  catch { return createApplicationFailure(tokenCatalogErrorRegistry, "internal_error"); }
+  try { return createApplicationFailure(runtimeErrorRegistry, code, issues); }
+  catch { return createApplicationFailure(runtimeErrorRegistry, "internal_error"); }
 };
 
 export const constrainInterfaceFailure = (
@@ -67,24 +64,39 @@ export const normalizeProblemDetailsFailure = (
   }
 };
 
-const normalizeDispatchFailure = (response: RuntimeDispatchResponse): ApplicationFailure =>
-  normalizeProblemDetailsFailure(
-    response,
-    tokenCatalogErrorRegistry,
-    tokenCatalogInterfaceErrorMappings,
-    "internal_error",
-  );
+export interface CanonicalDispatchAuthority {
+  readonly applicationErrors: ApplicationErrorRegistry;
+  readonly interfaceMappings: InterfaceErrorMappingRegistry;
+}
+
+const authorityFailure = (
+  authority: CanonicalDispatchAuthority,
+  code: string,
+  issues: ApplicationFailure["error"]["issues"] = [],
+): ApplicationFailure => {
+  try { return createApplicationFailure(authority.applicationErrors, code, issues); }
+  catch { return createApplicationFailure(authority.applicationErrors, "internal_error"); }
+};
 
 export const dispatchCanonical = async (
   runtime: RuntimeDispatchPort,
   request: RuntimeDispatchRequest,
   expectedStatus: 200 | 201,
+  authority: CanonicalDispatchAuthority,
 ): Promise<InterfaceInvocationResult> => {
   try {
     const response = await runtime.dispatchRuntimeRequest(request);
-    if (response.status >= 400) return { ok: false, failure: normalizeDispatchFailure(response) };
+    if (response.status >= 400) return {
+      ok: false,
+      failure: normalizeProblemDetailsFailure(
+        response,
+        authority.applicationErrors,
+        authority.interfaceMappings,
+        "internal_error",
+      ),
+    };
     if (response.status !== expectedStatus) {
-      return { ok: false, failure: createInterfaceFailure("internal_error") };
+      return { ok: false, failure: authorityFailure(authority, "internal_error") };
     }
     return { ok: true, value: captureCanonicalJson(response.body) };
   } catch (error) {
@@ -92,8 +104,8 @@ export const dispatchCanonical = async (
     return {
       ok: false,
       failure: failure === undefined
-        ? createInterfaceFailure("internal_error")
-        : createInterfaceFailure(failure.error.code, failure.error.issues),
+        ? authorityFailure(authority, "internal_error")
+        : authorityFailure(authority, failure.error.code, failure.error.issues),
     };
   }
 };

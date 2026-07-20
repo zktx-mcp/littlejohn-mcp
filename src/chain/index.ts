@@ -14,8 +14,20 @@ export {
   decodeErc20TotalSupplyResult,
 } from "./evm-standard.js";
 export type { Erc20CallEncoder } from "./evm-standard.js";
-export { chainInvocationDeadlineMs, createChainReadService } from "./handlers.js";
+export { createChainReadService } from "./handlers.js";
 export type { ChainReadService } from "./handlers.js";
+export {
+  chainInvocationDeadlineMs,
+  createChainInvocationLifecycle,
+  getChainInvocationStopReason,
+} from "./invocation-lifecycle.js";
+export type {
+  ChainInvocationLifecycle,
+  ChainInvocationStopReason,
+} from "./invocation-lifecycle.js";
+export { resolveCanonicalBlock } from "./canonical-block.js";
+export type { CanonicalBlock } from "./canonical-block.js";
+export { validateConfiguredChain } from "./configured-chain.js";
 export {
   createBoundedRpcRequester,
   rpcConcurrencyLimit,

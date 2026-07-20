@@ -14,6 +14,7 @@ const webEntrySource = resolve(webSourceRoot, "main.tsx");
 const webApplicationSource = resolve(webSourceRoot, "app.tsx");
 const walletClientSource = resolve(webSourceRoot, "wallet-client.ts");
 const browserClientSource = resolve(webSourceRoot, "browser-client.ts");
+const browserOperationIdSource = resolve(webSourceRoot, "operation-id.ts");
 const canonicalJsonSource = resolve(repositoryRoot, "src/core/canonical-json.ts");
 const evidenceSource = resolve(repositoryRoot, "src/core/evidence.ts");
 const keccak256Source = resolve(repositoryRoot, "src/core/keccak256.ts");
@@ -23,6 +24,8 @@ const immutabilitySource = resolve(repositoryRoot, "src/core/immutability.ts");
 const sharedContractSources = new Set([
   "src/interfaces/browser-contract.ts",
   "src/interfaces/browser-error-response.ts",
+  "src/interfaces/operation-delivery.ts",
+  "src/core/application-contract.ts",
   "src/core/canonical-json-value.ts",
   "src/core/canonical-json.ts",
   "src/core/capability-contract.ts",
@@ -30,6 +33,7 @@ const sharedContractSources = new Set([
   "src/core/browser.ts",
   "src/core/contract.ts",
   "src/core/error-definitions.ts",
+  "src/core/errors.ts",
   "src/core/evm-address-input.ts",
   "src/core/evidence.ts",
   "src/core/identities.ts",
@@ -37,6 +41,7 @@ const sharedContractSources = new Set([
   "src/core/json-object.ts",
   "src/core/keccak256.ts",
   "src/core/primitives.ts",
+  "src/core/operation-id.ts",
   "src/core/product-identity.ts",
   "src/core/wallet-connection.ts",
   "src/chain/error-definitions.ts",
@@ -47,6 +52,7 @@ const sharedContractSources = new Set([
   "src/token-catalog/http-contract.ts",
   "src/token-catalog/state.ts",
   "src/wallet/error-definitions.ts",
+  "src/wallet/management-contracts.ts",
   "src/wallet/operation-contract.ts",
   "src/wallet/operation-state.ts",
 ].map((path) => resolve(repositoryRoot, path)));
@@ -59,7 +65,8 @@ const allowedWebPackageImports = new Map([
 const allowedWebConstructorsBySource = new Map([
   [webEntrySource, new Set(["Error"])],
   [webApplicationSource, new Set(["Error"])],
-  [browserClientSource, new Set(["BrowserResponseError", "TypeError"])],
+  [browserClientSource, new Set(["AbortController", "BrowserResponseError", "Promise", "TypeError"])],
+  [browserOperationIdSource, new Set(["Uint8Array"])],
   [resolve(webSourceRoot, "request-authority.ts"), new Set(["AbortController"])],
 ]);
 const allowedVirtualModules = new Set([
@@ -89,7 +96,11 @@ const allowedGlobalMembers = new Set([
   "document.querySelector",
   "document.title",
   "globalThis.atob",
+  "globalThis.btoa",
+  "globalThis.clearTimeout",
+  "globalThis.crypto.getRandomValues",
   "globalThis.fetch",
+  "globalThis.setTimeout",
   "Object.create",
   "Object.freeze",
   "Object.getOwnPropertyDescriptors",
@@ -113,7 +124,11 @@ const callableGlobalMembers = new Set([
   "document.getElementById",
   "document.querySelector",
   "globalThis.atob",
+  "globalThis.btoa",
+  "globalThis.clearTimeout",
+  "globalThis.crypto.getRandomValues",
   "globalThis.fetch",
+  "globalThis.setTimeout",
   "Object.create",
   "Object.freeze",
   "Object.getOwnPropertyDescriptors",
@@ -132,6 +147,7 @@ const callableGlobalMembers = new Set([
   "window.setTimeout",
 ]);
 const sensitiveGlobalMemberSources = new Map([
+  ["globalThis.crypto.getRandomValues", new Set([browserOperationIdSource])],
   ["Object.getOwnPropertyDescriptors", new Set([
     canonicalJsonValueSource,
     jsonObjectSource,
@@ -277,6 +293,7 @@ const isMemberPrefix = (node: ts.Node): boolean =>
 const isPropertyName = (node: ts.Identifier): boolean =>
   (ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) ||
   (ts.isPropertyAssignment(node.parent) && node.parent.name === node) ||
+  (ts.isPropertySignature(node.parent) && node.parent.name === node) ||
   (ts.isMethodDeclaration(node.parent) && node.parent.name === node);
 
 const isBindingIdentifier = (node: ts.Identifier): boolean => {
@@ -368,6 +385,12 @@ const approvedConstructorBinding = (
     allowedWebConstructorsBySource.get(resolve(sourceFile.fileName))?.has(expression.text) !== true) return false;
   if (expression.text === "Error" || expression.text === "TypeError") {
     return symbolIsDeclaredIn(checker, expression, "lib.es5.d.ts");
+  }
+  if (expression.text === "Uint8Array") {
+    return symbolIsDeclaredIn(checker, expression, "lib.es5.d.ts");
+  }
+  if (expression.text === "Promise") {
+    return symbolIsDeclaredIn(checker, expression, "lib.es2015.promise.d.ts");
   }
   if (expression.text === "AbortController") return symbolIsDeclaredIn(checker, expression, "lib.dom.d.ts");
   if (expression.text !== "BrowserResponseError") return false;
@@ -572,7 +595,8 @@ export const auditBrowserSourceModule = (source: string, pathInput: string): rea
       if ((key === "document.getElementById" || key === "document.querySelector") &&
         !approvedSelectorCall(node, sourceFile)) reject(node, "unapproved DOM selection");
       if (key === "globalThis.fetch" && !fetchApproved) reject(node, "unapproved fetch");
-      if (key === "window.setTimeout" && !approvedTimerCallback(node)) {
+      if ((key === "window.setTimeout" || key === "globalThis.setTimeout") &&
+        !approvedTimerCallback(node)) {
         reject(node, "non-function timer callback");
       }
       if (key === "window.location.reload" && node.arguments.length !== 0) {
@@ -584,7 +608,8 @@ export const auditBrowserSourceModule = (source: string, pathInput: string): rea
       }
       if (member !== undefined && restrictedAuthorityCallMembers.has(member) &&
         !fetchApproved &&
-        !(key === "window.setTimeout" && approvedTimerCallback(node))) {
+        !((key === "window.setTimeout" || key === "globalThis.setTimeout") &&
+          approvedTimerCallback(node))) {
         reject(node, "unapproved browser authority call");
       }
       if (member === "setAttribute") {

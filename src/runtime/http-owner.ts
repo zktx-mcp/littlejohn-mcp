@@ -76,6 +76,11 @@ import {
   runtimeProtocolVersion,
   type RuntimeConfigurationMac,
 } from "./runtime-identity.js";
+import type {
+  RuntimeOwnerSession,
+  RuntimeOwnerSessionIdentity,
+  RuntimeOwnerSessionRequest,
+} from "./owner-session.js";
 
 const headerValues = (request: IncomingMessage, name: string): string[] => {
   const distinct = request.headersDistinct[name];
@@ -203,8 +208,16 @@ const parseHttpJson = (bytes: Uint8Array): CanonicalJson =>
 
 class PeerUnavailableError extends Error {}
 class PeerIncompatibleError extends Error {}
+class OwnerRequestInterruptedError extends Error {
+  constructor(
+    readonly sendBegan: boolean,
+    readonly reason: "request_aborted" | "owner_unavailable",
+  ) {
+    super(reason);
+  }
+}
 const ownerTransportDeadlineMilliseconds = 2_000;
-type RequestDeadlineBoundary = "response" | "dispatch";
+type RequestDeadlineBoundary = "response" | "dispatch" | "delivery";
 
 interface ResponsePacket {
   readonly status: number;
@@ -217,6 +230,11 @@ interface AuthenticatedOwnerChannel {
   readonly agent: Agent;
   readonly socket: Socket;
   close(): void;
+}
+
+interface AuthenticatedOwnerConnection {
+  readonly channel: AuthenticatedOwnerChannel;
+  readonly identity: RuntimeOwnerSessionIdentity;
 }
 
 const connectPinnedAgent = async (signal?: AbortSignal): Promise<AuthenticatedOwnerChannel> => {
@@ -278,6 +296,7 @@ const requestPacket = (
   maximumBytes: number,
   deadlineBoundary: RequestDeadlineBoundary,
   signal?: AbortSignal,
+  responseDeadlineMilliseconds?: number,
 ): Promise<ResponsePacket> => new Promise((resolve, reject) => {
   if (signal?.aborted === true) {
     reject(new RuntimeOperationError("request_aborted"));
@@ -288,10 +307,17 @@ const requestPacket = (
   let deadline: NodeJS.Timeout | undefined;
   let pinnedSocketAssigned = false;
   let requestFinished = false;
-  const clearDispatchedDeadline = (): void => {
-    if (deadlineBoundary !== "dispatch" || !pinnedSocketAssigned || !requestFinished || deadline === undefined) return;
-    clearTimeout(deadline);
-    deadline = undefined;
+  const advanceDeadlineAfterWrite = (): void => {
+    if (!pinnedSocketAssigned || !requestFinished || deadline === undefined) return;
+    if (deadlineBoundary === "dispatch") {
+      clearTimeout(deadline);
+      deadline = undefined;
+      return;
+    }
+    if (deadlineBoundary === "delivery") {
+      clearTimeout(deadline);
+      deadline = setTimeout(onDeadline, responseDeadlineMilliseconds);
+    }
   };
   const cleanup = (): void => {
     if (deadline !== undefined) clearTimeout(deadline);
@@ -312,12 +338,16 @@ const requestPacket = (
     reject(error);
   };
   const onAbort = (): void => {
-    rejectOnce(new RuntimeOperationError("request_aborted"));
+    rejectOnce(deadlineBoundary === "delivery"
+      ? new OwnerRequestInterruptedError(pinnedSocketAssigned, "request_aborted")
+      : new RuntimeOperationError("request_aborted"));
     request.destroy();
     channel.socket.destroy();
   };
   const onDeadline = (): void => {
-    rejectOnce(new PeerUnavailableError("Owner request timed out."));
+    rejectOnce(deadlineBoundary === "delivery"
+      ? new OwnerRequestInterruptedError(pinnedSocketAssigned, "owner_unavailable")
+      : new PeerUnavailableError("Owner request timed out."));
     request.destroy();
     channel.socket.destroy();
   };
@@ -329,11 +359,11 @@ const requestPacket = (
       return;
     }
     pinnedSocketAssigned = true;
-    clearDispatchedDeadline();
+    advanceDeadlineAfterWrite();
   };
   const onFinish = (): void => {
     requestFinished = true;
-    clearDispatchedDeadline();
+    advanceDeadlineAfterWrite();
   };
   request = httpRequest({
     host: fixedHost,
@@ -349,12 +379,18 @@ const requestPacket = (
         if (responseSocket !== channel.socket) throw new PeerIncompatibleError("Owner socket changed.");
         const bytes = await readIncomingBytes(response, maximumBytes, signal);
         resolveOnce({ status: response.statusCode ?? 0, headers: response.headers, bytes, socket: channel.socket });
-      } catch (error) { rejectOnce(error); }
+      } catch (error) {
+        rejectOnce(deadlineBoundary === "delivery"
+          ? new OwnerRequestInterruptedError(true, "owner_unavailable")
+          : error);
+      }
     })();
   });
-  request.once("error", (error) => rejectOnce(
-    error instanceof RuntimeOperationError ? error : new PeerUnavailableError(error.message),
-  ));
+  request.once("error", (error) => rejectOnce(deadlineBoundary === "delivery"
+    ? new OwnerRequestInterruptedError(pinnedSocketAssigned, error.name === "AbortError"
+      ? "request_aborted"
+      : "owner_unavailable")
+    : error instanceof RuntimeOperationError ? error : new PeerUnavailableError(error.message)));
   request.once("socket", onSocket);
   request.once("finish", onFinish);
   deadline = setTimeout(onDeadline, ownerTransportDeadlineMilliseconds);
@@ -366,7 +402,7 @@ const openAuthenticatedOwnerChannel = async (input: {
   readonly ownerStore: RuntimeOwnerStore;
   readonly credential: LocalControlCredentialAuthority;
   readonly configurationMac: RuntimeConfigurationMac;
-}, signal?: AbortSignal): Promise<AuthenticatedOwnerChannel> => {
+}, signal?: AbortSignal): Promise<AuthenticatedOwnerConnection> => {
   const channel = await connectPinnedAgent(signal);
   const challenge = createRuntimeIdentityChallenge();
   try {
@@ -401,7 +437,16 @@ const openAuthenticatedOwnerChannel = async (input: {
     if (!verifyControlPayload(input.credential, encodeOwnerProofPayload(identityWithoutProof), proof)) {
       throw new PeerIncompatibleError("Owner identity proof is invalid.");
     }
-    return channel;
+    return Object.freeze({
+      channel,
+      identity: Object.freeze({
+        profileId: identity.profileId,
+        ownerInstanceId: identity.ownerInstanceId,
+        runtimeProtocolVersion: identity.runtimeProtocolVersion,
+        configurationMac: identity.configurationMac,
+        ownerRevision: identity.ownerRevision,
+      }),
+    });
   } catch (error) {
     channel.close();
     if (error instanceof PeerUnavailableError || error instanceof PeerIncompatibleError || error instanceof RuntimeOperationError) {
@@ -585,12 +630,12 @@ export class FixedHttpOwner {
         this.#lifecycleController = lifecycle;
         this.#phase = "starting";
         try {
-          const channel = await openAuthenticatedOwnerChannel({
+          const connection = await openAuthenticatedOwnerChannel({
             ownerStore: this.#ownerStore,
             credential: this.#credential,
             configurationMac: this.#configurationMac,
           }, lifecycle.signal);
-          channel.close();
+          connection.channel.close();
           this.#lifecycleController = lifecycle;
           this.#phase = "deferred";
           return "deferred";
@@ -697,30 +742,20 @@ export class FixedHttpOwner {
     else request.signal?.addEventListener("abort", abort, { once: true });
     let registered = false;
     try {
-      await this.#serialize(async () => {
-        if (this.#stopRequested || active.controller.signal.aborted) {
-          throw new RuntimeOperationError("request_aborted");
-        }
-        if (this.#phase === "stopped") await this.#startLocked();
-        if (this.#phase !== "owner" && this.#phase !== "deferred") {
-          throw new RuntimeOperationError("runtime_busy");
-        }
-        active.generation = this.#generation;
-        this.#lifecycleWork.add(active);
-        registered = true;
-      });
+      await this.#admitRuntimeClient(active);
+      registered = true;
       for (let attempt = 0; attempt < 2; attempt += 1) {
         this.#assertActiveRuntimeDispatch(active);
-        let channel: AuthenticatedOwnerChannel | undefined;
+        let connection: AuthenticatedOwnerConnection | undefined;
         try {
-          channel = await openAuthenticatedOwnerChannel({
+          connection = await openAuthenticatedOwnerChannel({
             ownerStore: this.#ownerStore,
             credential: this.#credential,
             configurationMac: this.#configurationMac,
           }, active.controller.signal);
           this.#assertActiveRuntimeDispatch(active);
           const body = request.body === undefined ? undefined : `${canonicalJsonStringify(request.body)}\n`;
-          const packet = await requestPacket(channel, {
+          const packet = await requestPacket(connection.channel, {
             method: request.method,
             path: request.path,
             headers: {
@@ -745,7 +780,7 @@ export class FixedHttpOwner {
             throw new RuntimeOperationError("request_aborted");
           }
           if (error instanceof PeerIncompatibleError) throw new RuntimeOperationError("port_conflict");
-          if (!(error instanceof PeerUnavailableError) || channel !== undefined || attempt !== 0) {
+          if (!(error instanceof PeerUnavailableError) || connection !== undefined || attempt !== 0) {
             throw new RuntimeOperationError("runtime_state_unavailable");
           }
           await this.#serialize(async () => {
@@ -757,7 +792,7 @@ export class FixedHttpOwner {
               active.generation = this.#generation;
             }
           });
-        } finally { channel?.close(); }
+        } finally { connection?.channel.close(); }
       }
       throw new RuntimeOperationError("runtime_state_unavailable");
     } finally {
@@ -766,6 +801,137 @@ export class FixedHttpOwner {
         this.#finishLifecycleWork(active);
       }
     }
+  }
+
+  async openOwnerSession(signal?: AbortSignal): Promise<RuntimeOwnerSession> {
+    const active = createLifecycleWork();
+    const abort = (): void => active.controller.abort();
+    if (signal?.aborted === true) abort();
+    else signal?.addEventListener("abort", abort, { once: true });
+    let connection: AuthenticatedOwnerConnection | undefined;
+    let admitted = false;
+    try {
+      await this.#admitRuntimeClient(active);
+      admitted = true;
+      connection = await openAuthenticatedOwnerChannel({
+        ownerStore: this.#ownerStore,
+        credential: this.#credential,
+        configurationMac: this.#configurationMac,
+      }, active.controller.signal);
+      this.#assertActiveRuntimeDispatch(active);
+      const captured = connection;
+      const credential = this.#credential;
+      let closed = false;
+      let sending = false;
+      const close = (): void => {
+        if (closed) return;
+        closed = true;
+        active.controller.abort();
+        captured.channel.close();
+        signal?.removeEventListener("abort", abort);
+        this.#finishLifecycleWork(active);
+      };
+      const session: RuntimeOwnerSession = {
+        identity: captured.identity,
+        get usable(): boolean {
+          return !closed && !captured.channel.socket.destroyed;
+        },
+        async send(requestInput: RuntimeOwnerSessionRequest, callerSignal?: AbortSignal) {
+          if (closed || sending) return Object.freeze({
+            status: "request_not_sent" as const,
+            reason: "owner_unavailable" as const,
+          });
+          if (
+            !Number.isSafeInteger(requestInput.maximumResponseBytes) ||
+            requestInput.maximumResponseBytes < 1 ||
+            !Number.isSafeInteger(requestInput.responseDeadlineMilliseconds) ||
+            requestInput.responseDeadlineMilliseconds < 1
+          ) throw new TypeError("Owner session request limits are invalid.");
+          const request = validateRuntimeDispatchRequest({
+            requestClass: "local_control",
+            method: requestInput.method,
+            path: requestInput.path,
+            ...(requestInput.body === undefined ? {} : { body: requestInput.body }),
+          });
+          if (callerSignal?.aborted === true) return Object.freeze({
+            status: "request_not_sent" as const,
+            reason: "request_aborted" as const,
+          });
+          sending = true;
+          const combinedSignal = callerSignal === undefined
+            ? active.controller.signal
+            : AbortSignal.any([active.controller.signal, callerSignal]);
+          try {
+            const body = request.body === undefined ? undefined : `${canonicalJsonStringify(request.body)}\n`;
+            const packet = await requestPacket(captured.channel, {
+              method: request.method,
+              path: request.path,
+              headers: {
+                Host: fixedHostHeader,
+                Authorization: createControlAuthorizationHeader(credential),
+                ...(body === undefined ? {} : {
+                  "Content-Type": jsonContentType,
+                  "Content-Length": Buffer.byteLength(body),
+                }),
+              },
+              ...(body === undefined ? {} : { body }),
+            }, requestInput.maximumResponseBytes, "delivery", combinedSignal,
+            requestInput.responseDeadlineMilliseconds);
+            return Object.freeze({
+              status: "response_received" as const,
+              response: Object.freeze({
+                statusCode: packet.status,
+                contentType: packet.headers["content-type"],
+                cacheControl: packet.headers["cache-control"],
+                bytes: Uint8Array.from(packet.bytes),
+              }),
+            });
+          } catch (error) {
+            if (error instanceof OwnerRequestInterruptedError) {
+              return error.sendBegan
+                ? Object.freeze({ status: "response_unavailable_after_send_began" as const })
+                : Object.freeze({ status: "request_not_sent" as const, reason: error.reason });
+            }
+            return Object.freeze({
+              status: "request_not_sent" as const,
+              reason: combinedSignal.aborted
+                ? "request_aborted" as const
+                : "owner_unavailable" as const,
+            });
+          } finally {
+            sending = false;
+          }
+        },
+        close,
+      };
+      connection = undefined;
+      admitted = false;
+      return Object.freeze(session);
+    } catch (error) {
+      connection?.channel.close();
+      if (error instanceof PeerIncompatibleError) throw new RuntimeOperationError("port_conflict");
+      if (error instanceof RuntimeOperationError) throw error;
+      throw new RuntimeOperationError(active.controller.signal.aborted
+        ? "request_aborted"
+        : "runtime_state_unavailable");
+    } finally {
+      signal?.removeEventListener("abort", abort);
+      if (admitted) this.#finishLifecycleWork(active);
+    }
+  }
+
+  async #admitRuntimeClient(active: LifecycleWork): Promise<void> {
+    await this.#serialize(async () => {
+      if (this.#stopRequested || active.controller.signal.aborted) {
+        throw new RuntimeOperationError("request_aborted");
+      }
+      if (this.#phase === "stopped") await this.#startLocked();
+      if (this.#phase !== "owner" && this.#phase !== "deferred") {
+        throw new RuntimeOperationError("runtime_busy");
+      }
+      active.generation = this.#generation;
+      this.#lifecycleWork.add(active);
+    });
   }
 
   #assertActiveRuntimeDispatch(active: LifecycleWork): void {

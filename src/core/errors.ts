@@ -61,7 +61,7 @@ type ApplicationErrorDefinitionInput = z.input<typeof applicationErrorDefinition
 
 interface ApplicationErrorRegistryState {
   readonly definitions: ReadonlyMap<string, ApplicationErrorDefinition>;
-  readonly parent?: ApplicationErrorRegistry;
+  readonly parentRegistry?: ApplicationErrorRegistry;
 }
 
 const registryStates = new WeakMap<object, ApplicationErrorRegistryState>();
@@ -74,7 +74,7 @@ const registryState = (registry: ApplicationErrorRegistry): ApplicationErrorRegi
 
 const createRegistry = (
   definitions: readonly ApplicationErrorDefinitionInput[],
-  parent?: ApplicationErrorRegistry,
+  parentRegistry?: ApplicationErrorRegistry,
 ): ApplicationErrorRegistry => {
   const parsed = definitions
     .map((definition) => deepFreezeValue(authorityApplicationErrorDefinitionSchema.parse(definition)))
@@ -85,7 +85,10 @@ const createRegistry = (
     map.set(definition.code, definition);
   }
   const registry = Object.create(ApplicationErrorRegistry.prototype) as ApplicationErrorRegistry;
-  registryStates.set(registry, Object.freeze({ definitions: map, ...(parent === undefined ? {} : { parent }) }));
+  registryStates.set(registry, Object.freeze({
+    definitions: map,
+    ...(parentRegistry === undefined ? {} : { parentRegistry }),
+  }));
   return Object.freeze(registry);
 };
 
@@ -143,11 +146,11 @@ export const applicationFailureSchemaFor = (
 };
 
 export const assertDirectApplicationErrorRegistryExtension = (
-  parent: ApplicationErrorRegistry,
+  parentRegistry: ApplicationErrorRegistry,
   extension: ApplicationErrorRegistry,
 ): void => {
-  registryState(parent);
-  if (registryState(extension).parent !== parent) {
+  registryState(parentRegistry);
+  if (registryState(extension).parentRegistry !== parentRegistry) {
     throw new TypeError("Application error registry extension ancestry is invalid.");
   }
 };

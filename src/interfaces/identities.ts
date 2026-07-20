@@ -1,27 +1,95 @@
 import {
   accountBalanceCapability,
   CapabilityRegistry,
+  captureCanonicalJson,
   chainStatusCapability,
   compareCodePointSequences,
   contractInspectCapability,
   getCapabilityDefinitionSnapshot,
+  operationIdSchema,
   readCapabilityCommonFailureCodes,
   transactionInspectCapability,
   walletConnectionCapability,
+  type ApplicationErrorRegistry,
+  type ApplicationFailure,
+  type ApplicationContractPublicInput,
+  type CanonicalJson,
+  type OperationId,
   type AnyReadCapabilityDefinition,
 } from "../core/index.js";
+import { chainErrorRegistry, chainInterfaceErrorMappings } from "../chain/errors.js";
 import {
   tokenCatalogApplicationContracts,
+  tokenCatalogErrorRegistry,
+  tokenCatalogInterfaceErrorMappings,
+  tokenCatalogOperationConfirmationContract,
+  tokenCatalogOperationIdSchema,
+  tokenCatalogControlRoutes,
+  tokenRegistrationListRequestBody,
   tokenInspectCapability,
+  type TokenCatalogOperation,
+  type TokenCatalogCancellationResult,
+  type TokenCatalogConfirmedOperation,
+  type TokenCatalogOperationConfirmationInput,
+  type TokenCatalogOperationResult,
+  type TokenCatalogOperationStartResult,
+  type TokenRegistrationInput,
+  type TokenRegistrationListResult,
+  type TokenRegistrationStartRequest,
+  type TokenRegistrationUpdateStartInput,
+  type TokenRegistrationWithInspection,
+  type TokenUnregistrationStartInput,
   type TokenCatalogOperationKind,
   type AnyTokenCatalogApplicationContract,
 } from "../token-catalog/index.js";
 import {
   walletManagementContracts,
+  walletOperationConfirmationContract,
   type AnyWalletManagementContract,
 } from "../wallet/management-contracts.js";
+import {
+  parseWalletOperationResponse,
+  parseWalletOperationStartResponse,
+  type WalletManagementOperation,
+  type WalletOperationResponse,
+  type WalletOperationStartResponse,
+} from "../wallet/contracts.js";
+import { walletErrorRegistry, walletInterfaceErrorMappings } from "../wallet/errors.js";
 import type { WalletOperationKind } from "../wallet/operation-state.js";
 import { walletControlRoutes } from "../wallet/routes.js";
+import type { CanonicalDispatchAuthority } from "./http-client.js";
+import type { OperationDeliveryAction } from "./operation-delivery.js";
+import type { InterfaceErrorMappingRegistry } from "../runtime/errors.js";
+import type { RouteMethod } from "../runtime/http-routing.js";
+
+declare const localOperationIdentityType: unique symbol;
+
+export interface LocalOperationIdentity<Input = unknown, Success = unknown> {
+  readonly [localOperationIdentityType]: readonly [Input, Success];
+}
+
+interface LocalOperationHttpRequest {
+  readonly method: RouteMethod;
+  readonly path: string;
+  readonly body?: CanonicalJson;
+}
+
+interface LocalOperationContract<Input> {
+  readonly errorRegistry: ApplicationErrorRegistry;
+  parseInput(value: unknown): Input;
+  normalizeFailure(value: unknown): ApplicationFailure;
+}
+
+export interface LocalOperationBinding<Input = unknown, Success = unknown> {
+  readonly action: "read" | OperationDeliveryAction;
+  readonly contract: LocalOperationContract<Input>;
+  readonly errorMappings: InterfaceErrorMappingRegistry;
+  operationId(input: Input, allocated: OperationId | undefined): OperationId | undefined;
+  actionRequest(input: Input, operationId: OperationId | undefined): LocalOperationHttpRequest;
+  parseActionResponse(input: Input, operationId: OperationId | undefined, value: unknown): Success;
+  readonly recoveryRequest?: (operationId: OperationId) => LocalOperationHttpRequest;
+  readonly parseRecoveryResponse?: (input: Input, operationId: OperationId, value: unknown) => Success;
+}
 
 export interface InterfaceToolAnnotations {
   readonly readOnlyHint: boolean;
@@ -46,8 +114,22 @@ export interface ReadInterfaceIdentity {
     annotations: InterfaceToolAnnotations;
   }>;
   readonly cli: Readonly<CliInterfaceIdentity>;
+  readonly responseAuthority: CanonicalDispatchAuthority;
   readonly web?: true;
 }
+
+const chainResponseAuthority = Object.freeze({
+  applicationErrors: chainErrorRegistry,
+  interfaceMappings: chainInterfaceErrorMappings,
+});
+const walletResponseAuthority = Object.freeze({
+  applicationErrors: walletErrorRegistry,
+  interfaceMappings: walletInterfaceErrorMappings,
+});
+const tokenResponseAuthority = Object.freeze({
+  applicationErrors: tokenCatalogErrorRegistry,
+  interfaceMappings: tokenCatalogInterfaceErrorMappings,
+});
 
 const readAnnotations = (openWorldHint: boolean): InterfaceToolAnnotations => Object.freeze({
   readOnlyHint: true,
@@ -63,6 +145,7 @@ const identity = <Definition extends AnyReadCapabilityDefinition>(input: {
     readonly openWorldHint: boolean;
   };
   readonly cli: ReadInterfaceIdentity["cli"];
+  readonly responseAuthority: CanonicalDispatchAuthority;
   readonly web?: true;
 }): ReadInterfaceIdentity & { readonly definition: Definition } => Object.freeze({
   definition: input.definition,
@@ -74,6 +157,7 @@ const identity = <Definition extends AnyReadCapabilityDefinition>(input: {
     annotations: readAnnotations(input.mcp.openWorldHint),
   }),
   cli: Object.freeze(input.cli),
+  responseAuthority: input.responseAuthority,
   ...(input.web === undefined ? {} : { web: true as const }),
 });
 
@@ -86,6 +170,7 @@ export const chainStatusInterface = identity({
     openWorldHint: true,
   },
   cli: { domain: "read", command: "chain-status", argumentSyntax: "[--json]" },
+  responseAuthority: chainResponseAuthority,
 });
 
 export const contractInspectInterface = identity({
@@ -101,6 +186,7 @@ export const contractInspectInterface = identity({
     command: "contract",
     argumentSyntax: "<address> --block <latest|block-number> [--json]",
   },
+  responseAuthority: chainResponseAuthority,
 });
 
 export const transactionInspectInterface = identity({
@@ -112,6 +198,7 @@ export const transactionInspectInterface = identity({
     openWorldHint: true,
   },
   cli: { domain: "read", command: "transaction", argumentSyntax: "<transaction-hash> [--json]" },
+  responseAuthority: chainResponseAuthority,
 });
 
 export const accountBalanceInterface = identity({
@@ -127,6 +214,7 @@ export const accountBalanceInterface = identity({
     command: "balance",
     argumentSyntax: "(--address <address> | --active) --native <true|false> [--token <address>]... --block <latest|block-number> [--json]",
   },
+  responseAuthority: chainResponseAuthority,
 });
 
 export const walletConnectionInterface = identity({
@@ -138,6 +226,7 @@ export const walletConnectionInterface = identity({
     openWorldHint: false,
   },
   cli: { domain: "wallet", command: "status", argumentSyntax: "[--json]" },
+  responseAuthority: walletResponseAuthority,
 });
 
 export const tokenInspectInterface = identity({
@@ -153,6 +242,7 @@ export const tokenInspectInterface = identity({
     command: "inspect",
     argumentSyntax: "<token-address> --block <latest|block-number> [--json]",
   },
+  responseAuthority: tokenResponseAuthority,
   web: true,
 });
 
@@ -177,6 +267,7 @@ export const capabilityCatalogInterface = Object.freeze({
     description: "List the canonical read capability catalog.",
     annotations: readAnnotations(false),
   }),
+  responseAuthority: chainResponseAuthority,
 });
 
 export interface WalletInterfaceBinding {
@@ -410,6 +501,422 @@ export const walletInterfaceBindings = Object.freeze({
 export const walletInterfaceBindingList: readonly WalletInterfaceBinding[] = Object.freeze(
   Object.values(walletInterfaceBindings),
 );
+
+const localOperationBindings = new WeakMap<object, object>();
+
+const localOperationIdentity = <Input, Success>(
+  binding: LocalOperationBinding<Input, Success>,
+): LocalOperationIdentity<Input, Success> => {
+  const identity = Object.freeze({}) as LocalOperationIdentity<Input, Success>;
+  localOperationBindings.set(identity, Object.freeze(binding));
+  return identity;
+};
+
+export const resolveLocalOperationIdentity = <Input, Success>(
+  identity: LocalOperationIdentity<Input, Success>,
+): LocalOperationBinding<Input, Success> => {
+  const binding = localOperationBindings.get(identity as object);
+  if (binding === undefined) throw new TypeError("Local operation identity is invalid.");
+  return binding as LocalOperationBinding<Input, Success>;
+};
+
+const requiredOperationId = (operationId: OperationId | undefined): OperationId => {
+  if (operationId === undefined) throw new TypeError("Operation ID is required.");
+  return operationId;
+};
+
+const operationInputId = (input: Readonly<{ operationId: OperationId }>): OperationId =>
+  operationIdSchema.parse(input.operationId);
+
+const walletStartLocalIdentity = (
+  kind: WalletOperationKind,
+  interactionInterface: "cli" | "web",
+): LocalOperationIdentity<
+  ReturnType<typeof walletManagementContracts.connect.parseInput>,
+  WalletOperationStartResponse
+> => {
+  const contract = walletManagementContracts[kind];
+  const parseResponse = (
+    publicInput: ReturnType<typeof contract.parseInput>,
+    operationId: OperationId | undefined,
+    value: unknown,
+  ): WalletOperationStartResponse => {
+    const id = requiredOperationId(operationId);
+    const response = parseWalletOperationStartResponse(value);
+    if (interactionInterface !== "cli" && response.qr !== undefined) {
+      throw new TypeError("QR material is not available to this interaction interface.");
+    }
+    return Object.freeze({
+      ...response,
+      result: contract.parseBoundSuccess(
+        publicInput,
+        { operationId: id, interactionInterface },
+        response.result,
+      ),
+    });
+  };
+  return localOperationIdentity({
+    action: "start",
+    contract: contract.applicationContract,
+    errorMappings: walletInterfaceErrorMappings,
+    operationId: (_input, allocated) => requiredOperationId(allocated),
+    actionRequest: (_input, operationId) => ({
+      method: "POST",
+      path: walletControlRoutes.operations,
+      body: captureCanonicalJson({
+        control: {
+          operationId: requiredOperationId(operationId),
+          interactionInterface,
+        },
+        request: { kind, connectionRevision: null },
+      }),
+    }),
+    parseActionResponse: parseResponse,
+    recoveryRequest: (operationId) => ({
+      method: "GET",
+      path: walletControlRoutes.operation(operationId),
+    }),
+    parseRecoveryResponse: (publicInput, operationId, value) => {
+      const response = parseWalletOperationResponse(value);
+      return parseResponse(publicInput, operationId, {
+        result: { status: "operation_started", operation: response.operation },
+        ...(response.qr === undefined ? {} : { qr: response.qr }),
+      });
+    },
+  });
+};
+
+type WalletOperationInput = ReturnType<typeof walletManagementContracts.operation.parseInput>;
+
+const walletOperationReadIdentity = (
+  allowQr: boolean,
+): LocalOperationIdentity<WalletOperationInput, WalletOperationResponse> => {
+  const contract = walletManagementContracts.operation;
+  return localOperationIdentity({
+    action: "read",
+    contract: contract.applicationContract,
+    errorMappings: walletInterfaceErrorMappings,
+    operationId: (input) => operationInputId(input),
+    actionRequest: (_input, operationId) => ({
+      method: "GET",
+      path: walletControlRoutes.operation(requiredOperationId(operationId)),
+    }),
+    parseActionResponse: (input, _operationId, value) => {
+      const response = parseWalletOperationResponse(value);
+      if (!allowQr && response.qr !== undefined) {
+        throw new TypeError("QR material is not available to this interaction interface.");
+      }
+      return Object.freeze({
+        ...response,
+        operation: contract.parsePublicSuccess(input, response.operation),
+      });
+    },
+  });
+};
+
+const walletCancelLocalIdentity = localOperationIdentity<
+  ReturnType<typeof walletManagementContracts.cancelOperation.parseInput>,
+  WalletOperationResponse
+>({
+  action: "cancel",
+  contract: walletManagementContracts.cancelOperation.applicationContract,
+  errorMappings: walletInterfaceErrorMappings,
+  operationId: (input) => operationInputId(input),
+  actionRequest: (_input, operationId) => ({
+    method: "DELETE",
+    path: walletControlRoutes.operation(requiredOperationId(operationId)),
+  }),
+  parseActionResponse: (input, _operationId, value) => {
+    const response = parseWalletOperationResponse(value);
+    return Object.freeze({
+      ...response,
+      operation: walletManagementContracts.cancelOperation.parsePublicSuccess(
+        input,
+        response.operation,
+      ),
+    });
+  },
+  recoveryRequest: (operationId) => ({
+    method: "GET",
+    path: walletControlRoutes.operation(operationId),
+  }),
+  parseRecoveryResponse: (input, _operationId, value) => {
+    const response = parseWalletOperationResponse(value);
+    const operation = walletManagementContracts.cancelOperation.parsePublicSuccess(
+      input,
+      response.operation,
+    );
+    if (operation.state !== "cancelled") {
+      throw new TypeError("The exact operation does not prove cancellation.");
+    }
+    return Object.freeze({ ...response, operation });
+  },
+});
+
+type WalletConfirmationInput = ReturnType<typeof walletOperationConfirmationContract.parseInput>;
+
+const walletConfirmationLocalIdentity = localOperationIdentity<
+  WalletConfirmationInput,
+  WalletOperationResponse
+>({
+  action: "confirm",
+  contract: walletOperationConfirmationContract,
+  errorMappings: walletInterfaceErrorMappings,
+  operationId: (input) => operationInputId(input),
+  actionRequest: (input, operationId) => ({
+    method: "POST",
+    path: walletControlRoutes.confirmation(requiredOperationId(operationId)),
+    body: captureCanonicalJson({ connectionRevision: input.connectionRevision }),
+  }),
+  parseActionResponse: (input, operationId, value) => {
+    const id = requiredOperationId(operationId);
+    const response = parseWalletOperationResponse(value);
+    return Object.freeze({
+      ...response,
+      operation: walletOperationConfirmationContract.parseBoundSuccess(
+        input,
+        { operationId: id, interactionInterface: "cli" },
+        response.operation,
+      ),
+    });
+  },
+  recoveryRequest: (operationId) => ({
+    method: "GET",
+    path: walletControlRoutes.operation(operationId),
+  }),
+  parseRecoveryResponse: (input, operationId, value) => {
+    const id = requiredOperationId(operationId);
+    const response = parseWalletOperationResponse(value);
+    return Object.freeze({
+      ...response,
+      operation: walletOperationConfirmationContract.parseBoundSuccess(
+        input,
+        { operationId: id, interactionInterface: "cli" },
+        response.operation,
+      ),
+    });
+  },
+});
+
+const tokenOperationId = (input: Readonly<{ operationId: OperationId }>): OperationId =>
+  tokenCatalogOperationIdSchema.parse(input.operationId);
+
+const tokenStartLocalIdentity = <Input>(input: Readonly<{
+  kind: TokenCatalogOperationKind;
+  interactionInterface: "cli" | "web";
+  contract: Readonly<{
+    applicationContract: LocalOperationContract<Input>;
+    parseBoundSuccess(
+      publicInput: unknown,
+      internalContext: unknown,
+      value: unknown,
+    ): TokenCatalogOperationStartResult;
+  }>;
+}>): LocalOperationIdentity<Input, TokenCatalogOperationStartResult> => localOperationIdentity({
+  action: "start",
+  contract: input.contract.applicationContract,
+  errorMappings: tokenCatalogInterfaceErrorMappings,
+  operationId: (_publicInput, allocated) => requiredOperationId(allocated),
+  actionRequest: (publicInput, operationId) => ({
+    method: "POST",
+    path: tokenCatalogControlRoutes.operations,
+    body: captureCanonicalJson({
+      control: {
+        operationId: requiredOperationId(operationId),
+        interactionInterface: input.interactionInterface,
+      },
+      request: {
+        kind: input.kind,
+        ...(publicInput as Readonly<Record<string, CanonicalJson>>),
+      },
+    }),
+  }),
+  parseActionResponse: (publicInput, operationId, value) => input.contract.parseBoundSuccess(
+    publicInput,
+    {
+      operationId: requiredOperationId(operationId),
+      interactionInterface: input.interactionInterface,
+    },
+    value,
+  ) as TokenCatalogOperationStartResult,
+  recoveryRequest: (operationId) => ({
+    method: "GET",
+    path: tokenCatalogControlRoutes.operation(operationId),
+  }),
+  parseRecoveryResponse: (publicInput, operationId, value) => {
+    const operationResult = tokenCatalogApplicationContracts.operation.parsePublicSuccess(
+      { operationId: requiredOperationId(operationId) },
+      value,
+    );
+    return input.contract.parseBoundSuccess(
+      publicInput,
+      {
+        operationId: requiredOperationId(operationId),
+        interactionInterface: input.interactionInterface,
+      },
+      { operation: operationResult.operation },
+    ) as TokenCatalogOperationStartResult;
+  },
+});
+
+const tokenRegistrationReadIdentity = localOperationIdentity<
+  TokenRegistrationInput,
+  TokenRegistrationWithInspection
+>({
+  action: "read",
+  contract: tokenCatalogApplicationContracts.registration.applicationContract,
+  errorMappings: tokenCatalogInterfaceErrorMappings,
+  operationId: () => undefined,
+  actionRequest: (input) => ({
+    method: "GET",
+    path: tokenCatalogControlRoutes.registration(input.asset.chainId, input.asset.address),
+  }),
+  parseActionResponse: (input, _operationId, value) =>
+    tokenCatalogApplicationContracts.registration.parsePublicSuccess(input, value),
+});
+
+const tokenRegistrationsReadIdentity = localOperationIdentity<
+  ReturnType<typeof tokenCatalogApplicationContracts.registrations.parseInput>,
+  TokenRegistrationListResult
+>({
+  action: "read",
+  contract: tokenCatalogApplicationContracts.registrations.applicationContract,
+  errorMappings: tokenCatalogInterfaceErrorMappings,
+  operationId: () => undefined,
+  actionRequest: (input) => ({
+    method: "POST",
+    path: tokenCatalogControlRoutes.registrationQueries,
+    body: captureCanonicalJson(tokenRegistrationListRequestBody(
+      input as Parameters<typeof tokenRegistrationListRequestBody>[0],
+    )),
+  }),
+  parseActionResponse: (input, _operationId, value) =>
+    tokenCatalogApplicationContracts.registrations.parsePublicSuccess(input, value),
+});
+
+const tokenOperationReadIdentity = localOperationIdentity<
+  ReturnType<typeof tokenCatalogApplicationContracts.operation.parseInput>,
+  TokenCatalogOperationResult
+>({
+  action: "read",
+  contract: tokenCatalogApplicationContracts.operation.applicationContract,
+  errorMappings: tokenCatalogInterfaceErrorMappings,
+  operationId: (input) => tokenOperationId(input),
+  actionRequest: (_input, operationId) => ({
+    method: "GET",
+    path: tokenCatalogControlRoutes.operation(requiredOperationId(operationId)),
+  }),
+  parseActionResponse: (input, _operationId, value) =>
+    tokenCatalogApplicationContracts.operation.parsePublicSuccess(input, value),
+});
+
+const tokenCancelLocalIdentity = localOperationIdentity<
+  ReturnType<typeof tokenCatalogApplicationContracts.cancelOperation.parseInput>,
+  TokenCatalogCancellationResult
+>({
+  action: "cancel",
+  contract: tokenCatalogApplicationContracts.cancelOperation.applicationContract,
+  errorMappings: tokenCatalogInterfaceErrorMappings,
+  operationId: (input) => tokenOperationId(input),
+  actionRequest: (_input, operationId) => ({
+    method: "DELETE",
+    path: tokenCatalogControlRoutes.operation(requiredOperationId(operationId)),
+  }),
+  parseActionResponse: (input, _operationId, value) =>
+    tokenCatalogApplicationContracts.cancelOperation.parsePublicSuccess(input, value),
+  recoveryRequest: (operationId) => ({
+    method: "GET",
+    path: tokenCatalogControlRoutes.operation(operationId),
+  }),
+  parseRecoveryResponse: (input, _operationId, value) => {
+    const result = tokenCatalogApplicationContracts.operation.parsePublicSuccess(input, value);
+    if (result.operation.state !== "cancelled") {
+      throw new TypeError("The exact operation does not prove cancellation.");
+    }
+    return tokenCatalogApplicationContracts.cancelOperation.parsePublicSuccess(input, result);
+  },
+});
+
+const tokenConfirmationLocalIdentity = localOperationIdentity<
+  TokenCatalogOperationConfirmationInput,
+  TokenCatalogConfirmedOperation
+>({
+  action: "confirm",
+  contract: tokenCatalogOperationConfirmationContract.applicationContract,
+  errorMappings: tokenCatalogInterfaceErrorMappings,
+  operationId: (input) => tokenOperationId(input),
+  actionRequest: (input, operationId) => ({
+    method: "POST",
+    path: tokenCatalogControlRoutes.confirmation(requiredOperationId(operationId)),
+    body: captureCanonicalJson({ reviewDigest: input.reviewDigest }),
+  }),
+  parseActionResponse: (input, operationId, value) =>
+    tokenCatalogOperationConfirmationContract.parseBoundSuccess(
+      input,
+      { operationId: requiredOperationId(operationId), interactionInterface: "cli" },
+      value,
+    ),
+  recoveryRequest: (operationId) => ({
+    method: "GET",
+    path: tokenCatalogControlRoutes.operation(operationId),
+  }),
+  parseRecoveryResponse: (input, operationId, value) => {
+    const result = tokenCatalogApplicationContracts.operation.parsePublicSuccess(input, value);
+    return tokenCatalogOperationConfirmationContract.parseBoundSuccess(
+      input,
+      { operationId: requiredOperationId(operationId), interactionInterface: "cli" },
+      result.operation,
+    );
+  },
+});
+
+const tokenStartIdentities = (interactionInterface: "cli" | "web") => Object.freeze({
+  registration: tokenStartLocalIdentity<TokenRegistrationStartRequest>({
+    kind: "register",
+    interactionInterface,
+    contract: tokenCatalogApplicationContracts.startRegistration,
+  }),
+  registrationUpdate: tokenStartLocalIdentity<TokenRegistrationUpdateStartInput>({
+    kind: "update_registration",
+    interactionInterface,
+    contract: tokenCatalogApplicationContracts.startRegistrationUpdate,
+  }),
+  unregistration: tokenStartLocalIdentity<TokenUnregistrationStartInput>({
+    kind: "unregister",
+    interactionInterface,
+    contract: tokenCatalogApplicationContracts.startUnregistration,
+  }),
+});
+
+export const walletLocalOperationIdentities = Object.freeze({
+  cli: Object.freeze({
+    connect: walletStartLocalIdentity("connect", "cli"),
+    disconnect: walletStartLocalIdentity("disconnect", "cli"),
+    operation: walletOperationReadIdentity(true),
+    cancel: walletCancelLocalIdentity,
+    confirm: walletConfirmationLocalIdentity,
+  }),
+  mcp: Object.freeze({
+    connect: walletStartLocalIdentity("connect", "web"),
+    disconnect: walletStartLocalIdentity("disconnect", "web"),
+    operation: walletOperationReadIdentity(false),
+    cancel: walletCancelLocalIdentity,
+  }),
+});
+
+export const tokenLocalOperationIdentities = Object.freeze({
+  shared: Object.freeze({
+    registration: tokenRegistrationReadIdentity,
+    registrations: tokenRegistrationsReadIdentity,
+    operation: tokenOperationReadIdentity,
+    cancel: tokenCancelLocalIdentity,
+  }),
+  cli: Object.freeze({
+    ...tokenStartIdentities("cli"),
+    confirm: tokenConfirmationLocalIdentity,
+  }),
+  mcp: tokenStartIdentities("web"),
+});
 
 export const declaredCliCommandIdentities = Object.freeze([
   ...readInterfaceIdentities.map((identity) => identity.cli),

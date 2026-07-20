@@ -1,6 +1,5 @@
 import {
   bindCapability,
-  deriveEip155Reference,
   type CapabilityBinding,
   type CanonicalAmount,
   type CanonicalJson,
@@ -27,15 +26,10 @@ import {
   type Erc20CallEncoder,
 } from "./evm-standard.js";
 import {
-  blockSelectorToRpcTag,
-  normalizeRpcBlockAnchor,
   normalizeRpcBytes,
   normalizeRpcRuntimeCode,
-  unsignedDecimalToRpcQuantity,
 } from "./normalization.js";
 import {
-  canonicalBlockReference,
-  ChainRpcError,
   getChainRpcErrorCode,
   isRpcExecutionRevertedError,
   type RpcCanonicalBlockReference,
@@ -46,8 +40,13 @@ import {
   getChainOperationFailure,
 } from "./errors.js";
 import { tokenCatalogErrorRegistry } from "../token-catalog/errors.js";
+import { resolveCanonicalBlock } from "./canonical-block.js";
+import { validateConfiguredChain } from "./configured-chain.js";
+import {
+  getChainInvocationStopReason,
+  type ChainInvocationLifecycle,
+} from "./invocation-lifecycle.js";
 
-const tokenInspectionDeadlineMs = 90_000;
 const requiredTotalSupplyRevertedErrors = new WeakSet<object>();
 
 const createRequiredTotalSupplyRevertedError = (): Error => {
@@ -76,18 +75,17 @@ const normalizeSource = <Value>(operation: () => Value): Value => {
 };
 
 const runInspection = async (
+  lifecycle: ChainInvocationLifecycle,
   callerSignal: AbortSignal,
-  applicationSignal: AbortSignal,
   operation: (signal: AbortSignal) => Promise<unknown>,
 ): Promise<unknown> => {
-  const deadline = new AbortController();
-  const timer = setTimeout(() => deadline.abort(), tokenInspectionDeadlineMs);
-  timer.unref();
-  const signal = AbortSignal.any([callerSignal, applicationSignal, deadline.signal]);
   try {
-    if (signal.aborted) throw new ChainRpcError("request_aborted");
-    return await operation(signal);
+    return await lifecycle.run(callerSignal, operation);
   } catch (error) {
+    const stopReason = getChainInvocationStopReason(error);
+    if (stopReason !== undefined) {
+      return asFailure(stopReason === "caller_aborted" ? "request_aborted" : "source_unavailable");
+    }
     if (isRequiredTotalSupplyRevertedError(error)) {
       return asFailure("token_total_supply_reverted");
     }
@@ -99,8 +97,6 @@ const runInspection = async (
       return asFailure(rpcCode);
     }
     throw error;
-  } finally {
-    clearTimeout(timer);
   }
 };
 
@@ -109,17 +105,13 @@ const resolveBlock = async (
   input: TokenInspectionInput,
   signal: AbortSignal,
 ): Promise<Readonly<{ anchor: ChainAnchor; reference: RpcCanonicalBlockReference }>> => {
-  const raw = await dependencies.rpc.request(
-    "eth_getBlockByNumber",
-    [blockSelectorToRpcTag(input.block), false],
+  const block = await resolveCanonicalBlock({
+    rpc: dependencies.rpc,
+    chainId: dependencies.chainId,
+    selector: input.block,
     signal,
-  );
-  if (raw === null) throw new ChainOperationError("source_inconsistent");
-  const anchor = normalizeSource(() => normalizeRpcBlockAnchor(raw, dependencies.chainId));
-  if (input.block.kind === "number" && anchor.blockNumber !== input.block.blockNumber) {
-    throw new ChainOperationError("source_inconsistent");
-  }
-  return Object.freeze({ anchor, reference: canonicalBlockReference(anchor.blockHash) });
+  });
+  return Object.freeze({ anchor: block.anchor, reference: block.stateReference });
 };
 
 const recordChainId = async (
@@ -128,13 +120,13 @@ const recordChainId = async (
   observations: ObservationWriter,
   anchor: ChainAnchor,
 ): Promise<void> => {
-  const raw = await dependencies.rpc.request("eth_chainId", [], signal);
-  if (raw !== unsignedDecimalToRpcQuantity(deriveEip155Reference(dependencies.chainId))) {
-    throw new ChainOperationError("source_inconsistent");
-  }
-  observations.record("rpc_chain_id", {
-    source: dependencies.rpcSource,
-    claims: [{ role: "chain_id", value: dependencies.chainId, chainAnchor: anchor }],
+  await validateConfiguredChain({
+    rpc: dependencies.rpc,
+    chainId: dependencies.chainId,
+    rpcSource: dependencies.rpcSource,
+    signal,
+    observations,
+    chainAnchor: anchor,
   });
 };
 
@@ -338,22 +330,14 @@ const inspectionHandler = async (
 
 export interface TokenInspectionService {
   readonly binding: CapabilityBinding<typeof tokenInspectCapability>;
-  close(): Promise<void>;
 }
 
 export const createTokenInspectionService = (input: {
   readonly context: ChainOwnerApplicationContext<ActiveWalletReadPort>;
   readonly rpc: RpcRequester;
   readonly encoder: Erc20CallEncoder;
+  readonly lifecycle: ChainInvocationLifecycle;
 }): TokenInspectionService => {
-  const applicationAbort = new AbortController();
-  const activeInvocations = new Set<Promise<unknown>>();
-  let closed = false;
-  let closePromise: Promise<void> | undefined;
-  const abortForOwner = (): void => applicationAbort.abort();
-  if (input.context.signal.aborted) applicationAbort.abort();
-  else input.context.signal.addEventListener("abort", abortForOwner, { once: true });
-
   const dependencies: TokenInspectionDependencies = Object.freeze({
     rpc: input.rpc,
     encoder: input.encoder,
@@ -364,16 +348,7 @@ export const createTokenInspectionService = (input: {
   const execute = (
     callerSignal: AbortSignal,
     operation: (signal: AbortSignal) => Promise<unknown>,
-  ): Promise<unknown> => {
-    if (closed || applicationAbort.signal.aborted) return Promise.resolve(asFailure("source_unavailable"));
-    const invocation = runInspection(callerSignal, applicationAbort.signal, operation);
-    activeInvocations.add(invocation);
-    void invocation.then(
-      () => activeInvocations.delete(invocation),
-      () => activeInvocations.delete(invocation),
-    );
-    return invocation;
-  };
+  ): Promise<unknown> => runInspection(input.lifecycle, callerSignal, operation);
   const binding = bindCapability({
     definition: tokenInspectCapability,
     errorRegistry: tokenCatalogErrorRegistry,
@@ -386,17 +361,5 @@ export const createTokenInspectionService = (input: {
         inspectionHandler(dependencies, request, signal, observations)),
   });
 
-  return Object.freeze({
-    binding,
-    async close(): Promise<void> {
-      if (closePromise !== undefined) return closePromise;
-      closed = true;
-      applicationAbort.abort();
-      closePromise = (async () => {
-        await Promise.allSettled([...activeInvocations]);
-        input.context.signal.removeEventListener("abort", abortForOwner);
-      })();
-      return closePromise;
-    },
-  });
+  return Object.freeze({ binding });
 };

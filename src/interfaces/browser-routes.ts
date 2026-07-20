@@ -13,6 +13,7 @@ import type {
 import {
   parseTokenCatalogCancellationBody,
   parseTokenCatalogConfirmationBody,
+  parseTokenCatalogControlOperationCreate,
   parseTokenCatalogOperationCreate,
   parseTokenCatalogOperationPathId,
   parseTokenCatalogRegistrationPathInput,
@@ -37,11 +38,12 @@ import {
   parseWalletCurrentOperationProjection,
   parseWalletManagementOperation,
   parseWalletOperationConfirmation,
+  parseWalletOperationCreate,
   parseWalletOperationId,
   parseWalletOperationPresentation,
   parseWalletOperationStartResult,
-  parseWalletWebOperationCreate,
   walletManagementContracts,
+  walletOperationConfirmationContract,
   type WalletInterfaceOperations,
 } from "../wallet/contracts.js";
 import {
@@ -91,7 +93,7 @@ const presentationForId = (id: string, value: unknown) => {
   const presentation = parseWalletOperationPresentation(value);
   return Object.freeze({
     ...presentation,
-    operation: walletManagementContracts.operation.parseSuccess(
+    operation: walletManagementContracts.operation.parsePublicSuccess(
       { operationId: id },
       presentation.operation,
     ),
@@ -278,13 +280,23 @@ export const extendBrowserInterfaceRoutes = (input: {
       handler: async (context) => {
         let request;
         try {
-          request = parseWalletWebOperationCreate(context.body);
+          request = parseWalletOperationCreate(context.body);
+          if (request.interactionInterface !== "web" || request.connectionRevision === null) {
+            throw new TypeError("Browser operation interface is invalid.");
+          }
         } catch {
           return invalidInput();
         }
         try {
-          const result = parseWalletOperationStartResult(await operations.start(request));
-          return success(walletManagementContracts[request.kind].parseSuccess({}, result));
+          const result = parseWalletOperationStartResult(await operations.start({
+            kind: request.kind,
+            connectionRevision: request.connectionRevision,
+          }, request.operationId));
+          return success(walletManagementContracts[request.kind].parseBoundSuccess(
+            {},
+            { operationId: request.operationId, interactionInterface: "web" },
+            result,
+          ));
         } catch (error) {
           return normalizeFailure(error);
         }
@@ -299,7 +311,7 @@ export const extendBrowserInterfaceRoutes = (input: {
       handler: async () => {
         try {
           const current = parseWalletCurrentOperationProjection(await currentProjection.get());
-          return success(walletManagementContracts.currentOperation.parseSuccess({}, current));
+          return success(walletManagementContracts.currentOperation.parsePublicSuccess({}, current));
         } catch (error) {
           return normalizeFailure(error);
         }
@@ -341,9 +353,10 @@ export const extendBrowserInterfaceRoutes = (input: {
           return invalidInput();
         }
         try {
-          return success(operationForId(
-            id,
-            await confirmation.confirm(id, request),
+          return success(walletOperationConfirmationContract.parseBoundSuccess(
+            { operationId: id, connectionRevision: request.connectionRevision },
+            { operationId: id, interactionInterface: "web" },
+            operationForId(id, await confirmation.confirm(id, request)),
           ));
         } catch (error) {
           return normalizeFailure(error);
@@ -370,7 +383,7 @@ export const extendBrowserInterfaceRoutes = (input: {
             id,
             await operations.cancel(id, request),
           );
-          return success(walletManagementContracts.cancelOperation.parseSuccess(
+          return success(walletManagementContracts.cancelOperation.parsePublicSuccess(
             { operationId: id },
             operation,
           ));
@@ -450,15 +463,21 @@ export const extendBrowserInterfaceRoutes = (input: {
       successStatus: 200,
       handler: async (context) => {
         let create;
-        try { create = parseTokenCatalogOperationCreate(context.body); }
-        catch { return tokenInvalidInput(); }
-        const contract = tokenCatalogStartContract(create.kind);
         try {
-          return tokenCatalogApplicationResult(
-            contract,
-            create.request,
-            await startTokenCatalogOperation(create, input.tokenCatalogWebStart),
-          );
+          create = parseTokenCatalogControlOperationCreate(context.body);
+          if (create.interactionInterface !== "web") throw new TypeError("Browser operation interface is invalid.");
+        }
+        catch { return tokenInvalidInput(); }
+        const contract = tokenCatalogStartContract(create.request.kind);
+        try {
+          return success(contract.parseBoundSuccess(
+            create.request.request,
+            {
+              operationId: create.operationId,
+              interactionInterface: "web",
+            },
+            await startTokenCatalogOperation(create.request, input.tokenCatalogWebStart, create.operationId),
+          ));
         } catch (error) { return normalizeTokenFailure(error); }
       },
     },
@@ -514,8 +533,9 @@ export const extendBrowserInterfaceRoutes = (input: {
           );
         } catch { return tokenInvalidInput(); }
         try {
-          return success(tokenCatalogOperationConfirmationContract.parseSuccess(
+          return success(tokenCatalogOperationConfirmationContract.parseBoundSuccess(
             request,
+            { operationId: request.operationId, interactionInterface: "web" },
             await input.tokenCatalogBrowserOperations.confirm(request),
           ));
         } catch (error) { return normalizeTokenFailure(error); }

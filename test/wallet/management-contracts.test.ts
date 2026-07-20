@@ -74,14 +74,14 @@ describe("wallet management contract authority", () => {
     const connect = walletManagementContracts.connect;
     const disconnect = walletManagementContracts.disconnect;
 
-    expect(connect.parseSuccess({}, {
+    expect(connect.parsePublicSuccess({}, {
       status: "operation_started",
       operation: operation("connect"),
     })).toEqual({
       status: "operation_started",
       operation: operation("connect"),
     });
-    expect(disconnect.parseSuccess({}, {
+    expect(disconnect.parsePublicSuccess({}, {
       status: "operation_started",
       operation: operation("disconnect"),
     })).toEqual({
@@ -89,11 +89,11 @@ describe("wallet management contract authority", () => {
       operation: operation("disconnect"),
     });
 
-    expect(() => connect.parseSuccess({}, {
+    expect(() => connect.parsePublicSuccess({}, {
       status: "operation_started",
       operation: operation("disconnect"),
     })).toThrow();
-    expect(() => disconnect.parseSuccess({}, {
+    expect(() => disconnect.parsePublicSuccess({}, {
       status: "operation_started",
       operation: operation("connect"),
     })).toThrow();
@@ -112,8 +112,8 @@ describe("wallet management contract authority", () => {
       connectionRevision: "7",
       connection: connected,
     };
-    expect(walletManagementContracts.connect.parseSuccess({}, current)).toEqual(current);
-    expect(() => walletManagementContracts.disconnect.parseSuccess({}, current)).toThrow();
+    expect(walletManagementContracts.connect.parsePublicSuccess({}, current)).toEqual(current);
+    expect(() => walletManagementContracts.disconnect.parsePublicSuccess({}, current)).toThrow();
   });
 
   it("binds operation and cancellation results to the requested operation identifier", () => {
@@ -121,11 +121,11 @@ describe("wallet management contract authority", () => {
       walletManagementContracts.operation,
       walletManagementContracts.cancelOperation,
     ]) {
-      expect(contract.parseSuccess(
+      expect(contract.parsePublicSuccess(
         { operationId },
         operation("connect"),
       )).toEqual(operation("connect"));
-      expect(() => contract.parseSuccess(
+      expect(() => contract.parsePublicSuccess(
         { operationId },
         operation("connect", otherOperationId),
       )).toThrow("does not match");

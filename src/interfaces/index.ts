@@ -45,6 +45,8 @@ export type {
 export {
   cliHelpText,
   declaredCliCommandIdentities,
+  tokenLocalOperationIdentities,
+  walletLocalOperationIdentities,
   walletInterfaceBindingList,
   walletInterfaceBindings,
   walletConnectionInterface,
@@ -53,4 +55,23 @@ export type {
   CliInterfaceIdentity,
   WalletInterfaceBinding,
 } from "./identities.js";
+export {
+  LocalOperationClient,
+} from "./operation-client.js";
+export type {
+  LocalOperationIdentity,
+  LocalOperationResult,
+} from "./operation-client.js";
+export {
+  createDeliveryUnknown,
+  deliveryUnknownCliExitCode,
+  deliveryUnknownSchema,
+  isDeliveryUnknown,
+  operationDeliveryActions,
+  parseDeliveryUnknown,
+} from "./operation-delivery.js";
+export type {
+  DeliveryUnknown,
+  OperationDeliveryAction,
+} from "./operation-delivery.js";
 export { normalizeProblemDetailsFailure } from "./http-client.js";

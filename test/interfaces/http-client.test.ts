@@ -27,6 +27,11 @@ const request = Object.freeze({
   path: "/api/v1/capabilities",
 });
 
+const walletAuthority = Object.freeze({
+  applicationErrors: walletErrorRegistry,
+  interfaceMappings: walletInterfaceErrorMappings,
+});
+
 const throwingRuntime = (error: unknown): RuntimeDispatchPort => Object.freeze({
   dispatchRuntimeRequest: async () => { throw error; },
 });
@@ -37,11 +42,12 @@ describe("interface HTTP client error boundary", () => {
       throwingRuntime(new RuntimeOperationError("request_aborted")),
       request,
       200,
+      walletAuthority,
     )).toEqual({ ok: false, failure: createInterfaceFailure("request_aborted") });
 
     const forged = Object.create(RuntimeOperationError.prototype) as Record<string, unknown>;
     forged["failure"] = createInterfaceFailure("request_aborted");
-    expect(await dispatchCanonical(throwingRuntime(forged), request, 200)).toEqual({
+    expect(await dispatchCanonical(throwingRuntime(forged), request, 200, walletAuthority)).toEqual({
       ok: false,
       failure: createInterfaceFailure("internal_error"),
     });
@@ -71,7 +77,7 @@ describe("interface HTTP client error boundary", () => {
     });
 
     for (const error of [getterError, proxyError]) {
-      expect(await dispatchCanonical(throwingRuntime(error), request, 200)).toEqual({
+      expect(await dispatchCanonical(throwingRuntime(error), request, 200, walletAuthority)).toEqual({
         ok: false,
         failure: createInterfaceFailure("internal_error"),
       });

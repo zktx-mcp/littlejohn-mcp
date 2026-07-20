@@ -23,6 +23,15 @@ export {
 export type { CanonicalJson } from "./canonical-json.js";
 export { coreContractVersion } from "./contract.js";
 export {
+  defineApplicationContract,
+} from "./application-contract.js";
+export type {
+  ApplicationContract,
+  ApplicationContractInternalContext,
+  ApplicationContractPublicInput,
+  ApplicationContractSuccess,
+} from "./application-contract.js";
+export {
   assertCapabilitySuccessChainScope,
   createCapabilitySuccessSchema,
 } from "./capability-contract.js";
@@ -185,6 +194,12 @@ export type {
   ObservationClaim,
 } from "./invocation.js";
 export { keccak256FromHex } from "./keccak256.js";
+export {
+  operationIdByteLength,
+  operationIdFromBytes,
+  operationIdSchema,
+} from "./operation-id.js";
+export type { OperationId } from "./operation-id.js";
 export {
   blockSelectorSchema,
   canonicalBase64UrlPattern,

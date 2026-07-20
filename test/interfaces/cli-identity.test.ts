@@ -116,6 +116,7 @@ describe("CLI interface identity", () => {
     const terminal = helpTerminal();
     let runtimeCreations = 0;
     expect(await runCli(["--help"], {
+      createOperationId: () => "A".repeat(43),
       createRuntime: async () => {
         runtimeCreations += 1;
         throw new Error("Help must not create the local runtime.");

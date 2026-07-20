@@ -14,6 +14,9 @@ import {
   parseUtcTimestamp,
   walletConnectionCapability,
   type CanonicalJson,
+  type EvmAccountIdentity,
+  type UnsignedDecimal,
+  type UtcTimestamp,
 } from "../../src/core/index.js";
 import { ProductDatabase } from "../../src/runtime/database.js";
 import { getRuntimeOperationFailure } from "../../src/runtime/errors.js";
@@ -21,9 +24,17 @@ import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.
 import { createOwnerInstanceId } from "../../src/runtime/runtime-identity.js";
 import { getTokenCatalogOperationFailure } from "../../src/token-catalog/operation-error.js";
 import {
+  tokenCatalogOperationIdSchema,
+  tokenCatalogOperationSchema,
+  tokenCatalogReviewDigest,
   tokenInspectionDigest,
   tokenRegistrationRevisionSchema,
+  type TokenInspectionSuccess,
+  type TokenRegistration,
+  type TokenRegistrationSettings,
+  type TokenRegistrationWithInspection,
 } from "../../src/token-catalog/contracts.js";
+import type { TokenCatalogStore } from "../../src/token-catalog/ports.js";
 import { createInspectionSuccess, chainId, tokenAddress, walletAddress } from "./harness.js";
 
 const directories: string[] = [];
@@ -64,6 +75,151 @@ const expectCatalogCode = (operation: () => unknown, code: string): void => {
   expect(getTokenCatalogOperationFailure(failure)?.error.code).toBe(code);
 };
 
+let operationSequence = 0;
+
+const operationIdentity = () => tokenCatalogOperationIdSchema.parse(
+  Buffer.alloc(32, ++operationSequence % 256).toString("base64url"),
+);
+
+const applyingOperation = (input:
+  | Readonly<{
+      kind: "register";
+      account: EvmAccountIdentity;
+      connectionRevision: UnsignedDecimal;
+      inspection: TokenInspectionSuccess;
+      settings: TokenRegistrationSettings;
+    }>
+  | Readonly<{
+      kind: "update_registration";
+      account: EvmAccountIdentity;
+      connectionRevision: UnsignedDecimal;
+      previous: TokenRegistrationWithInspection;
+      settings: TokenRegistrationSettings;
+    }>
+  | Readonly<{
+      kind: "unregister";
+      account: EvmAccountIdentity;
+      connectionRevision: UnsignedDecimal;
+      previous: TokenRegistrationWithInspection;
+    }>
+) => {
+  const operationId = operationIdentity();
+  const inspection = input.kind === "register" ? input.inspection : input.previous.inspection;
+  const asset = inspection.data.asset;
+  const previousRegistration = input.kind === "register" ? null : input.previous.registration;
+  const proposedSettings = input.kind === "unregister" ? null : input.settings;
+  const createdAt = parseUtcTimestamp("2026-07-18T00:00:02.000Z");
+  const expiresAt = parseUtcTimestamp("2026-07-18T00:05:02.000Z");
+  const reviewDigest = tokenCatalogReviewDigest({
+    operationId,
+    kind: input.kind,
+    account: input.account,
+    connectionRevision: input.connectionRevision,
+    asset,
+    previousRegistration,
+    proposedSettings,
+    inspection,
+    interactionInterface: "cli",
+    expiresAt,
+  });
+  return tokenCatalogOperationSchema.parse({
+    operationId,
+    kind: input.kind,
+    state: "applying",
+    interactionInterface: "cli",
+    createdAt,
+    expiresAt,
+    account: input.account,
+    asset,
+    review: { previousRegistration, proposedSettings, inspection, reviewDigest },
+    result: null,
+    failure: null,
+  });
+};
+
+const register = (store: TokenCatalogStore, input: Readonly<{
+  account: EvmAccountIdentity;
+  expectedConnectionRevision: UnsignedDecimal;
+  inspection: TokenInspectionSuccess;
+  settings: TokenRegistrationSettings;
+  revision: TokenRegistration["revision"];
+  now: UtcTimestamp;
+}>): TokenRegistrationWithInspection => {
+  const operation = applyingOperation({
+    kind: "register",
+    account: input.account,
+    connectionRevision: input.expectedConnectionRevision,
+    inspection: input.inspection,
+    settings: input.settings,
+  });
+  if (operation.kind !== "register" || operation.state !== "applying") throw new Error("Invalid fixture.");
+  const completed = store.applyConfirmation({
+    kind: "register",
+    operation,
+    expectedConnectionRevision: input.expectedConnectionRevision,
+    registrationRevision: input.revision,
+    now: input.now,
+  });
+  if (completed.state !== "completed" || !("registration" in completed.result)) {
+    throw new Error("Registration confirmation did not complete.");
+  }
+  return completed.result;
+};
+
+const updateRegistration = (store: TokenCatalogStore, input: Readonly<{
+  account: EvmAccountIdentity;
+  expectedConnectionRevision: UnsignedDecimal;
+  previous: TokenRegistrationWithInspection;
+  settings: TokenRegistrationSettings;
+  revision: TokenRegistration["revision"];
+  now: UtcTimestamp;
+}>): TokenRegistrationWithInspection => {
+  const operation = applyingOperation({
+    kind: "update_registration",
+    account: input.account,
+    connectionRevision: input.expectedConnectionRevision,
+    previous: input.previous,
+    settings: input.settings,
+  });
+  if (operation.kind !== "update_registration" || operation.state !== "applying") {
+    throw new Error("Invalid fixture.");
+  }
+  const completed = store.applyConfirmation({
+    kind: "update_registration",
+    operation,
+    expectedConnectionRevision: input.expectedConnectionRevision,
+    registrationRevision: input.revision,
+    now: input.now,
+  });
+  if (completed.state !== "completed" || !("registration" in completed.result)) {
+    throw new Error("Registration update confirmation did not complete.");
+  }
+  return completed.result;
+};
+
+const unregister = (store: TokenCatalogStore, input: Readonly<{
+  account: EvmAccountIdentity;
+  expectedConnectionRevision: UnsignedDecimal;
+  previous: TokenRegistrationWithInspection;
+}>): Readonly<{ asset: TokenRegistration["asset"]; removedRevision: TokenRegistration["revision"] }> => {
+  const operation = applyingOperation({
+    kind: "unregister",
+    account: input.account,
+    connectionRevision: input.expectedConnectionRevision,
+    previous: input.previous,
+  });
+  if (operation.kind !== "unregister" || operation.state !== "applying") throw new Error("Invalid fixture.");
+  const completed = store.applyConfirmation({
+    kind: "unregister",
+    operation,
+    expectedConnectionRevision: input.expectedConnectionRevision,
+  });
+  if (completed.state !== "completed" || !("removedRevision" in completed.result)) {
+    throw new Error("Unregistration confirmation did not complete.");
+  }
+  return completed.result;
+};
+
 describe("token catalog persistence", () => {
   it("creates, updates, lists, and removes one registration atomically", async () => {
     const { path, database } = await openDatabase();
@@ -74,7 +230,7 @@ describe("token catalog persistence", () => {
     const inspection = await createInspectionSuccess();
     const store = database.tokenCatalogStore();
 
-    const created = store.register({
+    const created = register(store, {
       account,
       expectedConnectionRevision: connection.revision,
       inspection,
@@ -94,7 +250,7 @@ describe("token catalog persistence", () => {
     expect(() => restrictedParents.prepare(`DELETE FROM contract
       WHERE chain_id = ? AND contract_address = ?`).run(chainId, tokenAddress)).toThrow();
     restrictedParents.close();
-    expectCatalogCode(() => store.register({
+    expectCatalogCode(() => register(store, {
       account,
       expectedConnectionRevision: connection.revision,
       inspection,
@@ -103,11 +259,10 @@ describe("token catalog persistence", () => {
       now,
     }), "state_conflict");
 
-    const updated = store.update({
+    const updated = updateRegistration(store, {
       account,
-      asset: inspection.data.asset,
       expectedConnectionRevision: connection.revision,
-      expectedRegistrationRevision: created.registration.revision,
+      previous: created,
       settings: { userLabel: null, visibility: "hidden" },
       revision: revision(2),
       now: later,
@@ -119,34 +274,31 @@ describe("token catalog persistence", () => {
       createdAt: now,
       updatedAt: later,
     });
-    expectCatalogCode(() => store.update({
+    expectCatalogCode(() => updateRegistration(store, {
       account,
-      asset: inspection.data.asset,
       expectedConnectionRevision: connection.revision,
-      expectedRegistrationRevision: created.registration.revision,
+      previous: created,
       settings: { userLabel: "stale", visibility: "visible" },
       revision: revision(3),
       now: later,
     }), "token_registration_revision_changed");
 
-    expect(store.unregister({
+    expect(unregister(store, {
       account,
-      asset: inspection.data.asset,
       expectedConnectionRevision: connection.revision,
-      expectedRegistrationRevision: updated.registration.revision,
+      previous: updated,
     })).toEqual({ asset: inspection.data.asset, removedRevision: revision(2) });
     expect(store.getRegistration(account, inspection.data.asset)).toBeUndefined();
-    expectCatalogCode(() => store.update({
+    expectCatalogCode(() => updateRegistration(store, {
       account,
-      asset: inspection.data.asset,
       expectedConnectionRevision: connection.revision,
-      expectedRegistrationRevision: revision(2),
+      previous: updated,
       settings: { userLabel: "Removed", visibility: "hidden" },
       revision: revision(3),
       now: later,
     }), "token_registration_revision_changed");
 
-    const recreated = store.register({
+    const recreated = register(store, {
       account,
       expectedConnectionRevision: connection.revision,
       inspection,
@@ -155,26 +307,23 @@ describe("token catalog persistence", () => {
       now: later,
     });
     expect(recreated.registration.revision).toBe(revision(3));
-    expectCatalogCode(() => store.update({
+    expectCatalogCode(() => updateRegistration(store, {
       account,
-      asset: inspection.data.asset,
       expectedConnectionRevision: connection.revision,
-      expectedRegistrationRevision: revision(2),
+      previous: updated,
       settings: { userLabel: "Stale lifetime", visibility: "hidden" },
       revision: revision(4),
       now: later,
     }), "token_registration_revision_changed");
-    expect(store.unregister({
+    expect(unregister(store, {
       account,
-      asset: inspection.data.asset,
       expectedConnectionRevision: connection.revision,
-      expectedRegistrationRevision: recreated.registration.revision,
+      previous: recreated,
     })).toEqual({ asset: inspection.data.asset, removedRevision: revision(3) });
-    expectCatalogCode(() => store.unregister({
+    expectCatalogCode(() => unregister(store, {
       account,
-      asset: inspection.data.asset,
       expectedConnectionRevision: connection.revision,
-      expectedRegistrationRevision: revision(3),
+      previous: recreated,
     }), "token_registration_revision_changed");
 
     const raw = new Database(path, { readonly: true });
@@ -196,7 +345,7 @@ describe("token catalog persistence", () => {
       parseEvmAddressInput(`0x${byte.repeat(20)}`));
     const store = database.tokenCatalogStore();
     for (const [index, address] of addresses.entries()) {
-      store.register({
+      register(store, {
         account,
         expectedConnectionRevision: connection.revision,
         inspection: await createInspectionSuccess({
@@ -225,7 +374,7 @@ describe("token catalog persistence", () => {
     const account = accountFor(chainId, walletAddress);
     const inspection = await createInspectionSuccess();
     const store = database.tokenCatalogStore();
-    const created = store.register({
+    const created = register(store, {
       account,
       expectedConnectionRevision: connection.revision,
       inspection,
@@ -260,7 +409,7 @@ describe("token catalog persistence", () => {
     const firstConnection = database.walletStore().replace("0", connected(chainId, walletAddress), now);
     const firstInspection = await createInspectionSuccess();
     const firstAccount = accountFor(chainId, walletAddress);
-    store.register({
+    register(store, {
       account: firstAccount,
       expectedConnectionRevision: firstConnection.revision,
       inspection: firstInspection,
@@ -277,7 +426,7 @@ describe("token catalog persistence", () => {
     expect(store.listRegistrations({
       account: accountFor(chainId, secondWallet), limit: 25, cursor: null,
     }).registrations).toEqual([]);
-    expectCatalogCode(() => store.register({
+    expectCatalogCode(() => register(store, {
       account: firstAccount,
       expectedConnectionRevision: firstConnection.revision,
       inspection: firstInspection,
@@ -295,7 +444,7 @@ describe("token catalog persistence", () => {
       connected(alternateChain, walletAddress),
       later,
     );
-    store.register({
+    register(store, {
       account: accountFor(alternateChain, walletAddress),
       expectedConnectionRevision: alternateConnection.revision,
       inspection: alternateInspection,
@@ -333,7 +482,7 @@ describe("token catalog persistence", () => {
     const store = database.tokenCatalogStore();
 
     const connectedRecord = wallet.replace("0", connected(chainId, walletAddress), now);
-    const created = store.register({
+    const created = register(store, {
       account,
       expectedConnectionRevision: connectedRecord.revision,
       inspection,
@@ -398,7 +547,7 @@ describe("token catalog persistence", () => {
       BEFORE INSERT ON wallet_token_registration
       BEGIN SELECT RAISE(ABORT, 'injected registration failure'); END`);
 
-    expectCatalogCode(() => database.tokenCatalogStore().register({
+    expectCatalogCode(() => register(database.tokenCatalogStore(), {
       account: accountFor(chainId, walletAddress),
       expectedConnectionRevision: connection.revision,
       inspection,
@@ -406,6 +555,29 @@ describe("token catalog persistence", () => {
       revision: revision(1),
       now,
     }), "runtime_state_unavailable");
+    for (const table of ["contract", "token_contract", "token_contract_inspection", "wallet_token_registration"]) {
+      expect(raw.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table).toEqual({ count: 0 });
+    }
+    raw.close();
+    database.close();
+  });
+
+  it("rolls back durable state when the completed registration cannot be validated", async () => {
+    const { path, database } = await openDatabase();
+    database.configuredChainStore().insertConfiguredChainIfAbsent(chainId);
+    const connection = database.walletStore().replace("0", connected(chainId, walletAddress), now);
+    const inspection = await createInspectionSuccess();
+
+    expectCatalogCode(() => register(database.tokenCatalogStore(), {
+      account: accountFor(chainId, walletAddress),
+      expectedConnectionRevision: connection.revision,
+      inspection,
+      settings: { userLabel: null, visibility: "visible" },
+      revision: revision(1),
+      now: parseUtcTimestamp("2026-07-18T00:00:01.000Z"),
+    }), "runtime_state_unavailable");
+
+    const raw = new Database(path, { readonly: true });
     for (const table of ["contract", "token_contract", "token_contract_inspection", "wallet_token_registration"]) {
       expect(raw.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table).toEqual({ count: 0 });
     }
@@ -439,7 +611,7 @@ describe("token catalog persistence", () => {
       registrations: raw.prepare("SELECT COUNT(*) AS count FROM wallet_token_registration").get(),
     };
 
-    expectCatalogCode(() => database.tokenCatalogStore().register({
+    expectCatalogCode(() => register(database.tokenCatalogStore(), {
       account,
       expectedConnectionRevision: connection.revision,
       inspection,
@@ -470,7 +642,7 @@ describe("token catalog persistence", () => {
 
     const firstConnection = database.walletStore().replace("0", connected(chainId, walletAddress), now);
     const firstAccount = accountFor(chainId, walletAddress);
-    store.register({
+    const first = register(store, {
       account: firstAccount,
       expectedConnectionRevision: firstConnection.revision,
       inspection,
@@ -484,7 +656,7 @@ describe("token catalog persistence", () => {
       later,
     );
     const secondAccount = accountFor(chainId, secondWallet);
-    const second = store.register({
+    const second = register(store, {
       account: secondAccount,
       expectedConnectionRevision: secondConnection.revision,
       inspection,
@@ -492,11 +664,10 @@ describe("token catalog persistence", () => {
       revision: revision(2),
       now: later,
     });
-    store.unregister({
+    unregister(store, {
       account: secondAccount,
-      asset: inspection.data.asset,
       expectedConnectionRevision: secondConnection.revision,
-      expectedRegistrationRevision: second.registration.revision,
+      previous: second,
     });
 
     expect(store.getRegistration(firstAccount, inspection.data.asset)?.registration.userLabel).toBe("First");
@@ -516,7 +687,7 @@ describe("token catalog persistence", () => {
     database.configuredChainStore().insertConfiguredChainIfAbsent(chainId);
     const connection = database.walletStore().replace("0", connected(chainId, walletAddress), now);
     const inspection = await createInspectionSuccess();
-    const created = database.tokenCatalogStore().register({
+    const created = register(database.tokenCatalogStore(), {
       account: accountFor(chainId, walletAddress),
       expectedConnectionRevision: connection.revision,
       inspection,
@@ -601,7 +772,7 @@ describe("token catalog persistence", () => {
       const { path, database } = await openDatabase();
       database.configuredChainStore().insertConfiguredChainIfAbsent(chainId);
       const connection = database.walletStore().replace("0", connected(chainId, walletAddress), now);
-      database.tokenCatalogStore().register({
+      register(database.tokenCatalogStore(), {
         account: accountFor(chainId, walletAddress),
         expectedConnectionRevision: connection.revision,
         inspection: await createInspectionSuccess(),

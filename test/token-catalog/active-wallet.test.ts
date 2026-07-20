@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   parseCapabilityDataAt,
+  parseUnsignedDecimal,
   walletConnectionDataSchema,
   walletConnectionCapability,
 } from "../../src/core/index.js";
@@ -22,6 +23,7 @@ const connected = parseCapabilityDataAt(walletConnectionCapability, {
 const sessionSource = Object.freeze({}) as NonNullable<
   ReturnType<ActiveWalletReadPort["capture"]>["sessionSource"]
 >;
+const connectionRevision = parseUnsignedDecimal("0");
 
 const failureCode = (operation: () => unknown): string | undefined => {
   try { operation(); }
@@ -35,7 +37,7 @@ describe("token catalog connected wallet session", () => {
     const activeWallet: ActiveWalletReadPort = {
       capture: () => {
         captures += 1;
-        return { connection: connected, sessionSource };
+        return { connection: connected, connectionRevision, sessionSource };
       },
     };
 
@@ -44,6 +46,7 @@ describe("token catalog connected wallet session", () => {
     expect(captures).toBe(1);
     expect(result).toEqual({
       account: { chainId, address: walletAddress },
+      connectionRevision,
       sessionSource,
     });
     expect(Object.isFrozen(result)).toBe(true);
@@ -61,13 +64,16 @@ describe("token catalog connected wallet session", () => {
     [{ status: "unresolved", sessionCount: "2" }, "wallet_session_unusable"],
   ] as const)("maps %o to %s", (connection, expectedCode) => {
     expect(failureCode(() => captureConnectedWalletSession({
-      capture: () => ({ connection: walletConnectionDataSchema.parse(connection) }),
+      capture: () => ({
+        connection: walletConnectionDataSchema.parse(connection),
+        connectionRevision,
+      }),
     }))).toBe(expectedCode);
   });
 
   it("rejects a connected projection without a live session source", () => {
     expect(failureCode(() => captureConnectedWalletSession({
-      capture: () => ({ connection: connected }),
+      capture: () => ({ connection: connected, connectionRevision }),
     }))).toBe("wallet_session_unusable");
   });
 });

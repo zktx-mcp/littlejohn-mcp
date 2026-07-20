@@ -2,6 +2,7 @@ import { z, type ZodType } from "zod";
 
 import {
   assertCapabilitySuccessChainScope,
+  applicationFailureSchemaFor,
   blockSelectorSchema,
   canonicalAmountSchema,
   canonicalBase64UrlSchema,
@@ -11,23 +12,26 @@ import {
   chainAnchorSchema,
   codePointLength,
   coreContractVersion,
-  coreErrorDefinitions,
+  coreErrorRegistry,
   createCapabilitySuccessSchema,
+  defineApplicationContract as defineCanonicalApplicationContract,
   deepFreezeValue,
   erc20AssetIdentitySchema,
   evmAccountIdentitySchema,
   evmAddressSchema,
-  fieldIssueSchema,
   jsonObject,
   hash32Schema,
   isSafeSingleLineText,
   parseHash32,
   observationIdSchema,
+  operationIdByteLength,
+  operationIdSchema,
   readCapabilityLimits,
   unsignedDecimalSchema,
   utcTimestampSchema,
   utf8ByteLength,
   type ApplicationFailure,
+  type ApplicationContract,
   type CanonicalJson,
   type CapabilityId,
   type CapabilitySuccess,
@@ -50,7 +54,7 @@ export const tokenCatalogContractLimits = Object.freeze({
   displayTextCodePoints: 128,
   displayTextUtf8Bytes: 512,
   registrationRevisionBytes: 16,
-  operationIdBytes: 32,
+  operationIdBytes: operationIdByteLength,
   listDefaultLimit: 25,
   listMaximumLimit: 25,
 });
@@ -75,9 +79,7 @@ export const tokenUserLabelSchema = tokenDisplayTextSchema.min(1);
 export const tokenRegistrationRevisionSchema = canonicalBase64UrlSchema(
   tokenCatalogContractLimits.registrationRevisionBytes,
 );
-export const tokenCatalogOperationIdSchema = canonicalBase64UrlSchema(
-  tokenCatalogContractLimits.operationIdBytes,
-);
+export const tokenCatalogOperationIdSchema = operationIdSchema;
 
 export const tokenRegistrationSettingsSchema = z.object({
   userLabel: tokenUserLabelSchema.nullable(),
@@ -257,54 +259,11 @@ export const tokenRegistrationWithInspectionSchema = z.object({
 });
 export type TokenRegistrationWithInspection = z.infer<typeof tokenRegistrationWithInspectionSchema>;
 
-const tokenCatalogApplicationErrorDefinitions = Object.freeze([
-  ...coreErrorDefinitions,
-  ...runtimeErrorDefinitions,
-  ...walletErrorDefinitions,
-  ...chainErrorDefinitions,
-  ...tokenCatalogErrorDefinitions,
-]);
-
-interface TokenFailureDefinition {
-  readonly code: string;
-  readonly category: ApplicationFailure["error"]["category"];
-  readonly message: string;
-  readonly retryable: boolean;
-}
-
-const tokenFailureSchemaFor = (
-  codes: readonly string[],
-): ZodType<ApplicationFailure> => {
-  if (codes.length === 0 || new Set(codes).size !== codes.length) {
-    throw new TypeError("Application failure schema codes are invalid.");
-  }
-  const definitions = new Map<string, TokenFailureDefinition>(
-    tokenCatalogApplicationErrorDefinitions.map((definition) => [definition.code, definition]),
-  );
-  if (definitions.size !== tokenCatalogApplicationErrorDefinitions.length) {
-    throw new TypeError("Duplicate application error definition.");
-  }
-  const variants = codes.map((code) => {
-    const definition = definitions.get(code);
-    if (definition === undefined) throw new TypeError("Unknown application error code.");
-    return jsonObject({
-      ok: z.literal(false),
-      error: jsonObject({
-        code: z.literal(definition.code),
-        category: z.literal(definition.category),
-        message: z.literal(definition.message),
-        retryable: z.literal(definition.retryable),
-        issues: z.array(fieldIssueSchema).max(64),
-      }).strict(),
-    }).strict();
-  });
-  const first = variants[0];
-  if (first === undefined) throw new TypeError("Application failure schema codes are invalid.");
-  const second = variants[1];
-  return (second === undefined
-    ? first
-    : z.union([first, second, ...variants.slice(2)])) as unknown as ZodType<ApplicationFailure>;
-};
+const tokenCatalogApplicationErrorRegistry = coreErrorRegistry
+  .extend(runtimeErrorDefinitions)
+  .extend(walletErrorDefinitions)
+  .extend(chainErrorDefinitions)
+  .extend(tokenCatalogErrorDefinitions);
 
 const operationFailureCodes = Object.freeze([
   "internal_error",
@@ -314,7 +273,10 @@ const operationFailureCodes = Object.freeze([
   "wallet_not_connected",
   "wallet_session_unusable",
 ]);
-const tokenOperationFailureSchema = tokenFailureSchemaFor(operationFailureCodes);
+const tokenOperationFailureSchema = applicationFailureSchemaFor(
+  tokenCatalogApplicationErrorRegistry,
+  operationFailureCodes,
+);
 
 const operationReviewSchema = z.object({
   previousRegistration: tokenRegistrationSchema.nullable(),
@@ -656,12 +618,20 @@ export interface TokenCatalogApplicationContract<Input, Success> {
   readonly contractVersion: typeof coreContractVersion;
   readonly inputSchema: ZodType<Input>;
   readonly successSchema: ZodType<Success>;
-  readonly failureSchema: ZodType<ApplicationFailure>;
   readonly failureCodes: readonly string[];
+  readonly applicationContract: ApplicationContract<Input, TokenCatalogInternalContext, Success>;
   parseInput(value: unknown): Input;
-  parseSuccess(input: unknown, value: unknown): Success;
+  parsePublicSuccess(input: unknown, value: unknown): Success;
+  parseBoundSuccess(input: unknown, context: unknown, value: unknown): Success;
   parseFailure(value: unknown): ApplicationFailure;
+  normalizeFailure(value: unknown): ApplicationFailure;
 }
+
+export const tokenCatalogInternalContextSchema = z.object({
+  operationId: operationIdSchema.optional(),
+  interactionInterface: z.enum(tokenCatalogInteractionInterfaces).optional(),
+}).strict();
+export type TokenCatalogInternalContext = z.infer<typeof tokenCatalogInternalContextSchema>;
 
 const defineApplicationContract = <Input, Success>(options: {
   readonly capabilityId: string;
@@ -669,29 +639,40 @@ const defineApplicationContract = <Input, Success>(options: {
   readonly requestSchema?: ZodType<Input>;
   readonly successSchema: ZodType<Success>;
   readonly failureCodes: readonly string[];
-  readonly validateSuccess?: (input: Input, success: Success) => void;
+  readonly validatePublicSuccess?: (input: Input, success: Success) => void;
+  readonly validateBoundSuccess?: (
+    input: Input,
+    context: TokenCatalogInternalContext,
+    success: Success,
+  ) => void;
 }): TokenCatalogApplicationContract<Input, Success> => {
   const capabilityId = capabilityIdSchema.parse(options.capabilityId);
-  const failureSchema = tokenFailureSchemaFor(options.failureCodes);
+  const applicationContract = defineCanonicalApplicationContract({
+    inputSchema: options.inputSchema,
+    ...(options.requestSchema === undefined ? {} : { correlationInputSchema: options.requestSchema }),
+    successSchema: options.successSchema,
+    internalContextSchema: tokenCatalogInternalContextSchema,
+    errorRegistry: tokenCatalogApplicationErrorRegistry,
+    failureCodes: options.failureCodes,
+    ...(options.validatePublicSuccess === undefined ? {} : {
+      validatePublicSuccess: options.validatePublicSuccess,
+    }),
+    ...(options.validateBoundSuccess === undefined ? {} : {
+      validateBoundSuccess: options.validateBoundSuccess,
+    }),
+  });
   return Object.freeze({
     capabilityId,
     contractVersion: coreContractVersion,
     inputSchema: options.inputSchema,
     successSchema: options.successSchema,
-    failureSchema,
-    failureCodes: Object.freeze([...options.failureCodes].sort()),
-    parseInput(value: unknown): Input {
-      return deepFreezeValue(options.inputSchema.parse(captureCanonicalJson(value)));
-    },
-    parseSuccess(inputValue: unknown, value: unknown): Success {
-      const input = (options.requestSchema ?? options.inputSchema).parse(captureCanonicalJson(inputValue));
-      const success = options.successSchema.parse(captureCanonicalJson(value));
-      options.validateSuccess?.(input, success);
-      return deepFreezeValue(success);
-    },
-    parseFailure(value: unknown): ApplicationFailure {
-      return deepFreezeValue(failureSchema.parse(captureCanonicalJson(value)));
-    },
+    failureCodes: applicationContract.failureCodes,
+    applicationContract,
+    parseInput: applicationContract.parseInput,
+    parsePublicSuccess: applicationContract.parsePublicSuccess,
+    parseBoundSuccess: applicationContract.parseBoundSuccess,
+    parseFailure: applicationContract.parseFailure,
+    normalizeFailure: applicationContract.normalizeFailure,
   });
 };
 
@@ -699,40 +680,54 @@ export interface TokenCatalogOperationConfirmationContract {
   readonly contractVersion: typeof coreContractVersion;
   readonly inputSchema: typeof tokenCatalogOperationConfirmationInputSchema;
   readonly successSchema: typeof tokenCatalogConfirmedOperationSchema;
-  readonly failureSchema: ZodType<ApplicationFailure>;
   readonly failureCodes: readonly string[];
+  readonly applicationContract: ApplicationContract<
+    TokenCatalogOperationConfirmationInput,
+    TokenCatalogInternalContext,
+    TokenCatalogConfirmedOperation
+  >;
   parseInput(value: unknown): TokenCatalogOperationConfirmationInput;
-  parseSuccess(
+  parsePublicSuccess(
     input: unknown,
     value: unknown,
   ): TokenCatalogConfirmedOperation;
+  parseBoundSuccess(input: unknown, context: unknown, value: unknown): TokenCatalogConfirmedOperation;
   parseFailure(value: unknown): ApplicationFailure;
+  normalizeFailure(value: unknown): ApplicationFailure;
 }
 
-const confirmationFailureSchema = tokenFailureSchemaFor(confirmationFailureCodes);
+const confirmationApplicationContract = defineCanonicalApplicationContract({
+  inputSchema: tokenCatalogOperationConfirmationInputSchema,
+  successSchema: tokenCatalogConfirmedOperationSchema,
+  internalContextSchema: tokenCatalogInternalContextSchema,
+  errorRegistry: tokenCatalogApplicationErrorRegistry,
+  failureCodes: confirmationFailureCodes,
+  validatePublicSuccess: (input, success) => {
+    if (
+      success.operationId !== input.operationId ||
+      success.review.reviewDigest !== input.reviewDigest
+    ) throw new TypeError("Token operation confirmation result does not match its input.");
+  },
+  validateBoundSuccess: (_input, context, success) => {
+    if (
+      context.operationId !== success.operationId ||
+      context.interactionInterface !== success.interactionInterface
+    ) throw new TypeError("Token operation confirmation result does not match its internal context.");
+  },
+});
 
 export const tokenCatalogOperationConfirmationContract: TokenCatalogOperationConfirmationContract =
   Object.freeze({
     contractVersion: coreContractVersion,
     inputSchema: tokenCatalogOperationConfirmationInputSchema,
     successSchema: tokenCatalogConfirmedOperationSchema,
-    failureSchema: confirmationFailureSchema,
-    failureCodes: confirmationFailureCodes,
-    parseInput(value: unknown): TokenCatalogOperationConfirmationInput {
-      return deepFreezeValue(tokenCatalogOperationConfirmationInputSchema.parse(captureCanonicalJson(value)));
-    },
-    parseSuccess(inputValue: unknown, value: unknown): TokenCatalogConfirmedOperation {
-      const input = tokenCatalogOperationConfirmationInputSchema.parse(captureCanonicalJson(inputValue));
-      const success = tokenCatalogConfirmedOperationSchema.parse(captureCanonicalJson(value));
-      if (
-        success.operationId !== input.operationId ||
-        success.review.reviewDigest !== input.reviewDigest
-      ) throw new TypeError("Token operation confirmation result does not match its input.");
-      return deepFreezeValue(success);
-    },
-    parseFailure(value: unknown): ApplicationFailure {
-      return deepFreezeValue(confirmationFailureSchema.parse(captureCanonicalJson(value)));
-    },
+    failureCodes: confirmationApplicationContract.failureCodes,
+    applicationContract: confirmationApplicationContract,
+    parseInput: confirmationApplicationContract.parseInput,
+    parsePublicSuccess: confirmationApplicationContract.parsePublicSuccess,
+    parseBoundSuccess: confirmationApplicationContract.parseBoundSuccess,
+    parseFailure: confirmationApplicationContract.parseFailure,
+    normalizeFailure: confirmationApplicationContract.normalizeFailure,
   });
 
 const validateOperationId = (
@@ -765,7 +760,7 @@ export const tokenCatalogApplicationContracts = Object.freeze({
     inputSchema: registrationInputSchema,
     successSchema: tokenRegistrationWithInspectionSchema,
     failureCodes: contractFailureCodes.registration,
-    validateSuccess: (input, success) => {
+    validatePublicSuccess: (input, success) => {
       if (input.asset.chainId !== success.registration.asset.chainId || input.asset.address !== success.registration.asset.address) {
         throw new TypeError("Token registration target mismatch.");
       }
@@ -777,7 +772,7 @@ export const tokenCatalogApplicationContracts = Object.freeze({
     requestSchema: registrationsRequestSchema,
     successSchema: registrationListResultSchema,
     failureCodes: contractFailureCodes.registrations,
-    validateSuccess: (input, success) => {
+    validatePublicSuccess: (input, success) => {
       if (
         success.registrations.length > input.limit ||
         (success.nextCursor !== null && success.registrations.length !== input.limit) ||
@@ -793,7 +788,7 @@ export const tokenCatalogApplicationContracts = Object.freeze({
     requestSchema: startRegistrationRequestSchema,
     successSchema: registrationOperationStartResultSchema,
     failureCodes: contractFailureCodes.startRegistration,
-    validateSuccess: (input, success) => {
+    validatePublicSuccess: (input, success) => {
       const operation = validateStartCommon(input.asset, success);
       if (
         operation.review.previousRegistration !== null ||
@@ -801,13 +796,19 @@ export const tokenCatalogApplicationContracts = Object.freeze({
         !sameSettings(operation.review.proposedSettings, input.settings)
       ) throw new TypeError("Token registration start result is invalid.");
     },
+    validateBoundSuccess: (_input, context, success) => {
+      if (
+        context.operationId !== success.operation.operationId ||
+        context.interactionInterface !== success.operation.interactionInterface
+      ) throw new TypeError("Token registration start result does not match its internal context.");
+    },
   }),
   startRegistrationUpdate: defineApplicationContract({
     capabilityId: "token.start_registration_update",
     inputSchema: startUpdateInputSchema,
     successSchema: registrationUpdateOperationStartResultSchema,
     failureCodes: contractFailureCodes.startUpdate,
-    validateSuccess: (input, success) => {
+    validatePublicSuccess: (input, success) => {
       const operation = validateStartCommon(input.asset, success);
       const previous = operation.review.previousRegistration;
       const settings = operation.review.proposedSettings;
@@ -822,18 +823,30 @@ export const tokenCatalogApplicationContracts = Object.freeze({
         throw new TypeError("Token registration update start result is invalid.");
       }
     },
+    validateBoundSuccess: (_input, context, success) => {
+      if (
+        context.operationId !== success.operation.operationId ||
+        context.interactionInterface !== success.operation.interactionInterface
+      ) throw new TypeError("Token registration update start result does not match its internal context.");
+    },
   }),
   startUnregistration: defineApplicationContract({
     capabilityId: "token.start_unregistration",
     inputSchema: startUnregistrationInputSchema,
     successSchema: unregistrationOperationStartResultSchema,
     failureCodes: contractFailureCodes.startUnregistration,
-    validateSuccess: (input, success) => {
+    validatePublicSuccess: (input, success) => {
       const operation = validateStartCommon(input.asset, success);
       if (
         operation.review.proposedSettings !== null ||
         operation.review.previousRegistration?.revision !== input.expectedRevision
       ) throw new TypeError("Token removal start result is invalid.");
+    },
+    validateBoundSuccess: (_input, context, success) => {
+      if (
+        context.operationId !== success.operation.operationId ||
+        context.interactionInterface !== success.operation.interactionInterface
+      ) throw new TypeError("Token removal start result does not match its internal context.");
     },
   }),
   operation: defineApplicationContract({
@@ -841,14 +854,14 @@ export const tokenCatalogApplicationContracts = Object.freeze({
     inputSchema: operationInputSchema,
     successSchema: operationResultSchema,
     failureCodes: contractFailureCodes.operation,
-    validateSuccess: validateOperationId,
+    validatePublicSuccess: validateOperationId,
   }),
   cancelOperation: defineApplicationContract({
     capabilityId: "token.cancel_operation",
     inputSchema: operationInputSchema,
     successSchema: operationCancellationResultSchema,
     failureCodes: contractFailureCodes.cancelOperation,
-    validateSuccess: validateCancelledOperation,
+    validatePublicSuccess: validateCancelledOperation,
   }),
 });
 

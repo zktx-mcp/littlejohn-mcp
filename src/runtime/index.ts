@@ -1,4 +1,5 @@
 export { LocalRuntime } from "./composition.js";
+export { createOperationId } from "./operation-id.js";
 export type {
   ChainCapabilityAuthorityPort,
   ChainOwnerApplication,
@@ -11,7 +12,6 @@ export type {
   InterfaceOwnerApplicationContext,
   InterfaceOwnerApplicationFactory,
   LocalRuntimeOptions,
-  TokenCatalogOwnerApplication,
   TokenCatalogOwnerHandoff,
   TokenInspectionReadCapabilityPort,
   WalletConnectionReadCapabilityPort,
@@ -24,6 +24,14 @@ export type {
   WalletPrivateStoreDirectoryPort,
 } from "./composition.js";
 export type { WalletSessionSource } from "./source-identity.js";
+export type {
+  RuntimeOwnerResponsePacket,
+  RuntimeOwnerSendResult,
+  RuntimeOwnerSession,
+  RuntimeOwnerSessionIdentity,
+  RuntimeOwnerSessionPort,
+  RuntimeOwnerSessionRequest,
+} from "./owner-session.js";
 export { readConfiguredRpcEndpoint } from "./configuration.js";
 export type {
   ConfiguredRpcEndpoint,

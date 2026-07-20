@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { runCli, type CliTerminalPort } from "../../src/cli.js";
+import { runCli, type CliRuntimePort, type CliTerminalPort } from "../../src/cli.js";
 import {
   captureCanonicalJson,
   chainAnchorSchema,
@@ -13,6 +13,7 @@ import {
   runTokenCliCommand,
   type TokenCliOutputPort,
 } from "../../src/interfaces/cli-token.js";
+import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
 import type { RuntimeDispatchPort } from "../../src/interfaces/http-client.js";
 import type { RuntimeDispatchRequest, RuntimeDispatchResponse } from "../../src/runtime/index.js";
 import {
@@ -28,6 +29,7 @@ import {
   invokeBinding,
 } from "../core/capability-harness.js";
 import { createInspectionSuccess, walletAddress } from "../token-catalog/harness.js";
+import { openTestOwnerSession } from "./owner-session-harness.js";
 
 const tokenAddress = `0x${"12".repeat(20)}`;
 const tokenAsset = erc20AssetIdentitySchema.parse({
@@ -182,7 +184,7 @@ type RuntimeHandler = (
   request: RuntimeDispatchRequest,
 ) => RuntimeDispatchResponse | Promise<RuntimeDispatchResponse>;
 
-class FakeRuntime implements RuntimeDispatchPort {
+class FakeRuntime implements RuntimeDispatchPort, CliRuntimePort {
   readonly ownerState = "deferred" as const;
   readonly requests: RuntimeDispatchRequest[] = [];
   startCount = 0;
@@ -198,9 +200,16 @@ class FakeRuntime implements RuntimeDispatchPort {
     return await this.#handler(request);
   }
 
+  openOwnerSession(signal?: AbortSignal) { return openTestOwnerSession(this, signal); }
+
   async start(): Promise<void> { this.startCount += 1; }
   async stop(): Promise<void> { this.stopCount += 1; }
 }
+
+const operationClient = (runtime: FakeRuntime) => new LocalOperationClient({
+  ownerSessions: runtime,
+  createOperationId: () => operationId,
+});
 
 const outputPort = (options: {
   readonly confirmationLine?: string;
@@ -285,7 +294,7 @@ describe("token CLI", () => {
     const output = outputPort({ confirmationLine: "Y" });
     const command = parseTokenCliCommand(["token", "register", tokenAddress]);
 
-    expect(await runTokenCliCommand(runtime, command, output.port)).toBe(0);
+    expect(await runTokenCliCommand(runtime, operationClient(runtime), command, output.port)).toBe(0);
     expect(output.prompts).toEqual(["Confirm this token catalog change? [y/N] "]);
     expect(output.output.join("\n")).toContain("Add token");
     expect(output.output.join("\n")).toContain("Block hash:");
@@ -296,25 +305,25 @@ describe("token CLI", () => {
     expect(output.output.join("\n")).not.toContain(operationSet.awaiting.review.reviewDigest);
     expect(runtime.requests).toEqual([
       expect.objectContaining({ requestClass: "public_read", method: "GET", path: "/api/v1/chain-status" }),
-      {
+      expect.objectContaining({
         requestClass: "local_control",
         method: "POST",
         path: tokenCatalogControlRoutes.operations,
         body: {
-          interactionInterface: "cli",
+          control: { operationId, interactionInterface: "cli" },
           request: {
             kind: "register",
             asset: tokenAsset,
             settings: { userLabel: null, visibility: "visible" },
           },
         },
-      },
-      {
+      }),
+      expect.objectContaining({
         requestClass: "local_control",
         method: "POST",
         path: tokenCatalogControlRoutes.confirmation(operationId),
         body: { reviewDigest: operationSet.awaiting.review.reviewDigest },
-      },
+      }),
     ]);
   });
 
@@ -349,6 +358,7 @@ describe("token CLI", () => {
       const output = outputPort({ confirmationLine: "y" });
       expect(await runTokenCliCommand(
         runtime,
+        operationClient(runtime),
         parseTokenCliCommand(testCase.arguments),
         output.port,
       )).toBe(0);
@@ -386,7 +396,7 @@ describe("token CLI", () => {
       const output = outputPort(input);
       const command = parseTokenCliCommand(["token", "register", tokenAddress]);
 
-      expect(await runTokenCliCommand(runtime, command, output.port)).toBe(0);
+      expect(await runTokenCliCommand(runtime, operationClient(runtime), command, output.port)).toBe(0);
       expect(runtime.requests.at(-1)).toMatchObject({
         requestClass: "local_control",
         method: "DELETE",
@@ -397,7 +407,7 @@ describe("token CLI", () => {
     }
   });
 
-  it("does not admit a change after pre-start interruption and cancels a start that settles with interruption", async () => {
+  it("does not admit a change before send and preserves uncertainty when interruption races a sent start", async () => {
     const status = await chainStatusSuccess();
     const operationSet = await operations();
 
@@ -408,6 +418,7 @@ describe("token CLI", () => {
     });
     expect(await runTokenCliCommand(
       beforeStartRuntime,
+      operationClient(beforeStartRuntime),
       parseTokenCliCommand(["token", "register", tokenAddress]),
       beforeStartOutput.port,
     )).not.toBe(0);
@@ -421,18 +432,20 @@ describe("token CLI", () => {
         settlingOutput.interrupt();
         return { status: 200, body: captureCanonicalJson({ operation: operationSet.awaiting }) };
       }
-      if (request.method === "DELETE") {
-        return { status: 200, body: captureCanonicalJson({ operation: operationSet.cancelled }) };
-      }
       throw new Error("Unexpected request.");
     });
     expect(await runTokenCliCommand(
       settlingRuntime,
+      operationClient(settlingRuntime),
       parseTokenCliCommand(["token", "register", tokenAddress]),
       settlingOutput.port,
-    )).toBe(0);
-    expect(settlingRuntime.requests.map((request) => request.method)).toEqual(["GET", "POST", "DELETE"]);
+    )).toBe(8);
+    expect(settlingRuntime.requests.filter((request) =>
+      request.method === "POST" && request.path === tokenCatalogControlRoutes.operations,
+    )).toHaveLength(1);
+    expect(settlingRuntime.requests.some((request) => request.method === "DELETE")).toBe(false);
     expect(settlingRuntime.requests.at(-1)?.path).toBe(tokenCatalogControlRoutes.operation(operationId));
+    expect(settlingOutput.errors.join("\n")).toContain("Do not repeat it.");
   });
 
   it("permits non-interactive operation reads and cancellation but rejects every confirmation flow", async () => {
@@ -447,6 +460,7 @@ describe("token CLI", () => {
       const readOutput = outputPort({ inputIsTTY: false, outputIsTTY: false });
       expect(await runTokenCliCommand(
         runtime,
+        operationClient(runtime),
         parseTokenCliCommand(["token", command, operationId, "--json"]),
         readOutput.port,
       )).toBe(0);
@@ -469,6 +483,7 @@ describe("token CLI", () => {
         const output = outputPort(terminalState);
         expect(await runTokenCliCommand(
           rejectedRuntime,
+          operationClient(rejectedRuntime),
           parseTokenCliCommand(argumentsInput),
           output.port,
         )).toBe(2);
@@ -517,7 +532,7 @@ describe("token CLI", () => {
           method: "POST",
           path: tokenCatalogControlRoutes.operations,
           body: {
-            interactionInterface: "cli",
+            control: { operationId, interactionInterface: "cli" },
             request: {
               kind: "update_registration",
               asset: tokenAsset,
@@ -534,7 +549,7 @@ describe("token CLI", () => {
           method: "POST",
           path: tokenCatalogControlRoutes.operations,
           body: {
-            interactionInterface: "cli",
+            control: { operationId, interactionInterface: "cli" },
             request: { kind: "unregister", asset: tokenAsset, expectedRevision: revision },
           },
         },
@@ -557,10 +572,16 @@ describe("token CLI", () => {
       const output = outputPort({ confirmationLine: "y" });
       expect(await runTokenCliCommand(
         runtime,
+        operationClient(runtime),
         parseTokenCliCommand(testCase.arguments),
         output.port,
       )).not.toBe(0);
-      expect(runtime.requests.at(-1)).toMatchObject(testCase.expected);
+      expect(runtime.requests).toContainEqual(expect.objectContaining(testCase.expected));
+      if (testCase.expected.path === tokenCatalogControlRoutes.operations) {
+        expect(runtime.requests.filter((request) =>
+          request.method === "POST" && request.path === tokenCatalogControlRoutes.operations,
+        )).toHaveLength(1);
+      }
     }
   });
 
@@ -582,6 +603,7 @@ describe("token CLI", () => {
     });
 
     expect(await runCli(["token", "operation", operationId, "--json"], {
+      createOperationId: () => operationId,
       createRuntime: async () => runtime,
       terminal,
       waitForPoll: async () => undefined,

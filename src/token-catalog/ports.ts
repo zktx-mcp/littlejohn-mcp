@@ -2,6 +2,7 @@ import type {
   ApplicationFailure,
   CapabilityBinding,
   EvmAccountIdentity,
+  OperationId,
   UnsignedDecimal,
   UtcTimestamp,
 } from "../core/index.js";
@@ -36,6 +37,32 @@ export interface TokenRegistrationPage {
   readonly nextCursor: TokenRegistration["asset"]["address"] | null;
 }
 
+type ApplyingOperation<Kind extends TokenCatalogOperation["kind"]> = Extract<
+  TokenCatalogOperation,
+  { readonly kind: Kind; readonly state: "applying" }
+>;
+
+export type TokenCatalogConfirmationCommand =
+  | Readonly<{
+      kind: "register";
+      operation: ApplyingOperation<"register">;
+      expectedConnectionRevision: UnsignedDecimal;
+      registrationRevision: TokenRegistration["revision"];
+      now: UtcTimestamp;
+    }>
+  | Readonly<{
+      kind: "update_registration";
+      operation: ApplyingOperation<"update_registration">;
+      expectedConnectionRevision: UnsignedDecimal;
+      registrationRevision: TokenRegistration["revision"];
+      now: UtcTimestamp;
+    }>
+  | Readonly<{
+      kind: "unregister";
+      operation: ApplyingOperation<"unregister">;
+      expectedConnectionRevision: UnsignedDecimal;
+    }>;
+
 export interface TokenCatalogStore {
   getRegistration(
     account: EvmAccountIdentity,
@@ -44,32 +71,7 @@ export interface TokenCatalogStore {
   listRegistrations(input: Readonly<{
     account: EvmAccountIdentity;
   } & TokenRegistrationListRequest>): TokenRegistrationPage;
-  register(input: Readonly<{
-    account: EvmAccountIdentity;
-    expectedConnectionRevision: UnsignedDecimal;
-    inspection: TokenInspectionSuccess;
-    settings: TokenRegistrationSettings;
-    revision: TokenRegistration["revision"];
-    now: UtcTimestamp;
-  }>): TokenRegistrationWithInspection;
-  update(input: Readonly<{
-    account: EvmAccountIdentity;
-    asset: TokenRegistration["asset"];
-    expectedConnectionRevision: UnsignedDecimal;
-    expectedRegistrationRevision: TokenRegistration["revision"];
-    settings: TokenRegistrationSettings;
-    revision: TokenRegistration["revision"];
-    now: UtcTimestamp;
-  }>): TokenRegistrationWithInspection;
-  unregister(input: Readonly<{
-    account: EvmAccountIdentity;
-    asset: TokenRegistration["asset"];
-    expectedConnectionRevision: UnsignedDecimal;
-    expectedRegistrationRevision: TokenRegistration["revision"];
-  }>): Readonly<{
-    asset: TokenRegistration["asset"];
-    removedRevision: TokenRegistration["revision"];
-  }>;
+  applyConfirmation(input: TokenCatalogConfirmationCommand): TokenCatalogConfirmedOperation;
 }
 
 export type TokenCatalogQueryStore = Pick<
@@ -79,23 +81,28 @@ export type TokenCatalogQueryStore = Pick<
 
 export type TokenCatalogInspectionPort = CapabilityBinding<typeof tokenInspectCapability>;
 
+export interface TokenCatalogOperationControl {
+  readonly operationId: OperationId;
+  readonly interactionInterface: TokenCatalogInteractionInterface;
+}
+
 export interface TokenCatalogOperationCoordinatorPort {
   startRegistration(
     input: TokenRegistrationStartRequest,
-    interactionInterface: TokenCatalogInteractionInterface,
+    control: TokenCatalogOperationControl,
   ): Promise<TokenCatalogOperationStartResult<"register"> | ApplicationFailure>;
   startRegistrationUpdate(
     input: TokenRegistrationUpdateStartInput,
-    interactionInterface: TokenCatalogInteractionInterface,
+    control: TokenCatalogOperationControl,
   ): Promise<TokenCatalogOperationStartResult<"update_registration"> | ApplicationFailure>;
   startUnregistration(
     input: TokenUnregistrationStartInput,
-    interactionInterface: TokenCatalogInteractionInterface,
+    control: TokenCatalogOperationControl,
   ): Promise<TokenCatalogOperationStartResult<"unregister"> | ApplicationFailure>;
   getOperation(operationId: TokenCatalogOperation["operationId"]): TokenCatalogOperation;
   getCurrentOperation(): TokenCatalogOperation | null;
   confirm(
-    interactionInterface: TokenCatalogInteractionInterface,
+    control: TokenCatalogOperationControl,
     input: TokenCatalogOperationConfirmationInput,
   ): Promise<TokenCatalogConfirmedOperation>;
   cancel(
@@ -109,15 +116,15 @@ export interface TokenCatalogApplicationPort {
   listRegistrations(input: TokenRegistrationListInput): TokenRegistrationListResult | ApplicationFailure;
   startRegistration(
     input: TokenRegistrationStartInput,
-    interactionInterface: TokenCatalogInteractionInterface,
+    control: TokenCatalogOperationControl,
   ): Promise<TokenCatalogOperationStartResult<"register"> | ApplicationFailure>;
   startRegistrationUpdate(
     input: TokenRegistrationUpdateStartInput,
-    interactionInterface: TokenCatalogInteractionInterface,
+    control: TokenCatalogOperationControl,
   ): Promise<TokenCatalogOperationStartResult<"update_registration"> | ApplicationFailure>;
   startUnregistration(
     input: TokenUnregistrationStartInput,
-    interactionInterface: TokenCatalogInteractionInterface,
+    control: TokenCatalogOperationControl,
   ): Promise<TokenCatalogOperationStartResult<"unregister"> | ApplicationFailure>;
   getOperation(input: TokenCatalogOperationInput): TokenCatalogOperationResult | ApplicationFailure;
   cancelOperation(input: TokenCatalogOperationInput): Promise<TokenCatalogCancellationResult | ApplicationFailure>;
@@ -139,12 +146,15 @@ export interface TokenCatalogStartApplicationPort<
   readonly interactionInterface: InteractionInterface;
   startRegistration(
     input: TokenRegistrationStartInput,
+    operationId: OperationId,
   ): Promise<TokenCatalogOperationStartResult<"register"> | ApplicationFailure>;
   startRegistrationUpdate(
     input: TokenRegistrationUpdateStartInput,
+    operationId: OperationId,
   ): Promise<TokenCatalogOperationStartResult<"update_registration"> | ApplicationFailure>;
   startUnregistration(
     input: TokenUnregistrationStartInput,
+    operationId: OperationId,
   ): Promise<TokenCatalogOperationStartResult<"unregister"> | ApplicationFailure>;
 }
 
@@ -160,6 +170,14 @@ export interface TokenCatalogBrowserOperationPort {
 
 export interface TokenCatalogInteractiveCliPort extends TokenCatalogStartApplicationPort<"cli"> {
   confirm(input: TokenCatalogOperationConfirmationInput): Promise<TokenCatalogConfirmedOperation>;
+}
+
+export interface TokenCatalogConsumerPorts {
+  readonly tokenCatalogQueries: TokenCatalogQueryApplicationPort;
+  readonly tokenCatalogWebStart: TokenCatalogWebStartPort;
+  readonly tokenCatalogBrowserOperations: TokenCatalogBrowserOperationPort;
+  readonly tokenCatalogInteractiveCli: TokenCatalogInteractiveCliPort;
+  readonly tokenCatalogNonInteractiveOperations: TokenCatalogNonInteractiveOperationPort;
 }
 
 export const tokenCatalogConsumerPortContract = Object.freeze({

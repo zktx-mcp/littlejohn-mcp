@@ -44,6 +44,14 @@ afterEach(async () => {
 });
 
 const operationId = Buffer.alloc(32, 11).toString("base64url");
+const createBody = (
+  kind: "connect" | "disconnect",
+  interactionInterface: "cli" | "web",
+  connectionRevision: string | null,
+) => ({
+  control: { operationId, interactionInterface },
+  request: { kind, connectionRevision },
+});
 const disconnected = Object.freeze({ status: "disconnected" as const, reason: "no_session" as const });
 const connected = Object.freeze({
   status: "connected" as const,
@@ -235,41 +243,45 @@ describe("authenticated wallet control routes", () => {
     const confirmations = fakeCliConfirmation();
     const registry = await routes(operations, walletConnection(), confirmations.confirmation);
 
-    const created = await invoke(registry, "POST", "/api/v1/internal/control/wallet/operations", {
-      kind: "disconnect",
-      interactionInterface: "cli",
-      connectionRevision: null,
-    });
+    const created = await invoke(
+      registry,
+      "POST",
+      "/api/v1/internal/control/wallet/operations",
+      createBody("disconnect", "cli", null),
+    );
     expect(created).toEqual({
       ok: true,
       response: "canonical_json",
       body: { result: { status: "operation_started", operation: operation() } },
     });
     expect(calls.creates).toEqual([{
+      operationId,
       kind: "disconnect",
       interactionInterface: "cli",
       connectionRevision: null,
     }]);
 
     const extraCreate = await invoke(registry, "POST", "/api/v1/internal/control/wallet/operations", {
-      kind: "connect",
-      interactionInterface: "cli",
-      connectionRevision: null,
-      session: "forbidden",
+      ...createBody("connect", "cli", null),
+      extra: "forbidden",
     });
     expect(extraCreate.ok).toBe(false);
     if (!extraCreate.ok) expect(extraCreate.problem.code).toBe("invalid_input");
     expect(calls.creates).toHaveLength(1);
 
     let accessorRead = false;
-    const hostileCreate = { kind: "connect", interactionInterface: "cli", connectionRevision: null };
-    Object.defineProperty(hostileCreate, "kind", {
+    const hostileRequest = { kind: "connect", connectionRevision: null };
+    Object.defineProperty(hostileRequest, "kind", {
       enumerable: true,
       get() {
         accessorRead = true;
         throw new Error("secret");
       },
     });
+    const hostileCreate = {
+      control: { operationId, interactionInterface: "cli" },
+      request: hostileRequest,
+    };
     const hostile = await invoke(
       registry,
       "POST",
@@ -314,11 +326,12 @@ describe("authenticated wallet control routes", () => {
       }),
     );
     const registry = await routes(subject.operations);
-    const result = await invoke(registry, "POST", "/api/v1/internal/control/wallet/operations", {
-      kind: "connect",
-      interactionInterface: "web",
-      connectionRevision: "4",
-    });
+    const result = await invoke(
+      registry,
+      "POST",
+      "/api/v1/internal/control/wallet/operations",
+      createBody("connect", "web", "4"),
+    );
     expect(result).toEqual({
       ok: true,
       response: "canonical_json",
@@ -376,11 +389,12 @@ describe("authenticated wallet control routes", () => {
     });
     const withQr = fakeOperations(() => ({ operation: pending, qr }));
     const cliRegistry = await routes(withQr.operations);
-    const cli = await invoke(cliRegistry, "POST", "/api/v1/internal/control/wallet/operations", {
-      kind: "connect",
-      interactionInterface: "cli",
-      connectionRevision: null,
-    });
+    const cli = await invoke(
+      cliRegistry,
+      "POST",
+      "/api/v1/internal/control/wallet/operations",
+      createBody("connect", "cli", null),
+    );
     expect(cli).toEqual({
       ok: true,
       response: "canonical_json",
@@ -397,11 +411,12 @@ describe("authenticated wallet control routes", () => {
     }
 
     const webRegistry = await routes(withQr.operations);
-    const web = await invoke(webRegistry, "POST", "/api/v1/internal/control/wallet/operations", {
-      kind: "connect",
-      interactionInterface: "web",
-      connectionRevision: null,
-    });
+    const web = await invoke(
+      webRegistry,
+      "POST",
+      "/api/v1/internal/control/wallet/operations",
+      createBody("connect", "web", null),
+    );
     expect(web.ok).toBe(false);
     if (!web.ok) expect(web.problem.code).toBe("internal_error");
 

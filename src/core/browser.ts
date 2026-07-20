@@ -9,6 +9,12 @@ export {
 export { productDisplayName } from "./product-identity.js";
 export type { ApplicationFailure } from "./errors.js";
 export {
+  ApplicationErrorRegistry,
+  applicationFailureSchemaFor,
+  coreErrorRegistry,
+  createApplicationFailure,
+} from "./errors.js";
+export {
   assertCapabilitySuccessChainScope,
   capabilityIdSchema,
   createCapabilityIdSchema,
@@ -22,11 +28,26 @@ export {
   utf8ByteLength,
 } from "./canonical-json.js";
 export { coreContractVersion } from "./contract.js";
+export {
+  defineApplicationContract,
+} from "./application-contract.js";
+export type {
+  ApplicationContract,
+  ApplicationContractInternalContext,
+  ApplicationContractPublicInput,
+  ApplicationContractSuccess,
+} from "./application-contract.js";
 export { deepFreezeValue } from "./immutability.js";
 export {
   canonicalAmountSchema,
   erc20AssetIdentitySchema,
 } from "./amounts.js";
+export {
+  operationIdByteLength,
+  operationIdFromBytes,
+  operationIdSchema,
+} from "./operation-id.js";
+export type { OperationId } from "./operation-id.js";
 export {
   fieldIssueSchema,
   observationIdSchema,
@@ -47,6 +68,7 @@ export {
   canonicalBase64UrlSchema,
   chainAnchorSchema,
   codePointLength,
+  compareCodePointSequences,
   hash32Schema,
   isSafeSingleLineText,
   parseHash32,

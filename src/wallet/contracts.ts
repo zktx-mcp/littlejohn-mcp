@@ -19,6 +19,7 @@ export {
   walletManagementCapabilityIdList,
   walletManagementContractList,
   walletManagementContracts,
+  walletOperationConfirmationContract,
 } from "./management-contracts.js";
 export type {
   AnyWalletManagementContract,
@@ -32,7 +33,7 @@ export interface WalletLocalControlOperationPort {
 }
 
 export interface WalletWebOperationPort {
-  start(input: WalletWebOperationCreate): Promise<WalletOperationStartResult>;
+  start(input: WalletWebOperationCreate, operationId: string): Promise<WalletOperationStartResult>;
   cancel(
     operationId: string,
     input: WalletOperationConfirmation,

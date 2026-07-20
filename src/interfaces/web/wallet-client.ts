@@ -11,6 +11,12 @@ import {
   type WalletOperationPresentation,
   type WalletOperationStartResult,
 } from "../../wallet/operation-contract.js";
+import { walletManagementContracts, walletOperationConfirmationContract } from "../../wallet/management-contracts.js";
+import {
+  createDeliveryUnknown,
+  type DeliveryUnknown,
+  type OperationDeliveryAction,
+} from "../operation-delivery.js";
 import type { WalletOperationKind } from "../../wallet/operation-state.js";
 import {
   browserOperationCancellationPath,
@@ -20,20 +26,16 @@ import {
 } from "../browser-contract.js";
 import {
   BrowserResponseError,
-  controlBrowserJson,
+  controlBrowserActionJson,
   invalidBrowserResponse,
   readBrowserJson,
   type BrowserRequestOptions,
 } from "./browser-client.js";
+import { createBrowserOperationId } from "./operation-id.js";
 
 const parseCurrentProjection = (value: unknown): WalletCurrentOperationProjection => {
   try { return parseWalletCurrentOperationProjection(value); }
   catch { throw invalidBrowserResponse("The wallet state response is invalid."); }
-};
-
-const parseStartResult = (value: unknown): WalletOperationStartResult => {
-  try { return parseWalletOperationStartResult(value); }
-  catch { throw invalidBrowserResponse("The wallet operation response is invalid."); }
 };
 
 const parseOperation = (
@@ -84,14 +86,31 @@ export const startWalletOperation = async (
   connectionRevision: string,
   csrfToken: unknown,
   options: BrowserRequestOptions = {},
-): Promise<WalletOperationStartResult> => {
+): Promise<WalletOperationStartResult | DeliveryUnknown> => {
   const input = parseWalletWebOperationCreate({ kind, connectionRevision });
-  return parseStartResult(await controlBrowserJson(
+  const operationId = createBrowserOperationId();
+  const delivery = await controlBrowserActionJson(
+    "start",
+    operationId,
     browserWalletApiPaths.operations,
-    input,
+    {
+      control: { operationId, interactionInterface: "web" },
+      request: input,
+    },
     csrfToken,
     options,
-  ));
+  );
+  if (delivery.status === "delivery_unknown") return delivery.delivery;
+  const value = delivery.value;
+  try {
+    return walletManagementContracts[kind].parseBoundSuccess(
+      {},
+      { operationId, interactionInterface: "web" },
+      parseWalletOperationStartResult(value),
+    );
+  } catch {
+    return createDeliveryUnknown("start", operationId);
+  }
 };
 
 const controlWalletOperation = async (
@@ -100,15 +119,34 @@ const controlWalletOperation = async (
   connectionRevision: string,
   csrfToken: unknown,
   options: BrowserRequestOptions,
-): Promise<WalletManagementOperation> => {
+): Promise<WalletManagementOperation | DeliveryUnknown> => {
   const input = parseWalletOperationConfirmation({ connectionRevision });
+  const id = parseWalletOperationId(operationId);
   const path = action === "confirm"
-    ? browserOperationConfirmationPath(operationId)
-    : browserOperationCancellationPath(operationId);
-  return parseOperation(
-    await controlBrowserJson(path, input, csrfToken, options),
-    operationId,
-  );
+    ? browserOperationConfirmationPath(id)
+    : browserOperationCancellationPath(id);
+  const delivery = await controlBrowserActionJson(action, id, path, input, csrfToken, options);
+  if (delivery.status === "delivery_unknown") return delivery.delivery;
+  const value = delivery.value;
+  try {
+    const parsed = parseOperation(value, id);
+    const operation = action === "confirm"
+      ? walletOperationConfirmationContract.parseBoundSuccess(
+          { operationId: id, connectionRevision: input.connectionRevision },
+          { operationId: id, interactionInterface: "web" },
+          parsed,
+        )
+      : walletManagementContracts.cancelOperation.parsePublicSuccess(
+          { operationId: id },
+          parsed,
+        );
+    if (action === "cancel" && operation.state !== "cancelled") {
+      return createDeliveryUnknown("cancel", id);
+    }
+    return operation;
+  } catch {
+    return createDeliveryUnknown(action as OperationDeliveryAction, id);
+  }
 };
 
 export const confirmWalletOperation = (
@@ -116,7 +154,7 @@ export const confirmWalletOperation = (
   connectionRevision: string,
   csrfToken: unknown,
   options: BrowserRequestOptions = {},
-): Promise<WalletManagementOperation> =>
+): Promise<WalletManagementOperation | DeliveryUnknown> =>
   controlWalletOperation(
     "confirm",
     operationId,
@@ -130,7 +168,7 @@ export const cancelWalletOperation = (
   connectionRevision: string,
   csrfToken: unknown,
   options: BrowserRequestOptions = {},
-): Promise<WalletManagementOperation> =>
+): Promise<WalletManagementOperation | DeliveryUnknown> =>
   controlWalletOperation(
     "cancel",
     operationId,

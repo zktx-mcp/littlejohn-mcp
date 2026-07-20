@@ -306,7 +306,7 @@ describe("wallet owner application composition", () => {
     const started = await application.walletOperations.operation.start({
       kind: "disconnect",
       connectionRevision: current.connectionRevision,
-    });
+    }, "A".repeat(43));
     expect(started.status).toBe("operation_started");
     if (started.status !== "operation_started") throw new Error("Expected a disconnection operation.");
     const operation = started.operation;
@@ -331,6 +331,7 @@ describe("wallet owner application composition", () => {
 
     expect(application.activeWallet.capture()).toEqual({
       connection: { status: "disconnected", reason: "no_session" },
+      connectionRevision: operation.connectionRevision,
     });
     expect(startupScope.empty).toBe(true);
     await startupScope.close();

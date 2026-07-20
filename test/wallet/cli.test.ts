@@ -46,6 +46,7 @@ import {
   createCapabilityHarness,
   invokeBinding,
 } from "../core/capability-harness.js";
+import { openTestOwnerSession } from "../interfaces/owner-session-harness.js";
 
 const operationId = Buffer.alloc(32, 21).toString("base64url");
 const hyphenLeadingOperationId = Buffer.concat([
@@ -158,6 +159,7 @@ class FakeRuntime implements CliRuntimePort {
   readonly requests: RuntimeDispatchRequest[] = [];
   stopCount = 0;
   startCount = 0;
+  onOwnerSessionOpen: (() => void) | undefined;
   readonly #handle: (operation: RuntimeDispatchRequest, requestIndex: number) => RuntimeDispatchResponse | Promise<RuntimeDispatchResponse>;
   readonly #stopError: Error | undefined;
   readonly #startError: Error | undefined;
@@ -178,6 +180,11 @@ class FakeRuntime implements CliRuntimePort {
     const request = Object.freeze({ ...input });
     this.requests.push(request);
     return this.#handle(request, this.requests.length - 1);
+  }
+
+  openOwnerSession(signal?: AbortSignal) {
+    this.onOwnerSessionOpen?.();
+    return openTestOwnerSession(this, signal);
   }
 
   async start(): Promise<void> {
@@ -325,10 +332,21 @@ const dependencies = (
   onPoll?: () => void,
   onTerminate?: (exitCode: number) => void,
 ): CliDependencies => Object.freeze({
+  createOperationId: () => operationId,
   createRuntime: async () => runtime,
   terminal: terminalResult.terminal,
   waitForPoll: async () => { onPoll?.(); },
   terminateProcess: (exitCode: number) => { onTerminate?.(exitCode); },
+});
+
+const requestWithoutSignal = ({
+  signal: _signal,
+  ...request
+}: RuntimeDispatchRequest): Omit<RuntimeDispatchRequest, "signal"> => request;
+
+const walletStartBody = (kind: "connect" | "disconnect") => ({
+  control: { operationId, interactionInterface: "cli" as const },
+  request: { kind, connectionRevision: null },
 });
 
 describe("wallet CLI", () => {
@@ -367,7 +385,7 @@ describe("wallet CLI", () => {
     }
   });
 
-  it("dispatches exact cancellation before restoring the process terminal for every catchable signal", async () => {
+  it("clears the process terminal and settles exact cancellation for every catchable signal", async () => {
     for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
       const awaiting = operation({
         kind: "connect",
@@ -382,6 +400,7 @@ describe("wallet CLI", () => {
           ? successResponse(200, operationStartResponse(awaiting, qr))
           : successResponse(200, { operation: cancelled });
       });
+      runtime.onOwnerSessionOpen = () => events.push("session-open");
       const processHost = fakeProcessHost();
       const terminal = createProcessTerminal(processHost.host);
       let signalSent = false;
@@ -395,13 +414,14 @@ describe("wallet CLI", () => {
       });
 
       expect(await runCli(["wallet", "connect"], {
+        createOperationId: () => operationId,
         createRuntime: async () => runtime,
         terminal,
         waitForPoll: async () => undefined,
         terminateProcess: () => undefined,
       })).toBe(0);
       expect(events.indexOf("cancel")).toBeGreaterThan(events.indexOf("operation"));
-      expect(events.indexOf("restore")).toBeGreaterThan(events.indexOf("cancel"));
+      expect(events.indexOf("restore")).toBeGreaterThan(events.lastIndexOf("session-open"));
       expect(runtime.stopCount).toBe(1);
     }
   });
@@ -413,6 +433,7 @@ describe("wallet CLI", () => {
     const processHost = fakeProcessHost();
     const terminal = createProcessTerminal(processHost.host);
     const running = runCli(["wallet", "disconnect"], {
+      createOperationId: () => operationId,
       createRuntime: () => {
         creationEntered.resolve(undefined);
         return runtimeResult.promise;
@@ -452,6 +473,7 @@ describe("wallet CLI", () => {
           requests.push(request);
           throw new Error("operation must not run");
         },
+        openOwnerSession(signal?: AbortSignal) { return openTestOwnerSession(this, signal); },
         async stop(): Promise<void> {
           stopCount += 1;
           startResult.reject(new RuntimeOperationError("request_aborted"));
@@ -460,6 +482,7 @@ describe("wallet CLI", () => {
       const processHost = fakeProcessHost();
       const terminal = createProcessTerminal(processHost.host);
       const running = runCli(command, {
+        createOperationId: () => operationId,
         createRuntime: async () => runtime,
         terminal,
         waitForPoll: async () => undefined,
@@ -508,6 +531,7 @@ describe("wallet CLI", () => {
     const processHost = fakeProcessHost();
     const terminal = createProcessTerminal(processHost.host);
     const running = runCli(["wallet", "disconnect"], {
+      createOperationId: () => operationId,
       createRuntime: async () => runtime,
       terminal,
       waitForPoll: async () => undefined,
@@ -569,6 +593,9 @@ describe("wallet CLI", () => {
         events.push("owner:delete");
         return Promise.resolve(successResponse(200, { operation: cancelled }));
       },
+      openOwnerSession(signal?: AbortSignal) {
+        return openTestOwnerSession(this, signal);
+      },
       async closeApplication(): Promise<object> {
         events.push("owner:close-application");
         pendingGet.reject(new RuntimeOperationError("request_aborted"));
@@ -583,6 +610,7 @@ describe("wallet CLI", () => {
     const runtime = Reflect.construct(LocalRuntime, [database, () => owner]) as LocalRuntime;
     const terminal = fakeTerminal();
     const running = runCli(["wallet", "connect"], {
+      createOperationId: () => operationId,
       createRuntime: async () => runtime,
       terminal: terminal.terminal,
       waitForPoll: async () => undefined,
@@ -612,6 +640,7 @@ describe("wallet CLI", () => {
     ]) {
       let starts = 0;
       const exitCode = await runCli(["wallet", "status"], {
+        createOperationId: () => operationId,
         createRuntime: async () => {
           starts += 1;
           throw new Error("must not start");
@@ -643,6 +672,7 @@ describe("wallet CLI", () => {
       const tty = fakeTerminal();
       let starts = 0;
       expect(await runCli(command, {
+        createOperationId: () => operationId,
         createRuntime: async () => {
           starts += 1;
           throw new Error("must not start");
@@ -663,6 +693,7 @@ describe("wallet CLI", () => {
     let closes = 0;
 
     expect(await runCli([], {
+      createOperationId: () => operationId,
       createRuntime: async () => runtime,
       terminal: terminal.terminal,
       waitForPoll: async () => undefined,
@@ -701,7 +732,7 @@ describe("wallet CLI", () => {
       ["wallet", "operation", hyphenLeadingOperationId, "--json"],
       dependencies(operationRuntime, operationTerminal),
     )).toBe(0);
-    expect(operationRuntime.requests).toEqual([{
+    expect(operationRuntime.requests.map(requestWithoutSignal)).toEqual([{
       requestClass: "local_control",
       method: "GET",
       path: walletControlRoutes.operation(hyphenLeadingOperationId),
@@ -712,7 +743,7 @@ describe("wallet CLI", () => {
       ["wallet", "cancel", hyphenLeadingOperationId],
       dependencies(cancelRuntime),
     )).toBe(0);
-    expect(cancelRuntime.requests).toEqual([{
+    expect(cancelRuntime.requests.map(requestWithoutSignal)).toEqual([{
       requestClass: "local_control",
       method: "DELETE",
       path: walletControlRoutes.operation(hyphenLeadingOperationId),
@@ -751,11 +782,11 @@ describe("wallet CLI", () => {
 
   it("returns the current valid connection without creating, confirming, or observing an operation", async () => {
     const runtime = new FakeRuntime((request) => {
-      expect(request).toEqual({
+      expect(requestWithoutSignal(request)).toEqual({
         requestClass: "local_control",
         method: "POST",
         path: walletControlRoutes.operations,
-        body: { kind: "connect", interactionInterface: "cli", connectionRevision: null },
+        body: walletStartBody("connect"),
       });
       return successResponse(200, currentConnectionStartResponse());
     }, "owner");
@@ -777,23 +808,19 @@ describe("wallet CLI", () => {
     expect(terminal.output.join("")).not.toContain("WalletConnect coordinator active");
   });
 
-  it("rejects a current-connection response for disconnection", async () => {
+  it("preserves delivery uncertainty for an invalid current-connection response to disconnection", async () => {
     const runtime = new FakeRuntime(() =>
       successResponse(200, currentConnectionStartResponse()));
     const terminal = fakeTerminal();
 
-    expect(await runCli(["wallet", "disconnect"], dependencies(runtime, terminal))).toBe(1);
-    expect(runtime.requests).toEqual([{
-      requestClass: "local_control",
-      method: "POST",
-      path: walletControlRoutes.operations,
-      body: { kind: "disconnect", interactionInterface: "cli", connectionRevision: null },
-    }]);
+    expect(await runCli(["wallet", "disconnect"], dependencies(runtime, terminal))).toBe(8);
+    expect(runtime.requests.map(({ method, path }) => ({ method, path }))).toEqual([
+      { method: "POST", path: walletControlRoutes.operations },
+      { method: "GET", path: walletControlRoutes.operation(operationId) },
+    ]);
     expect(terminal.prompts).toEqual([]);
     expect(terminal.events).not.toContain("qr_show");
-    expect(terminal.errors).toEqual([
-      "internal_error: The request could not be completed.\n",
-    ]);
+    expect(terminal.errors.join("")).toContain("Delivery unknown for start operation");
   });
 
   it("renders a fresh pairing matrix, clears it at completion, and keeps an owner coordinator until interrupt", async () => {
@@ -818,12 +845,12 @@ describe("wallet CLI", () => {
     });
 
     expect(await runCli(["wallet", "connect"], dependencies(runtime, tty))).toBe(0);
-    expect(runtime.requests).toEqual([
+    expect(runtime.requests.map(requestWithoutSignal)).toEqual([
       {
         requestClass: "local_control",
         method: "POST",
         path: walletControlRoutes.operations,
-        body: { kind: "connect", interactionInterface: "cli", connectionRevision: null },
+        body: walletStartBody("connect"),
       },
       { requestClass: "local_control", method: "GET", path: walletControlRoutes.operation(operationId) },
     ]);
@@ -860,6 +887,7 @@ describe("wallet CLI", () => {
     });
 
     expect(await runCli(["wallet", "connect"], {
+      createOperationId: () => operationId,
       createRuntime: async () => runtime,
       terminal,
       waitForPoll: async () => undefined,
@@ -930,7 +958,7 @@ describe("wallet CLI", () => {
     expect(tty.prompts).toHaveLength(1);
     expect(tty.prompts[0]).toContain("Connection revision: 4");
     expect(tty.prompts[0]).toContain("Every existing wallet session for this profile will be disconnected");
-    expect(runtime.requests.at(-1)).toEqual({
+    expect(requestWithoutSignal(runtime.requests.at(-1)!)).toEqual({
       requestClass: "local_control",
       method: "DELETE",
       path: walletControlRoutes.operation(operationId),
@@ -949,7 +977,7 @@ describe("wallet CLI", () => {
     const completed = operation({
       kind: "disconnect",
       state: "completed",
-      connectionRevision: "92",
+      connectionRevision: "91",
       result: { outcome: "disconnected", connection: disconnected },
     });
     const runtime = new FakeRuntime((request) => {
@@ -965,13 +993,13 @@ describe("wallet CLI", () => {
     const tty = fakeTerminal({ confirmation: true });
 
     expect(await runCli(["wallet", "disconnect"], dependencies(runtime, tty))).toBe(0);
-    expect(runtime.requests[0]).toEqual({
+    expect(requestWithoutSignal(runtime.requests[0]!)).toEqual({
       requestClass: "local_control",
       method: "POST",
       path: walletControlRoutes.operations,
-      body: { kind: "disconnect", interactionInterface: "cli", connectionRevision: null },
+      body: walletStartBody("disconnect"),
     });
-    expect(runtime.requests.at(-1)).toEqual({
+    expect(requestWithoutSignal(runtime.requests.at(-1)!)).toEqual({
       requestClass: "local_control",
       method: "POST",
       path: walletControlRoutes.confirmation(operationId),
@@ -1024,7 +1052,7 @@ describe("wallet CLI", () => {
       ["wallet", "disconnect"],
       dependencies(promptFailure, promptTerminal),
     )).toBe(1);
-    expect(promptFailure.requests.at(-1)).toEqual({
+    expect(requestWithoutSignal(promptFailure.requests.at(-1)!)).toEqual({
       requestClass: "local_control",
       method: "DELETE",
       path: walletControlRoutes.operation(operationId),
@@ -1150,6 +1178,7 @@ describe("wallet CLI", () => {
     });
 
     expect(await runCli(["wallet", "disconnect"], {
+      createOperationId: () => operationId,
       createRuntime: async () => runtime,
       terminal,
       waitForPoll: async () => undefined,
@@ -1223,7 +1252,7 @@ describe("wallet CLI", () => {
       dependencies(runtime, terminal),
     )).toBe(5);
     expect(runtime.requests.some(({ method }) => method === "DELETE")).toBe(false);
-    expect(runtime.requests.at(-1)).toEqual({
+    expect(requestWithoutSignal(runtime.requests.at(-1)!)).toEqual({
       requestClass: "local_control",
       method: "POST",
       path: walletControlRoutes.confirmation(operationId),
@@ -1240,11 +1269,11 @@ describe("wallet CLI", () => {
       ["wallet", "disconnect"],
       dependencies(disconnectRuntime, disconnectTerminal),
     )).toBe(0);
-    expect(disconnectRuntime.requests).toEqual([{
+    expect(disconnectRuntime.requests.map(requestWithoutSignal)).toEqual([{
       requestClass: "local_control",
       method: "POST",
       path: walletControlRoutes.operations,
-      body: { kind: "disconnect", interactionInterface: "cli", connectionRevision: null },
+      body: walletStartBody("disconnect"),
     }]);
     expect(disconnectTerminal.output.join("")).toContain("already_disconnected");
 
@@ -1255,7 +1284,7 @@ describe("wallet CLI", () => {
       ["wallet", "cancel", operationId],
       dependencies(cancelRuntime, cancelTerminal),
     )).toBe(0);
-    expect(cancelRuntime.requests).toEqual([{
+    expect(cancelRuntime.requests.map(requestWithoutSignal)).toEqual([{
       requestClass: "local_control",
       method: "DELETE",
       path: walletControlRoutes.operation(operationId),
@@ -1284,7 +1313,7 @@ describe("wallet CLI", () => {
     });
 
     expect(await runCli(["wallet", "connect"], dependencies(runtime, tty))).toBe(0);
-    expect(runtime.requests.at(-1)).toEqual({
+    expect(requestWithoutSignal(runtime.requests.at(-1)!)).toEqual({
       requestClass: "local_control",
       method: "DELETE",
       path: walletControlRoutes.operation(operationId),
@@ -1413,6 +1442,7 @@ describe("wallet CLI", () => {
     const listenerCounts: number[] = [];
 
     expect(await runCli(["wallet", "connect"], {
+      createOperationId: () => operationId,
       createRuntime: async () => runtime,
       terminal: terminal.terminal,
       waitForPoll: () => new Promise<void>((resolvePoll) => {
@@ -1443,6 +1473,7 @@ describe("wallet CLI", () => {
     });
 
     expect(await runCli(["wallet", "connect"], {
+      createOperationId: () => operationId,
       createRuntime: async () => runtime,
       terminal: terminal.terminal,
       waitForPoll: () => new Promise<void>((resolvePoll) => {
@@ -1492,7 +1523,7 @@ describe("wallet CLI", () => {
     ]);
   });
 
-  it("starts exact-operation cancellation before clearing a displayed QR on interrupt", async () => {
+  it("clears a displayed QR and settles exact-operation cancellation on interrupt", async () => {
     const awaiting = operation({
       kind: "connect",
       state: "awaiting_wallet_approval",
@@ -1506,6 +1537,7 @@ describe("wallet CLI", () => {
         ? successResponse(200, operationStartResponse(awaiting, qr))
         : successResponse(200, { operation: cancelled });
     });
+    runtime.onOwnerSessionOpen = () => events.push("session-open");
     let tty!: FakeTerminalResult;
     tty = fakeTerminal({
       onOutput(value, result) {
@@ -1515,8 +1547,8 @@ describe("wallet CLI", () => {
     });
 
     expect(await runCli(["wallet", "connect"], dependencies(runtime, tty))).toBe(0);
-    expect(events.indexOf("cancel")).toBeGreaterThan(events.indexOf("output"));
-    expect(events.indexOf("clear")).toBeGreaterThan(events.indexOf("cancel"));
+    expect(events.lastIndexOf("session-open")).toBeGreaterThan(events.indexOf("output"));
+    expect(events.indexOf("clear")).toBeGreaterThan(events.lastIndexOf("session-open"));
     expect(runtime.requests.some((request) => request.method === "DELETE" &&
       request.path === walletControlRoutes.operation(operationId))).toBe(true);
   });
@@ -1593,6 +1625,7 @@ describe("wallet CLI", () => {
       });
 
       const exitCode = await runCli(["wallet", "connect"], {
+        createOperationId: () => operationId,
         createRuntime: async () => runtime,
         terminal: terminal.terminal,
         waitForPoll: failurePoint === "poll"
@@ -1602,7 +1635,8 @@ describe("wallet CLI", () => {
       });
 
       expect(exitCode).toBe(failurePoint === "observation" ? 7 : 1);
-      expect(runtime.requests.filter(({ method }) => method === "DELETE")).toEqual([{
+      expect(runtime.requests.filter(({ method }) => method === "DELETE")
+        .map(requestWithoutSignal)).toEqual([{
         requestClass: "local_control",
         method: "DELETE",
         path: walletControlRoutes.operation(operationId),

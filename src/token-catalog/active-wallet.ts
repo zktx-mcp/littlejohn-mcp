@@ -1,4 +1,5 @@
 import { type EvmAccountIdentity } from "../core/index.js";
+import type { UnsignedDecimal } from "../core/index.js";
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
 import { TokenCatalogOperationError } from "./operation-error.js";
 
@@ -8,6 +9,7 @@ type WalletSessionSource = NonNullable<
 
 export interface ConnectedWalletSession {
   readonly account: EvmAccountIdentity;
+  readonly connectionRevision: UnsignedDecimal;
   readonly sessionSource: WalletSessionSource;
 }
 
@@ -33,7 +35,11 @@ export const captureConnectedWalletSession = (
         chainId: snapshot.connection.chainId,
         address: snapshot.connection.address,
       });
-      return Object.freeze({ account, sessionSource: snapshot.sessionSource });
+      return Object.freeze({
+        account,
+        connectionRevision: snapshot.connectionRevision,
+        sessionSource: snapshot.sessionSource,
+      });
     }
   }
 };

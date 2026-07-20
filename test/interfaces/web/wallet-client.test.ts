@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fieldIssueSchema } from "../../../src/core/browser.js";
 import {
@@ -26,6 +26,15 @@ import { parseBrowserProblemDetails } from "../../../src/interfaces/browser-erro
 const operationId = "A".repeat(43);
 const csrfToken = "A".repeat(43);
 const connectionRevision = "7";
+
+beforeEach(() => {
+  vi.spyOn(globalThis.crypto, "getRandomValues").mockImplementation((array) => {
+    new Uint8Array(array.buffer, array.byteOffset, array.byteLength).fill(0);
+    return array;
+  });
+});
+
+afterEach(() => { vi.restoreAllMocks(); });
 
 const disconnected = Object.freeze({
   status: "disconnected",
@@ -247,16 +256,42 @@ describe("wallet browser client", () => {
         method: "POST",
         credentials: "same-origin",
         cache: "no-store",
+        signal: expect.any(AbortSignal),
         headers: {
           [browserCsrfHeaderName]: csrfToken,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          kind: "connect",
-          connectionRevision: operation.connectionRevision,
+          control: { operationId, interactionInterface: "web" },
+          request: {
+            kind: "connect",
+            connectionRevision: operation.connectionRevision,
+          },
         }),
       },
     }]);
+  });
+
+  it("does not trust a response body that imitates local delivery uncertainty", async () => {
+    const transport = queuedFetch([jsonResponse(200, {
+      status: "delivery_unknown",
+      action: "cancel",
+      operationId: "B".repeat(43),
+      resendAllowed: false,
+      extra: true,
+    })]);
+
+    await expect(startWalletOperation(
+      "connect",
+      operation.connectionRevision,
+      csrfToken,
+      { request: transport.request },
+    )).resolves.toEqual({
+      status: "delivery_unknown",
+      action: "start",
+      operationId,
+      resendAllowed: false,
+    });
   });
 
   it("sends direct browser disconnect as one start request", async () => {
@@ -278,8 +313,11 @@ describe("wallet browser client", () => {
     expect(transport.requests[0]).toMatchObject({
       path: browserWalletApiPaths.operations,
       init: { body: JSON.stringify({
-        kind: "disconnect",
-        connectionRevision: disconnecting.connectionRevision,
+        control: { operationId, interactionInterface: "web" },
+        request: {
+          kind: "disconnect",
+          connectionRevision: disconnecting.connectionRevision,
+        },
       }) },
     });
   });
@@ -288,7 +326,7 @@ describe("wallet browser client", () => {
     const confirmation = Object.freeze({
       ...operation,
       kind: "disconnect",
-      state: "awaiting_confirmation",
+      state: "disconnecting",
     });
     const cancelled = Object.freeze({
       ...confirmation,
@@ -316,6 +354,7 @@ describe("wallet browser client", () => {
       method: "POST",
       credentials: "same-origin",
       cache: "no-store",
+      signal: expect.any(AbortSignal),
       headers: {
         [browserCsrfHeaderName]: csrfToken,
         "Content-Type": "application/json",

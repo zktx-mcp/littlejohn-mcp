@@ -6,7 +6,6 @@ import {
   chainStatusCapability,
   contractInspectCapability,
   createAccountBalanceTokenEvidenceIdentity,
-  deriveEip155Reference,
   getCapabilityDefinitionSnapshot,
   transactionInspectCapability,
   type AccountBalanceData,
@@ -43,7 +42,6 @@ import {
 } from "./errors.js";
 import type { Erc20CallEncoder } from "./evm-standard.js";
 import {
-  blockSelectorToRpcTag,
   normalizeAbiDecimals,
   normalizeAbiUint256,
   normalizeIncludedTransaction,
@@ -51,22 +49,23 @@ import {
   normalizeRpcRuntimeCode,
   normalizeRpcTransaction,
   rpcQuantityToUnsignedDecimal,
-  unsignedDecimalToRpcQuantity,
   type NormalizedAccessList,
   type NormalizedRpcReceipt,
   type NormalizedRpcTransaction,
 } from "./normalization.js";
 import {
-  canonicalBlockReference,
-  ChainRpcError,
   getChainRpcErrorCode,
   isRpcExecutionRevertedError,
   rpcConcurrencyLimit,
   type RpcCanonicalBlockReference,
   type RpcRequester,
 } from "./rpc.js";
-
-export const chainInvocationDeadlineMs = 90_000;
+import { resolveCanonicalBlock } from "./canonical-block.js";
+import { validateConfiguredChain } from "./configured-chain.js";
+import {
+  getChainInvocationStopReason,
+  type ChainInvocationLifecycle,
+} from "./invocation-lifecycle.js";
 
 const transactionDefinition = getCapabilityDefinitionSnapshot(transactionInspectCapability);
 const accountDefinition = getCapabilityDefinitionSnapshot(accountBalanceCapability);
@@ -129,18 +128,17 @@ const accessListData = (accessList: NormalizedAccessList): TransactionInspectDat
       };
 
 const runHandler = async (
+  lifecycle: ChainInvocationLifecycle,
   callerSignal: AbortSignal,
-  applicationSignal: AbortSignal,
   operation: (signal: AbortSignal) => Promise<unknown>,
 ): Promise<unknown> => {
-  const deadline = new AbortController();
-  const timer = setTimeout(() => deadline.abort(), chainInvocationDeadlineMs);
-  timer.unref();
-  const signal = AbortSignal.any([callerSignal, applicationSignal, deadline.signal]);
   try {
-    if (signal.aborted) throw new ChainRpcError("request_aborted");
-    return await operation(signal);
+    return await lifecycle.run(callerSignal, operation);
   } catch (error) {
+    const stopReason = getChainInvocationStopReason(error);
+    if (stopReason !== undefined) {
+      return asFailure(stopReason === "caller_aborted" ? "request_aborted" : "source_unavailable");
+    }
     const operationFailure = getChainOperationFailure(error);
     if (operationFailure !== undefined) return asFailure(operationFailure.error.code);
     const rpcCode = getChainRpcErrorCode(error);
@@ -149,14 +147,11 @@ const runHandler = async (
       return asFailure(rpcCode);
     }
     throw error;
-  } finally {
-    clearTimeout(timer);
   }
 };
 
 export interface ChainReadService {
   readonly chainReads: ChainReadCapabilityPort;
-  close(): Promise<void>;
 }
 
 const recordChainId = async (
@@ -164,13 +159,12 @@ const recordChainId = async (
   signal: AbortSignal,
   observations: ObservationWriter,
 ): Promise<void> => {
-  const result = await dependencies.rpc.request("eth_chainId", [], signal);
-  if (result !== unsignedDecimalToRpcQuantity(deriveEip155Reference(dependencies.chainId))) {
-    throw new ChainOperationError("source_inconsistent");
-  }
-  observations.record("rpc_chain_id", {
-    source: dependencies.rpcSource,
-    claims: [{ role: "chain_id", value: dependencies.chainId }],
+  await validateConfiguredChain({
+    rpc: dependencies.rpc,
+    chainId: dependencies.chainId,
+    rpcSource: dependencies.rpcSource,
+    signal,
+    observations,
   });
 };
 
@@ -182,19 +176,11 @@ const resolveBlock = async (
   readonly anchor: ChainAnchor;
   readonly stateReference: RpcCanonicalBlockReference;
 }> => {
-  const raw = await dependencies.rpc.request(
-    "eth_getBlockByNumber",
-    [blockSelectorToRpcTag(selector), false],
+  return resolveCanonicalBlock({
+    rpc: dependencies.rpc,
+    chainId: dependencies.chainId,
+    selector,
     signal,
-  );
-  if (raw === null) throw new ChainOperationError("source_inconsistent");
-  const anchor = normalizeSourceValue(() => normalizeRpcBlockAnchor(raw, dependencies.chainId));
-  if (selector.kind === "number" && selector.blockNumber !== anchor.blockNumber) {
-    throw new ChainOperationError("source_inconsistent");
-  }
-  return Object.freeze({
-    anchor,
-    stateReference: canonicalBlockReference(anchor.blockHash),
   });
 };
 
@@ -581,6 +567,7 @@ export const createChainReadService = (input: {
   readonly context: ChainOwnerApplicationContext<ActiveWalletReadPort>;
   readonly rpc: RpcRequester;
   readonly encoder: Erc20CallEncoder;
+  readonly lifecycle: ChainInvocationLifecycle;
 }): ChainReadService => {
   const rpcSource = input.context.chain.sourceAuthority.observationAuthority;
   const chainId = input.context.chain.configuration.chain.chainId;
@@ -593,25 +580,10 @@ export const createChainReadService = (input: {
     nativeAsset,
   });
   const basePorts = input.context.chain.capabilityAuthority.invocationPorts;
-  const applicationAbort = new AbortController();
-  const activeInvocations = new Set<Promise<unknown>>();
-  let closed = false;
-  const abortForOwner = (): void => applicationAbort.abort();
-  if (input.context.signal.aborted) applicationAbort.abort();
-  else input.context.signal.addEventListener("abort", abortForOwner, { once: true });
   const execute = (
     callerSignal: AbortSignal,
     operation: (signal: AbortSignal) => Promise<unknown>,
-  ): Promise<unknown> => {
-    if (closed || applicationAbort.signal.aborted) return Promise.resolve(asFailure("source_unavailable"));
-    const invocation = runHandler(callerSignal, applicationAbort.signal, operation);
-    activeInvocations.add(invocation);
-    void invocation.then(
-      () => activeInvocations.delete(invocation),
-      () => activeInvocations.delete(invocation),
-    );
-    return invocation;
-  };
+  ): Promise<unknown> => runHandler(input.lifecycle, callerSignal, operation);
   const notRequiredPorts = (): ChainInvocationPorts => Object.freeze({
     observations: basePorts.observations,
     account: Object.freeze({ status: "not_required" as const }),
@@ -872,15 +844,5 @@ export const createChainReadService = (input: {
   });
 
   const chainReads = Object.freeze({ accountBalance, chainStatus, contractInspect, transactionInspect });
-  return Object.freeze({
-    chainReads,
-    async close(): Promise<void> {
-      if (!closed) {
-        closed = true;
-        input.context.signal.removeEventListener("abort", abortForOwner);
-        applicationAbort.abort();
-      }
-      await Promise.allSettled([...activeInvocations]);
-    },
-  });
+  return Object.freeze({ chainReads });
 };

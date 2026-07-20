@@ -33,8 +33,13 @@ and serialized wallet operation contracts defined below.
 The owner also opens one bounded RPC reader for the configured Robinhood Chain
 endpoint. `chain.status`, `contract.inspect`, `transaction.inspect`, and
 `account.balance` are complete internal direct capabilities. Every invocation
-checks canonical chain ID `eip155:4663`; pins dependent state reads to one observed canonical
-block hash using [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898); preserves
+enters one chain lifecycle that owns caller abort, application close, the
+90-second whole-invocation deadline, listener cleanup, and drain. Configured
+chain validation and selector-based canonical-block resolution are separate
+single-owner procedures used only by capabilities that need them. Every
+applicable invocation checks canonical chain ID `eip155:4663`; pins dependent
+state reads to one observed canonical block hash using
+[EIP-1898](https://eips.ethereum.org/EIPS/eip-1898); preserves
 integers as base-10 strings; validates transaction, receipt, log, and block
 identity; preserves the signed access-list sequence and multiplicity; and
 records source-scoped evidence. The chain boundary uses viem for EVM Keccak and
@@ -304,6 +309,12 @@ transaction material, WalletConnect state, or private settings.
 - Each application stage owns a separate acquisition scope. A failed partial
   stage closes before completed earlier stages; a successful stage retains only
   its returned application before its scope is sealed.
+- A stage failure followed by a cleanup failure preserves both errors in that
+  order. Cleanup failure never replaces or hides the startup failure.
+- The token-catalog application factory owns its coordinator, application
+  adapter, consumer ports, support extension, admission state, and close/drain
+  lifecycle. Runtime composition consumes that complete application and does
+  not construct token-catalog internals.
 - Fixed-owner shutdown blocks new work, aborts and drains active work, closes
   interface, chain, and wallet applications in that order, validates the
   WalletConnect private store, closes SQLite, releases the database lease, and
@@ -329,7 +340,7 @@ to contain a malicious process already running with the same user authority.
 
 - The local control credential contains 256 random bits, is encoded as
   unpadded base64url, and remains stable across compatible owner takeover.
-- The runtime protocol version is `3`. It identifies the compatible local-owner
+- The runtime protocol version is `4`. It identifies the compatible local-owner
   wire contract; an incompatible change replaces this value. Profile ID and
   owner instance ID each
   contain 128 random bits encoded as unpadded base64url. Owner revision is an
@@ -369,9 +380,21 @@ to contain a malicious process already running with the same user authority.
   that completed identity verification. A replacement socket receives no
   credential until it completes a new identity verification.
 - Connection, identity verification, and exact-socket request dispatch have a
-  finite transport deadline. After dispatch, the owning route and runtime
-  lifecycle own operation completion and cancellation. An operation is never
-  resent after delivery becomes uncertain.
+  finite transport deadline. An authenticated owner session reports whether a
+  request was not sent, received one complete response, or lost its response
+  after sending began. Response observation has a separate five-minute bound.
+- The local operation client allocates a 256-bit operation identifier before a
+  start, sends each start, cancellation, or confirmation once, and validates
+  the response through the binding catalog. Callers supply an opaque catalog
+  identity and operation input; the catalog alone owns the method, path, body,
+  parser, error mapping, recovery, and outcome rules. After an uncertain send,
+  it may read that exact operation once only while the authenticated profile,
+  owner instance, protocol version, configuration identifier, and owner
+  revision are unchanged. An unproved outcome is `delivery_unknown` and forbids
+  resend.
+- After dispatch, the owning route and runtime lifecycle own operation
+  completion and cancellation. Closing the client rejects new calls, aborts
+  cancellable transport work, and waits for admitted calls to settle.
 - A missing, malformed, invalid, foreign-profile, or incompatible identity
   response is a port conflict. The peer never sends its credential to that
   listener.
@@ -404,6 +427,15 @@ to contain a malicious process already running with the same user authority.
 - One wallet coordinator owns the WalletConnect Sign Client, relay connection,
   session lifecycle, wallet-management-operation lifecycle, and request
   lifecycle.
+- Its active-wallet read port captures connection state, account, chain,
+  durable connection revision, stable session-source identity, and live
+  evidence authority in one immutable observation. Consumers do not combine
+  that observation with a later SQLite projection read or compare recreated
+  source objects by reference.
+- One operation-entry procedure converges expired operations before every
+  public read or control action. A separate exact-session-revocation procedure
+  deactivates affected evidence, disconnects the exact topic, and proves that
+  topic absent from the SDK store before evidence can reactivate.
 - A local Little John profile has zero or one live WalletConnect session and zero
   or one nonterminal wallet management operation. A pending pairing proposal is
   operation state and is not a WalletConnect session.
@@ -501,10 +533,17 @@ and never enter the operation read model.
 The current token-catalog operation is also owner-memory coordination state. A
 profile has at most one nonterminal catalog operation. Registration inspects the
 token before creating that operation; update and removal capture the exact
-current registration revision. Confirmation revalidates the same live wallet
-session, account, chain, and connection revision before one atomic registration
-transaction. Terminal operations have bounded memory retention and are not
-restored by a successor owner.
+current registration revision. One start procedure owns slot reservation,
+atomic wallet capture, the explicit register, update, or removal preparation
+branch, wallet recapture, operation publication, and release. Confirmation
+revalidates the same live wallet session, account, chain, and connection
+revision before one database method executes the explicit branch in one
+transaction. That transaction rereads the durable result and validates the
+completed operation before commit. A failed postcondition rolls back the whole
+branch. Application close rejects new calls, aborts cancellable inspection,
+waits for every admitted asynchronous call, and then releases operation state.
+Terminal operations have bounded memory retention and are not restored by a
+successor owner.
 
 The WalletConnect SDK private store is authoritative for:
 
@@ -605,6 +644,13 @@ application logs, exports, and diagnostic bundles.
   operation identifier in their action-resource paths for exact identity,
   revision, and stale-tab checks. The identifier is not navigation state or
   browser authority.
+- Browser actions allocate the same canonical operation identifier and send
+  once, but do not use authenticated owner sessions. A missing or malformed
+  action response therefore becomes `delivery_unknown` without a recovery
+  read, retry, cancellation, reload, or owner inference. Wallet and token
+  presentation retain separate state lifecycles. Locally established delivery
+  uncertainty is carried separately from response JSON, so response data cannot
+  claim its action, operation identifier, or resend policy.
 - Exact-operation observation finishes before the browser adopts a successor
   operation. Canonical retention expiry clears the old observation without
   inventing a terminal result. Browser-session expiry or compatible-owner
@@ -698,8 +744,11 @@ application logs, exports, and diagnostic bundles.
   registration pages. Token registration, update, and removal require an
   interactive terminal, display the complete server-owned review, and accept
   only one exact case-insensitive `y` response. The CLI sends the server-owned
-  review digest and never asks the user to transcribe it. Decline, interruption,
-  or presentation failure cancels the exact admitted operation before exit.
+  review digest and never asks the user to transcribe it. Before confirmation
+  is sent, decline, interruption, or presentation failure cancels the exact
+  admitted operation before exit. Once an action send begins, an unproved
+  response is reported as `delivery_unknown` with exit code `8`; the CLI names
+  the exact operation and does not repeat or compensate for that action.
 - The wallet owner converts a WalletConnect pairing URI to a QR matrix and
   discards the URI. The CLI renders only that matrix and never receives or
   prints the raw URI.

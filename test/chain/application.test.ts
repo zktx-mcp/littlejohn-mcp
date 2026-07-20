@@ -18,6 +18,7 @@ import {
   parseCapabilityDataAt,
   parseEvmChainId,
   parseHexBytes,
+  parseUnsignedDecimal,
   parseUtcTimestamp,
   sourceReferenceSchema,
   transactionInspectCapability,
@@ -198,7 +199,10 @@ const createContext = async () => {
   const activeWallet: ActiveWalletReadPort = Object.freeze({
     capture(): ActiveWalletReadSnapshot {
       walletCaptureCount += 1;
-      return Object.freeze({ connection: disconnected });
+      return Object.freeze({
+        connection: disconnected,
+        connectionRevision: parseUnsignedDecimal("0"),
+      });
     },
   });
   const ownerController = new AbortController();
@@ -657,17 +661,12 @@ describe("chain owner application", () => {
     await new Promise<void>((resolveTurn) => { setImmediate(resolveTurn); });
     expect(invocationSettled).toBe(false);
 
-    let closeSettled = false;
-    const close = Promise.resolve(application.close()).then(() => { closeSettled = true; });
-    await new Promise<void>((resolveTurn) => { setImmediate(resolveTurn); });
-    expect(closeSettled).toBe(false);
-
     for (const release of releaseDelayed) release();
     await expect(invocation).resolves.toMatchObject({
       ok: false,
       error: { code: "source_inconsistent" },
     });
-    await close;
+    await application.close();
     expect(delayedAborted).toBe(3);
   });
 

@@ -292,7 +292,7 @@ export const runReadCliCommand = async (
   const result = constrainInterfaceFailure(await dispatchCanonical(runtime, {
     ...request,
     ...(signal === undefined ? {} : { signal }),
-  }, 200), getCapabilityDefinitionSnapshot(identity.definition).failureCodes);
+  }, 200, identity.responseAuthority), getCapabilityDefinitionSnapshot(identity.definition).failureCodes);
   if (!result.ok) {
     if (command.json) {
       output.writeOutput(`${canonicalJsonStringify(result.failure as unknown as CanonicalJson)}\n`);

@@ -7,6 +7,10 @@ import {
 
 import type { WalletCurrentOperationProjection } from "../../wallet/operation-contract.js";
 import {
+  isDeliveryUnknown,
+  type DeliveryUnknown,
+} from "../operation-delivery.js";
+import {
   isTokenCatalogOperationTerminal,
   tokenInspectionDigest,
   tokenRegistrationSettingsSchema,
@@ -179,6 +183,7 @@ const TokenOperationReview = ({ operation }: { readonly operation: TokenCatalogO
 const TokenDialog = ({
   form,
   operation,
+  deliveryUnknown,
   pending,
   onClose,
   onSubmitAdd,
@@ -188,6 +193,7 @@ const TokenDialog = ({
 }: {
   readonly form: TokenFormDialog | undefined;
   readonly operation: TokenCatalogOperation | null;
+  readonly deliveryUnknown: DeliveryUnknown | undefined;
   readonly pending: boolean;
   readonly onClose: () => void;
   readonly onSubmitAdd: (address: string, settings: TokenRegistrationSettings) => void;
@@ -256,7 +262,7 @@ const TokenDialog = ({
     operation.interactionInterface === "cli" &&
     !isTokenCatalogOperationTerminal(operation.state);
   const closeWithoutMutation = (): void => {
-    if (!pending && (dismissibleReadOnlyOperation || operation === null)) onClose();
+    if (!pending && (deliveryUnknown !== undefined || dismissibleReadOnlyOperation || operation === null)) onClose();
   };
   return (
     <dialog
@@ -274,7 +280,21 @@ const TokenDialog = ({
         closeWithoutMutation();
       }}
     >
-      {operation !== null ? <TokenOperationReview operation={operation} /> : null}
+      {deliveryUnknown === undefined ? null : (
+        <>
+          <header>
+            <h1>Token action status unknown</h1>
+            <p>The local browser did not receive a valid response after sending the token catalog action.</p>
+          </header>
+          <div className="warning">
+            <strong>Do not repeat this action</strong>
+            <p>It may have occurred. Inspect operation {deliveryUnknown.operationId} before making another catalog change.</p>
+          </div>
+        </>
+      )}
+      {deliveryUnknown === undefined && operation !== null
+        ? <TokenOperationReview operation={operation} />
+        : null}
       {form?.mode === "add" || form?.mode === "edit" ? (
         <>
           <header>
@@ -322,17 +342,17 @@ const TokenDialog = ({
         </>
       ) : null}
       <div className="actions">
-        {operation === null || dismissibleReadOnlyOperation ? (
+        {deliveryUnknown !== undefined || operation === null || dismissibleReadOnlyOperation ? (
           <button type="button" className="secondary" disabled={pending} onClick={() => { onClose(); }}>
             Close
           </button>
         ) : null}
-        {form?.mode === "add" || form?.mode === "edit" ? (
+        {deliveryUnknown === undefined && (form?.mode === "add" || form?.mode === "edit") ? (
           <button type="button" disabled={pending} onClick={() => { submit(); }}>
             {pending ? "Inspecting…" : "Review change"}
           </button>
         ) : null}
-        {showOperationActions ? (
+        {deliveryUnknown === undefined && showOperationActions ? (
           <>
             <button type="button" className="secondary" disabled={pending} onClick={() => { onCancel(); }}>
               Cancel
@@ -370,6 +390,8 @@ export const TokenCatalogPage = ({
   const [listRevision, setListRevision] = useState(0);
   const [formDialog, setFormDialog] = useState<TokenFormDialog | undefined>(undefined);
   const [operation, setOperation] = useState<TokenCatalogOperation | null>(null);
+  const [deliveryUnknown, setDeliveryUnknown] = useState<DeliveryUnknown | undefined>(undefined);
+  const [deliveryDialogOpen, setDeliveryDialogOpen] = useState(false);
   const [listRequestAuthority] = useState(createBrowserRequestAuthority);
   const [detailRequestAuthority] = useState(createBrowserRequestAuthority);
   const [operationRequestAuthority] = useState(createBrowserRequestAuthority);
@@ -473,7 +495,7 @@ export const TokenCatalogPage = ({
 
   const operationId = operation?.operationId;
   useEffect(() => {
-    if (operationPending) return;
+    if (operationPending || deliveryUnknown !== undefined) return;
     const request = operationRequestAuthority.beginRead();
     if (request === undefined) return;
     let timer: number | undefined;
@@ -526,6 +548,7 @@ export const TokenCatalogPage = ({
     operationRequestAuthority,
     recoverBrowserSession,
     setStableDialogFocusTarget,
+    deliveryUnknown,
   ]);
 
   const displayedFormDialog = formDialog !== undefined &&
@@ -533,7 +556,7 @@ export const TokenCatalogPage = ({
     sameAccount(formDialog.account, account)
     ? formDialog
     : undefined;
-  const tokenDialogOpen = displayedFormDialog !== undefined || operation !== null;
+  const tokenDialogOpen = deliveryDialogOpen || displayedFormDialog !== undefined || operation !== null;
   useEffect(() => {
     if (tokenDialogOpen) {
       dialogHadFocus.current = true;
@@ -559,6 +582,7 @@ export const TokenCatalogPage = ({
   }, [accountKey, detailRequestAuthority]);
 
   const closeTokenDialog = useCallback((): void => {
+    if (deliveryUnknown !== undefined) setDeliveryDialogOpen(false);
     if (
       operation !== null &&
       operation.interactionInterface === "cli" &&
@@ -566,7 +590,7 @@ export const TokenCatalogPage = ({
     ) dismissedReadOnlyOperationId.current = operation.operationId;
     setOperation(null);
     setFormDialog(undefined);
-  }, [operation]);
+  }, [deliveryUnknown, operation]);
 
   const verifyDetailAccount = async (
     expected: ConnectedAccount,
@@ -580,7 +604,7 @@ export const TokenCatalogPage = ({
   };
 
   const openEdit = async (registration: TokenRegistration): Promise<void> => {
-    if (account === undefined || requestPending) return;
+    if (account === undefined || requestPending || deliveryUnknown !== undefined) return;
     const request = detailRequestAuthority.beginRead();
     if (request === undefined) return;
     focusReturnPending.current = true;
@@ -627,6 +651,12 @@ export const TokenCatalogPage = ({
       }
       const started = await startTokenUnregistration(detail.registration, getCsrfToken());
       if (!operationRequestAuthority.isCurrent(request)) return;
+      if (isDeliveryUnknown(started)) {
+        setDeliveryUnknown(started);
+        setDeliveryDialogOpen(true);
+        setFormDialog(undefined);
+        return;
+      }
       acceptOperation(started.operation);
     } catch (error) {
       if (!operationRequestAuthority.isCurrent(request)) return;
@@ -642,7 +672,7 @@ export const TokenCatalogPage = ({
     address: string,
     settings: TokenRegistrationSettings,
   ): Promise<void> => {
-    if (account === undefined || requestPending) return;
+    if (account === undefined || requestPending || deliveryUnknown !== undefined) return;
     const request = operationRequestAuthority.beginControl();
     if (request === undefined) return;
     setOperationPending(true);
@@ -654,6 +684,12 @@ export const TokenCatalogPage = ({
         getCsrfToken(),
       );
       if (!operationRequestAuthority.isCurrent(request)) return;
+      if (isDeliveryUnknown(started)) {
+        setDeliveryUnknown(started);
+        setDeliveryDialogOpen(true);
+        setFormDialog(undefined);
+        return;
+      }
       acceptOperation(started.operation);
     } catch (error) {
       if (!operationRequestAuthority.isCurrent(request)) return;
@@ -668,7 +704,7 @@ export const TokenCatalogPage = ({
     detail: TokenRegistrationWithInspection,
     settings: TokenRegistrationSettings,
   ): Promise<void> => {
-    if (requestPending) return;
+    if (requestPending || deliveryUnknown !== undefined) return;
     const request = operationRequestAuthority.beginControl();
     if (request === undefined) return;
     const changes = Object.freeze({
@@ -687,6 +723,12 @@ export const TokenCatalogPage = ({
         getCsrfToken(),
       );
       if (!operationRequestAuthority.isCurrent(request)) return;
+      if (isDeliveryUnknown(started)) {
+        setDeliveryUnknown(started);
+        setDeliveryDialogOpen(true);
+        setFormDialog(undefined);
+        return;
+      }
       acceptOperation(started.operation);
     } catch (error) {
       if (!operationRequestAuthority.isCurrent(request)) return;
@@ -698,16 +740,37 @@ export const TokenCatalogPage = ({
   };
 
   const operate = async (action: "confirm" | "cancel"): Promise<void> => {
-    if (operation === null || requestPending || operation.interactionInterface !== "web") return;
+    if (
+      operation === null ||
+      requestPending ||
+      deliveryUnknown !== undefined ||
+      operation.interactionInterface !== "web"
+    ) return;
     const request = operationRequestAuthority.beginControl();
     if (request === undefined) return;
     setOperationPending(true);
     try {
-      const result = action === "confirm"
-        ? await confirmTokenOperation(operation, getCsrfToken())
-        : (await cancelTokenOperation(operation.operationId, getCsrfToken())).operation;
-      if (!operationRequestAuthority.isCurrent(request)) return;
-      acceptOperation(result);
+      if (action === "confirm") {
+        const result = await confirmTokenOperation(operation, getCsrfToken());
+        if (!operationRequestAuthority.isCurrent(request)) return;
+        if (isDeliveryUnknown(result)) {
+          setDeliveryUnknown(result);
+          setDeliveryDialogOpen(true);
+          setOperation(null);
+          return;
+        }
+        acceptOperation(result);
+      } else {
+        const result = await cancelTokenOperation(operation.operationId, getCsrfToken());
+        if (!operationRequestAuthority.isCurrent(request)) return;
+        if (isDeliveryUnknown(result)) {
+          setDeliveryUnknown(result);
+          setDeliveryDialogOpen(true);
+          setOperation(null);
+          return;
+        }
+        acceptOperation(result.operation);
+      }
     } catch (error) {
       if (!operationRequestAuthority.isCurrent(request)) return;
       if (!recoverBrowserSession(error)) publishError(error);
@@ -778,7 +841,7 @@ export const TokenCatalogPage = ({
           <button
             ref={addTokenButton}
             type="button"
-            disabled={requestPending}
+            disabled={requestPending || deliveryUnknown !== undefined}
             onClick={(event) => {
               dialogTrigger.current = event.currentTarget;
               setFormDialog({ mode: "add", account });
@@ -822,7 +885,7 @@ export const TokenCatalogPage = ({
                     <button
                       type="button"
                       className="secondary"
-                      disabled={requestPending}
+                      disabled={requestPending || deliveryUnknown !== undefined}
                       onClick={(event) => {
                         dialogTrigger.current = event.currentTarget;
                         void openEdit(registration);
@@ -833,7 +896,7 @@ export const TokenCatalogPage = ({
                     <button
                       type="button"
                       className="danger"
-                      disabled={requestPending}
+                      disabled={requestPending || deliveryUnknown !== undefined}
                       onClick={(event) => {
                         dialogTrigger.current = event.currentTarget;
                         void startRemoval(registration);
@@ -855,11 +918,12 @@ export const TokenCatalogPage = ({
           ) : null}
         </>
       )}
-      {displayedFormDialog !== undefined || operation !== null ? (
+      {deliveryDialogOpen || displayedFormDialog !== undefined || operation !== null ? (
         <TokenDialog
-          key={operation?.operationId ?? displayedFormDialog?.mode}
+          key={deliveryDialogOpen ? deliveryUnknown?.operationId : operation?.operationId ?? displayedFormDialog?.mode}
           form={displayedFormDialog}
           operation={operation}
+          deliveryUnknown={deliveryDialogOpen ? deliveryUnknown : undefined}
           pending={requestPending}
           onClose={closeTokenDialog}
           onSubmitAdd={(address, settings) => { void submitAdd(address, settings); }}
