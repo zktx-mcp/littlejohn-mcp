@@ -3,19 +3,43 @@ export {
   canonicalAmountSchema,
   decimalsStateSchema,
   erc20AssetIdentitySchema,
+  calculateScaledUiAmount,
   formatAmount,
   gasUnitsSchema,
   nativeAssetIdentitySchema,
   nativeGasRateSchema,
   maximumTokenDecimals,
+  scaledUiAmountSchema,
+  scaledUiAmountScale,
+  uint256DecimalSchema,
 } from "./amounts.js";
 export type {
   AssetIdentity,
   CanonicalAmount,
   DecimalsState,
+  Erc20AssetIdentity,
   GasUnits,
   NativeGasRate,
+  ScaledUiAmount,
+  Uint256Decimal,
 } from "./amounts.js";
+export {
+  requiredErc8056ObservationSchema,
+  supportedErc8056ValuesSchema,
+  tokenStandardDefinitions,
+  tokenStandardIdSchema,
+  tokenStandardObservationSchema,
+  tokenStandardObservationResultSchema,
+  tokenStandardObservationStatusSchema,
+} from "./token-standards.js";
+export type {
+  RequiredErc8056Observation,
+  SupportedErc8056Values,
+  TokenStandardId,
+  TokenStandardObservation,
+  TokenStandardObservationResult,
+  TokenStandardObservationStatus,
+} from "./token-standards.js";
 export {
   accountNativeDecimalsExclusion,
   accountBalanceDataSchema,
@@ -34,6 +58,8 @@ export {
   canonicalJsonStringify,
   canonicalSha256,
   captureCanonicalJson,
+  sha256Bytes,
+  utf8ByteLength,
 } from "./canonical-json.js";
 export type { CanonicalJson } from "./canonical-json.js";
 export { coreContractVersion } from "./contract.js";

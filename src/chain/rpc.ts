@@ -80,12 +80,17 @@ export interface ChainRpcRequestMap {
   readonly eth_chainId: readonly [];
   readonly eth_getBlockByNumber: readonly [block: "latest" | RpcQuantity, fullTransactions: false];
   readonly eth_getCode: readonly [address: EvmAddress, block: RpcCanonicalBlockReference];
+  readonly eth_getStorageAt: readonly [
+    address: EvmAddress,
+    slot: Hash32,
+    block: RpcCanonicalBlockReference,
+  ];
   readonly eth_getTransactionByHash: readonly [transactionHash: Hash32];
   readonly eth_getTransactionReceipt: readonly [transactionHash: Hash32];
   readonly eth_getBlockByHash: readonly [blockHash: Hash32, fullTransactions: false];
   readonly eth_getBalance: readonly [address: EvmAddress, block: RpcCanonicalBlockReference];
   readonly eth_call: readonly [
-    call: Readonly<{ to: EvmAddress; data: HexBytes }>,
+    call: Readonly<{ to: EvmAddress; data: HexBytes; gas?: RpcQuantity }>,
     block: RpcCanonicalBlockReference,
   ];
 }
@@ -112,6 +117,7 @@ const allowedMethods = new Set<ChainRpcMethod>([
   "eth_chainId",
   "eth_getBlockByNumber",
   "eth_getCode",
+  "eth_getStorageAt",
   "eth_getTransactionByHash",
   "eth_getTransactionReceipt",
   "eth_getBlockByHash",
@@ -227,7 +233,14 @@ const canonicalRpcBlockReference = (value: unknown): boolean =>
   value["requireCanonical"] === true;
 
 const assertMethodParameters = (method: ChainRpcMethod, input: unknown): void => {
-  const params = exactArray(input, method === "eth_chainId" ? 0 : 2);
+  const expectedLength = method === "eth_chainId"
+    ? 0
+    : method === "eth_getTransactionByHash" || method === "eth_getTransactionReceipt"
+      ? 1
+      : method === "eth_getStorageAt"
+        ? 3
+        : 2;
+  const params = exactArray(input, expectedLength);
   if (method === "eth_chainId") {
     if (params === undefined) throw new TypeError("RPC request parameters are invalid.");
     return;
@@ -259,12 +272,21 @@ const assertMethodParameters = (method: ChainRpcMethod, input: unknown): void =>
     }
     return;
   }
+  if (method === "eth_getStorageAt") {
+    if (
+      !canonicalRpcAddress(params[0]) ||
+      !canonicalRpcHash(params[1]) ||
+      !canonicalRpcBlockReference(params[2])
+    ) throw new TypeError("RPC request parameters are invalid.");
+    return;
+  }
   const call = params[0];
   if (
     !isPlainObject(call) ||
-    !hasExactKeys(call, ["to", "data"]) ||
+    !(hasExactKeys(call, ["to", "data"]) || hasExactKeys(call, ["to", "data", "gas"])) ||
     !canonicalRpcAddress(call["to"]) ||
     !canonicalRpcBytes(call["data"]) ||
+    (Object.hasOwn(call, "gas") && !canonicalRpcQuantity(call["gas"])) ||
     !canonicalRpcBlockReference(params[1])
   ) throw new TypeError("RPC request parameters are invalid.");
 };

@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   createErc20CallEncoder,
+  createStockFactoryCallEncoder,
+  createTokenStandardCallEncoder,
+  decodeAbiAddressResult,
+  decodeAbiBooleanResult,
   decodeCanonicalErc20Event,
   decodeErc20BalanceOfResult,
   decodeErc20DecimalsResult,
@@ -44,6 +48,28 @@ describe("standard EVM boundary", () => {
       `0x70a08231${"12".repeat(20).padStart(64, "0")}`,
     );
     expect(Object.isFrozen(encoder)).toBe(true);
+  });
+
+  it("uses exact fixed standard and StockFactory ABI encodings", () => {
+    const standards = createTokenStandardCallEncoder();
+    expect(standards.supportsInterface(hexBytesSchema.parse("0xa60bf13d"))).toBe(
+      `0x01ffc9a7a60bf13d${"0".repeat(56)}`,
+    );
+    expect(standards.uiMultiplier()).toBe("0xa60bf13d");
+    expect(standards.newUiMultiplier()).toBe("0xdc767007");
+    expect(standards.effectiveAt()).toBe("0x97a4064f");
+    expect(standards.balanceOfUi(addressA)).toBe(
+      `0x437a9958${addressA.slice(2).padStart(64, "0")}`,
+    );
+    expect(createStockFactoryCallEncoder().tokenAddress(hash32Schema.parse(`0x${"1".repeat(64)}`)))
+      .toBe(`0x97bb3ce9${"1".repeat(64)}`);
+    expect(decodeAbiBooleanResult(word(1n))).toBe(true);
+    expect(decodeAbiBooleanResult(word(0n))).toBe(false);
+    expect(decodeAbiAddressResult(hexBytesSchema.parse(
+      `0x${"0".repeat(24)}${addressA.slice(2)}`,
+    ))).toBe(addressA);
+    expect(() => standards.supportsInterface(hexBytesSchema.parse("0x01"))).toThrow(TypeError);
+    expect(() => decodeAbiBooleanResult(word(2n))).toThrow(TypeError);
   });
 
   it("produces EVM Keccak and exact fixed-width function results", () => {

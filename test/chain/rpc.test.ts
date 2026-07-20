@@ -117,6 +117,36 @@ describe("bounded RPC requester", () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
+  it("admits exact storage reads and gas-bounded calls without widening other parameters", async () => {
+    const slot = parseHash32(`0x${"c".repeat(64)}`);
+    const fetchFn = vi.fn(fetchOf(async (_input, init) => {
+      const request = requestFrom(init);
+      if (request.method === "eth_getStorageAt") {
+        expect(request.params).toEqual([stateAddress, slot, {
+          blockHash: stateBlockHash,
+          requireCanonical: true,
+        }]);
+        return resultResponse(init, `0x${"0".repeat(64)}`);
+      }
+      expect(request).toMatchObject({
+        method: "eth_call",
+        params: [{ to: stateAddress, data: "0x01", gas: "0x7530" }, {
+          blockHash: stateBlockHash,
+          requireCanonical: true,
+        }],
+      });
+      return resultResponse(init, `0x${"0".repeat(64)}`);
+    }));
+    const requester = createBoundedRpcRequester({ url: "https://rpc.example", fetch: fetchFn });
+    await requester.request("eth_getStorageAt", [stateAddress, slot, stateReference], new AbortController().signal);
+    await requester.request("eth_call", [{
+      to: stateAddress,
+      data: parseHexBytes("0x01"),
+      gas: "0x7530",
+    }, stateReference], new AbortController().signal);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
   it("supports credential-bearing configuration without exposing credentials in the fetch URL or error", async () => {
     const secret = "provider-secret";
     const fetchFn = vi.fn(fetchOf(async (input, init) => {

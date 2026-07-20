@@ -3,6 +3,7 @@ import { z } from "zod";
 import { canonicalJsonStringify, type CanonicalJson } from "./canonical-json.js";
 import { isStrictlyOrderedUnique, type ObservationId } from "./evidence.js";
 import { evmChainIdSchema } from "./identities.js";
+import { deepFreezeValue } from "./immutability.js";
 import { guardJsonSchema, jsonObject } from "./json-object.js";
 import {
   createPrimitiveSchemaSet,
@@ -11,6 +12,86 @@ import {
 } from "./primitives.js";
 
 export const maximumTokenDecimals = 255;
+export const scaledUiAmountScale = "1000000000000000000" as const;
+const maximumUint256 = (1n << 256n) - 1n;
+
+const amountPrimitives = createPrimitiveSchemaSet();
+const isUint256Decimal = (value: string): boolean => {
+  try {
+    return BigInt(value) <= maximumUint256;
+  } catch {
+    return false;
+  }
+};
+export const uint256DecimalSchema = guardJsonSchema(
+  amountPrimitives.unsignedDecimal.refine(
+    isUint256Decimal,
+    "Expected a uint256 decimal value.",
+  ),
+);
+export type Uint256Decimal = z.infer<typeof uint256DecimalSchema>;
+
+const availableScaledUiAmountSchema = jsonObject({
+  status: z.literal("available"),
+  raw: uint256DecimalSchema,
+  multiplier: uint256DecimalSchema,
+  scale: z.literal(scaledUiAmountScale),
+  adjustedRaw: uint256DecimalSchema,
+}).strict().superRefine((value, context) => {
+  const expected = BigInt(value.raw) * BigInt(value.multiplier) / BigInt(value.scale);
+  if (expected > maximumUint256 || value.adjustedRaw !== expected.toString(10)) {
+    context.addIssue({ code: "custom", message: "The scaled UI amount is inconsistent." });
+  }
+});
+const unavailableScaledUiAmountSchema = jsonObject({
+  status: z.literal("unavailable"),
+  reason: z.literal("result_out_of_range"),
+  raw: uint256DecimalSchema,
+  multiplier: uint256DecimalSchema,
+  scale: z.literal(scaledUiAmountScale),
+}).strict().superRefine((value, context) => {
+  const expected = BigInt(value.raw) * BigInt(value.multiplier) / BigInt(value.scale);
+  if (expected <= maximumUint256) {
+    context.addIssue({ code: "custom", message: "The scaled UI amount is representable." });
+  }
+});
+
+export const scaledUiAmountSchema = guardJsonSchema(z.discriminatedUnion("status", [
+  availableScaledUiAmountSchema,
+  unavailableScaledUiAmountSchema,
+]));
+export type ScaledUiAmount = z.infer<typeof scaledUiAmountSchema>;
+
+const parseUint256Decimal = (value: string, name: string): bigint => {
+  const parsed = uint256DecimalSchema.safeParse(value);
+  if (!parsed.success) throw new TypeError(`${name} must be a canonical uint256 decimal.`);
+  return BigInt(parsed.data);
+};
+
+export const calculateScaledUiAmount = (
+  raw: string,
+  multiplier: string,
+): ScaledUiAmount => {
+  const rawValue = parseUint256Decimal(raw, "Raw amount");
+  const multiplierValue = parseUint256Decimal(multiplier, "UI multiplier");
+  const adjusted = rawValue * multiplierValue / BigInt(scaledUiAmountScale);
+  if (adjusted > maximumUint256) {
+    return deepFreezeValue(scaledUiAmountSchema.parse({
+      status: "unavailable",
+      reason: "result_out_of_range",
+      raw,
+      multiplier,
+      scale: scaledUiAmountScale,
+    }));
+  }
+  return deepFreezeValue(scaledUiAmountSchema.parse({
+    status: "available",
+    raw,
+    multiplier,
+    scale: scaledUiAmountScale,
+    adjustedRaw: adjusted.toString(10),
+  }));
+};
 
 export const formatAmount = (
   rawUnsignedDecimal: string,
@@ -172,6 +253,7 @@ const semanticChainAnchorSchema = guardJsonSchema(semanticAmountSchemas.chainAnc
 
 export const nativeAssetIdentitySchema = guardJsonSchema(amountSchemas.nativeAssetIdentity);
 export const erc20AssetIdentitySchema = guardJsonSchema(amountSchemas.erc20AssetIdentity);
+export type Erc20AssetIdentity = z.infer<typeof erc20AssetIdentitySchema>;
 export const assetIdentitySchema = guardJsonSchema(amountSchemas.assetIdentity);
 export type AssetIdentity = z.infer<typeof assetIdentitySchema>;
 

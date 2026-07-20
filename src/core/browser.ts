@@ -42,8 +42,33 @@ export {
   canonicalAmountSchema,
   erc20AssetIdentitySchema,
   formatAmount,
+  scaledUiAmountSchema,
+  scaledUiAmountScale,
+  uint256DecimalSchema,
 } from "./amounts.js";
-export type { CanonicalAmount } from "./amounts.js";
+export type {
+  CanonicalAmount,
+  Erc20AssetIdentity,
+  ScaledUiAmount,
+  Uint256Decimal,
+} from "./amounts.js";
+export {
+  requiredErc8056ObservationSchema,
+  supportedErc8056ValuesSchema,
+  tokenStandardDefinitions,
+  tokenStandardIdSchema,
+  tokenStandardObservationSchema,
+  tokenStandardObservationResultSchema,
+  tokenStandardObservationStatusSchema,
+} from "./token-standards.js";
+export type {
+  RequiredErc8056Observation,
+  SupportedErc8056Values,
+  TokenStandardId,
+  TokenStandardObservation,
+  TokenStandardObservationResult,
+  TokenStandardObservationStatus,
+} from "./token-standards.js";
 export {
   operationIdByteLength,
   operationIdFromBytes,

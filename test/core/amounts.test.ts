@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  calculateScaledUiAmount,
   assetIdentitySchema,
   canonicalAmountSchema,
   chainAnchorSchema,
   compareCodePointSequences,
   observationIdSchema,
   nativeGasRateSchema,
+  scaledUiAmountSchema,
 } from "../../src/core/index.js";
 import {
   assertCanonicalAmountBindings,
@@ -37,6 +39,50 @@ const availableAmount = (quantity: ReturnType<typeof id>, decimals: ReturnType<t
 });
 
 describe("amount observation commitments", () => {
+  it("applies the ERC-8056 multiplier once with exact integer rounding", () => {
+    expect(calculateScaledUiAmount("100", "1500000000000000000")).toEqual({
+      status: "available",
+      raw: "100",
+      multiplier: "1500000000000000000",
+      scale: "1000000000000000000",
+      adjustedRaw: "150",
+    });
+    expect(calculateScaledUiAmount("1", "1500000000000000000")).toMatchObject({
+      status: "available",
+      adjustedRaw: "1",
+    });
+    const maximum = ((1n << 256n) - 1n).toString(10);
+    expect(calculateScaledUiAmount(maximum, "1000000000000000000")).toMatchObject({
+      status: "available",
+      adjustedRaw: maximum,
+    });
+    expect(calculateScaledUiAmount(maximum, maximum)).toEqual({
+      status: "unavailable",
+      reason: "result_out_of_range",
+      raw: maximum,
+      multiplier: maximum,
+      scale: "1000000000000000000",
+    });
+    expect(() => scaledUiAmountSchema.parse({
+      status: "available",
+      raw: "100",
+      multiplier: "1500000000000000000",
+      scale: "1000000000000000000",
+      adjustedRaw: "151",
+    })).toThrow();
+    expect(() => scaledUiAmountSchema.parse({
+      status: "unavailable",
+      reason: "result_out_of_range",
+      raw: "1",
+      multiplier: "1",
+      scale: "1000000000000000000",
+    })).toThrow();
+    for (const malformed of ["-1", "01", "1.0", (1n << 256n).toString(10)]) {
+      expect(() => calculateScaledUiAmount(malformed, "1")).toThrow(TypeError);
+      expect(() => calculateScaledUiAmount("1", malformed)).toThrow(TypeError);
+    }
+  });
+
   it("formats canonical raw units without numeric conversion or insignificant zeroes", () => {
     expect(formatAmount("0", "18")).toBe("0");
     expect(formatAmount("1", "6")).toBe("0.000001");

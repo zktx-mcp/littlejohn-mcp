@@ -74,6 +74,59 @@ An inference is labeled and remains separate from its source facts. Unknown,
 stale, incomplete, and conflicting evidence is preserved rather than converted
 into a positive conclusion.
 
+## Robinhood Stock Token Classification
+
+This section defines required evidence and does not claim that Stock Token
+classification is currently implemented.
+
+Current Robinhood Stock Token membership is owned by the complete successful
+response from Robinhood's public asset endpoint,
+`https://api.robinhood.com/rhj/assets`, which supplies the Stock Token table on
+the [official Token Contracts page](https://docs.robinhood.com/chain/contracts/).
+Only an entry with status `ASSET_STATUS_ACTIVE` and exactly one deployment for
+Robinhood Chain ID 4663 enters the current member set. A malformed, partial,
+oversized, or failed response establishes neither membership nor absence. A
+stored observation becomes stale whenever a required refresh fails.
+
+Before Little John adds an API member to an account or publishes that member as
+a verified account asset, the exact UID and token address require an independent
+pinned Robinhood Chain read against the StockFactory proxy
+`0x4783C67b63dE2B358Ac5951a7D41F47A38F3C046`. The read verifies the proxy runtime
+code, its implementation stored in EIP-1967 slot
+`0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc`, the
+implementation runtime code, `tokenAddress(uid)`, and nonempty runtime code at
+the returned token address at one canonical block. The accepted implementation
+identity is
+`0xEe351E53BCe6AAF106428358838197C91e36EE0E`; the proxy runtime-code Keccak-256 is
+`0x394c3517e9331e7c88ef8af388c0cb63c720af1b1b4d5a5cace212f7df0b045a`, and the
+implementation runtime-code Keccak-256 is
+`0x3bfd5841605b9931c9dbb0f9f54a28b4038918ceb74d6d1081bc7f963fe528b4`.
+These identities were observed on 2026-07-20 at block 14660943, hash
+`0x94d90a8691fc4fc7a4fb48a86755f948f2a1110325d6c8257dbfeaddaf8832b0`.
+The verified [proxy](https://robinhoodchain.blockscout.com/address/0x4783C67b63dE2B358Ac5951a7D41F47A38F3C046)
+and [implementation](https://robinhoodchain.blockscout.com/address/0xEe351E53BCe6AAF106428358838197C91e36EE0E)
+sources establish the lookup interface and proxy structure; the pinned chain
+read establishes the accepted deployed bytes. A mismatch makes that exact
+asset unavailable for selection or verified presentation; it does not rewrite
+or invalidate other members of a complete API observation.
+
+The API determines current membership; StockFactory proves the admitted
+UID-to-address deployment identity. Factory mappings and deployment events do
+not establish current membership because they have no current-member or removal
+state. API names, symbols, logos, multipliers, and trading capabilities do not
+establish token identity, current onchain metadata, price, availability, safety,
+or legal meaning. Bounded API names and symbols may label an unselected
+official candidate; verified account results use current onchain metadata.
+
+An accepted API observation records the exact source, observation time, exact
+response digest, normalized member-set digest, normalized candidate-list digest,
+configured chain, and complete member set. `Robinhood Stock Token` in an account
+result requires membership in that observation plus the exact per-asset
+StockFactory verification at the result's chain block. `Custom ERC-20` requires
+proved absence from the complete current API observation. When the API
+observation is unavailable or stale, or the required per-asset verification
+fails, classification remains unknown.
+
 ## Identity And Trust
 
 - Asset identity is defined only in `docs/NUMERIC_POLICY.md#token-identity-and-decimals`.

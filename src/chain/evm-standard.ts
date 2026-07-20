@@ -22,7 +22,18 @@ type ViemStandardModule = Readonly<{
   }): unknown;
   decodeFunctionResult(input: {
     readonly abi: readonly unknown[];
-    readonly functionName: "balanceOf" | "decimals" | "name" | "symbol" | "totalSupply";
+    readonly functionName:
+      | "balanceOf"
+      | "balanceOfUI"
+      | "decimals"
+      | "effectiveAt"
+      | "name"
+      | "newUIMultiplier"
+      | "supportsInterface"
+      | "symbol"
+      | "tokenAddress"
+      | "totalSupply"
+      | "uiMultiplier";
     readonly data: string;
   }): unknown;
   encodeEventTopics(input: {
@@ -31,7 +42,18 @@ type ViemStandardModule = Readonly<{
   }): unknown;
   encodeFunctionData(input: {
     readonly abi: readonly unknown[];
-    readonly functionName: "balanceOf" | "decimals" | "name" | "symbol" | "totalSupply";
+    readonly functionName:
+      | "balanceOf"
+      | "balanceOfUI"
+      | "decimals"
+      | "effectiveAt"
+      | "name"
+      | "newUIMultiplier"
+      | "supportsInterface"
+      | "symbol"
+      | "tokenAddress"
+      | "totalSupply"
+      | "uiMultiplier";
     readonly args?: readonly unknown[];
   }): unknown;
   readonly erc20Abi: unknown;
@@ -43,6 +65,53 @@ if (!Array.isArray(viemStandard.erc20Abi)) {
   throw new TypeError("Viem ERC-20 ABI is unavailable.");
 }
 const erc20Abi: readonly unknown[] = viemStandard.erc20Abi;
+
+const erc165Abi = Object.freeze([{
+  type: "function",
+  name: "supportsInterface",
+  stateMutability: "view",
+  inputs: [{ name: "interfaceId", type: "bytes4" }],
+  outputs: [{ name: "", type: "bool" }],
+}] as const);
+
+const erc8056Abi = Object.freeze([
+  {
+    type: "function",
+    name: "uiMultiplier",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "newUIMultiplier",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "effectiveAt",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "balanceOfUI",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const);
+
+const stockFactoryAbi = Object.freeze([{
+  type: "function",
+  name: "tokenAddress",
+  stateMutability: "view",
+  inputs: [{ name: "uid", type: "bytes32" }],
+  outputs: [{ name: "", type: "address" }],
+}] as const);
 
 const canonicalWordPattern = /^0x[0-9a-f]{64}$/u;
 const canonicalIndexedAddressWordPattern = /^0x0{24}[0-9a-f]{40}$/u;
@@ -140,6 +209,44 @@ export const decodeErc20DecimalsResult = (input: unknown): UnsignedDecimal => {
 
 export const decodeErc20TotalSupplyResult = (input: unknown): UnsignedDecimal =>
   decodeErc20BalanceOfResult(input);
+
+export const decodeAbiUint256Result = (input: unknown): UnsignedDecimal =>
+  decodeErc20BalanceOfResult(input);
+
+export const decodeAbiBooleanResult = (input: unknown): boolean => {
+  const word = exactWord(input);
+  if (word !== `0x${"0".repeat(64)}` && word !== `0x${"0".repeat(63)}1`) {
+    return invalidStandardEncoding();
+  }
+  let decoded: unknown;
+  try {
+    decoded = viemStandard.decodeFunctionResult({
+      abi: erc165Abi,
+      functionName: "supportsInterface",
+      data: word,
+    });
+  } catch {
+    return invalidStandardEncoding();
+  }
+  if (typeof decoded !== "boolean") return invalidStandardEncoding();
+  return decoded;
+};
+
+export const decodeAbiAddressResult = (input: unknown): EvmAddress => {
+  const word = exactWord(input);
+  if (!/^0x0{24}[0-9a-f]{40}$/u.test(word)) return invalidStandardEncoding();
+  let decoded: unknown;
+  try {
+    decoded = viemStandard.decodeFunctionResult({
+      abi: stockFactoryAbi,
+      functionName: "tokenAddress",
+      data: word,
+    });
+  } catch {
+    return invalidStandardEncoding();
+  }
+  return decodedAddress(decoded);
+};
 
 const abiUint256At = (data: HexBytes, byteOffset: number): bigint => {
   const hexOffset = 2 + byteOffset * 2;
@@ -330,6 +437,18 @@ export interface Erc20CallEncoder {
   totalSupply(): HexBytes;
 }
 
+export interface TokenStandardCallEncoder {
+  supportsInterface(interfaceId: HexBytes): HexBytes;
+  uiMultiplier(): HexBytes;
+  newUiMultiplier(): HexBytes;
+  effectiveAt(): HexBytes;
+  balanceOfUi(account: EvmAddress): HexBytes;
+}
+
+export interface StockFactoryCallEncoder {
+  tokenAddress(uid: Hash32): HexBytes;
+}
+
 const parseEncodedCall = (value: unknown, expected: string): HexBytes => {
   const parsed = parseHexBytes(value);
   if (parsed !== expected) throw new TypeError("Viem produced an unexpected ERC-20 call encoding.");
@@ -369,3 +488,55 @@ export const createErc20CallEncoder = async (): Promise<Erc20CallEncoder> => {
     totalSupply(): HexBytes { return totalSupplyCall; },
   });
 };
+
+export const createTokenStandardCallEncoder = (): TokenStandardCallEncoder => {
+  const uiMultiplier = parseEncodedCall(viemStandard.encodeFunctionData({
+    abi: erc8056Abi,
+    functionName: "uiMultiplier",
+  }), "0xa60bf13d");
+  const newUiMultiplier = parseEncodedCall(viemStandard.encodeFunctionData({
+    abi: erc8056Abi,
+    functionName: "newUIMultiplier",
+  }), "0xdc767007");
+  const effectiveAt = parseEncodedCall(viemStandard.encodeFunctionData({
+    abi: erc8056Abi,
+    functionName: "effectiveAt",
+  }), "0x97a4064f");
+  return Object.freeze({
+    supportsInterface(interfaceIdInput: HexBytes): HexBytes {
+      const interfaceId = parseHexBytes(interfaceIdInput);
+      if (!/^0x[0-9a-f]{8}$/u.test(interfaceId)) {
+        throw new TypeError("Expected a canonical four-byte interface identifier.");
+      }
+      const expected = `0x01ffc9a7${interfaceId.slice(2).padEnd(64, "0")}`;
+      return parseEncodedCall(viemStandard.encodeFunctionData({
+        abi: erc165Abi,
+        functionName: "supportsInterface",
+        args: [interfaceId],
+      }), expected);
+    },
+    uiMultiplier(): HexBytes { return uiMultiplier; },
+    newUiMultiplier(): HexBytes { return newUiMultiplier; },
+    effectiveAt(): HexBytes { return effectiveAt; },
+    balanceOfUi(accountInput: EvmAddress): HexBytes {
+      const account = parseEvmAddress(accountInput);
+      const expected = `0x437a9958${account.slice(2).padStart(64, "0")}`;
+      return parseEncodedCall(viemStandard.encodeFunctionData({
+        abi: erc8056Abi,
+        functionName: "balanceOfUI",
+        args: [account],
+      }), expected);
+    },
+  });
+};
+
+export const createStockFactoryCallEncoder = (): StockFactoryCallEncoder => Object.freeze({
+  tokenAddress(uidInput: Hash32): HexBytes {
+    const uid = parseHash32(uidInput);
+    return parseEncodedCall(viemStandard.encodeFunctionData({
+      abi: stockFactoryAbi,
+      functionName: "tokenAddress",
+      args: [uid],
+    }), `0x97bb3ce9${uid.slice(2)}`);
+  },
+});

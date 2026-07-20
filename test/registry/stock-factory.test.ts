@@ -1,0 +1,188 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  canonicalBlockReference,
+  type ChainRpcMethod,
+  type ChainRpcRequestMap,
+  type RpcRequester,
+} from "../../src/chain/rpc.js";
+import {
+  parseEvmAddress,
+  parseHash32,
+  parseUtcTimestamp,
+  type ChainAnchor,
+} from "../../src/core/index.js";
+import {
+  assertOfficialAssetSourceSnapshot,
+  createStockFactoryVerifier,
+  getStockFactoryVerificationErrorCode,
+  officialAssetCandidateListDigest,
+  officialAssetMemberSetDigest,
+  robinhoodAssetSourceUri,
+  robinhoodChainId,
+  stockFactoryImplementationAddress,
+  stockFactoryImplementationCodeHash,
+  stockFactoryImplementationSlot,
+  stockFactoryProxyAddress,
+  stockFactoryProxyCodeHash,
+} from "../../src/registry/index.js";
+import {
+  stockFactoryImplementationCodeFixture,
+  stockFactoryProxyCodeFixture,
+} from "./stock-factory-fixture.js";
+
+const blockHash = parseHash32(`0x${"a".repeat(64)}`);
+const expectedProxyAddress = parseEvmAddress("0x4783c67b63de2b358ac5951a7d41f47a38f3c046");
+const expectedImplementationAddress = parseEvmAddress("0xee351e53bce6aaf106428358838197c91e36ee0e");
+const expectedImplementationSlot = parseHash32(
+  "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
+);
+const expectedProxyCodeHash = parseHash32(
+  "0x394c3517e9331e7c88ef8af388c0cb63c720af1b1b4d5a5cace212f7df0b045a",
+);
+const expectedImplementationCodeHash = parseHash32(
+  "0x3bfd5841605b9931c9dbb0f9f54a28b4038918ceb74d6d1081bc7f963fe528b4",
+);
+const block: ChainAnchor = {
+  chainId: "eip155:4663" as ChainAnchor["chainId"],
+  blockNumber: "14737111" as ChainAnchor["blockNumber"],
+  blockHash,
+  blockTimestamp: "2026-07-20T13:28:38.000Z" as ChainAnchor["blockTimestamp"],
+};
+const reference = canonicalBlockReference(blockHash);
+const uid = parseHash32(`0x${"1".repeat(64)}`);
+const token = parseEvmAddress(`0x${"2".repeat(40)}`);
+const mappedAddressWord = `0x${"0".repeat(24)}${token.slice(2)}`;
+const implementationWord = `0x${"0".repeat(24)}${expectedImplementationAddress.slice(2)}`;
+
+class FactoryRpc implements RpcRequester {
+  readonly calls: Array<Readonly<{ method: ChainRpcMethod; params: readonly unknown[] }>> = [];
+  proxyCode: unknown = stockFactoryProxyCodeFixture;
+  implementationCode: unknown = stockFactoryImplementationCodeFixture;
+  implementationStorage: unknown = implementationWord;
+  tokenCode: unknown = "0x01";
+  mappedAddress: unknown = mappedAddressWord;
+
+  async request<Method extends ChainRpcMethod>(
+    method: Method,
+    params: ChainRpcRequestMap[Method],
+    _signal: AbortSignal,
+  ): Promise<unknown> {
+    this.calls.push({ method, params });
+    if (method === "eth_getStorageAt") return this.implementationStorage;
+    if (method === "eth_call") return this.mappedAddress;
+    if (method !== "eth_getCode") throw new Error("Unexpected RPC method.");
+    const address = params[0];
+    if (address === expectedProxyAddress) return this.proxyCode;
+    if (address === expectedImplementationAddress) return this.implementationCode;
+    if (address === token) return this.tokenCode;
+    throw new Error("Unexpected code address.");
+  }
+}
+
+const snapshotMembers = Object.freeze([{ assetUid: uid, contractAddress: token }]);
+const decodedSnapshot = assertOfficialAssetSourceSnapshot({
+  sourceUri: robinhoodAssetSourceUri,
+  sourceObservedAt: parseUtcTimestamp("2026-07-20T13:28:38.000Z"),
+  rawResponseDigest: parseHash32(`0x${"b".repeat(64)}`),
+  memberSetDigest: officialAssetMemberSetDigest(snapshotMembers),
+  candidateListDigest: officialAssetCandidateListDigest(snapshotMembers),
+  chainId: robinhoodChainId,
+  members: snapshotMembers,
+});
+const member = decodedSnapshot.members[0]!;
+
+describe("StockFactory verifier", () => {
+  it("shares pinned factory identity and verifies one exact decoded snapshot member", async () => {
+    expect(stockFactoryProxyAddress).toBe(expectedProxyAddress);
+    expect(stockFactoryImplementationAddress).toBe(expectedImplementationAddress);
+    expect(stockFactoryImplementationSlot).toBe(expectedImplementationSlot);
+    expect(stockFactoryProxyCodeHash).toBe(expectedProxyCodeHash);
+    expect(stockFactoryImplementationCodeHash).toBe(expectedImplementationCodeHash);
+    const rpc = new FactoryRpc();
+    const verifier = await createStockFactoryVerifier({
+      rpc,
+      block,
+      stateReference: reference,
+      signal: new AbortController().signal,
+    });
+    await expect(verifier.verify(member)).resolves.toEqual({
+      assetUid: uid,
+      contractAddress: token,
+      block,
+      proxyAddress: expectedProxyAddress,
+      proxyCodeHash: expectedProxyCodeHash,
+      implementationAddress: expectedImplementationAddress,
+      implementationCodeHash: expectedImplementationCodeHash,
+      tokenCodeHash: "0x5fe7f977e71dba2ea1a68e21057beebb9be2ac30c6410aa38d4f3fbe41dcffd2",
+    });
+    await verifier.verify(member);
+    expect(rpc.calls.map((call) => call.method)).toEqual([
+      "eth_getCode",
+      "eth_getStorageAt",
+      "eth_getCode",
+      "eth_call",
+      "eth_getCode",
+      "eth_call",
+      "eth_getCode",
+    ]);
+    expect(rpc.calls.filter((call) => call.method === "eth_getStorageAt")[0]?.params).toEqual([
+      expectedProxyAddress,
+      expectedImplementationSlot,
+      reference,
+    ]);
+    expect(rpc.calls.filter((call) => call.method === "eth_call").map((call) => call.params)).toEqual([
+      [{ to: expectedProxyAddress, data: `0x97bb3ce9${uid.slice(2)}` }, reference],
+      [{ to: expectedProxyAddress, data: `0x97bb3ce9${uid.slice(2)}` }, reference],
+    ]);
+    expect(rpc.calls.filter((call) => call.method === "eth_getCode").map((call) => call.params)).toEqual([
+      [expectedProxyAddress, reference],
+      [expectedImplementationAddress, reference],
+      [token, reference],
+      [token, reference],
+    ]);
+  });
+
+  it("rejects proxy, implementation, mapping, and token-code mismatches independently", async () => {
+    for (const mutate of [
+      (rpc: FactoryRpc) => { rpc.proxyCode = "0x01"; },
+      (rpc: FactoryRpc) => { rpc.implementationStorage = `0x${"0".repeat(64)}`; },
+      (rpc: FactoryRpc) => { rpc.implementationCode = "0x01"; },
+    ]) {
+      const rpc = new FactoryRpc();
+      mutate(rpc);
+      await expect(createStockFactoryVerifier({
+        rpc, block, stateReference: reference, signal: new AbortController().signal,
+      })).rejects.toSatisfy(
+        (error: unknown) => getStockFactoryVerificationErrorCode(error) === "factory_identity_mismatch",
+      );
+    }
+
+    const wrongMapping = new FactoryRpc();
+    wrongMapping.mappedAddress = `0x${"0".repeat(64)}`;
+    const mappingVerifier = await createStockFactoryVerifier({
+      rpc: wrongMapping, block, stateReference: reference, signal: new AbortController().signal,
+    });
+    await expect(mappingVerifier.verify(member)).rejects.toSatisfy(
+      (error: unknown) => getStockFactoryVerificationErrorCode(error) === "token_identity_mismatch",
+    );
+
+    const noCode = new FactoryRpc();
+    noCode.tokenCode = "0x";
+    const codeVerifier = await createStockFactoryVerifier({
+      rpc: noCode, block, stateReference: reference, signal: new AbortController().signal,
+    });
+    await expect(codeVerifier.verify(member)).rejects.toSatisfy(
+      (error: unknown) => getStockFactoryVerificationErrorCode(error) === "token_code_missing",
+    );
+  });
+
+  it("rejects a block label that does not match the exact RPC state reference", async () => {
+    await expect(createStockFactoryVerifier({
+      rpc: new FactoryRpc(),
+      block,
+      stateReference: canonicalBlockReference(parseHash32(`0x${"b".repeat(64)}`)),
+      signal: new AbortController().signal,
+    })).rejects.toThrow("block reference");
+  });
+});

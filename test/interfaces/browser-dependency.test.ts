@@ -325,6 +325,7 @@ describe("browser runtime dependency boundary", () => {
       expect(moduleIds).toContain(operationStateSource);
       expect(moduleIds).toContain(resolve(repositoryRoot, "src/wallet/operation-contract.ts"));
       expect(moduleIds).toContain(resolve(repositoryRoot, "src/core/wallet-connection.ts"));
+      expect(moduleIds).toContain(resolve(repositoryRoot, "src/core/token-standards.ts"));
       expect(moduleIds).toContain(chainErrorDefinitionsSource);
       expect(moduleIds).toContain(tokenCatalogBrowserSource);
       expect(moduleIds).toContain(tokenCatalogContractSchemaSource);

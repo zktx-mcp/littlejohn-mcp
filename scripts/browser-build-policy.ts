@@ -44,6 +44,7 @@ const sharedContractSources = new Set([
   "src/core/primitives.ts",
   "src/core/operation-id.ts",
   "src/core/product-identity.ts",
+  "src/core/token-standards.ts",
   "src/core/wallet-connection.ts",
   "src/chain/error-definitions.ts",
   "src/runtime/error-definitions.ts",
