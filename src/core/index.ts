@@ -3,6 +3,7 @@ export {
   canonicalAmountSchema,
   decimalsStateSchema,
   erc20AssetIdentitySchema,
+  formatAmount,
   gasUnitsSchema,
   nativeAssetIdentitySchema,
   nativeGasRateSchema,
@@ -15,6 +16,20 @@ export type {
   GasUnits,
   NativeGasRate,
 } from "./amounts.js";
+export {
+  accountNativeDecimalsExclusion,
+  accountBalanceDataSchema,
+  accountBalanceInputSchema,
+  assertAccountBalanceChainSemantics,
+  assertAccountBalanceDataSemantics,
+  assertAccountBalancePublicSuccess,
+  assertAccountBalanceRequestSemantics,
+  maximumEvmBalanceRaw,
+} from "./account-balance-contract.js";
+export type {
+  AccountBalanceData,
+  AccountBalanceInput,
+} from "./account-balance-contract.js";
 export {
   canonicalJsonStringify,
   canonicalSha256,
@@ -51,8 +66,6 @@ export {
   walletConnectionCapability,
 } from "./capabilities.js";
 export type {
-  AccountBalanceData,
-  AccountBalanceInput,
   ChainStatusData,
   ChainStatusInput,
   ContractInspectData,
@@ -124,6 +137,7 @@ export {
 export {
   conclusionSchema,
   coverageSchema,
+  createEvidenceSummary,
   digestSchema,
   evidenceSourceSchema,
   externalSourceClassSchema,
@@ -213,6 +227,7 @@ export {
   hash32Schema,
   hexBytesSchema,
   isSafeSingleLineText,
+  isWellFormedText,
   parseHash32,
   parseHexBytes,
   parseUnsignedDecimal,

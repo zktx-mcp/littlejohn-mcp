@@ -127,7 +127,7 @@ export interface RuntimeSupportManifestExtensionInput {
 export const runtimeSupportManifestSchema = guardRuntimeJsonSchema(publicSchemas.manifest);
 export type RuntimeSupportManifestSnapshot = z.infer<typeof runtimeSupportManifestSchema>;
 
-type ManifestScope = "initial" | "wallet" | "chain" | "token_catalog" | "interfaces";
+type ManifestScope = "initial" | "wallet" | "chain" | "token_catalog" | "account_assets" | "interfaces";
 declare const runtimeSupportManifestType: unique symbol;
 
 export interface RuntimeSupportManifest<Scope extends ManifestScope = ManifestScope> {
@@ -138,6 +138,7 @@ export type InitialRuntimeSupportManifest = RuntimeSupportManifest<"initial">;
 export type WalletRuntimeSupportManifest = RuntimeSupportManifest<"wallet">;
 export type ChainRuntimeSupportManifest = RuntimeSupportManifest<"chain">;
 export type TokenCatalogRuntimeSupportManifest = RuntimeSupportManifest<"token_catalog">;
+export type AccountAssetRuntimeSupportManifest = RuntimeSupportManifest<"account_assets">;
 export type InterfaceRuntimeSupportManifest = RuntimeSupportManifest<"interfaces">;
 
 interface ManifestState {
@@ -303,9 +304,14 @@ export const assertChainRuntimeSupportManifestExtension = (
 ): void => assertScopedChild(parent, "wallet", extension, "chain");
 
 export const assertInterfaceRuntimeSupportManifestExtension = (
-  parent: TokenCatalogRuntimeSupportManifest,
+  parent: AccountAssetRuntimeSupportManifest,
   extension: InterfaceRuntimeSupportManifest,
-): void => assertScopedChild(parent, "token_catalog", extension, "interfaces");
+): void => assertScopedChild(parent, "account_assets", extension, "interfaces");
+
+export const assertAccountAssetRuntimeSupportManifestExtension = (
+  parent: TokenCatalogRuntimeSupportManifest,
+  extension: AccountAssetRuntimeSupportManifest,
+): void => assertScopedChild(parent, "token_catalog", extension, "account_assets");
 
 export const assertTokenCatalogRuntimeSupportManifestExtension = (
   parent: ChainRuntimeSupportManifest,
@@ -341,11 +347,11 @@ export const extendChainRuntimeSupportManifest = (
 };
 
 export const extendInterfaceRuntimeSupportManifest = (
-  parent: TokenCatalogRuntimeSupportManifest,
+  parent: AccountAssetRuntimeSupportManifest,
   extensionInput: RuntimeSupportManifestExtensionInput,
 ): InterfaceRuntimeSupportManifest => {
   const parentState = manifestState(parent);
-  if (parentState.scope !== "token_catalog") throw new TypeError("Interface support requires the token catalog manifest.");
+  if (parentState.scope !== "account_assets") throw new TypeError("Interface support requires the account assets manifest.");
   const extension = createManifest(
     "interfaces",
     { ...parentState.snapshot, capabilities: applyCapabilityExtension(parentState.snapshot, extensionInput) },
@@ -366,6 +372,22 @@ export const extendTokenCatalogRuntimeSupportManifest = (
     capabilities: applyCapabilityExtension(parentState.snapshot, extensionInput),
   }, parent) as TokenCatalogRuntimeSupportManifest;
   assertTokenCatalogRuntimeSupportManifestExtension(parent, extension);
+  return extension;
+};
+
+export const extendAccountAssetRuntimeSupportManifest = (
+  parent: TokenCatalogRuntimeSupportManifest,
+  extensionInput: RuntimeSupportManifestExtensionInput,
+): AccountAssetRuntimeSupportManifest => {
+  const parentState = manifestState(parent);
+  if (parentState.scope !== "token_catalog") {
+    throw new TypeError("Account asset support requires the token catalog manifest.");
+  }
+  const extension = createManifest("account_assets", {
+    ...parentState.snapshot,
+    capabilities: applyCapabilityExtension(parentState.snapshot, extensionInput),
+  }, parent) as AccountAssetRuntimeSupportManifest;
+  assertAccountAssetRuntimeSupportManifestExtension(parent, extension);
   return extension;
 };
 

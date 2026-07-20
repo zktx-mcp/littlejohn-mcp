@@ -55,13 +55,13 @@ const tableManifest = captureCanonicalJson([...currentSqliteTableNames].sort()) 
 
 describe("token catalog WU2 handoff", () => {
   it("fixes the exact schema, contract, consumer-port, operation-timing, and support projections", () => {
-    expect(databaseSchemaVersion).toBe(3);
-    expect(runtimeProtocolVersion).toBe(4);
+    expect(databaseSchemaVersion).toBe(4);
+    expect(runtimeProtocolVersion).toBe(5);
     expect(currentSqliteTableNames).toHaveLength(9);
-    expect(schemaDigest).toBe("cf27079d42c4b3bbe70e3ac8a895478463103507d89a1d69fbf82fd984814183");
+    expect(schemaDigest).toBe("834120572b6f0b388ad2743238034a98c874f5975ae57ae17a83c21a41b27817");
     expect(canonicalSha256(tableManifest)).toBe("b742c8773e71cd37ad5a9cd58ebb6b9b3d474f9575d046b8a9142a8fc4401512");
-    expect(canonicalSha256(internalProjection as CanonicalJson)).toBe("3dc1c8d71c15409c139f6e29315a6238f938bb0bc3c1ea3e2f1e16caa7af6916");
-    expect(canonicalSha256(supportProjection as CanonicalJson)).toBe("f49676415ef62b233d2fb939d73e253a7d7404f80622160b3e34a718961f643c");
+    expect(canonicalSha256(internalProjection as CanonicalJson)).toBe("4a6e7a6759f6fc1d020d88c8b8804923fefa4752a8ada71248959a538c62a7b5");
+    expect(canonicalSha256(supportProjection as CanonicalJson)).toBe("39e5a952a599eace8e3348d0507332168b0752185a279acd8fc014456d250739");
   });
 
   it("keeps a maximum registration page within the compatible-process response limit", () => {
@@ -69,7 +69,6 @@ describe("token catalog WU2 handoff", () => {
     const walletAddress = `0x${"f".repeat(40)}`;
     const lastAddress = BigInt(`0x${"f".repeat(40)}`);
     const createdAt = "9999-12-31T23:59:59.999Z";
-    const maximumValidEscapedLabel = "\\".repeat(tokenCatalogContractLimits.displayTextCodePoints);
     const registrations = Array.from({ length: tokenCatalogContractLimits.listMaximumLimit }, (_, index) =>
       tokenRegistrationSchema.parse({
         account: { chainId, address: walletAddress },
@@ -82,29 +81,15 @@ describe("token catalog WU2 handoff", () => {
         revision: Buffer.alloc(tokenCatalogContractLimits.registrationRevisionBytes, index + 1)
           .toString("base64url"),
         inspectionDigest: `0x${index.toString(16).padStart(64, "0")}`,
-        userLabel: maximumValidEscapedLabel,
-        visibility: "visible",
         createdAt,
-        updatedAt: createdAt,
       }));
     const validPage = tokenCatalogApplicationContracts.registrations.parsePublicSuccess(
       { limit: tokenCatalogContractLimits.listMaximumLimit, cursor: null },
       { registrations, nextCursor: null },
     );
-    expect(Buffer.byteLength(canonicalJsonStringify(
+    expect(Buffer.byteLength(`${canonicalJsonStringify(
       captureCanonicalJson(validPage),
-    ), "utf8")).toBeLessThanOrEqual(internalResponseLimitBytes);
+    )}\n`, "utf8")).toBeLessThanOrEqual(internalResponseLimitBytes);
 
-    const conservativeEscapingPage = captureCanonicalJson({
-      registrations: registrations.map((registration) => ({
-        ...registration,
-        userLabel: "\\".repeat(tokenCatalogContractLimits.displayTextUtf8Bytes),
-      })),
-      nextCursor: null,
-    });
-    expect(Buffer.byteLength(
-      canonicalJsonStringify(conservativeEscapingPage),
-      "utf8",
-    )).toBeLessThanOrEqual(internalResponseLimitBytes);
   });
 });

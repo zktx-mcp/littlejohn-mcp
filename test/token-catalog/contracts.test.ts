@@ -22,14 +22,11 @@ import {
   tokenInspectCapability,
   tokenInspectionDigest,
   tokenInspectionInputSchema,
-  tokenRegistrationChangesSchema,
   tokenRegistrationRevisionSchema,
-  tokenUserLabelSchema,
   type TokenCatalogOperation,
   type TokenCatalogOperationVariant,
   type TokenInspectionSuccess,
   type TokenRegistration,
-  type TokenRegistrationSettings,
 } from "../../src/token-catalog/index.js";
 import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
 import { createInspectionSuccess, walletAddress } from "./harness.js";
@@ -48,23 +45,19 @@ const expiresAt = parseUtcTimestamp("2026-07-18T00:05:03.000Z");
 
 const registrationFor = (
   inspection: TokenInspectionSuccess,
-  settings: TokenRegistrationSettings = { userLabel: null, visibility: "visible" },
   revision = revisionA,
 ): TokenRegistration => ({
   account: { chainId: inspection.data.asset.chainId, address: walletAddress },
   asset: inspection.data.asset,
   revision,
   inspectionDigest: tokenInspectionDigest(inspection),
-  ...settings,
   createdAt,
-  updatedAt: createdAt,
 });
 
 const awaitingOperation = (input: Readonly<{
   inspection: TokenInspectionSuccess;
   kind: TokenCatalogOperation["kind"];
   previousRegistration: TokenRegistration | null;
-  proposedSettings: TokenRegistrationSettings | null;
 }>): TokenCatalogOperation => tokenCatalogOperationSchema.parse({
   operationId,
   kind: input.kind,
@@ -73,10 +66,10 @@ const awaitingOperation = (input: Readonly<{
   createdAt,
   expiresAt,
   account: { chainId: input.inspection.data.asset.chainId, address: walletAddress },
+  connectionRevision: "1",
   asset: input.inspection.data.asset,
   review: {
     previousRegistration: input.previousRegistration,
-    proposedSettings: input.proposedSettings,
     inspection: input.inspection,
     reviewDigest: `0x${"ab".repeat(32)}`,
   },
@@ -85,9 +78,9 @@ const awaitingOperation = (input: Readonly<{
 });
 
 describe("token catalog contracts", () => {
-  it("owns exactly the eight accepted capability identifiers at contract version 3", () => {
-    expect(coreContractVersion).toBe("3");
-    expect(getCapabilityDefinitionSnapshot(tokenInspectCapability).contractVersion).toBe("3");
+  it("owns exactly the seven membership capability identifiers at contract version 4", () => {
+    expect(coreContractVersion).toBe("4");
+    expect(getCapabilityDefinitionSnapshot(tokenInspectCapability).contractVersion).toBe("4");
     expect(tokenCatalogCapabilityIds).toEqual([
       "token.cancel_operation",
       "token.inspect",
@@ -95,10 +88,9 @@ describe("token catalog contracts", () => {
       "token.registration",
       "token.registrations",
       "token.start_registration",
-      "token.start_registration_update",
       "token.start_unregistration",
     ]);
-    expect(tokenCatalogContractProjection.contractVersion).toBe("3");
+    expect(tokenCatalogContractProjection.contractVersion).toBe("4");
     expect(tokenCatalogContractProjectionDigest).toMatch(/^0x[0-9a-f]{64}$/u);
     expect(Object.isFrozen(tokenCatalogContractProjection)).toBe(true);
     expect(tokenCatalogErrorDefinitions).toContainEqual({
@@ -135,20 +127,19 @@ describe("token catalog contracts", () => {
     })).toThrow();
   });
 
-  it("normalizes only declared defaults and rejects empty update changes", () => {
+  it("normalizes only the declared list defaults and keeps registration input exact", () => {
     expect(tokenCatalogApplicationContracts.registrations.parseInput({})).toEqual({
       limit: 25,
       cursor: null,
     });
-    expect(tokenCatalogApplicationContracts.startRegistration.parseInput({ asset })).toEqual({
+    expect(tokenCatalogApplicationContracts.startRegistration.parseInput({ asset })).toEqual({ asset });
+    expect(() => tokenCatalogApplicationContracts.startRegistration.parseInput({
       asset,
-      settings: { userLabel: null, visibility: "visible" },
-    });
-    expect(tokenRegistrationChangesSchema.safeParse({}).success).toBe(false);
-    expect(tokenRegistrationChangesSchema.safeParse({ userLabel: null }).success).toBe(true);
+      settings: {},
+    })).toThrow();
   });
 
-  it("uses exact opaque identifier sizes and the bounded safe text contract", () => {
+  it("uses exact opaque identifier sizes", () => {
     expect(tokenCatalogContractLimits).toEqual({
       displayTextCodePoints: 128,
       displayTextUtf8Bytes: 512,
@@ -161,11 +152,6 @@ describe("token catalog contracts", () => {
     expect(tokenRegistrationRevisionSchema.safeParse("A".repeat(21)).success).toBe(false);
     expect(tokenCatalogOperationIdSchema.safeParse("A".repeat(43)).success).toBe(true);
     expect(tokenCatalogOperationIdSchema.safeParse("A".repeat(44)).success).toBe(false);
-    expect(tokenUserLabelSchema.safeParse("a".repeat(128)).success).toBe(true);
-    expect(tokenUserLabelSchema.safeParse("a".repeat(129)).success).toBe(false);
-    expect(tokenUserLabelSchema.safeParse("line\nbreak").success).toBe(false);
-    expect(tokenUserLabelSchema.safeParse("\u202Ehidden").success).toBe(false);
-    expect(tokenUserLabelSchema.safeParse("").success).toBe(false);
   });
 
   it("rejects accessor, proxy, and additional-field inputs before authority use", () => {
@@ -213,52 +199,23 @@ describe("token catalog contracts", () => {
       page,
     )).toThrow();
 
-    const registerSettings = { userLabel: "Example", visibility: "visible" as const };
     const register = awaitingOperation({
       inspection,
       kind: "register",
       previousRegistration: null,
-      proposedSettings: registerSettings,
     });
     const registerSuccess = { operation: register };
-    expect(tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess({
-      asset,
-      settings: registerSettings,
-    }, registerSuccess)).toEqual(registerSuccess);
-    expect(() => tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess({
-      asset,
-      settings: { userLabel: null, visibility: "visible" },
-    }, registerSuccess)).toThrow();
+    expect(tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess({ asset }, registerSuccess))
+      .toEqual(registerSuccess);
     expect(() => tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess({
       asset: secondAsset,
-      settings: registerSettings,
     }, registerSuccess)).toThrow();
 
-    const previous = registrationFor(inspection, registerSettings);
-    const proposedSettings = { userLabel: null, visibility: "hidden" as const };
-    const update = awaitingOperation({
-      inspection,
-      kind: "update_registration",
-      previousRegistration: previous,
-      proposedSettings,
-    });
-    const updateSuccess = { operation: update };
-    expect(tokenCatalogApplicationContracts.startRegistrationUpdate.parsePublicSuccess({
-      asset,
-      expectedRevision: revisionA,
-      changes: proposedSettings,
-    }, updateSuccess)).toEqual(updateSuccess);
-    expect(() => tokenCatalogApplicationContracts.startRegistrationUpdate.parsePublicSuccess({
-      asset,
-      expectedRevision: revisionB,
-      changes: proposedSettings,
-    }, updateSuccess)).toThrow();
-
+    const previous = registrationFor(inspection);
     const unregister = awaitingOperation({
       inspection,
       kind: "unregister",
       previousRegistration: previous,
-      proposedSettings: null,
     });
     const unregisterSuccess = { operation: unregister };
     expect(tokenCatalogApplicationContracts.startUnregistration.parsePublicSuccess({
@@ -277,7 +234,6 @@ describe("token catalog contracts", () => {
       inspection,
       kind: "register",
       previousRegistration: null,
-      proposedSettings: { userLabel: null, visibility: "visible" },
     });
     const input = {
       operationId: awaiting.operationId,
@@ -344,7 +300,6 @@ describe("token catalog contracts", () => {
       inspection,
       kind: "register",
       previousRegistration: null,
-      proposedSettings: { userLabel: null, visibility: "visible" },
     });
     const applying = tokenCatalogOperationSchema.parse({ ...awaiting, state: "applying" });
     const cancelled = tokenCatalogOperationSchema.parse({ ...awaiting, state: "cancelled" });
@@ -383,15 +338,13 @@ describe("token catalog contracts", () => {
       inspection,
       kind: "register",
       previousRegistration: null,
-      proposedSettings: { userLabel: null, visibility: "visible" },
     });
     const applying = tokenCatalogOperationSchema.parse({ ...awaiting, state: "applying" });
     const cancelled = tokenCatalogOperationSchema.parse({ ...awaiting, state: "cancelled" });
-    const update = awaitingOperation({
+    const wrongKind = awaitingOperation({
       inspection,
-      kind: "update_registration",
+      kind: "unregister",
       previousRegistration: registrationFor(inspection),
-      proposedSettings: { userLabel: null, visibility: "hidden" },
     });
     const schemaFor = (capabilityId: string): object => {
       const projection = tokenCatalogContractProjection.applications.find(
@@ -409,7 +362,7 @@ describe("token catalog contracts", () => {
 
     expect(validateStart({ operation: awaiting })).toBe(true);
     expect(validateStart({ operation: applying })).toBe(false);
-    expect(validateStart({ operation: update })).toBe(false);
+    expect(validateStart({ operation: wrongKind })).toBe(false);
     expect(validateStart({ operation: awaiting, managementUrl: "http://127.0.0.1:46630/tokens" })).toBe(false);
     expect(validateCancel({ operation: cancelled })).toBe(true);
     expect(validateCancel({ operation: awaiting })).toBe(false);
@@ -443,14 +396,12 @@ describe("token catalog contracts", () => {
 
   it("binds completed registration results to the reviewed inspection and lifecycle", async () => {
     const inspection = await createInspectionSuccess();
-    const settings = { userLabel: "Example", visibility: "visible" as const };
     const register = awaitingOperation({
       inspection,
       kind: "register",
       previousRegistration: null,
-      proposedSettings: settings,
     });
-    const created = registrationFor(inspection, settings);
+    const created = registrationFor(inspection);
     expect(tokenCatalogOperationSchema.parse({
       ...register,
       state: "completed",
@@ -460,39 +411,7 @@ describe("token catalog contracts", () => {
       ...register,
       state: "completed",
       result: {
-        registration: { ...created, updatedAt: "2026-07-18T00:00:04.000Z" },
-        inspection,
-      },
-    })).toThrow();
-
-    const update = awaitingOperation({
-      inspection,
-      kind: "update_registration",
-      previousRegistration: created,
-      proposedSettings: { userLabel: null, visibility: "hidden" },
-    });
-    const updated = {
-      ...created,
-      revision: revisionB,
-      userLabel: null,
-      visibility: "hidden" as const,
-      updatedAt: "2026-07-18T00:00:04.000Z",
-    };
-    expect(tokenCatalogOperationSchema.parse({
-      ...update,
-      state: "completed",
-      result: { registration: updated, inspection },
-    })).toMatchObject({ state: "completed", result: { registration: { revision: revisionB } } });
-    expect(() => tokenCatalogOperationSchema.parse({
-      ...update,
-      state: "completed",
-      result: { registration: { ...updated, revision: revisionA }, inspection },
-    })).toThrow();
-    expect(() => tokenCatalogOperationSchema.parse({
-      ...update,
-      state: "completed",
-      result: {
-        registration: { ...updated, createdAt: "2026-07-18T00:00:02.000Z" },
+        registration: { ...created, createdAt: "2026-07-18T00:00:02.000Z" },
         inspection,
       },
     })).toThrow();

@@ -7,7 +7,6 @@ import {
   deepFreezeValue,
   defineReadCapability,
   getCapabilityDefinitionSnapshot,
-  snakeCaseCodeSchema,
   type CanonicalJson,
   type ConclusionDraft,
   type FactOutcome,
@@ -15,7 +14,6 @@ import {
   type ObservationExpectation,
   type ObservationSlot,
   type ObservedFact,
-  type StaticScopeExclusion,
 } from "../core/index.js";
 import { tokenCatalogErrorDefinitions } from "./error-definitions.js";
 import {
@@ -25,6 +23,7 @@ import {
   tokenInspectCapabilityId,
   tokenInspectionDataSchema,
   tokenInspectionInputSchema,
+  tokenInspectionStaticScopeExclusions,
   type TokenInspectionData,
   type TokenInspectionInput,
 } from "./contract-schema.js";
@@ -73,11 +72,6 @@ const claim = (
 const expectation = (slotId: string, claims: ObservationExpectation["claims"]): ObservationExpectation => ({
   slotId,
   claims,
-});
-
-const exclusion = (id: string, message: string): StaticScopeExclusion => ({
-  id: snakeCaseCodeSchema.parse(id),
-  message,
 });
 
 const inspectionFailureCodes = Object.freeze([
@@ -215,16 +209,7 @@ export const tokenInspectCapability = defineReadCapability<TokenInspectionInput,
     ) throw new TypeError("Token inspection evidence binding is incomplete.");
   },
   warningCodes: ["decimals_unavailable", "partial_result"],
-  staticScopeExclusions: [
-    exclusion("account_balance", "This inspection does not read an account balance."),
-    exclusion("official_asset_identity", "This inspection does not establish official asset identity."),
-    exclusion("price_and_liquidity", "This inspection does not establish price or liquidity."),
-    exclusion("protocol_identity", "This inspection does not establish protocol identity."),
-    exclusion("proxy_and_controls", "This inspection does not inspect proxy or control authority."),
-    exclusion("safety", "This inspection does not establish token safety."),
-    exclusion("source_verification", "This inspection does not establish source verification."),
-    exclusion("transaction_support", "This inspection does not establish transaction support."),
-  ],
+  staticScopeExclusions: tokenInspectionStaticScopeExclusions,
 });
 
 

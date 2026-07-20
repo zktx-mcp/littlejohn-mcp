@@ -40,6 +40,11 @@ describe("CLI interface identity", () => {
     expect(declaredCliCommandIdentities).toEqual([
       {
         domain: "read",
+        command: "assets",
+        argumentSyntax: "[--limit <1..5>] [--cursor <token-address>] [--json]",
+      },
+      {
+        domain: "read",
         command: "balance",
         argumentSyntax: "(--address <address> | --active) --native <true|false> [--token <address>]... --block <latest|block-number> [--json]",
       },
@@ -70,17 +75,12 @@ describe("CLI interface identity", () => {
       {
         domain: "token",
         command: "register",
-        argumentSyntax: "<token-address> [--label <text>] [--visibility <visible|hidden>]",
+        argumentSyntax: "<token-address>",
       },
       {
         domain: "token",
         command: "unregister",
         argumentSyntax: "<token-address> --revision <revision>",
-      },
-      {
-        domain: "token",
-        command: "update",
-        argumentSyntax: "<token-address> --revision <revision> [--label <text> | --clear-label] [--visibility <visible|hidden>]",
       },
       { domain: "wallet", command: "cancel", argumentSyntax: "<operation-id>" },
       { domain: "wallet", command: "connect", argumentSyntax: "" },
@@ -90,6 +90,7 @@ describe("CLI interface identity", () => {
     ]);
     expect(cliHelpText).toBe([
       "Usage:",
+      "  littlejohn read assets [--limit <1..5>] [--cursor <token-address>] [--json]",
       "  littlejohn read balance (--address <address> | --active) --native <true|false> [--token <address>]... --block <latest|block-number> [--json]",
       "  littlejohn read chain-status [--json]",
       "  littlejohn read contract <address> --block <latest|block-number> [--json]",
@@ -99,9 +100,8 @@ describe("CLI interface identity", () => {
       "  littlejohn token inspect <token-address> --block <latest|block-number> [--json]",
       "  littlejohn token list [--limit <1..25>] [--cursor <token-address>] [--json]",
       "  littlejohn token operation <operation-id> [--json]",
-      "  littlejohn token register <token-address> [--label <text>] [--visibility <visible|hidden>]",
+      "  littlejohn token register <token-address>",
       "  littlejohn token unregister <token-address> --revision <revision>",
-      "  littlejohn token update <token-address> --revision <revision> [--label <text> | --clear-label] [--visibility <visible|hidden>]",
       "  littlejohn wallet cancel <operation-id>",
       "  littlejohn wallet connect",
       "  littlejohn wallet disconnect",

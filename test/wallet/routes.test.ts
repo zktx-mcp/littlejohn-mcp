@@ -487,7 +487,7 @@ describe("authenticated wallet control routes", () => {
     if (!result.ok || result.response !== "canonical_json") return;
     expect(result.body).toMatchObject({
       ok: true,
-      meta: { capabilityId: "wallet.connection", contractVersion: "3", chainId: "eip155:4663" },
+      meta: { capabilityId: "wallet.connection", contractVersion: "4", chainId: "eip155:4663" },
       data: disconnected,
       warnings: [],
     });

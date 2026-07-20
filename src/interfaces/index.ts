@@ -44,6 +44,9 @@ export type {
 } from "./cli-read.js";
 export {
   cliHelpText,
+  accountAssetInterfaceBindingList,
+  accountAssetInterfaceBindings,
+  accountAssetLocalOperationIdentities,
   declaredCliCommandIdentities,
   tokenLocalOperationIdentities,
   walletLocalOperationIdentities,
@@ -52,6 +55,7 @@ export {
   walletConnectionInterface,
 } from "./identities.js";
 export type {
+  AccountAssetInterfaceBinding,
   CliInterfaceIdentity,
   WalletInterfaceBinding,
 } from "./identities.js";

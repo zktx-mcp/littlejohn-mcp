@@ -2,6 +2,7 @@ import { tokenInspectCapability } from "../../src/token-catalog/contracts.js";
 import { tokenCatalogErrorRegistry } from "../../src/token-catalog/errors.js";
 import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
 import type {
+  AccountTokenRegistrationReadPort,
   TokenCatalogBrowserOperationPort,
   TokenCatalogInspectionPort,
   TokenCatalogInteractiveCliPort,
@@ -14,6 +15,7 @@ import { bindForHarness, createCapabilityHarness } from "../core/capability-harn
 const failure = (code: string) => new TokenCatalogOperationError(code).failure;
 
 export interface TokenCatalogInterfaceHarnessPorts {
+  readonly accountTokenRegistrationRead: AccountTokenRegistrationReadPort;
   readonly tokenInspection: TokenCatalogInspectionPort;
   readonly tokenCatalogQueries: TokenCatalogQueryApplicationPort;
   readonly tokenCatalogWebStart: TokenCatalogWebStartPort;
@@ -31,6 +33,10 @@ export const tokenCatalogInterfaceHarnessPorts = (): TokenCatalogInterfaceHarnes
   );
   return Object.freeze({
     tokenInspection,
+    accountTokenRegistrationRead: Object.freeze({
+      getForAccount: () => undefined,
+      listForAccount: () => Object.freeze({ entries: [], nextCursor: null }),
+    }),
     tokenCatalogQueries: Object.freeze({
       getRegistration: () => failure("token_registration_not_found"),
       listRegistrations: () => Object.freeze({ registrations: [], nextCursor: null }),
@@ -38,7 +44,6 @@ export const tokenCatalogInterfaceHarnessPorts = (): TokenCatalogInterfaceHarnes
     tokenCatalogWebStart: Object.freeze({
       interactionInterface: "web",
       startRegistration: async () => failure("internal_error"),
-      startRegistrationUpdate: async () => failure("internal_error"),
       startUnregistration: async () => failure("internal_error"),
     }),
     tokenCatalogBrowserOperations: Object.freeze({
@@ -51,7 +56,6 @@ export const tokenCatalogInterfaceHarnessPorts = (): TokenCatalogInterfaceHarnes
     tokenCatalogInteractiveCli: Object.freeze({
       interactionInterface: "cli",
       startRegistration: async () => failure("internal_error"),
-      startRegistrationUpdate: async () => failure("internal_error"),
       startUnregistration: async () => failure("internal_error"),
       confirm: async () => { throw new TokenCatalogOperationError("token_operation_not_found"); },
     }),

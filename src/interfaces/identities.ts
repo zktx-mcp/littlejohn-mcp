@@ -19,6 +19,15 @@ import {
 } from "../core/index.js";
 import { chainErrorRegistry, chainInterfaceErrorMappings } from "../chain/errors.js";
 import {
+  accountAssetApplicationContracts,
+  accountAssetCollectionRequestBody,
+  accountAssetControlRoutes,
+  accountAssetErrorRegistry,
+  accountAssetInterfaceErrorMappings,
+  type AnyAccountAssetApplicationContract,
+  type AccountAssetCollectionSuccess,
+} from "../account-assets/index.js";
+import {
   tokenCatalogApplicationContracts,
   tokenCatalogErrorRegistry,
   tokenCatalogInterfaceErrorMappings,
@@ -36,7 +45,6 @@ import {
   type TokenRegistrationInput,
   type TokenRegistrationListResult,
   type TokenRegistrationStartRequest,
-  type TokenRegistrationUpdateStartInput,
   type TokenRegistrationWithInspection,
   type TokenUnregistrationStartInput,
   type TokenCatalogOperationKind,
@@ -129,6 +137,10 @@ const walletResponseAuthority = Object.freeze({
 const tokenResponseAuthority = Object.freeze({
   applicationErrors: tokenCatalogErrorRegistry,
   interfaceMappings: tokenCatalogInterfaceErrorMappings,
+});
+const accountAssetResponseAuthority = Object.freeze({
+  applicationErrors: accountAssetErrorRegistry,
+  interfaceMappings: accountAssetInterfaceErrorMappings,
 });
 
 const readAnnotations = (openWorldHint: boolean): InterfaceToolAnnotations => Object.freeze({
@@ -317,6 +329,50 @@ export interface TokenCatalogInterfaceBinding {
   readonly web: true;
 }
 
+export interface AccountAssetInterfaceBinding {
+  readonly action: "list" | "get";
+  readonly contract: AnyAccountAssetApplicationContract;
+  readonly responseAuthority: CanonicalDispatchAuthority;
+  readonly control?: Readonly<{ method: "POST"; path: string }>;
+  readonly mcp?: Readonly<{
+    readonly name: string;
+    readonly description: string;
+    readonly annotations: InterfaceToolAnnotations;
+  }>;
+  readonly cli?: Readonly<CliInterfaceIdentity>;
+  readonly web: true;
+}
+
+export const accountAssetInterfaceBindings = Object.freeze({
+  collection: Object.freeze({
+    action: "list",
+    contract: accountAssetApplicationContracts.collection,
+    responseAuthority: accountAssetResponseAuthority,
+    control: Object.freeze({ method: "POST", path: accountAssetControlRoutes.queries }),
+    mcp: Object.freeze({
+      name: "account_list_assets",
+      description: "List native and registered-token assets for the connected wallet account.",
+      annotations: readAnnotations(true),
+    }),
+    cli: Object.freeze({
+      domain: "read",
+      command: "assets",
+      argumentSyntax: "[--limit <1..5>] [--cursor <token-address>] [--json]",
+    }),
+    web: true,
+  }),
+  exact: Object.freeze({
+    action: "get",
+    contract: accountAssetApplicationContracts.exact,
+    responseAuthority: accountAssetResponseAuthority,
+    web: true,
+  }),
+});
+
+export const accountAssetInterfaceBindingList: readonly AccountAssetInterfaceBinding[] = Object.freeze(
+  Object.values(accountAssetInterfaceBindings),
+);
+
 const tokenCatalogBinding = <const Binding extends TokenCatalogInterfaceBinding>(
   input: Binding,
 ): Readonly<Binding> => Object.freeze({
@@ -364,25 +420,9 @@ export const tokenCatalogInterfaceBindings = Object.freeze({
     cli: {
       domain: "token",
       command: "register",
-      argumentSyntax: "<token-address> [--label <text>] [--visibility <visible|hidden>]",
+      argumentSyntax: "<token-address>",
     },
     operationKind: "register",
-    web: true,
-  }),
-  startRegistrationUpdate: tokenCatalogBinding({
-    action: "start",
-    contract: tokenCatalogApplicationContracts.startRegistrationUpdate,
-    mcp: {
-      name: "token_start_registration_update",
-      description: "Start a token registration settings update for local browser confirmation.",
-      annotations: startAnnotations(false),
-    },
-    cli: {
-      domain: "token",
-      command: "update",
-      argumentSyntax: "<token-address> --revision <revision> [--label <text> | --clear-label] [--visibility <visible|hidden>]",
-    },
-    operationKind: "update_registration",
     web: true,
   }),
   startUnregistration: tokenCatalogBinding({
@@ -870,16 +910,28 @@ const tokenConfirmationLocalIdentity = localOperationIdentity<
   },
 });
 
+const accountAssetCollectionReadIdentity = localOperationIdentity<
+  ReturnType<typeof accountAssetApplicationContracts.collection.parseInput>,
+  AccountAssetCollectionSuccess
+>({
+  action: "read",
+  contract: accountAssetApplicationContracts.collection.applicationContract,
+  errorMappings: accountAssetInterfaceErrorMappings,
+  operationId: () => undefined,
+  actionRequest: (input) => ({
+    method: "POST",
+    path: accountAssetControlRoutes.queries,
+    body: captureCanonicalJson(accountAssetCollectionRequestBody(input)),
+  }),
+  parseActionResponse: (input, _operationId, value) =>
+    accountAssetApplicationContracts.collection.parsePublicSuccess(input, value),
+});
+
 const tokenStartIdentities = (interactionInterface: "cli" | "web") => Object.freeze({
   registration: tokenStartLocalIdentity<TokenRegistrationStartRequest>({
     kind: "register",
     interactionInterface,
     contract: tokenCatalogApplicationContracts.startRegistration,
-  }),
-  registrationUpdate: tokenStartLocalIdentity<TokenRegistrationUpdateStartInput>({
-    kind: "update_registration",
-    interactionInterface,
-    contract: tokenCatalogApplicationContracts.startRegistrationUpdate,
   }),
   unregistration: tokenStartLocalIdentity<TokenUnregistrationStartInput>({
     kind: "unregister",
@@ -918,7 +970,13 @@ export const tokenLocalOperationIdentities = Object.freeze({
   mcp: tokenStartIdentities("web"),
 });
 
+export const accountAssetLocalOperationIdentities = Object.freeze({
+  collection: accountAssetCollectionReadIdentity,
+});
+
 export const declaredCliCommandIdentities = Object.freeze([
+  ...accountAssetInterfaceBindingList.flatMap((binding) =>
+    binding.cli === undefined ? [] : [binding.cli]),
   ...readInterfaceIdentities.map((identity) => identity.cli),
   ...tokenCatalogInterfaceBindingList.map((binding) => binding.cli),
   ...walletInterfaceBindingList.flatMap((binding) =>
@@ -943,6 +1001,8 @@ export const cliHelpText = [
 ].join("\n");
 
 export const declaredMcpToolNames = Object.freeze([
+  ...accountAssetInterfaceBindingList.flatMap((binding) =>
+    binding.mcp === undefined ? [] : [binding.mcp.name]),
   ...readInterfaceIdentities.map((entry) => entry.mcp.name),
   ...tokenCatalogInterfaceBindingList.map((binding) => binding.mcp.name),
   capabilityCatalogInterface.mcp.name,

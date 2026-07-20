@@ -40,7 +40,8 @@ const webApplicationSource = resolve(webSourceRoot, "app.tsx");
 const walletClientSource = resolve(webSourceRoot, "wallet-client.ts");
 const browserClientSource = resolve(webSourceRoot, "browser-client.ts");
 const tokenCatalogClientSource = resolve(webSourceRoot, "token-catalog-client.ts");
-const tokenCatalogPageSource = resolve(webSourceRoot, "token-catalog-page.tsx");
+const accountAssetsClientSource = resolve(webSourceRoot, "account-assets-client.ts");
+const accountAssetsPageSource = resolve(webSourceRoot, "account-assets-page.tsx");
 const operationStateSource = resolve(repositoryRoot, "src/wallet/operation-state.ts");
 const chainErrorDefinitionsSource = resolve(repositoryRoot, "src/chain/error-definitions.ts");
 const tokenCatalogBrowserSource = resolve(repositoryRoot, "src/token-catalog/browser.ts");
@@ -56,6 +57,11 @@ const tokenCatalogHttpContractSource = resolve(
   repositoryRoot,
   "src/token-catalog/http-contract.ts",
 );
+const accountAssetsBrowserSource = resolve(repositoryRoot, "src/account-assets/browser.ts");
+const accountAssetsContractsSource = resolve(repositoryRoot, "src/account-assets/contracts.ts");
+const accountAssetsErrorRegistrySource = resolve(repositoryRoot, "src/account-assets/error-registry.ts");
+const accountAssetsHttpContractSource = resolve(repositoryRoot, "src/account-assets/http-contract.ts");
+const accountAssetsViewSource = resolve(repositoryRoot, "src/account-assets/view.ts");
 const allowedVirtualModules = new Set([
   "\0commonjsHelpers.js",
   "\0rolldown/runtime.js",
@@ -87,6 +93,11 @@ describe("browser runtime dependency boundary", () => {
       tokenCatalogContractSchemaSource,
       tokenCatalogErrorDefinitionsSource,
       tokenCatalogHttpContractSource,
+      accountAssetsBrowserSource,
+      accountAssetsContractsSource,
+      accountAssetsErrorRegistrySource,
+      accountAssetsHttpContractSource,
+      accountAssetsViewSource,
       resolve(nodeModulesRoot, "react/index.js"),
       resolve(nodeModulesRoot, "react-dom/client.js"),
       resolve(nodeModulesRoot, "scheduler/index.js"),
@@ -307,7 +318,8 @@ describe("browser runtime dependency boundary", () => {
       expect(moduleIds).toContain(browserClientSource);
       expect(moduleIds).toContain(walletClientSource);
       expect(moduleIds).toContain(tokenCatalogClientSource);
-      expect(moduleIds).toContain(tokenCatalogPageSource);
+      expect(moduleIds).toContain(accountAssetsClientSource);
+      expect(moduleIds).toContain(accountAssetsPageSource);
       expect(moduleIds).toContain(webApplicationSource);
       expect(moduleIds).toContain(resolve(webSourceRoot, "wallet-dialog-view.ts"));
       expect(moduleIds).toContain(operationStateSource);
@@ -317,6 +329,11 @@ describe("browser runtime dependency boundary", () => {
       expect(moduleIds).toContain(tokenCatalogBrowserSource);
       expect(moduleIds).toContain(tokenCatalogContractSchemaSource);
       expect(moduleIds).toContain(tokenCatalogErrorDefinitionsSource);
+      expect(moduleIds).toContain(accountAssetsBrowserSource);
+      expect(moduleIds).toContain(accountAssetsContractsSource);
+      expect(moduleIds).toContain(accountAssetsErrorRegistrySource);
+      expect(moduleIds).toContain(accountAssetsHttpContractSource);
+      expect(moduleIds).toContain(accountAssetsViewSource);
       const zodRoot = resolve(nodeModulesRoot, "zod");
       expect(moduleIds.some((moduleId) =>
         moduleId === zodRoot || moduleId.startsWith(`${zodRoot}${sep}`))).toBe(true);

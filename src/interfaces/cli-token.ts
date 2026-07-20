@@ -19,13 +19,10 @@ import {
   tokenCatalogOperationConfirmationContract,
   tokenCatalogOperationIdSchema,
   tokenRegistrationRevisionSchema,
-  tokenRegistrationVisibilities,
-  tokenUserLabelSchema,
   type AnyTokenCatalogApplicationContract,
   type TokenCatalogOperation,
   type TokenCatalogOperationStartResult,
   type TokenRegistration,
-  type TokenRegistrationSettings,
   type TokenRegistrationWithInspection,
 } from "../token-catalog/index.js";
 import type { RuntimeDispatchPort } from "./http-client.js";
@@ -54,14 +51,7 @@ export type TokenCliCommand =
   | Readonly<{ kind: "inspect"; address: EvmAddress; block: BlockSelector; json: boolean }>
   | Readonly<{ kind: "get"; address: EvmAddress; json: boolean }>
   | Readonly<{ kind: "list"; limit?: number; cursor?: EvmAddress; json: boolean }>
-  | Readonly<{ kind: "register"; address: EvmAddress; settings: TokenRegistrationSettings; json: false }>
-  | Readonly<{
-      kind: "update";
-      address: EvmAddress;
-      expectedRevision: TokenRegistration["revision"];
-      changes: Readonly<{ userLabel?: string | null; visibility?: "visible" | "hidden" }>;
-      json: false;
-    }>
+  | Readonly<{ kind: "register"; address: EvmAddress; json: false }>
   | Readonly<{
       kind: "unregister";
       address: EvmAddress;
@@ -164,19 +154,6 @@ const position = (parsed: ParsedTokens): string => {
   return parsed.positionals[0] as string;
 };
 
-const parseVisibility = (value: string | undefined): "visible" | "hidden" | undefined => {
-  if (value === undefined) return undefined;
-  const visibility = tokenRegistrationVisibilities.find((candidate) => candidate === value);
-  if (visibility === undefined) return invalidInput();
-  return visibility;
-};
-
-const parseLabel = (value: string | undefined): string | undefined => {
-  if (value === undefined) return undefined;
-  try { return tokenUserLabelSchema.parse(value); }
-  catch { return invalidInput(); }
-};
-
 const parseLimit = (value: string | undefined): number | undefined => {
   if (value === undefined) return undefined;
   if (!/^(?:[1-9]|1[0-9]|2[0-5])$/.test(value)) return invalidInput();
@@ -213,40 +190,10 @@ export const parseTokenCliCommand = (argumentsInput: readonly string[]): TokenCl
     });
   }
   if (command === tokenCatalogInterfaceBindings.startRegistration.cli.command) {
-    const parsed = parseTokens(tokens, new Set(["--label", "--visibility"]));
-    const label = parseLabel(parsed.values.get("--label"));
-    const visibility = parseVisibility(parsed.values.get("--visibility"));
+    const parsed = parseTokens(tokens, new Set());
     return Object.freeze({
       kind: "register",
       address: address(position(parsed)),
-      settings: Object.freeze({
-        userLabel: label ?? null,
-        visibility: visibility ?? "visible",
-      }),
-      json: false,
-    });
-  }
-  if (command === tokenCatalogInterfaceBindings.startRegistrationUpdate.cli.command) {
-    const parsed = parseTokens(
-      tokens,
-      new Set(["--revision", "--label", "--visibility"]),
-      new Set(["--clear-label"]),
-    );
-    const label = parseLabel(parsed.values.get("--label"));
-    const clearLabel = parsed.booleans.has("--clear-label");
-    const visibility = parseVisibility(parsed.values.get("--visibility"));
-    if (label !== undefined && clearLabel || label === undefined && !clearLabel && visibility === undefined) {
-      return invalidInput();
-    }
-    const changes: { userLabel?: string | null; visibility?: "visible" | "hidden" } = {};
-    if (clearLabel) changes.userLabel = null;
-    else if (label !== undefined) changes.userLabel = label;
-    if (visibility !== undefined) changes.visibility = visibility;
-    return Object.freeze({
-      kind: "update",
-      address: address(position(parsed)),
-      expectedRevision: revision(parsed.values.get("--revision")),
-      changes: Object.freeze(changes),
       json: false,
     });
   }
@@ -273,7 +220,7 @@ export const parseTokenCliCommand = (argumentsInput: readonly string[]): TokenCl
 
 export const tokenCliCommandRequiresInteractiveTerminal = (
   command: TokenCliCommand,
-): boolean => command.kind === "register" || command.kind === "update" || command.kind === "unregister";
+): boolean => command.kind === "register" || command.kind === "unregister";
 
 const canonical = (output: TokenCliOutputPort, value: unknown): void => {
   output.writeOutput(`${canonicalJsonStringify(captureCanonicalJson(value))}\n`);
@@ -334,8 +281,6 @@ const asset = (chainId: EvmChainId, tokenAddress: EvmAddress) => Object.freeze({
   address: tokenAddress,
 });
 
-const optionalText = (value: string | null): string => value ?? "not set";
-
 const observationText = (
   observation: TokenRegistrationWithInspection["inspection"]["data"]["metadata"]["name"],
 ): string => observation.status === "available"
@@ -377,33 +322,24 @@ const inspectionHuman = (inspection: TokenRegistrationWithInspection["inspection
 const registrationHuman = (registration: TokenRegistration): string => [
   `Token: ${registration.asset.address}`,
   `Chain: ${registration.asset.chainId}`,
-  `Label: ${optionalText(registration.userLabel)}`,
-  `Visibility: ${registration.visibility}`,
   `Revision: ${registration.revision}`,
 ].join("\n");
 
 const operationAction = (operation: TokenCatalogOperation): string => {
   switch (operation.kind) {
     case "register": return "Add token";
-    case "update_registration": return "Edit token";
     case "unregister": return "Remove token";
   }
 };
 
 const operationReviewHuman = (operation: TokenCatalogOperation): string => {
   const previous = operation.review.previousRegistration;
-  const proposed = operation.review.proposedSettings;
   return [
     operationAction(operation),
     `Token: ${operation.asset.address}`,
     `Chain: ${operation.asset.chainId}`,
     ...(previous === null ? [] : [
-      `Current label: ${optionalText(previous.userLabel)}`,
-      `Current visibility: ${previous.visibility}`,
-    ]),
-    ...(proposed === null ? [] : [
-      `New label: ${optionalText(proposed.userLabel)}`,
-      `New visibility: ${proposed.visibility}`,
+      `Current registration revision: ${previous.revision}`,
     ]),
     "",
     "Reviewed token inspection",
@@ -414,9 +350,7 @@ const operationReviewHuman = (operation: TokenCatalogOperation): string => {
 const operationOutcomeHuman = (operation: TokenCatalogOperation): string => operation.state === "completed"
     ? operation.kind === "register"
       ? "Token added."
-      : operation.kind === "update_registration"
-        ? "Token settings updated."
-        : "Token removed."
+      : "Token removed."
     : operation.state === "cancelled"
       ? "Token catalog change cancelled."
       : `Token catalog operation: ${operation.state}.`;
@@ -445,12 +379,12 @@ const confirmationDecision = async (
 
 const startInput = async (
   runtime: RuntimeDispatchPort,
-  command: Extract<TokenCliCommand, { kind: "register" | "update" | "unregister" }>,
+  command: Extract<TokenCliCommand, { kind: "register" | "unregister" }>,
   signal: AbortSignal,
 ): Promise<Readonly<{
   contract: AnyTokenCatalogApplicationContract;
   request: Readonly<Record<string, CanonicalJson>>;
-  operationKind: "register" | "update_registration" | "unregister";
+  operationKind: "register" | "unregister";
 }> | ApplicationFailure> => {
   const chainId = await configuredChainId(runtime, signal);
   if (typeof chainId !== "string") return chainId;
@@ -459,20 +393,8 @@ const startInput = async (
     const contract = tokenCatalogApplicationContracts.startRegistration;
     return Object.freeze({
       contract,
-      request: contract.parseInput({ asset: tokenAsset, settings: command.settings }) as unknown as Readonly<Record<string, CanonicalJson>>,
+      request: contract.parseInput({ asset: tokenAsset }) as unknown as Readonly<Record<string, CanonicalJson>>,
       operationKind: "register" as const,
-    });
-  }
-  if (command.kind === "update") {
-    const contract = tokenCatalogApplicationContracts.startRegistrationUpdate;
-    return Object.freeze({
-      contract,
-      request: contract.parseInput({
-        asset: tokenAsset,
-        expectedRevision: command.expectedRevision,
-        changes: command.changes,
-      }) as unknown as Readonly<Record<string, CanonicalJson>>,
-      operationKind: "update_registration" as const,
     });
   }
   const contract = tokenCatalogApplicationContracts.startUnregistration;
@@ -495,7 +417,7 @@ const cancelStartedOperation = async (
 const runInteractiveChange = async (
   runtime: RuntimeDispatchPort,
   client: LocalOperationClient,
-  command: Extract<TokenCliCommand, { kind: "register" | "update" | "unregister" }>,
+  command: Extract<TokenCliCommand, { kind: "register" | "unregister" }>,
   output: TokenCliOutputPort,
 ): Promise<number> => {
   const prepared = await startInput(runtime, command, output.interruptSignal);
@@ -510,14 +432,7 @@ const runInteractiveChange = async (
       prepared.request,
       output.interruptSignal,
     )
-    : prepared.operationKind === "update_registration"
-      ? await invokeLocal(
-        client,
-        tokenLocalOperationIdentities.cli.registrationUpdate,
-        prepared.request,
-        output.interruptSignal,
-      )
-      : await invokeLocal(
+    : await invokeLocal(
         client,
         tokenLocalOperationIdentities.cli.unregistration,
         prepared.request,
@@ -584,7 +499,7 @@ export const runTokenCliCommand = async (
       (!output.inputIsTTY || !output.outputIsTTY)) {
       return reportFailure(output, createTokenCatalogFailure("interactive_terminal_required"), false);
     }
-    if (command.kind === "register" || command.kind === "update" || command.kind === "unregister") {
+    if (command.kind === "register" || command.kind === "unregister") {
       return await runInteractiveChange(runtime, client, command, output);
     }
     if (command.kind === "operation" || command.kind === "cancel") {

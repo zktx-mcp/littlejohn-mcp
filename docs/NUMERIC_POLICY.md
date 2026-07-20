@@ -17,6 +17,8 @@ affected calculation, review, or transaction.
 - Raw quantities use `BigInt` in memory.
 - JSON, SQLite, MCP, HTTP, evidence, logs, and package boundaries use base-10
   integer strings.
+- An EVM RPC raw asset amount is between zero and `2^256 - 1` inclusive. A
+  larger structurally valid decimal string is not an EVM balance.
 - JavaScript `number`, binary floating point, and exponent notation never carry
   a transaction-critical or authoritative user-visible financial value. The
   non-authoritative chart projection defined below is the only display
@@ -89,6 +91,10 @@ present and bound to the same asset and observation identity.
   approximate amount.
 - Display formatting derives only from the canonical raw integer and verified
   decimals.
+- The account-asset human view removes leading integer zeroes, inserts the
+  decimal point implied by verified decimals, and removes trailing fractional
+  zeroes. Zero is `0`; no exponent notation, locale separator, rounding, or
+  `number` conversion is used. The raw integer remains visible and canonical.
 - A formatted value round-trips to the identical raw integer.
 - A display value never becomes quoting, accounting, simulation, or transaction
   input without a new exact parse and unit binding.

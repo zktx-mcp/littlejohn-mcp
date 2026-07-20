@@ -21,9 +21,8 @@ import { coreContractVersion } from "./contract.js";
 import { sha256Algorithm } from "./digests.js";
 import {
   createEvidenceSchemaSet,
+  createEvidenceSummary,
   createFieldIssue,
-  createWarning,
-  deriveCoverage,
   factOutcomeDefinitions,
   freshnessRuleDefinitions,
   isStrictlyOrderedUnique,
@@ -1311,7 +1310,7 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
       warningRequirementAuthoritySchema,
       definition.deriveWarnings(validatedInput, result.data, factProjection),
     ) as readonly WarningRequirement[];
-    const warnings = warningRequirements.map((candidate) => {
+    const warningInputs = warningRequirements.map((candidate) => {
       if (!definition.warningCodes.includes(candidate.code)) throw new TypeError("Warning is not declared.");
       const factIds = canonicalUnique(candidate.factIds);
       if (factIds.length !== candidate.factIds.length) throw new TypeError("Warning fact evidence is duplicated.");
@@ -1321,18 +1320,13 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
         return fact.observationIds;
       })) as readonly ObservationId[];
       if (observationIds.length === 0) throw new TypeError("Warning evidence is invalid.");
-      return createWarning(candidate.code, observationIds);
-    }).sort((left, right) => {
-      const codeOrder = compareCodePointSequences(left.code, right.code);
-      return codeOrder === 0
-        ? compareCodePointSequences(left.observationIds.join("\0"), right.observationIds.join("\0"))
-        : codeOrder;
+      return { code: candidate.code, observationIds };
     });
-    const warningIdentities = warnings.map((warning) =>
+    const summary = createEvidenceSummary(conclusions, warningInputs);
+    const warningIdentities = summary.warnings.map((warning) =>
       canonicalJsonStringify(warning as unknown as CanonicalJson));
     if (!isStrictlyOrderedUnique(warningIdentities)) throw new TypeError("Warnings are not unique and ordered.");
 
-    const coverage = deriveCoverage(conclusions);
     const success = {
       ok: true as const,
       meta: {
@@ -1345,9 +1339,9 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
       evidence: {
         sources: observations.evidence(),
         conclusions,
-        coverage,
+        coverage: summary.coverage,
       },
-      warnings,
+      warnings: summary.warnings,
     };
     const parsed = definition.successParser(success);
     if (!parsed.success) return internalFailure(record.errorRegistry);

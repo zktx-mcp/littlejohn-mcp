@@ -9,7 +9,7 @@ import { walletConnectionFieldPresenceCheckSql } from "./wallet-connection-stora
 const sqlIdentifierPattern = /^[a-z][a-z0-9_]*$/u;
 const base64UrlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-export const databaseSchemaVersion = 3 as const;
+export const databaseSchemaVersion = 4 as const;
 
 const sqlColumn = (column: string): string => {
   if (!sqlIdentifierPattern.test(column)) throw new TypeError("SQLite column identifier is invalid.");
@@ -79,13 +79,6 @@ export const canonicalHash32SqlCheck = (columnInput: string): string => {
 
 export const canonicalRegistrationRevisionSqlCheck = (columnInput: string): string =>
   canonicalBase64UrlSqlCheck(columnInput, tokenCatalogContractLimits.registrationRevisionBytes);
-
-export const canonicalUserTokenLabelSqlCheck = (columnInput: string): string => {
-  const column = sqlColumn(columnInput);
-  return `(${canonicalSqlTextCheck(column)} AND length(${column}) BETWEEN 1 AND ` +
-    `${tokenCatalogContractLimits.displayTextCodePoints} AND ` +
-    `length(CAST(${column} AS BLOB)) BETWEEN 1 AND ${tokenCatalogContractLimits.displayTextUtf8Bytes})`;
-};
 
 export const canonicalJsonObjectSqlCheck = (columnInput: string): string => {
   const column = sqlColumn(columnInput);
@@ -164,12 +157,7 @@ CREATE TABLE wallet_token_registration (
   token_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("token_address")}),
   revision TEXT NOT NULL CHECK (${canonicalRegistrationRevisionSqlCheck("revision")}),
   inspection_digest TEXT NOT NULL CHECK (${canonicalHash32SqlCheck("inspection_digest")}),
-  user_label TEXT CHECK (user_label IS NULL OR ${canonicalUserTokenLabelSqlCheck("user_label")}),
-  visibility TEXT NOT NULL CHECK (
-    ${canonicalSqlTextCheck("visibility")} AND visibility IN ('hidden', 'visible')
-  ),
   created_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("created_at")}),
-  updated_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("updated_at")}),
   PRIMARY KEY (profile_id, chain_id, wallet_address, token_address),
   FOREIGN KEY (profile_id, chain_id, wallet_address)
     REFERENCES wallet_account(profile_id, chain_id, wallet_address)

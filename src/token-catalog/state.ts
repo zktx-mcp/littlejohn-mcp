@@ -1,6 +1,5 @@
 export const tokenCatalogOperationKinds = Object.freeze([
   "register",
-  "update_registration",
   "unregister",
 ] as const);
 
@@ -19,9 +18,6 @@ export type TokenCatalogOperationState = typeof tokenCatalogOperationStates[numb
 
 export const tokenCatalogInteractionInterfaces = Object.freeze(["cli", "web"] as const);
 export type TokenCatalogInteractionInterface = typeof tokenCatalogInteractionInterfaces[number];
-
-export const tokenRegistrationVisibilities = Object.freeze(["hidden", "visible"] as const);
-export type TokenRegistrationVisibility = typeof tokenRegistrationVisibilities[number];
 
 export const isTokenCatalogOperationTerminal = (state: TokenCatalogOperationState): boolean =>
   state === "cancelled" || state === "completed" || state === "expired" || state === "failed";

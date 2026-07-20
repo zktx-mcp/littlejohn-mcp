@@ -29,6 +29,9 @@ const interfaceConsumerEntryPoints = new Set([
   resolve(sourceRoot, "cli.ts"),
 ]);
 const browserCoreConsumers = new Set([
+  "account-assets/contracts.ts",
+  "account-assets/error-registry.ts",
+  "account-assets/view.ts",
   "interfaces/browser-contract.ts",
   "interfaces/browser-error-response.ts",
   "interfaces/operation-delivery.ts",

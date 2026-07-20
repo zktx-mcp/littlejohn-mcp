@@ -6,24 +6,17 @@ import {
   tokenCatalogBrowserRoutes,
   tokenCatalogCurrentOperationSchema,
   tokenCatalogOperationConfirmationContract,
-  tokenRegistrationListRequestBody,
   type TokenCatalogCancellationResult,
   type TokenCatalogConfirmedOperation,
   type TokenCatalogOperation,
   type TokenCatalogOperationResult,
   type TokenCatalogOperationStartResult,
   type TokenRegistration,
-  type TokenRegistrationChanges,
-  type TokenRegistrationListInput,
-  type TokenRegistrationListResult,
-  type TokenRegistrationSettings,
-  type TokenRegistrationWithInspection,
 } from "../../token-catalog/browser.js";
 import {
   BrowserResponseError,
   controlBrowserActionJson,
   invalidBrowserResponse,
-  queryBrowserJson,
   readBrowserJson,
   type BrowserRequestOptions,
 } from "./browser-client.js";
@@ -48,57 +41,14 @@ const tokenAsset = (chainId: TokenChainId, addressInput: unknown) => Object.free
 export const parseTokenAddressInput = (input: unknown): TokenAddress =>
   parseEvmAddressInput(input);
 
-export const loadTokenRegistrations = async (
-  input: TokenRegistrationListInput = {},
-  options: BrowserRequestOptions = {},
-): Promise<TokenRegistrationListResult> => {
-  const contract = tokenCatalogApplicationContracts.registrations;
-  const request = contract.parseInput(input);
-  try {
-    return contract.parsePublicSuccess(
-      request,
-      await queryBrowserJson(
-        tokenCatalogBrowserRoutes.registrationQueries,
-        tokenRegistrationListRequestBody(request),
-        options,
-      ),
-    );
-  } catch (error) {
-    if (error instanceof BrowserResponseError) throw error;
-    throw invalidCatalogResponse();
-  }
-};
-
-export const loadTokenRegistration = async (
-  chainId: TokenChainId,
-  addressInput: unknown,
-  options: BrowserRequestOptions = {},
-): Promise<TokenRegistrationWithInspection> => {
-  const contract = tokenCatalogApplicationContracts.registration;
-  const request = contract.parseInput({ asset: tokenAsset(chainId, addressInput) });
-  try {
-    return contract.parsePublicSuccess(
-      request,
-      await readBrowserJson(
-        tokenCatalogBrowserRoutes.registration(request.asset.chainId, request.asset.address),
-        options,
-      ),
-    );
-  } catch (error) {
-    if (error instanceof BrowserResponseError) throw error;
-    throw invalidCatalogResponse();
-  }
-};
-
 export const startTokenRegistration = async (
   chainId: TokenChainId,
   addressInput: unknown,
-  settings: TokenRegistrationSettings,
   csrfToken: unknown,
   options: BrowserRequestOptions = {},
 ): Promise<TokenCatalogOperationStartResult<"register"> | DeliveryUnknown> => {
   const contract = tokenCatalogApplicationContracts.startRegistration;
-  const request = contract.parseInput({ asset: tokenAsset(chainId, addressInput), settings });
+  const request = contract.parseInput({ asset: tokenAsset(chainId, addressInput) });
   const operationId = createBrowserOperationId();
   const delivery = await controlBrowserActionJson(
     "start",
@@ -107,36 +57,6 @@ export const startTokenRegistration = async (
     {
       control: { operationId, interactionInterface: "web" },
       request: { kind: "register", ...request },
-    },
-    csrfToken,
-    options,
-  );
-  if (delivery.status === "delivery_unknown") return delivery.delivery;
-  const value = delivery.value;
-  try { return contract.parseBoundSuccess(request, { operationId, interactionInterface: "web" }, value); }
-  catch { return createDeliveryUnknown("start", operationId); }
-};
-
-export const startTokenRegistrationUpdate = async (
-  registration: TokenRegistration,
-  changes: TokenRegistrationChanges,
-  csrfToken: unknown,
-  options: BrowserRequestOptions = {},
-): Promise<TokenCatalogOperationStartResult<"update_registration"> | DeliveryUnknown> => {
-  const contract = tokenCatalogApplicationContracts.startRegistrationUpdate;
-  const request = contract.parseInput({
-    asset: registration.asset,
-    expectedRevision: registration.revision,
-    changes,
-  });
-  const operationId = createBrowserOperationId();
-  const delivery = await controlBrowserActionJson(
-    "start",
-    operationId,
-    tokenCatalogBrowserRoutes.operations,
-    {
-      control: { operationId, interactionInterface: "web" },
-      request: { kind: "update_registration", ...request },
     },
     csrfToken,
     options,

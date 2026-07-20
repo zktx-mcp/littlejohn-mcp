@@ -6,6 +6,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { createErc20CallEncoder, type Erc20CallEncoder } from "../../src/chain/evm-standard.js";
 import { extendChainSupportManifest } from "../../src/chain/application.js";
+import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
 import {
   walletConnectionCapability,
   type HandlerInvocationContext,
@@ -91,9 +92,11 @@ const baseRoutes = async (): Promise<RuntimeRouteRegistry> => {
   });
 };
 
-const interfaceManifest = () => extendInterfaceSupportManifest(extendTokenCatalogSupportManifest(extendChainSupportManifest(
-  extendWalletSupportManifest(createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain)),
-)));
+const interfaceManifest = () => extendInterfaceSupportManifest(extendAccountAssetSupportManifest(
+  extendTokenCatalogSupportManifest(extendChainSupportManifest(
+    extendWalletSupportManifest(createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain)),
+  )),
+));
 
 const createRoutes = async (walletData?: unknown): Promise<{
   readonly routes: RuntimeRouteRegistry;

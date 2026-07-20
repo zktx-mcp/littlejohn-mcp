@@ -77,11 +77,11 @@ const operations = async (): Promise<Readonly<{
     interactionInterface: "cli" as const,
     createdAt,
     expiresAt,
+    connectionRevision: "1",
     account: { chainId: tokenAsset.chainId, address: walletAddress },
     asset: tokenAsset,
     review: {
       previousRegistration: null,
-      proposedSettings: { userLabel: null, visibility: "visible" as const },
       inspection,
       reviewDigest: `0x${"ef".repeat(32)}`,
     },
@@ -98,10 +98,7 @@ const operations = async (): Promise<Readonly<{
         asset: tokenAsset,
         revision: Buffer.alloc(16, 2).toString("base64url"),
         inspectionDigest: tokenInspectionDigest(inspection),
-        userLabel: null,
-        visibility: "visible",
         createdAt,
-        updatedAt: createdAt,
       },
       inspection,
     },
@@ -116,10 +113,7 @@ const existingRegistrationOperations = async () => {
     asset: tokenAsset,
     revision: Buffer.alloc(16, 4).toString("base64url"),
     inspectionDigest: tokenInspectionDigest(inspection),
-    userLabel: "Old label",
-    visibility: "visible",
     createdAt,
-    updatedAt: createdAt,
   });
   const common = {
     operationId,
@@ -127,48 +121,23 @@ const existingRegistrationOperations = async () => {
     interactionInterface: "cli" as const,
     createdAt,
     expiresAt,
+    connectionRevision: "1",
     account: previous.account,
     asset: previous.asset,
     result: null,
     failure: null,
   };
-  const update = tokenCatalogOperationSchema.parse({
-    ...common,
-    kind: "update_registration",
-    review: {
-      previousRegistration: previous,
-      proposedSettings: { userLabel: "New label", visibility: "hidden" },
-      inspection,
-      reviewDigest: `0x${"ab".repeat(32)}`,
-    },
-  });
   const unregister = tokenCatalogOperationSchema.parse({
     ...common,
     kind: "unregister",
     review: {
       previousRegistration: previous,
-      proposedSettings: null,
       inspection,
       reviewDigest: `0x${"cd".repeat(32)}`,
     },
   });
-  const updated = tokenRegistrationSchema.parse({
-    ...previous,
-    revision: Buffer.alloc(16, 5).toString("base64url"),
-    userLabel: "New label",
-    visibility: "hidden",
-    updatedAt: "2026-07-18T00:00:04.000Z",
-  });
   return Object.freeze({
     previous,
-    update: Object.freeze({
-      awaiting: update,
-      completed: tokenCatalogOperationSchema.parse({
-        ...update,
-        state: "completed",
-        result: { registration: updated, inspection },
-      }),
-    }),
     unregister: Object.freeze({
       awaiting: unregister,
       completed: tokenCatalogOperationSchema.parse({
@@ -255,24 +224,12 @@ describe("token CLI", () => {
       block: { kind: "number", blockNumber: "123" },
       json: true,
     });
-    expect(parseTokenCliCommand([
-      "token", "update", tokenAddress, "--revision", Buffer.alloc(16, 1).toString("base64url"),
-      "--clear-label", "--visibility", "hidden",
-    ])).toMatchObject({
-      kind: "update",
-      changes: { userLabel: null, visibility: "hidden" },
-    });
-    expect(parseTokenCliCommand([
-      "token", "register", tokenAddress, "--label", "--leading",
-    ])).toMatchObject({ kind: "register", settings: { userLabel: "--leading" } });
-    expect(parseTokenCliCommand([
-      "token", "update", tokenAddress, "--revision", Buffer.alloc(16, 1).toString("base64url"),
-      "--label", "--leading",
-    ])).toMatchObject({ kind: "update", changes: { userLabel: "--leading" } });
+    expect(parseTokenCliCommand(["token", "register", tokenAddress]))
+      .toEqual({ kind: "register", address: tokenAddress, json: false });
     for (const invalid of [
       ["token", "inspect", tokenAddress],
       ["token", "register", tokenAddress, "--json"],
-      ["token", "update", tokenAddress, "--revision", "bad", "--label", "x", "--clear-label"],
+      ["token", "update", tokenAddress, "--revision", Buffer.alloc(16, 1).toString("base64url")],
       ["token", "list", "--limit", "26"],
       ["token", "confirm", operationId],
     ]) expect(() => parseTokenCliCommand(invalid)).toThrow();
@@ -314,7 +271,6 @@ describe("token CLI", () => {
           request: {
             kind: "register",
             asset: tokenAsset,
-            settings: { userLabel: null, visibility: "visible" },
           },
         },
       }),
@@ -327,24 +283,14 @@ describe("token CLI", () => {
     ]);
   });
 
-  it("completes update and unregister through the same exact review and confirmation lifecycle", async () => {
+  it("completes unregister through the exact review and confirmation lifecycle", async () => {
     const status = await chainStatusSuccess();
     const fixture = await existingRegistrationOperations();
-    for (const testCase of [
-      {
-        arguments: [
-          "token", "update", tokenAddress, "--revision", fixture.previous.revision,
-          "--label", "New label", "--visibility", "hidden",
-        ],
-        operation: fixture.update,
-        outcome: "Token settings updated.",
-      },
-      {
+    for (const testCase of [{
         arguments: ["token", "unregister", tokenAddress, "--revision", fixture.previous.revision],
         operation: fixture.unregister,
         outcome: "Token removed.",
-      },
-    ] as const) {
+      }] as const) {
       const runtime = new FakeRuntime((request) => {
         if (request.path === "/api/v1/chain-status") return { status: 200, body: status };
         if (request.path === tokenCatalogControlRoutes.operations) {
@@ -471,7 +417,6 @@ describe("token CLI", () => {
     const revision = Buffer.alloc(16, 4).toString("base64url");
     const mutations = [
       ["token", "register", tokenAddress],
-      ["token", "update", tokenAddress, "--revision", revision, "--visibility", "hidden"],
       ["token", "unregister", tokenAddress, "--revision", revision],
     ] as const;
     for (const argumentsInput of mutations) {
@@ -523,23 +468,6 @@ describe("token CLI", () => {
           method: "POST",
           path: tokenCatalogControlRoutes.registrationQueries,
           body: { limit: 2, cursor: tokenAddress },
-        },
-      },
-      {
-        arguments: ["token", "update", tokenAddress, "--revision", revision, "--visibility", "hidden"],
-        expected: {
-          requestClass: "local_control",
-          method: "POST",
-          path: tokenCatalogControlRoutes.operations,
-          body: {
-            control: { operationId, interactionInterface: "cli" },
-            request: {
-              kind: "update_registration",
-              asset: tokenAsset,
-              expectedRevision: revision,
-              changes: { visibility: "hidden" },
-            },
-          },
         },
       },
       {

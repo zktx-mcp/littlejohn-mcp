@@ -106,21 +106,6 @@ export const createTokenCatalogApplication = (input: Readonly<{
       } catch (error) { return normalizedFailure(contract, error); }
     },
 
-    async startRegistrationUpdate(inputValue, control) {
-      const contract = tokenCatalogApplicationContracts.startRegistrationUpdate;
-      let request;
-      try { request = contract.parseInput(inputValue); }
-      catch { return contract.parseFailure(invalidInput()); }
-      try {
-        const result = await input.operations.startRegistrationUpdate(request, control);
-        if ("ok" in result && result.ok === false) return normalizedFailure(contract, result);
-        return requireInteractionInterface(
-          control.interactionInterface,
-          contract.parseBoundSuccess(request, control, result),
-        );
-      } catch (error) { return normalizedFailure(contract, error); }
-    },
-
     async startUnregistration(inputValue, control) {
       const contract = tokenCatalogApplicationContracts.startUnregistration;
       let request;

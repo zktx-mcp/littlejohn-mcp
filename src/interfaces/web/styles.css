@@ -39,24 +39,6 @@ body {
   text-decoration: none;
 }
 
-.page-navigation {
-  display: flex;
-  gap: 8px;
-  margin-inline-start: 28px;
-}
-
-.page-link {
-  padding: 8px 10px;
-  border-radius: 8px;
-  color: #a7b3aa;
-  text-decoration: none;
-}
-
-.page-link.active {
-  color: #f5f7f4;
-  background: #26302a;
-}
-
 .wallet-nav-control {
   margin-inline-start: auto;
 }
@@ -65,14 +47,12 @@ body {
   padding: 56px 4px 28px;
 }
 
-.wallet-dialog::backdrop,
-.token-dialog::backdrop {
+.application-dialog::backdrop {
   background: rgb(5 9 6 / 62%);
   backdrop-filter: blur(12px);
 }
 
-.wallet-dialog,
-.token-dialog {
+.application-dialog {
   width: min(calc(100% - 48px), 620px);
   max-height: calc(100vh - 48px);
   margin: auto;
@@ -137,11 +117,11 @@ dd:last-child { margin-bottom: 0; }
 
 .actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 26px; }
 
-.token-page {
+.asset-page {
   padding: 48px 4px 72px;
 }
 
-.page-header {
+.asset-page-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -149,8 +129,8 @@ dd:last-child { margin-bottom: 0; }
   margin-bottom: 28px;
 }
 
-.page-header h1,
-.token-card h2,
+.asset-page-header h1,
+.asset-row h2,
 .empty-state h2 {
   margin-bottom: 10px;
 }
@@ -161,16 +141,16 @@ dd:last-child { margin-bottom: 0; }
   color: #cdd6cf;
 }
 
-.token-list {
+.asset-list {
   display: grid;
   gap: 14px;
   margin-top: 24px;
 }
 
-.token-card {
-  display: flex;
+.asset-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, auto) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 20px;
   padding: 20px;
   border: 1px solid #354139;
@@ -178,11 +158,16 @@ dd:last-child { margin-bottom: 0; }
   background: #171d19;
 }
 
-.token-card-copy {
+.asset-identity {
   min-width: 0;
 }
 
-.token-card-copy p {
+.asset-identity h2 {
+  margin: 4px 0;
+  font-size: 18px;
+}
+
+.asset-identity p {
   max-width: 100%;
   margin: 5px 0;
   overflow-x: auto;
@@ -190,9 +175,78 @@ dd:last-child { margin-bottom: 0; }
   color: #a7b3aa;
 }
 
-.compact-actions {
+.asset-symbol {
+  color: #cdd6cf !important;
+  font-weight: 700;
+}
+
+.asset-address {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.asset-badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: #bff0ca;
+  background: #263b2c;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.asset-row-new {
+  border-color: #50875c;
+}
+
+.asset-quantity {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  min-width: 0;
+  text-align: right;
+}
+
+.asset-quantity strong {
+  max-width: 100%;
+  overflow-x: auto;
+  font-size: 18px;
+  white-space: nowrap;
+}
+
+.asset-quantity span,
+.asset-quantity.unavailable {
+  color: #a7b3aa;
+  font-size: 13px;
+}
+
+.asset-action {
+  white-space: nowrap;
+}
+
+.asset-page-actions {
   flex: 0 0 auto;
   margin-top: 0;
+}
+
+.asset-pagination {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.asset-pagination button:last-child {
+  justify-self: end;
+}
+
+.asset-pagination p {
+  color: #a7b3aa;
+  text-align: center;
+}
+
+.compact-empty-state {
+  padding: 20px;
 }
 
 .empty-state {
@@ -306,17 +360,19 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 @media (max-width: 520px) {
   #root { padding: 20px 16px; }
   .app-nav { padding-bottom: 16px; }
-  .page-navigation { margin-inline-start: 14px; }
   .intro { padding-top: 40px; }
-  .wallet-dialog,
-  .token-dialog {
+  .application-dialog {
     width: calc(100% - 32px);
     max-height: calc(100vh - 32px);
     padding: 24px 20px;
   }
   .actions { flex-direction: column; align-items: flex-end; }
-  .page-header,
-  .token-card { align-items: stretch; flex-direction: column; }
+  .asset-page-header { align-items: stretch; flex-direction: column; }
+  .asset-row { grid-template-columns: 1fr; align-items: stretch; }
+  .asset-quantity { justify-items: start; text-align: left; }
+  .asset-action { white-space: normal; }
+  .asset-pagination { grid-template-columns: 1fr 1fr; }
+  .asset-pagination p { grid-column: 1 / -1; grid-row: 1; }
   .notification-region {
     right: 16px;
     bottom: 16px;

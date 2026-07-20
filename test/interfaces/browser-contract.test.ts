@@ -22,7 +22,7 @@ describe("browser interface contract", () => {
   it("separates the root page, wallet API resources, and immutable assets", () => {
     expect(browserCsrfHeaderName).toBe("Littlejohn-CSRF-Token");
     expect(browserCsrfMetaName).toBe("littlejohn-csrf-token");
-    expect(browserPagePaths).toEqual({ root: "/", tokens: "/tokens" });
+    expect(browserPagePaths).toEqual({ root: "/" });
     expect(browserApiRoot).toBe("/api/v1");
     expect(browserWalletApiRoot).toBe("/api/v1/wallet");
     expect(browserWalletApiPaths).toEqual({
@@ -34,10 +34,9 @@ describe("browser interface contract", () => {
     });
     expect(browserAssetPaths).toEqual({ pattern: "/assets/{assetName}" });
 
-    expect(Object.values(browserPagePaths)).toEqual(["/", "/tokens"]);
+    expect(Object.values(browserPagePaths)).toEqual(["/"]);
     expect(parseBrowserPagePath("/")).toBe("/");
-    expect(parseBrowserPagePath("/tokens")).toBe("/tokens");
-    for (const invalid of ["/tokens/", "/wallet", "/tokens?x=1", undefined]) {
+    for (const invalid of ["/tokens", "/tokens/", "/wallet", "/?x=1", undefined]) {
       expect(() => parseBrowserPagePath(invalid)).toThrow();
     }
     expect(JSON.stringify(browserPagePaths)).not.toContain("operationId");

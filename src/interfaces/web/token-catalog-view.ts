@@ -12,7 +12,7 @@ export interface TokenOperationCopy {
 }
 
 export const tokenRegistrationLabel = (registration: TokenRegistration): string =>
-  registration.userLabel ?? registration.asset.address;
+  registration.asset.address;
 
 const optionalMetadata = (
   value: TokenInspectionSuccess["data"]["metadata"]["name"],
@@ -42,9 +42,7 @@ export const tokenOperationCopy = (
       return Object.freeze({
         heading: operation.kind === "register"
           ? "Add token"
-          : operation.kind === "update_registration"
-            ? "Edit token"
-            : "Remove token",
+          : "Remove token",
         message: "Review this account-specific catalog change before confirming.",
       });
     case "applying":
@@ -56,9 +54,7 @@ export const tokenOperationCopy = (
       return Object.freeze({
         heading: operation.kind === "register"
           ? "Token added"
-          : operation.kind === "update_registration"
-            ? "Token updated"
-            : "Token removed",
+          : "Token removed",
         message: "The account-specific token catalog is up to date.",
       });
     case "cancelled":

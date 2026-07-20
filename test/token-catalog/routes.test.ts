@@ -28,8 +28,6 @@ import {
   type TokenCatalogTerminalOperation,
   type TokenInspectionSuccess,
   type TokenRegistrationStartInput,
-  type TokenRegistrationStartRequest,
-  type TokenRegistrationUpdateStartInput,
   type TokenUnregistrationStartInput,
 } from "../../src/token-catalog/index.js";
 import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
@@ -62,7 +60,6 @@ afterEach(async () => {
 
 const pendingRegistration = (
   interactionInterface: "web" | "cli",
-  settings: TokenRegistrationStartRequest["settings"],
 ): TokenCatalogOperationStartResult<"register">["operation"] =>
   tokenCatalogOperationSchema.parse({
     operationId,
@@ -72,10 +69,10 @@ const pendingRegistration = (
     createdAt,
     expiresAt,
     account: { chainId, address: walletAddress },
+    connectionRevision: "1",
     asset: { kind: "erc20", chainId, address: tokenAddress },
     review: {
       previousRegistration: null,
-      proposedSettings: settings,
       inspection,
       reviewDigest: `0x${"ab".repeat(32)}`,
     },
@@ -121,7 +118,7 @@ const fakePorts = (): {
     registrations: [], lists: [], webStarts: [], cliStarts: [],
     reads: [], confirmations: [], cancellations: [],
   };
-  let current = pendingRegistration("cli", { userLabel: null, visibility: "visible" });
+  let current = pendingRegistration("cli");
   const unsupportedStart = async (): Promise<ApplicationFailure> =>
     new TokenCatalogOperationError("internal_error").failure;
   const queries: TokenCatalogQueryApplicationPort = Object.freeze({
@@ -139,12 +136,8 @@ const fakePorts = (): {
     async startRegistration(input: TokenRegistrationStartInput): Promise<TokenCatalogOperationStartResult<"register">> {
       const request = tokenCatalogApplicationContracts.startRegistration.parseInput(input);
       calls.webStarts.push(request);
-      current = pendingRegistration("web", request.settings);
+      current = pendingRegistration("web");
       return Object.freeze({ operation: current });
-    },
-    async startRegistrationUpdate(input: TokenRegistrationUpdateStartInput) {
-      calls.webStarts.push(input);
-      return await unsupportedStart();
     },
     async startUnregistration(input: TokenUnregistrationStartInput) {
       calls.webStarts.push(input);
@@ -156,12 +149,8 @@ const fakePorts = (): {
     async startRegistration(input: TokenRegistrationStartInput): Promise<TokenCatalogOperationStartResult<"register">> {
       const request = tokenCatalogApplicationContracts.startRegistration.parseInput(input);
       calls.cliStarts.push(request);
-      current = pendingRegistration("cli", request.settings);
+      current = pendingRegistration("cli");
       return Object.freeze({ operation: current });
-    },
-    async startRegistrationUpdate(input: TokenRegistrationUpdateStartInput) {
-      calls.cliStarts.push(input);
-      return await unsupportedStart();
     },
     async startUnregistration(input: TokenUnregistrationStartInput) {
       calls.cliStarts.push(input);
@@ -308,37 +297,33 @@ describe("token catalog local control routes", () => {
     expect(created.ok).toBe(true);
     expect(calls.cliStarts).toEqual([{
       asset: { kind: "erc20", chainId, address: tokenAddress },
-      settings: { userLabel: null, visibility: "visible" },
     }]);
     expect(calls.webStarts).toEqual([]);
 
     const revision = Buffer.alloc(16, 7).toString("base64url");
-    for (const request of [
-      {
+    const obsoleteUpdate = await invoke(routes, "POST", tokenCatalogControlRoutes.operations, {
+      control: { operationId, interactionInterface: "web" },
+      request: {
         kind: "update_registration",
         asset: { kind: "erc20", chainId, address: tokenAddress },
         expectedRevision: revision,
         changes: { visibility: "hidden" },
       },
-      {
+    });
+    expect(obsoleteUpdate.ok).toBe(false);
+    if (!obsoleteUpdate.ok) expect(obsoleteUpdate.problem.code).toBe("invalid_input");
+
+    const removed = await invoke(routes, "POST", tokenCatalogControlRoutes.operations, {
+      control: { operationId, interactionInterface: "web" },
+      request: {
         kind: "unregister",
         asset: { kind: "erc20", chainId, address: tokenAddress },
         expectedRevision: revision,
       },
-    ] as const) {
-      const result = await invoke(routes, "POST", tokenCatalogControlRoutes.operations, {
-        control: { operationId, interactionInterface: "web" },
-        request,
-      });
-      expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.problem.code).toBe("internal_error");
-    }
+    });
+    expect(removed.ok).toBe(false);
+    if (!removed.ok) expect(removed.problem.code).toBe("internal_error");
     expect(calls.webStarts).toEqual([
-      {
-        asset: { kind: "erc20", chainId, address: tokenAddress },
-        expectedRevision: revision,
-        changes: { visibility: "hidden" },
-      },
       {
         asset: { kind: "erc20", chainId, address: tokenAddress },
         expectedRevision: revision,

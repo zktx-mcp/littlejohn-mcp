@@ -5,9 +5,16 @@ import {
   useState,
 } from "react";
 
+import type {
+  AccountAssetCollectionSuccess,
+  AccountAssetExactSuccess,
+} from "../../account-assets/browser.js";
 import { productDisplayName } from "../../core/browser.js";
-import type { DeliveryUnknown } from "../operation-delivery.js";
-import { isDeliveryUnknown } from "../operation-delivery.js";
+import {
+  isTokenCatalogOperationTerminal,
+  type TokenCatalogOperation,
+  type TokenRegistration,
+} from "../../token-catalog/browser.js";
 import type {
   WalletCurrentOperationProjection,
   WalletManagementOperation,
@@ -15,11 +22,37 @@ import type {
   WalletQrMatrix,
 } from "../../wallet/operation-contract.js";
 import {
-  browserPagePaths,
   browserCsrfMetaName,
+  browserPagePaths,
   parseBrowserCsrfToken,
-  parseBrowserPagePath,
 } from "../browser-contract.js";
+import {
+  isDeliveryUnknown,
+  type DeliveryUnknown,
+} from "../operation-delivery.js";
+import { AccountAssetsPage, type AccountAssetPageSnapshot } from "./account-assets-page.js";
+import { loadAccountAssets, loadExactAccountAsset } from "./account-assets-client.js";
+import {
+  browserActionFailureMessage,
+  isBrowserResponseCode,
+} from "./browser-client.js";
+import { createBrowserSessionRecovery } from "./browser-session-recovery.js";
+import type { NotificationNotice } from "./notification.js";
+import { createBrowserRequestAuthority, type BrowserRequest } from "./request-authority.js";
+import {
+  cancelTokenOperation,
+  confirmTokenOperation,
+  loadCurrentTokenOperation,
+  loadTokenOperation,
+  parseTokenAddressInput,
+  startTokenRegistration,
+  startTokenUnregistration,
+} from "./token-catalog-client.js";
+import {
+  tokenInspectionFields,
+  tokenOperationCopy,
+  tokenOperationNotification,
+} from "./token-catalog-view.js";
 import {
   cancelWalletOperation,
   confirmWalletOperation,
@@ -28,28 +61,10 @@ import {
   startWalletOperation,
 } from "./wallet-client.js";
 import {
-  browserActionFailureMessage,
-  isBrowserResponseCode,
-} from "./browser-client.js";
-import {
-  createWalletObservationStore,
-  observeExactWalletOperation,
-  observeExpiredWalletOperation,
-  observeWalletCurrent,
-  trackWalletOperationResult,
-  type WalletObservationState,
-  walletObservationStorageKey,
-} from "./wallet-observation.js";
-import {
-  createBrowserRequestAuthority,
-  type BrowserRequest,
-} from "./request-authority.js";
-import { createBrowserSessionRecovery } from "./browser-session-recovery.js";
-import {
   walletConnectionActions,
   walletConnectionCopy,
-  walletDisconnectActionLabel,
   walletConnectionFields,
+  walletDisconnectActionLabel,
   walletNavigationLabel,
   walletOperationActions,
   walletOperationConfirmationMessage,
@@ -59,37 +74,114 @@ import {
   type WalletConnectionAction,
   type WalletOperationAction,
 } from "./wallet-dialog-view.js";
-import type { NotificationNotice } from "./notification.js";
-import { TokenCatalogPage } from "./token-catalog-page.js";
-
-type ReadyState = {
-  readonly status: "ready";
-  readonly wallet: WalletCurrentOperationProjection;
-};
+import {
+  createWalletObservationStore,
+  observeExactWalletOperation,
+  observeExpiredWalletOperation,
+  observeWalletCurrent,
+  trackWalletOperationResult,
+  type WalletObservationState,
+  walletObservationStorageKey,
+} from "./wallet-observation.js";
 
 type AppState =
-  | { readonly status: "loading" }
-  | ReadyState;
+  | Readonly<{ status: "loading"; failure?: string }>
+  | Readonly<{
+      status: "ready";
+      wallet: WalletCurrentOperationProjection;
+      observationFailure?: string;
+    }>;
 
-type ActiveNotification = {
-  readonly notice: NotificationNotice;
-  readonly sequence: number;
-  readonly phase: "visible" | "exiting";
-};
+type ConnectedAccount = Readonly<{
+  chainId: TokenRegistration["account"]["chainId"];
+  address: TokenRegistration["account"]["address"];
+  connectionRevision: string;
+}>;
+
+type AssetSnapshot = Readonly<{
+  accountKey: string;
+  result: AccountAssetCollectionSuccess;
+  cursor: TokenRegistration["asset"]["address"] | null;
+  previousCursors: readonly (TokenRegistration["asset"]["address"] | null)[];
+}>;
+
+type ExactAssetReadState =
+  | Readonly<{ status: "idle" }>
+  | Readonly<{
+      status: "loading";
+      accountKey: string;
+      asset: TokenRegistration["asset"];
+    }>
+  | Readonly<{
+      status: "available";
+      accountKey: string;
+      asset: TokenRegistration["asset"];
+      result: AccountAssetExactSuccess;
+    }>
+  | Readonly<{
+      status: "error";
+      accountKey: string;
+      asset: TokenRegistration["asset"];
+      message: string;
+    }>;
+
+type AssetReadState =
+  | Readonly<{ status: "idle" }>
+  | Readonly<{ status: "loading" }>
+  | Readonly<{ status: "error"; message: string }>;
+
+type ActiveNotification = Readonly<{
+  notice: NotificationNotice;
+  sequence: number;
+  phase: "visible" | "exiting";
+}>;
+
+type DialogPresentation =
+  | Readonly<{ kind: "wallet_delivery"; delivery: DeliveryUnknown }>
+  | Readonly<{ kind: "wallet_operation"; presentation: WalletOperationPresentation }>
+  | Readonly<{ kind: "wallet_connection"; wallet: WalletCurrentOperationProjection }>
+  | Readonly<{ kind: "token_delivery"; delivery: DeliveryUnknown }>
+  | Readonly<{ kind: "token_operation"; operation: TokenCatalogOperation; accountMatches: boolean }>
+  | Readonly<{ kind: "token_add"; account: ConnectedAccount }>;
 
 const browserPollMilliseconds = 500;
 const standardToastMilliseconds = 5_000;
 const errorToastMilliseconds = 8_000;
 const toastExitMilliseconds = 180;
+const idleExactAssetRead = Object.freeze({ status: "idle" as const });
+
+const connectedAccount = (
+  wallet: WalletCurrentOperationProjection | undefined,
+): ConnectedAccount | undefined => wallet?.connection.status === "connected"
+  ? Object.freeze({
+      chainId: wallet.connection.chainId,
+      address: wallet.connection.address,
+      connectionRevision: wallet.connectionRevision,
+    })
+  : undefined;
+
+const accountKey = (account: ConnectedAccount | undefined): string | undefined => account === undefined
+  ? undefined
+  : `${account.connectionRevision}:${account.chainId}:${account.address}`;
+
+const sameAccount = (
+  expected: ConnectedAccount,
+  actual: ConnectedAccount | undefined,
+): boolean => actual !== undefined &&
+  expected.chainId === actual.chainId &&
+  expected.address === actual.address &&
+  expected.connectionRevision === actual.connectionRevision;
+
+const resultMatchesAccount = (
+  expected: ConnectedAccount,
+  result: Pick<AccountAssetCollectionSuccess, "account"> | Pick<AccountAssetExactSuccess, "account">,
+): boolean => result.account.chainId === expected.chainId && result.account.address === expected.address;
 
 const createBrowserWalletObservationStore = () => createWalletObservationStore(Object.freeze({
   read: (): string | null => window.sessionStorage.getItem(walletObservationStorageKey),
   write: (operationId: string | undefined): void => {
-    if (operationId === undefined) {
-      window.sessionStorage.removeItem(walletObservationStorageKey);
-    } else {
-      window.sessionStorage.setItem(walletObservationStorageKey, operationId);
-    }
+    if (operationId === undefined) window.sessionStorage.removeItem(walletObservationStorageKey);
+    else window.sessionStorage.setItem(walletObservationStorageKey, operationId);
   },
 }));
 
@@ -116,14 +208,14 @@ const QrCode = ({ matrix }: { readonly matrix: WalletQrMatrix }) => (
   </svg>
 );
 
-const ConnectionDetails = ({
+const WalletConnectionDetails = ({
   wallet,
-  requestPending,
+  pending,
   onAction,
   onClose,
 }: {
   readonly wallet: WalletCurrentOperationProjection;
-  readonly requestPending: boolean;
+  readonly pending: boolean;
   readonly onAction: (action: WalletConnectionAction) => void;
   readonly onClose: () => void;
 }) => {
@@ -132,58 +224,35 @@ const ConnectionDetails = ({
   const actions = walletConnectionActions(wallet);
   return (
     <>
-      <header>
-        <h1>{copy.heading}</h1>
-        <p>{copy.message}</p>
-      </header>
+      <header><h1>{copy.heading}</h1><p>{copy.message}</p></header>
       {fields.length === 0 ? null : (
-        <dl>
-          {fields.flatMap((field) => [
-            <dt key={`${field.label}:label`}>{field.label}</dt>,
-            <dd key={`${field.label}:value`}>{field.value}</dd>,
-          ])}
-        </dl>
+        <dl>{fields.flatMap((field) => [
+          <dt key={`${field.label}:label`}>{field.label}</dt>,
+          <dd key={`${field.label}:value`}>{field.value}</dd>,
+        ])}</dl>
       )}
       <div className="actions">
-        <button
-          type="button"
-          className="secondary"
-          disabled={requestPending}
-          onClick={() => { onClose(); }}
-        >
-          Close
-        </button>
+        <button type="button" className="secondary" disabled={pending} onClick={onClose}>Close</button>
         {actions.includes("disconnect") ? (
-          <button
-            type="button"
-            className="danger"
-            disabled={requestPending}
-            onClick={() => { onAction("disconnect"); }}
-          >
+          <button type="button" className="danger" disabled={pending} onClick={() => { onAction("disconnect"); }}>
             {walletDisconnectActionLabel(wallet.connection)}
           </button>
         ) : null}
         {actions.includes("connect") ? (
-          <button
-            type="button"
-            disabled={requestPending}
-            onClick={() => { onAction("connect"); }}
-          >
-            Connect wallet
-          </button>
+          <button type="button" disabled={pending} onClick={() => { onAction("connect"); }}>Connect wallet</button>
         ) : null}
       </div>
     </>
   );
 };
 
-const OperationDetails = ({
+const WalletOperationDetails = ({
   presentation,
-  requestPending,
+  pending,
   onAction,
 }: {
   readonly presentation: WalletOperationPresentation;
-  readonly requestPending: boolean;
+  readonly pending: boolean;
   readonly onAction: (action: WalletOperationAction) => void;
 }) => {
   const { operation, qr } = presentation;
@@ -192,50 +261,20 @@ const OperationDetails = ({
   const notice = walletOperationNotice(presentation);
   return (
     <>
-      <header>
-        <h1>{copy.heading}</h1>
-        <p>{copy.message}</p>
-      </header>
-      {qr === undefined ? null : (
-        <div className="qr-wrap">
-          <QrCode matrix={qr} />
-        </div>
-      )}
-      {notice === undefined ? null : (
-        <div className="notice">
-          <strong>Read-only view</strong>
-          <p>{notice}</p>
-        </div>
-      )}
+      <header><h1>{copy.heading}</h1><p>{copy.message}</p></header>
+      {qr === undefined ? null : <div className="qr-wrap"><QrCode matrix={qr} /></div>}
+      {notice === undefined ? null : <div className="notice"><strong>Read-only view</strong><p>{notice}</p></div>}
       {operation.state === "awaiting_confirmation" ? (
-        <div className="warning">
-          <strong>Confirmation required</strong>
-          <p>{walletOperationConfirmationMessage(operation)}</p>
-        </div>
+        <div className="warning"><strong>Confirmation required</strong><p>{walletOperationConfirmationMessage(operation)}</p></div>
       ) : null}
-      {operation.failure === null ? null : (
-        <p className="error">{operation.failure.error.message}</p>
-      )}
+      {operation.failure === null ? null : <p className="error">{operation.failure.error.message}</p>}
       {actions.length === 0 ? null : (
         <div className="actions">
           {actions.includes("cancel") ? (
-            <button
-              type="button"
-              className="secondary"
-              disabled={requestPending}
-              onClick={() => { onAction("cancel"); }}
-            >
-              Cancel
-            </button>
+            <button type="button" className="secondary" disabled={pending} onClick={() => { onAction("cancel"); }}>Cancel</button>
           ) : null}
           {actions.includes("confirm") ? (
-            <button
-              type="button"
-              disabled={requestPending}
-              onClick={() => { onAction("confirm"); }}
-            >
-              Disconnect wallet
-            </button>
+            <button type="button" disabled={pending} onClick={() => { onAction("confirm"); }}>Disconnect wallet</button>
           ) : null}
         </div>
       )}
@@ -243,173 +282,222 @@ const OperationDetails = ({
   );
 };
 
-const WalletDeliveryUnknownDetails = ({
-  delivery,
+const TokenOperationDetails = ({
+  operation,
+  accountMatches,
+  pending,
+  onConfirm,
+  onCancel,
   onClose,
 }: {
-  readonly delivery: DeliveryUnknown;
+  readonly operation: TokenCatalogOperation;
+  readonly accountMatches: boolean;
+  readonly pending: boolean;
+  readonly onConfirm: () => void;
+  readonly onCancel: () => void;
   readonly onClose: () => void;
-}) => (
-  <>
-    <header>
-      <h1>Wallet action status unknown</h1>
-      <p>The local browser did not receive a valid response after sending the wallet action.</p>
-    </header>
-    <div className="warning">
-      <strong>Do not repeat this action</strong>
-      <p>It may have occurred. Inspect operation {delivery.operationId} before making another wallet change.</p>
-    </div>
-    <div className="actions">
-      <button type="button" className="secondary" onClick={onClose}>Close</button>
-    </div>
-  </>
-);
+}) => {
+  const copy = tokenOperationCopy(operation);
+  const webConfirmation = operation.interactionInterface === "web" &&
+    operation.state === "awaiting_confirmation";
+  return (
+    <>
+      <header><h1>{copy.heading}</h1><p>{copy.message}</p></header>
+      <dl className="token-details">
+        <dt>Account</dt><dd>{operation.account.chainId} / {operation.account.address}</dd>
+        <dt>Contract</dt><dd>{operation.asset.address}</dd>
+        {tokenInspectionFields(operation.review.inspection).flatMap((field) => [
+          <dt key={`${field.label}:label`}>{field.label}</dt>,
+          <dd key={`${field.label}:value`}>{field.value}</dd>,
+        ])}
+      </dl>
+      {operation.interactionInterface === "cli" ? (
+        <div className="notice"><strong>Read-only review</strong><p>Continue this token change in the CLI.</p></div>
+      ) : null}
+      {!accountMatches ? (
+        <div className="warning"><strong>Different account</strong><p>Confirmation is unavailable because the connected account changed.</p></div>
+      ) : null}
+      <div className="actions">
+        {operation.interactionInterface === "cli" ? (
+          <button type="button" className="secondary" disabled={pending} onClick={onClose}>Close</button>
+        ) : null}
+        {webConfirmation ? (
+          <button type="button" className="secondary" disabled={pending} onClick={onCancel}>Cancel</button>
+        ) : null}
+        {webConfirmation && accountMatches ? (
+          <button type="button" disabled={pending} onClick={onConfirm}>
+            {operation.kind === "register" ? "Add to this account" : "Remove from this account"}
+          </button>
+        ) : null}
+      </div>
+    </>
+  );
+};
 
-const Notification = ({
-  notice,
-  exiting,
-}: {
-  readonly notice: NotificationNotice;
-  readonly exiting: boolean;
-}) => (
-  <div className="notification-region">
-    <div
-      className={`notification notification-${notice.tone}${exiting ? " notification-exiting" : ""}`}
-      role={notice.tone === "error" ? "alert" : "status"}
-    >
-      <strong>{notice.heading}</strong>
-      <p>{notice.message}</p>
-    </div>
-  </div>
-);
-
-const WalletDialog = ({
-  wallet,
-  requestPending,
-  onConnectionAction,
-  onOperationAction,
+const ApplicationDialog = ({
+  presentation,
+  pending,
   onClose,
-  deliveryUnknown,
+  onWalletAction,
+  onTokenAddress,
+  onTokenConfirm,
+  onTokenCancel,
 }: {
-  readonly wallet: WalletCurrentOperationProjection;
-  readonly requestPending: boolean;
-  readonly onConnectionAction: (action: WalletConnectionAction) => void;
-  readonly onOperationAction: (action: WalletOperationAction) => void;
+  readonly presentation: DialogPresentation;
+  readonly pending: boolean;
   readonly onClose: () => void;
-  readonly deliveryUnknown: DeliveryUnknown | undefined;
+  readonly onWalletAction: (action: WalletConnectionAction | WalletOperationAction) => void;
+  readonly onTokenAddress: (address: string) => void;
+  readonly onTokenConfirm: () => void;
+  readonly onTokenCancel: () => void;
 }) => {
   const dialog = useRef<HTMLDialogElement>(null);
-  const presentation = wallet.status === "present"
-    ? wallet.presentation
-    : undefined;
-  const closeWhenIdle = (): void => {
-    if (deliveryUnknown !== undefined || presentation === undefined) onClose();
-  };
+  const [address, setAddress] = useState("");
+  const [validation, setValidation] = useState<string | undefined>();
   useEffect(() => {
     const element = dialog.current;
     if (element === null) return;
     element.showModal();
     element.focus();
-    return () => {
-      if (element.open) element.close();
-    };
+    return () => { if (element.open) element.close(); };
   }, []);
+  const dismissible = presentation.kind === "wallet_delivery" ||
+    presentation.kind === "wallet_connection" ||
+    presentation.kind === "token_delivery" ||
+    presentation.kind === "token_add" ||
+    presentation.kind === "token_operation" && presentation.operation.interactionInterface === "cli";
+  const close = (): void => { if (!pending && dismissible) onClose(); };
+  const submitAddress = (): void => {
+    try { parseTokenAddressInput(address); }
+    catch { setValidation("Enter a valid EVM contract address."); return; }
+    setValidation(undefined);
+    onTokenAddress(address);
+  };
   return (
     <dialog
       ref={dialog}
-      className="wallet-dialog"
-      aria-label="Wallet"
+      className="application-dialog"
+      aria-label="Little John action"
       tabIndex={-1}
-      onCancel={(event) => {
-        event.preventDefault();
-        closeWhenIdle();
-      }}
-      onKeyDown={(event) => {
-        if (event.key !== "Escape") return;
-        event.preventDefault();
-        closeWhenIdle();
-      }}
+      onCancel={(event) => { event.preventDefault(); close(); }}
+      onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); close(); } }}
     >
-      {deliveryUnknown !== undefined
-        ? <WalletDeliveryUnknownDetails delivery={deliveryUnknown} onClose={onClose} />
-        : presentation === undefined
-        ? (
-            <ConnectionDetails
-              wallet={wallet}
-              requestPending={requestPending}
-              onAction={onConnectionAction}
-              onClose={onClose}
+      {presentation.kind === "wallet_delivery" || presentation.kind === "token_delivery" ? (
+        <>
+          <header><h1>Action status unknown</h1><p>The local browser did not receive a valid response after sending the action.</p></header>
+          <div className="warning"><strong>Do not repeat this action</strong><p>It may have occurred. Inspect operation {presentation.delivery.operationId} before trying again.</p></div>
+          <div className="actions"><button type="button" className="secondary" onClick={onClose}>Close</button></div>
+        </>
+      ) : presentation.kind === "wallet_operation" ? (
+        <WalletOperationDetails presentation={presentation.presentation} pending={pending} onAction={onWalletAction} />
+      ) : presentation.kind === "wallet_connection" ? (
+        <WalletConnectionDetails wallet={presentation.wallet} pending={pending} onAction={onWalletAction} onClose={onClose} />
+      ) : presentation.kind === "token_operation" ? (
+        <TokenOperationDetails
+          operation={presentation.operation}
+          accountMatches={presentation.accountMatches}
+          pending={pending}
+          onConfirm={onTokenConfirm}
+          onCancel={onTokenCancel}
+          onClose={onClose}
+        />
+      ) : (
+        <>
+          <header><h1>Add token</h1><p>Inspect a token contract and review it before adding it to this account.</p></header>
+          <dl className="token-details">
+            <dt>Account</dt>
+            <dd>{presentation.account.chainId} / {presentation.account.address}</dd>
+          </dl>
+          <label className="field">
+            <span>Contract address</span>
+            <input
+              type="text"
+              value={address}
+              disabled={pending}
+              onChange={(event) => { setAddress(event.currentTarget.value); }}
+              autoComplete="off"
+              spellCheck={false}
             />
-          )
-        : (
-            <OperationDetails
-              presentation={presentation}
-              requestPending={requestPending}
-              onAction={onOperationAction}
-            />
-          )}
+          </label>
+          {validation === undefined ? null : <p className="error">{validation}</p>}
+          <div className="actions">
+            <button type="button" className="secondary" disabled={pending} onClick={onClose}>Close</button>
+            <button type="button" disabled={pending} onClick={submitAddress}>{pending ? "Inspecting…" : "Review token"}</button>
+          </div>
+        </>
+      )}
     </dialog>
   );
 };
 
+const Notification = ({ notice, exiting }: { readonly notice: NotificationNotice; readonly exiting: boolean }) => (
+  <div className="notification-region">
+    <div
+      className={`notification notification-${notice.tone}${exiting ? " notification-exiting" : ""}`}
+      role={notice.tone === "error" ? "alert" : "status"}
+    >
+      <strong>{notice.heading}</strong><p>{notice.message}</p>
+    </div>
+  </div>
+);
+
 export const App = () => {
   const [state, setState] = useState<AppState>({ status: "loading" });
+  const stateRef = useRef<AppState>(state);
   const [connectionDialogOpen, setConnectionDialogOpen] = useState(false);
-  const [walletDeliveryUnknown, setWalletDeliveryUnknown] = useState<DeliveryUnknown | undefined>(undefined);
-  const [walletDeliveryDialogOpen, setWalletDeliveryDialogOpen] = useState(false);
-  const [requestPending, setRequestPending] = useState(false);
-  const [activeNotification, setActiveNotification] = useState<ActiveNotification | undefined>(undefined);
-  const [requestAuthority] = useState(createBrowserRequestAuthority);
-  const [sessionRecovery] = useState(() => createBrowserSessionRecovery(
-    () => { window.location.reload(); },
-  ));
+  const [walletDelivery, setWalletDelivery] = useState<DeliveryUnknown>();
+  const [tokenDelivery, setTokenDelivery] = useState<DeliveryUnknown>();
+  const [addFormAccount, setAddFormAccount] = useState<ConnectedAccount>();
+  const [tokenOperation, setTokenOperation] = useState<TokenCatalogOperation | null>(null);
+  const [assetSnapshot, setAssetSnapshot] = useState<AssetSnapshot>();
+  const [exactRead, setExactRead] = useState<ExactAssetReadState>(idleExactAssetRead);
+  const exactReadRef = useRef<ExactAssetReadState>(exactRead);
+  const [assetRead, setAssetRead] = useState<AssetReadState>({ status: "idle" });
+  const [walletPending, setWalletPending] = useState(false);
+  const [tokenPending, setTokenPending] = useState(false);
+  const [activeNotification, setActiveNotification] = useState<ActiveNotification>();
+  const [walletAuthority] = useState(createBrowserRequestAuthority);
+  const [assetAuthority] = useState(createBrowserRequestAuthority);
+  const [exactAuthority] = useState(createBrowserRequestAuthority);
+  const [tokenAuthority] = useState(createBrowserRequestAuthority);
+  const [sessionRecovery] = useState(() => createBrowserSessionRecovery(() => { window.location.reload(); }));
   const [observationStore] = useState(createBrowserWalletObservationStore);
+  const observation = useRef<WalletObservationState>(observationStore.load());
   const notificationSequence = useRef(0);
-  const observation = useRef(observationStore.load());
+  const handledTerminalTokenOperation = useRef<string | undefined>(undefined);
+  const dismissedTokenOperation = useRef<string | undefined>(undefined);
+  const dialogTrigger = useRef<HTMLElement | undefined>(undefined);
   const walletNavigation = useRef<HTMLButtonElement>(null);
   const dialogHadFocus = useRef(false);
 
   const publishNotification = useCallback((notice: NotificationNotice): void => {
     notificationSequence.current += 1;
-    setActiveNotification(Object.freeze({
-      notice,
-      sequence: notificationSequence.current,
-      phase: "visible",
-    }));
+    setActiveNotification(Object.freeze({ notice, sequence: notificationSequence.current, phase: "visible" }));
   }, []);
 
-  const publishTerminalToast = useCallback((
-    operation: WalletManagementOperation,
-  ): void => {
-    const notice = walletOperationNotification(operation);
-    if (notice === undefined) return;
-    publishNotification(notice);
-  }, [publishNotification]);
-
-  const publishControlError = useCallback((error: unknown): void => {
-    publishNotification(Object.freeze({
-      id: "wallet-control-error",
-      tone: "error",
-      heading: "Wallet action failed",
-      message: browserActionFailureMessage(error),
-    }));
-  }, [publishNotification]);
-
-  const recoverBrowserSession = useCallback((error: unknown): boolean => {
-    return sessionRecovery(error);
-  }, [sessionRecovery]);
+  const replaceExactRead = useCallback((next: ExactAssetReadState): void => {
+    exactReadRef.current = next;
+    setExactRead(next);
+  }, []);
 
   const replaceObservation = useCallback((next: WalletObservationState): void => {
     observation.current = next;
     observationStore.save(next);
   }, [observationStore]);
 
-  const refresh = useCallback(async (request: BrowserRequest): Promise<boolean> => {
+  const publishActionError = useCallback((heading: string, error: unknown): void => {
+    publishNotification(Object.freeze({
+      id: `${heading.toLowerCase().replaceAll(" ", "-")}-error`,
+      tone: "error",
+      heading,
+      message: browserActionFailureMessage(error),
+    }));
+  }, [publishNotification]);
+
+  const refreshWallet = useCallback(async (request: BrowserRequest): Promise<boolean> => {
     try {
-      const wallet = await loadWalletProjection(
-        request.signal === undefined ? {} : { signal: request.signal },
-      );
-      if (!requestAuthority.isCurrent(request)) return false;
+      const wallet = await loadWalletProjection(request.signal === undefined ? {} : { signal: request.signal });
+      if (!walletAuthority.isCurrent(request)) return false;
       let resolved = observeWalletCurrent(observation.current, wallet);
       if (resolved.kind === "read_exact") {
         const exactObservation = resolved;
@@ -418,241 +506,530 @@ export const App = () => {
             exactObservation.operationId,
             request.signal === undefined ? {} : { signal: request.signal },
           );
-          if (!requestAuthority.isCurrent(request)) return false;
+          if (!walletAuthority.isCurrent(request)) return false;
           const exact = observeExactWalletOperation(exactObservation, presentation);
           if (exact.kind === "retry") return false;
           resolved = exact;
         } catch (error) {
-          if (!requestAuthority.isCurrent(request)) return false;
+          if (!walletAuthority.isCurrent(request)) return false;
           if (!isBrowserResponseCode(error, "state_conflict")) throw error;
           resolved = observeExpiredWalletOperation(exactObservation);
         }
       }
       replaceObservation(resolved.state);
-      setState({ status: "ready", wallet: resolved.wallet });
+      const next = Object.freeze({ status: "ready" as const, wallet: resolved.wallet });
+      stateRef.current = next;
+      setState(next);
       if (resolved.wallet.status === "present") setConnectionDialogOpen(false);
       if (resolved.terminal !== undefined) {
         setConnectionDialogOpen(false);
-        publishTerminalToast(resolved.terminal);
+        const notice = walletOperationNotification(resolved.terminal);
+        if (notice !== undefined) publishNotification(notice);
       }
       return true;
     } catch (error) {
-      if (!requestAuthority.isCurrent(request)) return false;
-      recoverBrowserSession(error);
+      if (!walletAuthority.isCurrent(request)) return false;
+      if (sessionRecovery(error)) return false;
+      const message = browserActionFailureMessage(error);
+      const current = stateRef.current;
+      const next: AppState = current.status === "ready"
+        ? Object.freeze({ ...current, observationFailure: message })
+        : Object.freeze({ status: "loading", failure: message });
+      stateRef.current = next;
+      setState(next);
       return false;
     }
-  }, [publishTerminalToast, recoverBrowserSession, replaceObservation, requestAuthority]);
+  }, [publishNotification, replaceObservation, sessionRecovery, walletAuthority]);
+
+  const retryWalletObservation = useCallback((): void => {
+    const request = walletAuthority.beginRead();
+    if (request !== undefined) void refreshWallet(request);
+  }, [refreshWallet, walletAuthority]);
+
+  const currentWallet = state.status === "ready" ? state.wallet : undefined;
+  const currentAccount = connectedAccount(currentWallet);
+  const currentAccountKey = accountKey(currentAccount);
+  const observationUnavailable = state.status === "ready" && state.observationFailure !== undefined;
+
+  const readAssetPage = useCallback(async (
+    expected: ConnectedAccount,
+    cursor: TokenRegistration["asset"]["address"] | null,
+    previousCursors: readonly (TokenRegistration["asset"]["address"] | null)[],
+    clearBeforeRead: boolean,
+  ): Promise<AccountAssetCollectionSuccess | undefined> => {
+    const request = assetAuthority.beginRead();
+    if (request === undefined) return undefined;
+    if (clearBeforeRead) setAssetSnapshot(undefined);
+    setAssetRead({ status: "loading" });
+    try {
+      const result = await loadAccountAssets(
+        { ...(cursor === null ? {} : { cursor }) },
+        { signal: request.signal },
+      );
+      if (!assetAuthority.isCurrent(request)) return undefined;
+      const actual = connectedAccount(stateRef.current.status === "ready" ? stateRef.current.wallet : undefined);
+      if (!sameAccount(expected, actual) || !resultMatchesAccount(expected, result)) {
+        throw new Error("The account changed while assets were being read.");
+      }
+      const next: AssetSnapshot = Object.freeze({
+        accountKey: accountKey(expected)!,
+        result,
+        cursor,
+        previousCursors: Object.freeze([...previousCursors]),
+      });
+      setAssetSnapshot(next);
+      setAssetRead({ status: "idle" });
+      const exact = exactReadRef.current;
+      if (exact.status !== "idle" && result.assets.some(
+        (entry) => entry.registration.asset.address === exact.asset.address,
+      )) {
+        exactAuthority.invalidateRead();
+        replaceExactRead(idleExactAssetRead);
+      }
+      return result;
+    } catch (error) {
+      if (!assetAuthority.isCurrent(request)) return undefined;
+      if (sessionRecovery(error)) return undefined;
+      setAssetRead({ status: "error", message: browserActionFailureMessage(error) });
+      return undefined;
+    } finally {
+      if (assetAuthority.isCurrent(request)) assetAuthority.cancelRead(request);
+    }
+  }, [assetAuthority, exactAuthority, replaceExactRead, sessionRecovery]);
+
+  const readExactAsset = useCallback(async (
+    expected: ConnectedAccount,
+    asset: TokenRegistration["asset"],
+  ): Promise<AccountAssetExactSuccess | undefined> => {
+    const request = exactAuthority.beginRead();
+    if (request === undefined) return undefined;
+    const readIdentity = Object.freeze({
+      accountKey: accountKey(expected)!,
+      asset,
+    });
+    replaceExactRead(Object.freeze({ status: "loading", ...readIdentity }));
+    try {
+      const result = await loadExactAccountAsset(asset, { signal: request.signal });
+      if (!exactAuthority.isCurrent(request)) return undefined;
+      const actual = connectedAccount(stateRef.current.status === "ready" ? stateRef.current.wallet : undefined);
+      if (!sameAccount(expected, actual) || !resultMatchesAccount(expected, result)) return undefined;
+      replaceExactRead(Object.freeze({ status: "available", ...readIdentity, result }));
+      return result;
+    } catch (error) {
+      if (!exactAuthority.isCurrent(request) || sessionRecovery(error)) return undefined;
+      replaceExactRead(Object.freeze({
+        status: "error",
+        ...readIdentity,
+        message: browserActionFailureMessage(error),
+      }));
+      return undefined;
+    } finally {
+      if (exactAuthority.isCurrent(request)) exactAuthority.cancelRead(request);
+    }
+  }, [exactAuthority, replaceExactRead, sessionRecovery]);
+
+  const acceptTokenOperation = useCallback((operation: TokenCatalogOperation): void => {
+    if (!isTokenCatalogOperationTerminal(operation.state)) {
+      if (dismissedTokenOperation.current !== operation.operationId) setTokenOperation(operation);
+      setAddFormAccount(undefined);
+      return;
+    }
+    if (handledTerminalTokenOperation.current === operation.operationId) return;
+    handledTerminalTokenOperation.current = operation.operationId;
+    setTokenOperation(null);
+    setAddFormAccount(undefined);
+    const notice = tokenOperationNotification(operation);
+    if (notice !== undefined) publishNotification(notice);
+    if (operation.state !== "completed") return;
+    const actual = connectedAccount(stateRef.current.status === "ready" ? stateRef.current.wallet : undefined);
+    const expected: ConnectedAccount = Object.freeze({
+      chainId: operation.account.chainId,
+      address: operation.account.address,
+      connectionRevision: operation.connectionRevision,
+    });
+    if (!sameAccount(expected, actual)) return;
+    assetAuthority.invalidateRead();
+    exactAuthority.invalidateRead();
+    const snapshot = assetSnapshot;
+    if (operation.kind === "register") {
+      void (async () => {
+        await readExactAsset(expected, operation.asset);
+        const latest = assetSnapshot ?? snapshot;
+        await readAssetPage(
+          expected,
+          latest?.cursor ?? null,
+          latest?.previousCursors ?? [],
+          false,
+        );
+      })();
+      return;
+    }
+    if (exactReadRef.current.status !== "idle" &&
+      exactReadRef.current.asset.address === operation.asset.address) {
+      exactAuthority.invalidateRead();
+      replaceExactRead(idleExactAssetRead);
+    }
+    setAssetSnapshot(undefined);
+    const onlyItemOnLaterPage = snapshot !== undefined && snapshot.cursor !== null &&
+      snapshot.result.assets.length === 1 &&
+      snapshot.result.assets[0]?.registration.asset.address === operation.asset.address;
+    const cursor = onlyItemOnLaterPage ? snapshot.previousCursors.at(-1) ?? null : snapshot?.cursor ?? null;
+    const previous = onlyItemOnLaterPage ? snapshot.previousCursors.slice(0, -1) : snapshot?.previousCursors ?? [];
+    void readAssetPage(expected, cursor, previous, true);
+  }, [assetAuthority, assetSnapshot, exactAuthority, publishNotification, readAssetPage, readExactAsset, replaceExactRead]);
 
   useEffect(() => {
-    requestAuthority.activate();
-    return () => { requestAuthority.close(); };
-  }, [requestAuthority]);
+    walletAuthority.activate();
+    assetAuthority.activate();
+    exactAuthority.activate();
+    tokenAuthority.activate();
+    return () => {
+      walletAuthority.close();
+      assetAuthority.close();
+      exactAuthority.close();
+      tokenAuthority.close();
+    };
+  }, [assetAuthority, exactAuthority, tokenAuthority, walletAuthority]);
 
   useEffect(() => {
     if (activeNotification === undefined) return;
-    const sequence = activeNotification.sequence;
-    const phase = activeNotification.phase;
-    const delay = phase === "exiting"
-      ? toastExitMilliseconds
-      : activeNotification.notice.tone === "error"
-        ? errorToastMilliseconds
-        : standardToastMilliseconds;
+    const { sequence, phase } = activeNotification;
+    const delay = phase === "exiting" ? toastExitMilliseconds :
+      activeNotification.notice.tone === "error" ? errorToastMilliseconds : standardToastMilliseconds;
     const timer = window.setTimeout(() => {
-      setActiveNotification((current) => {
-        if (current?.sequence !== sequence || current.phase !== phase) return current;
-        return phase === "visible"
+      setActiveNotification((current) => current?.sequence !== sequence || current.phase !== phase
+        ? current
+        : phase === "visible"
           ? Object.freeze({ ...current, phase: "exiting" })
-          : undefined;
-      });
+          : undefined);
     }, delay);
     return () => { window.clearTimeout(timer); };
   }, [activeNotification]);
 
   useEffect(() => {
-    if (requestPending || walletDeliveryUnknown !== undefined) return;
-    const request = requestAuthority.beginRead();
+    if (walletPending || walletDelivery !== undefined) return;
+    const request = walletAuthority.beginRead();
     if (request === undefined) return;
     let timer: number | undefined;
     const poll = async (): Promise<void> => {
-      await refresh(request);
-      if (!requestAuthority.isCurrent(request)) return;
+      await refreshWallet(request);
+      if (!walletAuthority.isCurrent(request)) return;
       timer = window.setTimeout(() => { void poll(); }, browserPollMilliseconds);
     };
     void poll();
     return () => {
-      requestAuthority.cancelRead(request);
+      walletAuthority.cancelRead(request);
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [refresh, requestAuthority, requestPending, walletDeliveryUnknown]);
+  }, [refreshWallet, walletAuthority, walletDelivery, walletPending]);
 
-  const trackOperationResult = useCallback((
-    operation: WalletManagementOperation,
-  ): void => {
-    replaceObservation(trackWalletOperationResult(observation.current, operation));
-  }, [replaceObservation]);
+  useEffect(() => {
+    assetAuthority.invalidateRead();
+    exactAuthority.invalidateRead();
+    setAssetSnapshot(undefined);
+    replaceExactRead(idleExactAssetRead);
+    setAddFormAccount(undefined);
+    setAssetRead({ status: "idle" });
+    if (currentAccount !== undefined && !observationUnavailable) {
+      void readAssetPage(currentAccount, null, [], true);
+    }
+  }, [currentAccountKey]);
 
-  const closeConnectionDialog = useCallback((): void => {
-    setConnectionDialogOpen(false);
-    setWalletDeliveryDialogOpen(false);
-  }, []);
-
-  const runControl = useCallback(async (
-    action: WalletConnectionAction | WalletOperationAction,
-  ): Promise<void> => {
-    if (state.status !== "ready" || walletDeliveryUnknown !== undefined) return;
-    const request = requestAuthority.beginControl();
+  const operationId = tokenOperation?.operationId;
+  useEffect(() => {
+    if (tokenPending || tokenDelivery !== undefined) return;
+    const request = tokenAuthority.beginRead();
     if (request === undefined) return;
-    setRequestPending(true);
-    try {
-      if (action === "connect" || action === "disconnect") {
-        if (state.wallet.status === "present") return;
-        if (!walletConnectionActions(state.wallet).includes(action)) return;
-        const token = csrfToken();
-        const result = await startWalletOperation(
-          action,
-          state.wallet.connectionRevision,
-          token,
-        );
-        if (isDeliveryUnknown(result)) {
-          setWalletDeliveryUnknown(result);
-          setWalletDeliveryDialogOpen(true);
+    let timer: number | undefined;
+    const poll = async (): Promise<void> => {
+      try {
+        const next = operationId === undefined
+          ? await loadCurrentTokenOperation({ signal: request.signal })
+          : (await loadTokenOperation(operationId, { signal: request.signal })).operation;
+        if (!tokenAuthority.isCurrent(request)) return;
+        if (next !== null && (
+          isTokenCatalogOperationTerminal(next.state)
+            ? handledTerminalTokenOperation.current !== next.operationId
+            : next.operationId !== dismissedTokenOperation.current
+        )) acceptTokenOperation(next);
+      } catch (error) {
+        if (!tokenAuthority.isCurrent(request) || sessionRecovery(error)) return;
+        if (operationId !== undefined && isBrowserResponseCode(error, "token_operation_not_found")) {
+          setTokenOperation(null);
+          publishActionError("Token operation unavailable", error);
           return;
         }
-        if (result.status === "operation_started") {
-          trackOperationResult(result.operation);
-        }
-      } else {
-        if (state.wallet.status !== "present") return;
-        const presentation = state.wallet.presentation;
-        if (!walletOperationActions(presentation).includes(action)) return;
-        const { operation } = presentation;
-        if (action === "confirm") {
-          const confirmed = await confirmWalletOperation(
-            operation.operationId,
-            operation.connectionRevision,
-            csrfToken(),
-          );
-          if (isDeliveryUnknown(confirmed)) {
-            setWalletDeliveryUnknown(confirmed);
-            setWalletDeliveryDialogOpen(true);
-            return;
-          }
-          trackOperationResult(confirmed);
-        } else {
-          const cancelled = await cancelWalletOperation(
-            operation.operationId,
-            operation.connectionRevision,
-            csrfToken(),
-          );
-          if (isDeliveryUnknown(cancelled)) {
-            setWalletDeliveryUnknown(cancelled);
-            setWalletDeliveryDialogOpen(true);
-            return;
-          }
-          trackOperationResult(cancelled);
-        }
       }
-      await refresh(request);
-    } catch (error) {
-      if (!requestAuthority.isCurrent(request)) return;
-      if (recoverBrowserSession(error)) return;
-      if (isBrowserResponseCode(error, "state_conflict")) {
-        await refresh(request);
-      } else {
-        publishControlError(error);
+      if (tokenAuthority.isCurrent(request)) {
+        timer = window.setTimeout(() => { void poll(); }, browserPollMilliseconds);
       }
-    } finally {
-      requestAuthority.finishControl(request);
-      if (requestAuthority.isCurrent(request)) setRequestPending(false);
-    }
-  }, [publishControlError, recoverBrowserSession, refresh, requestAuthority, state, trackOperationResult, walletDeliveryUnknown]);
+    };
+    void poll();
+    return () => {
+      tokenAuthority.cancelRead(request);
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [acceptTokenOperation, operationId, publishActionError, sessionRecovery, tokenAuthority, tokenDelivery, tokenPending]);
 
-  const wallet = state.status === "ready" ? state.wallet : undefined;
-  const dialogOpen = walletDeliveryDialogOpen || wallet?.status === "present" ||
-    (wallet !== undefined && connectionDialogOpen);
-  useEffect(() => {
-    if (dialogOpen) {
-      dialogHadFocus.current = true;
-      return;
+  const runWalletAction = useCallback(async (
+    action: WalletConnectionAction | WalletOperationAction,
+  ): Promise<void> => {
+    const current = stateRef.current;
+    if (current.status !== "ready" || walletDelivery !== undefined) return;
+    const request = walletAuthority.beginControl();
+    if (request === undefined) return;
+    setWalletPending(true);
+    try {
+      if (action === "connect" || action === "disconnect") {
+        if (current.wallet.status === "present" || !walletConnectionActions(current.wallet).includes(action)) return;
+        const result = await startWalletOperation(action, current.wallet.connectionRevision, csrfToken());
+        if (isDeliveryUnknown(result)) { setWalletDelivery(result); return; }
+        if (result.status === "operation_started") {
+          replaceObservation(trackWalletOperationResult(observation.current, result.operation));
+        }
+      } else {
+        if (current.wallet.status !== "present" || !walletOperationActions(current.wallet.presentation).includes(action)) return;
+        const operation = current.wallet.presentation.operation;
+        const result = action === "confirm"
+          ? await confirmWalletOperation(operation.operationId, operation.connectionRevision, csrfToken())
+          : await cancelWalletOperation(operation.operationId, operation.connectionRevision, csrfToken());
+        if (isDeliveryUnknown(result)) { setWalletDelivery(result); return; }
+        replaceObservation(trackWalletOperationResult(observation.current, result));
+      }
+      await refreshWallet(request);
+    } catch (error) {
+      if (!walletAuthority.isCurrent(request)) return;
+      if (sessionRecovery(error)) return;
+      if (isBrowserResponseCode(error, "state_conflict")) await refreshWallet(request);
+      else publishActionError("Wallet action failed", error);
+    } finally {
+      walletAuthority.finishControl(request);
+      if (walletAuthority.isCurrent(request)) setWalletPending(false);
     }
-    if (dialogHadFocus.current && !requestPending) {
-      walletNavigation.current?.focus();
+  }, [publishActionError, refreshWallet, replaceObservation, sessionRecovery, walletAuthority, walletDelivery]);
+
+  const startAdd = useCallback(async (address: string): Promise<void> => {
+    if (addFormAccount === undefined || tokenPending || observationUnavailable) return;
+    const request = tokenAuthority.beginControl();
+    if (request === undefined) return;
+    setTokenPending(true);
+    try {
+      const started = await startTokenRegistration(addFormAccount.chainId, address, csrfToken());
+      if (!tokenAuthority.isCurrent(request)) return;
+      if (isDeliveryUnknown(started)) { setTokenDelivery(started); setAddFormAccount(undefined); return; }
+      acceptTokenOperation(started.operation);
+    } catch (error) {
+      if (!tokenAuthority.isCurrent(request) || sessionRecovery(error)) return;
+      publishActionError("Token action failed", error);
+    } finally {
+      tokenAuthority.finishControl(request);
+      if (tokenAuthority.isCurrent(request)) setTokenPending(false);
+    }
+  }, [acceptTokenOperation, addFormAccount, observationUnavailable, publishActionError, sessionRecovery, tokenAuthority, tokenPending]);
+
+  const startRemove = useCallback(async (registration: TokenRegistration): Promise<void> => {
+    if (currentAccount === undefined || tokenPending || observationUnavailable) return;
+    const request = tokenAuthority.beginControl();
+    if (request === undefined) return;
+    setTokenPending(true);
+    try {
+      const started = await startTokenUnregistration(registration, csrfToken());
+      if (!tokenAuthority.isCurrent(request)) return;
+      if (isDeliveryUnknown(started)) { setTokenDelivery(started); return; }
+      acceptTokenOperation(started.operation);
+    } catch (error) {
+      if (!tokenAuthority.isCurrent(request) || sessionRecovery(error)) return;
+      publishActionError("Token action failed", error);
+    } finally {
+      tokenAuthority.finishControl(request);
+      if (tokenAuthority.isCurrent(request)) setTokenPending(false);
+    }
+  }, [acceptTokenOperation, currentAccountKey, observationUnavailable, publishActionError, sessionRecovery, tokenAuthority, tokenPending]);
+
+  const runTokenOperation = useCallback(async (action: "confirm" | "cancel"): Promise<void> => {
+    if (tokenOperation === null || tokenPending || tokenOperation.interactionInterface !== "web") return;
+    const request = tokenAuthority.beginControl();
+    if (request === undefined) return;
+    setTokenPending(true);
+    try {
+      const result = action === "confirm"
+        ? await confirmTokenOperation(tokenOperation, csrfToken())
+        : await cancelTokenOperation(tokenOperation.operationId, csrfToken());
+      if (!tokenAuthority.isCurrent(request)) return;
+      if (isDeliveryUnknown(result)) { setTokenDelivery(result); setTokenOperation(null); return; }
+      acceptTokenOperation("operation" in result ? result.operation : result);
+    } catch (error) {
+      if (!tokenAuthority.isCurrent(request) || sessionRecovery(error)) return;
+      publishActionError("Token action failed", error);
+    } finally {
+      tokenAuthority.finishControl(request);
+      if (tokenAuthority.isCurrent(request)) setTokenPending(false);
+    }
+  }, [acceptTokenOperation, publishActionError, sessionRecovery, tokenAuthority, tokenOperation, tokenPending]);
+
+  const dialogPresentation: DialogPresentation | undefined = walletDelivery !== undefined
+    ? { kind: "wallet_delivery", delivery: walletDelivery }
+    : currentWallet?.status === "present"
+      ? { kind: "wallet_operation", presentation: currentWallet.presentation }
+      : connectionDialogOpen && currentWallet !== undefined
+        ? { kind: "wallet_connection", wallet: currentWallet }
+        : tokenDelivery !== undefined
+          ? { kind: "token_delivery", delivery: tokenDelivery }
+          : tokenOperation !== null
+            ? { kind: "token_operation", operation: tokenOperation, accountMatches: sameAccount({
+                chainId: tokenOperation.account.chainId,
+                address: tokenOperation.account.address,
+                connectionRevision: tokenOperation.connectionRevision,
+              }, currentAccount) }
+            : addFormAccount !== undefined
+              ? { kind: "token_add", account: addFormAccount }
+              : undefined;
+
+  useEffect(() => {
+    if (dialogPresentation !== undefined) { dialogHadFocus.current = true; return; }
+    if (dialogHadFocus.current && !walletPending && !tokenPending) {
+      (dialogTrigger.current?.isConnected === true ? dialogTrigger.current : walletNavigation.current)?.focus();
+      dialogTrigger.current = undefined;
       dialogHadFocus.current = false;
     }
-  }, [dialogOpen, requestPending]);
-  const activateWalletNavigation = (): void => {
-    if (wallet === undefined || wallet.status === "present") return;
-    if (walletConnectionActions(wallet).includes("connect")) {
-      void runControl("connect");
-      return;
-    }
-    setConnectionDialogOpen((current) => !current);
+  }, [dialogPresentation, tokenPending, walletPending]);
+
+  const closeDialog = (): void => {
+    if (walletDelivery !== undefined) setWalletDelivery(undefined);
+    else if (connectionDialogOpen) setConnectionDialogOpen(false);
+    else if (tokenDelivery !== undefined) setTokenDelivery(undefined);
+    else if (tokenOperation?.interactionInterface === "cli") {
+      dismissedTokenOperation.current = tokenOperation.operationId;
+      setTokenOperation(null);
+    } else setAddFormAccount(undefined);
   };
-  const pagePath = parseBrowserPagePath(window.location.pathname);
+
+  const activateWalletNavigation = (): void => {
+    if (currentWallet === undefined || currentWallet.status === "present" || observationUnavailable) return;
+    if (walletConnectionActions(currentWallet).includes("connect")) { void runWalletAction("connect"); return; }
+    setConnectionDialogOpen((isOpen) => !isOpen);
+  };
+
+  const visibleAssetSnapshot = assetSnapshot?.accountKey === currentAccountKey
+    ? assetSnapshot
+    : undefined;
+  const visibleExactAsset = exactRead.status === "available" && exactRead.accountKey === currentAccountKey
+    ? exactRead.result
+    : undefined;
+  const visibleExactRead = exactRead.status !== "idle" && exactRead.accountKey === currentAccountKey
+    ? exactRead
+    : idleExactAssetRead;
+  const snapshotForPage: AccountAssetPageSnapshot | undefined = visibleAssetSnapshot === undefined ? undefined : {
+    result: visibleAssetSnapshot.result,
+    cursor: visibleAssetSnapshot.cursor,
+    canGoBack: visibleAssetSnapshot.previousCursors.length > 0,
+  };
   return (
     <div className="app-shell">
       <nav className="app-nav" aria-label="Primary">
         <a className="product-name" href={browserPagePaths.root}>{productDisplayName}</a>
-        <div className="page-navigation">
-          <a
-            className={pagePath === browserPagePaths.root ? "page-link active" : "page-link"}
-            href={browserPagePaths.root}
-            aria-current={pagePath === browserPagePaths.root ? "page" : undefined}
-          >
-            Home
-          </a>
-          <a
-            className={pagePath === browserPagePaths.tokens ? "page-link active" : "page-link"}
-            href={browserPagePaths.tokens}
-            aria-current={pagePath === browserPagePaths.tokens ? "page" : undefined}
-          >
-            Tokens
-          </a>
-        </div>
         <button
           ref={walletNavigation}
           type="button"
           className="wallet-nav-control secondary"
-          aria-expanded={dialogOpen}
-          disabled={wallet === undefined || requestPending || walletDeliveryUnknown !== undefined}
-          onClick={() => { activateWalletNavigation(); }}
+          aria-expanded={dialogPresentation?.kind.startsWith("wallet") ?? false}
+          disabled={currentWallet === undefined || walletPending || walletDelivery !== undefined || observationUnavailable}
+          onClick={activateWalletNavigation}
         >
-          {walletNavigationLabel(wallet)}
+          {walletNavigationLabel(currentWallet)}
         </button>
       </nav>
-      {pagePath === browserPagePaths.root ? (
-        <section className="intro">
+      {state.status === "loading" ? (
+        <main className="intro">
           <p className="eyebrow">Robinhood Chain</p>
-          <h1>Local wallet connection</h1>
-          <p>Connect Robinhood Wallet to the local Little John runtime.</p>
-        </section>
-      ) : state.status === "ready" ? (
-        <TokenCatalogPage
-          wallet={state.wallet}
-          getCsrfToken={csrfToken}
-          recoverBrowserSession={recoverBrowserSession}
-          onOpenWallet={activateWalletNavigation}
-          onNotification={publishNotification}
-        />
+          <h1>Local account assets</h1>
+          <p>{state.failure ?? "Checking the local wallet connection…"}</p>
+          {state.failure === undefined ? null : (
+            <button type="button" className="secondary" onClick={retryWalletObservation}>Retry</button>
+          )}
+        </main>
+      ) : currentAccount === undefined ? (
+        <main className="intro">
+          <p className="eyebrow">Robinhood Chain</p>
+          <h1>Your local chain assistant</h1>
+          <p>Little John shows the connected account&apos;s native balance and the token contracts you add for that account.</p>
+          <p>Connecting a wallet does not sign or send a transaction.</p>
+          {state.observationFailure === undefined ? null : <p className="error">{state.observationFailure}</p>}
+          {state.observationFailure === undefined ? (
+            <button type="button" onClick={activateWalletNavigation}>Connect wallet</button>
+          ) : (
+            <button type="button" className="secondary" onClick={retryWalletObservation}>Retry</button>
+          )}
+        </main>
       ) : (
-        <section className="intro"><p>Loading token catalog…</p></section>
+        <>
+          {state.observationFailure === undefined ? null : (
+            <div className="warning" role="status">
+              <strong>Wallet observation unavailable</strong>
+              <p>{state.observationFailure}</p>
+              <button type="button" className="secondary" onClick={retryWalletObservation}>Retry</button>
+            </div>
+          )}
+          <AccountAssetsPage
+            snapshot={snapshotForPage}
+            exact={visibleExactAsset}
+            loading={assetRead.status === "loading"}
+             staleMessage={assetRead.status === "error" ? assetRead.message : undefined}
+             exactRead={visibleExactRead.status === "error"
+               ? { status: "error", message: visibleExactRead.message }
+               : visibleExactRead.status === "loading"
+                 ? { status: "loading" }
+                 : { status: "idle" }}
+            mutationDisabled={walletPending || tokenPending || observationUnavailable || tokenDelivery !== undefined}
+             onRefresh={() => {
+              void readAssetPage(
+                currentAccount,
+                visibleAssetSnapshot?.cursor ?? null,
+                visibleAssetSnapshot?.previousCursors ?? [],
+                false,
+              );
+             }}
+             onRetryExact={() => {
+               if (visibleExactRead.status !== "error") return;
+               void readExactAsset(currentAccount, visibleExactRead.asset);
+             }}
+            onAdd={(trigger) => { dialogTrigger.current = trigger; setAddFormAccount(currentAccount); }}
+            onRemove={(registration, trigger) => { dialogTrigger.current = trigger; void startRemove(registration); }}
+            onPrevious={() => {
+              if (visibleAssetSnapshot === undefined) return;
+              const cursor = visibleAssetSnapshot.previousCursors.at(-1) ?? null;
+              void readAssetPage(
+                currentAccount,
+                cursor,
+                visibleAssetSnapshot.previousCursors.slice(0, -1),
+                true,
+              );
+            }}
+            onNext={() => {
+              if (visibleAssetSnapshot?.result.nextCursor === null || visibleAssetSnapshot === undefined) return;
+              void readAssetPage(
+                currentAccount,
+                visibleAssetSnapshot.result.nextCursor,
+                [...visibleAssetSnapshot.previousCursors, visibleAssetSnapshot.cursor],
+                true,
+              );
+            }}
+          />
+        </>
       )}
-      {dialogOpen && wallet !== undefined ? (
-        <WalletDialog
-          wallet={wallet}
-          requestPending={requestPending}
-          onConnectionAction={(action) => { void runControl(action); }}
-          onOperationAction={(action) => { void runControl(action); }}
-          onClose={closeConnectionDialog}
-          deliveryUnknown={walletDeliveryDialogOpen ? walletDeliveryUnknown : undefined}
+      {dialogPresentation === undefined ? null : (
+        <ApplicationDialog
+          presentation={dialogPresentation}
+          pending={walletPending || tokenPending}
+          onClose={closeDialog}
+          onWalletAction={(action) => { void runWalletAction(action); }}
+          onTokenAddress={(address) => { void startAdd(address); }}
+          onTokenConfirm={() => { void runTokenOperation("confirm"); }}
+          onTokenCancel={() => { void runTokenOperation("cancel"); }}
         />
-      ) : null}
+      )}
       {activeNotification === undefined ? null : (
-        <Notification
-          key={activeNotification.sequence}
-          notice={activeNotification.notice}
-          exiting={activeNotification.phase === "exiting"}
-        />
+        <Notification notice={activeNotification.notice} exiting={activeNotification.phase === "exiting"} />
       )}
     </div>
   );

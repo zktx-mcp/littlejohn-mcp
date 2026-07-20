@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { extendChainSupportManifest } from "../../src/chain/application.js";
+import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
 import {
   accountBalanceCapability,
   chainStatusCapability,
@@ -47,6 +48,7 @@ import {
 } from "../../src/wallet/contracts.js";
 import { bindForHarness, createCapabilityHarness } from "../core/capability-harness.js";
 import { tokenCatalogInterfaceHarnessPorts } from "../token-catalog/interface-harness.js";
+import { accountAssetInterfaceHarnessPort } from "../account-assets/interface-harness.js";
 
 const directories: string[] = [];
 const operationId = Buffer.alloc(32, 41).toString("base64url");
@@ -129,7 +131,9 @@ describe("interface owner application", () => {
       createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
     );
     const chainManifest = extendChainSupportManifest(walletManifest);
-    const tokenCatalogManifest = extendTokenCatalogSupportManifest(chainManifest);
+    const tokenCatalogManifest = extendAccountAssetSupportManifest(
+      extendTokenCatalogSupportManifest(chainManifest),
+    );
     const ports = capabilityPorts();
     let closes = 0;
     const createCredentials = (): BrowserRequestCredentialAuthority => {
@@ -148,6 +152,7 @@ describe("interface owner application", () => {
       createCredentials,
     })({
       ...tokenCatalogInterfaceHarnessPorts(),
+      accountAssets: accountAssetInterfaceHarnessPort(),
       routes,
       signal: new AbortController().signal,
       startupResources: createResourceOwnershipScope().resources,
@@ -162,7 +167,8 @@ describe("interface owner application", () => {
       ["GET", "/api/v1/wallet/connection"],
       ["GET", "/api/v1/capabilities"],
       ["GET", "/"],
-      ["GET", "/tokens"],
+      ["POST", "/api/v1/account-assets/queries"],
+      ["GET", "/api/v1/account-assets/eip155:4663/0x1111111111111111111111111111111111111111"],
       ["POST", "/api/v1/token-inspections"],
       ["POST", "/api/v1/internal/control/token-catalog/inspections"],
       ["POST", "/api/v1/internal/control/token-catalog/registration-queries"],
@@ -172,8 +178,6 @@ describe("interface owner application", () => {
       ["POST", `/api/v1/internal/control/token-catalog/operations/${operationId}/confirmation`],
       ["DELETE", `/api/v1/internal/control/token-catalog/operations/${operationId}`],
       ["POST", "/api/v1/token-catalog/inspections"],
-      ["POST", "/api/v1/token-catalog/registration-queries"],
-      ["GET", "/api/v1/token-catalog/registrations/eip155:4663/0x1111111111111111111111111111111111111111"],
       ["POST", "/api/v1/token-catalog/operations"],
       ["GET", "/api/v1/token-catalog/current-operation"],
       ["GET", `/api/v1/token-catalog/operations/${operationId}`],
@@ -186,6 +190,8 @@ describe("interface owner application", () => {
       ["POST", `/api/v1/wallet/operations/${operationId}/cancellation`],
     ] as const) expect(application.routes.match(method, path).status).toBe("matched");
     expect(application.routes.match("GET", "/wallet").status)
+      .toBe("not_found");
+    expect(application.routes.match("GET", "/tokens").status)
       .toBe("not_found");
 
     const root = application.routes.match("GET", "/");
@@ -249,13 +255,20 @@ describe("interface owner application", () => {
       "token.registration",
       "token.registrations",
       "token.start_registration",
-      "token.start_registration_update",
       "token.start_unregistration",
       "token.operation",
       "token.cancel_operation",
     ]) expect(availability.get(capabilityId)).toEqual({
       overall: "available", direct: "internal", http: "internal",
       mcp: "available", cli: "available", web: "available",
+    });
+    expect(availability.get("account.assets")).toEqual({
+      overall: "available", direct: "internal", http: "internal",
+      mcp: "available", cli: "available", web: "available",
+    });
+    expect(availability.get("account.asset")).toEqual({
+      overall: "available", direct: "internal", http: "internal",
+      mcp: "unavailable", cli: "unavailable", web: "available",
     });
 
     await application.close();

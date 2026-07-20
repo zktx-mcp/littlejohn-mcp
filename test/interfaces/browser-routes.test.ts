@@ -5,6 +5,8 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { chainInterfaceErrorMappings } from "../../src/chain/errors.js";
+import { accountAssetBrowserRoutes } from "../../src/account-assets/http-contract.js";
+import { parseEvmAddress } from "../../src/core/index.js";
 import type { BrowserAssetBundle } from "../../src/interfaces/browser-assets.js";
 import {
   browserAssetPaths,
@@ -55,6 +57,7 @@ import { WalletOperationError } from "../../src/wallet/errors.js";
 import { tokenCatalogBrowserRoutes } from "../../src/token-catalog/browser.js";
 import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
 import { tokenCatalogInterfaceHarnessPorts } from "../token-catalog/interface-harness.js";
+import { accountAssetInterfaceHarnessPort } from "../account-assets/interface-harness.js";
 
 const directories: string[] = [];
 const operationId = Buffer.alloc(32, 13).toString("base64url");
@@ -130,6 +133,11 @@ const assets: BrowserAssetBundle = Object.freeze({
       })
     : undefined,
   paths: () => Object.freeze(["/assets/index-Abcdef12.js"]),
+});
+
+const interfacePorts = () => Object.freeze({
+  ...tokenCatalogInterfaceHarnessPorts(),
+  accountAssets: accountAssetInterfaceHarnessPort(),
 });
 
 interface WalletCalls {
@@ -254,7 +262,7 @@ describe("wallet browser routes", () => {
     });
     const wallet = walletOperations();
     const registry = extendBrowserInterfaceRoutes({
-      ...tokenCatalogInterfaceHarnessPorts(),
+      ...interfacePorts(),
       routes: await baseRoutes(),
       credentials,
       assets,
@@ -262,15 +270,17 @@ describe("wallet browser routes", () => {
     });
     const expected = [
       ["GET", "/", "browser_bootstrap", "browser_content", "none"],
-      ["GET", "/tokens", "browser_bootstrap", "browser_content", "none"],
+      ["POST", accountAssetBrowserRoutes.queries, "browser_query", "canonical_json", "none"],
+      ["GET", accountAssetBrowserRoutes.exact(
+        "eip155:4663",
+        parseEvmAddress("0x1111111111111111111111111111111111111111"),
+      ), "browser_read", "canonical_json", "none"],
       ["POST", browserWalletApiPaths.operations, "browser_control", "canonical_json", "declared_control"],
       ["GET", browserWalletApiPaths.currentOperation, "browser_read", "canonical_json", "none"],
       ["GET", browserOperationPath(operationId), "browser_read", "canonical_json", "none"],
       ["POST", browserOperationConfirmationPath(operationId), "browser_control", "canonical_json", "declared_control"],
       ["POST", browserOperationCancellationPath(operationId), "browser_control", "canonical_json", "declared_control"],
       ["POST", tokenCatalogBrowserRoutes.inspections, "browser_query", "canonical_json", "none"],
-      ["POST", tokenCatalogBrowserRoutes.registrationQueries, "browser_query", "canonical_json", "none"],
-      ["GET", "/api/v1/token-catalog/registrations/eip155:4663/0x1111111111111111111111111111111111111111", "browser_read", "canonical_json", "none"],
       ["POST", tokenCatalogBrowserRoutes.operations, "browser_control", "canonical_json", "declared_control"],
       ["GET", tokenCatalogBrowserRoutes.currentOperation, "browser_read", "canonical_json", "none"],
       ["GET", tokenCatalogBrowserRoutes.operation(operationId), "browser_read", "canonical_json", "none"],
@@ -327,7 +337,7 @@ describe("wallet browser routes", () => {
     });
     const wallet = walletOperations();
     const registry = extendBrowserInterfaceRoutes({
-      ...tokenCatalogInterfaceHarnessPorts(),
+      ...interfacePorts(),
       routes: await baseRoutes(),
       credentials,
       assets,
@@ -352,15 +362,7 @@ describe("wallet browser routes", () => {
     })).toEqual({ ok: false, code: "invalid_origin" });
 
     const { cookie, csrfToken } = await bootstrap(registry);
-    const tokenPageMatch = registry.match("GET", browserPagePaths.tokens);
-    if (tokenPageMatch.status !== "matched") throw new Error("Expected the token page bootstrap route.");
-    expect(registry.validateSecurity(tokenPageMatch, noAuthority)).toEqual({ ok: true });
-    expect(registry.validateSecurity(tokenPageMatch, {
-      ...noAuthority,
-      cookie: [cookie],
-    })).toEqual({ ok: false, code: "unauthorized" });
-    const secondBootstrap = await bootstrap(registry, browserPagePaths.tokens);
-    expect(secondBootstrap).toEqual({ cookie, csrfToken });
+    expect(registry.match("GET", "/tokens").status).toBe("not_found");
     const currentMatch = registry.match("GET", browserWalletApiPaths.currentOperation);
     const startMatch = registry.match("POST", browserWalletApiPaths.operations);
     const tokenQueryMatch = registry.match("POST", tokenCatalogBrowserRoutes.inspections);
@@ -431,29 +433,19 @@ describe("wallet browser routes", () => {
     credentials.close();
   });
 
-  it("projects token catalog reads, current state, and failures through canonical contracts", async () => {
+  it("projects token catalog operation state and failures through canonical contracts", async () => {
     const credentials = createBrowserRequestCredentialAuthority({
       now: () => now,
       randomBytes: (size) => Buffer.alloc(size, 49),
     });
     const registry = extendBrowserInterfaceRoutes({
-      ...tokenCatalogInterfaceHarnessPorts(),
+      ...interfacePorts(),
       routes: await baseRoutes(),
       credentials,
       assets,
       walletOperations: walletOperations().port,
     });
 
-    expect(await invoke(
-      registry,
-      "POST",
-      tokenCatalogBrowserRoutes.registrationQueries,
-      {},
-    )).toEqual({
-      ok: true,
-      response: "canonical_json",
-      body: { registrations: [], nextCursor: null },
-    });
     expect(await invoke(
       registry,
       "GET",
@@ -463,32 +455,6 @@ describe("wallet browser routes", () => {
       response: "canonical_json",
       body: { operation: null },
     });
-
-    const missing = await invoke(
-      registry,
-      "GET",
-      tokenCatalogBrowserRoutes.registration(
-        "eip155:4663" as never,
-        "0x1111111111111111111111111111111111111111" as never,
-      ),
-    );
-    expect(missing.ok).toBe(false);
-    if (!missing.ok) {
-      expect(missing.problem).toMatchObject({
-        code: "token_registration_not_found",
-        status: 404,
-        retryable: false,
-      });
-    }
-
-    const invalid = await invoke(
-      registry,
-      "POST",
-      tokenCatalogBrowserRoutes.registrationQueries,
-      { extra: true },
-    );
-    expect(invalid.ok).toBe(false);
-    if (!invalid.ok) expect(invalid.problem.code).toBe("invalid_input");
 
     const cancelled = await invoke(
       registry,
@@ -508,13 +474,12 @@ describe("wallet browser routes", () => {
     });
     const calls: unknown[] = [];
     const rejected = () => new TokenCatalogOperationError("internal_error").failure;
-    const ports = tokenCatalogInterfaceHarnessPorts();
+    const ports = interfacePorts();
     const registry = extendBrowserInterfaceRoutes({
       ...ports,
       tokenCatalogWebStart: Object.freeze({
         interactionInterface: "web" as const,
         async startRegistration(input: unknown) { calls.push(input); return rejected(); },
-        async startRegistrationUpdate(input: unknown) { calls.push(input); return rejected(); },
         async startUnregistration(input: unknown) { calls.push(input); return rejected(); },
       }),
       routes: await baseRoutes(),
@@ -529,13 +494,7 @@ describe("wallet browser routes", () => {
     } as const;
     const revision = Buffer.alloc(16, 3).toString("base64url");
     const requests = [
-      { kind: "register", asset, settings: { userLabel: null, visibility: "visible" } },
-      {
-        kind: "update_registration",
-        asset,
-        expectedRevision: revision,
-        changes: { visibility: "hidden" },
-      },
+      { kind: "register", asset },
       { kind: "unregister", asset, expectedRevision: revision },
     ] as const;
     for (const request of requests) {
@@ -563,7 +522,7 @@ describe("wallet browser routes", () => {
     const present = currentPresent();
     const wallet = walletOperations({ current: () => present });
     const registry = extendBrowserInterfaceRoutes({
-      ...tokenCatalogInterfaceHarnessPorts(),
+      ...interfacePorts(),
       routes: await baseRoutes(),
       credentials,
       assets,
@@ -604,7 +563,7 @@ describe("wallet browser routes", () => {
       randomBytes: (size) => Buffer.alloc(size, 26),
     });
     const absentRegistry = extendBrowserInterfaceRoutes({
-      ...tokenCatalogInterfaceHarnessPorts(),
+      ...interfacePorts(),
       routes: await baseRoutes(),
       credentials: absentCredentials,
       assets,
@@ -635,7 +594,7 @@ describe("wallet browser routes", () => {
       operationResult: () => controlResult,
     });
     const registry = extendBrowserInterfaceRoutes({
-      ...tokenCatalogInterfaceHarnessPorts(),
+      ...interfacePorts(),
       routes: await baseRoutes(),
       credentials,
       assets,
@@ -735,7 +694,7 @@ describe("wallet browser routes", () => {
     });
     const wallet = walletOperations();
     const registry = extendBrowserInterfaceRoutes({
-      ...tokenCatalogInterfaceHarnessPorts(),
+      ...interfacePorts(),
       routes: await baseRoutes(),
       credentials,
       assets,
@@ -775,7 +734,7 @@ describe("wallet browser routes", () => {
       start: () => { throw new WalletOperationError("state_conflict"); },
     });
     const staleStartRegistry = extendBrowserInterfaceRoutes({
-      ...tokenCatalogInterfaceHarnessPorts(),
+      ...interfacePorts(),
       routes: await baseRoutes(),
       credentials,
       assets,
@@ -825,7 +784,7 @@ describe("wallet browser routes", () => {
       operationResult: () => foreign,
     });
     const registry = extendBrowserInterfaceRoutes({
-      ...tokenCatalogInterfaceHarnessPorts(),
+      ...interfacePorts(),
       routes: await baseRoutes(),
       credentials,
       assets,
@@ -892,7 +851,7 @@ describe("wallet browser routes", () => {
   });
 
   it("keeps page, API, and asset registries resource-oriented and caller-neutral", () => {
-    expect(browserPagePaths).toEqual({ root: "/", tokens: "/tokens" });
+    expect(browserPagePaths).toEqual({ root: "/" });
     expect(JSON.stringify(browserWalletApiPaths)).not.toContain("mcp");
     expect(JSON.stringify(browserWalletApiPaths)).not.toContain("cli");
     expect(JSON.stringify(browserAssetPaths)).not.toContain("wallet");

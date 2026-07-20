@@ -4,6 +4,9 @@ import { resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { AccountAssetOperationError } from "../../src/account-assets/errors.js";
+import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
+import type { AccountAssetApplicationPort } from "../../src/account-assets/ports.js";
 import {
   accountBalanceCapability,
   chainStatusCapability,
@@ -27,6 +30,7 @@ import type {
 import {
   LocalRuntime,
   composeOwnerApplicationStages,
+  type AccountAssetOwnerApplicationStage,
   type ChainReadCapabilityPort,
   type TokenCatalogOwnerApplicationStage,
   type WalletConnectionReadCapabilityPort,
@@ -62,7 +66,6 @@ const testTokenCatalog: TokenCatalogApplicationPort = Object.freeze({
   getRegistration: () => internalFailure,
   listRegistrations: () => internalFailure,
   startRegistration: async () => internalFailure,
-  startRegistrationUpdate: async () => internalFailure,
   startUnregistration: async () => internalFailure,
   getOperation: () => internalFailure,
   cancelOperation: async () => internalFailure,
@@ -71,7 +74,6 @@ const testTokenCatalog: TokenCatalogApplicationPort = Object.freeze({
 const unavailableOperation = (): never => { throw new Error("Token catalog operation is unavailable in this fixture."); };
 const testTokenCatalogOperations: TokenCatalogOperationCoordinatorPort = Object.freeze({
   startRegistration: async () => internalFailure,
-  startRegistrationUpdate: async () => internalFailure,
   startUnregistration: async () => internalFailure,
   getOperation: unavailableOperation,
   getCurrentOperation: () => null,
@@ -87,8 +89,6 @@ const testTokenCatalogWebStart = Object.freeze({
   interactionInterface: "web",
   startRegistration: (input: Parameters<TokenCatalogApplicationPort["startRegistration"]>[0], id: typeof operationId) =>
     testTokenCatalog.startRegistration(input, { operationId: id, interactionInterface: "web" }),
-  startRegistrationUpdate: (input: Parameters<TokenCatalogApplicationPort["startRegistrationUpdate"]>[0], id: typeof operationId) =>
-    testTokenCatalog.startRegistrationUpdate(input, { operationId: id, interactionInterface: "web" }),
   startUnregistration: (input: Parameters<TokenCatalogApplicationPort["startUnregistration"]>[0], id: typeof operationId) =>
     testTokenCatalog.startUnregistration(input, { operationId: id, interactionInterface: "web" }),
 }) satisfies TokenCatalogWebStartPort;
@@ -105,8 +105,6 @@ const testTokenCatalogInteractiveCli = Object.freeze({
   interactionInterface: "cli",
   startRegistration: (input: Parameters<TokenCatalogApplicationPort["startRegistration"]>[0], id: typeof operationId) =>
     testTokenCatalog.startRegistration(input, { operationId: id, interactionInterface: "cli" }),
-  startRegistrationUpdate: (input: Parameters<TokenCatalogApplicationPort["startRegistrationUpdate"]>[0], id: typeof operationId) =>
-    testTokenCatalog.startRegistrationUpdate(input, { operationId: id, interactionInterface: "cli" }),
   startUnregistration: (input: Parameters<TokenCatalogApplicationPort["startUnregistration"]>[0], id: typeof operationId) =>
     testTokenCatalog.startUnregistration(input, { operationId: id, interactionInterface: "cli" }),
   confirm: (input: Parameters<TokenCatalogInteractiveCliPort["confirm"]>[0]) =>
@@ -129,6 +127,10 @@ const createTestTokenCatalogStage = <ActiveWallet extends object>(
 ): TokenCatalogOwnerApplicationStage<ActiveWallet> => ({ routes }, _wallet, chain) => ({
   routes,
   supportManifest: extendTokenCatalogSupportManifest(chain.supportManifest),
+  accountTokenRegistrationRead: Object.freeze({
+    getForAccount: () => undefined,
+    listForAccount: () => Object.freeze({ entries: [], nextCursor: null }),
+  }),
   tokenCatalogQueries: testTokenCatalogQueries,
   tokenCatalogWebStart: testTokenCatalogWebStart,
   tokenCatalogBrowserOperations: testTokenCatalogBrowserOperations,
@@ -137,8 +139,24 @@ const createTestTokenCatalogStage = <ActiveWallet extends object>(
   close: async () => { close(); },
 });
 
+const accountAssetFailure = new AccountAssetOperationError("internal_error").failure;
+const testAccountAssets: AccountAssetApplicationPort = Object.freeze({
+  list: async () => accountAssetFailure,
+  get: async () => accountAssetFailure,
+});
+
+const createTestAccountAssetStage = <ActiveWallet extends object>(
+  close: () => void = () => undefined,
+): AccountAssetOwnerApplicationStage<ActiveWallet> => ({ routes }, _wallet, _chain, catalog) => ({
+  routes,
+  supportManifest: extendAccountAssetSupportManifest(catalog.supportManifest),
+  list: testAccountAssets.list,
+  get: testAccountAssets.get,
+  close: async () => { close(); },
+});
+
 const extendTestInterfaceSupportManifest = (
-  parent: Parameters<typeof extendInterfaceRuntimeSupportManifest>[0],
+  parent: ReturnType<typeof extendAccountAssetSupportManifest>,
 ) => extendInterfaceRuntimeSupportManifest(parent, {
   registrations: [],
   changes: [{
@@ -363,7 +381,9 @@ describe("owner application composition", () => {
     const walletOperations = testWalletOperations();
     const walletRoutes = routes.extend([route("/api/v1/internal/control/wallet")]);
     const chainRoutes = walletRoutes.extend([route("/api/v1/internal/control/chain")]);
-    const interfaceRoutes = chainRoutes.extend([route("/api/v1/internal/control/interfaces")]);
+    const catalogRoutes = chainRoutes;
+    const accountAssetRoutes = catalogRoutes.extend([route("/api/v1/internal/control/account-assets")]);
+    const interfaceRoutes = accountAssetRoutes.extend([route("/api/v1/internal/control/interfaces")]);
     const application = await composeStages(ownerContext(routes, signal), [
       () => ({
         routes: walletRoutes,
@@ -386,12 +406,20 @@ describe("owner application composition", () => {
         };
       },
       createTestTokenCatalogStage(() => { events.push("catalog:close"); }),
-      (_context, wallet, chain, catalog, operations) => {
+      (_context, _wallet, _chain, catalog) => ({
+        routes: accountAssetRoutes,
+        supportManifest: extendAccountAssetSupportManifest(catalog.supportManifest),
+        list: testAccountAssets.list,
+        get: testAccountAssets.get,
+        close: async () => { events.push("account-assets:close"); },
+      }),
+      (_context, wallet, chain, catalog, accountAssets, operations) => {
         expect(wallet.walletConnection.connection).toBe(ports.wallet.connection);
         expect(chain.chainReads.chainStatus).toBe(ports.chain.chainStatus);
         expect(chain.tokenInspection).toBeDefined();
         expect(Reflect.ownKeys(catalog).sort()).toEqual([
           "supportManifest",
+          "accountTokenRegistrationRead",
           "tokenCatalogBrowserOperations",
           "tokenCatalogInteractiveCli",
           "tokenCatalogNonInteractiveOperations",
@@ -401,28 +429,31 @@ describe("owner application composition", () => {
         expect(Reflect.ownKeys(catalog.tokenCatalogQueries).sort())
           .toEqual(["getRegistration", "listRegistrations"]);
         expect(Reflect.ownKeys(catalog.tokenCatalogWebStart).sort()).toEqual([
-          "interactionInterface", "startRegistration", "startRegistrationUpdate", "startUnregistration",
+          "interactionInterface", "startRegistration", "startUnregistration",
         ].sort());
         expect(Reflect.ownKeys(catalog.tokenCatalogBrowserOperations).sort()).toEqual([
           "cancel", "confirm", "getCurrentOperation", "getOperation", "interactionInterface",
         ].sort());
         expect(Reflect.ownKeys(catalog.tokenCatalogInteractiveCli).sort()).toEqual([
-          "confirm", "interactionInterface", "startRegistration", "startRegistrationUpdate", "startUnregistration",
+          "confirm", "interactionInterface", "startRegistration", "startUnregistration",
         ].sort());
         expect(Reflect.ownKeys(catalog.tokenCatalogNonInteractiveOperations).sort())
           .toEqual(["cancelOperation", "getOperation"]);
         expect(operations).toBe(walletOperations);
         expect(operations.readOperation()).toBe("test-operation");
+        expect(Reflect.ownKeys(accountAssets.accountAssets).sort()).toEqual(["get", "list"]);
         return {
           routes: interfaceRoutes,
-          supportManifest: extendTestInterfaceSupportManifest(catalog.supportManifest),
+          supportManifest: extendTestInterfaceSupportManifest(accountAssets.supportManifest),
           close: () => { events.push("interfaces:close"); },
         };
       },
     ]);
     expect(application.routes).toBe(interfaceRoutes);
     await application.close();
-    expect(events).toEqual(["interfaces:close", "catalog:close", "chain:close", "wallet:close"]);
+    expect(events).toEqual([
+      "interfaces:close", "account-assets:close", "catalog:close", "chain:close", "wallet:close",
+    ]);
   });
 
   it("rejects catalog handoffs whose interaction authority is not fixed by the port", async () => {
@@ -451,6 +482,10 @@ describe("owner application composition", () => {
           routes: catalogRoutes,
           supportManifest: extendTokenCatalogSupportManifest(chain.supportManifest),
           tokenCatalogQueries: testTokenCatalogQueries,
+          accountTokenRegistrationRead: Object.freeze({
+            getForAccount: () => undefined,
+            listForAccount: () => Object.freeze({ entries: [], nextCursor: null }),
+          }),
           tokenCatalogWebStart: invalidPort === "webStart"
             ? { ...testTokenCatalogWebStart, interactionInterface: "cli" as never }
             : testTokenCatalogWebStart,
@@ -463,6 +498,7 @@ describe("owner application composition", () => {
           tokenCatalogNonInteractiveOperations: testTokenCatalogNonInteractiveOperations,
           close: async () => { events.push("catalog:close"); },
         }),
+        createTestAccountAssetStage(),
       ])).rejects.toThrow("authority is invalid");
       expect(events).toEqual(["catalog:close", "chain:close", "wallet:close"]);
     }
@@ -495,9 +531,10 @@ describe("owner application composition", () => {
           close: () => { events.push("chain:close"); },
         }),
         createTestTokenCatalogStage(() => { events.push("catalog:close"); }),
-        (_context, _wallet, _chain, catalog) => ({
+        createTestAccountAssetStage(() => { events.push("account-assets:close"); }),
+        (_context, _wallet, _chain, _catalog, accountAssets) => ({
           routes,
-          supportManifest: extendTestInterfaceSupportManifest(catalog.supportManifest),
+          supportManifest: extendTestInterfaceSupportManifest(accountAssets.supportManifest),
           close: () => {
             events.push("interfaces:close");
             interfaceCloseCalls += 1;
@@ -514,7 +551,9 @@ describe("owner application composition", () => {
     expect(events).toEqual(["interfaces:close"]);
     events.length = 0;
     await application.close();
-    expect(events).toEqual(["interfaces:close", "catalog:close", "chain:close", "wallet:close"]);
+    expect(events).toEqual([
+      "interfaces:close", "account-assets:close", "catalog:close", "chain:close", "wallet:close",
+    ]);
     events.length = 0;
     await application.close();
     expect(events).toEqual([]);
@@ -565,6 +604,7 @@ describe("owner application composition", () => {
         close: () => { events.push("chain:close"); },
       }),
       createTestTokenCatalogStage(),
+      createTestAccountAssetStage(),
     ])).rejects.toThrow("scope lineage");
     expect(events).toEqual(["chain:close", "wallet:close"]);
   });
@@ -601,6 +641,7 @@ describe("owner application composition", () => {
         throw stageFailure;
       },
       createTestTokenCatalogStage(),
+      createTestAccountAssetStage(),
     ]);
 
     let failure: unknown;
@@ -647,6 +688,7 @@ describe("owner application composition", () => {
         };
       },
       createTestTokenCatalogStage(),
+      createTestAccountAssetStage(),
     ])).rejects.toThrow("retained startup resources");
     expect(events).toEqual(["chain:close", "partial-chain:close", "wallet:close"]);
   });
@@ -683,6 +725,7 @@ describe("owner application composition", () => {
         return application;
       },
       createTestTokenCatalogStage(),
+      createTestAccountAssetStage(),
     ])).rejects.toThrow("already registered");
     expect(events).toEqual(["chain:close", "wallet:close"]);
   });
@@ -763,6 +806,7 @@ describe("owner application composition", () => {
           };
         },
         createTestTokenCatalogStage(),
+        createTestAccountAssetStage(),
       ]);
     } catch (error) { failure = error; }
     expect(failure).toBeInstanceOf(RuntimeOperationError);
@@ -796,6 +840,7 @@ describe("owner application composition", () => {
           };
         },
         createTestTokenCatalogStage(),
+        createTestAccountAssetStage(),
       ])).rejects.toThrow("Wallet operation port must be a reference value");
       expect(events).toEqual(["wallet:close"]);
     }
@@ -827,6 +872,7 @@ describe("owner application composition", () => {
           };
         },
         createTestTokenCatalogStage(),
+        createTestAccountAssetStage(),
       ])).rejects.toThrow("Active wallet read port must be a reference value");
       expect(events).toEqual(["wallet:close"]);
     }

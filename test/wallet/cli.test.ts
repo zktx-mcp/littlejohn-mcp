@@ -4,6 +4,12 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 
 import {
+  accountAssetApplicationContracts,
+  accountAssetControlRoutes,
+  accountAssetMetadataAuthority,
+  createAccountAssetFailure,
+} from "../../src/account-assets/index.js";
+import {
   captureCanonicalJson,
   parseCapabilityData,
   walletConnectionCapability,
@@ -58,14 +64,29 @@ const unresolved = parseCapabilityData(walletConnectionCapability, {
   status: "unresolved",
   sessionCount: "2",
 });
-const connected = parseCapabilityData(walletConnectionCapability, {
-  status: "connected",
-  address: "0x1111111111111111111111111111111111111111",
-  chainId: "eip155:4663",
-  approvedMethods: ["eth_sendTransaction"],
-  approvedEvents: ["accountsChanged", "chainChanged"],
-  expiresAt: "2026-07-14T07:30:00.000Z",
-});
+const connected = (() => {
+  const value = parseCapabilityData(walletConnectionCapability, {
+    status: "connected",
+    address: "0x1111111111111111111111111111111111111111",
+    chainId: "eip155:4663",
+    approvedMethods: ["eth_sendTransaction"],
+    approvedEvents: ["accountsChanged", "chainChanged"],
+    expiresAt: "2026-07-14T07:30:00.000Z",
+  });
+  if (value.status !== "connected") throw new TypeError("Connected fixture is invalid.");
+  return value;
+})();
+const emptyAccountAssets = accountAssetApplicationContracts.collection.parsePublicSuccess(
+  { limit: 5, cursor: null },
+  {
+    account: { chainId: connected.chainId, address: connected.address },
+    metadataAuthority: accountAssetMetadataAuthority,
+    sourceReferences: [],
+    assets: [],
+    nextCursor: null,
+    balance: { status: "unavailable", failure: createAccountAssetFailure("source_unavailable") },
+  },
+);
 const qr = Object.freeze({
   size: 21,
   rows: Object.freeze(Array.from({ length: 21 }, (_unused, row) =>
@@ -179,6 +200,9 @@ class FakeRuntime implements CliRuntimePort {
   async dispatchRuntimeRequest(input: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse> {
     const request = Object.freeze({ ...input });
     this.requests.push(request);
+    if (request.path === accountAssetControlRoutes.queries) {
+      return successResponse(200, emptyAccountAssets);
+    }
     return this.#handle(request, this.requests.length - 1);
   }
 
@@ -797,7 +821,20 @@ describe("wallet CLI", () => {
       polls += 1;
     }))).toBe(0);
 
-    expect(runtime.requests).toHaveLength(1);
+    expect(runtime.requests.map(requestWithoutSignal)).toEqual([
+      {
+        requestClass: "local_control",
+        method: "POST",
+        path: walletControlRoutes.operations,
+        body: walletStartBody("connect"),
+      },
+      {
+        requestClass: "local_control",
+        method: "POST",
+        path: accountAssetControlRoutes.queries,
+        body: { limit: 5 },
+      },
+    ]);
     expect(polls).toBe(0);
     expect(terminal.prompts).toEqual([]);
     expect(terminal.events).not.toContain("qr_show");
@@ -853,6 +890,12 @@ describe("wallet CLI", () => {
         body: walletStartBody("connect"),
       },
       { requestClass: "local_control", method: "GET", path: walletControlRoutes.operation(operationId) },
+      {
+        requestClass: "local_control",
+        method: "POST",
+        path: accountAssetControlRoutes.queries,
+        body: { limit: 5 },
+      },
     ]);
     expect(tty.output.some((value) => value.includes("\u001b[47m\u001b[30m"))).toBe(true);
     expect(tty.output.some((value) => value.includes("\u001b[?1049h\u001b[?25l"))).toBe(true);
@@ -894,7 +937,7 @@ describe("wallet CLI", () => {
       terminateProcess: () => undefined,
     })).toBe(0);
     expect(signalSent).toBe(true);
-    expect(runtime.requests.map(({ method }) => method)).toEqual(["POST", "GET"]);
+    expect(runtime.requests.map(({ method }) => method)).toEqual(["POST", "GET", "POST"]);
     expect(runtime.stopCount).toBe(1);
   });
 
@@ -1350,7 +1393,7 @@ describe("wallet CLI", () => {
       polls += 1;
       if (polls === 1) tty.setDimensions(30, 15);
     }))).toBe(0);
-    expect(runtime.requests.map(({ method }) => method)).toEqual(["POST", "GET", "GET"]);
+    expect(runtime.requests.map(({ method }) => method)).toEqual(["POST", "GET", "GET", "POST"]);
     expect(runtime.requests.some(({ method }) => method === "DELETE")).toBe(false);
     expect(tty.output.filter((value) => value.includes("Current terminal dimensions"))).toHaveLength(1);
     expect(tty.output.some((value) => value.includes("\u001b[47m\u001b[30m"))).toBe(true);
@@ -1388,6 +1431,7 @@ describe("wallet CLI", () => {
     expect(new Set(runtime.requests.map(({ path }) => path))).toEqual(new Set([
       walletControlRoutes.operations,
       walletControlRoutes.operation(operationId),
+      accountAssetControlRoutes.queries,
     ]));
     expect(tty.events.filter((event) => event === "qr_show")).toHaveLength(2);
     expect(tty.events.filter((event) => event === "qr_hide")).toHaveLength(2);
@@ -1599,7 +1643,7 @@ describe("wallet CLI", () => {
     const terminal = fakeTerminal({ hideQrFailures: 1 });
 
     expect(await runCli(["wallet", "connect"], dependencies(runtime, terminal))).toBe(0);
-    expect(runtime.requests.map(({ method }) => method)).toEqual(["POST", "GET"]);
+    expect(runtime.requests.map(({ method }) => method)).toEqual(["POST", "GET", "POST"]);
     expect(terminal.events).toContain("qr_hide_failure");
     expect(terminal.events).toContain("qr_hide");
     expect(terminal.output.join("")).toContain(": completed");
@@ -1663,7 +1707,7 @@ describe("wallet CLI", () => {
     const terminal = fakeTerminal({ showQrFailures: 1 });
 
     expect(await runCli(["wallet", "connect"], dependencies(runtime, terminal))).toBe(0);
-    expect(runtime.requests.map(({ method }) => method)).toEqual(["POST", "DELETE", "GET"]);
+    expect(runtime.requests.map(({ method }) => method)).toEqual(["POST", "DELETE", "GET", "POST"]);
     expect(terminal.output.join("")).toContain(": completed");
     expect(terminal.errors).toEqual([]);
   });

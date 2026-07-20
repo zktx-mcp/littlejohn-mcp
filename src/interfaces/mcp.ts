@@ -3,6 +3,9 @@ import { readFileSync } from "node:fs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
+  type AnyAccountAssetApplicationContract,
+} from "../account-assets/index.js";
+import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
   type CallToolResult,
@@ -47,6 +50,8 @@ import {
 } from "./http-client.js";
 import {
   capabilityCatalogInterface,
+  accountAssetInterfaceBindingList,
+  accountAssetLocalOperationIdentities,
   declaredMcpToolNames,
   interfaceReadCapabilityRegistry,
   readInterfaceIdentities,
@@ -57,6 +62,7 @@ import {
   walletInterfaceBindings,
   walletInterfaceBindingList,
   type TokenCatalogInterfaceBinding,
+  type AccountAssetInterfaceBinding,
   type WalletInterfaceBinding,
   type InterfaceToolAnnotations,
   type ReadInterfaceIdentity,
@@ -263,6 +269,7 @@ const capabilityOutputSchema = (
 };
 
 type InterfaceApplicationContract =
+  | AnyAccountAssetApplicationContract
   | AnyWalletManagementContract
   | AnyTokenCatalogApplicationContract;
 
@@ -277,7 +284,7 @@ const contractOutputSchema = (
   successOrFailureSchema(zodSchema(contract.successSchema, "output"), contract.failureCodes);
 
 const walletDisplayUrl = `${fixedOrigin}${browserPagePaths.root}`;
-const tokenCatalogDisplayUrl = `${fixedOrigin}${browserPagePaths.tokens}`;
+const tokenCatalogDisplayUrl = `${fixedOrigin}${browserPagePaths.root}`;
 
 const startOutputSchema = (
   contract: InterfaceApplicationContract,
@@ -458,9 +465,7 @@ const tokenCatalogTool = (
       invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
         const result = operationKind === "register"
           ? await client.invoke(tokenLocalOperationIdentities.mcp.registration, value, signal)
-          : operationKind === "update_registration"
-            ? await client.invoke(tokenLocalOperationIdentities.mcp.registrationUpdate, value, signal)
-            : await client.invoke(tokenLocalOperationIdentities.mcp.unregistration, value, signal);
+          : await client.invoke(tokenLocalOperationIdentities.mcp.unregistration, value, signal);
         if ("status" in result || !result.ok) return result;
         return success({ result: result.value, displayUrl: tokenCatalogDisplayUrl });
       },
@@ -486,11 +491,31 @@ const tokenCatalogTool = (
   throw new TypeError("Token catalog MCP binding action is unsupported.");
 };
 
+const accountAssetTool = (
+  client: LocalOperationClient,
+  binding: AccountAssetInterfaceBinding,
+): McpToolDefinition => Object.freeze({
+  name: parseMcpToolName(binding.mcp!.name),
+  description: binding.mcp!.description,
+  inputSchema: contractInputSchema(binding.contract),
+  outputSchema: contractOutputSchema(binding.contract),
+  failureCodes: binding.contract.failureCodes,
+  annotations: annotations(binding.mcp!.annotations),
+  parseInput: (value: unknown): unknown => validateLocalToolInput(binding.contract.parseInput, value),
+  invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
+    const result = await client.invoke(accountAssetLocalOperationIdentities.collection, value, signal);
+    return "status" in result || !result.ok ? result : success(result.value);
+  },
+});
+
 const createToolDefinitions = (
   runtime: RuntimeDispatchPort,
   client: LocalOperationClient,
 ): readonly McpToolDefinition[] => Object.freeze([
   ...readInterfaceIdentities.map((identity) => readTool(runtime, identity)),
+  ...accountAssetInterfaceBindingList
+    .filter((binding) => binding.mcp !== undefined)
+    .map((binding) => accountAssetTool(client, binding)),
   Object.freeze({
     name: parseMcpToolName(capabilityCatalogInterface.mcp.name),
     description: capabilityCatalogInterface.mcp.description,

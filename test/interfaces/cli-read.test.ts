@@ -11,9 +11,10 @@ import {
 } from "../../src/core/index.js";
 import {
   parseReadCliCommand,
-  runReadCliCommand,
+  runReadCliCommand as runReadCliCommandWithClient,
   type ReadCliOutputPort,
 } from "../../src/interfaces/cli-read.js";
+import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
 import {
   toProblemDetails,
   type RuntimeDispatchRequest,
@@ -60,6 +61,22 @@ class FakeRuntime implements CliRuntimePort {
     return this.#response;
   }
 }
+
+const runReadCliCommand = (
+  runtime: FakeRuntime,
+  command: ReturnType<typeof parseReadCliCommand>,
+  output: ReadCliOutputPort,
+  signal?: AbortSignal,
+) => runReadCliCommandWithClient(
+  runtime,
+  new LocalOperationClient({
+    ownerSessions: runtime,
+    createOperationId: () => "A".repeat(43),
+  }),
+  command,
+  output,
+  signal,
+);
 
 const outputPort = (): ReadCliOutputPort & { readonly output: string[]; readonly errors: string[] } => {
   const output: string[] = [];

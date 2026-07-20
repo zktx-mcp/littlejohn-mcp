@@ -11,6 +11,7 @@ import {
 import {
   assertCanonicalAmountBindings,
   canonicalUnsignedDecimalMaximumPattern,
+  formatAmount,
   maximumTokenDecimals,
   type ObservationClaimBinding,
 } from "../../src/core/amounts.js";
@@ -36,6 +37,24 @@ const availableAmount = (quantity: ReturnType<typeof id>, decimals: ReturnType<t
 });
 
 describe("amount observation commitments", () => {
+  it("formats canonical raw units without numeric conversion or insignificant zeroes", () => {
+    expect(formatAmount("0", "18")).toBe("0");
+    expect(formatAmount("1", "6")).toBe("0.000001");
+    expect(formatAmount("1000000", "6")).toBe("1");
+    expect(formatAmount("1234500", "6")).toBe("1.2345");
+    expect(formatAmount("9007199254740993000000", "6")).toBe("9007199254740993");
+    expect(formatAmount("1", String(maximumTokenDecimals))).toBe(
+      `0.${"0".repeat(maximumTokenDecimals - 1)}1`,
+    );
+
+    for (const [raw, decimals] of [
+      ["01", "6"],
+      ["-1", "6"],
+      ["1", "00"],
+      ["1", String(maximumTokenDecimals + 1)],
+    ] as const) expect(() => formatAmount(raw, decimals)).toThrow(TypeError);
+  });
+
   it("derives canonical unsigned-decimal bounds without widening the schema range", () => {
     for (const maximum of [0, 1, 9, 10, 99, 100, 127, maximumTokenDecimals, 1_000]) {
       const pattern = new RegExp(canonicalUnsignedDecimalMaximumPattern(maximum), "u");

@@ -1,4 +1,4 @@
-import { compareCodePointSequences } from "./primitives.js";
+import { compareCodePointSequences, isWellFormedText } from "./primitives.js";
 
 export type CanonicalJson =
   | null
@@ -15,7 +15,11 @@ const capture = (input: unknown, depth: number): CanonicalJson => {
   if (depth > maximumCanonicalDepth) {
     throw new TypeError("Canonical JSON nesting exceeds the supported depth.");
   }
-  if (input === null || typeof input === "string" || typeof input === "boolean") return input;
+  if (input === null || typeof input === "boolean") return input;
+  if (typeof input === "string") {
+    if (!isWellFormedText(input)) throw new TypeError("Canonical JSON rejects ill-formed Unicode.");
+    return input;
+  }
   if (typeof input === "number") {
     if (!Number.isFinite(input)) throw new TypeError("Canonical JSON rejects non-finite numbers.");
     return Object.is(input, -0) ? 0 : input;
@@ -62,6 +66,9 @@ const capture = (input: unknown, depth: number): CanonicalJson => {
   const descriptors = Object.getOwnPropertyDescriptors(input);
   const keys = Reflect.ownKeys(descriptors);
   if (keys.some((key) => typeof key === "symbol")) throw new TypeError("Canonical JSON rejects symbol keys.");
+  if ((keys as string[]).some((key) => !isWellFormedText(key))) {
+    throw new TypeError("Canonical JSON rejects ill-formed Unicode keys.");
+  }
   const output: Record<string, CanonicalJson> = Object.create(null) as Record<string, CanonicalJson>;
   for (const key of (keys as string[]).sort(compareCodePointSequences)) {
     const descriptor = descriptors[key];

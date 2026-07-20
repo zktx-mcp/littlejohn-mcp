@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { extendChainSupportManifest } from "../../src/chain/application.js";
+import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
+import { accountAssetApplicationContracts } from "../../src/account-assets/contracts.js";
 import {
   compareCodePointSequences,
   getCapabilityDefinitionSnapshot,
@@ -10,6 +12,7 @@ import {
   declaredCliCommandIdentities,
   declaredMcpToolNames,
   interfaceReadCapabilityRegistry,
+  accountAssetInterfaceBindingList,
   readInterfaceIdentities,
   tokenCatalogInterfaceBindingList,
   tokenInspectInterface,
@@ -34,7 +37,9 @@ const tokenCatalogManifest = () => extendTokenCatalogSupportManifest(
   )),
 );
 
-const interfaceManifest = () => extendInterfaceSupportManifest(tokenCatalogManifest());
+const interfaceManifest = () => extendInterfaceSupportManifest(
+  extendAccountAssetSupportManifest(tokenCatalogManifest()),
+);
 
 describe("interface binding identity authority", () => {
   it("builds the six-read registry from the exact binding definition objects", () => {
@@ -75,7 +80,6 @@ describe("interface binding identity authority", () => {
       "token.registration",
       "token.registrations",
       "token.start_registration",
-      "token.start_registration_update",
       "token.start_unregistration",
     ]);
     expect(tokenCatalogInterfaceBindingList.map((binding) => binding.mcp.name)).toEqual([
@@ -84,7 +88,6 @@ describe("interface binding identity authority", () => {
       "token_get_registration",
       "token_list_registrations",
       "token_start_registration",
-      "token_start_registration_update",
       "token_start_unregistration",
     ]);
     expect(tokenCatalogInterfaceBindingList.map((binding) => [binding.action, binding.operationKind ?? null]))
@@ -94,7 +97,6 @@ describe("interface binding identity authority", () => {
         ["get", null],
         ["list", null],
         ["start", "register"],
-        ["start", "update_registration"],
         ["start", "unregister"],
       ]);
     expect(tokenCatalogInterfaceBindingList.some(
@@ -105,6 +107,10 @@ describe("interface binding identity authority", () => {
   });
 
   it("derives CLI, MCP, and final support availability from the binding catalogs", () => {
+    expect(accountAssetInterfaceBindingList.map((binding) => binding.contract)).toEqual([
+      accountAssetApplicationContracts.collection,
+      accountAssetApplicationContracts.exact,
+    ]);
     for (const binding of tokenCatalogInterfaceBindingList) {
       expect(declaredMcpToolNames).toContain(binding.mcp.name);
       expect(declaredCliCommandIdentities).toContain(binding.cli);

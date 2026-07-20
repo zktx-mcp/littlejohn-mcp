@@ -45,7 +45,6 @@ const connected = parseCapabilityDataAt(walletConnectionCapability, {
 const unavailable = (): never => { throw new Error("Operation fixture is unavailable."); };
 const operations = Object.freeze({
   startRegistration: async () => unavailable(),
-  startRegistrationUpdate: async () => unavailable(),
   startUnregistration: async () => unavailable(),
   getOperation: unavailable,
   getCurrentOperation: () => null,
@@ -68,10 +67,7 @@ describe("token catalog internal application", () => {
         asset: inspection.data.asset,
         revision: "AQEBAQEBAQEBAQEBAQEBAQ",
         inspectionDigest: tokenInspectionDigest(inspection),
-        userLabel: null,
-        visibility: "visible",
         createdAt: now,
-        updatedAt: now,
       },
       inspection,
     });
@@ -149,10 +145,7 @@ describe("token catalog internal application", () => {
         asset: inspection.data.asset,
         revision: "AQEBAQEBAQEBAQEBAQEBAQ",
         inspectionDigest: tokenInspectionDigest(inspection),
-        userLabel: null,
-        visibility: "visible",
         createdAt: now,
-        updatedAt: now,
       },
       inspection,
     });
@@ -188,10 +181,10 @@ describe("token catalog internal application", () => {
       createdAt: now,
       expiresAt: "2026-07-18T00:05:03.000Z",
       account: { chainId, address: walletAddress },
+      connectionRevision,
       asset: inspection.data.asset,
       review: {
         previousRegistration: null,
-        proposedSettings: { userLabel: null, visibility: "visible" },
         inspection,
         reviewDigest: `0x${"ab".repeat(32)}`,
       },
@@ -252,10 +245,10 @@ describe("token catalog internal application", () => {
       createdAt: now,
       expiresAt: "2026-07-18T00:05:03.000Z",
       account: { chainId, address: walletAddress },
+      connectionRevision,
       asset: inspection.data.asset,
       review: {
         previousRegistration: null,
-        proposedSettings: { userLabel: null, visibility: "visible" },
         inspection,
         reviewDigest: `0x${"ab".repeat(32)}`,
       },
@@ -296,7 +289,6 @@ describe("token catalog internal application", () => {
     expect(await pendingStart).toEqual({ operation });
     expect(receivedStart).toEqual({
       asset: inspection.data.asset,
-      settings: { userLabel: null, visibility: "visible" },
     });
     expect(Object.isFrozen(receivedStart)).toBe(true);
 
@@ -318,10 +310,10 @@ describe("token catalog internal application", () => {
       createdAt: now,
       expiresAt: "2026-07-18T00:05:03.000Z",
       account: { chainId, address: walletAddress },
+      connectionRevision,
       asset: inspection.data.asset,
       review: {
         previousRegistration: null,
-        proposedSettings: { userLabel: null, visibility: "visible" },
         inspection,
         reviewDigest: `0x${"ab".repeat(32)}`,
       },

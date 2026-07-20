@@ -7,17 +7,19 @@ import {
   extendInterfaceRuntimeSupportManifest,
   type CapabilityCatalog,
   type CapabilityAvailabilityInput,
+  type AccountAssetRuntimeSupportManifest,
   type InterfaceRuntimeSupportManifest,
-  type TokenCatalogRuntimeSupportManifest,
 } from "../runtime/index.js";
 import {
   interfaceReadCapabilityRegistry,
+  accountAssetInterfaceBindingList,
   readInterfaceIdentities,
   tokenCatalogInterfaceBindingList,
   walletInterfaceBindingList,
   type ReadInterfaceIdentity,
   type TokenCatalogInterfaceBinding,
   type WalletInterfaceBinding,
+  type AccountAssetInterfaceBinding,
 } from "./identities.js";
 
 export const interfaceCapabilityCatalogSchema = createCapabilityCatalogSchema(
@@ -50,6 +52,17 @@ const tokenCatalogBindingAvailability = (
   web: "available",
 });
 
+const accountAssetBindingAvailability = (
+  binding: AccountAssetInterfaceBinding,
+): CapabilityAvailabilityInput => Object.freeze({
+  overall: binding.mcp !== undefined || binding.cli !== undefined || binding.web ? "available" : "internal",
+  direct: "internal",
+  http: "internal",
+  mcp: binding.mcp === undefined ? "unavailable" : "available",
+  cli: binding.cli === undefined ? "unavailable" : "available",
+  web: binding.web ? "available" : "unavailable",
+});
+
 const walletBindingAvailability = (
   binding: WalletInterfaceBinding,
 ): CapabilityAvailabilityInput => Object.freeze({
@@ -64,10 +77,14 @@ const walletBindingAvailability = (
 });
 
 export const extendInterfaceSupportManifest = (
-  parent: TokenCatalogRuntimeSupportManifest,
+  parent: AccountAssetRuntimeSupportManifest,
 ): InterfaceRuntimeSupportManifest => extendInterfaceRuntimeSupportManifest(parent, {
   registrations: [],
   changes: Object.freeze([
+    ...accountAssetInterfaceBindingList.map((binding) => ({
+      capabilityId: binding.contract.capabilityId,
+      availability: accountAssetBindingAvailability(binding),
+    })),
     ...readInterfaceIdentities
       .map((identity) => ({
         capabilityId: identity.capabilityId,

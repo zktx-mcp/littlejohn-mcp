@@ -27,6 +27,7 @@ import {
   operationIdByteLength,
   operationIdSchema,
   readCapabilityLimits,
+  staticScopeExclusionSchema,
   unsignedDecimalSchema,
   utcTimestampSchema,
   utf8ByteLength,
@@ -45,7 +46,6 @@ import {
   tokenCatalogInteractionInterfaces,
   tokenCatalogOperationKinds,
   tokenCatalogOperationStates,
-  tokenRegistrationVisibilities,
   type TokenCatalogOperationKind,
   type TokenCatalogOperationState,
 } from "./state.js";
@@ -61,7 +61,7 @@ export const tokenCatalogContractLimits = Object.freeze({
 
 export const tokenCatalogDigestVersions = Object.freeze({
   inspection: "1",
-  review: "1",
+  review: "2",
 } as const);
 
 export const tokenDisplayTextSchema = z.string()
@@ -75,26 +75,10 @@ export const tokenDisplayTextSchema = z.string()
   )
   .refine(isSafeSingleLineText, "Expected safe single-line text.");
 
-export const tokenUserLabelSchema = tokenDisplayTextSchema.min(1);
 export const tokenRegistrationRevisionSchema = canonicalBase64UrlSchema(
   tokenCatalogContractLimits.registrationRevisionBytes,
 );
 export const tokenCatalogOperationIdSchema = operationIdSchema;
-
-export const tokenRegistrationSettingsSchema = z.object({
-  userLabel: tokenUserLabelSchema.nullable(),
-  visibility: z.enum(tokenRegistrationVisibilities),
-}).strict();
-export type TokenRegistrationSettings = z.infer<typeof tokenRegistrationSettingsSchema>;
-
-export const tokenRegistrationChangesSchema = z.object({
-  userLabel: tokenUserLabelSchema.nullable().optional(),
-  visibility: z.enum(tokenRegistrationVisibilities).optional(),
-}).strict().refine(
-  (value) => value.userLabel !== undefined || value.visibility !== undefined,
-  "At least one token registration setting must change.",
-);
-export type TokenRegistrationChanges = z.infer<typeof tokenRegistrationChangesSchema>;
 
 const optionalTextObservationSchema = z.discriminatedUnion("status", [
   z.object({
@@ -166,6 +150,17 @@ export type TokenInspectionSuccess = CapabilitySuccess<TokenInspectionData>;
 
 export const tokenInspectCapabilityId = capabilityIdSchema.parse("token.inspect");
 
+export const tokenInspectionStaticScopeExclusions = Object.freeze([
+  { id: "account_balance", message: "This inspection does not read an account balance." },
+  { id: "official_asset_identity", message: "This inspection does not establish official asset identity." },
+  { id: "price_and_liquidity", message: "This inspection does not establish price or liquidity." },
+  { id: "protocol_identity", message: "This inspection does not establish protocol identity." },
+  { id: "proxy_and_controls", message: "This inspection does not inspect proxy or control authority." },
+  { id: "safety", message: "This inspection does not establish token safety." },
+  { id: "source_verification", message: "This inspection does not establish source verification." },
+  { id: "transaction_support", message: "This inspection does not establish transaction support." },
+].map((value) => Object.freeze(staticScopeExclusionSchema.parse(value))));
+
 const canonicalTokenInspectionSuccessSchema = createCapabilitySuccessSchema(
   tokenInspectCapabilityId,
   tokenInspectionDataSchema,
@@ -206,7 +201,6 @@ const tokenCatalogReviewDigestInputSchema = z.object({
   connectionRevision: unsignedDecimalSchema,
   asset: erc20AssetIdentitySchema,
   previousRegistration: z.lazy(() => tokenRegistrationSchema).nullable(),
-  proposedSettings: tokenRegistrationSettingsSchema.nullable(),
   inspection: tokenInspectionSuccessSchema,
   interactionInterface: z.enum(tokenCatalogInteractionInterfaces),
   expiresAt: utcTimestampSchema,
@@ -224,7 +218,6 @@ export const tokenCatalogReviewDigest = (inputValue: unknown) => {
     connectionRevision: input.connectionRevision,
     asset: input.asset as unknown as CanonicalJson,
     previousRegistration: input.previousRegistration as unknown as CanonicalJson,
-    proposedSettings: input.proposedSettings as unknown as CanonicalJson,
     inspection: input.inspection as unknown as CanonicalJson,
     interactionInterface: input.interactionInterface,
     expiresAt: input.expiresAt,
@@ -236,13 +229,10 @@ export const tokenRegistrationSchema = z.object({
   asset: erc20AssetIdentitySchema,
   revision: tokenRegistrationRevisionSchema,
   inspectionDigest: hash32Schema,
-  userLabel: tokenUserLabelSchema.nullable(),
-  visibility: z.enum(tokenRegistrationVisibilities),
   createdAt: utcTimestampSchema,
-  updatedAt: utcTimestampSchema,
 }).strict().superRefine((value, context) => {
-  if (value.account.chainId !== value.asset.chainId || value.updatedAt < value.createdAt) {
-    context.addIssue({ code: "custom", message: "Token registration identity or timestamps are invalid." });
+  if (value.account.chainId !== value.asset.chainId) {
+    context.addIssue({ code: "custom", message: "Token registration identity is invalid." });
   }
 });
 export type TokenRegistration = z.infer<typeof tokenRegistrationSchema>;
@@ -280,7 +270,6 @@ const tokenOperationFailureSchema = applicationFailureSchemaFor(
 
 const operationReviewSchema = z.object({
   previousRegistration: tokenRegistrationSchema.nullable(),
-  proposedSettings: tokenRegistrationSettingsSchema.nullable(),
   inspection: tokenInspectionSuccessSchema,
   reviewDigest: hash32Schema,
 }).strict();
@@ -297,6 +286,7 @@ const operationCommonShape = {
   createdAt: utcTimestampSchema,
   expiresAt: utcTimestampSchema,
   account: evmAccountIdentitySchema,
+  connectionRevision: unsignedDecimalSchema,
   asset: erc20AssetIdentitySchema,
   review: operationReviewSchema,
 } as const;
@@ -308,11 +298,6 @@ const sameAsset = (
   left: TokenRegistration["asset"],
   right: TokenRegistration["asset"],
 ): boolean => left.chainId === right.chainId && left.address === right.address;
-
-const sameSettings = (
-  left: TokenRegistrationSettings,
-  right: TokenRegistrationSettings,
-): boolean => left.userLabel === right.userLabel && left.visibility === right.visibility;
 
 const operationVariantSchema = <
   Kind extends TokenCatalogOperationKind,
@@ -351,7 +336,6 @@ const operationSchemasForKind = <
 
 const operationSchemas = {
   register: operationSchemasForKind("register", registrationOperationResultSchema),
-  update_registration: operationSchemasForKind("update_registration", registrationOperationResultSchema),
   unregister: operationSchemasForKind("unregister", unregistrationOperationResultSchema),
 } as const satisfies Record<TokenCatalogOperationKind, object>;
 
@@ -362,12 +346,6 @@ const tokenCatalogOperationStructuralSchema = z.union([
   operationSchemas.register.completed,
   operationSchemas.register.expired,
   operationSchemas.register.failed,
-  operationSchemas.update_registration.applying,
-  operationSchemas.update_registration.awaiting_confirmation,
-  operationSchemas.update_registration.cancelled,
-  operationSchemas.update_registration.completed,
-  operationSchemas.update_registration.expired,
-  operationSchemas.update_registration.failed,
   operationSchemas.unregister.applying,
   operationSchemas.unregister.awaiting_confirmation,
   operationSchemas.unregister.cancelled,
@@ -415,18 +393,10 @@ const validateTokenCatalogOperation = (
     addIssue("Token operation previous registration is invalid.");
   }
   if (
-    (operation.kind === "register" && (previous !== null || operation.review.proposedSettings === null)) ||
-    (operation.kind === "update_registration" && (previous === null || operation.review.proposedSettings === null)) ||
-    (operation.kind === "unregister" && (previous === null || operation.review.proposedSettings !== null))
+    (operation.kind === "register" && previous !== null) ||
+    (operation.kind === "unregister" && previous === null)
   ) {
     addIssue("Token operation review does not match its kind.");
-  }
-  if (
-    operation.kind === "update_registration" && previous !== null &&
-    operation.review.proposedSettings !== null &&
-    sameSettings(operation.review.proposedSettings, previous)
-  ) {
-    addIssue("Token registration update does not change its settings.");
   }
   if (operation.state !== "completed" || operation.result === null) return;
   if (operation.kind === "unregister") {
@@ -443,30 +413,16 @@ const validateTokenCatalogOperation = (
     return;
   }
   const registration = operation.result.registration;
-  const settings = operation.review.proposedSettings;
   const resultInspectionDigest = tokenInspectionDigest(operation.result.inspection);
   const reviewInspectionDigest = tokenInspectionDigest(operation.review.inspection);
   if (
-    settings === null ||
     !sameAccount(registration.account, operation.account) ||
     !sameAsset(registration.asset, operation.asset) ||
-    !sameSettings(registration, settings) ||
     resultInspectionDigest !== reviewInspectionDigest ||
     registration.inspectionDigest !== reviewInspectionDigest
   ) addIssue("Token registration result is invalid.");
-  if (operation.kind === "register" && (
-    registration.createdAt !== registration.updatedAt ||
-    registration.createdAt < operation.createdAt
-  )) {
+  if (operation.kind === "register" && registration.createdAt < operation.createdAt) {
     addIssue("Token registration creation result is invalid.");
-  }
-  if (operation.kind === "update_registration" && (previous === null ||
-    registration.createdAt !== previous.createdAt ||
-    registration.updatedAt < operation.createdAt ||
-    registration.revision === previous.revision ||
-    registration.inspectionDigest !== previous.inspectionDigest
-  )) {
-    addIssue("Token registration update result is invalid.");
   }
 };
 
@@ -481,8 +437,6 @@ export const tokenCatalogOperationSchema = validateOperationSchema(tokenCatalogO
 export const tokenCatalogConfirmedOperationSchema = validateOperationSchema(z.union([
   operationSchemas.register.completed,
   operationSchemas.register.failed,
-  operationSchemas.update_registration.completed,
-  operationSchemas.update_registration.failed,
   operationSchemas.unregister.completed,
   operationSchemas.unregister.failed,
 ]));
@@ -499,22 +453,7 @@ const registrationsRequestSchema = z.object({
   limit: z.number().int().min(1).max(tokenCatalogContractLimits.listMaximumLimit),
   cursor: evmAddressSchema.nullable(),
 }).strict();
-const startRegistrationInputSchema = z.object({
-  asset: erc20AssetIdentitySchema,
-  settings: tokenRegistrationSettingsSchema.optional(),
-}).strict().transform((value) => ({
-  asset: value.asset,
-  settings: value.settings ?? { userLabel: null, visibility: "visible" as const },
-}));
-const startRegistrationRequestSchema = z.object({
-  asset: erc20AssetIdentitySchema,
-  settings: tokenRegistrationSettingsSchema,
-}).strict();
-const startUpdateInputSchema = z.object({
-  asset: erc20AssetIdentitySchema,
-  expectedRevision: tokenRegistrationRevisionSchema,
-  changes: tokenRegistrationChangesSchema,
-}).strict();
+const startRegistrationInputSchema = z.object({ asset: erc20AssetIdentitySchema }).strict();
 const startUnregistrationInputSchema = z.object({
   asset: erc20AssetIdentitySchema,
   expectedRevision: tokenRegistrationRevisionSchema,
@@ -529,9 +468,6 @@ const operationResultSchema = z.object({ operation: tokenCatalogOperationSchema 
 const registrationOperationStartResultSchema = z.object({
   operation: validateOperationSchema(operationSchemas.register.awaiting_confirmation),
 }).strict();
-const registrationUpdateOperationStartResultSchema = z.object({
-  operation: validateOperationSchema(operationSchemas.update_registration.awaiting_confirmation),
-}).strict();
 const unregistrationOperationStartResultSchema = z.object({
   operation: validateOperationSchema(operationSchemas.unregister.awaiting_confirmation),
 }).strict();
@@ -540,10 +476,6 @@ const terminalOperationStructuralSchema = z.union([
   operationSchemas.register.completed,
   operationSchemas.register.expired,
   operationSchemas.register.failed,
-  operationSchemas.update_registration.cancelled,
-  operationSchemas.update_registration.completed,
-  operationSchemas.update_registration.expired,
-  operationSchemas.update_registration.failed,
   operationSchemas.unregister.cancelled,
   operationSchemas.unregister.completed,
   operationSchemas.unregister.expired,
@@ -582,7 +514,6 @@ export type TokenRegistrationListRequest = z.output<typeof registrationsInputSch
 export type TokenRegistrationListResult = z.output<typeof registrationListResultSchema>;
 export type TokenRegistrationStartInput = z.input<typeof startRegistrationInputSchema>;
 export type TokenRegistrationStartRequest = z.output<typeof startRegistrationInputSchema>;
-export type TokenRegistrationUpdateStartInput = z.output<typeof startUpdateInputSchema>;
 export type TokenUnregistrationStartInput = z.output<typeof startUnregistrationInputSchema>;
 export type TokenCatalogOperationInput = z.output<typeof operationInputSchema>;
 export type TokenCatalogOperationConfirmationInput = z.output<
@@ -598,7 +529,6 @@ const contractFailureCodes = Object.freeze({
   registration: ["internal_error", "invalid_input", "runtime_state_unavailable", "token_registration_not_found", "wallet_not_connected", "wallet_session_unusable"],
   registrations: ["internal_error", "invalid_input", "runtime_state_unavailable", "wallet_not_connected", "wallet_session_unusable"],
   startRegistration: ["internal_error", "invalid_input", "not_found", "rate_limited", "request_aborted", "runtime_busy", "runtime_state_unavailable", "source_inconsistent", "source_unavailable", "state_conflict", "token_operation_conflict", "token_registration_already_exists", "token_total_supply_reverted", "wallet_not_connected", "wallet_session_unusable"],
-  startUpdate: ["internal_error", "invalid_input", "runtime_busy", "runtime_state_unavailable", "state_conflict", "token_operation_conflict", "token_registration_not_found", "token_registration_revision_changed", "wallet_not_connected", "wallet_session_unusable"],
   startUnregistration: ["internal_error", "invalid_input", "runtime_busy", "runtime_state_unavailable", "state_conflict", "token_operation_conflict", "token_registration_not_found", "token_registration_revision_changed", "wallet_not_connected", "wallet_session_unusable"],
   operation: ["internal_error", "invalid_input", "runtime_state_unavailable", "token_operation_not_found"],
   cancelOperation: ["internal_error", "invalid_input", "runtime_state_unavailable", "state_conflict", "token_operation_not_found"],
@@ -785,49 +715,19 @@ export const tokenCatalogApplicationContracts = Object.freeze({
   startRegistration: defineApplicationContract({
     capabilityId: "token.start_registration",
     inputSchema: startRegistrationInputSchema,
-    requestSchema: startRegistrationRequestSchema,
     successSchema: registrationOperationStartResultSchema,
     failureCodes: contractFailureCodes.startRegistration,
     validatePublicSuccess: (input, success) => {
       const operation = validateStartCommon(input.asset, success);
-      if (
-        operation.review.previousRegistration !== null ||
-        operation.review.proposedSettings === null ||
-        !sameSettings(operation.review.proposedSettings, input.settings)
-      ) throw new TypeError("Token registration start result is invalid.");
+      if (operation.review.previousRegistration !== null) {
+        throw new TypeError("Token registration start result is invalid.");
+      }
     },
     validateBoundSuccess: (_input, context, success) => {
       if (
         context.operationId !== success.operation.operationId ||
         context.interactionInterface !== success.operation.interactionInterface
       ) throw new TypeError("Token registration start result does not match its internal context.");
-    },
-  }),
-  startRegistrationUpdate: defineApplicationContract({
-    capabilityId: "token.start_registration_update",
-    inputSchema: startUpdateInputSchema,
-    successSchema: registrationUpdateOperationStartResultSchema,
-    failureCodes: contractFailureCodes.startUpdate,
-    validatePublicSuccess: (input, success) => {
-      const operation = validateStartCommon(input.asset, success);
-      const previous = operation.review.previousRegistration;
-      const settings = operation.review.proposedSettings;
-      if (previous === null || settings === null || previous.revision !== input.expectedRevision) {
-        throw new TypeError("Token registration update start result is invalid.");
-      }
-      const expectedSettings = {
-        userLabel: input.changes.userLabel === undefined ? previous.userLabel : input.changes.userLabel,
-        visibility: input.changes.visibility === undefined ? previous.visibility : input.changes.visibility,
-      };
-      if (!sameSettings(settings, expectedSettings) || sameSettings(settings, previous)) {
-        throw new TypeError("Token registration update start result is invalid.");
-      }
-    },
-    validateBoundSuccess: (_input, context, success) => {
-      if (
-        context.operationId !== success.operation.operationId ||
-        context.interactionInterface !== success.operation.interactionInterface
-      ) throw new TypeError("Token registration update start result does not match its internal context.");
     },
   }),
   startUnregistration: defineApplicationContract({
@@ -838,7 +738,6 @@ export const tokenCatalogApplicationContracts = Object.freeze({
     validatePublicSuccess: (input, success) => {
       const operation = validateStartCommon(input.asset, success);
       if (
-        operation.review.proposedSettings !== null ||
         operation.review.previousRegistration?.revision !== input.expectedRevision
       ) throw new TypeError("Token removal start result is invalid.");
     },

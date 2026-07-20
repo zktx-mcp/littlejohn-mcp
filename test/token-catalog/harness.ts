@@ -4,7 +4,9 @@ import {
   chainAnchorSchema,
   parseEvmAddressInput,
   parseEvmChainId,
+  sourceReferenceSchema,
   type CanonicalJson,
+  type SourceReference,
 } from "../../src/core/index.js";
 import {
   tokenInspectCapability,
@@ -20,11 +22,31 @@ export const tokenAddress = parseEvmAddressInput(`0x${"12".repeat(20)}`);
 export const walletAddress = parseEvmAddressInput(`0x${"34".repeat(20)}`);
 export const chainId = parseEvmChainId("eip155:4663");
 
+export interface InspectionHarnessOptions {
+  readonly chainRpc?: Readonly<{ owner: string; reference: SourceReference }>;
+  readonly name?: string;
+  readonly symbol?: string;
+}
+
 export const createInspectionBinding = (
   configuredChain = chainId,
   beforeResult?: () => Promise<void>,
+  options: InspectionHarnessOptions = {},
 ) => {
-  const harness = createCapabilityHarness(() => "2026-07-18T00:00:02.000Z", configuredChain);
+  const configurationDigest = Buffer.alloc(32, 2).toString("base64url");
+  const harness = createCapabilityHarness(
+    () => "2026-07-18T00:00:02.000Z",
+    configuredChain,
+    options.chainRpc ?? Object.freeze({
+      owner: "user_configured",
+      reference: sourceReferenceSchema.parse({
+        kind: "configured_rpc",
+        sourceId: `rpc:${configurationDigest}`,
+        publicOrigin: "https://rpc.example",
+        configurationDigest,
+      }),
+    }),
+  );
   return bindForHarness(tokenInspectCapability, harness, async (input, context, observations) => {
     await beforeResult?.();
     const source = context.ports.observations.get("chain_rpc");
@@ -62,11 +84,11 @@ export const createInspectionBinding = (
     });
     const nameObservationId = observations.record("name", {
       source,
-      claims: [{ role: "token_name", value: "Example Token", asset: input.asset, chainAnchor: block }],
+      claims: [{ role: "token_name", value: options.name ?? "Example Token", asset: input.asset, chainAnchor: block }],
     });
     const symbolObservationId = observations.record("symbol", {
       source,
-      claims: [{ role: "token_symbol", value: "EXT", asset: input.asset, chainAnchor: block }],
+      claims: [{ role: "token_symbol", value: options.symbol ?? "EXT", asset: input.asset, chainAnchor: block }],
     });
     const totalSupply = {
       asset: input.asset,
@@ -80,8 +102,8 @@ export const createInspectionBinding = (
       runtimeCode,
       totalSupply,
       metadata: {
-        name: { status: "available", value: "Example Token", observationId: nameObservationId },
-        symbol: { status: "available", value: "EXT", observationId: symbolObservationId },
+        name: { status: "available", value: options.name ?? "Example Token", observationId: nameObservationId },
+        symbol: { status: "available", value: options.symbol ?? "EXT", observationId: symbolObservationId },
       },
     });
     return { status: "success", data };
@@ -93,8 +115,9 @@ export const createInspectionSuccess = async (
     asset: { kind: "erc20", chainId, address: tokenAddress },
     block: { kind: "latest" },
   },
+  options: InspectionHarnessOptions = {},
 ): Promise<TokenInspectionSuccess> => {
-  const binding = createInspectionBinding(input.asset.chainId);
+  const binding = createInspectionBinding(input.asset.chainId, undefined, options);
   const result = await new CapabilityBindingRegistry(
     new CapabilityRegistry([tokenInspectCapability]),
     [binding],

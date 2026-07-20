@@ -13,6 +13,7 @@ import {
   getCapabilityDefinitionSnapshot,
 } from "../../src/core/index.js";
 import { extendChainSupportManifest } from "../../src/chain/application.js";
+import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
 import { chainErrorRegistry, createChainFailure } from "../../src/chain/errors.js";
 import {
   createMcpToolRegistry,
@@ -75,9 +76,11 @@ const connected = Object.freeze({
   expiresAt: "2026-07-15T06:00:00.000Z",
 });
 const catalog = composeInterfaceCapabilityCatalog(extendInterfaceSupportManifest(
-  extendTokenCatalogSupportManifest(extendChainSupportManifest(extendWalletSupportManifest(
-    createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
-  ))),
+  extendAccountAssetSupportManifest(extendTokenCatalogSupportManifest(
+    extendChainSupportManifest(extendWalletSupportManifest(
+      createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
+    )),
+  )),
 ));
 const operation = (): WalletManagementOperation => parseWalletManagementOperation({
   operationId,
@@ -98,7 +101,7 @@ const tokenAsset = erc20AssetIdentitySchema.parse({
 
 const tokenOperation = async (
   state: "awaiting_confirmation" | "cancelled" = "awaiting_confirmation",
-  kind: "register" | "update_registration" | "unregister" = "register",
+  kind: "register" | "unregister" = "register",
 ) => {
   const inspection = await createInspectionSuccess({ asset: tokenAsset, block: { kind: "latest" } });
   const previousRegistration = kind === "register" ? null : {
@@ -106,10 +109,7 @@ const tokenOperation = async (
     asset: tokenAsset,
     revision: Buffer.alloc(16, 2).toString("base64url"),
     inspectionDigest: tokenInspectionDigest(inspection),
-    userLabel: null,
-    visibility: "visible" as const,
     createdAt: "2026-07-18T00:00:01.000Z",
-    updatedAt: "2026-07-18T00:00:01.000Z",
   };
   return tokenCatalogOperationSchema.parse({
     operationId: tokenOperationId,
@@ -119,12 +119,10 @@ const tokenOperation = async (
     createdAt: "2026-07-18T00:00:03.000Z",
     expiresAt: "2026-07-18T00:05:03.000Z",
     account: { chainId: tokenAsset.chainId, address: walletAddress },
+    connectionRevision: "1",
     asset: tokenAsset,
     review: {
       previousRegistration,
-      proposedSettings: kind === "unregister"
-        ? null
-        : { userLabel: null, visibility: kind === "register" ? "visible" : "hidden" },
       inspection,
       reviewDigest: `0x${"ab".repeat(32)}`,
     },
@@ -136,7 +134,6 @@ const tokenOperation = async (
 const tokenMcpContractCases = async () => {
   const inspection = await createInspectionSuccess({ asset: tokenAsset, block: { kind: "latest" } });
   const registrationOperation = await tokenOperation();
-  const updateOperation = await tokenOperation("awaiting_confirmation", "update_registration");
   const unregistrationOperation = await tokenOperation("awaiting_confirmation", "unregister");
   const cancelledOperation = await tokenOperation("cancelled");
   const registration = {
@@ -144,13 +141,10 @@ const tokenMcpContractCases = async () => {
     asset: tokenAsset,
     revision: Buffer.alloc(16, 2).toString("base64url"),
     inspectionDigest: tokenInspectionDigest(inspection),
-    userLabel: null,
-    visibility: "visible" as const,
     createdAt: "2026-07-18T00:00:01.000Z",
-    updatedAt: "2026-07-18T00:00:01.000Z",
   };
   const revision = registration.revision;
-  const displayUrl = "http://127.0.0.1:46630/tokens";
+  const displayUrl = "http://127.0.0.1:46630/";
   return Object.freeze(new Map([
     [tokenCatalogInterfaceBindings.registration.mcp.name, {
       binding: tokenCatalogInterfaceBindings.registration,
@@ -167,12 +161,6 @@ const tokenMcpContractCases = async () => {
       input: { asset: tokenAsset },
       success: { result: { operation: registrationOperation }, displayUrl },
       canonicalSuccess: { operation: registrationOperation },
-    }],
-    [tokenCatalogInterfaceBindings.startRegistrationUpdate.mcp.name, {
-      binding: tokenCatalogInterfaceBindings.startRegistrationUpdate,
-      input: { asset: tokenAsset, expectedRevision: revision, changes: { visibility: "hidden" } },
-      success: { result: { operation: updateOperation }, displayUrl },
-      canonicalSuccess: { operation: updateOperation },
     }],
     [tokenCatalogInterfaceBindings.startUnregistration.mcp.name, {
       binding: tokenCatalogInterfaceBindings.startUnregistration,
@@ -377,12 +365,12 @@ describe("MCP interface", () => {
     )).toBe(true);
   });
 
-  it("keeps all seven token MCP schemas, failures, annotations, and secret boundaries canonical", async () => {
+  it("keeps all six token MCP schemas, failures, annotations, and secret boundaries canonical", async () => {
     const { client } = await connect(new FakeRuntime());
     const listed = await client.listTools();
     const cases = await tokenMcpContractCases();
 
-    expect(cases.size).toBe(7);
+    expect(cases.size).toBe(6);
     for (const binding of tokenCatalogInterfaceBindingList) {
       const testCase = [...cases.values()].find((candidate) => candidate.binding === binding);
       const tool = listed.tools.find((candidate) => candidate.name === binding.mcp.name);
@@ -773,7 +761,7 @@ describe("MCP interface", () => {
     expect(started.isError).not.toBe(true);
     expect(started.structuredContent).toEqual({
       result: { operation: awaiting },
-      displayUrl: "http://127.0.0.1:46630/tokens",
+      displayUrl: "http://127.0.0.1:46630/",
     });
     expect(runtime.requests).toEqual([
       {
@@ -792,7 +780,6 @@ describe("MCP interface", () => {
           request: {
             kind: "register",
             asset: tokenAsset,
-            settings: { userLabel: null, visibility: "visible" },
           },
         },
       }),
@@ -842,7 +829,7 @@ describe("MCP interface", () => {
       ...awaiting,
       operationId: otherOperationId,
     });
-    const wrongKind = await tokenOperation("awaiting_confirmation", "update_registration");
+    const wrongKind = await tokenOperation("awaiting_confirmation", "unregister");
     const runtime = new FakeRuntime((request) => ({
       status: 200,
       body: captureCanonicalJson(request.path === tokenCatalogControlRoutes.operations
@@ -883,10 +870,6 @@ describe("MCP interface", () => {
         arguments: {},
       },
       {
-        name: tokenCatalogInterfaceBindings.startRegistrationUpdate.mcp.name,
-        arguments: { asset: tokenAsset, expectedRevision: revision, changes: { visibility: "hidden" } },
-      },
-      {
         name: tokenCatalogInterfaceBindings.startUnregistration.mcp.name,
         arguments: { asset: tokenAsset, expectedRevision: revision },
       },
@@ -913,20 +896,6 @@ describe("MCP interface", () => {
         method: "POST",
         path: tokenCatalogControlRoutes.registrationQueries,
         body: { limit: 25 },
-      }),
-      expect.objectContaining({
-        requestClass: "local_control",
-        method: "POST",
-        path: tokenCatalogControlRoutes.operations,
-        body: {
-          control: { operationId: tokenOperationId, interactionInterface: "web" },
-          request: {
-            kind: "update_registration",
-            asset: tokenAsset,
-            expectedRevision: revision,
-            changes: { visibility: "hidden" },
-          },
-        },
       }),
       expect.objectContaining({
         requestClass: "local_control",

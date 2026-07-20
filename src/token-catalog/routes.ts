@@ -20,7 +20,6 @@ import {
   type TokenCatalogOperationConfirmationInput,
   type TokenCatalogOperationStartResult,
   type TokenRegistrationStartRequest,
-  type TokenRegistrationUpdateStartInput,
   type TokenUnregistrationStartInput,
 } from "./contracts.js";
 import {
@@ -54,7 +53,6 @@ export {
 
 export type TokenCatalogOperationCreate =
   | Readonly<{ kind: "register"; request: TokenRegistrationStartRequest }>
-  | Readonly<{ kind: "update_registration"; request: TokenRegistrationUpdateStartInput }>
   | Readonly<{ kind: "unregister"; request: TokenUnregistrationStartInput }>;
 
 const canonicalRecord = (input: unknown): Readonly<Record<string, CanonicalJson>> => {
@@ -88,12 +86,6 @@ export const parseTokenCatalogOperationCreate = (
     return Object.freeze({
       kind,
       request: tokenCatalogApplicationContracts.startRegistration.parseInput(request),
-    });
-  }
-  if (kind === "update_registration") {
-    return Object.freeze({
-      kind,
-      request: tokenCatalogApplicationContracts.startRegistrationUpdate.parseInput(request),
     });
   }
   if (kind === "unregister") {
@@ -205,7 +197,6 @@ export const startTokenCatalogOperation = (
 ): Promise<TokenCatalogOperationStartResult | ApplicationFailure> => {
   switch (input.kind) {
     case "register": return port.startRegistration(input.request, operationIdInput);
-    case "update_registration": return port.startRegistrationUpdate(input.request, operationIdInput);
     case "unregister": return port.startUnregistration(input.request, operationIdInput);
   }
 };
@@ -213,7 +204,6 @@ export const startTokenCatalogOperation = (
 export const tokenCatalogStartContract = (kind: TokenCatalogOperationCreate["kind"]) => {
   switch (kind) {
     case "register": return tokenCatalogApplicationContracts.startRegistration;
-    case "update_registration": return tokenCatalogApplicationContracts.startRegistrationUpdate;
     case "unregister": return tokenCatalogApplicationContracts.startUnregistration;
   }
 };

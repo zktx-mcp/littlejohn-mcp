@@ -38,6 +38,7 @@ import {
 } from "../token-catalog/contracts.js";
 import { TokenCatalogOperationError } from "../token-catalog/operation-error.js";
 import type {
+  AccountTokenRegistrationReadPort,
   TokenCatalogQueryStore,
   TokenCatalogConfirmationCommand,
   TokenCatalogStore,
@@ -151,10 +152,7 @@ interface TokenRegistrationRecordRow {
   readonly tokenAddress: string;
   readonly revision: string;
   readonly inspectionDigest: string;
-  readonly userLabel: string | null;
-  readonly visibility: string;
   readonly createdAt: string;
-  readonly updatedAt: string;
 }
 interface TokenRegistrationRow extends TokenRegistrationRecordRow {
   readonly contractAddress: string;
@@ -224,10 +222,7 @@ const decodeTokenRegistrationRecordRow = (
     asset,
     revision: tokenRegistrationRevisionSchema.parse(row.revision),
     inspectionDigest: row.inspectionDigest,
-    userLabel: row.userLabel,
-    visibility: row.visibility,
     createdAt: parseUtcTimestamp(row.createdAt),
-    updatedAt: parseUtcTimestamp(row.updatedAt),
   });
 };
 
@@ -403,8 +398,7 @@ const readWalletAccountRows = (database: Database.Database): void => {
 
 const tokenRegistrationColumns = `r.profile_id AS profileId, r.chain_id AS chainId,
   r.wallet_address AS walletAddress, r.token_address AS tokenAddress, r.revision,
-  r.inspection_digest AS inspectionDigest, r.user_label AS userLabel, r.visibility,
-  r.created_at AS createdAt, r.updated_at AS updatedAt`;
+  r.inspection_digest AS inspectionDigest, r.created_at AS createdAt`;
 
 const tokenRegistrationRecordSelect = `SELECT ${tokenRegistrationColumns}
   FROM wallet_token_registration AS r`;
@@ -639,6 +633,7 @@ export class ProductDatabase {
   readonly #configuredChainStore: ConfiguredChainStore;
   readonly #walletStore: WalletProjectionStore;
   readonly #tokenCatalogReadStore: TokenCatalogQueryStore;
+  readonly #accountTokenRegistrationRead: AccountTokenRegistrationReadPort;
   readonly #tokenCatalogStore: TokenCatalogStore;
   #databaseClosed = false;
   #mainLeaseClosed = false;
@@ -664,6 +659,10 @@ export class ProductDatabase {
       getRegistration: (account, asset) => this.getTokenRegistration(account, asset),
       listRegistrations: (input) => this.listTokenRegistrations(input),
     } satisfies TokenCatalogQueryStore);
+    this.#accountTokenRegistrationRead = Object.freeze({
+      getForAccount: ({ account, asset }) => this.getTokenRegistration(account, asset),
+      listForAccount: (input) => this.listTokenRegistrationInspections(input),
+    } satisfies AccountTokenRegistrationReadPort);
     this.#tokenCatalogStore = Object.freeze({
       getRegistration: (account, asset) => this.getTokenRegistration(account, asset),
       listRegistrations: (input) => this.listTokenRegistrations(input),
@@ -696,6 +695,9 @@ export class ProductDatabase {
   configuredChainStore(): ConfiguredChainStore { return this.#configuredChainStore; }
   walletStore(): WalletProjectionStore { return this.#walletStore; }
   tokenCatalogReadStore(): TokenCatalogQueryStore { return this.#tokenCatalogReadStore; }
+  accountTokenRegistrationRead(): AccountTokenRegistrationReadPort {
+    return this.#accountTokenRegistrationRead;
+  }
   tokenCatalogStore(): TokenCatalogStore { return this.#tokenCatalogStore; }
 
   close(): void {
@@ -907,6 +909,47 @@ export class ProductDatabase {
     } catch (error) { throw tokenCatalogStorageError(error); }
   }
 
+  private listTokenRegistrationInspections(
+    input: Parameters<AccountTokenRegistrationReadPort["listForAccount"]>[0],
+  ): ReturnType<AccountTokenRegistrationReadPort["listForAccount"]> {
+    try {
+      const account = evmAccountIdentitySchema.parse(input.account);
+      if (
+        !Number.isInteger(input.limit) || input.limit < 1 ||
+        input.limit > tokenCatalogContractLimits.listMaximumLimit
+      ) throw new TokenCatalogOperationError("invalid_input");
+      const cursor = input.cursor === null
+        ? null
+        : erc20AssetIdentitySchema.parse({
+            kind: "erc20",
+            chainId: account.chainId,
+            address: input.cursor,
+          }).address;
+      return this.#readWithIdentity(() => {
+        const profile = readProfileRaw(this.#database);
+        const rows = this.#database.prepare(`${tokenRegistrationSelect}
+          WHERE r.profile_id = ? AND r.chain_id = ? AND r.wallet_address = ?
+            AND (? IS NULL OR r.token_address > ?)
+          ORDER BY r.token_address LIMIT ?`)
+          .all(
+            profile.profileId,
+            account.chainId,
+            account.address,
+            cursor,
+            cursor,
+            input.limit + 1,
+          ) as TokenRegistrationRow[];
+        const hasMore = rows.length > input.limit;
+        const entries = rows.slice(0, input.limit)
+          .map((row) => decodeTokenRegistrationRow(row, profile.profileId));
+        return Object.freeze({
+          entries: Object.freeze(entries),
+          nextCursor: hasMore ? entries.at(-1)?.registration.asset.address ?? null : null,
+        });
+      });
+    } catch (error) { throw tokenCatalogStorageError(error); }
+  }
+
   private assertTokenCatalogConnection(
     account: EvmAccountIdentity,
     expectedRevision: RuntimeRevision,
@@ -937,8 +980,6 @@ export class ProductDatabase {
         let result: NonNullable<ReturnType<TokenCatalogStore["applyConfirmation"]>["result"]>;
 
         if (input.kind === "register" && operation.kind === "register") {
-          const settings = operation.review.proposedSettings;
-          if (settings === null) throw new TokenCatalogOperationError("internal_error");
           const inspection = tokenInspectionSuccessSchema.parse(operation.review.inspection);
           const revision = tokenRegistrationRevisionSchema.parse(input.registrationRevision);
           const now = parseUtcTimestamp(input.now);
@@ -967,45 +1008,14 @@ export class ProductDatabase {
             decodeInspectionRow(inspectionRows[0]);
           }
           this.#database.prepare(`INSERT INTO wallet_token_registration(
-            profile_id, chain_id, wallet_address, token_address, revision, inspection_digest,
-            user_label, visibility, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+            profile_id, chain_id, wallet_address, token_address, revision, inspection_digest, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)`)
             .run(
               profile.profileId, account.chainId, account.address, asset.address, revision,
-              inspectionDigest, settings.userLabel, settings.visibility, now, now,
+              inspectionDigest, now,
             );
           const stored = this.getTokenRegistrationRaw(profile.profileId, account, asset);
           if (stored === undefined) throw new Error("Token registration persistence failed.");
-          result = stored;
-        } else if (input.kind === "update_registration" && operation.kind === "update_registration") {
-          const previous = operation.review.previousRegistration;
-          const settings = operation.review.proposedSettings;
-          if (previous === null || settings === null) {
-            throw new TokenCatalogOperationError("internal_error");
-          }
-          const revision = tokenRegistrationRevisionSchema.parse(input.registrationRevision);
-          const now = parseUtcTimestamp(input.now);
-          if (revision === previous.revision) throw new RuntimeOperationError("state_conflict");
-          const current = this.getTokenRegistrationRaw(profile.profileId, account, asset);
-          if (current === undefined || current.registration.revision !== previous.revision) {
-            throw new TokenCatalogOperationError("token_registration_revision_changed");
-          }
-          if (canonicalJsonStringify(current.registration as unknown as CanonicalJson) !==
-            canonicalJsonStringify(previous as unknown as CanonicalJson)) {
-            throw new Error("Token registration revision does not identify its durable state.");
-          }
-          const update = this.#database.prepare(`UPDATE wallet_token_registration SET
-            revision = ?, user_label = ?, visibility = ?, updated_at = ?
-            WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? AND token_address = ? AND revision = ?`)
-            .run(
-              revision, settings.userLabel, settings.visibility, now, profile.profileId,
-              account.chainId, account.address, asset.address, previous.revision,
-            );
-          if (update.changes !== 1) {
-            throw new TokenCatalogOperationError("token_registration_revision_changed");
-          }
-          const stored = this.getTokenRegistrationRaw(profile.profileId, account, asset);
-          if (stored === undefined) throw new Error("Token registration update failed.");
           result = stored;
         } else if (input.kind === "unregister" && operation.kind === "unregister") {
           const previous = operation.review.previousRegistration;

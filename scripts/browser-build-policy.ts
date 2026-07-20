@@ -26,6 +26,7 @@ const sharedContractSources = new Set([
   "src/interfaces/browser-error-response.ts",
   "src/interfaces/operation-delivery.ts",
   "src/core/application-contract.ts",
+  "src/core/account-balance-contract.ts",
   "src/core/canonical-json-value.ts",
   "src/core/canonical-json.ts",
   "src/core/capability-contract.ts",
@@ -51,6 +52,11 @@ const sharedContractSources = new Set([
   "src/token-catalog/error-definitions.ts",
   "src/token-catalog/http-contract.ts",
   "src/token-catalog/state.ts",
+  "src/account-assets/browser.ts",
+  "src/account-assets/contracts.ts",
+  "src/account-assets/error-registry.ts",
+  "src/account-assets/http-contract.ts",
+  "src/account-assets/view.ts",
   "src/wallet/error-definitions.ts",
   "src/wallet/management-contracts.ts",
   "src/wallet/operation-contract.ts",
@@ -64,7 +70,7 @@ const allowedWebPackageImports = new Map([
 ]);
 const allowedWebConstructorsBySource = new Map([
   [webEntrySource, new Set(["Error"])],
-  [webApplicationSource, new Set(["Error"])],
+  [webApplicationSource, new Set(["Error", "Set"])],
   [browserClientSource, new Set(["AbortController", "BrowserResponseError", "Promise", "TypeError"])],
   [browserOperationIdSource, new Set(["Uint8Array"])],
   [resolve(webSourceRoot, "request-authority.ts"), new Set(["AbortController"])],
@@ -77,7 +83,7 @@ const allowedVirtualModules = new Set([
 const codeSourceExtensions = new Set([".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"]);
 const allowedIntrinsicElements = new Set([
   "a", "article", "button", "dd", "details", "dialog", "div", "dl", "dt", "h1", "h2", "header",
-  "input", "label", "nav", "option", "p", "rect", "section", "select", "span", "strong", "summary", "svg",
+  "footer", "input", "label", "main", "nav", "option", "p", "rect", "section", "select", "span", "strong", "summary", "svg",
 ]);
 const allowedIntrinsicAttributes = new Set([
   "aria-current", "aria-expanded", "aria-label", "aria-modal", "autoComplete", "className", "disabled",
@@ -391,6 +397,9 @@ const approvedConstructorBinding = (
   }
   if (expression.text === "Promise") {
     return symbolIsDeclaredIn(checker, expression, "lib.es2015.promise.d.ts");
+  }
+  if (expression.text === "Set") {
+    return symbolIsDeclaredIn(checker, expression, "lib.es2015.collection.d.ts");
   }
   if (expression.text === "AbortController") return symbolIsDeclaredIn(checker, expression, "lib.dom.d.ts");
   if (expression.text !== "BrowserResponseError") return false;

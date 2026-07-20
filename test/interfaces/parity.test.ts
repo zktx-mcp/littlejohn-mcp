@@ -8,6 +8,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { createErc20CallEncoder, type Erc20CallEncoder } from "../../src/chain/evm-standard.js";
 import { extendChainSupportManifest } from "../../src/chain/application.js";
+import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
 import {
   accountBalanceCapability,
   canonicalJsonStringify,
@@ -59,6 +60,7 @@ import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/suppo
 import { parseReadCliCommand, runReadCliCommand } from "../../src/interfaces/cli-read.js";
 import { parseTokenCliCommand, runTokenCliCommand } from "../../src/interfaces/cli-token.js";
 import { openTestOwnerSession } from "./owner-session-harness.js";
+import { accountAssetInterfaceHarnessPort } from "../account-assets/interface-harness.js";
 import {
   createControlCredentialVerifier,
   loadOrCreateControlCredential,
@@ -575,10 +577,7 @@ const createTokenParityValues = async () => {
       asset,
       revision: Buffer.alloc(16, 9).toString("base64url"),
       inspectionDigest: tokenInspectionDigest(inspection),
-      userLabel: "Parity token",
-      visibility: "visible",
       createdAt: tokenCreatedAt,
-      updatedAt: tokenCreatedAt,
     },
     inspection,
   });
@@ -590,18 +589,18 @@ const createTokenParityValues = async () => {
       interactionInterface,
       createdAt: tokenCreatedAt,
       expiresAt: tokenExpiresAt,
+      connectionRevision: "1",
       account: registrationWithInspection.registration.account,
       asset,
       review: {
         previousRegistration: null,
-        proposedSettings: { userLabel: "Parity token", visibility: "visible" },
         inspection,
         reviewDigest: `0x${"ef".repeat(32)}`,
       },
       result: null,
       failure: null,
     });
-  const startInput = { asset, settings: { userLabel: "Parity token", visibility: "visible" as const } };
+  const startInput = { asset };
   const webAwaiting = tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess(
     startInput,
     { operation: operationFor("web", "awaiting_confirmation") },
@@ -659,13 +658,11 @@ const createTokenParityPorts = (values: TokenParityValues): Readonly<{
     webStart: Object.freeze({
       interactionInterface: "web" as const,
       startRegistration: async () => Object.freeze({ operation: values.webAwaiting }),
-      startRegistrationUpdate: unavailable,
       startUnregistration: unavailable,
     }),
     interactiveCli: Object.freeze({
       interactionInterface: "cli" as const,
       startRegistration: async () => Object.freeze({ operation: values.cliAwaiting }),
-      startRegistrationUpdate: unavailable,
       startUnregistration: unavailable,
       confirm: async () => values.cliCompleted,
     }),
@@ -698,9 +695,11 @@ const createTokenParityContext = async () => {
     encoder: erc20Encoder,
     wallet: disconnectedWallet(),
   });
-  const manifest = extendInterfaceSupportManifest(extendTokenCatalogSupportManifest(extendChainSupportManifest(
-    extendWalletSupportManifest(createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain)),
-  )));
+  const manifest = extendInterfaceSupportManifest(extendAccountAssetSupportManifest(
+    extendTokenCatalogSupportManifest(extendChainSupportManifest(
+      extendWalletSupportManifest(createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain)),
+    )),
+  ));
   let routes = extendPublicInterfaceRoutes({
     routes: createRuntimeRouteRegistry({
       controlVerifier: createControlCredentialVerifier(authority),
@@ -727,8 +726,8 @@ const createTokenParityContext = async () => {
     credentials,
     assets: browserAssets,
     walletOperations: browserOperations(operation()),
+    accountAssets: accountAssetInterfaceHarnessPort(),
     tokenInspection: ports.inspection,
-    tokenCatalogQueries: ports.queries,
     tokenCatalogWebStart: ports.webStart,
     tokenCatalogBrowserOperations: ports.browserOperations,
   });
@@ -776,6 +775,7 @@ describe("interface parity", () => {
         const json = outputPort();
         expect(await runReadCliCommand(
           runtime,
+          new LocalOperationClient({ ownerSessions: runtime, createOperationId: () => operationId }),
           parseReadCliCommand([...entry.cliArguments, "--json"]),
           json.port,
         )).toBe(0);
@@ -785,6 +785,7 @@ describe("interface parity", () => {
         const human = outputPort();
         expect(await runReadCliCommand(
           runtime,
+          new LocalOperationClient({ ownerSessions: runtime, createOperationId: () => operationId }),
           parseReadCliCommand(entry.cliArguments),
           human.port,
         )).toBe(0);
@@ -867,7 +868,7 @@ describe("interface parity", () => {
     }
   });
 
-  it("preserves token registration reads through direct, local HTTP, MCP, CLI, and browser execution", async () => {
+  it("preserves token registration reads through direct, local HTTP, MCP, and CLI execution", async () => {
     const context = await createTokenParityContext();
     const registrationInput = tokenCatalogApplicationContracts.registration.parseInput({
       asset: context.values.asset,
@@ -929,17 +930,6 @@ describe("interface parity", () => {
       expect(listError).toEqual([]);
       expect(JSON.parse(listOutput.join(""))).toEqual(nativeList);
 
-      expect(await invokeRoute(
-        context.routes,
-        "GET",
-        tokenCatalogBrowserRoutes.registration(tokenChainId, tokenAddress),
-      )).toEqual({ ok: true, response: "canonical_json", body: nativeRegistration });
-      expect(await invokeRoute(
-        context.routes,
-        "POST",
-        tokenCatalogBrowserRoutes.registrationQueries,
-        {},
-      )).toEqual({ ok: true, response: "canonical_json", body: nativeList });
     } finally {
       await mcp.close();
       await context.close();
@@ -951,7 +941,6 @@ describe("interface parity", () => {
     const startContract = tokenCatalogApplicationContracts.startRegistration;
     const startInput = startContract.parseInput({
       asset: context.values.asset,
-      settings: { userLabel: "Parity token", visibility: "visible" },
     });
     const nativeStart = startContract.parsePublicSuccess(
       startInput,
@@ -988,7 +977,7 @@ describe("interface parity", () => {
       expect(mcpStart.isError).not.toBe(true);
       expect(mcpStart.structuredContent).toEqual({
         result: nativeStart,
-        displayUrl: "http://127.0.0.1:46630/tokens",
+        displayUrl: "http://127.0.0.1:46630/",
       });
 
       expect(await invokeRoute(
@@ -1010,7 +999,7 @@ describe("interface parity", () => {
       expect(await runTokenCliCommand(
         context.runtime,
         tokenOperationClient(context.runtime),
-        parseTokenCliCommand(["token", "register", tokenAddress, "--label", "Parity token"]),
+        parseTokenCliCommand(["token", "register", tokenAddress]),
         cliTerminal,
       )).toBe(0);
       expect(cliError).toEqual([]);
@@ -1136,11 +1125,13 @@ describe("interface parity", () => {
   });
 
   it("projects one canonical capability catalog through HTTP and MCP without changing core scope or support", async () => {
-    const manifest = extendInterfaceSupportManifest(extendTokenCatalogSupportManifest(extendChainSupportManifest(
-      extendWalletSupportManifest(
-        createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
-      ),
-    )));
+    const manifest = extendInterfaceSupportManifest(extendAccountAssetSupportManifest(
+      extendTokenCatalogSupportManifest(extendChainSupportManifest(
+        extendWalletSupportManifest(
+          createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
+        ),
+      )),
+    ));
     const catalog = composeInterfaceCapabilityCatalog(manifest);
     const runtime = new CanonicalRuntime([Object.freeze({
       method: capabilityCatalogInterface.http.method,
@@ -1211,6 +1202,7 @@ describe("interface parity", () => {
       const cli = outputPort();
       const exitCode = await runReadCliCommand(
         runtime,
+        new LocalOperationClient({ ownerSessions: runtime, createOperationId: () => operationId }),
         parseReadCliCommand(["read", "chain-status", "--json"]),
         cli.port,
       );
@@ -1302,6 +1294,7 @@ describe("interface parity", () => {
       });
       const routes = extendBrowserInterfaceRoutes({
         ...tokenCatalogInterfaceHarnessPorts(),
+        accountAssets: accountAssetInterfaceHarnessPort(),
         routes: createRuntimeRouteRegistry({
           controlVerifier: createControlCredentialVerifier(authority),
           errorMappings: chainInterfaceErrorMappings,

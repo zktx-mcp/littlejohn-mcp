@@ -1,4 +1,14 @@
 import {
+  accountAssetApplicationContracts,
+  accountAssetApplicationResult,
+  accountAssetBrowserRoutes,
+  accountAssetCollectionRequestBody,
+  accountAssetInterfaceErrorMappings,
+  createAccountAssetFailure,
+  parseAccountAssetExactPath,
+  type AccountAssetApplicationPort,
+} from "../account-assets/index.js";
+import {
   CapabilityBindingRegistry,
   CapabilityRegistry,
   captureCanonicalJson,
@@ -16,7 +26,6 @@ import {
   parseTokenCatalogControlOperationCreate,
   parseTokenCatalogOperationCreate,
   parseTokenCatalogOperationPathId,
-  parseTokenCatalogRegistrationPathInput,
   startTokenCatalogOperation,
   tokenCatalogApplicationResult,
   tokenCatalogApplicationContracts,
@@ -26,12 +35,9 @@ import {
   tokenCatalogStartContract,
   normalizeTokenCatalogError,
   TokenCatalogOperationError,
-  tokenRegistrationListRequestBody,
-  tokenCatalogInterfaceErrorMappings,
   tokenInspectCapability,
   type TokenCatalogBrowserOperationPort,
   type TokenCatalogInspectionPort,
-  type TokenCatalogQueryApplicationPort,
   type TokenCatalogWebStartPort,
 } from "../token-catalog/index.js";
 import {
@@ -107,15 +113,21 @@ const browserPageResources: readonly ResourcePathDefinition[] = Object.freeze([
     pathPattern: browserPagePaths.root,
     requestClass: "browser_bootstrap",
   }),
-  Object.freeze({
-    kind: "route",
-    method: "GET",
-    pathPattern: browserPagePaths.tokens,
-    requestClass: "browser_bootstrap",
-  }),
 ]);
 
 const browserApiResources: readonly ResourcePathDefinition[] = Object.freeze([
+  Object.freeze({
+    kind: "route",
+    method: "POST",
+    pathPattern: accountAssetBrowserRoutes.queries,
+    requestClass: "browser_query",
+  }),
+  Object.freeze({
+    kind: "route",
+    method: "GET",
+    pathPattern: accountAssetBrowserRoutes.exactPattern,
+    requestClass: "browser_read",
+  }),
   Object.freeze({
     kind: "route",
     method: "POST",
@@ -151,18 +163,6 @@ const browserApiResources: readonly ResourcePathDefinition[] = Object.freeze([
     method: "POST",
     pathPattern: tokenCatalogBrowserRoutes.inspections,
     requestClass: "browser_query",
-  }),
-  Object.freeze({
-    kind: "route",
-    method: "POST",
-    pathPattern: tokenCatalogBrowserRoutes.registrationQueries,
-    requestClass: "browser_query",
-  }),
-  Object.freeze({
-    kind: "route",
-    method: "GET",
-    pathPattern: tokenCatalogBrowserRoutes.registrationPattern,
-    requestClass: "browser_read",
   }),
   Object.freeze({
     kind: "route",
@@ -216,8 +216,8 @@ export const extendBrowserInterfaceRoutes = (input: {
   readonly credentials: BrowserRequestCredentialAuthority;
   readonly assets: BrowserAssetBundle;
   readonly walletOperations: WalletInterfaceOperations;
+  readonly accountAssets: AccountAssetApplicationPort;
   readonly tokenInspection: TokenCatalogInspectionPort;
-  readonly tokenCatalogQueries: TokenCatalogQueryApplicationPort;
   readonly tokenCatalogWebStart: TokenCatalogWebStartPort;
   readonly tokenCatalogBrowserOperations: TokenCatalogBrowserOperationPort;
 }): RuntimeRouteRegistry => {
@@ -264,12 +264,40 @@ export const extendBrowserInterfaceRoutes = (input: {
       handler: bootstrap,
     },
     {
+      method: "POST",
+      mutation: "none",
+      pathPattern: accountAssetBrowserRoutes.queries,
+      response: "canonical_json",
+      successStatus: 200,
+      handler: async (context) => {
+        const contract = accountAssetApplicationContracts.collection;
+        let request;
+        try { request = contract.parseInput(context.body); }
+        catch { return failure(createAccountAssetFailure("invalid_input")); }
+        return accountAssetApplicationResult(
+          contract,
+          request,
+          await input.accountAssets.list(accountAssetCollectionRequestBody(request), context.signal),
+        );
+      },
+    },
+    {
       method: "GET",
       mutation: "none",
-      pathPattern: browserPagePaths.tokens,
-      response: "browser_content",
+      pathPattern: accountAssetBrowserRoutes.exactPattern,
+      response: "canonical_json",
       successStatus: 200,
-      handler: bootstrap,
+      handler: async (context) => {
+        const contract = accountAssetApplicationContracts.exact;
+        let request;
+        try { request = parseAccountAssetExactPath(context); }
+        catch { return failure(createAccountAssetFailure("invalid_input")); }
+        return accountAssetApplicationResult(
+          contract,
+          request,
+          await input.accountAssets.get(request, context.signal),
+        );
+      },
     },
     {
       method: "POST",
@@ -411,52 +439,6 @@ export const extendBrowserInterfaceRoutes = (input: {
     },
     {
       method: "POST",
-      mutation: "none",
-      pathPattern: tokenCatalogBrowserRoutes.registrationQueries,
-      response: "canonical_json",
-      successStatus: 200,
-      handler: async (context) => {
-        const contract = tokenCatalogApplicationContracts.registrations;
-        let request;
-        try { request = contract.parseInput(context.body); }
-        catch { return tokenInvalidInput(); }
-        try {
-          return tokenCatalogApplicationResult(
-            contract,
-            request,
-            await input.tokenCatalogQueries.listRegistrations(
-              tokenRegistrationListRequestBody(request),
-            ),
-          );
-        } catch (error) { return normalizeTokenFailure(error); }
-      },
-    },
-    {
-      method: "GET",
-      mutation: "none",
-      pathPattern: tokenCatalogBrowserRoutes.registrationPattern,
-      response: "canonical_json",
-      successStatus: 200,
-      handler: async (context) => {
-        const contract = tokenCatalogApplicationContracts.registration;
-        let request;
-        try {
-          request = parseTokenCatalogRegistrationPathInput(
-            context.params["chainId"],
-            context.params["tokenAddress"],
-          );
-        } catch { return tokenInvalidInput(); }
-        try {
-          return tokenCatalogApplicationResult(
-            contract,
-            request,
-            await input.tokenCatalogQueries.getRegistration(request),
-          );
-        } catch (error) { return normalizeTokenFailure(error); }
-      },
-    },
-    {
-      method: "POST",
       mutation: "declared_control",
       pathPattern: tokenCatalogBrowserRoutes.operations,
       response: "canonical_json",
@@ -577,5 +559,5 @@ export const extendBrowserInterfaceRoutes = (input: {
           : { ok: true, body: asset.body, contentType: asset.contentType };
       },
     },
-  ], tokenCatalogInterfaceErrorMappings);
+  ], accountAssetInterfaceErrorMappings);
 };

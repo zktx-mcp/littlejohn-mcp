@@ -53,8 +53,8 @@ export const createInterfaceOwnerApplicationFactory = (
       credentials,
       assets,
       walletOperations: context.walletOperations,
+      accountAssets: context.accountAssets,
       tokenInspection: context.tokenInspection,
-      tokenCatalogQueries: context.tokenCatalogQueries,
       tokenCatalogWebStart: context.tokenCatalogWebStart,
       tokenCatalogBrowserOperations: context.tokenCatalogBrowserOperations,
     });

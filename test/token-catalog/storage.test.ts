@@ -28,10 +28,10 @@ import {
   tokenCatalogOperationSchema,
   tokenCatalogReviewDigest,
   tokenInspectionDigest,
+  tokenInspectionSuccessSchema,
   tokenRegistrationRevisionSchema,
   type TokenInspectionSuccess,
   type TokenRegistration,
-  type TokenRegistrationSettings,
   type TokenRegistrationWithInspection,
 } from "../../src/token-catalog/contracts.js";
 import type { TokenCatalogStore } from "../../src/token-catalog/ports.js";
@@ -87,14 +87,6 @@ const applyingOperation = (input:
       account: EvmAccountIdentity;
       connectionRevision: UnsignedDecimal;
       inspection: TokenInspectionSuccess;
-      settings: TokenRegistrationSettings;
-    }>
-  | Readonly<{
-      kind: "update_registration";
-      account: EvmAccountIdentity;
-      connectionRevision: UnsignedDecimal;
-      previous: TokenRegistrationWithInspection;
-      settings: TokenRegistrationSettings;
     }>
   | Readonly<{
       kind: "unregister";
@@ -107,7 +99,6 @@ const applyingOperation = (input:
   const inspection = input.kind === "register" ? input.inspection : input.previous.inspection;
   const asset = inspection.data.asset;
   const previousRegistration = input.kind === "register" ? null : input.previous.registration;
-  const proposedSettings = input.kind === "unregister" ? null : input.settings;
   const createdAt = parseUtcTimestamp("2026-07-18T00:00:02.000Z");
   const expiresAt = parseUtcTimestamp("2026-07-18T00:05:02.000Z");
   const reviewDigest = tokenCatalogReviewDigest({
@@ -117,7 +108,6 @@ const applyingOperation = (input:
     connectionRevision: input.connectionRevision,
     asset,
     previousRegistration,
-    proposedSettings,
     inspection,
     interactionInterface: "cli",
     expiresAt,
@@ -130,8 +120,9 @@ const applyingOperation = (input:
     createdAt,
     expiresAt,
     account: input.account,
+    connectionRevision: input.connectionRevision,
     asset,
-    review: { previousRegistration, proposedSettings, inspection, reviewDigest },
+    review: { previousRegistration, inspection, reviewDigest },
     result: null,
     failure: null,
   });
@@ -141,7 +132,6 @@ const register = (store: TokenCatalogStore, input: Readonly<{
   account: EvmAccountIdentity;
   expectedConnectionRevision: UnsignedDecimal;
   inspection: TokenInspectionSuccess;
-  settings: TokenRegistrationSettings;
   revision: TokenRegistration["revision"];
   now: UtcTimestamp;
 }>): TokenRegistrationWithInspection => {
@@ -150,7 +140,6 @@ const register = (store: TokenCatalogStore, input: Readonly<{
     account: input.account,
     connectionRevision: input.expectedConnectionRevision,
     inspection: input.inspection,
-    settings: input.settings,
   });
   if (operation.kind !== "register" || operation.state !== "applying") throw new Error("Invalid fixture.");
   const completed = store.applyConfirmation({
@@ -162,37 +151,6 @@ const register = (store: TokenCatalogStore, input: Readonly<{
   });
   if (completed.state !== "completed" || !("registration" in completed.result)) {
     throw new Error("Registration confirmation did not complete.");
-  }
-  return completed.result;
-};
-
-const updateRegistration = (store: TokenCatalogStore, input: Readonly<{
-  account: EvmAccountIdentity;
-  expectedConnectionRevision: UnsignedDecimal;
-  previous: TokenRegistrationWithInspection;
-  settings: TokenRegistrationSettings;
-  revision: TokenRegistration["revision"];
-  now: UtcTimestamp;
-}>): TokenRegistrationWithInspection => {
-  const operation = applyingOperation({
-    kind: "update_registration",
-    account: input.account,
-    connectionRevision: input.expectedConnectionRevision,
-    previous: input.previous,
-    settings: input.settings,
-  });
-  if (operation.kind !== "update_registration" || operation.state !== "applying") {
-    throw new Error("Invalid fixture.");
-  }
-  const completed = store.applyConfirmation({
-    kind: "update_registration",
-    operation,
-    expectedConnectionRevision: input.expectedConnectionRevision,
-    registrationRevision: input.revision,
-    now: input.now,
-  });
-  if (completed.state !== "completed" || !("registration" in completed.result)) {
-    throw new Error("Registration update confirmation did not complete.");
   }
   return completed.result;
 };
@@ -221,7 +179,7 @@ const unregister = (store: TokenCatalogStore, input: Readonly<{
 };
 
 describe("token catalog persistence", () => {
-  it("creates, updates, lists, and removes one registration atomically", async () => {
+  it("creates, lists, removes, and recreates one registration atomically", async () => {
     const { path, database } = await openDatabase();
     const configuredChain = parseEvmChainId(chainId);
     database.configuredChainStore().insertConfiguredChainIfAbsent(configuredChain);
@@ -234,7 +192,6 @@ describe("token catalog persistence", () => {
       account,
       expectedConnectionRevision: connection.revision,
       inspection,
-      settings: { userLabel: "Savings", visibility: "visible" },
       revision: revision(1),
       now,
     });
@@ -254,72 +211,35 @@ describe("token catalog persistence", () => {
       account,
       expectedConnectionRevision: connection.revision,
       inspection,
-      settings: { userLabel: null, visibility: "visible" },
       revision: revision(2),
       now,
     }), "state_conflict");
 
-    const updated = updateRegistration(store, {
-      account,
-      expectedConnectionRevision: connection.revision,
-      previous: created,
-      settings: { userLabel: null, visibility: "hidden" },
-      revision: revision(2),
-      now: later,
-    });
-    expect(updated.registration).toMatchObject({
-      revision: revision(2),
-      userLabel: null,
-      visibility: "hidden",
-      createdAt: now,
-      updatedAt: later,
-    });
-    expectCatalogCode(() => updateRegistration(store, {
-      account,
-      expectedConnectionRevision: connection.revision,
-      previous: created,
-      settings: { userLabel: "stale", visibility: "visible" },
-      revision: revision(3),
-      now: later,
-    }), "token_registration_revision_changed");
-
     expect(unregister(store, {
       account,
       expectedConnectionRevision: connection.revision,
-      previous: updated,
-    })).toEqual({ asset: inspection.data.asset, removedRevision: revision(2) });
+      previous: created,
+    })).toEqual({ asset: inspection.data.asset, removedRevision: revision(1) });
     expect(store.getRegistration(account, inspection.data.asset)).toBeUndefined();
-    expectCatalogCode(() => updateRegistration(store, {
-      account,
-      expectedConnectionRevision: connection.revision,
-      previous: updated,
-      settings: { userLabel: "Removed", visibility: "hidden" },
-      revision: revision(3),
-      now: later,
-    }), "token_registration_revision_changed");
 
     const recreated = register(store, {
       account,
       expectedConnectionRevision: connection.revision,
       inspection,
-      settings: { userLabel: "Recreated", visibility: "visible" },
-      revision: revision(3),
+      revision: revision(2),
       now: later,
     });
-    expect(recreated.registration.revision).toBe(revision(3));
-    expectCatalogCode(() => updateRegistration(store, {
+    expect(recreated.registration).toMatchObject({ revision: revision(2), createdAt: later });
+    expectCatalogCode(() => unregister(store, {
       account,
       expectedConnectionRevision: connection.revision,
-      previous: updated,
-      settings: { userLabel: "Stale lifetime", visibility: "hidden" },
-      revision: revision(4),
-      now: later,
+      previous: created,
     }), "token_registration_revision_changed");
     expect(unregister(store, {
       account,
       expectedConnectionRevision: connection.revision,
       previous: recreated,
-    })).toEqual({ asset: inspection.data.asset, removedRevision: revision(3) });
+    })).toEqual({ asset: inspection.data.asset, removedRevision: revision(2) });
     expectCatalogCode(() => unregister(store, {
       account,
       expectedConnectionRevision: connection.revision,
@@ -352,7 +272,6 @@ describe("token catalog persistence", () => {
           asset: { kind: "erc20", chainId, address },
           block: { kind: "latest" },
         }),
-        settings: { userLabel: null, visibility: "visible" },
         revision: revision(index + 1),
         now,
       });
@@ -378,7 +297,6 @@ describe("token catalog persistence", () => {
       account,
       expectedConnectionRevision: connection.revision,
       inspection,
-      settings: { userLabel: "Escaped \\\\ label", visibility: "visible" },
       revision: revision(1),
       now,
     });
@@ -413,7 +331,6 @@ describe("token catalog persistence", () => {
       account: firstAccount,
       expectedConnectionRevision: firstConnection.revision,
       inspection: firstInspection,
-      settings: { userLabel: null, visibility: "visible" },
       revision: revision(1),
       now,
     });
@@ -430,7 +347,6 @@ describe("token catalog persistence", () => {
       account: firstAccount,
       expectedConnectionRevision: firstConnection.revision,
       inspection: firstInspection,
-      settings: { userLabel: null, visibility: "visible" },
       revision: revision(2),
       now: later,
     }), "state_conflict");
@@ -448,7 +364,6 @@ describe("token catalog persistence", () => {
       account: accountFor(alternateChain, walletAddress),
       expectedConnectionRevision: alternateConnection.revision,
       inspection: alternateInspection,
-      settings: { userLabel: "Other chain", visibility: "visible" },
       revision: revision(3),
       now: later,
     });
@@ -486,7 +401,6 @@ describe("token catalog persistence", () => {
       account,
       expectedConnectionRevision: connectedRecord.revision,
       inspection,
-      settings: { userLabel: "Persistent", visibility: "visible" },
       revision: revision(1),
       now,
     });
@@ -551,7 +465,6 @@ describe("token catalog persistence", () => {
       account: accountFor(chainId, walletAddress),
       expectedConnectionRevision: connection.revision,
       inspection,
-      settings: { userLabel: null, visibility: "visible" },
       revision: revision(1),
       now,
     }), "runtime_state_unavailable");
@@ -572,7 +485,6 @@ describe("token catalog persistence", () => {
       account: accountFor(chainId, walletAddress),
       expectedConnectionRevision: connection.revision,
       inspection,
-      settings: { userLabel: null, visibility: "visible" },
       revision: revision(1),
       now: parseUtcTimestamp("2026-07-18T00:00:01.000Z"),
     }), "runtime_state_unavailable");
@@ -615,7 +527,6 @@ describe("token catalog persistence", () => {
       account,
       expectedConnectionRevision: connection.revision,
       inspection,
-      settings: { userLabel: null, visibility: "visible" },
       revision: revision(1),
       now,
     }), "runtime_state_unavailable");
@@ -646,7 +557,6 @@ describe("token catalog persistence", () => {
       account: firstAccount,
       expectedConnectionRevision: firstConnection.revision,
       inspection,
-      settings: { userLabel: "First", visibility: "visible" },
       revision: revision(1),
       now,
     });
@@ -660,7 +570,6 @@ describe("token catalog persistence", () => {
       account: secondAccount,
       expectedConnectionRevision: secondConnection.revision,
       inspection,
-      settings: { userLabel: "Second", visibility: "hidden" },
       revision: revision(2),
       now: later,
     });
@@ -670,7 +579,7 @@ describe("token catalog persistence", () => {
       previous: second,
     });
 
-    expect(store.getRegistration(firstAccount, inspection.data.asset)?.registration.userLabel).toBe("First");
+    expect(store.getRegistration(firstAccount, inspection.data.asset)).toEqual(first);
     expect(store.getRegistration(secondAccount, inspection.data.asset)).toBeUndefined();
     const raw = new Database(path, { readonly: true });
     expect(raw.prepare("SELECT COUNT(*) AS count FROM wallet_token_registration").get()).toEqual({ count: 1 });
@@ -691,7 +600,6 @@ describe("token catalog persistence", () => {
       account: accountFor(chainId, walletAddress),
       expectedConnectionRevision: connection.revision,
       inspection,
-      settings: { userLabel: null, visibility: "visible" },
       revision: revision(1),
       now,
     });
@@ -726,27 +634,53 @@ describe("token catalog persistence", () => {
       .run(profileId, chainId, secondWallet);
     const insertRegistration = raw.prepare(`INSERT INTO wallet_token_registration(
       profile_id, chain_id, wallet_address, token_address, revision, inspection_digest,
-      user_label, visibility, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`);
     for (const invalidRevision of ["A".repeat(21), "A".repeat(21) + "B", `A${"A".repeat(21)}\0`]) {
       expect(() => insertRegistration.run(
         profileId, chainId, secondWallet, tokenAddress, invalidRevision,
-        created.registration.inspectionDigest, null, "visible", now, now,
+        created.registration.inspectionDigest, now,
       )).toThrow();
     }
-    for (const invalidLabel of ["", "x".repeat(129), "x\0y"]) {
+    for (const invalidCreatedAt of ["x\0y"]) {
       expect(() => insertRegistration.run(
         profileId, chainId, secondWallet, tokenAddress, revision(2),
-        created.registration.inspectionDigest, invalidLabel, "visible", now, now,
+        created.registration.inspectionDigest, invalidCreatedAt,
       )).toThrow();
     }
-    expect(() => insertRegistration.run(
-      profileId, chainId, secondWallet, tokenAddress, revision(2),
-      created.registration.inspectionDigest, null, "archived", now, now,
-    )).toThrow();
     expect(raw.prepare(`SELECT COUNT(*) AS count FROM wallet_token_registration
       WHERE wallet_address = ?`).get(secondWallet)).toEqual({ count: 0 });
     raw.close();
+  });
+
+  it("rejects ill-formed Unicode when durable inspection bytes are decoded", async () => {
+    const { path, database } = await openDatabase();
+    database.configuredChainStore().insertConfiguredChainIfAbsent(chainId);
+    const connection = database.walletStore().replace("0", connected(chainId, walletAddress), now);
+    const inspection = await createInspectionSuccess();
+    register(database.tokenCatalogStore(), {
+      account: accountFor(chainId, walletAddress),
+      expectedConnectionRevision: connection.revision,
+      inspection,
+      revision: revision(1),
+      now,
+    });
+    database.close();
+
+    const invalid = JSON.parse(JSON.stringify(inspection)) as TokenInspectionSuccess;
+    if (invalid.data.metadata.name.status !== "available") throw new TypeError("Expected token name evidence.");
+    (invalid.data.metadata.name as { value: string }).value = String.fromCharCode(0xd800);
+    expect(tokenInspectionSuccessSchema.safeParse(invalid).success).toBe(false);
+    expect(() => canonicalJsonStringify(invalid as unknown as CanonicalJson)).toThrow("ill-formed Unicode");
+
+    const resultJson = JSON.stringify(invalid);
+    const raw = new Database(path);
+    raw.prepare("UPDATE token_contract_inspection SET result_json = ?").run(resultJson);
+    expect(raw.prepare("SELECT result_json AS resultJson FROM token_contract_inspection").get())
+      .toEqual({ resultJson });
+    raw.close();
+    await expect(ProductDatabase.open(path, now)).rejects.toSatisfy((error: unknown) =>
+      getRuntimeOperationFailure(error)?.error.code === "runtime_state_unavailable");
   });
 
   it("rejects canonical-looking rows whose decoded meaning is corrupt", async () => {
@@ -759,7 +693,7 @@ describe("token catalog persistence", () => {
           .run(JSON.stringify(JSON.parse(row.resultJson), null, 2));
       },
       (raw: Database.Database) => {
-        raw.prepare("UPDATE wallet_token_registration SET user_label = ?").run("line\nbreak");
+        raw.prepare("UPDATE wallet_token_registration SET created_at = ?").run("");
       },
       (raw: Database.Database) => {
         const falseDigest = `0x${"11".repeat(32)}`;
@@ -776,7 +710,6 @@ describe("token catalog persistence", () => {
         account: accountFor(chainId, walletAddress),
         expectedConnectionRevision: connection.revision,
         inspection: await createInspectionSuccess(),
-        settings: { userLabel: null, visibility: "visible" },
         revision: revision(1),
         now,
       });

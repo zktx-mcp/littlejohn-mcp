@@ -20,9 +20,7 @@ import {
   tokenCatalogReviewDigest,
   parseTokenOperationFailure,
   tokenInspectCapability,
-  tokenRegistrationChangesSchema,
   tokenRegistrationRevisionSchema,
-  tokenRegistrationSettingsSchema,
   type TokenCatalogConfirmedOperation,
   type TokenCatalogOperationConfirmationInput,
   type TokenCatalogOperation,
@@ -30,9 +28,7 @@ import {
   type TokenCatalogTerminalOperation,
   type TokenInspectionSuccess,
   type TokenRegistration,
-  type TokenRegistrationSettings,
   type TokenRegistrationStartRequest,
-  type TokenRegistrationUpdateStartInput,
   type TokenUnregistrationStartInput,
 } from "./contracts.js";
 import { normalizeTokenCatalogError, TokenCatalogOperationError } from "./operation-error.js";
@@ -83,12 +79,6 @@ type TokenStartCommand =
       operationId: TokenCatalogOperation["operationId"];
     }>
   | Readonly<{
-      kind: "update_registration";
-      input: TokenRegistrationUpdateStartInput;
-      interactionInterface: TokenCatalogInteractionInterface;
-      operationId: TokenCatalogOperation["operationId"];
-    }>
-  | Readonly<{
       kind: "unregister";
       input: TokenUnregistrationStartInput;
       interactionInterface: TokenCatalogInteractionInterface;
@@ -99,7 +89,6 @@ type PreparedTokenStart = Readonly<{
   kind: TokenCatalogOperationKind;
   asset: TokenRegistration["asset"];
   previousRegistration: TokenRegistration | null;
-  proposedSettings: TokenRegistrationSettings | null;
   inspection: TokenInspectionSuccess;
 }>;
 
@@ -142,15 +131,6 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
   ): Promise<TokenCatalogOperationStartResult<"register"> | ApplicationFailure> {
     return this.#runAdmitted(() => this.#start({ kind: "register", input, ...control })) as Promise<
       TokenCatalogOperationStartResult<"register"> | ApplicationFailure
-    >;
-  }
-
-  startRegistrationUpdate(
-    input: TokenRegistrationUpdateStartInput,
-    control: import("./ports.js").TokenCatalogOperationControl,
-  ): Promise<TokenCatalogOperationStartResult<"update_registration"> | ApplicationFailure> {
-    return this.#runAdmitted(() => this.#start({ kind: "update_registration", input, ...control })) as Promise<
-      TokenCatalogOperationStartResult<"update_registration"> | ApplicationFailure
     >;
   }
 
@@ -228,14 +208,6 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
       const applying = entry.operation;
       if (applying.state !== "applying") throw new TokenCatalogOperationError("internal_error");
       if (applying.kind === "register") {
-        entry.operation = this.#dependencies.store.applyConfirmation({
-          kind: applying.kind,
-          operation: applying,
-          expectedConnectionRevision: entry.connectionRevision,
-          registrationRevision: createRegistrationRevision(),
-          now: this.#now(),
-        });
-      } else if (applying.kind === "update_registration") {
         entry.operation = this.#dependencies.store.applyConfirmation({
           kind: applying.kind,
           operation: applying,
@@ -362,30 +334,7 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
           kind: command.kind,
           asset: command.input.asset,
           previousRegistration: null,
-          proposedSettings: tokenRegistrationSettingsSchema.parse(command.input.settings),
           inspection,
-        });
-      } else if (command.kind === "update_registration") {
-        const current = this.#dependencies.store.getRegistration(wallet.account, command.input.asset);
-        if (current === undefined) throw new TokenCatalogOperationError("token_registration_not_found");
-        if (current.registration.revision !== command.input.expectedRevision) {
-          throw new TokenCatalogOperationError("token_registration_revision_changed");
-        }
-        const changes = tokenRegistrationChangesSchema.parse(command.input.changes);
-        const proposedSettings = tokenRegistrationSettingsSchema.parse({
-          userLabel: changes.userLabel === undefined ? current.registration.userLabel : changes.userLabel,
-          visibility: changes.visibility === undefined ? current.registration.visibility : changes.visibility,
-        });
-        if (
-          proposedSettings.userLabel === current.registration.userLabel &&
-          proposedSettings.visibility === current.registration.visibility
-        ) throw new TokenCatalogOperationError("invalid_input");
-        prepared = Object.freeze({
-          kind: command.kind,
-          asset: command.input.asset,
-          previousRegistration: current.registration,
-          proposedSettings,
-          inspection: current.inspection,
         });
       } else {
         const current = this.#dependencies.store.getRegistration(wallet.account, command.input.asset);
@@ -397,7 +346,6 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
           kind: command.kind,
           asset: command.input.asset,
           previousRegistration: current.registration,
-          proposedSettings: null,
           inspection: current.inspection,
         });
       }
@@ -481,7 +429,6 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
     wallet: CapturedWallet;
     asset: TokenRegistration["asset"];
     previousRegistration: TokenRegistration | null;
-    proposedSettings: TokenRegistrationSettings | null;
     inspection: TokenInspectionSuccess;
   }>): TokenCatalogOperationStartResult<Kind> {
     const createdAt = this.#now();
@@ -493,7 +440,6 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
       connectionRevision: input.wallet.connectionRevision,
       asset: input.asset,
       previousRegistration: input.previousRegistration,
-      proposedSettings: input.proposedSettings,
       inspection: input.inspection,
       interactionInterface: input.interactionInterface,
       expiresAt,
@@ -506,10 +452,10 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
       createdAt,
       expiresAt,
       account: input.wallet.account,
+      connectionRevision: input.wallet.connectionRevision,
       asset: input.asset,
       review: {
         previousRegistration: input.previousRegistration,
-        proposedSettings: input.proposedSettings,
         inspection: input.inspection,
         reviewDigest,
       },
@@ -554,7 +500,6 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
       connectionRevision: entry.connectionRevision,
       asset: entry.operation.asset,
       previousRegistration: entry.operation.review.previousRegistration,
-      proposedSettings: entry.operation.review.proposedSettings,
       inspection: entry.operation.review.inspection,
       interactionInterface: entry.operation.interactionInterface,
       expiresAt: entry.operation.expiresAt,

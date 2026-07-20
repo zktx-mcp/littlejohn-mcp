@@ -420,3 +420,27 @@ export const deriveCoverage = (conclusions: readonly Conclusion[]): Coverage => 
     unavailable: [...parsed.unavailable],
   }) as Coverage;
 };
+
+export const createEvidenceSummary = (
+  conclusions: readonly Conclusion[],
+  warningInputs: readonly Readonly<{
+    code: WarningCode;
+    observationIds: readonly ObservationId[];
+  }>[],
+): Readonly<{ coverage: Coverage; warnings: readonly Warning[] }> => {
+  const warnings = warningInputs
+    .map((input) => createWarning(input.code, input.observationIds))
+    .sort((left, right) => {
+      const codeOrder = compareCodePointSequences(left.code, right.code);
+      return codeOrder === 0
+        ? compareCodePointSequences(left.observationIds.join("\0"), right.observationIds.join("\0"))
+        : codeOrder;
+    });
+  for (let index = 1; index < warnings.length; index += 1) {
+    if (
+      warnings[index - 1]?.code === warnings[index]?.code &&
+      warnings[index - 1]?.observationIds.join("\0") === warnings[index]?.observationIds.join("\0")
+    ) throw new TypeError("Warnings must be unique and ordered.");
+  }
+  return deepFreezeValue({ coverage: deriveCoverage(conclusions), warnings });
+};

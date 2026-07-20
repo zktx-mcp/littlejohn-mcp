@@ -15,6 +15,7 @@ import {
   type HandlerInvocationContext,
   type InvocationBoundaryPorts,
   type ObservationWriter,
+  type SourceReference,
 } from "../../src/core/index.js";
 import { chainErrorRegistry } from "../../src/chain/errors.js";
 
@@ -29,18 +30,25 @@ export interface CapabilityHarness {
 export const createCapabilityHarness = (
   now: () => unknown = () => fixedEvaluationTime,
   chainId: string = configuredChainId,
+  chainRpc: Readonly<{
+    owner: string;
+    reference: SourceReference;
+  }> = Object.freeze({
+    owner: "user_configured",
+    reference: sourceReferenceSchema.parse({
+      kind: "public",
+      sourceId: "rpc_test",
+      uri: "https://rpc.example/",
+    }),
+  }),
 ): CapabilityHarness => {
   const clock = createCanonicalClock(now);
   const authorities = [
     createObservationAuthority({
       clock,
       sourceClass: "chain_rpc",
-      owner: "user_configured",
-      reference: sourceReferenceSchema.parse({
-        kind: "public",
-        sourceId: "rpc_test",
-        uri: "https://rpc.example/",
-      }),
+      owner: chainRpc.owner,
+      reference: chainRpc.reference,
     }),
     createObservationAuthority({
       clock,

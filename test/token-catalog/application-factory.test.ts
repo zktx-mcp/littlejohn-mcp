@@ -65,6 +65,10 @@ describe("token catalog application factory", () => {
       inspection: createInspectionBinding(),
       store,
       readStore: store,
+      accountTokenRegistrationRead: Object.freeze({
+        getForAccount: () => undefined,
+        listForAccount: () => Object.freeze({ entries: Object.freeze([]), nextCursor: null }),
+      }),
       clock: createCanonicalClock(() => "2026-07-20T00:00:00.000Z"),
       signal: new AbortController().signal,
     });

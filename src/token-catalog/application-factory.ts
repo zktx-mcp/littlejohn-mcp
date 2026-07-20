@@ -9,6 +9,7 @@ import { TokenCatalogCoordinator } from "./coordinator.js";
 import { TokenCatalogOperationError } from "./operation-error.js";
 import type {
   TokenCatalogApplicationPort,
+  AccountTokenRegistrationReadPort,
   TokenCatalogBrowserOperationPort,
   TokenCatalogConsumerPorts,
   TokenCatalogCoordinatorDependencies,
@@ -35,13 +36,6 @@ const createStartPort = <InteractionInterface extends "cli" | "web">(
     assertOpen();
     return application.startRegistration(input, { operationId, interactionInterface });
   },
-  startRegistrationUpdate(
-    input: Parameters<TokenCatalogApplicationPort["startRegistrationUpdate"]>[0],
-    operationId: Parameters<TokenCatalogStartApplicationPort<InteractionInterface>["startRegistrationUpdate"]>[1],
-  ) {
-    assertOpen();
-    return application.startRegistrationUpdate(input, { operationId, interactionInterface });
-  },
   startUnregistration(
     input: Parameters<TokenCatalogApplicationPort["startUnregistration"]>[0],
     operationId: Parameters<TokenCatalogStartApplicationPort<InteractionInterface>["startUnregistration"]>[1],
@@ -54,6 +48,7 @@ const createStartPort = <InteractionInterface extends "cli" | "web">(
 const createTokenCatalogConsumerPorts = (
   application: TokenCatalogApplicationPort,
   coordinator: TokenCatalogOperationCoordinatorPort,
+  accountTokenRegistrationRead: AccountTokenRegistrationReadPort,
   assertOpen: () => void,
 ): TokenCatalogConsumerPorts => {
   const tokenCatalogQueries = Object.freeze({
@@ -106,6 +101,16 @@ const createTokenCatalogConsumerPorts = (
     },
   }) satisfies TokenCatalogNonInteractiveOperationPort;
   return Object.freeze({
+    accountTokenRegistrationRead: Object.freeze({
+      getForAccount(input: Parameters<AccountTokenRegistrationReadPort["getForAccount"]>[0]) {
+        assertOpen();
+        return accountTokenRegistrationRead.getForAccount(input);
+      },
+      listForAccount(input: Parameters<AccountTokenRegistrationReadPort["listForAccount"]>[0]) {
+        assertOpen();
+        return accountTokenRegistrationRead.listForAccount(input);
+      },
+    }),
     tokenCatalogQueries,
     tokenCatalogWebStart,
     tokenCatalogBrowserOperations,
@@ -127,6 +132,7 @@ export interface TokenCatalogApplicationFactoryInput {
   readonly inspection: TokenCatalogCoordinatorDependencies["inspection"];
   readonly store: TokenCatalogStore;
   readonly readStore: TokenCatalogQueryStore;
+  readonly accountTokenRegistrationRead: AccountTokenRegistrationReadPort;
   readonly clock: CanonicalClock;
   readonly signal: AbortSignal;
 }
@@ -162,7 +168,12 @@ export const createTokenCatalogApplicationFactory = async (
       },
       operations: coordinator,
     });
-    const ports = createTokenCatalogConsumerPorts(application, coordinator, assertOpen);
+    const ports = createTokenCatalogConsumerPorts(
+      application,
+      coordinator,
+      input.accountTokenRegistrationRead,
+      assertOpen,
+    );
     return Object.freeze({
       routes: input.routes,
       supportManifest: extendTokenCatalogSupportManifest(input.supportManifest),

@@ -23,9 +23,7 @@ import type {
   TokenRegistrationListResult,
   TokenRegistrationStartInput,
   TokenRegistrationStartRequest,
-  TokenRegistrationUpdateStartInput,
   TokenRegistration,
-  TokenRegistrationSettings,
   TokenRegistrationWithInspection,
   TokenUnregistrationStartInput,
   tokenInspectCapability,
@@ -37,6 +35,23 @@ export interface TokenRegistrationPage {
   readonly nextCursor: TokenRegistration["asset"]["address"] | null;
 }
 
+export interface TokenRegistrationInspectionPage {
+  readonly entries: readonly TokenRegistrationWithInspection[];
+  readonly nextCursor: TokenRegistration["asset"]["address"] | null;
+}
+
+export interface AccountTokenRegistrationReadPort {
+  getForAccount(input: Readonly<{
+    account: EvmAccountIdentity;
+    asset: TokenRegistration["asset"];
+  }>): TokenRegistrationWithInspection | undefined;
+  listForAccount(input: Readonly<{
+    account: EvmAccountIdentity;
+    limit: number;
+    cursor: TokenRegistration["asset"]["address"] | null;
+  }>): TokenRegistrationInspectionPage;
+}
+
 type ApplyingOperation<Kind extends TokenCatalogOperation["kind"]> = Extract<
   TokenCatalogOperation,
   { readonly kind: Kind; readonly state: "applying" }
@@ -46,13 +61,6 @@ export type TokenCatalogConfirmationCommand =
   | Readonly<{
       kind: "register";
       operation: ApplyingOperation<"register">;
-      expectedConnectionRevision: UnsignedDecimal;
-      registrationRevision: TokenRegistration["revision"];
-      now: UtcTimestamp;
-    }>
-  | Readonly<{
-      kind: "update_registration";
-      operation: ApplyingOperation<"update_registration">;
       expectedConnectionRevision: UnsignedDecimal;
       registrationRevision: TokenRegistration["revision"];
       now: UtcTimestamp;
@@ -91,10 +99,6 @@ export interface TokenCatalogOperationCoordinatorPort {
     input: TokenRegistrationStartRequest,
     control: TokenCatalogOperationControl,
   ): Promise<TokenCatalogOperationStartResult<"register"> | ApplicationFailure>;
-  startRegistrationUpdate(
-    input: TokenRegistrationUpdateStartInput,
-    control: TokenCatalogOperationControl,
-  ): Promise<TokenCatalogOperationStartResult<"update_registration"> | ApplicationFailure>;
   startUnregistration(
     input: TokenUnregistrationStartInput,
     control: TokenCatalogOperationControl,
@@ -118,10 +122,6 @@ export interface TokenCatalogApplicationPort {
     input: TokenRegistrationStartInput,
     control: TokenCatalogOperationControl,
   ): Promise<TokenCatalogOperationStartResult<"register"> | ApplicationFailure>;
-  startRegistrationUpdate(
-    input: TokenRegistrationUpdateStartInput,
-    control: TokenCatalogOperationControl,
-  ): Promise<TokenCatalogOperationStartResult<"update_registration"> | ApplicationFailure>;
   startUnregistration(
     input: TokenUnregistrationStartInput,
     control: TokenCatalogOperationControl,
@@ -148,10 +148,6 @@ export interface TokenCatalogStartApplicationPort<
     input: TokenRegistrationStartInput,
     operationId: OperationId,
   ): Promise<TokenCatalogOperationStartResult<"register"> | ApplicationFailure>;
-  startRegistrationUpdate(
-    input: TokenRegistrationUpdateStartInput,
-    operationId: OperationId,
-  ): Promise<TokenCatalogOperationStartResult<"update_registration"> | ApplicationFailure>;
   startUnregistration(
     input: TokenUnregistrationStartInput,
     operationId: OperationId,
@@ -173,6 +169,7 @@ export interface TokenCatalogInteractiveCliPort extends TokenCatalogStartApplica
 }
 
 export interface TokenCatalogConsumerPorts {
+  readonly accountTokenRegistrationRead: AccountTokenRegistrationReadPort;
   readonly tokenCatalogQueries: TokenCatalogQueryApplicationPort;
   readonly tokenCatalogWebStart: TokenCatalogWebStartPort;
   readonly tokenCatalogBrowserOperations: TokenCatalogBrowserOperationPort;
@@ -181,6 +178,9 @@ export interface TokenCatalogConsumerPorts {
 }
 
 export const tokenCatalogConsumerPortContract = Object.freeze({
+  accountTokenRegistrationRead: Object.freeze({
+    methods: Object.freeze(["getForAccount", "listForAccount"] as const),
+  }),
   tokenCatalogQueries: Object.freeze({
     methods: Object.freeze(["getRegistration", "listRegistrations"] as const),
   }),
@@ -188,7 +188,6 @@ export const tokenCatalogConsumerPortContract = Object.freeze({
     interactionInterface: "web" as const,
     methods: Object.freeze([
       "startRegistration",
-      "startRegistrationUpdate",
       "startUnregistration",
     ] as const),
   }),
@@ -200,7 +199,6 @@ export const tokenCatalogConsumerPortContract = Object.freeze({
     interactionInterface: "cli" as const,
     methods: Object.freeze([
       "startRegistration",
-      "startRegistrationUpdate",
       "startUnregistration",
       "confirm",
     ] as const),

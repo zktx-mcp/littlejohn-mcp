@@ -12,6 +12,29 @@ import {
 
 export const maximumTokenDecimals = 255;
 
+export const formatAmount = (
+  rawUnsignedDecimal: string,
+  availableDecimals: string,
+): string => {
+  if (!/^(?:0|[1-9][0-9]*)$/u.test(rawUnsignedDecimal)) {
+    throw new TypeError("Amount raw units must be a canonical unsigned decimal.");
+  }
+  if (!new RegExp(canonicalUnsignedDecimalMaximumPattern(maximumTokenDecimals), "u")
+    .test(availableDecimals)) {
+    throw new TypeError(`Amount decimals must be between 0 and ${maximumTokenDecimals}.`);
+  }
+  if (availableDecimals === "0") return rawUnsignedDecimal;
+
+  const decimalPlaces = Number(availableDecimals);
+  const zeroes = "0".repeat(decimalPlaces);
+  const padded = rawUnsignedDecimal.length <= decimalPlaces
+    ? `0.${zeroes.slice(rawUnsignedDecimal.length)}${rawUnsignedDecimal}`
+    : `${rawUnsignedDecimal.slice(0, -decimalPlaces)}.${rawUnsignedDecimal.slice(-decimalPlaces)}`;
+  const withoutTrailingZeroes = padded.replace(/0+$/u, "").replace(/\.$/u, "");
+
+  return withoutTrailingZeroes === "" ? "0" : withoutTrailingZeroes;
+};
+
 // Preserve the numeric maximum in emitted JSON Schema instead of enforcing it only at runtime.
 export const canonicalUnsignedDecimalMaximumPattern = (maximum: number): string => {
   if (!Number.isSafeInteger(maximum) || maximum < 0) {

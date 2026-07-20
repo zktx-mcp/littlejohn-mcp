@@ -18,12 +18,9 @@ export {
   tokenInspectionDigest,
   tokenInspectionInputSchema,
   tokenInspectionSuccessSchema,
-  tokenRegistrationChangesSchema,
   tokenRegistrationRevisionSchema,
   tokenRegistrationSchema,
-  tokenRegistrationSettingsSchema,
   tokenRegistrationWithInspectionSchema,
-  tokenUserLabelSchema,
 } from "./contracts.js";
 export type {
   AnyTokenCatalogApplicationContract,
@@ -43,15 +40,12 @@ export type {
   TokenInspectionInput,
   TokenInspectionSuccess,
   TokenRegistration,
-  TokenRegistrationChanges,
   TokenRegistrationInput,
   TokenRegistrationListInput,
   TokenRegistrationListRequest,
   TokenRegistrationListResult,
-  TokenRegistrationSettings,
   TokenRegistrationStartInput,
   TokenRegistrationStartRequest,
-  TokenRegistrationUpdateStartInput,
   TokenRegistrationWithInspection,
   TokenUnregistrationStartInput,
 } from "./contracts.js";
@@ -77,6 +71,7 @@ export type {
 } from "./application-factory.js";
 export { tokenCatalogConsumerPortContract } from "./ports.js";
 export type {
+  AccountTokenRegistrationReadPort,
   TokenCatalogBrowserOperationPort,
   TokenCatalogConsumerPorts,
   TokenCatalogInteractiveCliPort,
@@ -85,13 +80,13 @@ export type {
   TokenCatalogQueryApplicationPort,
   TokenCatalogStartApplicationPort,
   TokenCatalogWebStartPort,
+  TokenRegistrationInspectionPage,
 } from "./ports.js";
 export {
   isTokenCatalogOperationTerminal,
   tokenCatalogInteractionInterfaces,
   tokenCatalogOperationKinds,
   tokenCatalogOperationStates,
-  tokenRegistrationVisibilities,
 } from "./state.js";
 export {
   extendTokenCatalogControlRouteRegistry,
@@ -113,5 +108,4 @@ export type {
   TokenCatalogInteractionInterface,
   TokenCatalogOperationKind,
   TokenCatalogOperationState,
-  TokenRegistrationVisibility,
 } from "./state.js";

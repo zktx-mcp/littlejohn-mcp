@@ -17,6 +17,14 @@ import {
   type TransactionInspectData,
 } from "../core/index.js";
 import { chainInterfaceErrorMappings } from "../chain/errors.js";
+import {
+  accountAssetApplicationContracts,
+  accountAssetCollectionRequestBody,
+  accountAssetInterfaceErrorMappings,
+  projectAccountAssetCollectionView,
+  type AccountAssetCollectionInput,
+  type AccountAssetCollectionSuccess,
+} from "../account-assets/index.js";
 import type { RuntimeDispatchRequest } from "../runtime/index.js";
 import {
   createInterfaceFailure,
@@ -26,14 +34,22 @@ import {
 } from "./http-client.js";
 import {
   accountBalanceInterface,
+  accountAssetInterfaceBindings,
+  accountAssetLocalOperationIdentities,
   chainStatusInterface,
   contractInspectInterface,
   transactionInspectInterface,
   type ReadInterfaceIdentity,
 } from "./identities.js";
+import { LocalOperationClient } from "./operation-client.js";
+import { deliveryUnknownCliExitCode } from "./operation-delivery.js";
 
 type ReadCommandBase = { readonly json: boolean };
 export type ReadCliCommand =
+  | (ReadCommandBase & {
+      readonly kind: "assets";
+      readonly input: AccountAssetCollectionInput;
+    })
   | (ReadCommandBase & { readonly kind: "chain_status" })
   | (ReadCommandBase & { readonly kind: "contract"; readonly input: ReturnType<typeof contractInput> })
   | (ReadCommandBase & { readonly kind: "transaction"; readonly input: ReturnType<typeof transactionInput> })
@@ -164,9 +180,30 @@ const parseBalance = (tokens: readonly string[]): ReadCliCommand => {
   } catch { return invalidInput(); }
 };
 
+const parseAssets = (tokens: readonly string[]): ReadCliCommand => {
+  const parsed = parseTokens(tokens);
+  assertAllowedFlags(parsed, new Set(["--limit", "--cursor"]));
+  if (parsed.positionals.length !== 0) return invalidInput();
+  const limit = exactFlag(parsed, "--limit");
+  const cursor = exactFlag(parsed, "--cursor");
+  try {
+    const input = accountAssetApplicationContracts.collection.parseInput({
+      ...(limit === undefined ? {} : { limit: Number(limit) }),
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    return Object.freeze({
+      kind: "assets",
+      json: parsed.json,
+      input: accountAssetCollectionRequestBody(input),
+    });
+  } catch { return invalidInput(); }
+};
+
 export const parseReadCliCommand = (argumentsInput: readonly string[]): ReadCliCommand => {
   const [domain, command, ...tokens] = argumentsInput;
   if (command === undefined) return invalidInput();
+  if (domain === accountAssetInterfaceBindings.collection.cli.domain &&
+    command === accountAssetInterfaceBindings.collection.cli.command) return parseAssets(tokens);
   if (domain === chainStatusInterface.cli.domain && command === chainStatusInterface.cli.command) {
     const parsed = parseTokens(tokens);
     assertAllowedFlags(parsed, new Set());
@@ -242,7 +279,27 @@ const balanceHuman = (data: AccountBalanceData): string => [
     : `Token ${token.asset.address}: unavailable (${token.result.errorCode})`),
 ].join("\n");
 
-const interfaceForCommand = (command: ReadCliCommand): ReadInterfaceIdentity => {
+const assetsHuman = (result: AccountAssetCollectionSuccess): string => {
+  const view = projectAccountAssetCollectionView(result);
+  const quantity = (value: typeof view.native): string => value.status === "available"
+    ? `${value.formatted === null ? "" : `${value.formatted} `}(raw=${value.raw})`.trim()
+    : `unavailable (${value.reason})`;
+  return [
+    `Account: ${view.account.address}`,
+    view.block === null ? "Block: unavailable" : `Block: ${view.block.blockNumber}`,
+    `Native: ${quantity(view.native)}`,
+    ...view.assets.map((entry) => [
+      `Token: ${entry.symbol ?? entry.name ?? entry.registration.asset.address}`,
+      `  Address: ${entry.registration.asset.address}`,
+      `  Balance: ${quantity(entry.quantity)}`,
+    ].join("\n")),
+    ...(view.nextCursor === null ? [] : [`Next cursor: ${view.nextCursor}`]),
+  ].join("\n");
+};
+
+type DirectReadCliCommand = Exclude<ReadCliCommand, { readonly kind: "assets" }>;
+
+const interfaceForCommand = (command: DirectReadCliCommand): ReadInterfaceIdentity => {
   switch (command.kind) {
     case "chain_status": return chainStatusInterface;
     case "contract": return contractInspectInterface;
@@ -252,7 +309,7 @@ const interfaceForCommand = (command: ReadCliCommand): ReadInterfaceIdentity => 
 };
 
 const requestForCommand = (
-  command: ReadCliCommand,
+  command: DirectReadCliCommand,
   identity: ReadInterfaceIdentity,
 ): RuntimeDispatchRequest => ({
   requestClass: "public_read",
@@ -263,7 +320,7 @@ const requestForCommand = (
 
 const parseSuccess = (
   identity: ReadInterfaceIdentity,
-  command: ReadCliCommand,
+  command: DirectReadCliCommand,
   value: unknown,
 ): CapabilitySuccess<unknown> =>
   parseCapabilitySuccess(
@@ -272,7 +329,7 @@ const parseSuccess = (
     value,
   );
 
-const humanSuccess = (command: ReadCliCommand, success: CapabilitySuccess<unknown>): string => {
+const humanSuccess = (command: DirectReadCliCommand, success: CapabilitySuccess<unknown>): string => {
   switch (command.kind) {
     case "chain_status": return chainStatusHuman(success.data as ChainStatusData);
     case "contract": return contractHuman(success.data as ContractInspectData);
@@ -283,10 +340,28 @@ const humanSuccess = (command: ReadCliCommand, success: CapabilitySuccess<unknow
 
 export const runReadCliCommand = async (
   runtime: RuntimeDispatchPort,
+  client: LocalOperationClient,
   command: ReadCliCommand,
   output: ReadCliOutputPort,
   signal?: AbortSignal,
 ): Promise<number> => {
+  if (command.kind === "assets") {
+    const result = await client.invoke(accountAssetLocalOperationIdentities.collection, command.input, signal);
+    if ("status" in result) {
+      if (command.json) output.writeOutput(`${canonicalJsonStringify(result as unknown as CanonicalJson)}\n`);
+      else output.writeError("delivery_unknown: The account asset response is unavailable after sending began.\n");
+      return deliveryUnknownCliExitCode;
+    }
+    if (!result.ok) {
+      if (command.json) output.writeOutput(`${canonicalJsonStringify(result.failure as unknown as CanonicalJson)}\n`);
+      else output.writeError(`${result.failure.error.code}: ${result.failure.error.message}\n`);
+      return accountAssetInterfaceErrorMappings.get(result.failure.error.code).cliExitCode;
+    }
+    output.writeOutput(command.json
+      ? `${canonicalJsonStringify(result.value as unknown as CanonicalJson)}\n`
+      : `${assetsHuman(result.value)}\n`);
+    return 0;
+  }
   const identity = interfaceForCommand(command);
   const request = requestForCommand(command, identity);
   const result = constrainInterfaceFailure(await dispatchCanonical(runtime, {

@@ -20,6 +20,7 @@ import {
   type EvmAddress,
   type EvmChainId,
   type UtcTimestamp,
+  type SourceReference,
   type WalletConnectionData,
 } from "../../src/core/index.js";
 import type { Erc20CallEncoder } from "../../src/chain/evm-standard.js";
@@ -184,15 +185,18 @@ export const createChainHandlerHarness = (input: {
   readonly rpc: ScriptedRpc;
   readonly encoder: Erc20CallEncoder;
   readonly wallet?: ActiveWalletHarness;
+  readonly chainRpc?: Readonly<{ owner: string; reference: SourceReference }>;
 }): ChainHandlerHarness => {
+  const configurationDigest = "A".repeat(43);
   const rpcAuthority = createObservationAuthority({
     clock: handlerClock,
     sourceClass: "chain_rpc",
-    owner: "user_configured",
-    reference: sourceReferenceSchema.parse({
-      kind: "public",
-      sourceId: "rpc_handler_test",
-      uri: "https://rpc.example/",
+    owner: input.chainRpc?.owner ?? "user_configured",
+    reference: input.chainRpc?.reference ?? sourceReferenceSchema.parse({
+      kind: "configured_rpc",
+      sourceId: `rpc:${configurationDigest}`,
+      publicOrigin: "https://rpc.mainnet.chain.robinhood.com",
+      configurationDigest,
     }),
   });
   const invocationAuthority = createCapabilityInvocationAuthority(handlerClock, configuredChainId);

@@ -27,16 +27,17 @@ if (typeof dataDirectory !== "string" || typeof clockPath !== "string") {
 
 const sessionTopic = "a".repeat(64);
 const sessionAccount = "eip155:4663:0x1111111111111111111111111111111111111111";
+const alternateSessionAccount = "eip155:4663:0x3333333333333333333333333333333333333333";
 const now = () => readFileSync(clockPath, "utf8").trim();
 const sessionExpiry = () => Math.floor(Date.parse(now()) / 1000) + 7 * 24 * 60 * 60;
 
-const session = (expiry = sessionExpiry()) => Object.freeze({
+const session = (expiry = sessionExpiry(), account = sessionAccount) => Object.freeze({
   topic: sessionTopic,
   expiry,
   namespaces: Object.freeze({
     eip155: Object.freeze({
       chains: Object.freeze(["eip155:4663"]),
-      accounts: Object.freeze([sessionAccount]),
+      accounts: Object.freeze([account]),
       methods: Object.freeze(["eth_sendTransaction"]),
       events: Object.freeze(["accountsChanged", "chainChanged"]),
     }),
@@ -87,6 +88,7 @@ class FakeWalletConnectClient {
   constructor(storePath, sessions) {
     this.storePath = storePath;
     this.sessions = sessions;
+    this.nextSessionAccount = sessions[0]?.namespaces?.eip155?.accounts?.[0] ?? sessionAccount;
     this.listener = undefined;
     this.pending = undefined;
   }
@@ -121,7 +123,7 @@ class FakeWalletConnectClient {
   async approve() {
     const pending = this.pending;
     if (pending === undefined || pending.closed) throw new Error("No fake approval is pending.");
-    const approved = session();
+    const approved = session(sessionExpiry(), this.nextSessionAccount);
     this.sessions = [approved];
     await persistSessions(this.storePath, this.sessions);
     pending.closed = true;
@@ -133,6 +135,19 @@ class FakeWalletConnectClient {
   async touchSession() {
     if (this.sessions.length !== 1) throw new Error("No exact fake session is available.");
     const changed = session(this.sessions[0].expiry + 120);
+    this.sessions = [changed];
+    await persistSessions(this.storePath, this.sessions);
+    this.listener?.(Object.freeze({ kind: "session_changed", topic: sessionTopic }));
+    return changed;
+  }
+
+  async changeAccount() {
+    if (this.sessions.length !== 1) throw new Error("No exact fake session is available.");
+    const current = this.sessions[0];
+    this.nextSessionAccount = this.nextSessionAccount === sessionAccount
+      ? alternateSessionAccount
+      : sessionAccount;
+    const changed = session(current.expiry + 120, this.nextSessionAccount);
     this.sessions = [changed];
     await persistSessions(this.storePath, this.sessions);
     this.listener?.(Object.freeze({ kind: "session_changed", topic: sessionTopic }));
@@ -222,6 +237,11 @@ const handle = async (message) => {
   if (message.command === "touch_session") {
     if (client === undefined) throw new Error("Fake wallet owner is unavailable.");
     send({ requestId, ok: true, result: await client.touchSession() });
+    return;
+  }
+  if (message.command === "change_account") {
+    if (client === undefined) throw new Error("Fake wallet owner is unavailable.");
+    send({ requestId, ok: true, result: await client.changeAccount() });
     return;
   }
   if (message.command === "delete_session") {

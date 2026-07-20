@@ -1,6 +1,8 @@
 export { LocalRuntime } from "./composition.js";
 export { createOperationId } from "./operation-id.js";
 export type {
+  AccountAssetOwnerApplicationStage,
+  AccountAssetOwnerHandoff,
   ChainCapabilityAuthorityPort,
   ChainOwnerApplication,
   ChainOwnerApplicationFactory,
@@ -116,11 +118,13 @@ export { decodeWalletAccountRecordKey } from "./database.js";
 export {
   createCapabilityCatalogSchema,
   composeCapabilityCatalog,
+  assertAccountAssetRuntimeSupportManifestExtension,
   assertChainRuntimeSupportManifestExtension,
   assertInterfaceRuntimeSupportManifestExtension,
   assertTokenCatalogRuntimeSupportManifestExtension,
   assertWalletRuntimeSupportManifestExtension,
   extendChainRuntimeSupportManifest,
+  extendAccountAssetRuntimeSupportManifest,
   extendInterfaceRuntimeSupportManifest,
   extendTokenCatalogRuntimeSupportManifest,
   extendWalletRuntimeSupportManifest,
@@ -132,6 +136,7 @@ export {
   verifyCurrentSupportDocument,
 } from "./support-manifest.js";
 export type {
+  AccountAssetRuntimeSupportManifest,
   Availability,
   CapabilityAvailabilityInput,
   CapabilityCatalog,

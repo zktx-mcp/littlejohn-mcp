@@ -640,10 +640,23 @@ const runWalletTransition = async (
   kind: WalletOperationKind,
   dependencies: CliDependencies,
 ): Promise<void> => {
+  const readConnectedAssets = async (): Promise<void> => {
+    const exitCode = await runReadCliCommand(
+      runtime,
+      client,
+      parseReadCliCommand(["read", "assets"]),
+      dependencies.terminal,
+      dependencies.terminal.interruptSignal,
+    );
+    if (exitCode !== 0) {
+      dependencies.terminal.writeError("Retry with: littlejohn read assets\n");
+    }
+  };
   const startResponse = await startOperation(client, kind);
   if (startResponse.result.status === "current_connection") {
     if (kind !== "connect") throw new WalletOperationError("runtime_state_unavailable");
     writeConnectionHuman(dependencies.terminal, startResponse.result.connection);
+    await readConnectedAssets();
     return;
   }
   let response: WalletOperationResponse = Object.freeze({
@@ -716,6 +729,9 @@ const runWalletTransition = async (
   const failure = operationFailure(operation);
   if (failure !== undefined) throw new CliApplicationFailure(failure);
   writeOperationHuman(dependencies.terminal, operation);
+  if (operation.result?.outcome === "connected") {
+    await readConnectedAssets();
+  }
   if (
     operation.result?.outcome === "connected" &&
     runtime.ownerState === "owner"
@@ -849,8 +865,13 @@ export const runCli = async (
             dependencies.terminal.interruptSignal);
           if (decision.kind === "interrupted") await mcp.close();
         } else if (readCommand !== undefined) {
+          operationClient = new LocalOperationClient({
+            ownerSessions: runtime,
+            createOperationId: dependencies.createOperationId,
+          });
           readExitCode = await runReadCliCommand(
             runtime,
+            operationClient,
             readCommand,
             dependencies.terminal,
             dependencies.terminal.interruptSignal,

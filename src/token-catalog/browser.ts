@@ -12,11 +12,9 @@ export {
   tokenCatalogInteractionInterfaces,
   tokenCatalogOperationKinds,
   tokenCatalogOperationStates,
-  tokenRegistrationVisibilities,
 } from "./state.js";
 export type {
   TokenCatalogInteractionInterface,
   TokenCatalogOperationKind,
   TokenCatalogOperationState,
-  TokenRegistrationVisibility,
 } from "./state.js";

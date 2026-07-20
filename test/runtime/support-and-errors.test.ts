@@ -6,6 +6,7 @@ import {
   readCapabilityRegistry,
 } from "../../src/core/index.js";
 import { interfaceReadCapabilityRegistry } from "../../src/interfaces/identities.js";
+import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import {
   RuntimeOperationError,
@@ -147,7 +148,7 @@ describe("runtime support manifest authority", () => {
       expect(readRuntimeSupportManifest(chain).capabilities
         .find((entry) => entry.capabilityId === capabilityId)?.availability).toEqual(internal);
     }
-    const tokenCatalog = extendTokenCatalogSupportManifest(chain);
+    const tokenCatalog = extendAccountAssetSupportManifest(extendTokenCatalogSupportManifest(chain));
     const interfaces = extendInterfaceRuntimeSupportManifest(tokenCatalog, {
       registrations: [],
       changes: [{
@@ -238,7 +239,7 @@ describe("runtime support manifest authority", () => {
   it("binds the capability catalog schema and projection to the exact supplied registry", () => {
     const wallet = extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, walletExtensionInput);
     const chain = extendChainRuntimeSupportManifest(wallet, chainExtensionInput);
-    const tokenCatalog = extendTokenCatalogSupportManifest(chain);
+    const tokenCatalog = extendAccountAssetSupportManifest(extendTokenCatalogSupportManifest(chain));
     const interfaces = extendInterfaceRuntimeSupportManifest(tokenCatalog, {
       registrations: [],
       changes: [{

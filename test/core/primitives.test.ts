@@ -19,6 +19,7 @@ import {
   parseEvmContractIdentity,
   hexBytesSchema,
   isSafeSingleLineText,
+  isWellFormedText,
   unsignedDecimalSchema,
   utcTimestampSchema,
   chainAnchorSchema,
@@ -230,6 +231,17 @@ describe("canonical primitives", () => {
       }
     }
     expect(isSafeSingleLineText("safe text 😀")).toBe(true);
+  });
+
+  it("rejects ill-formed Unicode before canonical text and JSON encoding", () => {
+    const high = String.fromCharCode(0xd800);
+    const low = String.fromCharCode(0xdfff);
+    expect(isWellFormedText(high)).toBe(false);
+    expect(isWellFormedText(low)).toBe(false);
+    expect(isSafeSingleLineText(`safe${high}text`)).toBe(false);
+    expect(() => canonicalJsonStringify({ value: high })).toThrow("ill-formed Unicode");
+    expect(() => canonicalJsonStringify({ [low]: "value" })).toThrow("ill-formed Unicode keys");
+    expect(canonicalJsonStringify({ value: "safe text 😀" })).toBe('{"value":"safe text 😀"}');
   });
 
   it("canonicalizes key order independently of insertion order", () => {

@@ -16,7 +16,11 @@ const unsafeSingleLineCodePoint = (codePoint: number): boolean =>
   (codePoint >= 0x202a && codePoint <= 0x202e) ||
   (codePoint >= 0x2066 && codePoint <= 0x2069);
 
+export const isWellFormedText = (value: string): boolean =>
+  (value as string & { isWellFormed(): boolean }).isWellFormed();
+
 export const isSafeSingleLineText = (value: string): boolean => {
+  if (!isWellFormedText(value)) return false;
   for (const character of value) {
     const codePoint = character.codePointAt(0);
     if (codePoint === undefined || unsafeSingleLineCodePoint(codePoint)) {

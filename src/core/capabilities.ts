@@ -1,5 +1,16 @@
 import { z } from "zod";
 
+import {
+  accountNativeDecimalsExclusion,
+  accountBalanceDataSchema,
+  accountBalanceInputSchema,
+  assertAccountBalanceChainSemantics,
+  assertAccountBalanceDataSemantics,
+  assertAccountBalanceRequestSemantics,
+  type AccountBalanceData,
+  type AccountBalanceInput,
+} from "./account-balance-contract.js";
+
 export { readCapabilityLimits } from "./capability-contract.js";
 import { readCapabilityLimits } from "./capability-contract.js";
 import {
@@ -205,51 +216,6 @@ const transactionInspectDataSchema = jsonObject({
   ]),
 }).strict();
 
-const accountSelectorSchema = z.discriminatedUnion("kind", [
-  jsonObject({ kind: z.literal("address"), address: evmAddressInputSchema }).strict(),
-  jsonObject({ kind: z.literal("active_wallet") }).strict(),
-]);
-const canonicalTokenInputSchema = (minimum: 0 | 1) => z.array(evmAddressInputSchema)
-  .min(minimum)
-  .max(readCapabilityLimits.accountTokenAddresses)
-  .meta({ uniqueItems: true });
-
-const accountBalanceInputSchema = z.discriminatedUnion("includeNative", [
-  jsonObject({
-    account: accountSelectorSchema,
-    includeNative: z.literal(true),
-    tokens: canonicalTokenInputSchema(0),
-    block: blockSelectorSchema,
-  }).strict(),
-  jsonObject({
-    account: accountSelectorSchema,
-    includeNative: z.literal(false),
-    tokens: canonicalTokenInputSchema(1),
-    block: blockSelectorSchema,
-  }).strict(),
-]);
-
-const tokenBalanceResultSchema = jsonObject({
-  asset: erc20AssetIdentitySchema,
-  result: z.discriminatedUnion("status", [
-    jsonObject({ status: z.literal("available"), amount: canonicalAmountSchema }).strict(),
-    jsonObject({
-      status: z.literal("unavailable"),
-      errorCode: z.enum(["source_unavailable", "source_inconsistent"]),
-    }).strict(),
-  ]),
-}).strict();
-
-const accountBalanceDataSchema = jsonObject({
-  account: evmAddressSchema,
-  block: chainAnchorSchema,
-  native: z.discriminatedUnion("status", [
-    jsonObject({ status: z.literal("not_requested") }).strict(),
-    jsonObject({ status: z.literal("available"), amount: canonicalAmountSchema }).strict(),
-  ]),
-  tokens: z.array(tokenBalanceResultSchema).max(readCapabilityLimits.accountTokenAddresses),
-}).strict();
-
 const walletConnectionInputSchema = noInputSchema;
 
 export type ChainStatusInput = z.infer<typeof chainStatusInputSchema>;
@@ -258,8 +224,7 @@ export type ContractInspectInput = z.infer<typeof contractInspectInputSchema>;
 export type ContractInspectData = z.infer<typeof contractInspectDataSchema>;
 export type TransactionInspectInput = z.infer<typeof transactionInspectInputSchema>;
 export type TransactionInspectData = z.infer<typeof transactionInspectDataSchema>;
-export type AccountBalanceInput = z.infer<typeof accountBalanceInputSchema>;
-export type AccountBalanceData = z.infer<typeof accountBalanceDataSchema>;
+export type { AccountBalanceData, AccountBalanceInput } from "./account-balance-contract.js";
 export type WalletConnectionInput = z.infer<typeof walletConnectionInputSchema>;
 export type { WalletConnectionData } from "./wallet-connection.js";
 
@@ -271,10 +236,6 @@ const transactionEventDecimalsExclusion = exclusion(
 );
 const transactionNativeDecimalsExclusion = exclusion(
   "transaction_native_decimals_not_observed",
-  "Native asset decimals are not read by this capability.",
-);
-const accountNativeDecimalsExclusion = exclusion(
-  "account_native_decimals_not_observed",
   "Native asset decimals are not read by this capability.",
 );
 const sourceSlot = (
@@ -978,36 +939,13 @@ export const accountBalanceCapability = defineReadCapability<AccountBalanceInput
     return warnings;
   },
   validateIntrinsicData: (data, context) => {
-    const resultAddresses = data.tokens.map((entry) => entry.asset.address);
-    assertOrderedUnique(resultAddresses, "Token result addresses");
-    if (data.native.status === "available") {
-      assertNativeAmountIdentity(data.native.amount, accountNativeDecimalsExclusion, context);
-    }
-    for (const token of data.tokens) {
-      if (token.result.status === "available" && (
-        token.result.amount.asset.kind !== "erc20" ||
-        token.result.amount.asset.address !== token.asset.address ||
-        token.result.amount.decimals.status === "not_observed"
-      )) throw new TypeError("Token result amount identity is inconsistent.");
-    }
+    context.assertDeclaredScopeExclusion(accountNativeDecimalsExclusion);
+    assertAccountBalanceDataSemantics(data);
   },
   validateSuccess: (data, context) => {
-    if (data.block.chainId !== context.chainId) throw new TypeError("Account chain scope mismatch.");
-    if (data.native.status === "available") assertAmountChain(data.native.amount, context.chainId);
-    for (const token of data.tokens) {
-      if (token.asset.chainId !== context.chainId) throw new TypeError("Token chain scope mismatch.");
-      if (token.result.status === "available") assertAmountChain(token.result.amount, context.chainId);
-    }
+    assertAccountBalanceChainSemantics(data, context.chainId);
   },
-  validateRequest: (input, data) => {
-    if (input.account.kind === "address" && input.account.address !== data.account) throw new TypeError("Account target mismatch.");
-    if (input.block.kind === "number" && input.block.blockNumber !== data.block.blockNumber) {
-      throw new TypeError("Account block selector mismatch.");
-    }
-    if (input.includeNative !== (data.native.status === "available")) throw new TypeError("Native result selection mismatch.");
-    const resultAddresses = data.tokens.map((entry) => entry.asset.address);
-    if (resultAddresses.join("\0") !== input.tokens.join("\0")) throw new TypeError("Token result selection mismatch.");
-  },
+  validateRequest: assertAccountBalanceRequestSemantics,
   validateEvidence: (_input, data, context) => {
     if (data.native.status === "available") {
       assertNativeAmount(

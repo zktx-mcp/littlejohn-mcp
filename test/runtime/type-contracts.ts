@@ -83,7 +83,8 @@ type _InterfaceContextKeys = Assert<Equal<
   keyof InterfaceOwnerApplicationContext<TestWalletOperations>,
   "routes" | "signal" | "startupResources" | "supportManifest" | "walletConnection" | "walletOperations" |
   "chainReads" | "tokenInspection" | "tokenCatalogQueries" | "tokenCatalogWebStart" |
-  "tokenCatalogBrowserOperations" | "tokenCatalogInteractiveCli" | "tokenCatalogNonInteractiveOperations"
+  "tokenCatalogBrowserOperations" | "tokenCatalogInteractiveCli" | "tokenCatalogNonInteractiveOperations" |
+  "accountTokenRegistrationRead" | "accountAssets"
 >>;
 type _InterfaceWalletOperations = Assert<Equal<
   InterfaceOwnerApplicationContext<TestWalletOperations>["walletOperations"],
