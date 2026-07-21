@@ -2,13 +2,13 @@ import {
   tokenCatalogApplicationContracts,
   tokenCatalogOperationIdSchema,
   type TokenCatalogOperation,
-  type TokenRegistration,
-  type TokenRegistrationListInput,
-  type TokenRegistrationListRequest,
+  type TokenSelection,
+  type TokenSelectionListInput,
+  type TokenSelectionListRequest,
 } from "./contract-schema.js";
 
-type EvmChainId = TokenRegistration["asset"]["chainId"];
-type EvmAddress = TokenRegistration["asset"]["address"];
+type EvmChainId = TokenSelection["asset"]["chainId"];
+type EvmAddress = TokenSelection["asset"]["address"];
 
 const browserRoot = "/api/v1/token-catalog";
 const browserOperationsRoot = `${browserRoot}/operations`;
@@ -23,20 +23,20 @@ const operationPath = (
   action === undefined ? "" : `/${action}`
 }`;
 
-const registrationPath = (
+const selectionPath = (
   root: string,
   chainId: EvmChainId,
   tokenAddress: EvmAddress,
 ): string => {
-  const { asset } = tokenCatalogApplicationContracts.registration.parseInput({
+  const { asset } = tokenCatalogApplicationContracts.selection.parseInput({
     asset: { kind: "erc20", chainId, address: tokenAddress },
   });
   return `${root}/${asset.chainId}/${asset.address}`;
 };
 
-export const tokenRegistrationListRequestBody = (
-  request: TokenRegistrationListRequest,
-): Readonly<TokenRegistrationListInput> => Object.freeze({
+export const tokenSelectionListRequestBody = (
+  request: TokenSelectionListRequest,
+): Readonly<TokenSelectionListInput> => Object.freeze({
   limit: request.limit,
   ...(request.cursor === null ? {} : { cursor: request.cursor }),
 });
@@ -44,15 +44,15 @@ export const tokenRegistrationListRequestBody = (
 export const tokenCatalogBrowserRoutes = Object.freeze({
   root: browserRoot,
   inspections: `${browserRoot}/inspections`,
-  registrationQueries: `${browserRoot}/registration-queries`,
-  registrationPattern: `${browserRoot}/registrations/{chainId}/{tokenAddress}`,
+  selectionQueries: `${browserRoot}/selection-queries`,
+  selectionPattern: `${browserRoot}/selections/{chainId}/{tokenAddress}`,
   operations: browserOperationsRoot,
   currentOperation: `${browserRoot}/current-operation`,
   operationPattern: `${browserOperationsRoot}/{operationId}`,
   confirmationPattern: `${browserOperationsRoot}/{operationId}/confirmation`,
   cancellationPattern: `${browserOperationsRoot}/{operationId}/cancellation`,
-  registration: (chainId: EvmChainId, tokenAddress: EvmAddress): string =>
-    registrationPath(`${browserRoot}/registrations`, chainId, tokenAddress),
+  selection: (chainId: EvmChainId, tokenAddress: EvmAddress): string =>
+    selectionPath(`${browserRoot}/selections`, chainId, tokenAddress),
   operation: (operationId: TokenCatalogOperation["operationId"]): string =>
     operationPath(browserOperationsRoot, operationId),
   confirmation: (operationId: TokenCatalogOperation["operationId"]): string =>
@@ -63,13 +63,13 @@ export const tokenCatalogBrowserRoutes = Object.freeze({
 
 export const tokenCatalogControlRoutes = Object.freeze({
   inspections: `${controlRoot}/inspections`,
-  registrationQueries: `${controlRoot}/registration-queries`,
-  registrationPattern: `${controlRoot}/registrations/{chainId}/{tokenAddress}`,
+  selectionQueries: `${controlRoot}/selection-queries`,
+  selectionPattern: `${controlRoot}/selections/{chainId}/{tokenAddress}`,
   operations: controlOperationsRoot,
   operationPattern: `${controlOperationsRoot}/{operationId}`,
   confirmationPattern: `${controlOperationsRoot}/{operationId}/confirmation`,
-  registration: (chainId: EvmChainId, tokenAddress: EvmAddress): string =>
-    registrationPath(`${controlRoot}/registrations`, chainId, tokenAddress),
+  selection: (chainId: EvmChainId, tokenAddress: EvmAddress): string =>
+    selectionPath(`${controlRoot}/selections`, chainId, tokenAddress),
   operation: (operationId: TokenCatalogOperation["operationId"]): string =>
     operationPath(controlOperationsRoot, operationId),
   confirmation: (operationId: TokenCatalogOperation["operationId"]): string =>

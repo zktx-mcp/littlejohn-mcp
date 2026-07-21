@@ -28,6 +28,7 @@ import {
   operationIdSchema,
   readCapabilityLimits,
   staticScopeExclusionSchema,
+  tokenStandardObservationResultSchema,
   unsignedDecimalSchema,
   utcTimestampSchema,
   utf8ByteLength,
@@ -53,15 +54,15 @@ import {
 export const tokenCatalogContractLimits = Object.freeze({
   displayTextCodePoints: 128,
   displayTextUtf8Bytes: 512,
-  registrationRevisionBytes: 16,
+  selectionRevisionBytes: 16,
   operationIdBytes: operationIdByteLength,
   listDefaultLimit: 25,
   listMaximumLimit: 25,
 });
 
 export const tokenCatalogDigestVersions = Object.freeze({
-  inspection: "1",
-  review: "2",
+  inspection: "2",
+  review: "3",
 } as const);
 
 export const tokenDisplayTextSchema = z.string()
@@ -75,8 +76,8 @@ export const tokenDisplayTextSchema = z.string()
   )
   .refine(isSafeSingleLineText, "Expected safe single-line text.");
 
-export const tokenRegistrationRevisionSchema = canonicalBase64UrlSchema(
-  tokenCatalogContractLimits.registrationRevisionBytes,
+export const tokenSelectionRevisionSchema = canonicalBase64UrlSchema(
+  tokenCatalogContractLimits.selectionRevisionBytes,
 );
 export const tokenCatalogOperationIdSchema = operationIdSchema;
 
@@ -114,13 +115,18 @@ export const tokenInspectionDataSchema = z.object({
     name: optionalTextObservationSchema,
     symbol: optionalTextObservationSchema,
   }).strict(),
+  standards: tokenStandardObservationResultSchema,
 }).strict().superRefine((data, context) => {
   if (
     data.asset.chainId !== data.block.chainId ||
     data.totalSupply.asset.kind !== "erc20" ||
     data.totalSupply.asset.chainId !== data.asset.chainId ||
     data.totalSupply.asset.address !== data.asset.address ||
-    data.runtimeCode.byteLength === "0"
+    data.runtimeCode.byteLength === "0" ||
+    data.standards.asset.chainId !== data.asset.chainId ||
+    data.standards.asset.address !== data.asset.address ||
+    data.standards.block.blockHash !== data.block.blockHash ||
+    data.standards.account !== undefined
   ) {
     context.addIssue({ code: "custom", message: "Token inspection identity is inconsistent." });
   }
@@ -200,8 +206,11 @@ const tokenCatalogReviewDigestInputSchema = z.object({
   account: evmAccountIdentitySchema,
   connectionRevision: unsignedDecimalSchema,
   asset: erc20AssetIdentitySchema,
-  previousRegistration: z.lazy(() => tokenRegistrationSchema).nullable(),
-  inspection: tokenInspectionSuccessSchema,
+  previousSelection: z.lazy(() => tokenSelectionSchema).nullable(),
+  selectionSetRevision: z.lazy(() => tokenSelectionSetRevisionSchema).nullable(),
+  inspection: tokenInspectionSuccessSchema.nullable(),
+  officialSnapshotRevision: canonicalBase64UrlSchema(16).nullable(),
+  officialEvidence: z.lazy(() => tokenOfficialSelectionEvidenceSchema).nullable(),
   interactionInterface: z.enum(tokenCatalogInteractionInterfaces),
   expiresAt: utcTimestampSchema,
 }).strict();
@@ -217,37 +226,66 @@ export const tokenCatalogReviewDigest = (inputValue: unknown) => {
     account: input.account as unknown as CanonicalJson,
     connectionRevision: input.connectionRevision,
     asset: input.asset as unknown as CanonicalJson,
-    previousRegistration: input.previousRegistration as unknown as CanonicalJson,
+    previousSelection: input.previousSelection as unknown as CanonicalJson,
+    selectionSetRevision: input.selectionSetRevision,
     inspection: input.inspection as unknown as CanonicalJson,
+    officialSnapshotRevision: input.officialSnapshotRevision,
+    officialEvidence: input.officialEvidence as unknown as CanonicalJson,
     interactionInterface: input.interactionInterface,
     expiresAt: input.expiresAt,
   })}`);
 };
 
-export const tokenRegistrationSchema = z.object({
+export const tokenSelectionSchema = z.object({
   account: evmAccountIdentitySchema,
   asset: erc20AssetIdentitySchema,
-  revision: tokenRegistrationRevisionSchema,
-  inspectionDigest: hash32Schema,
+  included: z.boolean(),
+  revision: tokenSelectionRevisionSchema,
   createdAt: utcTimestampSchema,
+  updatedAt: utcTimestampSchema,
 }).strict().superRefine((value, context) => {
-  if (value.account.chainId !== value.asset.chainId) {
-    context.addIssue({ code: "custom", message: "Token registration identity is invalid." });
+  if (value.account.chainId !== value.asset.chainId || value.updatedAt < value.createdAt) {
+    context.addIssue({ code: "custom", message: "Token selection identity is invalid." });
   }
 });
-export type TokenRegistration = z.infer<typeof tokenRegistrationSchema>;
+export type TokenSelection = z.infer<typeof tokenSelectionSchema>;
 
-export const tokenRegistrationWithInspectionSchema = z.object({
-  registration: tokenRegistrationSchema,
-  inspection: tokenInspectionSuccessSchema,
+export const tokenSelectionSetRevisionSchema = tokenSelectionRevisionSchema.brand(
+  "TokenSelectionSetRevision",
+);
+export type TokenSelectionSetRevision = z.infer<typeof tokenSelectionSetRevisionSchema>;
+
+export const tokenSelectionStateSchema = z.object({
+  account: evmAccountIdentitySchema,
+  revision: tokenSelectionSetRevisionSchema,
+  defaultsInitialized: z.boolean(),
+  createdAt: utcTimestampSchema,
+  updatedAt: utcTimestampSchema,
 }).strict().superRefine((value, context) => {
-  if (
-    value.registration.asset.chainId !== value.inspection.data.asset.chainId ||
-    value.registration.asset.address !== value.inspection.data.asset.address ||
-    value.registration.inspectionDigest !== tokenInspectionDigest(value.inspection)
-  ) context.addIssue({ code: "custom", message: "Registration inspection identity is invalid." });
+  if (value.updatedAt < value.createdAt) {
+    context.addIssue({ code: "custom", message: "Token selection state lifetime is invalid." });
+  }
 });
-export type TokenRegistrationWithInspection = z.infer<typeof tokenRegistrationWithInspectionSchema>;
+export type TokenSelectionState = z.infer<typeof tokenSelectionStateSchema>;
+
+export const tokenOfficialSelectionEvidenceSchema = z.object({
+  assetUid: hash32Schema,
+  snapshotRevision: canonicalBase64UrlSchema(16),
+  verificationBlock: chainAnchorSchema,
+}).strict();
+export type TokenOfficialSelectionEvidence = z.infer<typeof tokenOfficialSelectionEvidenceSchema>;
+
+export const tokenSelectionDetailSchema = z.object({
+  selection: tokenSelectionSchema,
+  historicalInspection: tokenInspectionSuccessSchema.nullable(),
+}).strict().superRefine((value, context) => {
+  const inspection = value.historicalInspection;
+  if (inspection !== null && (
+    value.selection.asset.chainId !== inspection.data.asset.chainId ||
+    value.selection.asset.address !== inspection.data.asset.address
+  )) context.addIssue({ code: "custom", message: "Historical selection inspection identity is invalid." });
+});
+export type TokenSelectionDetail = z.infer<typeof tokenSelectionDetailSchema>;
 
 const tokenCatalogApplicationErrorRegistry = coreErrorRegistry
   .extend(runtimeErrorDefinitions)
@@ -259,7 +297,7 @@ const operationFailureCodes = Object.freeze([
   "internal_error",
   "runtime_state_unavailable",
   "state_conflict",
-  "token_registration_revision_changed",
+  "token_selection_revision_changed",
   "wallet_not_connected",
   "wallet_session_unusable",
 ]);
@@ -269,16 +307,15 @@ const tokenOperationFailureSchema = applicationFailureSchemaFor(
 );
 
 const operationReviewSchema = z.object({
-  previousRegistration: tokenRegistrationSchema.nullable(),
-  inspection: tokenInspectionSuccessSchema,
+  previousSelection: tokenSelectionSchema.nullable(),
+  selectionSetRevision: tokenSelectionSetRevisionSchema.nullable(),
+  inspection: tokenInspectionSuccessSchema.nullable(),
+  officialSnapshotRevision: canonicalBase64UrlSchema(16).nullable(),
+  officialEvidence: tokenOfficialSelectionEvidenceSchema.nullable(),
   reviewDigest: hash32Schema,
 }).strict();
 
-const registrationOperationResultSchema = tokenRegistrationWithInspectionSchema;
-const unregistrationOperationResultSchema = z.object({
-  asset: erc20AssetIdentitySchema,
-  removedRevision: tokenRegistrationRevisionSchema,
-}).strict();
+const selectionOperationResultSchema = tokenSelectionDetailSchema;
 
 const operationCommonShape = {
   operationId: tokenCatalogOperationIdSchema,
@@ -295,8 +332,8 @@ const sameAccount = (left: EvmAccountIdentity, right: EvmAccountIdentity): boole
   left.chainId === right.chainId && left.address === right.address;
 
 const sameAsset = (
-  left: TokenRegistration["asset"],
-  right: TokenRegistration["asset"],
+  left: TokenSelection["asset"],
+  right: TokenSelection["asset"],
 ): boolean => left.chainId === right.chainId && left.address === right.address;
 
 const operationVariantSchema = <
@@ -335,23 +372,23 @@ const operationSchemasForKind = <
 } as const satisfies Record<TokenCatalogOperationState, ZodType>);
 
 const operationSchemas = {
-  register: operationSchemasForKind("register", registrationOperationResultSchema),
-  unregister: operationSchemasForKind("unregister", unregistrationOperationResultSchema),
+  add: operationSchemasForKind("add", selectionOperationResultSchema),
+  remove: operationSchemasForKind("remove", selectionOperationResultSchema),
 } as const satisfies Record<TokenCatalogOperationKind, object>;
 
 const tokenCatalogOperationStructuralSchema = z.union([
-  operationSchemas.register.applying,
-  operationSchemas.register.awaiting_confirmation,
-  operationSchemas.register.cancelled,
-  operationSchemas.register.completed,
-  operationSchemas.register.expired,
-  operationSchemas.register.failed,
-  operationSchemas.unregister.applying,
-  operationSchemas.unregister.awaiting_confirmation,
-  operationSchemas.unregister.cancelled,
-  operationSchemas.unregister.completed,
-  operationSchemas.unregister.expired,
-  operationSchemas.unregister.failed,
+  operationSchemas.add.applying,
+  operationSchemas.add.awaiting_confirmation,
+  operationSchemas.add.cancelled,
+  operationSchemas.add.completed,
+  operationSchemas.add.expired,
+  operationSchemas.add.failed,
+  operationSchemas.remove.applying,
+  operationSchemas.remove.awaiting_confirmation,
+  operationSchemas.remove.cancelled,
+  operationSchemas.remove.completed,
+  operationSchemas.remove.expired,
+  operationSchemas.remove.failed,
 ]);
 
 export type TokenCatalogOperation = z.output<typeof tokenCatalogOperationStructuralSchema>;
@@ -377,53 +414,59 @@ const validateTokenCatalogOperation = (
 ): void => {
   if (
     operation.account.chainId !== operation.asset.chainId ||
-    operation.review.inspection.data.asset.chainId !== operation.asset.chainId ||
-    operation.review.inspection.data.asset.address !== operation.asset.address ||
     operation.expiresAt <= operation.createdAt
   ) {
     addIssue("Token operation identity or lifetime is invalid.");
     return;
   }
-  const previous = operation.review.previousRegistration;
+  const previous = operation.review.previousSelection;
   if (previous !== null && (
     !sameAccount(previous.account, operation.account) ||
-    !sameAsset(previous.asset, operation.asset) ||
-    previous.inspectionDigest !== tokenInspectionDigest(operation.review.inspection)
+    !sameAsset(previous.asset, operation.asset)
   )) {
-    addIssue("Token operation previous registration is invalid.");
+    addIssue("Token operation previous selection is invalid.");
   }
   if (
-    (operation.kind === "register" && previous !== null) ||
-    (operation.kind === "unregister" && previous === null)
+    (operation.kind === "add" && previous?.included === true) ||
+    (operation.kind === "remove" && previous?.included !== true) ||
+    (operation.kind === "add" && operation.review.inspection === null) ||
+    (operation.kind === "remove" && operation.review.inspection !== null) ||
+    (operation.kind === "add" && operation.review.officialSnapshotRevision === null) ||
+    (operation.kind === "remove" && (
+      operation.review.officialSnapshotRevision !== null ||
+      operation.review.officialEvidence !== null
+    )) ||
+    (operation.review.officialEvidence !== null &&
+      operation.review.officialEvidence.snapshotRevision !== operation.review.officialSnapshotRevision)
   ) {
     addIssue("Token operation review does not match its kind.");
   }
+  const inspection = operation.review.inspection;
+  if (inspection !== null && (
+    inspection.data.asset.chainId !== operation.asset.chainId ||
+    inspection.data.asset.address !== operation.asset.address
+  )) addIssue("Token operation inspection identity is invalid.");
   if (operation.state !== "completed" || operation.result === null) return;
-  if (operation.kind === "unregister") {
-    if (!("removedRevision" in operation.result) || previous === null ||
-      operation.result.asset.chainId !== operation.asset.chainId ||
-      operation.result.asset.address !== operation.asset.address ||
-      operation.result.removedRevision !== previous.revision) {
-      addIssue("Token removal result is invalid.");
-    }
+  if (!("selection" in operation.result)) {
+    addIssue("Token selection result is invalid.");
     return;
   }
-  if (!("registration" in operation.result)) {
-    addIssue("Token registration result is invalid.");
-    return;
-  }
-  const registration = operation.result.registration;
-  const resultInspectionDigest = tokenInspectionDigest(operation.result.inspection);
-  const reviewInspectionDigest = tokenInspectionDigest(operation.review.inspection);
+  const selection = operation.result.selection;
   if (
-    !sameAccount(registration.account, operation.account) ||
-    !sameAsset(registration.asset, operation.asset) ||
-    resultInspectionDigest !== reviewInspectionDigest ||
-    registration.inspectionDigest !== reviewInspectionDigest
-  ) addIssue("Token registration result is invalid.");
-  if (operation.kind === "register" && registration.createdAt < operation.createdAt) {
-    addIssue("Token registration creation result is invalid.");
-  }
+    !sameAccount(selection.account, operation.account) ||
+    !sameAsset(selection.asset, operation.asset) ||
+    selection.included !== (operation.kind === "add") ||
+    selection.revision === previous?.revision ||
+    selection.updatedAt < operation.createdAt ||
+    (previous === null
+      ? selection.createdAt < operation.createdAt
+      : selection.createdAt !== previous.createdAt) ||
+    (operation.kind === "add" && (
+      operation.result.historicalInspection === null ||
+      inspection === null ||
+      tokenInspectionDigest(operation.result.historicalInspection) !== tokenInspectionDigest(inspection)
+    ))
+  ) addIssue("Token selection result is invalid.");
 };
 
 const validateOperationSchema = <Schema extends ZodType<TokenCatalogOperation>>(schema: Schema) =>
@@ -435,28 +478,30 @@ const validateOperationSchema = <Schema extends ZodType<TokenCatalogOperation>>(
 
 export const tokenCatalogOperationSchema = validateOperationSchema(tokenCatalogOperationStructuralSchema);
 export const tokenCatalogConfirmedOperationSchema = validateOperationSchema(z.union([
-  operationSchemas.register.completed,
-  operationSchemas.register.failed,
-  operationSchemas.unregister.completed,
-  operationSchemas.unregister.failed,
+  operationSchemas.add.completed,
+  operationSchemas.add.failed,
+  operationSchemas.remove.completed,
+  operationSchemas.remove.failed,
 ]));
 
-const registrationInputSchema = z.object({ asset: erc20AssetIdentitySchema }).strict();
-const registrationsInputSchema = z.object({
+const selectionInputSchema = z.object({ asset: erc20AssetIdentitySchema }).strict();
+const selectionsInputSchema = z.object({
   limit: z.number().int().min(1).max(tokenCatalogContractLimits.listMaximumLimit).optional(),
   cursor: evmAddressSchema.optional(),
 }).strict().transform((value) => ({
   limit: value.limit ?? tokenCatalogContractLimits.listDefaultLimit,
   cursor: value.cursor ?? null,
 }));
-const registrationsRequestSchema = z.object({
+const selectionsRequestSchema = z.object({
   limit: z.number().int().min(1).max(tokenCatalogContractLimits.listMaximumLimit),
   cursor: evmAddressSchema.nullable(),
 }).strict();
-const startRegistrationInputSchema = z.object({ asset: erc20AssetIdentitySchema }).strict();
-const startUnregistrationInputSchema = z.object({
+const startAdditionInputSchema = z.object({
   asset: erc20AssetIdentitySchema,
-  expectedRevision: tokenRegistrationRevisionSchema,
+}).strict();
+const startRemovalInputSchema = z.object({
+  asset: erc20AssetIdentitySchema,
+  expectedRevision: tokenSelectionRevisionSchema,
 }).strict();
 const operationInputSchema = z.object({ operationId: tokenCatalogOperationIdSchema }).strict();
 export const tokenCatalogOperationConfirmationInputSchema = z.object({
@@ -465,56 +510,56 @@ export const tokenCatalogOperationConfirmationInputSchema = z.object({
 }).strict();
 
 const operationResultSchema = z.object({ operation: tokenCatalogOperationSchema }).strict();
-const registrationOperationStartResultSchema = z.object({
-  operation: validateOperationSchema(operationSchemas.register.awaiting_confirmation),
+const selectionOperationStartResultSchema = z.object({
+  operation: validateOperationSchema(operationSchemas.add.awaiting_confirmation),
 }).strict();
-const unregistrationOperationStartResultSchema = z.object({
-  operation: validateOperationSchema(operationSchemas.unregister.awaiting_confirmation),
+const removalOperationStartResultSchema = z.object({
+  operation: validateOperationSchema(operationSchemas.remove.awaiting_confirmation),
 }).strict();
 const terminalOperationStructuralSchema = z.union([
-  operationSchemas.register.cancelled,
-  operationSchemas.register.completed,
-  operationSchemas.register.expired,
-  operationSchemas.register.failed,
-  operationSchemas.unregister.cancelled,
-  operationSchemas.unregister.completed,
-  operationSchemas.unregister.expired,
-  operationSchemas.unregister.failed,
+  operationSchemas.add.cancelled,
+  operationSchemas.add.completed,
+  operationSchemas.add.expired,
+  operationSchemas.add.failed,
+  operationSchemas.remove.cancelled,
+  operationSchemas.remove.completed,
+  operationSchemas.remove.expired,
+  operationSchemas.remove.failed,
 ]);
 const terminalOperationSchema = validateOperationSchema(terminalOperationStructuralSchema);
 const operationCancellationResultSchema = z.object({ operation: terminalOperationSchema }).strict();
-const registrationListResultSchema = z.object({
-  registrations: z.array(tokenRegistrationSchema).max(tokenCatalogContractLimits.listMaximumLimit),
+const selectionListResultSchema = z.object({
+  selections: z.array(tokenSelectionSchema).max(tokenCatalogContractLimits.listMaximumLimit),
   nextCursor: evmAddressSchema.nullable(),
 }).strict().superRefine((value, context) => {
-  for (let index = 1; index < value.registrations.length; index += 1) {
-    const previous = value.registrations[index - 1];
-    const current = value.registrations[index];
+  for (let index = 1; index < value.selections.length; index += 1) {
+    const previous = value.selections[index - 1];
+    const current = value.selections[index];
     if (previous !== undefined && current !== undefined &&
       previous.asset.address >= current.asset.address) {
-      context.addIssue({ code: "custom", message: "Token registrations are not canonically ordered." });
+      context.addIssue({ code: "custom", message: "Token selections are not canonically ordered." });
       return;
     }
   }
-  const first = value.registrations[0];
-  if (first !== undefined && value.registrations.some((entry) =>
+  const first = value.selections[0];
+  if (first !== undefined && value.selections.some((entry) =>
     entry.account.chainId !== first.account.chainId ||
     entry.account.address !== first.account.address)) {
-    context.addIssue({ code: "custom", message: "Token registration page mixes accounts." });
+    context.addIssue({ code: "custom", message: "Token selection page mixes accounts." });
   }
-  const last = value.registrations.at(-1);
+  const last = value.selections.at(-1);
   if (value.nextCursor !== null && last?.asset.address !== value.nextCursor) {
-    context.addIssue({ code: "custom", message: "Token registration cursor is invalid." });
+    context.addIssue({ code: "custom", message: "Token selection cursor is invalid." });
   }
 });
 
-export type TokenRegistrationInput = z.output<typeof registrationInputSchema>;
-export type TokenRegistrationListInput = z.input<typeof registrationsInputSchema>;
-export type TokenRegistrationListRequest = z.output<typeof registrationsInputSchema>;
-export type TokenRegistrationListResult = z.output<typeof registrationListResultSchema>;
-export type TokenRegistrationStartInput = z.input<typeof startRegistrationInputSchema>;
-export type TokenRegistrationStartRequest = z.output<typeof startRegistrationInputSchema>;
-export type TokenUnregistrationStartInput = z.output<typeof startUnregistrationInputSchema>;
+export type TokenSelectionInput = z.output<typeof selectionInputSchema>;
+export type TokenSelectionListInput = z.input<typeof selectionsInputSchema>;
+export type TokenSelectionListRequest = z.output<typeof selectionsInputSchema>;
+export type TokenSelectionListResult = z.output<typeof selectionListResultSchema>;
+export type TokenAdditionStartInput = z.input<typeof startAdditionInputSchema>;
+export type TokenAdditionStartRequest = z.output<typeof startAdditionInputSchema>;
+export type TokenRemovalStartInput = z.output<typeof startRemovalInputSchema>;
 export type TokenCatalogOperationInput = z.output<typeof operationInputSchema>;
 export type TokenCatalogOperationConfirmationInput = z.output<
   typeof tokenCatalogOperationConfirmationInputSchema
@@ -526,10 +571,10 @@ export type TokenCatalogOperationStartResult<
 export type TokenCatalogCancellationResult = Readonly<{ operation: TokenCatalogTerminalOperation }>;
 
 const contractFailureCodes = Object.freeze({
-  registration: ["internal_error", "invalid_input", "runtime_state_unavailable", "token_registration_not_found", "wallet_not_connected", "wallet_session_unusable"],
-  registrations: ["internal_error", "invalid_input", "runtime_state_unavailable", "wallet_not_connected", "wallet_session_unusable"],
-  startRegistration: ["internal_error", "invalid_input", "not_found", "rate_limited", "request_aborted", "runtime_busy", "runtime_state_unavailable", "source_inconsistent", "source_unavailable", "state_conflict", "token_operation_conflict", "token_registration_already_exists", "token_total_supply_reverted", "wallet_not_connected", "wallet_session_unusable"],
-  startUnregistration: ["internal_error", "invalid_input", "runtime_busy", "runtime_state_unavailable", "state_conflict", "token_operation_conflict", "token_registration_not_found", "token_registration_revision_changed", "wallet_not_connected", "wallet_session_unusable"],
+  selection: ["internal_error", "invalid_input", "runtime_state_unavailable", "token_selection_not_found", "wallet_not_connected", "wallet_session_unusable"],
+  selections: ["internal_error", "invalid_input", "runtime_state_unavailable", "wallet_not_connected", "wallet_session_unusable"],
+  startAddition: ["internal_error", "invalid_input", "not_found", "rate_limited", "request_aborted", "runtime_busy", "runtime_state_unavailable", "source_inconsistent", "source_unavailable", "state_conflict", "token_operation_conflict", "token_selection_already_included", "token_selection_revision_changed", "token_total_supply_reverted", "wallet_not_connected", "wallet_session_unusable"],
+  startRemoval: ["internal_error", "invalid_input", "runtime_busy", "runtime_state_unavailable", "state_conflict", "token_operation_conflict", "token_selection_not_found", "token_selection_not_included", "token_selection_revision_changed", "wallet_not_connected", "wallet_session_unusable"],
   operation: ["internal_error", "invalid_input", "runtime_state_unavailable", "token_operation_not_found"],
   cancelOperation: ["internal_error", "invalid_input", "runtime_state_unavailable", "state_conflict", "token_operation_not_found"],
 } as const);
@@ -675,7 +720,7 @@ const validateCancelledOperation = (
 };
 
 const validateStartCommon = <Kind extends TokenCatalogOperationKind>(
-  asset: TokenRegistration["asset"],
+  asset: TokenSelection["asset"],
   success: TokenCatalogOperationStartResult<Kind>,
 ): TokenCatalogAwaitingOperation<Kind> => {
   if (!sameAsset(success.operation.asset, asset)) {
@@ -685,60 +730,60 @@ const validateStartCommon = <Kind extends TokenCatalogOperationKind>(
 };
 
 export const tokenCatalogApplicationContracts = Object.freeze({
-  registration: defineApplicationContract({
-    capabilityId: "token.registration",
-    inputSchema: registrationInputSchema,
-    successSchema: tokenRegistrationWithInspectionSchema,
-    failureCodes: contractFailureCodes.registration,
+  selection: defineApplicationContract({
+    capabilityId: "token.selection",
+    inputSchema: selectionInputSchema,
+    successSchema: tokenSelectionDetailSchema,
+    failureCodes: contractFailureCodes.selection,
     validatePublicSuccess: (input, success) => {
-      if (input.asset.chainId !== success.registration.asset.chainId || input.asset.address !== success.registration.asset.address) {
-        throw new TypeError("Token registration target mismatch.");
+      if (input.asset.chainId !== success.selection.asset.chainId || input.asset.address !== success.selection.asset.address) {
+        throw new TypeError("Token selection target mismatch.");
       }
     },
   }),
-  registrations: defineApplicationContract({
-    capabilityId: "token.registrations",
-    inputSchema: registrationsInputSchema,
-    requestSchema: registrationsRequestSchema,
-    successSchema: registrationListResultSchema,
-    failureCodes: contractFailureCodes.registrations,
+  selections: defineApplicationContract({
+    capabilityId: "token.selections",
+    inputSchema: selectionsInputSchema,
+    requestSchema: selectionsRequestSchema,
+    successSchema: selectionListResultSchema,
+    failureCodes: contractFailureCodes.selections,
     validatePublicSuccess: (input, success) => {
       if (
-        success.registrations.length > input.limit ||
-        (success.nextCursor !== null && success.registrations.length !== input.limit) ||
-        (input.cursor !== null && success.registrations.some(
+        success.selections.length > input.limit ||
+        (success.nextCursor !== null && success.selections.length !== input.limit) ||
+        (input.cursor !== null && success.selections.some(
           (entry) => entry.asset.address <= input.cursor!,
         ))
-      ) throw new TypeError("Token registration page does not match its request.");
+      ) throw new TypeError("Token selection page does not match its request.");
     },
   }),
-  startRegistration: defineApplicationContract({
-    capabilityId: "token.start_registration",
-    inputSchema: startRegistrationInputSchema,
-    successSchema: registrationOperationStartResultSchema,
-    failureCodes: contractFailureCodes.startRegistration,
+  startAddition: defineApplicationContract({
+    capabilityId: "token.start_addition",
+    inputSchema: startAdditionInputSchema,
+    successSchema: selectionOperationStartResultSchema,
+    failureCodes: contractFailureCodes.startAddition,
     validatePublicSuccess: (input, success) => {
       const operation = validateStartCommon(input.asset, success);
-      if (operation.review.previousRegistration !== null) {
-        throw new TypeError("Token registration start result is invalid.");
+      if (operation.review.previousSelection?.included === true) {
+        throw new TypeError("Token selection start result is invalid.");
       }
     },
     validateBoundSuccess: (_input, context, success) => {
       if (
         context.operationId !== success.operation.operationId ||
         context.interactionInterface !== success.operation.interactionInterface
-      ) throw new TypeError("Token registration start result does not match its internal context.");
+      ) throw new TypeError("Token selection start result does not match its internal context.");
     },
   }),
-  startUnregistration: defineApplicationContract({
-    capabilityId: "token.start_unregistration",
-    inputSchema: startUnregistrationInputSchema,
-    successSchema: unregistrationOperationStartResultSchema,
-    failureCodes: contractFailureCodes.startUnregistration,
+  startRemoval: defineApplicationContract({
+    capabilityId: "token.start_removal",
+    inputSchema: startRemovalInputSchema,
+    successSchema: removalOperationStartResultSchema,
+    failureCodes: contractFailureCodes.startRemoval,
     validatePublicSuccess: (input, success) => {
       const operation = validateStartCommon(input.asset, success);
       if (
-        operation.review.previousRegistration?.revision !== input.expectedRevision
+        operation.review.previousSelection?.revision !== input.expectedRevision
       ) throw new TypeError("Token removal start result is invalid.");
     },
     validateBoundSuccess: (_input, context, success) => {

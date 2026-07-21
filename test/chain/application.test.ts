@@ -276,6 +276,7 @@ describe("chain owner application", () => {
         if (call.data === "0x06fdde03") return rpcText("Example Token");
         if (call.data === "0x95d89b41") return rpcText("EXT");
         if (call.data === "0x313ce567") return rpcWord(18n);
+        if (call.data.startsWith("0x01ffc9a7")) return rpcWord(0n);
       }
       throw new Error(`Unexpected RPC method: ${method}`);
     });
@@ -317,7 +318,7 @@ describe("chain owner application", () => {
     const stateReferences = requester.calls
       .filter((call) => call.method === "eth_getCode" || call.method === "eth_call")
       .map((call) => call.params[1]);
-    expect(stateReferences).toHaveLength(5);
+    expect(stateReferences).toHaveLength(6);
     expect(stateReferences.every((reference) => JSON.stringify(reference) === JSON.stringify({
       blockHash,
       requireCanonical: true,
@@ -576,6 +577,7 @@ describe("chain owner application", () => {
         if (call.data === "0x06fdde03") return rpcText("line\nbreak");
         if (call.data === "0x95d89b41") return rpcText("a".repeat(513));
         if (call.data === "0x313ce567") return rpcWord(18n);
+        if (call.data.startsWith("0x01ffc9a7")) return rpcWord(0n);
       }
       throw new Error(`Unexpected RPC method: ${method}`);
     });
@@ -734,8 +736,10 @@ describe("chain owner application", () => {
     expect(state.walletCaptureCount).toBe(0);
     expect(application.routes).toBe(state.context.routes);
     expect(Object.keys(application).sort()).toEqual([
+      "accountAssetReads",
       "chainReads",
       "close",
+      "officialAssetReads",
       "routes",
       "supportManifest",
       "tokenInspection",

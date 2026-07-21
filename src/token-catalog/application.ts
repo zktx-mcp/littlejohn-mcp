@@ -3,7 +3,7 @@ import { captureConnectedWalletSession } from "./active-wallet.js";
 import {
   tokenCatalogApplicationContracts,
   type AnyTokenCatalogApplicationContract,
-  type TokenRegistration,
+  type TokenSelection,
 } from "./contracts.js";
 import { TokenCatalogOperationError, normalizeTokenCatalogError } from "./operation-error.js";
 import type {
@@ -30,7 +30,7 @@ const normalizedFailure = (
 
 const requireAccountAsset = (
   dependencies: TokenCatalogApplicationDependencies,
-  asset: TokenRegistration["asset"],
+  asset: TokenSelection["asset"],
 ): EvmAccountIdentity => {
   const { account } = captureConnectedWalletSession(dependencies.activeWallet);
   if (account.chainId !== asset.chainId) throw new TokenCatalogOperationError("invalid_input");
@@ -54,17 +54,17 @@ export const createTokenCatalogApplication = (input: Readonly<{
   operations: TokenCatalogOperationCoordinatorPort;
 }>): TokenCatalogApplicationPort => {
   const application: TokenCatalogApplicationPort = {
-    getRegistration(inputValue) {
-      const contract = tokenCatalogApplicationContracts.registration;
+    getSelection(inputValue) {
+      const contract = tokenCatalogApplicationContracts.selection;
       let request;
       try { request = contract.parseInput(inputValue); }
       catch { return contract.parseFailure(invalidInput()); }
       try {
         const account = requireAccountAsset(input.dependencies, request.asset);
-        const registration = input.dependencies.store.getRegistration(account, request.asset);
-        if (registration === undefined) throw new TokenCatalogOperationError("token_registration_not_found");
-        const result = contract.parsePublicSuccess(request, registration);
-        if (!sameAccount(account, result.registration.account)) {
+        const selection = input.dependencies.store.getSelection(account, request.asset);
+        if (selection === undefined) throw new TokenCatalogOperationError("token_selection_not_found");
+        const result = contract.parsePublicSuccess(request, selection);
+        if (!sameAccount(account, result.selection.account)) {
           throw new TokenCatalogOperationError("internal_error");
         }
         return result;
@@ -73,16 +73,16 @@ export const createTokenCatalogApplication = (input: Readonly<{
       }
     },
 
-    listRegistrations(inputValue) {
-      const contract = tokenCatalogApplicationContracts.registrations;
+    listSelections(inputValue) {
+      const contract = tokenCatalogApplicationContracts.selections;
       let request;
       try { request = contract.parseInput(inputValue); }
       catch { return contract.parseFailure(invalidInput()); }
       try {
         const { account } = captureConnectedWalletSession(input.dependencies.activeWallet);
-        const page = input.dependencies.store.listRegistrations({ account, ...request });
+        const page = input.dependencies.store.listSelections({ account, ...request });
         const result = contract.parsePublicSuccess(request, page);
-        if (result.registrations.some((entry) => !sameAccount(account, entry.account))) {
+        if (result.selections.some((entry) => !sameAccount(account, entry.account))) {
           throw new TokenCatalogOperationError("internal_error");
         }
         return result;
@@ -91,13 +91,13 @@ export const createTokenCatalogApplication = (input: Readonly<{
       }
     },
 
-    async startRegistration(inputValue, control) {
-      const contract = tokenCatalogApplicationContracts.startRegistration;
+    async startAddition(inputValue, control) {
+      const contract = tokenCatalogApplicationContracts.startAddition;
       let request;
       try { request = contract.parseInput(inputValue); }
       catch { return contract.parseFailure(invalidInput()); }
       try {
-        const result = await input.operations.startRegistration(request, control);
+        const result = await input.operations.startAddition(request, control);
         if ("ok" in result && result.ok === false) return normalizedFailure(contract, result);
         return requireInteractionInterface(
           control.interactionInterface,
@@ -106,13 +106,13 @@ export const createTokenCatalogApplication = (input: Readonly<{
       } catch (error) { return normalizedFailure(contract, error); }
     },
 
-    async startUnregistration(inputValue, control) {
-      const contract = tokenCatalogApplicationContracts.startUnregistration;
+    async startRemoval(inputValue, control) {
+      const contract = tokenCatalogApplicationContracts.startRemoval;
       let request;
       try { request = contract.parseInput(inputValue); }
       catch { return contract.parseFailure(invalidInput()); }
       try {
-        const result = await input.operations.startUnregistration(request, control);
+        const result = await input.operations.startRemoval(request, control);
         if ("ok" in result && result.ok === false) return normalizedFailure(contract, result);
         return requireInteractionInterface(
           control.interactionInterface,

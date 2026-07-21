@@ -37,11 +37,14 @@ import {
 import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
 import {
   tokenCatalogErrorRegistry,
-  tokenInspectionDigest,
   tokenCatalogOperationSchema,
   tokenCatalogControlRoutes,
 } from "../../src/token-catalog/index.js";
-import { createInspectionSuccess, walletAddress } from "../token-catalog/harness.js";
+import {
+  createInspectionSuccess,
+  createTokenOperation,
+  createTokenSelection,
+} from "../token-catalog/harness.js";
 import type { RuntimeDispatchPort } from "../../src/interfaces/http-client.js";
 import type {
   RuntimeDispatchRequest,
@@ -101,77 +104,44 @@ const tokenAsset = erc20AssetIdentitySchema.parse({
 
 const tokenOperation = async (
   state: "awaiting_confirmation" | "cancelled" = "awaiting_confirmation",
-  kind: "register" | "unregister" = "register",
-) => {
-  const inspection = await createInspectionSuccess({ asset: tokenAsset, block: { kind: "latest" } });
-  const previousRegistration = kind === "register" ? null : {
-    account: { chainId: tokenAsset.chainId, address: walletAddress },
-    asset: tokenAsset,
-    revision: Buffer.alloc(16, 2).toString("base64url"),
-    inspectionDigest: tokenInspectionDigest(inspection),
-    createdAt: "2026-07-18T00:00:01.000Z",
-  };
-  return tokenCatalogOperationSchema.parse({
-    operationId: tokenOperationId,
-    kind,
-    state,
-    interactionInterface: "web",
-    createdAt: "2026-07-18T00:00:03.000Z",
-    expiresAt: "2026-07-18T00:05:03.000Z",
-    account: { chainId: tokenAsset.chainId, address: walletAddress },
-    connectionRevision: "1",
-    asset: tokenAsset,
-    review: {
-      previousRegistration,
-      inspection,
-      reviewDigest: `0x${"ab".repeat(32)}`,
-    },
-    result: null,
-    failure: null,
-  });
-};
+  kind: "add" | "remove" = "add",
+) => createTokenOperation({ kind, state, operationId: tokenOperationId });
 
 const tokenMcpContractCases = async () => {
   const inspection = await createInspectionSuccess({ asset: tokenAsset, block: { kind: "latest" } });
-  const registrationOperation = await tokenOperation();
-  const unregistrationOperation = await tokenOperation("awaiting_confirmation", "unregister");
+  const additionOperation = await tokenOperation();
+  const removalOperation = await tokenOperation("awaiting_confirmation", "remove");
   const cancelledOperation = await tokenOperation("cancelled");
-  const registration = {
-    account: { chainId: tokenAsset.chainId, address: walletAddress },
-    asset: tokenAsset,
-    revision: Buffer.alloc(16, 2).toString("base64url"),
-    inspectionDigest: tokenInspectionDigest(inspection),
-    createdAt: "2026-07-18T00:00:01.000Z",
-  };
-  const revision = registration.revision;
+  const selection = createTokenSelection(inspection);
+  const revision = selection.revision;
   const displayUrl = "http://127.0.0.1:46630/";
   return Object.freeze(new Map([
-    [tokenCatalogInterfaceBindings.registration.mcp.name, {
-      binding: tokenCatalogInterfaceBindings.registration,
+    [tokenCatalogInterfaceBindings.selection.mcp.name, {
+      binding: tokenCatalogInterfaceBindings.selection,
       input: { asset: tokenAsset },
-      success: { registration, inspection },
+      success: { selection, historicalInspection: inspection },
     }],
-    [tokenCatalogInterfaceBindings.registrations.mcp.name, {
-      binding: tokenCatalogInterfaceBindings.registrations,
+    [tokenCatalogInterfaceBindings.selections.mcp.name, {
+      binding: tokenCatalogInterfaceBindings.selections,
       input: {},
-      success: { registrations: [registration], nextCursor: null },
+      success: { selections: [selection], nextCursor: null },
     }],
-    [tokenCatalogInterfaceBindings.startRegistration.mcp.name, {
-      binding: tokenCatalogInterfaceBindings.startRegistration,
+    [tokenCatalogInterfaceBindings.startAddition.mcp.name, {
+      binding: tokenCatalogInterfaceBindings.startAddition,
       input: { asset: tokenAsset },
-      success: { result: { operation: registrationOperation }, displayUrl },
-      canonicalSuccess: { operation: registrationOperation },
+      success: { result: { operation: additionOperation }, displayUrl },
+      canonicalSuccess: { operation: additionOperation },
     }],
-    [tokenCatalogInterfaceBindings.startUnregistration.mcp.name, {
-      binding: tokenCatalogInterfaceBindings.startUnregistration,
+    [tokenCatalogInterfaceBindings.startRemoval.mcp.name, {
+      binding: tokenCatalogInterfaceBindings.startRemoval,
       input: { asset: tokenAsset, expectedRevision: revision },
-      success: { result: { operation: unregistrationOperation }, displayUrl },
-      canonicalSuccess: { operation: unregistrationOperation },
+      success: { result: { operation: removalOperation }, displayUrl },
+      canonicalSuccess: { operation: removalOperation },
     }],
     [tokenCatalogInterfaceBindings.operation.mcp.name, {
       binding: tokenCatalogInterfaceBindings.operation,
       input: { operationId: tokenOperationId },
-      success: { operation: registrationOperation },
+      success: { operation: additionOperation },
     }],
     [tokenCatalogInterfaceBindings.cancelOperation.mcp.name, {
       binding: tokenCatalogInterfaceBindings.cancelOperation,
@@ -755,7 +725,7 @@ describe("MCP interface", () => {
     expect(inspected.structuredContent).toEqual(inspection);
 
     const started = await client.callTool({
-      name: tokenCatalogInterfaceBindings.startRegistration.mcp.name,
+      name: tokenCatalogInterfaceBindings.startAddition.mcp.name,
       arguments: { asset: tokenAsset },
     });
     expect(started.isError).not.toBe(true);
@@ -778,7 +748,7 @@ describe("MCP interface", () => {
         body: {
           control: { operationId: tokenOperationId, interactionInterface: "web" },
           request: {
-            kind: "register",
+            kind: "add",
             asset: tokenAsset,
           },
         },
@@ -829,7 +799,7 @@ describe("MCP interface", () => {
       ...awaiting,
       operationId: otherOperationId,
     });
-    const wrongKind = await tokenOperation("awaiting_confirmation", "unregister");
+    const wrongKind = await tokenOperation("awaiting_confirmation", "remove");
     const runtime = new FakeRuntime((request) => ({
       status: 200,
       body: captureCanonicalJson(request.path === tokenCatalogControlRoutes.operations
@@ -849,7 +819,7 @@ describe("MCP interface", () => {
     });
     expect(cancel.structuredContent).toMatchObject({ status: "delivery_unknown", action: "cancel" });
     const start = await client.callTool({
-      name: tokenCatalogInterfaceBindings.startRegistration.mcp.name,
+      name: tokenCatalogInterfaceBindings.startAddition.mcp.name,
       arguments: { asset: tokenAsset },
     });
     expect(start.structuredContent).toMatchObject({ status: "delivery_unknown", action: "start" });
@@ -862,15 +832,15 @@ describe("MCP interface", () => {
 
     const calls = [
       {
-        name: tokenCatalogInterfaceBindings.registration.mcp.name,
+        name: tokenCatalogInterfaceBindings.selection.mcp.name,
         arguments: { asset: tokenAsset },
       },
       {
-        name: tokenCatalogInterfaceBindings.registrations.mcp.name,
+        name: tokenCatalogInterfaceBindings.selections.mcp.name,
         arguments: {},
       },
       {
-        name: tokenCatalogInterfaceBindings.startUnregistration.mcp.name,
+        name: tokenCatalogInterfaceBindings.startRemoval.mcp.name,
         arguments: { asset: tokenAsset, expectedRevision: revision },
       },
     ] as const;
@@ -889,12 +859,12 @@ describe("MCP interface", () => {
       expect.objectContaining({
         requestClass: "local_control",
         method: "GET",
-        path: tokenCatalogControlRoutes.registration(tokenAsset.chainId, tokenAsset.address),
+        path: tokenCatalogControlRoutes.selection(tokenAsset.chainId, tokenAsset.address),
       }),
       expect.objectContaining({
         requestClass: "local_control",
         method: "POST",
-        path: tokenCatalogControlRoutes.registrationQueries,
+        path: tokenCatalogControlRoutes.selectionQueries,
         body: { limit: 25 },
       }),
       expect.objectContaining({
@@ -903,7 +873,7 @@ describe("MCP interface", () => {
         path: tokenCatalogControlRoutes.operations,
         body: {
           control: { operationId: tokenOperationId, interactionInterface: "web" },
-          request: { kind: "unregister", asset: tokenAsset, expectedRevision: revision },
+          request: { kind: "remove", asset: tokenAsset, expectedRevision: revision },
         },
       }),
     ]);
@@ -920,7 +890,7 @@ describe("MCP interface", () => {
         recoveryBody: { operation: operation() },
       },
       {
-        name: tokenCatalogInterfaceBindings.startRegistration.mcp.name,
+        name: tokenCatalogInterfaceBindings.startAddition.mcp.name,
         arguments: { asset: tokenAsset },
         operationPath: tokenCatalogControlRoutes.operation(tokenOperationId),
         startBody: { operation: awaitingToken },
@@ -981,7 +951,7 @@ describe("MCP interface", () => {
         recoveryBody: { operation: operation() },
       },
       {
-        name: tokenCatalogInterfaceBindings.startRegistration.mcp.name,
+        name: tokenCatalogInterfaceBindings.startAddition.mcp.name,
         arguments: { asset: tokenAsset },
         operationPath: tokenCatalogControlRoutes.operation(tokenOperationId),
         startBody: { operation: awaitingToken },

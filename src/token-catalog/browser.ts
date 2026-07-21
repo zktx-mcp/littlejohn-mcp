@@ -1,7 +1,7 @@
 export * from "./contract-schema.js";
 export {
   tokenCatalogBrowserRoutes,
-  tokenRegistrationListRequestBody,
+  tokenSelectionListRequestBody,
 } from "./http-contract.js";
 export {
   tokenCatalogErrorDefinitions,

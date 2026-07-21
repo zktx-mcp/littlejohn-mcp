@@ -18,12 +18,12 @@ import {
   tokenCatalogInterfaceErrorMappings,
   tokenCatalogOperationConfirmationContract,
   tokenCatalogOperationIdSchema,
-  tokenRegistrationRevisionSchema,
+  tokenSelectionRevisionSchema,
   type AnyTokenCatalogApplicationContract,
   type TokenCatalogOperation,
   type TokenCatalogOperationStartResult,
-  type TokenRegistration,
-  type TokenRegistrationWithInspection,
+  type TokenSelection,
+  type TokenSelectionDetail,
 } from "../token-catalog/index.js";
 import type { RuntimeDispatchPort } from "./http-client.js";
 import {
@@ -51,11 +51,11 @@ export type TokenCliCommand =
   | Readonly<{ kind: "inspect"; address: EvmAddress; block: BlockSelector; json: boolean }>
   | Readonly<{ kind: "get"; address: EvmAddress; json: boolean }>
   | Readonly<{ kind: "list"; limit?: number; cursor?: EvmAddress; json: boolean }>
-  | Readonly<{ kind: "register"; address: EvmAddress; json: false }>
+  | Readonly<{ kind: "add"; address: EvmAddress; json: false }>
   | Readonly<{
-      kind: "unregister";
+      kind: "remove";
       address: EvmAddress;
-      expectedRevision: TokenRegistration["revision"];
+      expectedRevision: TokenSelection["revision"];
       json: false;
     }>
   | Readonly<{ kind: "operation"; operationId: TokenCatalogOperation["operationId"]; json: boolean }>
@@ -137,8 +137,8 @@ const operationId = (
 
 const revision = (
   value: string | undefined,
-): TokenRegistration["revision"] => {
-  try { return tokenRegistrationRevisionSchema.parse(value); }
+): TokenSelection["revision"] => {
+  try { return tokenSelectionRevisionSchema.parse(value); }
   catch { return invalidInput(); }
 };
 
@@ -173,11 +173,11 @@ export const parseTokenCliCommand = (argumentsInput: readonly string[]): TokenCl
       json: parsed.json,
     });
   }
-  if (command === tokenCatalogInterfaceBindings.registration.cli.command) {
+  if (command === tokenCatalogInterfaceBindings.selection.cli.command) {
     const parsed = parseTokens(tokens, new Set(), new Set(), true);
     return Object.freeze({ kind: "get", address: address(position(parsed)), json: parsed.json });
   }
-  if (command === tokenCatalogInterfaceBindings.registrations.cli.command) {
+  if (command === tokenCatalogInterfaceBindings.selections.cli.command) {
     const parsed = parseTokens(tokens, new Set(["--limit", "--cursor"]), new Set(), true);
     if (parsed.positionals.length !== 0) return invalidInput();
     const limit = parseLimit(parsed.values.get("--limit"));
@@ -189,18 +189,18 @@ export const parseTokenCliCommand = (argumentsInput: readonly string[]): TokenCl
       json: parsed.json,
     });
   }
-  if (command === tokenCatalogInterfaceBindings.startRegistration.cli.command) {
+  if (command === tokenCatalogInterfaceBindings.startAddition.cli.command) {
     const parsed = parseTokens(tokens, new Set());
     return Object.freeze({
-      kind: "register",
+      kind: "add",
       address: address(position(parsed)),
       json: false,
     });
   }
-  if (command === tokenCatalogInterfaceBindings.startUnregistration.cli.command) {
+  if (command === tokenCatalogInterfaceBindings.startRemoval.cli.command) {
     const parsed = parseTokens(tokens, new Set(["--revision"]));
     return Object.freeze({
-      kind: "unregister",
+      kind: "remove",
       address: address(position(parsed)),
       expectedRevision: revision(parsed.values.get("--revision")),
       json: false,
@@ -220,7 +220,7 @@ export const parseTokenCliCommand = (argumentsInput: readonly string[]): TokenCl
 
 export const tokenCliCommandRequiresInteractiveTerminal = (
   command: TokenCliCommand,
-): boolean => command.kind === "register" || command.kind === "unregister";
+): boolean => command.kind === "add" || command.kind === "remove";
 
 const canonical = (output: TokenCliOutputPort, value: unknown): void => {
   output.writeOutput(`${canonicalJsonStringify(captureCanonicalJson(value))}\n`);
@@ -281,21 +281,23 @@ const asset = (chainId: EvmChainId, tokenAddress: EvmAddress) => Object.freeze({
   address: tokenAddress,
 });
 
+type HistoricalInspection = NonNullable<TokenSelectionDetail["historicalInspection"]>;
+
 const observationText = (
-  observation: TokenRegistrationWithInspection["inspection"]["data"]["metadata"]["name"],
+  observation: HistoricalInspection["data"]["metadata"]["name"],
 ): string => observation.status === "available"
   ? observation.value
   : `unavailable (${observation.reason})`;
 
 const decimalsText = (
-  decimals: TokenRegistrationWithInspection["inspection"]["data"]["totalSupply"]["decimals"],
+  decimals: HistoricalInspection["data"]["totalSupply"]["decimals"],
 ): string => decimals.status === "available"
   ? decimals.value
   : decimals.status === "unavailable"
     ? `unavailable (${decimals.reason})`
     : `not observed (${decimals.scopeExclusionId})`;
 
-const inspectionHuman = (inspection: TokenRegistrationWithInspection["inspection"]): string => {
+const inspectionHuman = (inspection: HistoricalInspection): string => {
   const data = inspection.data;
   return [
     `Token: ${data.asset.address}`,
@@ -319,41 +321,49 @@ const inspectionHuman = (inspection: TokenRegistrationWithInspection["inspection
   ].join("\n");
 };
 
-const registrationHuman = (registration: TokenRegistration): string => [
-  `Token: ${registration.asset.address}`,
-  `Chain: ${registration.asset.chainId}`,
-  `Revision: ${registration.revision}`,
+const selectionHuman = (selection: TokenSelection): string => [
+  `Token: ${selection.asset.address}`,
+  `Chain: ${selection.asset.chainId}`,
+  `Revision: ${selection.revision}`,
 ].join("\n");
 
 const operationAction = (operation: TokenCatalogOperation): string => {
   switch (operation.kind) {
-    case "register": return "Add token";
-    case "unregister": return "Remove token";
+    case "add": return "Add token";
+    case "remove": return "Remove token";
   }
 };
 
 const operationReviewHuman = (operation: TokenCatalogOperation): string => {
-  const previous = operation.review.previousRegistration;
+  const previous = operation.review.previousSelection;
   return [
     operationAction(operation),
     `Token: ${operation.asset.address}`,
     `Chain: ${operation.asset.chainId}`,
     ...(previous === null ? [] : [
-      `Current registration revision: ${previous.revision}`,
+      `Current selection revision: ${previous.revision}`,
+    ]),
+    ...(operation.kind !== "add" ? [] : [
+      `Classification: ${operation.review.officialEvidence === null
+        ? "Custom ERC-20"
+        : "Robinhood Stock Token"}`,
+    ]),
+    ...(operation.review.officialEvidence === null ? [] : [
+      `Official asset UID: ${operation.review.officialEvidence.assetUid}`,
     ]),
     "",
     "Reviewed token inspection",
-    inspectionHuman(operation.review.inspection),
+    ...(operation.review.inspection === null ? [] : [inspectionHuman(operation.review.inspection)]),
   ].join("\n");
 };
 
 const operationOutcomeHuman = (operation: TokenCatalogOperation): string => operation.state === "completed"
-    ? operation.kind === "register"
+    ? operation.kind === "add"
       ? "Token added."
       : "Token removed."
     : operation.state === "cancelled"
-      ? "Token catalog change cancelled."
-      : `Token catalog operation: ${operation.state}.`;
+      ? "Token selection change cancelled."
+      : `Token selection operation: ${operation.state}.`;
 
 const operationHuman = (operation: TokenCatalogOperation): string =>
   `${operationReviewHuman(operation)}\n${operationOutcomeHuman(operation)}`;
@@ -369,7 +379,7 @@ const confirmationDecision = async (
   const onAbort = (): void => { resolveInterrupt(); };
   output.interruptSignal.addEventListener("abort", onAbort, { once: true });
   try {
-    const answer = output.readLine("Confirm this token catalog change? [y/N] ")
+    const answer = output.readLine("Confirm this account token change? [y/N] ")
       .then((value): ConfirmationDecision => /^y$/iu.test(value) ? "confirm" : "decline");
     return await Promise.race([answer, interrupted]);
   } finally {
@@ -379,29 +389,29 @@ const confirmationDecision = async (
 
 const startInput = async (
   runtime: RuntimeDispatchPort,
-  command: Extract<TokenCliCommand, { kind: "register" | "unregister" }>,
+  command: Extract<TokenCliCommand, { kind: "add" | "remove" }>,
   signal: AbortSignal,
 ): Promise<Readonly<{
   contract: AnyTokenCatalogApplicationContract;
   request: Readonly<Record<string, CanonicalJson>>;
-  operationKind: "register" | "unregister";
+  operationKind: "add" | "remove";
 }> | ApplicationFailure> => {
   const chainId = await configuredChainId(runtime, signal);
   if (typeof chainId !== "string") return chainId;
   const tokenAsset = asset(chainId, command.address);
-  if (command.kind === "register") {
-    const contract = tokenCatalogApplicationContracts.startRegistration;
+  if (command.kind === "add") {
+    const contract = tokenCatalogApplicationContracts.startAddition;
     return Object.freeze({
       contract,
       request: contract.parseInput({ asset: tokenAsset }) as unknown as Readonly<Record<string, CanonicalJson>>,
-      operationKind: "register" as const,
+      operationKind: "add" as const,
     });
   }
-  const contract = tokenCatalogApplicationContracts.startUnregistration;
+  const contract = tokenCatalogApplicationContracts.startRemoval;
   return Object.freeze({
     contract,
     request: contract.parseInput({ asset: tokenAsset, expectedRevision: command.expectedRevision }) as unknown as Readonly<Record<string, CanonicalJson>>,
-    operationKind: "unregister" as const,
+    operationKind: "remove" as const,
   });
 };
 
@@ -417,7 +427,7 @@ const cancelStartedOperation = async (
 const runInteractiveChange = async (
   runtime: RuntimeDispatchPort,
   client: LocalOperationClient,
-  command: Extract<TokenCliCommand, { kind: "register" | "unregister" }>,
+  command: Extract<TokenCliCommand, { kind: "add" | "remove" }>,
   output: TokenCliOutputPort,
 ): Promise<number> => {
   const prepared = await startInput(runtime, command, output.interruptSignal);
@@ -425,16 +435,16 @@ const runInteractiveChange = async (
   if (output.interruptSignal.aborted) {
     return reportFailure(output, createInterfaceFailure("request_aborted"), false);
   }
-  const start = prepared.operationKind === "register"
+  const start = prepared.operationKind === "add"
     ? await invokeLocal(
       client,
-      tokenLocalOperationIdentities.cli.registration,
+      tokenLocalOperationIdentities.cli.addition,
       prepared.request,
       output.interruptSignal,
     )
     : await invokeLocal(
         client,
-        tokenLocalOperationIdentities.cli.unregistration,
+        tokenLocalOperationIdentities.cli.removal,
         prepared.request,
         output.interruptSignal,
       );
@@ -499,7 +509,7 @@ export const runTokenCliCommand = async (
       (!output.inputIsTTY || !output.outputIsTTY)) {
       return reportFailure(output, createTokenCatalogFailure("interactive_terminal_required"), false);
     }
-    if (command.kind === "register" || command.kind === "unregister") {
+    if (command.kind === "add" || command.kind === "remove") {
       return await runInteractiveChange(runtime, client, command, output);
     }
     if (command.kind === "operation" || command.kind === "cancel") {
@@ -523,24 +533,24 @@ export const runTokenCliCommand = async (
       return 0;
     }
     if (command.kind === "list") {
-      const contract = tokenCatalogApplicationContracts.registrations;
+      const contract = tokenCatalogApplicationContracts.selections;
       const input = {
         ...(command.limit === undefined ? {} : { limit: command.limit }),
         ...(command.cursor === undefined ? {} : { cursor: command.cursor }),
       };
       const result = await invokeLocal(
         client,
-        tokenLocalOperationIdentities.shared.registrations,
+        tokenLocalOperationIdentities.shared.selections,
         input,
         output.interruptSignal,
       );
       if (!result.ok) return reportFailure(output, result.failure, command.json);
       if (command.json) canonical(output, result.value);
       else {
-        const page = result.value as unknown as { registrations: TokenRegistration[]; nextCursor: string | null };
-        output.writeOutput(page.registrations.length === 0
-          ? "No tokens are registered for the current wallet account.\n"
-          : `${page.registrations.map(registrationHuman).join("\n\n")}${
+        const page = result.value as unknown as { selections: TokenSelection[]; nextCursor: string | null };
+        output.writeOutput(page.selections.length === 0
+          ? "No tokens are added for the current wallet account.\n"
+          : `${page.selections.map(selectionHuman).join("\n\n")}${
               page.nextCursor === null ? "" : `\n\nNext cursor: ${page.nextCursor}`
             }\n`);
       }
@@ -571,18 +581,20 @@ export const runTokenCliCommand = async (
         return reportFailure(output, createInterfaceFailure("internal_error"), command.json);
       }
     }
-    const contract = tokenCatalogApplicationContracts.registration;
+    const contract = tokenCatalogApplicationContracts.selection;
     const input = contract.parseInput({ asset: tokenAsset });
     const result = await invokeLocal(
       client,
-      tokenLocalOperationIdentities.shared.registration,
+      tokenLocalOperationIdentities.shared.selection,
       input,
       output.interruptSignal,
     );
     if (!result.ok) return reportFailure(output, result.failure, command.json);
-    const registration = result.value as unknown as TokenRegistrationWithInspection;
-    if (command.json) canonical(output, registration);
-    else output.writeOutput(`${registrationHuman(registration.registration)}\n${inspectionHuman(registration.inspection)}\n`);
+    const selection = result.value as unknown as TokenSelectionDetail;
+    if (command.json) canonical(output, selection);
+    else output.writeOutput(`${selectionHuman(selection.selection)}${
+      selection.historicalInspection === null ? "" : `\n${inspectionHuman(selection.historicalInspection)}`
+    }\n`);
     return 0;
   } catch (error) {
     if (error instanceof TokenCliDeliveryUnknown) {

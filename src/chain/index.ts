@@ -63,3 +63,14 @@ export {
 export type { RpcRequester } from "./rpc.js";
 export { createTokenInspectionService } from "./token-inspection.js";
 export type { TokenInspectionService } from "./token-inspection.js";
+export { createOfficialAssetChainReadPort } from "./official-assets.js";
+export type { OfficialAssetChainReadPort } from "./official-assets.js";
+export type { OfficialAssetVerificationResult } from "./official-assets.js";
+export { createAccountAssetChainReadPort } from "./account-assets.js";
+export type {
+  AccountAssetChainReadPort,
+  CurrentAccountAssetCollectionRead,
+  CurrentAccountAssetExactRead,
+  CurrentAccountTokenRead,
+  CurrentTokenText,
+} from "./account-assets.js";

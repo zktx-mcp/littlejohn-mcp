@@ -10,7 +10,7 @@ import {
 } from "../core/index.js";
 import { guardRuntimeJsonSchema, parseRuntimeAuthority } from "./schema-authority.js";
 
-export const runtimeProtocolVersion = 5 as const;
+export const runtimeProtocolVersion = 6 as const;
 export const runtimeIdentifierByteLength = 16 as const;
 export const runtimeIdentityChallengeByteLength = 32 as const;
 export const runtimeIdentityProofByteLength = 32 as const;

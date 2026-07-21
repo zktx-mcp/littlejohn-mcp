@@ -6,4 +6,5 @@ const unavailable = () => new AccountAssetOperationError("wallet_not_connected")
 export const accountAssetInterfaceHarnessPort = (): AccountAssetApplicationPort => Object.freeze({
   list: async () => unavailable(),
   get: async () => unavailable(),
+  listOfficialCandidates: async () => unavailable(),
 });

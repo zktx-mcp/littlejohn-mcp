@@ -1,26 +1,36 @@
 export {
   assertCommittedOfficialAssetSnapshot,
+  assertOfficialAssetSourceObservation,
   assertOfficialAssetSourceMember,
   assertOfficialAssetSourceSnapshot,
   createOfficialAssetSourceClient,
   getOfficialAssetSourceErrorCode,
   officialAssetCandidateListDigest,
-  officialAssetCandidatePageSize,
   officialAssetMemberSetDigest,
   officialAssetSnapshotRevisionSchema,
   officialAssetSourceDeploymentLimit,
   officialAssetSourceMemberLimit,
   officialAssetSourceResponseByteLimit,
   officialAssetSourceTimeoutMs,
-  projectOfficialAssetCandidates,
+  findOfficialAssetMember,
   robinhoodAssetSourceUri,
   robinhoodChainId,
   OfficialAssetSourceError,
 } from "./official-assets.js";
+export { officialAssetCandidatePageSize } from "./browser.js";
+export {
+  defaultStockTokenManifest,
+  defaultStockTokenRank,
+} from "./default-stock-tokens.js";
+export type { DefaultStockTokenManifest } from "./default-stock-tokens.js";
+export { createOfficialAssetSynchronization } from "./synchronization.js";
+export type {
+  OfficialAssetSynchronizationDependencies,
+  OfficialAssetSynchronizationPort,
+  OfficialAssetSynchronizationResult,
+} from "./synchronization.js";
 export type {
   CommittedOfficialAssetSnapshot,
-  OfficialAssetCandidateCursor,
-  OfficialAssetCandidatePage,
   OfficialAssetSnapshotRevision,
   OfficialAssetSnapshotStore,
   OfficialAssetSourceClient,

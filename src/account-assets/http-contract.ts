@@ -1,7 +1,9 @@
-import type { EvmAddress } from "../core/index.js";
+import { erc20AssetIdentitySchema, type EvmAddress } from "../core/browser.js";
 import {
   accountAssetApplicationContracts,
   type AccountAssetCollectionRequest,
+  type AccountAssetOfficialCandidateRequest,
+  type AccountAssetViewRevision,
 } from "./contracts.js";
 
 const browserRoot = "/api/v1/account-assets";
@@ -16,13 +18,24 @@ export const accountAssetCollectionRequestBody = (
 
 export const accountAssetBrowserRoutes = Object.freeze({
   queries: `${browserRoot}/queries`,
+  officialCandidateQueries: `${browserRoot}/official-candidate-queries`,
   exactPattern: `${browserRoot}/{chainId}/{tokenAddress}`,
   exact(chainId: string, tokenAddress: EvmAddress): string {
-    const request = accountAssetApplicationContracts.exact.parseInput({
-      asset: { kind: "erc20", chainId, address: tokenAddress },
+    const asset = erc20AssetIdentitySchema.parse({
+      kind: "erc20", chainId, address: tokenAddress,
     });
-    return `${browserRoot}/${request.asset.chainId}/${request.asset.address}`;
+    return `${browserRoot}/${asset.chainId}/${asset.address}`;
   },
+});
+
+export const accountAssetExactRequestBody = (viewRevision: AccountAssetViewRevision) =>
+  Object.freeze({ viewRevision });
+
+export const accountAssetOfficialCandidateRequestBody = (
+  request: AccountAssetOfficialCandidateRequest,
+) => Object.freeze({
+  viewRevision: request.viewRevision,
+  ...(request.cursor === null ? {} : { cursor: request.cursor }),
 });
 
 export const accountAssetControlRoutes = Object.freeze({

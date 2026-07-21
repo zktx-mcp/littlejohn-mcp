@@ -3,12 +3,10 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  assertOfficialAssetSourceSnapshot,
   createOfficialAssetSourceClient,
   getOfficialAssetSourceErrorCode,
   officialAssetSourceMemberLimit,
   officialAssetSourceResponseByteLimit,
-  projectOfficialAssetCandidates,
   robinhoodAssetSourceUri,
 } from "../../src/registry/index.js";
 import { parseEvmAddress, parseHash32 } from "../../src/core/index.js";
@@ -90,26 +88,6 @@ describe("official asset source", () => {
         (error: unknown) => getOfficialAssetSourceErrorCode(error) === "source_inconsistent",
       );
     }
-  });
-
-  it("pages only observations admitted by the exact HTTP owner", async () => {
-    const snapshot = await readSnapshot(bytes({
-      assets: Array.from({ length: 26 }, (_, index) => asset(index + 1)),
-    }));
-    const first = projectOfficialAssetCandidates(snapshot);
-    expect(first.entries).toHaveLength(25);
-    expect(first.nextCursor).toEqual({ assetUid: uid(25), contractAddress: address(25) });
-    expect(projectOfficialAssetCandidates(snapshot, first.nextCursor).entries).toHaveLength(1);
-    expect(() => projectOfficialAssetCandidates(snapshot, {
-      assetUid: uid(25),
-      contractAddress: address(24),
-    })).toThrow("cursor");
-
-    const structurallyValidCopy = assertOfficialAssetSourceSnapshot({
-      ...snapshot,
-      members: snapshot.members.map((member) => ({ ...member })),
-    });
-    expect(() => projectOfficialAssetCandidates(structurallyValidCopy as never)).toThrow("not admitted");
   });
 
   it("accepts the maximum complete source set without requiring an RPC dependency", async () => {

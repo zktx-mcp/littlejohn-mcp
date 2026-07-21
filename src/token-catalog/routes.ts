@@ -19,8 +19,8 @@ import {
   type TokenCatalogOperation,
   type TokenCatalogOperationConfirmationInput,
   type TokenCatalogOperationStartResult,
-  type TokenRegistrationStartRequest,
-  type TokenUnregistrationStartInput,
+  type TokenAdditionStartRequest,
+  type TokenRemovalStartInput,
 } from "./contracts.js";
 import {
   normalizeTokenCatalogError,
@@ -42,18 +42,18 @@ import {
 import {
   tokenCatalogBrowserRoutes,
   tokenCatalogControlRoutes,
-  tokenRegistrationListRequestBody,
+  tokenSelectionListRequestBody,
 } from "./http-contract.js";
 
 export {
   tokenCatalogBrowserRoutes,
   tokenCatalogControlRoutes,
-  tokenRegistrationListRequestBody,
+  tokenSelectionListRequestBody,
 } from "./http-contract.js";
 
 export type TokenCatalogOperationCreate =
-  | Readonly<{ kind: "register"; request: TokenRegistrationStartRequest }>
-  | Readonly<{ kind: "unregister"; request: TokenUnregistrationStartInput }>;
+  | Readonly<{ kind: "add"; request: TokenAdditionStartRequest }>
+  | Readonly<{ kind: "remove"; request: TokenRemovalStartInput }>;
 
 const canonicalRecord = (input: unknown): Readonly<Record<string, CanonicalJson>> => {
   const value = captureCanonicalJson(input);
@@ -82,16 +82,16 @@ export const parseTokenCatalogOperationCreate = (
   const request = Object.fromEntries(
     Object.entries(body).filter(([key]) => key !== "kind"),
   );
-  if (kind === "register") {
+  if (kind === "add") {
     return Object.freeze({
       kind,
-      request: tokenCatalogApplicationContracts.startRegistration.parseInput(request),
+      request: tokenCatalogApplicationContracts.startAddition.parseInput(request),
     });
   }
-  if (kind === "unregister") {
+  if (kind === "remove") {
     return Object.freeze({
       kind,
-      request: tokenCatalogApplicationContracts.startUnregistration.parseInput(request),
+      request: tokenCatalogApplicationContracts.startRemoval.parseInput(request),
     });
   }
   throw new TypeError("Token catalog operation kind is invalid.");
@@ -164,16 +164,32 @@ export const tokenCatalogApplicationResult = (
   }
 };
 
+export const tokenCatalogStartApplicationResult = (
+  contract: ReturnType<typeof tokenCatalogStartContract>,
+  request: TokenAdditionStartRequest | TokenRemovalStartInput,
+  context: Readonly<{
+    operationId: TokenCatalogOperation["operationId"];
+    interactionInterface: TokenCatalogInteractionInterface;
+  }>,
+  value: unknown,
+): RouteResult => {
+  try { return success(contract.parseBoundSuccess(request, context, value)); }
+  catch {
+    try { return failure(contract.parseFailure(value)); }
+    catch { return normalizeFailure(value); }
+  }
+};
+
 export const parseTokenCatalogOperationPathId = (
   operationIdInput: unknown,
 ): TokenCatalogOperation["operationId"] =>
   tokenCatalogOperationIdSchema.parse(operationIdInput);
 
-export const parseTokenCatalogRegistrationPathInput = (
+export const parseTokenCatalogSelectionPathInput = (
   chainIdInput: unknown,
   tokenAddressInput: unknown,
 ) =>
-  tokenCatalogApplicationContracts.registration.parseInput({
+  tokenCatalogApplicationContracts.selection.parseInput({
     asset: {
       kind: "erc20",
       chainId: chainIdInput,
@@ -184,8 +200,8 @@ export const parseTokenCatalogRegistrationPathInput = (
 const operationId = (context: RouteContext): TokenCatalogOperation["operationId"] =>
   parseTokenCatalogOperationPathId(context.params["operationId"]);
 
-const registrationRequest = (context: RouteContext) =>
-  parseTokenCatalogRegistrationPathInput(
+const selectionRequest = (context: RouteContext) =>
+  parseTokenCatalogSelectionPathInput(
     context.params["chainId"],
     context.params["tokenAddress"],
   );
@@ -196,15 +212,15 @@ export const startTokenCatalogOperation = (
   operationIdInput: TokenCatalogOperation["operationId"],
 ): Promise<TokenCatalogOperationStartResult | ApplicationFailure> => {
   switch (input.kind) {
-    case "register": return port.startRegistration(input.request, operationIdInput);
-    case "unregister": return port.startUnregistration(input.request, operationIdInput);
+    case "add": return port.startAddition(input.request, operationIdInput);
+    case "remove": return port.startRemoval(input.request, operationIdInput);
   }
 };
 
 export const tokenCatalogStartContract = (kind: TokenCatalogOperationCreate["kind"]) => {
   switch (kind) {
-    case "register": return tokenCatalogApplicationContracts.startRegistration;
-    case "unregister": return tokenCatalogApplicationContracts.startUnregistration;
+    case "add": return tokenCatalogApplicationContracts.startAddition;
+    case "remove": return tokenCatalogApplicationContracts.startRemoval;
   }
 };
 
@@ -246,11 +262,11 @@ export const extendTokenCatalogControlRouteRegistry = (input: {
     {
       method: "POST",
       mutation: "none",
-      pathPattern: tokenCatalogControlRoutes.registrationQueries,
+      pathPattern: tokenCatalogControlRoutes.selectionQueries,
       response: "canonical_json",
       successStatus: 200,
       handler: async (context) => {
-        const contract = tokenCatalogApplicationContracts.registrations;
+        const contract = tokenCatalogApplicationContracts.selections;
         let request;
         try { request = contract.parseInput(context.body); }
         catch { return invalidInput(); }
@@ -258,7 +274,7 @@ export const extendTokenCatalogControlRouteRegistry = (input: {
           return tokenCatalogApplicationResult(
             contract,
             request,
-            await input.queries.listRegistrations(tokenRegistrationListRequestBody(request)),
+            await input.queries.listSelections(tokenSelectionListRequestBody(request)),
           );
         }
         catch (error) { return normalizeFailure(error); }
@@ -267,19 +283,19 @@ export const extendTokenCatalogControlRouteRegistry = (input: {
     {
       method: "GET",
       mutation: "none",
-      pathPattern: tokenCatalogControlRoutes.registrationPattern,
+      pathPattern: tokenCatalogControlRoutes.selectionPattern,
       response: "canonical_json",
       successStatus: 200,
       handler: async (context) => {
-        const contract = tokenCatalogApplicationContracts.registration;
+        const contract = tokenCatalogApplicationContracts.selection;
         let request;
-        try { request = registrationRequest(context); }
+        try { request = selectionRequest(context); }
         catch { return invalidInput(); }
         try {
           return tokenCatalogApplicationResult(
             contract,
             request,
-            await input.queries.getRegistration(request),
+            await input.queries.getSelection(request),
           );
         }
         catch (error) { return normalizeFailure(error); }
@@ -300,14 +316,15 @@ export const extendTokenCatalogControlRouteRegistry = (input: {
           : input.interactiveCli;
         const contract = tokenCatalogStartContract(create.request.kind);
         try {
-          return success(contract.parseBoundSuccess(
+          return tokenCatalogStartApplicationResult(
+            contract,
             create.request.request,
             {
               operationId: create.operationId,
               interactionInterface: create.interactionInterface,
             },
             await startTokenCatalogOperation(create.request, port, create.operationId),
-          ));
+          );
         } catch (error) { return normalizeFailure(error); }
       },
     },

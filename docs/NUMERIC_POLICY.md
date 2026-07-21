@@ -153,7 +153,18 @@ present and bound to the same asset and observation identity.
 - Registry identifier, contract address, symbol, legal underlying, and token
   unit remain separate.
 - Stock Token raw balance and UI-adjusted balance remain separate.
-- A UI multiplier applies exactly once and its source and scale remain attached.
+- A verified ERC-8056 current UI multiplier applies exactly once. For raw
+  balance `raw` and current multiplier `multiplier`, both unsigned integers,
+  the adjusted raw amount is exactly
+  `floor(raw * multiplier / 1000000000000000000)`. The implementation uses
+  arbitrary-precision integer arithmetic and never converts either operand or
+  the intermediate product to a JavaScript `number`.
+- The current multiplier, its `10^18` scale, token identity, account identity,
+  and canonical block remain attached to the adjusted result. A pending
+  multiplier is reported as pending evidence and is not applied as the current
+  value.
+- Missing, malformed, contradictory, or out-of-range multiplier evidence leaves
+  the raw balance intact and produces no adjusted amount.
 - Oracle OHLC, DEX trade OHLCV, and wallet net flow remain separate data types.
 - Oracle candles contain no inferred trade volume.
 - Wallet net flow is not market volume, P&L, or cost basis.

@@ -7,13 +7,17 @@ import {
 
 import type {
   AccountAssetCollectionSuccess,
+  AccountAssetCursor,
   AccountAssetExactSuccess,
+  AccountAssetOfficialCandidateCursor,
+  AccountAssetOfficialCandidateSuccess,
+  AccountAssetViewRevision,
 } from "../../account-assets/browser.js";
 import { productDisplayName } from "../../core/browser.js";
 import {
   isTokenCatalogOperationTerminal,
   type TokenCatalogOperation,
-  type TokenRegistration,
+  type TokenSelection,
 } from "../../token-catalog/browser.js";
 import type {
   WalletCurrentOperationProjection,
@@ -31,7 +35,11 @@ import {
   type DeliveryUnknown,
 } from "../operation-delivery.js";
 import { AccountAssetsPage, type AccountAssetPageSnapshot } from "./account-assets-page.js";
-import { loadAccountAssets, loadExactAccountAsset } from "./account-assets-client.js";
+import {
+  loadAccountAssets,
+  loadExactAccountAsset,
+  loadOfficialAssetCandidates,
+} from "./account-assets-client.js";
 import {
   browserActionFailureMessage,
   isBrowserResponseCode,
@@ -45,8 +53,8 @@ import {
   loadCurrentTokenOperation,
   loadTokenOperation,
   parseTokenAddressInput,
-  startTokenRegistration,
-  startTokenUnregistration,
+  startTokenSelection,
+  startTokenRemoval,
 } from "./token-catalog-client.js";
 import {
   tokenInspectionFields,
@@ -93,35 +101,52 @@ type AppState =
     }>;
 
 type ConnectedAccount = Readonly<{
-  chainId: TokenRegistration["account"]["chainId"];
-  address: TokenRegistration["account"]["address"];
+  chainId: TokenSelection["account"]["chainId"];
+  address: TokenSelection["account"]["address"];
   connectionRevision: string;
 }>;
 
 type AssetSnapshot = Readonly<{
   accountKey: string;
   result: AccountAssetCollectionSuccess;
-  cursor: TokenRegistration["asset"]["address"] | null;
-  previousCursors: readonly (TokenRegistration["asset"]["address"] | null)[];
+  cursor: AccountAssetCursor | null;
+  previousCursors: readonly (AccountAssetCursor | null)[];
 }>;
+
+type AddFormContext = Readonly<{
+  account: ConnectedAccount;
+  viewRevision: AccountAssetViewRevision;
+}>;
+
+type OfficialCandidateSnapshot = Readonly<{
+  result: AccountAssetOfficialCandidateSuccess;
+  cursor: AccountAssetOfficialCandidateCursor | null;
+  previousCursors: readonly (AccountAssetOfficialCandidateCursor | null)[];
+}>;
+
+type OfficialCandidateReadState =
+  | Readonly<{ status: "idle" }>
+  | Readonly<{ status: "loading" }>
+  | Readonly<{ status: "available"; snapshot: OfficialCandidateSnapshot }>
+  | Readonly<{ status: "error"; message: string }>;
 
 type ExactAssetReadState =
   | Readonly<{ status: "idle" }>
   | Readonly<{
       status: "loading";
       accountKey: string;
-      asset: TokenRegistration["asset"];
+      asset: TokenSelection["asset"];
     }>
   | Readonly<{
       status: "available";
       accountKey: string;
-      asset: TokenRegistration["asset"];
+      asset: TokenSelection["asset"];
       result: AccountAssetExactSuccess;
     }>
   | Readonly<{
       status: "error";
       accountKey: string;
-      asset: TokenRegistration["asset"];
+      asset: TokenSelection["asset"];
       message: string;
     }>;
 
@@ -142,7 +167,7 @@ type DialogPresentation =
   | Readonly<{ kind: "wallet_connection"; wallet: WalletCurrentOperationProjection }>
   | Readonly<{ kind: "token_delivery"; delivery: DeliveryUnknown }>
   | Readonly<{ kind: "token_operation"; operation: TokenCatalogOperation; accountMatches: boolean }>
-  | Readonly<{ kind: "token_add"; account: ConnectedAccount }>;
+  | Readonly<{ kind: "token_add"; form: AddFormContext }>;
 
 const browserPollMilliseconds = 500;
 const standardToastMilliseconds = 5_000;
@@ -174,7 +199,9 @@ const sameAccount = (
 
 const resultMatchesAccount = (
   expected: ConnectedAccount,
-  result: Pick<AccountAssetCollectionSuccess, "account"> | Pick<AccountAssetExactSuccess, "account">,
+  result: Pick<AccountAssetCollectionSuccess, "account"> |
+    Pick<AccountAssetExactSuccess, "account"> |
+    Pick<AccountAssetOfficialCandidateSuccess, "account">,
 ): boolean => result.account.chainId === expected.chainId && result.account.address === expected.address;
 
 const createBrowserWalletObservationStore = () => createWalletObservationStore(Object.freeze({
@@ -306,7 +333,15 @@ const TokenOperationDetails = ({
       <dl className="token-details">
         <dt>Account</dt><dd>{operation.account.chainId} / {operation.account.address}</dd>
         <dt>Contract</dt><dd>{operation.asset.address}</dd>
-        {tokenInspectionFields(operation.review.inspection).flatMap((field) => [
+        {operation.kind === "add" ? (
+          <><dt>Classification</dt><dd>{operation.review.officialEvidence === null
+            ? "Custom ERC-20"
+            : "Robinhood Stock Token"}</dd></>
+        ) : null}
+        {operation.review.officialEvidence === null ? null : (
+          <><dt>Official asset UID</dt><dd>{operation.review.officialEvidence.assetUid}</dd></>
+        )}
+        {(operation.review.inspection === null ? [] : tokenInspectionFields(operation.review.inspection)).flatMap((field) => [
           <dt key={`${field.label}:label`}>{field.label}</dt>,
           <dd key={`${field.label}:value`}>{field.value}</dd>,
         ])}
@@ -326,7 +361,7 @@ const TokenOperationDetails = ({
         ) : null}
         {webConfirmation && accountMatches ? (
           <button type="button" disabled={pending} onClick={onConfirm}>
-            {operation.kind === "register" ? "Add to this account" : "Remove from this account"}
+            {operation.kind === "add" ? "Add to this account" : "Remove from this account"}
           </button>
         ) : null}
       </div>
@@ -339,6 +374,10 @@ const ApplicationDialog = ({
   pending,
   onClose,
   onWalletAction,
+  officialCandidates,
+  onRetryOfficialCandidates,
+  onPreviousOfficialCandidates,
+  onNextOfficialCandidates,
   onTokenAddress,
   onTokenConfirm,
   onTokenCancel,
@@ -347,6 +386,10 @@ const ApplicationDialog = ({
   readonly pending: boolean;
   readonly onClose: () => void;
   readonly onWalletAction: (action: WalletConnectionAction | WalletOperationAction) => void;
+  readonly officialCandidates: OfficialCandidateReadState;
+  readonly onRetryOfficialCandidates: () => void;
+  readonly onPreviousOfficialCandidates: () => void;
+  readonly onNextOfficialCandidates: () => void;
   readonly onTokenAddress: (address: string) => void;
   readonly onTokenConfirm: () => void;
   readonly onTokenCancel: () => void;
@@ -403,26 +446,85 @@ const ApplicationDialog = ({
         />
       ) : (
         <>
-          <header><h1>Add token</h1><p>Inspect a token contract and review it before adding it to this account.</p></header>
+          <header><h1>Add token</h1><p>Choose a current Robinhood Stock Token or enter a custom ERC-20 contract.</p></header>
           <dl className="token-details">
             <dt>Account</dt>
-            <dd>{presentation.account.chainId} / {presentation.account.address}</dd>
+            <dd>{presentation.form.account.chainId} / {presentation.form.account.address}</dd>
           </dl>
-          <label className="field">
-            <span>Contract address</span>
-            <input
-              type="text"
-              value={address}
-              disabled={pending}
-              onChange={(event) => { setAddress(event.currentTarget.value); }}
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </label>
-          {validation === undefined ? null : <p className="error">{validation}</p>}
+          <section className="add-token-section" aria-labelledby="official-token-heading">
+            <h2 id="official-token-heading">Robinhood Stock Tokens</h2>
+            {officialCandidates.status === "loading" ? (
+              <p role="status">Reading current official candidates…</p>
+            ) : officialCandidates.status === "error" ? (
+              <div className="warning" role="status">
+                <p>{officialCandidates.message}</p>
+                <button type="button" className="secondary" onClick={onRetryOfficialCandidates}>Retry</button>
+              </div>
+            ) : officialCandidates.status === "available" ? (
+              <>
+                {officialCandidates.snapshot.result.candidates.length === 0 ? (
+                  <p>No excluded Robinhood Stock Tokens are available in this view.</p>
+                ) : (
+                  <ul className="official-candidate-list">
+                    {officialCandidates.snapshot.result.candidates.map((candidate) => (
+                      <li key={candidate.assetUid}>
+                        <div>
+                          <strong>{candidate.sourceName ?? candidate.sourceSymbol ?? "Robinhood Stock Token"}</strong>
+                          {candidate.sourceSymbol === null ? null : <span>{candidate.sourceSymbol}</span>}
+                          <code>{candidate.contractAddress}</code>
+                        </div>
+                        <button
+                          type="button"
+                          className="icon-button"
+                          aria-label={`Add ${candidate.sourceSymbol ?? candidate.contractAddress}`}
+                          title="Review and add this token"
+                          disabled={pending}
+                          onClick={() => { onTokenAddress(candidate.contractAddress); }}
+                        >+</button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <div className="candidate-pagination">
+                  <button
+                    type="button"
+                    className="icon-button secondary"
+                    aria-label="Previous official token candidates"
+                    title="Previous official token candidates"
+                    disabled={pending || officialCandidates.snapshot.previousCursors.length === 0}
+                    onClick={onPreviousOfficialCandidates}
+                  >&lt;&lt;</button>
+                  <span>Official candidates</span>
+                  <button
+                    type="button"
+                    className="icon-button secondary"
+                    aria-label="Next official token candidates"
+                    title="Next official token candidates"
+                    disabled={pending || officialCandidates.snapshot.result.nextCursor === null}
+                    onClick={onNextOfficialCandidates}
+                  >&gt;&gt;</button>
+                </div>
+              </>
+            ) : null}
+          </section>
+          <section className="add-token-section" aria-labelledby="custom-token-heading">
+            <h2 id="custom-token-heading">Custom ERC-20</h2>
+            <label className="field">
+              <span>Contract address</span>
+              <input
+                type="text"
+                value={address}
+                disabled={pending}
+                onChange={(event) => { setAddress(event.currentTarget.value); }}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            {validation === undefined ? null : <p className="error">{validation}</p>}
+            <button type="button" disabled={pending} onClick={submitAddress}>{pending ? "Inspecting…" : "Review custom token"}</button>
+          </section>
           <div className="actions">
             <button type="button" className="secondary" disabled={pending} onClick={onClose}>Close</button>
-            <button type="button" disabled={pending} onClick={submitAddress}>{pending ? "Inspecting…" : "Review token"}</button>
           </div>
         </>
       )}
@@ -447,7 +549,8 @@ export const App = () => {
   const [connectionDialogOpen, setConnectionDialogOpen] = useState(false);
   const [walletDelivery, setWalletDelivery] = useState<DeliveryUnknown>();
   const [tokenDelivery, setTokenDelivery] = useState<DeliveryUnknown>();
-  const [addFormAccount, setAddFormAccount] = useState<ConnectedAccount>();
+  const [addForm, setAddForm] = useState<AddFormContext>();
+  const [officialCandidateRead, setOfficialCandidateRead] = useState<OfficialCandidateReadState>({ status: "idle" });
   const [tokenOperation, setTokenOperation] = useState<TokenCatalogOperation | null>(null);
   const [assetSnapshot, setAssetSnapshot] = useState<AssetSnapshot>();
   const [exactRead, setExactRead] = useState<ExactAssetReadState>(idleExactAssetRead);
@@ -459,6 +562,7 @@ export const App = () => {
   const [walletAuthority] = useState(createBrowserRequestAuthority);
   const [assetAuthority] = useState(createBrowserRequestAuthority);
   const [exactAuthority] = useState(createBrowserRequestAuthority);
+  const [candidateAuthority] = useState(createBrowserRequestAuthority);
   const [tokenAuthority] = useState(createBrowserRequestAuthority);
   const [sessionRecovery] = useState(() => createBrowserSessionRecovery(() => { window.location.reload(); }));
   const [observationStore] = useState(createBrowserWalletObservationStore);
@@ -553,8 +657,8 @@ export const App = () => {
 
   const readAssetPage = useCallback(async (
     expected: ConnectedAccount,
-    cursor: TokenRegistration["asset"]["address"] | null,
-    previousCursors: readonly (TokenRegistration["asset"]["address"] | null)[],
+    cursor: AccountAssetCursor | null,
+    previousCursors: readonly (AccountAssetCursor | null)[],
     clearBeforeRead: boolean,
   ): Promise<AccountAssetCollectionSuccess | undefined> => {
     const request = assetAuthority.beginRead();
@@ -581,7 +685,7 @@ export const App = () => {
       setAssetRead({ status: "idle" });
       const exact = exactReadRef.current;
       if (exact.status !== "idle" && result.assets.some(
-        (entry) => entry.registration.asset.address === exact.asset.address,
+        (entry) => entry.selection.asset.address === exact.asset.address,
       )) {
         exactAuthority.invalidateRead();
         replaceExactRead(idleExactAssetRead);
@@ -599,7 +703,8 @@ export const App = () => {
 
   const readExactAsset = useCallback(async (
     expected: ConnectedAccount,
-    asset: TokenRegistration["asset"],
+    asset: TokenSelection["asset"],
+    revision: AccountAssetViewRevision,
   ): Promise<AccountAssetExactSuccess | undefined> => {
     const request = exactAuthority.beginRead();
     if (request === undefined) return undefined;
@@ -609,7 +714,7 @@ export const App = () => {
     });
     replaceExactRead(Object.freeze({ status: "loading", ...readIdentity }));
     try {
-      const result = await loadExactAccountAsset(asset, { signal: request.signal });
+      const result = await loadExactAccountAsset(asset, revision, { signal: request.signal });
       if (!exactAuthority.isCurrent(request)) return undefined;
       const actual = connectedAccount(stateRef.current.status === "ready" ? stateRef.current.wallet : undefined);
       if (!sameAccount(expected, actual) || !resultMatchesAccount(expected, result)) return undefined;
@@ -628,16 +733,54 @@ export const App = () => {
     }
   }, [exactAuthority, replaceExactRead, sessionRecovery]);
 
+  const readOfficialCandidates = useCallback(async (
+    form: AddFormContext,
+    cursor: AccountAssetOfficialCandidateCursor | null,
+    previousCursors: readonly (AccountAssetOfficialCandidateCursor | null)[],
+  ): Promise<void> => {
+    const request = candidateAuthority.beginRead();
+    if (request === undefined) return;
+    setOfficialCandidateRead({ status: "loading" });
+    try {
+      const result = await loadOfficialAssetCandidates({
+        viewRevision: form.viewRevision,
+        ...(cursor === null ? {} : { cursor }),
+      }, { signal: request.signal });
+      if (!candidateAuthority.isCurrent(request)) return;
+      const actual = connectedAccount(stateRef.current.status === "ready" ? stateRef.current.wallet : undefined);
+      if (!sameAccount(form.account, actual) || !resultMatchesAccount(form.account, result)) {
+        throw new Error("The account changed while official candidates were being read.");
+      }
+      setOfficialCandidateRead(Object.freeze({
+        status: "available",
+        snapshot: Object.freeze({
+          result,
+          cursor,
+          previousCursors: Object.freeze([...previousCursors]),
+        }),
+      }));
+    } catch (error) {
+      if (!candidateAuthority.isCurrent(request) || sessionRecovery(error)) return;
+      setOfficialCandidateRead({ status: "error", message: browserActionFailureMessage(error) });
+    } finally {
+      if (candidateAuthority.isCurrent(request)) candidateAuthority.cancelRead(request);
+    }
+  }, [candidateAuthority, sessionRecovery]);
+
   const acceptTokenOperation = useCallback((operation: TokenCatalogOperation): void => {
     if (!isTokenCatalogOperationTerminal(operation.state)) {
       if (dismissedTokenOperation.current !== operation.operationId) setTokenOperation(operation);
-      setAddFormAccount(undefined);
+      candidateAuthority.invalidateRead();
+      setAddForm(undefined);
+      setOfficialCandidateRead({ status: "idle" });
       return;
     }
     if (handledTerminalTokenOperation.current === operation.operationId) return;
     handledTerminalTokenOperation.current = operation.operationId;
     setTokenOperation(null);
-    setAddFormAccount(undefined);
+    candidateAuthority.invalidateRead();
+    setAddForm(undefined);
+    setOfficialCandidateRead({ status: "idle" });
     const notice = tokenOperationNotification(operation);
     if (notice !== undefined) publishNotification(notice);
     if (operation.state !== "completed") return;
@@ -651,16 +794,17 @@ export const App = () => {
     assetAuthority.invalidateRead();
     exactAuthority.invalidateRead();
     const snapshot = assetSnapshot;
-    if (operation.kind === "register") {
+    if (operation.kind === "add") {
       void (async () => {
-        await readExactAsset(expected, operation.asset);
-        const latest = assetSnapshot ?? snapshot;
-        await readAssetPage(
+        const latest = await readAssetPage(
           expected,
-          latest?.cursor ?? null,
-          latest?.previousCursors ?? [],
-          false,
+          null,
+          [],
+          true,
         );
+        if (latest !== undefined) {
+          await readExactAsset(expected, operation.asset, latest.viewRevision);
+        }
       })();
       return;
     }
@@ -672,24 +816,26 @@ export const App = () => {
     setAssetSnapshot(undefined);
     const onlyItemOnLaterPage = snapshot !== undefined && snapshot.cursor !== null &&
       snapshot.result.assets.length === 1 &&
-      snapshot.result.assets[0]?.registration.asset.address === operation.asset.address;
+      snapshot.result.assets[0]?.selection.asset.address === operation.asset.address;
     const cursor = onlyItemOnLaterPage ? snapshot.previousCursors.at(-1) ?? null : snapshot?.cursor ?? null;
     const previous = onlyItemOnLaterPage ? snapshot.previousCursors.slice(0, -1) : snapshot?.previousCursors ?? [];
     void readAssetPage(expected, cursor, previous, true);
-  }, [assetAuthority, assetSnapshot, exactAuthority, publishNotification, readAssetPage, readExactAsset, replaceExactRead]);
+  }, [assetAuthority, assetSnapshot, candidateAuthority, exactAuthority, publishNotification, readAssetPage, readExactAsset, replaceExactRead]);
 
   useEffect(() => {
     walletAuthority.activate();
     assetAuthority.activate();
     exactAuthority.activate();
+    candidateAuthority.activate();
     tokenAuthority.activate();
     return () => {
       walletAuthority.close();
       assetAuthority.close();
       exactAuthority.close();
+      candidateAuthority.close();
       tokenAuthority.close();
     };
-  }, [assetAuthority, exactAuthority, tokenAuthority, walletAuthority]);
+  }, [assetAuthority, candidateAuthority, exactAuthority, tokenAuthority, walletAuthority]);
 
   useEffect(() => {
     if (activeNotification === undefined) return;
@@ -726,9 +872,11 @@ export const App = () => {
   useEffect(() => {
     assetAuthority.invalidateRead();
     exactAuthority.invalidateRead();
+    candidateAuthority.invalidateRead();
     setAssetSnapshot(undefined);
     replaceExactRead(idleExactAssetRead);
-    setAddFormAccount(undefined);
+    setAddForm(undefined);
+    setOfficialCandidateRead({ status: "idle" });
     setAssetRead({ status: "idle" });
     if (currentAccount !== undefined && !observationUnavailable) {
       void readAssetPage(currentAccount, null, [], true);
@@ -809,14 +957,20 @@ export const App = () => {
   }, [publishActionError, refreshWallet, replaceObservation, sessionRecovery, walletAuthority, walletDelivery]);
 
   const startAdd = useCallback(async (address: string): Promise<void> => {
-    if (addFormAccount === undefined || tokenPending || observationUnavailable) return;
+    if (addForm === undefined || tokenPending || observationUnavailable) return;
     const request = tokenAuthority.beginControl();
     if (request === undefined) return;
     setTokenPending(true);
     try {
-      const started = await startTokenRegistration(addFormAccount.chainId, address, csrfToken());
+      const started = await startTokenSelection(addForm.account.chainId, address, csrfToken());
       if (!tokenAuthority.isCurrent(request)) return;
-      if (isDeliveryUnknown(started)) { setTokenDelivery(started); setAddFormAccount(undefined); return; }
+      if (isDeliveryUnknown(started)) {
+        setTokenDelivery(started);
+        candidateAuthority.invalidateRead();
+        setAddForm(undefined);
+        setOfficialCandidateRead({ status: "idle" });
+        return;
+      }
       acceptTokenOperation(started.operation);
     } catch (error) {
       if (!tokenAuthority.isCurrent(request) || sessionRecovery(error)) return;
@@ -825,15 +979,15 @@ export const App = () => {
       tokenAuthority.finishControl(request);
       if (tokenAuthority.isCurrent(request)) setTokenPending(false);
     }
-  }, [acceptTokenOperation, addFormAccount, observationUnavailable, publishActionError, sessionRecovery, tokenAuthority, tokenPending]);
+  }, [acceptTokenOperation, addForm, candidateAuthority, observationUnavailable, publishActionError, sessionRecovery, tokenAuthority, tokenPending]);
 
-  const startRemove = useCallback(async (registration: TokenRegistration): Promise<void> => {
+  const startRemove = useCallback(async (selection: TokenSelection): Promise<void> => {
     if (currentAccount === undefined || tokenPending || observationUnavailable) return;
     const request = tokenAuthority.beginControl();
     if (request === undefined) return;
     setTokenPending(true);
     try {
-      const started = await startTokenUnregistration(registration, csrfToken());
+      const started = await startTokenRemoval(selection, csrfToken());
       if (!tokenAuthority.isCurrent(request)) return;
       if (isDeliveryUnknown(started)) { setTokenDelivery(started); return; }
       acceptTokenOperation(started.operation);
@@ -881,8 +1035,8 @@ export const App = () => {
                 address: tokenOperation.account.address,
                 connectionRevision: tokenOperation.connectionRevision,
               }, currentAccount) }
-            : addFormAccount !== undefined
-              ? { kind: "token_add", account: addFormAccount }
+            : addForm !== undefined
+              ? { kind: "token_add", form: addForm }
               : undefined;
 
   useEffect(() => {
@@ -901,7 +1055,11 @@ export const App = () => {
     else if (tokenOperation?.interactionInterface === "cli") {
       dismissedTokenOperation.current = tokenOperation.operationId;
       setTokenOperation(null);
-    } else setAddFormAccount(undefined);
+    } else {
+      candidateAuthority.invalidateRead();
+      setAddForm(undefined);
+      setOfficialCandidateRead({ status: "idle" });
+    }
   };
 
   const activateWalletNavigation = (): void => {
@@ -991,10 +1149,41 @@ export const App = () => {
              }}
              onRetryExact={() => {
                if (visibleExactRead.status !== "error") return;
-               void readExactAsset(currentAccount, visibleExactRead.asset);
+               if (visibleAssetSnapshot !== undefined) {
+                 void readExactAsset(
+                   currentAccount,
+                   visibleExactRead.asset,
+                   visibleAssetSnapshot.result.viewRevision,
+                 );
+               }
              }}
-            onAdd={(trigger) => { dialogTrigger.current = trigger; setAddFormAccount(currentAccount); }}
-            onRemove={(registration, trigger) => { dialogTrigger.current = trigger; void startRemove(registration); }}
+            onAdd={(trigger) => {
+              if (visibleAssetSnapshot?.result.viewRevision.officialSnapshotStatus !== "current") return;
+              dialogTrigger.current = trigger;
+              const form = Object.freeze({
+                account: currentAccount,
+                viewRevision: visibleAssetSnapshot.result.viewRevision,
+              });
+              setAddForm(form);
+              void readOfficialCandidates(form, null, []);
+            }}
+            onInfo={(selection, trigger) => {
+              if (visibleAssetSnapshot === undefined) return;
+              dialogTrigger.current = trigger;
+              void readExactAsset(
+                currentAccount,
+                selection.asset,
+                visibleAssetSnapshot.result.viewRevision,
+              );
+            }}
+            onCloseInfo={() => {
+              exactAuthority.invalidateRead();
+              replaceExactRead(idleExactAssetRead);
+              const trigger = dialogTrigger.current;
+              dialogTrigger.current = undefined;
+              window.setTimeout(() => { if (trigger?.isConnected === true) trigger.focus(); }, 0);
+            }}
+            onRemove={(selection, trigger) => { dialogTrigger.current = trigger; void startRemove(selection); }}
             onPrevious={() => {
               if (visibleAssetSnapshot === undefined) return;
               const cursor = visibleAssetSnapshot.previousCursors.at(-1) ?? null;
@@ -1023,6 +1212,28 @@ export const App = () => {
           pending={walletPending || tokenPending}
           onClose={closeDialog}
           onWalletAction={(action) => { void runWalletAction(action); }}
+          officialCandidates={officialCandidateRead}
+          onRetryOfficialCandidates={() => {
+            if (addForm !== undefined) void readOfficialCandidates(addForm, null, []);
+          }}
+          onPreviousOfficialCandidates={() => {
+            if (addForm === undefined || officialCandidateRead.status !== "available") return;
+            const previous = officialCandidateRead.snapshot.previousCursors;
+            void readOfficialCandidates(
+              addForm,
+              previous.at(-1) ?? null,
+              previous.slice(0, -1),
+            );
+          }}
+          onNextOfficialCandidates={() => {
+            if (addForm === undefined || officialCandidateRead.status !== "available" ||
+              officialCandidateRead.snapshot.result.nextCursor === null) return;
+            void readOfficialCandidates(
+              addForm,
+              officialCandidateRead.snapshot.result.nextCursor,
+              [...officialCandidateRead.snapshot.previousCursors, officialCandidateRead.snapshot.cursor],
+            );
+          }}
           onTokenAddress={(address) => { void startAdd(address); }}
           onTokenConfirm={() => { void runTokenOperation("confirm"); }}
           onTokenCancel={() => { void runTokenOperation("cancel"); }}

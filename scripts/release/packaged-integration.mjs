@@ -49,11 +49,11 @@ const expectedToolNames = Object.freeze([
   "read_list_capabilities",
   "token_cancel_operation",
   "token_get_operation",
-  "token_get_registration",
+  "token_get_selection",
   "token_inspect_contract",
-  "token_list_registrations",
-  "token_start_registration",
-  "token_start_unregistration",
+  "token_list_selections",
+  "token_start_addition",
+  "token_start_removal",
   "wallet_cancel_operation",
   "wallet_get_connection",
   "wallet_get_operation",
@@ -97,6 +97,15 @@ const waitFor = async (read, accept, label) => {
     await delay(Math.min(pollIntervalMs, remainingMilliseconds));
   }
   throw new TypeError(`${label} did not reach its required state.`);
+};
+
+const assertRpcRequestBudget = (fakeRpc, startingCount, maximumCount, label) => {
+  const requestCount = fakeRpc.calls.length - startingCount;
+  if (requestCount < 1 || requestCount > maximumCount) {
+    throw new TypeError(
+      `${label} used ${requestCount} RPC requests; expected 1-${maximumCount}.`,
+    );
+  }
 };
 
 class WorkerPeer {
@@ -436,7 +445,7 @@ const readPackagedRuntimeIdentity = async () => {
     Array.isArray(identity) ||
     JSON.stringify(Object.keys(identity).sort()) !== JSON.stringify(expectedFields) ||
     identity.challenge !== challenge ||
-    identity.runtimeProtocolVersion !== 5 ||
+    identity.runtimeProtocolVersion !== 6 ||
     typeof identity.profileId !== "string" ||
     !/^[A-Za-z0-9_-]{22}$/u.test(identity.profileId) ||
     typeof identity.ownerInstanceId !== "string" ||
@@ -447,7 +456,7 @@ const readPackagedRuntimeIdentity = async () => {
     !/^[A-Za-z0-9_-]{43}$/u.test(identity.proof) ||
     typeof identity.ownerRevision !== "string" ||
     !/^(?:0|[1-9][0-9]*)$/u.test(identity.ownerRevision)
-  ) throw new TypeError("Packaged runtime identity is not the exact protocol-5 contract.");
+  ) throw new TypeError("Packaged runtime identity is not the exact protocol-6 contract.");
   return identity;
 };
 
@@ -544,33 +553,78 @@ const assertTokenInspection = (inspection, fakeRpc) => {
 
 /**
  * @param {unknown} value
- * @param {Awaited<ReturnType<typeof startFakeRpc>>} fakeRpc
+ * @param {Awaited<ReturnType<typeof startFakeRpc>>["token"]} token
+ * @param {boolean} included
+ * @returns {{
+ *   readonly account: { readonly chainId: string; readonly address: string };
+ *   readonly asset: { readonly kind: "erc20"; readonly chainId: string; readonly address: string };
+ *   readonly included: boolean;
+ *   readonly revision: string;
+ *   readonly createdAt: string;
+ *   readonly updatedAt: string;
+ * }}
  */
-const assertSingleTokenRegistration = (
+const assertTokenSelection = (
   value,
-  fakeRpc,
+  token,
+  included,
 ) => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError("Packaged token registration page is invalid.");
+    throw new TypeError("Packaged token selection is invalid.");
   }
-  const page = /** @type {{ registrations?: unknown; nextCursor?: unknown }} */ (value);
-  const registrations = page.registrations;
-  const registration = Array.isArray(registrations) && registrations.length === 1
-    ? registrations[0]
-    : undefined;
+  const selection = /** @type {{
+   * account?: { chainId?: unknown; address?: unknown };
+   * asset?: { kind?: unknown; chainId?: unknown; address?: unknown };
+   * included?: unknown;
+   * revision?: unknown;
+   * createdAt?: unknown;
+   * updatedAt?: unknown;
+   * }} */ (value);
   if (
-    page.nextCursor !== null ||
-    registration?.account?.chainId !== fakeRpc.token.chainId ||
-    registration.account.address !== expectedWalletAddress ||
-    registration.asset?.kind !== "erc20" ||
-    registration.asset.chainId !== fakeRpc.token.chainId ||
-    registration.asset.address !== fakeRpc.token.address ||
-    Object.hasOwn(registration, "userLabel") ||
-    Object.hasOwn(registration, "visibility") ||
-    Object.hasOwn(registration, "updatedAt") ||
-    typeof registration.revision !== "string"
-  ) throw new TypeError("Packaged token registration page is invalid.");
-  return registration;
+    selection.account?.chainId !== token.chainId ||
+    selection.account.address !== expectedWalletAddress ||
+    selection.asset?.kind !== "erc20" ||
+    selection.asset.chainId !== token.chainId ||
+    selection.asset.address !== token.address ||
+    selection.included !== included ||
+    typeof selection.revision !== "string" ||
+    typeof selection.createdAt !== "string" ||
+    typeof selection.updatedAt !== "string"
+  ) throw new TypeError("Packaged token selection is invalid.");
+  return Object.freeze({
+    account: Object.freeze({
+      chainId: selection.account.chainId,
+      address: selection.account.address,
+    }),
+    asset: Object.freeze({
+      kind: selection.asset.kind,
+      chainId: selection.asset.chainId,
+      address: selection.asset.address,
+    }),
+    included: selection.included,
+    revision: selection.revision,
+    createdAt: selection.createdAt,
+    updatedAt: selection.updatedAt,
+  });
+};
+
+const assertTokenSelectionDetail = (value, fakeRpc, token, included) => {
+  const selection = assertTokenSelection(value?.selection, token, included);
+  if (included && value.historicalInspection !== null) {
+    assertTokenInspection(value.historicalInspection, Object.freeze({ ...fakeRpc, token }));
+  }
+  return selection;
+};
+
+const findTokenSelection = (value, token, included) => {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !Array.isArray(value.selections) ||
+    !Object.hasOwn(value, "nextCursor")
+  ) throw new TypeError("Packaged token selection page is invalid.");
+  const selection = value.selections.find((entry) => entry?.asset?.address === token.address);
+  return assertTokenSelection(selection, token, included);
 };
 
 const assertBrowserAssets = async (shell) => {
@@ -719,64 +773,58 @@ const browserAccountAssets = (browser) => fetch(
   },
 );
 
-const browserExactAccountAsset = (browser, fakeRpc) => fetch(
-  `${fixedOrigin}/api/v1/account-assets/${fakeRpc.token.chainId}/${fakeRpc.token.address}`,
-  { headers: { Cookie: browser.cookie }, redirect: "error" },
+const browserExactAccountAsset = (browser, token, viewRevision) => fetch(
+  `${fixedOrigin}/api/v1/account-assets/${token.chainId}/${token.address}`,
+  {
+    method: "POST",
+    headers: {
+      Cookie: browser.cookie,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ viewRevision }),
+    redirect: "error",
+  },
 );
 
-const assertSingleAccountAsset = (value, fakeRpc) => {
-  const asset = Array.isArray(value?.assets) && value.assets.length === 1
-    ? value.assets[0]
-    : undefined;
+const assertAccountAssetCollection = (value, fakeRpc, expectedTokens) => {
   if (
     value?.account?.chainId !== fakeRpc.token.chainId ||
     value.account.address !== expectedWalletAddress ||
-    value.nextCursor !== null ||
-    asset?.registration?.asset?.address !== fakeRpc.token.address ||
-    asset.registration.account?.address !== expectedWalletAddress ||
-    asset.metadata?.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
-    value.balance?.status !== "available" ||
-    value.balance.snapshot?.data?.native?.status !== "available" ||
-    value.balance.snapshot.data.native.amount?.raw !== fakeRpc.nativeBalanceRaw ||
-    !Array.isArray(value.balance.snapshot.data.tokens) ||
-    value.balance.snapshot.data.tokens.length !== 1 ||
-    value.balance.snapshot.data.tokens[0]?.result?.status !== "available" ||
-    value.balance.snapshot.data.tokens[0].result.amount?.raw !== fakeRpc.token.accountBalanceRaw
+    value.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
+    value.native?.rawBalance !== fakeRpc.nativeBalanceRaw ||
+    !Array.isArray(value.assets) ||
+    value.assets.length !== expectedTokens.length ||
+    expectedTokens.some((token, index) => {
+      const asset = value.assets[index];
+      return asset?.selection?.asset?.address !== token.address ||
+        asset.selection.account?.address !== expectedWalletAddress ||
+        asset.selection.included !== true ||
+        asset.amount?.raw !== token.accountBalanceRaw ||
+        asset.requiredStandards?.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash;
+    })
   ) throw new TypeError("Packaged account asset page is invalid.");
   return value;
 };
 
-const assertExactAccountAsset = (value, fakeRpc) => {
+const assertExactAccountAsset = (value, fakeRpc, token) => {
   if (
-    value?.account?.chainId !== fakeRpc.token.chainId ||
+    value?.account?.chainId !== token.chainId ||
     value.account.address !== expectedWalletAddress ||
-    value.asset?.registration?.asset?.address !== fakeRpc.token.address ||
-    value.asset.registration.account?.address !== expectedWalletAddress ||
-    value.asset.metadata?.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
-    value.balance?.status !== "available" ||
-    value.balance.snapshot?.data?.native?.status !== "not_requested" ||
-    !Array.isArray(value.balance.snapshot.data.tokens) ||
-    value.balance.snapshot.data.tokens.length !== 1 ||
-    value.balance.snapshot.data.tokens[0]?.asset?.address !== fakeRpc.token.address ||
-    value.balance.snapshot.data.tokens[0]?.result?.status !== "available" ||
-    value.balance.snapshot.data.tokens[0].result.amount?.raw !== fakeRpc.token.accountBalanceRaw
+    value.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
+    value.asset?.selection?.asset?.address !== token.address ||
+    value.asset.selection.account?.address !== expectedWalletAddress ||
+    value.asset.selection.included !== true ||
+    value.asset.amount?.raw !== token.accountBalanceRaw ||
+    value.asset.amount?.uiAdjusted?.status !== "available" ||
+    value.asset.amount.uiAdjusted.adjustedRaw !== (
+      BigInt(token.accountBalanceRaw) * BigInt(token.currentMultiplier) /
+      1_000_000_000_000_000_000n
+    ).toString(10) ||
+    value.totalSupply !== token.totalSupplyRaw ||
+    value.standards?.asset?.address !== token.address ||
+    value.standards.requiredErc8056?.currentMultiplier !== token.currentMultiplier
   ) throw new TypeError("Packaged exact account asset is invalid.");
   return value;
-};
-
-const assertEmptyAccountAssets = (value, fakeRpc) => {
-  if (
-    value?.account?.chainId !== expectedChainId ||
-    value.account.address !== expectedWalletAddress ||
-    value.nextCursor !== null ||
-    !Array.isArray(value.assets) ||
-    value.assets.length !== 0 ||
-    value.balance?.status !== "available" ||
-    value.balance.snapshot?.data?.native?.status !== "available" ||
-    value.balance.snapshot.data.native.amount?.raw !== fakeRpc.nativeBalanceRaw ||
-    !Array.isArray(value.balance.snapshot.data.tokens) ||
-    value.balance.snapshot.data.tokens.length !== 0
-  ) throw new TypeError("Packaged empty account asset page is invalid.");
 };
 
 const browserTokenConfirm = (operationId, reviewDigest, browser) => fetch(
@@ -845,7 +893,7 @@ const assertPackagedPersistence = (inspection, runtimeIdentity) => {
     Array.isArray(owner) ||
     owner.profileId !== runtimeIdentity.profileId ||
     owner.configurationMac !== runtimeIdentity.configurationMac ||
-    owner.protocolVersion !== 5
+    owner.protocolVersion !== 6
   ) throw new TypeError("Packaged SQLite owner configuration identity is invalid.");
   const connection = inspection.connection;
   if (
@@ -876,6 +924,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     ...prepared.environment,
     LITTLEJOHN_DATA_DIR: dataDirectory,
     LITTLEJOHN_RELEASE_CLOCK: clockPath,
+    LITTLEJOHN_RELEASE_ASSET_SOURCE_URL: fakeRpc.assetSourceUrl,
     LITTLEJOHN_RPC_URL: fakeRpc.url,
     LITTLEJOHN_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
   });
@@ -962,7 +1011,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     }
     const capabilityIds = catalogEntries.map((entry) => entry?.capabilityId);
     if (
-      catalog.structuredContent?.contractVersion !== "4" ||
+      catalog.structuredContent?.contractVersion !== "5" ||
       JSON.stringify(capabilityIds) !== JSON.stringify(expectedCapabilityIds)
     ) throw new TypeError("Packaged MCP capability catalog is not the exact canonical set.");
     const chainStatus = await firstMcp.callTool("read_get_chain_status");
@@ -1172,6 +1221,11 @@ export const verifyPackagedIntegration = async (prepared) => {
     ) throw new TypeError("Compatible MCP processes do not share one wallet projection.");
 
     const catalogAsset = tokenAsset(fakeRpc);
+    const officialCandidateAsset = Object.freeze({
+      kind: "erc20",
+      chainId: fakeRpc.officialCandidate.chainId,
+      address: fakeRpc.officialCandidate.address,
+    });
     const publicInspectionResponse = await fetch(`${fixedOrigin}/api/v1/token-inspections`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1200,20 +1254,62 @@ export const verifyPackagedIntegration = async (prepared) => {
       block: { kind: "latest" },
     });
     assertTokenInspection(mcpInspection.structuredContent, fakeRpc);
-    const tokenStart = await firstMcp.callTool("token_start_registration", {
-      asset: catalogAsset,
+
+    const initialAssetRequestCount = fakeRpc.calls.length;
+    let initialMcpAssets;
+    try {
+      initialMcpAssets = await firstMcp.callTool("account_list_assets");
+    } catch (error) {
+      throw new AggregateError(
+        [error],
+        `Packaged initial account-asset read failed: ${JSON.stringify({
+          failures: fakeRpc.failures,
+          tail: fakeRpc.calls.slice(-12),
+        })}`,
+      );
+    }
+    const initialAssets = assertAccountAssetCollection(
+      initialMcpAssets.structuredContent,
+      fakeRpc,
+      fakeRpc.defaultTokens,
+    );
+    assertRpcRequestBudget(fakeRpc, initialAssetRequestCount, 70, "Initial account asset page");
+    if (initialAssets.nextCursor !== null) {
+      throw new TypeError("Default initialization created unexpected account selections.");
+    }
+    const browserAssets = assertAccountAssetCollection(
+      await jsonResponse(await browserAccountAssets(browser)),
+      fakeRpc,
+      fakeRpc.defaultTokens,
+    );
+    const browserExactDefault = await jsonResponse(await browserExactAccountAsset(
+      browser,
+      fakeRpc.defaultTokens[0],
+      browserAssets.viewRevision,
+    ));
+    assertExactAccountAsset(browserExactDefault, fakeRpc, fakeRpc.defaultTokens[0]);
+
+    const officialAdditionRequestCount = fakeRpc.calls.length;
+    const officialStart = await firstMcp.callTool("token_start_addition", {
+      asset: officialCandidateAsset,
     });
-    const pendingTokenOperation = tokenStartOperation(tokenStart);
+    assertRpcRequestBudget(fakeRpc, officialAdditionRequestCount, 21, "Official token addition");
+    const pendingTokenOperation = tokenStartOperation(officialStart);
     if (
-      pendingTokenOperation.kind !== "register" ||
+      pendingTokenOperation.kind !== "add" ||
       pendingTokenOperation.state !== "awaiting_confirmation" ||
       pendingTokenOperation.interactionInterface !== "web" ||
       pendingTokenOperation.account?.address !== expectedWalletAddress ||
-      pendingTokenOperation.asset?.chainId !== fakeRpc.token.chainId ||
-      pendingTokenOperation.asset.address !== fakeRpc.token.address ||
-      typeof pendingTokenOperation.review?.reviewDigest !== "string"
-    ) throw new TypeError("Packaged token registration operation is invalid.");
-    assertTokenInspection(pendingTokenOperation.review.inspection, fakeRpc);
+      pendingTokenOperation.asset?.chainId !== fakeRpc.officialCandidate.chainId ||
+      pendingTokenOperation.asset.address !== fakeRpc.officialCandidate.address ||
+      pendingTokenOperation.review?.officialEvidence?.assetUid !==
+        fakeRpc.officialCandidate.assetUid ||
+      typeof pendingTokenOperation.review.reviewDigest !== "string"
+    ) throw new TypeError("Packaged official token addition operation is invalid.");
+    assertTokenInspection(
+      pendingTokenOperation.review.inspection,
+      Object.freeze({ ...fakeRpc, token: fakeRpc.officialCandidate }),
+    );
     const tokenOperationId = pendingTokenOperation.operationId;
     const currentTokenOperation = await jsonResponse(await browserTokenCurrent(browser));
     if (
@@ -1233,75 +1329,46 @@ export const verifyPackagedIntegration = async (prepared) => {
     ));
     if (
       confirmedTokenOperation.operationId !== tokenOperationId ||
-      confirmedTokenOperation.kind !== "register" ||
+      confirmedTokenOperation.kind !== "add" ||
       confirmedTokenOperation.state !== "completed" ||
       confirmedTokenOperation.failure !== null
     ) throw new TypeError("Browser token confirmation did not complete the exact operation.");
-    assertTokenInspection(confirmedTokenOperation.result?.inspection, fakeRpc);
-    const registeredToken = confirmedTokenOperation.result?.registration;
-    assertSingleTokenRegistration({ registrations: [registeredToken], nextCursor: null }, fakeRpc);
+    const officialSelection = assertTokenSelectionDetail(
+      confirmedTokenOperation.result,
+      fakeRpc,
+      fakeRpc.officialCandidate,
+      true,
+    );
 
-    const firstRegistration = await firstMcp.callTool("token_get_registration", {
-      asset: catalogAsset,
+    const firstSelection = await firstMcp.callTool("token_get_selection", {
+      asset: officialCandidateAsset,
     });
-    assertSingleTokenRegistration({
-      registrations: [firstRegistration.structuredContent?.registration],
-      nextCursor: null,
-    }, fakeRpc);
-    assertTokenInspection(firstRegistration.structuredContent?.inspection, fakeRpc);
-    const secondRegistrationPage = await secondMcp.callTool("token_list_registrations");
-    assertSingleTokenRegistration(secondRegistrationPage.structuredContent, fakeRpc);
+    assertTokenSelectionDetail(
+      firstSelection.structuredContent,
+      fakeRpc,
+      fakeRpc.officialCandidate,
+      true,
+    );
+    findTokenSelection(
+      (await secondMcp.callTool("token_list_selections")).structuredContent,
+      fakeRpc.officialCandidate,
+      true,
+    );
     const obsoleteBrowserRegistrationPage = await obsoleteBrowserTokenRegistrations(browser);
     if (
       obsoleteBrowserRegistrationPage.status !== 404 ||
       problemCode(await obsoleteBrowserRegistrationPage.json()) !== "route_not_found"
     ) throw new TypeError("Obsolete browser token registration query remains available.");
 
-    const mcpAccountAssets = await firstMcp.callTool("account_list_assets");
-    assertSingleAccountAsset(mcpAccountAssets.structuredContent, fakeRpc);
-    const browserAssets = await jsonResponse(await browserAccountAssets(browser));
-    assertSingleAccountAsset(browserAssets, fakeRpc);
-    const browserExactAsset = await jsonResponse(await browserExactAccountAsset(browser, fakeRpc));
-    assertExactAccountAsset(browserExactAsset, fakeRpc);
-
-    const cliTokenList = await runCommand(process.execPath, [
-      resolve(prepared.installedPackageRoot, "dist/cli.js"),
-      "token",
-      "list",
-      "--json",
-    ], { cwd: prepared.installRoot, env: environment, output: "capture" });
-    assertSingleTokenRegistration(JSON.parse(cliTokenList.stdout.toString("utf8")), fakeRpc);
-    const cliTokenGet = await runCommand(process.execPath, [
-      resolve(prepared.installedPackageRoot, "dist/cli.js"),
-      "token",
-      "get",
-      fakeRpc.token.address,
-      "--json",
-    ], { cwd: prepared.installRoot, env: environment, output: "capture" });
-    const cliTokenDetail = JSON.parse(cliTokenGet.stdout.toString("utf8"));
-    assertSingleTokenRegistration({
-      registrations: [cliTokenDetail.registration],
-      nextCursor: null,
-    }, fakeRpc);
-    assertTokenInspection(cliTokenDetail.inspection, fakeRpc);
-
-    const cliAssets = await runCommand(process.execPath, [
-      resolve(prepared.installedPackageRoot, "dist/cli.js"),
-      "read",
-      "assets",
-      "--json",
-    ], { cwd: prepared.installRoot, env: environment, output: "capture" });
-    assertSingleAccountAsset(JSON.parse(cliAssets.stdout.toString("utf8")), fakeRpc);
-
-    const tokenRemovalStart = await firstMcp.callTool("token_start_unregistration", {
-      asset: catalogAsset,
-      expectedRevision: registeredToken.revision,
+    const tokenRemovalStart = await firstMcp.callTool("token_start_removal", {
+      asset: officialCandidateAsset,
+      expectedRevision: officialSelection.revision,
     });
     const pendingTokenRemoval = tokenStartOperation(tokenRemovalStart);
     if (
-      pendingTokenRemoval.kind !== "unregister" ||
+      pendingTokenRemoval.kind !== "remove" ||
       pendingTokenRemoval.state !== "awaiting_confirmation" ||
-      pendingTokenRemoval.review?.previousRegistration?.revision !== registeredToken.revision
+      pendingTokenRemoval.review?.previousSelection?.revision !== officialSelection.revision
     ) throw new TypeError("Packaged token removal operation is invalid.");
     const currentTokenRemoval = await jsonResponse(await browserTokenCurrent(browser));
     if (JSON.stringify(currentTokenRemoval.operation) !== JSON.stringify(pendingTokenRemoval)) {
@@ -1313,40 +1380,168 @@ export const verifyPackagedIntegration = async (prepared) => {
       browser,
     ));
     if (
-      confirmedTokenRemoval.kind !== "unregister" ||
+      confirmedTokenRemoval.kind !== "remove" ||
       confirmedTokenRemoval.state !== "completed" ||
-      confirmedTokenRemoval.result?.removedRevision !== registeredToken.revision
+      confirmedTokenRemoval.result?.selection?.included !== false
     ) throw new TypeError("Browser token removal confirmation did not complete the exact operation.");
-    const emptyCatalog = (await secondMcp.callTool("token_list_registrations")).structuredContent;
-    if (
-      !Array.isArray(emptyCatalog?.registrations) ||
-      emptyCatalog.registrations.length !== 0 ||
-      emptyCatalog.nextCursor !== null
-    ) throw new TypeError("Packaged token removal left a visible registration.");
-    const emptyAssets = await jsonResponse(await browserAccountAssets(browser));
-    assertEmptyAccountAssets(emptyAssets, fakeRpc);
+    const excludedOfficial = findTokenSelection(
+      (await secondMcp.callTool("token_list_selections")).structuredContent,
+      fakeRpc.officialCandidate,
+      false,
+    );
+    assertAccountAssetCollection(
+      await jsonResponse(await browserAccountAssets(browser)),
+      fakeRpc,
+      fakeRpc.defaultTokens,
+    );
+    const retainedExclusion = await firstMcp.callTool("token_get_selection", {
+      asset: officialCandidateAsset,
+    });
+    assertTokenSelectionDetail(
+      retainedExclusion.structuredContent,
+      fakeRpc,
+      fakeRpc.officialCandidate,
+      false,
+    );
 
-    const tokenRestart = await firstMcp.callTool("token_start_registration", {
+    const customAdditionRequestCount = fakeRpc.calls.length;
+    const customStart = await firstMcp.callTool("token_start_addition", {
       asset: catalogAsset,
     });
-    const pendingTokenRestart = tokenStartOperation(tokenRestart);
-    const confirmedTokenRestart = await jsonResponse(await browserTokenConfirm(
-      pendingTokenRestart.operationId,
-      pendingTokenRestart.review.reviewDigest,
+    assertRpcRequestBudget(fakeRpc, customAdditionRequestCount, 21, "Custom token addition");
+    const pendingCustomAddition = tokenStartOperation(customStart);
+    if (
+      pendingCustomAddition.kind !== "add" ||
+      pendingCustomAddition.review?.officialEvidence !== null
+    ) throw new TypeError("Packaged custom token addition operation is invalid.");
+    const confirmedCustomAddition = await jsonResponse(await browserTokenConfirm(
+      pendingCustomAddition.operationId,
+      pendingCustomAddition.review.reviewDigest,
       browser,
     ));
     if (
-      pendingTokenRestart.kind !== "register" ||
-      confirmedTokenRestart.kind !== "register" ||
-      confirmedTokenRestart.state !== "completed"
-    ) throw new TypeError("Packaged token re-registration did not complete.");
-    const restoredToken = assertSingleTokenRegistration({
-      registrations: [confirmedTokenRestart.result?.registration],
-      nextCursor: null,
-    }, fakeRpc);
+      confirmedCustomAddition.kind !== "add" ||
+      confirmedCustomAddition.state !== "completed" ||
+      confirmedCustomAddition.failure !== null
+    ) {
+      throw new TypeError(
+        `Packaged custom token addition did not complete: ${JSON.stringify(confirmedCustomAddition)}`,
+      );
+    }
+    const customSelection = assertTokenSelectionDetail(
+      confirmedCustomAddition.result,
+      fakeRpc,
+      fakeRpc.token,
+      true,
+    );
+    const customAssetView = assertAccountAssetCollection(
+      await jsonResponse(await browserAccountAssets(browser)),
+      fakeRpc,
+      fakeRpc.defaultTokens,
+    );
+    const exactAssetRequestCount = fakeRpc.calls.length;
+    const exactCustom = await jsonResponse(await browserExactAccountAsset(
+      browser,
+      fakeRpc.token,
+      customAssetView.viewRevision,
+    ));
+    assertRpcRequestBudget(fakeRpc, exactAssetRequestCount, 21, "Exact account asset read");
+    assertExactAccountAsset(exactCustom, fakeRpc, fakeRpc.token);
+
+    const cliTokenList = await runCommand(process.execPath, [
+      resolve(prepared.installedPackageRoot, "dist/cli.js"),
+      "token",
+      "list",
+      "--json",
+    ], { cwd: prepared.installRoot, env: environment, output: "capture" });
+    findTokenSelection(
+      JSON.parse(cliTokenList.stdout.toString("utf8")),
+      fakeRpc.token,
+      true,
+    );
+    const cliTokenGet = await runCommand(process.execPath, [
+      resolve(prepared.installedPackageRoot, "dist/cli.js"),
+      "token",
+      "get",
+      fakeRpc.token.address,
+      "--json",
+    ], { cwd: prepared.installRoot, env: environment, output: "capture" });
+    assertTokenSelectionDetail(
+      JSON.parse(cliTokenGet.stdout.toString("utf8")),
+      fakeRpc,
+      fakeRpc.token,
+      true,
+    );
+    const cliAssets = await runCommand(process.execPath, [
+      resolve(prepared.installedPackageRoot, "dist/cli.js"),
+      "read",
+      "assets",
+      "--json",
+    ], { cwd: prepared.installRoot, env: environment, output: "capture" });
+    assertAccountAssetCollection(
+      JSON.parse(cliAssets.stdout.toString("utf8")),
+      fakeRpc,
+      fakeRpc.defaultTokens,
+    );
+
+    const customRemovalStart = tokenStartOperation(await firstMcp.callTool("token_start_removal", {
+      asset: catalogAsset,
+      expectedRevision: customSelection.revision,
+    }));
+    const removedCustom = await jsonResponse(await browserTokenConfirm(
+      customRemovalStart.operationId,
+      customRemovalStart.review.reviewDigest,
+      browser,
+    ));
+    const excludedCustom = assertTokenSelectionDetail(
+      removedCustom.result,
+      fakeRpc,
+      fakeRpc.token,
+      false,
+    );
+    const customRestart = tokenStartOperation(await firstMcp.callTool("token_start_addition", {
+      asset: catalogAsset,
+    }));
+    const restoredCustomOperation = await jsonResponse(await browserTokenConfirm(
+      customRestart.operationId,
+      customRestart.review.reviewDigest,
+      browser,
+    ));
     if (
-      restoredToken.revision === registeredToken.revision
-    ) throw new TypeError("Packaged token re-registration reused an obsolete revision.");
+      restoredCustomOperation.kind !== "add" ||
+      restoredCustomOperation.state !== "completed" ||
+      restoredCustomOperation.failure !== null
+    ) {
+      throw new TypeError(
+        `Packaged custom token re-addition did not complete: ${JSON.stringify(restoredCustomOperation)}`,
+      );
+    }
+    const restoredToken = assertTokenSelectionDetail(
+      restoredCustomOperation.result,
+      fakeRpc,
+      fakeRpc.token,
+      true,
+    );
+    if (
+      excludedOfficial.revision === officialSelection.revision ||
+      restoredToken.revision === customSelection.revision ||
+      restoredToken.revision === excludedCustom.revision
+    ) throw new TypeError("Packaged selection transitions reused obsolete revisions.");
+
+    fakeRpc.setAssetSourceUnavailable(true);
+    const unavailableSourceAssets = assertAccountAssetCollection(
+      await jsonResponse(await browserAccountAssets(browser)),
+      fakeRpc,
+      fakeRpc.defaultTokens,
+    );
+    fakeRpc.setAssetSourceUnavailable(false);
+    if (
+      unavailableSourceAssets.viewRevision?.officialSnapshotStatus !== "unavailable" ||
+      unavailableSourceAssets.viewRevision.officialSnapshotRevision !==
+        customAssetView.viewRevision.officialSnapshotRevision
+    ) {
+      throw new TypeError("Packaged source failure did not preserve the committed snapshot revision.");
+    }
 
     const idempotentConnection = startToolResult(
       await firstMcp.callTool("wallet_start_connection"),
@@ -1540,11 +1735,15 @@ export const verifyPackagedIntegration = async (prepared) => {
       throw new TypeError("Browser bootstrap did not recover after owner takeover.");
     }
     const renewedAssets = await jsonResponse(await browserAccountAssets(renewedBrowser));
-    assertSingleAccountAsset(renewedAssets, fakeRpc);
+    assertAccountAssetCollection(renewedAssets, fakeRpc, fakeRpc.defaultTokens);
     const takeoverMcp = await startNpxMcp(prepared, environment);
     mcpClients.push(takeoverMcp);
     const takeoverAssets = await takeoverMcp.callTool("account_list_assets");
-    assertSingleAccountAsset(takeoverAssets.structuredContent, fakeRpc);
+    assertAccountAssetCollection(
+      takeoverAssets.structuredContent,
+      fakeRpc,
+      fakeRpc.defaultTokens,
+    );
     await takeoverMcp.close();
     mcpClients.splice(mcpClients.indexOf(takeoverMcp), 1);
 

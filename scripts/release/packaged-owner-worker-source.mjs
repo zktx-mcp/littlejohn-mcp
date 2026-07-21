@@ -15,13 +15,22 @@ import { resolve } from "node:path";
 
 import { createChainOwnerApplication } from ${packageModule("chain/application.js")};
 import { createInterfaceOwnerApplication } from ${packageModule("interfaces/application.js")};
+import {
+  createOfficialAssetSourceClient,
+  robinhoodAssetSourceUri,
+} from ${packageModule("registry/index.js")};
 import { ProductDatabase } from ${packageModule("runtime/database.js")};
 import { LocalRuntime } from ${packageModule("runtime/index.js")};
 import { createWalletOwnerApplicationFactory } from ${packageModule("wallet/application.js")};
 
 const dataDirectory = process.env.LITTLEJOHN_DATA_DIR;
 const clockPath = process.env.LITTLEJOHN_RELEASE_CLOCK;
-if (typeof dataDirectory !== "string" || typeof clockPath !== "string") {
+const assetSourceUrl = process.env.LITTLEJOHN_RELEASE_ASSET_SOURCE_URL;
+if (
+  typeof dataDirectory !== "string" ||
+  typeof clockPath !== "string" ||
+  typeof assetSourceUrl !== "string"
+) {
   throw new TypeError("Release worker environment is incomplete.");
 }
 
@@ -204,6 +213,15 @@ const createFakeClient = async (configuration, acquisitionResources) => {
 const runtime = await LocalRuntime.create({
   environment: process.env,
   now,
+  officialAssetSourceClient: createOfficialAssetSourceClient({
+    now: () => new Date(now()),
+    fetch: (input, init) => {
+      if (input !== robinhoodAssetSourceUri) {
+        throw new TypeError("Release source client requested an unexpected authority.");
+      }
+      return fetch(assetSourceUrl, init);
+    },
+  }),
   walletApplicationFactory: createWalletOwnerApplicationFactory(createFakeClient),
   chainApplicationFactory: createChainOwnerApplication,
   interfaceApplicationFactory: createInterfaceOwnerApplication,

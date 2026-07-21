@@ -73,10 +73,11 @@ describe("root browser application structure", () => {
     const app = source("src/interfaces/web/app.tsx");
     const page = source("src/interfaces/web/account-assets-page.tsx");
 
-    expect(app.match(/useState\(createBrowserRequestAuthority\)/gu)).toHaveLength(4);
+    expect(app.match(/useState\(createBrowserRequestAuthority\)/gu)).toHaveLength(5);
     expect(app).toContain("walletAuthority.beginRead()");
     expect(app).toContain("assetAuthority.beginRead()");
     expect(app).toContain("exactAuthority.beginRead()");
+    expect(app).toContain("candidateAuthority.beginRead()");
     expect(app).toContain("tokenAuthority.beginRead()");
     expect(app).toContain("tokenAuthority.beginControl()");
     expect(app).toContain("resultMatchesAccount(expected, result)");
@@ -88,8 +89,8 @@ describe("root browser application structure", () => {
     expect(app).toContain("handledTerminalTokenOperation.current = operation.operationId");
     expect(app).toContain("handledTerminalTokenOperation.current !== next.operationId");
     expect(page).toContain("Add token");
-    expect(page).toContain("Remove from this account");
-    expect(app).not.toContain("startTokenRegistrationUpdate");
+    expect(page).toContain("Remove token from this account");
+    expect(app).not.toContain("startTokenSelectionUpdate");
   });
 
   it("gives wallet identifiers the full dialog width without wrapping", () => {

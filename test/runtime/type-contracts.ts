@@ -84,7 +84,7 @@ type _InterfaceContextKeys = Assert<Equal<
   "routes" | "signal" | "startupResources" | "supportManifest" | "walletConnection" | "walletOperations" |
   "chainReads" | "tokenInspection" | "tokenCatalogQueries" | "tokenCatalogWebStart" |
   "tokenCatalogBrowserOperations" | "tokenCatalogInteractiveCli" | "tokenCatalogNonInteractiveOperations" |
-  "accountTokenRegistrationRead" | "accountAssets"
+  "accountAssets"
 >>;
 type _InterfaceWalletOperations = Assert<Equal<
   InterfaceOwnerApplicationContext<TestWalletOperations>["walletOperations"],
@@ -129,7 +129,7 @@ type _WalletHandoffActiveWallet = Assert<Equal<
 >>;
 type _ChainHandoffKeys = Assert<Equal<
   keyof ChainOwnerHandoff,
-  "supportManifest" | "chainReads" | "tokenInspection"
+  "supportManifest" | "chainReads" | "tokenInspection" | "officialAssetReads" | "accountAssetReads"
 >>;
 type _RuntimeHandleKeys = Assert<Equal<
   keyof LocalRuntime,
@@ -137,7 +137,8 @@ type _RuntimeHandleKeys = Assert<Equal<
 >>;
 type _RuntimeOptionKeys = Assert<Equal<
   keyof LocalRuntimeOptions<TestActiveWallet, TestWalletOperations>,
-  "environment" | "now" | "walletApplicationFactory" | "chainApplicationFactory" | "interfaceApplicationFactory"
+  "environment" | "now" | "officialAssetSourceClient" | "walletApplicationFactory" |
+    "chainApplicationFactory" | "interfaceApplicationFactory"
 >>;
 type _NoFactoryPrefix = Assert<{} extends LocalRuntimeOptions<TestActiveWallet, TestWalletOperations> ? true : false>;
 type _WalletFactoryPrefix = Assert<{
@@ -174,11 +175,11 @@ type _WalletSessionSourceKeys = Assert<Equal<
 >>;
 type _TokenCatalogApplicationStoreKeys = Assert<Equal<
   keyof TokenCatalogApplicationDependencies["store"],
-  "getRegistration" | "listRegistrations"
+  "getSelection" | "getSelectionState" | "listSelections"
 >>;
 type _TokenCatalogHandoffKeys = Assert<Equal<
   keyof TokenCatalogOwnerHandoff,
-  "supportManifest" | keyof typeof tokenCatalogConsumerPortContract
+  "supportManifest" | "officialAssets" | keyof typeof tokenCatalogConsumerPortContract
 >>;
 type _TokenCatalogQueryKeys = Assert<Equal<
   keyof TokenCatalogQueryApplicationPort,

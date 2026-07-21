@@ -207,16 +207,16 @@ describe("wallet browser client", () => {
 
   it("preserves canonical token catalog failures without a browser error copy", async () => {
     const transport = queuedFetch([jsonResponse(409, problem({
-      code: "token_registration_already_exists",
-      detail: "The token is already registered for the current account.",
+      code: "token_selection_already_included",
+      detail: "The token is already included for the current account.",
       status: 409,
-      title: "Token already registered",
+      title: "Token already included",
     }))]);
 
     await expect(loadWalletProjection({ request: transport.request })).rejects.toMatchObject({
       name: "BrowserResponseError",
-      code: "token_registration_already_exists",
-      message: "The token is already registered for the current account.",
+      code: "token_selection_already_included",
+      message: "The token is already included for the current account.",
     });
   });
 

@@ -1,6 +1,6 @@
 export const tokenCatalogOperationKinds = Object.freeze([
-  "register",
-  "unregister",
+  "add",
+  "remove",
 ] as const);
 
 export type TokenCatalogOperationKind = typeof tokenCatalogOperationKinds[number];

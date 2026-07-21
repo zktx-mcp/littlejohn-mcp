@@ -69,7 +69,7 @@ import {
   runtimeProtocolVersion,
 } from "../../src/runtime/runtime-identity.js";
 import {
-  canonicalRegistrationRevisionSqlCheck,
+  canonicalSelectionRevisionSqlCheck,
   canonicalRuntimeConfigurationMacSqlCheck,
   canonicalRuntimeIdentifierSqlCheck,
   canonicalSqlTextCheck,
@@ -392,7 +392,11 @@ describe("SQLite product state", () => {
 
     const queries = database.tokenCatalogReadStore();
     expect(Object.isFrozen(queries)).toBe(true);
-    expect(Reflect.ownKeys(queries).sort()).toEqual(["getRegistration", "listRegistrations"]);
+    expect(Reflect.ownKeys(queries).sort()).toEqual([
+      "getSelection",
+      "getSelectionState",
+      "listSelections",
+    ]);
     expect(queries).not.toBe(database.tokenCatalogStore());
     expect("register" in queries).toBe(false);
     expect("update" in queries).toBe(false);
@@ -407,7 +411,7 @@ describe("SQLite product state", () => {
     expect(parseProfileId(profileId)).toBe(profileId);
     expect(parseOwnerInstanceId(ownerInstanceId)).toBe(ownerInstanceId);
     expect(parseRuntimeRevision("0")).toBe("0");
-    expect(runtimeProtocolVersion).toBe(5);
+    expect(runtimeProtocolVersion).toBe(6);
     const noncanonicalTail = `${"A".repeat(21)}B`;
     expect(() => parseProfileId(noncanonicalTail)).toThrow();
     expect(() => parseOwnerInstanceId(noncanonicalTail)).toThrow();
@@ -480,11 +484,14 @@ describe("SQLite product state", () => {
         { name: "contract" },
         { name: "current_wallet_connection" },
         { name: "local_profile" },
+        { name: "robinhood_asset" },
+        { name: "robinhood_asset_snapshot" },
         { name: "runtime_owner" },
         { name: "token_contract" },
         { name: "token_contract_inspection" },
         { name: "wallet_account" },
-        { name: "wallet_token_registration" },
+        { name: "wallet_token_selection" },
+        { name: "wallet_token_selection_state" },
       ]);
     inspection.close();
     if (process.platform !== "win32") {
@@ -492,7 +499,7 @@ describe("SQLite product state", () => {
     }
   });
 
-  it("uses the exact nine-table relational options and restrictive foreign keys", async () => {
+  it("uses the exact current relational options and declared foreign-key deletion behavior", async () => {
     const directory = await temporaryDirectory();
     await ensureOwnerOnlyDirectory(directory);
     const path = runtimePaths(directory).database;
@@ -512,19 +519,24 @@ describe("SQLite product state", () => {
       { name: "contract", wr: 1, strict: 1 },
       { name: "current_wallet_connection", wr: 0, strict: 1 },
       { name: "local_profile", wr: 0, strict: 1 },
+      { name: "robinhood_asset", wr: 1, strict: 1 },
+      { name: "robinhood_asset_snapshot", wr: 1, strict: 1 },
       { name: "runtime_owner", wr: 0, strict: 1 },
       { name: "token_contract", wr: 1, strict: 1 },
       { name: "token_contract_inspection", wr: 1, strict: 1 },
       { name: "wallet_account", wr: 1, strict: 1 },
-      { name: "wallet_token_registration", wr: 1, strict: 1 },
+      { name: "wallet_token_selection", wr: 1, strict: 1 },
+      { name: "wallet_token_selection_state", wr: 1, strict: 1 },
     ]);
     for (const table of [
       "runtime_owner",
+      "robinhood_asset_snapshot",
       "contract",
       "token_contract",
       "token_contract_inspection",
       "wallet_account",
-      "wallet_token_registration",
+      "wallet_token_selection_state",
+      "wallet_token_selection",
       "current_wallet_connection",
     ]) {
       const foreignKeys = inspection.pragma(`foreign_key_list(${table})`) as {
@@ -535,6 +547,13 @@ describe("SQLite product state", () => {
       expect(foreignKeys.every((key) => key.on_update === "RESTRICT" && key.on_delete === "RESTRICT"), table)
         .toBe(true);
     }
+    const officialAssetKeys = inspection.pragma("foreign_key_list(robinhood_asset)") as {
+      on_update: string;
+      on_delete: string;
+    }[];
+    expect(officialAssetKeys).toEqual([
+      expect.objectContaining({ on_update: "RESTRICT", on_delete: "CASCADE" }),
+    ]);
     expect(inspection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(inspection.prepare("PRAGMA integrity_check").all()).toEqual([{ integrity_check: "ok" }]);
     inspection.close();
@@ -562,7 +581,7 @@ describe("SQLite product state", () => {
     const base64UrlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     const checks = [
       { byteLength: 16, check: canonicalRuntimeIdentifierSqlCheck },
-      { byteLength: 16, check: canonicalRegistrationRevisionSqlCheck },
+      { byteLength: 16, check: canonicalSelectionRevisionSqlCheck },
       { byteLength: 32, check: canonicalRuntimeConfigurationMacSqlCheck },
     ] as const;
 
@@ -1021,7 +1040,8 @@ describe("SQLite product state", () => {
       "contract",
       "token_contract",
       "token_contract_inspection",
-      "wallet_token_registration",
+      "wallet_token_selection_state",
+      "wallet_token_selection",
     ]) {
       expect(inspection.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table)
         .toEqual({ count: 0 });

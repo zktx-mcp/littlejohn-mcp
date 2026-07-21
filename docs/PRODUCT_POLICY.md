@@ -66,6 +66,23 @@ The exact numeric contract is owned by `docs/NUMERIC_POLICY.md`. Transaction
 authority and execution requirements are owned by
 `docs/TRANSACTION_POLICY.md`.
 
+## Default Stock Tokens
+
+<!-- Generated from defaultStockTokenManifest. Do not edit this section. -->
+
+Little John attempts to include the following Robinhood Stock Tokens on an
+account's first successful asset read. Inclusion occurs only while the exact
+UID and contract address remain in the current official asset snapshot and pass
+the required onchain verification. An existing account choice is never replaced.
+
+Canonical source: `defaultStockTokenManifest` for `eip155:4663`.
+
+1. UID `0x00000000000000000000000000000000c2425be3658540dd8e2424cbf3c5c649`; contract `0xaf3d76f1834a1d425780943c99ea8a608f8a93f9`.
+2. UID `0x00000000000000000000000000000000915f477416294f5099a5e0e09f327ce5`; contract `0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec`.
+3. UID `0x00000000000000000000000000000000cfece3244ea34bb29414dd9488b32d9f`; contract `0x322f0929c4625ed5bad873c95208d54e1c003b2d`.
+4. UID `0x0000000000000000000000000000000053b69e2076884cc9ae2ada9bc7095df3`; contract `0x2e0847e8910a9732eb3fb1bb4b70a580adad4fe3`.
+5. UID `0x000000000000000000000000000000001c6f27a62789417d8ed359ed3c2d3da1`; contract `0x117cc2133c37b721f49de2a7a74833232b3b4c0c`.
+
 ## Current Support
 
 <!-- Generated from the runtime support manifest. Do not edit this section. -->
@@ -80,7 +97,7 @@ authority and execution requirements are owned by
 - Implemented protocol support: none.
 - Implemented wallet support: `wallet.cancel_operation` (MCP, CLI, web); `wallet.connect` (MCP, CLI, web); `wallet.connection` (HTTP, MCP, CLI); `wallet.current_operation` (web); `wallet.disconnect` (MCP, CLI, web); `wallet.operation` (MCP, CLI, web).
 - Implemented transaction actions: none.
-- Available user-facing capabilities: `account.asset`, `account.assets`, `account.balance`, `chain.status`, `contract.inspect`, `token.cancel_operation`, `token.inspect`, `token.operation`, `token.registration`, `token.registrations`, `token.start_registration`, `token.start_unregistration`, `transaction.inspect`, `wallet.cancel_operation`, `wallet.connect`, `wallet.connection`, `wallet.current_operation`, `wallet.disconnect`, `wallet.operation`.
+- Available user-facing capabilities: `account.asset`, `account.assets`, `account.balance`, `chain.status`, `contract.inspect`, `token.cancel_operation`, `token.inspect`, `token.operation`, `token.selection`, `token.selections`, `token.start_addition`, `token.start_removal`, `transaction.inspect`, `wallet.cancel_operation`, `wallet.connect`, `wallet.connection`, `wallet.current_operation`, `wallet.disconnect`, `wallet.operation`.
 - Experiments and collected research do not establish product support.
 
 ## Support Levels

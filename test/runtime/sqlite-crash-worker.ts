@@ -41,16 +41,25 @@ if (mode === "interrupted" || mode === "catalog-interrupted") {
       chain_id, contract_address, inspection_digest, result_json
     ) VALUES (?, ?, ?, ?)`)
       .run(chainId, tokenAddress, inspectionDigest, "{}");
-    database.prepare(`INSERT INTO wallet_token_registration(
-      profile_id, chain_id, wallet_address, token_address, revision, inspection_digest,
-      created_at
-    ) SELECT profile_id, ?, ?, ?, ?, ?, ?
+    database.prepare(`INSERT INTO wallet_token_selection_state(
+      profile_id, chain_id, wallet_address, revision, defaults_initialized, created_at, updated_at
+    ) SELECT profile_id, ?, ?, ?, 0, ?, ?
+      FROM local_profile WHERE singleton = 1`).run(
+        chainId,
+        walletAddress,
+        Buffer.alloc(16, 3).toString("base64url"),
+        observedAt,
+        observedAt,
+      );
+    database.prepare(`INSERT INTO wallet_token_selection(
+      profile_id, chain_id, wallet_address, token_address, included, revision, created_at, updated_at
+    ) SELECT profile_id, ?, ?, ?, 1, ?, ?, ?
       FROM local_profile WHERE singleton = 1`).run(
         chainId,
         walletAddress,
         tokenAddress,
         Buffer.alloc(16, 4).toString("base64url"),
-        inspectionDigest,
+        observedAt,
         observedAt,
       );
   }

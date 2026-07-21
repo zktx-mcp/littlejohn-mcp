@@ -46,6 +46,10 @@ import {
   getChainInvocationStopReason,
   type ChainInvocationLifecycle,
 } from "./invocation-lifecycle.js";
+import {
+  completeTokenStandardObservation,
+  observeRequiredErc8056,
+} from "./token-standards.js";
 
 const requiredTotalSupplyRevertedErrors = new WeakSet<object>();
 
@@ -315,6 +319,21 @@ const inspectionHandler = async (
       : Object.freeze({ status: "available" as const, value: decimals, observationId: decimalsObservationId }),
     quantityObservationId: supplyObservationId,
   });
+  const requiredStandards = await observeRequiredErc8056({
+    rpc: dependencies.rpc,
+    asset: request.asset,
+    block: block.anchor,
+    stateReference: block.reference,
+    signal,
+  });
+  const standards = await completeTokenStandardObservation({
+    rpc: dependencies.rpc,
+    asset: request.asset,
+    block: block.anchor,
+    stateReference: block.reference,
+    signal,
+    erc20ReadSurfaceObserved: true,
+  }, requiredStandards);
   const data: TokenInspectionData = Object.freeze({
     asset: request.asset,
     block: block.anchor,
@@ -324,6 +343,7 @@ const inspectionHandler = async (
       name: Object.freeze({ ...name, observationId: nameObservationId }) as OptionalText,
       symbol: Object.freeze({ ...symbol, observationId: symbolObservationId }) as OptionalText,
     }),
+    standards,
   });
   return Object.freeze({ status: "success", data });
 };

@@ -17,6 +17,12 @@ import {
 import { ProductDatabase } from "../../src/runtime/database.js";
 import { RuntimeOperationError } from "../../src/runtime/errors.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
+import {
+  createOfficialAssetSourceClient,
+  officialAssetSnapshotRevisionSchema,
+  robinhoodAssetSourceUri,
+  type CommittedOfficialAssetSnapshot,
+} from "../../src/registry/index.js";
 import type { WalletSessionSource } from "../../src/runtime/source-identity.js";
 import {
   TokenCatalogCoordinator,
@@ -27,7 +33,7 @@ import {
 } from "../../src/token-catalog/operation-error.js";
 import {
   tokenCatalogContractLimits,
-  tokenRegistrationWithInspectionSchema,
+  tokenSelectionDetailSchema,
 } from "../../src/token-catalog/contracts.js";
 import { createInspectionBinding, chainId, tokenAddress, walletAddress } from "./harness.js";
 
@@ -40,19 +46,19 @@ const nextOperationId = () => {
   return Buffer.alloc(32, operationIdSequence).toString("base64url");
 };
 
-const startRegistration = (
+const startAddition = (
   coordinator: TokenCatalogCoordinator,
-  input: Parameters<TokenCatalogCoordinator["startRegistration"]>[0],
+  input: Parameters<TokenCatalogCoordinator["startAddition"]>[0],
   interactionInterface: "cli" | "web",
   operationId = nextOperationId(),
-) => coordinator.startRegistration(input, { operationId, interactionInterface });
+) => coordinator.startAddition(input, { operationId, interactionInterface });
 
-const startUnregistration = (
+const startRemoval = (
   coordinator: TokenCatalogCoordinator,
-  input: Parameters<TokenCatalogCoordinator["startUnregistration"]>[0],
+  input: Parameters<TokenCatalogCoordinator["startRemoval"]>[0],
   interactionInterface: "cli" | "web",
   operationId = nextOperationId(),
-) => coordinator.startUnregistration(input, { operationId, interactionInterface });
+) => coordinator.startRemoval(input, { operationId, interactionInterface });
 
 const confirmOperation = (
   coordinator: TokenCatalogCoordinator,
@@ -109,12 +115,25 @@ const createState = async (
   let liveConnectionRevision = connection.revision;
   const controller = new AbortController();
   const catalogStore = database.tokenCatalogStore();
+  const observation = await createOfficialAssetSourceClient({
+    fetch: (async () => new Response(JSON.stringify({
+      assets: [{
+        id: `0x${"11".repeat(32)}`,
+        status: "ASSET_STATUS_ACTIVE",
+        deployments: [{ chainId: 4663, contractAddress: `0x${"56".repeat(20)}` }],
+        tokenName: "Unrelated Stock Token",
+        tokenSymbol: "OTHER",
+      }],
+    }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch,
+    now: () => new Date(currentTime),
+  }).read(controller.signal);
+  const officialSnapshot = database.officialAssetSnapshotStore().replaceSnapshot(observation, null);
   const operationStore = onRegister === undefined
     ? catalogStore
     : Object.freeze({
         ...catalogStore,
         applyConfirmation: (input: Parameters<typeof catalogStore.applyConfirmation>[0]) => {
-          if (input.kind === "register") onRegister();
+          if (input.kind === "add") onRegister();
           return catalogStore.applyConfirmation(input);
         },
       });
@@ -131,6 +150,14 @@ const createState = async (
         },
       },
       inspection,
+      officialAssets: Object.freeze({
+        synchronize: async () => Object.freeze({ status: "current" as const, snapshot: officialSnapshot }),
+        readStored: () => officialSnapshot,
+        close: async () => undefined,
+      }),
+      verifyOfficialAsset: Object.freeze({
+        verify: async () => { throw new Error("No official verification is expected."); },
+      }),
       store: operationStore,
       clock,
       signal,
@@ -180,26 +207,26 @@ const createState = async (
 const failureCode = (error: unknown) => getTokenCatalogOperationFailure(error)?.error.code;
 
 describe("token catalog operation coordinator", () => {
-  it("keeps registration mutation absent until exact-interface confirmation", async () => {
+  it("keeps selection mutation absent until exact-interface confirmation", async () => {
     const state = await createState();
-    const start = await startRegistration(state.coordinator, {
+    const start = await startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "web");
     expect("ok" in start).toBe(false);
-    if ("ok" in start) throw new Error("Registration start failed.");
+    if ("ok" in start) throw new Error("Selection start failed.");
     expect(start.operation).toMatchObject({
-      kind: "register",
+      kind: "add",
       state: "awaiting_confirmation",
       interactionInterface: "web",
       account: { chainId, address: walletAddress },
     });
     const rawBefore = new Database(state.path, { readonly: true });
-    for (const table of ["contract", "token_contract", "token_contract_inspection", "wallet_token_registration"]) {
+    for (const table of ["contract", "token_contract", "token_contract_inspection", "wallet_token_selection"]) {
       expect(rawBefore.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table).toEqual({ count: 0 });
     }
     rawBefore.close();
 
-    const concurrent = await startUnregistration(state.coordinator, {
+    const concurrent = await startRemoval(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
       expectedRevision: Buffer.alloc(16, 9).toString("base64url"),
     }, "web");
@@ -219,13 +246,13 @@ describe("token catalog operation coordinator", () => {
       operationId: start.operation.operationId,
       reviewDigest: start.operation.review.reviewDigest,
     });
-    expect(completed).toMatchObject({ state: "completed", result: { registration: {
+    expect(completed).toMatchObject({ state: "completed", result: { selection: {
       account: { chainId, address: walletAddress },
       asset: { kind: "erc20", chainId, address: tokenAddress },
     } } });
-    expect(state.database.tokenCatalogStore().listRegistrations({
+    expect(state.database.tokenCatalogStore().listSelections({
       account: { chainId, address: walletAddress }, limit: tokenCatalogContractLimits.listMaximumLimit, cursor: null,
-    }).registrations).toHaveLength(1);
+    }).selections).toHaveLength(1);
     await expect(confirmOperation(state.coordinator, "web", {
       operationId: start.operation.operationId,
       reviewDigest: start.operation.review.reviewDigest,
@@ -236,10 +263,10 @@ describe("token catalog operation coordinator", () => {
 
   it("validates the canonical confirmation input before operation lookup or state comparison", async () => {
     const state = await createState();
-    const start = await startRegistration(state.coordinator, {
+    const start = await startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "web");
-    if ("ok" in start) throw new Error("Registration start failed.");
+    if ("ok" in start) throw new Error("Selection start failed.");
 
     const validInput = {
       operationId: start.operation.operationId,
@@ -277,11 +304,11 @@ describe("token catalog operation coordinator", () => {
     let releaseInspection!: () => void;
     const inspectionGate = new Promise<void>((resolveGate) => { releaseInspection = resolveGate; });
     const state = await createState(createInspectionBinding(chainId, () => inspectionGate));
-    const pending = startRegistration(state.coordinator, {
+    const pending = startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "web");
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      expect(await startRegistration(state.coordinator, {
+      expect(await startAddition(state.coordinator, {
         asset: { kind: "erc20", chainId, address: tokenAddress },
       }, "web")).toMatchObject({ ok: false, error: { code: "token_operation_conflict" } });
     }
@@ -300,12 +327,12 @@ describe("token catalog operation coordinator", () => {
     let releaseInspection!: () => void;
     const inspectionGate = new Promise<void>((resolveGate) => { releaseInspection = resolveGate; });
     const state = await createState(createInspectionBinding(chainId, () => inspectionGate));
-    const pending = startRegistration(state.coordinator, {
+    const pending = startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "web");
     const close = state.coordinator.close();
     expect(state.coordinator.close()).toBe(close);
-    await expect(startRegistration(state.coordinator, {
+    await expect(startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "web")).rejects.toSatisfy((error: unknown) =>
       failureCode(error) === "runtime_state_unavailable");
@@ -318,18 +345,18 @@ describe("token catalog operation coordinator", () => {
     await close;
     expect(closeSettled).toBe(true);
     expect(() => state.coordinator.getCurrentOperation()).toThrow();
-    expect(state.database.tokenCatalogStore().listRegistrations({
+    expect(state.database.tokenCatalogStore().listSelections({
       account: { chainId, address: walletAddress }, limit: tokenCatalogContractLimits.listMaximumLimit, cursor: null,
-    }).registrations).toEqual([]);
+    }).selections).toEqual([]);
     state.database.close();
   });
 
   it("preserves continuity when the same live session is republished as a new object", async () => {
     const state = await createState();
-    const start = await startRegistration(state.coordinator, {
+    const start = await startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "cli");
-    if ("ok" in start) throw new Error("Registration start failed.");
+    if ("ok" in start) throw new Error("Selection start failed.");
     state.republishSessionSource();
     const completed = await confirmOperation(state.coordinator, "cli", {
       operationId: start.operation.operationId,
@@ -347,56 +374,78 @@ describe("token catalog operation coordinator", () => {
       (state: Awaited<ReturnType<typeof createState>>) => { state.disconnectLive(); },
     ]) {
       const state = await createState();
-      const start = await startRegistration(state.coordinator, {
+      const start = await startAddition(state.coordinator, {
         asset: { kind: "erc20", chainId, address: tokenAddress },
       }, "cli");
-      if ("ok" in start) throw new Error("Registration start failed.");
+      if ("ok" in start) throw new Error("Selection start failed.");
       invalidate(state);
       await expect(confirmOperation(state.coordinator, "cli", {
         operationId: start.operation.operationId,
         reviewDigest: start.operation.review.reviewDigest,
       })).rejects.toSatisfy((error: unknown) => failureCode(error) === "state_conflict");
-      expect(state.database.tokenCatalogStore().listRegistrations({
+      expect(state.database.tokenCatalogStore().listSelections({
         account: { chainId, address: walletAddress }, limit: tokenCatalogContractLimits.listMaximumLimit, cursor: null,
-      }).registrations).toEqual([]);
+      }).selections).toEqual([]);
       expect(state.coordinator.getOperation(start.operation.operationId).state).toBe("awaiting_confirmation");
       state.coordinator.close();
       state.database.close();
     }
   });
 
-  it("removes the exact registration revision without deleting contract identity", async () => {
+  it("removes the exact selection revision without deleting contract identity", async () => {
     const state = await createState();
-    const registrationStart = await startRegistration(state.coordinator, {
+    const additionStart = await startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "cli");
-    if ("ok" in registrationStart) throw new Error("Registration start failed.");
+    if ("ok" in additionStart) throw new Error("Selection start failed.");
     const registered = await confirmOperation(state.coordinator, "cli", {
-      operationId: registrationStart.operation.operationId,
-      reviewDigest: registrationStart.operation.review.reviewDigest,
+      operationId: additionStart.operation.operationId,
+      reviewDigest: additionStart.operation.review.reviewDigest,
     });
-    if (registered.kind !== "register" || registered.state !== "completed") {
-      throw new Error("Registration did not complete.");
+    if (registered.kind !== "add" || registered.state !== "completed") {
+      throw new Error("Selection did not complete.");
     }
-    const registeredResult = tokenRegistrationWithInspectionSchema.parse(registered.result);
+    const registeredResult = tokenSelectionDetailSchema.parse(registered.result);
 
-    const removalStart = await startUnregistration(state.coordinator, {
-      asset: registeredResult.registration.asset,
-      expectedRevision: registeredResult.registration.revision,
+    const removalStart = await startRemoval(state.coordinator, {
+      asset: registeredResult.selection.asset,
+      expectedRevision: registeredResult.selection.revision,
     }, "web");
-    if ("ok" in removalStart) throw new Error("Registration removal start failed.");
+    if ("ok" in removalStart) throw new Error("Selection removal start failed.");
     const removed = await confirmOperation(state.coordinator, "web", {
       operationId: removalStart.operation.operationId,
       reviewDigest: removalStart.operation.review.reviewDigest,
     });
     expect(removed).toMatchObject({
-      kind: "unregister",
+      kind: "remove",
       state: "completed",
-      result: { removedRevision: registeredResult.registration.revision },
+      result: { selection: { included: false } },
     });
-    expect(state.database.tokenCatalogStore().listRegistrations({
+    const removedSelection = tokenSelectionDetailSchema.parse(removed.result).selection;
+    const readditionStart = await startAddition(state.coordinator, {
+      asset: registeredResult.selection.asset,
+    }, "web");
+    if ("ok" in readditionStart) throw new Error("Selection re-addition start failed.");
+    expect(readditionStart.operation.review.previousSelection).toMatchObject({
+      included: false,
+      revision: removedSelection.revision,
+    });
+    const readded = await confirmOperation(state.coordinator, "web", {
+      operationId: readditionStart.operation.operationId,
+      reviewDigest: readditionStart.operation.review.reviewDigest,
+    });
+    expect(readded).toMatchObject({
+      kind: "add",
+      state: "completed",
+      failure: null,
+      result: { selection: { included: true } },
+    });
+    const selections = state.database.tokenCatalogStore().listSelections({
       account: { chainId, address: walletAddress }, limit: tokenCatalogContractLimits.listMaximumLimit, cursor: null,
-    }).registrations).toEqual([]);
+    }).selections;
+    expect(selections).toHaveLength(1);
+    expect(selections[0]).toMatchObject({ included: true });
+    expect(selections[0]?.revision).not.toBe(registeredResult.selection.revision);
     const raw = new Database(state.path, { readonly: true });
     expect(raw.prepare("SELECT COUNT(*) AS count FROM token_contract").get()).toEqual({ count: 1 });
     raw.close();
@@ -406,14 +455,14 @@ describe("token catalog operation coordinator", () => {
 
   it("records one failed operation and rolls back storage when applying fails", async () => {
     const state = await createState();
-    const start = await startRegistration(state.coordinator, {
+    const start = await startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "web");
-    if ("ok" in start) throw new Error("Registration start failed.");
+    if ("ok" in start) throw new Error("Selection start failed.");
     const raw = new Database(state.path);
-    raw.exec(`CREATE TRIGGER reject_token_registration
-      BEFORE INSERT ON wallet_token_registration
-      BEGIN SELECT RAISE(ABORT, 'injected registration failure'); END`);
+    raw.exec(`CREATE TRIGGER reject_token_selection
+      BEFORE INSERT ON wallet_token_selection
+      BEGIN SELECT RAISE(ABORT, 'injected selection failure'); END`);
     const failed = await confirmOperation(state.coordinator, "web", {
       operationId: start.operation.operationId,
       reviewDigest: start.operation.review.reviewDigest,
@@ -423,7 +472,7 @@ describe("token catalog operation coordinator", () => {
       failure: { error: { code: "runtime_state_unavailable" } },
     });
     expect((await state.coordinator.cancel(start.operation.operationId)).state).toBe("failed");
-    for (const table of ["contract", "token_contract", "token_contract_inspection", "wallet_token_registration"]) {
+    for (const table of ["contract", "token_contract", "token_contract_inspection", "wallet_token_selection"]) {
       expect(raw.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table).toEqual({ count: 0 });
     }
     raw.close();
@@ -437,7 +486,7 @@ describe("token catalog operation coordinator", () => {
       undefined,
       () => new RuntimeOperationError("runtime_state_unavailable"),
     );
-    const result = await startRegistration(state.coordinator, {
+    const result = await startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "web");
     expect(result).toMatchObject({
@@ -455,10 +504,10 @@ describe("token catalog operation coordinator", () => {
       undefined,
       () => projectionUnavailable ? new RuntimeOperationError("runtime_state_unavailable") : undefined,
     );
-    const start = await startRegistration(state.coordinator, {
+    const start = await startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "web");
-    if ("ok" in start) throw new Error("Registration start failed.");
+    if ("ok" in start) throw new Error("Selection start failed.");
 
     projectionUnavailable = true;
     await expect(confirmOperation(state.coordinator, "web", {
@@ -474,12 +523,12 @@ describe("token catalog operation coordinator", () => {
 
   it("closes an applying operation when a dependency reports an undeclared failure", async () => {
     const state = await createState(createInspectionBinding(), () => {
-      throw new TokenCatalogOperationError("token_registration_not_found");
+      throw new Error("The dependency returned an undeclared failure.");
     });
-    const start = await startRegistration(state.coordinator, {
+    const start = await startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "web");
-    if ("ok" in start) throw new Error("Registration start failed.");
+    if ("ok" in start) throw new Error("Selection start failed.");
 
     const failed = await confirmOperation(state.coordinator, "web", {
       operationId: start.operation.operationId,
@@ -491,7 +540,7 @@ describe("token catalog operation coordinator", () => {
     });
     expect(state.coordinator.getOperation(start.operation.operationId)).toEqual(failed);
 
-    const successor = await startRegistration(state.coordinator, {
+    const successor = await startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "web");
     expect("ok" in successor).toBe(false);
@@ -505,14 +554,14 @@ describe("token catalog operation coordinator", () => {
     let reentrantStart: Promise<unknown> | undefined;
     let state!: Awaited<ReturnType<typeof createState>>;
     state = await createState(createInspectionBinding(), () => {
-      reentrantStart = startRegistration(state.coordinator, {
+      reentrantStart = startAddition(state.coordinator, {
         asset: { kind: "erc20", chainId, address: tokenAddress },
       }, "web");
     });
-    const start = await startRegistration(state.coordinator, {
+    const start = await startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "web");
-    if ("ok" in start) throw new Error("Registration start failed.");
+    if ("ok" in start) throw new Error("Selection start failed.");
 
     const completed = await confirmOperation(state.coordinator, "web", {
       operationId: start.operation.operationId,
@@ -534,10 +583,10 @@ describe("token catalog operation coordinator", () => {
     state = await createState(createInspectionBinding(), () => {
       close = state.coordinator.close();
     });
-    const start = await startRegistration(state.coordinator, {
+    const start = await startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "web");
-    if ("ok" in start) throw new Error("Registration start failed.");
+    if ("ok" in start) throw new Error("Selection start failed.");
 
     const completed = await confirmOperation(state.coordinator, "web", {
       operationId: start.operation.operationId,
@@ -545,7 +594,7 @@ describe("token catalog operation coordinator", () => {
     });
     expect(completed.state).toBe("completed");
     await close;
-    expect(state.database.tokenCatalogStore().getRegistration(
+    expect(state.database.tokenCatalogStore().getSelection(
       { chainId, address: walletAddress },
       { kind: "erc20", chainId, address: tokenAddress },
     )).toEqual(completed.result);
@@ -555,10 +604,10 @@ describe("token catalog operation coordinator", () => {
 
   it("rejects confirmation after reconnect and does not restore operations in a successor owner", async () => {
     const state = await createState();
-    const start = await startRegistration(state.coordinator, {
+    const start = await startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "web");
-    if ("ok" in start) throw new Error("Registration start failed.");
+    if ("ok" in start) throw new Error("Selection start failed.");
     state.reconnectProjection();
     await expect(confirmOperation(state.coordinator, "web", {
       operationId: start.operation.operationId,
@@ -572,45 +621,45 @@ describe("token catalog operation coordinator", () => {
     try { successor.getOperation(start.operation.operationId); }
     catch (error) { missingOperation = error; }
     expect(failureCode(missingOperation)).toBe("token_operation_not_found");
-    expect(state.database.tokenCatalogStore().listRegistrations({
+    expect(state.database.tokenCatalogStore().listSelections({
       account: { chainId, address: walletAddress }, limit: tokenCatalogContractLimits.listMaximumLimit, cursor: null,
-    }).registrations).toEqual([]);
+    }).selections).toEqual([]);
     successor.close();
     state.database.close();
   });
 
   it("expires, cancels, retains, and removes operations without persistent partial state", async () => {
     const state = await createState();
-    const cancelledStart = await startRegistration(state.coordinator, {
+    const cancelledStart = await startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "web");
-    if ("ok" in cancelledStart) throw new Error("Registration start failed.");
+    if ("ok" in cancelledStart) throw new Error("Selection start failed.");
     expect((await state.coordinator.cancel(cancelledStart.operation.operationId, "web")).state).toBe("cancelled");
     expect((await state.coordinator.cancel(cancelledStart.operation.operationId)).state).toBe("cancelled");
 
-    const expiringStart = await startRegistration(state.coordinator, {
+    const expiringStart = await startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "web");
-    if ("ok" in expiringStart) throw new Error("Registration start failed.");
+    if ("ok" in expiringStart) throw new Error("Selection start failed.");
     expect(state.coordinator.getOperation(cancelledStart.operation.operationId).state).toBe("cancelled");
     expect(state.coordinator.getCurrentOperation()?.operationId).toBe(expiringStart.operation.operationId);
     currentTime = "2026-07-18T00:05:04.000Z";
     expect(state.coordinator.getOperation(expiringStart.operation.operationId).state).toBe("expired");
     currentTime = "2026-07-18T00:10:05.000Z";
     expect(() => state.coordinator.getOperation(expiringStart.operation.operationId)).toThrow();
-    expect(state.database.tokenCatalogStore().listRegistrations({
+    expect(state.database.tokenCatalogStore().listSelections({
       account: { chainId, address: walletAddress }, limit: tokenCatalogContractLimits.listMaximumLimit, cursor: null,
-    }).registrations).toEqual([]);
+    }).selections).toEqual([]);
     state.coordinator.close();
     state.database.close();
   });
 
   it("does not extend expired-operation retention when expiry is first observed late", async () => {
     const state = await createState();
-    const start = await startRegistration(state.coordinator, {
+    const start = await startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "web");
-    if ("ok" in start) throw new Error("Registration start failed.");
+    if ("ok" in start) throw new Error("Selection start failed.");
     currentTime = "2026-07-18T00:10:04.000Z";
     let missingOperation: unknown;
     try { state.coordinator.getOperation(start.operation.operationId); }

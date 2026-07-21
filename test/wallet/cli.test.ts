@@ -6,8 +6,6 @@ import { describe, expect, it } from "vitest";
 import {
   accountAssetApplicationContracts,
   accountAssetControlRoutes,
-  accountAssetMetadataAuthority,
-  createAccountAssetFailure,
 } from "../../src/account-assets/index.js";
 import {
   captureCanonicalJson,
@@ -80,11 +78,25 @@ const emptyAccountAssets = accountAssetApplicationContracts.collection.parsePubl
   { limit: 5, cursor: null },
   {
     account: { chainId: connected.chainId, address: connected.address },
-    metadataAuthority: accountAssetMetadataAuthority,
-    sourceReferences: [],
+    block: {
+      chainId: connected.chainId,
+      blockNumber: "1",
+      blockHash: `0x${"11".repeat(32)}`,
+      blockTimestamp: "2026-07-14T07:30:00.000Z",
+    },
+    viewRevision: {
+      officialSnapshotStatus: "unavailable",
+      officialSnapshotRevision: null,
+      selectionSetRevision: null,
+    },
+    native: {
+      kind: "native",
+      asset: { kind: "native", chainId: connected.chainId },
+      rawBalance: "0",
+      classification: "native",
+    },
     assets: [],
     nextCursor: null,
-    balance: { status: "unavailable", failure: createAccountAssetFailure("source_unavailable") },
   },
 );
 const qr = Object.freeze({

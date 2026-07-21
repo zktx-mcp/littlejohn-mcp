@@ -4,6 +4,8 @@ import {
   accountAssetBrowserRoutes,
   accountAssetCollectionRequestBody,
   accountAssetInterfaceErrorMappings,
+  accountAssetOfficialCandidateQueryContract,
+  accountAssetOfficialCandidateRequestBody,
   createAccountAssetFailure,
   parseAccountAssetExactPath,
   type AccountAssetApplicationPort,
@@ -28,6 +30,7 @@ import {
   parseTokenCatalogOperationPathId,
   startTokenCatalogOperation,
   tokenCatalogApplicationResult,
+  tokenCatalogStartApplicationResult,
   tokenCatalogApplicationContracts,
   tokenCatalogBrowserRoutes,
   tokenCatalogCurrentOperationSchema,
@@ -124,9 +127,15 @@ const browserApiResources: readonly ResourcePathDefinition[] = Object.freeze([
   }),
   Object.freeze({
     kind: "route",
-    method: "GET",
+    method: "POST",
     pathPattern: accountAssetBrowserRoutes.exactPattern,
-    requestClass: "browser_read",
+    requestClass: "browser_query",
+  }),
+  Object.freeze({
+    kind: "route",
+    method: "POST",
+    pathPattern: accountAssetBrowserRoutes.officialCandidateQueries,
+    requestClass: "browser_query",
   }),
   Object.freeze({
     kind: "route",
@@ -282,7 +291,7 @@ export const extendBrowserInterfaceRoutes = (input: {
       },
     },
     {
-      method: "GET",
+      method: "POST",
       mutation: "none",
       pathPattern: accountAssetBrowserRoutes.exactPattern,
       response: "canonical_json",
@@ -296,6 +305,27 @@ export const extendBrowserInterfaceRoutes = (input: {
           contract,
           request,
           await input.accountAssets.get(request, context.signal),
+        );
+      },
+    },
+    {
+      method: "POST",
+      mutation: "none",
+      pathPattern: accountAssetBrowserRoutes.officialCandidateQueries,
+      response: "canonical_json",
+      successStatus: 200,
+      handler: async (context) => {
+        const contract = accountAssetOfficialCandidateQueryContract;
+        let request;
+        try { request = contract.parseInput(context.body); }
+        catch { return failure(createAccountAssetFailure("invalid_input")); }
+        return accountAssetApplicationResult(
+          contract,
+          request,
+          await input.accountAssets.listOfficialCandidates(
+            accountAssetOfficialCandidateRequestBody(request),
+            context.signal,
+          ),
         );
       },
     },
@@ -452,14 +482,15 @@ export const extendBrowserInterfaceRoutes = (input: {
         catch { return tokenInvalidInput(); }
         const contract = tokenCatalogStartContract(create.request.kind);
         try {
-          return success(contract.parseBoundSuccess(
+          return tokenCatalogStartApplicationResult(
+            contract,
             create.request.request,
             {
               operationId: create.operationId,
               interactionInterface: "web",
             },
             await startTokenCatalogOperation(create.request, input.tokenCatalogWebStart, create.operationId),
-          ));
+          );
         } catch (error) { return normalizeTokenFailure(error); }
       },
     },

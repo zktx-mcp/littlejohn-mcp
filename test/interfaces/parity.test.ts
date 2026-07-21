@@ -90,9 +90,6 @@ import {
   tokenCatalogBrowserRoutes,
   tokenCatalogControlRoutes,
   tokenCatalogOperationConfirmationContract,
-  tokenCatalogOperationSchema,
-  tokenInspectionDigest,
-  tokenRegistrationWithInspectionSchema,
   type TokenCatalogBrowserOperationPort,
   type TokenCatalogInteractiveCliPort,
   type TokenCatalogNonInteractiveOperationPort,
@@ -118,6 +115,8 @@ import {
   chainId as tokenChainId,
   createInspectionBinding,
   createInspectionSuccess,
+  createTokenOperation,
+  createTokenSelectionDetail,
   tokenAddress,
   walletAddress,
 } from "../token-catalog/harness.js";
@@ -565,68 +564,41 @@ const browserOperations = (value: WalletManagementOperation): WalletInterfaceOpe
 });
 
 const tokenOperationId = Buffer.alloc(32, 62).toString("base64url");
-const tokenCreatedAt = "2026-07-18T00:00:03.000Z";
-const tokenExpiresAt = "2026-07-18T00:05:03.000Z";
-
 const createTokenParityValues = async () => {
   const inspection = await createInspectionSuccess();
   const asset = inspection.data.asset;
-  const registrationWithInspection = tokenRegistrationWithInspectionSchema.parse({
-    registration: {
-      account: { chainId: tokenChainId, address: walletAddress },
-      asset,
-      revision: Buffer.alloc(16, 9).toString("base64url"),
-      inspectionDigest: tokenInspectionDigest(inspection),
-      createdAt: tokenCreatedAt,
-    },
-    inspection,
-  });
-  const operationFor = (interactionInterface: "web" | "cli", state: "awaiting_confirmation" | "cancelled") =>
-    tokenCatalogOperationSchema.parse({
-      operationId: tokenOperationId,
-      kind: "register",
-      state,
-      interactionInterface,
-      createdAt: tokenCreatedAt,
-      expiresAt: tokenExpiresAt,
-      connectionRevision: "1",
-      account: registrationWithInspection.registration.account,
-      asset,
-      review: {
-        previousRegistration: null,
-        inspection,
-        reviewDigest: `0x${"ef".repeat(32)}`,
-      },
-      result: null,
-      failure: null,
-    });
+  const selectionDetail = createTokenSelectionDetail(inspection, { revisionByte: 9 });
   const startInput = { asset };
-  const webAwaiting = tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess(
+  const webAwaiting = tokenCatalogApplicationContracts.startAddition.parsePublicSuccess(
     startInput,
-    { operation: operationFor("web", "awaiting_confirmation") },
+    { operation: await createTokenOperation({
+      kind: "add", state: "awaiting_confirmation", interactionInterface: "web", operationId: tokenOperationId,
+    }) },
   ).operation;
-  const cliAwaiting = tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess(
+  const cliAwaiting = tokenCatalogApplicationContracts.startAddition.parsePublicSuccess(
     startInput,
-    { operation: operationFor("cli", "awaiting_confirmation") },
+    { operation: await createTokenOperation({
+      kind: "add", state: "awaiting_confirmation", interactionInterface: "cli", operationId: tokenOperationId,
+    }) },
   ).operation;
   const webCancelled = tokenCatalogApplicationContracts.cancelOperation.parsePublicSuccess(
     { operationId: tokenOperationId },
-    { operation: operationFor("web", "cancelled") },
+    { operation: await createTokenOperation({
+      kind: "add", state: "cancelled", interactionInterface: "web", operationId: tokenOperationId,
+    }) },
   ).operation;
   const cliCompleted = tokenCatalogOperationConfirmationContract.parsePublicSuccess(
     { operationId: tokenOperationId, reviewDigest: cliAwaiting.review.reviewDigest },
-    tokenCatalogOperationSchema.parse({
-      ...cliAwaiting,
-      state: "completed",
-      result: registrationWithInspection,
+    await createTokenOperation({
+      kind: "add", state: "completed", interactionInterface: "cli", operationId: tokenOperationId,
     }),
   );
   return Object.freeze({
     asset,
     inspection,
-    registrationWithInspection,
-    registrationList: Object.freeze({
-      registrations: [registrationWithInspection.registration],
+    selectionDetail,
+    selectionList: Object.freeze({
+      selections: [selectionDetail.selection],
       nextCursor: null,
     }),
     webAwaiting,
@@ -652,18 +624,18 @@ const createTokenParityPorts = (values: TokenParityValues): Readonly<{
   return Object.freeze({
     inspection: createInspectionBinding(),
     queries: Object.freeze({
-      getRegistration: () => values.registrationWithInspection,
-      listRegistrations: () => values.registrationList,
+      getSelection: () => values.selectionDetail,
+      listSelections: () => values.selectionList,
     }),
     webStart: Object.freeze({
       interactionInterface: "web" as const,
-      startRegistration: async () => Object.freeze({ operation: values.webAwaiting }),
-      startUnregistration: unavailable,
+      startAddition: async () => Object.freeze({ operation: values.webAwaiting }),
+      startRemoval: unavailable,
     }),
     interactiveCli: Object.freeze({
       interactionInterface: "cli" as const,
-      startRegistration: async () => Object.freeze({ operation: values.cliAwaiting }),
-      startUnregistration: unavailable,
+      startAddition: async () => Object.freeze({ operation: values.cliAwaiting }),
+      startRemoval: unavailable,
       confirm: async () => values.cliCompleted,
     }),
     operations: Object.freeze({
@@ -868,44 +840,44 @@ describe("interface parity", () => {
     }
   });
 
-  it("preserves token registration reads through direct, local HTTP, MCP, and CLI execution", async () => {
+  it("preserves token selection reads through direct, local HTTP, MCP, and CLI execution", async () => {
     const context = await createTokenParityContext();
-    const registrationInput = tokenCatalogApplicationContracts.registration.parseInput({
+    const selectionInput = tokenCatalogApplicationContracts.selection.parseInput({
       asset: context.values.asset,
     });
-    const listInput = tokenCatalogApplicationContracts.registrations.parseInput({});
-    const nativeRegistration = tokenCatalogApplicationContracts.registration.parsePublicSuccess(
-      registrationInput,
-      context.ports.queries.getRegistration(registrationInput),
+    const listInput = tokenCatalogApplicationContracts.selections.parseInput({});
+    const nativeSelection = tokenCatalogApplicationContracts.selection.parsePublicSuccess(
+      selectionInput,
+      context.ports.queries.getSelection(selectionInput),
     );
-    const nativeList = tokenCatalogApplicationContracts.registrations.parsePublicSuccess(
+    const nativeList = tokenCatalogApplicationContracts.selections.parsePublicSuccess(
       listInput,
-      context.ports.queries.listRegistrations({}),
+      context.ports.queries.listSelections({}),
     );
     const mcp = await connectMcp(context.runtime);
     try {
-      const registrationPath = tokenCatalogControlRoutes.registration(tokenChainId, tokenAddress);
-      expect(await invokeRoute(context.routes, "GET", registrationPath)).toEqual({
+      const selectionPath = tokenCatalogControlRoutes.selection(tokenChainId, tokenAddress);
+      expect(await invokeRoute(context.routes, "GET", selectionPath)).toEqual({
         ok: true,
         response: "canonical_json",
-        body: nativeRegistration,
+        body: nativeSelection,
       });
       expect(await invokeRoute(
         context.routes,
         "POST",
-        tokenCatalogControlRoutes.registrationQueries,
+        tokenCatalogControlRoutes.selectionQueries,
         {},
       )).toEqual({ ok: true, response: "canonical_json", body: nativeList });
 
-      const mcpRegistration = await mcp.client.callTool({
-        name: tokenCatalogInterfaceBindings.registration.mcp.name,
-        arguments: registrationInput as Readonly<Record<string, unknown>>,
+      const mcpSelection = await mcp.client.callTool({
+        name: tokenCatalogInterfaceBindings.selection.mcp.name,
+        arguments: selectionInput as Readonly<Record<string, unknown>>,
       });
       const mcpList = await mcp.client.callTool({
-        name: tokenCatalogInterfaceBindings.registrations.mcp.name,
+        name: tokenCatalogInterfaceBindings.selections.mcp.name,
         arguments: {},
       });
-      expect(mcpRegistration.structuredContent).toEqual(nativeRegistration);
+      expect(mcpSelection.structuredContent).toEqual(nativeSelection);
       expect(mcpList.structuredContent).toEqual(nativeList);
 
       const getOutput: string[] = [];
@@ -917,7 +889,7 @@ describe("interface parity", () => {
         terminalPort(getOutput, getError),
       )).toBe(0);
       expect(getError).toEqual([]);
-      expect(JSON.parse(getOutput.join(""))).toEqual(nativeRegistration);
+      expect(JSON.parse(getOutput.join(""))).toEqual(nativeSelection);
 
       const listOutput: string[] = [];
       const listError: string[] = [];
@@ -938,13 +910,13 @@ describe("interface parity", () => {
 
   it("preserves token start, exact operation reads, and cancellation through every owning interface", async () => {
     const context = await createTokenParityContext();
-    const startContract = tokenCatalogApplicationContracts.startRegistration;
+    const startContract = tokenCatalogApplicationContracts.startAddition;
     const startInput = startContract.parseInput({
       asset: context.values.asset,
     });
     const nativeStart = startContract.parsePublicSuccess(
       startInput,
-      await context.ports.webStart.startRegistration(startInput, tokenOperationId),
+      await context.ports.webStart.startAddition(startInput, tokenOperationId),
     );
     const operationInput = tokenCatalogApplicationContracts.operation.parseInput({
       operationId: tokenOperationId,
@@ -965,13 +937,13 @@ describe("interface parity", () => {
         tokenCatalogControlRoutes.operations,
         {
           control: { operationId: tokenOperationId, interactionInterface: "web" },
-          request: { kind: "register", ...startInput },
+          request: { kind: "add", ...startInput },
         },
       );
       expect(httpStart).toEqual({ ok: true, response: "canonical_json", body: nativeStart });
 
       const mcpStart = await mcp.client.callTool({
-        name: tokenCatalogInterfaceBindings.startRegistration.mcp.name,
+        name: tokenCatalogInterfaceBindings.startAddition.mcp.name,
         arguments: startInput as Readonly<Record<string, unknown>>,
       });
       expect(mcpStart.isError).not.toBe(true);
@@ -986,7 +958,7 @@ describe("interface parity", () => {
         tokenCatalogBrowserRoutes.operations,
         {
           control: { operationId: tokenOperationId, interactionInterface: "web" },
-          request: { kind: "register", ...startInput },
+          request: { kind: "add", ...startInput },
         },
       )).toEqual({ ok: true, response: "canonical_json", body: nativeStart });
 
@@ -999,7 +971,7 @@ describe("interface parity", () => {
       expect(await runTokenCliCommand(
         context.runtime,
         tokenOperationClient(context.runtime),
-        parseTokenCliCommand(["token", "register", tokenAddress]),
+        parseTokenCliCommand(["token", "add", tokenAddress]),
         cliTerminal,
       )).toBe(0);
       expect(cliError).toEqual([]);

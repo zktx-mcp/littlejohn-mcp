@@ -30,6 +30,19 @@ import {
   type TokenCatalogApplication,
 } from "../token-catalog/application-factory.js";
 import {
+  createOfficialAssetSourceClient,
+  createOfficialAssetSynchronization,
+  getOfficialAssetSourceErrorCode,
+  type OfficialAssetSourceClient,
+  type OfficialAssetSynchronizationPort,
+} from "../registry/index.js";
+import type {
+  AccountAssetChainReadPort,
+  OfficialAssetChainReadPort,
+} from "../chain/index.js";
+import { createTokenCatalogFailure } from "../token-catalog/errors.js";
+import { normalizeTokenCatalogError } from "../token-catalog/operation-error.js";
+import {
   tokenCatalogCapabilityIds,
   tokenInspectCapability,
 } from "../token-catalog/contracts.js";
@@ -164,10 +177,13 @@ export interface ChainOwnerHandoff {
   readonly supportManifest: ChainRuntimeSupportManifest;
   readonly chainReads: ChainReadCapabilityPort;
   readonly tokenInspection: TokenInspectionReadCapabilityPort["tokenInspection"];
+  readonly officialAssetReads: OfficialAssetChainReadPort;
+  readonly accountAssetReads: AccountAssetChainReadPort;
 }
 
 export interface TokenCatalogOwnerHandoff extends TokenCatalogConsumerPorts {
   readonly supportManifest: TokenCatalogRuntimeSupportManifest;
+  readonly officialAssets: OfficialAssetSynchronizationPort;
 }
 
 export interface AccountAssetOwnerHandoff {
@@ -194,7 +210,7 @@ export interface ChainOwnerApplicationContext<ActiveWallet extends object> {
 }
 
 export interface InterfaceOwnerApplicationContext<WalletOperations extends object>
-  extends TokenCatalogConsumerPorts {
+  extends Omit<TokenCatalogConsumerPorts, "accountTokenSelectionStore"> {
   readonly routes: RuntimeRouteRegistry;
   readonly signal: AbortSignal;
   readonly startupResources: HttpOwnerStartupResourceRegistry;
@@ -220,6 +236,8 @@ export interface ChainOwnerApplication extends HttpOwnerApplication {
   readonly supportManifest: ChainRuntimeSupportManifest;
   readonly chainReads: ChainReadCapabilityPort;
   readonly tokenInspection: TokenInspectionReadCapabilityPort["tokenInspection"];
+  readonly officialAssetReads: OfficialAssetChainReadPort;
+  readonly accountAssetReads: AccountAssetChainReadPort;
 }
 
 export interface InterfaceOwnerApplication extends HttpOwnerApplication {
@@ -243,6 +261,7 @@ export type InterfaceOwnerApplicationFactory<WalletOperations extends object> = 
 interface LocalRuntimeBaseOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly now?: () => UtcTimestamp;
+  readonly officialAssetSourceClient?: OfficialAssetSourceClient;
 }
 
 type LocalRuntimeApplicationFactories<
@@ -433,9 +452,9 @@ const snapshotTokenCatalogConsumerPorts = (
     ) throw new TypeError(`Token catalog ${name} authority is invalid.`);
   };
   assertPort(
-    "account token registration read",
-    input.accountTokenRegistrationRead,
-    tokenCatalogConsumerPortContract.accountTokenRegistrationRead,
+    "account token selection",
+    input.accountTokenSelectionStore,
+    tokenCatalogConsumerPortContract.accountTokenSelectionStore,
   );
   assertPort(
     "query",
@@ -463,24 +482,28 @@ const snapshotTokenCatalogConsumerPorts = (
     tokenCatalogConsumerPortContract.tokenCatalogNonInteractiveOperations,
   );
   return Object.freeze({
-    accountTokenRegistrationRead: Object.freeze({
-      getForAccount: (...args: Parameters<TokenCatalogConsumerPorts["accountTokenRegistrationRead"]["getForAccount"]>) =>
-        input.accountTokenRegistrationRead.getForAccount(...args),
-      listForAccount: (...args: Parameters<TokenCatalogConsumerPorts["accountTokenRegistrationRead"]["listForAccount"]>) =>
-        input.accountTokenRegistrationRead.listForAccount(...args),
+    accountTokenSelectionStore: Object.freeze({
+      getState: (...args: Parameters<TokenCatalogConsumerPorts["accountTokenSelectionStore"]["getState"]>) =>
+        input.accountTokenSelectionStore.getState(...args),
+      getForAccount: (...args: Parameters<TokenCatalogConsumerPorts["accountTokenSelectionStore"]["getForAccount"]>) =>
+        input.accountTokenSelectionStore.getForAccount(...args),
+      listIncludedForAccount: (...args: Parameters<TokenCatalogConsumerPorts["accountTokenSelectionStore"]["listIncludedForAccount"]>) =>
+        input.accountTokenSelectionStore.listIncludedForAccount(...args),
+      initializeDefaults: (...args: Parameters<TokenCatalogConsumerPorts["accountTokenSelectionStore"]["initializeDefaults"]>) =>
+        input.accountTokenSelectionStore.initializeDefaults(...args),
     }),
     tokenCatalogQueries: Object.freeze({
-      getRegistration: (request: Parameters<TokenCatalogQueryApplicationPort["getRegistration"]>[0]) =>
-        input.tokenCatalogQueries.getRegistration(request),
-      listRegistrations: (request: Parameters<TokenCatalogQueryApplicationPort["listRegistrations"]>[0]) =>
-        input.tokenCatalogQueries.listRegistrations(request),
+      getSelection: (request: Parameters<TokenCatalogQueryApplicationPort["getSelection"]>[0]) =>
+        input.tokenCatalogQueries.getSelection(request),
+      listSelections: (request: Parameters<TokenCatalogQueryApplicationPort["listSelections"]>[0]) =>
+        input.tokenCatalogQueries.listSelections(request),
     }),
     tokenCatalogWebStart: Object.freeze({
       interactionInterface: "web",
-      startRegistration: (...args: Parameters<TokenCatalogWebStartPort["startRegistration"]>) =>
-        input.tokenCatalogWebStart.startRegistration(...args),
-      startUnregistration: (...args: Parameters<TokenCatalogWebStartPort["startUnregistration"]>) =>
-        input.tokenCatalogWebStart.startUnregistration(...args),
+      startAddition: (...args: Parameters<TokenCatalogWebStartPort["startAddition"]>) =>
+        input.tokenCatalogWebStart.startAddition(...args),
+      startRemoval: (...args: Parameters<TokenCatalogWebStartPort["startRemoval"]>) =>
+        input.tokenCatalogWebStart.startRemoval(...args),
     }),
     tokenCatalogBrowserOperations: Object.freeze({
       interactionInterface: "web",
@@ -494,10 +517,10 @@ const snapshotTokenCatalogConsumerPorts = (
     }),
     tokenCatalogInteractiveCli: Object.freeze({
       interactionInterface: "cli",
-      startRegistration: (...args: Parameters<TokenCatalogInteractiveCliPort["startRegistration"]>) =>
-        input.tokenCatalogInteractiveCli.startRegistration(...args),
-      startUnregistration: (...args: Parameters<TokenCatalogInteractiveCliPort["startUnregistration"]>) =>
-        input.tokenCatalogInteractiveCli.startUnregistration(...args),
+      startAddition: (...args: Parameters<TokenCatalogInteractiveCliPort["startAddition"]>) =>
+        input.tokenCatalogInteractiveCli.startAddition(...args),
+      startRemoval: (...args: Parameters<TokenCatalogInteractiveCliPort["startRemoval"]>) =>
+        input.tokenCatalogInteractiveCli.startRemoval(...args),
       confirm: (request: Parameters<TokenCatalogInteractiveCliPort["confirm"]>[0]) =>
         input.tokenCatalogInteractiveCli.confirm(request),
     }),
@@ -586,6 +609,19 @@ export const composeOwnerApplicationStages = async <
         assertChainRuntimeSupportManifestExtension(wallet.supportManifest, chainApplication.supportManifest);
         const reads = snapshotChainReads(chainApplication.chainReads);
         const tokenInspection = snapshotTokenInspection(chainApplication.tokenInspection);
+        const officialAssetReads = chainApplication.officialAssetReads;
+        const accountAssetReads = chainApplication.accountAssetReads;
+        if (
+          typeof officialAssetReads !== "object" || officialAssetReads === null ||
+          typeof officialAssetReads.verifyAtBlock !== "function" ||
+          typeof officialAssetReads.verifyManyAtBlock !== "function"
+        ) throw new TypeError("Official asset chain read authority is unavailable.");
+        if (
+          typeof accountAssetReads !== "object" || accountAssetReads === null ||
+          typeof accountAssetReads.resolveCurrentBlock !== "function" ||
+          typeof accountAssetReads.readCollectionAtBlock !== "function" ||
+          typeof accountAssetReads.readExactAtBlock !== "function"
+        ) throw new TypeError("Account asset chain read authority is unavailable.");
         assertCapabilityDirectSupport(chainApplication.supportManifest, chainReadCapabilityIds);
         if (context.signal.aborted) throw new RuntimeOperationError("request_aborted");
         return Object.freeze({
@@ -595,6 +631,8 @@ export const composeOwnerApplicationStages = async <
             supportManifest: chainApplication.supportManifest,
             chainReads: reads,
             tokenInspection,
+            officialAssetReads,
+            accountAssetReads,
           }) satisfies ChainOwnerHandoff,
         });
       });
@@ -629,6 +667,7 @@ export const composeOwnerApplicationStages = async <
             application,
             handoff: Object.freeze({
               supportManifest: application.supportManifest,
+              officialAssets: application.officialAssets,
               ...consumerPorts,
             }) satisfies TokenCatalogOwnerHandoff,
           });
@@ -667,6 +706,8 @@ export const composeOwnerApplicationStages = async <
           const accountAssets = Object.freeze({
             list: (...args: Parameters<AccountAssetApplicationPort["list"]>) => application.list(...args),
             get: (...args: Parameters<AccountAssetApplicationPort["get"]>) => application.get(...args),
+            listOfficialCandidates: (...args: Parameters<AccountAssetApplicationPort["listOfficialCandidates"]>) =>
+              application.listOfficialCandidates(...args),
           }) satisfies AccountAssetApplicationPort;
           return Object.freeze({
             application,
@@ -769,6 +810,7 @@ export class LocalRuntime {
     const walletApplicationFactory = options.walletApplicationFactory;
     const chainApplicationFactory = options.chainApplicationFactory;
     const interfaceApplicationFactory = options.interfaceApplicationFactory;
+    const officialAssetSourceClient = options.officialAssetSourceClient;
     if ((walletApplicationFactory === undefined && (chainApplicationFactory !== undefined || interfaceApplicationFactory !== undefined)) ||
       (chainApplicationFactory === undefined && interfaceApplicationFactory !== undefined)) {
       throw new TypeError("Owner application factories must form a dependency prefix.");
@@ -843,14 +885,33 @@ export class LocalRuntime {
           ? undefined
           : ({ routes, signal }, wallet, chain) => {
             const activeWallet = requireActiveWalletAuthority(wallet.activeWallet);
+            const officialAssets = createOfficialAssetSynchronization({
+              source: officialAssetSourceClient ?? createOfficialAssetSourceClient(),
+              store: database.officialAssetSnapshotStore(),
+              signal,
+              failureFor: (error) => {
+                const sourceCode = getOfficialAssetSourceErrorCode(error);
+                return sourceCode === undefined
+                  ? normalizeTokenCatalogError(error).failure
+                  : createTokenCatalogFailure(sourceCode);
+              },
+              abortedFailure: () => createTokenCatalogFailure(
+                signal.aborted ? "runtime_state_unavailable" : "request_aborted",
+              ),
+            });
             return createTokenCatalogApplicationFactory({
               routes,
               supportManifest: chain.supportManifest,
               activeWallet,
               inspection: chain.tokenInspection,
+              officialAssets,
+              verifyOfficialAsset: Object.freeze({
+                verify: (member, block, callerSignal) =>
+                  chain.officialAssetReads.verifyAtBlock(member, block, callerSignal),
+              }),
               store: database.tokenCatalogStore(),
               readStore: database.tokenCatalogReadStore(),
-              accountTokenRegistrationRead: database.accountTokenRegistrationRead(),
+              accountTokenSelectionStore: database.accountTokenSelectionStore(),
               clock,
               signal,
             });
@@ -863,8 +924,11 @@ export class LocalRuntime {
               routes,
               supportManifest: tokenCatalog.supportManifest,
               activeWallet: requireActiveWalletAuthority(wallet.activeWallet),
-              registrations: tokenCatalog.accountTokenRegistrationRead,
-              accountBalance: chain.chainReads.accountBalance,
+              selections: tokenCatalog.accountTokenSelectionStore,
+              officialAssets: tokenCatalog.officialAssets,
+              officialAssetReads: chain.officialAssetReads,
+              chainReads: chain.accountAssetReads,
+              clock,
               signal,
             });
       const interfaceStage: InterfaceOwnerApplicationStage<ActiveWallet, WalletOperations> | undefined =
@@ -879,7 +943,6 @@ export class LocalRuntime {
             walletOperations,
             chainReads: chain.chainReads,
             tokenInspection: chain.tokenInspection,
-            accountTokenRegistrationRead: tokenCatalog.accountTokenRegistrationRead,
             accountAssets: accountAssets.accountAssets,
             tokenCatalogQueries: tokenCatalog.tokenCatalogQueries,
             tokenCatalogWebStart: tokenCatalog.tokenCatalogWebStart,

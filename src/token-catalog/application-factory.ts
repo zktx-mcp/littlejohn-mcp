@@ -9,7 +9,7 @@ import { TokenCatalogCoordinator } from "./coordinator.js";
 import { TokenCatalogOperationError } from "./operation-error.js";
 import type {
   TokenCatalogApplicationPort,
-  AccountTokenRegistrationReadPort,
+  AccountTokenSelectionStore,
   TokenCatalogBrowserOperationPort,
   TokenCatalogConsumerPorts,
   TokenCatalogCoordinatorDependencies,
@@ -29,36 +29,36 @@ const createStartPort = <InteractionInterface extends "cli" | "web">(
   assertOpen: () => void,
 ): TokenCatalogStartApplicationPort<InteractionInterface> => Object.freeze({
   interactionInterface,
-  startRegistration(
-    input: Parameters<TokenCatalogApplicationPort["startRegistration"]>[0],
-    operationId: Parameters<TokenCatalogStartApplicationPort<InteractionInterface>["startRegistration"]>[1],
+  startAddition(
+    input: Parameters<TokenCatalogApplicationPort["startAddition"]>[0],
+    operationId: Parameters<TokenCatalogStartApplicationPort<InteractionInterface>["startAddition"]>[1],
   ) {
     assertOpen();
-    return application.startRegistration(input, { operationId, interactionInterface });
+    return application.startAddition(input, { operationId, interactionInterface });
   },
-  startUnregistration(
-    input: Parameters<TokenCatalogApplicationPort["startUnregistration"]>[0],
-    operationId: Parameters<TokenCatalogStartApplicationPort<InteractionInterface>["startUnregistration"]>[1],
+  startRemoval(
+    input: Parameters<TokenCatalogApplicationPort["startRemoval"]>[0],
+    operationId: Parameters<TokenCatalogStartApplicationPort<InteractionInterface>["startRemoval"]>[1],
   ) {
     assertOpen();
-    return application.startUnregistration(input, { operationId, interactionInterface });
+    return application.startRemoval(input, { operationId, interactionInterface });
   },
 });
 
 const createTokenCatalogConsumerPorts = (
   application: TokenCatalogApplicationPort,
   coordinator: TokenCatalogOperationCoordinatorPort,
-  accountTokenRegistrationRead: AccountTokenRegistrationReadPort,
+  accountTokenSelectionStore: AccountTokenSelectionStore,
   assertOpen: () => void,
 ): TokenCatalogConsumerPorts => {
   const tokenCatalogQueries = Object.freeze({
-    getRegistration(input: Parameters<TokenCatalogApplicationPort["getRegistration"]>[0]) {
+    getSelection(input: Parameters<TokenCatalogApplicationPort["getSelection"]>[0]) {
       assertOpen();
-      return application.getRegistration(input);
+      return application.getSelection(input);
     },
-    listRegistrations(input: Parameters<TokenCatalogApplicationPort["listRegistrations"]>[0]) {
+    listSelections(input: Parameters<TokenCatalogApplicationPort["listSelections"]>[0]) {
       assertOpen();
-      return application.listRegistrations(input);
+      return application.listSelections(input);
     },
   }) satisfies TokenCatalogQueryApplicationPort;
   const tokenCatalogWebStart = createStartPort(application, "web", assertOpen);
@@ -101,14 +101,22 @@ const createTokenCatalogConsumerPorts = (
     },
   }) satisfies TokenCatalogNonInteractiveOperationPort;
   return Object.freeze({
-    accountTokenRegistrationRead: Object.freeze({
-      getForAccount(input: Parameters<AccountTokenRegistrationReadPort["getForAccount"]>[0]) {
+    accountTokenSelectionStore: Object.freeze({
+      getState(input: Parameters<AccountTokenSelectionStore["getState"]>[0]) {
         assertOpen();
-        return accountTokenRegistrationRead.getForAccount(input);
+        return accountTokenSelectionStore.getState(input);
       },
-      listForAccount(input: Parameters<AccountTokenRegistrationReadPort["listForAccount"]>[0]) {
+      getForAccount(input: Parameters<AccountTokenSelectionStore["getForAccount"]>[0]) {
         assertOpen();
-        return accountTokenRegistrationRead.listForAccount(input);
+        return accountTokenSelectionStore.getForAccount(input);
+      },
+      listIncludedForAccount(input: Parameters<AccountTokenSelectionStore["listIncludedForAccount"]>[0]) {
+        assertOpen();
+        return accountTokenSelectionStore.listIncludedForAccount(input);
+      },
+      initializeDefaults(input: Parameters<AccountTokenSelectionStore["initializeDefaults"]>[0]) {
+        assertOpen();
+        return accountTokenSelectionStore.initializeDefaults(input);
       },
     }),
     tokenCatalogQueries,
@@ -122,6 +130,7 @@ const createTokenCatalogConsumerPorts = (
 export interface TokenCatalogApplication extends TokenCatalogConsumerPorts {
   readonly routes: RuntimeRouteRegistry;
   readonly supportManifest: TokenCatalogRuntimeSupportManifest;
+  readonly officialAssets: TokenCatalogCoordinatorDependencies["officialAssets"];
   close(): Promise<void>;
 }
 
@@ -130,9 +139,11 @@ export interface TokenCatalogApplicationFactoryInput {
   readonly supportManifest: ChainRuntimeSupportManifest;
   readonly activeWallet: TokenCatalogCoordinatorDependencies["activeWallet"];
   readonly inspection: TokenCatalogCoordinatorDependencies["inspection"];
+  readonly officialAssets: TokenCatalogCoordinatorDependencies["officialAssets"];
+  readonly verifyOfficialAsset: TokenCatalogCoordinatorDependencies["verifyOfficialAsset"];
   readonly store: TokenCatalogStore;
   readonly readStore: TokenCatalogQueryStore;
-  readonly accountTokenRegistrationRead: AccountTokenRegistrationReadPort;
+  readonly accountTokenSelectionStore: AccountTokenSelectionStore;
   readonly clock: CanonicalClock;
   readonly signal: AbortSignal;
 }
@@ -143,6 +154,8 @@ export const createTokenCatalogApplicationFactory = async (
   const coordinator = new TokenCatalogCoordinator({
     activeWallet: input.activeWallet,
     inspection: input.inspection,
+    officialAssets: input.officialAssets,
+    verifyOfficialAsset: input.verifyOfficialAsset,
     store: input.store,
     clock: input.clock,
     signal: input.signal,
@@ -157,7 +170,14 @@ export const createTokenCatalogApplicationFactory = async (
   const close = (): Promise<void> => {
     if (closePromise !== undefined) return closePromise;
     lifecycleState = "closing";
-    closePromise = coordinator.close().then(() => { lifecycleState = "closed"; });
+    closePromise = Promise.allSettled([
+      coordinator.close(),
+      input.officialAssets.close(),
+    ]).then((settled) => {
+      const failures = settled.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+      if (failures.length > 0) throw new AggregateError(failures, "Token catalog cleanup failed.");
+      lifecycleState = "closed";
+    });
     return closePromise;
   };
   try {
@@ -171,12 +191,13 @@ export const createTokenCatalogApplicationFactory = async (
     const ports = createTokenCatalogConsumerPorts(
       application,
       coordinator,
-      input.accountTokenRegistrationRead,
+      input.accountTokenSelectionStore,
       assertOpen,
     );
     return Object.freeze({
       routes: input.routes,
       supportManifest: extendTokenCatalogSupportManifest(input.supportManifest),
+      officialAssets: input.officialAssets,
       ...ports,
       close,
     });

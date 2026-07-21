@@ -42,6 +42,7 @@ describe("account asset routes", () => {
     const accountAssets: AccountAssetApplicationPort = Object.freeze({
       list: async () => failure,
       get: async () => failure,
+      listOfficialCandidates: async () => failure,
     });
     const routes = extendAccountAssetControlRouteRegistry({
       routes: await routesAfterTokenCatalog(),

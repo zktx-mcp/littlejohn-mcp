@@ -46,10 +46,21 @@ const supportManifest = () => {
 };
 
 const store = Object.freeze({
-  getRegistration: () => undefined,
-  listRegistrations: () => Object.freeze({ registrations: Object.freeze([]), nextCursor: null }),
+  getSelection: () => undefined,
+  getSelectionState: () => undefined,
+  listSelections: () => Object.freeze({ selections: Object.freeze([]), nextCursor: null }),
   applyConfirmation: () => { throw new Error("No confirmation is expected."); },
 }) satisfies TokenCatalogStore;
+
+const officialAssets = Object.freeze({
+  synchronize: async () => ({
+    status: "unavailable" as const,
+    storedRevision: null,
+    failure: new (class extends Error {})(),
+  } as never),
+  readStored: () => undefined,
+  close: async () => undefined,
+});
 
 describe("token catalog application factory", () => {
   it("owns one close result and rejects every consumer surface once closing begins", async () => {
@@ -63,11 +74,15 @@ describe("token catalog application factory", () => {
         }),
       }),
       inspection: createInspectionBinding(),
+      officialAssets,
+      verifyOfficialAsset: Object.freeze({ verify: async () => { throw new Error("No verification is expected."); } }),
       store,
       readStore: store,
-      accountTokenRegistrationRead: Object.freeze({
+      accountTokenSelectionStore: Object.freeze({
+        getState: () => undefined,
         getForAccount: () => undefined,
-        listForAccount: () => Object.freeze({ entries: Object.freeze([]), nextCursor: null }),
+        listIncludedForAccount: () => Object.freeze({ selections: Object.freeze([]), nextCursor: null }),
+        initializeDefaults: () => { throw new Error("No default initialization is expected."); },
       }),
       clock: createCanonicalClock(() => "2026-07-20T00:00:00.000Z"),
       signal: new AbortController().signal,
@@ -76,8 +91,8 @@ describe("token catalog application factory", () => {
     const close = application.close();
     expect(application.close()).toBe(close);
     const calls: Array<() => unknown> = [
-      () => application.tokenCatalogQueries.getRegistration({} as never),
-      () => application.tokenCatalogWebStart.startRegistration({} as never, "A".repeat(43)),
+      () => application.tokenCatalogQueries.getSelection({} as never),
+      () => application.tokenCatalogWebStart.startAddition({} as never, "A".repeat(43)),
       () => application.tokenCatalogBrowserOperations.getCurrentOperation(),
       () => application.tokenCatalogInteractiveCli.confirm({} as never),
       () => application.tokenCatalogNonInteractiveOperations.getOperation({} as never),

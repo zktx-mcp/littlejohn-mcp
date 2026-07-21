@@ -63,18 +63,18 @@ const internalFailure = new TokenCatalogOperationError("internal_error").failure
 const operationId = "A".repeat(43);
 
 const testTokenCatalog: TokenCatalogApplicationPort = Object.freeze({
-  getRegistration: () => internalFailure,
-  listRegistrations: () => internalFailure,
-  startRegistration: async () => internalFailure,
-  startUnregistration: async () => internalFailure,
+  getSelection: () => internalFailure,
+  listSelections: () => internalFailure,
+  startAddition: async () => internalFailure,
+  startRemoval: async () => internalFailure,
   getOperation: () => internalFailure,
   cancelOperation: async () => internalFailure,
 });
 
 const unavailableOperation = (): never => { throw new Error("Token catalog operation is unavailable in this fixture."); };
 const testTokenCatalogOperations: TokenCatalogOperationCoordinatorPort = Object.freeze({
-  startRegistration: async () => internalFailure,
-  startUnregistration: async () => internalFailure,
+  startAddition: async () => internalFailure,
+  startRemoval: async () => internalFailure,
   getOperation: unavailableOperation,
   getCurrentOperation: () => null,
   confirm: async () => unavailableOperation(),
@@ -82,15 +82,15 @@ const testTokenCatalogOperations: TokenCatalogOperationCoordinatorPort = Object.
 });
 
 const testTokenCatalogQueries = Object.freeze({
-  getRegistration: testTokenCatalog.getRegistration,
-  listRegistrations: testTokenCatalog.listRegistrations,
+  getSelection: testTokenCatalog.getSelection,
+  listSelections: testTokenCatalog.listSelections,
 }) satisfies TokenCatalogQueryApplicationPort;
 const testTokenCatalogWebStart = Object.freeze({
   interactionInterface: "web",
-  startRegistration: (input: Parameters<TokenCatalogApplicationPort["startRegistration"]>[0], id: typeof operationId) =>
-    testTokenCatalog.startRegistration(input, { operationId: id, interactionInterface: "web" }),
-  startUnregistration: (input: Parameters<TokenCatalogApplicationPort["startUnregistration"]>[0], id: typeof operationId) =>
-    testTokenCatalog.startUnregistration(input, { operationId: id, interactionInterface: "web" }),
+  startAddition: (input: Parameters<TokenCatalogApplicationPort["startAddition"]>[0], id: typeof operationId) =>
+    testTokenCatalog.startAddition(input, { operationId: id, interactionInterface: "web" }),
+  startRemoval: (input: Parameters<TokenCatalogApplicationPort["startRemoval"]>[0], id: typeof operationId) =>
+    testTokenCatalog.startRemoval(input, { operationId: id, interactionInterface: "web" }),
 }) satisfies TokenCatalogWebStartPort;
 const testTokenCatalogBrowserOperations = Object.freeze({
   interactionInterface: "web",
@@ -103,10 +103,10 @@ const testTokenCatalogBrowserOperations = Object.freeze({
 }) satisfies TokenCatalogBrowserOperationPort;
 const testTokenCatalogInteractiveCli = Object.freeze({
   interactionInterface: "cli",
-  startRegistration: (input: Parameters<TokenCatalogApplicationPort["startRegistration"]>[0], id: typeof operationId) =>
-    testTokenCatalog.startRegistration(input, { operationId: id, interactionInterface: "cli" }),
-  startUnregistration: (input: Parameters<TokenCatalogApplicationPort["startUnregistration"]>[0], id: typeof operationId) =>
-    testTokenCatalog.startUnregistration(input, { operationId: id, interactionInterface: "cli" }),
+  startAddition: (input: Parameters<TokenCatalogApplicationPort["startAddition"]>[0], id: typeof operationId) =>
+    testTokenCatalog.startAddition(input, { operationId: id, interactionInterface: "cli" }),
+  startRemoval: (input: Parameters<TokenCatalogApplicationPort["startRemoval"]>[0], id: typeof operationId) =>
+    testTokenCatalog.startRemoval(input, { operationId: id, interactionInterface: "cli" }),
   confirm: (input: Parameters<TokenCatalogInteractiveCliPort["confirm"]>[0]) =>
     testTokenCatalogOperations.confirm({ operationId: input.operationId, interactionInterface: "cli" }, input),
 }) satisfies TokenCatalogInteractiveCliPort;
@@ -122,14 +122,31 @@ const testTokenInspection = () => bindForHarness(
   tokenCatalogErrorRegistry,
 );
 
+const testOfficialAssetReads = Object.freeze({
+  verifyAtBlock: async () => unavailableOperation(),
+  verifyManyAtBlock: async () => unavailableOperation(),
+});
+const testAccountAssetReads = Object.freeze({
+  resolveCurrentBlock: async () => unavailableOperation(),
+  readCollectionAtBlock: async () => unavailableOperation(),
+  readExactAtBlock: async () => unavailableOperation(),
+});
+
 const createTestTokenCatalogStage = <ActiveWallet extends object>(
   close: () => void = () => undefined,
 ): TokenCatalogOwnerApplicationStage<ActiveWallet> => ({ routes }, _wallet, chain) => ({
   routes,
   supportManifest: extendTokenCatalogSupportManifest(chain.supportManifest),
-  accountTokenRegistrationRead: Object.freeze({
+  accountTokenSelectionStore: Object.freeze({
+    getState: () => undefined,
     getForAccount: () => undefined,
-    listForAccount: () => Object.freeze({ entries: [], nextCursor: null }),
+    listIncludedForAccount: () => Object.freeze({ selections: [], nextCursor: null }),
+    initializeDefaults: () => { throw new Error("No default initialization is expected."); },
+  }),
+  officialAssets: Object.freeze({
+    synchronize: async () => unavailableOperation(),
+    readStored: () => undefined,
+    close: async () => undefined,
   }),
   tokenCatalogQueries: testTokenCatalogQueries,
   tokenCatalogWebStart: testTokenCatalogWebStart,
@@ -143,6 +160,7 @@ const accountAssetFailure = new AccountAssetOperationError("internal_error").fai
 const testAccountAssets: AccountAssetApplicationPort = Object.freeze({
   list: async () => accountAssetFailure,
   get: async () => accountAssetFailure,
+  listOfficialCandidates: async () => accountAssetFailure,
 });
 
 const createTestAccountAssetStage = <ActiveWallet extends object>(
@@ -152,6 +170,7 @@ const createTestAccountAssetStage = <ActiveWallet extends object>(
   supportManifest: extendAccountAssetSupportManifest(catalog.supportManifest),
   list: testAccountAssets.list,
   get: testAccountAssets.get,
+  listOfficialCandidates: testAccountAssets.listOfficialCandidates,
   close: async () => { close(); },
 });
 
@@ -402,6 +421,8 @@ describe("owner application composition", () => {
           supportManifest: support.chain,
           chainReads: ports.chain,
           tokenInspection: testTokenInspection(),
+          officialAssetReads: testOfficialAssetReads,
+          accountAssetReads: testAccountAssetReads,
           close: () => { events.push("chain:close"); },
         };
       },
@@ -411,6 +432,7 @@ describe("owner application composition", () => {
         supportManifest: extendAccountAssetSupportManifest(catalog.supportManifest),
         list: testAccountAssets.list,
         get: testAccountAssets.get,
+        listOfficialCandidates: testAccountAssets.listOfficialCandidates,
         close: async () => { events.push("account-assets:close"); },
       }),
       (_context, wallet, chain, catalog, accountAssets, operations) => {
@@ -419,7 +441,8 @@ describe("owner application composition", () => {
         expect(chain.tokenInspection).toBeDefined();
         expect(Reflect.ownKeys(catalog).sort()).toEqual([
           "supportManifest",
-          "accountTokenRegistrationRead",
+          "accountTokenSelectionStore",
+          "officialAssets",
           "tokenCatalogBrowserOperations",
           "tokenCatalogInteractiveCli",
           "tokenCatalogNonInteractiveOperations",
@@ -427,21 +450,22 @@ describe("owner application composition", () => {
           "tokenCatalogWebStart",
         ].sort());
         expect(Reflect.ownKeys(catalog.tokenCatalogQueries).sort())
-          .toEqual(["getRegistration", "listRegistrations"]);
+          .toEqual(["getSelection", "listSelections"]);
         expect(Reflect.ownKeys(catalog.tokenCatalogWebStart).sort()).toEqual([
-          "interactionInterface", "startRegistration", "startUnregistration",
+          "interactionInterface", "startAddition", "startRemoval",
         ].sort());
         expect(Reflect.ownKeys(catalog.tokenCatalogBrowserOperations).sort()).toEqual([
           "cancel", "confirm", "getCurrentOperation", "getOperation", "interactionInterface",
         ].sort());
         expect(Reflect.ownKeys(catalog.tokenCatalogInteractiveCli).sort()).toEqual([
-          "confirm", "interactionInterface", "startRegistration", "startUnregistration",
+          "confirm", "interactionInterface", "startAddition", "startRemoval",
         ].sort());
         expect(Reflect.ownKeys(catalog.tokenCatalogNonInteractiveOperations).sort())
           .toEqual(["cancelOperation", "getOperation"]);
         expect(operations).toBe(walletOperations);
         expect(operations.readOperation()).toBe("test-operation");
-        expect(Reflect.ownKeys(accountAssets.accountAssets).sort()).toEqual(["get", "list"]);
+        expect(Reflect.ownKeys(accountAssets.accountAssets).sort())
+          .toEqual(["get", "list", "listOfficialCandidates"]);
         return {
           routes: interfaceRoutes,
           supportManifest: extendTestInterfaceSupportManifest(accountAssets.supportManifest),
@@ -476,15 +500,24 @@ describe("owner application composition", () => {
           supportManifest: support.chain,
           chainReads: ports.chain,
           tokenInspection: testTokenInspection(),
+          officialAssetReads: testOfficialAssetReads,
+          accountAssetReads: testAccountAssetReads,
           close: () => { events.push("chain:close"); },
         }),
         ({ routes: catalogRoutes }, _wallet, chain) => ({
           routes: catalogRoutes,
           supportManifest: extendTokenCatalogSupportManifest(chain.supportManifest),
           tokenCatalogQueries: testTokenCatalogQueries,
-          accountTokenRegistrationRead: Object.freeze({
+          accountTokenSelectionStore: Object.freeze({
+            getState: () => undefined,
             getForAccount: () => undefined,
-            listForAccount: () => Object.freeze({ entries: [], nextCursor: null }),
+            listIncludedForAccount: () => Object.freeze({ selections: [], nextCursor: null }),
+            initializeDefaults: () => unavailableOperation(),
+          }),
+          officialAssets: Object.freeze({
+            synchronize: async () => unavailableOperation(),
+            readStored: () => undefined,
+            close: async () => undefined,
           }),
           tokenCatalogWebStart: invalidPort === "webStart"
             ? { ...testTokenCatalogWebStart, interactionInterface: "cli" as never }
@@ -528,6 +561,8 @@ describe("owner application composition", () => {
           supportManifest: support.chain,
           chainReads: ports.chain,
           tokenInspection: testTokenInspection(),
+          officialAssetReads: testOfficialAssetReads,
+          accountAssetReads: testAccountAssetReads,
           close: () => { events.push("chain:close"); },
         }),
         createTestTokenCatalogStage(() => { events.push("catalog:close"); }),
@@ -601,6 +636,8 @@ describe("owner application composition", () => {
         supportManifest: wrongChain,
         chainReads: ports.chain,
         tokenInspection: testTokenInspection(),
+        officialAssetReads: testOfficialAssetReads,
+        accountAssetReads: testAccountAssetReads,
         close: () => { events.push("chain:close"); },
       }),
       createTestTokenCatalogStage(),
@@ -684,6 +721,8 @@ describe("owner application composition", () => {
           supportManifest: support.chain,
           chainReads: ports.chain,
           tokenInspection: testTokenInspection(),
+          officialAssetReads: testOfficialAssetReads,
+          accountAssetReads: testAccountAssetReads,
           close: () => { events.push("chain:close"); },
         };
       },
@@ -719,6 +758,8 @@ describe("owner application composition", () => {
             async () => ({ status: "failure", code: "internal_error", issues: [] }),
             tokenCatalogErrorRegistry,
           ),
+          officialAssetReads: testOfficialAssetReads,
+          accountAssetReads: testAccountAssetReads,
           close: () => { events.push("chain:close"); },
         };
         startupResources.register(application);
@@ -802,6 +843,8 @@ describe("owner application composition", () => {
             supportManifest: support.chain,
             chainReads: ports.chain,
             tokenInspection: testTokenInspection(),
+            officialAssetReads: testOfficialAssetReads,
+            accountAssetReads: testAccountAssetReads,
             close: () => undefined,
           };
         },
@@ -836,6 +879,8 @@ describe("owner application composition", () => {
             supportManifest: support.chain,
             chainReads: ports.chain,
             tokenInspection: testTokenInspection(),
+            officialAssetReads: testOfficialAssetReads,
+            accountAssetReads: testAccountAssetReads,
             close: () => undefined,
           };
         },
@@ -868,6 +913,8 @@ describe("owner application composition", () => {
             supportManifest: support.chain,
             chainReads: ports.chain,
             tokenInspection: testTokenInspection(),
+            officialAssetReads: testOfficialAssetReads,
+            accountAssetReads: testAccountAssetReads,
             close: () => undefined,
           };
         },

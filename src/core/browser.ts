@@ -39,6 +39,7 @@ export type {
 } from "./application-contract.js";
 export { deepFreezeValue } from "./immutability.js";
 export {
+  calculateScaledUiAmount,
   canonicalAmountSchema,
   erc20AssetIdentitySchema,
   formatAmount,
@@ -55,6 +56,7 @@ export type {
 export {
   requiredErc8056ObservationSchema,
   supportedErc8056ValuesSchema,
+  tokenStandardDefinitionFor,
   tokenStandardDefinitions,
   tokenStandardIdSchema,
   tokenStandardObservationSchema,
@@ -88,7 +90,7 @@ export {
   evmAddressSchema,
   evmChainIdSchema,
 } from "./identities.js";
-export type { EvmAccountIdentity, EvmChainId } from "./identities.js";
+export type { EvmAccountIdentity, EvmAddress, EvmChainId } from "./identities.js";
 export {
   evmAddressInputSchema,
   parseEvmAddressInput,

@@ -77,18 +77,18 @@ describe("interface binding identity authority", () => {
     expect(tokenCatalogInterfaceBindingList.map((binding) => binding.contract.capabilityId)).toEqual([
       "token.cancel_operation",
       "token.operation",
-      "token.registration",
-      "token.registrations",
-      "token.start_registration",
-      "token.start_unregistration",
+      "token.selection",
+      "token.selections",
+      "token.start_addition",
+      "token.start_removal",
     ]);
     expect(tokenCatalogInterfaceBindingList.map((binding) => binding.mcp.name)).toEqual([
       "token_cancel_operation",
       "token_get_operation",
-      "token_get_registration",
-      "token_list_registrations",
-      "token_start_registration",
-      "token_start_unregistration",
+      "token_get_selection",
+      "token_list_selections",
+      "token_start_addition",
+      "token_start_removal",
     ]);
     expect(tokenCatalogInterfaceBindingList.map((binding) => [binding.action, binding.operationKind ?? null]))
       .toEqual([
@@ -96,8 +96,8 @@ describe("interface binding identity authority", () => {
         ["get_operation", null],
         ["get", null],
         ["list", null],
-        ["start", "register"],
-        ["start", "unregister"],
+        ["start", "add"],
+        ["start", "remove"],
       ]);
     expect(tokenCatalogInterfaceBindingList.some(
       (binding) => binding.contract === tokenCatalogOperationConfirmationContract as never,

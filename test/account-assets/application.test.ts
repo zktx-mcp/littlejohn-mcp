@@ -1,303 +1,376 @@
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { createAccountAssetApplication } from "../../src/account-assets/application.js";
-import { createErc20CallEncoder, type Erc20CallEncoder } from "../../src/chain/evm-standard.js";
 import {
-  parseEvmAddress,
+  chainAnchorSchema,
+  createCanonicalClock,
+  parseCapabilityDataAt,
+  parseEvmAddressInput,
   parseEvmChainId,
+  parseHash32,
+  parseUtcTimestamp,
   parseUnsignedDecimal,
-  type EvmAccountIdentity,
+  tokenStandardObservationResultSchema,
+  walletConnectionCapability,
+  type EvmAddress,
 } from "../../src/core/index.js";
+import type {
+  AccountAssetChainReadPort,
+  OfficialAssetChainReadPort,
+} from "../../src/chain/index.js";
 import {
-  tokenInspectionDigest,
-  tokenRegistrationWithInspectionSchema,
-  type AccountTokenRegistrationReadPort,
-  type TokenRegistrationWithInspection,
+  defaultStockTokenManifest,
+  officialAssetSnapshotRevisionSchema,
+  robinhoodAssetSourceUri,
+  type CommittedOfficialAssetSnapshot,
+} from "../../src/registry/index.js";
+import {
+  tokenSelectionDetailSchema,
+  tokenSelectionSetRevisionSchema,
+  type AccountTokenSelectionStore,
+  type TokenSelectionDetail,
+  type TokenSelectionState,
 } from "../../src/token-catalog/index.js";
-import type { ActiveWalletReadPort, ActiveWalletReadSnapshot } from "../../src/wallet/coordinator.js";
-import {
-  ScriptedRpc,
-  connectedWallet,
-  createChainHandlerHarness,
-  rpcFailure,
-  rpcValue,
-  type ChainHandlerHarness,
-  type RpcStep,
-} from "../chain/handler-harness.js";
-import {
+
+const chainId = parseEvmChainId("eip155:4663");
+const accountAddress = parseEvmAddressInput(`0x${"34".repeat(20)}`);
+const customAddress = parseEvmAddressInput(`0x${"88".repeat(20)}`);
+const candidateAddress = parseEvmAddressInput(`0x${"99".repeat(20)}`);
+const at = parseUtcTimestamp("2026-07-21T00:00:00.000Z");
+const block = chainAnchorSchema.parse({
   chainId,
-  createInspectionSuccess,
-  walletAddress,
-} from "../token-catalog/harness.js";
-
-const blockHash = `0x${"88".repeat(32)}`;
-const block = Object.freeze({
-  number: "0x2a",
-  hash: blockHash,
-  timestamp: "0x65a00000",
-  transactions: [],
+  blockNumber: "42",
+  blockHash: `0x${"ab".repeat(32)}`,
+  blockTimestamp: at,
 });
-const abiWord = (value: bigint): `0x${string}` => `0x${value.toString(16).padStart(64, "0")}`;
-
-let encoder: Erc20CallEncoder;
-const openApplications: ReturnType<typeof createAccountAssetApplication>[] = [];
-const openChains: ChainHandlerHarness[] = [];
-
-beforeAll(async () => { encoder = await createErc20CallEncoder(); });
-
-afterEach(async () => {
-  await Promise.allSettled(openApplications.splice(0).map((application) => application.close()));
-  await Promise.allSettled(openChains.splice(0).map((chain) => chain.close()));
+const laterBlock = chainAnchorSchema.parse({
+  chainId,
+  blockNumber: "43",
+  blockHash: `0x${"bc".repeat(32)}`,
+  blockTimestamp: "2026-07-21T00:00:01.000Z",
 });
+const snapshotRevision = officialAssetSnapshotRevisionSchema.parse(
+  Buffer.alloc(16, 7).toString("base64url"),
+);
+const selectionSetRevision = tokenSelectionSetRevisionSchema.parse(
+  Buffer.alloc(16, 8).toString("base64url"),
+);
+const account = Object.freeze({ chainId, address: accountAddress });
 
-const registration = async (index: number): Promise<TokenRegistrationWithInspection> => {
-  const address = parseEvmAddress(`0x${index.toString(16).padStart(2, "0").repeat(20)}`);
-  const inspection = await createInspectionSuccess({
-    asset: { kind: "erc20", chainId, address },
-    block: { kind: "latest" },
-  });
-  return tokenRegistrationWithInspectionSchema.parse({
-    registration: {
-      account: { chainId, address: walletAddress },
-      asset: inspection.data.asset,
-      revision: Buffer.alloc(16, index).toString("base64url"),
-      inspectionDigest: tokenInspectionDigest(inspection),
-      createdAt: "2026-07-18T00:00:03.000Z",
+const member = (address: EvmAddress, byte: string, symbol: string) => Object.freeze({
+  assetUid: parseHash32(`0x${byte.repeat(32)}`),
+  contractAddress: address,
+  sourceName: `${symbol} Stock Token`,
+  sourceSymbol: symbol,
+});
+const defaultMember = member(defaultStockTokenManifest.assets[0]!.contractAddress, "11", "AAPL");
+const unselectedMember = member(candidateAddress, "22", "NEXT");
+const snapshot = Object.freeze({
+  sourceUri: robinhoodAssetSourceUri,
+  sourceObservedAt: at,
+  rawResponseDigest: parseHash32(`0x${"33".repeat(32)}`),
+  memberSetDigest: parseHash32(`0x${"44".repeat(32)}`),
+  candidateListDigest: parseHash32(`0x${"55".repeat(32)}`),
+  chainId,
+  members: Object.freeze([defaultMember, unselectedMember]),
+  revision: snapshotRevision,
+  updatedAt: at,
+}) satisfies CommittedOfficialAssetSnapshot;
+
+const detail = (address: EvmAddress, byte: number, included = true): TokenSelectionDetail =>
+  tokenSelectionDetailSchema.parse({
+    selection: {
+      account,
+      asset: { kind: "erc20", chainId, address },
+      included,
+      revision: Buffer.alloc(16, byte).toString("base64url"),
+      createdAt: at,
+      updatedAt: at,
     },
-    inspection,
+    historicalInspection: null,
   });
-};
 
-const registrationStore = (
-  readEntries: () => readonly TokenRegistrationWithInspection[],
-): AccountTokenRegistrationReadPort => Object.freeze({
-  getForAccount({ account, asset }: Parameters<AccountTokenRegistrationReadPort["getForAccount"]>[0]) {
-    return readEntries().find((entry) =>
-      entry.registration.account.chainId === account.chainId &&
-      entry.registration.account.address === account.address &&
-      entry.registration.asset.chainId === asset.chainId &&
-      entry.registration.asset.address === asset.address);
-  },
-  listForAccount({
-    account,
-    limit,
-    cursor,
-  }: Parameters<AccountTokenRegistrationReadPort["listForAccount"]>[0]) {
-    const matching = readEntries()
-      .filter((entry) =>
-        entry.registration.account.chainId === account.chainId &&
-        entry.registration.account.address === account.address &&
-        (cursor === null || entry.registration.asset.address > cursor))
-      .sort((left, right) => left.registration.asset.address.localeCompare(right.registration.asset.address));
-    const entries = matching.slice(0, limit);
-    return Object.freeze({
-      entries: Object.freeze(entries),
-      nextCursor: matching.length > limit ? entries.at(-1)!.registration.asset.address : null,
-    });
+const requiredObservation = (address: EvmAddress, observationBlock = block) => Object.freeze({
+  asset: { kind: "erc20" as const, chainId, address },
+  block: observationBlock,
+  erc165: { standardId: "erc165" as const, status: "not_supported" as const },
+  erc8056: { standardId: "erc8056" as const, status: "unknown" as const },
+  pendingMultiplier: {
+    standardId: "erc8056_pending_multiplier" as const,
+    status: "unknown" as const,
   },
 });
 
-const mutableWallet = (): Readonly<{
-  port: ActiveWalletReadPort;
-  replace(snapshot: ActiveWalletReadSnapshot): void;
-  read(): ActiveWalletReadSnapshot;
-}> => {
-  let snapshot = connectedWallet(walletAddress).port.capture();
-  return Object.freeze({
-    port: Object.freeze({ capture: () => snapshot }),
-    replace(next) { snapshot = next; },
-    read: () => snapshot,
-  });
-};
+const fullObservation = (address: EvmAddress) => tokenStandardObservationResultSchema.parse({
+  asset: { kind: "erc20", chainId, address },
+  account,
+  block,
+  standards: [
+    { standardId: "erc20_read_surface", status: "observed" },
+    { standardId: "erc165", status: "not_supported" },
+    { standardId: "erc8056", status: "unknown" },
+    { standardId: "erc8056_pending_multiplier", status: "unknown" },
+    { standardId: "erc8056_conversion", status: "unknown" },
+    { standardId: "erc8056_balances", status: "unknown" },
+  ],
+});
 
-const createApplication = (
-  entries: () => readonly TokenRegistrationWithInspection[],
-  steps: readonly RpcStep[],
-  wallet = mutableWallet(),
-) => {
-  const chain = createChainHandlerHarness({
-    rpc: new ScriptedRpc(steps),
-    encoder,
-    wallet: { port: wallet.port, captures: () => 0 },
+const fixture = (options: Readonly<{
+  sourceAvailable?: boolean;
+  blocks?: readonly [typeof block, ...(typeof block)[]];
+  afterVerification?: () => void;
+  beforeCollectionReturn?: () => void;
+}> = {}) => {
+  const sourceAvailable = options.sourceAvailable ?? true;
+  const entries = [detail(defaultMember.contractAddress, 1), detail(customAddress, 2)];
+  let state: TokenSelectionState = {
+    account,
+    revision: selectionSetRevision,
+    defaultsInitialized: true,
+    createdAt: at,
+    updatedAt: at,
+  };
+  let initializationCalls = 0;
+  let sessionSourceId = "wallet-session:test";
+  let officialSnapshot: CommittedOfficialAssetSnapshot = snapshot;
+  let blockIndex = 0;
+  const selections: AccountTokenSelectionStore = Object.freeze({
+    getState: () => state,
+    getForAccount: ({ account: requested, asset }: Parameters<AccountTokenSelectionStore["getForAccount"]>[0]) => requested.chainId === account.chainId &&
+      requested.address === account.address
+      ? entries.find((entry) => entry.selection.asset.address === asset.address)
+      : undefined,
+    listIncludedForAccount: ({ cursor, limit, excludedAddresses }: Parameters<AccountTokenSelectionStore["listIncludedForAccount"]>[0]) => {
+      const matching = entries.map((entry) => entry.selection)
+        .filter((entry) => entry.included && !excludedAddresses.includes(entry.asset.address) &&
+          (cursor === null || entry.asset.address > cursor))
+        .sort((left, right) => left.asset.address.localeCompare(right.asset.address));
+      const page = matching.slice(0, limit);
+      return Object.freeze({
+        selections: Object.freeze(page),
+        nextCursor: matching.length > limit ? page.at(-1)!.asset.address : null,
+      });
+    },
+    initializeDefaults: () => {
+      initializationCalls += 1;
+      throw new Error("Initialized state must not be seeded again.");
+    },
+  });
+  const currentConnection = parseCapabilityDataAt(walletConnectionCapability, {
+    status: "connected",
+    chainId,
+    address: accountAddress,
+    approvedMethods: ["eth_sendTransaction"],
+    approvedEvents: ["accountsChanged", "chainChanged"],
+    expiresAt: "2026-07-22T00:00:00.000Z",
+  }, at);
+  const verificationFor = (
+    assetUid: ReturnType<typeof parseHash32>,
+    contractAddress: EvmAddress,
+    verificationBlock = block,
+  ) => ({
+    assetUid,
+    contractAddress,
+    block: verificationBlock,
+    proxyAddress: parseEvmAddressInput(`0x${"aa".repeat(20)}`),
+    proxyCodeHash: parseHash32(`0x${"bb".repeat(32)}`),
+    implementationAddress: parseEvmAddressInput(`0x${"cc".repeat(20)}`),
+    implementationCodeHash: parseHash32(`0x${"dd".repeat(32)}`),
+    tokenCodeHash: parseHash32(`0x${"ee".repeat(32)}`),
   });
   const owner = new AbortController();
+  const officialAssetReads: OfficialAssetChainReadPort = Object.freeze({
+    verifyAtBlock: async (
+      entry: Parameters<OfficialAssetChainReadPort["verifyAtBlock"]>[0],
+      verificationBlock: Parameters<OfficialAssetChainReadPort["verifyAtBlock"]>[1],
+    ) => verificationFor(entry.assetUid, entry.contractAddress, verificationBlock),
+    verifyManyAtBlock: async (
+      members: Parameters<OfficialAssetChainReadPort["verifyManyAtBlock"]>[0],
+      verificationBlock: Parameters<OfficialAssetChainReadPort["verifyManyAtBlock"]>[1],
+    ) => {
+      const results = Object.freeze(members.map((entry) => Object.freeze({
+        status: "verified" as const,
+        verification: verificationFor(entry.assetUid, entry.contractAddress, verificationBlock),
+      })));
+      options.afterVerification?.();
+      return results;
+    },
+  });
+  const chainReads: AccountAssetChainReadPort = Object.freeze({
+    resolveCurrentBlock: async () => options.blocks?.[blockIndex++] ?? block,
+    readCollectionAtBlock: async (
+      { account: requested, assets, block: requestedBlock }: Parameters<AccountAssetChainReadPort["readCollectionAtBlock"]>[0],
+    ) => {
+      const result = Object.freeze({
+        account: requested,
+        block: requestedBlock,
+        nativeRawBalance: parseUnsignedDecimal("7"),
+        tokens: Object.freeze(assets.map((asset, index) => Object.freeze({
+        asset,
+        name: { status: "available" as const, value: index === 0 ? "Apple" : "Custom" },
+        symbol: { status: "available" as const, value: index === 0 ? "AAPL" : "CSTM" },
+        decimals: parseUnsignedDecimal("18"),
+        rawBalance: parseUnsignedDecimal(String(index + 1)),
+        requiredStandards: requiredObservation(asset.address, requestedBlock),
+        }))),
+      });
+      options.beforeCollectionReturn?.();
+      return result;
+    },
+    readExactAtBlock: async (
+      { account: requested, asset }: Parameters<AccountAssetChainReadPort["readExactAtBlock"]>[0],
+    ) => Object.freeze({
+      account: requested,
+      asset,
+      block,
+      name: { status: "available" as const, value: "Exact" },
+      symbol: { status: "available" as const, value: "EXT" },
+      decimals: parseUnsignedDecimal("18"),
+      rawBalance: parseUnsignedDecimal("9"),
+      requiredStandards: requiredObservation(asset.address),
+      totalSupply: parseUnsignedDecimal("100"),
+      standards: fullObservation(asset.address),
+    }),
+  });
   const application = createAccountAssetApplication({
-    activeWallet: wallet.port,
-    registrations: registrationStore(entries),
-    accountBalance: chain.service.chainReads.accountBalance,
+    activeWallet: Object.freeze({
+      capture: () => Object.freeze({
+        connection: currentConnection,
+        connectionRevision: parseUnsignedDecimal("1"),
+        sessionSource: { sourceId: sessionSourceId } as never,
+      }),
+    }),
+    selections,
+    officialAssets: Object.freeze({
+      synchronize: async () => sourceAvailable
+        ? Object.freeze({ status: "current" as const, snapshot: officialSnapshot })
+        : Object.freeze({
+            status: "unavailable" as const,
+            storedRevision: officialSnapshot.revision,
+            failure: { ok: false as const, error: {
+              code: "source_unavailable" as never,
+              category: "source" as const,
+              message: "Source unavailable.",
+              retryable: true,
+              issues: [],
+            } },
+          }),
+      readStored: () => officialSnapshot,
+      close: async () => undefined,
+    }),
+    officialAssetReads,
+    chainReads,
+    clock: createCanonicalClock(() => at),
     signal: owner.signal,
   });
-  openChains.push(chain);
-  openApplications.push(application);
-  return Object.freeze({ application, chain, wallet, owner });
+  return {
+    application,
+    get state() { return state; },
+    setState(next: TokenSelectionState) { state = next; },
+    get initializationCalls() { return initializationCalls; },
+    setSessionSourceId(next: string) { sessionSourceId = next; },
+    setOfficialSnapshot(next: CommittedOfficialAssetSnapshot) { officialSnapshot = next; },
+  };
 };
 
-const collectionSteps = (tokenCount: number): readonly RpcStep[] => Object.freeze([
-  rpcValue("eth_chainId", "0x1237"),
-  rpcValue("eth_getBlockByNumber", block),
-  rpcValue("eth_getBalance", "0x64"),
-  ...Array.from({ length: tokenCount }, (_, index) => rpcValue("eth_call", abiWord(BigInt(index + 1)))),
-  ...Array.from({ length: tokenCount }, () => rpcValue("eth_call", abiWord(6n))),
-]);
-
 describe("account asset read process", () => {
-  it("reads one current-account page at one block and preserves canonical pagination", async () => {
-    const entries = await Promise.all([1, 2, 3, 4, 5, 6].map(registration));
-    const { application, chain } = createApplication(() => entries, collectionSteps(5));
+  it("orders defaults before custom selections and binds classifications to one current block", async () => {
+    const test = fixture();
+    const result = await test.application.list({ limit: 5 });
+    if ("ok" in result) throw new TypeError(result.error.code);
+    expect(result.assets.map((entry) => entry.selection.asset.address)).toEqual([
+      defaultMember.contractAddress,
+      customAddress,
+    ]);
+    expect(result.assets.map((entry) => entry.classification.kind)).toEqual([
+      "robinhood_stock_token",
+      "custom_erc20",
+    ]);
+    expect(result.native.rawBalance).toBe("7");
+    expect(test.initializationCalls).toBe(0);
 
-    const result = await application.list({ limit: 5 });
-    expect(result).toMatchObject({
-      account: { chainId, address: walletAddress },
-      assets: entries.slice(0, 5).map((entry) => ({ registration: entry.registration })),
-      nextCursor: entries[4]!.registration.asset.address,
-      balance: {
-        status: "available",
-        snapshot: {
-          data: {
-            account: walletAddress,
-            native: { status: "available", amount: { raw: "100" } },
-          },
-        },
-      },
-    });
-    if (!("balance" in result) || result.balance.status !== "available") throw new TypeError();
-    expect(result.balance.snapshot.data.tokens.map((entry) => entry.asset.address))
-      .toEqual(entries.slice(0, 5).map((entry) => entry.registration.asset.address));
-    expect(new Set(result.balance.snapshot.data.tokens.map((entry) =>
-      entry.result.status === "available" ? entry.result.amount.raw : entry.result.status,
-    ))).toEqual(new Set(["1", "2", "3", "4", "5"]));
-    expect(chain.rpc.remainingSteps).toBe(0);
+    const candidates = await test.application.listOfficialCandidates({ viewRevision: result.viewRevision });
+    if ("ok" in candidates) throw new TypeError(candidates.error.code);
+    expect(candidates.candidates.map((entry) => entry.contractAddress)).toEqual([candidateAddress]);
+    await test.application.close();
   });
 
-  it("keeps membership and metadata when the chain source is unavailable", async () => {
-    const entry = await registration(1);
-    const { application } = createApplication(() => [entry], [
-      rpcFailure("eth_chainId", "source_unavailable"),
-    ]);
-
-    const result = await application.list({});
-    expect(result).toMatchObject({
-      assets: [{ registration: entry.registration }],
-      balance: { status: "unavailable", failure: { error: { code: "source_unavailable" } } },
+  it("uses the supplied view revision for exact reads and rejects later selection drift", async () => {
+    const test = fixture();
+    const list = await test.application.list({});
+    if ("ok" in list) throw new TypeError(list.error.code);
+    const exact = await test.application.get({
+      asset: list.assets[1]!.selection.asset,
+      viewRevision: list.viewRevision,
     });
+    if ("ok" in exact) throw new TypeError(exact.error.code);
+    expect(exact.totalSupply).toBe("100");
+    expect(exact.asset.amount.raw).toBe("9");
+
+    test.setState({
+      ...test.state,
+      revision: tokenSelectionSetRevisionSchema.parse(Buffer.alloc(16, 9).toString("base64url")),
+    });
+    await expect(test.application.get({
+      asset: list.assets[1]!.selection.asset,
+      viewRevision: list.viewRevision,
+    })).resolves.toMatchObject({ ok: false, error: { code: "state_conflict" } });
+    await test.application.close();
   });
 
-  it("reads one exact registered token without requesting the native balance", async () => {
-    const entry = await registration(1);
-    const { application, chain } = createApplication(() => [entry], [
-      rpcValue("eth_chainId", "0x1237"),
-      rpcValue("eth_getBlockByNumber", block),
-      rpcValue("eth_call", abiWord(1234500n)),
-      rpcValue("eth_call", abiWord(6n)),
-    ]);
-
-    const result = await application.get({ asset: entry.registration.asset });
-    expect(result).toMatchObject({
-      account: entry.registration.account,
-      asset: { registration: entry.registration },
-      balance: {
-        status: "available",
-        snapshot: {
-          data: {
-            native: { status: "not_requested" },
-            tokens: [{
-              asset: entry.registration.asset,
-              result: { status: "available", amount: { raw: "1234500" } },
-            }],
-          },
-        },
-      },
+  it("preserves selected assets while making official classification explicitly unavailable", async () => {
+    const test = fixture({ sourceAvailable: false });
+    const result = await test.application.list({});
+    if ("ok" in result) throw new TypeError(result.error.code);
+    expect(result.assets).toHaveLength(2);
+    expect(result.assets.every((entry) =>
+      entry.classification.kind === "classification_unavailable" &&
+      entry.classification.reason === "source_unavailable")).toBe(true);
+    expect(result.viewRevision).toMatchObject({
+      officialSnapshotStatus: "unavailable",
+      officialSnapshotRevision: snapshotRevision,
+      selectionSetRevision,
     });
-    expect(chain.rpc.calls.some(({ method }) => method === "eth_getBalance")).toBe(false);
-    expect(chain.rpc.remainingSteps).toBe(0);
+    await test.application.close();
   });
 
-  it("rejects registration and wallet drift across the balance observation", async () => {
-    const entry = await registration(1);
-    let entries: readonly TokenRegistrationWithInspection[] = [entry];
-    const registrationDrift = createApplication(() => entries, [
-      rpcValue("eth_chainId", "0x1237"),
-      rpcValue("eth_getBlockByNumber", block),
-      {
-        method: "eth_getBalance",
-        run: () => { entries = []; return "0x1"; },
-      },
-      rpcValue("eth_call", abiWord(1n)),
-      rpcValue("eth_call", abiWord(6n)),
-    ]);
-    expect(await registrationDrift.application.list({})).toMatchObject({
+  it("rejects session-source and official-snapshot drift before returning a page", async () => {
+    let sessionTest: ReturnType<typeof fixture>;
+    sessionTest = fixture({
+      beforeCollectionReturn: () => { sessionTest.setSessionSourceId("wallet-session:changed"); },
+    });
+    await expect(sessionTest.application.list({})).resolves.toMatchObject({
       ok: false,
       error: { code: "state_conflict" },
     });
+    await sessionTest.application.close();
 
-    const wallet = mutableWallet();
-    const initial = wallet.read();
-    const walletDrift = createApplication(() => [], [
-      rpcValue("eth_chainId", "0x1237"),
-      rpcValue("eth_getBlockByNumber", block),
-      {
-        method: "eth_getBalance",
-        run: () => {
-          wallet.replace(Object.freeze({
-            ...initial,
-            connectionRevision: parseUnsignedDecimal("1"),
-          }));
-          return "0x1";
-        },
+    const changedRevision = officialAssetSnapshotRevisionSchema.parse(
+      Buffer.alloc(16, 10).toString("base64url"),
+    );
+    let sourceTest: ReturnType<typeof fixture>;
+    sourceTest = fixture({
+      beforeCollectionReturn: () => {
+        sourceTest.setOfficialSnapshot({ ...snapshot, revision: changedRevision });
       },
-    ], wallet);
-    expect(await walletDrift.application.list({})).toMatchObject({
+    });
+    await expect(sourceTest.application.list({})).resolves.toMatchObject({
       ok: false,
       error: { code: "state_conflict" },
     });
+    await sourceTest.application.close();
   });
 
-  it("rejects wrong-chain and missing exact identities before returning an asset", async () => {
-    const entry = await registration(1);
-    const wrongChain = createApplication(() => [entry], []);
-    expect(await wrongChain.application.get({
-      asset: { ...entry.registration.asset, chainId: parseEvmChainId("eip155:1") },
-    })).toMatchObject({ ok: false, error: { code: "invalid_input" } });
+  it("retains view revisions while resolving a new block for a later page", async () => {
+    const test = fixture({ blocks: [block, laterBlock] });
+    const first = await test.application.list({ limit: 1 });
+    if ("ok" in first || first.nextCursor === null) throw new TypeError("First page fixture is invalid.");
+    const second = await test.application.list({ limit: 1, cursor: first.nextCursor });
+    if ("ok" in second) throw new TypeError(second.error.code);
 
-    const missing = await registration(2);
-    expect(await wrongChain.application.get({ asset: missing.registration.asset }))
-      .toMatchObject({ ok: false, error: { code: "token_registration_not_found" } });
-    expect(wrongChain.chain.rpc.calls).toEqual([]);
-  });
-
-  it("maps caller cancellation separately and closes by aborting and draining admitted reads", async () => {
-    const started: Array<() => void> = [];
-    const blockingStep = (): RpcStep => Object.freeze({
-      method: "eth_chainId",
-      run: (_params: readonly unknown[], signal: AbortSignal) => new Promise<never>((_resolve, reject) => {
-        started.shift()?.();
-        const abort = (): void => reject(new Error("aborted"));
-        if (signal.aborted) abort();
-        else signal.addEventListener("abort", abort, { once: true });
-      }),
-    });
-
-    const callerHarness = createApplication(() => [], [blockingStep()]);
-    const callerStarted = new Promise<void>((resolve) => { started.push(resolve); });
-    const caller = new AbortController();
-    const callerRead = callerHarness.application.list({}, caller.signal);
-    await callerStarted;
-    caller.abort();
-    expect(await callerRead).toMatchObject({ ok: false, error: { code: "request_aborted" } });
-
-    const closeHarness = createApplication(() => [], [blockingStep()]);
-    const closeStarted = new Promise<void>((resolve) => { started.push(resolve); });
-    const closeRead = closeHarness.application.list({});
-    await closeStarted;
-    const closing = closeHarness.application.close();
-    expect(await closeRead).toMatchObject({
-      ok: false,
-      error: { code: "runtime_state_unavailable" },
-    });
-    await closing;
-    expect(await closeHarness.application.list({})).toMatchObject({
-      ok: false,
-      error: { code: "runtime_state_unavailable" },
-    });
+    expect(first.block.blockHash).toBe(block.blockHash);
+    expect(second.block.blockHash).toBe(laterBlock.blockHash);
+    expect(second.viewRevision).toEqual(first.viewRevision);
+    await test.application.close();
   });
 });

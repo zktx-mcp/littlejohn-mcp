@@ -12,8 +12,10 @@ import {
 } from "../runtime/index.js";
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
 import { createErc20CallEncoder, type Erc20CallEncoder } from "./evm-standard.js";
+import { createAccountAssetChainReadPort } from "./account-assets.js";
 import { createChainReadService } from "./handlers.js";
 import { createChainInvocationLifecycle } from "./invocation-lifecycle.js";
+import { createOfficialAssetChainReadPort } from "./official-assets.js";
 import { createBoundedRpcRequester, type RpcRequester } from "./rpc.js";
 import { createTokenInspectionService } from "./token-inspection.js";
 
@@ -68,9 +70,22 @@ export const createChainOwnerApplicationFactory = (
     const lifecycle = createChainInvocationLifecycle(context.signal);
     let service: ReturnType<typeof createChainReadService>;
     let tokenInspection: ReturnType<typeof createTokenInspectionService>;
+    let officialAssetReads: ReturnType<typeof createOfficialAssetChainReadPort>;
+    let accountAssetReads: ReturnType<typeof createAccountAssetChainReadPort>;
     try {
       service = createChainReadService({ context, rpc, encoder, lifecycle });
       tokenInspection = createTokenInspectionService({ context, rpc, encoder, lifecycle });
+      officialAssetReads = createOfficialAssetChainReadPort({
+        rpc,
+        chainId: context.chain.configuration.chain.chainId,
+        lifecycle,
+      });
+      accountAssetReads = createAccountAssetChainReadPort({
+        rpc,
+        encoder,
+        chainId: context.chain.configuration.chain.chainId,
+        lifecycle,
+      });
     } catch (error) {
       await lifecycle.close();
       throw error;
@@ -80,6 +95,8 @@ export const createChainOwnerApplicationFactory = (
       supportManifest: extendChainSupportManifest(context.supportManifest),
       chainReads: service.chainReads,
       tokenInspection: tokenInspection.binding,
+      officialAssetReads,
+      accountAssetReads,
       close: () => lifecycle.close(),
     });
   };

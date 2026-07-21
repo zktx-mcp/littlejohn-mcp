@@ -6,7 +6,7 @@ import type {
 } from "../runtime/index.js";
 import {
   accountAssetApplicationContracts,
-  type AccountAssetApplicationContract,
+  type AccountAssetRequestContract,
 } from "./contracts.js";
 import {
   createAccountAssetFailure,
@@ -15,6 +15,7 @@ import {
 import {
   accountAssetBrowserRoutes,
   accountAssetCollectionRequestBody,
+  accountAssetExactRequestBody,
   accountAssetControlRoutes,
 } from "./http-contract.js";
 import type { AccountAssetApplicationPort } from "./ports.js";
@@ -22,6 +23,8 @@ import type { AccountAssetApplicationPort } from "./ports.js";
 export {
   accountAssetBrowserRoutes,
   accountAssetCollectionRequestBody,
+  accountAssetExactRequestBody,
+  accountAssetOfficialCandidateRequestBody,
   accountAssetControlRoutes,
 } from "./http-contract.js";
 
@@ -29,7 +32,7 @@ const success = (body: unknown): RouteResult => ({ ok: true, body: captureCanoni
 const failure = (value: ApplicationFailure): RouteResult => ({ ok: false, failure: value });
 
 export const accountAssetApplicationResult = <Input, Success>(
-  contract: AccountAssetApplicationContract<Input, Success>,
+  contract: AccountAssetRequestContract<Input, Success>,
   request: unknown,
   value: unknown,
 ): RouteResult => {
@@ -40,13 +43,14 @@ export const accountAssetApplicationResult = <Input, Success>(
   }
 };
 
-export const parseAccountAssetExactPath = (context: Pick<RouteContext, "params">) =>
+export const parseAccountAssetExactPath = (context: Pick<RouteContext, "params" | "body">) =>
   accountAssetApplicationContracts.exact.parseInput({
     asset: {
       kind: "erc20",
       chainId: context.params["chainId"],
       address: context.params["tokenAddress"],
     },
+    viewRevision: (context.body as { viewRevision?: unknown } | null)?.viewRevision,
   });
 
 export const extendAccountAssetControlRouteRegistry = (input: Readonly<{

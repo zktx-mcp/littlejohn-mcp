@@ -12,6 +12,11 @@ import {
   type UnsignedDecimal,
   type UtcTimestamp,
 } from "../core/index.js";
+import {
+  findOfficialAssetMember,
+  type OfficialAssetSnapshotRevision,
+  type StockFactoryVerification,
+} from "../registry/index.js";
 import { captureConnectedWalletSession } from "./active-wallet.js";
 import {
   tokenCatalogContractLimits,
@@ -20,16 +25,18 @@ import {
   tokenCatalogReviewDigest,
   parseTokenOperationFailure,
   tokenInspectCapability,
-  tokenRegistrationRevisionSchema,
+  tokenSelectionRevisionSchema,
+  tokenSelectionSetRevisionSchema,
   type TokenCatalogConfirmedOperation,
   type TokenCatalogOperationConfirmationInput,
   type TokenCatalogOperation,
   type TokenCatalogOperationStartResult,
   type TokenCatalogTerminalOperation,
   type TokenInspectionSuccess,
-  type TokenRegistration,
-  type TokenRegistrationStartRequest,
-  type TokenUnregistrationStartInput,
+  type TokenSelection,
+  type TokenOfficialSelectionEvidence,
+  type TokenAdditionStartRequest,
+  type TokenRemovalStartInput,
 } from "./contracts.js";
 import { normalizeTokenCatalogError, TokenCatalogOperationError } from "./operation-error.js";
 import type {
@@ -51,8 +58,11 @@ export const tokenCatalogCoordinatorPolicy = Object.freeze({
 const addMilliseconds = (value: UtcTimestamp, milliseconds: number): UtcTimestamp =>
   parseUtcTimestamp(new Date(Date.parse(value) + milliseconds).toISOString());
 
-const createRegistrationRevision = () => tokenRegistrationRevisionSchema.parse(
-  randomBytes(tokenCatalogContractLimits.registrationRevisionBytes).toString("base64url"),
+const createSelectionRevision = () => tokenSelectionRevisionSchema.parse(
+  randomBytes(tokenCatalogContractLimits.selectionRevisionBytes).toString("base64url"),
+);
+const createSelectionSetRevision = () => tokenSelectionSetRevisionSchema.parse(
+  randomBytes(tokenCatalogContractLimits.selectionRevisionBytes).toString("base64url"),
 );
 
 interface CapturedWallet {
@@ -69,27 +79,32 @@ interface OperationEntry {
   readonly sessionTopicDigest: CapturedWallet["sessionTopicDigest"];
   terminalAt?: UtcTimestamp;
   readonly sequence: number;
+  readonly officialVerification: StockFactoryVerification | null;
 }
 
 type TokenStartCommand =
   | Readonly<{
-      kind: "register";
-      input: TokenRegistrationStartRequest;
+      kind: "add";
+      input: TokenAdditionStartRequest;
       interactionInterface: TokenCatalogInteractionInterface;
       operationId: TokenCatalogOperation["operationId"];
     }>
   | Readonly<{
-      kind: "unregister";
-      input: TokenUnregistrationStartInput;
+      kind: "remove";
+      input: TokenRemovalStartInput;
       interactionInterface: TokenCatalogInteractionInterface;
       operationId: TokenCatalogOperation["operationId"];
     }>;
 
 type PreparedTokenStart = Readonly<{
   kind: TokenCatalogOperationKind;
-  asset: TokenRegistration["asset"];
-  previousRegistration: TokenRegistration | null;
-  inspection: TokenInspectionSuccess;
+  asset: TokenSelection["asset"];
+  previousSelection: TokenSelection | null;
+  selectionSetRevision: ReturnType<typeof tokenSelectionSetRevisionSchema.parse> | null;
+  inspection: TokenInspectionSuccess | null;
+  officialSnapshotRevision: OfficialAssetSnapshotRevision | null;
+  officialEvidence: TokenOfficialSelectionEvidence | null;
+  officialVerification: StockFactoryVerification | null;
 }>;
 
 export interface TokenCatalogCoordinatorRuntimeDependencies extends TokenCatalogCoordinatorDependencies {
@@ -125,21 +140,21 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
     Object.seal(this);
   }
 
-  startRegistration(
-    input: TokenRegistrationStartRequest,
+  startAddition(
+    input: TokenAdditionStartRequest,
     control: import("./ports.js").TokenCatalogOperationControl,
-  ): Promise<TokenCatalogOperationStartResult<"register"> | ApplicationFailure> {
-    return this.#runAdmitted(() => this.#start({ kind: "register", input, ...control })) as Promise<
-      TokenCatalogOperationStartResult<"register"> | ApplicationFailure
+  ): Promise<TokenCatalogOperationStartResult<"add"> | ApplicationFailure> {
+    return this.#runAdmitted(() => this.#start({ kind: "add", input, ...control })) as Promise<
+      TokenCatalogOperationStartResult<"add"> | ApplicationFailure
     >;
   }
 
-  startUnregistration(
-    input: TokenUnregistrationStartInput,
+  startRemoval(
+    input: TokenRemovalStartInput,
     control: import("./ports.js").TokenCatalogOperationControl,
-  ): Promise<TokenCatalogOperationStartResult<"unregister"> | ApplicationFailure> {
-    return this.#runAdmitted(() => this.#start({ kind: "unregister", input, ...control })) as Promise<
-      TokenCatalogOperationStartResult<"unregister"> | ApplicationFailure
+  ): Promise<TokenCatalogOperationStartResult<"remove"> | ApplicationFailure> {
+    return this.#runAdmitted(() => this.#start({ kind: "remove", input, ...control })) as Promise<
+      TokenCatalogOperationStartResult<"remove"> | ApplicationFailure
     >;
   }
 
@@ -207,12 +222,14 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
     try {
       const applying = entry.operation;
       if (applying.state !== "applying") throw new TokenCatalogOperationError("internal_error");
-      if (applying.kind === "register") {
+      if (applying.kind === "add") {
         entry.operation = this.#dependencies.store.applyConfirmation({
           kind: applying.kind,
           operation: applying,
           expectedConnectionRevision: entry.connectionRevision,
-          registrationRevision: createRegistrationRevision(),
+          selectionRevision: createSelectionRevision(),
+          selectionSetRevision: createSelectionSetRevision(),
+          officialVerification: entry.officialVerification,
           now: this.#now(),
         });
       } else {
@@ -220,6 +237,9 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
           kind: applying.kind,
           operation: applying,
           expectedConnectionRevision: entry.connectionRevision,
+          selectionRevision: createSelectionRevision(),
+          selectionSetRevision: createSelectionSetRevision(),
+          now: this.#now(),
         });
       }
     } catch (error) {
@@ -320,9 +340,14 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
       }
       const signal = AbortSignal.any([this.#dependencies.signal, controller.signal]);
       let prepared: PreparedTokenStart;
-      if (command.kind === "register") {
-        if (this.#dependencies.store.getRegistration(wallet.account, command.input.asset) !== undefined) {
-          throw new TokenCatalogOperationError("token_registration_already_exists");
+      if (command.kind === "add") {
+        const current = this.#dependencies.store.getSelection(wallet.account, command.input.asset);
+        if (current?.selection.included === true) {
+          throw new TokenCatalogOperationError("token_selection_already_included");
+        }
+        const synchronization = await this.#dependencies.officialAssets.synchronize(signal);
+        if (synchronization.status === "unavailable") {
+          return synchronization.failure;
         }
         const inspection = await this.#inspections.invoke(
           tokenInspectCapability,
@@ -330,23 +355,43 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
           { signal },
         );
         if ("ok" in inspection && inspection.ok === false) return inspection;
+        const member = findOfficialAssetMember(synchronization.snapshot, command.input.asset.address);
+        const officialVerification = member === undefined
+          ? null
+          : await this.#dependencies.verifyOfficialAsset.verify(member, inspection.data.block, signal);
+        const officialEvidence: TokenOfficialSelectionEvidence | null = member === undefined || officialVerification === null
+          ? null
+          : Object.freeze({
+              assetUid: member.assetUid,
+              snapshotRevision: synchronization.snapshot.revision,
+              verificationBlock: officialVerification.block,
+            });
         prepared = Object.freeze({
           kind: command.kind,
           asset: command.input.asset,
-          previousRegistration: null,
+          previousSelection: current?.selection ?? null,
+          selectionSetRevision: this.#dependencies.store.getSelectionState(wallet.account)?.revision ?? null,
           inspection,
+          officialSnapshotRevision: synchronization.snapshot.revision,
+          officialEvidence,
+          officialVerification,
         });
       } else {
-        const current = this.#dependencies.store.getRegistration(wallet.account, command.input.asset);
-        if (current === undefined) throw new TokenCatalogOperationError("token_registration_not_found");
-        if (current.registration.revision !== command.input.expectedRevision) {
-          throw new TokenCatalogOperationError("token_registration_revision_changed");
+        const current = this.#dependencies.store.getSelection(wallet.account, command.input.asset);
+        if (current === undefined) throw new TokenCatalogOperationError("token_selection_not_found");
+        if (!current.selection.included) throw new TokenCatalogOperationError("token_selection_not_included");
+        if (current.selection.revision !== command.input.expectedRevision) {
+          throw new TokenCatalogOperationError("token_selection_revision_changed");
         }
         prepared = Object.freeze({
           kind: command.kind,
           asset: command.input.asset,
-          previousRegistration: current.registration,
-          inspection: current.inspection,
+          previousSelection: current.selection,
+          selectionSetRevision: this.#dependencies.store.getSelectionState(wallet.account)?.revision ?? null,
+          inspection: null,
+          officialSnapshotRevision: null,
+          officialEvidence: null,
+          officialVerification: null,
         });
       }
       if (this.#lifecycleState !== "open" || signal.aborted) {
@@ -427,9 +472,13 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
     kind: Kind;
     interactionInterface: TokenCatalogInteractionInterface;
     wallet: CapturedWallet;
-    asset: TokenRegistration["asset"];
-    previousRegistration: TokenRegistration | null;
-    inspection: TokenInspectionSuccess;
+    asset: TokenSelection["asset"];
+    previousSelection: TokenSelection | null;
+    selectionSetRevision: ReturnType<typeof tokenSelectionSetRevisionSchema.parse> | null;
+    inspection: TokenInspectionSuccess | null;
+    officialSnapshotRevision: OfficialAssetSnapshotRevision | null;
+    officialEvidence: TokenOfficialSelectionEvidence | null;
+    officialVerification: StockFactoryVerification | null;
   }>): TokenCatalogOperationStartResult<Kind> {
     const createdAt = this.#now();
     const expiresAt = addMilliseconds(createdAt, tokenCatalogCoordinatorPolicy.userActionMilliseconds);
@@ -439,8 +488,11 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
       account: input.wallet.account,
       connectionRevision: input.wallet.connectionRevision,
       asset: input.asset,
-      previousRegistration: input.previousRegistration,
+      previousSelection: input.previousSelection,
+      selectionSetRevision: input.selectionSetRevision,
       inspection: input.inspection,
+      officialSnapshotRevision: input.officialSnapshotRevision,
+      officialEvidence: input.officialEvidence,
       interactionInterface: input.interactionInterface,
       expiresAt,
     });
@@ -455,8 +507,11 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
       connectionRevision: input.wallet.connectionRevision,
       asset: input.asset,
       review: {
-        previousRegistration: input.previousRegistration,
+        previousSelection: input.previousSelection,
+        selectionSetRevision: input.selectionSetRevision,
         inspection: input.inspection,
+        officialSnapshotRevision: input.officialSnapshotRevision,
+        officialEvidence: input.officialEvidence,
         reviewDigest,
       },
       result: null,
@@ -468,6 +523,7 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
       sessionSourceId: input.wallet.sessionSourceId,
       sessionTopicDigest: input.wallet.sessionTopicDigest,
       sequence: ++this.#sequence,
+      officialVerification: input.officialVerification,
     };
     this.#operations.set(operation.operationId, entry);
     if (operation.kind !== input.kind || operation.state !== "awaiting_confirmation") {
@@ -499,8 +555,11 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
       account: entry.operation.account,
       connectionRevision: entry.connectionRevision,
       asset: entry.operation.asset,
-      previousRegistration: entry.operation.review.previousRegistration,
+      previousSelection: entry.operation.review.previousSelection,
+      selectionSetRevision: entry.operation.review.selectionSetRevision,
       inspection: entry.operation.review.inspection,
+      officialSnapshotRevision: entry.operation.review.officialSnapshotRevision,
+      officialEvidence: entry.operation.review.officialEvidence,
       interactionInterface: entry.operation.interactionInterface,
       expiresAt: entry.operation.expiresAt,
     });

@@ -18,9 +18,12 @@ export {
   tokenInspectionDigest,
   tokenInspectionInputSchema,
   tokenInspectionSuccessSchema,
-  tokenRegistrationRevisionSchema,
-  tokenRegistrationSchema,
-  tokenRegistrationWithInspectionSchema,
+  tokenSelectionRevisionSchema,
+  tokenSelectionSetRevisionSchema,
+  tokenSelectionSchema,
+  tokenSelectionStateSchema,
+  tokenSelectionDetailSchema,
+  tokenOfficialSelectionEvidenceSchema,
 } from "./contracts.js";
 export type {
   AnyTokenCatalogApplicationContract,
@@ -39,15 +42,18 @@ export type {
   TokenInspectionData,
   TokenInspectionInput,
   TokenInspectionSuccess,
-  TokenRegistration,
-  TokenRegistrationInput,
-  TokenRegistrationListInput,
-  TokenRegistrationListRequest,
-  TokenRegistrationListResult,
-  TokenRegistrationStartInput,
-  TokenRegistrationStartRequest,
-  TokenRegistrationWithInspection,
-  TokenUnregistrationStartInput,
+  TokenSelection,
+  TokenSelectionDetail,
+  TokenSelectionState,
+  TokenSelectionSetRevision,
+  TokenOfficialSelectionEvidence,
+  TokenSelectionInput,
+  TokenSelectionListInput,
+  TokenSelectionListRequest,
+  TokenSelectionListResult,
+  TokenAdditionStartInput,
+  TokenAdditionStartRequest,
+  TokenRemovalStartInput,
 } from "./contracts.js";
 export {
   tokenCatalogErrorDefinitions,
@@ -71,7 +77,9 @@ export type {
 } from "./application-factory.js";
 export { tokenCatalogConsumerPortContract } from "./ports.js";
 export type {
-  AccountTokenRegistrationReadPort,
+  AccountTokenSelectionReadPort,
+  AccountTokenSelectionStore,
+  DefaultTokenSelectionVerification,
   TokenCatalogBrowserOperationPort,
   TokenCatalogConsumerPorts,
   TokenCatalogInteractiveCliPort,
@@ -80,7 +88,6 @@ export type {
   TokenCatalogQueryApplicationPort,
   TokenCatalogStartApplicationPort,
   TokenCatalogWebStartPort,
-  TokenRegistrationInspectionPage,
 } from "./ports.js";
 export {
   isTokenCatalogOperationTerminal,
@@ -95,13 +102,14 @@ export {
   parseTokenCatalogControlOperationCreate,
   parseTokenCatalogOperationCreate,
   parseTokenCatalogOperationPathId,
-  parseTokenCatalogRegistrationPathInput,
+  parseTokenCatalogSelectionPathInput,
   startTokenCatalogOperation,
   tokenCatalogApplicationResult,
+  tokenCatalogStartApplicationResult,
   tokenCatalogBrowserRoutes,
   tokenCatalogControlRoutes,
   tokenCatalogStartContract,
-  tokenRegistrationListRequestBody,
+  tokenSelectionListRequestBody,
 } from "./routes.js";
 export type { TokenCatalogOperationCreate } from "./routes.js";
 export type {

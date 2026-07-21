@@ -26,7 +26,6 @@ export const robinhoodChainId = evmChainIdSchema.parse("eip155:4663") as EvmChai
 export const officialAssetSourceResponseByteLimit = 1_048_576;
 export const officialAssetSourceMemberLimit = 512;
 export const officialAssetSourceDeploymentLimit = 8;
-export const officialAssetCandidatePageSize = 25;
 export const officialAssetSourceTimeoutMs = 10_000;
 
 const sourceLabelCodePointLimit = 128;
@@ -65,21 +64,19 @@ export interface CommittedOfficialAssetSnapshot extends OfficialAssetSourceSnaps
 }
 
 export interface OfficialAssetSnapshotStore {
+  readSnapshot(): CommittedOfficialAssetSnapshot | undefined;
   replaceSnapshot(
     snapshot: OfficialAssetSourceObservation,
     expectedRevision: OfficialAssetSnapshotRevision | null,
   ): CommittedOfficialAssetSnapshot;
 }
 
-export interface OfficialAssetCandidateCursor {
-  readonly assetUid: Hash32;
-  readonly contractAddress: EvmAddress;
-}
-
-export interface OfficialAssetCandidatePage {
-  readonly entries: readonly OfficialAssetSourceMember[];
-  readonly nextCursor?: OfficialAssetCandidateCursor;
-}
+export const findOfficialAssetMember = (
+  snapshot: OfficialAssetSourceSnapshot,
+  contractAddress: EvmAddress,
+): OfficialAssetSourceMember | undefined => snapshot.members.find(
+  (member) => member.contractAddress === contractAddress,
+);
 
 export type OfficialAssetSourceErrorCode =
   | "request_aborted"
@@ -315,6 +312,15 @@ export const assertOfficialAssetSourceSnapshot = (
   });
 };
 
+export const assertOfficialAssetSourceObservation = (
+  input: OfficialAssetSourceObservation,
+): OfficialAssetSourceObservation => {
+  if (!admittedSourceObservations.has(input)) {
+    throw new TypeError("The official asset snapshot was not admitted from the source response.");
+  }
+  return assertOfficialAssetSourceSnapshot(input) as OfficialAssetSourceObservation;
+};
+
 const cancelResponseBody = (response: Response): void => {
   if (response.body !== null) void response.body.cancel().catch(() => undefined);
 };
@@ -455,32 +461,6 @@ export const createOfficialAssetSourceClient = (
         clearTimeout(timer);
       }
     },
-  });
-};
-
-export const projectOfficialAssetCandidates = (
-  snapshot: OfficialAssetSourceObservation,
-  after?: OfficialAssetCandidateCursor,
-): OfficialAssetCandidatePage => {
-  if (!admittedSourceObservations.has(snapshot)) {
-    throw new TypeError("The official asset snapshot was not admitted from the source response.");
-  }
-  const members = snapshot.members;
-  let start = 0;
-  if (after !== undefined) {
-    const index = members.findIndex((member) =>
-      member.assetUid === after.assetUid && member.contractAddress === after.contractAddress);
-    if (index < 0) throw new TypeError("Official asset candidate cursor is invalid.");
-    start = index + 1;
-  }
-  const entries = members.slice(start, start + officialAssetCandidatePageSize);
-  const hasMore = start + entries.length < members.length;
-  const last = entries.at(-1);
-  return deepFreezeValue({
-    entries,
-    ...(hasMore && last !== undefined
-      ? { nextCursor: { assetUid: last.assetUid, contractAddress: last.contractAddress } }
-      : {}),
   });
 };
 

@@ -1,12 +1,19 @@
 import type {
   ApplicationFailure,
   CapabilityBinding,
+  ChainAnchor,
   EvmAccountIdentity,
   OperationId,
   UnsignedDecimal,
   UtcTimestamp,
 } from "../core/index.js";
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
+import type {
+  OfficialAssetSnapshotRevision,
+  OfficialAssetSourceMember,
+  OfficialAssetSynchronizationPort,
+  StockFactoryVerification,
+} from "../registry/index.js";
 import type {
   TokenCatalogOperation,
   TokenCatalogOperationConfirmationInput,
@@ -17,39 +24,56 @@ import type {
   TokenCatalogOperationStartResult,
   TokenCatalogTerminalOperation,
   TokenInspectionSuccess,
-  TokenRegistrationInput,
-  TokenRegistrationListInput,
-  TokenRegistrationListRequest,
-  TokenRegistrationListResult,
-  TokenRegistrationStartInput,
-  TokenRegistrationStartRequest,
-  TokenRegistration,
-  TokenRegistrationWithInspection,
-  TokenUnregistrationStartInput,
+  TokenSelectionInput,
+  TokenSelectionListInput,
+  TokenSelectionListRequest,
+  TokenSelectionListResult,
+  TokenAdditionStartInput,
+  TokenAdditionStartRequest,
+  TokenSelection,
+  TokenSelectionDetail,
+  TokenSelectionState,
+  TokenSelectionSetRevision,
+  TokenRemovalStartInput,
   tokenInspectCapability,
 } from "./contracts.js";
 import type { TokenCatalogInteractionInterface } from "./state.js";
 
-export interface TokenRegistrationPage {
-  readonly registrations: readonly TokenRegistration[];
-  readonly nextCursor: TokenRegistration["asset"]["address"] | null;
+export interface TokenSelectionPage {
+  readonly selections: readonly TokenSelection[];
+  readonly nextCursor: TokenSelection["asset"]["address"] | null;
 }
 
-export interface TokenRegistrationInspectionPage {
-  readonly entries: readonly TokenRegistrationWithInspection[];
-  readonly nextCursor: TokenRegistration["asset"]["address"] | null;
-}
-
-export interface AccountTokenRegistrationReadPort {
+export interface AccountTokenSelectionReadPort {
+  getState(account: EvmAccountIdentity): TokenSelectionState | undefined;
   getForAccount(input: Readonly<{
     account: EvmAccountIdentity;
-    asset: TokenRegistration["asset"];
-  }>): TokenRegistrationWithInspection | undefined;
-  listForAccount(input: Readonly<{
+    asset: TokenSelection["asset"];
+  }>): TokenSelectionDetail | undefined;
+  listIncludedForAccount(input: Readonly<{
     account: EvmAccountIdentity;
     limit: number;
-    cursor: TokenRegistration["asset"]["address"] | null;
-  }>): TokenRegistrationInspectionPage;
+    cursor: TokenSelection["asset"]["address"] | null;
+    excludedAddresses: readonly TokenSelection["asset"]["address"][];
+  }>): TokenSelectionPage;
+}
+
+export interface DefaultTokenSelectionVerification {
+  readonly asset: TokenSelection["asset"];
+  readonly verification: StockFactoryVerification;
+}
+
+export interface AccountTokenSelectionStore extends AccountTokenSelectionReadPort {
+  initializeDefaults(input: Readonly<{
+    account: EvmAccountIdentity;
+    expectedConnectionRevision: UnsignedDecimal;
+    snapshotRevision: OfficialAssetSnapshotRevision;
+    verifiedDefaults: readonly DefaultTokenSelectionVerification[];
+    now: UtcTimestamp;
+  }>): Readonly<{
+    state: TokenSelectionState;
+    selections: readonly TokenSelection[];
+  }>;
 }
 
 type ApplyingOperation<Kind extends TokenCatalogOperation["kind"]> = Extract<
@@ -59,32 +83,38 @@ type ApplyingOperation<Kind extends TokenCatalogOperation["kind"]> = Extract<
 
 export type TokenCatalogConfirmationCommand =
   | Readonly<{
-      kind: "register";
-      operation: ApplyingOperation<"register">;
+      kind: "add";
+      operation: ApplyingOperation<"add">;
       expectedConnectionRevision: UnsignedDecimal;
-      registrationRevision: TokenRegistration["revision"];
+      selectionRevision: TokenSelection["revision"];
+      selectionSetRevision: TokenSelectionSetRevision;
+      officialVerification: StockFactoryVerification | null;
       now: UtcTimestamp;
     }>
   | Readonly<{
-      kind: "unregister";
-      operation: ApplyingOperation<"unregister">;
+      kind: "remove";
+      operation: ApplyingOperation<"remove">;
       expectedConnectionRevision: UnsignedDecimal;
+      selectionRevision: TokenSelection["revision"];
+      selectionSetRevision: TokenSelectionSetRevision;
+      now: UtcTimestamp;
     }>;
 
 export interface TokenCatalogStore {
-  getRegistration(
+  getSelection(
     account: EvmAccountIdentity,
-    asset: TokenRegistration["asset"],
-  ): TokenRegistrationWithInspection | undefined;
-  listRegistrations(input: Readonly<{
+    asset: TokenSelection["asset"],
+  ): TokenSelectionDetail | undefined;
+  getSelectionState(account: EvmAccountIdentity): TokenSelectionState | undefined;
+  listSelections(input: Readonly<{
     account: EvmAccountIdentity;
-  } & TokenRegistrationListRequest>): TokenRegistrationPage;
+  } & TokenSelectionListRequest>): TokenSelectionPage;
   applyConfirmation(input: TokenCatalogConfirmationCommand): TokenCatalogConfirmedOperation;
 }
 
 export type TokenCatalogQueryStore = Pick<
   TokenCatalogStore,
-  "getRegistration" | "listRegistrations"
+  "getSelection" | "getSelectionState" | "listSelections"
 >;
 
 export type TokenCatalogInspectionPort = CapabilityBinding<typeof tokenInspectCapability>;
@@ -95,14 +125,14 @@ export interface TokenCatalogOperationControl {
 }
 
 export interface TokenCatalogOperationCoordinatorPort {
-  startRegistration(
-    input: TokenRegistrationStartRequest,
+  startAddition(
+    input: TokenAdditionStartRequest,
     control: TokenCatalogOperationControl,
-  ): Promise<TokenCatalogOperationStartResult<"register"> | ApplicationFailure>;
-  startUnregistration(
-    input: TokenUnregistrationStartInput,
+  ): Promise<TokenCatalogOperationStartResult<"add"> | ApplicationFailure>;
+  startRemoval(
+    input: TokenRemovalStartInput,
     control: TokenCatalogOperationControl,
-  ): Promise<TokenCatalogOperationStartResult<"unregister"> | ApplicationFailure>;
+  ): Promise<TokenCatalogOperationStartResult<"remove"> | ApplicationFailure>;
   getOperation(operationId: TokenCatalogOperation["operationId"]): TokenCatalogOperation;
   getCurrentOperation(): TokenCatalogOperation | null;
   confirm(
@@ -116,23 +146,23 @@ export interface TokenCatalogOperationCoordinatorPort {
 }
 
 export interface TokenCatalogApplicationPort {
-  getRegistration(input: TokenRegistrationInput): TokenRegistrationWithInspection | ApplicationFailure;
-  listRegistrations(input: TokenRegistrationListInput): TokenRegistrationListResult | ApplicationFailure;
-  startRegistration(
-    input: TokenRegistrationStartInput,
+  getSelection(input: TokenSelectionInput): TokenSelectionDetail | ApplicationFailure;
+  listSelections(input: TokenSelectionListInput): TokenSelectionListResult | ApplicationFailure;
+  startAddition(
+    input: TokenAdditionStartInput,
     control: TokenCatalogOperationControl,
-  ): Promise<TokenCatalogOperationStartResult<"register"> | ApplicationFailure>;
-  startUnregistration(
-    input: TokenUnregistrationStartInput,
+  ): Promise<TokenCatalogOperationStartResult<"add"> | ApplicationFailure>;
+  startRemoval(
+    input: TokenRemovalStartInput,
     control: TokenCatalogOperationControl,
-  ): Promise<TokenCatalogOperationStartResult<"unregister"> | ApplicationFailure>;
+  ): Promise<TokenCatalogOperationStartResult<"remove"> | ApplicationFailure>;
   getOperation(input: TokenCatalogOperationInput): TokenCatalogOperationResult | ApplicationFailure;
   cancelOperation(input: TokenCatalogOperationInput): Promise<TokenCatalogCancellationResult | ApplicationFailure>;
 }
 
 export type TokenCatalogQueryApplicationPort = Pick<
   TokenCatalogApplicationPort,
-  "getRegistration" | "listRegistrations"
+  "getSelection" | "listSelections"
 >;
 
 export type TokenCatalogNonInteractiveOperationPort = Pick<
@@ -144,14 +174,14 @@ export interface TokenCatalogStartApplicationPort<
   InteractionInterface extends TokenCatalogInteractionInterface,
 > {
   readonly interactionInterface: InteractionInterface;
-  startRegistration(
-    input: TokenRegistrationStartInput,
+  startAddition(
+    input: TokenAdditionStartInput,
     operationId: OperationId,
-  ): Promise<TokenCatalogOperationStartResult<"register"> | ApplicationFailure>;
-  startUnregistration(
-    input: TokenUnregistrationStartInput,
+  ): Promise<TokenCatalogOperationStartResult<"add"> | ApplicationFailure>;
+  startRemoval(
+    input: TokenRemovalStartInput,
     operationId: OperationId,
-  ): Promise<TokenCatalogOperationStartResult<"unregister"> | ApplicationFailure>;
+  ): Promise<TokenCatalogOperationStartResult<"remove"> | ApplicationFailure>;
 }
 
 export type TokenCatalogWebStartPort = TokenCatalogStartApplicationPort<"web">;
@@ -169,7 +199,7 @@ export interface TokenCatalogInteractiveCliPort extends TokenCatalogStartApplica
 }
 
 export interface TokenCatalogConsumerPorts {
-  readonly accountTokenRegistrationRead: AccountTokenRegistrationReadPort;
+  readonly accountTokenSelectionStore: AccountTokenSelectionStore;
   readonly tokenCatalogQueries: TokenCatalogQueryApplicationPort;
   readonly tokenCatalogWebStart: TokenCatalogWebStartPort;
   readonly tokenCatalogBrowserOperations: TokenCatalogBrowserOperationPort;
@@ -178,17 +208,22 @@ export interface TokenCatalogConsumerPorts {
 }
 
 export const tokenCatalogConsumerPortContract = Object.freeze({
-  accountTokenRegistrationRead: Object.freeze({
-    methods: Object.freeze(["getForAccount", "listForAccount"] as const),
+  accountTokenSelectionStore: Object.freeze({
+    methods: Object.freeze([
+      "getState",
+      "getForAccount",
+      "listIncludedForAccount",
+      "initializeDefaults",
+    ] as const),
   }),
   tokenCatalogQueries: Object.freeze({
-    methods: Object.freeze(["getRegistration", "listRegistrations"] as const),
+    methods: Object.freeze(["getSelection", "listSelections"] as const),
   }),
   tokenCatalogWebStart: Object.freeze({
     interactionInterface: "web" as const,
     methods: Object.freeze([
-      "startRegistration",
-      "startUnregistration",
+      "startAddition",
+      "startRemoval",
     ] as const),
   }),
   tokenCatalogBrowserOperations: Object.freeze({
@@ -198,8 +233,8 @@ export const tokenCatalogConsumerPortContract = Object.freeze({
   tokenCatalogInteractiveCli: Object.freeze({
     interactionInterface: "cli" as const,
     methods: Object.freeze([
-      "startRegistration",
-      "startUnregistration",
+      "startAddition",
+      "startRemoval",
       "confirm",
     ] as const),
   }),
@@ -211,6 +246,14 @@ export const tokenCatalogConsumerPortContract = Object.freeze({
 export interface TokenCatalogCoordinatorDependencies {
   readonly activeWallet: ActiveWalletReadPort;
   readonly inspection: TokenCatalogInspectionPort;
+  readonly officialAssets: OfficialAssetSynchronizationPort;
+  readonly verifyOfficialAsset: Readonly<{
+    verify(
+      member: OfficialAssetSourceMember,
+      block: ChainAnchor,
+      signal: AbortSignal,
+    ): Promise<StockFactoryVerification>;
+  }>;
   readonly store: TokenCatalogStore;
 }
 

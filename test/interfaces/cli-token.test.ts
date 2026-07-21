@@ -17,10 +17,7 @@ import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
 import type { RuntimeDispatchPort } from "../../src/interfaces/http-client.js";
 import type { RuntimeDispatchRequest, RuntimeDispatchResponse } from "../../src/runtime/index.js";
 import {
-  tokenCatalogOperationSchema,
   tokenCatalogControlRoutes,
-  tokenInspectionDigest,
-  tokenRegistrationSchema,
   type TokenCatalogOperation,
 } from "../../src/token-catalog/index.js";
 import {
@@ -28,7 +25,7 @@ import {
   createCapabilityHarness,
   invokeBinding,
 } from "../core/capability-harness.js";
-import { createInspectionSuccess, walletAddress } from "../token-catalog/harness.js";
+import { createTokenOperation } from "../token-catalog/harness.js";
 import { openTestOwnerSession } from "./owner-session-harness.js";
 
 const tokenAddress = `0x${"12".repeat(20)}`;
@@ -70,81 +67,32 @@ const operations = async (): Promise<Readonly<{
   completed: TokenCatalogOperation;
   cancelled: TokenCatalogOperation;
 }>> => {
-  const inspection = await createInspectionSuccess({ asset: tokenAsset, block: { kind: "latest" } });
-  const common = {
-    operationId,
-    kind: "register" as const,
-    interactionInterface: "cli" as const,
-    createdAt,
-    expiresAt,
-    connectionRevision: "1",
-    account: { chainId: tokenAsset.chainId, address: walletAddress },
-    asset: tokenAsset,
-    review: {
-      previousRegistration: null,
-      inspection,
-      reviewDigest: `0x${"ef".repeat(32)}`,
-    },
-    failure: null,
-  };
-  const awaiting = tokenCatalogOperationSchema.parse({ ...common, state: "awaiting_confirmation", result: null });
-  const cancelled = tokenCatalogOperationSchema.parse({ ...common, state: "cancelled", result: null });
-  const completed = tokenCatalogOperationSchema.parse({
-    ...common,
-    state: "completed",
-    result: {
-      registration: {
-        account: common.account,
-        asset: tokenAsset,
-        revision: Buffer.alloc(16, 2).toString("base64url"),
-        inspectionDigest: tokenInspectionDigest(inspection),
-        createdAt,
-      },
-      inspection,
-    },
+  const awaiting = await createTokenOperation({
+    kind: "add", state: "awaiting_confirmation", interactionInterface: "cli", operationId,
+  });
+  const cancelled = await createTokenOperation({
+    kind: "add", state: "cancelled", interactionInterface: "cli", operationId,
+  });
+  const completed = await createTokenOperation({
+    kind: "add", state: "completed", interactionInterface: "cli", operationId,
   });
   return Object.freeze({ awaiting, completed, cancelled });
 };
 
-const existingRegistrationOperations = async () => {
-  const inspection = await createInspectionSuccess({ asset: tokenAsset, block: { kind: "latest" } });
-  const previous = tokenRegistrationSchema.parse({
-    account: { chainId: tokenAsset.chainId, address: walletAddress },
-    asset: tokenAsset,
-    revision: Buffer.alloc(16, 4).toString("base64url"),
-    inspectionDigest: tokenInspectionDigest(inspection),
-    createdAt,
+const existingSelectionOperations = async () => {
+  const awaiting = await createTokenOperation({
+    kind: "remove", state: "awaiting_confirmation", interactionInterface: "cli", operationId,
   });
-  const common = {
-    operationId,
-    state: "awaiting_confirmation" as const,
-    interactionInterface: "cli" as const,
-    createdAt,
-    expiresAt,
-    connectionRevision: "1",
-    account: previous.account,
-    asset: previous.asset,
-    result: null,
-    failure: null,
-  };
-  const unregister = tokenCatalogOperationSchema.parse({
-    ...common,
-    kind: "unregister",
-    review: {
-      previousRegistration: previous,
-      inspection,
-      reviewDigest: `0x${"cd".repeat(32)}`,
-    },
+  const completed = await createTokenOperation({
+    kind: "remove", state: "completed", interactionInterface: "cli", operationId,
   });
+  const previous = awaiting.review.previousSelection;
+  if (previous === null) throw new TypeError("Expected an included token selection fixture.");
   return Object.freeze({
     previous,
-    unregister: Object.freeze({
-      awaiting: unregister,
-      completed: tokenCatalogOperationSchema.parse({
-        ...unregister,
-        state: "completed",
-        result: { asset: previous.asset, removedRevision: previous.revision },
-      }),
+    remove: Object.freeze({
+      awaiting,
+      completed,
     }),
   });
 };
@@ -224,11 +172,11 @@ describe("token CLI", () => {
       block: { kind: "number", blockNumber: "123" },
       json: true,
     });
-    expect(parseTokenCliCommand(["token", "register", tokenAddress]))
-      .toEqual({ kind: "register", address: tokenAddress, json: false });
+    expect(parseTokenCliCommand(["token", "add", tokenAddress]))
+      .toEqual({ kind: "add", address: tokenAddress, json: false });
     for (const invalid of [
       ["token", "inspect", tokenAddress],
-      ["token", "register", tokenAddress, "--json"],
+      ["token", "add", tokenAddress, "--json"],
       ["token", "update", tokenAddress, "--revision", Buffer.alloc(16, 1).toString("base64url")],
       ["token", "list", "--limit", "26"],
       ["token", "confirm", operationId],
@@ -249,10 +197,10 @@ describe("token CLI", () => {
       throw new Error("Unexpected request.");
     });
     const output = outputPort({ confirmationLine: "Y" });
-    const command = parseTokenCliCommand(["token", "register", tokenAddress]);
+    const command = parseTokenCliCommand(["token", "add", tokenAddress]);
 
     expect(await runTokenCliCommand(runtime, operationClient(runtime), command, output.port)).toBe(0);
-    expect(output.prompts).toEqual(["Confirm this token catalog change? [y/N] "]);
+    expect(output.prompts).toEqual(["Confirm this account token change? [y/N] "]);
     expect(output.output.join("\n")).toContain("Add token");
     expect(output.output.join("\n")).toContain("Block hash:");
     expect(output.output.join("\n")).toContain("Runtime code hash:");
@@ -269,7 +217,7 @@ describe("token CLI", () => {
         body: {
           control: { operationId, interactionInterface: "cli" },
           request: {
-            kind: "register",
+            kind: "add",
             asset: tokenAsset,
           },
         },
@@ -283,12 +231,12 @@ describe("token CLI", () => {
     ]);
   });
 
-  it("completes unregister through the exact review and confirmation lifecycle", async () => {
+  it("completes remove through the exact review and confirmation lifecycle", async () => {
     const status = await chainStatusSuccess();
-    const fixture = await existingRegistrationOperations();
+    const fixture = await existingSelectionOperations();
     for (const testCase of [{
-        arguments: ["token", "unregister", tokenAddress, "--revision", fixture.previous.revision],
-        operation: fixture.unregister,
+        arguments: ["token", "remove", tokenAddress, "--revision", fixture.previous.revision],
+        operation: fixture.remove,
         outcome: "Token removed.",
       }] as const) {
       const runtime = new FakeRuntime((request) => {
@@ -308,7 +256,7 @@ describe("token CLI", () => {
         parseTokenCliCommand(testCase.arguments),
         output.port,
       )).toBe(0);
-      expect(output.prompts).toEqual(["Confirm this token catalog change? [y/N] "]);
+      expect(output.prompts).toEqual(["Confirm this account token change? [y/N] "]);
       expect(output.output.join("\n")).toContain(testCase.outcome);
       expect(runtime.requests.map((request) => request.path)).toEqual([
         "/api/v1/chain-status",
@@ -340,7 +288,7 @@ describe("token CLI", () => {
         throw new Error("Unexpected request.");
       });
       const output = outputPort(input);
-      const command = parseTokenCliCommand(["token", "register", tokenAddress]);
+      const command = parseTokenCliCommand(["token", "add", tokenAddress]);
 
       expect(await runTokenCliCommand(runtime, operationClient(runtime), command, output.port)).toBe(0);
       expect(runtime.requests.at(-1)).toMatchObject({
@@ -349,7 +297,7 @@ describe("token CLI", () => {
         path: tokenCatalogControlRoutes.operation(operationId),
       });
       expect(runtime.requests.some((request) => request.path.endsWith("/confirmation"))).toBe(false);
-      expect(output.output.join("\n")).toContain("Token catalog change cancelled.");
+      expect(output.output.join("\n")).toContain("Token selection change cancelled.");
     }
   });
 
@@ -365,7 +313,7 @@ describe("token CLI", () => {
     expect(await runTokenCliCommand(
       beforeStartRuntime,
       operationClient(beforeStartRuntime),
-      parseTokenCliCommand(["token", "register", tokenAddress]),
+      parseTokenCliCommand(["token", "add", tokenAddress]),
       beforeStartOutput.port,
     )).not.toBe(0);
     expect(beforeStartRuntime.requests).toHaveLength(1);
@@ -383,7 +331,7 @@ describe("token CLI", () => {
     expect(await runTokenCliCommand(
       settlingRuntime,
       operationClient(settlingRuntime),
-      parseTokenCliCommand(["token", "register", tokenAddress]),
+      parseTokenCliCommand(["token", "add", tokenAddress]),
       settlingOutput.port,
     )).toBe(8);
     expect(settlingRuntime.requests.filter((request) =>
@@ -416,8 +364,8 @@ describe("token CLI", () => {
 
     const revision = Buffer.alloc(16, 4).toString("base64url");
     const mutations = [
-      ["token", "register", tokenAddress],
-      ["token", "unregister", tokenAddress, "--revision", revision],
+      ["token", "add", tokenAddress],
+      ["token", "remove", tokenAddress, "--revision", revision],
     ] as const;
     for (const argumentsInput of mutations) {
       for (const terminalState of [
@@ -458,7 +406,7 @@ describe("token CLI", () => {
         expected: {
           requestClass: "local_control",
           method: "GET",
-          path: tokenCatalogControlRoutes.registration(tokenAsset.chainId, tokenAsset.address),
+          path: tokenCatalogControlRoutes.selection(tokenAsset.chainId, tokenAsset.address),
         },
       },
       {
@@ -466,19 +414,19 @@ describe("token CLI", () => {
         expected: {
           requestClass: "local_control",
           method: "POST",
-          path: tokenCatalogControlRoutes.registrationQueries,
+          path: tokenCatalogControlRoutes.selectionQueries,
           body: { limit: 2, cursor: tokenAddress },
         },
       },
       {
-        arguments: ["token", "unregister", tokenAddress, "--revision", revision],
+        arguments: ["token", "remove", tokenAddress, "--revision", revision],
         expected: {
           requestClass: "local_control",
           method: "POST",
           path: tokenCatalogControlRoutes.operations,
           body: {
             control: { operationId, interactionInterface: "cli" },
-            request: { kind: "unregister", asset: tokenAsset, expectedRevision: revision },
+            request: { kind: "remove", asset: tokenAsset, expectedRevision: revision },
           },
         },
       },

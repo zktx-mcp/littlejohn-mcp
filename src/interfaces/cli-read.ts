@@ -22,6 +22,7 @@ import {
   accountAssetCollectionRequestBody,
   accountAssetInterfaceErrorMappings,
   projectAccountAssetCollectionView,
+  type AccountAssetQuantityView,
   type AccountAssetCollectionInput,
   type AccountAssetCollectionSuccess,
 } from "../account-assets/index.js";
@@ -281,19 +282,25 @@ const balanceHuman = (data: AccountBalanceData): string => [
 
 const assetsHuman = (result: AccountAssetCollectionSuccess): string => {
   const view = projectAccountAssetCollectionView(result);
-  const quantity = (value: typeof view.native): string => value.status === "available"
-    ? `${value.formatted === null ? "" : `${value.formatted} `}(raw=${value.raw})`.trim()
-    : `unavailable (${value.reason})`;
+  const quantity = (value: AccountAssetQuantityView): string => [
+    `raw=${value.raw}`,
+    ...(value.formattedRaw === null ? [] : [`formatted=${value.formattedRaw}`]),
+    ...(value.adjustedRaw === null ? [] : [`UI-adjusted raw=${value.adjustedRaw}`]),
+    ...(value.formattedAdjusted === null ? [] : [`UI-adjusted=${value.formattedAdjusted}`]),
+  ].join(" ");
   return [
     `Account: ${view.account.address}`,
     view.block === null ? "Block: unavailable" : `Block: ${view.block.blockNumber}`,
     `Native: ${quantity(view.native)}`,
     ...view.assets.map((entry) => [
-      `Token: ${entry.symbol ?? entry.name ?? entry.registration.asset.address}`,
-      `  Address: ${entry.registration.asset.address}`,
+      `Token: ${entry.symbol ?? entry.name ?? entry.selection.asset.address}`,
+      `  Address: ${entry.selection.asset.address}`,
+      `  Classification: ${entry.classification.kind}`,
       `  Balance: ${quantity(entry.quantity)}`,
     ].join("\n")),
-    ...(view.nextCursor === null ? [] : [`Next cursor: ${view.nextCursor}`]),
+    ...(view.nextCursor === null ? [] : [
+      `Next cursor: ${canonicalJsonStringify(view.nextCursor as unknown as CanonicalJson)}`,
+    ]),
   ].join("\n");
 };
 

@@ -432,7 +432,7 @@ const tokenCatalogTool = (
       outputSchema: contractOutputSchema(binding.contract),
       invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
         const result = await client.invoke(
-          tokenLocalOperationIdentities.shared.registration,
+          tokenLocalOperationIdentities.shared.selection,
           value,
           signal,
         );
@@ -446,7 +446,7 @@ const tokenCatalogTool = (
       outputSchema: contractOutputSchema(binding.contract),
       invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
         const result = await client.invoke(
-          tokenLocalOperationIdentities.shared.registrations,
+          tokenLocalOperationIdentities.shared.selections,
           value,
           signal,
         );
@@ -463,9 +463,9 @@ const tokenCatalogTool = (
       ...common,
       outputSchema: startOutputSchema(binding.contract, tokenCatalogDisplayUrl),
       invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
-        const result = operationKind === "register"
-          ? await client.invoke(tokenLocalOperationIdentities.mcp.registration, value, signal)
-          : await client.invoke(tokenLocalOperationIdentities.mcp.unregistration, value, signal);
+        const result = operationKind === "add"
+          ? await client.invoke(tokenLocalOperationIdentities.mcp.addition, value, signal)
+          : await client.invoke(tokenLocalOperationIdentities.mcp.removal, value, signal);
         if ("status" in result || !result.ok) return result;
         return success({ result: result.value, displayUrl: tokenCatalogDisplayUrl });
       },
@@ -608,7 +608,7 @@ export const createMcpServer = (
   const registry = createMcpToolRegistry(runtime, client);
   const server = new Server(mcpServerIdentity, {
     capabilities: { tools: {} },
-    instructions: "Read Robinhood Chain data, inspect token contracts, and manage local token catalog and Robinhood Wallet operations without establishing token safety or official status and without signing or transaction authority.",
+    instructions: "Read Robinhood Chain data, inspect token contracts, and manage account token selections and Robinhood Wallet operations without establishing token safety or official status and without signing or transaction authority.",
   });
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({

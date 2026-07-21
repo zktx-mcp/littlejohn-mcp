@@ -23,7 +23,7 @@ describe("token catalog browser contract", () => {
     expect(browserContracts.tokenCatalogOperationConfirmationContract).toBe(serverConfirmationContract);
     expect(browserContracts.tokenInspectionSuccessSchema).toBe(serverInspectionSuccessSchema);
     expect(tokenCatalogContractProjectionDigest).toBe(
-      "0xe1204adc042cbff89bb8426dd711a89b87cd8342560114f62d854cda557bfd78",
+      "0xcd31418c7c26f635b1c19062e4ebe715fce71a0916993ae844fc71bca39f7c22",
     );
   });
 

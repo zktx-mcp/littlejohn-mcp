@@ -1,250 +1,181 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   accountAssetApplicationContracts,
-  accountAssetMetadataAuthority,
-  accountAssetSourceReferenceSchema,
-  projectAccountAssetCollectionSuccess,
+  accountAssetOfficialCandidateQueryContract,
+  createAccountAssetAmount,
 } from "../../src/account-assets/contracts.js";
-import { createAccountAssetFailure } from "../../src/account-assets/errors.js";
-import { projectAccountAssetEntry } from "../../src/account-assets/metadata.js";
-import { createErc20CallEncoder, type Erc20CallEncoder } from "../../src/chain/evm-standard.js";
-import { accountBalanceCapability, maximumEvmBalanceRaw } from "../../src/core/index.js";
 import {
-  tokenInspectionDigest,
-  tokenRegistrationWithInspectionSchema,
+  calculateScaledUiAmount,
+  parseEvmAddressInput,
+  parseEvmChainId,
+  parseUtcTimestamp,
+  requiredErc8056ObservationSchema,
+  tokenStandardObservationResultSchema,
+} from "../../src/core/index.js";
+import {
+  tokenSelectionRevisionSchema,
+  tokenSelectionSetRevisionSchema,
 } from "../../src/token-catalog/index.js";
-import {
-  ScriptedRpc,
-  connectedWallet,
-  createChainHandlerHarness,
-  rpcValue,
-} from "../chain/handler-harness.js";
-import {
+
+const chainId = parseEvmChainId("eip155:4663");
+const accountAddress = parseEvmAddressInput(`0x${"34".repeat(20)}`);
+const tokenAddress = parseEvmAddressInput(`0x${"12".repeat(20)}`);
+const at = parseUtcTimestamp("2026-07-21T00:00:00.000Z");
+const revision = tokenSelectionRevisionSchema.parse(Buffer.alloc(16, 1).toString("base64url"));
+const setRevision = tokenSelectionSetRevisionSchema.parse(Buffer.alloc(16, 2).toString("base64url"));
+const block = Object.freeze({
   chainId,
-  createInspectionSuccess,
-  walletAddress,
-} from "../token-catalog/harness.js";
+  blockNumber: "42",
+  blockHash: `0x${"ab".repeat(32)}`,
+  blockTimestamp: at,
+});
+const asset = Object.freeze({ kind: "erc20" as const, chainId, address: tokenAddress });
+const requiredStandards = requiredErc8056ObservationSchema.parse({
+  asset,
+  block,
+  erc165: { standardId: "erc165", status: "not_supported" },
+  erc8056: { standardId: "erc8056", status: "unknown" },
+  pendingMultiplier: { standardId: "erc8056_pending_multiplier", status: "unknown" },
+});
+const viewRevision = Object.freeze({
+  officialSnapshotStatus: "unavailable" as const,
+  officialSnapshotRevision: null,
+  selectionSetRevision: setRevision,
+});
+const selection = Object.freeze({
+  account: { chainId, address: accountAddress },
+  asset,
+  included: true,
+  revision,
+  createdAt: at,
+  updatedAt: at,
+});
+const contractAsset = Object.freeze({
+  kind: "erc20" as const,
+  selection,
+  name: { status: "available" as const, value: "Example" },
+  symbol: { status: "available" as const, value: "EXT" },
+  classification: {
+    kind: "classification_unavailable" as const,
+    storedRevision: null,
+    snapshot: null,
+    member: null,
+    reason: "source_unavailable" as const,
+  },
+  amount: createAccountAssetAmount({ raw: "1234500", decimals: "6", multiplier: null }),
+  requiredStandards,
+});
 
-let encoder: Erc20CallEncoder;
-beforeAll(async () => { encoder = await createErc20CallEncoder(); });
-
-const storedRegistration = async () => {
-  const inspection = await createInspectionSuccess();
-  return tokenRegistrationWithInspectionSchema.parse({
-    registration: {
-      account: { chainId, address: walletAddress },
-      asset: inspection.data.asset,
-      revision: Buffer.alloc(16, 1).toString("base64url"),
-      inspectionDigest: tokenInspectionDigest(inspection),
-      createdAt: "2026-07-18T00:00:03.000Z",
-    },
-    inspection,
-  });
-};
-
-describe("account asset public contract", () => {
-  it("normalizes repeated metadata source references into one result-level entry", async () => {
-    const stored = await storedRegistration();
-    const projectedEntry = projectAccountAssetEntry(stored);
-    const result = projectAccountAssetCollectionSuccess({
-      account: stored.registration.account,
-      metadataAuthority: accountAssetMetadataAuthority,
-      assets: [projectedEntry],
-      nextCursor: null,
-      balance: {
-        status: "unavailable",
-        failure: createAccountAssetFailure("source_unavailable"),
+describe("account asset contracts", () => {
+  it("binds a collection to one account, block, selection view, and amount model", () => {
+    const result = accountAssetApplicationContracts.collection.parsePublicSuccess(
+      { limit: 5, cursor: null },
+      {
+        account: selection.account,
+        block,
+        viewRevision,
+        native: {
+          kind: "native",
+          asset: { kind: "native", chainId },
+          rawBalance: "7",
+          classification: "native",
+        },
+        assets: [contractAsset],
+        nextCursor: null,
       },
+    );
+    expect(result.assets[0]?.amount).toEqual({
+      raw: "1234500",
+      decimals: "6",
+      formattedRaw: "1.2345",
+      uiAdjusted: null,
+      formattedUiAdjusted: null,
     });
+    expect(() => accountAssetApplicationContracts.collection.parsePublicSuccess(
+      { limit: 5, cursor: null },
+      { ...result, block: { ...block, blockHash: `0x${"cd".repeat(32)}` } },
+    )).toThrow();
+    expect(() => accountAssetApplicationContracts.collection.parsePublicSuccess(
+      { limit: 5, cursor: null },
+      { ...result, assets: [{ ...contractAsset, selection: { ...selection, included: false } }] },
+    )).toThrow();
+  });
 
-    expect(result.sourceReferences).toHaveLength(1);
-    expect(result.assets[0]?.metadata.name.source.sourceId)
-      .toBe(result.assets[0]?.metadata.symbol.source.sourceId);
+  it("binds exact standard and adjusted-balance evidence to the same block and account", () => {
+    const values = {
+      currentMultiplier: "2000000000000000000",
+      pendingMultiplier: "3000000000000000000",
+      pendingEffectiveAt: "1800000000",
+    };
+    const supportedRequired = requiredErc8056ObservationSchema.parse({
+      asset,
+      block,
+      erc165: { standardId: "erc165", status: "supported" },
+      erc8056: { standardId: "erc8056", status: "supported" },
+      pendingMultiplier: { standardId: "erc8056_pending_multiplier", status: "supported" },
+      values,
+    });
+    const standards = tokenStandardObservationResultSchema.parse({
+      asset,
+      account: selection.account,
+      block,
+      standards: [
+        { standardId: "erc20_read_surface", status: "observed" },
+        { standardId: "erc165", status: "supported" },
+        { standardId: "erc8056", status: "supported" },
+        { standardId: "erc8056_pending_multiplier", status: "supported" },
+        { standardId: "erc8056_conversion", status: "not_supported" },
+        { standardId: "erc8056_balances", status: "not_supported" },
+      ],
+      requiredErc8056: values,
+      calculatedBalance: calculateScaledUiAmount("5", values.currentMultiplier),
+    });
+    const exactAsset = {
+      ...contractAsset,
+      amount: createAccountAssetAmount({ raw: "5", decimals: "0", multiplier: values.currentMultiplier }),
+      requiredStandards: supportedRequired,
+    };
+    const result = accountAssetApplicationContracts.exact.parsePublicSuccess(
+      { asset, viewRevision },
+      {
+        account: selection.account,
+        block,
+        viewRevision,
+        asset: exactAsset,
+        totalSupply: "100",
+        standards,
+      },
+    );
+    expect(result.asset.amount.formattedUiAdjusted).toBe("10");
+    expect(() => accountAssetApplicationContracts.exact.parsePublicSuccess(
+      { asset, viewRevision },
+      { ...result, asset: { ...exactAsset, amount: createAccountAssetAmount({ raw: "6", decimals: "0", multiplier: values.currentMultiplier }) } },
+    )).toThrow();
+  });
 
-    const conflictingEntry = structuredClone(projectedEntry);
-    const symbolReference = conflictingEntry.metadata.symbol.source.reference;
-    if (symbolReference.kind !== "configured_rpc") throw new TypeError();
-    Reflect.set(symbolReference, "publicOrigin", "https://conflict.example");
-    expect(() => projectAccountAssetCollectionSuccess({
-      account: stored.registration.account,
-      metadataAuthority: accountAssetMetadataAuthority,
-      assets: [conflictingEntry],
-      nextCursor: null,
-      balance: {
-        status: "unavailable",
-        failure: createAccountAssetFailure("source_unavailable"),
+  it("rejects candidate cursors that do not belong to the exact view", () => {
+    expect(() => accountAssetOfficialCandidateQueryContract.parseInput({
+      viewRevision,
+    })).toThrow();
+    const currentRevision = Buffer.alloc(16, 3).toString("base64url");
+    const currentView = {
+      officialSnapshotStatus: "current",
+      officialSnapshotRevision: currentRevision,
+      selectionSetRevision: setRevision,
+    } as const;
+    expect(accountAssetOfficialCandidateQueryContract.parseInput({ viewRevision: currentView })).toEqual({
+      viewRevision: currentView,
+      cursor: null,
+    });
+    expect(() => accountAssetOfficialCandidateQueryContract.parseInput({
+      viewRevision: currentView,
+      cursor: {
+        assetUid: `0x${"11".repeat(32)}`,
+        contractAddress: tokenAddress,
+        officialSnapshotRevision: Buffer.alloc(16, 4).toString("base64url"),
+        selectionSetRevision: setRevision,
       },
     })).toThrow();
-  });
-
-  it("normalizes and validates an available canonical account balance", async () => {
-    const stored = await storedRegistration();
-    const block = {
-      number: "0x2a",
-      hash: `0x${"88".repeat(32)}`,
-      timestamp: "0x65a00000",
-      transactions: [],
-    };
-    const abiWord = (value: bigint): `0x${string}` =>
-      `0x${value.toString(16).padStart(64, "0")}`;
-    const chain = createChainHandlerHarness({
-      rpc: new ScriptedRpc([
-        rpcValue("eth_chainId", "0x1237"),
-        rpcValue("eth_getBlockByNumber", block),
-        rpcValue("eth_getBalance", "0x64"),
-        rpcValue("eth_call", abiWord(1n)),
-        rpcValue("eth_call", abiWord(6n)),
-      ]),
-      encoder,
-      wallet: connectedWallet(walletAddress),
-    });
-    try {
-      const balance = await chain.invoke(accountBalanceCapability, {
-        account: { kind: "address", address: walletAddress },
-        includeNative: true,
-        tokens: [stored.registration.asset.address],
-        block: { kind: "latest" },
-      });
-      if (!balance.ok) throw new TypeError(balance.error.code);
-      const result = projectAccountAssetCollectionSuccess({
-        account: stored.registration.account,
-        metadataAuthority: accountAssetMetadataAuthority,
-        assets: [projectAccountAssetEntry(stored)],
-        nextCursor: null,
-        balance: { status: "available", snapshot: balance },
-      });
-      expect(result.balance.status).toBe("available");
-      expect(result.sourceReferences).toHaveLength(3);
-
-      if (result.balance.status !== "available") throw new TypeError();
-      const token = result.balance.snapshot.data.tokens[0];
-      if (token?.result.status !== "available") throw new TypeError();
-      const invalidAmountIdentity = {
-        ...result,
-        balance: {
-          ...result.balance,
-          snapshot: {
-            ...result.balance.snapshot,
-            data: {
-              ...result.balance.snapshot.data,
-              tokens: [{
-                ...token,
-                result: {
-                  ...token.result,
-                  amount: {
-                    ...token.result.amount,
-                    asset: { kind: "native", chainId },
-                  },
-                },
-              }],
-            },
-          },
-        },
-      };
-      expect(() => accountAssetApplicationContracts.collection.parsePublicSuccess(
-        { limit: 5, cursor: null },
-        invalidAmountIdentity,
-      )).toThrow();
-
-      const excessiveBalance = structuredClone(result);
-      if (excessiveBalance.balance.status !== "available" ||
-        excessiveBalance.balance.snapshot.data.native.status !== "available") throw new TypeError();
-      Reflect.set(
-        excessiveBalance.balance.snapshot.data.native.amount,
-        "raw",
-        `${maximumEvmBalanceRaw}0`,
-      );
-      expect(() => accountAssetApplicationContracts.collection.parsePublicSuccess(
-        { limit: 5, cursor: null },
-        excessiveBalance,
-      )).toThrow();
-
-      const invalidMetadataSource = structuredClone(result);
-      const nameSource = invalidMetadataSource.assets[0]!.metadata.name.source;
-      Reflect.set(nameSource, "sourceClass", "validated_input");
-      Reflect.set(nameSource, "owner", "Little John validated input");
-      Reflect.set(nameSource, "sourceId", "input:account.balance");
-      Reflect.deleteProperty(nameSource, "chainAnchor");
-      expect(() => accountAssetApplicationContracts.collection.parsePublicSuccess(
-        { limit: 5, cursor: null },
-        invalidMetadataSource,
-      )).toThrow();
-
-      const unrelatedCoverage = structuredClone(result);
-      const metadata = unrelatedCoverage.assets[0]!.metadata;
-      Reflect.set(metadata, "coverage", {
-        ...metadata.coverage,
-        established: [...metadata.coverage.established, "total_supply_observed"].sort(),
-      });
-      expect(() => accountAssetApplicationContracts.collection.parsePublicSuccess(
-        { limit: 5, cursor: null },
-        unrelatedCoverage,
-      )).toThrow();
-
-      const invalidFreshness = structuredClone(result);
-      Reflect.set(
-        invalidFreshness.assets[0]!.metadata.name.conclusion.freshness,
-        "evaluatedAt",
-        "2026-07-18T00:00:04.000Z",
-      );
-      expect(() => accountAssetApplicationContracts.collection.parsePublicSuccess(
-        { limit: 5, cursor: null },
-        invalidFreshness,
-      )).toThrow();
-
-      const omittedFactWarning = structuredClone(result);
-      if (omittedFactWarning.balance.status !== "available") throw new TypeError();
-      Reflect.set(
-        omittedFactWarning.assets[0]!.metadata,
-        "warnings",
-        [omittedFactWarning.balance.snapshot.warnings[0]!],
-      );
-      expect(() => accountAssetApplicationContracts.collection.parsePublicSuccess(
-        { limit: 5, cursor: null },
-        omittedFactWarning,
-      )).toThrow();
-
-      expect(() => accountAssetApplicationContracts.collection.parsePublicSuccess(
-        { limit: 5, cursor: null },
-        { ...result, sourceReferences: result.sourceReferences.slice(1) },
-      )).toThrow();
-      expect(() => accountAssetApplicationContracts.collection.parsePublicSuccess(
-        { limit: 5, cursor: null },
-        { ...result, sourceReferences: [...result.sourceReferences, result.sourceReferences[0]!] },
-      )).toThrow();
-      expect(() => accountAssetApplicationContracts.collection.parsePublicSuccess(
-        { limit: 5, cursor: null },
-        { ...result, sourceReferences: [...result.sourceReferences].reverse() },
-      )).toThrow();
-      const unusedDigest = Buffer.alloc(32, 9).toString("base64url");
-      const unusedReference = accountAssetSourceReferenceSchema.parse({
-        kind: "configured_rpc",
-        sourceId: `rpc:${unusedDigest}`,
-        publicOrigin: "https://unused.example",
-        configurationDigest: unusedDigest,
-      });
-      expect(() => accountAssetApplicationContracts.collection.parsePublicSuccess(
-        { limit: 5, cursor: null },
-        {
-          ...result,
-          sourceReferences: [...result.sourceReferences, unusedReference]
-            .sort((left, right) => left.sourceId < right.sourceId ? -1 : left.sourceId > right.sourceId ? 1 : 0),
-        },
-      )).toThrow();
-      expect(() => accountAssetApplicationContracts.collection.parsePublicSuccess(
-        { limit: 5, cursor: null },
-        {
-          ...result,
-          sourceReferences: [...result.sourceReferences, {
-            kind: "public",
-            sourceId: "unapproved_source",
-            uri: "https://example.com/",
-          }],
-        },
-      )).toThrow();
-    } finally {
-      await chain.close();
-    }
   });
 });

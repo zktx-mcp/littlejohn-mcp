@@ -50,6 +50,8 @@ export const tokenStandardDefinitions = deepFreezeValue({
 } as const);
 
 export type TokenStandardId = keyof typeof tokenStandardDefinitions;
+export const tokenStandardDefinitionFor = (standardId: TokenStandardId) =>
+  tokenStandardDefinitions[standardId];
 export type TokenStandardObservationStatus =
   | "observed"
   | "supported"

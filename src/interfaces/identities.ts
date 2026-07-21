@@ -34,7 +34,7 @@ import {
   tokenCatalogOperationConfirmationContract,
   tokenCatalogOperationIdSchema,
   tokenCatalogControlRoutes,
-  tokenRegistrationListRequestBody,
+  tokenSelectionListRequestBody,
   tokenInspectCapability,
   type TokenCatalogOperation,
   type TokenCatalogCancellationResult,
@@ -42,11 +42,11 @@ import {
   type TokenCatalogOperationConfirmationInput,
   type TokenCatalogOperationResult,
   type TokenCatalogOperationStartResult,
-  type TokenRegistrationInput,
-  type TokenRegistrationListResult,
-  type TokenRegistrationStartRequest,
-  type TokenRegistrationWithInspection,
-  type TokenUnregistrationStartInput,
+  type TokenSelectionInput,
+  type TokenSelectionListResult,
+  type TokenAdditionStartRequest,
+  type TokenSelectionDetail,
+  type TokenRemovalStartInput,
   type TokenCatalogOperationKind,
   type AnyTokenCatalogApplicationContract,
 } from "../token-catalog/index.js";
@@ -351,7 +351,7 @@ export const accountAssetInterfaceBindings = Object.freeze({
     control: Object.freeze({ method: "POST", path: accountAssetControlRoutes.queries }),
     mcp: Object.freeze({
       name: "account_list_assets",
-      description: "List native and registered-token assets for the connected wallet account.",
+      description: "List native and added-token assets for the connected wallet account.",
       annotations: readAnnotations(true),
     }),
     cli: Object.freeze({
@@ -383,23 +383,23 @@ const tokenCatalogBinding = <const Binding extends TokenCatalogInterfaceBinding>
 }) as Readonly<Binding>;
 
 export const tokenCatalogInterfaceBindings = Object.freeze({
-  registration: tokenCatalogBinding({
+  selection: tokenCatalogBinding({
     action: "get",
-    contract: tokenCatalogApplicationContracts.registration,
+    contract: tokenCatalogApplicationContracts.selection,
     mcp: {
-      name: "token_get_registration",
-      description: "Read one token registration for the current wallet account.",
+      name: "token_get_selection",
+      description: "Read one token selection for the current wallet account.",
       annotations: readAnnotations(false),
     },
     cli: { domain: "token", command: "get", argumentSyntax: "<token-address> [--json]" },
     web: true,
   }),
-  registrations: tokenCatalogBinding({
+  selections: tokenCatalogBinding({
     action: "list",
-    contract: tokenCatalogApplicationContracts.registrations,
+    contract: tokenCatalogApplicationContracts.selections,
     mcp: {
-      name: "token_list_registrations",
-      description: "List token registrations for the current wallet account.",
+      name: "token_list_selections",
+      description: "List token selections for the current wallet account.",
       annotations: readAnnotations(false),
     },
     cli: {
@@ -409,36 +409,36 @@ export const tokenCatalogInterfaceBindings = Object.freeze({
     },
     web: true,
   }),
-  startRegistration: tokenCatalogBinding({
+  startAddition: tokenCatalogBinding({
     action: "start",
-    contract: tokenCatalogApplicationContracts.startRegistration,
+    contract: tokenCatalogApplicationContracts.startAddition,
     mcp: {
-      name: "token_start_registration",
-      description: "Start a token registration operation for local browser confirmation.",
+      name: "token_start_addition",
+      description: "Start adding one token to the current wallet account.",
       annotations: startAnnotations(true),
     },
     cli: {
       domain: "token",
-      command: "register",
+      command: "add",
       argumentSyntax: "<token-address>",
     },
-    operationKind: "register",
+    operationKind: "add",
     web: true,
   }),
-  startUnregistration: tokenCatalogBinding({
+  startRemoval: tokenCatalogBinding({
     action: "start",
-    contract: tokenCatalogApplicationContracts.startUnregistration,
+    contract: tokenCatalogApplicationContracts.startRemoval,
     mcp: {
-      name: "token_start_unregistration",
-      description: "Start token removal for local browser confirmation.",
+      name: "token_start_removal",
+      description: "Start removing one token from the current wallet account.",
       annotations: startAnnotations(false),
     },
     cli: {
       domain: "token",
-      command: "unregister",
+      command: "remove",
       argumentSyntax: "<token-address> --revision <revision>",
     },
-    operationKind: "unregister",
+    operationKind: "remove",
     web: true,
   }),
   operation: tokenCatalogBinding({
@@ -446,7 +446,7 @@ export const tokenCatalogInterfaceBindings = Object.freeze({
     contract: tokenCatalogApplicationContracts.operation,
     mcp: {
       name: "token_get_operation",
-      description: "Read one retained token catalog operation.",
+      description: "Read one retained account token operation.",
       annotations: readAnnotations(false),
     },
     cli: { domain: "token", command: "operation", argumentSyntax: "<operation-id> [--json]" },
@@ -457,7 +457,7 @@ export const tokenCatalogInterfaceBindings = Object.freeze({
     contract: tokenCatalogApplicationContracts.cancelOperation,
     mcp: {
       name: "token_cancel_operation",
-      description: "Cancel one cancellable token catalog operation.",
+      description: "Cancel one cancellable account token operation.",
       annotations: Object.freeze({
         readOnlyHint: false,
         destructiveHint: false,
@@ -799,39 +799,39 @@ const tokenStartLocalIdentity = <Input>(input: Readonly<{
   },
 });
 
-const tokenRegistrationReadIdentity = localOperationIdentity<
-  TokenRegistrationInput,
-  TokenRegistrationWithInspection
+const tokenSelectionReadIdentity = localOperationIdentity<
+  TokenSelectionInput,
+  TokenSelectionDetail
 >({
   action: "read",
-  contract: tokenCatalogApplicationContracts.registration.applicationContract,
+  contract: tokenCatalogApplicationContracts.selection.applicationContract,
   errorMappings: tokenCatalogInterfaceErrorMappings,
   operationId: () => undefined,
   actionRequest: (input) => ({
     method: "GET",
-    path: tokenCatalogControlRoutes.registration(input.asset.chainId, input.asset.address),
+    path: tokenCatalogControlRoutes.selection(input.asset.chainId, input.asset.address),
   }),
   parseActionResponse: (input, _operationId, value) =>
-    tokenCatalogApplicationContracts.registration.parsePublicSuccess(input, value),
+    tokenCatalogApplicationContracts.selection.parsePublicSuccess(input, value),
 });
 
-const tokenRegistrationsReadIdentity = localOperationIdentity<
-  ReturnType<typeof tokenCatalogApplicationContracts.registrations.parseInput>,
-  TokenRegistrationListResult
+const tokenSelectionsReadIdentity = localOperationIdentity<
+  ReturnType<typeof tokenCatalogApplicationContracts.selections.parseInput>,
+  TokenSelectionListResult
 >({
   action: "read",
-  contract: tokenCatalogApplicationContracts.registrations.applicationContract,
+  contract: tokenCatalogApplicationContracts.selections.applicationContract,
   errorMappings: tokenCatalogInterfaceErrorMappings,
   operationId: () => undefined,
   actionRequest: (input) => ({
     method: "POST",
-    path: tokenCatalogControlRoutes.registrationQueries,
-    body: captureCanonicalJson(tokenRegistrationListRequestBody(
-      input as Parameters<typeof tokenRegistrationListRequestBody>[0],
+    path: tokenCatalogControlRoutes.selectionQueries,
+    body: captureCanonicalJson(tokenSelectionListRequestBody(
+      input as Parameters<typeof tokenSelectionListRequestBody>[0],
     )),
   }),
   parseActionResponse: (input, _operationId, value) =>
-    tokenCatalogApplicationContracts.registrations.parsePublicSuccess(input, value),
+    tokenCatalogApplicationContracts.selections.parsePublicSuccess(input, value),
 });
 
 const tokenOperationReadIdentity = localOperationIdentity<
@@ -928,15 +928,15 @@ const accountAssetCollectionReadIdentity = localOperationIdentity<
 });
 
 const tokenStartIdentities = (interactionInterface: "cli" | "web") => Object.freeze({
-  registration: tokenStartLocalIdentity<TokenRegistrationStartRequest>({
-    kind: "register",
+  addition: tokenStartLocalIdentity<TokenAdditionStartRequest>({
+    kind: "add",
     interactionInterface,
-    contract: tokenCatalogApplicationContracts.startRegistration,
+    contract: tokenCatalogApplicationContracts.startAddition,
   }),
-  unregistration: tokenStartLocalIdentity<TokenUnregistrationStartInput>({
-    kind: "unregister",
+  removal: tokenStartLocalIdentity<TokenRemovalStartInput>({
+    kind: "remove",
     interactionInterface,
-    contract: tokenCatalogApplicationContracts.startUnregistration,
+    contract: tokenCatalogApplicationContracts.startRemoval,
   }),
 });
 
@@ -958,8 +958,8 @@ export const walletLocalOperationIdentities = Object.freeze({
 
 export const tokenLocalOperationIdentities = Object.freeze({
   shared: Object.freeze({
-    registration: tokenRegistrationReadIdentity,
-    registrations: tokenRegistrationsReadIdentity,
+    selection: tokenSelectionReadIdentity,
+    selections: tokenSelectionsReadIdentity,
     operation: tokenOperationReadIdentity,
     cancel: tokenCancelLocalIdentity,
   }),

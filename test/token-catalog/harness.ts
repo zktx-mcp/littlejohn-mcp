@@ -5,6 +5,7 @@ import {
   parseEvmAddressInput,
   parseEvmChainId,
   sourceReferenceSchema,
+  tokenStandardObservationResultSchema,
   type CanonicalJson,
   type SourceReference,
 } from "../../src/core/index.js";
@@ -15,7 +16,20 @@ import {
   type TokenInspectionInput,
   type TokenInspectionSuccess,
 } from "../../src/token-catalog/contracts.js";
+import {
+  tokenCatalogOperationSchema,
+  tokenSelectionDetailSchema,
+  tokenSelectionSchema,
+  type TokenCatalogOperation,
+  type TokenSelection,
+  type TokenSelectionDetail,
+} from "../../src/token-catalog/contract-schema.js";
 import { tokenCatalogErrorRegistry } from "../../src/token-catalog/errors.js";
+import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
+import type {
+  TokenCatalogOperationKind,
+  TokenCatalogOperationState,
+} from "../../src/token-catalog/state.js";
 import { bindForHarness, createCapabilityHarness } from "../core/capability-harness.js";
 
 export const tokenAddress = parseEvmAddressInput(`0x${"12".repeat(20)}`);
@@ -105,6 +119,18 @@ export const createInspectionBinding = (
         name: { status: "available", value: options.name ?? "Example Token", observationId: nameObservationId },
         symbol: { status: "available", value: options.symbol ?? "EXT", observationId: symbolObservationId },
       },
+      standards: tokenStandardObservationResultSchema.parse({
+        asset: input.asset,
+        block,
+        standards: [
+          { standardId: "erc20_read_surface", status: "observed" },
+          { standardId: "erc165", status: "not_supported" },
+          { standardId: "erc8056", status: "unknown" },
+          { standardId: "erc8056_pending_multiplier", status: "unknown" },
+          { standardId: "erc8056_conversion", status: "unknown" },
+          { standardId: "erc8056_balances", status: "unknown" },
+        ],
+      }),
     });
     return { status: "success", data };
   }, tokenCatalogErrorRegistry);
@@ -124,4 +150,75 @@ export const createInspectionSuccess = async (
   ).invoke(tokenInspectCapability, input, { signal: new AbortController().signal });
   if (!result.ok) throw new Error(`Inspection fixture failed: ${result.error.code}`);
   return result;
+};
+
+export const createTokenSelection = (
+  inspection: TokenInspectionSuccess,
+  options: Readonly<{
+    included?: boolean;
+    revisionByte?: number;
+    createdAt?: string;
+    updatedAt?: string;
+  }> = {},
+): TokenSelection => tokenSelectionSchema.parse({
+  account: { chainId: inspection.data.asset.chainId, address: walletAddress },
+  asset: inspection.data.asset,
+  included: options.included ?? true,
+  revision: Buffer.alloc(16, options.revisionByte ?? 1).toString("base64url"),
+  createdAt: options.createdAt ?? "2026-07-18T00:00:01.000Z",
+  updatedAt: options.updatedAt ?? options.createdAt ?? "2026-07-18T00:00:01.000Z",
+});
+
+export const createTokenSelectionDetail = (
+  inspection: TokenInspectionSuccess,
+  options: Parameters<typeof createTokenSelection>[1] = {},
+): TokenSelectionDetail => tokenSelectionDetailSchema.parse({
+  selection: createTokenSelection(inspection, options),
+  historicalInspection: inspection,
+});
+
+export const createTokenOperation = async (options: Readonly<{
+  kind: TokenCatalogOperationKind;
+  state: TokenCatalogOperationState;
+  interactionInterface?: "cli" | "web";
+  operationId?: string;
+}>): Promise<TokenCatalogOperation> => {
+  const inspection = await createInspectionSuccess();
+  const previousSelection = options.kind === "remove"
+    ? createTokenSelection(inspection)
+    : null;
+  const createdAt = "2026-07-18T00:00:03.000Z";
+  const completedSelection = createTokenSelection(inspection, {
+    included: options.kind === "add",
+    revisionByte: 2,
+    createdAt: previousSelection?.createdAt ?? createdAt,
+    updatedAt: "2026-07-18T00:00:04.000Z",
+  });
+  return tokenCatalogOperationSchema.parse({
+    operationId: options.operationId ?? Buffer.alloc(32, options.kind === "add" ? 1 : 2).toString("base64url"),
+    kind: options.kind,
+    state: options.state,
+    interactionInterface: options.interactionInterface ?? "web",
+    createdAt,
+    expiresAt: "2026-07-18T00:05:03.000Z",
+    account: completedSelection.account,
+    connectionRevision: "1",
+    asset: completedSelection.asset,
+    review: {
+      previousSelection,
+      selectionSetRevision: Buffer.alloc(16, 3).toString("base64url"),
+      inspection: options.kind === "add" ? inspection : null,
+      officialSnapshotRevision: options.kind === "add"
+        ? Buffer.alloc(16, 4).toString("base64url")
+        : null,
+      officialEvidence: null,
+      reviewDigest: `0x${"ef".repeat(32)}`,
+    },
+    result: options.state === "completed"
+      ? { selection: completedSelection, historicalInspection: inspection }
+      : null,
+    failure: options.state === "failed"
+      ? new TokenCatalogOperationError("state_conflict").failure
+      : null,
+  });
 };

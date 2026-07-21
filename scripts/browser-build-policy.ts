@@ -33,6 +33,7 @@ const sharedContractSources = new Set([
   "src/core/amounts.ts",
   "src/core/browser.ts",
   "src/core/contract.ts",
+  "src/core/digests.ts",
   "src/core/error-definitions.ts",
   "src/core/errors.ts",
   "src/core/evm-address-input.ts",
@@ -66,7 +67,7 @@ const sharedContractSources = new Set([
 
 const allowedRuntimePackages = new Set(["@noble/hashes", "react", "react-dom", "scheduler", "zod"]);
 const allowedWebPackageImports = new Map([
-  ["react", new Set(["StrictMode", "useCallback", "useEffect", "useRef", "useState"])],
+  ["react", new Set(["ReactNode", "StrictMode", "useCallback", "useEffect", "useRef", "useState"])],
   ["react-dom/client", new Set(["createRoot"])],
 ]);
 const allowedWebConstructorsBySource = new Map([
@@ -83,13 +84,14 @@ const allowedVirtualModules = new Set([
 ]);
 const codeSourceExtensions = new Set([".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"]);
 const allowedIntrinsicElements = new Set([
-  "a", "article", "button", "dd", "details", "dialog", "div", "dl", "dt", "h1", "h2", "header",
-  "footer", "input", "label", "main", "nav", "option", "p", "rect", "section", "select", "span", "strong", "summary", "svg",
+  "a", "article", "button", "code", "dd", "details", "dialog", "div", "dl", "dt", "h1", "h2", "header",
+  "footer", "input", "label", "li", "main", "nav", "option", "p", "rect", "section", "select", "span", "strong", "summary", "svg", "ul",
 ]);
 const allowedIntrinsicAttributes = new Set([
-  "aria-current", "aria-expanded", "aria-label", "aria-modal", "autoComplete", "className", "disabled",
-  "fill", "height", "href", "key", "onCancel", "onChange", "onClick", "onKeyDown", "ref", "role",
-  "shapeRendering", "spellCheck", "tabIndex", "type", "value", "viewBox", "width", "x", "y",
+  "aria-current", "aria-expanded", "aria-hidden", "aria-label", "aria-labelledby", "aria-modal", "autoComplete", "className", "disabled",
+  "fill", "height", "href", "key", "onBlur", "onCancel", "onChange", "onClick", "onFocus", "onKeyDown",
+  "onMouseDown", "onMouseEnter", "onMouseLeave", "ref", "role",
+  "id", "shapeRendering", "spellCheck", "tabIndex", "title", "type", "value", "viewBox", "width", "x", "y",
 ]);
 const forbiddenGlobalIdentifiers = new Set([
   "Audio", "BroadcastChannel", "DOMParser", "EventSource", "Function", "Image", "SharedWorker",

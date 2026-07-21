@@ -2,7 +2,7 @@ import {
   isTokenCatalogOperationTerminal,
   type TokenCatalogOperation,
   type TokenInspectionSuccess,
-  type TokenRegistration,
+  type TokenSelection,
 } from "../../token-catalog/browser.js";
 import type { NotificationNotice } from "./notification.js";
 
@@ -11,8 +11,8 @@ export interface TokenOperationCopy {
   readonly message: string;
 }
 
-export const tokenRegistrationLabel = (registration: TokenRegistration): string =>
-  registration.asset.address;
+export const tokenSelectionLabel = (selection: TokenSelection): string =>
+  selection.asset.address;
 
 const optionalMetadata = (
   value: TokenInspectionSuccess["data"]["metadata"]["name"],
@@ -40,36 +40,36 @@ export const tokenOperationCopy = (
   switch (operation.state) {
     case "awaiting_confirmation":
       return Object.freeze({
-        heading: operation.kind === "register"
+        heading: operation.kind === "add"
           ? "Add token"
           : "Remove token",
-        message: "Review this account-specific catalog change before confirming.",
+        message: "Review this account token change before confirming.",
       });
     case "applying":
       return Object.freeze({
-        heading: "Applying token catalog change",
+        heading: "Applying token selection change",
         message: "Little John is committing the confirmed change.",
       });
     case "completed":
       return Object.freeze({
-        heading: operation.kind === "register"
+        heading: operation.kind === "add"
           ? "Token added"
           : "Token removed",
-        message: "The account-specific token catalog is up to date.",
+        message: "The account token selection is up to date.",
       });
     case "cancelled":
       return Object.freeze({
-        heading: "Token catalog change cancelled",
-        message: "No catalog change was made by this operation.",
+        heading: "Token selection change cancelled",
+        message: "No account token change was made by this operation.",
       });
     case "expired":
       return Object.freeze({
-        heading: "Token catalog change expired",
+        heading: "Token selection change expired",
         message: "The review expired before confirmation.",
       });
     case "failed":
       return Object.freeze({
-        heading: "Token catalog change failed",
+        heading: "Token selection change failed",
         message: operation.failure.error.message,
       });
   }

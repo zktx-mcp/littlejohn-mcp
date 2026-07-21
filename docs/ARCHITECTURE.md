@@ -52,26 +52,27 @@ the chain decoder. Explicit account reads do not consume wallet state. Only
 WalletConnect account.
 
 The internal `token-catalog` module owns canonical token inspection,
-registration, operation, error, and downstream port contracts. Its
-chain adapter inspects deployed code and ERC-20 `totalSupply`, optional `name`,
-optional `symbol`, and optional `decimals` at one EIP-1898 block reference. The
-standardized `eth_call` execution-reverted response makes an optional method
-unavailable; malformed, mismatched, transport, and source failures retain their
-own failure meaning. A fatal inspection call aborts and drains its sibling calls
-before the inspection returns or the owner closes. The catalog runtime persists
-an inspection only when a confirmed account registration commits. The query
-application receives only registration get and list storage methods. Exact get
-returns the registration and its inspection evidence; list returns bounded
-registration rows without duplicating inspection evidence. One owner-memory
-coordinator alone receives the mutation store, serializes catalog changes,
-binds confirmation to the captured live wallet session and connection revision
-through the canonical confirmation contract, and commits each change through
-one SQLite transaction. The interface layer exposes token inspection and the
-account-specific registration catalog through their declared HTTP, MCP, and
-CLI bindings. The web surface starts and reviews catalog mutations through
-operation resources and consumes account-assets for display. None of these
-surfaces establishes official asset identity, safety, price, valuation, or
-transaction support.
+account-specific token selection, operation, error, and downstream port
+contracts. Its chain adapter inspects deployed code and ERC-20 `totalSupply`,
+optional `name`, optional `symbol`, and optional `decimals` at one EIP-1898
+block reference. The standardized `eth_call` execution-reverted response makes
+an optional method unavailable; malformed, mismatched, transport, and source
+failures retain their own failure meaning. A fatal inspection call aborts and
+drains its sibling calls before the inspection returns or the owner closes.
+The catalog runtime persists an inspection only when a confirmed addition
+commits. The query application receives only exact-selection and bounded-list
+storage methods. Exact get returns the selection and any historical inspection;
+list returns selection rows without duplicating inspection evidence. One
+owner-memory coordinator alone receives the mutation store, serializes additions
+and removals, binds confirmation to the captured live wallet session and
+connection revision through the canonical confirmation contract, and commits
+each change through one SQLite transaction. The interface layer exposes token
+inspection and the account-specific selection set through their declared HTTP,
+MCP, and CLI bindings. The web surface starts and reviews changes through
+operation resources and consumes account-assets for display. Official Stock
+Token classification is established only by the `registry` source observation
+and same-block StockFactory verification; no surface establishes safety, price,
+valuation, or transaction support.
 
 The interactive CLI implements `wallet status`, `wallet connect`, `wallet
 disconnect`, `wallet operation`, and `wallet cancel`, plus
@@ -79,7 +80,7 @@ disconnect`, `wallet operation`, and `wallet cancel`, plus
 `read balance`, and the seven declared `token` commands under
 [`CLI Surface`](#cli-surface). Read
 commands expose the canonical result as human-readable text or exact JSON
-without recomputing domain meaning. Token registration and removal
+without recomputing domain meaning. Token addition and removal
 commands require an interactive terminal and one exact confirmation response.
 Exact operation cancellation is confirmation-independent and remains available
 to non-interactive callers.
@@ -102,7 +103,7 @@ The fixed-origin React surface serves one application at `/`; `/tokens` is not
 a page. The product identity remains at the left of the navigation bar and the
 wallet control remains at the right. A disconnected account sees the product
 description and connection action. A connected account sees one fresh bounded
-asset page with native balance, registered-token balances, refresh, pagination,
+asset page with native balance, included-token balances, refresh, pagination,
 and contextual add and removal actions. One modal host derives priority across
 wallet operations, token operations, and the add form. A CLI-created catalog
 operation is read-only in the browser. The modal acts only after a direct user
@@ -130,8 +131,8 @@ cookie path as authority. The wallet-operation resources are:
 
 The catalog browser resources are inspection, operation creation,
 current-operation and exact operation reads, and exact confirmation and
-cancellation action resources. Registration reads belong to account-assets;
-the browser does not retain parallel catalog query resources. These resources
+cancellation action resources. Selection and balance reads belong to
+account-assets; the browser does not retain parallel catalog query resources. These resources
 do not expose a second contract, error map, or operation state machine.
 
 There is no human wallet-path namespace, separate QR resource, or browser
@@ -208,15 +209,15 @@ transaction material, WalletConnect state, or private settings.
 | `core` | Schemas, exact numeric types, evidence, commitments, and errors |
 | `chain` | RPC, pinned reads, simulation, broadcast, and receipt ports |
 | `data` | Dataset schema and release verification |
-| `registry` | Canonical asset, deployment, and source-authority records |
+| `registry` | Official-asset source admission, StockFactory identity, and ordered default Stock Tokens |
 | `intelligence` | ABI, source, contract, calldata, signature, and transaction analysis |
 | `security` | Deterministic policy, simulation coverage, warnings, blocks, and state deltas |
 | `market-portfolio` | Balances, price evidence, candles, valuation coverage, and wallet net flow |
 | `protocols` | Protocol package contract and protocol-specific capabilities and action adapters |
 | `review` | Intent, account binding, commitments, freshness, and review state |
 | `wallet` | WalletConnect sessions and exact reviewed-request handoff |
-| `token-catalog` | Token inspection and account-specific registration contracts |
-| `account-assets` | Stable connected-account registration and balance reads |
+| `token-catalog` | Token inspection and account-specific selection contracts |
+| `account-assets` | Stable connected-account selection, classification, standard, and balance reads |
 | `receipt-activity` | Transactions, receipts, traces, finality, and actual state deltas |
 | `interfaces` | MCP, loopback HTTP API, React read models, and interactive CLI |
 | `runtime` | Composition root, SQLite, configuration, HTTP ownership, and feature gates |
@@ -493,7 +494,7 @@ creators converge on the final database rather than choosing or repairing a
 staging database.
 
 SQLite has one current schema definition. The SQLite schema module owns
-`databaseSchemaVersion`, currently `4`, and standard SQLite `user_version`
+`databaseSchemaVersion`, currently `5`, and standard SQLite `user_version`
 equals that value. The exact current table set must also be present. A mismatch
 fails closed and never invokes a migration, old-schema reader, conversion,
 repair, or automatic replacement. A development schema change requires deleting
@@ -508,21 +509,25 @@ runtime protocol version before constructing the application. A deferred
 process accepts a live owner only when the stored projection, signed live-owner
 identity, and current runtime protocol version agree.
 
-The current product SQLite schema contains exactly nine tables:
+The current product SQLite schema contains exactly twelve tables:
 
 - `local_profile` stores the local profile identity;
 - `runtime_owner` stores the HTTP-owner identity, compatibility version,
   configuration identifier, process projection, and owner revision;
 - `chain` stores trusted canonical EIP-155 chain identities inserted only from
   runtime configuration after fixed-port ownership is acquired;
-- `contract` and `token_contract` store chain-scoped parent identities inserted
-  only by a confirmed token registration;
+- `robinhood_asset_snapshot` and `robinhood_asset` store one complete admitted
+  official-source snapshot and its chain-scoped members;
+- `contract` and `token_contract` store chain-scoped contract identities
+  inserted by a confirmed addition or verified default initialization;
 - `token_contract_inspection` stores the exact canonical `token.inspect`
   success selected by its digest;
 - `wallet_account` stores persistent `(profile, chain, address)` identities that
   survive disconnect, account change, session deletion, and owner takeover;
-- `wallet_token_registration` stores account-specific token membership,
-  revision, and inspection reference; and
+- `wallet_token_selection_state` stores the account selection-set revision and
+  whether the ordered defaults were initialized;
+- `wallet_token_selection` stores the account-specific inclusion choice and
+  selection revision independently from current official classification; and
 - `current_wallet_connection` stores the secret-free current connection
   projection and revision.
 
@@ -540,11 +545,11 @@ removed. Pairing URI and QR material remain separate owner-memory secret state
 and never enter the operation read model.
 
 The current token-catalog operation is also owner-memory coordination state. A
-profile has at most one nonterminal catalog operation. Registration inspects the
+profile has at most one nonterminal catalog operation. Addition inspects the
 token before creating that operation; removal captures the exact current
-registration revision. One start procedure owns slot reservation, atomic
-wallet capture, the explicit registration or removal preparation branch,
-wallet recapture, operation publication, and release. Confirmation
+selection revision. One start procedure owns slot reservation, atomic wallet
+capture, the explicit addition or removal preparation branch, wallet recapture,
+operation publication, and release. Confirmation
 revalidates the same live wallet session, account, chain, and connection
 revision before one database method executes the explicit branch in one
 transaction. That transaction rereads the durable result and validates the
@@ -555,20 +560,23 @@ Terminal operations have bounded memory retention and are not restored by a
 successor owner.
 
 The account-assets application is the sole owner of the connected-account asset
-read. It atomically captures the active wallet, reads one bounded explicit
-registration page, invokes `account.balance` at one canonical block, rereads the
-same registration selection, recaptures the wallet, and accepts the result only
-when account, connection revision, stable session-source identity, and
-registration bytes remain unchanged. SQLite stores no balance page or read
-error. Metadata is a compact projection validated from the stored immutable
-inspection; interfaces never reconstruct this join. The public account-assets
-result stores each configured-RPC or validated-input source reference once and
-uses its source identifier from projected metadata and balance evidence. The
-account-assets contract reconstructs the canonical `account.balance` success,
-applies the definition-owned balance semantics, and rejects missing, unused,
-conflicting, or unsupported references before an interface receives the
-result. This normalized result keeps the bounded five-asset response within the
-fixed loopback HTTP response limit without removing evidence.
+read. On a first-page read it atomically captures the active wallet, attempts one
+bounded official-source synchronization, resolves one canonical block,
+initializes the exact ordered defaults once for that account after verifying
+them at that block, and then reads one bounded included-selection page. Later
+pages preserve the admitted official-snapshot and selection-set revisions while
+resolving a fresh canonical block. Each visible official member is verified
+against StockFactory before it is classified as a Robinhood Stock Token; a
+source member without that proof is not displayed as official. The application
+reads ERC-20 metadata, raw balance, required ERC-8056 observations, and the
+native balance at the same block, then rereads the selection-set revision and
+recaptures the wallet. It accepts the result only when the account, connection
+revision, stable session-source identity, official snapshot revision, and
+selection-set revision remain unchanged. SQLite stores no balance page, token
+standard observation, or read error. Exact reads and official-candidate pages
+consume the same view revisions instead of reconstructing the join in an
+interface. A failed official synchronization preserves the last committed
+snapshot and never changes account choices.
 
 The WalletConnect SDK private store is authoritative for:
 
@@ -693,9 +701,11 @@ application logs, exports, and diagnostic bundles.
   connected account. Account or connection-revision change aborts older reads,
   clears their presentation, and starts a new first-page read. A manual refresh
   failure retains the last verified snapshot and marks it stale.
-- The modal presents add, removal, and retained operation review as independent
-  canonical views. Add inspects before the operation is admitted. Removal uses
-  the current registration revision.
+- The modal presents add, removal, information, and retained operation review as
+  independent canonical views. Add inspects before the operation is admitted.
+  Removal uses the current selection revision. The add view lists bounded
+  official candidates from the account-assets view and also accepts one custom
+  ERC-20 address; both routes enter the same addition operation.
   A web-owned operation exposes its declared confirmation or cancellation
   action; a CLI-owned operation is read-only in the browser. Closing a dialog
   never confirms, cancels, or changes domain state.
@@ -763,8 +773,8 @@ application logs, exports, and diagnostic bundles.
   operations as MCP and web. A direct interactive CLI action may provide the
   operation confirmation owned by the CLI flow; piped or redirected input may
   not.
-- CLI token reads expose canonical inspection, registration detail, and bounded
-  registration pages. Token registration and removal require an
+- CLI token reads expose canonical inspection, selection detail, and bounded
+  selection pages. Token addition and removal require an
   interactive terminal, display the complete server-owned review, and accept
   only one exact case-insensitive `y` response. The CLI sends the server-owned
   review digest and never asks the user to transcribe it. Before confirmation
@@ -773,7 +783,9 @@ application logs, exports, and diagnostic bundles.
   response is reported as `delivery_unknown` with exit code `8`; the CLI names
   the exact operation and does not repeat or compensate for that action.
 - `read assets` consumes the account-assets application and exposes its exact
-  canonical collection or the shared human view. Both successful wallet-connect
+  canonical collection or the shared human view, including raw balances,
+  verified official classification, required token standards, and adjusted
+  Stock Token amounts when the current multiplier is available. Both successful wallet-connect
   outcomes perform the same first-page read before return or owner wait. A read
   failure does not relabel or roll back connection success.
 - The wallet owner converts a WalletConnect pairing URI to a QR matrix and
@@ -975,5 +987,5 @@ single-session invariant, wallet-operation serialization and expiry, stale
 confirmation, disconnection failure, session restoration and invalidation,
 shared MCP, web, and CLI state, credential separation, Host and Origin
 validation, CSRF, request limits, token-catalog account and operation binding,
-account-assets wallet and registration continuity, installed-package catalog
+account-assets wallet, official snapshot, and selection continuity, installed-package catalog
 persistence across owner takeover, and secret-leak boundaries.

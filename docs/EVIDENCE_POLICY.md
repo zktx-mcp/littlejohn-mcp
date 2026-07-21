@@ -76,9 +76,6 @@ into a positive conclusion.
 
 ## Robinhood Stock Token Classification
 
-This section defines required evidence and does not claim that Stock Token
-classification is currently implemented.
-
 Current Robinhood Stock Token membership is owned by the complete successful
 response from Robinhood's public asset endpoint,
 `https://api.robinhood.com/rhj/assets`, which supplies the Stock Token table on

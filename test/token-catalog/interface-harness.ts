@@ -2,7 +2,7 @@ import { tokenInspectCapability } from "../../src/token-catalog/contracts.js";
 import { tokenCatalogErrorRegistry } from "../../src/token-catalog/errors.js";
 import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
 import type {
-  AccountTokenRegistrationReadPort,
+  AccountTokenSelectionReadPort,
   TokenCatalogBrowserOperationPort,
   TokenCatalogInspectionPort,
   TokenCatalogInteractiveCliPort,
@@ -15,7 +15,7 @@ import { bindForHarness, createCapabilityHarness } from "../core/capability-harn
 const failure = (code: string) => new TokenCatalogOperationError(code).failure;
 
 export interface TokenCatalogInterfaceHarnessPorts {
-  readonly accountTokenRegistrationRead: AccountTokenRegistrationReadPort;
+  readonly accountTokenSelectionRead: AccountTokenSelectionReadPort;
   readonly tokenInspection: TokenCatalogInspectionPort;
   readonly tokenCatalogQueries: TokenCatalogQueryApplicationPort;
   readonly tokenCatalogWebStart: TokenCatalogWebStartPort;
@@ -33,18 +33,19 @@ export const tokenCatalogInterfaceHarnessPorts = (): TokenCatalogInterfaceHarnes
   );
   return Object.freeze({
     tokenInspection,
-    accountTokenRegistrationRead: Object.freeze({
+    accountTokenSelectionRead: Object.freeze({
+      getState: () => undefined,
       getForAccount: () => undefined,
-      listForAccount: () => Object.freeze({ entries: [], nextCursor: null }),
+      listIncludedForAccount: () => Object.freeze({ selections: [], nextCursor: null }),
     }),
     tokenCatalogQueries: Object.freeze({
-      getRegistration: () => failure("token_registration_not_found"),
-      listRegistrations: () => Object.freeze({ registrations: [], nextCursor: null }),
+      getSelection: () => failure("token_selection_not_found"),
+      listSelections: () => Object.freeze({ selections: [], nextCursor: null }),
     }),
     tokenCatalogWebStart: Object.freeze({
       interactionInterface: "web",
-      startRegistration: async () => failure("internal_error"),
-      startUnregistration: async () => failure("internal_error"),
+      startAddition: async () => failure("internal_error"),
+      startRemoval: async () => failure("internal_error"),
     }),
     tokenCatalogBrowserOperations: Object.freeze({
       interactionInterface: "web",
@@ -55,8 +56,8 @@ export const tokenCatalogInterfaceHarnessPorts = (): TokenCatalogInterfaceHarnes
     }),
     tokenCatalogInteractiveCli: Object.freeze({
       interactionInterface: "cli",
-      startRegistration: async () => failure("internal_error"),
-      startUnregistration: async () => failure("internal_error"),
+      startAddition: async () => failure("internal_error"),
+      startRemoval: async () => failure("internal_error"),
       confirm: async () => { throw new TokenCatalogOperationError("token_operation_not_found"); },
     }),
     tokenCatalogNonInteractiveOperations: Object.freeze({

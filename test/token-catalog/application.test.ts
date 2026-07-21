@@ -13,8 +13,7 @@ import { RuntimeOperationError } from "../../src/runtime/errors.js";
 import { createTokenCatalogApplication } from "../../src/token-catalog/application.js";
 import {
   tokenCatalogOperationSchema,
-  tokenInspectionDigest,
-  tokenRegistrationWithInspectionSchema,
+  tokenSelectionDetailSchema,
   type TokenCatalogAwaitingOperation,
   type TokenCatalogOperation,
   type TokenCatalogTerminalOperation,
@@ -29,6 +28,7 @@ import { chainId, createInspectionSuccess, tokenAddress, walletAddress } from ".
 
 const now = parseUtcTimestamp("2026-07-18T00:00:03.000Z");
 const connectionRevision = parseUnsignedDecimal("0");
+const snapshotRevision = Buffer.alloc(16, 7).toString("base64url");
 const webControl = Object.freeze({
   operationId: "A".repeat(43),
   interactionInterface: "web" as const,
@@ -44,8 +44,8 @@ const connected = parseCapabilityDataAt(walletConnectionCapability, {
 
 const unavailable = (): never => { throw new Error("Operation fixture is unavailable."); };
 const operations = Object.freeze({
-  startRegistration: async () => unavailable(),
-  startUnregistration: async () => unavailable(),
+  startAddition: async () => unavailable(),
+  startRemoval: async () => unavailable(),
   getOperation: unavailable,
   getCurrentOperation: () => null,
   confirm: async () => unavailable(),
@@ -61,22 +61,24 @@ const deferred = <Value>() => {
 describe("token catalog internal application", () => {
   it("derives the account from the live wallet and never accepts caller-owned account scope", async () => {
     const inspection = await createInspectionSuccess();
-    const stored = tokenRegistrationWithInspectionSchema.parse({
-      registration: {
+    const stored = tokenSelectionDetailSchema.parse({
+      selection: {
         account: { chainId, address: walletAddress },
         asset: inspection.data.asset,
+        included: true,
         revision: "AQEBAQEBAQEBAQEBAQEBAQ",
-        inspectionDigest: tokenInspectionDigest(inspection),
         createdAt: now,
+        updatedAt: now,
       },
-      inspection,
+      historicalInspection: inspection,
     });
     let observedAccount: EvmAccountIdentity | undefined;
     const store = Object.freeze({
-      getRegistration: (account: EvmAccountIdentity) => { observedAccount = account; return stored; },
-      listRegistrations: (request: Parameters<TokenCatalogApplicationDependencies["store"]["listRegistrations"]>[0]) => {
+      getSelectionState: () => undefined,
+      getSelection: (account: EvmAccountIdentity) => { observedAccount = account; return stored; },
+      listSelections: (request: Parameters<TokenCatalogApplicationDependencies["store"]["listSelections"]>[0]) => {
         observedAccount = request.account;
-        return { registrations: [stored.registration], nextCursor: null };
+        return { selections: [stored.selection], nextCursor: null };
       },
     }) satisfies TokenCatalogApplicationDependencies["store"];
     const application = createTokenCatalogApplication({
@@ -87,13 +89,13 @@ describe("token catalog internal application", () => {
       operations,
     });
 
-    const result = application.getRegistration({ asset: inspection.data.asset });
+    const result = application.getSelection({ asset: inspection.data.asset });
     expect("ok" in result).toBe(false);
     expect(observedAccount).toEqual({ chainId, address: walletAddress });
-    const listed = application.listRegistrations({ limit: 1 });
+    const listed = application.listSelections({ limit: 1 });
     expect("ok" in listed).toBe(false);
     expect(observedAccount).toEqual({ chainId, address: walletAddress });
-    const forged = application.getRegistration({
+    const forged = application.getSelection({
       asset: inspection.data.asset,
       account: { chainId, address: `0x${"56".repeat(20)}` },
     } as never);
@@ -104,50 +106,52 @@ describe("token catalog internal application", () => {
     const inspection = await createInspectionSuccess();
     const create = (
       capture: ActiveWalletReadPort["capture"],
-      getRegistration: TokenCatalogApplicationDependencies["store"]["getRegistration"] = () => undefined,
+      getSelection: TokenCatalogApplicationDependencies["store"]["getSelection"] = () => undefined,
     ) => createTokenCatalogApplication({
       dependencies: {
         activeWallet: { capture },
         store: {
-          getRegistration,
-          listRegistrations: unavailable,
+          getSelectionState: () => undefined,
+          getSelection,
+          listSelections: unavailable,
         },
       },
       operations,
     });
 
     expect(create(() => ({ connection: { status: "disconnected", reason: "no_session" }, connectionRevision }))
-      .getRegistration({ asset: inspection.data.asset }))
+      .getSelection({ asset: inspection.data.asset }))
       .toMatchObject({ ok: false, error: { code: "wallet_not_connected" } });
     expect(create(() => ({ connection: connected, connectionRevision }))
-      .getRegistration({ asset: inspection.data.asset }))
+      .getSelection({ asset: inspection.data.asset }))
       .toMatchObject({ ok: false, error: { code: "wallet_session_unusable" } });
     expect(create(
       () => ({ connection: connected, connectionRevision, sessionSource: {} as never }),
       () => { throw new TokenCatalogOperationError("runtime_state_unavailable"); },
-    ).getRegistration({ asset: inspection.data.asset }))
+    ).getSelection({ asset: inspection.data.asset }))
       .toMatchObject({ ok: false, error: { code: "runtime_state_unavailable" } });
     expect(create(
       () => ({ connection: connected, connectionRevision, sessionSource: {} as never }),
       () => { throw new RuntimeOperationError("runtime_state_unavailable"); },
-    ).getRegistration({ asset: inspection.data.asset }))
+    ).getSelection({ asset: inspection.data.asset }))
       .toMatchObject({ ok: false, error: { code: "runtime_state_unavailable" } });
     expect(create(() => ({ connection: connected, connectionRevision, sessionSource: {} as never }))
-      .getRegistration({ asset: { ...inspection.data.asset, chainId: parseEvmChainId("eip155:1") } }))
+      .getSelection({ asset: { ...inspection.data.asset, chainId: parseEvmChainId("eip155:1") } }))
       .toMatchObject({ ok: false, error: { code: "invalid_input" } });
   });
 
   it("rejects query-store results outside the captured live account", async () => {
     const inspection = await createInspectionSuccess();
-    const wrongAccountRegistration = tokenRegistrationWithInspectionSchema.parse({
-      registration: {
+    const wrongAccountSelection = tokenSelectionDetailSchema.parse({
+      selection: {
         account: { chainId, address: `0x${"56".repeat(20)}` },
         asset: inspection.data.asset,
+        included: true,
         revision: "AQEBAQEBAQEBAQEBAQEBAQ",
-        inspectionDigest: tokenInspectionDigest(inspection),
         createdAt: now,
+        updatedAt: now,
       },
-      inspection,
+      historicalInspection: inspection,
     });
     const application = createTokenCatalogApplication({
       dependencies: {
@@ -155,9 +159,10 @@ describe("token catalog internal application", () => {
           capture: () => ({ connection: connected, connectionRevision, sessionSource: {} as never }),
         },
         store: {
-          getRegistration: () => wrongAccountRegistration,
-          listRegistrations: () => ({
-            registrations: [wrongAccountRegistration.registration],
+          getSelectionState: () => undefined,
+          getSelection: () => wrongAccountSelection,
+          listSelections: () => ({
+            selections: [wrongAccountSelection.selection],
             nextCursor: null,
           }),
         },
@@ -165,9 +170,9 @@ describe("token catalog internal application", () => {
       operations,
     });
 
-    expect(application.getRegistration({ asset: inspection.data.asset }))
+    expect(application.getSelection({ asset: inspection.data.asset }))
       .toMatchObject({ ok: false, error: { code: "internal_error" } });
-    expect(application.listRegistrations({ limit: 1 }))
+    expect(application.listSelections({ limit: 1 }))
       .toMatchObject({ ok: false, error: { code: "internal_error" } });
   });
 
@@ -175,7 +180,7 @@ describe("token catalog internal application", () => {
     const inspection = await createInspectionSuccess();
     const operation = tokenCatalogOperationSchema.parse({
       operationId: "A".repeat(43),
-      kind: "register",
+      kind: "add",
       state: "awaiting_confirmation",
       interactionInterface: "cli",
       createdAt: now,
@@ -184,46 +189,49 @@ describe("token catalog internal application", () => {
       connectionRevision,
       asset: inspection.data.asset,
       review: {
-        previousRegistration: null,
+        previousSelection: null,
+        selectionSetRevision: null,
         inspection,
+        officialSnapshotRevision: snapshotRevision,
+        officialEvidence: null,
         reviewDigest: `0x${"ab".repeat(32)}`,
       },
       result: null,
       failure: null,
-    }) as TokenCatalogAwaitingOperation<"register">;
+    }) as TokenCatalogAwaitingOperation<"add">;
     const maliciousOperations = Object.freeze({
       ...operations,
-      startRegistration: async () => ({ operation }),
+      startAddition: async () => ({ operation }),
     }) as unknown as TokenCatalogOperationCoordinatorPort;
     const application = createTokenCatalogApplication({
       dependencies: {
         activeWallet: { capture: () => ({ connection: connected, connectionRevision, sessionSource: {} as never }) },
-        store: { getRegistration: unavailable, listRegistrations: unavailable },
+        store: { getSelectionState: unavailable, getSelection: unavailable, listSelections: unavailable },
       },
       operations: maliciousOperations,
     });
 
-    expect(await application.startRegistration({ asset: inspection.data.asset }, webControl))
+    expect(await application.startAddition({ asset: inspection.data.asset }, webControl))
       .toMatchObject({ ok: false, error: { code: "internal_error" } });
   });
 
   it("allows only failures declared by the exact application contract", async () => {
     const inspection = await createInspectionSuccess();
-    const create = (startRegistration: TokenCatalogOperationCoordinatorPort["startRegistration"]) =>
+    const create = (startAddition: TokenCatalogOperationCoordinatorPort["startAddition"]) =>
       createTokenCatalogApplication({
         dependencies: {
           activeWallet: { capture: () => ({ connection: connected, connectionRevision, sessionSource: {} as never }) },
-          store: { getRegistration: unavailable, listRegistrations: unavailable },
+          store: { getSelectionState: unavailable, getSelection: unavailable, listSelections: unavailable },
         },
-        operations: Object.freeze({ ...operations, startRegistration }),
+        operations: Object.freeze({ ...operations, startAddition }),
       });
 
     const declared = new TokenCatalogOperationError("rate_limited").failure;
-    expect(await create(async () => declared).startRegistration({ asset: inspection.data.asset }, webControl))
+    expect(await create(async () => declared).startAddition({ asset: inspection.data.asset }, webControl))
       .toEqual(declared);
 
     const undeclared = new TokenCatalogOperationError("token_operation_not_found").failure;
-    expect(await create(async () => undeclared).startRegistration({ asset: inspection.data.asset }, webControl))
+    expect(await create(async () => undeclared).startAddition({ asset: inspection.data.asset }, webControl))
       .toMatchObject({ ok: false, error: { code: "internal_error" } });
 
     const malformed = {
@@ -231,7 +239,7 @@ describe("token catalog internal application", () => {
       error: { ...declared.error, message: "Forged failure message." },
     };
     expect(await create(async () => malformed as never)
-      .startRegistration({ asset: inspection.data.asset }, webControl))
+      .startAddition({ asset: inspection.data.asset }, webControl))
       .toMatchObject({ ok: false, error: { code: "internal_error" } });
   });
 
@@ -239,7 +247,7 @@ describe("token catalog internal application", () => {
     const inspection = await createInspectionSuccess();
     const operation = tokenCatalogOperationSchema.parse({
       operationId: "A".repeat(43),
-      kind: "register",
+      kind: "add",
       state: "awaiting_confirmation",
       interactionInterface: "web",
       createdAt: now,
@@ -248,24 +256,27 @@ describe("token catalog internal application", () => {
       connectionRevision,
       asset: inspection.data.asset,
       review: {
-        previousRegistration: null,
+        previousSelection: null,
+        selectionSetRevision: null,
         inspection,
+        officialSnapshotRevision: snapshotRevision,
+        officialEvidence: null,
         reviewDigest: `0x${"ab".repeat(32)}`,
       },
       result: null,
       failure: null,
-    }) as TokenCatalogAwaitingOperation<"register">;
+    }) as TokenCatalogAwaitingOperation<"add">;
     const cancelled = tokenCatalogOperationSchema.parse({
       ...operation,
       state: "cancelled",
     }) as TokenCatalogTerminalOperation;
-    const startGate = deferred<Readonly<{ operation: TokenCatalogAwaitingOperation<"register"> }>>();
+    const startGate = deferred<Readonly<{ operation: TokenCatalogAwaitingOperation<"add"> }>>();
     const cancelGate = deferred<TokenCatalogTerminalOperation>();
     let receivedStart: unknown;
     let receivedCancellationId: string | undefined;
     const delayedOperations = Object.freeze({
       ...operations,
-      startRegistration: async (request: unknown) => {
+      startAddition: async (request: unknown) => {
         receivedStart = request;
         return startGate.promise;
       },
@@ -277,13 +288,13 @@ describe("token catalog internal application", () => {
     const application = createTokenCatalogApplication({
       dependencies: {
         activeWallet: { capture: () => ({ connection: connected, connectionRevision, sessionSource: {} as never }) },
-        store: { getRegistration: unavailable, listRegistrations: unavailable },
+        store: { getSelectionState: unavailable, getSelection: unavailable, listSelections: unavailable },
       },
       operations: delayedOperations,
     });
 
     const startInput = { asset: { ...inspection.data.asset } };
-    const pendingStart = application.startRegistration(startInput, webControl);
+    const pendingStart = application.startAddition(startInput, webControl);
     startInput.asset = { ...startInput.asset, address: parseEvmAddress(`0x${"34".repeat(20)}`) };
     startGate.resolve({ operation });
     expect(await pendingStart).toEqual({ operation });
@@ -304,7 +315,7 @@ describe("token catalog internal application", () => {
     const inspection = await createInspectionSuccess();
     const applying = tokenCatalogOperationSchema.parse({
       operationId: "A".repeat(43),
-      kind: "register",
+      kind: "add",
       state: "applying",
       interactionInterface: "web",
       createdAt: now,
@@ -313,8 +324,11 @@ describe("token catalog internal application", () => {
       connectionRevision,
       asset: inspection.data.asset,
       review: {
-        previousRegistration: null,
+        previousSelection: null,
+        selectionSetRevision: null,
         inspection,
+        officialSnapshotRevision: snapshotRevision,
+        officialEvidence: null,
         reviewDigest: `0x${"ab".repeat(32)}`,
       },
       result: null,
@@ -323,7 +337,7 @@ describe("token catalog internal application", () => {
     const application = createTokenCatalogApplication({
       dependencies: {
         activeWallet: { capture: () => ({ connection: connected, connectionRevision, sessionSource: {} as never }) },
-        store: { getRegistration: unavailable, listRegistrations: unavailable },
+        store: { getSelectionState: unavailable, getSelection: unavailable, listSelections: unavailable },
       },
       operations: Object.freeze({
         ...operations,

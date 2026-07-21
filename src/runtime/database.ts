@@ -24,25 +24,41 @@ import {
   type WalletConnectionData,
 } from "../core/index.js";
 import {
+  assertCommittedOfficialAssetSnapshot,
+  assertOfficialAssetSourceObservation,
+  assertOfficialAssetSourceMember,
+  defaultStockTokenManifest,
+  findOfficialAssetMember,
+  officialAssetSnapshotRevisionSchema,
+  robinhoodAssetSourceUri,
+  type CommittedOfficialAssetSnapshot,
+  type OfficialAssetSnapshotStore,
+  type OfficialAssetSourceMember,
+} from "../registry/index.js";
+import {
   tokenCatalogContractLimits,
   tokenCatalogConfirmedOperationSchema,
   tokenCatalogOperationSchema,
   tokenInspectionDigest,
   tokenInspectionSuccessSchema,
-  tokenRegistrationSchema,
-  tokenRegistrationRevisionSchema,
-  tokenRegistrationWithInspectionSchema,
+  tokenSelectionSchema,
+  tokenSelectionDetailSchema,
+  tokenSelectionRevisionSchema,
+  tokenSelectionSetRevisionSchema,
+  tokenSelectionStateSchema,
   type TokenInspectionSuccess,
-  type TokenRegistration,
-  type TokenRegistrationWithInspection,
+  type TokenSelection,
+  type TokenSelectionDetail,
+  type TokenSelectionState,
 } from "../token-catalog/contracts.js";
 import { TokenCatalogOperationError } from "../token-catalog/operation-error.js";
 import type {
-  AccountTokenRegistrationReadPort,
+  AccountTokenSelectionReadPort,
+  AccountTokenSelectionStore,
   TokenCatalogQueryStore,
   TokenCatalogConfirmationCommand,
   TokenCatalogStore,
-  TokenRegistrationPage,
+  TokenSelectionPage,
 } from "../token-catalog/ports.js";
 import { getRuntimeOperationFailure, RuntimeOperationError } from "./errors.js";
 import {
@@ -145,18 +161,40 @@ interface TokenInspectionRow {
   readonly inspectionDigest: string;
   readonly resultJson: string;
 }
-interface TokenRegistrationRecordRow {
+interface TokenSelectionRecordRow {
   readonly profileId: string;
   readonly chainId: string;
   readonly walletAddress: string;
   readonly tokenAddress: string;
+  readonly included: number;
   readonly revision: string;
-  readonly inspectionDigest: string;
   readonly createdAt: string;
+  readonly updatedAt: string;
 }
-interface TokenRegistrationRow extends TokenRegistrationRecordRow {
+interface TokenSelectionStateRow {
+  readonly profileId: string;
+  readonly chainId: string;
+  readonly walletAddress: string;
+  readonly revision: string;
+  readonly defaultsInitialized: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+interface OfficialAssetSnapshotRow {
+  readonly chainId: string;
+  readonly sourceObservedAt: string;
+  readonly rawResponseDigest: string;
+  readonly memberSetDigest: string;
+  readonly candidateListDigest: string;
+  readonly revision: string;
+  readonly updatedAt: string;
+}
+interface OfficialAssetMemberRow {
+  readonly chainId: string;
   readonly contractAddress: string;
-  readonly resultJson: string;
+  readonly assetUid: string;
+  readonly sourceName: string | null;
+  readonly sourceSymbol: string | null;
 }
 export interface WalletAccountStorageRow {
   readonly profileId: string;
@@ -203,13 +241,13 @@ const decodeInspectionRow = (row: TokenInspectionRow): TokenInspectionSuccess =>
   return inspection;
 };
 
-const decodeTokenRegistrationRecordRow = (
-  row: TokenRegistrationRecordRow,
+const decodeTokenSelectionRecordRow = (
+  row: TokenSelectionRecordRow,
   expectedProfileId?: ProfileId,
-): TokenRegistration => {
+): TokenSelection => {
   const profileId = parseProfileId(row.profileId);
   if (expectedProfileId !== undefined && profileId !== expectedProfileId) {
-    throw new Error("Stored token registration profile is invalid.");
+    throw new Error("Stored token selection profile is invalid.");
   }
   const account = parseEvmAccountIdentity({ chainId: row.chainId, address: row.walletAddress });
   const asset = erc20AssetIdentitySchema.parse({
@@ -217,22 +255,40 @@ const decodeTokenRegistrationRecordRow = (
     chainId: row.chainId,
     address: row.tokenAddress,
   });
-  return tokenRegistrationSchema.parse({
+  return tokenSelectionSchema.parse({
     account,
     asset,
-    revision: tokenRegistrationRevisionSchema.parse(row.revision),
-    inspectionDigest: row.inspectionDigest,
+    included: row.included === 1,
+    revision: tokenSelectionRevisionSchema.parse(row.revision),
     createdAt: parseUtcTimestamp(row.createdAt),
+    updatedAt: parseUtcTimestamp(row.updatedAt),
   });
 };
 
-const decodeTokenRegistrationRow = (
-  row: TokenRegistrationRow,
+const decodeTokenSelectionStateRow = (
+  row: TokenSelectionStateRow,
   expectedProfileId?: ProfileId,
-): TokenRegistrationWithInspection => tokenRegistrationWithInspectionSchema.parse({
-  registration: decodeTokenRegistrationRecordRow(row, expectedProfileId),
-  inspection: decodeInspectionRow(row),
-});
+): TokenSelectionState => {
+  const profileId = parseProfileId(row.profileId);
+  if (expectedProfileId !== undefined && profileId !== expectedProfileId) {
+    throw new Error("Stored token selection state profile is invalid.");
+  }
+  return tokenSelectionStateSchema.parse({
+    account: parseEvmAccountIdentity({ chainId: row.chainId, address: row.walletAddress }),
+    revision: tokenSelectionSetRevisionSchema.parse(row.revision),
+    defaultsInitialized: row.defaultsInitialized === 1,
+    createdAt: parseUtcTimestamp(row.createdAt),
+    updatedAt: parseUtcTimestamp(row.updatedAt),
+  });
+};
+
+const decodeOfficialAssetMemberRow = (row: OfficialAssetMemberRow): OfficialAssetSourceMember =>
+  assertOfficialAssetSourceMember({
+    assetUid: row.assetUid as never,
+    contractAddress: row.contractAddress as never,
+    ...(row.sourceName === null ? {} : { sourceName: row.sourceName }),
+    ...(row.sourceSymbol === null ? {} : { sourceSymbol: row.sourceSymbol }),
+  });
 
 const sqliteContentionCodes: ReadonlySet<string> = new Set([
   "SQLITE_BUSY",
@@ -396,20 +452,45 @@ const readWalletAccountRows = (database: Database.Database): void => {
   for (const row of rows) decodeWalletAccountRecordKey(row);
 };
 
-const tokenRegistrationColumns = `r.profile_id AS profileId, r.chain_id AS chainId,
-  r.wallet_address AS walletAddress, r.token_address AS tokenAddress, r.revision,
-  r.inspection_digest AS inspectionDigest, r.created_at AS createdAt`;
+const tokenSelectionColumns = `r.profile_id AS profileId, r.chain_id AS chainId,
+  r.wallet_address AS walletAddress, r.token_address AS tokenAddress, r.included,
+  r.revision, r.created_at AS createdAt, r.updated_at AS updatedAt`;
 
-const tokenRegistrationRecordSelect = `SELECT ${tokenRegistrationColumns}
-  FROM wallet_token_registration AS r`;
+const tokenSelectionRecordSelect = `SELECT ${tokenSelectionColumns}
+  FROM wallet_token_selection AS r`;
 
-const tokenRegistrationSelect = `SELECT ${tokenRegistrationColumns},
-  i.contract_address AS contractAddress, i.result_json AS resultJson
-  FROM wallet_token_registration AS r
-  JOIN token_contract_inspection AS i
-    ON i.chain_id = r.chain_id
-   AND i.contract_address = r.token_address
-   AND i.inspection_digest = r.inspection_digest`;
+const tokenSelectionStateSelect = `SELECT profile_id AS profileId, chain_id AS chainId,
+  wallet_address AS walletAddress, revision, defaults_initialized AS defaultsInitialized,
+  created_at AS createdAt, updated_at AS updatedAt FROM wallet_token_selection_state`;
+
+const readOfficialAssetSnapshotRaw = (
+  database: Database.Database,
+): CommittedOfficialAssetSnapshot | undefined => {
+  const rows = database.prepare(`SELECT chain_id AS chainId,
+    source_observed_at AS sourceObservedAt, raw_response_digest AS rawResponseDigest,
+    member_set_digest AS memberSetDigest, candidate_list_digest AS candidateListDigest,
+    revision, updated_at AS updatedAt FROM robinhood_asset_snapshot ORDER BY chain_id`)
+    .all() as OfficialAssetSnapshotRow[];
+  if (rows.length > 1) throw new Error("Official asset snapshot identity is not unique.");
+  const row = rows[0];
+  if (row === undefined) return undefined;
+  const members = database.prepare(`SELECT chain_id AS chainId,
+    contract_address AS contractAddress, asset_uid AS assetUid,
+    source_name AS sourceName, source_symbol AS sourceSymbol FROM robinhood_asset
+    WHERE chain_id = ? ORDER BY asset_uid, contract_address`)
+    .all(row.chainId) as OfficialAssetMemberRow[];
+  return assertCommittedOfficialAssetSnapshot({
+    sourceUri: robinhoodAssetSourceUri,
+    sourceObservedAt: row.sourceObservedAt as never,
+    rawResponseDigest: row.rawResponseDigest as never,
+    memberSetDigest: row.memberSetDigest as never,
+    candidateListDigest: row.candidateListDigest as never,
+    chainId: row.chainId as never,
+    members: members.map(decodeOfficialAssetMemberRow),
+    revision: row.revision as never,
+    updatedAt: row.updatedAt as never,
+  });
+};
 
 const readTokenCatalogRows = (database: Database.Database): void => {
   const inspections = database.prepare(`SELECT chain_id AS chainId,
@@ -417,10 +498,15 @@ const readTokenCatalogRows = (database: Database.Database): void => {
     result_json AS resultJson FROM token_contract_inspection
     ORDER BY chain_id, contract_address, inspection_digest`).iterate() as IterableIterator<TokenInspectionRow>;
   for (const row of inspections) decodeInspectionRow(row);
-  const registrations = database.prepare(`${tokenRegistrationRecordSelect}
+  const selections = database.prepare(`${tokenSelectionRecordSelect}
     ORDER BY r.profile_id, r.chain_id, r.wallet_address, r.token_address`)
-    .iterate() as IterableIterator<TokenRegistrationRecordRow>;
-  for (const row of registrations) decodeTokenRegistrationRecordRow(row);
+    .iterate() as IterableIterator<TokenSelectionRecordRow>;
+  for (const row of selections) decodeTokenSelectionRecordRow(row);
+  const selectionStates = database.prepare(`${tokenSelectionStateSelect}
+    ORDER BY profile_id, chain_id, wallet_address`)
+    .iterate() as IterableIterator<TokenSelectionStateRow>;
+  for (const row of selectionStates) decodeTokenSelectionStateRow(row);
+  readOfficialAssetSnapshotRaw(database);
 };
 
 const validateDatabaseState = (database: Database.Database): void => {
@@ -632,8 +718,9 @@ export class ProductDatabase {
   readonly #ownerStore: RuntimeOwnerStore;
   readonly #configuredChainStore: ConfiguredChainStore;
   readonly #walletStore: WalletProjectionStore;
+  readonly #officialAssetSnapshotStore: OfficialAssetSnapshotStore;
   readonly #tokenCatalogReadStore: TokenCatalogQueryStore;
-  readonly #accountTokenRegistrationRead: AccountTokenRegistrationReadPort;
+  readonly #accountTokenSelectionStore: AccountTokenSelectionStore;
   readonly #tokenCatalogStore: TokenCatalogStore;
   #databaseClosed = false;
   #mainLeaseClosed = false;
@@ -655,17 +742,26 @@ export class ProductDatabase {
       replace: (expectedRevision: string, connection: WalletConnectionData, updatedAt: UtcTimestamp) =>
         this.replaceWalletConnection(expectedRevision, connection, updatedAt),
     });
+    this.#officialAssetSnapshotStore = Object.freeze({
+      readSnapshot: () => this.readOfficialAssetSnapshot(),
+      replaceSnapshot: (snapshot, expectedRevision) =>
+        this.replaceOfficialAssetSnapshot(snapshot, expectedRevision),
+    } satisfies OfficialAssetSnapshotStore);
     this.#tokenCatalogReadStore = Object.freeze({
-      getRegistration: (account, asset) => this.getTokenRegistration(account, asset),
-      listRegistrations: (input) => this.listTokenRegistrations(input),
+      getSelection: (account, asset) => this.getTokenSelection(account, asset),
+      getSelectionState: (account) => this.getTokenSelectionState(account),
+      listSelections: (input) => this.listTokenSelections(input),
     } satisfies TokenCatalogQueryStore);
-    this.#accountTokenRegistrationRead = Object.freeze({
-      getForAccount: ({ account, asset }) => this.getTokenRegistration(account, asset),
-      listForAccount: (input) => this.listTokenRegistrationInspections(input),
-    } satisfies AccountTokenRegistrationReadPort);
+    this.#accountTokenSelectionStore = Object.freeze({
+      getState: (account) => this.getTokenSelectionState(account),
+      getForAccount: ({ account, asset }) => this.getTokenSelection(account, asset),
+      listIncludedForAccount: (input) => this.listIncludedTokenSelections(input),
+      initializeDefaults: (input) => this.initializeDefaultTokenSelections(input),
+    } satisfies AccountTokenSelectionStore);
     this.#tokenCatalogStore = Object.freeze({
-      getRegistration: (account, asset) => this.getTokenRegistration(account, asset),
-      listRegistrations: (input) => this.listTokenRegistrations(input),
+      getSelection: (account, asset) => this.getTokenSelection(account, asset),
+      getSelectionState: (account) => this.getTokenSelectionState(account),
+      listSelections: (input) => this.listTokenSelections(input),
       applyConfirmation: (input) => this.applyTokenConfirmation(input),
     } satisfies TokenCatalogStore);
   }
@@ -694,9 +790,10 @@ export class ProductDatabase {
   ownerStore(): RuntimeOwnerStore { return this.#ownerStore; }
   configuredChainStore(): ConfiguredChainStore { return this.#configuredChainStore; }
   walletStore(): WalletProjectionStore { return this.#walletStore; }
+  officialAssetSnapshotStore(): OfficialAssetSnapshotStore { return this.#officialAssetSnapshotStore; }
   tokenCatalogReadStore(): TokenCatalogQueryStore { return this.#tokenCatalogReadStore; }
-  accountTokenRegistrationRead(): AccountTokenRegistrationReadPort {
-    return this.#accountTokenRegistrationRead;
+  accountTokenSelectionStore(): AccountTokenSelectionStore {
+    return this.#accountTokenSelectionStore;
   }
   tokenCatalogStore(): TokenCatalogStore { return this.#tokenCatalogStore; }
 
@@ -849,103 +946,281 @@ export class ProductDatabase {
     } catch (error) { throw storageError(error); }
   }
 
-  private getTokenRegistration(
+  private readOfficialAssetSnapshot(): CommittedOfficialAssetSnapshot | undefined {
+    try { return this.#readWithIdentity(() => readOfficialAssetSnapshotRaw(this.#database)); }
+    catch (error) { throw storageError(error); }
+  }
+
+  private replaceOfficialAssetSnapshot(
+    snapshotInput: Parameters<OfficialAssetSnapshotStore["replaceSnapshot"]>[0],
+    expectedRevisionInput: Parameters<OfficialAssetSnapshotStore["replaceSnapshot"]>[1],
+  ): CommittedOfficialAssetSnapshot {
+    try {
+      const snapshot = assertOfficialAssetSourceObservation(snapshotInput);
+      const expectedRevision = expectedRevisionInput === null
+        ? null
+        : officialAssetSnapshotRevisionSchema.parse(expectedRevisionInput);
+      return this.#writeWithIdentity(() => {
+        const current = readOfficialAssetSnapshotRaw(this.#database);
+        if ((current?.revision ?? null) !== expectedRevision) {
+          throw new RuntimeOperationError("state_conflict");
+        }
+        const revision = current !== undefined &&
+          current.memberSetDigest === snapshot.memberSetDigest &&
+          current.candidateListDigest === snapshot.candidateListDigest
+          ? current.revision
+          : officialAssetSnapshotRevisionSchema.parse(randomBytes(16).toString("base64url"));
+        this.#database.prepare("DELETE FROM robinhood_asset WHERE chain_id = ?")
+          .run(snapshot.chainId);
+        this.#database.prepare(`INSERT INTO robinhood_asset_snapshot(
+          chain_id, source_observed_at, raw_response_digest, member_set_digest,
+          candidate_list_digest, revision, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(chain_id) DO UPDATE SET
+          source_observed_at = excluded.source_observed_at,
+          raw_response_digest = excluded.raw_response_digest,
+          member_set_digest = excluded.member_set_digest,
+          candidate_list_digest = excluded.candidate_list_digest,
+          revision = excluded.revision,
+          updated_at = excluded.updated_at`)
+          .run(
+            snapshot.chainId,
+            snapshot.sourceObservedAt,
+            snapshot.rawResponseDigest,
+            snapshot.memberSetDigest,
+            snapshot.candidateListDigest,
+            revision,
+            snapshot.sourceObservedAt,
+          );
+        const insert = this.#database.prepare(`INSERT INTO robinhood_asset(
+          chain_id, contract_address, asset_uid, source_name, source_symbol
+        ) VALUES (?, ?, ?, ?, ?)`);
+        for (const member of snapshot.members) {
+          insert.run(
+            snapshot.chainId,
+            member.contractAddress,
+            member.assetUid,
+            member.sourceName ?? null,
+            member.sourceSymbol ?? null,
+          );
+        }
+        const stored = readOfficialAssetSnapshotRaw(this.#database);
+        if (stored === undefined || stored.revision !== revision) {
+          throw new Error("Official asset snapshot persistence failed.");
+        }
+        return stored;
+      });
+    } catch (error) { throw storageError(error); }
+  }
+
+  private getTokenSelectionStateRaw(
+    profileId: ProfileId,
+    account: EvmAccountIdentity,
+  ): TokenSelectionState | undefined {
+    const rows = this.#database.prepare(`${tokenSelectionStateSelect}
+      WHERE profile_id = ? AND chain_id = ? AND wallet_address = ?`)
+      .all(profileId, account.chainId, account.address) as TokenSelectionStateRow[];
+    if (rows.length > 1) throw new Error("Token selection state identity is not unique.");
+    return rows[0] === undefined ? undefined : decodeTokenSelectionStateRow(rows[0], profileId);
+  }
+
+  private getTokenSelectionState(accountInput: EvmAccountIdentity): TokenSelectionState | undefined {
+    try {
+      const account = evmAccountIdentitySchema.parse(accountInput);
+      return this.#readWithIdentity(() => {
+        const profile = readProfileRaw(this.#database);
+        return this.getTokenSelectionStateRaw(profile.profileId, account);
+      });
+    } catch (error) { throw tokenCatalogStorageError(error); }
+  }
+
+  private getLatestInspection(asset: TokenSelection["asset"]): TokenInspectionSuccess | null {
+    const rows = this.#database.prepare(`SELECT chain_id AS chainId,
+      contract_address AS contractAddress, inspection_digest AS inspectionDigest,
+      result_json AS resultJson FROM token_contract_inspection
+      WHERE chain_id = ? AND contract_address = ? ORDER BY inspection_digest`)
+      .all(asset.chainId, asset.address) as TokenInspectionRow[];
+    const inspections = rows.map(decodeInspectionRow).sort((left, right) =>
+      left.meta.evaluatedAt === right.meta.evaluatedAt
+        ? tokenInspectionDigest(left).localeCompare(tokenInspectionDigest(right))
+        : left.meta.evaluatedAt.localeCompare(right.meta.evaluatedAt));
+    return inspections.at(-1) ?? null;
+  }
+
+  private getTokenSelectionRaw(
+    profileId: ProfileId,
+    account: EvmAccountIdentity,
+    asset: TokenSelection["asset"],
+  ): TokenSelectionDetail | undefined {
+    const rows = this.#database.prepare(`${tokenSelectionRecordSelect}
+      WHERE r.profile_id = ? AND r.chain_id = ? AND r.wallet_address = ? AND r.token_address = ?`)
+      .all(profileId, account.chainId, account.address, asset.address) as TokenSelectionRecordRow[];
+    if (rows.length > 1) throw new Error("Token selection identity is not unique.");
+    if (rows[0] === undefined) return undefined;
+    return tokenSelectionDetailSchema.parse({
+      selection: decodeTokenSelectionRecordRow(rows[0], profileId),
+      historicalInspection: this.getLatestInspection(asset),
+    });
+  }
+
+  private getTokenSelection(
     accountInput: EvmAccountIdentity,
-    assetInput: TokenRegistration["asset"],
-  ): TokenRegistrationWithInspection | undefined {
+    assetInput: TokenSelection["asset"],
+  ): TokenSelectionDetail | undefined {
     try {
       const account = evmAccountIdentitySchema.parse(accountInput);
       const asset = erc20AssetIdentitySchema.parse(assetInput);
       if (account.chainId !== asset.chainId) throw new TokenCatalogOperationError("invalid_input");
       return this.#readWithIdentity(() => {
         const profile = readProfileRaw(this.#database);
-        const rows = this.#database.prepare(`${tokenRegistrationSelect}
-          WHERE r.profile_id = ? AND r.chain_id = ? AND r.wallet_address = ? AND r.token_address = ?`)
-          .all(profile.profileId, account.chainId, account.address, asset.address) as TokenRegistrationRow[];
-        if (rows.length > 1) throw new Error("Token registration identity is not unique.");
-        return rows[0] === undefined ? undefined : decodeTokenRegistrationRow(rows[0], profile.profileId);
+        return this.getTokenSelectionRaw(profile.profileId, account, asset);
       });
     } catch (error) { throw tokenCatalogStorageError(error); }
   }
 
-  private listTokenRegistrations(input: Readonly<{
+  private listTokenSelections(input: Readonly<{
     account: EvmAccountIdentity;
     limit: number;
-    cursor: TokenRegistration["asset"]["address"] | null;
-  }>): TokenRegistrationPage {
+    cursor: TokenSelection["asset"]["address"] | null;
+  }>): TokenSelectionPage {
+    return this.listTokenSelectionsByAddress({ ...input, includedOnly: false, excludedAddresses: [] });
+  }
+
+  private listIncludedTokenSelections(
+    input: Parameters<AccountTokenSelectionReadPort["listIncludedForAccount"]>[0],
+  ): TokenSelectionPage {
+    return this.listTokenSelectionsByAddress({ ...input, includedOnly: true });
+  }
+
+  private listTokenSelectionsByAddress(input: Readonly<{
+    account: EvmAccountIdentity;
+    limit: number;
+    cursor: TokenSelection["asset"]["address"] | null;
+    includedOnly: boolean;
+    excludedAddresses: readonly TokenSelection["asset"]["address"][];
+  }>): TokenSelectionPage {
     try {
       const account = evmAccountIdentitySchema.parse(input.account);
-      if (
-        !Number.isInteger(input.limit) || input.limit < 1 ||
-        input.limit > tokenCatalogContractLimits.listMaximumLimit
-      ) {
+      if (!Number.isInteger(input.limit) || input.limit < 1 ||
+        input.limit > tokenCatalogContractLimits.listMaximumLimit) {
         throw new TokenCatalogOperationError("invalid_input");
       }
-      const cursor = input.cursor === null
-        ? null
-        : erc20AssetIdentitySchema.parse({ kind: "erc20", chainId: account.chainId, address: input.cursor }).address;
+      const cursor = input.cursor === null ? null : erc20AssetIdentitySchema.parse({
+        kind: "erc20", chainId: account.chainId, address: input.cursor,
+      }).address;
+      const excluded = [...new Set(input.excludedAddresses.map((address) =>
+        erc20AssetIdentitySchema.parse({ kind: "erc20", chainId: account.chainId, address }).address))];
+      const excludedSql = excluded.length === 0
+        ? ""
+        : ` AND r.token_address NOT IN (${excluded.map(() => "?").join(", ")})`;
       return this.#readWithIdentity(() => {
         const profile = readProfileRaw(this.#database);
-        const rows = this.#database.prepare(`${tokenRegistrationRecordSelect}
+        const rows = this.#database.prepare(`${tokenSelectionRecordSelect}
           WHERE r.profile_id = ? AND r.chain_id = ? AND r.wallet_address = ?
-            AND (? IS NULL OR r.token_address > ?)
+            AND (? = 0 OR r.included = 1) AND (? IS NULL OR r.token_address > ?)${excludedSql}
           ORDER BY r.token_address LIMIT ?`)
           .all(
-            profile.profileId,
-            account.chainId,
-            account.address,
-            cursor,
-            cursor,
-            input.limit + 1,
-          ) as TokenRegistrationRecordRow[];
+            profile.profileId, account.chainId, account.address,
+            input.includedOnly ? 1 : 0, cursor, cursor, ...excluded, input.limit + 1,
+          ) as TokenSelectionRecordRow[];
         const hasMore = rows.length > input.limit;
-        const selected = rows.slice(0, input.limit)
-          .map((row) => decodeTokenRegistrationRecordRow(row, profile.profileId));
+        const selections = rows.slice(0, input.limit)
+          .map((row) => decodeTokenSelectionRecordRow(row, profile.profileId));
         return Object.freeze({
-          registrations: Object.freeze(selected),
-          nextCursor: hasMore ? selected.at(-1)?.asset.address ?? null : null,
+          selections: Object.freeze(selections),
+          nextCursor: hasMore ? selections.at(-1)?.asset.address ?? null : null,
         });
       });
     } catch (error) { throw tokenCatalogStorageError(error); }
   }
 
-  private listTokenRegistrationInspections(
-    input: Parameters<AccountTokenRegistrationReadPort["listForAccount"]>[0],
-  ): ReturnType<AccountTokenRegistrationReadPort["listForAccount"]> {
+  private initializeDefaultTokenSelections(
+    input: Parameters<AccountTokenSelectionStore["initializeDefaults"]>[0],
+  ): ReturnType<AccountTokenSelectionStore["initializeDefaults"]> {
     try {
       const account = evmAccountIdentitySchema.parse(input.account);
-      if (
-        !Number.isInteger(input.limit) || input.limit < 1 ||
-        input.limit > tokenCatalogContractLimits.listMaximumLimit
-      ) throw new TokenCatalogOperationError("invalid_input");
-      const cursor = input.cursor === null
-        ? null
-        : erc20AssetIdentitySchema.parse({
-            kind: "erc20",
-            chainId: account.chainId,
-            address: input.cursor,
-          }).address;
-      return this.#readWithIdentity(() => {
+      const expectedConnectionRevision = parseRuntimeRevision(input.expectedConnectionRevision);
+      const snapshotRevision = officialAssetSnapshotRevisionSchema.parse(input.snapshotRevision);
+      const now = parseUtcTimestamp(input.now);
+      return this.#writeWithIdentity(() => {
         const profile = readProfileRaw(this.#database);
-        const rows = this.#database.prepare(`${tokenRegistrationSelect}
-          WHERE r.profile_id = ? AND r.chain_id = ? AND r.wallet_address = ?
-            AND (? IS NULL OR r.token_address > ?)
-          ORDER BY r.token_address LIMIT ?`)
-          .all(
-            profile.profileId,
-            account.chainId,
-            account.address,
-            cursor,
-            cursor,
-            input.limit + 1,
-          ) as TokenRegistrationRow[];
-        const hasMore = rows.length > input.limit;
-        const entries = rows.slice(0, input.limit)
-          .map((row) => decodeTokenRegistrationRow(row, profile.profileId));
-        return Object.freeze({
-          entries: Object.freeze(entries),
-          nextCursor: hasMore ? entries.at(-1)?.registration.asset.address ?? null : null,
+        this.assertTokenCatalogConnection(account, expectedConnectionRevision);
+        const snapshot = readOfficialAssetSnapshotRaw(this.#database);
+        if (snapshot === undefined || snapshot.revision !== snapshotRevision) {
+          throw new RuntimeOperationError("state_conflict");
+        }
+        const currentState = this.getTokenSelectionStateRaw(profile.profileId, account);
+        if (currentState?.defaultsInitialized === true) {
+          return Object.freeze({ state: currentState, selections: Object.freeze([]) });
+        }
+        const missing = defaultStockTokenManifest.assets.filter((entry) => {
+          if (findOfficialAssetMember(snapshot, entry.contractAddress) === undefined) return false;
+          const asset = erc20AssetIdentitySchema.parse({
+            kind: "erc20", chainId: account.chainId, address: entry.contractAddress,
+          });
+          return this.getTokenSelectionRaw(profile.profileId, account, asset) === undefined;
         });
+        if (missing.length !== input.verifiedDefaults.length) {
+          throw new RuntimeOperationError("state_conflict");
+        }
+        for (let index = 0; index < missing.length; index += 1) {
+          const expected = missing[index];
+          const supplied = input.verifiedDefaults[index];
+          if (expected === undefined || supplied === undefined ||
+            supplied.asset.chainId !== account.chainId ||
+            supplied.asset.address !== expected.contractAddress ||
+            supplied.verification.assetUid !== expected.assetUid ||
+            supplied.verification.contractAddress !== expected.contractAddress ||
+            supplied.verification.block.chainId !== account.chainId) {
+            throw new RuntimeOperationError("state_conflict");
+          }
+        }
+        const verificationBlock = input.verifiedDefaults[0]?.verification.block;
+        if (verificationBlock !== undefined && input.verifiedDefaults.some((item) =>
+          item.verification.block.chainId !== verificationBlock.chainId ||
+          item.verification.block.blockHash !== verificationBlock.blockHash ||
+          item.verification.block.blockNumber !== verificationBlock.blockNumber ||
+          item.verification.block.blockTimestamp !== verificationBlock.blockTimestamp
+        )) throw new RuntimeOperationError("state_conflict");
+        const stateRevision = tokenSelectionSetRevisionSchema.parse(randomBytes(16).toString("base64url"));
+        if (currentState === undefined) {
+          this.#database.prepare(`INSERT INTO wallet_token_selection_state(
+            profile_id, chain_id, wallet_address, revision, defaults_initialized, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, 1, ?, ?)`)
+            .run(profile.profileId, account.chainId, account.address, stateRevision, now, now);
+        } else {
+          const update = this.#database.prepare(`UPDATE wallet_token_selection_state
+            SET revision = ?, defaults_initialized = 1, updated_at = ?
+            WHERE profile_id = ? AND chain_id = ? AND wallet_address = ?
+              AND revision = ? AND defaults_initialized = 0`)
+            .run(
+              stateRevision, now, profile.profileId, account.chainId, account.address,
+              currentState.revision,
+            );
+          if (update.changes !== 1) throw new RuntimeOperationError("state_conflict");
+        }
+        const selections: TokenSelection[] = [];
+        for (const item of input.verifiedDefaults) {
+          this.#database.prepare(`INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)
+            ON CONFLICT(chain_id, contract_address) DO NOTHING`).run(account.chainId, item.asset.address);
+          this.#database.prepare(`INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)
+            ON CONFLICT(chain_id, contract_address) DO NOTHING`).run(account.chainId, item.asset.address);
+          const revision = tokenSelectionRevisionSchema.parse(randomBytes(16).toString("base64url"));
+          this.#database.prepare(`INSERT INTO wallet_token_selection(
+            profile_id, chain_id, wallet_address, token_address, included, revision, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)`)
+            .run(profile.profileId, account.chainId, account.address, item.asset.address, revision, now, now);
+          const stored = this.getTokenSelectionRaw(profile.profileId, account, item.asset);
+          if (stored === undefined || !stored.selection.included) {
+            throw new Error("Default token selection persistence failed.");
+          }
+          selections.push(stored.selection);
+        }
+        const state = this.getTokenSelectionStateRaw(profile.profileId, account);
+        if (state === undefined || !state.defaultsInitialized || state.revision !== stateRevision) {
+          throw new Error("Default token selection state persistence failed.");
+        }
+        return deepFreezeValue({ state, selections });
       });
     } catch (error) { throw tokenCatalogStorageError(error); }
   }
@@ -977,18 +1252,50 @@ export class ProductDatabase {
       return this.#writeWithIdentity(() => {
         const profile = readProfileRaw(this.#database);
         this.assertTokenCatalogConnection(account, expectedConnectionRevision);
-        let result: NonNullable<ReturnType<TokenCatalogStore["applyConfirmation"]>["result"]>;
+        const inspection = operation.review.inspection === null
+          ? null
+          : tokenInspectionSuccessSchema.parse(operation.review.inspection);
+        const revision = tokenSelectionRevisionSchema.parse(input.selectionRevision);
+        const stateRevision = tokenSelectionSetRevisionSchema.parse(input.selectionSetRevision);
+        const now = parseUtcTimestamp(input.now);
+        let state = this.getTokenSelectionStateRaw(profile.profileId, account);
+        if ((state?.revision ?? null) !== operation.review.selectionSetRevision) {
+          throw new TokenCatalogOperationError("token_selection_revision_changed");
+        }
+        if (stateRevision === state?.revision) throw new TokenCatalogOperationError("state_conflict");
+        if (state === undefined) {
+          this.#database.prepare(`INSERT INTO wallet_token_selection_state(
+            profile_id, chain_id, wallet_address, revision, defaults_initialized, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, 0, ?, ?)`)
+            .run(profile.profileId, account.chainId, account.address, stateRevision, now, now);
+        }
+        const current = this.getTokenSelectionRaw(profile.profileId, account, asset);
+        if (canonicalJsonStringify((current?.selection ?? null) as unknown as CanonicalJson) !==
+          canonicalJsonStringify(operation.review.previousSelection as unknown as CanonicalJson)) {
+          throw new TokenCatalogOperationError("token_selection_revision_changed");
+        }
 
-        if (input.kind === "register" && operation.kind === "register") {
-          const inspection = tokenInspectionSuccessSchema.parse(operation.review.inspection);
-          const revision = tokenRegistrationRevisionSchema.parse(input.registrationRevision);
-          const now = parseUtcTimestamp(input.now);
+        if (input.kind === "add" && operation.kind === "add") {
+          if (inspection === null) throw new TokenCatalogOperationError("internal_error");
+          const snapshot = readOfficialAssetSnapshotRaw(this.#database);
+          if (snapshot === undefined || snapshot.revision !== operation.review.officialSnapshotRevision) {
+            throw new RuntimeOperationError("state_conflict");
+          }
+          const member = findOfficialAssetMember(snapshot, asset.address);
+          const verification = input.officialVerification;
+          if ((member === undefined) !== (verification === null) ||
+            (member !== undefined && verification !== null && (
+              verification.assetUid !== member.assetUid ||
+              verification.contractAddress !== member.contractAddress ||
+              verification.block.chainId !== account.chainId ||
+              operation.review.officialEvidence?.assetUid !== member.assetUid ||
+              operation.review.officialEvidence.verificationBlock.blockHash !== verification.block.blockHash
+            ))) throw new RuntimeOperationError("state_conflict");
           const inspectionDigest = tokenInspectionDigest(inspection);
           const resultJson = canonicalJsonStringify(inspection as unknown as CanonicalJson);
-          const existing = this.#database.prepare(`SELECT revision FROM wallet_token_registration
-            WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? AND token_address = ?`)
-            .all(profile.profileId, account.chainId, account.address, asset.address) as { revision: string }[];
-          if (existing.length !== 0) throw new TokenCatalogOperationError("state_conflict");
+          if (current?.selection.included === true) {
+            throw new TokenCatalogOperationError("token_selection_already_included");
+          }
           this.#database.prepare(`INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)
             ON CONFLICT(chain_id, contract_address) DO NOTHING`).run(asset.chainId, asset.address);
           this.#database.prepare(`INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)
@@ -1007,63 +1314,54 @@ export class ProductDatabase {
           } else {
             decodeInspectionRow(inspectionRows[0]);
           }
-          this.#database.prepare(`INSERT INTO wallet_token_registration(
-            profile_id, chain_id, wallet_address, token_address, revision, inspection_digest, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+          this.#database.prepare(`INSERT INTO wallet_token_selection(
+            profile_id, chain_id, wallet_address, token_address, included, revision, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+          ON CONFLICT(profile_id, chain_id, wallet_address, token_address) DO UPDATE SET
+            included = 1, revision = excluded.revision, updated_at = excluded.updated_at`)
+            .run(profile.profileId, account.chainId, account.address, asset.address, revision, now, now);
+        } else if (input.kind === "remove" && operation.kind === "remove") {
+          const previous = operation.review.previousSelection;
+          if (previous === null || !previous.included || current === undefined) {
+            throw new TokenCatalogOperationError("token_selection_not_included");
+          }
+          const removal = this.#database.prepare(`UPDATE wallet_token_selection
+            SET included = 0, revision = ?, updated_at = ?
+            WHERE profile_id = ? AND chain_id = ? AND wallet_address = ?
+              AND token_address = ? AND revision = ? AND included = 1`)
             .run(
-              profile.profileId, account.chainId, account.address, asset.address, revision,
-              inspectionDigest, now,
+              revision, now, profile.profileId, account.chainId, account.address,
+              asset.address, previous.revision,
             );
-          const stored = this.getTokenRegistrationRaw(profile.profileId, account, asset);
-          if (stored === undefined) throw new Error("Token registration persistence failed.");
-          result = stored;
-        } else if (input.kind === "unregister" && operation.kind === "unregister") {
-          const previous = operation.review.previousRegistration;
-          if (previous === null) throw new TokenCatalogOperationError("internal_error");
-          const current = this.getTokenRegistrationRaw(profile.profileId, account, asset);
-          if (current === undefined || current.registration.revision !== previous.revision) {
-            throw new TokenCatalogOperationError("token_registration_revision_changed");
-          }
-          if (canonicalJsonStringify(current.registration as unknown as CanonicalJson) !==
-            canonicalJsonStringify(previous as unknown as CanonicalJson)) {
-            throw new Error("Token registration revision does not identify its durable state.");
-          }
-          const removal = this.#database.prepare(`DELETE FROM wallet_token_registration
-            WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? AND token_address = ? AND revision = ?`)
-            .run(profile.profileId, account.chainId, account.address, asset.address, previous.revision);
           if (removal.changes !== 1) {
-            throw new TokenCatalogOperationError("token_registration_revision_changed");
+            throw new TokenCatalogOperationError("token_selection_revision_changed");
           }
-          this.#database.prepare(`DELETE FROM token_contract_inspection
-            WHERE chain_id = ? AND contract_address = ? AND inspection_digest = ?
-              AND NOT EXISTS (
-                SELECT 1 FROM wallet_token_registration
-                WHERE chain_id = ? AND token_address = ? AND inspection_digest = ?
-              )`).run(
-                asset.chainId, asset.address, previous.inspectionDigest,
-                asset.chainId, asset.address, previous.inspectionDigest,
-              );
-          if (this.getTokenRegistrationRaw(profile.profileId, account, asset) !== undefined) {
-            throw new Error("Token registration removal failed.");
-          }
-          const references = this.#database.prepare(`SELECT COUNT(*) AS count
-            FROM wallet_token_registration
-            WHERE chain_id = ? AND token_address = ? AND inspection_digest = ?`)
-            .get(asset.chainId, asset.address, previous.inspectionDigest) as { count: number };
-          const inspectionRows = this.#database.prepare(`SELECT chain_id AS chainId,
-            contract_address AS contractAddress, inspection_digest AS inspectionDigest,
-            result_json AS resultJson FROM token_contract_inspection
-            WHERE chain_id = ? AND contract_address = ? AND inspection_digest = ?`)
-            .all(asset.chainId, asset.address, previous.inspectionDigest) as TokenInspectionRow[];
-          if (
-            (references.count === 0 && inspectionRows.length !== 0) ||
-            (references.count > 0 && inspectionRows.length !== 1)
-          ) throw new Error("Token inspection collection postcondition failed.");
-          if (inspectionRows[0] !== undefined) decodeInspectionRow(inspectionRows[0]);
-          result = Object.freeze({ asset, removedRevision: previous.revision });
         } else {
           throw new TokenCatalogOperationError("invalid_input");
         }
+
+        if (state !== undefined) {
+          const stateUpdate = this.#database.prepare(`UPDATE wallet_token_selection_state
+            SET revision = ?, updated_at = ?
+            WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? AND revision = ?`)
+            .run(
+              stateRevision, now, profile.profileId, account.chainId, account.address, state.revision,
+            );
+          if (stateUpdate.changes !== 1) throw new RuntimeOperationError("state_conflict");
+        }
+        state = this.getTokenSelectionStateRaw(profile.profileId, account);
+        const stored = this.getTokenSelectionRaw(profile.profileId, account, asset);
+        if (state?.revision !== stateRevision || stored === undefined ||
+          stored.selection.revision !== revision ||
+          stored.selection.included !== (operation.kind === "add")) {
+          throw new Error("Token selection persistence postcondition failed.");
+        }
+        const result: TokenSelectionDetail = operation.kind === "add"
+          ? tokenSelectionDetailSchema.parse({
+              selection: stored.selection,
+              historicalInspection: inspection,
+            })
+          : stored;
 
         return deepFreezeValue(tokenCatalogConfirmedOperationSchema.parse({
           ...operation,
@@ -1073,18 +1371,6 @@ export class ProductDatabase {
         }));
       });
     } catch (error) { throw tokenCatalogStorageError(error); }
-  }
-
-  private getTokenRegistrationRaw(
-    profileId: ProfileId,
-    account: EvmAccountIdentity,
-    asset: TokenRegistration["asset"],
-  ): TokenRegistrationWithInspection | undefined {
-    const rows = this.#database.prepare(`${tokenRegistrationSelect}
-      WHERE r.profile_id = ? AND r.chain_id = ? AND r.wallet_address = ? AND r.token_address = ?`)
-      .all(profileId, account.chainId, account.address, asset.address) as TokenRegistrationRow[];
-    if (rows.length > 1) throw new Error("Token registration identity is not unique.");
-    return rows[0] === undefined ? undefined : decodeTokenRegistrationRow(rows[0], profileId);
   }
 
 }

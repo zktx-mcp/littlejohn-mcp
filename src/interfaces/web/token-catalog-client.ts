@@ -11,7 +11,7 @@ import {
   type TokenCatalogOperation,
   type TokenCatalogOperationResult,
   type TokenCatalogOperationStartResult,
-  type TokenRegistration,
+  type TokenSelection,
 } from "../../token-catalog/browser.js";
 import {
   BrowserResponseError,
@@ -27,10 +27,10 @@ import {
 import { createBrowserOperationId } from "./operation-id.js";
 
 const invalidCatalogResponse = (): BrowserResponseError =>
-  invalidBrowserResponse("The token catalog response is invalid.");
+  invalidBrowserResponse("The account token response is invalid.");
 
-type TokenChainId = TokenRegistration["asset"]["chainId"];
-type TokenAddress = TokenRegistration["asset"]["address"];
+type TokenChainId = TokenSelection["asset"]["chainId"];
+type TokenAddress = TokenSelection["asset"]["address"];
 
 const tokenAsset = (chainId: TokenChainId, addressInput: unknown) => Object.freeze({
   kind: "erc20" as const,
@@ -41,13 +41,13 @@ const tokenAsset = (chainId: TokenChainId, addressInput: unknown) => Object.free
 export const parseTokenAddressInput = (input: unknown): TokenAddress =>
   parseEvmAddressInput(input);
 
-export const startTokenRegistration = async (
+export const startTokenSelection = async (
   chainId: TokenChainId,
   addressInput: unknown,
   csrfToken: unknown,
   options: BrowserRequestOptions = {},
-): Promise<TokenCatalogOperationStartResult<"register"> | DeliveryUnknown> => {
-  const contract = tokenCatalogApplicationContracts.startRegistration;
+): Promise<TokenCatalogOperationStartResult<"add"> | DeliveryUnknown> => {
+  const contract = tokenCatalogApplicationContracts.startAddition;
   const request = contract.parseInput({ asset: tokenAsset(chainId, addressInput) });
   const operationId = createBrowserOperationId();
   const delivery = await controlBrowserActionJson(
@@ -56,7 +56,7 @@ export const startTokenRegistration = async (
     tokenCatalogBrowserRoutes.operations,
     {
       control: { operationId, interactionInterface: "web" },
-      request: { kind: "register", ...request },
+      request: { kind: "add", ...request },
     },
     csrfToken,
     options,
@@ -67,15 +67,15 @@ export const startTokenRegistration = async (
   catch { return createDeliveryUnknown("start", operationId); }
 };
 
-export const startTokenUnregistration = async (
-  registration: TokenRegistration,
+export const startTokenRemoval = async (
+  selection: TokenSelection,
   csrfToken: unknown,
   options: BrowserRequestOptions = {},
-): Promise<TokenCatalogOperationStartResult<"unregister"> | DeliveryUnknown> => {
-  const contract = tokenCatalogApplicationContracts.startUnregistration;
+): Promise<TokenCatalogOperationStartResult<"remove"> | DeliveryUnknown> => {
+  const contract = tokenCatalogApplicationContracts.startRemoval;
   const request = contract.parseInput({
-    asset: registration.asset,
-    expectedRevision: registration.revision,
+    asset: selection.asset,
+    expectedRevision: selection.revision,
   });
   const operationId = createBrowserOperationId();
   const delivery = await controlBrowserActionJson(
@@ -84,7 +84,7 @@ export const startTokenUnregistration = async (
     tokenCatalogBrowserRoutes.operations,
     {
       control: { operationId, interactionInterface: "web" },
-      request: { kind: "unregister", ...request },
+      request: { kind: "remove", ...request },
     },
     csrfToken,
     options,

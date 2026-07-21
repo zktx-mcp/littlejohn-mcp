@@ -271,10 +271,11 @@ describe("wallet browser routes", () => {
     const expected = [
       ["GET", "/", "browser_bootstrap", "browser_content", "none"],
       ["POST", accountAssetBrowserRoutes.queries, "browser_query", "canonical_json", "none"],
-      ["GET", accountAssetBrowserRoutes.exact(
+      ["POST", accountAssetBrowserRoutes.exact(
         "eip155:4663",
         parseEvmAddress("0x1111111111111111111111111111111111111111"),
-      ), "browser_read", "canonical_json", "none"],
+      ), "browser_query", "canonical_json", "none"],
+      ["POST", accountAssetBrowserRoutes.officialCandidateQueries, "browser_query", "canonical_json", "none"],
       ["POST", browserWalletApiPaths.operations, "browser_control", "canonical_json", "declared_control"],
       ["GET", browserWalletApiPaths.currentOperation, "browser_read", "canonical_json", "none"],
       ["GET", browserOperationPath(operationId), "browser_read", "canonical_json", "none"],
@@ -473,14 +474,14 @@ describe("wallet browser routes", () => {
       randomBytes: (size) => Buffer.alloc(size, 50),
     });
     const calls: unknown[] = [];
-    const rejected = () => new TokenCatalogOperationError("internal_error").failure;
+    const rejected = () => new TokenCatalogOperationError("token_selection_revision_changed").failure;
     const ports = interfacePorts();
     const registry = extendBrowserInterfaceRoutes({
       ...ports,
       tokenCatalogWebStart: Object.freeze({
         interactionInterface: "web" as const,
-        async startRegistration(input: unknown) { calls.push(input); return rejected(); },
-        async startUnregistration(input: unknown) { calls.push(input); return rejected(); },
+        async startAddition(input: unknown) { calls.push(input); return rejected(); },
+        async startRemoval(input: unknown) { calls.push(input); return rejected(); },
       }),
       routes: await baseRoutes(),
       credentials,
@@ -494,8 +495,8 @@ describe("wallet browser routes", () => {
     } as const;
     const revision = Buffer.alloc(16, 3).toString("base64url");
     const requests = [
-      { kind: "register", asset },
-      { kind: "unregister", asset, expectedRevision: revision },
+      { kind: "add", asset },
+      { kind: "remove", asset, expectedRevision: revision },
     ] as const;
     for (const request of requests) {
       const result = await invoke(
@@ -508,7 +509,7 @@ describe("wallet browser routes", () => {
         },
       );
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.problem.code).toBe("internal_error");
+      if (!result.ok) expect(result.problem.code).toBe("token_selection_revision_changed");
     }
     expect(calls).toEqual(requests.map(({ kind: _kind, ...request }) => request));
     credentials.close();

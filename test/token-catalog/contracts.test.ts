@@ -20,13 +20,12 @@ import {
   tokenCatalogOperationIdSchema,
   tokenCatalogOperationSchema,
   tokenInspectCapability,
-  tokenInspectionDigest,
   tokenInspectionInputSchema,
-  tokenRegistrationRevisionSchema,
+  tokenSelectionRevisionSchema,
   type TokenCatalogOperation,
   type TokenCatalogOperationVariant,
   type TokenInspectionSuccess,
-  type TokenRegistration,
+  type TokenSelection,
 } from "../../src/token-catalog/index.js";
 import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
 import { createInspectionSuccess, walletAddress } from "./harness.js";
@@ -40,24 +39,26 @@ const asset = erc20AssetIdentitySchema.parse({
 const operationId = "A".repeat(43);
 const revisionA = Buffer.alloc(16, 1).toString("base64url");
 const revisionB = Buffer.alloc(16, 2).toString("base64url");
+const snapshotRevision = Buffer.alloc(16, 3).toString("base64url");
 const createdAt = parseUtcTimestamp("2026-07-18T00:00:03.000Z");
 const expiresAt = parseUtcTimestamp("2026-07-18T00:05:03.000Z");
 
-const registrationFor = (
+const selectionFor = (
   inspection: TokenInspectionSuccess,
   revision = revisionA,
-): TokenRegistration => ({
+): TokenSelection => ({
   account: { chainId: inspection.data.asset.chainId, address: walletAddress },
   asset: inspection.data.asset,
+  included: true,
   revision,
-  inspectionDigest: tokenInspectionDigest(inspection),
   createdAt,
+  updatedAt: createdAt,
 });
 
 const awaitingOperation = (input: Readonly<{
   inspection: TokenInspectionSuccess;
   kind: TokenCatalogOperation["kind"];
-  previousRegistration: TokenRegistration | null;
+  previousSelection: TokenSelection | null;
 }>): TokenCatalogOperation => tokenCatalogOperationSchema.parse({
   operationId,
   kind: input.kind,
@@ -69,8 +70,11 @@ const awaitingOperation = (input: Readonly<{
   connectionRevision: "1",
   asset: input.inspection.data.asset,
   review: {
-    previousRegistration: input.previousRegistration,
-    inspection: input.inspection,
+    previousSelection: input.previousSelection,
+    selectionSetRevision: null,
+    inspection: input.kind === "add" ? input.inspection : null,
+    officialSnapshotRevision: input.kind === "add" ? snapshotRevision : null,
+    officialEvidence: null,
     reviewDigest: `0x${"ab".repeat(32)}`,
   },
   result: null,
@@ -78,19 +82,19 @@ const awaitingOperation = (input: Readonly<{
 });
 
 describe("token catalog contracts", () => {
-  it("owns exactly the seven membership capability identifiers at contract version 4", () => {
-    expect(coreContractVersion).toBe("4");
-    expect(getCapabilityDefinitionSnapshot(tokenInspectCapability).contractVersion).toBe("4");
+  it("owns exactly the seven selection capability identifiers at contract version 5", () => {
+    expect(coreContractVersion).toBe("5");
+    expect(getCapabilityDefinitionSnapshot(tokenInspectCapability).contractVersion).toBe("5");
     expect(tokenCatalogCapabilityIds).toEqual([
       "token.cancel_operation",
       "token.inspect",
       "token.operation",
-      "token.registration",
-      "token.registrations",
-      "token.start_registration",
-      "token.start_unregistration",
+      "token.selection",
+      "token.selections",
+      "token.start_addition",
+      "token.start_removal",
     ]);
-    expect(tokenCatalogContractProjection.contractVersion).toBe("4");
+    expect(tokenCatalogContractProjection.contractVersion).toBe("5");
     expect(tokenCatalogContractProjectionDigest).toMatch(/^0x[0-9a-f]{64}$/u);
     expect(Object.isFrozen(tokenCatalogContractProjection)).toBe(true);
     expect(tokenCatalogErrorDefinitions).toContainEqual({
@@ -107,7 +111,7 @@ describe("token catalog contracts", () => {
     });
     expect(getCapabilityDefinitionSnapshot(tokenInspectCapability).failureCodes)
       .toContain("token_total_supply_reverted");
-    expect(tokenCatalogApplicationContracts.startRegistration.failureCodes)
+    expect(tokenCatalogApplicationContracts.startAddition.failureCodes)
       .toContain("token_total_supply_reverted");
   });
 
@@ -121,19 +125,19 @@ describe("token catalog contracts", () => {
       block: { kind: "latest" },
       profileId: "caller-owned",
     })).toThrow();
-    expect(() => tokenCatalogApplicationContracts.registration.parseInput({
+    expect(() => tokenCatalogApplicationContracts.selection.parseInput({
       asset,
       walletAddress: `0x${"34".repeat(20)}`,
     })).toThrow();
   });
 
-  it("normalizes only the declared list defaults and keeps registration input exact", () => {
-    expect(tokenCatalogApplicationContracts.registrations.parseInput({})).toEqual({
+  it("normalizes only the declared list defaults and keeps selection input exact", () => {
+    expect(tokenCatalogApplicationContracts.selections.parseInput({})).toEqual({
       limit: 25,
       cursor: null,
     });
-    expect(tokenCatalogApplicationContracts.startRegistration.parseInput({ asset })).toEqual({ asset });
-    expect(() => tokenCatalogApplicationContracts.startRegistration.parseInput({
+    expect(tokenCatalogApplicationContracts.startAddition.parseInput({ asset })).toEqual({ asset });
+    expect(() => tokenCatalogApplicationContracts.startAddition.parseInput({
       asset,
       settings: {},
     })).toThrow();
@@ -143,13 +147,13 @@ describe("token catalog contracts", () => {
     expect(tokenCatalogContractLimits).toEqual({
       displayTextCodePoints: 128,
       displayTextUtf8Bytes: 512,
-      registrationRevisionBytes: 16,
+      selectionRevisionBytes: 16,
       operationIdBytes: 32,
       listDefaultLimit: 25,
       listMaximumLimit: 25,
     });
-    expect(tokenRegistrationRevisionSchema.safeParse("A".repeat(22)).success).toBe(true);
-    expect(tokenRegistrationRevisionSchema.safeParse("A".repeat(21)).success).toBe(false);
+    expect(tokenSelectionRevisionSchema.safeParse("A".repeat(22)).success).toBe(true);
+    expect(tokenSelectionRevisionSchema.safeParse("A".repeat(21)).success).toBe(false);
     expect(tokenCatalogOperationIdSchema.safeParse("A".repeat(43)).success).toBe(true);
     expect(tokenCatalogOperationIdSchema.safeParse("A".repeat(44)).success).toBe(false);
   });
@@ -159,13 +163,13 @@ describe("token catalog contracts", () => {
       enumerable: true,
       get: () => asset,
     });
-    expect(() => tokenCatalogApplicationContracts.registration.parseInput(accessor)).toThrow();
+    expect(() => tokenCatalogApplicationContracts.selection.parseInput(accessor)).toThrow();
 
     const proxied = new Proxy({ asset }, {
       ownKeys: () => { throw new Error("trap"); },
     });
-    expect(() => tokenCatalogApplicationContracts.registration.parseInput(proxied)).toThrow();
-    expect(() => tokenCatalogApplicationContracts.registration.parseInput({ asset, extra: true })).toThrow();
+    expect(() => tokenCatalogApplicationContracts.selection.parseInput(proxied)).toThrow();
+    expect(() => tokenCatalogApplicationContracts.selection.parseInput({ asset, extra: true })).toThrow();
   });
 
   it("binds list and operation-start successes to the exact normalized request", async () => {
@@ -173,56 +177,60 @@ describe("token catalog contracts", () => {
     const secondAsset = erc20AssetIdentitySchema.parse({ ...asset, address: `0x${"13".repeat(20)}` });
     const secondInspection = await createInspectionSuccess({ asset: secondAsset, block: { kind: "latest" } });
     const page = {
-      registrations: [
-        registrationFor(inspection),
-        registrationFor(secondInspection),
+      selections: [
+        selectionFor(inspection),
+        selectionFor(secondInspection),
       ],
       nextCursor: secondAsset.address,
     };
-    expect(tokenCatalogApplicationContracts.registrations.parsePublicSuccess(
-      tokenCatalogApplicationContracts.registrations.parseInput({ limit: 2 }),
+    expect(tokenCatalogApplicationContracts.selections.parsePublicSuccess(
+      tokenCatalogApplicationContracts.selections.parseInput({ limit: 2 }),
       page,
     )).toEqual(page);
-    expect(() => tokenCatalogApplicationContracts.registrations.parsePublicSuccess(
-      tokenCatalogApplicationContracts.registrations.parseInput({ limit: 1 }),
+    expect(() => tokenCatalogApplicationContracts.selections.parsePublicSuccess(
+      tokenCatalogApplicationContracts.selections.parseInput({ limit: 1 }),
       page,
     )).toThrow();
-    expect(() => tokenCatalogApplicationContracts.registrations.parsePublicSuccess(
-      tokenCatalogApplicationContracts.registrations.parseInput({
+    expect(() => tokenCatalogApplicationContracts.selections.parsePublicSuccess(
+      tokenCatalogApplicationContracts.selections.parseInput({
       limit: 2,
       cursor: asset.address,
       }),
       page,
     )).toThrow();
-    expect(() => tokenCatalogApplicationContracts.registrations.parsePublicSuccess(
-      tokenCatalogApplicationContracts.registrations.parseInput({ limit: 3 }),
+    expect(() => tokenCatalogApplicationContracts.selections.parsePublicSuccess(
+      tokenCatalogApplicationContracts.selections.parseInput({ limit: 3 }),
       page,
     )).toThrow();
 
-    const register = awaitingOperation({
+    const add = awaitingOperation({
       inspection,
-      kind: "register",
-      previousRegistration: null,
+      kind: "add",
+      previousSelection: null,
     });
-    const registerSuccess = { operation: register };
-    expect(tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess({ asset }, registerSuccess))
+    const registerSuccess = { operation: add };
+    expect(tokenCatalogApplicationContracts.startAddition.parsePublicSuccess({ asset }, registerSuccess))
       .toEqual(registerSuccess);
-    expect(() => tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess({
+    expect(() => tokenCatalogApplicationContracts.startAddition.parseInput({
+      asset,
+      expectedRevision: revisionA,
+    })).toThrow();
+    expect(() => tokenCatalogApplicationContracts.startAddition.parsePublicSuccess({
       asset: secondAsset,
     }, registerSuccess)).toThrow();
 
-    const previous = registrationFor(inspection);
-    const unregister = awaitingOperation({
+    const previous = selectionFor(inspection);
+    const remove = awaitingOperation({
       inspection,
-      kind: "unregister",
-      previousRegistration: previous,
+      kind: "remove",
+      previousSelection: previous,
     });
-    const unregisterSuccess = { operation: unregister };
-    expect(tokenCatalogApplicationContracts.startUnregistration.parsePublicSuccess({
+    const unregisterSuccess = { operation: remove };
+    expect(tokenCatalogApplicationContracts.startRemoval.parsePublicSuccess({
       asset,
       expectedRevision: revisionA,
     }, unregisterSuccess)).toEqual(unregisterSuccess);
-    expect(() => tokenCatalogApplicationContracts.startUnregistration.parsePublicSuccess({
+    expect(() => tokenCatalogApplicationContracts.startRemoval.parsePublicSuccess({
       asset,
       expectedRevision: revisionB,
     }, unregisterSuccess)).toThrow();
@@ -232,8 +240,8 @@ describe("token catalog contracts", () => {
     const inspection = await createInspectionSuccess();
     const awaiting = awaitingOperation({
       inspection,
-      kind: "register",
-      previousRegistration: null,
+      kind: "add",
+      previousSelection: null,
     });
     const input = {
       operationId: awaiting.operationId,
@@ -243,8 +251,8 @@ describe("token catalog contracts", () => {
       ...awaiting,
       state: "completed",
       result: {
-        registration: registrationFor(inspection),
-        inspection,
+        selection: selectionFor(inspection),
+        historicalInspection: inspection,
       },
     });
     const failed = tokenCatalogOperationSchema.parse({
@@ -298,21 +306,21 @@ describe("token catalog contracts", () => {
     const inspection = await createInspectionSuccess();
     const awaiting = awaitingOperation({
       inspection,
-      kind: "register",
-      previousRegistration: null,
+      kind: "add",
+      previousSelection: null,
     });
     const applying = tokenCatalogOperationSchema.parse({ ...awaiting, state: "applying" });
     const cancelled = tokenCatalogOperationSchema.parse({ ...awaiting, state: "cancelled" });
-    const input = tokenCatalogApplicationContracts.startRegistration.parseInput({ asset });
+    const input = tokenCatalogApplicationContracts.startAddition.parseInput({ asset });
 
-    expect(tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess(input, { operation: awaiting }))
+    expect(tokenCatalogApplicationContracts.startAddition.parsePublicSuccess(input, { operation: awaiting }))
       .toEqual({ operation: awaiting });
-    expect(() => tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess(input, {
+    expect(() => tokenCatalogApplicationContracts.startAddition.parsePublicSuccess(input, {
       operation: applying,
     })).toThrow();
-    expect(() => tokenCatalogApplicationContracts.startRegistration.parsePublicSuccess(input, {
+    expect(() => tokenCatalogApplicationContracts.startAddition.parsePublicSuccess(input, {
       operation: awaiting,
-      managementUrl: "http://127.0.0.1:46630/tokens",
+      managementUrl: "http://127.0.0.1:46630/",
     })).toThrow();
     expect(tokenCatalogApplicationContracts.cancelOperation.parsePublicSuccess(
       { operationId: cancelled.operationId },
@@ -336,15 +344,15 @@ describe("token catalog contracts", () => {
     const inspection = await createInspectionSuccess();
     const awaiting = awaitingOperation({
       inspection,
-      kind: "register",
-      previousRegistration: null,
+      kind: "add",
+      previousSelection: null,
     });
     const applying = tokenCatalogOperationSchema.parse({ ...awaiting, state: "applying" });
     const cancelled = tokenCatalogOperationSchema.parse({ ...awaiting, state: "cancelled" });
     const wrongKind = awaitingOperation({
       inspection,
-      kind: "unregister",
-      previousRegistration: registrationFor(inspection),
+      kind: "remove",
+      previousSelection: selectionFor(inspection),
     });
     const schemaFor = (capabilityId: string): object => {
       const projection = tokenCatalogContractProjection.applications.find(
@@ -357,13 +365,13 @@ describe("token catalog contracts", () => {
       strict: true,
       formats: { uri: true, "date-time": true },
     });
-    const validateStart = ajv.compile(schemaFor("token.start_registration"));
+    const validateStart = ajv.compile(schemaFor("token.start_addition"));
     const validateCancel = ajv.compile(schemaFor("token.cancel_operation"));
 
     expect(validateStart({ operation: awaiting })).toBe(true);
     expect(validateStart({ operation: applying })).toBe(false);
     expect(validateStart({ operation: wrongKind })).toBe(false);
-    expect(validateStart({ operation: awaiting, managementUrl: "http://127.0.0.1:46630/tokens" })).toBe(false);
+    expect(validateStart({ operation: awaiting, managementUrl: "http://127.0.0.1:46630/" })).toBe(false);
     expect(validateCancel({ operation: cancelled })).toBe(true);
     expect(validateCancel({ operation: awaiting })).toBe(false);
     expect(validateCancel({ operation: applying })).toBe(false);
@@ -379,40 +387,40 @@ describe("token catalog contracts", () => {
         expectTypeOf(operation.failure).toEqualTypeOf<null>();
         expectTypeOf(operation.result).toEqualTypeOf<null>();
       }
-      if (operation.state === "completed" && operation.kind === "unregister") {
+      if (operation.state === "completed" && operation.kind === "remove") {
         expectTypeOf(operation.result).toEqualTypeOf<
-          TokenCatalogOperationVariant<"unregister", "completed">["result"]
+          TokenCatalogOperationVariant<"remove", "completed">["result"]
         >();
         expectTypeOf(operation.failure).toEqualTypeOf<null>();
       }
-      if (operation.state === "completed" && operation.kind === "register") {
+      if (operation.state === "completed" && operation.kind === "add") {
         expectTypeOf(operation.result).toEqualTypeOf<
-          TokenCatalogOperationVariant<"register", "completed">["result"]
+          TokenCatalogOperationVariant<"add", "completed">["result"]
         >();
       }
     };
     expect(audit).toBeTypeOf("function");
   });
 
-  it("binds completed registration results to the reviewed inspection and lifecycle", async () => {
+  it("binds completed selection results to the reviewed inspection and lifecycle", async () => {
     const inspection = await createInspectionSuccess();
-    const register = awaitingOperation({
+    const add = awaitingOperation({
       inspection,
-      kind: "register",
-      previousRegistration: null,
+      kind: "add",
+      previousSelection: null,
     });
-    const created = registrationFor(inspection);
+    const created = selectionFor(inspection);
     expect(tokenCatalogOperationSchema.parse({
-      ...register,
+      ...add,
       state: "completed",
-      result: { registration: created, inspection },
-    })).toMatchObject({ state: "completed", result: { registration: { revision: revisionA } } });
+      result: { selection: created, historicalInspection: inspection },
+    })).toMatchObject({ state: "completed", result: { selection: { revision: revisionA } } });
     expect(() => tokenCatalogOperationSchema.parse({
-      ...register,
+      ...add,
       state: "completed",
       result: {
-        registration: { ...created, createdAt: "2026-07-18T00:00:02.000Z" },
-        inspection,
+        selection: { ...created, createdAt: "2026-07-18T00:00:02.000Z" },
+        historicalInspection: inspection,
       },
     })).toThrow();
   });

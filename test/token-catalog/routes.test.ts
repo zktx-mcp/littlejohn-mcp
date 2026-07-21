@@ -27,8 +27,8 @@ import {
   type TokenCatalogOperationStartResult,
   type TokenCatalogTerminalOperation,
   type TokenInspectionSuccess,
-  type TokenRegistrationStartInput,
-  type TokenUnregistrationStartInput,
+  type TokenAdditionStartInput,
+  type TokenRemovalStartInput,
 } from "../../src/token-catalog/index.js";
 import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
 import type {
@@ -58,12 +58,12 @@ afterEach(async () => {
     rm(directory, { recursive: true, force: true })));
 });
 
-const pendingRegistration = (
+const pendingSelection = (
   interactionInterface: "web" | "cli",
-): TokenCatalogOperationStartResult<"register">["operation"] =>
+): TokenCatalogOperationStartResult<"add">["operation"] =>
   tokenCatalogOperationSchema.parse({
     operationId,
-    kind: "register",
+    kind: "add",
     state: "awaiting_confirmation",
     interactionInterface,
     createdAt,
@@ -72,16 +72,19 @@ const pendingRegistration = (
     connectionRevision: "1",
     asset: { kind: "erc20", chainId, address: tokenAddress },
     review: {
-      previousRegistration: null,
+      previousSelection: null,
+      selectionSetRevision: null,
       inspection,
+      officialSnapshotRevision: Buffer.alloc(16, 7).toString("base64url"),
+      officialEvidence: null,
       reviewDigest: `0x${"ab".repeat(32)}`,
     },
     result: null,
     failure: null,
-  }) as TokenCatalogOperationStartResult<"register">["operation"];
+  }) as TokenCatalogOperationStartResult<"add">["operation"];
 
 const failedOperation = (
-  operation: TokenCatalogOperationStartResult<"register">["operation"],
+  operation: TokenCatalogOperationStartResult<"add">["operation"],
 ): TokenCatalogConfirmedOperation =>
   tokenCatalogOperationSchema.parse({
     ...operation,
@@ -90,7 +93,7 @@ const failedOperation = (
   }) as TokenCatalogConfirmedOperation;
 
 const cancelledOperation = (
-  operation: TokenCatalogOperationStartResult<"register">["operation"],
+  operation: TokenCatalogOperationStartResult<"add">["operation"],
 ): TokenCatalogTerminalOperation => tokenCatalogOperationSchema.parse({
   ...operation,
   state: "cancelled",
@@ -98,7 +101,7 @@ const cancelledOperation = (
 }) as TokenCatalogTerminalOperation;
 
 interface Calls {
-  readonly registrations: unknown[];
+  readonly selections: unknown[];
   readonly lists: unknown[];
   readonly webStarts: unknown[];
   readonly cliStarts: unknown[];
@@ -115,44 +118,44 @@ const fakePorts = (): {
   readonly operations: TokenCatalogNonInteractiveOperationPort;
 } => {
   const calls: Calls = {
-    registrations: [], lists: [], webStarts: [], cliStarts: [],
+    selections: [], lists: [], webStarts: [], cliStarts: [],
     reads: [], confirmations: [], cancellations: [],
   };
-  let current = pendingRegistration("cli");
+  let current = pendingSelection("cli");
   const unsupportedStart = async (): Promise<ApplicationFailure> =>
-    new TokenCatalogOperationError("internal_error").failure;
+    new TokenCatalogOperationError("token_selection_revision_changed").failure;
   const queries: TokenCatalogQueryApplicationPort = Object.freeze({
-    getRegistration(input) {
-      calls.registrations.push(input);
-      return new TokenCatalogOperationError("token_registration_not_found").failure;
+    getSelection(input) {
+      calls.selections.push(input);
+      return new TokenCatalogOperationError("token_selection_not_found").failure;
     },
-    listRegistrations(input) {
+    listSelections(input) {
       calls.lists.push(input);
-      return Object.freeze({ registrations: [], nextCursor: null });
+      return Object.freeze({ selections: [], nextCursor: null });
     },
   });
   const webStart: TokenCatalogWebStartPort = Object.freeze({
     interactionInterface: "web" as const,
-    async startRegistration(input: TokenRegistrationStartInput): Promise<TokenCatalogOperationStartResult<"register">> {
-      const request = tokenCatalogApplicationContracts.startRegistration.parseInput(input);
+    async startAddition(input: TokenAdditionStartInput): Promise<TokenCatalogOperationStartResult<"add">> {
+      const request = tokenCatalogApplicationContracts.startAddition.parseInput(input);
       calls.webStarts.push(request);
-      current = pendingRegistration("web");
+      current = pendingSelection("web");
       return Object.freeze({ operation: current });
     },
-    async startUnregistration(input: TokenUnregistrationStartInput) {
+    async startRemoval(input: TokenRemovalStartInput) {
       calls.webStarts.push(input);
       return await unsupportedStart();
     },
   });
   const interactiveCli: TokenCatalogInteractiveCliPort = Object.freeze({
     interactionInterface: "cli" as const,
-    async startRegistration(input: TokenRegistrationStartInput): Promise<TokenCatalogOperationStartResult<"register">> {
-      const request = tokenCatalogApplicationContracts.startRegistration.parseInput(input);
+    async startAddition(input: TokenAdditionStartInput): Promise<TokenCatalogOperationStartResult<"add">> {
+      const request = tokenCatalogApplicationContracts.startAddition.parseInput(input);
       calls.cliStarts.push(request);
-      current = pendingRegistration("cli");
+      current = pendingSelection("cli");
       return Object.freeze({ operation: current });
     },
-    async startUnregistration(input: TokenUnregistrationStartInput) {
+    async startRemoval(input: TokenRemovalStartInput) {
       calls.cliStarts.push(input);
       return await unsupportedStart();
     },
@@ -225,11 +228,11 @@ const invoke = async (
 describe("token catalog local control routes", () => {
   it("registers exactly the seven authenticated resources and their HTTP meanings", async () => {
     const { routes } = await createRoutes();
-    const registration = tokenCatalogControlRoutes.registration(chainId, tokenAddress);
+    const selection = tokenCatalogControlRoutes.selection(chainId, tokenAddress);
     const expected = [
       ["POST", tokenCatalogControlRoutes.inspections, "none", true],
-      ["POST", tokenCatalogControlRoutes.registrationQueries, "none", true],
-      ["GET", registration, "none", false],
+      ["POST", tokenCatalogControlRoutes.selectionQueries, "none", true],
+      ["GET", selection, "none", false],
       ["POST", tokenCatalogControlRoutes.operations, "declared_control", true],
       ["GET", tokenCatalogControlRoutes.operation(operationId), "none", false],
       ["POST", tokenCatalogControlRoutes.confirmation(operationId), "declared_control", true],
@@ -250,16 +253,16 @@ describe("token catalog local control routes", () => {
     }
     expect(routes.match("GET", tokenCatalogControlRoutes.operations).status)
       .toBe("method_not_allowed");
-    expect(routes.match("POST", registration).status).toBe("method_not_allowed");
+    expect(routes.match("POST", selection).status).toBe("method_not_allowed");
   });
 
   it("uses one raw canonical CAIP-2 segment and rejects aliases before application authority", async () => {
     const { routes, calls } = await createRoutes();
-    const rawPath = tokenCatalogControlRoutes.registration(chainId, tokenAddress);
+    const rawPath = tokenCatalogControlRoutes.selection(chainId, tokenAddress);
     expect(rawPath).toBe(
-      `/api/v1/internal/control/token-catalog/registrations/${chainId}/${tokenAddress}`,
+      `/api/v1/internal/control/token-catalog/selections/${chainId}/${tokenAddress}`,
     );
-    expect(() => tokenCatalogControlRoutes.registration(
+    expect(() => tokenCatalogControlRoutes.selection(
       "eip155%3A4663" as never,
       tokenAddress,
     )).toThrow();
@@ -275,12 +278,12 @@ describe("token catalog local control routes", () => {
     );
     expect(malformed.ok).toBe(false);
     if (!malformed.ok) expect(malformed.problem.code).toBe("invalid_input");
-    expect(calls.registrations).toEqual([]);
+    expect(calls.selections).toEqual([]);
 
     const canonical = await invoke(routes, "GET", rawPath);
     expect(canonical.ok).toBe(false);
-    if (!canonical.ok) expect(canonical.problem.code).toBe("token_registration_not_found");
-    expect(calls.registrations).toEqual([{
+    if (!canonical.ok) expect(canonical.problem.code).toBe("token_selection_not_found");
+    expect(calls.selections).toEqual([{
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }]);
   });
@@ -290,7 +293,7 @@ describe("token catalog local control routes", () => {
     const created = await invoke(routes, "POST", tokenCatalogControlRoutes.operations, {
       control: { operationId, interactionInterface: "cli" },
       request: {
-        kind: "register",
+        kind: "add",
         asset: { kind: "erc20", chainId, address: tokenAddress },
       },
     });
@@ -301,28 +304,28 @@ describe("token catalog local control routes", () => {
     expect(calls.webStarts).toEqual([]);
 
     const revision = Buffer.alloc(16, 7).toString("base64url");
-    const obsoleteUpdate = await invoke(routes, "POST", tokenCatalogControlRoutes.operations, {
+    const unsupportedChange = await invoke(routes, "POST", tokenCatalogControlRoutes.operations, {
       control: { operationId, interactionInterface: "web" },
       request: {
-        kind: "update_registration",
+        kind: "unsupported_change",
         asset: { kind: "erc20", chainId, address: tokenAddress },
         expectedRevision: revision,
-        changes: { visibility: "hidden" },
+        changes: { unsupported: true },
       },
     });
-    expect(obsoleteUpdate.ok).toBe(false);
-    if (!obsoleteUpdate.ok) expect(obsoleteUpdate.problem.code).toBe("invalid_input");
+    expect(unsupportedChange.ok).toBe(false);
+    if (!unsupportedChange.ok) expect(unsupportedChange.problem.code).toBe("invalid_input");
 
     const removed = await invoke(routes, "POST", tokenCatalogControlRoutes.operations, {
       control: { operationId, interactionInterface: "web" },
       request: {
-        kind: "unregister",
+        kind: "remove",
         asset: { kind: "erc20", chainId, address: tokenAddress },
         expectedRevision: revision,
       },
     });
     expect(removed.ok).toBe(false);
-    if (!removed.ok) expect(removed.problem.code).toBe("internal_error");
+    if (!removed.ok) expect(removed.problem.code).toBe("token_selection_revision_changed");
     expect(calls.webStarts).toEqual([
       {
         asset: { kind: "erc20", chainId, address: tokenAddress },
@@ -333,7 +336,7 @@ describe("token catalog local control routes", () => {
     const extra = await invoke(routes, "POST", tokenCatalogControlRoutes.operations, {
       control: { operationId, interactionInterface: "cli" },
       request: {
-        kind: "register",
+        kind: "add",
         asset: { kind: "erc20", chainId, address: tokenAddress },
       },
       forwardedInterface: "web",
@@ -378,8 +381,8 @@ describe("token catalog local control routes", () => {
       routes: await baseRoutes(),
       inspection: createInspectionBinding(),
       queries: Object.freeze({
-        getRegistration() { throw new Error(secret); },
-        listRegistrations: ports.queries.listRegistrations,
+        getSelection() { throw new Error(secret); },
+        listSelections: ports.queries.listSelections,
       }),
       webStart: ports.webStart,
       interactiveCli: ports.interactiveCli,
@@ -388,7 +391,7 @@ describe("token catalog local control routes", () => {
     const result = await invoke(
       routes,
       "GET",
-      tokenCatalogControlRoutes.registration(chainId, tokenAddress),
+      tokenCatalogControlRoutes.selection(chainId, tokenAddress),
     );
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -396,14 +399,14 @@ describe("token catalog local control routes", () => {
       expect(JSON.stringify(result.problem)).not.toContain(secret);
     }
 
-    const list = await invoke(routes, "POST", tokenCatalogControlRoutes.registrationQueries, {});
+    const list = await invoke(routes, "POST", tokenCatalogControlRoutes.selectionQueries, {});
     expect(ports.calls.lists).toEqual([{ limit: 25 }]);
     expect(list).toEqual({
       ok: true,
       response: "canonical_json",
-      body: tokenCatalogApplicationContracts.registrations.parsePublicSuccess(
+      body: tokenCatalogApplicationContracts.selections.parsePublicSuccess(
         { limit: 25, cursor: null },
-        { registrations: [], nextCursor: null },
+        { selections: [], nextCursor: null },
       ),
     });
   });

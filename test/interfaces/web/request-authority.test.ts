@@ -76,17 +76,17 @@ describe("browser request authority", () => {
     const authority = createBrowserRequestAuthority();
     const oldPage = deferred<readonly string[]>();
     const newPage = deferred<readonly string[]>();
-    let registrations: readonly string[] = ["old-first-page"];
+    let selections: readonly string[] = ["old-first-page"];
     const oldRead = authority.beginRead();
     if (oldRead === undefined) throw new Error("Expected the old account read.");
     const oldCompletion = oldPage.promise.then((page) => {
-      if (authority.isCurrent(oldRead)) registrations = [...registrations, ...page];
+      if (authority.isCurrent(oldRead)) selections = [...selections, ...page];
     });
 
     const newRead = authority.beginRead();
     if (newRead === undefined) throw new Error("Expected the new account read.");
     const newCompletion = newPage.promise.then((page) => {
-      if (authority.isCurrent(newRead)) registrations = page;
+      if (authority.isCurrent(newRead)) selections = page;
     });
 
     newPage.resolve(["new-account"]);
@@ -95,24 +95,24 @@ describe("browser request authority", () => {
     await oldCompletion;
 
     expect(oldRead.signal?.aborted).toBe(true);
-    expect(registrations).toEqual(["new-account"]);
+    expect(selections).toEqual(["new-account"]);
   });
 
   it("keeps a refreshed page after an older same-account append resolves", async () => {
     const authority = createBrowserRequestAuthority();
     const oldAppend = deferred<readonly string[]>();
     const refresh = deferred<readonly string[]>();
-    let registrations: readonly string[] = ["before-refresh"];
+    let selections: readonly string[] = ["before-refresh"];
     const appendRead = authority.beginRead();
     if (appendRead === undefined) throw new Error("Expected the append read.");
     const appendCompletion = oldAppend.promise.then((page) => {
-      if (authority.isCurrent(appendRead)) registrations = [...registrations, ...page];
+      if (authority.isCurrent(appendRead)) selections = [...selections, ...page];
     });
 
     const refreshRead = authority.beginRead();
     if (refreshRead === undefined) throw new Error("Expected the refresh read.");
     const refreshCompletion = refresh.promise.then((page) => {
-      if (authority.isCurrent(refreshRead)) registrations = page;
+      if (authority.isCurrent(refreshRead)) selections = page;
     });
 
     refresh.resolve(["after-refresh"]);
@@ -120,7 +120,7 @@ describe("browser request authority", () => {
     oldAppend.resolve(["stale-append"]);
     await appendCompletion;
 
-    expect(registrations).toEqual(["after-refresh"]);
+    expect(selections).toEqual(["after-refresh"]);
   });
 
   it("invalidates an active read without closing the authority", () => {
