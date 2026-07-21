@@ -336,7 +336,7 @@ describe("capability binding authority", () => {
       capabilityId: "test.portlifecycle",
       inputSchema: z.object({ values: z.array(z.string()).min(1) }).strict(),
       dataSchema: z.object({ values: z.array(z.string()).min(1) }).strict(),
-      failureCodes: ["internal_error", "invalid_input"],
+      failureCodes: ["internal_error", "invalid_input", "result_too_large"],
       normalizeInput: (input) => ({ values: [...input.values].sort() }),
       conclusionIds: ["input_validated"],
       observationSlots: (input) => {
@@ -478,12 +478,14 @@ describe("capability binding authority", () => {
     expect(Reflect.ownKeys(chainStatusCapability)).toEqual([]);
     const snapshot = getCapabilityDefinitionSnapshot(chainStatusCapability);
     expect(snapshot.capabilityId).toBe("chain.status");
+    expect(snapshot.maximumSuccessUtf8Bytes).toBe(8_388_607);
     expect(snapshot.failureCodes).toEqual([
       "internal_error",
       "invalid_input",
       "port_conflict",
       "rate_limited",
       "request_aborted",
+      "result_too_large",
       "runtime_busy",
       "runtime_state_unavailable",
       "source_inconsistent",
@@ -879,7 +881,7 @@ describe("capability binding authority", () => {
       capabilityId: "test.validated",
       inputSchema: z.object({ value: z.string() }).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
-      failureCodes: ["internal_error", "invalid_input"],
+      failureCodes: ["internal_error", "invalid_input", "result_too_large"],
       conclusionIds: ["input_validated"],
       observationSlots: () => [{
         slotId: "input",
@@ -950,7 +952,7 @@ describe("capability binding authority", () => {
       capabilityId: "test.dynamicconclusion",
       inputSchema: z.object({ address: z.string().regex(/^0x[0-9a-f]{40}$/) }).strict(),
       dataSchema: z.object({ address: z.string().regex(/^0x[0-9a-f]{40}$/) }).strict(),
-      failureCodes: ["internal_error", "invalid_input"],
+      failureCodes: ["internal_error", "invalid_input", "result_too_large"],
       conclusionIds: ["address_observed:<address>"],
       expectedConclusionIds: (input) => [`address_observed:${input.address}`],
       observationSlots: () => [{
@@ -995,7 +997,7 @@ describe("capability binding authority", () => {
       capabilityId: "test.scopeexclusion",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
-      failureCodes: ["internal_error", "invalid_input"],
+      failureCodes: ["internal_error", "invalid_input", "result_too_large"],
       conclusionIds: ["value_observed"],
       observationSlots: () => [],
       observationExpectations: () => [],
@@ -1017,7 +1019,7 @@ describe("capability binding authority", () => {
       capabilityId: "test.slotownership",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
-      failureCodes: ["internal_error", "invalid_input"],
+      failureCodes: ["internal_error", "invalid_input", "result_too_large"],
       conclusionIds: ["value_observed"],
       observationSlots: () => [
         { slotId: "used", factId: "value", kind: "source", purpose: "used", sourceClass: "chain_rpc" },
@@ -1058,7 +1060,7 @@ describe("capability binding authority", () => {
       capabilityId: "test.factauthority",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
-      failureCodes: ["internal_error", "invalid_input"],
+      failureCodes: ["internal_error", "invalid_input", "result_too_large"],
       conclusionIds: ["input_validated"],
       observationSlots: () => [
         { slotId: "input", factId: "input", kind: "validated_input", purpose: "validated_input" },
@@ -1098,7 +1100,7 @@ describe("capability binding authority", () => {
       capabilityId: "test.emptyevidence",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
-      failureCodes: ["internal_error", "invalid_input"],
+      failureCodes: ["internal_error", "invalid_input", "result_too_large"],
       conclusionIds: ["value_not_present"],
       observationSlots: () => [{
         slotId: "value",

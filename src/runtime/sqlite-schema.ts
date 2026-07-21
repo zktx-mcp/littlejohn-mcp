@@ -9,7 +9,7 @@ import { walletConnectionFieldPresenceCheckSql } from "./wallet-connection-stora
 const sqlIdentifierPattern = /^[a-z][a-z0-9_]*$/u;
 const base64UrlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-export const databaseSchemaVersion = 5 as const;
+export const databaseSchemaVersion = 6 as const;
 
 const sqlColumn = (column: string): string => {
   if (!sqlIdentifierPattern.test(column)) throw new TypeError("SQLite column identifier is invalid.");

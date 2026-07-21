@@ -317,6 +317,7 @@ describe("interface error authority", () => {
       { code: "runtime_busy", httpStatus: 503, problemTitle: "Runtime busy", cliExitCode: 4 },
       { code: "runtime_state_unavailable", httpStatus: 500, problemTitle: "Runtime state unavailable", cliExitCode: 7 },
       { code: "request_aborted", httpStatus: 408, problemTitle: "Request aborted", cliExitCode: 4 },
+      { code: "result_too_large", httpStatus: 422, problemTitle: "Result too large", cliExitCode: 3 },
     ]);
   });
 
@@ -334,6 +335,13 @@ describe("interface error authority", () => {
     expect(toProblemDetails(failure)).toEqual(expected);
     expect(toProblemDetails(createRuntimeFailure("port_conflict")).detail)
       .toBe("The fixed Little John port is owned by an incompatible process.");
+    expect(toProblemDetails(createRuntimeFailure("result_too_large"))).toMatchObject({
+      status: 422,
+      title: "Result too large",
+      code: "result_too_large",
+      detail: "The canonical result exceeds the supported size.",
+      retryable: false,
+    });
     const runtime = (problemDetailsSchema as unknown as { _zod: { run: unknown } })._zod;
     const original = runtime.run;
     try {

@@ -69,6 +69,16 @@ describe("release fake boundaries", () => {
         rpc.token.address,
         rpc.canonicalBlockReference,
       ])).resolves.toMatchObject({ result: rpc.token.runtimeCode });
+      await expect(rpcRequest(rpc.url, "eth_getBalance", [
+        rpc.semanticReads.account.address,
+        rpc.canonicalBlockReference,
+      ])).resolves.toMatchObject({
+        result: `0x${BigInt(rpc.semanticReads.account.nativeBalanceRaw).toString(16)}`,
+      });
+      await expect(rpcRequest(rpc.url, "eth_getCode", [
+        rpc.semanticReads.contract.address,
+        rpc.canonicalBlockReference,
+      ])).resolves.toMatchObject({ result: rpc.semanticReads.contract.runtimeCode });
       for (const [selector, result] of [
         ["0x18160ddd", `0x${BigInt(rpc.token.totalSupplyRaw).toString(16).padStart(64, "0")}`],
         ["0x313ce567", `0x${BigInt(rpc.token.decimals).toString(16).padStart(64, "0")}`],
@@ -82,6 +92,37 @@ describe("release fake boundaries", () => {
         error: { code: -32601 },
       });
       expect(() => rpc.assertNoUnexpectedMethods()).toThrow("eth_sendTransaction");
+    } finally {
+      await rpc.close();
+    }
+  });
+
+  it("serves one exact large included transaction and rejects adjacent identities", async () => {
+    const rpc = await startFakeRpc();
+    try {
+      const transaction = await rpcRequest(rpc.url, "eth_getTransactionByHash", [
+        rpc.semanticReads.transaction.transactionHash,
+      ]) as { result?: { input?: unknown } };
+      expect(transaction.result?.input).toBe(rpc.semanticReads.transaction.input);
+
+      const receipt = await rpcRequest(rpc.url, "eth_getTransactionReceipt", [
+        rpc.semanticReads.transaction.transactionHash,
+      ]) as { result?: { logs?: readonly { data?: unknown }[] } };
+      expect(receipt.result?.logs?.[0]?.data).toBe(rpc.semanticReads.transaction.undecodedLogData);
+      expect(receipt.result?.logs?.[1]).toMatchObject({
+        address: rpc.semanticReads.transaction.transferToken,
+      });
+
+      for (const [method, params] of [
+        ["eth_getTransactionByHash", [`0x${"76".repeat(32)}`]],
+        ["eth_getTransactionReceipt", [`0x${"76".repeat(32)}`]],
+        ["eth_getBlockByHash", [rpc.canonicalBlockReference.blockHash, true]],
+      ] as const) {
+        await expect(rpcRequest(rpc.url, method, params)).resolves.toMatchObject({
+          error: { code: -32601 },
+        });
+      }
+      expect(() => rpc.assertNoUnexpectedMethods()).toThrow("eth_getTransactionByHash");
     } finally {
       await rpc.close();
     }

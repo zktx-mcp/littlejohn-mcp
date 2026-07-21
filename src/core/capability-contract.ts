@@ -26,6 +26,8 @@ export const readCapabilityLimits = Object.freeze({
   accountTokenAddresses: 50,
 });
 
+export const maximumSuccessUtf8Bytes = 8_388_607 as const;
+
 export const capabilityIdPatternSource =
   "[a-z][a-z0-9]*(?:_[a-z0-9]+)*\\.[a-z][a-z0-9]*(?:_[a-z0-9]+)*";
 

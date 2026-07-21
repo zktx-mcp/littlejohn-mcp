@@ -49,6 +49,7 @@ describe("application error authority", () => {
     expect(coreErrorRegistry.values().map((definition) => definition.code)).toEqual([
       "internal_error",
       "invalid_input",
+      "result_too_large",
     ]);
     expect(() => coreErrorRegistry.extend([{
       code: "internal_error",
@@ -65,6 +66,7 @@ describe("application error authority", () => {
     expect(extended.values().map((definition) => definition.code)).toEqual([
       "internal_error",
       "invalid_input",
+      "result_too_large",
       "source_unavailable",
     ]);
     expect(() => assertDirectApplicationErrorRegistryExtension(coreErrorRegistry, extended)).not.toThrow();

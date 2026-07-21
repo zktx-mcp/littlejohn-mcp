@@ -12,7 +12,15 @@ export const internalErrorDefinition = Object.freeze({
   retryable: false,
 } as const);
 
+export const resultTooLargeErrorDefinition = Object.freeze({
+  code: "result_too_large",
+  category: "domain",
+  message: "The canonical result exceeds the supported size.",
+  retryable: false,
+} as const);
+
 export const coreErrorDefinitions = Object.freeze([
   invalidInputErrorDefinition,
   internalErrorDefinition,
+  resultTooLargeErrorDefinition,
 ] as const);

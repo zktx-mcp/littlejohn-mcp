@@ -6,6 +6,8 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  canonicalJsonStringify,
+  canonicalSha256,
   chainAnchorSchema,
   parseCapabilityDataAt,
   parseEvmAddressInput,
@@ -13,6 +15,7 @@ import {
   parseHash32,
   parseUtcTimestamp,
   walletConnectionCapability,
+  type CanonicalJson,
   type EvmAccountIdentity,
 } from "../../src/core/index.js";
 import {
@@ -27,6 +30,7 @@ import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.
 import {
   tokenCatalogOperationIdSchema,
   tokenCatalogOperationSchema,
+  tokenCatalogDigestVersions,
   tokenCatalogReviewDigest,
   tokenInspectionDigest,
   tokenSelectionRevisionSchema,
@@ -206,6 +210,46 @@ const failureCode = (effect: () => unknown): string | undefined => {
 };
 
 describe("token selection persistence", () => {
+  it("rejects a stored core-5 token inspection under the current schema", async () => {
+    const { database, path } = await openDatabase();
+    const inspection = await createInspectionSuccess({
+      asset: {
+        kind: "erc20",
+        chainId,
+        address: parseEvmAddressInput(`0x${"87".repeat(20)}`),
+      },
+      block: { kind: "latest" },
+    });
+    database.close();
+
+    const oldResult = JSON.parse(canonicalJsonStringify(inspection as unknown as CanonicalJson)) as {
+      meta: { contractVersion: string };
+    };
+    oldResult.meta.contractVersion = "5";
+    const resultJson = canonicalJsonStringify(oldResult as unknown as CanonicalJson);
+    const inspectionDigest = `0x${canonicalSha256({
+      digestKind: "token_inspection",
+      digestVersion: tokenCatalogDigestVersions.inspection,
+      result: oldResult as unknown as CanonicalJson,
+    })}`;
+
+    const raw = new Database(path);
+    raw.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(chainId, inspection.data.asset.address);
+    raw.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(chainId, inspection.data.asset.address);
+    raw.prepare(`INSERT INTO token_contract_inspection(
+      chain_id, contract_address, inspection_digest, result_json
+    ) VALUES (?, ?, ?, ?)`)
+      .run(chainId, inspection.data.asset.address, inspectionDigest, resultJson);
+    raw.close();
+
+    let failure: unknown;
+    try { await ProductDatabase.open(path, now); }
+    catch (error) { failure = error; }
+    expect(getRuntimeOperationFailure(failure)?.error.code).toBe("runtime_state_unavailable");
+  });
+
   it("rejects a structural copy before changing the durable official snapshot", async () => {
     const { database, path } = await openDatabase();
     const observation = await sourceObservation();

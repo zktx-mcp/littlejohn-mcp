@@ -157,6 +157,11 @@ Read-result consumers revalidate the normalized request, result chain scope,
 and evidence-anchor chain scope through the same definition-owned checks used
 by the local producer. Observation-claim binding remains producer-only because
 those claims do not cross the transport boundary.
+The semantic-read result owner accepts a complete canonical success only when
+its UTF-8 JSON representation is at most 8,388,607 bytes. Every generated read
+projection exposes that aggregate limit and the `result_too_large` failure. The
+HTTP public-read body limit is the canonical result limit plus its one-byte line
+framing; transports do not reclassify an oversized semantic result.
 The runtime support manifest remains the machine authority for binding
 availability, and its public projection is
 `docs/PRODUCT_POLICY.md#current-support`. No signature request, transaction
@@ -350,7 +355,7 @@ to contain a malicious process already running with the same user authority.
 
 - The local control credential contains 256 random bits, is encoded as
   unpadded base64url, and remains stable across compatible owner takeover.
-- The runtime protocol version is `4`. It identifies the compatible local-owner
+- The runtime protocol version is `7`. It identifies the compatible local-owner
   wire contract; an incompatible change replaces this value. Profile ID and
   owner instance ID each
   contain 128 random bits encoded as unpadded base64url. Owner revision is an
@@ -494,7 +499,7 @@ creators converge on the final database rather than choosing or repairing a
 staging database.
 
 SQLite has one current schema definition. The SQLite schema module owns
-`databaseSchemaVersion`, currently `5`, and standard SQLite `user_version`
+`databaseSchemaVersion`, currently `6`, and standard SQLite `user_version`
 equals that value. The exact current table set must also be present. A mismatch
 fails closed and never invokes a migration, old-schema reader, conversion,
 repair, or automatic replacement. A development schema change requires deleting

@@ -82,9 +82,9 @@ const awaitingOperation = (input: Readonly<{
 });
 
 describe("token catalog contracts", () => {
-  it("owns exactly the seven selection capability identifiers at contract version 5", () => {
-    expect(coreContractVersion).toBe("5");
-    expect(getCapabilityDefinitionSnapshot(tokenInspectCapability).contractVersion).toBe("5");
+  it("owns exactly the seven selection capability identifiers at contract version 6", () => {
+    expect(coreContractVersion).toBe("6");
+    expect(getCapabilityDefinitionSnapshot(tokenInspectCapability).contractVersion).toBe("6");
     expect(tokenCatalogCapabilityIds).toEqual([
       "token.cancel_operation",
       "token.inspect",
@@ -94,7 +94,7 @@ describe("token catalog contracts", () => {
       "token.start_addition",
       "token.start_removal",
     ]);
-    expect(tokenCatalogContractProjection.contractVersion).toBe("5");
+    expect(tokenCatalogContractProjection.contractVersion).toBe("6");
     expect(tokenCatalogContractProjectionDigest).toMatch(/^0x[0-9a-f]{64}$/u);
     expect(Object.isFrozen(tokenCatalogContractProjection)).toBe(true);
     expect(tokenCatalogErrorDefinitions).toContainEqual({

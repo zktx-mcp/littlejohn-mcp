@@ -41,4 +41,5 @@ export const runtimeInterfaceErrorMappingDefinitions = Object.freeze([
   { code: "runtime_busy", httpStatus: 503, problemTitle: "Runtime busy", cliExitCode: 4 },
   { code: "runtime_state_unavailable", httpStatus: 500, problemTitle: "Runtime state unavailable", cliExitCode: 7 },
   { code: "request_aborted", httpStatus: 408, problemTitle: "Request aborted", cliExitCode: 4 },
+  { code: "result_too_large", httpStatus: 422, problemTitle: "Result too large", cliExitCode: 3 },
 ] as const);

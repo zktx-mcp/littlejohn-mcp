@@ -7,7 +7,7 @@ import {
   contractInspectCapability,
   getCapabilityDefinitionSnapshot,
   operationIdSchema,
-  readCapabilityCommonFailureCodes,
+  readBoundaryFailureCodes,
   transactionInspectCapability,
   walletConnectionCapability,
   type ApplicationErrorRegistry,
@@ -272,7 +272,7 @@ export const interfaceReadCapabilityRegistry = new CapabilityRegistry(
 );
 
 export const capabilityCatalogInterface = Object.freeze({
-  failureCodes: readCapabilityCommonFailureCodes,
+  failureCodes: readBoundaryFailureCodes,
   http: Object.freeze({ method: "GET" as const, path: "/api/v1/capabilities" }),
   mcp: Object.freeze({
     name: "read_list_capabilities",

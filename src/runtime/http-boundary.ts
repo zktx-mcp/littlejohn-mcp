@@ -1,3 +1,5 @@
+import { maximumSuccessUtf8Bytes } from "../core/index.js";
+
 export const fixedHost = "127.0.0.1";
 export const fixedPort = 46630;
 export const fixedOrigin = `http://${fixedHost}:${fixedPort}`;
@@ -5,7 +7,7 @@ export const fixedHostHeader = `${fixedHost}:${fixedPort}`;
 
 export const requestBodyLimitBytes = 65_536;
 export const internalResponseLimitBytes = 65_536;
-export const publicReadResponseLimitBytes = 8 * 1024 * 1024;
+export const publicReadResponseLimitBytes = maximumSuccessUtf8Bytes + 1;
 export const jsonContentType = "application/json";
 export const problemJsonContentType = "application/problem+json";
 export const noStoreCacheControl = "no-store";

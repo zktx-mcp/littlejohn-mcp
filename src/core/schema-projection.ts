@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { canonicalJsonStringify, canonicalSha256, type CanonicalJson } from "./canonical-json.js";
 import { coreContractVersion } from "./contract.js";
+import { maximumSuccessUtf8Bytes } from "./capability-contract.js";
 import { createSha256HexSchema } from "./digests.js";
 import {
   CapabilityRegistry,
@@ -32,6 +33,7 @@ const createCapabilityProjectionSchemaSet = () => {
   const capabilitySchemaProjection = jsonObject({
       capabilityId: createCapabilityIdSchema(),
       contractVersion: z.literal(coreContractVersion),
+      maximumSuccessUtf8Bytes: z.literal(maximumSuccessUtf8Bytes),
       input: projectedSchema,
       data: projectedSchema,
       success: projectedSchema,
@@ -66,6 +68,7 @@ const projectCapability = (definition: AnyReadCapabilityDefinition): CapabilityS
   return authoritySchemas.capabilitySchemaProjection.parse({
     capabilityId: snapshot.capabilityId,
     contractVersion: coreContractVersion,
+    maximumSuccessUtf8Bytes: snapshot.maximumSuccessUtf8Bytes,
     input: projectSchema(snapshot.inputSchema, `${base}:input:${schemaVersion}`),
     data: projectSchema(snapshot.dataSchema, `${base}:data:${schemaVersion}`),
     success: projectSchema(snapshot.successSchema, `${base}:success:${schemaVersion}`),

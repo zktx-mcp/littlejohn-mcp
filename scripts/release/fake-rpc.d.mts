@@ -23,6 +23,43 @@ export interface FakeRpcHandle {
     readonly blockHash: string;
     readonly requireCanonical: true;
   }>;
+  readonly semanticReads: Readonly<{
+    readonly account: Readonly<{
+      readonly address: string;
+      readonly nativeBalanceRaw: string;
+      readonly token: FakeRpcHandle["token"];
+    }>;
+    readonly contract: Readonly<{
+      readonly address: string;
+      readonly runtimeCode: string;
+      readonly byteLength: string;
+      readonly codeHash: string;
+    }>;
+    readonly transaction: Readonly<{
+      readonly transactionHash: string;
+      readonly from: string;
+      readonly to: string;
+      readonly valueRaw: string;
+      readonly input: string;
+      readonly nonce: string;
+      readonly gasLimitRaw: string;
+      readonly type: string;
+      readonly gasPriceRaw: string;
+      readonly blockNumber: string;
+      readonly transactionIndex: string;
+      readonly cumulativeGasUsedRaw: string;
+      readonly gasUsedRaw: string;
+      readonly accessListAddress: string;
+      readonly accessListStorageKey: string;
+      readonly undecodedLogData: string;
+      readonly transferToken: string;
+      readonly transferFrom: string;
+      readonly transferTo: string;
+      readonly transferAmountRaw: string;
+      readonly transaction: Readonly<Record<string, unknown>>;
+      readonly receipt: Readonly<Record<string, unknown>>;
+    }>;
+  }>;
   readonly calls: readonly Readonly<{
     readonly method: string;
     readonly params: readonly unknown[];

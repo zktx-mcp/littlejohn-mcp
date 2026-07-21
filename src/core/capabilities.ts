@@ -64,7 +64,7 @@ const canonicalFailureCodes = (codes: readonly string[]): readonly SnakeCaseCode
   sortUniqueStrings(codes.map((code) => capabilityPrimitives.snakeCaseCode.parse(code))),
 );
 
-export const readCapabilityCommonFailureCodes = canonicalFailureCodes([
+export const readBoundaryFailureCodes = canonicalFailureCodes([
   "internal_error",
   "invalid_input",
   "port_conflict",
@@ -73,8 +73,13 @@ export const readCapabilityCommonFailureCodes = canonicalFailureCodes([
   "runtime_state_unavailable",
 ]);
 
+const semanticReadFailureCodes = canonicalFailureCodes([
+  ...readBoundaryFailureCodes,
+  "result_too_large",
+]);
+
 const rpcReadFailureCodes = canonicalFailureCodes([
-  ...readCapabilityCommonFailureCodes,
+  ...semanticReadFailureCodes,
   "rate_limited",
   "source_inconsistent",
   "source_unavailable",
@@ -982,7 +987,7 @@ export const walletConnectionCapability = defineReadCapability<WalletConnectionI
   capabilityId: "wallet.connection",
   inputSchema: walletConnectionInputSchema,
   dataSchema: walletConnectionDataSchema,
-  failureCodes: readCapabilityCommonFailureCodes,
+  failureCodes: semanticReadFailureCodes,
   conclusionIds: ["wallet_connection_state"],
   observationSlots: () => [
     sourceSlot("wallet_sdk", "wallet_connection", "wallet_sdk_sessions", "wallet_sdk"),

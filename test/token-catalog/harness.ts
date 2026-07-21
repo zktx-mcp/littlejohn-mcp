@@ -38,8 +38,12 @@ export const chainId = parseEvmChainId("eip155:4663");
 
 export interface InspectionHarnessOptions {
   readonly chainRpc?: Readonly<{ owner: string; reference: SourceReference }>;
+  readonly decimals?: string;
   readonly name?: string;
+  readonly runtimeByteLength?: string;
+  readonly standards?: TokenInspectionData["standards"];
   readonly symbol?: string;
+  readonly totalSupply?: string;
 }
 
 export const createInspectionBinding = (
@@ -78,7 +82,10 @@ export const createInspectionBinding = (
       source,
       claims: [{ role: "token_inspection_block", value: block as unknown as CanonicalJson, chainAnchor: block }],
     });
-    const runtimeCode = { byteLength: "2", codeHash: `0x${"cd".repeat(32)}` } as const;
+    const runtimeCode = {
+      byteLength: options.runtimeByteLength ?? "2",
+      codeHash: `0x${"cd".repeat(32)}`,
+    } as const;
     observations.record("runtime_code", {
       source,
       claims: [{
@@ -90,11 +97,21 @@ export const createInspectionBinding = (
     });
     const supplyObservationId = observations.record("total_supply", {
       source,
-      claims: [{ role: "token_total_supply", value: "1000000", asset: input.asset, chainAnchor: block }],
+      claims: [{
+        role: "token_total_supply",
+        value: options.totalSupply ?? "1000000",
+        asset: input.asset,
+        chainAnchor: block,
+      }],
     });
     const decimalsObservationId = observations.record("decimals", {
       source,
-      claims: [{ role: "token_decimals", value: "18", asset: input.asset, chainAnchor: block }],
+      claims: [{
+        role: "token_decimals",
+        value: options.decimals ?? "18",
+        asset: input.asset,
+        chainAnchor: block,
+      }],
     });
     const nameObservationId = observations.record("name", {
       source,
@@ -106,8 +123,8 @@ export const createInspectionBinding = (
     });
     const totalSupply = {
       asset: input.asset,
-      raw: "1000000",
-      decimals: { status: "available", value: "18", observationId: decimalsObservationId },
+      raw: options.totalSupply ?? "1000000",
+      decimals: { status: "available", value: options.decimals ?? "18", observationId: decimalsObservationId },
       quantityObservationId: supplyObservationId,
     };
     const data: TokenInspectionData = tokenInspectionDataSchema.parse({
@@ -119,7 +136,7 @@ export const createInspectionBinding = (
         name: { status: "available", value: options.name ?? "Example Token", observationId: nameObservationId },
         symbol: { status: "available", value: options.symbol ?? "EXT", observationId: symbolObservationId },
       },
-      standards: tokenStandardObservationResultSchema.parse({
+      standards: options.standards ?? tokenStandardObservationResultSchema.parse({
         asset: input.asset,
         block,
         standards: [

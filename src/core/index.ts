@@ -75,6 +75,7 @@ export type {
 export {
   assertCapabilitySuccessChainScope,
   createCapabilitySuccessSchema,
+  maximumSuccessUtf8Bytes,
 } from "./capability-contract.js";
 export type { CapabilitySuccess } from "./capability-contract.js";
 export { createSha256HexSchema } from "./digests.js";
@@ -85,7 +86,7 @@ export {
   chainStatusCapability,
   contractInspectCapability,
   createAccountBalanceTokenEvidenceIdentity,
-  readCapabilityCommonFailureCodes,
+  readBoundaryFailureCodes,
   readCapabilityLimits,
   readCapabilityRegistry,
   transactionInspectCapability,

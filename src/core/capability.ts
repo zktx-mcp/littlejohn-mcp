@@ -7,6 +7,7 @@ import {
   capabilityIdSchema,
   createCapabilityIdSchema,
   createCapabilitySuccessSchema,
+  maximumSuccessUtf8Bytes,
   type CapabilityId,
   type CapabilitySuccess,
 } from "./capability-contract.js";
@@ -16,7 +17,12 @@ export {
   createCapabilityIdSchema,
 } from "./capability-contract.js";
 export type { CapabilityId } from "./capability-contract.js";
-import { canonicalJsonStringify, captureCanonicalJson, type CanonicalJson } from "./canonical-json.js";
+import {
+  canonicalJsonStringify,
+  captureCanonicalJson,
+  utf8ByteLength,
+  type CanonicalJson,
+} from "./canonical-json.js";
 import { coreContractVersion } from "./contract.js";
 import { sha256Algorithm } from "./digests.js";
 import {
@@ -346,6 +352,7 @@ const compileConclusionIdMatcher = (declaration: string): ((value: string) => bo
 export interface CapabilityDefinitionSnapshot {
   readonly capabilityId: CapabilityId;
   readonly contractVersion: typeof coreContractVersion;
+  readonly maximumSuccessUtf8Bytes: typeof maximumSuccessUtf8Bytes;
   readonly failureCodes: readonly SnakeCaseCode[];
   readonly inputSchema: CanonicalJson;
   readonly dataSchema: CanonicalJson;
@@ -410,11 +417,15 @@ export const safeParseCapabilityData = <Definition extends AnyReadCapabilityDefi
 ): z.ZodSafeParseResult<CapabilityData<Definition>> =>
   definitionRecord(definition).dataParser(value) as z.ZodSafeParseResult<CapabilityData<Definition>>;
 
-const validateSuccessEnvelope = <Input, Data>(
+type CapabilityResultValidation<Data> =
+  | Readonly<{ readonly status: "success"; readonly success: CapabilitySuccess<Data> }>
+  | Readonly<{ readonly status: "result_too_large" }>;
+
+const validateCapabilityResult = <Input, Data>(
   record: InternalDefinitionRecord<Input, Data>,
   input: Input,
   success: CapabilitySuccess<Data>,
-): CapabilitySuccess<Data> => {
+): CapabilityResultValidation<Data> => {
   const parsedData = record.dataParser(success.data);
   if (!parsedData.success) throw parsedData.error;
   const dataContext = Object.freeze({ evaluatedAt: success.meta.evaluatedAt });
@@ -426,10 +437,14 @@ const validateSuccessEnvelope = <Input, Data>(
   record.validateSuccess(parsedData.data, successContext);
   record.validateRequest(input, parsedData.data);
   assertCapabilitySuccessChainScope(success);
-  return deepFreezeValue({
+  const validated = deepFreezeValue({
     ...success,
     data: parsedData.data,
   });
+  if (utf8ByteLength(canonicalJsonStringify(validated as unknown as CanonicalJson)) > maximumSuccessUtf8Bytes) {
+    return Object.freeze({ status: "result_too_large" });
+  }
+  return Object.freeze({ status: "success", success: validated });
 };
 
 export const parseCapabilitySuccess = <Definition extends AnyReadCapabilityDefinition>(
@@ -442,7 +457,11 @@ export const parseCapabilitySuccess = <Definition extends AnyReadCapabilityDefin
   if (!parsedInput.success) throw parsedInput.error;
   const parsed = record.successParser(value);
   if (!parsed.success) throw parsed.error;
-  return validateSuccessEnvelope(record, parsedInput.data, parsed.data) as CapabilitySuccess<CapabilityData<Definition>>;
+  const result = validateCapabilityResult(record, parsedInput.data, parsed.data);
+  if (result.status === "result_too_large") {
+    throw new TypeError("The canonical capability success exceeds the supported size.");
+  }
+  return result.success as CapabilitySuccess<CapabilityData<Definition>>;
 };
 
 export const parseCapabilityDataAt = <Definition extends AnyReadCapabilityDefinition>(
@@ -575,7 +594,8 @@ export const defineReadCapability = <Input, Data>(options: {
   const failureCodes = canonicalUnique(failureCodeInput) as readonly SnakeCaseCode[];
   if (failureCodes.length !== failureCodeInput.length) throw new TypeError("Duplicate capability failure code.");
   if (!failureCodes.includes("invalid_input" as SnakeCaseCode) ||
-    !failureCodes.includes("internal_error" as SnakeCaseCode)) {
+    !failureCodes.includes("internal_error" as SnakeCaseCode) ||
+    !failureCodes.includes("result_too_large" as SnakeCaseCode)) {
     throw new TypeError("Capability failure codes must include canonical boundary failures.");
   }
   const conclusionIdInput = options.conclusionIds.map((id) => binderPrimitiveSchemas.fixedIdentifier.parse(id));
@@ -660,6 +680,7 @@ export const defineReadCapability = <Input, Data>(options: {
   const snapshot = deepFreezeValue({
     capabilityId,
     contractVersion: coreContractVersion,
+    maximumSuccessUtf8Bytes,
     failureCodes,
     inputSchema: inputSchemaSnapshot,
     dataSchema: dataSchemaSnapshot,
@@ -1345,7 +1366,10 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
     };
     const parsed = definition.successParser(success);
     if (!parsed.success) return internalFailure(record.errorRegistry);
-    return validateSuccessEnvelope(definition, validatedInput, parsed.data) as CapabilitySuccess<CapabilityData<Definition>>;
+    const validated = validateCapabilityResult(definition, validatedInput, parsed.data);
+    return validated.status === "result_too_large"
+      ? createApplicationFailure(record.errorRegistry, "result_too_large")
+      : validated.success as CapabilitySuccess<CapabilityData<Definition>>;
   } catch {
     return internalFailure(record.errorRegistry);
   }

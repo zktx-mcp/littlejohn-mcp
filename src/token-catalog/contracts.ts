@@ -80,6 +80,7 @@ const inspectionFailureCodes = Object.freeze([
   "not_found",
   "rate_limited",
   "request_aborted",
+  "result_too_large",
   "runtime_busy",
   "source_inconsistent",
   "source_unavailable",

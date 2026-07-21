@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   canonicalSha256,
+  capabilitySchemaProjectionSchema,
   coreContractVersion,
   getCapabilityDefinitionSnapshot,
   projectCapabilities,
@@ -14,29 +15,29 @@ import {
 describe("generated capability projections", () => {
   const golden = {
     "account.balance": [
-      "d47419db7957c196358b998cdbb121b2e3c23c42af4f9d88c3522f89e96f6d5f",
-      "9bbefe9fbd6d859223ef6ab301117c840bd5b9a388e5f5712f2a85f97112827c",
-      "47b1f490c4c05288472ed7ce0f06bc54f7c06dcf010196778989621535f910fe",
+      "be04aa06e5915821efc4e28602e175221b68fa0ad436ab44d98a171b36f35351",
+      "9a1ce3a6a5e9b681f20c1e84b2910683b4919403767cb2c553e28153d67d0e94",
+      "5cc7d60863a2f7413f7747e0a141b4b3ca85a843902d016863d7dc6bcbf6ba09",
     ],
     "chain.status": [
-      "3c5ab7cf1693898aba3d181330cd72fc0dd1c923ffe7b6a1fd107b6fade9e6c8",
-      "14ed15b01ee40b0d23cbb2bf842373dd4ed59a5a8cdfbefb00c0b442fa8ad0ac",
-      "f11f92a04cc45ef4e0488a6f8a16bca9c4c246825438b46f0853b6b1b42586bb",
+      "ed12e01397346c7998e9950e7e53e14206b59a9acca7ec2c2b83c7a6f8fe16aa",
+      "698b99fae23384a0d8f6f1dfe5ca2c5c36980aab9398827e81670d47dcb6cde9",
+      "30cf139e6492bea7ca1d3186724d4a5461912f0eb5dc866ae657bf1c80d7777f",
     ],
     "contract.inspect": [
-      "6587dab0e4cd23e2ac03e9e2c6b7326907cd5eeb43b8593cb48e38b3115d29cb",
-      "8113413e53da744a14476e634b902ed75b9c6f0161888349a1a6919b5a87a65d",
-      "60bf7ab3ad774dcf19244b877fef4072ee38ab371386583e65b4cec31a58d3d5",
+      "2ba906c7ec25e3c13bf18d4d0cff6aa9662f80b1cafce5f49254f869bc951ffa",
+      "f0b7f78bacb177cdca005d2750ef49c980ce5927ba0a1071ccde2bc8d9ac0dec",
+      "b16d624488de290a4bcabaa95e6efb70721dbae5b41438039feb019055be3228",
     ],
     "transaction.inspect": [
-      "b7e558c558ce414b34d024b7c527083432f918642d91523eb09430bab5a9f47e",
-      "583e8d519ce80c3f59ae3c6450a16d57385f4ae747e9064fb71204c4f98fd16f",
-      "4ec7e92755b47f3a94a64f77400c336b203f91b9c3ddb4b7c4d160853e16be15",
+      "54c2075cb9c0db34bd477d2caa27d5c68cb52d9f6e9743152756271f61011458",
+      "ae5c17c386bf58fb547a32ef875e9270815d8f53594557ae10e40f58c91a4048",
+      "0db57cd02d216ce3e97c60a2a2571ca1bc6323993871c711ed38a1d747069e78",
     ],
     "wallet.connection": [
-      "ee4e3353294e3a170d161f652ff2a3bd94e1c66d583fdd7fe9be18500ad3f417",
-      "9bef4875ce260d0c90fce4eab584bd46662ab238689ccfbb3559b6290324b723",
-      "4005bb23b6eed1405054fddc38cfa758072e4afbe4f6b5a8b9f5ae96874be5b1",
+      "e062d8dc5c584cfc22635628d10461c52ab38385795ae8f1db80823a3d909793",
+      "739ab8c3e2e3077f5baad8af7f0d2ea908368b58602deb6152a4dbb5df007b77",
+      "a4c3d451c7ca8659192d57101d6f353d3b13401df0fa9fd87cc4fd2fb3fa52cd",
     ],
   } as const;
 
@@ -60,12 +61,14 @@ describe("generated capability projections", () => {
         `urn:littlejohn:capability:${projection.capabilityId}:success:v${coreContractVersion}`,
       );
       expect(projection.contractVersion).toBe(coreContractVersion);
+      expect(projection.maximumSuccessUtf8Bytes).toBe(8_388_607);
       expect(canonicalSha256(projection.input.schema)).toBe(projection.input.digest);
       expect(canonicalSha256(projection.data.schema)).toBe(projection.data.digest);
       expect(canonicalSha256(projection.success.schema)).toBe(projection.success.digest);
       expect(projection.failureCodes).toEqual(
         getCapabilityDefinitionSnapshot(definition).failureCodes,
       );
+      expect(projection.failureCodes.filter((code) => code === "result_too_large")).toHaveLength(1);
       expect(Object.isFrozen(projection.failureCodes)).toBe(true);
     }
   });
@@ -76,6 +79,18 @@ describe("generated capability projections", () => {
       expect([projection.input.digest, projection.data.digest, projection.success.digest]).toEqual(
         golden[projection.capabilityId as keyof typeof golden],
       );
+    }
+  });
+
+  it("makes the aggregate success budget part of every canonical projection", () => {
+    for (const projection of projectCapabilities(readCapabilityRegistry)) {
+      expect(capabilitySchemaProjectionSchema.safeParse(projection).success).toBe(true);
+      const { maximumSuccessUtf8Bytes: _omitted, ...missing } = projection;
+      expect(capabilitySchemaProjectionSchema.safeParse(missing).success).toBe(false);
+      expect(capabilitySchemaProjectionSchema.safeParse({
+        ...projection,
+        maximumSuccessUtf8Bytes: 8_388_608,
+      }).success).toBe(false);
     }
   });
 

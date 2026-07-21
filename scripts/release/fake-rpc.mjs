@@ -55,6 +55,18 @@ const officialTokens = Object.freeze([
   },
 ]);
 const customTokenAddress = `0x${"28".repeat(20)}`;
+const inspectedContractAddress = `0x${"29".repeat(20)}`;
+const inspectedContractRuntimeCode = "0x600060005260206000f3";
+const inspectedContractCodeHash = "0x52262f711ffacf04147d1bc4b323c69df60a55163b5b86666f3c227f25a34008";
+const inspectedTransactionHash = `0x${"77".repeat(32)}`;
+const inspectedTransactionFrom = `0x${"44".repeat(20)}`;
+const inspectedTransactionTo = `0x${"55".repeat(20)}`;
+const inspectedTransactionValue = "9007199254740993";
+const inspectedTransactionInput = `0x${"ab".repeat(2_000_000)}`;
+const undecodedLogData = `0x${"cd".repeat(2_000_000)}`;
+const accessListStorageKey = `0x${"66".repeat(32)}`;
+const undecodedLogTopic = `0x${"aa".repeat(32)}`;
+const erc20TransferTopic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const tokenAddresses = Object.freeze([
   ...officialTokens.map((token) => token.address),
   customTokenAddress,
@@ -103,6 +115,69 @@ if (fakeOfficialCandidate === undefined || fakeOfficialCandidateUid === undefine
 const verifiedFakeOfficialCandidate = Object.freeze({
   ...fakeOfficialCandidate,
   assetUid: fakeOfficialCandidateUid,
+});
+
+const indexedAddress = (address) => `0x${address.slice(2).padStart(64, "0")}`;
+const inspectedTransaction = Object.freeze({
+  hash: inspectedTransactionHash,
+  from: inspectedTransactionFrom,
+  to: inspectedTransactionTo,
+  value: `0x${BigInt(inspectedTransactionValue).toString(16)}`,
+  input: inspectedTransactionInput,
+  nonce: "0x2",
+  gas: "0x7a1200",
+  type: "0x1",
+  chainId: "0x1237",
+  accessList: [{ address: inspectedContractAddress, storageKeys: [accessListStorageKey] }],
+  gasPrice: "0x3b9aca00",
+  blockNumber,
+  blockHash,
+  transactionIndex: "0x0",
+});
+const inspectedTransactionReceipt = Object.freeze({
+  transactionHash: inspectedTransactionHash,
+  from: inspectedTransactionFrom,
+  to: inspectedTransactionTo,
+  type: "0x1",
+  transactionIndex: "0x0",
+  blockNumber,
+  blockHash,
+  status: "0x1",
+  cumulativeGasUsed: "0x7a1200",
+  gasUsed: "0x6acfc0",
+  effectiveGasPrice: "0x3b9aca00",
+  contractAddress: null,
+  logs: [{
+    address: inspectedContractAddress,
+    topics: [undecodedLogTopic],
+    data: undecodedLogData,
+    logIndex: "0x0",
+    transactionIndex: "0x0",
+    transactionHash: inspectedTransactionHash,
+    blockNumber,
+    blockHash,
+    removed: false,
+  }, {
+    address: fakeToken.address,
+    topics: [
+      erc20TransferTopic,
+      indexedAddress(inspectedTransactionFrom),
+      indexedAddress(inspectedTransactionTo),
+    ],
+    data: uint256Result(fakeToken.accountBalanceRaw),
+    logIndex: "0x1",
+    transactionIndex: "0x0",
+    transactionHash: inspectedTransactionHash,
+    blockNumber,
+    blockHash,
+    removed: false,
+  }],
+});
+const inspectedTransactionBlock = Object.freeze({
+  number: blockNumber,
+  hash: blockHash,
+  timestamp: blockTimestamp,
+  transactions: [inspectedTransactionHash],
 });
 
 const balanceOfCalls = new Set(walletAddresses.map(
@@ -207,9 +282,25 @@ const resultFor = (method, params) => {
       number: blockNumber,
       hash: blockHash,
       timestamp: blockTimestamp,
-      transactions: [],
+      transactions: [inspectedTransactionHash],
     };
   }
+  if (
+    method === "eth_getBlockByHash" &&
+    params.length === 2 &&
+    params[0] === blockHash &&
+    params[1] === false
+  ) return inspectedTransactionBlock;
+  if (
+    method === "eth_getTransactionByHash" &&
+    params.length === 1 &&
+    params[0] === inspectedTransactionHash
+  ) return inspectedTransaction;
+  if (
+    method === "eth_getTransactionReceipt" &&
+    params.length === 1 &&
+    params[0] === inspectedTransactionHash
+  ) return inspectedTransactionReceipt;
   if (
     method === "eth_getCode" &&
     params.length === 2 &&
@@ -219,6 +310,7 @@ const resultFor = (method, params) => {
     if (params[0] === stockFactoryImplementationAddress) {
       return stockFactoryImplementationCodeFixture;
     }
+    if (params[0] === inspectedContractAddress) return inspectedContractRuntimeCode;
     if (token !== undefined) return token.runtimeCode;
   }
   if (
@@ -338,6 +430,43 @@ export const startFakeRpc = async () => {
     officialCandidate: verifiedFakeOfficialCandidate,
     tokens: fakeTokens,
     canonicalBlockReference,
+    semanticReads: Object.freeze({
+      account: Object.freeze({
+        address: walletAddress,
+        nativeBalanceRaw,
+        token: fakeToken,
+      }),
+      contract: Object.freeze({
+        address: inspectedContractAddress,
+        runtimeCode: inspectedContractRuntimeCode,
+        byteLength: "10",
+        codeHash: inspectedContractCodeHash,
+      }),
+      transaction: Object.freeze({
+        transactionHash: inspectedTransactionHash,
+        from: inspectedTransactionFrom,
+        to: inspectedTransactionTo,
+        valueRaw: inspectedTransactionValue,
+        input: inspectedTransactionInput,
+        nonce: "2",
+        gasLimitRaw: "8000000",
+        type: "1",
+        gasPriceRaw: "1000000000",
+        blockNumber: BigInt(blockNumber).toString(10),
+        transactionIndex: "0",
+        cumulativeGasUsedRaw: "8000000",
+        gasUsedRaw: "7000000",
+        accessListAddress: inspectedContractAddress,
+        accessListStorageKey,
+        undecodedLogData,
+        transferToken: fakeToken.address,
+        transferFrom: inspectedTransactionFrom,
+        transferTo: inspectedTransactionTo,
+        transferAmountRaw: fakeToken.accountBalanceRaw,
+        transaction: inspectedTransaction,
+        receipt: inspectedTransactionReceipt,
+      }),
+    }),
     calls,
     failures,
     assertNoUnexpectedMethods() {

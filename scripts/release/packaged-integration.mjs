@@ -40,6 +40,14 @@ const expectedCapabilityIds = Object.freeze([
   "transaction.inspect",
   "wallet.connection",
 ]);
+const expectedSemanticReadToolNames = Object.freeze([
+  "read_get_account_balance",
+  "read_get_chain_status",
+  "read_inspect_contract",
+  "read_inspect_transaction",
+  "token_inspect_contract",
+  "wallet_get_connection",
+]);
 const expectedToolNames = Object.freeze([
   "account_list_assets",
   "read_get_account_balance",
@@ -445,7 +453,7 @@ const readPackagedRuntimeIdentity = async () => {
     Array.isArray(identity) ||
     JSON.stringify(Object.keys(identity).sort()) !== JSON.stringify(expectedFields) ||
     identity.challenge !== challenge ||
-    identity.runtimeProtocolVersion !== 6 ||
+    identity.runtimeProtocolVersion !== 7 ||
     typeof identity.profileId !== "string" ||
     !/^[A-Za-z0-9_-]{22}$/u.test(identity.profileId) ||
     typeof identity.ownerInstanceId !== "string" ||
@@ -456,7 +464,7 @@ const readPackagedRuntimeIdentity = async () => {
     !/^[A-Za-z0-9_-]{43}$/u.test(identity.proof) ||
     typeof identity.ownerRevision !== "string" ||
     !/^(?:0|[1-9][0-9]*)$/u.test(identity.ownerRevision)
-  ) throw new TypeError("Packaged runtime identity is not the exact protocol-6 contract.");
+  ) throw new TypeError("Packaged runtime identity is not the exact protocol-7 contract.");
   return identity;
 };
 
@@ -506,6 +514,17 @@ const canonicalToolText = (toolResult) => {
     typeof content[0].text !== "string"
   ) throw new TypeError("Packaged MCP canonical text projection is invalid.");
   return content[0].text;
+};
+
+const canonicalSemanticToolContent = (toolResult, label) => {
+  const structured = toolResult?.structuredContent;
+  if (
+    typeof structured !== "object" ||
+    structured === null ||
+    Array.isArray(structured) ||
+    canonicalToolText(toolResult) !== JSON.stringify(structured)
+  ) throw new TypeError(`${label} text and structured content differ.`);
+  return structured;
 };
 
 const operationIdFrom = (toolResult) => {
@@ -893,7 +912,7 @@ const assertPackagedPersistence = (inspection, runtimeIdentity) => {
     Array.isArray(owner) ||
     owner.profileId !== runtimeIdentity.profileId ||
     owner.configurationMac !== runtimeIdentity.configurationMac ||
-    owner.protocolVersion !== 6
+    owner.protocolVersion !== 7
   ) throw new TypeError("Packaged SQLite owner configuration identity is invalid.");
   const connection = inspection.connection;
   if (
@@ -979,6 +998,15 @@ export const verifyPackagedIntegration = async (prepared) => {
 
     const firstMcp = await startNpxMcp(prepared, environment);
     mcpClients.push(firstMcp);
+    const invokedSemanticReadToolNames = new Set();
+    const callSemanticRead = async (client, name, arguments_ = {}) => {
+      if (!expectedSemanticReadToolNames.includes(name)) {
+        throw new TypeError(`Undeclared semantic read invocation: ${name}.`);
+      }
+      const result = await client.callTool(name, arguments_);
+      invokedSemanticReadToolNames.add(name);
+      return result;
+    };
     const tools = await firstMcp.listTools();
     const names = tools.map((tool) => tool.name).sort();
     if (JSON.stringify(names) !== JSON.stringify([...expectedToolNames].sort())) {
@@ -1011,14 +1039,138 @@ export const verifyPackagedIntegration = async (prepared) => {
     }
     const capabilityIds = catalogEntries.map((entry) => entry?.capabilityId);
     if (
-      catalog.structuredContent?.contractVersion !== "5" ||
-      JSON.stringify(capabilityIds) !== JSON.stringify(expectedCapabilityIds)
+      catalog.structuredContent?.contractVersion !== "6" ||
+      JSON.stringify(capabilityIds) !== JSON.stringify(expectedCapabilityIds) ||
+      catalogEntries.some((entry) =>
+        entry?.maximumSuccessUtf8Bytes !== 8_388_607 ||
+        !Array.isArray(entry?.failureCodes) ||
+        entry.failureCodes.filter((code) => code === "result_too_large").length !== 1)
     ) throw new TypeError("Packaged MCP capability catalog is not the exact canonical set.");
-    const chainStatus = await firstMcp.callTool("read_get_chain_status");
+    const chainStatus = await callSemanticRead(firstMcp, "read_get_chain_status");
     if (
       chainStatus.structuredContent?.data?.chainId !== expectedChainId ||
       Object.hasOwn(chainStatus.structuredContent?.data ?? {}, "caip2")
     ) throw new TypeError("Packaged MCP chain status is invalid.");
+
+    const accountBalance = await callSemanticRead(firstMcp, "read_get_account_balance", {
+      account: { kind: "address", address: fakeRpc.semanticReads.account.address },
+      includeNative: true,
+      tokens: [fakeRpc.semanticReads.account.token.address],
+      block: { kind: "latest" },
+    });
+    const accountBalanceContent = canonicalSemanticToolContent(
+      accountBalance,
+      "Packaged MCP account balance",
+    );
+    const accountToken = accountBalanceContent.data?.tokens?.[0];
+    const accountConclusionIds = accountBalanceContent.evidence?.conclusions?.map(({ id }) => id);
+    if (
+      accountBalanceContent.data?.account !== fakeRpc.semanticReads.account.address ||
+      accountBalanceContent.data?.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
+      accountBalanceContent.data?.native?.status !== "available" ||
+      accountBalanceContent.data.native.amount?.raw !== fakeRpc.semanticReads.account.nativeBalanceRaw ||
+      accountToken?.asset?.address !== fakeRpc.semanticReads.account.token.address ||
+      accountToken.result?.status !== "available" ||
+      accountToken.result.amount?.raw !== fakeRpc.semanticReads.account.token.accountBalanceRaw ||
+      accountToken.result.amount?.decimals?.status !== "available" ||
+      accountToken.result.amount.decimals.value !== fakeRpc.semanticReads.account.token.decimals ||
+      JSON.stringify(accountConclusionIds) !== JSON.stringify([
+        "account_bound",
+        "native_balance_observed",
+        `token_balance:${fakeRpc.semanticReads.account.token.address}`,
+      ]) ||
+      accountBalanceContent.evidence?.coverage?.status !== "complete"
+    ) throw new TypeError("Packaged MCP account balance is invalid.");
+
+    const contractInspection = await callSemanticRead(firstMcp, "read_inspect_contract", {
+      address: fakeRpc.semanticReads.contract.address,
+      block: { kind: "latest" },
+    });
+    const contractContent = canonicalSemanticToolContent(
+      contractInspection,
+      "Packaged MCP contract inspection",
+    );
+    if (
+      contractContent.data?.address !== fakeRpc.semanticReads.contract.address ||
+      contractContent.data?.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
+      contractContent.data?.runtimeCode?.status !== "present" ||
+      contractContent.data.runtimeCode.bytecode !== fakeRpc.semanticReads.contract.runtimeCode ||
+      contractContent.data.runtimeCode.byteLength !== fakeRpc.semanticReads.contract.byteLength ||
+      contractContent.data.runtimeCode.codeHash !== fakeRpc.semanticReads.contract.codeHash ||
+      JSON.stringify(contractContent.evidence?.conclusions?.map(({ id }) => id)) !==
+        JSON.stringify(["account_observed", "runtime_code_observed"]) ||
+      contractContent.evidence?.coverage?.status !== "complete"
+    ) throw new TypeError("Packaged MCP contract inspection is invalid.");
+
+    const sourceResponseLimitBytes = 8 * 1024 * 1024;
+    for (const [label, result] of [
+      ["transaction", fakeRpc.semanticReads.transaction.transaction],
+      ["receipt", fakeRpc.semanticReads.transaction.receipt],
+    ]) {
+      const bytes = Buffer.byteLength(JSON.stringify({ jsonrpc: "2.0", id: "release", result }), "utf8");
+      if (bytes >= sourceResponseLimitBytes) {
+        throw new TypeError(`Packaged ${label} fixture exceeds the RPC source-response limit.`);
+      }
+    }
+    const transactionInspection = await callSemanticRead(firstMcp, "read_inspect_transaction", {
+      transactionHash: fakeRpc.semanticReads.transaction.transactionHash,
+    });
+    const transactionContent = canonicalSemanticToolContent(
+      transactionInspection,
+      "Packaged MCP transaction inspection",
+    );
+    const receipt = transactionContent.data?.inclusion?.receipt;
+    const transactionWarnings = transactionContent.warnings;
+    const transactionBytes = Buffer.byteLength(JSON.stringify(transactionContent), "utf8");
+    if (
+      transactionContent.data?.transactionHash !== fakeRpc.semanticReads.transaction.transactionHash ||
+      transactionContent.data?.from !== fakeRpc.semanticReads.transaction.from ||
+      transactionContent.data?.recipient?.kind !== "call" ||
+      transactionContent.data.recipient.address !== fakeRpc.semanticReads.transaction.to ||
+      transactionContent.data?.value?.raw !== fakeRpc.semanticReads.transaction.valueRaw ||
+      transactionContent.data?.input !== fakeRpc.semanticReads.transaction.input ||
+      transactionContent.data?.nonce !== fakeRpc.semanticReads.transaction.nonce ||
+      transactionContent.data?.gasLimit?.raw !== fakeRpc.semanticReads.transaction.gasLimitRaw ||
+      transactionContent.data?.type !== fakeRpc.semanticReads.transaction.type ||
+      transactionContent.data?.fee?.kind !== "legacy" ||
+      transactionContent.data.fee.gasPrice?.numerator?.raw !==
+        fakeRpc.semanticReads.transaction.gasPriceRaw ||
+      transactionContent.data?.accessList?.kind !== "entries" ||
+      transactionContent.data.accessList.entries?.[0]?.address !==
+        fakeRpc.semanticReads.transaction.accessListAddress ||
+      transactionContent.data.accessList.entries?.[0]?.storageKeys?.[0] !==
+        fakeRpc.semanticReads.transaction.accessListStorageKey ||
+      transactionContent.data?.inclusion?.status !== "included" ||
+      transactionContent.data.inclusion.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
+      transactionContent.data.inclusion.block?.blockNumber !==
+        fakeRpc.semanticReads.transaction.blockNumber ||
+      transactionContent.data.inclusion.transactionIndex !==
+        fakeRpc.semanticReads.transaction.transactionIndex ||
+      receipt?.status !== "success" ||
+      receipt.cumulativeGasUsed?.raw !== fakeRpc.semanticReads.transaction.cumulativeGasUsedRaw ||
+      receipt.gasUsed?.raw !== fakeRpc.semanticReads.transaction.gasUsedRaw ||
+      receipt.effectiveGasPrice?.numerator?.raw !== fakeRpc.semanticReads.transaction.gasPriceRaw ||
+      receipt.logs?.[0]?.data !== fakeRpc.semanticReads.transaction.undecodedLogData ||
+      receipt.logs?.[0]?.decodedEvent?.kind !== "not_decoded" ||
+      receipt.logs?.[1]?.decodedEvent?.kind !== "erc20_transfer" ||
+      receipt.logs[1].decodedEvent.token !== fakeRpc.semanticReads.transaction.transferToken ||
+      receipt.logs[1].decodedEvent.from !== fakeRpc.semanticReads.transaction.transferFrom ||
+      receipt.logs[1].decodedEvent.to !== fakeRpc.semanticReads.transaction.transferTo ||
+      receipt.logs[1].decodedEvent.amount?.raw !== fakeRpc.semanticReads.transaction.transferAmountRaw ||
+      JSON.stringify(transactionContent.evidence?.conclusions?.map(({ id }) => id)) !==
+        JSON.stringify([
+          "inclusion_observed",
+          "receipt_observed",
+          "standard_events_decoded",
+          "transaction_observed",
+        ]) ||
+      !Array.isArray(transactionWarnings) ||
+      transactionWarnings.length !== 2 ||
+      transactionWarnings.some((warning) => warning?.code !== "decimals_unavailable") ||
+      transactionContent.evidence?.coverage?.status !== "complete" ||
+      transactionBytes < 8_000_000 ||
+      transactionBytes > 8_388_607
+    ) throw new TypeError("Packaged MCP transaction inspection is invalid.");
 
     const httpChainStatus = await jsonResponse(await fetch(`${fixedOrigin}/api/v1/chain-status`));
     if (
@@ -1193,7 +1345,7 @@ export const verifyPackagedIntegration = async (prepared) => {
       completedBrowserOperation.operation?.state !== "completed" ||
       completedBrowserOperation.operation?.result?.outcome !== "connected"
     ) throw new TypeError("Packaged browser lost the completed connection result.");
-    const firstConnection = await firstMcp.callTool("wallet_get_connection");
+    const firstConnection = await callSemanticRead(firstMcp, "wallet_get_connection");
     const firstConnectionData = firstConnection.structuredContent?.data;
     if (
       firstConnectionData?.status !== "connected" ||
@@ -1249,11 +1401,15 @@ export const verifyPackagedIntegration = async (prepared) => {
       problemCode(credentialedPublicProblem) !== "unauthorized"
     ) throw new TypeError("Public token inspection accepted browser authority.");
 
-    const mcpInspection = await firstMcp.callTool("token_inspect_contract", {
+    const mcpInspection = await callSemanticRead(firstMcp, "token_inspect_contract", {
       asset: catalogAsset,
       block: { kind: "latest" },
     });
     assertTokenInspection(mcpInspection.structuredContent, fakeRpc);
+    if (
+      JSON.stringify([...invokedSemanticReadToolNames].sort()) !==
+      JSON.stringify([...expectedSemanticReadToolNames].sort())
+    ) throw new TypeError("Packaged MCP did not execute every semantic read tool.");
 
     const initialAssetRequestCount = fakeRpc.calls.length;
     let initialMcpAssets;
@@ -1762,12 +1918,16 @@ export const verifyPackagedIntegration = async (prepared) => {
     assertPackagedPersistence(persistenceInspection, restoredRuntimeIdentity);
     fakeRpc.assertNoUnexpectedMethods();
     const methods = fakeRpc.calls.map((call) => call.method);
-    if (
-      !methods.includes("eth_chainId") ||
-      !methods.includes("eth_getBlockByNumber") ||
-      !methods.includes("eth_getCode") ||
-      !methods.includes("eth_call")
-    ) {
+    if ([
+      "eth_call",
+      "eth_chainId",
+      "eth_getBalance",
+      "eth_getBlockByHash",
+      "eth_getBlockByNumber",
+      "eth_getCode",
+      "eth_getTransactionByHash",
+      "eth_getTransactionReceipt",
+    ].some((method) => !methods.includes(method))) {
       throw new TypeError("Packaged integration did not exercise the bounded RPC path.");
     }
     await fakeRpc.close();

@@ -19,6 +19,7 @@ export {
   capabilityIdSchema,
   createCapabilityIdSchema,
   createCapabilitySuccessSchema,
+  maximumSuccessUtf8Bytes,
   readCapabilityLimits,
 } from "./capability-contract.js";
 export type { CapabilityId, CapabilitySuccess } from "./capability-contract.js";

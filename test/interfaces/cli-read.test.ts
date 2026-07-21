@@ -263,6 +263,24 @@ describe("read CLI", () => {
     expect(output.errors).toEqual(["source_unavailable: A required data source is unavailable.\n"]);
   });
 
+  it("reports an aggregate read result failure through the canonical CLI mapping", async () => {
+    const failure = createApplicationFailure(chainErrorRegistry, "result_too_large");
+    const problem = toProblemDetails(failure, chainInterfaceErrorMappings);
+    const output = outputPort();
+    expect(await runReadCliCommand(
+      new FakeRuntime(Object.freeze({
+        status: problem.status,
+        body: problem as unknown as CanonicalJson,
+      })),
+      parseReadCliCommand(["read", "chain-status"]),
+      output,
+    )).toBe(3);
+    expect(output.output).toEqual([]);
+    expect(output.errors).toEqual([
+      "result_too_large: The canonical result exceeds the supported size.\n",
+    ]);
+  });
+
   it("does not expose registry errors outside the selected capability contract", async () => {
     const failure = createApplicationFailure(chainErrorRegistry, "not_found");
     const problem = toProblemDetails(failure, chainInterfaceErrorMappings);

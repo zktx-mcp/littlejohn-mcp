@@ -14,7 +14,11 @@ import {
 } from "../../src/core/index.js";
 import { extendChainSupportManifest } from "../../src/chain/application.js";
 import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
-import { chainErrorRegistry, createChainFailure } from "../../src/chain/errors.js";
+import {
+  chainErrorRegistry,
+  chainInterfaceErrorMappings,
+  createChainFailure,
+} from "../../src/chain/errors.js";
 import {
   createMcpToolRegistry,
   createMcpServer,
@@ -395,6 +399,14 @@ describe("MCP interface", () => {
   it("keeps read and catalog output schemas equivalent to their canonical failure contracts", async () => {
     const { client } = await connect(new FakeRuntime());
     const listed = await client.listTools();
+    expect(capabilityCatalogInterface.failureCodes).toEqual([
+      "internal_error",
+      "invalid_input",
+      "port_conflict",
+      "request_aborted",
+      "runtime_busy",
+      "runtime_state_unavailable",
+    ]);
     const contracts = [
       ...readInterfaceIdentities.map((identity) => ({
         name: identity.mcp.name,
@@ -446,6 +458,19 @@ describe("MCP interface", () => {
     const result = await client.callTool({ name: "read_get_chain_status", arguments: {} });
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toEqual(createChainFailure("internal_error"));
+  });
+
+  it("projects an aggregate read result failure as an MCP error", async () => {
+    const failure = createChainFailure("result_too_large");
+    const problem = toProblemDetails(failure, chainInterfaceErrorMappings);
+    const { client } = await connect(new FakeRuntime(() => ({
+      status: problem.status,
+      body: captureCanonicalJson(problem),
+    })));
+    const result = await client.callTool({ name: "read_get_chain_status", arguments: {} });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toEqual(failure);
+    expect(textResult(result)).toBe(canonicalJsonStringify(failure as never));
   });
 
   it("uses one canonical operation identifier contract for reads and cancellations", async () => {

@@ -4,6 +4,9 @@ import { resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { maximumSuccessUtf8Bytes } from "../../src/core/index.js";
+import { publicReadResponseLimitBytes } from "../../src/runtime/http-boundary.js";
+
 import {
   createControlCredentialVerifier,
   loadOrCreateControlCredential,
@@ -52,6 +55,10 @@ const base: RequestSecurityInput = {
 const success = async () => ({ ok: true as const, body: {} });
 
 describe("HTTP request-class and route authority", () => {
+  it("derives the public-read frame from the canonical semantic success budget", () => {
+    expect(publicReadResponseLimitBytes).toBe(maximumSuccessUtf8Bytes + 1);
+    expect(publicReadResponseLimitBytes).toBe(8_388_608);
+  });
   it("enforces the complete initial Host, Origin, authentication, and body policy", async () => {
     const { verifier, authorization } = await credentialFixture();
     expect(validateRequestSecurity(base)).toEqual({ ok: true });
