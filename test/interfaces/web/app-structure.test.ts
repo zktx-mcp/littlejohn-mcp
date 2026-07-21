@@ -66,7 +66,7 @@ describe("root browser application structure", () => {
     expect(app).toContain('isBrowserResponseCode(error, "token_operation_not_found")');
     expect(app).toContain("event.preventDefault()");
     expect(app).toContain('event.key === "Escape"');
-    expect(styles).toMatch(/\.application-dialog::backdrop\s*\{[^}]*backdrop-filter:\s*blur\(12px\);/su);
+    expect(styles).toMatch(/\.application-dialog::backdrop\s*\{[^}]*backdrop-filter:\s*blur\(18px\);/su);
   });
 
   it("binds wallet, asset, and token results to one account under role-specific request authority", () => {
@@ -89,7 +89,8 @@ describe("root browser application structure", () => {
     expect(app).toContain("handledTerminalTokenOperation.current = operation.operationId");
     expect(app).toContain("handledTerminalTokenOperation.current !== next.operationId");
     expect(page).toContain("Add token");
-    expect(page).toContain("Remove token from this account");
+    expect(page).toContain("Remove token");
+    expect(page).toContain("onRemove(row.selection, event.currentTarget)");
     expect(app).not.toContain("startTokenSelectionUpdate");
   });
 

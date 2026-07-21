@@ -3,16 +3,24 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import type {
   AccountAssetCursor,
   AccountAssetCollectionSuccess,
+  AccountAssetEvidenceField,
   AccountAssetExactSuccess,
   AccountAssetQuantityView,
   AccountAssetRowView,
 } from "../../account-assets/browser.js";
 import {
+  accountAssetAnchorFields,
+  assetIdentityWarnings,
+  classificationEvidenceFields,
+  classificationLabel,
+  officialSnapshotFresh,
+  officialSnapshotStatusText,
   projectAccountAssetCollectionView,
   projectAccountAssetExactView,
   tokenStandardDefinitionFor,
 } from "../../account-assets/browser.js";
 import type { TokenSelection } from "../../token-catalog/browser.js";
+import { Icon } from "./icons.js";
 
 export interface AccountAssetPageSnapshot {
   readonly result: AccountAssetCollectionSuccess;
@@ -63,10 +71,12 @@ const AssetQuantity = ({ quantity }: { readonly quantity: AccountAssetQuantityVi
 const AssetDialog = ({
   labelledBy,
   onClose,
+  className,
   children,
 }: {
   readonly labelledBy: string;
   readonly onClose: () => void;
+  readonly className?: string;
   readonly children: ReactNode;
 }) => {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -80,7 +90,7 @@ const AssetDialog = ({
   return (
     <dialog
       ref={dialog}
-      className="application-dialog asset-info-dialog"
+      className={`application-dialog asset-info-dialog${className === undefined ? "" : ` ${className}`}`}
       aria-labelledby={labelledBy}
       tabIndex={-1}
       onCancel={(event) => { event.preventDefault(); onClose(); }}
@@ -91,28 +101,16 @@ const AssetDialog = ({
   );
 };
 
-const classificationLabel = (row: AccountAssetRowView): string => {
-  switch (row.classification.kind) {
-    case "robinhood_stock_token": return "Robinhood Stock Token";
-    case "custom_erc20": return "Custom ERC-20";
-    case "classification_unavailable": return "Classification unavailable";
-  }
-};
-
 const TokenAssetRow = ({
   row,
-  disabled,
   onInfo,
-  onRemove,
 }: {
   readonly row: AccountAssetRowView;
-  readonly disabled: boolean;
   readonly onInfo: (selection: TokenSelection, trigger: HTMLButtonElement) => void;
-  readonly onRemove: (selection: TokenSelection, trigger: HTMLButtonElement) => void;
 }) => (
   <article className="asset-row">
     <div className="asset-identity">
-      <span className="asset-badge">{classificationLabel(row)}</span>
+      <span className="asset-badge">{classificationLabel(row.classification)}</span>
       <h2>{row.name ?? row.symbol ?? "ERC-20 token"}</h2>
       {row.symbol === null ? null : <p className="asset-symbol">{row.symbol}</p>}
       <p className="asset-address">{row.selection.asset.address}</p>
@@ -122,36 +120,54 @@ const TokenAssetRow = ({
       <button
         type="button"
         className="icon-button secondary"
-        aria-label="View token information"
-        title="View token information"
+        aria-label="Token details and actions"
+        title="Token details and actions"
         onClick={(event) => { onInfo(row.selection, event.currentTarget); }}
-      >ⓘ</button>
-      <button
-        type="button"
-        className="icon-button danger"
-        aria-label="Remove token from this account"
-        title="Remove token from this account"
-        disabled={disabled}
-        onClick={(event) => { onRemove(row.selection, event.currentTarget); }}
-      >−</button>
+      ><Icon name="more" /></button>
     </div>
   </article>
 );
 
+const EvidenceList = ({ fields }: { readonly fields: readonly AccountAssetEvidenceField[] }) => (
+  <dl>{fields.flatMap((field) => [
+    <dt key={`${field.label}:label`}>{field.label}</dt>,
+    <dd key={`${field.label}:value`}>{field.value}</dd>,
+  ])}</dl>
+);
+
 const TokenInformation = ({
   result,
+  mutationDisabled,
   onClose,
+  onRemove,
 }: {
   readonly result: AccountAssetExactSuccess;
+  readonly mutationDisabled: boolean;
   readonly onClose: () => void;
+  readonly onRemove: (selection: TokenSelection, trigger: HTMLButtonElement) => void;
 }) => {
   const row = projectAccountAssetExactView(result);
+  const identityWarnings = assetIdentityWarnings(row);
+  const rawBalanceLine = `${row.quantity.formattedRaw ?? "—"} / ${row.quantity.raw}`;
+  const uiAdjustedLine = row.quantity.adjustmentStatus === "available"
+    ? `${row.quantity.formattedAdjusted ?? "—"} / ${row.quantity.adjustedRaw ?? "—"}`
+    : row.quantity.adjustmentStatus === "result_out_of_range"
+      ? "Out of range"
+      : "Not established";
   const [tooltip, setTooltip] = useState<string | null>(null);
+  const [showDetails, setShowDetails] = useState(false);
+  const shownStandards = result.standards.standards.filter(
+    (standard) => standard.status !== "not_supported" && standard.status !== "unknown",
+  );
+  const activeStandard = tooltip === null
+    ? undefined
+    : shownStandards.find((standard) => standard.standardId === tooltip);
   return (
-    <AssetDialog labelledBy="asset-info-title" onClose={onClose}>
+    <AssetDialog labelledBy="asset-info-title" onClose={onClose} className="detail-dialog-host">
       <div
+        className="detail-dialog"
         onMouseDown={(event) => {
-          if ((event.target as Element).closest(".standard-list button") === null) {
+          if ((event.target as Element).closest(".standard-badge") === null) {
             setTooltip(null);
           }
         }}
@@ -163,45 +179,76 @@ const TokenInformation = ({
           else setTooltip(null);
         }}
       >
+        <div className="detail-dialog-head">
         <header>
-          <p className="eyebrow">{classificationLabel(row)}</p>
+          <p className="eyebrow">{classificationLabel(row.classification)}</p>
           <h1 id="asset-info-title">{row.name ?? row.symbol ?? "Token information"}</h1>
+          {shownStandards.length === 0 ? null : (
+            <div className="standard-badges">
+              {shownStandards.map((standard) => {
+                const definition = tokenStandardDefinitionFor(standard.standardId);
+                const isOpen = tooltip === standard.standardId;
+                return (
+                  <button
+                    key={standard.standardId}
+                    type="button"
+                    className={`standard-badge${standard.status === "inconsistent" ? " inconsistent" : ""}${isOpen ? " active" : ""}`}
+                    aria-label={`About ${definition.displayName}`}
+                    aria-expanded={isOpen}
+                    onClick={() => { setTooltip(isOpen ? null : standard.standardId); }}
+                    onKeyDown={(event) => { if (event.key === "Escape") setTooltip(null); }}
+                  >{definition.displayName}</button>
+                );
+              })}
+            </div>
+          )}
+          {activeStandard === undefined ? null : (
+            <p role="tooltip" className="standard-explanation">
+              {tokenStandardDefinitionFor(activeStandard.standardId).explanation}
+            </p>
+          )}
           <p className="asset-address">{row.selection.asset.address}</p>
         </header>
-        <dl>
-          <dt>Raw balance</dt><dd>{row.quantity.raw}</dd>
-          <dt>Formatted raw balance</dt><dd>{row.quantity.formattedRaw ?? "Decimals unavailable"}</dd>
-          <dt>UI-adjusted raw balance</dt><dd>{row.quantity.adjustedRaw ?? "Not established"}</dd>
-          <dt>UI-adjusted balance</dt><dd>{row.quantity.formattedAdjusted ?? "Not established"}</dd>
+        {identityWarnings.length === 0 ? null : (
+          <div className="warning" role="status">
+            <strong>Identity evidence withheld</strong>
+            {identityWarnings.map((message) => <p key={message}>{message}</p>)}
+          </div>
+        )}
+        <dl className="balance-list">
+          <dt>Formatted / raw balance</dt><dd>{rawBalanceLine}</dd>
+          <dt>UI-adjusted / raw balance</dt><dd>{uiAdjustedLine}</dd>
           <dt>Raw total supply</dt><dd>{result.totalSupply}</dd>
-          <dt>Block</dt><dd>{result.block.blockNumber}</dd>
         </dl>
-        <section aria-labelledby="token-standards-heading">
-          <h2 id="token-standards-heading">Token standards</h2>
-          <ul className="standard-list">
-            {result.standards.standards.map((standard) => {
-              const definition = tokenStandardDefinitionFor(standard.standardId);
-              const tooltipOpen = tooltip === standard.standardId;
-              return (
-                <li key={standard.standardId}>
-                  <span>{definition.displayName}</span>
-                  <strong>{standard.status.replaceAll("_", " ")}</strong>
-                  <button
-                    type="button"
-                    className="icon-button secondary"
-                    aria-label={`About ${definition.displayName}`}
-                    aria-expanded={tooltipOpen}
-                    onBlur={() => { setTooltip(null); }}
-                    onClick={() => { setTooltip(tooltipOpen ? null : standard.standardId); }}
-                    onKeyDown={(event) => { if (event.key === "Escape") setTooltip(null); }}
-                  >?</button>
-                  {tooltipOpen ? <p role="tooltip">{definition.explanation}</p> : null}
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-        <div className="actions">
+        <button
+          type="button"
+          className="disclosure"
+          aria-expanded={showDetails}
+          onClick={() => { setShowDetails((visible) => !visible); }}
+        >
+          <span>Evidence</span>
+          <span className={`disclosure-chevron${showDetails ? " open" : ""}`} aria-hidden="true">
+            <Icon name="chevron-right" />
+          </span>
+        </button>
+        </div>
+        {!showDetails ? null : (
+          <div className="detail-panel">
+            <section aria-label="Asset evidence">
+              <p className="evidence-caption">Classification · {classificationLabel(row.classification)}</p>
+              <EvidenceList fields={classificationEvidenceFields(row.classification)} />
+              <p className="evidence-caption">Chain anchor</p>
+              <EvidenceList fields={accountAssetAnchorFields(result.block)} />
+            </section>
+          </div>
+        )}
+        <div className="actions detail-dialog-actions">
+          <button
+            type="button"
+            className="danger with-icon"
+            disabled={mutationDisabled}
+            onClick={(event) => { onRemove(row.selection, event.currentTarget); }}
+          ><Icon name="trash" />Remove token</button>
           <button type="button" className="secondary" onClick={onClose}>Close</button>
         </div>
       </div>
@@ -241,6 +288,14 @@ export const AccountAssetsPage = ({
           {page === undefined ? null : (
             <p className="account-line">{page.account.chainId} / {page.account.address}</p>
           )}
+          {page === undefined ? null : (
+            <p className="evidence-anchor">
+              <span>As of block {page.block.blockNumber}</span>
+              <span className={`data-status${officialSnapshotFresh(page.viewRevision) ? "" : " stale"}`}>
+                {officialSnapshotStatusText(page.viewRevision)}
+              </span>
+            </p>
+          )}
         </div>
         <div className="actions asset-page-actions">
           <button
@@ -250,7 +305,7 @@ export const AccountAssetsPage = ({
             title="Refresh assets"
             disabled={loading}
             onClick={onRefresh}
-          >↻</button>
+          ><Icon name="refresh" /></button>
           <button
             type="button"
             className="icon-button"
@@ -258,7 +313,7 @@ export const AccountAssetsPage = ({
             title="Add token"
             disabled={mutationDisabled || snapshot?.result.viewRevision.officialSnapshotStatus !== "current"}
             onClick={(event) => { onAdd(event.currentTarget); }}
-          >+</button>
+          ><Icon name="plus" /></button>
         </div>
       </header>
       {staleMessage === undefined ? null : (
@@ -297,21 +352,18 @@ export const AccountAssetsPage = ({
                 <button
                   type="button"
                   className="icon-button secondary"
-                  aria-label="View native asset information"
-                  title="View native asset information"
+                  aria-label="Native asset details"
+                  title="Native asset details"
                   ref={nativeInfoTrigger}
                   onClick={() => { setNativeInfo(true); }}
-                >ⓘ</button>
-                <span className="icon-button-placeholder" aria-hidden="true" />
+                ><Icon name="more" /></button>
               </div>
             </article>
             {page.assets.map((row) => (
               <TokenAssetRow
                 key={row.selection.asset.address}
                 row={row}
-                disabled={mutationDisabled}
                 onInfo={onInfo}
-                onRemove={onRemove}
               />
             ))}
           </section>
@@ -329,7 +381,7 @@ export const AccountAssetsPage = ({
               title="Previous asset page"
               disabled={snapshot?.canGoBack !== true || loading}
               onClick={onPrevious}
-            >&lt;&lt;</button>
+            ><Icon name="chevron-left" /></button>
             <p>Block {page.block.blockNumber}</p>
             <button
               type="button"
@@ -338,11 +390,18 @@ export const AccountAssetsPage = ({
               title="Next asset page"
               disabled={page.nextCursor === null || loading}
               onClick={onNext}
-            >&gt;&gt;</button>
+            ><Icon name="chevron-right" /></button>
           </footer>
         </>
       )}
-      {exact === undefined ? null : <TokenInformation result={exact} onClose={onCloseInfo} />}
+      {exact === undefined ? null : (
+        <TokenInformation
+          result={exact}
+          mutationDisabled={mutationDisabled}
+          onClose={onCloseInfo}
+          onRemove={onRemove}
+        />
+      )}
       {!nativeInfo ? null : (
         <AssetDialog labelledBy="native-info-title" onClose={closeNativeInfo}>
           <div>

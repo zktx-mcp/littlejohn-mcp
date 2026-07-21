@@ -65,10 +65,13 @@ const sharedContractSources = new Set([
   "src/wallet/operation-state.ts",
 ].map((path) => resolve(repositoryRoot, path)));
 
-const allowedRuntimePackages = new Set(["@noble/hashes", "react", "react-dom", "scheduler", "zod"]);
+const allowedRuntimePackages = new Set(["@noble/hashes", "lucide-react", "react", "react-dom", "scheduler", "zod"]);
 const allowedWebPackageImports = new Map([
   ["react", new Set(["ReactNode", "StrictMode", "useCallback", "useEffect", "useRef", "useState"])],
   ["react-dom/client", new Set(["createRoot"])],
+  ["lucide-react", new Set([
+    "ChevronLeft", "ChevronRight", "EllipsisVertical", "Plus", "RefreshCw", "Trash2",
+  ])],
 ]);
 const allowedWebConstructorsBySource = new Map([
   [webEntrySource, new Set(["Error"])],

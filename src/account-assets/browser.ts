@@ -32,6 +32,12 @@ export type {
   NativeAccountAsset,
 } from "./contracts.js";
 export {
+  accountAssetAnchorFields,
+  assetIdentityWarnings,
+  classificationEvidenceFields,
+  classificationLabel,
+  officialSnapshotFresh,
+  officialSnapshotStatusText,
   projectAccountAssetCollectionView,
   projectAccountAssetExactView,
 } from "./view.js";
@@ -43,7 +49,9 @@ export {
   accountAssetControlRoutes,
 } from "./http-contract.js";
 export type {
+  AccountAssetEvidenceField,
   AccountAssetQuantityView,
   AccountAssetRowView,
+  AccountAssetTextIssue,
 } from "./view.js";
 export { tokenStandardDefinitionFor } from "../core/browser.js";

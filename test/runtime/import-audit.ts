@@ -78,6 +78,7 @@ export const runtimePackageSourceRoots = Object.freeze({
   "@noble/hashes": "src/core",
   "@walletconnect/sign-client": "src/wallet",
   "better-sqlite3": "src/runtime",
+  "lucide-react": "src/interfaces",
   qrcode: "src/wallet",
   react: "src/interfaces",
   "react-dom": "src/interfaces",

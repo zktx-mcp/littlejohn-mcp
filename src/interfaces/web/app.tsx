@@ -35,6 +35,7 @@ import {
   type DeliveryUnknown,
 } from "../operation-delivery.js";
 import { AccountAssetsPage, type AccountAssetPageSnapshot } from "./account-assets-page.js";
+import { Icon } from "./icons.js";
 import {
   loadAccountAssets,
   loadExactAccountAsset,
@@ -480,7 +481,7 @@ const ApplicationDialog = ({
                           title="Review and add this token"
                           disabled={pending}
                           onClick={() => { onTokenAddress(candidate.contractAddress); }}
-                        >+</button>
+                        ><Icon name="plus" /></button>
                       </li>
                     ))}
                   </ul>
@@ -493,7 +494,7 @@ const ApplicationDialog = ({
                     title="Previous official token candidates"
                     disabled={pending || officialCandidates.snapshot.previousCursors.length === 0}
                     onClick={onPreviousOfficialCandidates}
-                  >&lt;&lt;</button>
+                  ><Icon name="chevron-left" /></button>
                   <span>Official candidates</span>
                   <button
                     type="button"
@@ -502,7 +503,7 @@ const ApplicationDialog = ({
                     title="Next official token candidates"
                     disabled={pending || officialCandidates.snapshot.result.nextCursor === null}
                     onClick={onNextOfficialCandidates}
-                  >&gt;&gt;</button>
+                  ><Icon name="chevron-right" /></button>
                 </div>
               </>
             ) : null}
@@ -1183,7 +1184,12 @@ export const App = () => {
               dialogTrigger.current = undefined;
               window.setTimeout(() => { if (trigger?.isConnected === true) trigger.focus(); }, 0);
             }}
-            onRemove={(selection, trigger) => { dialogTrigger.current = trigger; void startRemove(selection); }}
+            onRemove={(selection, trigger) => {
+              exactAuthority.invalidateRead();
+              replaceExactRead(idleExactAssetRead);
+              dialogTrigger.current = trigger;
+              void startRemove(selection);
+            }}
             onPrevious={() => {
               if (visibleAssetSnapshot === undefined) return;
               const cursor = visibleAssetSnapshot.previousCursors.at(-1) ?? null;
