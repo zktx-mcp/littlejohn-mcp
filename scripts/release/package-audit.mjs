@@ -23,10 +23,23 @@ import {
   sha256,
 } from "./release-support.mjs";
 
-const walletConnectLicenseRelativePath = "LICENSES/WALLETCONNECT-COMMUNITY-LICENSE.md";
-const walletConnectLicenseDigest =
-  "1cb6f8cfe21f54ab1105105717eaa2ba08343037a2a9c41dfd5ab09e3ce270fc";
 const reownNotice = "Portions © 2025 Reown, Inc. All Rights Reserved";
+const fixedDistributionArtifacts = Object.freeze([
+  Object.freeze({ path: "package.json" }),
+  Object.freeze({ path: "THIRD_PARTY_NOTICES.txt" }),
+  Object.freeze({
+    path: "LICENSES/WALLETCONNECT-COMMUNITY-LICENSE.md",
+    licenseName: "WalletConnect",
+    digest: "1cb6f8cfe21f54ab1105105717eaa2ba08343037a2a9c41dfd5ab09e3ce270fc",
+  }),
+  Object.freeze({
+    path: "LICENSES/LUCIDE-LICENSE.txt",
+    licenseName: "Lucide",
+    digest: "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57",
+  }),
+]);
+const fixedDistributionPaths = Object.freeze(fixedDistributionArtifacts.map(({ path }) => path));
+const fixedDistributionPathSet = new Set(fixedDistributionPaths);
 
 /** @type {typeof import("./package-audit.d.mts").parseReleasePackageIdentity} */
 export const parseReleasePackageIdentity = (value) => {
@@ -69,9 +82,7 @@ const isolatedNpmEnvironment = (base, inherited = process.env) => Object.freeze(
 const assertPackagePathClasses = (paths) => {
   for (const path of paths) {
     if (
-      path === "package.json" ||
-      path === "THIRD_PARTY_NOTICES.txt" ||
-      path === walletConnectLicenseRelativePath ||
+      fixedDistributionPathSet.has(path) ||
       path.startsWith("dist/")
     ) continue;
     throw new TypeError(`npm package contains a prohibited path: ${path}`);
@@ -79,21 +90,16 @@ const assertPackagePathClasses = (paths) => {
 };
 
 const expectedPackagePaths = async (sourceRoot) => {
-  const fixedPaths = [
-    "package.json",
-    "THIRD_PARTY_NOTICES.txt",
-    walletConnectLicenseRelativePath,
-  ];
   const distPaths = (await collectRegularFiles(resolve(sourceRoot, "dist")))
     .map((path) => canonicalRelativePath(`dist/${path}`));
   if (distPaths.length === 0) throw new TypeError("Built package dist tree is empty.");
-  for (const path of fixedPaths) {
+  for (const path of fixedDistributionPaths) {
     const details = await lstat(resolve(sourceRoot, path));
     if (!details.isFile() || details.isSymbolicLink()) {
       throw new TypeError(`Source package artifact must be a regular file: ${path}`);
     }
   }
-  const paths = Object.freeze([...fixedPaths, ...distPaths].sort());
+  const paths = Object.freeze([...fixedDistributionPaths, ...distPaths].sort());
   assertPackagePathClasses(paths);
   return paths;
 };
@@ -137,20 +143,19 @@ const assertDeclarationTargets = async (packageRoot, paths) => {
 };
 
 const assertDistributionArtifacts = async (sourceRoot, packageRoot) => {
-  for (const path of [
-    "package.json",
-    "THIRD_PARTY_NOTICES.txt",
-    walletConnectLicenseRelativePath,
-  ]) {
+  for (const path of fixedDistributionPaths) {
     const [source, packaged] = await Promise.all([
       readFile(resolve(sourceRoot, path)),
       readFile(resolve(packageRoot, path)),
     ]);
     if (!source.equals(packaged)) throw new TypeError(`Packaged artifact differs from source: ${path}`);
   }
-  const license = await readFile(resolve(packageRoot, walletConnectLicenseRelativePath));
-  if (sha256(license) !== walletConnectLicenseDigest) {
-    throw new TypeError("Packaged WalletConnect license digest is invalid.");
+  for (const artifact of fixedDistributionArtifacts) {
+    if (!("digest" in artifact)) continue;
+    const license = await readFile(resolve(packageRoot, artifact.path));
+    if (sha256(license) !== artifact.digest) {
+      throw new TypeError(`Packaged ${artifact.licenseName} license digest is invalid.`);
+    }
   }
   const notice = await readFile(resolve(packageRoot, "THIRD_PARTY_NOTICES.txt"), "utf8");
   if (notice.split(reownNotice).length !== 2) {

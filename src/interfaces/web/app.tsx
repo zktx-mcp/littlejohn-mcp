@@ -34,7 +34,11 @@ import {
   isDeliveryUnknown,
   type DeliveryUnknown,
 } from "../operation-delivery.js";
-import { AccountAssetsPage, type AccountAssetPageSnapshot } from "./account-assets-page.js";
+import {
+  AccountAssetsPage,
+  type AccountAssetExactReadPresentation,
+  type AccountAssetPageSnapshot,
+} from "./account-assets-page.js";
 import { Icon } from "./icons.js";
 import {
   loadAccountAssets,
@@ -132,24 +136,9 @@ type OfficialCandidateReadState =
   | Readonly<{ status: "error"; message: string }>;
 
 type ExactAssetReadState =
-  | Readonly<{ status: "idle" }>
-  | Readonly<{
-      status: "loading";
-      accountKey: string;
-      asset: TokenSelection["asset"];
-    }>
-  | Readonly<{
-      status: "available";
-      accountKey: string;
-      asset: TokenSelection["asset"];
-      result: AccountAssetExactSuccess;
-    }>
-  | Readonly<{
-      status: "error";
-      accountKey: string;
-      asset: TokenSelection["asset"];
-      message: string;
-    }>;
+  | Extract<AccountAssetExactReadPresentation, { status: "idle" }>
+  | (Exclude<AccountAssetExactReadPresentation, { status: "idle" }> &
+    Readonly<{ accountKey: string }>);
 
 type AssetReadState =
   | Readonly<{ status: "idle" }>
@@ -686,7 +675,7 @@ export const App = () => {
       setAssetRead({ status: "idle" });
       const exact = exactReadRef.current;
       if (exact.status !== "idle" && result.assets.some(
-        (entry) => entry.selection.asset.address === exact.asset.address,
+        (entry) => entry.selection.asset.address === exact.selection.asset.address,
       )) {
         exactAuthority.invalidateRead();
         replaceExactRead(idleExactAssetRead);
@@ -704,22 +693,27 @@ export const App = () => {
 
   const readExactAsset = useCallback(async (
     expected: ConnectedAccount,
-    asset: TokenSelection["asset"],
+    selection: TokenSelection,
     revision: AccountAssetViewRevision,
   ): Promise<AccountAssetExactSuccess | undefined> => {
     const request = exactAuthority.beginRead();
     if (request === undefined) return undefined;
     const readIdentity = Object.freeze({
       accountKey: accountKey(expected)!,
-      asset,
+      selection,
     });
     replaceExactRead(Object.freeze({ status: "loading", ...readIdentity }));
     try {
-      const result = await loadExactAccountAsset(asset, revision, { signal: request.signal });
+      const result = await loadExactAccountAsset(selection.asset, revision, { signal: request.signal });
       if (!exactAuthority.isCurrent(request)) return undefined;
       const actual = connectedAccount(stateRef.current.status === "ready" ? stateRef.current.wallet : undefined);
       if (!sameAccount(expected, actual) || !resultMatchesAccount(expected, result)) return undefined;
-      replaceExactRead(Object.freeze({ status: "available", ...readIdentity, result }));
+      replaceExactRead(Object.freeze({
+        status: "available",
+        ...readIdentity,
+        selection: result.asset.selection,
+        result,
+      }));
       return result;
     } catch (error) {
       if (!exactAuthority.isCurrent(request) || sessionRecovery(error)) return undefined;
@@ -804,13 +798,15 @@ export const App = () => {
           true,
         );
         if (latest !== undefined) {
-          await readExactAsset(expected, operation.asset, latest.viewRevision);
+          if (operation.result !== null && "selection" in operation.result) {
+            await readExactAsset(expected, operation.result.selection, latest.viewRevision);
+          }
         }
       })();
       return;
     }
     if (exactReadRef.current.status !== "idle" &&
-      exactReadRef.current.asset.address === operation.asset.address) {
+      exactReadRef.current.selection.asset.address === operation.asset.address) {
       exactAuthority.invalidateRead();
       replaceExactRead(idleExactAssetRead);
     }
@@ -1072,10 +1068,8 @@ export const App = () => {
   const visibleAssetSnapshot = assetSnapshot?.accountKey === currentAccountKey
     ? assetSnapshot
     : undefined;
-  const visibleExactAsset = exactRead.status === "available" && exactRead.accountKey === currentAccountKey
-    ? exactRead.result
-    : undefined;
-  const visibleExactRead = exactRead.status !== "idle" && exactRead.accountKey === currentAccountKey
+  const visibleExactRead: AccountAssetExactReadPresentation =
+    exactRead.status !== "idle" && exactRead.accountKey === currentAccountKey
     ? exactRead
     : idleExactAssetRead;
   const snapshotForPage: AccountAssetPageSnapshot | undefined = visibleAssetSnapshot === undefined ? undefined : {
@@ -1131,33 +1125,28 @@ export const App = () => {
           )}
           <AccountAssetsPage
             snapshot={snapshotForPage}
-            exact={visibleExactAsset}
             loading={assetRead.status === "loading"}
-             staleMessage={assetRead.status === "error" ? assetRead.message : undefined}
-             exactRead={visibleExactRead.status === "error"
-               ? { status: "error", message: visibleExactRead.message }
-               : visibleExactRead.status === "loading"
-                 ? { status: "loading" }
-                 : { status: "idle" }}
+            staleMessage={assetRead.status === "error" ? assetRead.message : undefined}
+            exactRead={visibleExactRead}
             mutationDisabled={walletPending || tokenPending || observationUnavailable || tokenDelivery !== undefined}
-             onRefresh={() => {
+            onRefresh={() => {
               void readAssetPage(
                 currentAccount,
                 visibleAssetSnapshot?.cursor ?? null,
                 visibleAssetSnapshot?.previousCursors ?? [],
                 false,
               );
-             }}
-             onRetryExact={() => {
-               if (visibleExactRead.status !== "error") return;
-               if (visibleAssetSnapshot !== undefined) {
-                 void readExactAsset(
-                   currentAccount,
-                   visibleExactRead.asset,
-                   visibleAssetSnapshot.result.viewRevision,
-                 );
-               }
-             }}
+            }}
+            onRetryExact={() => {
+              if (visibleExactRead.status !== "error") return;
+              if (visibleAssetSnapshot !== undefined) {
+                void readExactAsset(
+                  currentAccount,
+                  visibleExactRead.selection,
+                  visibleAssetSnapshot.result.viewRevision,
+                );
+              }
+            }}
             onAdd={(trigger) => {
               if (visibleAssetSnapshot?.result.viewRevision.officialSnapshotStatus !== "current") return;
               dialogTrigger.current = trigger;
@@ -1173,7 +1162,7 @@ export const App = () => {
               dialogTrigger.current = trigger;
               void readExactAsset(
                 currentAccount,
-                selection.asset,
+                selection,
                 visibleAssetSnapshot.result.viewRevision,
               );
             }}

@@ -28,15 +28,17 @@ export interface AccountAssetPageSnapshot {
   readonly canGoBack: boolean;
 }
 
+export type AccountAssetExactReadPresentation =
+  | Readonly<{ status: "idle" }>
+  | Readonly<{ status: "loading"; selection: TokenSelection }>
+  | Readonly<{ status: "available"; selection: TokenSelection; result: AccountAssetExactSuccess }>
+  | Readonly<{ status: "error"; selection: TokenSelection; message: string }>;
+
 export interface AccountAssetPageProps {
   readonly snapshot: AccountAssetPageSnapshot | undefined;
-  readonly exact: AccountAssetExactSuccess | undefined;
   readonly loading: boolean;
   readonly staleMessage: string | undefined;
-  readonly exactRead: Readonly<{
-    status: "idle" | "loading" | "error";
-    message?: string;
-  }>;
+  readonly exactRead: AccountAssetExactReadPresentation;
   readonly mutationDisabled: boolean;
   readonly onRefresh: () => void;
   readonly onRetryExact: () => void;
@@ -135,30 +137,38 @@ const EvidenceList = ({ fields }: { readonly fields: readonly AccountAssetEviden
   ])}</dl>
 );
 
-const TokenInformation = ({
-  result,
+const TokenDetailsAndActions = ({
+  read,
   mutationDisabled,
   onClose,
+  onRetry,
   onRemove,
 }: {
-  readonly result: AccountAssetExactSuccess;
+  readonly read: Exclude<AccountAssetExactReadPresentation, { status: "idle" }>;
   readonly mutationDisabled: boolean;
   readonly onClose: () => void;
+  readonly onRetry: () => void;
   readonly onRemove: (selection: TokenSelection, trigger: HTMLButtonElement) => void;
 }) => {
-  const row = projectAccountAssetExactView(result);
-  const identityWarnings = assetIdentityWarnings(row);
-  const rawBalanceLine = `${row.quantity.formattedRaw ?? "—"} / ${row.quantity.raw}`;
-  const uiAdjustedLine = row.quantity.adjustmentStatus === "available"
-    ? `${row.quantity.formattedAdjusted ?? "—"} / ${row.quantity.adjustedRaw ?? "—"}`
-    : row.quantity.adjustmentStatus === "result_out_of_range"
-      ? "Out of range"
-      : "Not established";
+  const row = read.status === "available" ? projectAccountAssetExactView(read.result) : undefined;
+  const identityWarnings = row === undefined ? [] : assetIdentityWarnings(row);
+  const rawBalanceLine = row === undefined
+    ? undefined
+    : `${row.quantity.formattedRaw ?? "—"} / ${row.quantity.raw}`;
+  const uiAdjustedLine = row === undefined
+    ? undefined
+    : row.quantity.adjustmentStatus === "available"
+      ? `${row.quantity.formattedAdjusted ?? "—"} / ${row.quantity.adjustedRaw ?? "—"}`
+      : row.quantity.adjustmentStatus === "result_out_of_range"
+        ? "Out of range"
+        : "Not established";
   const [tooltip, setTooltip] = useState<string | null>(null);
   const [showDetails, setShowDetails] = useState(false);
-  const shownStandards = result.standards.standards.filter(
-    (standard) => standard.status !== "not_supported" && standard.status !== "unknown",
-  );
+  const shownStandards = read.status === "available"
+    ? read.result.standards.standards.filter(
+        (standard) => standard.status !== "not_supported" && standard.status !== "unknown",
+      )
+    : [];
   const activeStandard = tooltip === null
     ? undefined
     : shownStandards.find((standard) => standard.standardId === tooltip);
@@ -181,8 +191,8 @@ const TokenInformation = ({
       >
         <div className="detail-dialog-head">
         <header>
-          <p className="eyebrow">{classificationLabel(row.classification)}</p>
-          <h1 id="asset-info-title">{row.name ?? row.symbol ?? "Token information"}</h1>
+          <p className="eyebrow">{row === undefined ? "Account token" : classificationLabel(row.classification)}</p>
+          <h1 id="asset-info-title">{row?.name ?? row?.symbol ?? "Token details and actions"}</h1>
           {shownStandards.length === 0 ? null : (
             <div className="standard-badges">
               {shownStandards.map((standard) => {
@@ -207,7 +217,7 @@ const TokenInformation = ({
               {tokenStandardDefinitionFor(activeStandard.standardId).explanation}
             </p>
           )}
-          <p className="asset-address">{row.selection.asset.address}</p>
+          <p className="asset-address">{read.selection.asset.address}</p>
         </header>
         {identityWarnings.length === 0 ? null : (
           <div className="warning" role="status">
@@ -215,30 +225,44 @@ const TokenInformation = ({
             {identityWarnings.map((message) => <p key={message}>{message}</p>)}
           </div>
         )}
-        <dl className="balance-list">
-          <dt>Formatted / raw balance</dt><dd>{rawBalanceLine}</dd>
-          <dt>UI-adjusted / raw balance</dt><dd>{uiAdjustedLine}</dd>
-          <dt>Raw total supply</dt><dd>{result.totalSupply}</dd>
-        </dl>
-        <button
-          type="button"
-          className="disclosure"
-          aria-expanded={showDetails}
-          onClick={() => { setShowDetails((visible) => !visible); }}
-        >
-          <span>Evidence</span>
-          <span className={`disclosure-chevron${showDetails ? " open" : ""}`} aria-hidden="true">
-            <Icon name="chevron-right" />
-          </span>
-        </button>
+        {read.status === "loading" ? (
+          <div className="notice" role="status"><strong>Reading token information</strong></div>
+        ) : read.status === "error" ? (
+          <div className="warning" role="status">
+            <strong>Token information unavailable</strong>
+            <p>{read.message}</p>
+            <button type="button" className="secondary" onClick={onRetry}>Retry</button>
+          </div>
+        ) : (
+          <>
+            <dl className="balance-list">
+              <dt>Formatted / raw balance</dt><dd>{rawBalanceLine}</dd>
+              <dt>UI-adjusted / raw balance</dt><dd>{uiAdjustedLine}</dd>
+              <dt>Raw total supply</dt><dd>{read.result.totalSupply}</dd>
+            </dl>
+            <button
+              type="button"
+              className="disclosure"
+              aria-expanded={showDetails}
+              onClick={() => { setShowDetails((visible) => !visible); }}
+            >
+              <span>Evidence</span>
+              <span className={`disclosure-chevron${showDetails ? " open" : ""}`} aria-hidden="true">
+                <Icon name="chevron-right" />
+              </span>
+            </button>
+          </>
+        )}
         </div>
-        {!showDetails ? null : (
+        {read.status !== "available" || !showDetails ? null : (
           <div className="detail-panel">
             <section aria-label="Asset evidence">
-              <p className="evidence-caption">Classification · {classificationLabel(row.classification)}</p>
-              <EvidenceList fields={classificationEvidenceFields(row.classification)} />
+              <p className="evidence-caption">
+                Classification · {classificationLabel(read.result.asset.classification)}
+              </p>
+              <EvidenceList fields={classificationEvidenceFields(read.result.asset.classification)} />
               <p className="evidence-caption">Chain anchor</p>
-              <EvidenceList fields={accountAssetAnchorFields(result.block)} />
+              <EvidenceList fields={accountAssetAnchorFields(read.result.block)} />
             </section>
           </div>
         )}
@@ -247,7 +271,7 @@ const TokenInformation = ({
             type="button"
             className="danger with-icon"
             disabled={mutationDisabled}
-            onClick={(event) => { onRemove(row.selection, event.currentTarget); }}
+            onClick={(event) => { onRemove(read.selection, event.currentTarget); }}
           ><Icon name="trash" />Remove token</button>
           <button type="button" className="secondary" onClick={onClose}>Close</button>
         </div>
@@ -258,7 +282,6 @@ const TokenInformation = ({
 
 export const AccountAssetsPage = ({
   snapshot,
-  exact,
   loading,
   staleMessage,
   exactRead,
@@ -322,15 +345,6 @@ export const AccountAssetsPage = ({
           <p>{staleMessage}</p>
         </div>
       )}
-      {exactRead.status === "loading" ? (
-        <div className="notice" role="status"><strong>Reading token information</strong></div>
-      ) : exactRead.status === "error" ? (
-        <div className="warning" role="status">
-          <strong>Token information unavailable</strong>
-          <p>{exactRead.message}</p>
-          <button type="button" className="secondary" onClick={onRetryExact}>Retry</button>
-        </div>
-      ) : null}
       {page === undefined ? (
         <div className="empty-state">
           <h2>{loading ? "Reading assets…" : "Assets unavailable"}</h2>
@@ -394,11 +408,12 @@ export const AccountAssetsPage = ({
           </footer>
         </>
       )}
-      {exact === undefined ? null : (
-        <TokenInformation
-          result={exact}
+      {exactRead.status === "idle" ? null : (
+        <TokenDetailsAndActions
+          read={exactRead}
           mutationDisabled={mutationDisabled}
           onClose={onCloseInfo}
+          onRetry={onRetryExact}
           onRemove={onRemove}
         />
       )}

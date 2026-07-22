@@ -90,7 +90,9 @@ describe("root browser application structure", () => {
     expect(app).toContain("handledTerminalTokenOperation.current !== next.operationId");
     expect(page).toContain("Add token");
     expect(page).toContain("Remove token");
-    expect(page).toContain("onRemove(row.selection, event.currentTarget)");
+    expect(page).toContain("onRemove(read.selection, event.currentTarget)");
+    expect(app).toContain("selection: result.asset.selection");
+    expect(app).not.toContain("visibleExactAsset");
     expect(app).not.toContain("startTokenSelectionUpdate");
   });
 

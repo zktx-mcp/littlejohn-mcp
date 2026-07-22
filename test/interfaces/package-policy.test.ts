@@ -3,6 +3,17 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 describe("browser bundle distribution notices", () => {
+  it("retains the exact pinned Lucide and Feather license artifact", async () => {
+    const [installed, retained, notice] = await Promise.all([
+      readFile("node_modules/lucide-react/LICENSE"),
+      readFile("LICENSES/LUCIDE-LICENSE.txt"),
+      readFile("THIRD_PARTY_NOTICES.txt", "utf8"),
+    ]);
+    expect(retained).toEqual(installed);
+    expect(notice).toContain("Lucide (React icons)");
+    expect(notice).toContain("LICENSES/LUCIDE-LICENSE.txt");
+  });
+
   it("includes the exact shared React license once for React, React DOM, and Scheduler", async () => {
     const [react, reactDom, scheduler, notice] = await Promise.all([
       readFile("node_modules/react/LICENSE", "utf8"),
