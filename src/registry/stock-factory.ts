@@ -2,6 +2,7 @@ import {
   deepFreezeValue,
   parseEvmAddressInput,
   parseHash32,
+  productChainId,
   type ChainAnchor,
   type EvmAddress,
   type Hash32,
@@ -23,7 +24,6 @@ import {
 } from "../chain/rpc.js";
 import {
   assertOfficialAssetSourceMember,
-  robinhoodChainId,
   type OfficialAssetSourceMember,
 } from "./official-assets.js";
 
@@ -127,7 +127,7 @@ const requiredRuntimeCodeHash = (
 export const createStockFactoryVerifier = async (
   input: StockFactoryVerifierInput,
 ): Promise<StockFactoryVerifier> => {
-  if (input.block.chainId !== robinhoodChainId) {
+  if (input.block.chainId !== productChainId) {
     throw new TypeError("StockFactory verification requires Robinhood Chain.");
   }
   if (input.stateReference.blockHash !== input.block.blockHash) {

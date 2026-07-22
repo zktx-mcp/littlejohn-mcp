@@ -6,12 +6,13 @@ import {
   codePointLength,
   compareCodePointSequences,
   deepFreezeValue,
-  evmChainIdSchema,
   hash32Schema,
   isSafeSingleLineText,
   parseEvmAddressInput,
   parseHash32,
   parseUtcTimestamp,
+  productChainId,
+  productChainNumericId,
   sha256Bytes,
   utcTimestampSchema,
   utf8ByteLength,
@@ -22,7 +23,6 @@ import {
 } from "../core/index.js";
 
 export const robinhoodAssetSourceUri = "https://api.robinhood.com/rhj/assets" as const;
-export const robinhoodChainId = evmChainIdSchema.parse("eip155:4663") as EvmChainId;
 export const officialAssetSourceResponseByteLimit = 1_048_576;
 export const officialAssetSourceMemberLimit = 512;
 export const officialAssetSourceDeploymentLimit = 8;
@@ -157,7 +157,7 @@ const memberSetPayload = (
   members: readonly OfficialAssetSourceMember[],
 ) => ({
   version: "1",
-  chainId: robinhoodChainId,
+  chainId: productChainId,
   sourceUri: robinhoodAssetSourceUri,
   members: members.map((member) => ({
     assetUid: member.assetUid,
@@ -169,7 +169,7 @@ const candidateListPayload = (
   members: readonly OfficialAssetSourceMember[],
 ) => ({
   version: "1",
-  chainId: robinhoodChainId,
+  chainId: productChainId,
   sourceUri: robinhoodAssetSourceUri,
   members: members.map((member) => ({
     assetUid: member.assetUid,
@@ -200,7 +200,9 @@ const normalizeSourceResponse = (
       chainId: deployment.chainId,
       contractAddress: parseEvmAddressInput(deployment.contractAddress),
     }));
-    const deployments = normalizedDeployments.filter((deployment) => deployment.chainId === 4663);
+    const deployments = normalizedDeployments.filter(
+      (deployment) => deployment.chainId === productChainNumericId,
+    );
     if (deployments.length !== 1) {
       throw new TypeError("The official asset response requires one Robinhood Chain deployment.");
     }
@@ -264,7 +266,7 @@ const parseOfficialAssetSourceResponse = (
     rawResponseDigest: exactResponseDigest(bytesInput),
     memberSetDigest: officialAssetMemberSetDigest(members),
     candidateListDigest: officialAssetCandidateListDigest(members),
-    chainId: robinhoodChainId,
+    chainId: productChainId,
     members,
   });
 };
@@ -272,7 +274,7 @@ const parseOfficialAssetSourceResponse = (
 export const assertOfficialAssetSourceSnapshot = (
   input: OfficialAssetSourceSnapshot,
 ): OfficialAssetSourceSnapshot => {
-  if (input.sourceUri !== robinhoodAssetSourceUri || input.chainId !== robinhoodChainId) {
+  if (input.sourceUri !== robinhoodAssetSourceUri || input.chainId !== productChainId) {
     throw new TypeError("Official asset snapshot authority is invalid.");
   }
   const sourceObservedAt = parseUtcTimestamp(input.sourceObservedAt);
@@ -307,7 +309,7 @@ export const assertOfficialAssetSourceSnapshot = (
     rawResponseDigest,
     memberSetDigest,
     candidateListDigest,
-    chainId: robinhoodChainId,
+    chainId: productChainId,
     members,
   });
 };

@@ -33,7 +33,7 @@ import {
 import type {
   ChainOwnerApplicationContext,
   ChainReadCapabilityPort,
-} from "../runtime/index.js";
+} from "../runtime/application-context.js";
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
 import {
   chainErrorRegistry,

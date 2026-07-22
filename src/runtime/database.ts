@@ -90,6 +90,10 @@ import {
   encodeWalletConnectionStorage,
   type WalletConnectionStorageRow,
 } from "./wallet-connection-storage.js";
+import type {
+  WalletConnectionRecord,
+  WalletProjectionStore,
+} from "./wallet-projection.js";
 
 export interface LocalProfile {
   readonly profileId: ProfileId;
@@ -106,12 +110,6 @@ export interface RuntimeOwnerRecord {
   readonly acquiredAt: UtcTimestamp;
 }
 
-export interface WalletConnectionRecord {
-  readonly revision: RuntimeRevision;
-  readonly connection: WalletConnectionData;
-  readonly updatedAt: UtcTimestamp;
-}
-
 export interface RuntimeOwnerStore {
   readProfile(): LocalProfile;
   readOwner(): RuntimeOwnerRecord | undefined;
@@ -124,15 +122,6 @@ export interface RuntimeOwnerStore {
 
 export interface ConfiguredChainStore {
   insertConfiguredChainIfAbsent(chainId: EvmChainId): void;
-}
-
-export interface WalletProjectionStore {
-  read(): WalletConnectionRecord;
-  replace(
-    expectedRevision: string,
-    connection: WalletConnectionData,
-    updatedAt: UtcTimestamp,
-  ): WalletConnectionRecord;
 }
 
 interface ProfileRow { singleton: number; profileId: string; createdAt: string }

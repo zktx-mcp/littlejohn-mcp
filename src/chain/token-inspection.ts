@@ -10,7 +10,7 @@ import {
   type ObservationWriter,
   type UnsignedDecimal,
 } from "../core/index.js";
-import type { ChainOwnerApplicationContext } from "../runtime/index.js";
+import type { ChainOwnerApplicationContext } from "../runtime/application-context.js";
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
 import {
   tokenCatalogContractLimits,

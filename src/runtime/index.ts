@@ -3,28 +3,22 @@ export { createOperationId } from "./operation-id.js";
 export type {
   AccountAssetOwnerApplicationStage,
   AccountAssetOwnerHandoff,
-  ChainCapabilityAuthorityPort,
-  ChainOwnerApplication,
-  ChainOwnerApplicationFactory,
   ChainOwnerHandoff,
+  LocalRuntimeOptions,
+  TokenCatalogOwnerHandoff,
+  WalletOwnerHandoff,
+} from "./composition.js";
+export type {
+  ChainCapabilityAuthorityPort,
   ChainOwnerApplicationContext,
   ChainOwnerBootstrapPort,
   ChainReadCapabilityPort,
-  InterfaceOwnerApplication,
-  InterfaceOwnerApplicationContext,
-  InterfaceOwnerApplicationFactory,
-  LocalRuntimeOptions,
-  TokenCatalogOwnerHandoff,
-  TokenInspectionReadCapabilityPort,
   WalletConnectionReadCapabilityPort,
-  WalletOwnerApplication,
-  WalletOwnerApplicationFactory,
-  WalletOwnerHandoff,
   WalletCapabilityAuthorityPort,
   WalletOwnerApplicationContext,
   WalletOwnerBootstrapPort,
   WalletPrivateStoreDirectoryPort,
-} from "./composition.js";
+} from "./application-context.js";
 export type { WalletSessionSource } from "./source-identity.js";
 export type {
   RuntimeOwnerResponsePacket,
@@ -111,10 +105,12 @@ export type {
   RuntimeOwnerStore,
   WalletAccountRecordKey,
   WalletAccountStorageRow,
-  WalletConnectionRecord,
-  WalletProjectionStore,
 } from "./database.js";
 export { decodeWalletAccountRecordKey } from "./database.js";
+export type {
+  WalletConnectionRecord,
+  WalletProjectionStore,
+} from "./wallet-projection.js";
 export {
   createCapabilityCatalogSchema,
   composeCapabilityCatalog,

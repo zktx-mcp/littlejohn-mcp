@@ -19,10 +19,10 @@ import {
 } from "../core/index.js";
 import type {
   WalletConnectionReadCapabilityPort,
-  WalletConnectionRecord,
   WalletOwnerBootstrapPort,
-  WalletSessionSource,
-} from "../runtime/index.js";
+} from "../runtime/application-context.js";
+import type { WalletConnectionRecord } from "../runtime/wallet-projection.js";
+import type { WalletSessionSource } from "../runtime/source-identity.js";
 import {
   isWalletOperationFailureCode,
   operationFailure,

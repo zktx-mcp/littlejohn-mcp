@@ -3,7 +3,7 @@ export interface OwnedResource {
 }
 
 export interface OwnedResourceRegistration {
-  replace(resource: OwnedResource): void;
+  replace(expected: OwnedResource, replacement: OwnedResource): void;
   transfer(): void;
 }
 
@@ -67,10 +67,13 @@ export const createResourceOwnershipScope = (): ResourceOwnershipScope => {
         identities.add(resource);
         entries.push(entry);
         return Object.freeze({
-          replace(replacement: OwnedResource): void {
+          replace(expected: OwnedResource, replacement: OwnedResource): void {
             mutate(() => {
               if (!entry.active || sealed) {
                 throw new TypeError("Owned resource registration is unavailable.");
+              }
+              if (entry.current.resource !== expected) {
+                throw new TypeError("Owned resource registration does not own the expected resource.");
               }
               if (identities.has(replacement)) {
                 throw new TypeError("Owned resource is already registered.");

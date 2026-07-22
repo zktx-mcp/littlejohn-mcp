@@ -10,6 +10,7 @@ import {
   parseEvmAddress,
   parseHash32,
   parseUtcTimestamp,
+  productChainId,
   type ChainAnchor,
 } from "../../src/core/index.js";
 import {
@@ -19,7 +20,6 @@ import {
   officialAssetCandidateListDigest,
   officialAssetMemberSetDigest,
   robinhoodAssetSourceUri,
-  robinhoodChainId,
   stockFactoryImplementationAddress,
   stockFactoryImplementationCodeHash,
   stockFactoryImplementationSlot,
@@ -87,7 +87,7 @@ const decodedSnapshot = assertOfficialAssetSourceSnapshot({
   rawResponseDigest: parseHash32(`0x${"b".repeat(64)}`),
   memberSetDigest: officialAssetMemberSetDigest(snapshotMembers),
   candidateListDigest: officialAssetCandidateListDigest(snapshotMembers),
-  chainId: robinhoodChainId,
+  chainId: productChainId,
   members: snapshotMembers,
 });
 const member = decodedSnapshot.members[0]!;

@@ -9,7 +9,7 @@ import {
   type CapabilityAvailabilityInput,
   type AccountAssetRuntimeSupportManifest,
   type InterfaceRuntimeSupportManifest,
-} from "../runtime/index.js";
+} from "../runtime/support-manifest.js";
 import {
   interfaceReadCapabilityRegistry,
   accountAssetInterfaceBindingList,

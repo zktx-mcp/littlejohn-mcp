@@ -202,10 +202,14 @@ const createFakeClient = async (configuration, acquisitionResources) => {
   const storePath = resolve(configuration.privateStoreDirectory, "release-fake-sessions.json");
   const created = new FakeWalletConnectClient(storePath, await readSessions(storePath));
   const registration = acquisitionResources.register(created);
+  let ownedResource = created;
   client = created;
   return Object.freeze({
     client: created,
-    replace: (resource) => registration.replace(resource),
+    replace: (resource) => {
+      registration.replace(ownedResource, resource);
+      ownedResource = resource;
+    },
     transfer: () => registration.transfer(),
   });
 };

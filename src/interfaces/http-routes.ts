@@ -8,15 +8,17 @@ import {
 import { chainInterfaceErrorMappings } from "../chain/errors.js";
 import { tokenCatalogInterfaceErrorMappings } from "../token-catalog/index.js";
 import { walletInterfaceErrorMappings } from "../wallet/errors.js";
-import {
-  type ChainReadCapabilityPort,
-  type InterfaceRuntimeSupportManifest,
-  type RouteContext,
-  type RouteResult,
-  type RuntimeRouteRegistry,
-  type TokenInspectionReadCapabilityPort,
-  type WalletConnectionReadCapabilityPort,
-} from "../runtime/index.js";
+import type {
+  ChainReadCapabilityPort,
+  WalletConnectionReadCapabilityPort,
+} from "../runtime/application-context.js";
+import type { TokenCatalogInspectionPort } from "../token-catalog/index.js";
+import type { InterfaceRuntimeSupportManifest } from "../runtime/support-manifest.js";
+import type {
+  RouteContext,
+  RouteResult,
+  RuntimeRouteRegistry,
+} from "../runtime/http-routing.js";
 import {
   accountBalanceInterface,
   capabilityCatalogInterface,
@@ -71,7 +73,7 @@ export const extendPublicInterfaceRoutes = (input: {
   readonly routes: RuntimeRouteRegistry;
   readonly chainReads: ChainReadCapabilityPort;
   readonly walletConnection: WalletConnectionReadCapabilityPort;
-  readonly tokenInspection: TokenInspectionReadCapabilityPort["tokenInspection"];
+  readonly tokenInspection: TokenCatalogInspectionPort;
   readonly supportManifest: InterfaceRuntimeSupportManifest;
 }): RuntimeRouteRegistry => {
   const bindings = new CapabilityBindingRegistry(interfaceReadCapabilityRegistry, [

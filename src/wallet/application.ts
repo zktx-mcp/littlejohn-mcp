@@ -1,11 +1,13 @@
 import type {
-  InitialRuntimeSupportManifest,
-  WalletOwnerApplication,
+  WalletConnectionReadCapabilityPort,
   WalletOwnerApplicationContext,
-  WalletOwnerApplicationFactory,
-  WalletRuntimeSupportManifest,
-} from "../runtime/index.js";
-import { extendWalletRuntimeSupportManifest } from "../runtime/index.js";
+} from "../runtime/application-context.js";
+import type { HttpOwnerApplication } from "../runtime/http-owner.js";
+import {
+  extendWalletRuntimeSupportManifest,
+  type WalletRuntimeSupportManifest,
+  type InitialRuntimeSupportManifest,
+} from "../runtime/support-manifest.js";
 import {
   getCapabilityDefinitionSnapshot,
   walletConnectionCapability,
@@ -59,6 +61,24 @@ type WalletConnectClientFactory = (
   acquisitionResources: WalletConnectAcquisitionRegistry,
   signal: AbortSignal,
 ) => Promise<WalletConnectClientAcquisition>;
+
+export interface WalletOwnerApplication<
+  ActiveWallet extends object,
+  WalletOperations extends object,
+> extends HttpOwnerApplication {
+  readonly supportManifest: WalletRuntimeSupportManifest;
+  readonly walletConnection: WalletConnectionReadCapabilityPort;
+  readonly activeWallet: ActiveWallet;
+  readonly walletOperations: WalletOperations;
+}
+
+export type WalletOwnerApplicationFactory<
+  ActiveWallet extends object,
+  WalletOperations extends object,
+> = (
+  context: WalletOwnerApplicationContext,
+) => Promise<WalletOwnerApplication<ActiveWallet, WalletOperations>> |
+  WalletOwnerApplication<ActiveWallet, WalletOperations>;
 
 export const createWalletOwnerApplicationFactory = (
   createClient: WalletConnectClientFactory,
@@ -148,7 +168,7 @@ export const createWalletOwnerApplicationFactory = (
         close: closeApplication,
       });
       acquisition.replace(application);
-      startupRegistration.replace(application);
+      startupRegistration.replace(acquisitionScope, application);
       acquisition.transfer();
       startupRegistration.transfer();
       return application;

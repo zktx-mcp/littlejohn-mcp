@@ -10,10 +10,12 @@ import {
   internalResponseLimitBytes,
   jsonContentType,
   noStoreCacheControl,
-  type RuntimeOwnerSession,
-  type RuntimeOwnerSessionIdentity,
-  type RuntimeOwnerSessionPort,
-} from "../runtime/index.js";
+} from "../runtime/http-boundary.js";
+import type {
+  RuntimeOwnerSession,
+  RuntimeOwnerSessionIdentity,
+  RuntimeOwnerSessionPort,
+} from "../runtime/owner-session.js";
 import {
   getRuntimeOperationFailure,
   type InterfaceErrorMappingRegistry,

@@ -9,7 +9,7 @@ import {
   type HandlerInvocationContext,
   type ObservationWriter,
 } from "../../src/core/index.js";
-import type { WalletConnectionReadCapabilityPort } from "../../src/runtime/composition.js";
+import type { WalletConnectionReadCapabilityPort } from "../../src/runtime/application-context.js";
 import {
   createControlCredentialVerifier,
   loadOrCreateControlCredential,

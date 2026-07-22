@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { productDisplayName } from "../core/index.js";
-import type { BrowserContentType } from "../runtime/index.js";
+import type { BrowserContentType } from "../runtime/http-boundary.js";
 import { browserAssetContentViolation } from "./browser-asset-policy.js";
 import {
   browserCsrfMetaName,

@@ -11,9 +11,9 @@ import {
 import { ProductDatabase } from "../../src/runtime/database.js";
 import {
   FixedHttpOwner,
-  type HttpOwnerApplicationContext,
   type RuntimeDispatchResponse,
 } from "../../src/runtime/http-owner.js";
+import type { RuntimeApplicationContext } from "../../src/runtime/application-context.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
 
 type WorkerCommand =
@@ -119,7 +119,7 @@ const snapshot = (): WorkerSnapshot => {
   });
 };
 
-const applicationFactory = ({ routes }: HttpOwnerApplicationContext) => {
+const applicationFactory = ({ routes }: RuntimeApplicationContext) => {
   applicationFactoryCalls += 1;
   return Object.freeze({
     routes: routes.extend([{

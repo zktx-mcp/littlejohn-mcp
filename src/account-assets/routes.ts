@@ -3,7 +3,7 @@ import type {
   RouteContext,
   RouteResult,
   RuntimeRouteRegistry,
-} from "../runtime/index.js";
+} from "../runtime/http-routing.js";
 import {
   accountAssetApplicationContracts,
   type AccountAssetRequestContract,

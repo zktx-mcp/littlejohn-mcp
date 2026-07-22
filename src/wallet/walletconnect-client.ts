@@ -2740,6 +2740,7 @@ export const createWalletConnectClient = async (
   const registration = acquisitionResources.register(acquisitionResource);
   const acquisitionBudget = createWalletConnectAcquisitionBudget(signal);
   let clientAdopted = false;
+  let ownedResource: WalletConnectAcquisitionResource = acquisitionResource;
   const logger = createDroppingLogger();
   try {
     const productionDependencies = await acquisitionBudget.run(
@@ -2787,7 +2788,8 @@ export const createWalletConnectClient = async (
       client: initializedClient,
       replace: (resource: WalletConnectAcquisitionResource): void => {
         const current = acquisitionResource.adoptionIsCurrent();
-        registration.replace(resource);
+        registration.replace(ownedResource, resource);
+        ownedResource = resource;
         if (!clientAdopted) {
           clientAdopted = true;
           acquisitionResource.markAdopted();

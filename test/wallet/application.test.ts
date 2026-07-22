@@ -231,9 +231,13 @@ const acquireFakeClient = (
   configurations.push(configuration);
   signals.push(signal);
   const registration = acquisitionResources.register(client);
+  let ownedResource: WalletConnectAcquisitionResource = client;
   return Object.freeze({
     client,
-    replace: (resource: WalletConnectAcquisitionResource) => registration.replace(resource),
+    replace(resource: WalletConnectAcquisitionResource): void {
+      registration.replace(ownedResource, resource);
+      ownedResource = resource;
+    },
     transfer: () => registration.transfer(),
   });
 };
@@ -389,7 +393,10 @@ describe("wallet owner application composition", () => {
         register(resource: WalletConnectAcquisitionResource) {
           retained = resource;
           return Object.freeze({
-            replace(replacement: WalletConnectAcquisitionResource): void { retained = replacement; },
+            replace(
+              _expected: WalletConnectAcquisitionResource,
+              replacement: WalletConnectAcquisitionResource,
+            ): void { retained = replacement; },
             transfer(): void { throw transferFailure; },
           });
         },

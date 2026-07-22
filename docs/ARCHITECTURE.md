@@ -257,6 +257,10 @@ package verification does not replace manual host and wallet gates.
   module imports a core leaf directly.
 - Concrete SDK, database, HTTP, and adapter implementations enter through
   `runtime` composition.
+- Feature modules import runtime application contexts and transport contracts
+  from their exact leaf owners. They do not import the runtime entry point or
+  composition implementation. The top-level CLI alone enters the composed
+  runtime through `runtime/index`.
 - `package-lock.json` fixes repository clean installs only. It is not packaged,
   does not define consumer dependency resolution, and does not participate in
   process compatibility.
@@ -320,10 +324,10 @@ package verification does not replace manual host and wallet gates.
 - Fixed-owner application initialization, composed application stages, and
   WalletConnect acquisition register each acquired long-lived resource with its
   current lifecycle owner before the next fallible initialization step.
-- Replacing a registered resource changes the owned resource atomically. The
-  replacement assumes the same remaining cleanup obligation. The previous
-  owner transfers its registration only after the receiving owner has accepted
-  the replacement.
+- Replacing a registered resource requires and verifies the exact current
+  resource, then changes the owned resource atomically. The replacement assumes
+  the same remaining cleanup obligation. The previous owner transfers its
+  registration only after the receiving owner has accepted the replacement.
 - One scope owns each exact resource identity at most once. Reading a resource's
   cleanup operation cannot reenter or alter registration, replacement,
   transfer, or sealing.
@@ -345,10 +349,13 @@ package verification does not replace manual host and wallet gates.
   its returned application before its scope is sealed.
 - A stage failure followed by a cleanup failure preserves both errors in that
   order. Cleanup failure never replaces or hides the startup failure.
-- The token-catalog application factory owns its coordinator, application
-  adapter, consumer ports, support extension, admission state, and close/drain
-  lifecycle. Runtime composition consumes that complete application and does
-  not construct token-catalog internals.
+- The token-catalog application factory owns its official-asset synchronization,
+  coordinator, application adapter, consumer ports, support extension, admission
+  state, and retryable close/drain lifecycle. It closes the coordinator before
+  the synchronization. The factory registers that complete lifecycle with the
+  supplied application-stage owner before adopting either resource. Runtime
+  composition supplies the stage owner and complete dependencies, consumes the
+  complete application, and does not construct token-catalog internals.
 - Fixed-owner shutdown blocks new work, aborts and drains active work, closes
   interface, account-assets, token-catalog, chain, and wallet applications in
   that order, validates the

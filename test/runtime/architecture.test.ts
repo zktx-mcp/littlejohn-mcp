@@ -51,6 +51,8 @@ const browserCoreConsumers = new Set([
 const browserTokenCatalogConsumers = new Set([
   resolve(sourceRoot, "interfaces/browser-error-response.ts"),
 ]);
+const runtimeEntryPoint = resolve(sourceRoot, "runtime/index.ts");
+const runtimeComposition = resolve(sourceRoot, "runtime/composition.ts");
 
 const loadPackagePolicy = async () => {
   const [manifest, sourceFiles] = await Promise.all([
@@ -74,6 +76,16 @@ const isWithin = (file: string, directory: string): boolean => {
   const fromDirectory = relative(directory, file);
   return fromDirectory === "" || (!isAbsolute(fromDirectory) && fromDirectory !== ".." &&
     !fromDirectory.startsWith(`..${sep}`));
+};
+
+const resolveSourceModule = (file: string, specifier: string): string | undefined => {
+  if (!specifier.startsWith(".")) return undefined;
+  try {
+    const target = fileURLToPath(new URL(specifier, pathToFileURL(file)));
+    return target.endsWith(".js") ? `${target.slice(0, -3)}.ts` : target;
+  } catch {
+    return undefined;
+  }
 };
 
 const isInterfaceConsumer = (file: string): boolean =>
@@ -124,6 +136,46 @@ describe("runtime architecture boundary", () => {
       }
     }
     expect(violations).toEqual([]);
+  });
+
+  it("keeps feature modules out of the runtime entry point and composition implementation", async () => {
+    const violations: string[] = [];
+    for (const file of await collectSourceFiles(sourceRoot)) {
+      const name = relative(sourceRoot, file).split(sep).join("/");
+      for (const reference of (await inspectSourceFile(file)).moduleImports) {
+        if (reference.specifier === undefined) continue;
+        const target = resolveSourceModule(file, reference.specifier);
+        if (target === runtimeEntryPoint && file !== resolve(sourceRoot, "cli.ts")) {
+          violations.push(`${name}:runtime-entry`);
+        }
+        if (target === runtimeComposition && file !== runtimeEntryPoint) {
+          violations.push(`${name}:runtime-composition`);
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("keeps the product chain literal in its single code owner and derives its numeric form", async () => {
+    const productChainLiteralOwners: string[] = [];
+    const productChainNumericLiteralOwners: string[] = [];
+    for (const file of await collectSourceFiles(sourceRoot)) {
+      const name = relative(sourceRoot, file).split(sep).join("/");
+      const source = await readFile(file, "utf8");
+      const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+      const visit = (node: ts.Node): void => {
+        if (ts.isStringLiteralLike(node) && node.text === "eip155:4663") {
+          productChainLiteralOwners.push(name);
+        }
+        if (ts.isNumericLiteral(node) && node.text === "4663") {
+          productChainNumericLiteralOwners.push(name);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(parsed);
+    }
+    expect([...new Set(productChainLiteralOwners)]).toEqual(["core/product-identity.ts"]);
+    expect(productChainNumericLiteralOwners).toEqual([]);
   });
 
   it("requires interface and package consumers to enter the token catalog through their exact public handoff", async () => {

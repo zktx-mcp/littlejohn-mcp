@@ -26,11 +26,9 @@ import {
   type CanonicalJson,
   type CapabilityId,
 } from "../core/index.js";
-import {
-  createOperationId,
-  fixedOrigin,
-  type RuntimeOwnerSessionPort,
-} from "../runtime/index.js";
+import { fixedOrigin } from "../runtime/http-boundary.js";
+import { createOperationId } from "../runtime/operation-id.js";
+import type { RuntimeOwnerSessionPort } from "../runtime/owner-session.js";
 import {
   tokenCatalogErrorRegistry,
   type AnyTokenCatalogApplicationContract,

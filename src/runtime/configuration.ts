@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   parseEvmChainId,
+  productChainId,
   productDisplayName,
   type EvmChainId,
 } from "../core/index.js";
@@ -123,7 +124,7 @@ export const readConfiguredRpcEndpoint = (
 export const readRuntimeConfiguration = (
   environment: Readonly<Record<string, string | undefined>>,
 ): RuntimeConfiguration => {
-  const chain = createRuntimeChainConfiguration("eip155:4663");
+  const chain = createRuntimeChainConfiguration(productChainId);
   const endpoint = parseConfiguredRpc(environment["LITTLEJOHN_RPC_URL"] ?? defaultRpcUrl);
   const rpc = Object.freeze({ chain, endpoint });
   const projectId = walletConnectProjectIdSchema.parse(

@@ -4,12 +4,16 @@ import {
 } from "../core/index.js";
 import {
   extendChainRuntimeSupportManifest,
-  readConfiguredRpcEndpoint,
-  type ChainOwnerApplication,
-  type ChainOwnerApplicationFactory,
   type ChainRuntimeSupportManifest,
   type WalletRuntimeSupportManifest,
-} from "../runtime/index.js";
+} from "../runtime/support-manifest.js";
+import { readConfiguredRpcEndpoint } from "../runtime/configuration.js";
+import type {
+  ChainOwnerApplicationContext,
+  ChainReadCapabilityPort,
+} from "../runtime/application-context.js";
+import type { TokenCatalogInspectionPort } from "../token-catalog/ports.js";
+import type { HttpOwnerApplication } from "../runtime/http-owner.js";
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
 import { createErc20CallEncoder, type Erc20CallEncoder } from "./evm-standard.js";
 import { createAccountAssetChainReadPort } from "./account-assets.js";
@@ -30,6 +34,18 @@ const internalReadAvailability = Object.freeze({
 
 export type ChainRpcRequesterFactory = (url: string) => RpcRequester;
 export type ChainErc20CallEncoderFactory = () => Promise<Erc20CallEncoder>;
+
+export interface ChainOwnerApplication extends HttpOwnerApplication {
+  readonly supportManifest: ChainRuntimeSupportManifest;
+  readonly chainReads: ChainReadCapabilityPort;
+  readonly tokenInspection: TokenCatalogInspectionPort;
+  readonly officialAssetReads: ReturnType<typeof createOfficialAssetChainReadPort>;
+  readonly accountAssetReads: ReturnType<typeof createAccountAssetChainReadPort>;
+}
+
+export type ChainOwnerApplicationFactory<ActiveWallet extends object> = (
+  context: ChainOwnerApplicationContext<ActiveWallet>,
+) => Promise<ChainOwnerApplication> | ChainOwnerApplication;
 
 export const extendChainSupportManifest = (
   parent: WalletRuntimeSupportManifest,

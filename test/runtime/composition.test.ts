@@ -31,10 +31,12 @@ import {
   LocalRuntime,
   composeOwnerApplicationStages,
   type AccountAssetOwnerApplicationStage,
-  type ChainReadCapabilityPort,
   type TokenCatalogOwnerApplicationStage,
-  type WalletConnectionReadCapabilityPort,
 } from "../../src/runtime/composition.js";
+import type {
+  ChainReadCapabilityPort,
+  WalletConnectionReadCapabilityPort,
+} from "../../src/runtime/application-context.js";
 import {
   readRuntimeConfiguration,
 } from "../../src/runtime/configuration.js";

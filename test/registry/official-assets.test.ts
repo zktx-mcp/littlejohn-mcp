@@ -9,7 +9,11 @@ import {
   officialAssetSourceResponseByteLimit,
   robinhoodAssetSourceUri,
 } from "../../src/registry/index.js";
-import { parseEvmAddress, parseHash32 } from "../../src/core/index.js";
+import {
+  parseEvmAddress,
+  parseHash32,
+  productChainNumericId,
+} from "../../src/core/index.js";
 
 const observedAt = "2026-07-20T00:00:00.000Z";
 const expectedSourceUri = "https://api.robinhood.com/rhj/assets";
@@ -18,7 +22,7 @@ const address = (value: number) => parseEvmAddress(`0x${value.toString(16).padSt
 const asset = (value: number, overrides: Record<string, unknown> = {}) => ({
   id: uid(value),
   status: "ASSET_STATUS_ACTIVE",
-  deployments: [{ chainId: 4663, contractAddress: address(value) }],
+  deployments: [{ chainId: productChainNumericId, contractAddress: address(value) }],
   tokenName: `Token ${value}`,
   tokenSymbol: `T${value}`,
   ignored: "not consumed",
@@ -38,7 +42,7 @@ const readSnapshot = async (body: Uint8Array) => await createOfficialAssetSource
 describe("official asset source", () => {
   it("accepts one complete response, normalizes ordering and addresses, and derives independent digests", async () => {
     const responseBytes = bytes({ assets: [
-      asset(2, { deployments: [{ chainId: 4663, contractAddress: address(2).toUpperCase().replace("0X", "0x") }] }),
+      asset(2, { deployments: [{ chainId: productChainNumericId, contractAddress: address(2).toUpperCase().replace("0X", "0x") }] }),
       asset(1),
     ], ignored: true });
     const snapshot = await readSnapshot(responseBytes);
@@ -69,15 +73,15 @@ describe("official asset source", () => {
     const invalidResponses = [
       { assets: [] },
       { assets: [asset(1), asset(1)] },
-      { assets: [asset(1), asset(2, { deployments: [{ chainId: 4663, contractAddress: address(1) }] })] },
+      { assets: [asset(1), asset(2, { deployments: [{ chainId: productChainNumericId, contractAddress: address(1) }] })] },
       { assets: [asset(1, { status: "ASSET_STATUS_INACTIVE" })] },
       { assets: [asset(1, { deployments: [{ chainId: 1, contractAddress: address(1) }] })] },
       { assets: [asset(1, { deployments: [
-        { chainId: 4663, contractAddress: address(1) },
-        { chainId: 4663, contractAddress: address(2) },
+        { chainId: productChainNumericId, contractAddress: address(1) },
+        { chainId: productChainNumericId, contractAddress: address(2) },
       ] })] },
       { assets: [asset(1, { deployments: [
-        { chainId: 4663, contractAddress: address(1) },
+        { chainId: productChainNumericId, contractAddress: address(1) },
         { chainId: 1, contractAddress: "not-an-address" },
       ] })] },
       { assets: [asset(1, { id: `0x${"A".repeat(64)}` })] },

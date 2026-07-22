@@ -20,8 +20,6 @@ import {
   walletConnectionCapability,
   type AnyReadCapabilityDefinition,
   type CapabilityBinding,
-  type CanonicalClock,
-  type CapabilityInvocationAuthority,
   type InvocationBoundaryPorts,
   type UtcTimestamp,
 } from "../core/index.js";
@@ -40,6 +38,15 @@ import type {
   AccountAssetChainReadPort,
   OfficialAssetChainReadPort,
 } from "../chain/index.js";
+import type {
+  ChainOwnerApplication,
+  ChainOwnerApplicationFactory,
+} from "../chain/application.js";
+import type {
+  InterfaceOwnerApplication,
+  InterfaceOwnerApplicationContext,
+  InterfaceOwnerApplicationFactory,
+} from "../interfaces/application.js";
 import { createTokenCatalogFailure } from "../token-catalog/errors.js";
 import { normalizeTokenCatalogError } from "../token-catalog/operation-error.js";
 import {
@@ -53,28 +60,22 @@ import {
   type TokenCatalogInteractiveCliPort,
   type TokenCatalogCoordinatorDependencies,
   type TokenCatalogNonInteractiveOperationPort,
+  type TokenCatalogInspectionPort,
   type TokenCatalogQueryApplicationPort,
   type TokenCatalogWebStartPort,
 } from "../token-catalog/ports.js";
 import {
   readRuntimeConfiguration,
-  type RuntimeRpcConfiguration,
-  type WalletConnectConfiguration,
 } from "./configuration.js";
 import {
   deriveRuntimeConfigurationMac,
   loadOrCreateControlCredential,
 } from "./control-credential.js";
-import {
-  ProductDatabase,
-  type WalletProjectionStore,
-} from "./database.js";
+import { ProductDatabase } from "./database.js";
 import {
   FixedHttpOwner,
   type HttpOwnerApplication,
-  type HttpOwnerApplicationContext,
   type HttpOwnerReleasePermit,
-  type HttpOwnerStartupResourceRegistry,
   type RuntimeDispatchRequest,
   type RuntimeDispatchResponse,
 } from "./http-owner.js";
@@ -97,9 +98,7 @@ import {
 import {
   createRpcSourceAuthority,
   createWalletSourceAuthority,
-  type RpcSourceAuthorityPort,
   type WalletSessionSource,
-  type WalletSourceAuthorityPort,
 } from "./source-identity.js";
 import {
   assertChainRuntimeSupportManifestExtension,
@@ -112,60 +111,26 @@ import {
   type ChainRuntimeSupportManifest,
   type AccountAssetRuntimeSupportManifest,
   type InitialRuntimeSupportManifest,
-  type InterfaceRuntimeSupportManifest,
   type TokenCatalogRuntimeSupportManifest,
   type WalletRuntimeSupportManifest,
 } from "./support-manifest.js";
+import type {
+  ChainCapabilityAuthorityPort,
+  ChainReadCapabilityPort,
+  RuntimeApplicationContext,
+  WalletCapabilityAuthorityPort,
+  WalletConnectionReadCapabilityPort,
+  WalletPrivateStoreDirectoryPort,
+} from "./application-context.js";
+import type {
+  WalletOwnerApplication,
+  WalletOwnerApplicationFactory,
+} from "../wallet/application.js";
 
 const walletConnectionCapabilityId = getCapabilityDefinitionSnapshot(walletConnectionCapability).capabilityId;
 const chainReadCapabilityIds = Object.freeze(chainReadCapabilities.map((definition) =>
   getCapabilityDefinitionSnapshot(definition).capabilityId));
 type ActiveWalletAuthorityPort = TokenCatalogCoordinatorDependencies["activeWallet"];
-
-export interface WalletCapabilityAuthorityPort {
-  readonly clock: CanonicalClock;
-  readonly invocationAuthority: CapabilityInvocationAuthority;
-  createInvocationPorts(session?: WalletSessionSource): InvocationBoundaryPorts;
-}
-
-export interface ChainCapabilityAuthorityPort {
-  readonly clock: CanonicalClock;
-  readonly invocationAuthority: CapabilityInvocationAuthority;
-  readonly invocationPorts: InvocationBoundaryPorts;
-}
-
-export interface WalletOwnerBootstrapPort {
-  readonly configuration: WalletConnectConfiguration;
-  readonly privateStoreDirectory: WalletPrivateStoreDirectoryPort;
-  readonly projection: WalletProjectionStore;
-  readonly sourceAuthority: WalletSourceAuthorityPort;
-  readonly capabilityAuthority: WalletCapabilityAuthorityPort;
-}
-
-export interface WalletPrivateStoreDirectoryPort {
-  ensureDirectory(): Promise<string>;
-}
-
-export interface ChainOwnerBootstrapPort {
-  readonly configuration: RuntimeRpcConfiguration;
-  readonly sourceAuthority: RpcSourceAuthorityPort;
-  readonly capabilityAuthority: ChainCapabilityAuthorityPort;
-}
-
-export interface WalletConnectionReadCapabilityPort {
-  readonly connection: CapabilityBinding<typeof walletConnectionCapability>;
-}
-
-export interface ChainReadCapabilityPort {
-  readonly accountBalance: CapabilityBinding<typeof accountBalanceCapability>;
-  readonly chainStatus: CapabilityBinding<typeof chainStatusCapability>;
-  readonly contractInspect: CapabilityBinding<typeof contractInspectCapability>;
-  readonly transactionInspect: CapabilityBinding<typeof transactionInspectCapability>;
-}
-
-export interface TokenInspectionReadCapabilityPort {
-  readonly tokenInspection: CapabilityBinding<typeof tokenInspectCapability>;
-}
 
 export interface WalletOwnerHandoff<ActiveWallet extends object> {
   readonly supportManifest: WalletRuntimeSupportManifest;
@@ -176,7 +141,7 @@ export interface WalletOwnerHandoff<ActiveWallet extends object> {
 export interface ChainOwnerHandoff {
   readonly supportManifest: ChainRuntimeSupportManifest;
   readonly chainReads: ChainReadCapabilityPort;
-  readonly tokenInspection: TokenInspectionReadCapabilityPort["tokenInspection"];
+  readonly tokenInspection: TokenCatalogInspectionPort;
   readonly officialAssetReads: OfficialAssetChainReadPort;
   readonly accountAssetReads: AccountAssetChainReadPort;
 }
@@ -190,73 +155,6 @@ export interface AccountAssetOwnerHandoff {
   readonly supportManifest: AccountAssetRuntimeSupportManifest;
   readonly accountAssets: AccountAssetApplicationPort;
 }
-
-export interface WalletOwnerApplicationContext {
-  readonly routes: RuntimeRouteRegistry;
-  readonly signal: AbortSignal;
-  readonly startupResources: HttpOwnerStartupResourceRegistry;
-  readonly supportManifest: InitialRuntimeSupportManifest;
-  readonly wallet: WalletOwnerBootstrapPort;
-}
-
-export interface ChainOwnerApplicationContext<ActiveWallet extends object> {
-  readonly routes: RuntimeRouteRegistry;
-  readonly signal: AbortSignal;
-  readonly startupResources: HttpOwnerStartupResourceRegistry;
-  readonly supportManifest: WalletRuntimeSupportManifest;
-  readonly walletConnection: WalletConnectionReadCapabilityPort;
-  readonly activeWallet: ActiveWallet;
-  readonly chain: ChainOwnerBootstrapPort;
-}
-
-export interface InterfaceOwnerApplicationContext<WalletOperations extends object>
-  extends Omit<TokenCatalogConsumerPorts, "accountTokenSelectionStore"> {
-  readonly routes: RuntimeRouteRegistry;
-  readonly signal: AbortSignal;
-  readonly startupResources: HttpOwnerStartupResourceRegistry;
-  readonly supportManifest: AccountAssetRuntimeSupportManifest;
-  readonly walletConnection: WalletConnectionReadCapabilityPort;
-  readonly walletOperations: WalletOperations;
-  readonly chainReads: ChainReadCapabilityPort;
-  readonly tokenInspection: TokenInspectionReadCapabilityPort["tokenInspection"];
-  readonly accountAssets: AccountAssetApplicationPort;
-}
-
-export interface WalletOwnerApplication<
-  ActiveWallet extends object,
-  WalletOperations extends object,
-> extends HttpOwnerApplication {
-  readonly supportManifest: WalletRuntimeSupportManifest;
-  readonly walletConnection: WalletConnectionReadCapabilityPort;
-  readonly activeWallet: ActiveWallet;
-  readonly walletOperations: WalletOperations;
-}
-
-export interface ChainOwnerApplication extends HttpOwnerApplication {
-  readonly supportManifest: ChainRuntimeSupportManifest;
-  readonly chainReads: ChainReadCapabilityPort;
-  readonly tokenInspection: TokenInspectionReadCapabilityPort["tokenInspection"];
-  readonly officialAssetReads: OfficialAssetChainReadPort;
-  readonly accountAssetReads: AccountAssetChainReadPort;
-}
-
-export interface InterfaceOwnerApplication extends HttpOwnerApplication {
-  readonly supportManifest: InterfaceRuntimeSupportManifest;
-}
-
-export type WalletOwnerApplicationFactory<
-  ActiveWallet extends object,
-  WalletOperations extends object,
-> = (
-  context: WalletOwnerApplicationContext,
-) => Promise<WalletOwnerApplication<ActiveWallet, WalletOperations>> |
-  WalletOwnerApplication<ActiveWallet, WalletOperations>;
-export type ChainOwnerApplicationFactory<ActiveWallet extends object> = (
-  context: ChainOwnerApplicationContext<ActiveWallet>,
-) => Promise<ChainOwnerApplication> | ChainOwnerApplication;
-export type InterfaceOwnerApplicationFactory<WalletOperations extends object> = (
-  context: InterfaceOwnerApplicationContext<WalletOperations>,
-) => Promise<InterfaceOwnerApplication> | InterfaceOwnerApplication;
 
 interface LocalRuntimeBaseOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
@@ -344,20 +242,20 @@ export type WalletOwnerApplicationStage<
   ActiveWallet extends object,
   WalletOperations extends object,
 > = (
-  context: HttpOwnerApplicationContext,
+  context: RuntimeApplicationContext,
 ) => Promise<WalletOwnerApplication<ActiveWallet, WalletOperations>> |
   WalletOwnerApplication<ActiveWallet, WalletOperations>;
 export type ChainOwnerApplicationStage<ActiveWallet extends object> = (
-  context: HttpOwnerApplicationContext,
+  context: RuntimeApplicationContext,
   wallet: WalletOwnerHandoff<ActiveWallet>,
 ) => Promise<ChainOwnerApplication> | ChainOwnerApplication;
 export type TokenCatalogOwnerApplicationStage<ActiveWallet extends object> = (
-  context: HttpOwnerApplicationContext,
+  context: RuntimeApplicationContext,
   wallet: WalletOwnerHandoff<ActiveWallet>,
   chain: ChainOwnerHandoff,
 ) => Promise<TokenCatalogApplication> | TokenCatalogApplication;
 export type AccountAssetOwnerApplicationStage<ActiveWallet extends object> = (
-  context: HttpOwnerApplicationContext,
+  context: RuntimeApplicationContext,
   wallet: WalletOwnerHandoff<ActiveWallet>,
   chain: ChainOwnerHandoff,
   tokenCatalog: TokenCatalogOwnerHandoff,
@@ -366,7 +264,7 @@ export type InterfaceOwnerApplicationStage<
   ActiveWallet extends object,
   WalletOperations extends object,
 > = (
-  context: HttpOwnerApplicationContext,
+  context: RuntimeApplicationContext,
   wallet: WalletOwnerHandoff<ActiveWallet>,
   chain: ChainOwnerHandoff,
   tokenCatalog: TokenCatalogOwnerHandoff,
@@ -421,8 +319,8 @@ const snapshotChainReads = (input: ChainReadCapabilityPort): ChainReadCapability
 };
 
 const snapshotTokenInspection = (
-  input: TokenInspectionReadCapabilityPort["tokenInspection"],
-): TokenInspectionReadCapabilityPort["tokenInspection"] => {
+  input: TokenCatalogInspectionPort,
+): TokenCatalogInspectionPort => {
   assertBindingProvenance(tokenInspectCapability, input);
   return input;
 };
@@ -550,7 +448,7 @@ export const composeOwnerApplicationStages = async <
   ActiveWallet extends object,
   WalletOperations extends object,
 >(
-  context: HttpOwnerApplicationContext,
+  context: RuntimeApplicationContext,
   initialSupportManifest: InitialRuntimeSupportManifest,
   stages: OwnerApplicationStages<ActiveWallet, WalletOperations>,
 ): Promise<HttpOwnerApplication> => {
@@ -883,10 +781,14 @@ export class LocalRuntime {
       const tokenCatalogStage: TokenCatalogOwnerApplicationStage<ActiveWallet> | undefined =
         chainStage === undefined
           ? undefined
-          : ({ routes, signal }, wallet, chain) => {
+          : async ({ routes, signal, startupResources }, wallet, chain) => {
             const activeWallet = requireActiveWalletAuthority(wallet.activeWallet);
+            const store = database.tokenCatalogStore();
+            const readStore = database.tokenCatalogReadStore();
+            const accountTokenSelectionStore = database.accountTokenSelectionStore();
+            const source = officialAssetSourceClient ?? createOfficialAssetSourceClient();
             const officialAssets = createOfficialAssetSynchronization({
-              source: officialAssetSourceClient ?? createOfficialAssetSourceClient(),
+              source,
               store: database.officialAssetSnapshotStore(),
               signal,
               failureFor: (error) => {
@@ -899,22 +801,24 @@ export class LocalRuntime {
                 signal.aborted ? "runtime_state_unavailable" : "request_aborted",
               ),
             });
-            return createTokenCatalogApplicationFactory({
+            const application = await createTokenCatalogApplicationFactory({
               routes,
               supportManifest: chain.supportManifest,
               activeWallet,
               inspection: chain.tokenInspection,
               officialAssets,
+              startupResources,
               verifyOfficialAsset: Object.freeze({
                 verify: (member, block, callerSignal) =>
                   chain.officialAssetReads.verifyAtBlock(member, block, callerSignal),
               }),
-              store: database.tokenCatalogStore(),
-              readStore: database.tokenCatalogReadStore(),
-              accountTokenSelectionStore: database.accountTokenSelectionStore(),
+              store,
+              readStore,
+              accountTokenSelectionStore,
               clock,
               signal,
             });
+            return application;
           };
       const accountAssetStage: AccountAssetOwnerApplicationStage<ActiveWallet> | undefined =
         tokenCatalogStage === undefined
@@ -970,7 +874,7 @@ export class LocalRuntime {
               ];
       const applicationFactory = stages === undefined
         ? undefined
-        : (context: HttpOwnerApplicationContext) => composeOwnerApplicationStages(
+        : (context: RuntimeApplicationContext) => composeOwnerApplicationStages(
           context,
           initialSupportManifest,
           stages,

@@ -1,5 +1,9 @@
 import type { CanonicalClock } from "../core/index.js";
 import type { RuntimeRouteRegistry } from "../runtime/http-routing.js";
+import {
+  createResourceOwnershipScope,
+  type OwnedResourceRegistry,
+} from "../runtime/resource-ownership.js";
 import type {
   ChainRuntimeSupportManifest,
   TokenCatalogRuntimeSupportManifest,
@@ -140,6 +144,7 @@ export interface TokenCatalogApplicationFactoryInput {
   readonly activeWallet: TokenCatalogCoordinatorDependencies["activeWallet"];
   readonly inspection: TokenCatalogCoordinatorDependencies["inspection"];
   readonly officialAssets: TokenCatalogCoordinatorDependencies["officialAssets"];
+  readonly startupResources: OwnedResourceRegistry;
   readonly verifyOfficialAsset: TokenCatalogCoordinatorDependencies["verifyOfficialAsset"];
   readonly store: TokenCatalogStore;
   readonly readStore: TokenCatalogQueryStore;
@@ -151,36 +156,41 @@ export interface TokenCatalogApplicationFactoryInput {
 export const createTokenCatalogApplicationFactory = async (
   input: TokenCatalogApplicationFactoryInput,
 ): Promise<TokenCatalogApplication> => {
-  const coordinator = new TokenCatalogCoordinator({
-    activeWallet: input.activeWallet,
-    inspection: input.inspection,
-    officialAssets: input.officialAssets,
-    verifyOfficialAsset: input.verifyOfficialAsset,
-    store: input.store,
-    clock: input.clock,
-    signal: input.signal,
-  });
+  const lifecycle = createResourceOwnershipScope();
+  const lifecycleOwnership = input.startupResources.register(lifecycle);
   let lifecycleState: "open" | "closing" | "closed" = "open";
-  let closePromise: Promise<void> | undefined;
+  let activeClose: Promise<void> | undefined;
   const assertOpen = (): void => {
     if (lifecycleState !== "open") {
       throw new TokenCatalogOperationError("runtime_state_unavailable");
     }
   };
   const close = (): Promise<void> => {
-    if (closePromise !== undefined) return closePromise;
+    if (lifecycleState === "closed") return Promise.resolve();
+    if (activeClose !== undefined) return activeClose;
     lifecycleState = "closing";
-    closePromise = Promise.allSettled([
-      coordinator.close(),
-      input.officialAssets.close(),
-    ]).then((settled) => {
-      const failures = settled.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
-      if (failures.length > 0) throw new AggregateError(failures, "Token catalog cleanup failed.");
+    let tracked!: Promise<void>;
+    tracked = lifecycle.close().then(() => {
       lifecycleState = "closed";
+    }).finally(() => {
+      if (activeClose === tracked) activeClose = undefined;
     });
-    return closePromise;
+    activeClose = tracked;
+    return tracked;
   };
   try {
+    lifecycle.resources.register(input.officialAssets);
+    const coordinator = new TokenCatalogCoordinator({
+      activeWallet: input.activeWallet,
+      inspection: input.inspection,
+      officialAssets: input.officialAssets,
+      verifyOfficialAsset: input.verifyOfficialAsset,
+      store: input.store,
+      clock: input.clock,
+      signal: input.signal,
+    });
+    lifecycle.resources.register(coordinator);
+    lifecycle.seal();
     const application = createTokenCatalogApplication({
       dependencies: {
         activeWallet: input.activeWallet,
@@ -194,15 +204,21 @@ export const createTokenCatalogApplicationFactory = async (
       input.accountTokenSelectionStore,
       assertOpen,
     );
-    return Object.freeze({
+    const result = Object.freeze({
       routes: input.routes,
       supportManifest: extendTokenCatalogSupportManifest(input.supportManifest),
       officialAssets: input.officialAssets,
       ...ports,
       close,
     });
+    lifecycleOwnership.transfer();
+    return result;
   } catch (startupError) {
-    try { await close(); }
+    if (!lifecycle.sealed) lifecycle.seal();
+    try {
+      await close();
+      lifecycleOwnership.transfer();
+    }
     catch (cleanupError) {
       throw new AggregateError(
         [startupError, cleanupError],

@@ -1,21 +1,30 @@
 import type {
   ChainOwnerApplicationContext,
-  ChainOwnerApplicationFactory,
   ChainOwnerBootstrapPort,
-  ChainOwnerHandoff,
   ChainReadCapabilityPort,
-  InterfaceOwnerApplicationContext,
-  InterfaceOwnerApplicationFactory,
+  RuntimeApplicationContext,
+  WalletConnectionReadCapabilityPort,
+  WalletOwnerApplicationContext,
+  WalletOwnerBootstrapPort,
+  WalletPrivateStoreDirectoryPort,
+} from "../../src/runtime/application-context.js";
+import type {
+  ChainOwnerHandoff,
   LocalRuntimeOptions,
   TokenCatalogOwnerHandoff,
-  WalletConnectionReadCapabilityPort,
-  WalletOwnerApplication,
-  WalletOwnerApplicationContext,
-  WalletOwnerApplicationFactory,
-  WalletOwnerBootstrapPort,
   WalletOwnerHandoff,
-  WalletPrivateStoreDirectoryPort,
 } from "../../src/runtime/composition.js";
+import type {
+  ChainOwnerApplicationFactory,
+} from "../../src/chain/application.js";
+import type {
+  InterfaceOwnerApplicationContext,
+  InterfaceOwnerApplicationFactory,
+} from "../../src/interfaces/application.js";
+import type {
+  WalletOwnerApplication,
+  WalletOwnerApplicationFactory,
+} from "../../src/wallet/application.js";
 import type {
   RuntimeChainConfiguration,
   RuntimeConfiguration,
@@ -70,6 +79,10 @@ type TestInterfaceApplicationFactory = InterfaceOwnerApplicationFactory<TestWall
 type _WalletContextKeys = Assert<Equal<
   keyof WalletOwnerApplicationContext,
   "routes" | "signal" | "startupResources" | "supportManifest" | "wallet"
+>>;
+type _RuntimeApplicationContextKeys = Assert<Equal<
+  keyof RuntimeApplicationContext,
+  "routes" | "signal" | "startupResources"
 >>;
 type _ChainContextKeys = Assert<Equal<
   keyof ChainOwnerApplicationContext<TestActiveWallet>,

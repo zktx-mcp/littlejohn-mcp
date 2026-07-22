@@ -3,10 +3,9 @@ import { z } from "zod";
 import {
   deepFreezeValue,
   evmAddressSchema,
-  evmChainIdSchema,
   hash32Schema,
+  productChainId,
 } from "../core/index.js";
-import { robinhoodChainId } from "./official-assets.js";
 
 const defaultStockTokenEntrySchema = z.object({
   assetUid: hash32Schema,
@@ -14,7 +13,7 @@ const defaultStockTokenEntrySchema = z.object({
 }).strict();
 
 const defaultStockTokenManifestSchema = z.object({
-  chainId: z.literal(robinhoodChainId),
+  chainId: z.literal(productChainId),
   assets: z.array(defaultStockTokenEntrySchema).min(1).max(5),
 }).strict().superRefine((value, context) => {
   const uids = value.assets.map((asset) => asset.assetUid);
@@ -30,7 +29,7 @@ const defaultStockTokenManifestSchema = z.object({
 export type DefaultStockTokenManifest = z.infer<typeof defaultStockTokenManifestSchema>;
 
 export const defaultStockTokenManifest = deepFreezeValue(defaultStockTokenManifestSchema.parse({
-  chainId: robinhoodChainId,
+  chainId: productChainId,
   assets: [
     {
       assetUid: "0x00000000000000000000000000000000c2425be3658540dd8e2424cbf3c5c649",

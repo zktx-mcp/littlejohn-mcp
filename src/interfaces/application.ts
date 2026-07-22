@@ -1,9 +1,22 @@
 import type {
-  InterfaceOwnerApplication,
-  InterfaceOwnerApplicationFactory,
-} from "../runtime/index.js";
+  ChainReadCapabilityPort,
+  RuntimeApplicationContext,
+  WalletConnectionReadCapabilityPort,
+} from "../runtime/application-context.js";
+import type {
+  HttpOwnerApplication,
+} from "../runtime/http-owner.js";
+import type {
+  AccountAssetRuntimeSupportManifest,
+  InterfaceRuntimeSupportManifest,
+} from "../runtime/support-manifest.js";
 import type { WalletInterfaceOperations } from "../wallet/contracts.js";
-import { extendTokenCatalogControlRouteRegistry } from "../token-catalog/index.js";
+import {
+  extendTokenCatalogControlRouteRegistry,
+  type TokenCatalogConsumerPorts,
+  type TokenCatalogInspectionPort,
+} from "../token-catalog/index.js";
+import type { AccountAssetApplicationPort } from "../account-assets/index.js";
 import {
   loadBrowserAssetBundle,
   type BrowserAssetBundle,
@@ -20,6 +33,24 @@ export interface InterfaceApplicationDependencies {
   readonly loadAssets: () => Promise<BrowserAssetBundle>;
   readonly createCredentials: () => BrowserRequestCredentialAuthority;
 }
+
+export interface InterfaceOwnerApplicationContext<WalletOperations extends object>
+  extends RuntimeApplicationContext, Omit<TokenCatalogConsumerPorts, "accountTokenSelectionStore"> {
+  readonly supportManifest: AccountAssetRuntimeSupportManifest;
+  readonly walletConnection: WalletConnectionReadCapabilityPort;
+  readonly walletOperations: WalletOperations;
+  readonly chainReads: ChainReadCapabilityPort;
+  readonly tokenInspection: TokenCatalogInspectionPort;
+  readonly accountAssets: AccountAssetApplicationPort;
+}
+
+export interface InterfaceOwnerApplication extends HttpOwnerApplication {
+  readonly supportManifest: InterfaceRuntimeSupportManifest;
+}
+
+export type InterfaceOwnerApplicationFactory<WalletOperations extends object> = (
+  context: InterfaceOwnerApplicationContext<WalletOperations>,
+) => Promise<InterfaceOwnerApplication> | InterfaceOwnerApplication;
 
 const defaultDependencies: InterfaceApplicationDependencies = Object.freeze({
   loadAssets: () => loadBrowserAssetBundle(),

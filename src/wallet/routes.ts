@@ -9,8 +9,8 @@ import type {
   RouteContext,
   RouteResult,
   RuntimeRouteRegistry,
-  WalletConnectionReadCapabilityPort,
-} from "../runtime/index.js";
+} from "../runtime/http-routing.js";
+import type { WalletConnectionReadCapabilityPort } from "../runtime/application-context.js";
 import {
   parseWalletOperationConfirmation,
   parseWalletOperationCreate,

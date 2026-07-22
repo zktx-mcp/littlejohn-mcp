@@ -2,7 +2,11 @@ import { readFile, readdir } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
-import { productDisplayName } from "../../src/core/index.js";
+import {
+  productChainId,
+  productChainNumericId,
+  productDisplayName,
+} from "../../src/core/index.js";
 
 describe("product identity projection", () => {
   it("matches the product-policy authority and keeps prose free of the technical spelling", async () => {
@@ -21,5 +25,11 @@ describe("product identity projection", () => {
         expect(match[0], name).toBe(productDisplayName);
       }
     }
+  });
+
+  it("owns the product chain and derives its numeric API identifier", async () => {
+    const policy = await readFile("docs/PRODUCT_POLICY.md", "utf8");
+    expect(policy).toContain(`canonical chain ID for that network is \`${productChainId}\``);
+    expect(productChainNumericId).toBe(4663);
   });
 });

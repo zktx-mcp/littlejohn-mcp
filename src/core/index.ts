@@ -79,7 +79,11 @@ export {
 } from "./capability-contract.js";
 export type { CapabilitySuccess } from "./capability-contract.js";
 export { createSha256HexSchema } from "./digests.js";
-export { productDisplayName } from "./product-identity.js";
+export {
+  productChainId,
+  productChainNumericId,
+  productDisplayName,
+} from "./product-identity.js";
 export {
   accountBalanceCapability,
   chainReadCapabilities,

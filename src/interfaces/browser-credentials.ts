@@ -9,11 +9,11 @@ import type {
   AuthenticationVerifierDefinition,
   RequestAuthenticationInput,
   RequestPolicyExtension,
-} from "../runtime/index.js";
+} from "../runtime/request-security.js";
 import {
   internalResponseLimitBytes,
   publicReadResponseLimitBytes,
-} from "../runtime/index.js";
+} from "../runtime/http-boundary.js";
 import {
   browserCsrfTokenByteLength,
   browserApiRoot,

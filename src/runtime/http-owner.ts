@@ -31,6 +31,7 @@ import {
   runtimeInterfaceErrorMappings,
   toProblemDetails,
 } from "./errors.js";
+import type { RuntimeApplicationContext } from "./application-context.js";
 import {
   browserContentSecurityPolicy,
   browserContentTypeOptions,
@@ -510,12 +511,6 @@ export type HttpOwnerStartupResourceRegistration = OwnedResourceRegistration;
 export type HttpOwnerStartupResourceRegistry = OwnedResourceRegistry;
 export type HttpOwnerStartupResourceScope = ResourceOwnershipScope;
 
-export interface HttpOwnerApplicationContext {
-  readonly routes: RuntimeRouteRegistry;
-  readonly signal: AbortSignal;
-  readonly startupResources: HttpOwnerStartupResourceRegistry;
-}
-
 export interface HttpOwnerOptions {
   readonly ownerStore: RuntimeOwnerStore;
   readonly credential: LocalControlCredentialAuthority;
@@ -523,7 +518,7 @@ export interface HttpOwnerOptions {
   readonly now: () => UtcTimestamp;
   readonly onPortOwnershipAcquired: () => Promise<void> | void;
   readonly applicationFactory?: (
-    context: HttpOwnerApplicationContext,
+    context: RuntimeApplicationContext,
   ) => Promise<HttpOwnerApplication> | HttpOwnerApplication;
 }
 

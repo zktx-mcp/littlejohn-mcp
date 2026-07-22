@@ -16,7 +16,7 @@ import {
 import type {
   RuntimeDispatchRequest,
   RuntimeDispatchResponse,
-} from "../runtime/index.js";
+} from "../runtime/http-owner.js";
 
 export interface RuntimeDispatchPort {
   dispatchRuntimeRequest(request: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse>;

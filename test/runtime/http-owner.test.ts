@@ -35,9 +35,9 @@ import { ProductDatabase } from "../../src/runtime/database.js";
 import { RuntimeOperationError } from "../../src/runtime/errors.js";
 import {
   FixedHttpOwner,
-  type HttpOwnerApplicationContext,
   type HttpOwnerOptions,
 } from "../../src/runtime/http-owner.js";
+import type { RuntimeApplicationContext } from "../../src/runtime/application-context.js";
 import { createResourceOwnershipScope } from "../../src/runtime/resource-ownership.js";
 import {
   runtimeProtocolVersion,
@@ -755,18 +755,19 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     let originalEntered!: () => void;
     const originalGate = new Promise<void>((resolveGate) => { releaseOriginal = resolveGate; });
     const entered = new Promise<void>((resolveEntered) => { originalEntered = resolveEntered; });
-    const registration = scope.resources.register({
+    const original = {
       async close(): Promise<void> {
         originalCloses += 1;
         originalEntered();
         await originalGate;
       },
-    });
+    };
+    const registration = scope.resources.register(original);
     scope.resources.register({ close(): void { unrelatedCloses += 1; } });
 
     const firstClose = scope.close();
     await entered;
-    registration.replace({ close(): void { replacementCloses += 1; } });
+    registration.replace(original, { close(): void { replacementCloses += 1; } });
     expect(() => registration.transfer()).toThrow(
       "Owned resource registration is unavailable.",
     );
@@ -792,18 +793,19 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     const originalGate = new Promise<void>((resolveGate) => { releaseOriginal = resolveGate; });
     const entered = new Promise<void>((resolveEntered) => { originalEntered = resolveEntered; });
     scope.resources.register({ close(): void { events.push("dependency:close"); } });
-    const registration = scope.resources.register({
+    const original = {
       async close(): Promise<void> {
         events.push("original:close");
         originalEntered();
         await originalGate;
         throw new Error("original cleanup failed");
       },
-    });
+    };
+    const registration = scope.resources.register(original);
 
     const first = scope.close();
     await entered;
-    registration.replace({ close(): void { events.push("replacement:close"); } });
+    registration.replace(original, { close(): void { events.push("replacement:close"); } });
     releaseOriginal();
     await expect(first).rejects.toThrow("original cleanup failed");
     expect(events).toEqual(["original:close"]);
@@ -816,16 +818,19 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
   it("seals acquisition ownership and cannot revive a closed registration", async () => {
     const scope = createResourceOwnershipScope();
     let closes = 0;
-    const registration = scope.resources.register({ close(): void { closes += 1; } });
+    const original = { close(): void { closes += 1; } };
+    const registration = scope.resources.register(original);
     scope.seal();
     expect(scope.sealed).toBe(true);
     expect(() => scope.resources.register({ close(): void {} })).toThrow("scope is sealed");
-    expect(() => registration.replace({ close(): void {} })).toThrow("registration is unavailable");
+    expect(() => registration.replace(original, { close(): void {} }))
+      .toThrow("registration is unavailable");
     expect(() => registration.transfer()).toThrow("registration is unavailable");
     await scope.close();
     expect(closes).toBe(1);
     expect(scope.empty).toBe(true);
-    expect(() => registration.replace({ close(): void {} })).toThrow("registration is unavailable");
+    expect(() => registration.replace(original, { close(): void {} }))
+      .toThrow("registration is unavailable");
   });
 
   it("rejects duplicate identity and close-getter reentry without changing ownership", async () => {
@@ -851,8 +856,9 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     const replaceScope = createResourceOwnershipScope();
     let originalCloses = 0;
     let replacementCloses = 0;
-    const registration = replaceScope.resources.register({ close(): void { originalCloses += 1; } });
-    expect(() => registration.replace({
+    const original = { close(): void { originalCloses += 1; } };
+    const registration = replaceScope.resources.register(original);
+    expect(() => registration.replace(original, {
       get close(): () => void {
         registration.transfer();
         return () => { replacementCloses += 1; };
@@ -863,6 +869,22 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     await replaceScope.close();
     expect(originalCloses).toBe(1);
     expect(replacementCloses).toBe(0);
+  });
+
+  it("rejects a replacement for a different resource without losing ownership", async () => {
+    const scope = createResourceOwnershipScope();
+    const events: string[] = [];
+    const original = { close(): void { events.push("original:close"); } };
+    const unrelated = { close(): void { events.push("unrelated:close"); } };
+    const replacement = { close(): void { events.push("replacement:close"); } };
+    const registration = scope.resources.register(original);
+
+    expect(() => registration.replace(unrelated, replacement))
+      .toThrow("does not own the expected resource");
+    scope.seal();
+    await scope.close();
+
+    expect(events).toEqual(["original:close"]);
   });
 
   it("closes acquired dependencies in reverse order and retains earlier dependencies after failure", async () => {
@@ -978,7 +1000,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
 
   it("seals the startup registry when application production completes", async () => {
     const test = await fixture();
-    let retainedRegistry!: HttpOwnerApplicationContext["startupResources"];
+    let retainedRegistry!: RuntimeApplicationContext["startupResources"];
     const owner = new FixedHttpOwner({
       ...fixedOwnerOptions(test),
       applicationFactory: ({ routes, startupResources }) => {
@@ -1124,7 +1146,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     const secondDatabase = await ProductDatabase.open(test.paths.database, now);
     databases.push(secondDatabase);
     let executions = 0;
-    const applicationFactory = ({ routes }: HttpOwnerApplicationContext) => ({
+    const applicationFactory = ({ routes }: RuntimeApplicationContext) => ({
       routes: routes.extend([
         {
           method: "GET",
@@ -1314,7 +1336,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     expect(Buffer.byteLength(`${canonicalJsonStringify({ value: oversizedValue })}\n`))
       .toBe(publicReadResponseLimitBytes + 1);
     expect(Buffer.byteLength(value)).toBeGreaterThan(internalResponseLimitBytes);
-    const applicationFactory = ({ routes }: HttpOwnerApplicationContext) => ({
+    const applicationFactory = ({ routes }: RuntimeApplicationContext) => ({
       routes: routes.extend([
         {
           method: "GET",
@@ -2172,7 +2194,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
 
   it("cancels initialization and closes a late application before completing stop", async () => {
     const test = await fixture();
-    let context: HttpOwnerApplicationContext | undefined;
+    let context: RuntimeApplicationContext | undefined;
     let release!: () => void;
     let closes = 0;
     const pending = new Promise<void>((resolvePending) => { release = resolvePending; });
@@ -2204,13 +2226,13 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
 
   it("reports late startup cleanup failure while concurrent stop retries the same application", async () => {
     const test = await fixture();
-    let context: HttpOwnerApplicationContext | undefined;
+    let context: RuntimeApplicationContext | undefined;
     let release!: () => void;
     let closeCalls = 0;
     const closeFailure = new Error("late application close failed");
     const pending = new Promise<void>((resolvePending) => { release = resolvePending; });
     let application: {
-      readonly routes: HttpOwnerApplicationContext["routes"];
+      readonly routes: RuntimeApplicationContext["routes"];
       close(): void;
     } | undefined;
     const owner = new FixedHttpOwner({

@@ -14,7 +14,6 @@ export {
   officialAssetSourceTimeoutMs,
   findOfficialAssetMember,
   robinhoodAssetSourceUri,
-  robinhoodChainId,
   OfficialAssetSourceError,
 } from "./official-assets.js";
 export { officialAssetCandidatePageSize } from "./browser.js";

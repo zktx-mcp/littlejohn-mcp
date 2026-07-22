@@ -26,7 +26,7 @@ import {
   type AccountAssetCollectionInput,
   type AccountAssetCollectionSuccess,
 } from "../account-assets/index.js";
-import type { RuntimeDispatchRequest } from "../runtime/index.js";
+import type { RuntimeDispatchRequest } from "../runtime/http-owner.js";
 import {
   createInterfaceFailure,
   constrainInterfaceFailure,
