@@ -34,6 +34,8 @@ const typeLinkedReleaseModules = [
   "package-audit",
   "packaged-integration",
   "packaged-owner-worker-source",
+  "publication-contract",
+  "publish-release",
   "release-support",
 ] as const;
 

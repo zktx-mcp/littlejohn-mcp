@@ -26,6 +26,7 @@ import {
 const reownNotice = "Portions © 2025 Reown, Inc. All Rights Reserved";
 const fixedDistributionArtifacts = Object.freeze([
   Object.freeze({ path: "package.json" }),
+  Object.freeze({ path: "LICENSE" }),
   Object.freeze({ path: "THIRD_PARTY_NOTICES.txt" }),
   Object.freeze({
     path: "LICENSES/WALLETCONNECT-COMMUNITY-LICENSE.md",

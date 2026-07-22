@@ -1,7 +1,17 @@
 {
   "name": "littlejohn-mcp",
   "version": "0.1.0",
-  "description": "Local Robinhood Chain MCP and transaction review runtime",
+  "license": "MIT",
+  "mcpName": "io.github.stelis-dev/littlejohn-mcp",
+  "description": "Local Robinhood Chain MCP and transaction review runtime.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stelis-dev/littlejohn-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/stelis-dev/littlejohn-mcp/issues"
+  },
+  "homepage": "https://github.com/stelis-dev/littlejohn-mcp#readme",
   "type": "module",
   "exports": {},
   "engines": {
@@ -12,9 +22,14 @@
   },
   "files": [
     "dist",
+    "LICENSE",
     "THIRD_PARTY_NOTICES.txt",
     "LICENSES"
   ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
   "scripts": {
     "clean": "node scripts/clean.mjs",
     "build": "npm run clean && tsc -p tsconfig.build.json && tsc -p tsconfig.web.json --noEmit && vite build --config vite.config.ts",

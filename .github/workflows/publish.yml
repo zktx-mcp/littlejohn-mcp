@@ -1,0 +1,55 @@
+name: Publish npm package and MCP Registry entry
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish verified release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      LITTLEJOHN_RELEASE_OUTPUT: ${{ runner.temp }}/littlejohn-release/littlejohn-mcp.tgz
+      MCP_PUBLISHER_PATH: ${{ runner.temp }}/mcp-publisher/mcp-publisher
+
+    steps:
+      - name: Checkout release
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.18.0
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and verify the publication artifact
+        run: npm run release:check
+
+      - name: Install fixed MCP publisher
+        if: ${{ !github.event.release.prerelease }}
+        env:
+          MCP_PUBLISHER_SHA256: ab128162b0616090b47cf245afe0a23f3ef08936fdce19074f5ba0a4469281ac
+          MCP_PUBLISHER_URL: https://github.com/modelcontextprotocol/registry/releases/download/v1.7.9/mcp-publisher_linux_amd64.tar.gz
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/mcp-publisher_linux_amd64.tar.gz"
+          mkdir -p "$(dirname "${MCP_PUBLISHER_PATH}")"
+          curl --fail --location --proto '=https' --tlsv1.2 --output "${archive}" "${MCP_PUBLISHER_URL}"
+          printf '%s  %s\n' "${MCP_PUBLISHER_SHA256}" "${archive}" | sha256sum --check --strict
+          tar -xzf "${archive}" -C "$(dirname "${MCP_PUBLISHER_PATH}")" mcp-publisher
+          chmod 0700 "${MCP_PUBLISHER_PATH}"
+
+      - name: Publish the verified release
+        env:
+          GITHUB_RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          GITHUB_RELEASE_TAG: ${{ github.event.release.tag_name }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: node scripts/release/publish-release.mjs

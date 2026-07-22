@@ -207,6 +207,26 @@ deployment, legal, contract-control, oracle-mapping, and observation records.
 It never receives wallet addresses, balances, activity, review sessions,
 transaction material, WalletConnect state, or private settings.
 
+## Release Publication
+
+A published GitHub Release is the only package-publication trigger. Its tag is
+the package version with an optional `v` prefix. The workflow runs
+`release:check`, publishes that exact verified tarball to the public npm
+registry, and verifies its recorded integrity and distribution tag. Before a
+stable npm commit it uses the fixed official MCP publisher to validate
+`server.json`; after the npm commit is visible it registers and verifies the
+same stable version in the official MCP Registry. Prereleases use npm tag
+`next` and do not enter the MCP Registry.
+
+The first npm publication requires the repository secret `NPM_TOKEN` to contain
+a granular npm token authorized to publish `littlejohn-mcp`. After that package
+exists, the maintainer configures npm Trusted Publisher for
+`.github/workflows/publish.yml` and removes `NPM_TOKEN`; the unchanged workflow
+then uses GitHub OIDC. The token is available only to the npm publication step
+and is removed from the MCP publisher process environment. Publishing a GitHub
+Release remains the maintainer's assertion that the release is ready; automated
+package verification does not replace manual host and wallet gates.
+
 ## Logical Modules
 
 | Module | Responsibility |
