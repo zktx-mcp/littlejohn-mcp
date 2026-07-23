@@ -1,0 +1,964 @@
+import { describe, expect, it, vi } from "vitest";
+
+import {
+  createChainInvocationLifecycle,
+  resolveConfiguredCanonicalBlock,
+  type ReferenceMarketChainReadPort,
+} from "../../src/chain/index.js";
+import type {
+  ChainRpcMethod,
+  ChainRpcRequestMap,
+  RpcRequester,
+} from "../../src/chain/rpc.js";
+import {
+  chainAnchorSchema,
+  createCanonicalClock,
+  createExactRational,
+  evmAccountIdentitySchema,
+  parseCapabilityDataAt,
+  parseUtcTimestamp,
+  referenceMarketManifest,
+  referencePriceWarnings,
+  referenceRoundObservationSchema,
+  walletConnectionCapability,
+  type ApplicationFailure,
+  type ChainAnchor,
+  type ReferenceFeedId,
+  type ReferenceHistoryTraversalReport,
+  type ReferenceRoundObservation,
+  type ReferenceWatchlistSuccess,
+} from "../../src/core/index.js";
+import { ReferenceMarketApplication } from "../../src/market-portfolio/application.js";
+import { createReferenceHistory } from "../../src/market-portfolio/candles.js";
+import type {
+  ReferenceFeedCacheCommit,
+  ReferenceFeedCacheSnapshot,
+  ReferenceMarketStore,
+} from "../../src/runtime/reference-market-storage.js";
+import { parseRuntimeRevision } from "../../src/runtime/runtime-identity.js";
+
+const block = chainAnchorSchema.parse({
+  chainId: "eip155:4663",
+  blockNumber: "16520666",
+  blockHash: `0x${"39".repeat(32)}`,
+  blockTimestamp: "2026-07-22T00:07:00.000Z",
+});
+const account = evmAccountIdentitySchema.parse({
+  chainId: "eip155:4663",
+  address: `0x${"12".repeat(20)}`,
+});
+const connectionRevision = parseRuntimeRevision("1");
+const rpcConfigurationDigest = "A".repeat(43);
+const walletConnection = parseCapabilityDataAt(walletConnectionCapability, {
+  status: "connected",
+  ...account,
+  approvedMethods: ["eth_sendTransaction"],
+  approvedEvents: ["accountsChanged", "chainChanged"],
+  expiresAt: "2026-07-23T00:07:00.000Z",
+}, parseUtcTimestamp("2026-07-22T00:07:00.000Z"));
+
+const observation = (input: Readonly<{
+  feedId: ReferenceFeedId;
+  roundId: string;
+  answer: string;
+  updatedAt: string;
+  readBlock?: ChainAnchor;
+}>): ReferenceRoundObservation => {
+  const feed = referenceMarketManifest.feeds.find((entry) => entry.feedId === input.feedId)!;
+  const seconds = Math.floor(Date.parse(input.updatedAt) / 1_000).toString(10);
+  return referenceRoundObservationSchema.parse({
+    fact: {
+      manifestVersion: 1,
+      feedId: input.feedId,
+      proxyAddress: feed.standardProxy,
+      decimals: 8,
+      roundId: input.roundId,
+      answeredInRound: input.roundId,
+      answer: input.answer,
+      startedAtUnixSeconds: seconds,
+      updatedAtUnixSeconds: seconds,
+      value: createExactRational(BigInt(input.answer), 100_000_000n),
+    },
+    readEvidence: {
+      observedAt: "2026-07-22T00:07:00.000Z",
+      sourceOwner: "user_configured",
+      sourceClass: "chain_rpc",
+      sourceReference: {
+        kind: "configured_rpc",
+        sourceId: `rpc:${rpcConfigurationDigest}`,
+        publicOrigin: "https://rpc.example",
+        configurationDigest: rpcConfigurationDigest,
+      },
+      block: input.readBlock ?? block,
+    },
+  });
+};
+
+const latestEth = observation({
+  feedId: "eth_usd",
+  roundId: "18446744073709552818",
+  answer: "193384405462",
+  updatedAt: "2026-07-22T00:02:00.000Z",
+});
+const latestUsdg = observation({
+  feedId: "usdg_usd",
+  roundId: "18446744073709551663",
+  answer: "100008000",
+  updatedAt: "2026-07-21T23:55:00.000Z",
+});
+
+const success = <Value>(value: Value | ApplicationFailure): Value => {
+  if (typeof value === "object" && value !== null && "ok" in value && value.ok === false) {
+    throw new Error(`Unexpected failure: ${value.error.code}`);
+  }
+  return value as Value;
+};
+
+const deferred = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+};
+
+const pendingUntilAbort = (signal: AbortSignal): Promise<never> =>
+  new Promise((_resolve, reject) => {
+    const abort = (): void => reject(new DOMException("Aborted.", "AbortError"));
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+  });
+
+const traversalReport = (
+  overrides: Partial<ReferenceHistoryTraversalReport> = {},
+): ReferenceHistoryTraversalReport => Object.freeze({
+  remainingContinuation: false,
+  remainingGap: false,
+  phaseBoundaryObserved: false,
+  malformedRoundObserved: false,
+  ...overrides,
+});
+
+const traversalReportsFor = (
+  feedIds: readonly ReferenceFeedId[],
+  overrides: Partial<Record<ReferenceFeedId, Partial<ReferenceHistoryTraversalReport>>> = {},
+): ReadonlyMap<ReferenceFeedId, ReferenceHistoryTraversalReport> =>
+  new Map(feedIds.map((feedId) => [feedId, traversalReport(overrides[feedId])]));
+
+const cancellationScenarios = Object.freeze([
+  {
+    name: "caller abort followed by close",
+    order: "caller_then_close",
+    expectedCode: "request_aborted",
+  },
+  {
+    name: "close followed by caller abort before projection",
+    order: "close_then_caller",
+    expectedCode: "request_aborted",
+  },
+  {
+    name: "close without caller abort",
+    order: "close_only",
+    expectedCode: "runtime_state_unavailable",
+  },
+] as const);
+
+const fixture = () => {
+  const chainOwner = new AbortController();
+  const lifecycle = createChainInvocationLifecycle(chainOwner.signal);
+  const rpc: RpcRequester = {
+    async request<Method extends ChainRpcMethod>(
+      method: Method,
+      _params: ChainRpcRequestMap[Method],
+    ): Promise<unknown> {
+      if (method === "eth_chainId") return "0x1237";
+      if (method === "eth_getBlockByNumber") {
+        return {
+          number: `0x${BigInt(block.blockNumber).toString(16)}`,
+          hash: block.blockHash,
+          timestamp: `0x${BigInt(Math.floor(Date.parse(block.blockTimestamp) / 1_000)).toString(16)}`,
+        };
+      }
+      throw new Error(`Unexpected fixture RPC method: ${method}`);
+    },
+  };
+  let watchlist: ReferenceWatchlistSuccess = {
+    account,
+    revision: "AAAAAAAAAAAAAAAAAAAAAA" as never,
+    entries: [],
+  };
+  const watchlistRevisions = [
+    "AgICAgICAgICAgICAgICAg",
+    "AwMDAwMDAwMDAwMDAwMDAw",
+    "BAQEBAQEBAQEBAQEBAQEBA",
+    "BQUFBQUFBQUFBQUFBQUFBQ",
+  ] as const;
+  let watchlistMutationIndex = 0;
+  let feedReadCalls = 0;
+  let feedCommitCalls = 0;
+  const store: ReferenceMarketStore = {
+    readFeed: (feedId) => {
+      feedReadCalls += 1;
+      return {
+        feedId,
+        revision: null,
+        observations: [],
+        backfillPhaseId: null,
+        backfillNextRoundId: null,
+        retentionCutoffRoundId: null,
+        integrityStatus: null,
+        backfillStatus: null,
+      };
+    },
+    commitFeed: (input: ReferenceFeedCacheCommit) => {
+      feedCommitCalls += 1;
+      return {
+        feedId: input.feedId,
+        revision: "AQEBAQEBAQEBAQEBAQEBAQ",
+        observations: input.observations,
+        backfillPhaseId: input.backfillPhaseId,
+        backfillNextRoundId: input.backfillNextRoundId,
+        retentionCutoffRoundId: null,
+        integrityStatus: null,
+        backfillStatus: input.backfillStatus,
+      };
+    },
+    readWatchlist: () => watchlist,
+    mutateWatchlist: (input) => {
+      const currentIds = watchlist.entries.map((entry) => entry.pairId);
+      let ids: readonly typeof currentIds[number][];
+      if (input.mutation.kind === "add") {
+        ids = [...currentIds, input.mutation.pairId];
+      } else if (input.mutation.kind === "remove") {
+        const removedPairId = input.mutation.pairId;
+        ids = currentIds.filter((pairId) => pairId !== removedPairId);
+      } else {
+        ids = [...input.mutation.pairIds];
+      }
+      watchlist = {
+        account,
+        revision: watchlistRevisions[watchlistMutationIndex++]! as never,
+        entries: ids.map((pairId) => referenceMarketManifest.pairs.find((entry) => entry.pairId === pairId)!),
+      };
+      return { status: "success", watchlist };
+    },
+  };
+  let latest = [latestEth, latestUsdg] as readonly ReferenceRoundObservation[];
+  let latestRead = async (feedIds: readonly ReferenceFeedId[], _signal: AbortSignal) =>
+    feedIds.map((feedId) => latest.find((entry) => entry.fact.feedId === feedId)!);
+  let historyRead: ReferenceMarketChainReadPort["readHistoryAtBlock"] = async () => ({
+    observations: [],
+    backfillPhaseId: "1",
+    backfillNextRoundId: null,
+    backfillStatus: "phase_boundary",
+    phaseBoundaryObserved: true,
+    malformedRoundObserved: false,
+    failure: undefined,
+  });
+  let historyReadCalls = 0;
+  const chain: ReferenceMarketChainReadPort = {
+    resolveCurrentBlock: (context) => resolveConfiguredCanonicalBlock({
+      rpc,
+      chainId: account.chainId,
+      selector: { kind: "latest" },
+      context,
+    }),
+    readLatestAtBlock: (feedIds, _block, context) => latestRead(feedIds, context.signal),
+    readHistoryAtBlock: (input, context) => {
+      historyReadCalls += 1;
+      return historyRead(input, context);
+    },
+  };
+  const application = new ReferenceMarketApplication({
+    chain,
+    chainInvocations: lifecycle,
+    store,
+    activeWallet: {
+      capture: () => ({
+        connection: walletConnection,
+        connectionRevision,
+        sessionSource: { sourceId: "wallet-session:test" } as never,
+      }),
+    },
+    clock: createCanonicalClock(() => "2026-07-22T00:07:00.000Z"),
+  });
+  return {
+    application,
+    async close() {
+      await application.close();
+      await lifecycle.close();
+    },
+    setLatest(value: readonly ReferenceRoundObservation[]) { latest = value; },
+    setLatestRead(value: typeof latestRead) { latestRead = value; },
+    setHistoryRead(value: typeof historyRead) { historyRead = value; },
+    currentWatchlist: () => watchlist,
+    counts: () => Object.freeze({ feedReadCalls, feedCommitCalls, historyReadCalls }),
+  };
+};
+
+describe("reference-market application", () => {
+  it("returns a current derived price only while both latest sources are fresh", async () => {
+    const context = fixture();
+    const pairId = referenceMarketManifest.pairs[2]!.pairId;
+    const current = success(await context.application.price({ pairId }));
+    expect(current).toMatchObject({ status: "current", warnings: referencePriceWarnings });
+
+    context.setLatest([latestEth, observation({
+      feedId: "usdg_usd",
+      roundId: "18446744073709551662",
+      answer: "100008000",
+      updatedAt: "2026-07-20T23:55:00.000Z",
+    })]);
+    const unavailable = success(await context.application.price({ pairId }));
+    expect(unavailable).toMatchObject({
+      status: "unavailable",
+      reason: "derived_sources_not_fresh",
+    });
+    expect(unavailable).not.toHaveProperty("lastObserved");
+    await context.close();
+  });
+
+  it("uses the canonical watchlist transaction result and rejects work after close", async () => {
+    const context = fixture();
+    const pairId = referenceMarketManifest.pairs[0]!.pairId;
+    const initial = success(await context.application.watchlist({}));
+    const added = success(await context.application.addPair({
+      pairId,
+      expectedRevision: initial.revision,
+    }));
+    expect(added.entries.map((entry) => entry.pairId)).toEqual([pairId]);
+    await context.application.close();
+    const afterClose = await context.application.watchlist({});
+    expect(afterClose).toMatchObject({ ok: false, error: { code: "runtime_state_unavailable" } });
+    await context.close();
+  });
+
+  it("fixes each durable watchlist mutation result before later abort or close", async () => {
+    const context = fixture();
+    const [firstPair, secondPair] = referenceMarketManifest.pairs;
+    const initial = success(await context.application.watchlist({}));
+
+    const addCaller = new AbortController();
+    const pendingAdd = context.application.addPair({
+      pairId: firstPair!.pairId,
+      expectedRevision: initial.revision,
+    }, addCaller.signal);
+    addCaller.abort();
+    const added = success(await pendingAdd);
+    expect(added.entries.map((entry) => entry.pairId)).toEqual([firstPair!.pairId]);
+
+    const secondAdded = success(await context.application.addPair({
+      pairId: secondPair!.pairId,
+      expectedRevision: added.revision,
+    }));
+    const reorderCaller = new AbortController();
+    const pendingReorder = context.application.reorderPairs({
+      pairIds: [secondPair!.pairId, firstPair!.pairId],
+      expectedRevision: secondAdded.revision,
+    }, reorderCaller.signal);
+    reorderCaller.abort();
+    const reordered = success(await pendingReorder);
+    expect(reordered.entries.map((entry) => entry.pairId)).toEqual([
+      secondPair!.pairId,
+      firstPair!.pairId,
+    ]);
+
+    const pendingRemove = context.application.removePair({
+      pairId: firstPair!.pairId,
+      expectedRevision: reordered.revision,
+    });
+    const closing = context.application.close();
+    const removed = success(await pendingRemove);
+    expect(removed.entries.map((entry) => entry.pairId)).toEqual([secondPair!.pairId]);
+    expect(context.currentWatchlist()).toEqual(removed);
+    await closing;
+    await context.close();
+  });
+
+  it("rejects a watchlist mutation cancelled before its durable call without changing state", async () => {
+    const context = fixture();
+    const initial = success(await context.application.watchlist({}));
+    const caller = new AbortController();
+    caller.abort();
+    await expect(context.application.addPair({
+      pairId: referenceMarketManifest.pairs[0]!.pairId,
+      expectedRevision: initial.revision,
+    }, caller.signal)).resolves.toMatchObject({
+      ok: false,
+      error: { code: "request_aborted" },
+    });
+    expect(context.currentWatchlist()).toEqual(initial);
+    await context.close();
+  });
+
+  it("aborts and drains an active price read before close settles", async () => {
+    const context = fixture();
+    let observedAbort = false;
+    context.setLatestRead(async (_feedIds, signal) => {
+      if (signal.aborted) {
+        observedAbort = true;
+        throw new DOMException("Aborted.", "AbortError");
+      }
+      return await new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          observedAbort = true;
+          reject(new DOMException("Aborted.", "AbortError"));
+        }, { once: true });
+      });
+    });
+    const active = context.application.price({ pairId: referenceMarketManifest.pairs[0]!.pairId });
+    const closing = context.close();
+    await expect(active).resolves.toMatchObject({
+      ok: false,
+      error: { code: "runtime_state_unavailable" },
+    });
+    await closing;
+    expect(observedAbort).toBe(true);
+  });
+
+  for (const scenario of cancellationScenarios) {
+    it(`fixes active history cancellation precedence for ${scenario.name} and drains settlement`, async () => {
+      const context = fixture();
+      const caller = new AbortController();
+      const readStarted = deferred();
+      const readAborted = deferred();
+      const releaseCleanup = deferred();
+      context.setHistoryRead(async (_input, invocation) => {
+        readStarted.resolve();
+        await new Promise<void>((resolve) => {
+          const abort = (): void => {
+            readAborted.resolve();
+            resolve();
+          };
+          if (invocation.signal.aborted) abort();
+          else invocation.signal.addEventListener("abort", abort, { once: true });
+        });
+        await releaseCleanup.promise;
+        throw new DOMException("Aborted.", "AbortError");
+      });
+      const active = context.application.history({
+        pairId: referenceMarketManifest.pairs[0]!.pairId,
+        window: "1d",
+      }, caller.signal);
+      await readStarted.promise;
+
+      let closing: Promise<void>;
+      if (scenario.order === "caller_then_close") {
+        caller.abort();
+        closing = context.application.close();
+      } else {
+        closing = context.application.close();
+        if (scenario.order === "close_then_caller") caller.abort();
+      }
+      await readAborted.promise;
+      let closeSettled = false;
+      void closing.then(() => { closeSettled = true; });
+      await Promise.resolve();
+      expect(closeSettled).toBe(false);
+
+      releaseCleanup.resolve();
+      await expect(active).resolves.toMatchObject({
+        ok: false,
+        error: { code: scenario.expectedCode },
+      });
+      await closing;
+      expect(closeSettled).toBe(true);
+      expect(context.counts()).toEqual({
+        feedReadCalls: 1,
+        feedCommitCalls: 1,
+        historyReadCalls: 1,
+      });
+      await context.close();
+    });
+  }
+
+  for (const scenario of cancellationScenarios) {
+    it(`removes a same-feed queued history synchronization for ${scenario.name} without starting it`, async () => {
+      const context = fixture();
+      const activeReadStarted = deferred();
+      const activeReadAborted = deferred();
+      const releaseActiveCleanup = deferred();
+      const secondLatestRead = deferred();
+      let latestReadCalls = 0;
+      context.setLatestRead(async (feedIds) => {
+        latestReadCalls += 1;
+        if (latestReadCalls === 2) secondLatestRead.resolve();
+        return feedIds.map((feedId) =>
+          [latestEth, latestUsdg].find((entry) => entry.fact.feedId === feedId)!);
+      });
+      context.setHistoryRead(async (_input, invocation) => {
+        activeReadStarted.resolve();
+        await new Promise<void>((resolve) => {
+          const abort = (): void => {
+            activeReadAborted.resolve();
+            resolve();
+          };
+          if (invocation.signal.aborted) abort();
+          else invocation.signal.addEventListener("abort", abort, { once: true });
+        });
+        await releaseActiveCleanup.promise;
+        throw new DOMException("Aborted.", "AbortError");
+      });
+
+      const pairId = referenceMarketManifest.pairs[0]!.pairId;
+      const active = context.application.history({ pairId, window: "1d" });
+      await activeReadStarted.promise;
+      const caller = new AbortController();
+      const queued = context.application.history({ pairId, window: "1d" }, caller.signal);
+      await secondLatestRead.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+
+      let closing: Promise<void>;
+      if (scenario.order === "caller_then_close") {
+        caller.abort();
+        closing = context.application.close();
+      } else {
+        closing = context.application.close();
+        if (scenario.order === "close_then_caller") caller.abort();
+      }
+      await activeReadAborted.promise;
+      await expect(queued).resolves.toMatchObject({
+        ok: false,
+        error: { code: scenario.expectedCode },
+      });
+      expect(context.counts()).toEqual({
+        feedReadCalls: 1,
+        feedCommitCalls: 0,
+        historyReadCalls: 1,
+      });
+
+      let closeSettled = false;
+      void closing.then(() => { closeSettled = true; });
+      await Promise.resolve();
+      expect(closeSettled).toBe(false);
+      releaseActiveCleanup.resolve();
+      await expect(active).resolves.toMatchObject({
+        ok: false,
+        error: { code: "runtime_state_unavailable" },
+      });
+      await closing;
+      expect(closeSettled).toBe(true);
+      expect(context.counts()).toEqual({
+        feedReadCalls: 1,
+        feedCommitCalls: 1,
+        historyReadCalls: 1,
+      });
+      await context.close();
+    });
+  }
+
+  it("keeps one remaining chain deadline across reference price and history reads", async () => {
+    vi.useFakeTimers();
+    const context = fixture();
+    const priceStarted = deferred();
+    context.setLatestRead(async (_feedIds, signal) => {
+      priceStarted.resolve();
+      return await pendingUntilAbort(signal);
+    });
+    const pendingPrice = context.application.price({
+      pairId: referenceMarketManifest.pairs[2]!.pairId,
+    });
+    await priceStarted.promise;
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(90_000);
+    await expect(pendingPrice).resolves.toMatchObject({
+      ok: false,
+      error: { code: "source_unavailable" },
+    });
+    expect(vi.getTimerCount()).toBe(0);
+
+    const latestGate = deferred();
+    const latestStarted = deferred();
+    let latestSignal: AbortSignal | undefined;
+    context.setLatestRead(async (feedIds, signal) => {
+      latestSignal = signal;
+      latestStarted.resolve();
+      await latestGate.promise;
+      return feedIds.map((feedId) =>
+        [latestEth, latestUsdg].find((entry) => entry.fact.feedId === feedId)!);
+    });
+    const historyGate = deferred();
+    const historyStarted = deferred();
+    let historySignal: AbortSignal | undefined;
+    context.setHistoryRead(async (_input, invocation) => {
+      historySignal = invocation.signal;
+      historyStarted.resolve();
+      await historyGate.promise;
+      return await pendingUntilAbort(invocation.signal);
+    });
+    const pendingHistory = context.application.history({
+      pairId: referenceMarketManifest.pairs[2]!.pairId,
+      window: "1d",
+    });
+    await latestStarted.promise;
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(vi.getTimerCount()).toBe(1);
+    latestGate.resolve();
+    await historyStarted.promise;
+    expect(vi.getTimerCount()).toBe(1);
+    historyGate.resolve();
+    await vi.advanceTimersByTimeAsync(30_000);
+    await expect(pendingHistory).resolves.toMatchObject({
+      ok: false,
+      error: { code: "source_unavailable" },
+    });
+    expect(historySignal).toBe(latestSignal);
+    expect(latestSignal?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    await context.close();
+  });
+
+  it("derives a UTC candle from mutually fresh legs while preserving the older counterpart and skew", () => {
+    const ethBefore = observation({
+      feedId: "eth_usd",
+      roundId: "18446744073709552817",
+      answer: "193300000000",
+      updatedAt: "2026-07-21T23:50:00.000Z",
+    });
+    const snapshots = new Map<ReferenceFeedId, ReferenceFeedCacheSnapshot>([
+      ["eth_usd", {
+        feedId: "eth_usd",
+        revision: null,
+        observations: [ethBefore, latestEth],
+        backfillPhaseId: "1",
+        backfillNextRoundId: null,
+        retentionCutoffRoundId: null,
+        integrityStatus: null,
+        backfillStatus: "phase_boundary",
+      }],
+      ["usdg_usd", {
+        feedId: "usdg_usd",
+        revision: null,
+        observations: [latestUsdg],
+        backfillPhaseId: "1",
+        backfillNextRoundId: null,
+        retentionCutoffRoundId: ((1n << 64n) | 1n).toString(10),
+        integrityStatus: null,
+        backfillStatus: "phase_boundary",
+      }],
+    ]);
+    const history = createReferenceHistory({
+      pair: referenceMarketManifest.pairs[2]!,
+      window: "1d",
+      block,
+      snapshots,
+      reports: traversalReportsFor(["eth_usd", "usdg_usd"], {
+        eth_usd: { remainingContinuation: true },
+        usdg_usd: {
+          phaseBoundaryObserved: true,
+          malformedRoundObserved: true,
+        },
+      }),
+    });
+    expect(history).toMatchObject({
+      status: "partial",
+      coverage: {
+        basis: "observed_rounds",
+        requestedStart: "2026-07-21T00:07:00.000Z",
+        requestedEnd: block.blockTimestamp,
+        limitations: [
+          "source_history_not_exhaustive",
+          "traversal_incomplete",
+          "phase_boundary",
+          "malformed_round",
+          "retention_limited",
+        ],
+      },
+    });
+    expect(history.coverage.emptyBucketStarts).toHaveLength(94);
+    expect(history.coverage.emptyBucketStarts[0]).toBe("2026-07-21T00:15:00.000Z");
+    expect(history.coverage.emptyBucketStarts).not.toContain(history.coverage.requestedStart);
+    expect(history.warnings).toContain("partial_history");
+    const final = history.candles.at(-1)!;
+    expect(final.openedAt).toBe("2026-07-22T00:00:00.000Z");
+    expect(final.closeSourceSkewSeconds).toBe("420");
+    const byIdentity = new Map(history.sourceObservations.map((entry) => [
+      `${entry.fact.feedId}:${entry.fact.roundId}`,
+      entry,
+    ]));
+    expect(final.closeSourcePointers.map((pointer) =>
+      byIdentity.get(`${pointer.feedId}:${pointer.roundId}`)?.fact.updatedAtUnixSeconds)).toEqual([
+      String(Date.parse("2026-07-22T00:02:00.000Z") / 1_000),
+      String(Date.parse("2026-07-21T23:55:00.000Z") / 1_000),
+    ]);
+  });
+
+  it("orders a candle by source time when composite round identities are nonmonotonic", () => {
+    const boundaryBlock = chainAnchorSchema.parse({
+      ...block,
+      blockTimestamp: "2026-07-22T00:15:00.000Z",
+    });
+    const observations = [
+      ["5", "150000000", "2026-07-22T00:01:00.000Z"],
+      ["2", "250000000", "2026-07-22T00:02:00.000Z"],
+      ["4", "50000000", "2026-07-22T00:03:00.000Z"],
+      ["3", "200000000", "2026-07-22T00:04:00.000Z"],
+    ].map(([round, answer, updatedAt]) => observation({
+      feedId: "eth_usd",
+      roundId: ((1n << 64n) | BigInt(round!)).toString(10),
+      answer: answer!,
+      updatedAt: updatedAt!,
+      readBlock: boundaryBlock,
+    }));
+    const history = createReferenceHistory({
+      pair: referenceMarketManifest.pairs[0]!,
+      window: "1d",
+      block: boundaryBlock,
+      snapshots: new Map<ReferenceFeedId, ReferenceFeedCacheSnapshot>([["eth_usd", {
+        feedId: "eth_usd",
+        revision: null,
+        observations,
+        backfillPhaseId: "1",
+        backfillNextRoundId: null,
+        retentionCutoffRoundId: null,
+        integrityStatus: null,
+        backfillStatus: "phase_boundary",
+      }]]),
+      reports: traversalReportsFor(["eth_usd"], {
+        eth_usd: { phaseBoundaryObserved: true },
+      }),
+    });
+    expect(history.status).toBe("partial");
+    expect(history.coverage.limitations[0]).toBe("source_history_not_exhaustive");
+    expect(history.candles.at(-1)).toMatchObject({
+      open: { numerator: "3", denominator: "2" },
+      high: { numerator: "5", denominator: "2" },
+      low: { numerator: "1", denominator: "2" },
+      close: { numerator: "2", denominator: "1" },
+      openSourcePointers: [{ feedId: "eth_usd", roundId: observations[0]!.fact.roundId }],
+      highSourcePointers: [{ feedId: "eth_usd", roundId: observations[1]!.fact.roundId }],
+      lowSourcePointers: [{ feedId: "eth_usd", roundId: observations[2]!.fact.roundId }],
+      closeSourcePointers: [{ feedId: "eth_usd", roundId: observations[3]!.fact.roundId }],
+    });
+  });
+
+  it("admits a cross-feed source exactly at its heartbeat and rejects one second beyond it", () => {
+    const newerTime = "2026-07-22T00:06:00.000Z";
+    const newer = observation({
+      feedId: "usdg_usd",
+      roundId: ((1n << 64n) | 3n).toString(10),
+      answer: "100000000",
+      updatedAt: newerTime,
+    });
+    const historyFor = (olderTime: string) => {
+      const older = observation({
+        feedId: "eth_usd",
+        roundId: ((1n << 64n) | 2n).toString(10),
+        answer: "300000000000",
+        updatedAt: olderTime,
+      });
+      const snapshot = (
+        feedId: ReferenceFeedId,
+        observations: readonly ReferenceRoundObservation[],
+      ): ReferenceFeedCacheSnapshot => ({
+        feedId,
+        revision: null,
+        observations,
+        backfillPhaseId: "1",
+        backfillNextRoundId: null,
+        retentionCutoffRoundId: null,
+        integrityStatus: null,
+        backfillStatus: "phase_boundary",
+      });
+      return createReferenceHistory({
+        pair: referenceMarketManifest.pairs[2]!,
+        window: "1d",
+        block,
+        snapshots: new Map<ReferenceFeedId, ReferenceFeedCacheSnapshot>([
+          ["eth_usd", snapshot("eth_usd", [older])],
+          ["usdg_usd", snapshot("usdg_usd", [newer])],
+        ]),
+        reports: traversalReportsFor(["eth_usd", "usdg_usd"], {
+          eth_usd: { phaseBoundaryObserved: true },
+          usdg_usd: { phaseBoundaryObserved: true },
+        }),
+      });
+    };
+
+    const boundary = historyFor("2026-07-21T00:06:00.000Z");
+    expect(boundary.status).toBe("partial");
+    expect(boundary.candles.at(-1)).toMatchObject({
+      close: { numerator: "3000", denominator: "1" },
+      closeSourcePointers: [
+        { feedId: "eth_usd" },
+        { feedId: "usdg_usd" },
+      ],
+      closeSourceSkewSeconds: "86400",
+    });
+
+    const stale = historyFor("2026-07-21T00:05:59.000Z");
+    expect(stale).toMatchObject({
+      status: "unavailable",
+      reason: "no_valid_observation",
+      candles: [],
+      sourceObservations: [],
+    });
+  });
+
+  it("reports no-valid-observation without fabricating source evidence", () => {
+    const snapshots = new Map<ReferenceFeedId, ReferenceFeedCacheSnapshot>([
+      ["eth_usd", {
+        feedId: "eth_usd",
+        revision: null,
+        observations: [],
+        backfillPhaseId: null,
+        backfillNextRoundId: null,
+        retentionCutoffRoundId: null,
+        integrityStatus: null,
+        backfillStatus: null,
+      }],
+    ]);
+    const history = createReferenceHistory({
+      pair: referenceMarketManifest.pairs[0]!,
+      window: "1d",
+      block,
+      snapshots,
+      reports: traversalReportsFor(["eth_usd"]),
+    });
+    expect(history).toMatchObject({
+      status: "unavailable",
+      reason: "no_valid_observation",
+      coverage: {
+        basis: "observed_rounds",
+        requestedStart: "2026-07-21T00:07:00.000Z",
+        requestedEnd: block.blockTimestamp,
+        limitations: ["source_history_not_exhaustive"],
+      },
+      candles: [],
+      sourceObservations: [],
+    });
+    expect(history.coverage.emptyBucketStarts).toHaveLength(96);
+    expect(history.warnings).not.toContain("partial_history");
+  });
+
+  it("keeps observed buckets while exposing a local retention limitation", () => {
+    const boundaryBlock = chainAnchorSchema.parse({
+      ...block,
+      blockTimestamp: "2026-07-22T00:00:00.000Z",
+    });
+    const requestedStart = Date.parse(boundaryBlock.blockTimestamp) - 24 * 60 * 60 * 1_000;
+    const pointTimes = Array.from({ length: 96 }, (_, index) =>
+      new Date(requestedStart + index * 15 * 60 * 1_000 + 60_000).toISOString());
+    const observationsFor = (feedId: ReferenceFeedId, answer: string) =>
+      pointTimes.map((updatedAt, index) => observation({
+        feedId,
+        roundId: ((1n << 64n) | BigInt(index + 2)).toString(10),
+        answer,
+        updatedAt,
+        readBlock: boundaryBlock,
+      }));
+    const snapshot = (
+      feedId: ReferenceFeedId,
+      observations: readonly ReferenceRoundObservation[],
+    ): ReferenceFeedCacheSnapshot => ({
+      feedId,
+      revision: null,
+      observations,
+      backfillPhaseId: "1",
+      backfillNextRoundId: null,
+      retentionCutoffRoundId: ((1n << 64n) | 1n).toString(10),
+      integrityStatus: null,
+      backfillStatus: "retention_boundary",
+    });
+    const eth = snapshot("eth_usd", observationsFor("eth_usd", "300000000000"));
+    const usdg = snapshot("usdg_usd", observationsFor("usdg_usd", "100000000"));
+
+    for (const [pairIndex, snapshots] of [
+      [0, new Map<ReferenceFeedId, ReferenceFeedCacheSnapshot>([["eth_usd", eth]])],
+      [2, new Map<ReferenceFeedId, ReferenceFeedCacheSnapshot>([
+        ["eth_usd", eth],
+        ["usdg_usd", usdg],
+      ])],
+    ] as const) {
+      const history = createReferenceHistory({
+        pair: referenceMarketManifest.pairs[pairIndex]!,
+        window: "1d",
+        block: boundaryBlock,
+        snapshots,
+        reports: traversalReportsFor(referenceMarketManifest.pairs[pairIndex]!.contract.sourceIds),
+      });
+      expect(history.status).toBe("partial");
+      expect(history.coverage).toMatchObject({
+        basis: "observed_rounds",
+        emptyBucketStarts: [],
+        limitations: ["source_history_not_exhaustive", "retention_limited"],
+      });
+      expect(history.candles).toHaveLength(96);
+    }
+  });
+
+  it("closes an exact UTC-boundary bucket and opens only a truncated final bucket", () => {
+    const exactBoundary = chainAnchorSchema.parse({
+      ...block,
+      blockTimestamp: "2026-07-22T00:15:00.000Z",
+    });
+    const closedPoints = [
+      observation({
+        feedId: "eth_usd",
+        roundId: ((1n << 64n) | 2n).toString(10),
+        answer: "300000000000",
+        updatedAt: "2026-07-22T00:10:00.000Z",
+        readBlock: exactBoundary,
+      }),
+      observation({
+        feedId: "eth_usd",
+        roundId: ((1n << 64n) | 3n).toString(10),
+        answer: "310000000000",
+        updatedAt: exactBoundary.blockTimestamp,
+        readBlock: exactBoundary,
+      }),
+    ];
+    const snapshotFor = (
+      observations: readonly ReferenceRoundObservation[],
+    ): ReferenceFeedCacheSnapshot => ({
+      feedId: "eth_usd",
+      revision: null,
+      observations,
+      backfillPhaseId: "1",
+      backfillNextRoundId: null,
+      retentionCutoffRoundId: null,
+      integrityStatus: null,
+      backfillStatus: "phase_boundary",
+    });
+    const closed = createReferenceHistory({
+      pair: referenceMarketManifest.pairs[0]!,
+      window: "1d",
+      block: exactBoundary,
+      snapshots: new Map([["eth_usd", snapshotFor(closedPoints)]]),
+      reports: traversalReportsFor(["eth_usd"], {
+        eth_usd: { phaseBoundaryObserved: true },
+      }),
+    }).candles.at(-1)!;
+    expect(closed).toMatchObject({
+      openedAt: "2026-07-22T00:00:00.000Z",
+      closedAt: exactBoundary.blockTimestamp,
+      openBucket: false,
+      closeSourcePointers: [{ feedId: "eth_usd", roundId: closedPoints[0]!.fact.roundId }],
+    });
+
+    const truncatedPoint = observation({
+      feedId: "eth_usd",
+      roundId: ((1n << 64n) | 4n).toString(10),
+      answer: "320000000000",
+      updatedAt: block.blockTimestamp,
+      readBlock: block,
+    });
+    const open = createReferenceHistory({
+      pair: referenceMarketManifest.pairs[0]!,
+      window: "1d",
+      block,
+      snapshots: new Map([["eth_usd", snapshotFor([truncatedPoint])]]),
+      reports: traversalReportsFor(["eth_usd"], {
+        eth_usd: { phaseBoundaryObserved: true },
+      }),
+    }).candles.at(-1)!;
+    expect(open).toMatchObject({
+      openedAt: "2026-07-22T00:00:00.000Z",
+      closedAt: block.blockTimestamp,
+      openBucket: true,
+      closeSourcePointers: [{ feedId: "eth_usd", roundId: truncatedPoint.fact.roundId }],
+    });
+  });
+});

@@ -27,7 +27,6 @@ import type {
 } from "../../src/token-catalog/ports.js";
 import {
   chainId,
-  createInspectionBinding,
   tokenAddress,
   walletAddress,
 } from "./harness.js";
@@ -69,14 +68,20 @@ const store = Object.freeze({
 }) satisfies TokenCatalogStore;
 
 const officialAssets = Object.freeze({
-  synchronize: async () => ({
+  synchronize: async () => Object.freeze({
     status: "unavailable" as const,
     storedRevision: null,
-    failure: new (class extends Error {})(),
-  } as never),
+    failure: createTokenCatalogFailure("runtime_state_unavailable"),
+  }),
   readStored: () => undefined,
   close: async (): Promise<void> => undefined,
-});
+}) satisfies TokenCatalogCoordinatorDependencies["officialAssets"];
+
+const additionChainReads = Object.freeze({
+  inspectAndVerifyOfficial: async () => {
+    throw new Error("No token addition chain read is expected.");
+  },
+}) satisfies TokenCatalogCoordinatorDependencies["additionChainReads"];
 
 const factoryInput = (
   officialAssetPort: TokenCatalogCoordinatorDependencies["officialAssets"] = officialAssets,
@@ -93,12 +98,9 @@ const factoryInput = (
           connectionRevision: parseUnsignedDecimal("0"),
         }),
       }),
-      inspection: createInspectionBinding(),
+      additionChainReads,
       officialAssets: officialAssetPort,
       startupResources: startup.resources,
-      verifyOfficialAsset: Object.freeze({
-        verify: async () => { throw new Error("No verification is expected."); },
-      }),
       store,
       readStore: store,
       accountTokenSelectionStore: Object.freeze({

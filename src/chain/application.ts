@@ -12,14 +12,24 @@ import type {
   ChainOwnerApplicationContext,
   ChainReadCapabilityPort,
 } from "../runtime/application-context.js";
-import type { TokenCatalogInspectionPort } from "../token-catalog/ports.js";
+import type {
+  TokenAdditionChainReadPort,
+  TokenCatalogInspectionPort,
+} from "../token-catalog/ports.js";
 import type { HttpOwnerApplication } from "../runtime/http-owner.js";
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
 import { createErc20CallEncoder, type Erc20CallEncoder } from "./evm-standard.js";
 import { createAccountAssetChainReadPort } from "./account-assets.js";
 import { createChainReadService } from "./handlers.js";
-import { createChainInvocationLifecycle } from "./invocation-lifecycle.js";
+import {
+  createChainInvocationLifecycle,
+  type ChainInvocationPort,
+} from "./invocation-lifecycle.js";
 import { createOfficialAssetChainReadPort } from "./official-assets.js";
+import {
+  createReferenceMarketCallEncoder,
+  createReferenceMarketChainReadPort,
+} from "./reference-market.js";
 import { createBoundedRpcRequester, type RpcRequester } from "./rpc.js";
 import { createTokenInspectionService } from "./token-inspection.js";
 
@@ -37,10 +47,13 @@ export type ChainErc20CallEncoderFactory = () => Promise<Erc20CallEncoder>;
 
 export interface ChainOwnerApplication extends HttpOwnerApplication {
   readonly supportManifest: ChainRuntimeSupportManifest;
+  readonly invocations: ChainInvocationPort;
   readonly chainReads: ChainReadCapabilityPort;
   readonly tokenInspection: TokenCatalogInspectionPort;
+  readonly tokenAdditionReads: TokenAdditionChainReadPort;
   readonly officialAssetReads: ReturnType<typeof createOfficialAssetChainReadPort>;
   readonly accountAssetReads: ReturnType<typeof createAccountAssetChainReadPort>;
+  readonly referenceMarketReads: ReturnType<typeof createReferenceMarketChainReadPort>;
 }
 
 export type ChainOwnerApplicationFactory<ActiveWallet extends object> = (
@@ -85,22 +98,37 @@ export const createChainOwnerApplicationFactory = (
     }
     const lifecycle = createChainInvocationLifecycle(context.signal);
     let service: ReturnType<typeof createChainReadService>;
-    let tokenInspection: ReturnType<typeof createTokenInspectionService>;
     let officialAssetReads: ReturnType<typeof createOfficialAssetChainReadPort>;
+    let tokenInspection: ReturnType<typeof createTokenInspectionService>;
     let accountAssetReads: ReturnType<typeof createAccountAssetChainReadPort>;
+    let referenceMarketReads: ReturnType<typeof createReferenceMarketChainReadPort>;
     try {
       service = createChainReadService({ context, rpc, encoder, lifecycle });
-      tokenInspection = createTokenInspectionService({ context, rpc, encoder, lifecycle });
       officialAssetReads = createOfficialAssetChainReadPort({
         rpc,
         chainId: context.chain.configuration.chain.chainId,
         lifecycle,
+      });
+      tokenInspection = createTokenInspectionService({
+        context,
+        rpc,
+        encoder,
+        lifecycle,
+        officialAssetReads,
       });
       accountAssetReads = createAccountAssetChainReadPort({
         rpc,
         encoder,
         chainId: context.chain.configuration.chain.chainId,
         lifecycle,
+      });
+      referenceMarketReads = createReferenceMarketChainReadPort({
+        rpc,
+        encoder: createReferenceMarketCallEncoder(),
+        chainId: context.chain.configuration.chain.chainId,
+        lifecycle,
+        clock: context.chain.capabilityAuthority.clock,
+        observationAuthority: context.chain.sourceAuthority.observationAuthority,
       });
     } catch (error) {
       await lifecycle.close();
@@ -109,10 +137,13 @@ export const createChainOwnerApplicationFactory = (
     return Object.freeze({
       routes: context.routes,
       supportManifest: extendChainSupportManifest(context.supportManifest),
+      invocations: Object.freeze({ run: lifecycle.run }),
       chainReads: service.chainReads,
       tokenInspection: tokenInspection.binding,
+      tokenAdditionReads: tokenInspection.additionReads,
       officialAssetReads,
       accountAssetReads,
+      referenceMarketReads,
       close: () => lifecycle.close(),
     });
   };

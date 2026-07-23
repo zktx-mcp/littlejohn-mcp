@@ -16,6 +16,8 @@ describe("root browser application structure", () => {
     expect(main).not.toContain("location.pathname");
     expect(app).toContain("href={browserPagePaths.root}");
     expect(app).toContain("<AccountAssetsPage");
+    expect(app).toContain('import { ReferenceMarketView } from "./reference-market-view.js"');
+    expect(app.match(/<ReferenceMarketView\b/gu)).toHaveLength(1);
     expect(app).not.toContain("browserPagePaths.tokens");
     expect(app).not.toContain("<TokenCatalogPage");
     expect(app).not.toContain("location.pathname");

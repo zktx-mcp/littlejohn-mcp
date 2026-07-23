@@ -170,6 +170,41 @@ present and bound to the same asset and observation identity.
 - Wallet net flow is not market volume, P&L, or cost basis.
 - A quote is not a candle, fill, guaranteed price, or execution result.
 
+### Reference Market Values
+
+- A reference-market value is a positive reduced rational with base-10 string
+  `numerator` and `denominator`. It retains the exact pair identity, source
+  round identities, canonical chain block, actual read time, and freshness
+  result that produced it. A source round update time remains a distinct feed
+  fact and is never used as the read time.
+- A direct feed answer `answer` with `decimals` is exactly
+  `answer / 10^decimals`. A nonpositive answer, invalid round identity, future
+  update time, or malformed decimals produces no reference value.
+- ETH/USDG is exactly ETH/USD divided by USDG/USD. Its reduced rational is
+  `(ethAnswer * 10^usdgDecimals) / (usdgAnswer * 10^ethDecimals)`. Current cross
+  construction requires both source rounds to be fresh at the same canonical
+  block; one stale leg makes the current cross unavailable.
+- Historical cross construction considers each source update time. For that
+  time it selects the latest observation from each source that is not later than
+  the candidate time and requires each selected observation to be within its
+  feed heartbeat. It never fills from the future, interpolates, averages, or
+  substitutes a midpoint.
+- The `1d`, `7d`, and `30d` windows use UTC buckets of 15 minutes, 1 hour, and 4
+  hours respectively. Each candle's open and close are the first and last exact
+  points in its bucket; high and low use exact rational comparison. A natural
+  bucket `[openedAt, naturalEnd)` is closed when `naturalEnd` is not later than
+  the canonical block time and excludes a point exactly at `naturalEnd`. Only a
+  bucket truncated by a block time before `naturalEnd` is open, and it includes
+  an admitted point exactly at that block time. The first represented bucket
+  begins at the first UTC bucket boundary not earlier than the requested start;
+  the unaligned prefix is not a bucket. Candle starts and empty-bucket starts
+  partition the represented bucket starts. An empty bucket means only that no
+  admitted point appears in that bucket; neither a candle nor an empty bucket
+  proves exhaustive source history. Every candle has no trade volume.
+- Browser chart coordinates may use only the non-authoritative floating-point
+  projection allowed by [`Charts`](#charts). Exact rational OHLC values remain
+  visible beside that projection and are the only values returned or stored.
+
 ## Verification
 
 An implemented numeric boundary requires audited golden vectors and

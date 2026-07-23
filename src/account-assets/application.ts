@@ -3,7 +3,11 @@ import {
   type ChainAnchor,
   type EvmAccountIdentity,
 } from "../core/index.js";
-import type { OfficialAssetVerificationResult } from "../chain/index.js";
+import type {
+  CanonicalBlock,
+  ChainInvocationContext,
+  OfficialAssetVerificationResult,
+} from "../chain/index.js";
 import {
   defaultStockTokenManifest,
   defaultStockTokenRank,
@@ -334,8 +338,8 @@ const verifyVisibleMembers = async (
   dependencies: AccountAssetReadProcessDependencies,
   official: OfficialView,
   selections: readonly TokenSelectionDetail[],
-  block: ChainAnchor,
-  signal: AbortSignal,
+  block: CanonicalBlock,
+  context: ChainInvocationContext,
   retained: ReadonlyMap<string, OfficialAssetVerificationResult> = new Map(),
 ): Promise<ReadonlyMap<string, OfficialAssetVerificationResult>> => {
   if (official.status !== "current" || official.snapshot === null) return new Map();
@@ -351,7 +355,7 @@ const verifyVisibleMembers = async (
   }
   const verified = pending.length === 0
     ? []
-    : await dependencies.officialAssetReads.verifyManyAtBlock(pending, block, signal);
+    : await dependencies.officialAssetReads.verifyManyAtBlock(pending, block, context);
   pending.forEach((member, index) => {
     const result = verified[index];
     if (result === undefined) throw new AccountAssetOperationError("internal_error");
@@ -364,9 +368,9 @@ const initializeDefaults = async (
   dependencies: AccountAssetReadProcessDependencies,
   wallet: CapturedWallet,
   official: OfficialView,
-  block: ChainAnchor,
+  block: CanonicalBlock,
   pageLimit: number,
-  signal: AbortSignal,
+  context: ChainInvocationContext,
 ): Promise<ReadonlyMap<string, OfficialAssetVerificationResult>> => {
   if (official.status !== "current" || official.snapshot === null) return new Map();
   const state = dependencies.selections.getState(wallet.account);
@@ -402,7 +406,7 @@ const initializeDefaults = async (
   const members = [...verificationMembers.values()];
   const results = members.length === 0
     ? []
-    : await dependencies.officialAssetReads.verifyManyAtBlock(members, block, signal);
+    : await dependencies.officialAssetReads.verifyManyAtBlock(members, block, context);
   const resultByAddress = new Map(members.map((member, index) => {
     const result = results[index];
     if (result === undefined) throw new AccountAssetOperationError("internal_error");
@@ -569,48 +573,50 @@ export const createAccountAssetApplication = (
           const official = firstPage
             ? await synchronizeOfficialView(dependencies, signal)
             : readOfficialView(dependencies, request.cursor!);
-          const block = await dependencies.chainReads.resolveCurrentBlock(signal);
-          const retained = firstPage
-            ? await initializeDefaults(dependencies, wallet, official, block, request.limit, signal)
-            : new Map<string, OfficialAssetVerificationResult>();
-          const revision: AccountAssetViewRevision = firstPage
-            ? viewRevision(official, dependencies.selections.getState(wallet.account))
-            : cursorViewRevision(request.cursor!);
-          const page = pageSelections(dependencies, wallet.account, request, revision);
-          const verification = await verifyVisibleMembers(
-            dependencies,
-            official,
-            page.entries,
-            block,
-            signal,
-            retained,
-          );
-          const chain = await dependencies.chainReads.readCollectionAtBlock({
-            account: wallet.account,
-            assets: page.entries.map((entry) => entry.selection.asset),
-            block,
-          }, signal);
-          if (chain.tokens.length !== page.entries.length) {
-            throw new AccountAssetOperationError("internal_error");
-          }
-          assertViewContinuity(dependencies, wallet, revision);
-          return Object.freeze({
-            account: wallet.account,
-            block,
-            viewRevision: revision,
-            native: {
-              kind: "native",
-              asset: { kind: "native", chainId: wallet.account.chainId },
-              rawBalance: chain.nativeRawBalance,
-              classification: "native",
-            },
-            assets: page.entries.map((entry, index) => contractAsset(
-              entry,
-              chain.tokens[index]!,
+          return dependencies.chainInvocations.run(signal, async (context) => {
+            const block = await dependencies.chainReads.resolveCurrentBlock(context);
+            const retained = firstPage
+              ? await initializeDefaults(dependencies, wallet, official, block, request.limit, context)
+              : new Map<string, OfficialAssetVerificationResult>();
+            const revision: AccountAssetViewRevision = firstPage
+              ? viewRevision(official, dependencies.selections.getState(wallet.account))
+              : cursorViewRevision(request.cursor!);
+            const page = pageSelections(dependencies, wallet.account, request, revision);
+            const verification = await verifyVisibleMembers(
+              dependencies,
               official,
-              verification.get(entry.selection.asset.address),
-            )),
-            nextCursor: page.nextCursor,
+              page.entries,
+              block,
+              context,
+              retained,
+            );
+            const chain = await dependencies.chainReads.readCollectionAtBlock({
+              account: wallet.account,
+              assets: page.entries.map((entry) => entry.selection.asset),
+              block,
+            }, context);
+            if (chain.tokens.length !== page.entries.length) {
+              throw new AccountAssetOperationError("internal_error");
+            }
+            assertViewContinuity(dependencies, wallet, revision);
+            return Object.freeze({
+              account: wallet.account,
+              block: block.anchor,
+              viewRevision: revision,
+              native: {
+                kind: "native",
+                asset: { kind: "native", chainId: wallet.account.chainId },
+                rawBalance: chain.nativeRawBalance,
+                classification: "native",
+              },
+              assets: page.entries.map((entry, index) => contractAsset(
+                entry,
+                chain.tokens[index]!,
+                official,
+                verification.get(entry.selection.asset.address),
+              )),
+              nextCursor: page.nextCursor,
+            });
           });
         },
       );
@@ -639,32 +645,34 @@ export const createAccountAssetApplication = (
             throw new AccountAssetOperationError("token_selection_not_found");
           }
           const official = readOfficialView(dependencies, request.viewRevision);
-          const block = await dependencies.chainReads.resolveCurrentBlock(signal);
-          const verification = await verifyVisibleMembers(
-            dependencies,
-            official,
-            [detail],
-            block,
-            signal,
-          );
-          const chain = await dependencies.chainReads.readExactAtBlock({
-            account: wallet.account,
-            asset: detail.selection.asset,
-            block,
-          }, signal);
-          assertViewContinuity(dependencies, wallet, request.viewRevision);
-          return Object.freeze({
-            account: wallet.account,
-            block,
-            viewRevision: request.viewRevision,
-            asset: contractAsset(
-              detail,
-              chain,
+          return dependencies.chainInvocations.run(signal, async (context) => {
+            const block = await dependencies.chainReads.resolveCurrentBlock(context);
+            const verification = await verifyVisibleMembers(
+              dependencies,
               official,
-              verification.get(detail.selection.asset.address),
-            ),
-            totalSupply: chain.totalSupply,
-            standards: chain.standards,
+              [detail],
+              block,
+              context,
+            );
+            const chain = await dependencies.chainReads.readExactAtBlock({
+              account: wallet.account,
+              asset: detail.selection.asset,
+              block,
+            }, context);
+            assertViewContinuity(dependencies, wallet, request.viewRevision);
+            return Object.freeze({
+              account: wallet.account,
+              block: block.anchor,
+              viewRevision: request.viewRevision,
+              asset: contractAsset(
+                detail,
+                chain,
+                official,
+                verification.get(detail.selection.asset.address),
+              ),
+              totalSupply: chain.totalSupply,
+              standards: chain.standards,
+            });
           });
         },
       );

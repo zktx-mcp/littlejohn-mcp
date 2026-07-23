@@ -60,10 +60,17 @@ import {
   type RpcCanonicalBlockReference,
   type RpcRequester,
 } from "./rpc.js";
-import { resolveCanonicalBlock } from "./canonical-block.js";
-import { validateConfiguredChain } from "./configured-chain.js";
+import {
+  readConfiguredCanonicalBlock,
+  resolveConfiguredCanonicalBlock,
+} from "./canonical-block.js";
+import {
+  recordConfiguredChainProof,
+  validateConfiguredChain,
+} from "./configured-chain.js";
 import {
   getChainInvocationStopReason,
+  type ChainInvocationContext,
   type ChainInvocationLifecycle,
 } from "./invocation-lifecycle.js";
 
@@ -130,7 +137,7 @@ const accessListData = (accessList: NormalizedAccessList): TransactionInspectDat
 const runHandler = async (
   lifecycle: ChainInvocationLifecycle,
   callerSignal: AbortSignal,
-  operation: (signal: AbortSignal) => Promise<unknown>,
+  operation: (context: ChainInvocationContext) => Promise<unknown>,
 ): Promise<unknown> => {
   try {
     return await lifecycle.run(callerSignal, operation);
@@ -171,17 +178,29 @@ const recordChainId = async (
 const resolveBlock = async (
   dependencies: HandlerDependencies,
   selector: ContractInspectInput["block"] | AccountBalanceInput["block"],
-  signal: AbortSignal,
+  context: ChainInvocationContext,
+  observations: ObservationWriter,
 ): Promise<{
   readonly anchor: ChainAnchor;
   readonly stateReference: RpcCanonicalBlockReference;
 }> => {
-  return resolveCanonicalBlock({
+  const block = await resolveConfiguredCanonicalBlock({
     rpc: dependencies.rpc,
     chainId: dependencies.chainId,
     selector,
-    signal,
+    context,
   });
+  const state = readConfiguredCanonicalBlock({
+    context,
+    block,
+    chainId: dependencies.chainId,
+  });
+  recordConfiguredChainProof({
+    proof: state.configuredChainProof,
+    rpcSource: dependencies.rpcSource,
+    observations,
+  });
+  return state;
 };
 
 const nativeAmount = (
@@ -582,7 +601,7 @@ export const createChainReadService = (input: {
   const basePorts = input.context.chain.capabilityAuthority.invocationPorts;
   const execute = (
     callerSignal: AbortSignal,
-    operation: (signal: AbortSignal) => Promise<unknown>,
+    operation: (context: ChainInvocationContext) => Promise<unknown>,
   ): Promise<unknown> => runHandler(input.lifecycle, callerSignal, operation);
   const notRequiredPorts = (): ChainInvocationPorts => Object.freeze({
     observations: basePorts.observations,
@@ -626,7 +645,8 @@ export const createChainReadService = (input: {
     invocationAuthority: input.context.chain.capabilityAuthority.invocationAuthority,
     createInvocationPorts: (_request: ChainStatusInput) => notRequiredPorts(),
     handler: async (_request, context: HandlerInvocationContext<ChainInvocationPorts>, observations) =>
-      execute(context.signal, async (signal) => {
+      execute(context.signal, async (chainInvocation) => {
+        const signal = chainInvocation.signal;
         await recordChainId(dependencies, signal, observations);
         const rawBlock = await dependencies.rpc.request("eth_getBlockByNumber", ["latest", false], signal);
         if (rawBlock === null) throw new ChainOperationError("source_inconsistent");
@@ -649,9 +669,9 @@ export const createChainReadService = (input: {
     invocationAuthority: input.context.chain.capabilityAuthority.invocationAuthority,
     createInvocationPorts: (_request: ContractInspectInput) => notRequiredPorts(),
     handler: async (request, context: HandlerInvocationContext<ChainInvocationPorts>, observations) =>
-      execute(context.signal, async (signal) => {
-        await recordChainId(dependencies, signal, observations);
-        const block = await resolveBlock(dependencies, request.block, signal);
+      execute(context.signal, async (chainInvocation) => {
+        const signal = chainInvocation.signal;
+        const block = await resolveBlock(dependencies, request.block, chainInvocation, observations);
         const rawCode = await dependencies.rpc.request(
           "eth_getCode",
           [request.address, block.stateReference],
@@ -681,7 +701,8 @@ export const createChainReadService = (input: {
     invocationAuthority: input.context.chain.capabilityAuthority.invocationAuthority,
     createInvocationPorts: (_request: TransactionInspectInput) => notRequiredPorts(),
     handler: async (request, context: HandlerInvocationContext<ChainInvocationPorts>, observations) =>
-      execute(context.signal, async (signal) => {
+      execute(context.signal, async (chainInvocation) => {
+        const signal = chainInvocation.signal;
         await recordChainId(dependencies, signal, observations);
         const transactionRaw = await dependencies.rpc.request(
           "eth_getTransactionByHash",
@@ -749,11 +770,11 @@ export const createChainReadService = (input: {
     invocationAuthority: input.context.chain.capabilityAuthority.invocationAuthority,
     createInvocationPorts: accountPorts,
     handler: async (request, context: HandlerInvocationContext<ChainInvocationPorts>, observations) =>
-      execute(context.signal, async (signal) => {
+      execute(context.signal, async (chainInvocation) => {
+        const signal = chainInvocation.signal;
         const accountPort = context.ports.account;
         if (accountPort.status !== "available") throw new ChainOperationError("wallet_not_connected");
-        await recordChainId(dependencies, signal, observations);
-        const block = await resolveBlock(dependencies, request.block, signal);
+        const block = await resolveBlock(dependencies, request.block, chainInvocation, observations);
         if (accountPort.active) {
           observations.record("account", {
             source: context.ports.observations.get("wallet_session"),

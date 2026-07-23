@@ -18,6 +18,7 @@ import {
   tokenInspectInterface,
 } from "../../src/interfaces/identities.js";
 import { extendInterfaceSupportManifest } from "../../src/interfaces/support.js";
+import { extendReferenceMarketSupportManifest } from "../../src/market-portfolio/support.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import {
   createInitialRuntimeSupportManifest,
@@ -38,7 +39,7 @@ const tokenCatalogManifest = () => extendTokenCatalogSupportManifest(
 );
 
 const interfaceManifest = () => extendInterfaceSupportManifest(
-  extendAccountAssetSupportManifest(tokenCatalogManifest()),
+  extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(tokenCatalogManifest())),
 );
 
 describe("interface binding identity authority", () => {

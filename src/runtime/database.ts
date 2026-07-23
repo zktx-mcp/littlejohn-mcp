@@ -7,6 +7,8 @@ import Database from "better-sqlite3";
 
 import {
   canonicalJsonStringify,
+  canonicalBase64UrlSchema,
+  createExactRational,
   decodeCanonicalBase64Url,
   deepFreezeValue,
   erc20AssetIdentitySchema,
@@ -15,11 +17,35 @@ import {
   parseEvmChainId,
   parseEvmContractIdentity,
   parseCapabilityDataAt,
+  productChainId,
+  parseReferenceCompositeRoundId,
   parseUtcTimestamp,
+  findReferenceFeed,
+  findReferencePair,
+  initialReferenceWatchlistRevision,
+  referenceFeedIntegrityStatusSchema,
+  referenceFeedIds,
+  referenceFeedIdSchema,
+  referenceFeedTraversalStateSchema,
+  referenceFeedTraversalStatusSchema,
+  referenceMarketLimits,
+  referenceMarketManifestVersion,
+  referencePairManifestEntrySchema,
+  referenceRoundObservationSchema,
+  referenceRoundReadEvidenceSchema,
+  referenceSupportedPairIdSchema,
+  referenceWatchlistRevisionSchema,
+  referenceWatchlistSuccessSchema,
   walletConnectionCapability,
   type CanonicalJson,
   type EvmAccountIdentity,
   type EvmChainId,
+  type ReferenceFeedId,
+  type ReferenceFeedIntegrityStatus,
+  type ReferenceFeedTraversalStatus,
+  type ReferencePairId,
+  type ReferenceRoundObservation,
+  type ReferenceWatchlistSuccess,
   type UtcTimestamp,
   type WalletConnectionData,
 } from "../core/index.js";
@@ -94,6 +120,12 @@ import type {
   WalletConnectionRecord,
   WalletProjectionStore,
 } from "./wallet-projection.js";
+import type {
+  ReferenceFeedCacheCommit,
+  ReferenceFeedCacheSnapshot,
+  ReferenceMarketStore,
+  ReferenceWatchlistMutationResult,
+} from "./reference-market-storage.js";
 
 export interface LocalProfile {
   readonly profileId: ProfileId;
@@ -184,6 +216,49 @@ interface OfficialAssetMemberRow {
   readonly assetUid: string;
   readonly sourceName: string | null;
   readonly sourceSymbol: string | null;
+}
+interface ReferenceFeedRoundRow {
+  readonly manifestVersion: number;
+  readonly chainId: string;
+  readonly feedId: string;
+  readonly proxyAddress: string;
+  readonly phaseId: string;
+  readonly aggregatorRoundId: string;
+  readonly roundId: string;
+  readonly answeredInRound: string;
+  readonly answer: string;
+  readonly startedAtUnixSeconds: string;
+  readonly updatedAtUnixSeconds: string;
+  readonly readEvidenceJson: string;
+}
+interface ReferenceFeedSyncStateRow {
+  readonly manifestVersion: number;
+  readonly chainId: string;
+  readonly feedId: string;
+  readonly proxyAddress: string;
+  readonly revision: string;
+  readonly backfillPhaseId: string | null;
+  readonly backfillNextRoundId: string | null;
+  readonly retentionCutoffRoundId: string | null;
+  readonly integrityStatus: string | null;
+  readonly backfillStatus: string | null;
+  readonly updatedAt: string;
+}
+interface ReferenceWatchlistStateRow {
+  readonly profileId: string;
+  readonly chainId: string;
+  readonly walletAddress: string;
+  readonly revision: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+interface ReferenceWatchlistEntryRow {
+  readonly profileId: string;
+  readonly chainId: string;
+  readonly walletAddress: string;
+  readonly pairId: string;
+  readonly pairJson: string;
+  readonly position: number;
 }
 export interface WalletAccountStorageRow {
   readonly profileId: string;
@@ -498,6 +573,209 @@ const readTokenCatalogRows = (database: Database.Database): void => {
   readOfficialAssetSnapshotRaw(database);
 };
 
+const referenceCacheRevisionSchema = canonicalBase64UrlSchema(referenceMarketLimits.revisionBytes);
+const roundSelect = `SELECT manifest_version AS manifestVersion, chain_id AS chainId,
+  feed_id AS feedId, proxy_address AS proxyAddress, phase_id AS phaseId,
+  aggregator_round_id AS aggregatorRoundId, round_id AS roundId,
+  answered_in_round AS answeredInRound, answer,
+  started_at_unix_seconds AS startedAtUnixSeconds,
+  updated_at_unix_seconds AS updatedAtUnixSeconds,
+  read_evidence_json AS readEvidenceJson FROM reference_feed_round`;
+
+const decodeReferenceRoundRow = (row: ReferenceFeedRoundRow): ReferenceRoundObservation => {
+  const feedId = referenceFeedIdSchema.parse(row.feedId);
+  const feed = findReferenceFeed(feedId);
+  if (
+    row.manifestVersion !== referenceMarketManifestVersion ||
+    row.chainId !== productChainId ||
+    row.proxyAddress !== feed.standardProxy
+  ) throw new Error("Stored reference round identity is invalid.");
+  const roundIdentity = parseReferenceCompositeRoundId(row.roundId);
+  if (
+    roundIdentity.phaseId !== row.phaseId ||
+    roundIdentity.aggregatorRoundId !== row.aggregatorRoundId
+  ) {
+    throw new Error("Stored reference round decomposition is invalid.");
+  }
+  let rawReadEvidence: unknown;
+  try { rawReadEvidence = JSON.parse(row.readEvidenceJson); }
+  catch { throw new Error("Stored reference round read evidence is invalid."); }
+  const readEvidence = referenceRoundReadEvidenceSchema.parse(rawReadEvidence);
+  if (canonicalJsonStringify(readEvidence as unknown as CanonicalJson) !== row.readEvidenceJson) {
+    throw new Error("Stored reference round read evidence is not canonical.");
+  }
+  return referenceRoundObservationSchema.parse({
+    fact: {
+      manifestVersion: referenceMarketManifestVersion,
+      feedId,
+      proxyAddress: feed.standardProxy,
+      decimals: feed.decimals,
+      roundId: row.roundId,
+      answeredInRound: row.answeredInRound,
+      answer: row.answer,
+      startedAtUnixSeconds: row.startedAtUnixSeconds,
+      updatedAtUnixSeconds: row.updatedAtUnixSeconds,
+      value: createExactRational(BigInt(row.answer), 10n ** BigInt(feed.decimals)),
+    },
+    readEvidence,
+  });
+};
+
+const decodeReferenceIntegrityStatus = (value: string | null): ReferenceFeedIntegrityStatus => {
+  if (value === null) return null;
+  return referenceFeedIntegrityStatusSchema.parse(value);
+};
+
+const decodeReferenceBackfillStatus = (value: string | null): ReferenceFeedTraversalStatus => {
+  if (value === null) return null;
+  return referenceFeedTraversalStatusSchema.parse(value);
+};
+
+const referenceStateSelect = `SELECT manifest_version AS manifestVersion, chain_id AS chainId,
+  feed_id AS feedId, proxy_address AS proxyAddress, revision,
+  backfill_phase_id AS backfillPhaseId,
+  backfill_next_round_id AS backfillNextRoundId,
+  retention_cutoff_round_id AS retentionCutoffRoundId,
+  integrity_status AS integrityStatus, backfill_status AS backfillStatus, updated_at AS updatedAt
+  FROM reference_feed_sync_state`;
+
+const validateReferenceFeedStateRow = (
+  row: ReferenceFeedSyncStateRow,
+  expectedFeedId?: ReferenceFeedId,
+): void => {
+  const feedId = referenceFeedIdSchema.parse(row.feedId);
+  const feed = findReferenceFeed(feedId);
+  if (
+    row.manifestVersion !== referenceMarketManifestVersion ||
+    row.chainId !== productChainId || row.proxyAddress !== feed.standardProxy ||
+    (expectedFeedId !== undefined && feedId !== expectedFeedId)
+  ) throw new Error("Stored reference feed state identity is invalid.");
+  referenceCacheRevisionSchema.parse(row.revision);
+  const status = decodeReferenceBackfillStatus(row.backfillStatus);
+  referenceFeedTraversalStateSchema.parse({
+    backfillPhaseId: row.backfillPhaseId,
+    backfillNextRoundId: row.backfillNextRoundId,
+    retentionCutoffRoundId: row.retentionCutoffRoundId,
+    backfillStatus: status,
+  });
+  decodeReferenceIntegrityStatus(row.integrityStatus);
+  parseUtcTimestamp(row.updatedAt);
+};
+
+const readReferenceFeedRaw = (
+  database: Database.Database,
+  feedIdInput: ReferenceFeedId,
+): ReferenceFeedCacheSnapshot => {
+  const feedId = referenceFeedIdSchema.parse(feedIdInput);
+  const feed = findReferenceFeed(feedId);
+  const states = database.prepare(`${referenceStateSelect}
+    WHERE manifest_version = ? AND chain_id = ? AND feed_id = ? AND proxy_address = ?`)
+    .all(referenceMarketManifestVersion, productChainId, feedId, feed.standardProxy) as ReferenceFeedSyncStateRow[];
+  if (states.length > 1) throw new Error("Stored reference feed state is not unique.");
+  const state = states[0];
+  if (state !== undefined) {
+    validateReferenceFeedStateRow(state, feedId);
+  }
+  const rows = database.prepare(`${roundSelect}
+    WHERE manifest_version = ? AND chain_id = ? AND feed_id = ? AND proxy_address = ?
+    ORDER BY length(updated_at_unix_seconds), updated_at_unix_seconds,
+      length(round_id), round_id`)
+    .all(referenceMarketManifestVersion, productChainId, feedId, feed.standardProxy) as ReferenceFeedRoundRow[];
+  return deepFreezeValue({
+    feedId,
+    revision: state?.revision ?? null,
+    observations: rows.map(decodeReferenceRoundRow),
+    backfillPhaseId: state?.backfillPhaseId ?? null,
+    backfillNextRoundId: state?.backfillNextRoundId ?? null,
+    retentionCutoffRoundId: state?.retentionCutoffRoundId ?? null,
+    integrityStatus: decodeReferenceIntegrityStatus(state?.integrityStatus ?? null),
+    backfillStatus: decodeReferenceBackfillStatus(state?.backfillStatus ?? null),
+  });
+};
+
+const watchlistStateSelect = `SELECT profile_id AS profileId, chain_id AS chainId,
+  wallet_address AS walletAddress, revision, created_at AS createdAt, updated_at AS updatedAt
+  FROM reference_pair_watchlist_state`;
+const watchlistEntrySelect = `SELECT profile_id AS profileId, chain_id AS chainId,
+  wallet_address AS walletAddress, pair_id AS pairId, pair_json AS pairJson, position
+  FROM reference_pair_watchlist_entry`;
+
+const readReferenceWatchlistRaw = (
+  database: Database.Database,
+  profileId: ProfileId,
+  accountInput: EvmAccountIdentity,
+): ReferenceWatchlistSuccess => {
+  const account = evmAccountIdentitySchema.parse(accountInput);
+  const states = database.prepare(`${watchlistStateSelect}
+    WHERE profile_id = ? AND chain_id = ? AND wallet_address = ?`)
+    .all(profileId, account.chainId, account.address) as ReferenceWatchlistStateRow[];
+  if (states.length > 1) throw new Error("Stored reference watchlist state is not unique.");
+  const state = states[0];
+  const rows = database.prepare(`${watchlistEntrySelect}
+    WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? ORDER BY position`)
+    .all(profileId, account.chainId, account.address) as ReferenceWatchlistEntryRow[];
+  if (state === undefined && rows.length !== 0) throw new Error("Stored reference watchlist entries are orphaned.");
+  const entries = rows.map((row, index) => {
+    if (
+      row.profileId !== profileId || row.chainId !== account.chainId ||
+      row.walletAddress !== account.address || row.position !== index
+    ) throw new Error("Stored reference watchlist entry identity is invalid.");
+    const parsedJson = JSON.parse(row.pairJson) as unknown;
+    const pair = referencePairManifestEntrySchema.parse(parsedJson);
+    if (
+      pair.pairId !== row.pairId ||
+      canonicalJsonStringify(pair as unknown as CanonicalJson) !== row.pairJson
+    ) throw new Error("Stored reference watchlist pair is invalid.");
+    return pair;
+  });
+  if (state !== undefined) {
+    if (state.profileId !== profileId || state.chainId !== account.chainId ||
+      state.walletAddress !== account.address) {
+      throw new Error("Stored reference watchlist state identity is invalid.");
+    }
+    referenceWatchlistRevisionSchema.parse(state.revision);
+    parseUtcTimestamp(state.createdAt);
+    parseUtcTimestamp(state.updatedAt);
+  }
+  return deepFreezeValue(referenceWatchlistSuccessSchema.parse({
+    account,
+    revision: state?.revision ?? initialReferenceWatchlistRevision,
+    entries,
+  }));
+};
+
+const readReferenceMarketRows = (database: Database.Database): void => {
+  const allRounds = database.prepare(`${roundSelect}
+    ORDER BY manifest_version, chain_id, feed_id, proxy_address,
+      length(round_id), round_id`).iterate() as IterableIterator<ReferenceFeedRoundRow>;
+  for (const row of allRounds) decodeReferenceRoundRow(row);
+  const allStates = database.prepare(`${referenceStateSelect}
+    ORDER BY manifest_version, chain_id, feed_id, proxy_address`)
+    .iterate() as IterableIterator<ReferenceFeedSyncStateRow>;
+  for (const row of allStates) validateReferenceFeedStateRow(row);
+  for (const feedId of referenceFeedIds) readReferenceFeedRaw(database, feedId);
+  const profiles = database.prepare("SELECT profile_id AS profileId FROM local_profile")
+    .all() as Array<{ profileId: string }>;
+  for (const profileRow of profiles) {
+    const profileId = parseProfileId(profileRow.profileId);
+    const accounts = database.prepare(`SELECT profile_id AS profileId, chain_id AS chainId,
+      wallet_address AS walletAddress FROM reference_pair_watchlist_state
+      WHERE profile_id = ? ORDER BY chain_id, wallet_address`)
+      .all(profileId) as WalletAccountStorageRow[];
+    for (const row of accounts) readReferenceWatchlistRaw(database, profileId, decodeWalletAccountRecordKey(row).account);
+  }
+};
+
+const createReferenceRevision = (current: string | null): string => {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const revision = referenceWatchlistRevisionSchema.parse(
+      randomBytes(referenceMarketLimits.revisionBytes).toString("base64url"),
+    );
+    if (revision !== initialReferenceWatchlistRevision && revision !== current) return revision;
+  }
+  throw new Error("A distinct reference-market revision could not be generated.");
+};
+
 const validateDatabaseState = (database: Database.Database): void => {
   assertCurrentSchema(database);
   readProfileRaw(database);
@@ -507,6 +785,7 @@ const validateDatabaseState = (database: Database.Database): void => {
   readContractRows(database, "token_contract");
   readWalletAccountRows(database);
   readTokenCatalogRows(database);
+  readReferenceMarketRows(database);
   readWalletRaw(database);
   if (database.prepare("PRAGMA foreign_key_check").all().length !== 0) {
     throw new Error("SQLite foreign-key state is invalid.");
@@ -711,6 +990,7 @@ export class ProductDatabase {
   readonly #tokenCatalogReadStore: TokenCatalogQueryStore;
   readonly #accountTokenSelectionStore: AccountTokenSelectionStore;
   readonly #tokenCatalogStore: TokenCatalogStore;
+  readonly #referenceMarketStore: ReferenceMarketStore;
   #databaseClosed = false;
   #mainLeaseClosed = false;
 
@@ -753,6 +1033,12 @@ export class ProductDatabase {
       listSelections: (input) => this.listTokenSelections(input),
       applyConfirmation: (input) => this.applyTokenConfirmation(input),
     } satisfies TokenCatalogStore);
+    this.#referenceMarketStore = Object.freeze({
+      readFeed: (feedId) => this.readReferenceFeed(feedId),
+      commitFeed: (input) => this.commitReferenceFeed(input),
+      readWatchlist: (account) => this.readReferenceWatchlist(account),
+      mutateWatchlist: (input) => this.mutateReferenceWatchlist(input),
+    } satisfies ReferenceMarketStore);
   }
 
   static async open(
@@ -785,6 +1071,7 @@ export class ProductDatabase {
     return this.#accountTokenSelectionStore;
   }
   tokenCatalogStore(): TokenCatalogStore { return this.#tokenCatalogStore; }
+  referenceMarketStore(): ReferenceMarketStore { return this.#referenceMarketStore; }
 
   close(): void {
     let failure: unknown;
@@ -1133,7 +1420,7 @@ export class ProductDatabase {
       const now = parseUtcTimestamp(input.now);
       return this.#writeWithIdentity(() => {
         const profile = readProfileRaw(this.#database);
-        this.assertTokenCatalogConnection(account, expectedConnectionRevision);
+        this.assertCurrentWalletConnection(account, expectedConnectionRevision);
         const snapshot = readOfficialAssetSnapshotRaw(this.#database);
         if (snapshot === undefined || snapshot.revision !== snapshotRevision) {
           throw new RuntimeOperationError("state_conflict");
@@ -1214,7 +1501,315 @@ export class ProductDatabase {
     } catch (error) { throw tokenCatalogStorageError(error); }
   }
 
-  private assertTokenCatalogConnection(
+  private readReferenceFeed(feedIdInput: ReferenceFeedId): ReferenceFeedCacheSnapshot {
+    try {
+      const feedId = referenceFeedIdSchema.parse(feedIdInput);
+      return this.#readWithIdentity(() => readReferenceFeedRaw(this.#database, feedId));
+    } catch (error) { throw storageError(error); }
+  }
+
+  private commitReferenceFeed(input: ReferenceFeedCacheCommit): ReferenceFeedCacheSnapshot {
+    try {
+      const feedId = referenceFeedIdSchema.parse(input.feedId);
+      const feed = findReferenceFeed(feedId);
+      const expectedRevision = input.expectedRevision === null
+        ? null
+        : referenceCacheRevisionSchema.parse(input.expectedRevision);
+      const observations = input.observations.map((observation) =>
+        referenceRoundObservationSchema.parse(observation));
+      const observationIdentities = observations.map((observation) =>
+        parseReferenceCompositeRoundId(observation.fact.roundId));
+      if (
+        observations.length > referenceMarketLimits.historyProbes + 1 ||
+        observations.some((observation) => observation.fact.feedId !== feedId)
+      ) {
+        throw new RuntimeOperationError("state_conflict");
+      }
+      const backfillPhaseId = input.backfillPhaseId;
+      const backfillNextRoundId = input.backfillNextRoundId;
+      if (!/^[1-9][0-9]*$/u.test(input.retainAfterUnixSeconds) ||
+        BigInt(input.retainAfterUnixSeconds) > 253_402_300_799n) {
+        throw new TypeError("Reference history retention boundary is invalid.");
+      }
+      const backfillStatus = decodeReferenceBackfillStatus(input.backfillStatus);
+      const now = parseUtcTimestamp(input.now);
+      return this.#writeWithIdentity(() => {
+        const current = readReferenceFeedRaw(this.#database, feedId);
+        if (current.revision !== expectedRevision) throw new RuntimeOperationError("state_conflict");
+        if (current.integrityStatus === "conflict") return current;
+        const existingCutoff = current.retentionCutoffRoundId === null
+          ? null
+          : parseReferenceCompositeRoundId(current.retentionCutoffRoundId);
+        if (
+          existingCutoff !== null &&
+          observationIdentities.some((identity) => BigInt(identity.roundId) <= BigInt(existingCutoff.roundId))
+        ) {
+          throw new RuntimeOperationError("state_conflict");
+        }
+        referenceFeedTraversalStateSchema.parse({
+          backfillPhaseId,
+          backfillNextRoundId,
+          backfillStatus,
+          retentionCutoffRoundId: existingCutoff?.roundId ?? null,
+        });
+
+        let changed = current.revision === null;
+        let conflict = false;
+        const selectExisting = this.#database.prepare(`${roundSelect}
+          WHERE manifest_version = ? AND chain_id = ? AND feed_id = ? AND proxy_address = ?
+            AND phase_id = ? AND aggregator_round_id = ?`);
+        const insert = this.#database.prepare(`INSERT INTO reference_feed_round(
+          manifest_version, chain_id, feed_id, proxy_address, phase_id, aggregator_round_id,
+          round_id, answered_in_round, answer, started_at_unix_seconds, updated_at_unix_seconds,
+          read_evidence_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        for (const [index, observation] of observations.entries()) {
+          const identity = observationIdentities[index]!;
+          const existingRows = selectExisting.all(
+            referenceMarketManifestVersion, productChainId, feedId, feed.standardProxy,
+            identity.phaseId, identity.aggregatorRoundId,
+          ) as ReferenceFeedRoundRow[];
+          if (existingRows.length > 1) throw new Error("Stored reference round is not unique.");
+          if (existingRows[0] !== undefined) {
+            const existing = decodeReferenceRoundRow(existingRows[0]);
+            if (canonicalJsonStringify(existing.fact as unknown as CanonicalJson) !==
+              canonicalJsonStringify(observation.fact as unknown as CanonicalJson)) conflict = true;
+            continue;
+          }
+          insert.run(
+            referenceMarketManifestVersion, productChainId, feedId, feed.standardProxy,
+            identity.phaseId, identity.aggregatorRoundId, identity.roundId,
+            observation.fact.answeredInRound, observation.fact.answer,
+            observation.fact.startedAtUnixSeconds, observation.fact.updatedAtUnixSeconds,
+            canonicalJsonStringify(observation.readEvidence as unknown as CanonicalJson),
+          );
+          changed = true;
+        }
+
+        const storedRows = this.#database.prepare(`${roundSelect}
+          WHERE manifest_version = ? AND chain_id = ? AND feed_id = ? AND proxy_address = ?
+          ORDER BY length(round_id), round_id`)
+          .all(referenceMarketManifestVersion, productChainId, feedId, feed.standardProxy) as ReferenceFeedRoundRow[];
+        if (
+          existingCutoff !== null &&
+          storedRows.some((row) => BigInt(row.roundId) <= BigInt(existingCutoff.roundId))
+        ) {
+          throw new Error("Stored reference round is at or below the retention cutoff.");
+        }
+        let ageCandidate: ReferenceFeedRoundRow | undefined;
+        for (let index = 0; index < storedRows.length - 1; index += 1) {
+          const row = storedRows[index]!;
+          if (BigInt(row.updatedAtUnixSeconds) >= BigInt(input.retainAfterUnixSeconds)) break;
+          ageCandidate = row;
+        }
+        const capacityDeleteCount = Math.max(
+          0,
+          storedRows.length - referenceMarketLimits.historyRoundsPerFeed,
+        );
+        const capacityCandidate = capacityDeleteCount === 0
+          ? undefined
+          : storedRows[capacityDeleteCount - 1];
+        const cutoffCandidates = [
+          existingCutoff?.roundId,
+          ageCandidate?.roundId,
+          capacityCandidate?.roundId,
+        ].filter((value): value is string => value !== undefined);
+        const retentionCutoffRoundId = cutoffCandidates.length === 0
+          ? null
+          : cutoffCandidates.reduce((greatest, value) =>
+              BigInt(value) > BigInt(greatest) ? value : greatest);
+        const deleted = retentionCutoffRoundId === null
+          ? []
+          : storedRows.filter((row) => BigInt(row.roundId) <= BigInt(retentionCutoffRoundId));
+        const retained = retentionCutoffRoundId === null
+          ? storedRows
+          : storedRows.filter((row) => BigInt(row.roundId) > BigInt(retentionCutoffRoundId));
+        if (storedRows.length !== 0 && retained.length === 0) {
+          throw new Error("Reference feed retention removed the greatest current identity.");
+        }
+        const remove = this.#database.prepare(`DELETE FROM reference_feed_round
+          WHERE manifest_version = ? AND chain_id = ? AND feed_id = ? AND proxy_address = ?
+            AND phase_id = ? AND aggregator_round_id = ?`);
+        for (const row of deleted) {
+          remove.run(
+            referenceMarketManifestVersion, productChainId, feedId, feed.standardProxy,
+            row.phaseId, row.aggregatorRoundId,
+          );
+        }
+        if (deleted.length !== 0) changed = true;
+        let finalBackfillPhaseId = backfillPhaseId;
+        let finalBackfillNextRoundId = backfillNextRoundId;
+        let finalBackfillStatus = backfillStatus;
+        if (
+          retentionCutoffRoundId !== null &&
+          finalBackfillNextRoundId !== null &&
+          BigInt(finalBackfillNextRoundId) <= BigInt(retentionCutoffRoundId)
+        ) {
+          finalBackfillPhaseId = parseReferenceCompositeRoundId(retentionCutoffRoundId).phaseId;
+          finalBackfillNextRoundId = null;
+          finalBackfillStatus = "retention_boundary";
+        } else if (
+          retentionCutoffRoundId !== null &&
+          finalBackfillStatus === "retention_boundary"
+        ) {
+          finalBackfillPhaseId = parseReferenceCompositeRoundId(retentionCutoffRoundId).phaseId;
+        }
+        referenceFeedTraversalStateSchema.parse({
+          backfillPhaseId: finalBackfillPhaseId,
+          backfillNextRoundId: finalBackfillNextRoundId,
+          backfillStatus: finalBackfillStatus,
+          retentionCutoffRoundId,
+        });
+        const finalIntegrity = conflict ? "conflict" : current.integrityStatus;
+        if (
+          current.backfillPhaseId !== finalBackfillPhaseId ||
+          current.backfillNextRoundId !== finalBackfillNextRoundId ||
+          current.integrityStatus !== finalIntegrity ||
+          current.backfillStatus !== finalBackfillStatus ||
+          current.retentionCutoffRoundId !== retentionCutoffRoundId
+        ) changed = true;
+        if (!changed) return current;
+
+        const revision = createReferenceRevision(current.revision);
+        this.#database.prepare(`INSERT INTO reference_feed_sync_state(
+          manifest_version, chain_id, feed_id, proxy_address, revision, backfill_phase_id,
+          backfill_next_round_id,
+          retention_cutoff_round_id, integrity_status, backfill_status, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(manifest_version, chain_id, feed_id, proxy_address) DO UPDATE SET
+          revision = excluded.revision, backfill_phase_id = excluded.backfill_phase_id,
+          backfill_next_round_id = excluded.backfill_next_round_id,
+          retention_cutoff_round_id = excluded.retention_cutoff_round_id,
+          integrity_status = excluded.integrity_status, backfill_status = excluded.backfill_status,
+          updated_at = excluded.updated_at`)
+          .run(
+            referenceMarketManifestVersion, productChainId, feedId, feed.standardProxy,
+            revision, finalBackfillPhaseId, finalBackfillNextRoundId,
+            retentionCutoffRoundId, finalIntegrity, finalBackfillStatus, now,
+          );
+        const stored = readReferenceFeedRaw(this.#database, feedId);
+        if (
+          stored.revision !== revision || stored.integrityStatus !== finalIntegrity ||
+          stored.backfillPhaseId !== finalBackfillPhaseId ||
+          stored.backfillStatus !== finalBackfillStatus ||
+          stored.backfillNextRoundId !== finalBackfillNextRoundId ||
+          stored.retentionCutoffRoundId !== retentionCutoffRoundId ||
+          stored.observations.length > referenceMarketLimits.historyRoundsPerFeed ||
+          (retentionCutoffRoundId !== null && stored.observations.some((observation) =>
+            BigInt(observation.fact.roundId) <= BigInt(retentionCutoffRoundId)))
+        ) {
+          throw new Error("Reference feed cache postcondition failed.");
+        }
+        return stored;
+      });
+    } catch (error) { throw storageError(error); }
+  }
+
+  private readReferenceWatchlist(accountInput: EvmAccountIdentity): ReferenceWatchlistSuccess {
+    try {
+      const account = evmAccountIdentitySchema.parse(accountInput);
+      return this.#readWithIdentity(() =>
+        readReferenceWatchlistRaw(this.#database, readProfileRaw(this.#database).profileId, account));
+    } catch (error) { throw storageError(error); }
+  }
+
+  private mutateReferenceWatchlist(
+    input: Parameters<ReferenceMarketStore["mutateWatchlist"]>[0],
+  ): ReferenceWatchlistMutationResult {
+    try {
+      const account = evmAccountIdentitySchema.parse(input.account);
+      const expectedConnectionRevision = parseRuntimeRevision(input.expectedConnectionRevision);
+      const expectedRevision = referenceWatchlistRevisionSchema.parse(input.expectedRevision);
+      const now = parseUtcTimestamp(input.now);
+      const mutation = input.mutation.kind === "reorder"
+        ? Object.freeze({
+            kind: "reorder" as const,
+            pairIds: Object.freeze(input.mutation.pairIds.map((pairId) =>
+              referenceSupportedPairIdSchema.parse(pairId))),
+          })
+        : input.mutation.kind === "add"
+          ? Object.freeze({
+              kind: "add" as const,
+              pairId: referenceSupportedPairIdSchema.parse(input.mutation.pairId),
+            })
+          : Object.freeze({
+              kind: "remove" as const,
+              pairId: referenceSupportedPairIdSchema.parse(input.mutation.pairId),
+            });
+      return this.#writeWithIdentity(() => {
+        const profile = readProfileRaw(this.#database);
+        this.assertCurrentWalletConnection(account, expectedConnectionRevision);
+        const current = readReferenceWatchlistRaw(this.#database, profile.profileId, account);
+        if (current.revision !== expectedRevision) throw new RuntimeOperationError("state_conflict");
+        const currentIds = current.entries.map((entry) => entry.pairId);
+        let nextIds: readonly ReferencePairId[];
+        if (mutation.kind === "add") {
+          if (currentIds.length >= referenceMarketLimits.watchlistEntries) {
+            return Object.freeze({ status: "rejected", reason: "watchlist_full" });
+          }
+          if (currentIds.includes(mutation.pairId)) {
+            return Object.freeze({ status: "rejected", reason: "watchlist_pair_already_saved" });
+          }
+          nextIds = Object.freeze([...currentIds, mutation.pairId]);
+        } else if (mutation.kind === "remove") {
+          if (!currentIds.includes(mutation.pairId)) {
+            return Object.freeze({ status: "rejected", reason: "watchlist_pair_not_found" });
+          }
+          nextIds = Object.freeze(currentIds.filter((pairId) => pairId !== mutation.pairId));
+        } else {
+          if (new Set(mutation.pairIds).size !== mutation.pairIds.length ||
+            mutation.pairIds.length !== currentIds.length ||
+            mutation.pairIds.some((pairId) => !currentIds.includes(pairId))) {
+            return Object.freeze({ status: "rejected", reason: "watchlist_order_conflict" });
+          }
+          if (mutation.pairIds.every((pairId, index) => pairId === currentIds[index])) {
+            return Object.freeze({ status: "success", watchlist: current });
+          }
+          nextIds = mutation.pairIds;
+        }
+
+        const revision = createReferenceRevision(current.revision);
+        const stateRows = this.#database.prepare(`${watchlistStateSelect}
+          WHERE profile_id = ? AND chain_id = ? AND wallet_address = ?`)
+          .all(profile.profileId, account.chainId, account.address) as ReferenceWatchlistStateRow[];
+        if (stateRows.length === 0) {
+          this.#database.prepare(`INSERT INTO reference_pair_watchlist_state(
+            profile_id, chain_id, wallet_address, revision, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?)`)
+            .run(profile.profileId, account.chainId, account.address, revision, now, now);
+        } else {
+          const update = this.#database.prepare(`UPDATE reference_pair_watchlist_state
+            SET revision = ?, updated_at = ?
+            WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? AND revision = ?`)
+            .run(
+              revision, now, profile.profileId, account.chainId, account.address, current.revision,
+            );
+          if (update.changes !== 1) throw new RuntimeOperationError("state_conflict");
+        }
+        this.#database.prepare(`DELETE FROM reference_pair_watchlist_entry
+          WHERE profile_id = ? AND chain_id = ? AND wallet_address = ?`)
+          .run(profile.profileId, account.chainId, account.address);
+        const insert = this.#database.prepare(`INSERT INTO reference_pair_watchlist_entry(
+          profile_id, chain_id, wallet_address, pair_id, pair_json, position
+        ) VALUES (?, ?, ?, ?, ?, ?)`);
+        nextIds.forEach((pairId, position) => {
+          const pair = findReferencePair(pairId);
+          insert.run(
+            profile.profileId, account.chainId, account.address, pairId,
+            canonicalJsonStringify(pair as unknown as CanonicalJson), position,
+          );
+        });
+        const stored = readReferenceWatchlistRaw(this.#database, profile.profileId, account);
+        if (stored.revision !== revision || stored.entries.length !== nextIds.length ||
+          stored.entries.some((entry, index) => entry.pairId !== nextIds[index])) {
+          throw new Error("Reference watchlist postcondition failed.");
+        }
+        return Object.freeze({ status: "success", watchlist: stored });
+      });
+    } catch (error) { throw storageError(error); }
+  }
+
+  private assertCurrentWalletConnection(
     account: EvmAccountIdentity,
     expectedRevision: RuntimeRevision,
   ): void {
@@ -1240,7 +1835,7 @@ export class ProductDatabase {
       const expectedConnectionRevision = parseRuntimeRevision(input.expectedConnectionRevision);
       return this.#writeWithIdentity(() => {
         const profile = readProfileRaw(this.#database);
-        this.assertTokenCatalogConnection(account, expectedConnectionRevision);
+        this.assertCurrentWalletConnection(account, expectedConnectionRevision);
         const inspection = operation.review.inspection === null
           ? null
           : tokenInspectionSuccessSchema.parse(operation.review.inspection);

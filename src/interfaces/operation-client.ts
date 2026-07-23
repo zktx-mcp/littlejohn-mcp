@@ -25,7 +25,7 @@ import {
   type DeliveryUnknown,
   type OperationDeliveryAction,
 } from "./operation-delivery.js";
-import { normalizeProblemDetailsFailure } from "./http-client.js";
+import { parseProblemDetailsFailure } from "./http-client.js";
 import type {
   LocalOperationBinding,
   LocalOperationIdentity,
@@ -158,11 +158,10 @@ export class LocalOperationClient {
     }
     const body = parseJsonBytes(response.bytes);
     if (response.statusCode >= 400) {
-      const failure = normalizeProblemDetailsFailure(
+      const failure = parseProblemDetailsFailure(
         { status: response.statusCode, body },
         binding.contract.errorRegistry,
         binding.errorMappings,
-        "internal_error",
       );
       return { ok: false, failure: binding.contract.normalizeFailure(failure) };
     }

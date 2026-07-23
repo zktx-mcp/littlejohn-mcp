@@ -2,12 +2,15 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import {
+  canonicalJsonStringify,
+  captureCanonicalJson,
   coreContractVersion,
   erc20AssetIdentitySchema,
   getCapabilityDefinitionSnapshot,
   parseUtcTimestamp,
   type ApplicationFailure,
 } from "../../src/core/index.js";
+import { internalResponseLimitBytes } from "../../src/runtime/http-boundary.js";
 import {
   tokenCatalogApplicationContracts,
   tokenCatalogCapabilityIds,
@@ -22,6 +25,7 @@ import {
   tokenInspectCapability,
   tokenInspectionInputSchema,
   tokenSelectionRevisionSchema,
+  tokenSelectionSchema,
   type TokenCatalogOperation,
   type TokenCatalogOperationVariant,
   type TokenInspectionSuccess,
@@ -82,9 +86,9 @@ const awaitingOperation = (input: Readonly<{
 });
 
 describe("token catalog contracts", () => {
-  it("owns exactly the seven selection capability identifiers at contract version 6", () => {
-    expect(coreContractVersion).toBe("6");
-    expect(getCapabilityDefinitionSnapshot(tokenInspectCapability).contractVersion).toBe("6");
+  it("owns exactly the seven selection capability identifiers at contract version 7", () => {
+    expect(coreContractVersion).toBe("7");
+    expect(getCapabilityDefinitionSnapshot(tokenInspectCapability).contractVersion).toBe("7");
     expect(tokenCatalogCapabilityIds).toEqual([
       "token.cancel_operation",
       "token.inspect",
@@ -94,7 +98,7 @@ describe("token catalog contracts", () => {
       "token.start_addition",
       "token.start_removal",
     ]);
-    expect(tokenCatalogContractProjection.contractVersion).toBe("6");
+    expect(tokenCatalogContractProjection.contractVersion).toBe("7");
     expect(tokenCatalogContractProjectionDigest).toMatch(/^0x[0-9a-f]{64}$/u);
     expect(Object.isFrozen(tokenCatalogContractProjection)).toBe(true);
     expect(tokenCatalogErrorDefinitions).toContainEqual({
@@ -156,6 +160,34 @@ describe("token catalog contracts", () => {
     expect(tokenSelectionRevisionSchema.safeParse("A".repeat(21)).success).toBe(false);
     expect(tokenCatalogOperationIdSchema.safeParse("A".repeat(43)).success).toBe(true);
     expect(tokenCatalogOperationIdSchema.safeParse("A".repeat(44)).success).toBe(false);
+  });
+
+  it("keeps the actual maximum selection page within the compatible-process response limit", () => {
+    const chainId = `eip155:${"9".repeat(32)}`;
+    const maximumAddress = BigInt(`0x${"f".repeat(40)}`);
+    const timestamp = "9999-12-31T23:59:59.999Z";
+    const selections = Array.from({ length: tokenCatalogContractLimits.listMaximumLimit }, (_, index) =>
+      tokenSelectionSchema.parse({
+        account: { chainId, address: `0x${"f".repeat(40)}` },
+        asset: {
+          kind: "erc20",
+          chainId,
+          address: `0x${(maximumAddress - BigInt(
+            tokenCatalogContractLimits.listMaximumLimit - index - 1,
+          )).toString(16).padStart(40, "0")}`,
+        },
+        included: index % 2 === 0,
+        revision: Buffer.alloc(tokenCatalogContractLimits.selectionRevisionBytes, index + 1)
+          .toString("base64url"),
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }));
+    const page = tokenCatalogApplicationContracts.selections.parsePublicSuccess(
+      { limit: tokenCatalogContractLimits.listMaximumLimit, cursor: null },
+      { selections, nextCursor: null },
+    );
+    expect(Buffer.byteLength(`${canonicalJsonStringify(captureCanonicalJson(page))}\n`, "utf8"))
+      .toBeLessThanOrEqual(internalResponseLimitBytes);
   });
 
   it("rejects accessor, proxy, and additional-field inputs before authority use", () => {

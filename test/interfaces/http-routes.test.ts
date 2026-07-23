@@ -17,6 +17,7 @@ import {
   publicInterfaceRoutes,
 } from "../../src/interfaces/http-routes.js";
 import { extendInterfaceSupportManifest } from "../../src/interfaces/support.js";
+import { extendReferenceMarketSupportManifest } from "../../src/market-portfolio/support.js";
 import { composeInterfaceCapabilityCatalog } from "../../src/interfaces/support.js";
 import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
 import {
@@ -92,11 +93,11 @@ const baseRoutes = async (): Promise<RuntimeRouteRegistry> => {
   });
 };
 
-const interfaceManifest = () => extendInterfaceSupportManifest(extendAccountAssetSupportManifest(
+const interfaceManifest = () => extendInterfaceSupportManifest(extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(
   extendTokenCatalogSupportManifest(extendChainSupportManifest(
     extendWalletSupportManifest(createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain)),
   )),
-));
+)));
 
 const createRoutes = async (walletData?: unknown): Promise<{
   readonly routes: RuntimeRouteRegistry;

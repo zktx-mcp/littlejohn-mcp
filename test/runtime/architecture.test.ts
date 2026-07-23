@@ -37,6 +37,9 @@ const browserCoreConsumers = new Set([
   "interfaces/browser-contract.ts",
   "interfaces/browser-error-response.ts",
   "interfaces/operation-delivery.ts",
+  "interfaces/reference-market-delivery.ts",
+  "interfaces/web/reference-market-client.ts",
+  "interfaces/web/reference-market-view.tsx",
   "interfaces/web/app.tsx",
   "interfaces/web/browser-client.ts",
   "interfaces/web/main.tsx",
@@ -44,6 +47,7 @@ const browserCoreConsumers = new Set([
   "interfaces/web/token-catalog-client.ts",
   "interfaces/web/wallet-dialog-view.ts",
   "runtime/error-definitions.ts",
+  "market-portfolio/contracts.ts",
   "token-catalog/contract-schema.ts",
   "wallet/management-contracts.ts",
   "wallet/operation-contract.ts",
@@ -178,6 +182,134 @@ describe("runtime architecture boundary", () => {
     expect(productChainNumericLiteralOwners).toEqual([]);
   });
 
+  it("keeps every reference-market capability identifier in its contract owner", async () => {
+    const expected = new Set([
+      "market.reference_price",
+      "market.reference_history",
+      "market.watchlist",
+      "market.add_watchlist_pair",
+      "market.remove_watchlist_pair",
+      "market.reorder_watchlist_pairs",
+    ]);
+    const owners = new Map<string, Set<string>>();
+    for (const file of await collectSourceFiles(sourceRoot)) {
+      const name = relative(sourceRoot, file).split(sep).join("/");
+      const parsed = ts.createSourceFile(
+        file,
+        await readFile(file, "utf8"),
+        ts.ScriptTarget.Latest,
+        true,
+      );
+      const visit = (node: ts.Node): void => {
+        if (ts.isStringLiteralLike(node) && expected.has(node.text)) {
+          const files = owners.get(node.text) ?? new Set<string>();
+          files.add(name);
+          owners.set(node.text, files);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(parsed);
+    }
+    expect([...owners.keys()].sort()).toEqual([...expected].sort());
+    for (const files of owners.values()) expect([...files]).toEqual(["market-portfolio/contracts.ts"]);
+  });
+
+  it("keeps the fixed reference-market manifest and process entry points in their single owners", async () => {
+    const fixedLiteralOwners = new Map<string, string>([
+      [
+        "https://docs.chain.link/data-feeds/price-feeds/addresses?network=robinhood",
+        "core/reference-market.ts",
+      ],
+      ["2026-07-23T02:00:12.000Z", "core/reference-market.ts"],
+      ["0x78f3556b67e17df817d51ef5a990cdaf09e8d3a9", "core/reference-market.ts"],
+      ["0x61b7e5650328764b076a108eff5fa7282a1b9ad2", "core/reference-market.ts"],
+      ["0x5fc5360d0400a0fd4f2af552add042d716f1d168", "core/reference-market.ts"],
+      ["ETH / USD", "core/reference-market.ts"],
+      ["USDG / USD", "core/reference-market.ts"],
+      ["ETH/USD", "core/reference-market.ts"],
+      ["USDG/USD", "core/reference-market.ts"],
+      ["ETH/USDG", "core/reference-market.ts"],
+      ["0x7284e416", "chain/reference-market.ts"],
+      ["0xfeaf968c", "chain/reference-market.ts"],
+      ["0x9a6fc8f5", "chain/reference-market.ts"],
+    ]);
+    const fixedLiteralOccurrences = new Map(
+      [...fixedLiteralOwners.keys()].map((literal) => [literal, new Set<string>()]),
+    );
+    const declarationOwners = new Map<string, Set<string>>([
+      ["createReferenceMarketChainReadPort", new Set()],
+      ["createReferenceHistory", new Set()],
+    ]);
+    const heartbeatOwners = new Set<string>();
+    const canonicalWatchlistLimitConsumers = new Set<string>();
+    const referenceMarketSurfaceFiles: string[] = [];
+    const forbiddenLogReaders: string[] = [];
+
+    for (const file of await collectSourceFiles(sourceRoot)) {
+      const name = relative(sourceRoot, file).split(sep).join("/");
+      const parsed = ts.createSourceFile(
+        file,
+        await readFile(file, "utf8"),
+        ts.ScriptTarget.Latest,
+        true,
+      );
+      const referenceMarketRelated =
+        name.includes("reference-market") ||
+        name.startsWith("market-portfolio/") ||
+        parsed.text.includes("referenceMarket") ||
+        parsed.text.includes("ReferenceMarket");
+      if (referenceMarketRelated) {
+        referenceMarketSurfaceFiles.push(name);
+        if (parsed.text.includes("eth_getLogs")) forbiddenLogReaders.push(name);
+      }
+      const visit = (node: ts.Node): void => {
+        if (ts.isStringLiteralLike(node)) {
+          fixedLiteralOccurrences.get(node.text)?.add(name);
+        }
+        if (
+          ts.isNumericLiteral(node) &&
+          node.getText(parsed).replaceAll("_", "") === "86400" &&
+          referenceMarketRelated
+        ) {
+          heartbeatOwners.add(name);
+        }
+        if (
+          ts.isVariableDeclaration(node) &&
+          ts.isIdentifier(node.name) &&
+          declarationOwners.has(node.name.text)
+        ) {
+          declarationOwners.get(node.name.text)!.add(name);
+        }
+        if (
+          ts.isPropertyAccessExpression(node) &&
+          node.getText(parsed) === "referenceMarketLimits.watchlistEntries"
+        ) {
+          canonicalWatchlistLimitConsumers.add(name);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(parsed);
+    }
+
+    for (const [literal, expectedOwner] of fixedLiteralOwners) {
+      expect([...fixedLiteralOccurrences.get(literal)!], literal).toEqual([expectedOwner]);
+    }
+    expect([...heartbeatOwners]).toEqual(["core/reference-market.ts"]);
+    expect([...declarationOwners.get("createReferenceMarketChainReadPort")!])
+      .toEqual(["chain/reference-market.ts"]);
+    expect([...declarationOwners.get("createReferenceHistory")!])
+      .toEqual(["market-portfolio/candles.ts"]);
+    expect([...canonicalWatchlistLimitConsumers]).toEqual(expect.arrayContaining([
+      "core/reference-market.ts",
+      "interfaces/web/reference-market-view.tsx",
+      "runtime/database.ts",
+      "runtime/sqlite-schema.ts",
+    ]));
+    expect(forbiddenLogReaders).toEqual([]);
+    expect(referenceMarketSurfaceFiles.filter((name) =>
+      /(?:^|[-/])(?:indexer|provider)(?:[-/.]|$)/u.test(name))).toEqual([]);
+  });
+
   it("requires interface and package consumers to enter the token catalog through their exact public handoff", async () => {
     const violations: string[] = [];
     for (const file of await collectProductSourceFiles(repositoryRoot)) {
@@ -279,6 +411,107 @@ describe("runtime architecture boundary", () => {
     expect(composition).not.toContain("new TokenCatalogCoordinator");
     expect(composition).not.toContain("createTokenCatalogApplication({");
     expect(composition).not.toContain("createTokenCatalogConsumerPorts(");
+  });
+
+  it("passes only the cumulative support manifest into the reference-market stage", async () => {
+    const file = resolve("src/runtime/composition.ts");
+    const source = await readFile(file, "utf8");
+    const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    let stageType: ts.TypeAliasDeclaration | undefined;
+    const visit = (node: ts.Node): void => {
+      if (ts.isTypeAliasDeclaration(node) && node.name.text === "ReferenceMarketOwnerApplicationStage") {
+        stageType = node;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(parsed);
+    expect(stageType).toBeDefined();
+    if (stageType === undefined || !ts.isFunctionTypeNode(stageType.type)) return;
+    expect(stageType.type.parameters[3]?.type?.getText(parsed)).toBe("AccountAssetRuntimeSupportManifest");
+    expect(stageType.getText(parsed)).not.toContain("AccountAssetOwnerHandoff");
+  });
+
+  it("keeps chain invocation, opaque-block, observation, and token-inspection authority in their exact owners", async () => {
+    const lifecycleOwners = new Set([
+      resolve(sourceRoot, "chain/application.ts"),
+      resolve(sourceRoot, "chain/index.ts"),
+      resolve(sourceRoot, "chain/invocation-lifecycle.ts"),
+    ]);
+    const lifecycleViolations: string[] = [];
+    for (const file of await collectSourceFiles(sourceRoot)) {
+      const source = await readFile(file, "utf8");
+      if (
+        !lifecycleOwners.has(file) &&
+        (source.includes("createChainInvocationLifecycle") || source.includes("chainInvocationDeadlineMs"))
+      ) {
+        lifecycleViolations.push(relative(sourceRoot, file).split(sep).join("/"));
+      }
+    }
+    expect(lifecycleViolations).toEqual([]);
+
+    const atBlockPorts = [
+      [resolve(sourceRoot, "chain/account-assets.ts"), "AccountAssetChainReadPort"],
+      [resolve(sourceRoot, "chain/official-assets.ts"), "OfficialAssetChainReadPort"],
+      [resolve(sourceRoot, "chain/reference-market.ts"), "ReferenceMarketChainReadPort"],
+    ] as const;
+    const blockPortViolations: string[] = [];
+    for (const [file, interfaceName] of atBlockPorts) {
+      const source = await readFile(file, "utf8");
+      const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const visit = (node: ts.Node): void => {
+        if (ts.isInterfaceDeclaration(node) && node.name.text === interfaceName) {
+          for (const member of node.members) {
+            if (!ts.isMethodSignature(member)) continue;
+            const text = member.getText(parsed);
+            const hasBlockParameter = member.parameters.some((parameter) =>
+              ts.isIdentifier(parameter.name) && parameter.name.text === "block") ||
+              text.includes("block: CanonicalBlock");
+            if (hasBlockParameter && (!text.includes("CanonicalBlock") || !text.includes("ChainInvocationContext"))) {
+              blockPortViolations.push(`${relative(sourceRoot, file)}:${member.name.getText(parsed)}`);
+            }
+            if (hasBlockParameter && text.includes("block: ChainAnchor")) {
+              blockPortViolations.push(`${relative(sourceRoot, file)}:${member.name.getText(parsed)}:raw-anchor`);
+            }
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(parsed);
+    }
+    expect(blockPortViolations).toEqual([]);
+
+    const coreIndexFile = resolve(sourceRoot, "core/index.ts");
+    const coreIndexSource = await readFile(coreIndexFile, "utf8");
+    const coreIndex = ts.createSourceFile(
+      coreIndexFile,
+      coreIndexSource,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    const constructorDeclarations: string[] = [];
+    const inspectCoreIndex = (node: ts.Node): void => {
+      if (ts.isFunctionDeclaration(node) && node.name?.text === "captureReferenceRoundObservation") {
+        constructorDeclarations.push("function");
+      }
+      if (ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.name.text === "captureReferenceRoundObservation") {
+        constructorDeclarations.push("variable");
+      }
+      ts.forEachChild(node, inspectCoreIndex);
+    };
+    inspectCoreIndex(coreIndex);
+    expect(constructorDeclarations).toEqual([]);
+    expect(coreIndexSource).toContain("captureReferenceRoundObservation,");
+
+    const coordinator = await readFile(resolve(sourceRoot, "token-catalog/coordinator.ts"), "utf8");
+    for (const forbidden of [
+      "CapabilityBindingRegistry",
+      "CapabilityRegistry",
+      "createTokenInspectionService",
+      "tokenInspectCapability",
+    ]) expect(coordinator).not.toContain(forbidden);
   });
 
   it("confines SQLite snake-case row names to SQL aliases at the database adapter", async () => {

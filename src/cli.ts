@@ -22,8 +22,8 @@ import { createChainOwnerApplication } from "./chain/application.js";
 import {
   createInterfaceOwnerApplication,
   cliHelpText,
-  deliveryUnknownCliExitCode,
   LocalOperationClient,
+  LocalMutationClient,
   normalizeProblemDetailsFailure,
   parseReadCliCommand,
   runReadCliCommand,
@@ -33,8 +33,12 @@ import {
   walletInterfaceBindings,
   type DeliveryUnknown,
   type ReadCliCommand,
+  parseReferenceMarketCliCommand,
+  runReferenceMarketCliCommand,
+  type ReferenceMarketCliCommand,
   type StdioMcpHandle,
 } from "./interfaces/index.js";
+import { deliveryUnknownCliExitCode } from "./interfaces/delivery-exit.js";
 import {
   parseTokenCliCommand,
   runTokenCliCommand,
@@ -818,12 +822,15 @@ export const runCli = async (
   let command: CliCommand | undefined;
   let readCommand: ReadCliCommand | undefined;
   let tokenCommand: TokenCliCommand | undefined;
+  let marketCommand: ReferenceMarketCliCommand | undefined;
   const mcpMode = argumentsInput.length === 0;
   let runtime: CliRuntimePort | undefined;
   let operationClient: LocalOperationClient | undefined;
+  let mutationClient: LocalMutationClient | undefined;
   let mcp: StdioMcpHandle | undefined;
   let readExitCode: number | undefined;
   let tokenExitCode: number | undefined;
+  let marketExitCode: number | undefined;
   let runtimeStopped = false;
   let failure: ApplicationFailure | undefined;
   let deliveryUnknown: DeliveryUnknown | undefined;
@@ -841,6 +848,9 @@ export const runCli = async (
       catch { throw new WalletOperationError("invalid_input"); }
     } else if (!mcpMode && argumentsInput[0] === "token") {
       try { tokenCommand = parseTokenCliCommand(argumentsInput); }
+      catch { throw new WalletOperationError("invalid_input"); }
+    } else if (!mcpMode && argumentsInput[0] === "market") {
+      try { marketCommand = parseReferenceMarketCliCommand(argumentsInput); }
       catch { throw new WalletOperationError("invalid_input"); }
     } else if (!mcpMode) command = parseCommand(argumentsInput);
     if (command !== undefined && command.kind !== "help" &&
@@ -889,6 +899,15 @@ export const runCli = async (
             writeError: (value: string) => { dependencies.terminal.writeError(value); },
             readLine: (prompt: string) => dependencies.terminal.readLine(prompt),
           }));
+        } else if (marketCommand !== undefined) {
+          mutationClient = new LocalMutationClient(runtime);
+          marketExitCode = await runReferenceMarketCliCommand(
+            runtime,
+            mutationClient,
+            marketCommand,
+            dependencies.terminal,
+            dependencies.terminal.interruptSignal,
+          );
         } else if (command !== undefined) {
           operationClient = new LocalOperationClient({
             ownerSessions: runtime,
@@ -907,6 +926,10 @@ export const runCli = async (
     }
     if (operationClient !== undefined) {
       try { await operationClient.close(); }
+      catch (error) { retainFailure(error); }
+    }
+    if (mutationClient !== undefined) {
+      try { await mutationClient.close(); }
       catch (error) { retainFailure(error); }
     }
     if (runtime !== undefined && !runtimeStopped) {
@@ -930,12 +953,12 @@ export const runCli = async (
     ].join("\n"));
     return deliveryUnknownCliExitCode;
   }
-  if (failure === undefined) return tokenExitCode ?? readExitCode ?? 0;
+  if (failure === undefined) return marketExitCode ?? tokenExitCode ?? readExitCode ?? 0;
   let exitCode: number;
   try {
     exitCode = reportFailure(
       failure,
-      tokenCommand?.json ?? command?.json ?? false,
+      marketCommand?.json ?? tokenCommand?.json ?? command?.json ?? false,
       dependencies.terminal,
     );
   } catch {

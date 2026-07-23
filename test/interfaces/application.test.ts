@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { extendChainSupportManifest } from "../../src/chain/application.js";
 import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
+import { extendReferenceMarketSupportManifest } from "../../src/market-portfolio/support.js";
 import {
   accountBalanceCapability,
   chainStatusCapability,
@@ -47,6 +48,7 @@ import {
   type WalletInterfaceOperations,
 } from "../../src/wallet/contracts.js";
 import { bindForHarness, createCapabilityHarness } from "../core/capability-harness.js";
+import { referenceMarketInterfaceHarnessPort } from "../market-portfolio/interface-harness.js";
 import { tokenCatalogInterfaceHarnessPorts } from "../token-catalog/interface-harness.js";
 import { accountAssetInterfaceHarnessPort } from "../account-assets/interface-harness.js";
 
@@ -131,9 +133,9 @@ describe("interface owner application", () => {
       createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
     );
     const chainManifest = extendChainSupportManifest(walletManifest);
-    const tokenCatalogManifest = extendAccountAssetSupportManifest(
+    const tokenCatalogManifest = extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(
       extendTokenCatalogSupportManifest(chainManifest),
-    );
+    ));
     const ports = capabilityPorts();
     let closes = 0;
     const createCredentials = (): BrowserRequestCredentialAuthority => {
@@ -153,6 +155,7 @@ describe("interface owner application", () => {
     })({
       ...tokenCatalogInterfaceHarnessPorts(),
       accountAssets: accountAssetInterfaceHarnessPort(),
+      referenceMarkets: referenceMarketInterfaceHarnessPort(),
       routes,
       signal: new AbortController().signal,
       startupResources: createResourceOwnershipScope().resources,

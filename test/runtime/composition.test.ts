@@ -6,6 +6,11 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { AccountAssetOperationError } from "../../src/account-assets/errors.js";
 import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
+import {
+  ReferenceMarketOperationError,
+  extendReferenceMarketSupportManifest,
+  type ReferenceMarketApplicationPort,
+} from "../../src/market-portfolio/index.js";
 import type { AccountAssetApplicationPort } from "../../src/account-assets/ports.js";
 import {
   accountBalanceCapability,
@@ -19,6 +24,7 @@ import { tokenCatalogErrorRegistry } from "../../src/token-catalog/errors.js";
 import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
 import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
 import type {
+  TokenAdditionChainReadPort,
   TokenCatalogApplicationPort,
   TokenCatalogBrowserOperationPort,
   TokenCatalogInteractiveCliPort,
@@ -31,6 +37,7 @@ import {
   LocalRuntime,
   composeOwnerApplicationStages,
   type AccountAssetOwnerApplicationStage,
+  type ReferenceMarketOwnerApplicationStage,
   type TokenCatalogOwnerApplicationStage,
 } from "../../src/runtime/composition.js";
 import type {
@@ -54,6 +61,7 @@ import {
   extendWalletRuntimeSupportManifest,
   createInitialRuntimeSupportManifest,
 } from "../../src/runtime/support-manifest.js";
+import type { ChainInvocationPort } from "../../src/chain/invocation-lifecycle.js";
 import { bindForHarness, createCapabilityHarness } from "../core/capability-harness.js";
 
 const directories: string[] = [];
@@ -74,6 +82,12 @@ const testTokenCatalog: TokenCatalogApplicationPort = Object.freeze({
 });
 
 const unavailableOperation = (): never => { throw new Error("Token catalog operation is unavailable in this fixture."); };
+const testChainInvocations = Object.freeze({
+  run: async () => unavailableOperation(),
+}) satisfies ChainInvocationPort;
+const testTokenAdditionReads = Object.freeze({
+  inspectAndVerifyOfficial: async () => unavailableOperation(),
+}) satisfies TokenAdditionChainReadPort;
 const testTokenCatalogOperations: TokenCatalogOperationCoordinatorPort = Object.freeze({
   startAddition: async () => internalFailure,
   startRemoval: async () => internalFailure,
@@ -133,6 +147,11 @@ const testAccountAssetReads = Object.freeze({
   readCollectionAtBlock: async () => unavailableOperation(),
   readExactAtBlock: async () => unavailableOperation(),
 });
+const testReferenceMarketReads = Object.freeze({
+  resolveCurrentBlock: async () => unavailableOperation(),
+  readLatestAtBlock: async () => unavailableOperation(),
+  readHistoryAtBlock: async () => unavailableOperation(),
+});
 
 const createTestTokenCatalogStage = <ActiveWallet extends object>(
   close: () => void = () => undefined,
@@ -176,8 +195,27 @@ const createTestAccountAssetStage = <ActiveWallet extends object>(
   close: async () => { close(); },
 });
 
+const referenceMarketFailure = new ReferenceMarketOperationError("internal_error").failure;
+const testReferenceMarkets: ReferenceMarketApplicationPort = Object.freeze({
+  price: async () => referenceMarketFailure,
+  history: async () => referenceMarketFailure,
+  watchlist: async () => referenceMarketFailure,
+  addPair: async () => referenceMarketFailure,
+  removePair: async () => referenceMarketFailure,
+  reorderPairs: async () => referenceMarketFailure,
+});
+
+const createTestReferenceMarketStage = <ActiveWallet extends object>(
+  close: () => void = () => undefined,
+): ReferenceMarketOwnerApplicationStage<ActiveWallet> => ({ routes }, _wallet, _chain, supportManifest) => ({
+  routes,
+  supportManifest: extendReferenceMarketSupportManifest(supportManifest),
+  ...testReferenceMarkets,
+  close: async () => { close(); },
+});
+
 const extendTestInterfaceSupportManifest = (
-  parent: ReturnType<typeof extendAccountAssetSupportManifest>,
+  parent: ReturnType<typeof extendReferenceMarketSupportManifest>,
 ) => extendInterfaceRuntimeSupportManifest(parent, {
   registrations: [],
   changes: [{
@@ -404,7 +442,8 @@ describe("owner application composition", () => {
     const chainRoutes = walletRoutes.extend([route("/api/v1/internal/control/chain")]);
     const catalogRoutes = chainRoutes;
     const accountAssetRoutes = catalogRoutes.extend([route("/api/v1/internal/control/account-assets")]);
-    const interfaceRoutes = accountAssetRoutes.extend([route("/api/v1/internal/control/interfaces")]);
+    const referenceMarketRoutes = accountAssetRoutes.extend([route("/api/v1/internal/control/reference-markets")]);
+    const interfaceRoutes = referenceMarketRoutes.extend([route("/api/v1/internal/control/interfaces")]);
     const application = await composeStages(ownerContext(routes, signal), [
       () => ({
         routes: walletRoutes,
@@ -421,10 +460,13 @@ describe("owner application composition", () => {
         return {
           routes: chainRoutes,
           supportManifest: support.chain,
+          invocations: testChainInvocations,
           chainReads: ports.chain,
           tokenInspection: testTokenInspection(),
+          tokenAdditionReads: testTokenAdditionReads,
           officialAssetReads: testOfficialAssetReads,
           accountAssetReads: testAccountAssetReads,
+          referenceMarketReads: testReferenceMarketReads,
           close: () => { events.push("chain:close"); },
         };
       },
@@ -437,10 +479,18 @@ describe("owner application composition", () => {
         listOfficialCandidates: testAccountAssets.listOfficialCandidates,
         close: async () => { events.push("account-assets:close"); },
       }),
-      (_context, wallet, chain, catalog, accountAssets, operations) => {
+      ({ routes: marketRoutes }, _wallet, _chain, supportManifest) => ({
+        routes: referenceMarketRoutes,
+        supportManifest: extendReferenceMarketSupportManifest(supportManifest),
+        ...testReferenceMarkets,
+        close: async () => { events.push("reference-markets:close"); },
+      }),
+      (_context, wallet, chain, catalog, accountAssets, referenceMarkets, operations) => {
         expect(wallet.walletConnection.connection).toBe(ports.wallet.connection);
         expect(chain.chainReads.chainStatus).toBe(ports.chain.chainStatus);
         expect(chain.tokenInspection).toBeDefined();
+        expect(chain.invocations).toBe(testChainInvocations);
+        expect(chain.tokenAdditionReads).toBe(testTokenAdditionReads);
         expect(Reflect.ownKeys(catalog).sort()).toEqual([
           "supportManifest",
           "accountTokenSelectionStore",
@@ -468,9 +518,11 @@ describe("owner application composition", () => {
         expect(operations.readOperation()).toBe("test-operation");
         expect(Reflect.ownKeys(accountAssets.accountAssets).sort())
           .toEqual(["get", "list", "listOfficialCandidates"]);
+        expect(Reflect.ownKeys(referenceMarkets.referenceMarkets).sort())
+          .toEqual(["addPair", "history", "price", "removePair", "reorderPairs", "watchlist"]);
         return {
           routes: interfaceRoutes,
-          supportManifest: extendTestInterfaceSupportManifest(accountAssets.supportManifest),
+          supportManifest: extendTestInterfaceSupportManifest(referenceMarkets.supportManifest),
           close: () => { events.push("interfaces:close"); },
         };
       },
@@ -478,7 +530,7 @@ describe("owner application composition", () => {
     expect(application.routes).toBe(interfaceRoutes);
     await application.close();
     expect(events).toEqual([
-      "interfaces:close", "account-assets:close", "catalog:close", "chain:close", "wallet:close",
+      "interfaces:close", "reference-markets:close", "account-assets:close", "catalog:close", "chain:close", "wallet:close",
     ]);
   });
 
@@ -500,10 +552,13 @@ describe("owner application composition", () => {
         () => ({
           routes,
           supportManifest: support.chain,
+          invocations: testChainInvocations,
           chainReads: ports.chain,
           tokenInspection: testTokenInspection(),
+          tokenAdditionReads: testTokenAdditionReads,
           officialAssetReads: testOfficialAssetReads,
           accountAssetReads: testAccountAssetReads,
+          referenceMarketReads: testReferenceMarketReads,
           close: () => { events.push("chain:close"); },
         }),
         ({ routes: catalogRoutes }, _wallet, chain) => ({
@@ -534,6 +589,7 @@ describe("owner application composition", () => {
           close: async () => { events.push("catalog:close"); },
         }),
         createTestAccountAssetStage(),
+        createTestReferenceMarketStage(),
       ])).rejects.toThrow("authority is invalid");
       expect(events).toEqual(["catalog:close", "chain:close", "wallet:close"]);
     }
@@ -561,17 +617,21 @@ describe("owner application composition", () => {
         () => ({
           routes,
           supportManifest: support.chain,
+          invocations: testChainInvocations,
           chainReads: ports.chain,
           tokenInspection: testTokenInspection(),
+          tokenAdditionReads: testTokenAdditionReads,
           officialAssetReads: testOfficialAssetReads,
           accountAssetReads: testAccountAssetReads,
+          referenceMarketReads: testReferenceMarketReads,
           close: () => { events.push("chain:close"); },
         }),
         createTestTokenCatalogStage(() => { events.push("catalog:close"); }),
         createTestAccountAssetStage(() => { events.push("account-assets:close"); }),
-        (_context, _wallet, _chain, _catalog, accountAssets) => ({
+        createTestReferenceMarketStage(() => { events.push("reference-markets:close"); }),
+        (_context, _wallet, _chain, _catalog, _accountAssets, referenceMarkets) => ({
           routes,
-          supportManifest: extendTestInterfaceSupportManifest(accountAssets.supportManifest),
+          supportManifest: extendTestInterfaceSupportManifest(referenceMarkets.supportManifest),
           close: () => {
             events.push("interfaces:close");
             interfaceCloseCalls += 1;
@@ -589,7 +649,7 @@ describe("owner application composition", () => {
     events.length = 0;
     await application.close();
     expect(events).toEqual([
-      "interfaces:close", "account-assets:close", "catalog:close", "chain:close", "wallet:close",
+      "interfaces:close", "reference-markets:close", "account-assets:close", "catalog:close", "chain:close", "wallet:close",
     ]);
     events.length = 0;
     await application.close();
@@ -636,14 +696,18 @@ describe("owner application composition", () => {
       () => ({
         routes: chainRoutes,
         supportManifest: wrongChain,
+        invocations: testChainInvocations,
         chainReads: ports.chain,
         tokenInspection: testTokenInspection(),
+        tokenAdditionReads: testTokenAdditionReads,
         officialAssetReads: testOfficialAssetReads,
         accountAssetReads: testAccountAssetReads,
+        referenceMarketReads: testReferenceMarketReads,
         close: () => { events.push("chain:close"); },
       }),
       createTestTokenCatalogStage(),
       createTestAccountAssetStage(),
+      createTestReferenceMarketStage(),
     ])).rejects.toThrow("scope lineage");
     expect(events).toEqual(["chain:close", "wallet:close"]);
   });
@@ -681,6 +745,7 @@ describe("owner application composition", () => {
       },
       createTestTokenCatalogStage(),
       createTestAccountAssetStage(),
+      createTestReferenceMarketStage(),
     ]);
 
     let failure: unknown;
@@ -721,15 +786,19 @@ describe("owner application composition", () => {
         return {
           routes,
           supportManifest: support.chain,
+          invocations: testChainInvocations,
           chainReads: ports.chain,
           tokenInspection: testTokenInspection(),
+          tokenAdditionReads: testTokenAdditionReads,
           officialAssetReads: testOfficialAssetReads,
           accountAssetReads: testAccountAssetReads,
+          referenceMarketReads: testReferenceMarketReads,
           close: () => { events.push("chain:close"); },
         };
       },
       createTestTokenCatalogStage(),
       createTestAccountAssetStage(),
+      createTestReferenceMarketStage(),
     ])).rejects.toThrow("retained startup resources");
     expect(events).toEqual(["chain:close", "partial-chain:close", "wallet:close"]);
   });
@@ -753,6 +822,7 @@ describe("owner application composition", () => {
         const application = {
           routes,
           supportManifest: support.chain,
+          invocations: testChainInvocations,
           chainReads: ports.chain,
           tokenInspection: bindForHarness(
             tokenInspectCapability,
@@ -760,8 +830,10 @@ describe("owner application composition", () => {
             async () => ({ status: "failure", code: "internal_error", issues: [] }),
             tokenCatalogErrorRegistry,
           ),
+          tokenAdditionReads: testTokenAdditionReads,
           officialAssetReads: testOfficialAssetReads,
           accountAssetReads: testAccountAssetReads,
+          referenceMarketReads: testReferenceMarketReads,
           close: () => { events.push("chain:close"); },
         };
         startupResources.register(application);
@@ -769,6 +841,7 @@ describe("owner application composition", () => {
       },
       createTestTokenCatalogStage(),
       createTestAccountAssetStage(),
+      createTestReferenceMarketStage(),
     ])).rejects.toThrow("already registered");
     expect(events).toEqual(["chain:close", "wallet:close"]);
   });
@@ -843,15 +916,19 @@ describe("owner application composition", () => {
           return {
             routes,
             supportManifest: support.chain,
+            invocations: testChainInvocations,
             chainReads: ports.chain,
             tokenInspection: testTokenInspection(),
+            tokenAdditionReads: testTokenAdditionReads,
             officialAssetReads: testOfficialAssetReads,
             accountAssetReads: testAccountAssetReads,
+            referenceMarketReads: testReferenceMarketReads,
             close: () => undefined,
           };
         },
         createTestTokenCatalogStage(),
         createTestAccountAssetStage(),
+        createTestReferenceMarketStage(),
       ]);
     } catch (error) { failure = error; }
     expect(failure).toBeInstanceOf(RuntimeOperationError);
@@ -879,15 +956,19 @@ describe("owner application composition", () => {
           return {
             routes,
             supportManifest: support.chain,
+            invocations: testChainInvocations,
             chainReads: ports.chain,
             tokenInspection: testTokenInspection(),
+            tokenAdditionReads: testTokenAdditionReads,
             officialAssetReads: testOfficialAssetReads,
             accountAssetReads: testAccountAssetReads,
+            referenceMarketReads: testReferenceMarketReads,
             close: () => undefined,
           };
         },
         createTestTokenCatalogStage(),
         createTestAccountAssetStage(),
+        createTestReferenceMarketStage(),
       ])).rejects.toThrow("Wallet operation port must be a reference value");
       expect(events).toEqual(["wallet:close"]);
     }
@@ -913,15 +994,19 @@ describe("owner application composition", () => {
           return {
             routes,
             supportManifest: support.chain,
+            invocations: testChainInvocations,
             chainReads: ports.chain,
             tokenInspection: testTokenInspection(),
+            tokenAdditionReads: testTokenAdditionReads,
             officialAssetReads: testOfficialAssetReads,
             accountAssetReads: testAccountAssetReads,
+            referenceMarketReads: testReferenceMarketReads,
             close: () => undefined,
           };
         },
         createTestTokenCatalogStage(),
         createTestAccountAssetStage(),
+        createTestReferenceMarketStage(),
       ])).rejects.toThrow("Active wallet read port must be a reference value");
       expect(events).toEqual(["wallet:close"]);
     }

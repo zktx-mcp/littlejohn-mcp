@@ -1,4 +1,6 @@
 import {
+  CapabilityBindingRegistry,
+  CapabilityRegistry,
   bindCapability,
   type CapabilityBinding,
   type CanonicalAmount,
@@ -19,6 +21,7 @@ import {
   type TokenInspectionData,
   type TokenInspectionInput,
 } from "../token-catalog/contracts.js";
+import type { TokenAdditionChainReadPort } from "../token-catalog/ports.js";
 import {
   decodeErc20DecimalsResult,
   decodeErc20TextResult,
@@ -39,17 +42,26 @@ import {
   ChainOperationError,
   getChainOperationFailure,
 } from "./errors.js";
-import { tokenCatalogErrorRegistry } from "../token-catalog/errors.js";
-import { resolveCanonicalBlock } from "./canonical-block.js";
-import { validateConfiguredChain } from "./configured-chain.js";
+import {
+  createTokenCatalogFailure,
+  tokenCatalogErrorRegistry,
+} from "../token-catalog/errors.js";
+import {
+  readConfiguredCanonicalBlock,
+  resolveConfiguredCanonicalBlock,
+  type CanonicalBlock,
+} from "./canonical-block.js";
+import { recordConfiguredChainProof } from "./configured-chain.js";
 import {
   getChainInvocationStopReason,
+  type ChainInvocationContext,
   type ChainInvocationLifecycle,
 } from "./invocation-lifecycle.js";
 import {
   completeTokenStandardObservation,
   observeRequiredErc8056,
 } from "./token-standards.js";
+import type { OfficialAssetChainReadPort } from "./official-assets.js";
 
 const requiredTotalSupplyRevertedErrors = new WeakSet<object>();
 
@@ -73,33 +85,41 @@ interface TokenInspectionDependencies {
 
 const asFailure = (code: string) => ({ status: "failure" as const, code, issues: Object.freeze([]) });
 
+const inspectionFailureCode = (
+  error: unknown,
+  callerSignal: AbortSignal,
+): string | undefined => {
+  const stopReason = getChainInvocationStopReason(error);
+  if (stopReason !== undefined) {
+    return stopReason === "caller_aborted" ? "request_aborted" : "source_unavailable";
+  }
+  if (isRequiredTotalSupplyRevertedError(error)) return "token_total_supply_reverted";
+  const operationFailure = getChainOperationFailure(error);
+  if (operationFailure !== undefined) return operationFailure.error.code;
+  const rpcCode = getChainRpcErrorCode(error);
+  if (rpcCode !== undefined) {
+    return rpcCode === "request_aborted" && !callerSignal.aborted
+      ? "source_unavailable"
+      : rpcCode;
+  }
+  return undefined;
+};
+
 const normalizeSource = <Value>(operation: () => Value): Value => {
   try { return operation(); }
   catch { throw new ChainOperationError("source_inconsistent"); }
 };
 
-const runInspection = async (
+const runInspection = async <Result>(
   lifecycle: ChainInvocationLifecycle,
   callerSignal: AbortSignal,
-  operation: (signal: AbortSignal) => Promise<unknown>,
-): Promise<unknown> => {
+  operation: (context: ChainInvocationContext) => Promise<Result>,
+): Promise<Result | ReturnType<typeof asFailure>> => {
   try {
     return await lifecycle.run(callerSignal, operation);
   } catch (error) {
-    const stopReason = getChainInvocationStopReason(error);
-    if (stopReason !== undefined) {
-      return asFailure(stopReason === "caller_aborted" ? "request_aborted" : "source_unavailable");
-    }
-    if (isRequiredTotalSupplyRevertedError(error)) {
-      return asFailure("token_total_supply_reverted");
-    }
-    const operationFailure = getChainOperationFailure(error);
-    if (operationFailure !== undefined) return asFailure(operationFailure.error.code);
-    const rpcCode = getChainRpcErrorCode(error);
-    if (rpcCode !== undefined) {
-      if (rpcCode === "request_aborted" && !callerSignal.aborted) return asFailure("source_unavailable");
-      return asFailure(rpcCode);
-    }
+    const code = inspectionFailureCode(error, callerSignal);
+    if (code !== undefined) return asFailure(code);
     throw error;
   }
 };
@@ -107,30 +127,34 @@ const runInspection = async (
 const resolveBlock = async (
   dependencies: TokenInspectionDependencies,
   input: TokenInspectionInput,
-  signal: AbortSignal,
-): Promise<Readonly<{ anchor: ChainAnchor; reference: RpcCanonicalBlockReference }>> => {
-  const block = await resolveCanonicalBlock({
+  context: ChainInvocationContext,
+  observations: ObservationWriter,
+): Promise<Readonly<{
+  block: CanonicalBlock;
+  anchor: ChainAnchor;
+  reference: RpcCanonicalBlockReference;
+}>> => {
+  const block = await resolveConfiguredCanonicalBlock({
     rpc: dependencies.rpc,
     chainId: dependencies.chainId,
     selector: input.block,
-    signal,
+    context,
   });
-  return Object.freeze({ anchor: block.anchor, reference: block.stateReference });
-};
-
-const recordChainId = async (
-  dependencies: TokenInspectionDependencies,
-  signal: AbortSignal,
-  observations: ObservationWriter,
-  anchor: ChainAnchor,
-): Promise<void> => {
-  await validateConfiguredChain({
-    rpc: dependencies.rpc,
+  const state = readConfiguredCanonicalBlock({
+    context,
+    block,
     chainId: dependencies.chainId,
+  });
+  recordConfiguredChainProof({
+    proof: state.configuredChainProof,
     rpcSource: dependencies.rpcSource,
-    signal,
     observations,
-    chainAnchor: anchor,
+    chainAnchor: state.anchor,
+  });
+  return Object.freeze({
+    block,
+    anchor: state.anchor,
+    reference: state.stateReference,
   });
 };
 
@@ -217,12 +241,15 @@ const readRequiredTotalSupply = async (
 const inspectionHandler = async (
   dependencies: TokenInspectionDependencies,
   request: TokenInspectionInput,
-  signal: AbortSignal,
+  context: ChainInvocationContext,
   observations: ObservationWriter,
-): Promise<Readonly<{ status: "success"; data: TokenInspectionData }>> => {
+): Promise<Readonly<{
+  success: Readonly<{ status: "success"; data: TokenInspectionData }>;
+  block: CanonicalBlock;
+}>> => {
   if (request.asset.chainId !== dependencies.chainId) throw new ChainOperationError("invalid_input");
-  const block = await resolveBlock(dependencies, request, signal);
-  await recordChainId(dependencies, signal, observations, block.anchor);
+  const signal = context.signal;
+  const block = await resolveBlock(dependencies, request, context, observations);
 
   const rawCode = await dependencies.rpc.request(
     "eth_getCode",
@@ -345,11 +372,15 @@ const inspectionHandler = async (
     }),
     standards,
   });
-  return Object.freeze({ status: "success", data });
+  return Object.freeze({
+    success: Object.freeze({ status: "success", data }),
+    block: block.block,
+  });
 };
 
 export interface TokenInspectionService {
   readonly binding: CapabilityBinding<typeof tokenInspectCapability>;
+  readonly additionReads: TokenAdditionChainReadPort;
 }
 
 export const createTokenInspectionService = (input: {
@@ -357,6 +388,7 @@ export const createTokenInspectionService = (input: {
   readonly rpc: RpcRequester;
   readonly encoder: Erc20CallEncoder;
   readonly lifecycle: ChainInvocationLifecycle;
+  readonly officialAssetReads: OfficialAssetChainReadPort;
 }): TokenInspectionService => {
   const dependencies: TokenInspectionDependencies = Object.freeze({
     rpc: input.rpc,
@@ -365,9 +397,11 @@ export const createTokenInspectionService = (input: {
     chainId: input.context.chain.configuration.chain.chainId,
   });
   const basePorts = input.context.chain.capabilityAuthority.invocationPorts;
+  const captureContexts = new WeakSet<object>();
+  const capturedBlocks = new WeakMap<object, CanonicalBlock>();
   const execute = (
     callerSignal: AbortSignal,
-    operation: (signal: AbortSignal) => Promise<unknown>,
+    operation: (context: ChainInvocationContext) => Promise<unknown>,
   ): Promise<unknown> => runInspection(input.lifecycle, callerSignal, operation);
   const binding = bindCapability({
     definition: tokenInspectCapability,
@@ -377,9 +411,67 @@ export const createTokenInspectionService = (input: {
       observations: basePorts.observations,
     }),
     handler: async (request, context: HandlerInvocationContext<InvocationBoundaryPorts>, observations) =>
-      execute(context.signal, (signal) =>
-        inspectionHandler(dependencies, request, signal, observations)),
+      execute(context.signal, async (chainInvocation) => {
+        const execution = await inspectionHandler(
+          dependencies,
+          request,
+          chainInvocation,
+          observations,
+        );
+        if (captureContexts.has(chainInvocation)) {
+          capturedBlocks.set(chainInvocation, execution.block);
+        }
+        return execution.success;
+      }),
+  });
+  const inspections = new CapabilityBindingRegistry(
+    new CapabilityRegistry([tokenInspectCapability]),
+    [binding],
+  );
+  const additionReads: TokenAdditionChainReadPort = Object.freeze({
+    async inspectAndVerifyOfficial(
+      request: Parameters<TokenAdditionChainReadPort["inspectAndVerifyOfficial"]>[0],
+      callerSignal: Parameters<TokenAdditionChainReadPort["inspectAndVerifyOfficial"]>[1],
+    ) {
+      try {
+        return await input.lifecycle.run(callerSignal, async (context) => {
+          if (
+            request.asset.chainId !== dependencies.chainId ||
+            (request.officialMember !== null &&
+              request.officialMember.contractAddress !== request.asset.address)
+          ) {
+            throw new ChainOperationError("invalid_input");
+          }
+          captureContexts.add(context);
+          try {
+            const inspection = await inspections.invoke(
+              tokenInspectCapability,
+              { asset: request.asset, block: { kind: "latest" } },
+              { signal: context.signal },
+            );
+            if (!inspection.ok) return inspection;
+            const block = capturedBlocks.get(context);
+            if (block === undefined) throw new ChainOperationError("internal_error");
+            const officialVerification = request.officialMember === null
+              ? null
+              : await input.officialAssetReads.verifyAtBlock(
+                  request.officialMember,
+                  block,
+                  context,
+                );
+            return Object.freeze({ inspection, officialVerification });
+          } finally {
+            captureContexts.delete(context);
+            capturedBlocks.delete(context);
+          }
+        });
+      } catch (error) {
+        return createTokenCatalogFailure(
+          inspectionFailureCode(error, callerSignal) ?? "internal_error",
+        );
+      }
+    },
   });
 
-  return Object.freeze({ binding });
+  return Object.freeze({ binding, additionReads });
 };

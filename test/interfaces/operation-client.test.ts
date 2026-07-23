@@ -179,6 +179,37 @@ describe("authenticated local operation client", () => {
     await client.close();
   });
 
+  it("recovers after a malformed post-send Problem Details response instead of inventing a failure", async () => {
+    let sends = 0;
+    const client = new LocalOperationClient({
+      ownerSessions: ownerSessions(session({
+        async send() {
+          sends += 1;
+          if (sends === 1) {
+            return Object.freeze({
+              status: "response_received" as const,
+              response: Object.freeze({
+                statusCode: 500,
+                contentType: jsonContentType,
+                cacheControl: noStoreCacheControl,
+                bytes: new TextEncoder().encode("{}"),
+              }),
+            });
+          }
+          return received({ operation: operation("awaiting_wallet_approval") });
+        },
+      })),
+      createOperationId: () => operationId,
+    });
+
+    expect(await client.invoke(walletLocalOperationIdentities.cli.connect, {})).toMatchObject({
+      ok: true,
+      value: { result: { status: "operation_started", operation: { operationId } } },
+    });
+    expect(sends).toBe(2);
+    await client.close();
+  });
+
   it("refuses recovery when any authenticated owner identity field changes", async () => {
     const replacements: RuntimeOwnerSessionIdentity[] = [
       ownerIdentity({ profileId: parseProfileId(Buffer.alloc(16, 4).toString("base64url")) }),

@@ -1,6 +1,14 @@
 import type { BlockSelector, ChainAnchor, EvmChainId } from "../core/index.js";
+import {
+  validateConfiguredChain,
+  type ConfiguredChainProof,
+} from "./configured-chain.js";
 import { ChainOperationError } from "./errors.js";
 import { blockSelectorToRpcTag, normalizeRpcBlockAnchor } from "./normalization.js";
+import {
+  assertActiveChainInvocationContext,
+  type ChainInvocationContext,
+} from "./invocation-lifecycle.js";
 import {
   canonicalBlockReference,
   type RpcCanonicalBlockReference,
@@ -9,19 +17,34 @@ import {
 
 export interface CanonicalBlock {
   readonly anchor: ChainAnchor;
-  readonly stateReference: RpcCanonicalBlockReference;
 }
 
-export const resolveCanonicalBlock = async (input: Readonly<{
+interface CanonicalBlockState {
+  readonly context: ChainInvocationContext;
+  readonly anchor: ChainAnchor;
+  readonly stateReference: RpcCanonicalBlockReference;
+  readonly configuredChainProof: ConfiguredChainProof;
+}
+
+const canonicalBlockStates = new WeakMap<object, CanonicalBlockState>();
+
+export const resolveConfiguredCanonicalBlock = async (input: Readonly<{
   rpc: RpcRequester;
   chainId: EvmChainId;
   selector: BlockSelector;
-  signal: AbortSignal;
+  context: ChainInvocationContext;
 }>): Promise<CanonicalBlock> => {
+  assertActiveChainInvocationContext(input.context);
+  const signal = input.context.signal;
+  const configuredChainProof = await validateConfiguredChain({
+    rpc: input.rpc,
+    chainId: input.chainId,
+    signal,
+  });
   const raw = await input.rpc.request(
     "eth_getBlockByNumber",
     [blockSelectorToRpcTag(input.selector), false],
-    input.signal,
+    signal,
   );
   if (raw === null) throw new ChainOperationError("source_inconsistent");
   let anchor: ChainAnchor;
@@ -30,5 +53,32 @@ export const resolveCanonicalBlock = async (input: Readonly<{
   if (input.selector.kind === "number" && input.selector.blockNumber !== anchor.blockNumber) {
     throw new ChainOperationError("source_inconsistent");
   }
-  return Object.freeze({ anchor, stateReference: canonicalBlockReference(anchor.blockHash) });
+  const block = Object.freeze({ anchor }) satisfies CanonicalBlock;
+  canonicalBlockStates.set(block, Object.freeze({
+    context: input.context,
+    anchor,
+    stateReference: canonicalBlockReference(anchor.blockHash),
+    configuredChainProof,
+  }));
+  return block;
+};
+
+export const readConfiguredCanonicalBlock = (input: Readonly<{
+  context: ChainInvocationContext;
+  block: CanonicalBlock;
+  chainId: EvmChainId;
+}>): CanonicalBlockState => {
+  assertActiveChainInvocationContext(input.context);
+  const state = typeof input.block === "object" && input.block !== null
+    ? canonicalBlockStates.get(input.block)
+    : undefined;
+  if (
+    state === undefined ||
+    state.context !== input.context ||
+    state.anchor.chainId !== input.chainId ||
+    input.block.anchor !== state.anchor
+  ) {
+    throw new TypeError("Configured canonical block authority is invalid.");
+  }
+  return state;
 };

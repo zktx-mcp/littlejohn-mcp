@@ -142,10 +142,9 @@ export interface TokenCatalogApplicationFactoryInput {
   readonly routes: RuntimeRouteRegistry;
   readonly supportManifest: ChainRuntimeSupportManifest;
   readonly activeWallet: TokenCatalogCoordinatorDependencies["activeWallet"];
-  readonly inspection: TokenCatalogCoordinatorDependencies["inspection"];
+  readonly additionChainReads: TokenCatalogCoordinatorDependencies["additionChainReads"];
   readonly officialAssets: TokenCatalogCoordinatorDependencies["officialAssets"];
   readonly startupResources: OwnedResourceRegistry;
-  readonly verifyOfficialAsset: TokenCatalogCoordinatorDependencies["verifyOfficialAsset"];
   readonly store: TokenCatalogStore;
   readonly readStore: TokenCatalogQueryStore;
   readonly accountTokenSelectionStore: AccountTokenSelectionStore;
@@ -182,9 +181,8 @@ export const createTokenCatalogApplicationFactory = async (
     lifecycle.resources.register(input.officialAssets);
     const coordinator = new TokenCatalogCoordinator({
       activeWallet: input.activeWallet,
-      inspection: input.inspection,
+      additionChainReads: input.additionChainReads,
       officialAssets: input.officialAssets,
-      verifyOfficialAsset: input.verifyOfficialAsset,
       store: input.store,
       clock: input.clock,
       signal: input.signal,

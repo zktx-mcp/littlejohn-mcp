@@ -9,6 +9,7 @@ import {
   walletInterfaceBindingList,
 } from "../../src/interfaces/identities.js";
 import { extendInterfaceSupportManifest } from "../../src/interfaces/support.js";
+import { extendReferenceMarketSupportManifest } from "../../src/market-portfolio/support.js";
 import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
 import {
   createInitialRuntimeSupportManifest,
@@ -24,9 +25,9 @@ describe("interface Current Support projection", () => {
 
   it("derives every wallet management binding availability from the binding catalog", () => {
     const snapshot = readRuntimeSupportManifest(extendInterfaceSupportManifest(
-      extendAccountAssetSupportManifest(extendTokenCatalogSupportManifest(
+      extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(extendTokenCatalogSupportManifest(
         extendChainSupportManifest(extendWalletSupportManifest(initialManifest())),
-      )),
+      ))),
     ));
     for (const binding of walletInterfaceBindingList) {
       const availability = snapshot.capabilities
@@ -56,11 +57,11 @@ describe("interface Current Support projection", () => {
 
   it("keeps the public current state generated from the final interface manifest", async () => {
     const document = await readFile("docs/PRODUCT_POLICY.md", "utf8");
-    const manifest = extendInterfaceSupportManifest(extendAccountAssetSupportManifest(
+    const manifest = extendInterfaceSupportManifest(extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(
       extendTokenCatalogSupportManifest(extendChainSupportManifest(
         extendWalletSupportManifest(initialManifest()),
       )),
-    ));
+    )));
     expect(renderCurrentSupportSection(manifest)).toContain(
       "Implemented wallet support: `wallet.cancel_operation` (MCP, CLI, web); " +
         "`wallet.connect` (MCP, CLI, web); `wallet.connection` (HTTP, MCP, CLI); " +

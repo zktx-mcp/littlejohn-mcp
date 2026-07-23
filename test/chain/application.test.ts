@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   CapabilityBindingRegistry,
@@ -16,8 +16,10 @@ import {
   createObservationAuthority,
   getCapabilityDefinitionSnapshot,
   parseCapabilityDataAt,
+  parseEvmAddressInput,
   parseEvmChainId,
   parseHexBytes,
+  parseHash32,
   parseUnsignedDecimal,
   parseUtcTimestamp,
   sourceReferenceSchema,
@@ -54,13 +56,22 @@ import type {
 } from "../../src/wallet/coordinator.js";
 import { bindForHarness, createCapabilityHarness } from "../core/capability-harness.js";
 import { tokenInspectCapability, tokenInspectionDigest } from "../../src/token-catalog/index.js";
+import {
+  stockFactoryImplementationAddress,
+  stockFactoryImplementationSlot,
+  stockFactoryProxyAddress,
+} from "../../src/registry/index.js";
+import {
+  stockFactoryImplementationCodeFixture,
+  stockFactoryProxyCodeFixture,
+} from "../registry/stock-factory-fixture.js";
 
 const directories: string[] = [];
 const observedAt = parseUtcTimestamp("2026-07-15T12:00:00.000Z");
 const exactRpcUrl = "https://rpc-user:rpc-password@rpc.example/private/path?project=secret";
 const configuredChainId = parseEvmChainId("eip155:4663");
 const runtimeConfiguration = readRuntimeConfiguration({ LITTLEJOHN_RPC_URL: exactRpcUrl });
-const tokenAddress = `0x${"ab".repeat(20)}` as const;
+const tokenAddress = parseEvmAddressInput(`0x${"ab".repeat(20)}`);
 const rpcWord = (value: bigint) => `0x${value.toString(16).padStart(64, "0")}`;
 const rpcText = (value: string) => {
   const bytes = Buffer.from(value, "utf8");
@@ -109,6 +120,7 @@ const executionRevertResponse = (requestId: string): Response => new Response(JS
 }));
 
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(directories.splice(0).map((directory) =>
     rm(directory, { recursive: true, force: true })));
 });
@@ -710,6 +722,152 @@ describe("chain owner application", () => {
     await application.close();
   });
 
+  it("rejects a wrong configured RPC chain before either composite reader requests a block", async () => {
+    const requester = new FakeRequester(async (method) => {
+      if (method === "eth_chainId") return "0x1";
+      throw new Error(`Unexpected RPC method after a wrong chain ID: ${method}`);
+    });
+    const state = await createContext();
+    const application = await createChainOwnerApplicationFactory(
+      () => requester,
+      async () => new FakeEncoder(),
+    )(state.context);
+
+    await expect(application.invocations.run(
+      new AbortController().signal,
+      (context) => application.accountAssetReads.resolveCurrentBlock(context),
+    )).rejects.toMatchObject({ failure: { error: { code: "source_inconsistent" } } });
+    expect(requester.calls.map(({ method }) => method)).toEqual(["eth_chainId"]);
+
+    requester.calls.splice(0);
+    await expect(application.invocations.run(
+      new AbortController().signal,
+      (context) => application.referenceMarketReads.resolveCurrentBlock(context),
+    )).rejects.toMatchObject({ failure: { error: { code: "source_inconsistent" } } });
+    expect(requester.calls.map(({ method }) => method)).toEqual(["eth_chainId"]);
+
+    await application.close();
+  });
+
+  it("returns a canonical failure when token-addition chain work is stopped before admission", async () => {
+    const requester = new FakeRequester();
+    const state = await createContext();
+    const application = await createChainOwnerApplicationFactory(
+      () => requester,
+      async () => new FakeEncoder(),
+    )(state.context);
+    const caller = new AbortController();
+    caller.abort();
+
+    await expect(application.tokenAdditionReads.inspectAndVerifyOfficial({
+      asset: { kind: "erc20", chainId: configuredChainId, address: tokenAddress },
+      officialMember: null,
+    }, caller.signal)).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "request_aborted",
+        category: "transport",
+      },
+    });
+    expect(requester.calls).toEqual([]);
+    await application.close();
+  });
+
+  it("uses one remaining deadline and one exact block for token inspection and official verification", async () => {
+    vi.useFakeTimers();
+    const blockHash = `0x${"cd".repeat(32)}` as const;
+    const assetUid = parseHash32(`0x${"12".repeat(32)}`);
+    const implementationWord = `0x${"0".repeat(24)}${stockFactoryImplementationAddress.slice(2)}`;
+    const mappedAddressWord = `0x${"0".repeat(24)}${tokenAddress.slice(2)}`;
+    let tokenCodeReads = 0;
+    let releaseInspectionCode!: () => void;
+    const inspectionCodeReleased = new Promise<void>((resolveReleased) => {
+      releaseInspectionCode = resolveReleased;
+    });
+    let markInspectionCodeStarted!: () => void;
+    const inspectionCodeStarted = new Promise<void>((resolveStarted) => {
+      markInspectionCodeStarted = resolveStarted;
+    });
+    const requester = new FakeRequester(async (method, params) => {
+      if (method === "eth_chainId") return "0x1237";
+      if (method === "eth_getBlockByNumber") {
+        return { number: "0x2d", hash: blockHash, timestamp: "0x687787a4" };
+      }
+      if (method === "eth_getCode") {
+        const address = params[0];
+        if (address === tokenAddress) {
+          tokenCodeReads += 1;
+          if (tokenCodeReads === 1) {
+            markInspectionCodeStarted();
+            await inspectionCodeReleased;
+          }
+          return "0x6000";
+        }
+        if (address === stockFactoryProxyAddress) return stockFactoryProxyCodeFixture;
+        if (address === stockFactoryImplementationAddress) return stockFactoryImplementationCodeFixture;
+      }
+      if (method === "eth_getStorageAt") {
+        expect(params[0]).toBe(stockFactoryProxyAddress);
+        expect(params[1]).toBe(stockFactoryImplementationSlot);
+        return implementationWord;
+      }
+      if (method === "eth_call") {
+        const call = params[0] as { readonly to: string; readonly data: string };
+        if (call.to === stockFactoryProxyAddress) return mappedAddressWord;
+        if (call.data === "0x18160ddd") return rpcWord(7n);
+        if (call.data === "0x06fdde03") return rpcText("Token");
+        if (call.data === "0x95d89b41") return rpcText("TKN");
+        if (call.data === "0x313ce567") return rpcWord(18n);
+        if (call.data.startsWith("0x01ffc9a7")) return rpcWord(0n);
+      }
+      throw new Error(`Unexpected RPC method: ${method}`);
+    });
+    const state = await createContext();
+    const application = await createChainOwnerApplicationFactory(
+      () => requester,
+      async () => new FakeEncoder(),
+    )(state.context);
+
+    const pending = application.tokenAdditionReads.inspectAndVerifyOfficial({
+      asset: { kind: "erc20", chainId: configuredChainId, address: tokenAddress },
+      officialMember: { assetUid, contractAddress: tokenAddress },
+    }, new AbortController().signal);
+    await inspectionCodeStarted;
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(vi.getTimerCount()).toBe(1);
+    releaseInspectionCode();
+
+    const result = await pending;
+    expect(result).toMatchObject({
+      inspection: {
+        ok: true,
+        data: {
+          asset: { kind: "erc20", chainId: configuredChainId, address: tokenAddress },
+          block: { blockHash },
+        },
+      },
+      officialVerification: {
+        assetUid,
+        contractAddress: tokenAddress,
+        block: { blockHash },
+      },
+    });
+    if ("inspection" in result && result.inspection.ok) {
+      expect(result.officialVerification?.block).toEqual(result.inspection.data.block);
+    }
+    const stateReferences = requester.calls.flatMap(({ method, params }) => {
+      if (method === "eth_call") return [params[1]];
+      if (method === "eth_getCode") return [params[1]];
+      if (method === "eth_getStorageAt") return [params[2]];
+      return [];
+    }).filter((value) => value !== undefined);
+    expect(new Set(stateReferences).size).toBe(1);
+    expect(stateReferences[0]).toMatchObject({ blockHash, requireCanonical: true });
+    expect(vi.getTimerCount()).toBe(0);
+    await application.close();
+  });
+
   it("composes the exact RPC URL, unchanged routes, internal support, and canonical bindings without startup reads", async () => {
     const requester = new FakeRequester();
     const encoder = new FakeEncoder();
@@ -739,9 +897,12 @@ describe("chain owner application", () => {
       "accountAssetReads",
       "chainReads",
       "close",
+      "invocations",
       "officialAssetReads",
+      "referenceMarketReads",
       "routes",
       "supportManifest",
+      "tokenAdditionReads",
       "tokenInspection",
     ]);
     expect(JSON.stringify(application)).not.toContain("rpc-password");

@@ -27,6 +27,7 @@ import type { WalletSessionSource } from "../../src/runtime/source-identity.js";
 import {
   TokenCatalogCoordinator,
 } from "../../src/token-catalog/coordinator.js";
+import { createTokenCatalogFailure } from "../../src/token-catalog/errors.js";
 import {
   getTokenCatalogOperationFailure,
   TokenCatalogOperationError,
@@ -35,7 +36,8 @@ import {
   tokenCatalogContractLimits,
   tokenSelectionDetailSchema,
 } from "../../src/token-catalog/contracts.js";
-import { createInspectionBinding, chainId, tokenAddress, walletAddress } from "./harness.js";
+import type { TokenAdditionChainReadPort } from "../../src/token-catalog/ports.js";
+import { createInspectionSuccess, chainId, tokenAddress, walletAddress } from "./harness.js";
 
 const directories: string[] = [];
 let currentTime = "2026-07-18T00:00:03.000Z";
@@ -90,8 +92,25 @@ const createSessionSource = (
   });
 };
 
+const createAdditionChainReads = (
+  beforeResult?: () => Promise<void>,
+): TokenAdditionChainReadPort => Object.freeze({
+  async inspectAndVerifyOfficial(
+    { asset }: Parameters<TokenAdditionChainReadPort["inspectAndVerifyOfficial"]>[0],
+    signal: Parameters<TokenAdditionChainReadPort["inspectAndVerifyOfficial"]>[1],
+  ) {
+    if (signal.aborted) return createTokenCatalogFailure("request_aborted");
+    await beforeResult?.();
+    if (signal.aborted) return createTokenCatalogFailure("request_aborted");
+    return Object.freeze({
+      inspection: await createInspectionSuccess({ asset, block: { kind: "latest" } }),
+      officialVerification: null,
+    });
+  },
+});
+
 const createState = async (
-  inspection = createInspectionBinding(),
+  additionChainReads = createAdditionChainReads(),
   onRegister?: () => void,
   captureError?: () => Error | undefined,
 ) => {
@@ -149,14 +168,11 @@ const createState = async (
           });
         },
       },
-      inspection,
+      additionChainReads,
       officialAssets: Object.freeze({
         synchronize: async () => Object.freeze({ status: "current" as const, snapshot: officialSnapshot }),
         readStored: () => officialSnapshot,
         close: async () => undefined,
-      }),
-      verifyOfficialAsset: Object.freeze({
-        verify: async () => { throw new Error("No official verification is expected."); },
       }),
       store: operationStore,
       clock,
@@ -300,19 +316,25 @@ describe("token catalog operation coordinator", () => {
     state.database.close();
   });
 
-  it("holds the single-operation reservation for the complete asynchronous inspection", async () => {
-    let releaseInspection!: () => void;
-    const inspectionGate = new Promise<void>((resolveGate) => { releaseInspection = resolveGate; });
-    const state = await createState(createInspectionBinding(chainId, () => inspectionGate));
+  it("holds the single-operation reservation for the complete asynchronous token-addition chain read", async () => {
+    let markAdditionReadEntered!: () => void;
+    let releaseAdditionRead!: () => void;
+    const additionReadEntered = new Promise<void>((resolveEntered) => { markAdditionReadEntered = resolveEntered; });
+    const additionReadGate = new Promise<void>((resolveGate) => { releaseAdditionRead = resolveGate; });
+    const state = await createState(createAdditionChainReads(async () => {
+      markAdditionReadEntered();
+      await additionReadGate;
+    }));
     const pending = startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "web");
+    await additionReadEntered;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       expect(await startAddition(state.coordinator, {
         asset: { kind: "erc20", chainId, address: tokenAddress },
       }, "web")).toMatchObject({ ok: false, error: { code: "token_operation_conflict" } });
     }
-    releaseInspection();
+    releaseAdditionRead();
     const started = await pending;
     expect("ok" in started).toBe(false);
     if (!("ok" in started)) {
@@ -323,13 +345,19 @@ describe("token catalog operation coordinator", () => {
     state.database.close();
   });
 
-  it("aborts an unfinished inspection when the owner closes without leaving operation state", async () => {
-    let releaseInspection!: () => void;
-    const inspectionGate = new Promise<void>((resolveGate) => { releaseInspection = resolveGate; });
-    const state = await createState(createInspectionBinding(chainId, () => inspectionGate));
+  it("aborts an unfinished token-addition chain read when the owner closes without leaving operation state", async () => {
+    let markAdditionReadEntered!: () => void;
+    let releaseAdditionRead!: () => void;
+    const additionReadEntered = new Promise<void>((resolveEntered) => { markAdditionReadEntered = resolveEntered; });
+    const additionReadGate = new Promise<void>((resolveGate) => { releaseAdditionRead = resolveGate; });
+    const state = await createState(createAdditionChainReads(async () => {
+      markAdditionReadEntered();
+      await additionReadGate;
+    }));
     const pending = startAddition(state.coordinator, {
       asset: { kind: "erc20", chainId, address: tokenAddress },
     }, "web");
+    await additionReadEntered;
     const close = state.coordinator.close();
     expect(state.coordinator.close()).toBe(close);
     await expect(startAddition(state.coordinator, {
@@ -340,7 +368,7 @@ describe("token catalog operation coordinator", () => {
     void close.then(() => { closeSettled = true; });
     await Promise.resolve();
     expect(closeSettled).toBe(false);
-    releaseInspection();
+    releaseAdditionRead();
     expect(await pending).toMatchObject({ ok: false, error: { code: "request_aborted" } });
     await close;
     expect(closeSettled).toBe(true);
@@ -482,7 +510,7 @@ describe("token catalog operation coordinator", () => {
 
   it("normalizes inherited runtime failures without losing their declared meaning", async () => {
     const state = await createState(
-      createInspectionBinding(),
+      createAdditionChainReads(),
       undefined,
       () => new RuntimeOperationError("runtime_state_unavailable"),
     );
@@ -500,7 +528,7 @@ describe("token catalog operation coordinator", () => {
   it("normalizes a runtime failure during confirmation and leaves the operation cancellable", async () => {
     let projectionUnavailable = false;
     const state = await createState(
-      createInspectionBinding(),
+      createAdditionChainReads(),
       undefined,
       () => projectionUnavailable ? new RuntimeOperationError("runtime_state_unavailable") : undefined,
     );
@@ -522,7 +550,7 @@ describe("token catalog operation coordinator", () => {
   });
 
   it("closes an applying operation when a dependency reports an undeclared failure", async () => {
-    const state = await createState(createInspectionBinding(), () => {
+    const state = await createState(createAdditionChainReads(), () => {
       throw new Error("The dependency returned an undeclared failure.");
     });
     const start = await startAddition(state.coordinator, {
@@ -553,7 +581,7 @@ describe("token catalog operation coordinator", () => {
   it("retains the single-operation slot through a reentrant applying transaction", async () => {
     let reentrantStart: Promise<unknown> | undefined;
     let state!: Awaited<ReturnType<typeof createState>>;
-    state = await createState(createInspectionBinding(), () => {
+    state = await createState(createAdditionChainReads(), () => {
       reentrantStart = startAddition(state.coordinator, {
         asset: { kind: "erc20", chainId, address: tokenAddress },
       }, "web");
@@ -580,7 +608,7 @@ describe("token catalog operation coordinator", () => {
   it("waits for an admitted confirmation transaction before close releases operation state", async () => {
     let close: Promise<void> | undefined;
     let state!: Awaited<ReturnType<typeof createState>>;
-    state = await createState(createInspectionBinding(), () => {
+    state = await createState(createAdditionChainReads(), () => {
       close = state.coordinator.close();
     });
     const start = await startAddition(state.coordinator, {

@@ -9,6 +9,8 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createErc20CallEncoder, type Erc20CallEncoder } from "../../src/chain/evm-standard.js";
 import { extendChainSupportManifest } from "../../src/chain/application.js";
 import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
+import { extendReferenceMarketSupportManifest } from "../../src/market-portfolio/support.js";
+import { referenceMarketInterfaceErrorMappings } from "../../src/market-portfolio/errors.js";
 import {
   accountBalanceCapability,
   canonicalJsonStringify,
@@ -61,6 +63,7 @@ import { parseReadCliCommand, runReadCliCommand } from "../../src/interfaces/cli
 import { parseTokenCliCommand, runTokenCliCommand } from "../../src/interfaces/cli-token.js";
 import { openTestOwnerSession } from "./owner-session-harness.js";
 import { accountAssetInterfaceHarnessPort } from "../account-assets/interface-harness.js";
+import { referenceMarketInterfaceHarnessPort } from "../market-portfolio/interface-harness.js";
 import {
   createControlCredentialVerifier,
   loadOrCreateControlCredential,
@@ -667,11 +670,11 @@ const createTokenParityContext = async () => {
     encoder: erc20Encoder,
     wallet: disconnectedWallet(),
   });
-  const manifest = extendInterfaceSupportManifest(extendAccountAssetSupportManifest(
+  const manifest = extendInterfaceSupportManifest(extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(
     extendTokenCatalogSupportManifest(extendChainSupportManifest(
       extendWalletSupportManifest(createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain)),
     )),
-  ));
+  )));
   let routes = extendPublicInterfaceRoutes({
     routes: createRuntimeRouteRegistry({
       controlVerifier: createControlCredentialVerifier(authority),
@@ -699,6 +702,7 @@ const createTokenParityContext = async () => {
     assets: browserAssets,
     walletOperations: browserOperations(operation()),
     accountAssets: accountAssetInterfaceHarnessPort(),
+    referenceMarkets: referenceMarketInterfaceHarnessPort(),
     tokenInspection: ports.inspection,
     tokenCatalogWebStart: ports.webStart,
     tokenCatalogBrowserOperations: ports.browserOperations,
@@ -1097,13 +1101,13 @@ describe("interface parity", () => {
   });
 
   it("projects one canonical capability catalog through HTTP and MCP without changing core scope or support", async () => {
-    const manifest = extendInterfaceSupportManifest(extendAccountAssetSupportManifest(
+    const manifest = extendInterfaceSupportManifest(extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(
       extendTokenCatalogSupportManifest(extendChainSupportManifest(
         extendWalletSupportManifest(
           createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
         ),
       )),
-    ));
+    )));
     const catalog = composeInterfaceCapabilityCatalog(manifest);
     const runtime = new CanonicalRuntime([Object.freeze({
       method: capabilityCatalogInterface.http.method,
@@ -1267,9 +1271,10 @@ describe("interface parity", () => {
       const routes = extendBrowserInterfaceRoutes({
         ...tokenCatalogInterfaceHarnessPorts(),
         accountAssets: accountAssetInterfaceHarnessPort(),
+        referenceMarkets: referenceMarketInterfaceHarnessPort(),
         routes: createRuntimeRouteRegistry({
           controlVerifier: createControlCredentialVerifier(authority),
-          errorMappings: chainInterfaceErrorMappings,
+          errorMappings: referenceMarketInterfaceErrorMappings,
         }),
         credentials,
         assets: browserAssets,

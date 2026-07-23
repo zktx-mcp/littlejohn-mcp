@@ -4,6 +4,7 @@ import {
   chainInvocationDeadlineMs,
   createChainInvocationLifecycle,
   getChainInvocationStopReason,
+  type ChainInvocationContext,
 } from "../../src/chain/invocation-lifecycle.js";
 
 afterEach(() => {
@@ -36,7 +37,7 @@ describe("chain invocation lifecycle", () => {
     const owner = new AbortController();
     const lifecycle = createChainInvocationLifecycle(owner.signal);
     const caller = new AbortController();
-    const invocation = lifecycle.run(caller.signal, pendingUntilAbort);
+    const invocation = lifecycle.run(caller.signal, (context) => pendingUntilAbort(context.signal));
     const closing = lifecycle.close();
     let failure: unknown;
     try { await invocation; }
@@ -44,6 +45,61 @@ describe("chain invocation lifecycle", () => {
     expect(getChainInvocationStopReason(failure)).toBe("application_closed");
     await expect(closing).resolves.toBeUndefined();
     await expect(lifecycle.close()).resolves.toBeUndefined();
+  });
+
+  it("joins an exact nested signal under one deadline and drain, then rejects foreign and stale context use", async () => {
+    vi.useFakeTimers();
+    const owner = new AbortController();
+    const lifecycle = createChainInvocationLifecycle(owner.signal);
+    const foreignLifecycle = createChainInvocationLifecycle(new AbortController().signal);
+    let publishContexts!: (contexts: Readonly<{
+      outer: ChainInvocationContext;
+      inner: ChainInvocationContext;
+    }>) => void;
+    const contextsReady = new Promise<Readonly<{
+      outer: ChainInvocationContext;
+      inner: ChainInvocationContext;
+    }>>((resolveContexts) => { publishContexts = resolveContexts; });
+    let releaseNested!: () => void;
+    const nestedPending = new Promise<void>((resolveNested) => { releaseNested = resolveNested; });
+
+    const invocation = lifecycle.run(new AbortController().signal, async (outer) => {
+      lifecycle.assertActiveContext(outer);
+      return await lifecycle.run(outer.signal, async (inner) => {
+        publishContexts({ outer, inner });
+        await nestedPending;
+        return "joined";
+      });
+    });
+    const contexts = await contextsReady;
+
+    expect(contexts.inner).toBe(contexts.outer);
+    expect(vi.getTimerCount()).toBe(1);
+    expect(() => foreignLifecycle.assertActiveContext(contexts.outer))
+      .toThrowError(/another lifecycle/u);
+
+    let closeSettled = false;
+    const closing = lifecycle.close().then(() => { closeSettled = true; });
+    await Promise.resolve();
+    expect(contexts.outer.signal.aborted).toBe(true);
+    expect(closeSettled).toBe(false);
+
+    let lateJoinInvoked = false;
+    await expect(lifecycle.run(contexts.outer.signal, async () => {
+      lateJoinInvoked = true;
+    })).rejects.toThrowError(/cannot be joined/u);
+    expect(lateJoinInvoked).toBe(false);
+
+    releaseNested();
+    let failure: unknown;
+    try { await invocation; }
+    catch (error) { failure = error; }
+    expect(getChainInvocationStopReason(failure)).toBe("application_closed");
+    await expect(closing).resolves.toBeUndefined();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(() => lifecycle.assertActiveContext(contexts.outer))
+      .toThrowError(/not active/u);
+    await foreignLifecycle.close();
   });
 
   it("owns the whole-invocation deadline and rejects a late result", async () => {

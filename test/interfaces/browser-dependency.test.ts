@@ -62,6 +62,10 @@ const accountAssetsContractsSource = resolve(repositoryRoot, "src/account-assets
 const accountAssetsErrorRegistrySource = resolve(repositoryRoot, "src/account-assets/error-registry.ts");
 const accountAssetsHttpContractSource = resolve(repositoryRoot, "src/account-assets/http-contract.ts");
 const accountAssetsViewSource = resolve(repositoryRoot, "src/account-assets/view.ts");
+const referenceMarketContractsSource = resolve(repositoryRoot, "src/market-portfolio/contracts.ts");
+const referenceMarketDeliverySource = resolve(repositoryRoot, "src/interfaces/reference-market-delivery.ts");
+const referenceMarketCoreSource = resolve(repositoryRoot, "src/core/reference-market.ts");
+const invocationSource = resolve(repositoryRoot, "src/core/invocation.ts");
 const allowedVirtualModules = new Set([
   "\0commonjsHelpers.js",
   "\0rolldown/runtime.js",
@@ -98,6 +102,11 @@ describe("browser runtime dependency boundary", () => {
       accountAssetsErrorRegistrySource,
       accountAssetsHttpContractSource,
       accountAssetsViewSource,
+      referenceMarketContractsSource,
+      browserContractSource,
+      referenceMarketDeliverySource,
+      referenceMarketCoreSource,
+      invocationSource,
       resolve(nodeModulesRoot, "react/index.js"),
       resolve(nodeModulesRoot, "react-dom/client.js"),
       resolve(nodeModulesRoot, "scheduler/index.js"),

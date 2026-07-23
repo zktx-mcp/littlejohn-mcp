@@ -6,6 +6,11 @@ import {
   type AnyAccountAssetApplicationContract,
 } from "../account-assets/index.js";
 import {
+  referenceMarketApplicationContracts,
+  referenceMarketErrorRegistry,
+  type AnyReferenceMarketApplicationContract,
+} from "../market-portfolio/index.js";
+import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
   type CallToolResult,
@@ -25,6 +30,7 @@ import {
   projectCapabilities,
   type CanonicalJson,
   type CapabilityId,
+  type ApplicationErrorRegistry,
 } from "../core/index.js";
 import { fixedOrigin } from "../runtime/http-boundary.js";
 import { createOperationId } from "../runtime/operation-id.js";
@@ -53,6 +59,7 @@ import {
   declaredMcpToolNames,
   interfaceReadCapabilityRegistry,
   readInterfaceIdentities,
+  referenceMarketInterfaceBindingList,
   tokenCatalogInterfaceBindings,
   tokenCatalogInterfaceBindingList,
   tokenLocalOperationIdentities,
@@ -64,6 +71,7 @@ import {
   type WalletInterfaceBinding,
   type InterfaceToolAnnotations,
   type ReadInterfaceIdentity,
+  type ReferenceMarketInterfaceBinding,
 } from "./identities.js";
 import { LocalOperationClient } from "./operation-client.js";
 import {
@@ -71,6 +79,12 @@ import {
   type DeliveryUnknown,
 } from "./operation-delivery.js";
 import { interfaceCapabilityCatalogSchema } from "./support.js";
+import { LocalMutationClient } from "./reference-market-local-client.js";
+import { dispatchReferenceMarketRead } from "./reference-market-http.js";
+import {
+  referenceMarketDeliveryUnknownSchema,
+  type ReferenceMarketDeliveryUnknown,
+} from "./reference-market-delivery.js";
 
 const readMcpServerIdentity = (): Readonly<{ name: string; version: string }> => {
   let manifest: unknown;
@@ -125,7 +139,7 @@ interface McpToolDefinition {
   readonly invoke: (input: unknown, signal: AbortSignal) => Promise<McpInvocationResult>;
 }
 
-type McpInvocationResult = InterfaceInvocationResult | DeliveryUnknown;
+type McpInvocationResult = InterfaceInvocationResult | DeliveryUnknown | ReferenceMarketDeliveryUnknown;
 
 export interface McpRuntimePort extends RuntimeDispatchPort, RuntimeOwnerSessionPort {}
 
@@ -218,10 +232,11 @@ const capabilityInputSchema = (capabilityId: CapabilityId): Tool["inputSchema"] 
 const successOrFailureSchema = (
   successSchema: unknown,
   failureCodes: readonly string[],
+  errorRegistry: ApplicationErrorRegistry = tokenCatalogErrorRegistry,
 ): NonNullable<Tool["outputSchema"]> => {
   const success = rebaseSchema(successSchema, "success");
   const failure = rebaseSchema(
-    zodSchema(applicationFailureSchemaFor(tokenCatalogErrorRegistry, failureCodes), "output"),
+    zodSchema(applicationFailureSchemaFor(errorRegistry, failureCodes), "output"),
     "failure",
   );
   return canonicalSchema<NonNullable<Tool["outputSchema"]>>({
@@ -240,13 +255,15 @@ const successOrFailureSchema = (
 const successFailureOrDeliverySchema = (
   successSchema: unknown,
   failureCodes: readonly string[],
+  errorRegistry: ApplicationErrorRegistry = tokenCatalogErrorRegistry,
+  deliverySchema: z.ZodType = deliveryUnknownSchema,
 ): NonNullable<Tool["outputSchema"]> => {
   const success = rebaseSchema(successSchema, "success");
   const failure = rebaseSchema(
-    zodSchema(applicationFailureSchemaFor(tokenCatalogErrorRegistry, failureCodes), "output"),
+    zodSchema(applicationFailureSchemaFor(errorRegistry, failureCodes), "output"),
     "failure",
   );
-  const delivery = rebaseSchema(zodSchema(deliveryUnknownSchema, "output"), "delivery");
+  const delivery = rebaseSchema(zodSchema(deliverySchema, "output"), "delivery");
   return canonicalSchema<NonNullable<Tool["outputSchema"]>>({
     type: "object",
     $defs: {
@@ -268,6 +285,7 @@ const capabilityOutputSchema = (
 
 type InterfaceApplicationContract =
   | AnyAccountAssetApplicationContract
+  | AnyReferenceMarketApplicationContract
   | AnyWalletManagementContract
   | AnyTokenCatalogApplicationContract;
 
@@ -278,8 +296,9 @@ const contractInputSchema = (
 
 const contractOutputSchema = (
   contract: InterfaceApplicationContract,
+  errorRegistry: ApplicationErrorRegistry = tokenCatalogErrorRegistry,
 ): NonNullable<Tool["outputSchema"]> =>
-  successOrFailureSchema(zodSchema(contract.successSchema, "output"), contract.failureCodes);
+  successOrFailureSchema(zodSchema(contract.successSchema, "output"), contract.failureCodes, errorRegistry);
 
 const walletDisplayUrl = `${fixedOrigin}${browserPagePaths.root}`;
 const tokenCatalogDisplayUrl = `${fixedOrigin}${browserPagePaths.root}`;
@@ -506,14 +525,55 @@ const accountAssetTool = (
   },
 });
 
+const referenceMarketTool = (
+  runtime: RuntimeDispatchPort,
+  mutationClient: LocalMutationClient,
+  binding: ReferenceMarketInterfaceBinding,
+): McpToolDefinition => {
+  const mutation = binding.action === "add" || binding.action === "remove" || binding.action === "reorder";
+  return Object.freeze({
+    name: parseMcpToolName(binding.mcp.name),
+    description: binding.mcp.description,
+    inputSchema: contractInputSchema(binding.contract),
+    outputSchema: mutation
+      ? successFailureOrDeliverySchema(
+        zodSchema(binding.contract.successSchema, "output"),
+        binding.contract.failureCodes,
+        referenceMarketErrorRegistry,
+        referenceMarketDeliveryUnknownSchema,
+      )
+      : contractOutputSchema(binding.contract, referenceMarketErrorRegistry),
+    failureCodes: binding.contract.failureCodes,
+    annotations: annotations(binding.mcp.annotations),
+    parseInput: (value: unknown): unknown => validateLocalToolInput(binding.contract.parseInput, value),
+    invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
+      const result = binding.action === "price"
+        ? await dispatchReferenceMarketRead(runtime, binding, value, signal)
+        : binding.action === "history"
+          ? await dispatchReferenceMarketRead(runtime, binding, value, signal)
+          : binding.action === "watchlist"
+            ? await dispatchReferenceMarketRead(runtime, binding, value, signal)
+            : binding.action === "add"
+              ? await mutationClient.add(referenceMarketApplicationContracts.add.parseInput(value), signal)
+              : binding.action === "remove"
+                ? await mutationClient.remove(referenceMarketApplicationContracts.remove.parseInput(value), signal)
+                : await mutationClient.reorder(referenceMarketApplicationContracts.reorder.parseInput(value), signal);
+      return "status" in result || !result.ok ? result : success(result.value);
+    },
+  });
+};
+
 const createToolDefinitions = (
   runtime: RuntimeDispatchPort,
   client: LocalOperationClient,
+  mutationClient: LocalMutationClient,
 ): readonly McpToolDefinition[] => Object.freeze([
   ...readInterfaceIdentities.map((identity) => readTool(runtime, identity)),
   ...accountAssetInterfaceBindingList
     .filter((binding) => binding.mcp !== undefined)
     .map((binding) => accountAssetTool(client, binding)),
+  ...referenceMarketInterfaceBindingList.map((binding) =>
+    referenceMarketTool(runtime, mutationClient, binding)),
   Object.freeze({
     name: parseMcpToolName(capabilityCatalogInterface.mcp.name),
     description: capabilityCatalogInterface.mcp.description,
@@ -574,9 +634,10 @@ export class McpToolRegistry {
 }
 
 export const createMcpToolRegistry = (
-  runtime: RuntimeDispatchPort,
+  runtime: McpRuntimePort,
   client: LocalOperationClient,
-): McpToolRegistry => new McpToolRegistry(createToolDefinitions(runtime, client));
+  mutationClient = new LocalMutationClient(runtime),
+): McpToolRegistry => new McpToolRegistry(createToolDefinitions(runtime, client, mutationClient));
 
 const toolResult = (result: McpInvocationResult): CallToolResult => {
   const deliveryUnknown = "status" in result;
@@ -602,8 +663,9 @@ const constrainedToolResult = (
 export const createMcpServer = (
   runtime: McpRuntimePort,
   client = new LocalOperationClient({ ownerSessions: runtime, createOperationId }),
+  mutationClient = new LocalMutationClient(runtime),
 ): Server => {
-  const registry = createMcpToolRegistry(runtime, client);
+  const registry = createMcpToolRegistry(runtime, client, mutationClient);
   const server = new Server(mcpServerIdentity, {
     capabilities: { tools: {} },
     instructions: "Read Robinhood Chain data, inspect token contracts, and manage account token selections and Robinhood Wallet operations without establishing token safety or official status and without signing or transaction authority.",
@@ -647,7 +709,7 @@ export const createMcpServer = (
       });
     }
   });
-  server.onclose = () => { void client.close(); };
+  server.onclose = () => { void Promise.allSettled([client.close(), mutationClient.close()]); };
   return server;
 };
 
@@ -658,15 +720,16 @@ export interface StdioMcpHandle {
 
 export const startStdioMcp = async (runtime: McpRuntimePort): Promise<StdioMcpHandle> => {
   const client = new LocalOperationClient({ ownerSessions: runtime, createOperationId });
-  const server = createMcpServer(runtime, client);
+  const mutationClient = new LocalMutationClient(runtime);
+  const server = createMcpServer(runtime, client, mutationClient);
   let resolveClosed!: () => void;
   const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
-  server.onclose = () => { void client.close().finally(resolveClosed); };
+  server.onclose = () => { void Promise.allSettled([client.close(), mutationClient.close()]).finally(resolveClosed); };
   await server.connect(new StdioServerTransport());
   return Object.freeze({
     closed,
     close: async (): Promise<void> => {
-      const results = await Promise.allSettled([server.close(), client.close()]);
+      const results = await Promise.allSettled([server.close(), client.close(), mutationClient.close()]);
       resolveClosed();
       const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
       if (failures.length === 1) throw failures[0];

@@ -1,6 +1,7 @@
 import {
   browserCsrfHeaderName,
   parseBrowserCsrfToken,
+  referenceMarketBrowserMutationPath,
 } from "../browser-contract.js";
 import {
   parseBrowserProblemDetails,
@@ -12,10 +13,16 @@ import {
   type OperationDeliveryAction,
 } from "../operation-delivery.js";
 import type { OperationId } from "../../core/browser.js";
+import {
+  createReferenceMarketDeliveryUnknown,
+  type ReferenceMarketDeliveryAction,
+  type ReferenceMarketDeliveryUnknown,
+} from "../reference-market-delivery.js";
+import type { CanonicalJson } from "../../core/browser.js";
 
 export interface BrowserFetchInit {
   readonly method: "GET" | "POST";
-  readonly credentials: "same-origin";
+  readonly credentials: "omit" | "same-origin";
   readonly cache: "no-store";
   readonly headers?: Readonly<Record<string, string>>;
   readonly body?: string;
@@ -142,6 +149,19 @@ export const queryBrowserJson = (
   body: JSON.stringify(body),
 });
 
+export const queryPublicBrowserJson = (
+  path: string,
+  body: unknown,
+  options: BrowserRequestOptions = {},
+): Promise<unknown> => issueBrowserRequest(options, path, {
+  method: "POST",
+  credentials: "omit",
+  cache: "no-store",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+  ...(options.signal === undefined ? {} : { signal: options.signal }),
+});
+
 export const controlBrowserJson = (
   path: string,
   body: unknown,
@@ -156,14 +176,16 @@ export const controlBrowserJson = (
   body: JSON.stringify(body),
 });
 
-export const controlBrowserActionJson = async (
-  action: OperationDeliveryAction,
-  operationId: OperationId,
+const controlBrowserSendOnceJson = async <Unknown>(
   path: string,
   body: unknown,
   csrfTokenInput: unknown,
+  deliveryUnknown: () => Unknown,
   options: BrowserRequestOptions = {},
-): Promise<BrowserActionDeliveryResult> => {
+): Promise<Readonly<{ status: "response_received"; value: unknown }> | Readonly<{
+  status: "delivery_unknown";
+  delivery: Unknown;
+}>> => {
   if (options.signal?.aborted === true) {
     throw new BrowserResponseError(
       "The request ended before completion.",
@@ -202,13 +224,13 @@ export const controlBrowserActionJson = async (
     } catch {
       return Object.freeze({
         status: "delivery_unknown",
-        delivery: createDeliveryUnknown(action, operationId),
+        delivery: deliveryUnknown(),
       });
     }
     if (response === browserActionResponseUnavailable) {
       return Object.freeze({
         status: "delivery_unknown",
-        delivery: createDeliveryUnknown(action, operationId),
+        delivery: deliveryUnknown(),
       });
     }
 
@@ -217,13 +239,13 @@ export const controlBrowserActionJson = async (
     catch {
       return Object.freeze({
         status: "delivery_unknown",
-        delivery: createDeliveryUnknown(action, operationId),
+        delivery: deliveryUnknown(),
       });
     }
     if (value === browserActionResponseUnavailable) {
       return Object.freeze({
         status: "delivery_unknown",
-        delivery: createDeliveryUnknown(action, operationId),
+        delivery: deliveryUnknown(),
       });
     }
     if (response.ok) return Object.freeze({ status: "response_received", value });
@@ -235,11 +257,47 @@ export const controlBrowserActionJson = async (
       if (error instanceof BrowserResponseError) throw error;
       return Object.freeze({
         status: "delivery_unknown",
-        delivery: createDeliveryUnknown(action, operationId),
+        delivery: deliveryUnknown(),
       });
     }
   } finally {
     globalThis.clearTimeout(deadline);
     options.signal?.removeEventListener("abort", abort);
   }
+};
+
+export const controlBrowserActionJson = (
+  action: OperationDeliveryAction,
+  operationId: OperationId,
+  path: string,
+  body: unknown,
+  csrfTokenInput: unknown,
+  options: BrowserRequestOptions = {},
+): Promise<BrowserActionDeliveryResult> => controlBrowserSendOnceJson(
+  path,
+  body,
+  csrfTokenInput,
+  () => createDeliveryUnknown(action, operationId),
+  options,
+);
+
+export const controlBrowserReferenceMarketMutationJson = (
+  input: Readonly<{
+    action: ReferenceMarketDeliveryAction;
+    request: CanonicalJson;
+    csrfToken: unknown;
+    options?: BrowserRequestOptions;
+  }>,
+): Promise<Readonly<{ status: "response_received"; value: unknown }> | Readonly<{
+  status: "delivery_unknown";
+  delivery: ReferenceMarketDeliveryUnknown;
+}>> => {
+  const deliveryUnknown = createReferenceMarketDeliveryUnknown(input);
+  return controlBrowserSendOnceJson(
+    referenceMarketBrowserMutationPath(deliveryUnknown.action),
+    input.request,
+    input.csrfToken,
+    () => deliveryUnknown,
+    input.options,
+  );
 };

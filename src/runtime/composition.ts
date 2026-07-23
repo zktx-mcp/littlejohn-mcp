@@ -5,6 +5,11 @@ import {
   type AccountAssetApplicationPort,
 } from "../account-assets/index.js";
 import {
+  createReferenceMarketApplicationFactory,
+  type ReferenceMarketApplicationPort,
+  type ReferenceMarketOwnerApplication,
+} from "../market-portfolio/index.js";
+import {
   CapabilityBindingRegistry,
   CapabilityRegistry,
   ObservationAuthorityRegistry,
@@ -23,6 +28,7 @@ import {
   type InvocationBoundaryPorts,
   type UtcTimestamp,
 } from "../core/index.js";
+import { referenceMarketCapabilityIds } from "../market-portfolio/contracts.js";
 import {
   createTokenCatalogApplicationFactory,
   type TokenCatalogApplication,
@@ -36,7 +42,9 @@ import {
 } from "../registry/index.js";
 import type {
   AccountAssetChainReadPort,
+  ChainInvocationPort,
   OfficialAssetChainReadPort,
+  ReferenceMarketChainReadPort,
 } from "../chain/index.js";
 import type {
   ChainOwnerApplication,
@@ -58,6 +66,7 @@ import {
   type TokenCatalogConsumerPorts,
   tokenCatalogConsumerPortContract,
   type TokenCatalogInteractiveCliPort,
+  type TokenAdditionChainReadPort,
   type TokenCatalogCoordinatorDependencies,
   type TokenCatalogNonInteractiveOperationPort,
   type TokenCatalogInspectionPort,
@@ -104,6 +113,7 @@ import {
   assertChainRuntimeSupportManifestExtension,
   assertAccountAssetRuntimeSupportManifestExtension,
   assertInterfaceRuntimeSupportManifestExtension,
+  assertReferenceMarketRuntimeSupportManifestExtension,
   assertTokenCatalogRuntimeSupportManifestExtension,
   assertWalletRuntimeSupportManifestExtension,
   createInitialRuntimeSupportManifest,
@@ -111,6 +121,7 @@ import {
   type ChainRuntimeSupportManifest,
   type AccountAssetRuntimeSupportManifest,
   type InitialRuntimeSupportManifest,
+  type ReferenceMarketRuntimeSupportManifest,
   type TokenCatalogRuntimeSupportManifest,
   type WalletRuntimeSupportManifest,
 } from "./support-manifest.js";
@@ -140,10 +151,13 @@ export interface WalletOwnerHandoff<ActiveWallet extends object> {
 
 export interface ChainOwnerHandoff {
   readonly supportManifest: ChainRuntimeSupportManifest;
+  readonly invocations: ChainInvocationPort;
   readonly chainReads: ChainReadCapabilityPort;
   readonly tokenInspection: TokenCatalogInspectionPort;
+  readonly tokenAdditionReads: TokenAdditionChainReadPort;
   readonly officialAssetReads: OfficialAssetChainReadPort;
   readonly accountAssetReads: AccountAssetChainReadPort;
+  readonly referenceMarketReads: ReferenceMarketChainReadPort;
 }
 
 export interface TokenCatalogOwnerHandoff extends TokenCatalogConsumerPorts {
@@ -154,6 +168,11 @@ export interface TokenCatalogOwnerHandoff extends TokenCatalogConsumerPorts {
 export interface AccountAssetOwnerHandoff {
   readonly supportManifest: AccountAssetRuntimeSupportManifest;
   readonly accountAssets: AccountAssetApplicationPort;
+}
+
+export interface ReferenceMarketOwnerHandoff {
+  readonly supportManifest: ReferenceMarketRuntimeSupportManifest;
+  readonly referenceMarkets: ReferenceMarketApplicationPort;
 }
 
 interface LocalRuntimeBaseOptions {
@@ -260,6 +279,12 @@ export type AccountAssetOwnerApplicationStage<ActiveWallet extends object> = (
   chain: ChainOwnerHandoff,
   tokenCatalog: TokenCatalogOwnerHandoff,
 ) => Promise<AccountAssetApplication> | AccountAssetApplication;
+export type ReferenceMarketOwnerApplicationStage<ActiveWallet extends object> = (
+  context: RuntimeApplicationContext,
+  wallet: WalletOwnerHandoff<ActiveWallet>,
+  chain: ChainOwnerHandoff,
+  supportManifest: AccountAssetRuntimeSupportManifest,
+) => Promise<ReferenceMarketOwnerApplication> | ReferenceMarketOwnerApplication;
 export type InterfaceOwnerApplicationStage<
   ActiveWallet extends object,
   WalletOperations extends object,
@@ -269,6 +294,7 @@ export type InterfaceOwnerApplicationStage<
   chain: ChainOwnerHandoff,
   tokenCatalog: TokenCatalogOwnerHandoff,
   accountAssets: AccountAssetOwnerHandoff,
+  referenceMarkets: ReferenceMarketOwnerHandoff,
   walletOperations: WalletOperations,
 ) => Promise<InterfaceOwnerApplication> | InterfaceOwnerApplication;
 
@@ -282,12 +308,14 @@ export type OwnerApplicationStages<
       ChainOwnerApplicationStage<ActiveWallet>,
       TokenCatalogOwnerApplicationStage<ActiveWallet>,
       AccountAssetOwnerApplicationStage<ActiveWallet>,
+      ReferenceMarketOwnerApplicationStage<ActiveWallet>,
     ]
   | readonly [
       WalletOwnerApplicationStage<ActiveWallet, WalletOperations>,
       ChainOwnerApplicationStage<ActiveWallet>,
       TokenCatalogOwnerApplicationStage<ActiveWallet>,
       AccountAssetOwnerApplicationStage<ActiveWallet>,
+      ReferenceMarketOwnerApplicationStage<ActiveWallet>,
       InterfaceOwnerApplicationStage<ActiveWallet, WalletOperations>,
     ];
 
@@ -433,7 +461,8 @@ const snapshotTokenCatalogConsumerPorts = (
 
 const assertCapabilityDirectSupport = (
   manifest: WalletRuntimeSupportManifest | ChainRuntimeSupportManifest |
-    TokenCatalogRuntimeSupportManifest | AccountAssetRuntimeSupportManifest,
+    TokenCatalogRuntimeSupportManifest | AccountAssetRuntimeSupportManifest |
+    ReferenceMarketRuntimeSupportManifest,
   capabilityIds: readonly string[],
 ): void => {
   const snapshot = readRuntimeSupportManifest(manifest);
@@ -506,9 +535,20 @@ export const composeOwnerApplicationStages = async <
         assertRuntimeRouteRegistryDescendant(chainRoutes, chainApplication.routes);
         assertChainRuntimeSupportManifestExtension(wallet.supportManifest, chainApplication.supportManifest);
         const reads = snapshotChainReads(chainApplication.chainReads);
+        const invocations = chainApplication.invocations;
         const tokenInspection = snapshotTokenInspection(chainApplication.tokenInspection);
+        const tokenAdditionReads = chainApplication.tokenAdditionReads;
         const officialAssetReads = chainApplication.officialAssetReads;
         const accountAssetReads = chainApplication.accountAssetReads;
+        const referenceMarketReads = chainApplication.referenceMarketReads;
+        if (
+          typeof tokenAdditionReads !== "object" || tokenAdditionReads === null ||
+          typeof tokenAdditionReads.inspectAndVerifyOfficial !== "function"
+        ) throw new TypeError("Token addition chain read authority is unavailable.");
+        if (
+          typeof invocations !== "object" || invocations === null ||
+          typeof invocations.run !== "function"
+        ) throw new TypeError("Chain invocation authority is unavailable.");
         if (
           typeof officialAssetReads !== "object" || officialAssetReads === null ||
           typeof officialAssetReads.verifyAtBlock !== "function" ||
@@ -520,6 +560,12 @@ export const composeOwnerApplicationStages = async <
           typeof accountAssetReads.readCollectionAtBlock !== "function" ||
           typeof accountAssetReads.readExactAtBlock !== "function"
         ) throw new TypeError("Account asset chain read authority is unavailable.");
+        if (
+          typeof referenceMarketReads !== "object" || referenceMarketReads === null ||
+          typeof referenceMarketReads.resolveCurrentBlock !== "function" ||
+          typeof referenceMarketReads.readLatestAtBlock !== "function" ||
+          typeof referenceMarketReads.readHistoryAtBlock !== "function"
+        ) throw new TypeError("Reference market chain read authority is unavailable.");
         assertCapabilityDirectSupport(chainApplication.supportManifest, chainReadCapabilityIds);
         if (context.signal.aborted) throw new RuntimeOperationError("request_aborted");
         return Object.freeze({
@@ -527,10 +573,13 @@ export const composeOwnerApplicationStages = async <
           reads,
           handoff: Object.freeze({
             supportManifest: chainApplication.supportManifest,
+            invocations,
             chainReads: reads,
             tokenInspection,
+            tokenAdditionReads,
             officialAssetReads,
             accountAssetReads,
+            referenceMarketReads,
           }) satisfies ChainOwnerHandoff,
         });
       });
@@ -621,12 +670,61 @@ export const composeOwnerApplicationStages = async <
       currentRoutes = accountAssetApplication.routes;
     }
 
-    const interfaceStage = stages[4];
+    const referenceMarketStage = stages[4];
+    let referenceMarketApplication: ReferenceMarketOwnerApplication | undefined;
+    let referenceMarketHandoff: ReferenceMarketOwnerHandoff | undefined;
+    if (referenceMarketStage !== undefined) {
+      if (
+        chain === undefined || chainHandoff === undefined ||
+        accountAssetApplication === undefined || accountAssetHandoff === undefined
+      ) throw new TypeError("Reference market dependencies are unavailable.");
+      const referenceMarketRoutes = currentRoutes;
+      const referenceMarketResult = await runApplicationStage(
+        applications,
+        (startupResources) => referenceMarketStage(
+          { routes: referenceMarketRoutes, signal: context.signal, startupResources },
+          walletHandoff,
+          chainHandoff,
+          accountAssetApplication.supportManifest,
+        ),
+        (application) => {
+          assertRuntimeRouteRegistryDescendant(referenceMarketRoutes, application.routes);
+          assertReferenceMarketRuntimeSupportManifestExtension(
+            accountAssetApplication.supportManifest,
+            application.supportManifest,
+          );
+          assertCapabilityDirectSupport(application.supportManifest, referenceMarketCapabilityIds);
+          if (context.signal.aborted) throw new RuntimeOperationError("request_aborted");
+          const referenceMarkets = Object.freeze({
+            price: (...args: Parameters<ReferenceMarketApplicationPort["price"]>) => application.price(...args),
+            history: (...args: Parameters<ReferenceMarketApplicationPort["history"]>) => application.history(...args),
+            watchlist: (...args: Parameters<ReferenceMarketApplicationPort["watchlist"]>) => application.watchlist(...args),
+            addPair: (...args: Parameters<ReferenceMarketApplicationPort["addPair"]>) => application.addPair(...args),
+            removePair: (...args: Parameters<ReferenceMarketApplicationPort["removePair"]>) => application.removePair(...args),
+            reorderPairs: (...args: Parameters<ReferenceMarketApplicationPort["reorderPairs"]>) =>
+              application.reorderPairs(...args),
+          }) satisfies ReferenceMarketApplicationPort;
+          return Object.freeze({
+            application,
+            handoff: Object.freeze({
+              supportManifest: application.supportManifest,
+              referenceMarkets,
+            }) satisfies ReferenceMarketOwnerHandoff,
+          });
+        },
+      );
+      referenceMarketApplication = referenceMarketResult.application;
+      referenceMarketHandoff = referenceMarketResult.handoff;
+      currentRoutes = referenceMarketApplication.routes;
+    }
+
+    const interfaceStage = stages[5];
     if (interfaceStage !== undefined) {
       if (
         chain === undefined || chainReads === undefined || chainHandoff === undefined ||
         tokenCatalogApplication === undefined || tokenCatalogHandoff === undefined ||
         accountAssetApplication === undefined || accountAssetHandoff === undefined
+        || referenceMarketApplication === undefined || referenceMarketHandoff === undefined
       ) {
         throw new TypeError("Interface application dependencies are unavailable.");
       }
@@ -639,12 +737,13 @@ export const composeOwnerApplicationStages = async <
           chainHandoff,
           tokenCatalogHandoff,
           accountAssetHandoff,
+          referenceMarketHandoff,
           walletOperations,
         ),
         (application) => {
           assertRuntimeRouteRegistryDescendant(interfaceRoutes, application.routes);
           assertInterfaceRuntimeSupportManifestExtension(
-            accountAssetApplication.supportManifest,
+            referenceMarketApplication.supportManifest,
             application.supportManifest,
           );
           if (context.signal.aborted) throw new RuntimeOperationError("request_aborted");
@@ -805,13 +904,9 @@ export class LocalRuntime {
               routes,
               supportManifest: chain.supportManifest,
               activeWallet,
-              inspection: chain.tokenInspection,
+              additionChainReads: chain.tokenAdditionReads,
               officialAssets,
               startupResources,
-              verifyOfficialAsset: Object.freeze({
-                verify: (member, block, callerSignal) =>
-                  chain.officialAssetReads.verifyAtBlock(member, block, callerSignal),
-              }),
               store,
               readStore,
               accountTokenSelectionStore,
@@ -830,24 +925,46 @@ export class LocalRuntime {
               activeWallet: requireActiveWalletAuthority(wallet.activeWallet),
               selections: tokenCatalog.accountTokenSelectionStore,
               officialAssets: tokenCatalog.officialAssets,
+              chainInvocations: chain.invocations,
               officialAssetReads: chain.officialAssetReads,
               chainReads: chain.accountAssetReads,
               clock,
               signal,
             });
+      const referenceMarketStage: ReferenceMarketOwnerApplicationStage<ActiveWallet> | undefined =
+        accountAssetStage === undefined
+          ? undefined
+          : ({ routes }, wallet, chain, supportManifest) => createReferenceMarketApplicationFactory({
+            routes,
+            supportManifest,
+            activeWallet: requireActiveWalletAuthority(wallet.activeWallet),
+            chainInvocations: chain.invocations,
+            chain: chain.referenceMarketReads,
+            store: database.referenceMarketStore(),
+            clock,
+          });
       const interfaceStage: InterfaceOwnerApplicationStage<ActiveWallet, WalletOperations> | undefined =
         interfaceApplicationFactory === undefined
           ? undefined
-          : ({ routes, signal, startupResources }, wallet, chain, tokenCatalog, accountAssets, walletOperations) => interfaceApplicationFactory({
+          : (
+              { routes, signal, startupResources },
+              wallet,
+              chain,
+              tokenCatalog,
+              accountAssets,
+              referenceMarkets,
+              walletOperations,
+            ) => interfaceApplicationFactory({
             routes,
             signal,
             startupResources,
-            supportManifest: accountAssets.supportManifest,
+            supportManifest: referenceMarkets.supportManifest,
             walletConnection: wallet.walletConnection,
             walletOperations,
             chainReads: chain.chainReads,
             tokenInspection: chain.tokenInspection,
             accountAssets: accountAssets.accountAssets,
+            referenceMarkets: referenceMarkets.referenceMarkets,
             tokenCatalogQueries: tokenCatalog.tokenCatalogQueries,
             tokenCatalogWebStart: tokenCatalog.tokenCatalogWebStart,
             tokenCatalogBrowserOperations: tokenCatalog.tokenCatalogBrowserOperations,
@@ -864,12 +981,14 @@ export class LocalRuntime {
                 chainStage,
                 tokenCatalogStage as TokenCatalogOwnerApplicationStage<ActiveWallet>,
                 accountAssetStage as AccountAssetOwnerApplicationStage<ActiveWallet>,
+                referenceMarketStage as ReferenceMarketOwnerApplicationStage<ActiveWallet>,
               ]
             : [
                 walletStage,
                 chainStage,
                 tokenCatalogStage as TokenCatalogOwnerApplicationStage<ActiveWallet>,
                 accountAssetStage as AccountAssetOwnerApplicationStage<ActiveWallet>,
+                referenceMarketStage as ReferenceMarketOwnerApplicationStage<ActiveWallet>,
                 interfaceStage,
               ];
       const applicationFactory = stages === undefined

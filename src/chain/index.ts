@@ -26,15 +26,21 @@ export type {
 export { createChainReadService } from "./handlers.js";
 export type { ChainReadService } from "./handlers.js";
 export {
+  assertActiveChainInvocationContext,
   chainInvocationDeadlineMs,
   createChainInvocationLifecycle,
   getChainInvocationStopReason,
 } from "./invocation-lifecycle.js";
 export type {
+  ChainInvocationContext,
   ChainInvocationLifecycle,
+  ChainInvocationPort,
   ChainInvocationStopReason,
 } from "./invocation-lifecycle.js";
-export { resolveCanonicalBlock } from "./canonical-block.js";
+export {
+  readConfiguredCanonicalBlock,
+  resolveConfiguredCanonicalBlock,
+} from "./canonical-block.js";
 export type { CanonicalBlock } from "./canonical-block.js";
 export { validateConfiguredChain } from "./configured-chain.js";
 export {
@@ -56,11 +62,13 @@ export type {
 } from "./token-standards.js";
 export {
   createBoundedRpcRequester,
+  isRpcBatchRejectedError,
+  rpcBatchCallLimit,
   rpcConcurrencyLimit,
   rpcRequestTimeoutMs,
   rpcResponseByteLimit,
 } from "./rpc.js";
-export type { RpcRequester } from "./rpc.js";
+export type { ChainRpcCall, RpcRequester } from "./rpc.js";
 export { createTokenInspectionService } from "./token-inspection.js";
 export type { TokenInspectionService } from "./token-inspection.js";
 export { createOfficialAssetChainReadPort } from "./official-assets.js";
@@ -74,3 +82,12 @@ export type {
   CurrentAccountTokenRead,
   CurrentTokenText,
 } from "./account-assets.js";
+export {
+  createReferenceMarketCallEncoder,
+  createReferenceMarketChainReadPort,
+} from "./reference-market.js";
+export type {
+  ReferenceHistoryTraversal,
+  ReferenceMarketCallEncoder,
+  ReferenceMarketChainReadPort,
+} from "./reference-market.js";

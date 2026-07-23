@@ -7,6 +7,7 @@ import {
 } from "../../src/core/index.js";
 import { interfaceReadCapabilityRegistry } from "../../src/interfaces/identities.js";
 import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
+import { extendReferenceMarketSupportManifest } from "../../src/market-portfolio/support.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import {
   RuntimeOperationError,
@@ -148,8 +149,9 @@ describe("runtime support manifest authority", () => {
       expect(readRuntimeSupportManifest(chain).capabilities
         .find((entry) => entry.capabilityId === capabilityId)?.availability).toEqual(internal);
     }
-    const tokenCatalog = extendAccountAssetSupportManifest(extendTokenCatalogSupportManifest(chain));
-    const interfaces = extendInterfaceRuntimeSupportManifest(tokenCatalog, {
+    const accountAssets = extendAccountAssetSupportManifest(extendTokenCatalogSupportManifest(chain));
+    const referenceMarkets = extendReferenceMarketSupportManifest(accountAssets);
+    const interfaces = extendInterfaceRuntimeSupportManifest(referenceMarkets, {
       registrations: [],
       changes: [{
         capabilityId: "wallet.operation",
@@ -159,7 +161,7 @@ describe("runtime support manifest authority", () => {
     expect(readRuntimeSupportManifest(interfaces).capabilities
       .find((entry) => entry.capabilityId === "wallet.operation")?.availability.web).toBe("available");
     expect(() => assertChainRuntimeSupportManifestExtension(wallet, chain)).not.toThrow();
-    expect(() => assertInterfaceRuntimeSupportManifestExtension(tokenCatalog, interfaces)).not.toThrow();
+    expect(() => assertInterfaceRuntimeSupportManifestExtension(referenceMarkets, interfaces)).not.toThrow();
     expect(() => assertWalletRuntimeSupportManifestExtension(initialRuntimeSupportManifest, chain as never))
       .toThrow("scope lineage");
 
@@ -239,8 +241,9 @@ describe("runtime support manifest authority", () => {
   it("binds the capability catalog schema and projection to the exact supplied registry", () => {
     const wallet = extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, walletExtensionInput);
     const chain = extendChainRuntimeSupportManifest(wallet, chainExtensionInput);
-    const tokenCatalog = extendAccountAssetSupportManifest(extendTokenCatalogSupportManifest(chain));
-    const interfaces = extendInterfaceRuntimeSupportManifest(tokenCatalog, {
+    const accountAssets = extendAccountAssetSupportManifest(extendTokenCatalogSupportManifest(chain));
+    const referenceMarkets = extendReferenceMarketSupportManifest(accountAssets);
+    const interfaces = extendInterfaceRuntimeSupportManifest(referenceMarkets, {
       registrations: [],
       changes: [{
         capabilityId: "token.inspect",

@@ -4,6 +4,7 @@ import {
   canonicalBlockReference,
   ChainRpcError,
   createBoundedRpcRequester,
+  isRpcBatchRejectedError,
   isRpcExecutionRevertedError,
   normalizeChainRpcError,
   rpcConcurrencyLimit,
@@ -115,6 +116,59 @@ describe("bounded RPC requester", () => {
       new AbortController().signal,
     )).resolves.toBe("0x1");
     expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns batch results in request order while preserving per-call reverts", async () => {
+    const fetchFn = vi.fn(fetchOf(async (_input, init) => {
+      if (typeof init?.body !== "string") throw new TypeError("Expected a string request body.");
+      const requests = JSON.parse(init.body) as JsonRpcRequest[];
+      expect(requests).toHaveLength(2);
+      return new Response(JSON.stringify([{
+        jsonrpc: "2.0",
+        id: requests[1]!.id,
+        error: { code: 3, message: "execution reverted", data: "0x" },
+      }, {
+        jsonrpc: "2.0",
+        id: requests[0]!.id,
+        result: "0x01",
+      }]));
+    }));
+    const requester = createBoundedRpcRequester({ url: "https://rpc.example", fetch: fetchFn });
+    if (requester.requestBatch === undefined) throw new TypeError("Expected batch support.");
+    const results = await requester.requestBatch([{
+      method: "eth_call",
+      params: [{ to: stateAddress, data: parseHexBytes("0x01") }, stateReference],
+    }, {
+      method: "eth_call",
+      params: [{ to: stateAddress, data: parseHexBytes("0x02") }, stateReference],
+    }], new AbortController().signal);
+
+    expect(results[0]).toEqual({ status: "fulfilled", value: "0x01" });
+    expect(results[1]?.status).toBe("rejected");
+    if (results[1]?.status !== "rejected") throw new TypeError("Expected a rejected batch item.");
+    expect(isRpcExecutionRevertedError(results[1].reason)).toBe(true);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("distinguishes a canonical provider batch rejection from malformed transport data", async () => {
+    const requester = createBoundedRpcRequester({
+      url: "https://rpc.example",
+      fetch: fetchOf(async () => new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32600, message: "batch unsupported" },
+      }))),
+    });
+    if (requester.requestBatch === undefined) throw new TypeError("Expected batch support.");
+    try {
+      await requester.requestBatch([{
+        method: "eth_call",
+        params: [{ to: stateAddress, data: parseHexBytes("0x01") }, stateReference],
+      }], new AbortController().signal);
+      throw new Error("Expected a batch rejection.");
+    } catch (error) {
+      expect(isRpcBatchRejectedError(error)).toBe(true);
+    }
   });
 
   it("admits exact storage reads and gas-bounded calls without widening other parameters", async () => {

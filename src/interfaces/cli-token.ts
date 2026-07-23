@@ -31,9 +31,9 @@ import {
   type LocalOperationIdentity,
 } from "./operation-client.js";
 import {
-  deliveryUnknownCliExitCode,
   type DeliveryUnknown,
 } from "./operation-delivery.js";
+import { deliveryUnknownCliExitCode } from "./delivery-exit.js";
 import {
   constrainInterfaceFailure,
   createInterfaceFailure,

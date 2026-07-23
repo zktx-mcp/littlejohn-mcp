@@ -7,8 +7,8 @@ import type {
   HttpOwnerApplication,
 } from "../runtime/http-owner.js";
 import type {
-  AccountAssetRuntimeSupportManifest,
   InterfaceRuntimeSupportManifest,
+  ReferenceMarketRuntimeSupportManifest,
 } from "../runtime/support-manifest.js";
 import type { WalletInterfaceOperations } from "../wallet/contracts.js";
 import {
@@ -17,6 +17,7 @@ import {
   type TokenCatalogInspectionPort,
 } from "../token-catalog/index.js";
 import type { AccountAssetApplicationPort } from "../account-assets/index.js";
+import type { ReferenceMarketApplicationPort } from "../market-portfolio/index.js";
 import {
   loadBrowserAssetBundle,
   type BrowserAssetBundle,
@@ -27,6 +28,7 @@ import {
 } from "./browser-credentials.js";
 import { extendBrowserInterfaceRoutes } from "./browser-routes.js";
 import { extendPublicInterfaceRoutes } from "./http-routes.js";
+import { extendReferenceMarketInterfaceRoutes } from "./reference-market-http.js";
 import { extendInterfaceSupportManifest } from "./support.js";
 
 export interface InterfaceApplicationDependencies {
@@ -36,12 +38,13 @@ export interface InterfaceApplicationDependencies {
 
 export interface InterfaceOwnerApplicationContext<WalletOperations extends object>
   extends RuntimeApplicationContext, Omit<TokenCatalogConsumerPorts, "accountTokenSelectionStore"> {
-  readonly supportManifest: AccountAssetRuntimeSupportManifest;
+  readonly supportManifest: ReferenceMarketRuntimeSupportManifest;
   readonly walletConnection: WalletConnectionReadCapabilityPort;
   readonly walletOperations: WalletOperations;
   readonly chainReads: ChainReadCapabilityPort;
   readonly tokenInspection: TokenCatalogInspectionPort;
   readonly accountAssets: AccountAssetApplicationPort;
+  readonly referenceMarkets: ReferenceMarketApplicationPort;
 }
 
 export interface InterfaceOwnerApplication extends HttpOwnerApplication {
@@ -79,12 +82,17 @@ export const createInterfaceOwnerApplicationFactory = (
       interactiveCli: context.tokenCatalogInteractiveCli,
       nonInteractiveOperations: context.tokenCatalogNonInteractiveOperations,
     });
-    const routes = extendBrowserInterfaceRoutes({
+    const referenceMarketRoutes = extendReferenceMarketInterfaceRoutes({
       routes: controlRoutes,
+      referenceMarkets: context.referenceMarkets,
+    });
+    const routes = extendBrowserInterfaceRoutes({
+      routes: referenceMarketRoutes,
       credentials,
       assets,
       walletOperations: context.walletOperations,
       accountAssets: context.accountAssets,
+      referenceMarkets: context.referenceMarkets,
       tokenInspection: context.tokenInspection,
       tokenCatalogWebStart: context.tokenCatalogWebStart,
       tokenCatalogBrowserOperations: context.tokenCatalogBrowserOperations,

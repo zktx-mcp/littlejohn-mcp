@@ -15,6 +15,7 @@ const webApplicationSource = resolve(webSourceRoot, "app.tsx");
 const walletClientSource = resolve(webSourceRoot, "wallet-client.ts");
 const browserClientSource = resolve(webSourceRoot, "browser-client.ts");
 const browserOperationIdSource = resolve(webSourceRoot, "operation-id.ts");
+const referenceMarketViewSource = resolve(webSourceRoot, "reference-market-view.tsx");
 const canonicalJsonSource = resolve(repositoryRoot, "src/core/canonical-json.ts");
 const evidenceSource = resolve(repositoryRoot, "src/core/evidence.ts");
 const keccak256Source = resolve(repositoryRoot, "src/core/keccak256.ts");
@@ -25,6 +26,7 @@ const sharedContractSources = new Set([
   "src/interfaces/browser-contract.ts",
   "src/interfaces/browser-error-response.ts",
   "src/interfaces/operation-delivery.ts",
+  "src/interfaces/reference-market-delivery.ts",
   "src/core/application-contract.ts",
   "src/core/account-balance-contract.ts",
   "src/core/canonical-json-value.ts",
@@ -40,11 +42,13 @@ const sharedContractSources = new Set([
   "src/core/evidence.ts",
   "src/core/identities.ts",
   "src/core/immutability.ts",
+  "src/core/invocation.ts",
   "src/core/json-object.ts",
   "src/core/keccak256.ts",
   "src/core/primitives.ts",
   "src/core/operation-id.ts",
   "src/core/product-identity.ts",
+  "src/core/reference-market.ts",
   "src/core/token-standards.ts",
   "src/core/wallet-connection.ts",
   "src/chain/error-definitions.ts",
@@ -54,6 +58,8 @@ const sharedContractSources = new Set([
   "src/token-catalog/error-definitions.ts",
   "src/token-catalog/http-contract.ts",
   "src/token-catalog/state.ts",
+  "src/market-portfolio/contracts.ts",
+  "src/market-portfolio/error-definitions.ts",
   "src/account-assets/browser.ts",
   "src/account-assets/contracts.ts",
   "src/account-assets/error-registry.ts",
@@ -78,6 +84,7 @@ const allowedWebConstructorsBySource = new Map([
   [webApplicationSource, new Set(["Error", "Set"])],
   [browserClientSource, new Set(["AbortController", "BrowserResponseError", "Promise", "TypeError"])],
   [browserOperationIdSource, new Set(["Uint8Array"])],
+  [referenceMarketViewSource, new Set(["AbortController", "Map", "Set"])],
   [resolve(webSourceRoot, "request-authority.ts"), new Set(["AbortController"])],
 ]);
 const allowedVirtualModules = new Set([
@@ -88,13 +95,13 @@ const allowedVirtualModules = new Set([
 const codeSourceExtensions = new Set([".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"]);
 const allowedIntrinsicElements = new Set([
   "a", "article", "button", "code", "dd", "details", "dialog", "div", "dl", "dt", "h1", "h2", "header",
-  "footer", "input", "label", "li", "main", "nav", "option", "p", "rect", "section", "select", "span", "strong", "summary", "svg", "ul",
+  "footer", "input", "label", "li", "main", "nav", "option", "p", "polyline", "rect", "section", "select", "span", "strong", "summary", "svg", "ul",
 ]);
 const allowedIntrinsicAttributes = new Set([
   "aria-current", "aria-expanded", "aria-hidden", "aria-label", "aria-labelledby", "aria-modal", "autoComplete", "className", "disabled",
-  "fill", "height", "href", "key", "onBlur", "onCancel", "onChange", "onClick", "onFocus", "onKeyDown",
+  "fill", "height", "href", "key", "onBlur", "onCancel", "onChange", "onClick", "onFocus", "onKeyDown", "points",
   "onMouseDown", "onMouseEnter", "onMouseLeave", "ref", "role",
-  "id", "shapeRendering", "spellCheck", "tabIndex", "title", "type", "value", "viewBox", "width", "x", "y",
+  "id", "shapeRendering", "spellCheck", "stroke", "strokeWidth", "tabIndex", "title", "type", "value", "vectorEffect", "viewBox", "width", "x", "y",
 ]);
 const forbiddenGlobalIdentifiers = new Set([
   "Audio", "BroadcastChannel", "DOMParser", "EventSource", "Function", "Image", "SharedWorker",
@@ -404,7 +411,7 @@ const approvedConstructorBinding = (
   if (expression.text === "Promise") {
     return symbolIsDeclaredIn(checker, expression, "lib.es2015.promise.d.ts");
   }
-  if (expression.text === "Set") {
+  if (expression.text === "Map" || expression.text === "Set") {
     return symbolIsDeclaredIn(checker, expression, "lib.es2015.collection.d.ts");
   }
   if (expression.text === "AbortController") return symbolIsDeclaredIn(checker, expression, "lib.dom.d.ts");

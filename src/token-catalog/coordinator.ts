@@ -1,8 +1,6 @@
 import { randomBytes } from "node:crypto";
 
 import {
-  CapabilityBindingRegistry,
-  CapabilityRegistry,
   ObservationAuthorityRegistry,
   deepFreezeValue,
   parseUtcTimestamp,
@@ -24,7 +22,6 @@ import {
   tokenCatalogOperationSchema,
   tokenCatalogReviewDigest,
   parseTokenOperationFailure,
-  tokenInspectCapability,
   tokenSelectionRevisionSchema,
   tokenSelectionSetRevisionSchema,
   type TokenCatalogConfirmedOperation,
@@ -122,7 +119,6 @@ const operationFailureFor = (error: unknown): ApplicationFailure => {
 
 export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinatorPort {
   readonly #dependencies: TokenCatalogCoordinatorRuntimeDependencies;
-  readonly #inspections: CapabilityBindingRegistry;
   readonly #operations = new Map<string, OperationEntry>();
   readonly #inspectionControllers = new Set<AbortController>();
   readonly #activeCalls = new Set<Promise<void>>();
@@ -133,10 +129,6 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
 
   constructor(dependencies: TokenCatalogCoordinatorRuntimeDependencies) {
     this.#dependencies = dependencies;
-    this.#inspections = new CapabilityBindingRegistry(
-      new CapabilityRegistry([tokenInspectCapability]),
-      [dependencies.inspection],
-    );
     Object.seal(this);
   }
 
@@ -349,16 +341,13 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
         if (synchronization.status === "unavailable") {
           return synchronization.failure;
         }
-        const inspection = await this.#inspections.invoke(
-          tokenInspectCapability,
-          { asset: command.input.asset, block: { kind: "latest" } },
-          { signal },
-        );
-        if ("ok" in inspection && inspection.ok === false) return inspection;
         const member = findOfficialAssetMember(synchronization.snapshot, command.input.asset.address);
-        const officialVerification = member === undefined
-          ? null
-          : await this.#dependencies.verifyOfficialAsset.verify(member, inspection.data.block, signal);
+        const chainResult = await this.#dependencies.additionChainReads.inspectAndVerifyOfficial({
+          asset: command.input.asset,
+          officialMember: member ?? null,
+        }, signal);
+        if (!("inspection" in chainResult)) return chainResult;
+        const { inspection, officialVerification } = chainResult;
         const officialEvidence: TokenOfficialSelectionEvidence | null = member === undefined || officialVerification === null
           ? null
           : Object.freeze({

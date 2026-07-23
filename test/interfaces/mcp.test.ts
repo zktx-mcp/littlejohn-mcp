@@ -11,9 +11,15 @@ import {
   captureCanonicalJson,
   erc20AssetIdentitySchema,
   getCapabilityDefinitionSnapshot,
+  referenceMarketManifest,
 } from "../../src/core/index.js";
 import { extendChainSupportManifest } from "../../src/chain/application.js";
 import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
+import { extendReferenceMarketSupportManifest } from "../../src/market-portfolio/support.js";
+import {
+  createReferenceMarketFailure,
+  referenceMarketInterfaceErrorMappings,
+} from "../../src/market-portfolio/errors.js";
 import {
   chainErrorRegistry,
   chainInterfaceErrorMappings,
@@ -29,6 +35,7 @@ import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
 import {
   capabilityCatalogInterface,
   readInterfaceIdentities,
+  referenceMarketInterfaceBindings,
   tokenCatalogInterfaceBindings,
   tokenCatalogInterfaceBindingList,
   walletInterfaceBindings,
@@ -83,11 +90,11 @@ const connected = Object.freeze({
   expiresAt: "2026-07-15T06:00:00.000Z",
 });
 const catalog = composeInterfaceCapabilityCatalog(extendInterfaceSupportManifest(
-  extendAccountAssetSupportManifest(extendTokenCatalogSupportManifest(
+  extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(extendTokenCatalogSupportManifest(
     extendChainSupportManifest(extendWalletSupportManifest(
       createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
     )),
-  )),
+  ))),
 ));
 const operation = (): WalletManagementOperation => parseWalletManagementOperation({
   operationId,
@@ -222,6 +229,31 @@ const textResult = (result: unknown): string => {
 };
 
 describe("MCP interface", () => {
+  it("dispatches reference-market reads through the credential-free public-read boundary", async () => {
+    const unavailable = createReferenceMarketFailure("source_unavailable");
+    const runtime = new FakeRuntime(() => ({
+      status: 503,
+      body: captureCanonicalJson(toProblemDetails(unavailable, referenceMarketInterfaceErrorMappings)),
+    }));
+    const { client } = await connect(runtime);
+    const pairId = referenceMarketManifest.pairs[0]!.pairId;
+
+    const result = await client.callTool({
+      name: referenceMarketInterfaceBindings.price.mcp.name,
+      arguments: { pairId },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toEqual(unavailable);
+    expect(runtime.requests).toEqual([{
+      requestClass: "public_read",
+      method: "POST",
+      path: referenceMarketInterfaceBindings.price.http.path,
+      body: { pairId },
+      signal: expect.any(AbortSignal),
+    }]);
+  });
+
   it("projects the package identity through the MCP handshake", async () => {
     const manifest = JSON.parse(readFileSync("package.json", "utf8")) as {
       readonly name: string;
@@ -240,7 +272,6 @@ describe("MCP interface", () => {
     const names = listed.tools.map((tool) => tool.name).sort();
 
     expect(names).toEqual([...mcpToolNames].sort());
-    expect(names).toHaveLength(18);
     for (const name of names) expect(parseMcpToolName(name)).toBe(name);
     expect(() => parseMcpToolName("read.get_chain_status")).toThrow();
     expect(() => parseMcpToolName("Read_Get_Chain_Status")).toThrow();

@@ -52,6 +52,7 @@ import {
 import { createBrowserSessionRecovery } from "./browser-session-recovery.js";
 import type { NotificationNotice } from "./notification.js";
 import { createBrowserRequestAuthority, type BrowserRequest } from "./request-authority.js";
+import { ReferenceMarketView } from "./reference-market-view.js";
 import {
   cancelTokenOperation,
   confirmTokenOperation,
@@ -1092,6 +1093,7 @@ export const App = () => {
           {walletNavigationLabel(currentWallet)}
         </button>
       </nav>
+      <ReferenceMarketView walletConnected={currentAccount !== undefined} csrfToken={csrfToken} />
       {state.status === "loading" ? (
         <main className="intro">
           <p className="eyebrow">Robinhood Chain</p>

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createAccountAssetApplication } from "../../src/account-assets/application.js";
 import {
@@ -14,9 +14,14 @@ import {
   walletConnectionCapability,
   type EvmAddress,
 } from "../../src/core/index.js";
-import type {
-  AccountAssetChainReadPort,
-  OfficialAssetChainReadPort,
+import {
+  createChainInvocationLifecycle,
+  readConfiguredCanonicalBlock,
+  resolveConfiguredCanonicalBlock,
+  type AccountAssetChainReadPort,
+  type CanonicalBlock,
+  type ChainInvocationContext,
+  type OfficialAssetChainReadPort,
 } from "../../src/chain/index.js";
 import {
   defaultStockTokenManifest,
@@ -49,6 +54,27 @@ const laterBlock = chainAnchorSchema.parse({
   blockHash: `0x${"bc".repeat(32)}`,
   blockTimestamp: "2026-07-21T00:00:01.000Z",
 });
+const issueBlock = (
+  anchor: typeof block,
+  context: ChainInvocationContext,
+): Promise<CanonicalBlock> => resolveConfiguredCanonicalBlock({
+  rpc: {
+    async request(method) {
+      if (method === "eth_chainId") return "0x1237";
+      if (method === "eth_getBlockByNumber") {
+        return {
+          number: `0x${BigInt(anchor.blockNumber).toString(16)}`,
+          hash: anchor.blockHash,
+          timestamp: `0x${BigInt(Math.floor(Date.parse(anchor.blockTimestamp) / 1_000)).toString(16)}`,
+        };
+      }
+      throw new Error(`Unexpected canonical-block fixture method: ${method}`);
+    },
+  },
+  chainId,
+  selector: { kind: "latest" },
+  context,
+});
 const snapshotRevision = officialAssetSnapshotRevisionSchema.parse(
   Buffer.alloc(16, 7).toString("base64url"),
 );
@@ -56,6 +82,21 @@ const selectionSetRevision = tokenSelectionSetRevisionSchema.parse(
   Buffer.alloc(16, 8).toString("base64url"),
 );
 const account = Object.freeze({ chainId, address: accountAddress });
+
+const deferred = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+};
+
+const pendingUntilAbort = (signal: AbortSignal): Promise<never> =>
+  new Promise((_resolve, reject) => {
+    const abort = (): void => reject(new DOMException("Aborted.", "AbortError"));
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+  });
 
 const member = (address: EvmAddress, byte: string, symbol: string) => Object.freeze({
   assetUid: parseHash32(`0x${byte.repeat(32)}`),
@@ -101,10 +142,13 @@ const requiredObservation = (address: EvmAddress, observationBlock = block) => O
   },
 });
 
-const fullObservation = (address: EvmAddress) => tokenStandardObservationResultSchema.parse({
+const fullObservation = (
+  address: EvmAddress,
+  observationBlock = block,
+) => tokenStandardObservationResultSchema.parse({
   asset: { kind: "erc20", chainId, address },
   account,
-  block,
+  block: observationBlock,
   standards: [
     { standardId: "erc20_read_surface", status: "observed" },
     { standardId: "erc165", status: "not_supported" },
@@ -118,8 +162,9 @@ const fullObservation = (address: EvmAddress) => tokenStandardObservationResultS
 const fixture = (options: Readonly<{
   sourceAvailable?: boolean;
   blocks?: readonly [typeof block, ...(typeof block)[]];
-  afterVerification?: () => void;
-  beforeCollectionReturn?: () => void;
+  afterVerification?: (signal: AbortSignal) => void | Promise<void>;
+  beforeCollectionReturn?: (signal: AbortSignal) => void | Promise<void>;
+  beforeExactReturn?: (signal: AbortSignal) => void | Promise<void>;
 }> = {}) => {
   const sourceAvailable = options.sourceAvailable ?? true;
   const entries = [detail(defaultMember.contractAddress, 1), detail(customAddress, 2)];
@@ -134,6 +179,9 @@ const fixture = (options: Readonly<{
   let sessionSourceId = "wallet-session:test";
   let officialSnapshot: CommittedOfficialAssetSnapshot = snapshot;
   let blockIndex = 0;
+  let afterVerification = options.afterVerification;
+  let beforeCollectionReturn = options.beforeCollectionReturn;
+  let beforeExactReturn = options.beforeExactReturn;
   const selections: AccountTokenSelectionStore = Object.freeze({
     getState: () => state,
     getForAccount: ({ account: requested, asset }: Parameters<AccountTokenSelectionStore["getForAccount"]>[0]) => requested.chainId === account.chainId &&
@@ -179,31 +227,57 @@ const fixture = (options: Readonly<{
     tokenCodeHash: parseHash32(`0x${"ee".repeat(32)}`),
   });
   const owner = new AbortController();
+  const lifecycle = createChainInvocationLifecycle(owner.signal);
+  const readBlock = (
+    canonicalBlock: CanonicalBlock,
+    context: ChainInvocationContext,
+  ) => {
+    lifecycle.assertActiveContext(context);
+    return readConfiguredCanonicalBlock({
+      block: canonicalBlock,
+      context,
+      chainId,
+    }).anchor;
+  };
   const officialAssetReads: OfficialAssetChainReadPort = Object.freeze({
     verifyAtBlock: async (
       entry: Parameters<OfficialAssetChainReadPort["verifyAtBlock"]>[0],
       verificationBlock: Parameters<OfficialAssetChainReadPort["verifyAtBlock"]>[1],
-    ) => verificationFor(entry.assetUid, entry.contractAddress, verificationBlock),
+      context: Parameters<OfficialAssetChainReadPort["verifyAtBlock"]>[2],
+    ) => verificationFor(
+      entry.assetUid,
+      entry.contractAddress,
+      readBlock(verificationBlock, context),
+    ),
     verifyManyAtBlock: async (
       members: Parameters<OfficialAssetChainReadPort["verifyManyAtBlock"]>[0],
       verificationBlock: Parameters<OfficialAssetChainReadPort["verifyManyAtBlock"]>[1],
+      context: Parameters<OfficialAssetChainReadPort["verifyManyAtBlock"]>[2],
     ) => {
+      const verificationAnchor = readBlock(verificationBlock, context);
       const results = Object.freeze(members.map((entry) => Object.freeze({
         status: "verified" as const,
-        verification: verificationFor(entry.assetUid, entry.contractAddress, verificationBlock),
+        verification: verificationFor(entry.assetUid, entry.contractAddress, verificationAnchor),
       })));
-      options.afterVerification?.();
+      await afterVerification?.(context.signal);
       return results;
     },
   });
   const chainReads: AccountAssetChainReadPort = Object.freeze({
-    resolveCurrentBlock: async () => options.blocks?.[blockIndex++] ?? block,
+    resolveCurrentBlock: async (
+      context: Parameters<AccountAssetChainReadPort["resolveCurrentBlock"]>[0],
+    ) => {
+      lifecycle.assertActiveContext(context);
+      return issueBlock(options.blocks?.[blockIndex++] ?? block, context);
+    },
     readCollectionAtBlock: async (
       { account: requested, assets, block: requestedBlock }: Parameters<AccountAssetChainReadPort["readCollectionAtBlock"]>[0],
+      context: Parameters<AccountAssetChainReadPort["readCollectionAtBlock"]>[1],
     ) => {
+      const requestedAnchor = readBlock(requestedBlock, context);
       const result = Object.freeze({
         account: requested,
-        block: requestedBlock,
+        block: requestedAnchor,
         nativeRawBalance: parseUnsignedDecimal("7"),
         tokens: Object.freeze(assets.map((asset, index) => Object.freeze({
         asset,
@@ -211,26 +285,32 @@ const fixture = (options: Readonly<{
         symbol: { status: "available" as const, value: index === 0 ? "AAPL" : "CSTM" },
         decimals: parseUnsignedDecimal("18"),
         rawBalance: parseUnsignedDecimal(String(index + 1)),
-        requiredStandards: requiredObservation(asset.address, requestedBlock),
+        requiredStandards: requiredObservation(asset.address, requestedAnchor),
         }))),
       });
-      options.beforeCollectionReturn?.();
+      await beforeCollectionReturn?.(context.signal);
       return result;
     },
     readExactAtBlock: async (
-      { account: requested, asset }: Parameters<AccountAssetChainReadPort["readExactAtBlock"]>[0],
-    ) => Object.freeze({
-      account: requested,
-      asset,
-      block,
-      name: { status: "available" as const, value: "Exact" },
-      symbol: { status: "available" as const, value: "EXT" },
-      decimals: parseUnsignedDecimal("18"),
-      rawBalance: parseUnsignedDecimal("9"),
-      requiredStandards: requiredObservation(asset.address),
-      totalSupply: parseUnsignedDecimal("100"),
-      standards: fullObservation(asset.address),
-    }),
+      { account: requested, asset, block: requestedBlock }: Parameters<AccountAssetChainReadPort["readExactAtBlock"]>[0],
+      context: Parameters<AccountAssetChainReadPort["readExactAtBlock"]>[1],
+    ) => {
+      const requestedAnchor = readBlock(requestedBlock, context);
+      const result = Object.freeze({
+        account: requested,
+        asset,
+        block: requestedAnchor,
+        name: { status: "available" as const, value: "Exact" },
+        symbol: { status: "available" as const, value: "EXT" },
+        decimals: parseUnsignedDecimal("18"),
+        rawBalance: parseUnsignedDecimal("9"),
+        requiredStandards: requiredObservation(asset.address, requestedAnchor),
+        totalSupply: parseUnsignedDecimal("100"),
+        standards: fullObservation(asset.address, requestedAnchor),
+      });
+      await beforeExactReturn?.(context.signal);
+      return result;
+    },
   });
   const application = createAccountAssetApplication({
     activeWallet: Object.freeze({
@@ -258,6 +338,7 @@ const fixture = (options: Readonly<{
       readStored: () => officialSnapshot,
       close: async () => undefined,
     }),
+    chainInvocations: lifecycle,
     officialAssetReads,
     chainReads,
     clock: createCanonicalClock(() => at),
@@ -265,11 +346,18 @@ const fixture = (options: Readonly<{
   });
   return {
     application,
+    async close() {
+      await application.close();
+      await lifecycle.close();
+    },
     get state() { return state; },
     setState(next: TokenSelectionState) { state = next; },
     get initializationCalls() { return initializationCalls; },
     setSessionSourceId(next: string) { sessionSourceId = next; },
     setOfficialSnapshot(next: CommittedOfficialAssetSnapshot) { officialSnapshot = next; },
+    setAfterVerification(next: typeof afterVerification) { afterVerification = next; },
+    setBeforeCollectionReturn(next: typeof beforeCollectionReturn) { beforeCollectionReturn = next; },
+    setBeforeExactReturn(next: typeof beforeExactReturn) { beforeExactReturn = next; },
   };
 };
 
@@ -286,13 +374,20 @@ describe("account asset read process", () => {
       "robinhood_stock_token",
       "custom_erc20",
     ]);
+    expect(result.assets.map((entry) => entry.requiredStandards.block)).toEqual([
+      result.block,
+      result.block,
+    ]);
+    expect(result.assets[0]!.classification).toMatchObject({
+      verification: { block: result.block },
+    });
     expect(result.native.rawBalance).toBe("7");
     expect(test.initializationCalls).toBe(0);
 
     const candidates = await test.application.listOfficialCandidates({ viewRevision: result.viewRevision });
     if ("ok" in candidates) throw new TypeError(candidates.error.code);
     expect(candidates.candidates.map((entry) => entry.contractAddress)).toEqual([candidateAddress]);
-    await test.application.close();
+    await test.close();
   });
 
   it("uses the supplied view revision for exact reads and rejects later selection drift", async () => {
@@ -315,7 +410,7 @@ describe("account asset read process", () => {
       asset: list.assets[1]!.selection.asset,
       viewRevision: list.viewRevision,
     })).resolves.toMatchObject({ ok: false, error: { code: "state_conflict" } });
-    await test.application.close();
+    await test.close();
   });
 
   it("preserves selected assets while making official classification explicitly unavailable", async () => {
@@ -331,7 +426,7 @@ describe("account asset read process", () => {
       officialSnapshotRevision: snapshotRevision,
       selectionSetRevision,
     });
-    await test.application.close();
+    await test.close();
   });
 
   it("rejects session-source and official-snapshot drift before returning a page", async () => {
@@ -343,7 +438,7 @@ describe("account asset read process", () => {
       ok: false,
       error: { code: "state_conflict" },
     });
-    await sessionTest.application.close();
+    await sessionTest.close();
 
     const changedRevision = officialAssetSnapshotRevisionSchema.parse(
       Buffer.alloc(16, 10).toString("base64url"),
@@ -358,7 +453,7 @@ describe("account asset read process", () => {
       ok: false,
       error: { code: "state_conflict" },
     });
-    await sourceTest.application.close();
+    await sourceTest.close();
   });
 
   it("retains view revisions while resolving a new block for a later page", async () => {
@@ -371,6 +466,68 @@ describe("account asset read process", () => {
     expect(first.block.blockHash).toBe(block.blockHash);
     expect(second.block.blockHash).toBe(laterBlock.blockHash);
     expect(second.viewRevision).toEqual(first.viewRevision);
-    await test.application.close();
+    await test.close();
+  });
+
+  it("keeps one remaining chain deadline across account list and get reads", async () => {
+    vi.useFakeTimers();
+    const test = fixture();
+    const baseline = await test.application.list({});
+    if ("ok" in baseline) throw new TypeError(baseline.error.code);
+
+    const listGate = deferred();
+    const listStarted = deferred();
+    const collectionStarted = deferred();
+    test.setAfterVerification(async () => {
+      listStarted.resolve();
+      await listGate.promise;
+    });
+    test.setBeforeCollectionReturn((signal) => {
+      collectionStarted.resolve();
+      return pendingUntilAbort(signal);
+    });
+    const pendingList = test.application.list({});
+    await listStarted.promise;
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(vi.getTimerCount()).toBe(1);
+    listGate.resolve();
+    await collectionStarted.promise;
+    await vi.advanceTimersByTimeAsync(30_000);
+    await expect(pendingList).resolves.toMatchObject({
+      ok: false,
+      error: { code: "source_unavailable" },
+    });
+    expect(vi.getTimerCount()).toBe(0);
+
+    const getGate = deferred();
+    const getStarted = deferred();
+    const exactStarted = deferred();
+    test.setAfterVerification(async () => {
+      getStarted.resolve();
+      await getGate.promise;
+    });
+    test.setBeforeCollectionReturn(undefined);
+    test.setBeforeExactReturn((signal) => {
+      exactStarted.resolve();
+      return pendingUntilAbort(signal);
+    });
+    const pendingGet = test.application.get({
+      asset: baseline.assets[0]!.selection.asset,
+      viewRevision: baseline.viewRevision,
+    });
+    await getStarted.promise;
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(vi.getTimerCount()).toBe(1);
+    getGate.resolve();
+    await exactStarted.promise;
+    await vi.advanceTimersByTimeAsync(30_000);
+    await expect(pendingGet).resolves.toMatchObject({
+      ok: false,
+      error: { code: "source_unavailable" },
+    });
+    expect(vi.getTimerCount()).toBe(0);
+    await test.close();
   });
 });

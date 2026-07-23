@@ -17,8 +17,6 @@ export const deliveryUnknownSchema = z.object({
 }).strict();
 export type DeliveryUnknown = z.infer<typeof deliveryUnknownSchema>;
 
-export const deliveryUnknownCliExitCode = 8;
-
 export const createDeliveryUnknown = (
   action: OperationDeliveryAction,
   operationId: OperationId,

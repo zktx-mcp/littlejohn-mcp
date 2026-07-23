@@ -103,7 +103,20 @@ export interface RpcRequester {
     params: ChainRpcRequestMap[Method],
     signal: AbortSignal,
   ): Promise<unknown>;
+  requestBatch?(
+    calls: readonly ChainRpcCall[],
+    signal: AbortSignal,
+  ): Promise<readonly PromiseSettledResult<unknown>[]>;
 }
+
+export type ChainRpcCall = {
+  readonly [Method in ChainRpcMethod]: Readonly<{
+    method: Method;
+    params: ChainRpcRequestMap[Method];
+  }>;
+}[ChainRpcMethod];
+
+export const rpcBatchCallLimit = 32;
 
 type RpcFetch = typeof fetch;
 
@@ -144,6 +157,19 @@ let nextRequestId = 1n;
 class RequestAbortedMarker extends Error {
   override readonly name = "RequestAbortedMarker";
 }
+
+const rpcBatchRejectedErrors = new WeakSet<object>();
+
+const createRpcBatchRejectedError = (): Error => {
+  const error = new Error("rpc_batch_rejected");
+  error.name = "RpcBatchRejectedError";
+  rpcBatchRejectedErrors.add(error);
+  Object.freeze(error);
+  return error;
+};
+
+export const isRpcBatchRejectedError = (error: unknown): boolean =>
+  typeof error === "object" && error !== null && rpcBatchRejectedErrors.has(error);
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -426,17 +452,11 @@ const readBoundedBody = async (response: Response, signal: AbortSignal): Promise
   }
 };
 
-const parseResponse = (
-  body: string,
+const parseResponseValue = (
+  parsed: unknown,
   expectedId: string,
   method: ChainRpcMethod,
 ): unknown => {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body) as unknown;
-  } catch {
-    throw new ChainRpcError("source_inconsistent");
-  }
   if (!isPlainObject(parsed) || parsed["jsonrpc"] !== "2.0" || parsed["id"] !== expectedId) {
     throw new ChainRpcError("source_inconsistent");
   }
@@ -481,6 +501,61 @@ const parseResponse = (
   throw new ChainRpcError("source_unavailable");
 };
 
+const parseResponse = (
+  body: string,
+  expectedId: string,
+  method: ChainRpcMethod,
+): unknown => {
+  let parsed: unknown;
+  try { parsed = JSON.parse(body) as unknown; }
+  catch { throw new ChainRpcError("source_inconsistent"); }
+  return parseResponseValue(parsed, expectedId, method);
+};
+
+const isBatchRejection = (value: unknown): boolean => {
+  if (!isPlainObject(value) || value["jsonrpc"] !== "2.0" || value["id"] !== null) return false;
+  const error = value["error"];
+  return hasExactKeys(value, ["jsonrpc", "id", "error"]) &&
+    isPlainObject(error) &&
+    (hasExactKeys(error, ["code", "message"]) || hasExactKeys(error, ["code", "message", "data"])) &&
+    (error["code"] === -32600 || error["code"] === -32601) &&
+    typeof error["message"] === "string";
+};
+
+const parseBatchResponse = (
+  body: string,
+  expected: ReadonlyMap<string, ChainRpcMethod>,
+): readonly PromiseSettledResult<unknown>[] => {
+  let parsed: unknown;
+  try { parsed = JSON.parse(body) as unknown; }
+  catch { throw new ChainRpcError("source_inconsistent"); }
+  if (!Array.isArray(parsed)) {
+    if (isBatchRejection(parsed)) throw createRpcBatchRejectedError();
+    throw new ChainRpcError("source_inconsistent");
+  }
+  if (parsed.length !== expected.size) throw new ChainRpcError("source_inconsistent");
+  const byId = new Map<string, PromiseSettledResult<unknown>>();
+  for (const entry of parsed) {
+    if (!isPlainObject(entry) || typeof entry["id"] !== "string" || !expected.has(entry["id"]) ||
+      byId.has(entry["id"])) {
+      throw new ChainRpcError("source_inconsistent");
+    }
+    const id = entry["id"];
+    const method = expected.get(id);
+    if (method === undefined) throw new ChainRpcError("source_inconsistent");
+    try {
+      byId.set(id, { status: "fulfilled", value: parseResponseValue(entry, id, method) });
+    } catch (reason) {
+      byId.set(id, { status: "rejected", reason });
+    }
+  }
+  return Object.freeze([...expected.keys()].map((id) => {
+    const result = byId.get(id);
+    if (result === undefined) throw new ChainRpcError("source_inconsistent");
+    return Object.freeze(result);
+  }));
+};
+
 export const createBoundedRpcRequester = (
   options: BoundedRpcRequesterOptions,
 ): RpcRequester => {
@@ -489,20 +564,9 @@ export const createBoundedRpcRequester = (
   if (typeof fetchFn !== "function") throw new TypeError("RPC fetch implementation is unavailable.");
   const timeoutMs = parseBoundedInteger(options.timeoutMs, rpcRequestTimeoutMs, rpcRequestTimeoutMs, "RPC timeout");
 
-  const requester: RpcRequester = {
-    async request<Method extends ChainRpcMethod>(
-      method: Method,
-      params: ChainRpcRequestMap[Method],
-      signal: AbortSignal,
-    ): Promise<unknown> {
-      if (!allowedMethods.has(method)) throw new TypeError("RPC method is not allowed.");
-      if (!(signal instanceof AbortSignal)) throw new TypeError("RPC abort signal is invalid.");
-      if (signal.aborted) throw new ChainRpcError("request_aborted");
-
-      const id = nextRequestId.toString(10);
-      nextRequestId += 1n;
-      const body = serializeRequest(id, method, params);
-
+  const sendBody = async (body: string, signal: AbortSignal): Promise<string> => {
+    if (!(signal instanceof AbortSignal)) throw new TypeError("RPC abort signal is invalid.");
+    if (signal.aborted) throw new ChainRpcError("request_aborted");
       if (activeExternalRpcRequests >= rpcConcurrencyLimit) throw new ChainRpcError("runtime_busy");
       activeExternalRpcRequests += 1;
 
@@ -542,18 +606,55 @@ export const createBoundedRpcRequester = (
           cancelBody(response);
           throw new ChainRpcError("source_unavailable");
         }
-        const responseBody = await readBoundedBody(response, controller.signal);
-        return parseResponse(responseBody, id, method);
+        return await readBoundedBody(response, controller.signal);
       } catch (error) {
         if (signal.aborted) throw new ChainRpcError("request_aborted");
         if (timedOut) throw new ChainRpcError("source_unavailable");
-        if (isRpcExecutionRevertedError(error)) throw error;
         throw normalizeChainRpcError(error);
       } finally {
         clearTimeout(timeout);
         signal.removeEventListener("abort", onCallerAbort);
         activeExternalRpcRequests -= 1;
       }
+  };
+
+  const requester: RpcRequester = {
+    async request<Method extends ChainRpcMethod>(
+      method: Method,
+      params: ChainRpcRequestMap[Method],
+      signal: AbortSignal,
+    ): Promise<unknown> {
+      if (!allowedMethods.has(method)) throw new TypeError("RPC method is not allowed.");
+      const id = nextRequestId.toString(10);
+      nextRequestId += 1n;
+      const body = serializeRequest(id, method, params);
+      return parseResponse(await sendBody(body, signal), id, method);
+    },
+    async requestBatch(
+      calls: readonly ChainRpcCall[],
+      signal: AbortSignal,
+    ): Promise<readonly PromiseSettledResult<unknown>[]> {
+      if (!Array.isArray(calls) || calls.length < 1 || calls.length > rpcBatchCallLimit) {
+        throw new TypeError("RPC batch size is invalid.");
+      }
+      const expected = new Map<string, ChainRpcMethod>();
+      const requests: string[] = [];
+      for (const call of calls) {
+        if (!isPlainObject(call) || !hasExactKeys(call, ["method", "params"])) {
+          throw new TypeError("RPC batch call is invalid.");
+        }
+        const method = call["method"];
+        const params = call["params"];
+        if (typeof method !== "string" || !allowedMethods.has(method as ChainRpcMethod) || !Array.isArray(params)) {
+          throw new TypeError("RPC batch call is invalid.");
+        }
+        const admittedMethod = method as ChainRpcMethod;
+        const id = nextRequestId.toString(10);
+        nextRequestId += 1n;
+        expected.set(id, admittedMethod);
+        requests.push(serializeRequest(id, admittedMethod, params));
+      }
+      return parseBatchResponse(await sendBody(`[${requests.join(",")}]`, signal), expected);
     },
   };
   return Object.freeze(requester);

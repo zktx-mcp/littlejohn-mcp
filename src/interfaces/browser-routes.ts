@@ -66,6 +66,11 @@ import {
   browserWalletApiPaths,
 } from "./browser-contract.js";
 import type { BrowserRequestCredentialAuthority } from "./browser-credentials.js";
+import {
+  extendReferenceMarketBrowserControlRoutes,
+  referenceMarketBrowserControlResources,
+} from "./reference-market-http.js";
+import type { ReferenceMarketApplicationPort } from "../market-portfolio/index.js";
 
 const success = (body: unknown): RouteResult => ({
   ok: true,
@@ -119,6 +124,7 @@ const browserPageResources: readonly ResourcePathDefinition[] = Object.freeze([
 ]);
 
 const browserApiResources: readonly ResourcePathDefinition[] = Object.freeze([
+  ...referenceMarketBrowserControlResources,
   Object.freeze({
     kind: "route",
     method: "POST",
@@ -226,6 +232,7 @@ export const extendBrowserInterfaceRoutes = (input: {
   readonly assets: BrowserAssetBundle;
   readonly walletOperations: WalletInterfaceOperations;
   readonly accountAssets: AccountAssetApplicationPort;
+  readonly referenceMarkets: ReferenceMarketApplicationPort;
   readonly tokenInspection: TokenCatalogInspectionPort;
   readonly tokenCatalogWebStart: TokenCatalogWebStartPort;
   readonly tokenCatalogBrowserOperations: TokenCatalogBrowserOperationPort;
@@ -263,7 +270,7 @@ export const extendBrowserInterfaceRoutes = (input: {
     }
   };
 
-  return securedRoutes.extend([
+  const browserRoutes = securedRoutes.extend([
     {
       method: "GET",
       mutation: "none",
@@ -590,5 +597,9 @@ export const extendBrowserInterfaceRoutes = (input: {
           : { ok: true, body: asset.body, contentType: asset.contentType };
       },
     },
-  ], accountAssetInterfaceErrorMappings);
+  ]);
+  return extendReferenceMarketBrowserControlRoutes({
+    routes: browserRoutes,
+    referenceMarkets: input.referenceMarkets,
+  });
 };

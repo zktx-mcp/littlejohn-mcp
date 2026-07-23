@@ -41,6 +41,9 @@ const expectedCapabilityIds = Object.freeze([
   "wallet.connection",
 ]);
 const expectedSemanticReadToolNames = Object.freeze([
+  "market_get_reference_history",
+  "market_get_reference_price",
+  "market_get_watchlist",
   "read_get_account_balance",
   "read_get_chain_status",
   "read_inspect_contract",
@@ -50,6 +53,12 @@ const expectedSemanticReadToolNames = Object.freeze([
 ]);
 const expectedToolNames = Object.freeze([
   "account_list_assets",
+  "market_add_watchlist_pair",
+  "market_get_reference_history",
+  "market_get_reference_price",
+  "market_get_watchlist",
+  "market_remove_watchlist_pair",
+  "market_reorder_watchlist_pairs",
   "read_get_account_balance",
   "read_get_chain_status",
   "read_inspect_contract",
@@ -453,7 +462,7 @@ const readPackagedRuntimeIdentity = async () => {
     Array.isArray(identity) ||
     JSON.stringify(Object.keys(identity).sort()) !== JSON.stringify(expectedFields) ||
     identity.challenge !== challenge ||
-    identity.runtimeProtocolVersion !== 7 ||
+    identity.runtimeProtocolVersion !== 8 ||
     typeof identity.profileId !== "string" ||
     !/^[A-Za-z0-9_-]{22}$/u.test(identity.profileId) ||
     typeof identity.ownerInstanceId !== "string" ||
@@ -464,7 +473,7 @@ const readPackagedRuntimeIdentity = async () => {
     !/^[A-Za-z0-9_-]{43}$/u.test(identity.proof) ||
     typeof identity.ownerRevision !== "string" ||
     !/^(?:0|[1-9][0-9]*)$/u.test(identity.ownerRevision)
-  ) throw new TypeError("Packaged runtime identity is not the exact protocol-7 contract.");
+  ) throw new TypeError("Packaged runtime identity is not the exact protocol-8 contract.");
   return identity;
 };
 
@@ -805,6 +814,59 @@ const browserExactAccountAsset = (browser, token, viewRevision) => fetch(
   },
 );
 
+const browserReferencePrice = (pairId, headers = {}) => fetch(
+  `${fixedOrigin}/api/v1/reference-markets/price-queries`,
+  {
+    method: "POST",
+    headers: {
+      Origin: fixedOrigin,
+      "Content-Type": "application/json",
+      ...headers,
+    },
+    body: JSON.stringify({ pairId }),
+    redirect: "error",
+  },
+);
+
+const browserReferenceHistory = (pairId, window) => fetch(
+  `${fixedOrigin}/api/v1/reference-markets/history-queries`,
+  {
+    method: "POST",
+    headers: {
+      Origin: fixedOrigin,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ pairId, window }),
+    redirect: "error",
+  },
+);
+
+const browserReferenceWatchlistMutation = (path, body, browser) => fetch(
+  `${fixedOrigin}${path}`,
+  {
+    method: "POST",
+    headers: {
+      Cookie: browser.cookie,
+      Origin: fixedOrigin,
+      [csrfHeaderName]: browser.csrf,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+    redirect: "error",
+  },
+);
+
+const assertReferenceWatchlist = (value, expectedPairIds) => {
+  if (
+    value?.account?.chainId !== expectedChainId ||
+    value.account.address !== expectedWalletAddress ||
+    typeof value.revision !== "string" ||
+    !Array.isArray(value.entries) ||
+    JSON.stringify(value.entries.map((entry) => entry?.pairId)) !== JSON.stringify(expectedPairIds)
+  ) throw new TypeError("Packaged reference-market watchlist is invalid.");
+  return value;
+};
+
 const assertAccountAssetCollection = (value, fakeRpc, expectedTokens) => {
   if (
     value?.account?.chainId !== fakeRpc.token.chainId ||
@@ -912,7 +974,7 @@ const assertPackagedPersistence = (inspection, runtimeIdentity) => {
     Array.isArray(owner) ||
     owner.profileId !== runtimeIdentity.profileId ||
     owner.configurationMac !== runtimeIdentity.configurationMac ||
-    owner.protocolVersion !== 7
+    owner.protocolVersion !== 8
   ) throw new TypeError("Packaged SQLite owner configuration identity is invalid.");
   const connection = inspection.connection;
   if (
@@ -1039,7 +1101,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     }
     const capabilityIds = catalogEntries.map((entry) => entry?.capabilityId);
     if (
-      catalog.structuredContent?.contractVersion !== "6" ||
+      catalog.structuredContent?.contractVersion !== "7" ||
       JSON.stringify(capabilityIds) !== JSON.stringify(expectedCapabilityIds) ||
       catalogEntries.some((entry) =>
         entry?.maximumSuccessUtf8Bytes !== 8_388_607 ||
@@ -1372,6 +1434,100 @@ export const verifyPackagedIntegration = async (prepared) => {
       JSON.stringify(firstConnection.structuredContent?.data)
     ) throw new TypeError("Compatible MCP processes do not share one wallet projection.");
 
+    const referencePair = fakeRpc.referenceMarkets.pairs[0];
+    if (referencePair === undefined) throw new TypeError("Release reference pair is unavailable.");
+    const referencePrice = await callSemanticRead(firstMcp, "market_get_reference_price", {
+      pairId: referencePair.pairId,
+    });
+    if (
+      referencePrice.structuredContent?.status !== "current" ||
+      referencePrice.structuredContent.pair?.pairId !== referencePair.pairId ||
+      referencePrice.structuredContent.currentPrice?.numerator !== "96692202731" ||
+      referencePrice.structuredContent.currentPrice?.denominator !== "50000000" ||
+      referencePrice.structuredContent.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash
+    ) throw new TypeError("Packaged reference price is invalid.");
+    const browserPrice = await jsonResponse(await browserReferencePrice(referencePair.pairId));
+    if (JSON.stringify(browserPrice) !== JSON.stringify(referencePrice.structuredContent)) {
+      throw new TypeError("Packaged browser and MCP reference prices differ.");
+    }
+    const credentialedReferencePrice = await browserReferencePrice(referencePair.pairId, {
+      Cookie: browser.cookie,
+    });
+    const credentialedReferenceProblem = await credentialedReferencePrice.json();
+    if (
+      credentialedReferencePrice.status !== 401 ||
+      problemCode(credentialedReferenceProblem) !== "unauthorized"
+    ) throw new TypeError("Public reference price accepted browser credentials.");
+
+    const referenceHistory = await callSemanticRead(firstMcp, "market_get_reference_history", {
+      pairId: referencePair.pairId,
+      window: "1d",
+    });
+    const referenceHistoryContent = referenceHistory.structuredContent;
+    if (
+      referenceHistoryContent?.status !== "partial" ||
+      referenceHistoryContent.pair?.pairId !== referencePair.pairId ||
+      referenceHistoryContent.window !== "1d" ||
+      referenceHistoryContent.coverage?.basis !== "observed_rounds" ||
+      JSON.stringify(Object.keys(referenceHistoryContent.coverage).sort()) !==
+        JSON.stringify(["basis", "emptyBucketStarts", "limitations", "requestedEnd", "requestedStart"]) ||
+      JSON.stringify(referenceHistoryContent.coverage.limitations) !==
+        JSON.stringify(["source_history_not_exhaustive", "phase_boundary"]) ||
+      !Array.isArray(referenceHistoryContent.candles) ||
+      referenceHistoryContent.candles.length !== 1 ||
+      Object.hasOwn(referenceHistoryContent.candles[0] ?? {}, "volume") ||
+      !Array.isArray(referenceHistoryContent.warnings) ||
+      !referenceHistoryContent.warnings.includes("partial_history")
+    ) throw new TypeError("Packaged reference history is invalid.");
+    const browserHistory = await jsonResponse(await browserReferenceHistory(referencePair.pairId, "1d"));
+    if (JSON.stringify(browserHistory) !== JSON.stringify(referenceHistoryContent)) {
+      throw new TypeError("Packaged browser and MCP reference histories differ.");
+    }
+    for (const [command, expected] of [
+      [["market", "price", referencePair.pairId, "--json"], referencePrice.structuredContent],
+      [["market", "history", referencePair.pairId, "--window", "1d", "--json"], referenceHistoryContent],
+    ]) {
+      const result = await runCommand(process.execPath, [
+        resolve(prepared.installedPackageRoot, "dist/cli.js"),
+        ...command,
+      ], { cwd: prepared.installRoot, env: environment, output: "capture" });
+      if (JSON.stringify(JSON.parse(result.stdout.toString("utf8"))) !== JSON.stringify(expected)) {
+        throw new TypeError("Packaged CLI and MCP reference reads differ.");
+      }
+    }
+
+    const initialReferenceWatchlist = assertReferenceWatchlist(
+      (await callSemanticRead(firstMcp, "market_get_watchlist")).structuredContent,
+      [],
+    );
+    const cliReferenceWatchlist = await runCommand(process.execPath, [
+      resolve(prepared.installedPackageRoot, "dist/cli.js"),
+      "market",
+      "watchlist",
+      "--json",
+    ], { cwd: prepared.installRoot, env: environment, output: "capture" });
+    assertReferenceWatchlist(
+      JSON.parse(cliReferenceWatchlist.stdout.toString("utf8")),
+      [],
+    );
+    const addedReferenceWatchlist = assertReferenceWatchlist(
+      await jsonResponse(await browserReferenceWatchlistMutation(
+        "/api/v1/reference-market-watchlist/entry-additions",
+        { pairId: referencePair.pairId, expectedRevision: initialReferenceWatchlist.revision },
+        browser,
+      )),
+      [referencePair.pairId],
+    );
+    const reorderedReferenceWatchlist = assertReferenceWatchlist(
+      (await firstMcp.callTool("market_reorder_watchlist_pairs", {
+        pairIds: [referencePair.pairId],
+        expectedRevision: addedReferenceWatchlist.revision,
+      })).structuredContent,
+      [referencePair.pairId],
+    );
+    if (reorderedReferenceWatchlist.revision !== addedReferenceWatchlist.revision) {
+      throw new TypeError("Packaged no-op watchlist reorder changed its revision.");
+    }
     const catalogAsset = tokenAsset(fakeRpc);
     const officialCandidateAsset = Object.freeze({
       kind: "erc20",
@@ -1429,7 +1585,7 @@ export const verifyPackagedIntegration = async (prepared) => {
       fakeRpc,
       fakeRpc.defaultTokens,
     );
-    assertRpcRequestBudget(fakeRpc, initialAssetRequestCount, 70, "Initial account asset page");
+    assertRpcRequestBudget(fakeRpc, initialAssetRequestCount, 71, "Initial account asset page");
     if (initialAssets.nextCursor !== null) {
       throw new TypeError("Default initialization created unexpected account selections.");
     }
@@ -1601,7 +1757,7 @@ export const verifyPackagedIntegration = async (prepared) => {
       fakeRpc.token,
       customAssetView.viewRevision,
     ));
-    assertRpcRequestBudget(fakeRpc, exactAssetRequestCount, 21, "Exact account asset read");
+    assertRpcRequestBudget(fakeRpc, exactAssetRequestCount, 22, "Exact account asset read");
     assertExactAccountAsset(exactCustom, fakeRpc, fakeRpc.token);
 
     const cliTokenList = await runCommand(process.execPath, [
@@ -1900,6 +2056,23 @@ export const verifyPackagedIntegration = async (prepared) => {
       fakeRpc,
       fakeRpc.defaultTokens,
     );
+    const takeoverReferenceWatchlist = assertReferenceWatchlist(
+      (await callSemanticRead(takeoverMcp, "market_get_watchlist")).structuredContent,
+      [referencePair.pairId],
+    );
+    if (takeoverReferenceWatchlist.revision !== reorderedReferenceWatchlist.revision) {
+      throw new TypeError("Packaged owner takeover changed the persisted reference watchlist.");
+    }
+    const removedReferenceWatchlist = assertReferenceWatchlist(
+      (await takeoverMcp.callTool("market_remove_watchlist_pair", {
+        pairId: referencePair.pairId,
+        expectedRevision: takeoverReferenceWatchlist.revision,
+      })).structuredContent,
+      [],
+    );
+    if (removedReferenceWatchlist.revision === takeoverReferenceWatchlist.revision) {
+      throw new TypeError("Packaged watchlist removal did not commit a new revision.");
+    }
     await takeoverMcp.close();
     mcpClients.splice(mcpClients.indexOf(takeoverMcp), 1);
 

@@ -28,6 +28,13 @@ import {
   type AccountAssetCollectionSuccess,
 } from "../account-assets/index.js";
 import {
+  referenceMarketApplicationContracts,
+  referenceMarketCapabilities,
+  referenceMarketErrorRegistry,
+  referenceMarketInterfaceErrorMappings,
+  type AnyReferenceMarketApplicationContract,
+} from "../market-portfolio/index.js";
+import {
   tokenCatalogApplicationContracts,
   tokenCatalogErrorRegistry,
   tokenCatalogInterfaceErrorMappings,
@@ -66,9 +73,17 @@ import { walletErrorRegistry, walletInterfaceErrorMappings } from "../wallet/err
 import type { WalletOperationKind } from "../wallet/operation-state.js";
 import { walletControlRoutes } from "../wallet/routes.js";
 import type { CanonicalDispatchAuthority } from "./http-client.js";
+import type { ReferenceMarketDeliveryAction } from "./reference-market-delivery.js";
 import type { OperationDeliveryAction } from "./operation-delivery.js";
 import type { InterfaceErrorMappingRegistry } from "../runtime/errors.js";
 import type { RouteMethod } from "../runtime/http-routing.js";
+import { referenceMarketPublicRoutes } from "./browser-contract.js";
+
+export const referenceMarketLocalMutationPaths = Object.freeze({
+  add: "/api/v1/internal/control/reference-market-watchlist/entry-additions",
+  remove: "/api/v1/internal/control/reference-market-watchlist/entry-removals",
+  reorder: "/api/v1/internal/control/reference-market-watchlist/order-replacements",
+} as const satisfies Readonly<Record<ReferenceMarketDeliveryAction, string>>);
 
 declare const localOperationIdentityType: unique symbol;
 
@@ -107,7 +122,7 @@ export interface InterfaceToolAnnotations {
 }
 
 export interface CliInterfaceIdentity {
-  readonly domain: "read" | "token" | "wallet";
+  readonly domain: "market" | "read" | "token" | "wallet";
   readonly command: string;
   readonly argumentSyntax: string;
 }
@@ -141,6 +156,10 @@ const tokenResponseAuthority = Object.freeze({
 const accountAssetResponseAuthority = Object.freeze({
   applicationErrors: accountAssetErrorRegistry,
   interfaceMappings: accountAssetInterfaceErrorMappings,
+});
+const referenceMarketResponseAuthority = Object.freeze({
+  applicationErrors: referenceMarketErrorRegistry,
+  interfaceMappings: referenceMarketInterfaceErrorMappings,
 });
 
 const readAnnotations = (openWorldHint: boolean): InterfaceToolAnnotations => Object.freeze({
@@ -342,6 +361,131 @@ export interface AccountAssetInterfaceBinding {
   readonly cli?: Readonly<CliInterfaceIdentity>;
   readonly web: true;
 }
+
+export interface ReferenceMarketInterfaceBinding {
+  readonly action: "price" | "history" | "watchlist" | "add" | "remove" | "reorder";
+  readonly contract: AnyReferenceMarketApplicationContract;
+  readonly responseAuthority: CanonicalDispatchAuthority;
+  readonly http: Readonly<{ method: "POST"; path: string }>;
+  readonly mcp: Readonly<{
+    readonly name: string;
+    readonly description: string;
+    readonly annotations: InterfaceToolAnnotations;
+  }>;
+  readonly cli: Readonly<CliInterfaceIdentity>;
+  readonly web: true;
+}
+
+const referenceMarketBinding = <const Binding extends ReferenceMarketInterfaceBinding>(
+  input: Binding,
+): Readonly<Binding> => {
+  if (input.contract.capabilityId !== referenceMarketCapabilities[input.action]) {
+    throw new TypeError("Reference market interface action and contract are inconsistent.");
+  }
+  return Object.freeze({
+    ...input,
+    contract: input.contract,
+    responseAuthority: input.responseAuthority,
+    http: Object.freeze(input.http),
+    mcp: Object.freeze(input.mcp),
+    cli: Object.freeze(input.cli),
+  }) as Readonly<Binding>;
+};
+
+export const referenceMarketInterfaceBindings = Object.freeze({
+  price: referenceMarketBinding({
+    action: "price",
+    contract: referenceMarketApplicationContracts.price,
+    responseAuthority: referenceMarketResponseAuthority,
+    http: { method: "POST", path: referenceMarketPublicRoutes.priceQueries },
+    mcp: {
+      name: "market_get_reference_price",
+      description: "Read one Chainlink reference price on Robinhood Chain.",
+      annotations: readAnnotations(true),
+    },
+    cli: { domain: "market", command: "price", argumentSyntax: "<pair-id> [--json]" },
+    web: true,
+  }),
+  history: referenceMarketBinding({
+    action: "history",
+    contract: referenceMarketApplicationContracts.history,
+    responseAuthority: referenceMarketResponseAuthority,
+    http: { method: "POST", path: referenceMarketPublicRoutes.historyQueries },
+    mcp: {
+      name: "market_get_reference_history",
+      description: "Read exact Chainlink reference-price candles on Robinhood Chain.",
+      annotations: readAnnotations(true),
+    },
+    cli: { domain: "market", command: "history", argumentSyntax: "<pair-id> --window <1d|7d|30d> [--json]" },
+    web: true,
+  }),
+  watchlist: referenceMarketBinding({
+    action: "watchlist",
+    contract: referenceMarketApplicationContracts.watchlist,
+    responseAuthority: referenceMarketResponseAuthority,
+    http: { method: "POST", path: referenceMarketPublicRoutes.watchlistQueries },
+    mcp: {
+      name: "market_get_watchlist",
+      description: "Read the current wallet account's reference-pair watchlist.",
+      annotations: readAnnotations(false),
+    },
+    cli: { domain: "market", command: "watchlist", argumentSyntax: "[--json]" },
+    web: true,
+  }),
+  add: referenceMarketBinding({
+    action: "add",
+    contract: referenceMarketApplicationContracts.add,
+    responseAuthority: referenceMarketResponseAuthority,
+    http: { method: "POST", path: referenceMarketLocalMutationPaths.add },
+    mcp: {
+      name: "market_add_watchlist_pair",
+      description: "Add one supported reference pair to the current wallet account's watchlist.",
+      annotations: startAnnotations(false),
+    },
+    cli: { domain: "market", command: "add-pair", argumentSyntax: "<pair-id> --revision <revision> [--json]" },
+    web: true,
+  }),
+  remove: referenceMarketBinding({
+    action: "remove",
+    contract: referenceMarketApplicationContracts.remove,
+    responseAuthority: referenceMarketResponseAuthority,
+    http: { method: "POST", path: referenceMarketLocalMutationPaths.remove },
+    mcp: {
+      name: "market_remove_watchlist_pair",
+      description: "Remove one reference pair from the current wallet account's watchlist.",
+      annotations: Object.freeze({
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      }),
+    },
+    cli: { domain: "market", command: "remove-pair", argumentSyntax: "<pair-id> --revision <revision> [--json]" },
+    web: true,
+  }),
+  reorder: referenceMarketBinding({
+    action: "reorder",
+    contract: referenceMarketApplicationContracts.reorder,
+    responseAuthority: referenceMarketResponseAuthority,
+    http: { method: "POST", path: referenceMarketLocalMutationPaths.reorder },
+    mcp: {
+      name: "market_reorder_watchlist_pairs",
+      description: "Replace the complete order of the current wallet account's reference-pair watchlist.",
+      annotations: startAnnotations(false),
+    },
+    cli: {
+      domain: "market",
+      command: "reorder-pairs",
+      argumentSyntax: "<pair-id>... --revision <revision> [--json]",
+    },
+    web: true,
+  }),
+});
+
+export const referenceMarketInterfaceBindingList: readonly ReferenceMarketInterfaceBinding[] = Object.freeze(
+  Object.values(referenceMarketInterfaceBindings)
+    .sort((left, right) => compareCodePointSequences(left.contract.capabilityId, right.contract.capabilityId)),
+);
 
 export const accountAssetInterfaceBindings = Object.freeze({
   collection: Object.freeze({
@@ -978,6 +1122,7 @@ export const declaredCliCommandIdentities = Object.freeze([
   ...accountAssetInterfaceBindingList.flatMap((binding) =>
     binding.cli === undefined ? [] : [binding.cli]),
   ...readInterfaceIdentities.map((identity) => identity.cli),
+  ...referenceMarketInterfaceBindingList.map((binding) => binding.cli),
   ...tokenCatalogInterfaceBindingList.map((binding) => binding.cli),
   ...walletInterfaceBindingList.flatMap((binding) =>
     binding.cli === undefined ? [] : [binding.cli]),
@@ -1004,6 +1149,7 @@ export const declaredMcpToolNames = Object.freeze([
   ...accountAssetInterfaceBindingList.flatMap((binding) =>
     binding.mcp === undefined ? [] : [binding.mcp.name]),
   ...readInterfaceIdentities.map((entry) => entry.mcp.name),
+  ...referenceMarketInterfaceBindingList.map((binding) => binding.mcp.name),
   ...tokenCatalogInterfaceBindingList.map((binding) => binding.mcp.name),
   capabilityCatalogInterface.mcp.name,
   ...walletInterfaceBindingList.flatMap((binding) =>

@@ -29,6 +29,7 @@ import {
   parseCapabilityDataAt,
   parseUtcTimestamp,
   productDisplayName,
+  referenceMarketLimits,
   walletConnectionCapability,
 } from "../../src/core/index.js";
 import {
@@ -411,7 +412,7 @@ describe("SQLite product state", () => {
     expect(parseProfileId(profileId)).toBe(profileId);
     expect(parseOwnerInstanceId(ownerInstanceId)).toBe(ownerInstanceId);
     expect(parseRuntimeRevision("0")).toBe("0");
-    expect(runtimeProtocolVersion).toBe(7);
+    expect(runtimeProtocolVersion).toBe(8);
     const noncanonicalTail = `${"A".repeat(21)}B`;
     expect(() => parseProfileId(noncanonicalTail)).toThrow();
     expect(() => parseOwnerInstanceId(noncanonicalTail)).toThrow();
@@ -484,6 +485,10 @@ describe("SQLite product state", () => {
         { name: "contract" },
         { name: "current_wallet_connection" },
         { name: "local_profile" },
+        { name: "reference_feed_round" },
+        { name: "reference_feed_sync_state" },
+        { name: "reference_pair_watchlist_entry" },
+        { name: "reference_pair_watchlist_state" },
         { name: "robinhood_asset" },
         { name: "robinhood_asset_snapshot" },
         { name: "runtime_owner" },
@@ -493,6 +498,27 @@ describe("SQLite product state", () => {
         { name: "wallet_token_selection" },
         { name: "wallet_token_selection_state" },
       ]);
+    const referenceSyncColumns = inspection.pragma("table_xinfo(reference_feed_sync_state)") as
+      Array<{ name: string }>;
+    expect(referenceSyncColumns.map((column) => column.name)).toEqual([
+      "manifest_version",
+      "chain_id",
+      "feed_id",
+      "proxy_address",
+      "revision",
+      "backfill_phase_id",
+      "backfill_next_round_id",
+      "retention_cutoff_round_id",
+      "integrity_status",
+      "backfill_status",
+      "updated_at",
+    ]);
+    const watchlistEntryDefinition = inspection.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+    ).get("reference_pair_watchlist_entry") as { sql: string };
+    expect(watchlistEntryDefinition.sql).toContain(
+      `position BETWEEN 0 AND ${referenceMarketLimits.watchlistEntries - 1}`,
+    );
     inspection.close();
     if (process.platform !== "win32") {
       expect((await stat(path)).mode & 0o777).toBe(0o600);
@@ -519,6 +545,10 @@ describe("SQLite product state", () => {
       { name: "contract", wr: 1, strict: 1 },
       { name: "current_wallet_connection", wr: 0, strict: 1 },
       { name: "local_profile", wr: 0, strict: 1 },
+      { name: "reference_feed_round", wr: 1, strict: 1 },
+      { name: "reference_feed_sync_state", wr: 1, strict: 1 },
+      { name: "reference_pair_watchlist_entry", wr: 1, strict: 1 },
+      { name: "reference_pair_watchlist_state", wr: 1, strict: 1 },
       { name: "robinhood_asset", wr: 1, strict: 1 },
       { name: "robinhood_asset_snapshot", wr: 1, strict: 1 },
       { name: "runtime_owner", wr: 0, strict: 1 },
@@ -530,6 +560,9 @@ describe("SQLite product state", () => {
     ]);
     for (const table of [
       "runtime_owner",
+      "reference_feed_round",
+      "reference_feed_sync_state",
+      "reference_pair_watchlist_state",
       "robinhood_asset_snapshot",
       "contract",
       "token_contract",
@@ -553,6 +586,33 @@ describe("SQLite product state", () => {
     }[];
     expect(officialAssetKeys).toEqual([
       expect.objectContaining({ on_update: "RESTRICT", on_delete: "CASCADE" }),
+    ]);
+    const referenceWatchlistEntryKeys = inspection.pragma("foreign_key_list(reference_pair_watchlist_entry)") as {
+      on_update: string;
+      on_delete: string;
+    }[];
+    expect(referenceWatchlistEntryKeys).toEqual([
+      expect.objectContaining({
+        table: "reference_pair_watchlist_state",
+        from: "profile_id",
+        to: "profile_id",
+        on_update: "RESTRICT",
+        on_delete: "CASCADE",
+      }),
+      expect.objectContaining({
+        table: "reference_pair_watchlist_state",
+        from: "chain_id",
+        to: "chain_id",
+        on_update: "RESTRICT",
+        on_delete: "CASCADE",
+      }),
+      expect.objectContaining({
+        table: "reference_pair_watchlist_state",
+        from: "wallet_address",
+        to: "wallet_address",
+        on_update: "RESTRICT",
+        on_delete: "CASCADE",
+      }),
     ]);
     expect(inspection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(inspection.prepare("PRAGMA integrity_check").all()).toEqual([{ integrity_check: "ok" }]);

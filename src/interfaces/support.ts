@@ -7,16 +7,18 @@ import {
   extendInterfaceRuntimeSupportManifest,
   type CapabilityCatalog,
   type CapabilityAvailabilityInput,
-  type AccountAssetRuntimeSupportManifest,
   type InterfaceRuntimeSupportManifest,
+  type ReferenceMarketRuntimeSupportManifest,
 } from "../runtime/support-manifest.js";
 import {
   interfaceReadCapabilityRegistry,
   accountAssetInterfaceBindingList,
   readInterfaceIdentities,
+  referenceMarketInterfaceBindingList,
   tokenCatalogInterfaceBindingList,
   walletInterfaceBindingList,
   type ReadInterfaceIdentity,
+  type ReferenceMarketInterfaceBinding,
   type TokenCatalogInterfaceBinding,
   type WalletInterfaceBinding,
   type AccountAssetInterfaceBinding,
@@ -76,8 +78,21 @@ const walletBindingAvailability = (
   web: binding.web === undefined ? "unavailable" : "available",
 });
 
+const referenceMarketBindingAvailability = (
+  binding: ReferenceMarketInterfaceBinding,
+): CapabilityAvailabilityInput => Object.freeze({
+  overall: "available",
+  direct: "internal",
+  http: binding.action === "price" || binding.action === "history" || binding.action === "watchlist"
+    ? "available"
+    : "internal",
+  mcp: "available",
+  cli: "available",
+  web: "available",
+});
+
 export const extendInterfaceSupportManifest = (
-  parent: AccountAssetRuntimeSupportManifest,
+  parent: ReferenceMarketRuntimeSupportManifest,
 ): InterfaceRuntimeSupportManifest => extendInterfaceRuntimeSupportManifest(parent, {
   registrations: [],
   changes: Object.freeze([
@@ -90,6 +105,10 @@ export const extendInterfaceSupportManifest = (
         capabilityId: identity.capabilityId,
         availability: readBindingAvailability(identity),
       })),
+    ...referenceMarketInterfaceBindingList.map((binding) => ({
+      capabilityId: binding.contract.capabilityId,
+      availability: referenceMarketBindingAvailability(binding),
+    })),
     ...tokenCatalogInterfaceBindingList.map((binding) => ({
       capabilityId: binding.contract.capabilityId,
       availability: tokenCatalogBindingAvailability(binding),

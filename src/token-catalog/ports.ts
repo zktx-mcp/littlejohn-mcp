@@ -1,7 +1,6 @@
 import type {
   ApplicationFailure,
   CapabilityBinding,
-  ChainAnchor,
   EvmAccountIdentity,
   OperationId,
   UnsignedDecimal,
@@ -118,6 +117,22 @@ export type TokenCatalogQueryStore = Pick<
 >;
 
 export type TokenCatalogInspectionPort = CapabilityBinding<typeof tokenInspectCapability>;
+
+export interface TokenAdditionChainReadPort {
+  inspectAndVerifyOfficial(
+    input: Readonly<{
+      asset: TokenSelection["asset"];
+      officialMember: OfficialAssetSourceMember | null;
+    }>,
+    signal: AbortSignal,
+  ): Promise<
+    | ApplicationFailure
+    | Readonly<{
+        inspection: TokenInspectionSuccess;
+        officialVerification: StockFactoryVerification | null;
+      }>
+  >;
+}
 
 export interface TokenCatalogOperationControl {
   readonly operationId: OperationId;
@@ -245,15 +260,8 @@ export const tokenCatalogConsumerPortContract = Object.freeze({
 
 export interface TokenCatalogCoordinatorDependencies {
   readonly activeWallet: ActiveWalletReadPort;
-  readonly inspection: TokenCatalogInspectionPort;
+  readonly additionChainReads: TokenAdditionChainReadPort;
   readonly officialAssets: OfficialAssetSynchronizationPort;
-  readonly verifyOfficialAsset: Readonly<{
-    verify(
-      member: OfficialAssetSourceMember,
-      block: ChainAnchor,
-      signal: AbortSignal,
-    ): Promise<StockFactoryVerification>;
-  }>;
   readonly store: TokenCatalogStore;
 }
 

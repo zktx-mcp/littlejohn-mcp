@@ -41,27 +41,32 @@ export const constrainInterfaceFailure = (
   ? result
   : Object.freeze({ ok: false, failure: createInterfaceFailure("internal_error") });
 
+export const parseProblemDetailsFailure = (
+  response: RuntimeDispatchResponse,
+  applicationErrors: ApplicationErrorRegistry,
+  interfaceMappings: InterfaceErrorMappingRegistry,
+): ApplicationFailure => {
+  const problem = problemDetailsSchema.parse(captureCanonicalJson(response.body));
+  const failure = createApplicationFailure(applicationErrors, problem.code, problem.issues);
+  const expected = toProblemDetails(failure, interfaceMappings);
+  if (
+    response.status !== problem.status ||
+    canonicalJsonStringify(problem as unknown as CanonicalJson) !==
+      canonicalJsonStringify(expected as unknown as CanonicalJson)
+  ) {
+    throw new TypeError("Problem Details does not match the interface error authority.");
+  }
+  return failure;
+};
+
 export const normalizeProblemDetailsFailure = (
   response: RuntimeDispatchResponse,
   applicationErrors: ApplicationErrorRegistry,
   interfaceMappings: InterfaceErrorMappingRegistry,
   fallbackCode: string,
 ): ApplicationFailure => {
-  try {
-    const problem = problemDetailsSchema.parse(captureCanonicalJson(response.body));
-    const failure = createApplicationFailure(applicationErrors, problem.code, problem.issues);
-    const expected = toProblemDetails(failure, interfaceMappings);
-    if (
-      response.status !== problem.status ||
-      canonicalJsonStringify(problem as unknown as CanonicalJson) !==
-        canonicalJsonStringify(expected as unknown as CanonicalJson)
-    ) {
-      throw new TypeError("Problem Details does not match the interface error authority.");
-    }
-    return failure;
-  } catch {
-    return createApplicationFailure(applicationErrors, fallbackCode);
-  }
+  try { return parseProblemDetailsFailure(response, applicationErrors, interfaceMappings); }
+  catch { return createApplicationFailure(applicationErrors, fallbackCode); }
 };
 
 export interface CanonicalDispatchAuthority {

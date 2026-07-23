@@ -33,13 +33,19 @@ and serialized wallet operation contracts defined below.
 
 The owner also opens one bounded RPC reader for the configured Robinhood Chain
 endpoint. `chain.status`, `contract.inspect`, `transaction.inspect`, and
-`account.balance` are complete internal direct capabilities. Every invocation
-enters one chain lifecycle that owns caller abort, application close, the
-90-second whole-invocation deadline, listener cleanup, and drain. Configured
-chain validation and selector-based canonical-block resolution are separate
-single-owner procedures used only by capabilities that need them. Every
-applicable invocation checks canonical chain ID `eip155:4663`; pins dependent
-state reads to one observed canonical block hash using
+`account.balance` are complete internal direct capabilities. Every contiguous
+chain-dependent phase enters one chain lifecycle that owns caller abort,
+application close, one 90-second whole-invocation deadline, listener cleanup,
+and drain. A nested binding may join only the exact active invocation signal;
+it does not create another deadline or active-call record. Configured-chain
+validation and selector-based canonical-block resolution are separate
+single-owner procedures used only by capabilities that need them. Resolution
+issues an opaque block object whose private state binds the active invocation,
+configured-chain proof, public anchor, and exact state reference. Dependent
+state readers require that exact object and context; a plain anchor, clone,
+foreign block, or settled context fails before RPC. Every applicable invocation
+checks canonical chain ID `eip155:4663`; pins dependent state reads to one
+observed canonical block hash using
 [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898); preserves
 integers as base-10 strings; validates transaction, receipt, log, and block
 identity; preserves the signed access-list sequence and multiplicity; and
@@ -74,10 +80,24 @@ Token classification is established only by the `registry` source observation
 and same-block StockFactory verification; no surface establishes safety, price,
 valuation, or transaction support.
 
+The `market-portfolio` module owns one closed reference-market application for
+the fixed ETH/USD and USDG/USD Chainlink feeds and the derived ETH/USDG pair.
+Each current result uses one canonical Robinhood Chain block. Direct prices bind
+one validated round; the cross binds fresh rounds from both feeds at that same
+block. Bounded history synchronization stores validated round evidence and
+builds exact observed-point UTC candles without trade volume. History results
+are always non-exhaustive: a result with candles is `partial`, and one without
+candles is `unavailable`. One account-scoped watchlist stores only pairs
+admitted by the fixed manifest and uses revisioned local mutations. Feed
+synchronization and watchlist mutation have separate state and failure
+boundaries.
+
 The interactive CLI implements `wallet status`, `wallet connect`, `wallet
 disconnect`, `wallet operation`, and `wallet cancel`, plus
 `read assets`, `read chain-status`, `read contract`, `read transaction`,
-`read balance`, and the seven declared `token` commands under
+`read balance`, the seven declared `token` commands, and `market price`,
+`market history`, `market watchlist`, `market add-pair`, `market remove-pair`,
+and `market reorder-pairs` under
 [`CLI Surface`](#cli-surface). Read
 commands expose the canonical result as human-readable text or exact JSON
 without recomputing domain meaning. Token addition and removal
@@ -87,12 +107,14 @@ to non-interactive callers.
 `littlejohn --help` projects the same command identities consumed by the CLI
 parsers and does not start the runtime.
 
-Public loopback resources expose the five chain and token reads, the wallet
+Public loopback resources expose the eight chain, token, and reference-market
+reads, the wallet
 connection projection, and the registry-derived capability catalog. A
 no-argument `littlejohn` process runs one stdio MCP connection while sharing or
-taking over the same fixed-port owner. Its eighteen convention-validated tools
-expose the account-asset collection, four chain reads, the capability catalog,
-five wallet-management bindings, and seven token-catalog bindings. MCP
+taking over the same fixed-port owner. Its twenty-four convention-validated
+tools expose the account-asset collection, four chain reads, the capability
+catalog, five wallet-management bindings, seven token-catalog bindings, and six
+reference-market bindings. MCP
 start-operation tools return
 the applicable fixed local page URL. Exact operation-read and cancellation
 tools return the canonical operation without a display URL. No MCP tool
@@ -104,7 +126,9 @@ a page. The product identity remains at the left of the navigation bar and the
 wallet control remains at the right. A disconnected account sees the product
 description and connection action. A connected account sees one fresh bounded
 asset page with native balance, included-token balances, refresh, pagination,
-and contextual add and removal actions. One modal host derives priority across
+and contextual add and removal actions. The same root includes reference-market
+starter or saved cards, one selected exact-price history chart, and the current
+account's supported-pair watchlist controls. One modal host derives priority across
 wallet operations, token operations, and the add form. A CLI-created catalog
 operation is read-only in the browser. The modal acts only after a direct user
 action, renders canonical states without inventing a second lifecycle, and
@@ -119,7 +143,11 @@ credential is held only by the `HttpOnly` cookie store. Host, Origin,
 credential, CSRF, operation identity, connection
 revision or review digest, and expiry checks precede browser control. The
 browser uses the declared wallet resources under `/api/v1/wallet` and catalog
-resources under `/api/v1/token-catalog`. Public reads and compatible-process
+resources under `/api/v1/token-catalog`. Reference-market price, history, and
+watchlist queries are public reads. Browser watchlist changes use browser
+credentials and CSRF; compatible-process watchlist changes use local-control
+authentication. Both mutation paths send once and report an unproved response
+as `delivery_unknown` without retrying. Public reads and compatible-process
 control resources reject the browser credential instead of treating its wider
 cookie path as authority. The wallet-operation resources are:
 
@@ -145,13 +173,13 @@ execution, connections, resources, frames, and forms. A monotonic request
 authority prevents an older poll or duplicate control action from replacing a
 newer wallet dialog view.
 
-The wallet, token-catalog, and account-assets modules own their canonical application contracts,
+The wallet, token-catalog, account-assets, and market-portfolio modules own their canonical application contracts,
 including each identifier, version, input schema, success schema, failure-code
 set, and state meaning. One canonical interface-binding catalog maps those
 contracts to MCP, loopback HTTP, CLI, and web bindings. Transport adapters and
 the runtime support manifest derive from these sources rather than maintaining
 parallel tool, schema, route, or availability lists. The interface layer
-projects the completed wallet, chain, token-catalog, and account-assets ports
+projects the completed wallet, chain, token-catalog, account-assets, and reference-market ports
 into HTTP, MCP, CLI, and the React application.
 Read-result consumers revalidate the normalized request, result chain scope,
 and evidence-anchor chain scope through the same definition-owned checks used
@@ -192,20 +220,15 @@ This repository owns:
 - MCP tools and resources;
 - loopback HTTP API and React pages;
 - local SQLite state;
-- dataset release verification;
 - live chain reads;
 - asset and deployment registries;
 - contract, calldata, transaction, and receipt analysis;
 - simulation and policy;
-- prices, candles, portfolio, and activity views;
+- the fixed reference-feed manifest, exact reference prices and candles, and
+  account-scoped reference-pair watchlists;
 - protocol adapters;
 - WalletConnect handoff; and
 - receipt verification.
-
-The separate dataset repository owns public versioned network, asset,
-deployment, legal, contract-control, oracle-mapping, and observation records.
-It never receives wallet addresses, balances, activity, review sessions,
-transaction material, WalletConnect state, or private settings.
 
 ## Release Publication
 
@@ -237,7 +260,7 @@ package verification does not replace manual host and wallet gates.
 | `registry` | Official-asset source admission, StockFactory identity, and ordered default Stock Tokens |
 | `intelligence` | ABI, source, contract, calldata, signature, and transaction analysis |
 | `security` | Deterministic policy, simulation coverage, warnings, blocks, and state deltas |
-| `market-portfolio` | Balances, price evidence, candles, valuation coverage, and wallet net flow |
+| `market-portfolio` | Fixed-feed reference prices, bounded exact candles, and account-scoped pair watchlists |
 | `protocols` | Protocol package contract and protocol-specific capabilities and action adapters |
 | `review` | Intent, account binding, commitments, freshness, and review state |
 | `wallet` | WalletConnect sessions and exact reviewed-request handoff |
@@ -357,7 +380,8 @@ package verification does not replace manual host and wallet gates.
   composition supplies the stage owner and complete dependencies, consumes the
   complete application, and does not construct token-catalog internals.
 - Fixed-owner shutdown blocks new work, aborts and drains active work, closes
-  interface, account-assets, token-catalog, chain, and wallet applications in
+  interface, reference-market, account-assets, token-catalog, chain, and wallet
+  applications in
   that order, validates the
   WalletConnect private store, closes SQLite, releases the database lease, and
   then releases the fixed HTTP listener.
@@ -382,7 +406,7 @@ to contain a malicious process already running with the same user authority.
 
 - The local control credential contains 256 random bits, is encoded as
   unpadded base64url, and remains stable across compatible owner takeover.
-- The runtime protocol version is `7`. It identifies the compatible local-owner
+- The runtime protocol version is `8`. It identifies the compatible local-owner
   wire contract; an incompatible change replaces this value. Profile ID and
   owner instance ID each
   contain 128 random bits encoded as unpadded base64url. Owner revision is an
@@ -526,7 +550,7 @@ creators converge on the final database rather than choosing or repairing a
 staging database.
 
 SQLite has one current schema definition. The SQLite schema module owns
-`databaseSchemaVersion`, currently `6`, and standard SQLite `user_version`
+`databaseSchemaVersion`, currently `7`, and standard SQLite `user_version`
 equals that value. The exact current table set must also be present. A mismatch
 fails closed and never invokes a migration, old-schema reader, conversion,
 repair, or automatic replacement. A development schema change requires deleting
@@ -541,13 +565,19 @@ runtime protocol version before constructing the application. A deferred
 process accepts a live owner only when the stored projection, signed live-owner
 identity, and current runtime protocol version agree.
 
-The current product SQLite schema contains exactly twelve tables:
+The current product SQLite schema contains exactly sixteen tables:
 
 - `local_profile` stores the local profile identity;
 - `runtime_owner` stores the HTTP-owner identity, compatibility version,
   configuration identifier, process projection, and owner revision;
 - `chain` stores trusted canonical EIP-155 chain identities inserted only from
   runtime configuration after fixed-port ownership is acquired;
+- `reference_feed_round` stores validated fixed-manifest Chainlink round
+  facts and their first admitted configured-RPC read evidence by feed, proxy,
+  phase, and aggregator-round identity;
+- `reference_feed_sync_state` stores each feed's revision, phase-scoped bounded
+  continuation, irreversible local composite-round retention cutoff, integrity
+  conflict, and terminal malformed, phase, or retention boundary;
 - `robinhood_asset_snapshot` and `robinhood_asset` store one complete admitted
   official-source snapshot and its chain-scoped members;
 - `contract` and `token_contract` store chain-scoped contract identities
@@ -556,6 +586,10 @@ The current product SQLite schema contains exactly twelve tables:
   success selected by its digest;
 - `wallet_account` stores persistent `(profile, chain, address)` identities that
   survive disconnect, account change, session deletion, and owner takeover;
+- `reference_pair_watchlist_state` stores one revision for each local profile,
+  product chain, and wallet address;
+- `reference_pair_watchlist_entry` stores that account's complete ordered set of
+  supported fixed-manifest pairs;
 - `wallet_token_selection_state` stores the account selection-set revision and
   whether the ordered defaults were initialized;
 - `wallet_token_selection` stores the account-specific inclusion choice and
@@ -592,23 +626,57 @@ Terminal operations have bounded memory retention and are not restored by a
 successor owner.
 
 The account-assets application is the sole owner of the connected-account asset
-read. On a first-page read it atomically captures the active wallet, attempts one
-bounded official-source synchronization, resolves one canonical block,
-initializes the exact ordered defaults once for that account after verifying
-them at that block, and then reads one bounded included-selection page. Later
+read. On a first-page read it atomically captures the active wallet and attempts
+one bounded official-source synchronization before entering one chain
+invocation. That invocation resolves one opaque canonical block, initializes
+the exact ordered defaults once for that account after verifying them at that
+block, and reads one bounded included-selection page at the same block. Later
 pages preserve the admitted official-snapshot and selection-set revisions while
-resolving a fresh canonical block. Each visible official member is verified
-against StockFactory before it is classified as a Robinhood Stock Token; a
-source member without that proof is not displayed as official. The application
-reads ERC-20 metadata, raw balance, required ERC-8056 observations, and the
-native balance at the same block, then rereads the selection-set revision and
-recaptures the wallet. It accepts the result only when the account, connection
-revision, stable session-source identity, official snapshot revision, and
-selection-set revision remain unchanged. SQLite stores no balance page, token
-standard observation, or read error. Exact reads and official-candidate pages
-consume the same view revisions instead of reconstructing the join in an
-interface. A failed official synchronization preserves the last committed
-snapshot and never changes account choices.
+resolving a fresh block in their own invocation. Each visible official member
+is verified against StockFactory before it is classified as a Robinhood Stock
+Token; a source member without that proof is not displayed as official. The
+application reads ERC-20 metadata, raw balance, required ERC-8056 observations,
+and the native balance through the exact block authority, then rereads the
+selection-set revision and recaptures the wallet. It accepts the result only
+when the account, connection revision, stable session-source identity, official
+snapshot revision, and selection-set revision remain unchanged. SQLite stores
+no balance page, token standard observation, or read error. Exact reads and
+official-candidate pages consume the same view revisions instead of
+reconstructing the join in an interface. A failed official synchronization
+preserves the last committed snapshot and never changes account choices.
+
+The reference-market application is the sole owner of latest reference prices,
+bounded history synchronization, exact cross construction, candle aggregation,
+and account watchlists. Each latest or history read enters one chain invocation,
+resolves one opaque canonical block, and performs every dependent feed read
+through that exact authority and the fixed product manifest. History
+synchronization serializes each feed, admits bounded callers, and commits
+validated observations, the exact backfill phase and continuation, and
+retention state in one transaction. Age eviction removes only a wholly expired
+composite-identity prefix; capacity eviction retains at most the canonical
+per-feed history-round limit owned by `referenceMarketLimits`. Both advance one
+irreversible inclusive identity cutoff.
+Reads never traverse or admit an identity at or below it, and that cutoff never
+becomes source-time, source-absence, finality, or coverage evidence. The chain
+reader consumes one nonoverlapping work plan derived from the durable
+continuation, admitted identities, and cutoff. Synchronization derives the
+request report from the committed snapshot through the same planner. Remaining
+continuation, remaining gap, phase-boundary, malformed-round, and retention
+facts become explicit history limitations rather than completeness claims.
+Candles and empty-bucket starts partition only the represented UTC buckets and
+never prove that the source had no other updates. Stored read evidence retains
+its original block and read time instead of being rewritten under a later
+request block. The synchronization owner rejects new work while closing,
+removes queued work without an RPC or commit, and drains active settlement.
+The application determines terminal cancellation once at the final projection:
+caller abort precedes application close, which precedes the chain deadline and
+other failures. Its composition stage consumes only the cumulative parent
+support manifest; it does not receive or depend on the account-assets
+application port. Watchlist reads capture and recapture the same live wallet
+session. Add, remove, and reorder commit only when the captured account,
+connection revision, and expected watchlist revision still match.
+Neither the round cache nor the watchlist stores a formatted price, chart
+coordinate, wallet balance, remote directory response, or arbitrary pair.
 
 The WalletConnect SDK private store is authoritative for:
 
@@ -665,8 +733,8 @@ application logs, exports, and diagnostic bundles.
 - Little John owns the local page state and URL. The desktop host owns browser
   display, focus, and navigation to that URL.
 - The fixed root is the only human page. Wallet connection state, account
-  assets, and contextual token actions use one application shell and one modal
-  host.
+  assets, contextual token actions, reference prices, reference history, and
+  account watchlist controls use one application shell and one modal host.
   Wallet connection, disconnection, and operation identifiers do not create
   human page-path namespaces.
 - Opening the root or the wallet dialog does not connect, disconnect, or
@@ -741,6 +809,17 @@ application logs, exports, and diagnostic bundles.
   A web-owned operation exposes its declared confirmation or cancellation
   action; a CLI-owned operation is read-only in the browser. Closing a dialog
   never confirms, cancels, or changes domain state.
+- The reference-market view reads current prices and selected history through
+  public-read routes. It displays exact OHLC values beside the non-authoritative
+  chart projection. Its semantic details preserve the canonical block, mapping
+  evidence, safe configured-RPC reference, round identity, update and read
+  times, partial or unavailable status, observed-round coverage basis, explicit
+  limitations, warnings, and any unavailable reason without
+  substituting display-derived facts. A disconnected user can read the two
+  starter pairs and all fixed-manifest prices but cannot read or change an
+  account watchlist. Add, remove, and reorder use one captured watchlist
+  revision and never retry an uncertain send. Pointer and keyboard ordering
+  submit the same canonical complete-order replacement.
 - Catalog operation confirmation carries the exact operation identifier and
   review digest. The browser does not derive either value from the page URL or
   recompute the digest.
@@ -820,6 +899,15 @@ application logs, exports, and diagnostic bundles.
   Stock Token amounts when the current multiplier is available. Both successful wallet-connect
   outcomes perform the same first-page read before return or owner wait. A read
   failure does not relabel or roll back connection success.
+- `market price` and `market history` consume the public reference-market read
+  contracts. Their human output preserves the canonical block, mapping
+  evidence, source references, round identity and times, status, coverage,
+  warnings, and unavailable reason; exact JSON remains the canonical result.
+  `market watchlist` reads the connected account's exact ordered state.
+  `market add-pair`, `market remove-pair`, and `market reorder-pairs` require an
+  explicit expected revision and use the same send-once mutation owner as MCP.
+  An uncertain response exits with code `8` and instructs the caller to read
+  the watchlist before deciding whether to act again.
 - The wallet owner converts a WalletConnect pairing URI to a QR matrix and
   discards the URI. The CLI renders only that matrix and never receives or
   prints the raw URI.
@@ -1019,5 +1107,9 @@ single-session invariant, wallet-operation serialization and expiry, stale
 confirmation, disconnection failure, session restoration and invalidation,
 shared MCP, web, and CLI state, credential separation, Host and Origin
 validation, CSRF, request limits, token-catalog account and operation binding,
-account-assets wallet, official snapshot, and selection continuity, installed-package catalog
-persistence across owner takeover, and secret-leak boundaries.
+account-assets wallet, official snapshot, and selection continuity,
+reference-market manifest admission, same-block price evidence, history bounds,
+non-exhaustive observed history, exact candles, local-cutoff work preservation,
+caller-first cancellation, cache and watchlist transactions, send-once delivery,
+installed-package catalog and reference-market persistence across owner
+takeover, and secret-leak boundaries.

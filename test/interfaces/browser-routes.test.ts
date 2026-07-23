@@ -5,8 +5,12 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { chainInterfaceErrorMappings } from "../../src/chain/errors.js";
+import { referenceMarketInterfaceErrorMappings } from "../../src/market-portfolio/errors.js";
 import { accountAssetBrowserRoutes } from "../../src/account-assets/http-contract.js";
-import { parseEvmAddress } from "../../src/core/index.js";
+import {
+  parseEvmAddress,
+  referenceMarketManifest,
+} from "../../src/core/index.js";
 import type { BrowserAssetBundle } from "../../src/interfaces/browser-assets.js";
 import {
   browserAssetPaths,
@@ -16,6 +20,7 @@ import {
   browserOperationConfirmationPath,
   browserOperationPath,
   browserPagePaths,
+  referenceMarketBrowserMutationPaths,
   browserWalletApiPaths,
 } from "../../src/interfaces/browser-contract.js";
 import {
@@ -58,6 +63,11 @@ import { tokenCatalogBrowserRoutes } from "../../src/token-catalog/browser.js";
 import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
 import { tokenCatalogInterfaceHarnessPorts } from "../token-catalog/interface-harness.js";
 import { accountAssetInterfaceHarnessPort } from "../account-assets/interface-harness.js";
+import { referenceMarketInterfaceHarnessPort } from "../market-portfolio/interface-harness.js";
+import {
+  createReferenceMarketFailure,
+  type ReferenceMarketApplicationPort,
+} from "../../src/market-portfolio/index.js";
 
 const directories: string[] = [];
 const operationId = Buffer.alloc(32, 13).toString("base64url");
@@ -135,9 +145,12 @@ const assets: BrowserAssetBundle = Object.freeze({
   paths: () => Object.freeze(["/assets/index-Abcdef12.js"]),
 });
 
-const interfacePorts = () => Object.freeze({
+const interfacePorts = (
+  referenceMarkets: ReferenceMarketApplicationPort = referenceMarketInterfaceHarnessPort(),
+) => Object.freeze({
   ...tokenCatalogInterfaceHarnessPorts(),
   accountAssets: accountAssetInterfaceHarnessPort(),
+  referenceMarkets,
 });
 
 interface WalletCalls {
@@ -220,7 +233,7 @@ const baseRoutes = async (): Promise<RuntimeRouteRegistry> => {
   const credential = await loadOrCreateControlCredential(directory, paths.controlCredential);
   return createRuntimeRouteRegistry({
     controlVerifier: createControlCredentialVerifier(credential),
-    errorMappings: chainInterfaceErrorMappings,
+    errorMappings: referenceMarketInterfaceErrorMappings,
   });
 };
 
@@ -327,6 +340,46 @@ describe("wallet browser routes", () => {
       confirmations: [],
       cancellations: [],
     });
+    credentials.close();
+  });
+
+  it("binds each browser reference-market mutation path to the matching application effect", async () => {
+    const calls: string[] = [];
+    const base = referenceMarketInterfaceHarnessPort();
+    const record = (
+      action: "add" | "remove" | "reorder",
+    ) => async () => {
+      calls.push(action);
+      return createReferenceMarketFailure("wallet_not_connected");
+    };
+    const referenceMarkets: ReferenceMarketApplicationPort = Object.freeze({
+      ...base,
+      addPair: record("add"),
+      removePair: record("remove"),
+      reorderPairs: record("reorder"),
+    });
+    const credentials = createBrowserRequestCredentialAuthority({
+      now: () => now,
+      randomBytes: (size) => Buffer.alloc(size, 18),
+    });
+    const registry = extendBrowserInterfaceRoutes({
+      ...interfacePorts(referenceMarkets),
+      routes: await baseRoutes(),
+      credentials,
+      assets,
+      walletOperations: walletOperations().port,
+    });
+    const pairId = referenceMarketManifest.pairs[0]!.pairId;
+    const expectedRevision = "AAAAAAAAAAAAAAAAAAAAAA";
+    const requests = {
+      add: { pairId, expectedRevision },
+      remove: { pairId, expectedRevision },
+      reorder: { pairIds: [pairId], expectedRevision },
+    } as const;
+    for (const action of ["add", "remove", "reorder"] as const) {
+      await invoke(registry, "POST", referenceMarketBrowserMutationPaths[action], requests[action]);
+    }
+    expect(calls).toEqual(["add", "remove", "reorder"]);
     credentials.close();
   });
 

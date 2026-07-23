@@ -124,6 +124,52 @@ proved absence from the complete current API observation. When the API
 observation is unavailable or stale, or the required per-asset verification
 fails, classification remains unknown.
 
+## Reference Market Feed Mapping
+
+The validated `referenceMarketManifest` in `src/core/reference-market.ts` is the
+sole exact owner of each supported mapping, its official source URI, source
+owner and class, source observation time, freshness rule, coverage, exclusions,
+supported conclusions, and unsupported conclusions. Policy and presentation
+surfaces do not copy its addresses, decimals, heartbeat values, or observation
+time.
+
+The runtime does not fetch or revalidate that directory. Mapping freshness is
+therefore the manifest's declared non-runtime-revalidation outcome. Public
+results project the manifest-owned mapping evidence once and do not infer a
+new source observation from an onchain read.
+
+Each runtime reference-price observation separately reads the fixed proxy at one
+canonical Robinhood Chain block and validates deployed code, description,
+decimals, round identity, answer, answer time, and freshness. That onchain
+observation establishes only the reported reference value and its exact source
+position. It remains distinct from directory freshness, execution price, trade
+volume, valuation, safety, recommendation, and transaction support.
+
+A feed round's `updatedAt` is a source fact, not Little John's observation time.
+Round read evidence records the actual canonical-clock read time, the configured
+RPC's safe source reference, and the exact block used for that read. The cache
+preserves the first admitted read evidence for an equal immutable round fact.
+A later read of the same round does not replace that evidence, and a different
+immutable fact for the same round creates an integrity conflict. Cached evidence
+records its original read anchor; it does not claim later re-observation,
+finality, reorganization survival, or independent-provider agreement.
+
+Local history retention is not source evidence. Its inclusive composite-round
+cutoff identifies only identities that the local cache will never read or admit
+again. It establishes no source update time, source absence, exhaustive round
+coverage, finality, or reorganization survival.
+
+Reference history is always a bounded observation result. It reports
+`observed_rounds` as its coverage basis and always states that source history is
+not exhaustive. A returned candle proves only the admitted observations used
+for its exact open, high, low, and close. An empty bucket proves only that the
+bounded result contains no admitted point in that represented UTC bucket.
+Missing, reverting, malformed, unperformed, retained-out, or otherwise
+unresolved round identities never become evidence of source absence. A history
+result is `partial` when it contains at least one observed-point candle and
+`unavailable` when it contains none; no history result can claim complete
+source coverage.
+
 ## Identity And Trust
 
 - Asset identity is defined only in `docs/NUMERIC_POLICY.md#token-identity-and-decimals`.

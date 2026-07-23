@@ -97,7 +97,7 @@ Canonical source: `defaultStockTokenManifest` for `eip155:4663`.
 - Implemented protocol support: none.
 - Implemented wallet support: `wallet.cancel_operation` (MCP, CLI, web); `wallet.connect` (MCP, CLI, web); `wallet.connection` (HTTP, MCP, CLI); `wallet.current_operation` (web); `wallet.disconnect` (MCP, CLI, web); `wallet.operation` (MCP, CLI, web).
 - Implemented transaction actions: none.
-- Available user-facing capabilities: `account.asset`, `account.assets`, `account.balance`, `chain.status`, `contract.inspect`, `token.cancel_operation`, `token.inspect`, `token.operation`, `token.selection`, `token.selections`, `token.start_addition`, `token.start_removal`, `transaction.inspect`, `wallet.cancel_operation`, `wallet.connect`, `wallet.connection`, `wallet.current_operation`, `wallet.disconnect`, `wallet.operation`.
+- Available user-facing capabilities: `account.asset`, `account.assets`, `account.balance`, `chain.status`, `contract.inspect`, `market.add_watchlist_pair`, `market.reference_history`, `market.reference_price`, `market.remove_watchlist_pair`, `market.reorder_watchlist_pairs`, `market.watchlist`, `token.cancel_operation`, `token.inspect`, `token.operation`, `token.selection`, `token.selections`, `token.start_addition`, `token.start_removal`, `transaction.inspect`, `wallet.cancel_operation`, `wallet.connect`, `wallet.connection`, `wallet.current_operation`, `wallet.disconnect`, `wallet.operation`.
 - Experiments and collected research do not establish product support.
 
 ## Support Levels

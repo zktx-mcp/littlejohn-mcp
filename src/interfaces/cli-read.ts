@@ -43,7 +43,7 @@ import {
   type ReadInterfaceIdentity,
 } from "./identities.js";
 import { LocalOperationClient } from "./operation-client.js";
-import { deliveryUnknownCliExitCode } from "./operation-delivery.js";
+import { deliveryUnknownCliExitCode } from "./delivery-exit.js";
 
 type ReadCommandBase = { readonly json: boolean };
 export type ReadCliCommand =
