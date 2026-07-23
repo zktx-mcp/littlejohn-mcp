@@ -7,6 +7,7 @@ import {
   coreContractVersion,
   erc20AssetIdentitySchema,
   getCapabilityDefinitionSnapshot,
+  parseCapabilitySuccess,
   parseUtcTimestamp,
   type ApplicationFailure,
 } from "../../src/core/index.js";
@@ -132,6 +133,28 @@ describe("token catalog contracts", () => {
     expect(() => tokenCatalogApplicationContracts.selection.parseInput({
       asset,
       walletAddress: `0x${"34".repeat(20)}`,
+    })).toThrow();
+  });
+
+  it("binds public token data references to their definition-owned source slots", async () => {
+    const inspection = await createInspectionSuccess();
+    const input = { asset, block: { kind: "latest" as const } };
+    expect(() => parseCapabilitySuccess(tokenInspectCapability, input, inspection)).not.toThrow();
+
+    const runtimeCodeSource = inspection.evidence.sources.find(
+      (source) => source.purpose === "token_runtime_code",
+    );
+    expect(runtimeCodeSource).toBeDefined();
+    if (runtimeCodeSource === undefined) return;
+    expect(() => parseCapabilitySuccess(tokenInspectCapability, input, {
+      ...inspection,
+      data: {
+        ...inspection.data,
+        totalSupply: {
+          ...inspection.data.totalSupply,
+          quantityObservationId: runtimeCodeSource.observationId,
+        },
+      },
     })).toThrow();
   });
 

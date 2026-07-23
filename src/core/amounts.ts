@@ -1,14 +1,12 @@
 import { z } from "zod";
 
-import { canonicalJsonStringify, type CanonicalJson } from "./canonical-json.js";
-import { isStrictlyOrderedUnique, type ObservationId } from "./evidence.js";
+import { isStrictlyOrderedUnique } from "./evidence.js";
 import { evmChainIdSchema } from "./identities.js";
 import { deepFreezeValue } from "./immutability.js";
 import { guardJsonSchema, jsonObject } from "./json-object.js";
 import {
   createPrimitiveSchemaSet,
   prefixedCanonicalBase64UrlSchema,
-  type ChainAnchor,
 } from "./primitives.js";
 
 export const maximumTokenDecimals = 255;
@@ -246,10 +244,6 @@ export const createAmountSchemaSet = () => {
 };
 
 const amountSchemas = createAmountSchemaSet();
-const semanticAmountSchemas = createAmountSchemaSet();
-const semanticCanonicalAmountSchema = guardJsonSchema(semanticAmountSchemas.canonicalAmount);
-const semanticAssetIdentitySchema = guardJsonSchema(semanticAmountSchemas.assetIdentity);
-const semanticChainAnchorSchema = guardJsonSchema(semanticAmountSchemas.chainAnchor);
 
 export const nativeAssetIdentitySchema = guardJsonSchema(amountSchemas.nativeAssetIdentity);
 export const erc20AssetIdentitySchema = guardJsonSchema(amountSchemas.erc20AssetIdentity);
@@ -268,106 +262,3 @@ export type GasUnits = z.infer<typeof gasUnitsSchema>;
 
 export const nativeGasRateSchema = guardJsonSchema(amountSchemas.nativeGasRate);
 export type NativeGasRate = z.infer<typeof nativeGasRateSchema>;
-
-export interface ObservationClaimBinding {
-  readonly observationId: ObservationId;
-  readonly role: string;
-  readonly value: CanonicalJson;
-  readonly asset?: AssetIdentity;
-  readonly chainAnchor?: ChainAnchor;
-}
-
-export interface AmountObservationRoles {
-  readonly quantity: string;
-  readonly decimals: string;
-}
-
-const sameAsset = (left: AssetIdentity, right: AssetIdentity): boolean =>
-  left.kind === right.kind &&
-  left.chainId === right.chainId &&
-  (left.kind === "native" || (right.kind === "erc20" && left.address === right.address));
-
-const sameAnchor = (left: ChainAnchor | undefined, right: ChainAnchor | undefined): boolean => {
-  if (left === undefined || right === undefined) return left === right;
-  return (
-    left.chainId === right.chainId &&
-    left.blockNumber === right.blockNumber &&
-    left.blockHash === right.blockHash &&
-    left.blockTimestamp === right.blockTimestamp
-  );
-};
-
-export const assertCanonicalAmountBindings = (
-  amountInput: unknown,
-  bindingsInput: readonly ObservationClaimBinding[],
-  permittedNotObservedIds: ReadonlySet<string>,
-  roles: AmountObservationRoles,
-): CanonicalAmount => {
-  const amount = semanticCanonicalAmountSchema.parse(amountInput) as CanonicalAmount;
-  const bindings = new Map<string, ObservationClaimBinding>();
-  for (const candidate of bindingsInput) {
-    const binding = Object.freeze({
-      ...candidate,
-      ...(candidate.chainAnchor === undefined ? {} : { chainAnchor: semanticChainAnchorSchema.parse(candidate.chainAnchor) }),
-      ...(candidate.asset === undefined ? {} : { asset: semanticAssetIdentitySchema.parse(candidate.asset) }),
-    });
-    const identity = `${binding.observationId}\0${binding.role}`;
-    if (bindings.has(identity)) throw new TypeError("Duplicate observation claim binding.");
-    bindings.set(identity, binding);
-  }
-
-  const quantity = bindings.get(`${amount.quantityObservationId}\0${roles.quantity}`);
-  if (
-    quantity?.asset === undefined ||
-    !sameAsset(quantity.asset, amount.asset) ||
-    quantity.value !== amount.raw
-  ) {
-    throw new TypeError("The quantity observation does not bind the amount role, value, and asset.");
-  }
-
-  if (amount.decimals.status === "not_observed") {
-    if (!permittedNotObservedIds.has(amount.decimals.scopeExclusionId)) {
-      throw new TypeError("The decimals exclusion is not owned by this amount field.");
-    }
-    return amount;
-  }
-
-  const decimalIds = amount.decimals.status === "available"
-    ? [amount.decimals.observationId]
-    : amount.decimals.observationIds;
-  if (roles.decimals === roles.quantity) {
-    throw new TypeError("Quantity and decimals require distinct observation claims.");
-  }
-  const decimalValues: CanonicalJson[] = [];
-  for (const observationId of decimalIds) {
-    const decimals = bindings.get(`${observationId}\0${roles.decimals}`);
-    if (
-      decimals?.asset === undefined ||
-      !sameAsset(decimals.asset, amount.asset) ||
-      !sameAnchor(decimals.chainAnchor, quantity.chainAnchor)
-    ) {
-      throw new TypeError("The decimals observation does not bind the amount role, asset, and position.");
-    }
-    decimalValues.push(decimals.value);
-  }
-  if (amount.decimals.status === "available") {
-    if (decimalValues[0] !== amount.decimals.value) {
-      throw new TypeError("The decimals observation does not bind the available decimals value.");
-    }
-  } else if (amount.decimals.reason === "missing") {
-    if (decimalValues.some((value) => value !== null)) {
-      throw new TypeError("Missing decimals observations must bind a missing value.");
-    }
-  } else {
-    if (
-      decimalValues.some((value) =>
-        typeof value !== "string" ||
-        !/^(?:0|[1-9][0-9]*)$/.test(value) ||
-        BigInt(value) > BigInt(maximumTokenDecimals)) ||
-      new Set(decimalValues.map((value) => canonicalJsonStringify(value))).size < 2
-    ) {
-      throw new TypeError("Conflicting decimals observations must bind distinct canonical values.");
-    }
-  }
-  return amount;
-};

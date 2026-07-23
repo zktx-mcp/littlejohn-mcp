@@ -14,12 +14,10 @@ import {
 export { readCapabilityLimits } from "./capability-contract.js";
 import { readCapabilityLimits } from "./capability-contract.js";
 import {
-  assertCanonicalAmountBindings,
   canonicalUnsignedDecimalMaximumPattern,
   createAmountSchemaSet,
   type CanonicalAmount,
   type NativeGasRate,
-  type ObservationClaimBinding,
 } from "./amounts.js";
 import {
   CapabilityRegistry,
@@ -29,6 +27,7 @@ import {
   type FactRequirement,
   type IntrinsicDataValidationContext,
   type ObservationExpectation,
+  type ObservationReference,
   type ObservationSlot,
   type ObservedFact,
   type WarningRequirement,
@@ -425,17 +424,32 @@ export const contractInspectCapability = defineReadCapability<ContractInspectInp
   ],
 });
 
-const assertNativeAmount = (
+const observationReference = (
+  observationId: ObservationReference["observationId"],
+  slotId: string,
+  role: string,
+): ObservationReference => ({ observationId, slotId, role });
+
+const amountObservationReferences = (
   amount: CanonicalAmount,
-  bindings: readonly ObservationClaimBinding[],
-  exclusion: StaticScopeExclusion,
-  quantityRole: string,
-  decimalsRole: string,
-): void => {
-  assertCanonicalAmountBindings(amount, bindings, new Set([exclusion.id]), {
-    quantity: quantityRole,
-    decimals: decimalsRole,
-  });
+  quantity: Readonly<{ readonly slotId: string; readonly role: string }>,
+  decimals?: Readonly<{ readonly slotId: string; readonly role: string }>,
+): readonly ObservationReference[] => {
+  const references = [
+    observationReference(amount.quantityObservationId, quantity.slotId, quantity.role),
+  ];
+  if (amount.decimals.status === "not_observed") return references;
+  if (decimals === undefined) {
+    throw new TypeError("Observed decimals require a public observation reference.");
+  }
+  const observationIds = amount.decimals.status === "available"
+    ? [amount.decimals.observationId]
+    : amount.decimals.observationIds;
+  return [
+    ...references,
+    ...observationIds.map((observationId) =>
+      observationReference(observationId, decimals.slotId, decimals.role)),
+  ];
 };
 
 const assertAmountChain = (amount: CanonicalAmount, chainId: EvmChainId): void => {
@@ -685,18 +699,6 @@ const validateTransactionIntrinsicData = (
   }
 };
 
-const assertObservationClaimValue = (
-  bindings: readonly ObservationClaimBinding[],
-  observationId: string,
-  role: string,
-  value: CanonicalJson,
-): void => {
-  const binding = bindings.find((candidate) => candidate.observationId === observationId && candidate.role === role);
-  if (binding === undefined || asJson(binding.value) !== value) {
-    throw new TypeError("Observed numeric value does not match its declared role.");
-  }
-};
-
 export const transactionInspectCapability = defineReadCapability<TransactionInspectInput, TransactionInspectData>({
   capabilityId: "transaction.inspect",
   inputSchema: transactionInspectInputSchema,
@@ -762,38 +764,55 @@ export const transactionInspectCapability = defineReadCapability<TransactionInsp
   validateRequest: (input, data) => {
     if (input.transactionHash !== data.transactionHash) throw new TypeError("Transaction target mismatch.");
   },
-  validateEvidence: (_input, data, context) => {
-    const bindings = context.observationClaims;
-    assertNativeAmount(data.value, bindings, transactionNativeDecimalsExclusion,
-      "transaction_value", "transaction_value_decimals");
-    assertObservationClaimValue(bindings, data.gasLimit.observationId, "transaction_gas_limit", data.gasLimit.raw);
+  observationReferences: (_input, data) => {
+    const references: ObservationReference[] = [
+      ...amountObservationReferences(data.value, {
+        slotId: "transaction",
+        role: "transaction_value",
+      }),
+      observationReference(data.gasLimit.observationId, "transaction", "transaction_gas_limit"),
+    ];
     if (data.fee.kind === "legacy") {
-      assertNativeAmount(data.fee.gasPrice.numerator, bindings, transactionNativeDecimalsExclusion,
-        "transaction_gas_price", "transaction_gas_price_decimals");
+      references.push(...amountObservationReferences(data.fee.gasPrice.numerator, {
+        slotId: "transaction",
+        role: "transaction_gas_price",
+      }));
     } else if (data.fee.kind === "dynamic") {
-      assertNativeAmount(data.fee.maxFeePerGas.numerator, bindings, transactionNativeDecimalsExclusion,
-        "transaction_max_fee_per_gas", "transaction_max_fee_per_gas_decimals");
-      assertNativeAmount(data.fee.maxPriorityFeePerGas.numerator, bindings, transactionNativeDecimalsExclusion,
-        "transaction_max_priority_fee_per_gas", "transaction_max_priority_fee_per_gas_decimals");
+      references.push(
+        ...amountObservationReferences(data.fee.maxFeePerGas.numerator, {
+          slotId: "transaction",
+          role: "transaction_max_fee_per_gas",
+        }),
+        ...amountObservationReferences(data.fee.maxPriorityFeePerGas.numerator, {
+          slotId: "transaction",
+          role: "transaction_max_priority_fee_per_gas",
+        }),
+      );
     }
     if (data.inclusion.status === "included") {
       const receipt = data.inclusion.receipt;
-      assertObservationClaimValue(bindings, receipt.cumulativeGasUsed.observationId,
-        "receipt_cumulative_gas_used", receipt.cumulativeGasUsed.raw);
-      assertObservationClaimValue(bindings, receipt.gasUsed.observationId, "receipt_gas_used", receipt.gasUsed.raw);
-      assertNativeAmount(receipt.effectiveGasPrice.numerator, bindings, transactionNativeDecimalsExclusion,
-        "receipt_effective_gas_price", "receipt_effective_gas_price_decimals");
+      references.push(
+        observationReference(
+          receipt.cumulativeGasUsed.observationId,
+          "receipt",
+          "receipt_cumulative_gas_used",
+        ),
+        observationReference(receipt.gasUsed.observationId, "receipt", "receipt_gas_used"),
+        ...amountObservationReferences(receipt.effectiveGasPrice.numerator, {
+          slotId: "receipt",
+          role: "receipt_effective_gas_price",
+        }),
+      );
       for (const [index, log] of receipt.logs.entries()) {
         if (log.decodedEvent.kind !== "not_decoded") {
-          assertCanonicalAmountBindings(
+          references.push(...amountObservationReferences(
             log.decodedEvent.amount,
-            bindings,
-            new Set([transactionEventDecimalsExclusion.id]),
-            { quantity: `receipt_log_amount:${index}`, decimals: `receipt_log_decimals:${index}` },
-          );
+            { slotId: "receipt", role: `receipt_log_amount:${index}` },
+          ));
         }
       }
     }
+    return references;
   },
   warningCodes: ["decimals_unavailable", "unsupported_transaction_type"],
   staticScopeExclusions: [
@@ -951,25 +970,25 @@ export const accountBalanceCapability = defineReadCapability<AccountBalanceInput
     assertAccountBalanceChainSemantics(data, context.chainId);
   },
   validateRequest: assertAccountBalanceRequestSemantics,
-  validateEvidence: (_input, data, context) => {
+  observationReferences: (_input, data) => {
+    const references: ObservationReference[] = [];
     if (data.native.status === "available") {
-      assertNativeAmount(
+      references.push(...amountObservationReferences(
         data.native.amount,
-        context.observationClaims,
-        accountNativeDecimalsExclusion,
-        "native_balance",
-        "native_balance_decimals",
-      );
+        { slotId: "native_balance", role: "native_balance" },
+      ));
     }
     for (const token of data.tokens) {
       if (token.result.status === "available") {
         const identity = createAccountBalanceTokenEvidenceIdentity(token.asset.address);
-        assertCanonicalAmountBindings(token.result.amount, context.observationClaims, new Set(), {
-          quantity: identity.balanceClaimRole,
-          decimals: identity.decimalsClaimRole,
-        });
+        references.push(...amountObservationReferences(
+          token.result.amount,
+          { slotId: identity.balanceSlotId, role: identity.balanceClaimRole },
+          { slotId: identity.decimalsSlotId, role: identity.decimalsClaimRole },
+        ));
       }
     }
+    return references;
   },
   warningCodes: ["decimals_unavailable", "partial_result"],
   staticScopeExclusions: [

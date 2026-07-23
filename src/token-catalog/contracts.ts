@@ -12,6 +12,7 @@ import {
   type FactOutcome,
   type FactRequirement,
   type ObservationExpectation,
+  type ObservationReference,
   type ObservationSlot,
   type ObservedFact,
 } from "../core/index.js";
@@ -192,22 +193,35 @@ export const tokenInspectCapability = defineReadCapability<TokenInspectionInput,
       throw new TypeError("Token inspection block mismatch.");
     }
   },
-  validateEvidence: (_input, data, context) => {
-    const binding = (observationId: string, role: string) =>
-      context.observationClaims.find((candidate) =>
-        candidate.observationId === observationId && candidate.role === role);
+  observationReferences: (_input, data) => {
     if (data.totalSupply.decimals.status === "not_observed") {
       throw new TypeError("Token inspection decimals evidence is absent.");
     }
-    const decimalsId = data.totalSupply.decimals.status === "available"
-      ? data.totalSupply.decimals.observationId
-      : data.totalSupply.decimals.observationIds[0];
-    if (
-      binding(data.totalSupply.quantityObservationId, "token_total_supply")?.value !== data.totalSupply.raw ||
-      decimalsId === undefined || binding(decimalsId, "token_decimals") === undefined ||
-      binding(data.metadata.name.observationId, "token_name") === undefined ||
-      binding(data.metadata.symbol.observationId, "token_symbol") === undefined
-    ) throw new TypeError("Token inspection evidence binding is incomplete.");
+    const decimalsIds = data.totalSupply.decimals.status === "available"
+      ? [data.totalSupply.decimals.observationId]
+      : data.totalSupply.decimals.observationIds;
+    return [
+      {
+        observationId: data.totalSupply.quantityObservationId,
+        slotId: "total_supply",
+        role: "token_total_supply",
+      },
+      ...decimalsIds.map((observationId): ObservationReference => ({
+        observationId,
+        slotId: "decimals",
+        role: "token_decimals",
+      })),
+      {
+        observationId: data.metadata.name.observationId,
+        slotId: "name",
+        role: "token_name",
+      },
+      {
+        observationId: data.metadata.symbol.observationId,
+        slotId: "symbol",
+        role: "token_symbol",
+      },
+    ];
   },
   warningCodes: ["decimals_unavailable", "partial_result"],
   staticScopeExclusions: tokenInspectionStaticScopeExclusions,

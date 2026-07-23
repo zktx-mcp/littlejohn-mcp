@@ -16,12 +16,14 @@ import {
   chainStatusCapability,
   contractInspectCapability,
   coreErrorRegistry,
+  createAccountBalanceTokenEvidenceIdentity,
   createCanonicalClock,
   createCapabilityInvocationAuthority,
   createObservationAuthority,
   evmAddressSchema,
   evmChainIdSchema,
   getCapabilityDefinitionSnapshot,
+  observationIdSchema,
   parseCapabilitySuccess,
   productDisplayName,
   safeParseCapabilityInput,
@@ -29,6 +31,7 @@ import {
   sourceReferenceSchema,
   walletConnectionCapability,
   type ObservationClaim,
+  type EvidenceSource,
   type ObservationWriter,
 } from "../../src/core/index.js";
 import { defineReadCapability } from "../../src/core/capability.js";
@@ -64,6 +67,45 @@ const block = chainAnchorSchema.parse({
   blockHash: `0x${"a".repeat(64)}`,
   blockTimestamp: fixedEvaluationTime,
 });
+
+const independentCanonicalJson = (value: unknown): string => {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(independentCanonicalJson).join(",")}]`;
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    return `{${entries.map(([key, entry]) =>
+      `${JSON.stringify(key)}:${independentCanonicalJson(entry)}`).join(",")}}`;
+  }
+  throw new TypeError("Unsupported test canonical JSON value.");
+};
+
+const independentObservationId = (
+  source: {
+    readonly reference: { readonly sourceId: string };
+    readonly purpose: string;
+    readonly observedAt: string;
+    readonly chainAnchor?: unknown;
+    readonly invocationId: string;
+  },
+  ordinal: string,
+): EvidenceSource["observationId"] => `obs:${createHash("sha256").update(independentCanonicalJson([
+  source.reference.sourceId,
+  source.purpose,
+  source.observedAt,
+  source.chainAnchor ?? null,
+  source.invocationId,
+  ordinal,
+]), "utf8").digest("base64url")}` as EvidenceSource["observationId"];
+
+const canonicalSourceOrder = <Source extends { readonly observationId: string }>(
+  sources: readonly Source[],
+): readonly Source[] =>
+  [...sources].sort((left, right) =>
+    left.observationId < right.observationId ? -1 : left.observationId > right.observationId ? 1 : 0);
 
 const recordRpc = (
   context: Parameters<Parameters<typeof bindForHarness>[2]>[1],
@@ -783,6 +825,385 @@ describe("capability binding authority", () => {
     }))).toThrow();
   });
 
+  it("replays required source slots and canonical evidence from production definitions", async () => {
+    const harness = createCapabilityHarness();
+    const binding = bindForHarness(chainStatusCapability, harness, async (_input, context, observations) =>
+      successfulHandler(context, observations));
+    const result = await invokeBinding(chainStatusCapability, binding, {});
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const chainIdSource = result.evidence.sources.find((source) => source.purpose === "chain_id");
+    const blockSource = result.evidence.sources.find((source) => source.purpose === "latest_block");
+    expect(chainIdSource).toBeDefined();
+    expect(blockSource).toBeDefined();
+    if (chainIdSource === undefined || blockSource === undefined) return;
+
+    const sourceCounterexamples = [
+      {
+        label: "missing required source",
+        sources: [blockSource],
+      },
+      {
+        label: "duplicate source",
+        sources: canonicalSourceOrder([...result.evidence.sources, chainIdSource]),
+      },
+      {
+        label: "noncanonical source order",
+        sources: [...result.evidence.sources].reverse(),
+      },
+      {
+        label: "wrong purpose",
+        sources: canonicalSourceOrder(result.evidence.sources.map((source) => {
+          if (source !== chainIdSource) return source;
+          const changed = { ...source, purpose: "wrong_purpose" };
+          return { ...changed, observationId: independentObservationId(changed, "0") };
+        })),
+      },
+      {
+        label: "wrong source class",
+        sources: result.evidence.sources.map((source) => source === chainIdSource
+          ? { ...source, sourceClass: "official_document" as const }
+          : source),
+      },
+      {
+        label: "wrong chain anchor",
+        sources: canonicalSourceOrder(result.evidence.sources.map((source) => {
+          if (source !== blockSource) return source;
+          const changed = {
+            ...source,
+            chainAnchor: chainAnchorSchema.parse({ ...block, blockHash: `0x${"b".repeat(64)}` }),
+          };
+          return { ...changed, observationId: independentObservationId(changed, "1") };
+        })),
+      },
+      {
+        label: "wrong invocation",
+        sources: canonicalSourceOrder(result.evidence.sources.map((source) => {
+          if (source !== chainIdSource) return source;
+          const changed = {
+            ...source,
+            invocationId: `inv:${"A".repeat(43)}` as EvidenceSource["invocationId"],
+          };
+          return { ...changed, observationId: independentObservationId(changed, "0") };
+        })),
+      },
+      {
+        label: "wrong observation identifier",
+        sources: result.evidence.sources.map((source) => source === chainIdSource
+          ? { ...source, observationId: `obs:${"A".repeat(43)}` }
+          : source),
+      },
+      {
+        label: "conflicting authority identity",
+        sources: result.evidence.sources.map((source) => source === chainIdSource
+          ? { ...source, owner: "different_owner" }
+          : source),
+      },
+      {
+        label: "observation after evaluation",
+        sources: canonicalSourceOrder(result.evidence.sources.map((source) => {
+          if (source !== chainIdSource) return source;
+          const changed = { ...source, observedAt: "2026-07-12T10:16:03.000Z" as const };
+          return { ...changed, observationId: independentObservationId(changed, "0") };
+        })),
+      },
+      {
+        label: "additional undeclared source",
+        sources: canonicalSourceOrder([...result.evidence.sources, (() => {
+          const changed = {
+            ...chainIdSource,
+            purpose: "undeclared_source",
+          };
+          return { ...changed, observationId: independentObservationId(changed, "9") };
+        })()]),
+      },
+    ] as const;
+    for (const counterexample of sourceCounterexamples) {
+      expect(
+        () => parseCapabilitySuccess(chainStatusCapability, {}, {
+          ...result,
+          evidence: { ...result.evidence, sources: counterexample.sources },
+        }),
+        counterexample.label,
+      ).toThrow();
+    }
+
+    const conclusionCounterexamples = [
+      {
+        label: "missing conclusion",
+        evidence: { ...result.evidence, conclusions: result.evidence.conclusions.slice(1) },
+        warnings: result.warnings,
+      },
+      {
+        label: "duplicate conclusion",
+        evidence: {
+          ...result.evidence,
+          conclusions: [...result.evidence.conclusions, result.evidence.conclusions[0]],
+        },
+        warnings: result.warnings,
+      },
+      {
+        label: "additional undeclared conclusion",
+        evidence: {
+          ...result.evidence,
+          conclusions: [...result.evidence.conclusions, {
+            ...result.evidence.conclusions[0],
+            id: "undeclared_conclusion",
+          }],
+        },
+        warnings: result.warnings,
+      },
+      {
+        label: "noncanonical conclusion order",
+        evidence: { ...result.evidence, conclusions: [...result.evidence.conclusions].reverse() },
+        warnings: result.warnings,
+      },
+      {
+        label: "dangling conclusion evidence",
+        evidence: {
+          ...result.evidence,
+          conclusions: result.evidence.conclusions.map((conclusion, index) => index === 0
+            ? {
+                ...conclusion,
+                observationIds: [`obs:${"A".repeat(43)}`],
+                freshness: {
+                  ...conclusion.freshness,
+                  observationIds: [`obs:${"A".repeat(43)}`],
+                },
+              }
+            : conclusion),
+        },
+        warnings: result.warnings,
+      },
+      {
+        label: "coverage omits a conclusion",
+        evidence: {
+          ...result.evidence,
+          coverage: {
+            ...result.evidence.coverage,
+            established: result.evidence.coverage.established.slice(1),
+          },
+        },
+        warnings: result.warnings,
+      },
+      {
+        label: "undeclared warning",
+        evidence: result.evidence,
+        warnings: [{
+          code: "partial_result",
+          message: "Some requested results are unavailable.",
+          observationIds: [chainIdSource.observationId],
+        }],
+      },
+    ] as const;
+    for (const counterexample of conclusionCounterexamples) {
+      expect(
+        () => parseCapabilitySuccess(chainStatusCapability, {}, {
+          ...result,
+          evidence: counterexample.evidence,
+          warnings: counterexample.warnings,
+        }),
+        counterexample.label,
+      ).toThrow();
+    }
+
+    const address = `0x${"3".repeat(40)}`;
+    const contractHarness = createCapabilityHarness();
+    const contractBinding = bindForHarness(
+      contractInspectCapability,
+      contractHarness,
+      async (_input, context, observations) => {
+        recordRpc(context, observations, "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
+        recordRpc(context, observations, "block", [{
+          role: "contract_block",
+          value: { address, block },
+          chainAnchor: block,
+        }]);
+        recordRpc(context, observations, "runtime_code", [{
+          role: "runtime_code",
+          value: { address, runtimeCode: { status: "empty" } },
+          chainAnchor: block,
+        }]);
+        return {
+          status: "success",
+          data: { address, block, runtimeCode: { status: "empty" as const } },
+        };
+      },
+    );
+    const contractResult = await invokeBinding(
+      contractInspectCapability,
+      contractBinding,
+      { address, block: { kind: "latest" } },
+    );
+    expect(contractResult.ok).toBe(true);
+    if (!contractResult.ok) return;
+    const unreferencedRequiredSource = contractResult.evidence.sources.find(
+      (source) => source.purpose === "chain_id",
+    );
+    expect(unreferencedRequiredSource).toBeDefined();
+    expect(() => parseCapabilitySuccess(
+      contractInspectCapability,
+      { address, block: { kind: "latest" } },
+      {
+        ...contractResult,
+        evidence: {
+          ...contractResult.evidence,
+          sources: contractResult.evidence.sources.filter(
+            (source) => source !== unreferencedRequiredSource,
+          ),
+        },
+      },
+    )).toThrow();
+  });
+
+  it("preserves valid optional evidence and rejects a definition-owned warning omission", async () => {
+    const disconnected = { status: "disconnected" as const, reason: "no_session" as const };
+    const walletHarness = createCapabilityHarness();
+    const walletBinding = bindForHarness(
+      walletConnectionCapability,
+      walletHarness,
+      async (_input, context, observations) => {
+        observations.record("wallet_sdk", {
+          source: context.ports.observations.get("wallet_sdk"),
+          claims: [{ role: "wallet_sdk_state", value: disconnected }],
+        });
+        return { status: "success", data: disconnected };
+      },
+    );
+    const walletResult = await invokeBinding(walletConnectionCapability, walletBinding, {});
+    expect(walletResult.ok).toBe(true);
+    if (!walletResult.ok) return;
+    expect(walletResult.evidence.sources.map((source) => source.purpose)).toEqual(["wallet_sdk_sessions"]);
+    expect(() => parseCapabilitySuccess(walletConnectionCapability, {}, walletResult)).not.toThrow();
+
+    const account = `0x${"4".repeat(40)}`;
+    const unavailableToken = evmAddressSchema.parse(`0x${"5".repeat(40)}`);
+    const accountInput = {
+      account: { kind: "address" as const, address: account },
+      includeNative: true as const,
+      tokens: [unavailableToken],
+      block: { kind: "latest" as const },
+    };
+    const accountHarness = createCapabilityHarness();
+    const accountBinding = bindForHarness(
+      accountBalanceCapability,
+      accountHarness,
+      async (_input, context, observations) => {
+        recordRpc(context, observations, "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
+        recordRpc(context, observations, "block", [{
+          role: "balance_block",
+          value: block,
+          chainAnchor: block,
+        }]);
+        const asset = { kind: "native" as const, chainId: configuredChainId };
+        const quantityObservationId = recordRpc(context, observations, "native_balance", [{
+          role: "native_balance",
+          value: "1",
+          asset,
+          chainAnchor: block,
+        }]);
+        const tokenAsset = {
+          kind: "erc20" as const,
+          chainId: configuredChainId,
+          address: unavailableToken,
+        };
+        const identity = createAccountBalanceTokenEvidenceIdentity(unavailableToken);
+        const unavailable = { status: "unavailable" as const, errorCode: "source_unavailable" as const };
+        recordRpc(context, observations, identity.balanceSlotId, [{
+          role: identity.balanceClaimRole,
+          value: unavailable,
+          asset: tokenAsset,
+          chainAnchor: block,
+        }]);
+        recordRpc(context, observations, identity.decimalsSlotId, [{
+          role: identity.decimalsClaimRole,
+          value: unavailable,
+          asset: tokenAsset,
+          chainAnchor: block,
+        }]);
+        return {
+          status: "success",
+          data: {
+            account,
+            block,
+            native: {
+              status: "available" as const,
+              amount: {
+                asset,
+                raw: "1",
+                decimals: {
+                  status: "not_observed" as const,
+                  scopeExclusionId: "account_native_decimals_not_observed",
+                },
+                quantityObservationId,
+              },
+            },
+            tokens: [{ asset: tokenAsset, result: unavailable }],
+          },
+        };
+      },
+    );
+    const accountResult = await invokeBinding(accountBalanceCapability, accountBinding, accountInput);
+    expect(accountResult.ok).toBe(true);
+    if (!accountResult.ok) return;
+    expect(accountResult.warnings.map((warning) => warning.code)).toEqual([
+      "decimals_unavailable",
+      "partial_result",
+    ]);
+    expect(() => parseCapabilitySuccess(accountBalanceCapability, accountInput, accountResult)).not.toThrow();
+    const balanceBlockSource = accountResult.evidence.sources.find(
+      (source) => source.purpose === "balance_block",
+    );
+    expect(balanceBlockSource).toBeDefined();
+    const native = accountResult.data.native;
+    if (balanceBlockSource === undefined || native.status !== "available") return;
+    expect(() => parseCapabilitySuccess(accountBalanceCapability, accountInput, {
+      ...accountResult,
+      data: {
+        ...accountResult.data,
+        native: {
+          status: "available",
+          amount: {
+            ...native.amount,
+            quantityObservationId: balanceBlockSource.observationId,
+          },
+        },
+      },
+    })).toThrow();
+    expect(() => parseCapabilitySuccess(accountBalanceCapability, accountInput, {
+      ...accountResult,
+      warnings: [],
+    })).toThrow();
+    expect(() => parseCapabilitySuccess(accountBalanceCapability, accountInput, {
+      ...accountResult,
+      warnings: accountResult.warnings.map((warning) => ({
+        ...warning,
+        observationIds: [`obs:${"A".repeat(43)}`],
+      })),
+    })).toThrow();
+    expect(() => parseCapabilitySuccess(accountBalanceCapability, accountInput, {
+      ...accountResult,
+      warnings: [...accountResult.warnings].reverse(),
+    })).toThrow();
+    expect(() => parseCapabilitySuccess(accountBalanceCapability, accountInput, {
+      ...accountResult,
+      warnings: accountResult.warnings.map((warning, index) => index === 0
+        ? { ...warning, message: "Forged warning text." }
+        : warning),
+    })).toThrow();
+    expect(() => parseCapabilitySuccess(accountBalanceCapability, accountInput, {
+      ...accountResult,
+      warnings: accountResult.warnings.map((warning, index) => index === 0
+        ? {
+            ...warning,
+            code: "unsupported_transaction_type" as const,
+            message: "The transaction type is not interpreted.",
+          }
+        : warning),
+    })).toThrow();
+  });
+
   it("binds a transport success to its chain scope, evidence anchors, and request", async () => {
     const chainHarness = createCapabilityHarness();
     const chainBinding = bindForHarness(chainStatusCapability, chainHarness, async (_input, context, observations) =>
@@ -1052,6 +1473,61 @@ describe("capability binding authority", () => {
       recordRpc(context, observations, "orphan", [{ role: "orphan", value: "safe", chainAnchor: block }]);
       return { status: "success", data: { value: "safe" } };
     });
+    expect((await invokeBinding(definition, binding, {})).ok).toBe(false);
+  });
+
+  it("requires each public observation reference role to be owned by its declared slot", async () => {
+    const dataSchema = z.object({ observationId: observationIdSchema }).strict();
+    const definition = defineReadCapability<{}, z.infer<typeof dataSchema>>({
+      capabilityId: "test.reference_role",
+      inputSchema: z.object({}).strict(),
+      dataSchema,
+      failureCodes: ["internal_error", "invalid_input", "result_too_large"],
+      conclusionIds: ["value_observed"],
+      observationSlots: () => [{
+        slotId: "value",
+        factId: "value",
+        kind: "source",
+        purpose: "value",
+        sourceClass: "chain_rpc",
+      }],
+      observationExpectations: () => [{
+        slotId: "value",
+        claims: [{ role: "expected_role", value: "safe", chainAnchor: block }],
+      }],
+      observationReferences: (_input, data) => [{
+        observationId: data.observationId,
+        slotId: "value",
+        role: "wrong_role",
+      }],
+      factRequirements: () => [{
+        factId: "value",
+        observationSlotIds: ["value"],
+        requiredObservationSlotIds: ["value"],
+        minimumObservationCount: 1,
+        outcome: "observed",
+      }],
+      deriveConclusions: () => [{
+        id: "value_observed",
+        outcomeFactId: "value",
+        evidenceFactIds: ["value"],
+        freshnessRuleId: "chain_anchor_exact",
+      }],
+      deriveWarnings: () => [],
+      warningCodes: [],
+      staticScopeExclusions: [],
+    });
+    const harness = createCapabilityHarness();
+    const binding = bindForHarness(definition, harness, async (_input, context, observations) => ({
+      status: "success",
+      data: {
+        observationId: recordRpc(context, observations, "value", [{
+          role: "expected_role",
+          value: "safe",
+          chainAnchor: block,
+        }]),
+      },
+    }));
     expect((await invokeBinding(definition, binding, {})).ok).toBe(false);
   });
 

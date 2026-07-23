@@ -10,6 +10,7 @@ import {
   erc20TransferTopic0,
   fixedIdentifierSchema,
   keccak256FromHex,
+  parseCapabilitySuccess,
   parseEvmAddress,
   parseEvmChainId,
   parseHash32,
@@ -249,6 +250,28 @@ describe("Robinhood Chain read handlers", () => {
     });
     expect(result.data.accessList).toEqual({ kind: "entries", entries: [] });
     expect(result.data.inclusion).toEqual({ status: "pending" });
+    expect(() => parseCapabilitySuccess(
+      transactionInspectCapability,
+      { transactionHash },
+      result,
+    )).not.toThrow();
+    const chainIdSource = result.evidence.sources.find((source) => source.purpose === "chain_id");
+    expect(chainIdSource).toBeDefined();
+    if (chainIdSource === undefined) return;
+    expect(() => parseCapabilitySuccess(
+      transactionInspectCapability,
+      { transactionHash },
+      {
+        ...result,
+        data: {
+          ...result.data,
+          value: {
+            ...result.data.value,
+            quantityObservationId: chainIdSource.observationId,
+          },
+        },
+      },
+    )).toThrow();
     expect(service.rpc.calls).toEqual([
       { method: "eth_chainId", params: [] },
       { method: "eth_getTransactionByHash", params: [transactionHash] },
@@ -451,12 +474,13 @@ describe("Robinhood Chain read handlers", () => {
       rpcValue("eth_call", abiWord(6n)),
     ]);
 
-    const result = await service.invoke(accountBalanceCapability, {
+    const input = {
       account: { kind: "address", address: account },
-      includeNative: false,
+      includeNative: false as const,
       tokens: [token],
-      block: { kind: "latest" },
-    });
+      block: { kind: "latest" as const },
+    };
+    const result = await service.invoke(accountBalanceCapability, input);
     expectSuccess(result);
     const tokenResult = result.data.tokens[0]?.result;
     expect(tokenResult?.status).toBe("available");
@@ -466,6 +490,28 @@ describe("Robinhood Chain read handlers", () => {
       raw: largeDecimal,
       decimals: { status: "available", value: "6" },
     });
+    expect(() => parseCapabilitySuccess(accountBalanceCapability, input, result)).not.toThrow();
+    const blockSource = result.evidence.sources.find((source) => source.purpose === "balance_block");
+    expect(blockSource).toBeDefined();
+    if (blockSource === undefined) return;
+    expect(() => parseCapabilitySuccess(accountBalanceCapability, input, {
+      ...result,
+      data: {
+        ...result.data,
+        tokens: result.data.tokens.map((entry) => entry.result.status === "available"
+          ? {
+              ...entry,
+              result: {
+                ...entry.result,
+                amount: {
+                  ...entry.result.amount,
+                  quantityObservationId: blockSource.observationId,
+                },
+              },
+            }
+          : entry),
+      },
+    })).toThrow();
   });
 
   it("keeps canonical token order when concurrent reads complete out of order", async () => {
