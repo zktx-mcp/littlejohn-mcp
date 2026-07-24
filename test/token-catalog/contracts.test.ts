@@ -25,6 +25,7 @@ import {
   tokenCatalogOperationSchema,
   tokenInspectCapability,
   tokenInspectionInputSchema,
+  tokenInspectionSuccessSchema,
   tokenSelectionRevisionSchema,
   tokenSelectionSchema,
   type TokenCatalogOperation,
@@ -156,6 +157,55 @@ describe("token catalog contracts", () => {
         },
       },
     })).toThrow();
+  });
+
+  it("rejects every independent field mismatch in both token anchor relations", async () => {
+    const inspection = await createInspectionSuccess();
+    const anchorMutations = [
+      { field: "chainId", value: "eip155:1" },
+      { field: "blockNumber", value: "43" },
+      { field: "blockHash", value: `0x${"cd".repeat(32)}` },
+      { field: "blockTimestamp", value: "2026-07-18T00:00:01.000Z" },
+    ] as const;
+
+    for (const mutation of anchorMutations) {
+      const invalidInspection = JSON.parse(JSON.stringify(inspection)) as {
+        data: { standards: { block: Record<string, unknown> } };
+      };
+      invalidInspection.data.standards.block[mutation.field] = mutation.value;
+      expect(() => tokenInspectionSuccessSchema.parse(invalidInspection)).toThrow();
+    }
+
+    const add = awaitingOperation({
+      inspection,
+      kind: "add",
+      previousSelection: null,
+    });
+    const officialEvidence = {
+      assetUid: `0x${"56".repeat(32)}`,
+      snapshotRevision,
+      verificationBlock: inspection.data.block,
+    };
+    expect(() => tokenCatalogOperationSchema.parse({
+      ...add,
+      review: { ...add.review, officialEvidence },
+    })).not.toThrow();
+
+    for (const mutation of anchorMutations) {
+      expect(() => tokenCatalogOperationSchema.parse({
+        ...add,
+        review: {
+          ...add.review,
+          officialEvidence: {
+            ...officialEvidence,
+            verificationBlock: {
+              ...officialEvidence.verificationBlock,
+              [mutation.field]: mutation.value,
+            },
+          },
+        },
+      })).toThrow();
+    }
   });
 
   it("normalizes only the declared list defaults and keeps selection input exact", () => {

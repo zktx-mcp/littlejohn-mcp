@@ -426,24 +426,28 @@ describe("capability semantic and evidence authority", () => {
         { slotId: "first", factId: "value", kind: "source" as const, purpose: "first", sourceClass: "chain_rpc" as const },
         { slotId: "second", factId: "value", kind: "source" as const, purpose: "second", sourceClass: "chain_rpc" as const },
       ],
-      observationExpectations: () => [
-        { slotId: "first", claims: [{ role: "first", value: "same", chainAnchor: block }] },
-        { slotId: "second", claims: [{ role: "second", value: "same", chainAnchor: otherBlock }] },
-      ],
-      factRequirements: () => [{
-        factId: "value",
-        observationSlotIds: ["first", "second"],
-        requiredObservationSlotIds: ["first", "second"],
-        minimumObservationCount: 2,
-        outcome: "observed" as const,
-      }],
-      deriveConclusions: () => [{
-        id: "value_observed",
-        outcomeFactId: "value",
-        evidenceFactIds: ["value"],
-        freshnessRuleId: "chain_anchor_exact" as const,
-      }],
-      deriveWarnings: () => [],
+      evidenceDeclaration: () => ({
+        observationExpectations: [
+          { slotId: "first", claims: [{ role: "first", value: "same", chainAnchor: block }] },
+          { slotId: "second", claims: [{ role: "second", value: "same", chainAnchor: otherBlock }] },
+        ],
+        observationReferences: [],
+        factRequirements: [{
+          factId: "value",
+          observationSlotIds: ["first", "second"],
+          requiredObservationSlotIds: ["first", "second"],
+          minimumObservationCount: 2,
+          outcome: "observed" as const,
+        }],
+        expectedConclusionIds: ["value_observed"],
+        conclusionDrafts: [{
+          id: "value_observed",
+          outcomeFactId: "value",
+          evidenceFactIds: ["value"],
+          freshnessRuleId: "chain_anchor_exact" as const,
+        }],
+        warningRequirements: [],
+      }),
       warningCodes: [],
       staticScopeExclusions: [],
     });

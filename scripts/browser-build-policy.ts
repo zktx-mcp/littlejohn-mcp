@@ -40,6 +40,7 @@ const sharedContractSources = new Set([
   "src/core/errors.ts",
   "src/core/evm-address-input.ts",
   "src/core/evidence.ts",
+  "src/core/evidence-replay.ts",
   "src/core/identities.ts",
   "src/core/immutability.ts",
   "src/core/invocation.ts",

@@ -8,11 +8,13 @@ import {
   captureCanonicalJson,
   type CanonicalJson,
 } from "../../src/core/browser.js";
+import { parseCapabilitySuccess } from "../../src/core/index.js";
 import * as browserContracts from "../../src/token-catalog/browser.js";
 import {
   tokenCatalogApplicationContracts as serverApplicationContracts,
   tokenCatalogContractProjectionDigest,
   tokenCatalogOperationConfirmationContract as serverConfirmationContract,
+  tokenInspectCapability,
   tokenInspectionSuccessSchema as serverInspectionSuccessSchema,
 } from "../../src/token-catalog/contracts.js";
 import { createInspectionSuccess } from "./harness.js";
@@ -54,5 +56,43 @@ describe("token catalog browser contract", () => {
     };
     expect(() => browserContracts.tokenInspectionSuccessSchema.parse(invalid)).toThrow();
     expect(() => serverInspectionSuccessSchema.parse(invalid)).toThrow();
+  });
+
+  it("keeps generic and browser token evidence rejection semantically identical", async () => {
+    const success = await createInspectionSuccess();
+    const input = {
+      asset: success.data.asset,
+      block: { kind: "latest" as const },
+    };
+    const mutations = [
+      (candidate: Record<string, unknown>) => {
+        const evidence = candidate["evidence"] as Record<string, unknown>;
+        evidence["sources"] = (evidence["sources"] as unknown[]).slice(1);
+      },
+      (candidate: Record<string, unknown>) => {
+        const evidence = candidate["evidence"] as Record<string, unknown>;
+        const source = (evidence["sources"] as Array<Record<string, unknown>>)[0];
+        if (source === undefined) throw new TypeError("Token fixture has no evidence source.");
+        candidate["warnings"] = [{
+          code: "partial_result",
+          message: "Some requested results are unavailable.",
+          observationIds: [source["observationId"]],
+        }];
+      },
+      (candidate: Record<string, unknown>) => {
+        const evidence = candidate["evidence"] as Record<string, unknown>;
+        const coverage = evidence["coverage"] as Record<string, unknown>;
+        const established = coverage["established"] as unknown[];
+        coverage["established"] = [established[0], ...established];
+      },
+    ] as const;
+
+    for (const mutate of mutations) {
+      const invalid = JSON.parse(JSON.stringify(success)) as Record<string, unknown>;
+      mutate(invalid);
+      expect(() => parseCapabilitySuccess(tokenInspectCapability, input, invalid)).toThrow();
+      expect(() => browserContracts.tokenInspectionSuccessSchema.parse(invalid)).toThrow();
+      expect(() => serverInspectionSuccessSchema.parse(invalid)).toThrow();
+    }
   });
 });

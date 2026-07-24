@@ -230,19 +230,21 @@ export type {
   CapabilityDefinitionSnapshot,
   CapabilityId,
   CapabilityInput,
-  ConclusionDraft,
   DataValidationContext,
-  FactRequirement,
   IntrinsicDataValidationContext,
+  ObservationWriter,
+  ReadCapabilityDefinition,
+  SuccessValidationContext,
+} from "./capability.js";
+export type {
+  ConclusionDraft,
+  EvidenceReplayDeclaration,
+  FactRequirement,
   ObservationExpectation,
   ObservationReference,
   ObservationSlot,
-  ObservationWriter,
-  ObservedFact,
-  ReadCapabilityDefinition,
-  SuccessValidationContext,
   WarningRequirement,
-} from "./capability.js";
+} from "./evidence-replay.js";
 export {
   ApplicationErrorRegistry,
   applicationErrorDefinitionSchema,

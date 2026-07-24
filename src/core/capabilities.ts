@@ -23,15 +23,19 @@ import {
   CapabilityRegistry,
   defineReadCapability,
   type AnyReadCapabilityDefinition,
-  type ConclusionDraft,
-  type FactRequirement,
   type IntrinsicDataValidationContext,
+} from "./capability.js";
+import {
+  createEvmAddressConclusionIdentity,
+  createEvmAddressConclusionIdentityDeclaration,
+  type ConclusionDraft,
+  type EvidenceReplayDeclaration,
+  type FactRequirement,
   type ObservationExpectation,
   type ObservationReference,
   type ObservationSlot,
-  type ObservedFact,
   type WarningRequirement,
-} from "./capability.js";
+} from "./evidence-replay.js";
 import type { CanonicalJson } from "./canonical-json.js";
 import type { ExternalSourceClass, FactOutcome, Freshness, StaticScopeExclusion } from "./evidence.js";
 import {
@@ -58,6 +62,8 @@ import {
 
 const capabilityPrimitives = createPrimitiveSchemaSet();
 const capabilityAmounts = createAmountSchemaSet();
+const accountBalanceTokenConclusionIdentity =
+  createEvmAddressConclusionIdentityDeclaration("token_balance:");
 
 const canonicalFailureCodes = (codes: readonly string[]): readonly SnakeCaseCode[] => Object.freeze(
   sortUniqueStrings(codes.map((code) => capabilityPrimitives.snakeCaseCode.parse(code))),
@@ -282,7 +288,7 @@ const expectation = (slotId: string, claims: readonly ObservationClaim[]): Obser
 const asJson = (value: unknown): CanonicalJson => value as CanonicalJson;
 
 export const createAccountBalanceTokenEvidenceIdentity = (address: EvmAddress) => {
-  const factId = capabilityPrimitives.fixedIdentifier.parse(`token_balance:${address}`);
+  const factId = createEvmAddressConclusionIdentity(accountBalanceTokenConclusionIdentity, address);
   return Object.freeze({
     factId,
     balanceSlotId: capabilityPrimitives.fixedIdentifier.parse(`token:${address}:balance`),
@@ -303,46 +309,52 @@ const assertOrderedUnique = (values: readonly string[], label: string): void => 
 const conclusionFromFact = (
   id: string,
   factId: string,
-  facts: ReadonlyMap<string, ObservedFact>,
   freshnessRuleId: Freshness["ruleId"],
   evidenceFactIds: readonly string[] = [factId],
-): ConclusionDraft => {
-  const fact = facts.get(factId);
-  if (fact === undefined) throw new TypeError("Missing capability fact.");
-  return {
+): ConclusionDraft => ({
     id,
     outcomeFactId: factId,
     evidenceFactIds,
-    freshnessRuleId,
-  };
-};
+  freshnessRuleId,
+});
+
+const chainStatusConclusionIds = Object.freeze([
+  "latest_block_observed",
+  "rpc_chain_id_matches_scope",
+]);
 
 export const chainStatusCapability = defineReadCapability<ChainStatusInput, ChainStatusData>({
   capabilityId: "chain.status",
   inputSchema: chainStatusInputSchema,
   dataSchema: chainStatusDataSchema,
   failureCodes: rpcReadFailureCodes,
-  conclusionIds: ["latest_block_observed", "rpc_chain_id_matches_scope"],
+  conclusionIds: chainStatusConclusionIds,
   observationSlots: () => [
     sourceSlot("rpc_chain_id", "rpc_chain_id", "chain_id", "chain_rpc"),
     sourceSlot("latest_block", "latest_block", "latest_block", "chain_rpc"),
   ],
-  observationExpectations: (_input, data) => [
-    expectation("rpc_chain_id", [claim("chain_id", data.chainId)]),
-    expectation("latest_block", [claim("latest_block", asJson(data.latestBlock), { chainAnchor: data.latestBlock })]),
-  ],
-  factRequirements: () => [
-    requirement("latest_block", "observed", ["latest_block"]),
-    requirement("rpc_chain_id", "observed", ["rpc_chain_id"]),
-  ],
-  deriveConclusions: (_input, _data, facts) => [
-    conclusionFromFact("latest_block_observed", "latest_block", facts, "chain_anchor_exact"),
-    {
-      ...conclusionFromFact("rpc_chain_id_matches_scope", "rpc_chain_id", facts, "chain_anchor_exact"),
-      evidenceFactIds: ["latest_block", "rpc_chain_id"],
-    },
-  ],
-  deriveWarnings: () => [],
+  evidenceDeclaration: (_input, data) => ({
+    observationExpectations: [
+      expectation("rpc_chain_id", [claim("chain_id", data.chainId)]),
+      expectation("latest_block", [
+        claim("latest_block", asJson(data.latestBlock), { chainAnchor: data.latestBlock }),
+      ]),
+    ],
+    observationReferences: [],
+    factRequirements: [
+      requirement("latest_block", "observed", ["latest_block"]),
+      requirement("rpc_chain_id", "observed", ["rpc_chain_id"]),
+    ],
+    expectedConclusionIds: chainStatusConclusionIds,
+    conclusionDrafts: [
+      conclusionFromFact("latest_block_observed", "latest_block", "chain_anchor_exact"),
+      {
+        ...conclusionFromFact("rpc_chain_id_matches_scope", "rpc_chain_id", "chain_anchor_exact"),
+        evidenceFactIds: ["latest_block", "rpc_chain_id"],
+      },
+    ],
+    warningRequirements: [],
+  }),
   validateIntrinsicData: (data) => {
     if (data.latestBlock.chainId !== data.chainId) throw new TypeError("Chain status anchor mismatch.");
   },
@@ -359,37 +371,46 @@ export const chainStatusCapability = defineReadCapability<ChainStatusInput, Chai
   ],
 });
 
+const contractInspectConclusionIds = Object.freeze([
+  "account_observed",
+  "runtime_code_observed",
+]);
+
 export const contractInspectCapability = defineReadCapability<ContractInspectInput, ContractInspectData>({
   capabilityId: "contract.inspect",
   inputSchema: contractInspectInputSchema,
   dataSchema: contractInspectDataSchema,
   failureCodes: rpcReadFailureCodes,
-  conclusionIds: ["account_observed", "runtime_code_observed"],
+  conclusionIds: contractInspectConclusionIds,
   observationSlots: () => [
     sourceSlot("rpc_chain_id", "rpc_chain_id", "chain_id", "chain_rpc"),
     sourceSlot("block", "account", "contract_block", "chain_rpc"),
     sourceSlot("runtime_code", "runtime_code", "runtime_code", "chain_rpc"),
   ],
-  observationExpectations: (_input, data) => [
-    expectation("rpc_chain_id", [claim("chain_id", data.block.chainId)]),
-    expectation("block", [claim("contract_block", asJson({ address: data.address, block: data.block }), {
-      chainAnchor: data.block,
-    })]),
-    expectation("runtime_code", [claim("runtime_code", asJson({
-      address: data.address,
-      runtimeCode: data.runtimeCode,
-    }), { chainAnchor: data.block })]),
-  ],
-  factRequirements: () => [
-    requirement("account", "observed", ["block"]),
-    requirement("rpc_chain_id", "observed", ["rpc_chain_id"]),
-    requirement("runtime_code", "observed", ["runtime_code"]),
-  ],
-  deriveConclusions: (_input, _data, facts) => [
-    conclusionFromFact("account_observed", "account", facts, "chain_anchor_exact"),
-    conclusionFromFact("runtime_code_observed", "runtime_code", facts, "chain_anchor_exact"),
-  ],
-  deriveWarnings: () => [],
+  evidenceDeclaration: (_input, data) => ({
+    observationExpectations: [
+      expectation("rpc_chain_id", [claim("chain_id", data.block.chainId)]),
+      expectation("block", [claim("contract_block", asJson({ address: data.address, block: data.block }), {
+        chainAnchor: data.block,
+      })]),
+      expectation("runtime_code", [claim("runtime_code", asJson({
+        address: data.address,
+        runtimeCode: data.runtimeCode,
+      }), { chainAnchor: data.block })]),
+    ],
+    observationReferences: [],
+    factRequirements: [
+      requirement("account", "observed", ["block"]),
+      requirement("rpc_chain_id", "observed", ["rpc_chain_id"]),
+      requirement("runtime_code", "observed", ["runtime_code"]),
+    ],
+    expectedConclusionIds: contractInspectConclusionIds,
+    conclusionDrafts: [
+      conclusionFromFact("account_observed", "account", "chain_anchor_exact"),
+      conclusionFromFact("runtime_code_observed", "runtime_code", "chain_anchor_exact"),
+    ],
+    warningRequirements: [],
+  }),
   validateIntrinsicData: (data) => {
     if (data.runtimeCode.status === "present") {
       const byteLength = BigInt((data.runtimeCode.bytecode.length - 2) / 2);
@@ -699,46 +720,109 @@ const validateTransactionIntrinsicData = (
   }
 };
 
+const transactionInspectConclusionIds = Object.freeze([
+  "inclusion_observed",
+  "receipt_observed",
+  "standard_events_decoded",
+  "transaction_observed",
+]);
+
+const transactionEvidenceDeclaration = (
+  input: TransactionInspectInput,
+  data: TransactionInspectData,
+): EvidenceReplayDeclaration => {
+  const pending = data.inclusion.status === "pending";
+  const rule = pending ? "pending_transaction_observed" : "chain_anchor_exact";
+  const references: ObservationReference[] = [
+    ...amountObservationReferences(data.value, {
+      slotId: "transaction",
+      role: "transaction_value",
+    }),
+    observationReference(data.gasLimit.observationId, "transaction", "transaction_gas_limit"),
+  ];
+  if (data.fee.kind === "legacy") {
+    references.push(...amountObservationReferences(data.fee.gasPrice.numerator, {
+      slotId: "transaction",
+      role: "transaction_gas_price",
+    }));
+  } else if (data.fee.kind === "dynamic") {
+    references.push(
+      ...amountObservationReferences(data.fee.maxFeePerGas.numerator, {
+        slotId: "transaction",
+        role: "transaction_max_fee_per_gas",
+      }),
+      ...amountObservationReferences(data.fee.maxPriorityFeePerGas.numerator, {
+        slotId: "transaction",
+        role: "transaction_max_priority_fee_per_gas",
+      }),
+    );
+  }
+  if (data.inclusion.status === "included") {
+    const receipt = data.inclusion.receipt;
+    references.push(
+      observationReference(
+        receipt.cumulativeGasUsed.observationId,
+        "receipt",
+        "receipt_cumulative_gas_used",
+      ),
+      observationReference(receipt.gasUsed.observationId, "receipt", "receipt_gas_used"),
+      ...amountObservationReferences(receipt.effectiveGasPrice.numerator, {
+        slotId: "receipt",
+        role: "receipt_effective_gas_price",
+      }),
+    );
+    for (const [index, log] of receipt.logs.entries()) {
+      if (log.decodedEvent.kind !== "not_decoded") {
+        references.push(...amountObservationReferences(
+          log.decodedEvent.amount,
+          { slotId: "receipt", role: `receipt_log_amount:${index}` },
+        ));
+      }
+    }
+  }
+  return {
+    observationExpectations: transactionObservationExpectations(input, data),
+    observationReferences: references,
+    factRequirements: [
+      requirement("block", data.inclusion.status === "included" ? "observed" : "not_present", ["block"],
+        data.inclusion.status === "included" ? ["block"] : [], data.inclusion.status === "included" ? 1 : 0),
+      requirement("receipt", data.inclusion.status === "included" ? "observed" : "not_present", ["receipt"],
+        data.inclusion.status === "included" ? ["receipt"] : [], data.inclusion.status === "included" ? 1 : 0),
+      requirement("rpc_chain_id", "observed", ["rpc_chain_id"]),
+      requirement("transaction", pending ? "pending" : "observed", ["transaction"]),
+    ],
+    expectedConclusionIds: transactionInspectConclusionIds,
+    conclusionDrafts: [
+      conclusionFromFact("inclusion_observed", pending ? "transaction" : "block", rule),
+      conclusionFromFact("receipt_observed", "receipt", rule, pending ? ["transaction"] : ["receipt"]),
+      conclusionFromFact("standard_events_decoded", "receipt", rule, pending ? ["transaction"] : ["receipt"]),
+      conclusionFromFact("transaction_observed", "transaction", rule),
+    ],
+    warningRequirements: [
+      { code: "decimals_unavailable", factIds: ["transaction"] },
+      ...(data.inclusion.status === "included"
+        ? [{ code: "decimals_unavailable" as const, factIds: ["receipt"] }]
+        : []),
+      ...(data.fee.kind === "unsupported"
+        ? [{ code: "unsupported_transaction_type" as const, factIds: ["transaction"] }]
+        : []),
+    ],
+  };
+};
+
 export const transactionInspectCapability = defineReadCapability<TransactionInspectInput, TransactionInspectData>({
   capabilityId: "transaction.inspect",
   inputSchema: transactionInspectInputSchema,
   dataSchema: transactionInspectDataSchema,
   failureCodes: transactionReadFailureCodes,
-  conclusionIds: ["inclusion_observed", "receipt_observed", "standard_events_decoded", "transaction_observed"],
+  conclusionIds: transactionInspectConclusionIds,
   observationSlots: () => [
     sourceSlot("rpc_chain_id", "rpc_chain_id", "chain_id", "chain_rpc"),
     sourceSlot("transaction", "transaction", "transaction", "chain_rpc"),
     sourceSlot("receipt", "receipt", "transaction_receipt", "chain_rpc"),
     sourceSlot("block", "block", "transaction_block", "chain_rpc"),
   ],
-  observationExpectations: transactionObservationExpectations,
-  factRequirements: (_input, data) => [
-    requirement("block", data.inclusion.status === "included" ? "observed" : "not_present", ["block"],
-      data.inclusion.status === "included" ? ["block"] : [], data.inclusion.status === "included" ? 1 : 0),
-    requirement("receipt", data.inclusion.status === "included" ? "observed" : "not_present", ["receipt"],
-      data.inclusion.status === "included" ? ["receipt"] : [], data.inclusion.status === "included" ? 1 : 0),
-    requirement("rpc_chain_id", "observed", ["rpc_chain_id"]),
-    requirement("transaction", data.inclusion.status === "pending" ? "pending" : "observed", ["transaction"]),
-  ],
-  deriveConclusions: (_input, data, facts) => {
-    const pending = data.inclusion.status === "pending";
-    const rule = pending ? "pending_transaction_observed" : "chain_anchor_exact";
-    return [
-      conclusionFromFact("inclusion_observed", pending ? "transaction" : "block", facts, rule),
-      conclusionFromFact("receipt_observed", "receipt", facts, rule, pending ? ["transaction"] : ["receipt"]),
-      conclusionFromFact("standard_events_decoded", "receipt", facts, rule, pending ? ["transaction"] : ["receipt"]),
-      conclusionFromFact("transaction_observed", "transaction", facts, rule),
-    ];
-  },
-  deriveWarnings: (_input, data) => [
-    { code: "decimals_unavailable", factIds: ["transaction"] },
-    ...(data.inclusion.status === "included"
-      ? [{ code: "decimals_unavailable" as const, factIds: ["receipt"] }]
-      : []),
-    ...(data.fee.kind === "unsupported"
-      ? [{ code: "unsupported_transaction_type" as const, factIds: ["transaction"] }]
-      : []),
-  ],
+  evidenceDeclaration: transactionEvidenceDeclaration,
   validateIntrinsicData: validateTransactionIntrinsicData,
   validateSuccess: (data, context) => {
     if (data.chainId !== context.chainId) throw new TypeError("Transaction chain scope mismatch.");
@@ -763,56 +847,6 @@ export const transactionInspectCapability = defineReadCapability<TransactionInsp
   },
   validateRequest: (input, data) => {
     if (input.transactionHash !== data.transactionHash) throw new TypeError("Transaction target mismatch.");
-  },
-  observationReferences: (_input, data) => {
-    const references: ObservationReference[] = [
-      ...amountObservationReferences(data.value, {
-        slotId: "transaction",
-        role: "transaction_value",
-      }),
-      observationReference(data.gasLimit.observationId, "transaction", "transaction_gas_limit"),
-    ];
-    if (data.fee.kind === "legacy") {
-      references.push(...amountObservationReferences(data.fee.gasPrice.numerator, {
-        slotId: "transaction",
-        role: "transaction_gas_price",
-      }));
-    } else if (data.fee.kind === "dynamic") {
-      references.push(
-        ...amountObservationReferences(data.fee.maxFeePerGas.numerator, {
-          slotId: "transaction",
-          role: "transaction_max_fee_per_gas",
-        }),
-        ...amountObservationReferences(data.fee.maxPriorityFeePerGas.numerator, {
-          slotId: "transaction",
-          role: "transaction_max_priority_fee_per_gas",
-        }),
-      );
-    }
-    if (data.inclusion.status === "included") {
-      const receipt = data.inclusion.receipt;
-      references.push(
-        observationReference(
-          receipt.cumulativeGasUsed.observationId,
-          "receipt",
-          "receipt_cumulative_gas_used",
-        ),
-        observationReference(receipt.gasUsed.observationId, "receipt", "receipt_gas_used"),
-        ...amountObservationReferences(receipt.effectiveGasPrice.numerator, {
-          slotId: "receipt",
-          role: "receipt_effective_gas_price",
-        }),
-      );
-      for (const [index, log] of receipt.logs.entries()) {
-        if (log.decodedEvent.kind !== "not_decoded") {
-          references.push(...amountObservationReferences(
-            log.decodedEvent.amount,
-            { slotId: "receipt", role: `receipt_log_amount:${index}` },
-          ));
-        }
-      }
-    }
-    return references;
   },
   warningCodes: ["decimals_unavailable", "unsupported_transaction_type"],
   staticScopeExclusions: [
@@ -897,6 +931,90 @@ const accountObservationExpectations = (
   return expectations;
 };
 
+const accountBalanceConclusionIds = Object.freeze([
+  "account_bound",
+  "native_balance_observed",
+  accountBalanceTokenConclusionIdentity,
+]);
+
+const accountBalanceEvidenceDeclaration = (
+  input: AccountBalanceInput,
+  data: AccountBalanceData,
+): EvidenceReplayDeclaration => {
+  const references: ObservationReference[] = [];
+  if (data.native.status === "available") {
+    references.push(...amountObservationReferences(
+      data.native.amount,
+      { slotId: "native_balance", role: "native_balance" },
+    ));
+  }
+  for (const token of data.tokens) {
+    if (token.result.status === "available") {
+      const identity = createAccountBalanceTokenEvidenceIdentity(token.asset.address);
+      references.push(...amountObservationReferences(
+        token.result.amount,
+        { slotId: identity.balanceSlotId, role: identity.balanceClaimRole },
+        { slotId: identity.decimalsSlotId, role: identity.decimalsClaimRole },
+      ));
+    }
+  }
+
+  const warningRequirements: WarningRequirement[] = [];
+  if (data.native.status === "available") {
+    warningRequirements.push({ code: "decimals_unavailable", factIds: ["native_balance"] });
+  }
+  for (const token of data.tokens) {
+    const factId = createAccountBalanceTokenEvidenceIdentity(token.asset.address).factId;
+    if (token.result.status === "unavailable") {
+      warningRequirements.push({ code: "partial_result", factIds: [factId] });
+    } else if (token.result.amount.decimals.status !== "available") {
+      warningRequirements.push({ code: "decimals_unavailable", factIds: [factId] });
+    }
+  }
+
+  return {
+    observationExpectations: accountObservationExpectations(input, data),
+    observationReferences: references,
+    factRequirements: [
+      requirement("account", input.account.kind === "address" ? "validated_input" : "observed", ["account"]),
+      requirement("block", "observed", ["block"]),
+      ...(input.includeNative ? [requirement("native_balance", "observed", ["native_balance"])] : []),
+      requirement("rpc_chain_id", "observed", ["rpc_chain_id"]),
+      ...data.tokens.map((token) => {
+        const identity = createAccountBalanceTokenEvidenceIdentity(token.asset.address);
+        const slots = [identity.balanceSlotId, identity.decimalsSlotId];
+        if (token.result.status === "available") {
+          return requirement(identity.factId, "observed", slots);
+        }
+        return requirement(
+          identity.factId,
+          token.result.errorCode === "source_inconsistent" ? "source_inconsistent" : "source_failed",
+          slots,
+          [],
+          1,
+        );
+      }),
+    ],
+    expectedConclusionIds: [
+      "account_bound",
+      ...(input.includeNative ? ["native_balance_observed"] : []),
+      ...input.tokens.map((address) => createAccountBalanceTokenEvidenceIdentity(address).factId),
+    ],
+    conclusionDrafts: [
+      conclusionFromFact("account_bound", "account",
+        input.account.kind === "address" ? "validated_input_current" : "wallet_session_current"),
+      ...(input.includeNative
+        ? [conclusionFromFact("native_balance_observed", "native_balance", "chain_anchor_exact")]
+        : []),
+      ...input.tokens.map((address) => {
+        const identity = createAccountBalanceTokenEvidenceIdentity(address);
+        return conclusionFromFact(identity.factId, identity.factId, "chain_anchor_exact");
+      }),
+    ],
+    warningRequirements,
+  };
+};
+
 export const accountBalanceCapability = defineReadCapability<AccountBalanceInput, AccountBalanceData>({
   capabilityId: "account.balance",
   inputSchema: accountBalanceInputSchema,
@@ -908,60 +1026,9 @@ export const accountBalanceCapability = defineReadCapability<AccountBalanceInput
     }
     return { ...input, tokens: [...input.tokens].sort(compareCodePointSequences) };
   },
-  conclusionIds: ["account_bound", "native_balance_observed", "token_balance:<address>"],
-  expectedConclusionIds: (input) => [
-    "account_bound",
-    ...(input.includeNative ? ["native_balance_observed"] : []),
-    ...input.tokens.map((address) => createAccountBalanceTokenEvidenceIdentity(address).factId),
-  ],
+  conclusionIds: accountBalanceConclusionIds,
   observationSlots: accountObservationSlots,
-  observationExpectations: accountObservationExpectations,
-  factRequirements: (input, data) => [
-    requirement("account", input.account.kind === "address" ? "validated_input" : "observed", ["account"]),
-    requirement("block", "observed", ["block"]),
-    ...(input.includeNative ? [requirement("native_balance", "observed", ["native_balance"])] : []),
-    requirement("rpc_chain_id", "observed", ["rpc_chain_id"]),
-    ...data.tokens.map((token) => {
-      const identity = createAccountBalanceTokenEvidenceIdentity(token.asset.address);
-      const slots = [identity.balanceSlotId, identity.decimalsSlotId];
-      if (token.result.status === "available") {
-        return requirement(identity.factId, "observed", slots);
-      }
-      return requirement(
-        identity.factId,
-        token.result.errorCode === "source_inconsistent" ? "source_inconsistent" : "source_failed",
-        slots,
-        [],
-        1,
-      );
-    }),
-  ],
-  deriveConclusions: (input, _data, facts) => [
-    conclusionFromFact("account_bound", "account", facts,
-      input.account.kind === "address" ? "validated_input_current" : "wallet_session_current"),
-    ...(input.includeNative
-      ? [conclusionFromFact("native_balance_observed", "native_balance", facts, "chain_anchor_exact")]
-      : []),
-    ...input.tokens.map((address) => {
-      const identity = createAccountBalanceTokenEvidenceIdentity(address);
-      return conclusionFromFact(identity.factId, identity.factId, facts, "chain_anchor_exact");
-    }),
-  ],
-  deriveWarnings: (_input, data) => {
-    const warnings: WarningRequirement[] = [];
-    if (data.native.status === "available") {
-      warnings.push({ code: "decimals_unavailable", factIds: ["native_balance"] });
-    }
-    for (const token of data.tokens) {
-      const factId = createAccountBalanceTokenEvidenceIdentity(token.asset.address).factId;
-      if (token.result.status === "unavailable") {
-        warnings.push({ code: "partial_result", factIds: [factId] });
-      } else if (token.result.amount.decimals.status !== "available") {
-        warnings.push({ code: "decimals_unavailable", factIds: [factId] });
-      }
-    }
-    return warnings;
-  },
+  evidenceDeclaration: accountBalanceEvidenceDeclaration,
   validateIntrinsicData: (data, context) => {
     context.assertDeclaredScopeExclusion(accountNativeDecimalsExclusion);
     assertAccountBalanceDataSemantics(data);
@@ -970,26 +1037,6 @@ export const accountBalanceCapability = defineReadCapability<AccountBalanceInput
     assertAccountBalanceChainSemantics(data, context.chainId);
   },
   validateRequest: assertAccountBalanceRequestSemantics,
-  observationReferences: (_input, data) => {
-    const references: ObservationReference[] = [];
-    if (data.native.status === "available") {
-      references.push(...amountObservationReferences(
-        data.native.amount,
-        { slotId: "native_balance", role: "native_balance" },
-      ));
-    }
-    for (const token of data.tokens) {
-      if (token.result.status === "available") {
-        const identity = createAccountBalanceTokenEvidenceIdentity(token.asset.address);
-        references.push(...amountObservationReferences(
-          token.result.amount,
-          { slotId: identity.balanceSlotId, role: identity.balanceClaimRole },
-          { slotId: identity.decimalsSlotId, role: identity.decimalsClaimRole },
-        ));
-      }
-    }
-    return references;
-  },
   warningCodes: ["decimals_unavailable", "partial_result"],
   staticScopeExclusions: [
     accountNativeDecimalsExclusion,
@@ -1002,33 +1049,39 @@ export const accountBalanceCapability = defineReadCapability<AccountBalanceInput
   ],
 });
 
+const walletConnectionConclusionIds = Object.freeze(["wallet_connection_state"]);
+
 export const walletConnectionCapability = defineReadCapability<WalletConnectionInput, WalletConnectionData>({
   capabilityId: "wallet.connection",
   inputSchema: walletConnectionInputSchema,
   dataSchema: walletConnectionDataSchema,
   failureCodes: semanticReadFailureCodes,
-  conclusionIds: ["wallet_connection_state"],
+  conclusionIds: walletConnectionConclusionIds,
   observationSlots: () => [
     sourceSlot("wallet_sdk", "wallet_connection", "wallet_sdk_sessions", "wallet_sdk"),
     sourceSlot("wallet_session", "wallet_connection", "wallet_session", "wallet_session"),
   ],
-  observationExpectations: (_input, data) => [
-    expectation("wallet_sdk", [claim("wallet_sdk_state", asJson(data))]),
-    ...(data.status === "connected"
-      ? [expectation("wallet_session", [claim("wallet_session_state", asJson(data))])]
-      : []),
-  ],
-  factRequirements: (_input, data) => [requirement(
-    "wallet_connection",
-    "observed",
-    ["wallet_sdk", "wallet_session"],
-    data.status === "connected" ? ["wallet_sdk", "wallet_session"] : ["wallet_sdk"],
-    data.status === "connected" ? 2 : 1,
-  )],
-  deriveConclusions: (_input, _data, facts) => [
-    conclusionFromFact("wallet_connection_state", "wallet_connection", facts, "wallet_session_current"),
-  ],
-  deriveWarnings: () => [],
+  evidenceDeclaration: (_input, data) => ({
+    observationExpectations: [
+      expectation("wallet_sdk", [claim("wallet_sdk_state", asJson(data))]),
+      ...(data.status === "connected"
+        ? [expectation("wallet_session", [claim("wallet_session_state", asJson(data))])]
+        : []),
+    ],
+    observationReferences: [],
+    factRequirements: [requirement(
+      "wallet_connection",
+      "observed",
+      ["wallet_sdk", "wallet_session"],
+      data.status === "connected" ? ["wallet_sdk", "wallet_session"] : ["wallet_sdk"],
+      data.status === "connected" ? 2 : 1,
+    )],
+    expectedConclusionIds: walletConnectionConclusionIds,
+    conclusionDrafts: [
+      conclusionFromFact("wallet_connection_state", "wallet_connection", "wallet_session_current"),
+    ],
+    warningRequirements: [],
+  }),
   validateIntrinsicData: assertCanonicalWalletConnection,
   validateDataContext: (data, context) => {
     if (data.status === "connected" && Date.parse(data.expiresAt) <= Date.parse(context.evaluatedAt)) {

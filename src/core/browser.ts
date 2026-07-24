@@ -28,6 +28,23 @@ export {
   canonicalSha256,
   utf8ByteLength,
 } from "./canonical-json.js";
+export {
+  createEvidenceReplayDefinition,
+  createEvidenceReplayLayout,
+  replayPublicEvidence,
+} from "./evidence-replay.js";
+export type {
+  ConclusionDraft,
+  EvidenceReplayDeclaration,
+  EvidenceReplayDefinition,
+  EvidenceReplayLayout,
+  EvidenceReplayResult,
+  FactRequirement,
+  ObservationExpectation,
+  ObservationReference,
+  ObservationSlot,
+  WarningRequirement,
+} from "./evidence-replay.js";
 export { coreContractVersion } from "./contract.js";
 export {
   canonicalUsdgAddress,

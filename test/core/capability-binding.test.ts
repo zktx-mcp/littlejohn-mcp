@@ -34,6 +34,10 @@ import {
   type EvidenceSource,
   type ObservationWriter,
 } from "../../src/core/index.js";
+import {
+  createEvmAddressConclusionIdentity,
+  createEvmAddressConclusionIdentityDeclaration,
+} from "../../src/core/evidence-replay.js";
 import { defineReadCapability } from "../../src/core/capability.js";
 import { chainErrorRegistry } from "../../src/chain/errors.js";
 import {
@@ -390,24 +394,31 @@ describe("capability binding authority", () => {
           purpose: "validated_input",
         }];
       },
-      observationExpectations: (input) => [{
-        slotId: "input",
-        claims: [{ role: "validated_input", value: input as never }],
-      }],
-      factRequirements: () => [{
-        factId: "input",
-        observationSlotIds: ["input"],
-        requiredObservationSlotIds: ["input"],
-        minimumObservationCount: 1,
-        outcome: "validated_input" as const,
-      }],
-      deriveConclusions: () => [{
-        id: "input_validated",
-        outcomeFactId: "input",
-        evidenceFactIds: ["input"],
-        freshnessRuleId: "validated_input_current" as const,
-      }],
-      deriveWarnings: () => [],
+      evidenceDeclaration: (input) => {
+        events.push(`declaration:${input.values.join(",")}`);
+        return {
+          observationExpectations: [{
+            slotId: "input",
+            claims: [{ role: "validated_input", value: input as never }],
+          }],
+          observationReferences: [],
+          factRequirements: [{
+            factId: "input",
+            observationSlotIds: ["input"],
+            requiredObservationSlotIds: ["input"],
+            minimumObservationCount: 1,
+            outcome: "validated_input" as const,
+          }],
+          expectedConclusionIds: ["input_validated"],
+          conclusionDrafts: [{
+            id: "input_validated",
+            outcomeFactId: "input",
+            evidenceFactIds: ["input"],
+            freshnessRuleId: "validated_input_current" as const,
+          }],
+          warningRequirements: [],
+        };
+      },
       validateRequest: (input, data) => {
         if (input.values.join("\0") !== data.values.join("\0")) throw new TypeError("Input mismatch.");
       },
@@ -430,10 +441,47 @@ describe("capability binding authority", () => {
     });
 
     expect((await invokeBinding(definition, binding, { values: ["b", "a"] })).ok).toBe(true);
-    expect(events).toEqual(["slots:a,b", "ports:a,b", "handler:a,b"]);
+    expect(events).toEqual(["slots:a,b", "ports:a,b", "handler:a,b", "declaration:a,b"]);
 
     events.length = 0;
     expect((await invokeBinding(definition, binding, { values: [] })).ok).toBe(false);
+    expect(events).toEqual([]);
+
+    const duplicateDefinition = defineReadCapability<{}, { value: string }>({
+      capabilityId: "test.duplicateportlayout",
+      inputSchema: z.object({}).strict(),
+      dataSchema: z.object({ value: z.string() }).strict(),
+      failureCodes: ["internal_error", "invalid_input", "result_too_large"],
+      conclusionIds: ["value_observed"],
+      observationSlots: () => [
+        { slotId: "value", factId: "value", kind: "source", purpose: "value", sourceClass: "chain_rpc" },
+        { slotId: "value", factId: "value", kind: "source", purpose: "value", sourceClass: "chain_rpc" },
+      ],
+      evidenceDeclaration: () => ({
+        observationExpectations: [],
+        observationReferences: [],
+        factRequirements: [],
+        expectedConclusionIds: ["value_observed"],
+        conclusionDrafts: [],
+        warningRequirements: [],
+      }),
+      warningCodes: [],
+      staticScopeExclusions: [],
+    });
+    const duplicateBinding = bindCapability({
+      definition: duplicateDefinition,
+      errorRegistry: chainErrorRegistry,
+      invocationAuthority: harness.invocationAuthority,
+      createInvocationPorts: () => {
+        events.push("duplicate:ports");
+        return harness.ports;
+      },
+      handler: async () => {
+        events.push("duplicate:handler");
+        return { status: "success", data: { value: "safe" } };
+      },
+    });
+    expect((await invokeBinding(duplicateDefinition, duplicateBinding, {})).ok).toBe(false);
     expect(events).toEqual([]);
   });
 
@@ -536,6 +584,11 @@ describe("capability binding authority", () => {
     expect(Object.isFrozen(snapshot.failureCodes)).toBe(true);
     expect(Object.isFrozen(snapshot)).toBe(true);
     expect(Object.values(snapshot).some((value) => typeof value === "function")).toBe(false);
+    expect(getCapabilityDefinitionSnapshot(accountBalanceCapability).conclusionIds).toEqual([
+      "account_bound",
+      "native_balance_observed",
+      "token_balance:<address>",
+    ]);
     expect(() => new CapabilityRegistry([{} as never])).toThrow("provenance");
   });
 
@@ -1296,8 +1349,6 @@ describe("capability binding authority", () => {
 
   it("makes validated-input fact support binder-owned", async () => {
     let dataMutationRejected = false;
-    let factMutationRejected = false;
-    let factSetExposed = false;
     const definition = defineReadCapability<{ value: string }, { value: string }>({
       capabilityId: "test.validated",
       inputSchema: z.object({ value: z.string() }).strict(),
@@ -1310,40 +1361,35 @@ describe("capability binding authority", () => {
         kind: "validated_input" as const,
         purpose: "validated_input",
       }],
-      observationExpectations: (input, data) => {
+      evidenceDeclaration: (input, data) => {
         try {
           data.value = "mutated";
         } catch {
           dataMutationRejected = true;
         }
-        return [{
-          slotId: "input",
-          claims: [{ role: "validated_input", value: input as never }],
-        }];
-      },
-      factRequirements: () => [{
-        factId: "input",
-        observationSlotIds: ["input"],
-        requiredObservationSlotIds: ["input"],
-        minimumObservationCount: 1,
-        outcome: "validated_input" as const,
-      }],
-      deriveConclusions: (_input, _data, facts) => {
-        factSetExposed = typeof (facts as unknown as { set?: unknown }).set === "function";
-        const fact = facts.get("input");
-        try {
-          if (fact !== undefined) (fact as { outcome: string }).outcome = "source_failed";
-        } catch {
-          factMutationRejected = true;
-        }
-        return [{
+        return {
+          observationExpectations: [{
+            slotId: "input",
+            claims: [{ role: "validated_input", value: input as never }],
+          }],
+          observationReferences: [],
+          factRequirements: [{
+            factId: "input",
+            observationSlotIds: ["input"],
+            requiredObservationSlotIds: ["input"],
+            minimumObservationCount: 1,
+            outcome: "validated_input" as const,
+          }],
+          expectedConclusionIds: ["input_validated"],
+          conclusionDrafts: [{
           id: "input_validated",
           outcomeFactId: "input",
           evidenceFactIds: ["input"],
           freshnessRuleId: "validated_input_current" as const,
-        }];
+          }],
+          warningRequirements: [],
+        };
       },
-      deriveWarnings: () => [],
       validateRequest: (input, data) => {
         if (input.value !== data.value) throw new TypeError("Input mismatch.");
       },
@@ -1363,43 +1409,52 @@ describe("capability binding authority", () => {
         .toBe(`${productDisplayName} validated input`);
     }
     expect(dataMutationRejected).toBe(true);
-    expect(factMutationRejected).toBe(true);
-    expect(factSetExposed).toBe(false);
   });
 
-  it("binds dynamic conclusion identities to one declared address template", async () => {
-    const address = `0x${"3".repeat(40)}`;
+  it("binds dynamic conclusion identities to one typed address declaration", async () => {
+    const address = evmAddressSchema.parse(`0x${"3".repeat(40)}`);
+    const conclusionIdentity =
+      createEvmAddressConclusionIdentityDeclaration("address_observed:");
     const definition = defineReadCapability<{ address: string }, { address: string }>({
       capabilityId: "test.dynamicconclusion",
       inputSchema: z.object({ address: z.string().regex(/^0x[0-9a-f]{40}$/) }).strict(),
       dataSchema: z.object({ address: z.string().regex(/^0x[0-9a-f]{40}$/) }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
-      conclusionIds: ["address_observed:<address>"],
-      expectedConclusionIds: (input) => [`address_observed:${input.address}`],
+      conclusionIds: [conclusionIdentity],
       observationSlots: () => [{
         slotId: "input",
         factId: "input",
         kind: "validated_input" as const,
         purpose: "validated_input",
       }],
-      observationExpectations: (input) => [{
-        slotId: "input",
-        claims: [{ role: "validated_input", value: input as never }],
-      }],
-      factRequirements: () => [{
-        factId: "input",
-        observationSlotIds: ["input"],
-        requiredObservationSlotIds: ["input"],
-        minimumObservationCount: 1,
-        outcome: "validated_input" as const,
-      }],
-      deriveConclusions: (input) => [{
-        id: `address_observed:${input.address}`,
-        outcomeFactId: "input",
-        evidenceFactIds: ["input"],
-        freshnessRuleId: "validated_input_current" as const,
-      }],
-      deriveWarnings: () => [],
+      evidenceDeclaration: (input) => {
+        const conclusionId = createEvmAddressConclusionIdentity(
+          conclusionIdentity,
+          evmAddressSchema.parse(input.address),
+        );
+        return {
+          observationExpectations: [{
+            slotId: "input",
+            claims: [{ role: "validated_input", value: input as never }],
+          }],
+          observationReferences: [],
+          factRequirements: [{
+            factId: "input",
+            observationSlotIds: ["input"],
+            requiredObservationSlotIds: ["input"],
+            minimumObservationCount: 1,
+            outcome: "validated_input" as const,
+          }],
+          expectedConclusionIds: [conclusionId],
+          conclusionDrafts: [{
+            id: conclusionId,
+            outcomeFactId: "input",
+            evidenceFactIds: ["input"],
+            freshnessRuleId: "validated_input_current" as const,
+          }],
+          warningRequirements: [],
+        };
+      },
       validateRequest: (input, data) => {
         if (input.address !== data.address) throw new TypeError("Address mismatch.");
       },
@@ -1421,10 +1476,14 @@ describe("capability binding authority", () => {
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
       conclusionIds: ["value_observed"],
       observationSlots: () => [],
-      observationExpectations: () => [],
-      factRequirements: () => [],
-      deriveConclusions: () => [],
-      deriveWarnings: () => [],
+      evidenceDeclaration: () => ({
+        observationExpectations: [],
+        observationReferences: [],
+        factRequirements: [],
+        expectedConclusionIds: ["value_observed"],
+        conclusionDrafts: [],
+        warningRequirements: [],
+      }),
       validateIntrinsicData: (_data, context) => context.assertDeclaredScopeExclusion({
         id: "missing_exclusion" as never,
         message: "This exclusion is not declared.",
@@ -1446,24 +1505,28 @@ describe("capability binding authority", () => {
         { slotId: "used", factId: "value", kind: "source", purpose: "used", sourceClass: "chain_rpc" },
         { slotId: "orphan", factId: "value", kind: "source", purpose: "orphan", sourceClass: "chain_rpc" },
       ],
-      observationExpectations: () => [
-        { slotId: "used", claims: [{ role: "used", value: "safe", chainAnchor: block }] },
-        { slotId: "orphan", claims: [{ role: "orphan", value: "safe", chainAnchor: block }] },
-      ],
-      factRequirements: () => [{
-        factId: "value",
-        observationSlotIds: ["used"],
-        requiredObservationSlotIds: ["used"],
-        minimumObservationCount: 1,
-        outcome: "observed",
-      }],
-      deriveConclusions: () => [{
-        id: "value_observed",
-        outcomeFactId: "value",
-        evidenceFactIds: ["value"],
-        freshnessRuleId: "chain_anchor_exact",
-      }],
-      deriveWarnings: () => [],
+      evidenceDeclaration: () => ({
+        observationExpectations: [
+          { slotId: "used", claims: [{ role: "used", value: "safe", chainAnchor: block }] },
+          { slotId: "orphan", claims: [{ role: "orphan", value: "safe", chainAnchor: block }] },
+        ],
+        observationReferences: [],
+        factRequirements: [{
+          factId: "value",
+          observationSlotIds: ["used"],
+          requiredObservationSlotIds: ["used"],
+          minimumObservationCount: 1,
+          outcome: "observed",
+        }],
+        expectedConclusionIds: ["value_observed"],
+        conclusionDrafts: [{
+          id: "value_observed",
+          outcomeFactId: "value",
+          evidenceFactIds: ["value"],
+          freshnessRuleId: "chain_anchor_exact",
+        }],
+        warningRequirements: [],
+      }),
       warningCodes: [],
       staticScopeExclusions: [],
     });
@@ -1491,29 +1554,32 @@ describe("capability binding authority", () => {
         purpose: "value",
         sourceClass: "chain_rpc",
       }],
-      observationExpectations: () => [{
-        slotId: "value",
-        claims: [{ role: "expected_role", value: "safe", chainAnchor: block }],
-      }],
-      observationReferences: (_input, data) => [{
-        observationId: data.observationId,
-        slotId: "value",
-        role: "wrong_role",
-      }],
-      factRequirements: () => [{
-        factId: "value",
-        observationSlotIds: ["value"],
-        requiredObservationSlotIds: ["value"],
-        minimumObservationCount: 1,
-        outcome: "observed",
-      }],
-      deriveConclusions: () => [{
-        id: "value_observed",
-        outcomeFactId: "value",
-        evidenceFactIds: ["value"],
-        freshnessRuleId: "chain_anchor_exact",
-      }],
-      deriveWarnings: () => [],
+      evidenceDeclaration: (_input, data) => ({
+        observationExpectations: [{
+          slotId: "value",
+          claims: [{ role: "expected_role", value: "safe", chainAnchor: block }],
+        }],
+        observationReferences: [{
+          observationId: data.observationId,
+          slotId: "value",
+          role: "wrong_role",
+        }],
+        factRequirements: [{
+          factId: "value",
+          observationSlotIds: ["value"],
+          requiredObservationSlotIds: ["value"],
+          minimumObservationCount: 1,
+          outcome: "observed",
+        }],
+        expectedConclusionIds: ["value_observed"],
+        conclusionDrafts: [{
+          id: "value_observed",
+          outcomeFactId: "value",
+          evidenceFactIds: ["value"],
+          freshnessRuleId: "chain_anchor_exact",
+        }],
+        warningRequirements: [],
+      }),
       warningCodes: [],
       staticScopeExclusions: [],
     });
@@ -1542,24 +1608,28 @@ describe("capability binding authority", () => {
         { slotId: "input", factId: "input", kind: "validated_input", purpose: "validated_input" },
         { slotId: "source", factId: "input", kind: "source", purpose: "source", sourceClass: "chain_rpc" },
       ],
-      observationExpectations: (input) => [{
-        slotId: "input",
-        claims: [{ role: "validated_input", value: input as never }],
-      }],
-      factRequirements: () => [{
-        factId: "input",
-        observationSlotIds: ["input", "source"],
-        requiredObservationSlotIds: ["input"],
-        minimumObservationCount: 1,
-        outcome: "validated_input",
-      }],
-      deriveConclusions: () => [{
-        id: "input_validated",
-        outcomeFactId: "input",
-        evidenceFactIds: ["input"],
-        freshnessRuleId: "validated_input_current",
-      }],
-      deriveWarnings: () => [],
+      evidenceDeclaration: (input) => ({
+        observationExpectations: [{
+          slotId: "input",
+          claims: [{ role: "validated_input", value: input as never }],
+        }],
+        observationReferences: [],
+        factRequirements: [{
+          factId: "input",
+          observationSlotIds: ["input", "source"],
+          requiredObservationSlotIds: ["input"],
+          minimumObservationCount: 1,
+          outcome: "validated_input",
+        }],
+        expectedConclusionIds: ["input_validated"],
+        conclusionDrafts: [{
+          id: "input_validated",
+          outcomeFactId: "input",
+          evidenceFactIds: ["input"],
+          freshnessRuleId: "validated_input_current",
+        }],
+        warningRequirements: [],
+      }),
       warningCodes: [],
       staticScopeExclusions: [],
     });
@@ -1585,21 +1655,25 @@ describe("capability binding authority", () => {
         purpose: "value",
         sourceClass: "chain_rpc",
       }],
-      observationExpectations: () => [],
-      factRequirements: () => [{
-        factId: "value",
-        observationSlotIds: ["value"],
-        requiredObservationSlotIds: [],
-        minimumObservationCount: 0,
-        outcome: "not_present",
-      }],
-      deriveConclusions: () => [{
-        id: "value_not_present",
-        outcomeFactId: "value",
-        evidenceFactIds: ["value"],
-        freshnessRuleId: "chain_anchor_exact",
-      }],
-      deriveWarnings: () => [],
+      evidenceDeclaration: () => ({
+        observationExpectations: [],
+        observationReferences: [],
+        factRequirements: [{
+          factId: "value",
+          observationSlotIds: ["value"],
+          requiredObservationSlotIds: [],
+          minimumObservationCount: 0,
+          outcome: "not_present",
+        }],
+        expectedConclusionIds: ["value_not_present"],
+        conclusionDrafts: [{
+          id: "value_not_present",
+          outcomeFactId: "value",
+          evidenceFactIds: ["value"],
+          freshnessRuleId: "chain_anchor_exact",
+        }],
+        warningRequirements: [],
+      }),
       warningCodes: [],
       staticScopeExclusions: [],
     });

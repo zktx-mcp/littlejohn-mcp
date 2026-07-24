@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { z, type ZodType } from "zod";
 
 import { createAmountSchemaSet, type AssetIdentity } from "./amounts.js";
@@ -24,26 +24,32 @@ import {
   type CanonicalJson,
 } from "./canonical-json.js";
 import { coreContractVersion } from "./contract.js";
-import { sha256Algorithm } from "./digests.js";
 import {
   createEvidenceSchemaSet,
-  createEvidenceSummary,
   createFieldIssue,
-  factOutcomeDefinitions,
-  freshnessRuleDefinitions,
-  isStrictlyOrderedUnique,
-  type Conclusion,
-  type Coverage,
   type EvidenceSource,
-  type FactOutcome,
   type FieldIssue,
-  type Freshness,
   type InvocationId,
   type ObservationId,
   type SourceClass,
   type StaticScopeExclusion,
   type Warning,
 } from "./evidence.js";
+import {
+  createEvidenceObservationId,
+  createEvidenceReplayDefinition,
+  createEvidenceReplayLayout,
+  readEvidenceReplaySlots,
+  readEvidenceReplayConclusionIds,
+  replayPublicEvidence,
+  type ConclusionIdentityDeclaration,
+  type EvidenceReplayDefinition,
+  type EvidenceReplayDeclaration,
+  type EvidenceReplayLayout,
+  type EvidenceReplayResult,
+  type ObservationExpectation,
+  type ObservationSlot,
+} from "./evidence-replay.js";
 import { evmChainIdSchema, type EvmChainId } from "./identities.js";
 import { deepFreezeValue } from "./immutability.js";
 import { jsonObject } from "./json-object.js";
@@ -71,7 +77,6 @@ import {
   compareCodePointSequences,
   sortUniqueStrings,
   createPrimitiveSchemaSet,
-  type ChainAnchor,
   type SnakeCaseCode,
   type UtcTimestamp,
 } from "./primitives.js";
@@ -82,66 +87,12 @@ const binderEvidenceSchemas = createEvidenceSchemaSet();
 
 const capabilityIdAuthoritySchema = createCapabilityIdSchema();
 
-export interface FactRequirement {
-  readonly factId: string;
-  readonly observationSlotIds: readonly string[];
-  readonly requiredObservationSlotIds: readonly string[];
-  readonly minimumObservationCount: number;
-  readonly outcome: FactOutcome;
-}
-
-export type ObservationSlot =
-  | {
-      readonly slotId: string;
-      readonly factId: string;
-      readonly kind: "validated_input";
-      readonly purpose: string;
-    }
-  | {
-      readonly slotId: string;
-      readonly factId: string;
-      readonly kind: "source";
-      readonly purpose: string;
-      readonly sourceClass: Exclude<SourceClass, "validated_input">;
-    };
-
-type PreparedObservationSlot = ObservationSlot & { readonly ordinal: string };
-
-export interface ObservedFact {
-  readonly factId: string;
-  readonly outcome: FactOutcome;
-  readonly observationIds: readonly ObservationId[];
-}
-
-export interface ObservationExpectation {
-  readonly slotId: string;
-  readonly claims: readonly ObservationClaim[];
-}
-
-export interface ObservationReference {
-  readonly observationId: ObservationId;
-  readonly slotId: string;
-  readonly role: string;
-}
-
 export interface ObservationWriter {
   record(slotId: string, observation: {
     readonly source: ObservationAuthority;
     readonly claims: readonly ObservationClaim[];
   }): ObservationId;
   get(slotId: string): ObservationId | undefined;
-}
-
-export interface ConclusionDraft {
-  readonly id: string;
-  readonly outcomeFactId: string;
-  readonly evidenceFactIds: readonly string[];
-  readonly freshnessRuleId: Freshness["ruleId"];
-}
-
-export interface WarningRequirement {
-  readonly code: Warning["code"];
-  readonly factIds: readonly string[];
 }
 
 export interface SuccessValidationContext {
@@ -156,62 +107,6 @@ export interface DataValidationContext {
 export interface IntrinsicDataValidationContext {
   assertDeclaredScopeExclusion(exclusion: StaticScopeExclusion): void;
 }
-
-const observationClaimAuthoritySchema = jsonObject({
-  role: binderPrimitiveSchemas.fixedIdentifier,
-  value: z.json(),
-  chainAnchor: binderPrimitiveSchemas.chainAnchor.optional(),
-  asset: binderAmountSchemas.assetIdentity.optional(),
-}).strict();
-const observationSlotAuthoritySchema = z.discriminatedUnion("kind", [
-  jsonObject({
-    slotId: binderPrimitiveSchemas.fixedIdentifier,
-    factId: binderPrimitiveSchemas.fixedIdentifier,
-    kind: z.literal("validated_input"),
-    purpose: binderPrimitiveSchemas.snakeCaseCode,
-  }).strict(),
-  jsonObject({
-    slotId: binderPrimitiveSchemas.fixedIdentifier,
-    factId: binderPrimitiveSchemas.fixedIdentifier,
-    kind: z.literal("source"),
-    purpose: binderPrimitiveSchemas.snakeCaseCode,
-    sourceClass: binderEvidenceSchemas.externalSourceClass,
-  }).strict(),
-]);
-const factRequirementAuthoritySchema = jsonObject({
-  factId: binderPrimitiveSchemas.fixedIdentifier,
-  observationSlotIds: z.array(binderPrimitiveSchemas.fixedIdentifier).min(1).max(128),
-  requiredObservationSlotIds: z.array(binderPrimitiveSchemas.fixedIdentifier).max(128),
-  minimumObservationCount: z.number().int().min(0).max(128),
-  outcome: binderEvidenceSchemas.factOutcome,
-}).strict();
-const observationExpectationAuthoritySchema = jsonObject({
-  slotId: binderPrimitiveSchemas.fixedIdentifier,
-  claims: z.array(observationClaimAuthoritySchema).min(1).max(8_192),
-}).strict();
-const observationReferenceAuthoritySchema = jsonObject({
-  observationId: binderEvidenceSchemas.observationId,
-  slotId: binderPrimitiveSchemas.fixedIdentifier,
-  role: binderPrimitiveSchemas.fixedIdentifier,
-}).strict();
-const conclusionDraftAuthoritySchema = jsonObject({
-  id: binderPrimitiveSchemas.fixedIdentifier,
-  outcomeFactId: binderPrimitiveSchemas.fixedIdentifier,
-  evidenceFactIds: z.array(binderPrimitiveSchemas.fixedIdentifier).min(1).max(128),
-  freshnessRuleId: binderEvidenceSchemas.freshnessRuleId,
-}).strict();
-const warningRequirementAuthoritySchema = jsonObject({
-  code: binderEvidenceSchemas.warningCode,
-  factIds: z.array(binderPrimitiveSchemas.fixedIdentifier).min(1).max(128),
-}).strict();
-
-const parseDefinitionArray = <Value>(schema: ZodType<Value>, input: unknown): readonly Value[] => {
-  const normalized = safeNormalize(input);
-  if (!normalized.ok || !Array.isArray(normalized.value)) {
-    throw new TypeError("Capability definition output is invalid.");
-  }
-  return Object.freeze(normalized.value.map((value) => deepFreezeValue(schema.parse(value))));
-};
 
 declare const readCapabilityDefinitionType: unique symbol;
 
@@ -234,22 +129,9 @@ interface InternalReadCapabilityDefinition<Input, Data> {
   readonly contractVersion: typeof coreContractVersion;
   readonly failureCodes: readonly SnakeCaseCode[];
   readonly conclusionIds: readonly string[];
-  readonly conclusionIdMatchers: readonly ((value: string) => boolean)[];
-  expectedConclusionIds(input: Input, data: Data): readonly string[];
+  readonly replayDefinition: EvidenceReplayDefinition;
   observationSlots(input: Input): readonly ObservationSlot[];
-  observationExpectations(input: Input, data: Data): readonly ObservationExpectation[];
-  observationReferences(input: Input, data: Data): readonly ObservationReference[];
-  factRequirements(input: Input, data: Data): readonly FactRequirement[];
-  deriveConclusions(
-    input: Input,
-    data: Data,
-    facts: ReadonlyMap<string, ObservedFact>,
-  ): readonly ConclusionDraft[];
-  deriveWarnings(
-    input: Input,
-    data: Data,
-    facts: ReadonlyMap<string, ObservedFact>,
-  ): readonly WarningRequirement[];
+  evidenceDeclaration(input: Input, data: Data): EvidenceReplayDeclaration;
   validateIntrinsicData(data: Data, context: IntrinsicDataValidationContext): void;
   validateDataContext(data: Data, context: DataValidationContext): void;
   validateSuccess(data: Data, context: SuccessValidationContext): void;
@@ -333,31 +215,6 @@ type ParsedHandlerResult<Data> =
 
 const canonicalUnique = (values: readonly string[]): readonly string[] => Object.freeze(sortUniqueStrings(values));
 
-const conclusionAddressMarker = "<address>";
-
-const compileConclusionIdMatcher = (declaration: string): ((value: string) => boolean) => {
-  const markerIndex = declaration.indexOf(conclusionAddressMarker);
-  if (markerIndex < 0) {
-    if (declaration.includes("<") || declaration.includes(">")) {
-      throw new TypeError("Conclusion identity contains an undeclared placeholder.");
-    }
-    return (value) => value === declaration;
-  }
-  if (
-    declaration.indexOf(conclusionAddressMarker, markerIndex + conclusionAddressMarker.length) >= 0 ||
-    declaration.replace(conclusionAddressMarker, "").includes("<") ||
-    declaration.replace(conclusionAddressMarker, "").includes(">")
-  ) throw new TypeError("Conclusion identity placeholder is ambiguous.");
-  const prefix = declaration.slice(0, markerIndex);
-  const suffix = declaration.slice(markerIndex + conclusionAddressMarker.length);
-  return (value) => {
-    if (!value.startsWith(prefix) || !value.endsWith(suffix)) return false;
-    const end = value.length - suffix.length;
-    if (end < prefix.length) return false;
-    return binderPrimitiveSchemas.evmAddress.safeParse(value.slice(prefix.length, end)).success;
-  };
-};
-
 export interface CapabilityDefinitionSnapshot {
   readonly capabilityId: CapabilityId;
   readonly contractVersion: typeof coreContractVersion;
@@ -430,17 +287,65 @@ type CapabilityResultValidation<Data> =
   | Readonly<{ readonly status: "success"; readonly success: CapabilitySuccess<Data> }>
   | Readonly<{ readonly status: "result_too_large" }>;
 
-interface DerivedCapabilityEvidence {
-  readonly conclusions: readonly Conclusion[];
-  readonly coverage: Coverage;
-  readonly warnings: readonly Warning[];
-}
+const captureDeclarationArray = <Value>(input: readonly Value[]): readonly Value[] => {
+  const normalized = safeNormalize(input);
+  if (!normalized.ok || !Array.isArray(normalized.value)) {
+    throw new TypeError("Capability definition output is invalid.");
+  }
+  return deepFreezeValue(normalized.value) as unknown as readonly Value[];
+};
+
+const captureObservationExpectations = (
+  input: readonly ObservationExpectation[],
+): readonly ObservationExpectation[] => Object.freeze(
+  captureDeclarationArray(input).map((expectation) => deepFreezeValue({
+    ...expectation,
+    claims: [...expectation.claims].sort((left, right) =>
+      compareCodePointSequences(left.role, right.role)),
+  })),
+);
+
+const captureEvidenceDeclaration = <Input, Data>(
+  definition: InternalDefinitionRecord<Input, Data>,
+  input: Input,
+  data: Data,
+): EvidenceReplayDeclaration => {
+  const declaration = definition.evidenceDeclaration(input, data);
+  return Object.freeze({
+    observationExpectations: captureObservationExpectations(declaration.observationExpectations),
+    observationReferences: captureDeclarationArray(declaration.observationReferences),
+    factRequirements: captureDeclarationArray(declaration.factRequirements),
+    expectedConclusionIds: captureDeclarationArray(declaration.expectedConclusionIds),
+    conclusionDrafts: captureDeclarationArray(declaration.conclusionDrafts),
+    warningRequirements: captureDeclarationArray(declaration.warningRequirements),
+  });
+};
+
+const replayCapabilityEvidence = <Input, Data>(
+  definition: InternalDefinitionRecord<Input, Data>,
+  input: Input,
+  data: Data,
+  success: CapabilitySuccess<Data>,
+): EvidenceReplayResult => {
+  const layout = createEvidenceReplayLayout(
+    definition.replayDefinition,
+    definition.observationSlots(input),
+  );
+  const declaration = captureEvidenceDeclaration(definition, input, data);
+  return replayPublicEvidence({
+    definition: definition.replayDefinition,
+    layout,
+    ...declaration,
+    evaluatedAt: success.meta.evaluatedAt,
+    sources: success.evidence.sources,
+  });
+};
 
 const validateCapabilityResult = <Input, Data>(
   record: InternalDefinitionRecord<Input, Data>,
   input: Input,
   success: CapabilitySuccess<Data>,
-  producedEvidence?: DerivedCapabilityEvidence,
+  producedEvidence?: EvidenceReplayResult,
 ): CapabilityResultValidation<Data> => {
   const parsedData = record.dataParser(success.data);
   if (!parsedData.success) throw parsedData.error;
@@ -497,110 +402,14 @@ export const parseCapabilityDataAt = <Definition extends AnyReadCapabilityDefini
   return parsed.data as CapabilityData<Definition>;
 };
 
-const validateDefinitionStructure = <Input>(
-  slots: readonly ObservationSlot[],
-  requirements: readonly FactRequirement[],
-): void => {
-  const slotIds = canonicalUnique(slots.map((slot) => slot.slotId));
-  const factIds = canonicalUnique(requirements.map((requirement) => requirement.factId));
-  if (slotIds.length !== slots.length || factIds.length !== requirements.length) throw new TypeError("Duplicate definition identity.");
-  const slotById = new Map(slots.map((slot) => [slot.slotId, slot]));
-  const requirementByFactId = new Map(requirements.map((requirement) => [requirement.factId, requirement]));
-  for (const requirement of requirements) {
-    const ordered = canonicalUnique(requirement.observationSlotIds);
-    if (ordered.length !== requirement.observationSlotIds.length) throw new TypeError("Duplicate fact observation slot.");
-    const required = canonicalUnique(requirement.requiredObservationSlotIds);
-    if (required.length !== requirement.requiredObservationSlotIds.length) {
-      throw new TypeError("Duplicate required fact observation slot.");
-    }
-    if (
-      !Number.isSafeInteger(requirement.minimumObservationCount) ||
-      requirement.minimumObservationCount < required.length ||
-      requirement.minimumObservationCount > ordered.length
-    ) throw new TypeError("Fact observation cardinality is invalid.");
-    for (const slotId of ordered) {
-      const slot = slotById.get(slotId);
-      if (slot === undefined || slot.factId !== requirement.factId) throw new TypeError("Fact requirement does not own its observation slot.");
-    }
-    const authorityKind = factOutcomeDefinitions[requirement.outcome].evidenceAuthority === "validated_input"
-      ? "validated_input"
-      : "source";
-    if (ordered.some((slotId) => slotById.get(slotId)?.kind !== authorityKind)) {
-      throw new TypeError("Fact requirement mixes observation authorities.");
-    }
-    for (const slotId of required) {
-      if (!ordered.includes(slotId)) throw new TypeError("Required observation slot is not allowed by its fact.");
-    }
-  }
-  for (const slot of slots) {
-    const requirement = requirementByFactId.get(slot.factId);
-    if (requirement === undefined || !requirement.observationSlotIds.includes(slot.slotId)) {
-      throw new TypeError("Observation slot has no owning fact requirement.");
-    }
-  }
-};
-
-class ImmutableFactProjection implements ReadonlyMap<string, ObservedFact> {
-  readonly #facts: Map<string, ObservedFact>;
-
-  constructor(facts: ReadonlyMap<string, ObservedFact>) {
-    this.#facts = new Map(facts);
-    Object.freeze(this);
-  }
-
-  get size(): number {
-    return this.#facts.size;
-  }
-
-  get(key: string): ObservedFact | undefined {
-    return this.#facts.get(key);
-  }
-
-  has(key: string): boolean {
-    return this.#facts.has(key);
-  }
-
-  entries(): MapIterator<[string, ObservedFact]> {
-    return this.#facts.entries();
-  }
-
-  keys(): MapIterator<string> {
-    return this.#facts.keys();
-  }
-
-  values(): MapIterator<ObservedFact> {
-    return this.#facts.values();
-  }
-
-  forEach(
-    callbackfn: (value: ObservedFact, key: string, map: ReadonlyMap<string, ObservedFact>) => void,
-    thisArg?: unknown,
-  ): void {
-    for (const [key, value] of this.#facts) callbackfn.call(thisArg, value, key, this);
-  }
-
-  [Symbol.iterator](): MapIterator<[string, ObservedFact]> {
-    return this.entries();
-  }
-
-  get [Symbol.toStringTag](): string {
-    return "ImmutableFactProjection";
-  }
-}
-
 export const defineReadCapability = <Input, Data>(options: {
   readonly capabilityId: string;
   readonly inputSchema: ZodType<Input>;
   readonly dataSchema: ZodType<Data>;
   readonly normalizeInput?: (input: Input) => Input;
-  readonly conclusionIds: readonly string[];
-  readonly expectedConclusionIds?: (input: Input, data: Data) => readonly string[];
+  readonly conclusionIds: readonly ConclusionIdentityDeclaration[];
   readonly observationSlots: (input: Input) => readonly ObservationSlot[];
-  readonly observationExpectations: (input: Input, data: Data) => readonly ObservationExpectation[];
-  readonly observationReferences?: (input: Input, data: Data) => readonly ObservationReference[];
-  readonly factRequirements: (input: Input, data: Data) => readonly FactRequirement[];
-  readonly deriveConclusions: InternalReadCapabilityDefinition<Input, Data>["deriveConclusions"];
-  readonly deriveWarnings: InternalReadCapabilityDefinition<Input, Data>["deriveWarnings"];
+  readonly evidenceDeclaration: InternalReadCapabilityDefinition<Input, Data>["evidenceDeclaration"];
   readonly validateIntrinsicData?: InternalReadCapabilityDefinition<Input, Data>["validateIntrinsicData"];
   readonly validateDataContext?: InternalReadCapabilityDefinition<Input, Data>["validateDataContext"];
   readonly validateSuccess?: InternalReadCapabilityDefinition<Input, Data>["validateSuccess"];
@@ -618,24 +427,15 @@ export const defineReadCapability = <Input, Data>(options: {
     !failureCodes.includes("result_too_large" as SnakeCaseCode)) {
     throw new TypeError("Capability failure codes must include canonical boundary failures.");
   }
-  const conclusionIdInput = options.conclusionIds.map((id) => binderPrimitiveSchemas.fixedIdentifier.parse(id));
-  const conclusionIds = canonicalUnique(conclusionIdInput);
-  if (conclusionIds.length !== conclusionIdInput.length) throw new TypeError("Duplicate conclusion identity.");
-  const conclusionIdMatchers = Object.freeze(conclusionIds.map(compileConclusionIdMatcher));
-  if (options.expectedConclusionIds === undefined && conclusionIds.some((id) => id.includes(conclusionAddressMarker))) {
-    throw new TypeError("Parameterized conclusions require an exact identity producer.");
-  }
-  for (let index = 0; index < conclusionIds.length; index += 1) {
-    for (let other = index + 1; other < conclusionIds.length; other += 1) {
-      if (conclusionIdMatchers[index]?.(conclusionIds[other] ?? "") === true ||
-        conclusionIdMatchers[other]?.(conclusionIds[index] ?? "") === true) {
-        throw new TypeError("Conclusion identity declarations overlap.");
-      }
-    }
-  }
   const warningCodeInput = options.warningCodes.map((code) => binderEvidenceSchemas.warningCode.parse(code));
   const warningCodes = canonicalUnique(warningCodeInput) as readonly Warning["code"][];
   if (warningCodes.length !== warningCodeInput.length) throw new TypeError("Duplicate warning code.");
+  const replayDefinition = createEvidenceReplayDefinition({
+    capabilityId,
+    conclusionIds: options.conclusionIds,
+    warningCodes,
+  });
+  const conclusionIds = readEvidenceReplayConclusionIds(replayDefinition);
   const staticScopeExclusions = options.staticScopeExclusions
     .map((entry) => binderEvidenceSchemas.staticScopeExclusion.parse(entry) as StaticScopeExclusion)
     .sort((left, right) => compareCodePointSequences(left.id, right.id));
@@ -714,14 +514,9 @@ export const defineReadCapability = <Input, Data>(options: {
     contractVersion: coreContractVersion,
     failureCodes,
     conclusionIds,
-    conclusionIdMatchers,
-    expectedConclusionIds: options.expectedConclusionIds ?? (() => conclusionIds),
+    replayDefinition,
     observationSlots: options.observationSlots,
-    observationExpectations: options.observationExpectations,
-    observationReferences: options.observationReferences ?? (() => []),
-    factRequirements: options.factRequirements,
-    deriveConclusions: options.deriveConclusions,
-    deriveWarnings: options.deriveWarnings,
+    evidenceDeclaration: options.evidenceDeclaration,
     validateIntrinsicData: options.validateIntrinsicData ?? (() => undefined),
     validateDataContext: options.validateDataContext ?? (() => undefined),
     validateSuccess: options.validateSuccess ?? (() => undefined),
@@ -772,49 +567,32 @@ export class CapabilityRegistry {
   }
 }
 
-const sourceIdOf = (reference: EvidenceSource["reference"]): string => reference.sourceId;
-
-const observationIdFor = (
-  sourceId: string,
-  purpose: string,
-  observedAt: UtcTimestamp,
-  chainAnchor: ChainAnchor | undefined,
-  invocationId: InvocationId,
-  invocationOrdinal: string,
-): ObservationId => {
-  const anchor = chainAnchor === undefined ? null : chainAnchor as unknown as CanonicalJson;
-  const digest = createHash(sha256Algorithm)
-    .update(canonicalJsonStringify([sourceId, purpose, observedAt, anchor, invocationId, invocationOrdinal]), "utf8")
-    .digest("base64url");
-  return binderEvidenceSchemas.observationId.parse(`obs:${digest}`);
-};
-
-interface EvidenceObservationProjection {
-  get(slotId: string): ObservationId | undefined;
-  hasSlot(slotId: string): boolean;
-  evidenceFor(observationId: string): EvidenceSource | undefined;
-}
-
 class InvocationObservations implements ObservationWriter {
   readonly #clock: CanonicalClock;
   readonly #authorities: ObservationAuthorityRegistry;
+  readonly #definition: EvidenceReplayDefinition;
+  readonly #layout: EvidenceReplayLayout;
   readonly #invocationId: InvocationId;
-  readonly #slots: ReadonlyMap<string, PreparedObservationSlot>;
+  readonly #slots: ReadonlyMap<string, ObservationSlot>;
   readonly #evidence = new Map<string, EvidenceSource>();
   readonly #claims = new Map<string, readonly ObservationClaim[]>();
 
   constructor(
     capabilityId: CapabilityId,
-    slots: readonly PreparedObservationSlot[],
+    definition: EvidenceReplayDefinition,
+    layout: EvidenceReplayLayout,
     input: unknown,
     invocationId: InvocationId,
     clock: CanonicalClock,
     authorities: ObservationAuthorityRegistry,
   ) {
     this.#clock = clock;
+    this.#definition = definition;
+    this.#layout = layout;
     this.#invocationId = invocationId;
     this.#authorities = authorities;
-    const map = new Map<string, PreparedObservationSlot>();
+    const map = new Map<string, ObservationSlot>();
+    const slots = readEvidenceReplaySlots(definition, layout);
     for (const slot of slots) map.set(slot.slotId, slot);
     this.#slots = map;
     for (const slot of map.values()) {
@@ -884,14 +662,13 @@ class InvocationObservations implements ObservationWriter {
     };
     const expectedClass = slot.kind === "validated_input" ? "validated_input" : slot.sourceClass;
     if (expectedClass !== detailsInput.sourceClass) throw new TypeError("Observation source class is inconsistent.");
-    const observationId = observationIdFor(
-      sourceIdOf(details.reference),
-      slot.purpose,
-      details.observedAt,
-      details.chainAnchor,
-      this.#invocationId,
-      slot.ordinal,
-    );
+    const observationId = createEvidenceObservationId(this.#definition, this.#layout, {
+      slotId,
+      sourceId: details.reference.sourceId,
+      observedAt: details.observedAt,
+      ...(details.chainAnchor === undefined ? {} : { chainAnchor: details.chainAnchor }),
+      invocationId: this.#invocationId,
+    });
     const evidence = deepFreezeValue({
       observationId,
       invocationId: this.#invocationId,
@@ -948,132 +725,6 @@ class InvocationObservations implements ObservationWriter {
 
 }
 
-const expectedSourceClass = (slot: ObservationSlot): SourceClass =>
-  slot.kind === "validated_input" ? "validated_input" : slot.sourceClass;
-
-const canonicalOptionalAnchor = (anchor: ChainAnchor | undefined): string =>
-  canonicalJsonStringify((anchor ?? null) as unknown as CanonicalJson);
-
-const prepareObservationExpectations = (
-  slots: readonly PreparedObservationSlot[],
-  expectationsInput: readonly ObservationExpectation[],
-): ReadonlyMap<string, readonly ObservationClaim[]> => {
-  const slotIds = new Set(slots.map((slot) => slot.slotId));
-  const expectations = new Map<string, readonly ObservationClaim[]>();
-  for (const expectation of expectationsInput) {
-    if (!slotIds.has(expectation.slotId) || expectations.has(expectation.slotId)) {
-      throw new TypeError("Observation expectation identity is invalid.");
-    }
-    const normalized = expectation.claims.map((claim) => deepFreezeValue({
-      role: binderPrimitiveSchemas.fixedIdentifier.parse(claim.role),
-      value: JSON.parse(canonicalJsonStringify(claim.value)) as CanonicalJson,
-      ...(claim.chainAnchor === undefined
-        ? {}
-        : { chainAnchor: binderPrimitiveSchemas.chainAnchor.parse(claim.chainAnchor) }),
-      ...(claim.asset === undefined ? {} : { asset: binderAmountSchemas.assetIdentity.parse(claim.asset) }),
-    })).sort((left, right) => compareCodePointSequences(left.role, right.role));
-    if (
-      normalized.length === 0 ||
-      canonicalUnique(normalized.map((claim) => claim.role)).length !== normalized.length
-    ) throw new TypeError("Observation expectation claims are invalid.");
-    expectations.set(expectation.slotId, Object.freeze(normalized));
-  }
-  return expectations;
-};
-
-const assertExpectedSourceAnchors = (
-  observations: EvidenceObservationProjection,
-  expectations: ReadonlyMap<string, readonly ObservationClaim[]>,
-): void => {
-  for (const [slotId, claims] of expectations) {
-    const observationId = observations.get(slotId);
-    if (observationId === undefined) continue;
-    const source = observations.evidenceFor(observationId);
-    if (source === undefined) throw new TypeError("Observation source is unavailable.");
-    const anchors = claims.flatMap((claim) => claim.chainAnchor === undefined ? [] : [claim.chainAnchor]);
-    const expected = anchors[0];
-    if (anchors.some((anchor) => canonicalOptionalAnchor(anchor) !== canonicalOptionalAnchor(expected))) {
-      throw new TypeError("Observation expectation contains conflicting anchors.");
-    }
-    if (canonicalOptionalAnchor(source.chainAnchor) !== canonicalOptionalAnchor(expected)) {
-      throw new TypeError("Observation source anchor does not match its definition.");
-    }
-  }
-};
-
-class ParsedEvidenceObservations implements EvidenceObservationProjection {
-  readonly #bySlot = new Map<string, EvidenceSource>();
-  readonly #byObservationId = new Map<string, EvidenceSource>();
-
-  constructor(
-    capabilityId: CapabilityId,
-    slots: readonly PreparedObservationSlot[],
-    sources: readonly EvidenceSource[],
-    evaluatedAt: UtcTimestamp,
-  ) {
-    const observationIds = sources.map((source) => source.observationId);
-    if (!isStrictlyOrderedUnique(observationIds)) {
-      throw new TypeError("Evidence sources must be unique and canonically ordered.");
-    }
-    const invocationId = sources[0]?.invocationId;
-    const authorityByClass = new Map<SourceClass, string>();
-    for (const source of sources) {
-      if (source.observedAt > evaluatedAt) {
-        throw new TypeError("Observation time exceeds evaluation time.");
-      }
-      if (source.invocationId !== invocationId) {
-        throw new TypeError("Evidence source invocation identity is inconsistent.");
-      }
-      const authorityIdentity = canonicalJsonStringify({
-        owner: source.owner,
-        reference: source.reference,
-      } as unknown as CanonicalJson);
-      const currentAuthority = authorityByClass.get(source.sourceClass);
-      if (currentAuthority !== undefined && currentAuthority !== authorityIdentity) {
-        throw new TypeError("One invocation uses conflicting source identities.");
-      }
-      authorityByClass.set(source.sourceClass, authorityIdentity);
-      const candidates = slots.filter((slot) =>
-        expectedSourceClass(slot) === source.sourceClass &&
-        slot.purpose === source.purpose &&
-        observationIdFor(
-          source.reference.sourceId,
-          source.purpose,
-          source.observedAt,
-          source.chainAnchor,
-          source.invocationId,
-          slot.ordinal,
-        ) === source.observationId);
-      if (candidates.length !== 1) {
-        throw new TypeError("Evidence source does not match one declared observation slot.");
-      }
-      const slot = candidates[0] as PreparedObservationSlot;
-      if (this.#bySlot.has(slot.slotId)) {
-        throw new TypeError("Observation slot is duplicated.");
-      }
-      if (slot.kind === "validated_input" && (
-        source.owner !== `${productDisplayName} validated input` ||
-        source.reference.kind !== "validated_input" ||
-        source.reference.sourceId !== `input:${capabilityId}`
-      )) throw new TypeError("Validated-input evidence identity is invalid.");
-      this.#bySlot.set(slot.slotId, source);
-      this.#byObservationId.set(source.observationId, source);
-    }
-  }
-
-  get(slotId: string): ObservationId | undefined {
-    return this.#bySlot.get(slotId)?.observationId;
-  }
-
-  hasSlot(slotId: string): boolean {
-    return this.#bySlot.has(slotId);
-  }
-
-  evidenceFor(observationId: string): EvidenceSource | undefined {
-    return this.#byObservationId.get(observationId);
-  }
-}
-
 const normalizeHandlerResult = <Data>(
   value: unknown,
   parseData: (value: unknown) => z.ZodSafeParseResult<Data>,
@@ -1090,258 +741,9 @@ const normalizeHandlerResult = <Data>(
 const internalFailure = (registry: ApplicationErrorRegistry): ApplicationFailure =>
   createApplicationFailure(registry, "internal_error");
 
-const conclusionOutcome = (outcome: FactOutcome): Pick<Conclusion, "status" | "reason"> =>
-  ({ status: factOutcomeDefinitions[outcome].conclusionStatus, reason: outcome });
-
-const assertConclusionFreshness = (
-  draft: ConclusionDraft,
-  sources: readonly EvidenceSource[],
-): void => {
-  if (sources.length === 0) throw new TypeError("Conclusion freshness requires evidence.");
-  const rule = freshnessRuleDefinitions[draft.freshnessRuleId];
-  if (sources.some((source) => !rule.sourceClasses.includes(source.sourceClass as never))) {
-    throw new TypeError("Conclusion freshness source is invalid.");
-  }
-  if ("exactSourceCount" in rule && sources.length !== rule.exactSourceCount) {
-    throw new TypeError("Conclusion freshness source count is invalid.");
-  }
-  if ("purpose" in rule && sources.some((source) => source.purpose !== rule.purpose)) {
-    throw new TypeError("Conclusion freshness source purpose is invalid.");
-  }
-  if (rule.anchor === "consistent_present") {
-    const anchors = sources.flatMap((source) => source.chainAnchor === undefined ? [] : [source.chainAnchor]);
-    if (anchors.length === 0) throw new TypeError("Chain freshness requires an anchor.");
-    const expected = canonicalJsonStringify(anchors[0] as unknown as CanonicalJson);
-    if (anchors.some((anchor) => canonicalJsonStringify(anchor as unknown as CanonicalJson) !== expected)) {
-      throw new TypeError("Chain freshness contains conflicting anchors.");
-    }
-    return;
-  }
-  if (rule.anchor === "absent" && sources.some((source) => source.chainAnchor !== undefined)) {
-    throw new TypeError("Conclusion freshness must not claim a chain anchor.");
-  }
-};
-
-interface PreparedEvidenceDefinition {
-  readonly slots: readonly PreparedObservationSlot[];
-  readonly requirements: readonly FactRequirement[];
-  readonly expectations: ReadonlyMap<string, readonly ObservationClaim[]>;
-  readonly references: readonly ObservationReference[];
-}
-
-const assertPublicEvidenceClosure = (
-  prepared: PreparedEvidenceDefinition,
-  observations: EvidenceObservationProjection,
-): void => {
-  for (const slot of prepared.slots) {
-    if (observations.hasSlot(slot.slotId) && !prepared.expectations.has(slot.slotId)) {
-      throw new TypeError("Observed slot has no definition-owned expectation.");
-    }
-  }
-  const referenceIdentities = new Set<string>();
-  for (const reference of prepared.references) {
-    const identity = canonicalJsonStringify(reference as unknown as CanonicalJson);
-    if (referenceIdentities.has(identity)) {
-      throw new TypeError("Public observation reference is duplicated.");
-    }
-    referenceIdentities.add(identity);
-    if (observations.get(reference.slotId) !== reference.observationId) {
-      throw new TypeError("Public observation reference does not match its declared slot.");
-    }
-    const claims = prepared.expectations.get(reference.slotId);
-    if (claims === undefined || !claims.some((claim) => claim.role === reference.role)) {
-      throw new TypeError("Public observation reference role is not owned by its declared slot.");
-    }
-  }
-  assertExpectedSourceAnchors(observations, prepared.expectations);
-};
-
-const prepareEvidenceDefinition = <Input, Data>(
-  definition: InternalDefinitionRecord<Input, Data>,
-  input: Input,
-  data: Data,
-  slots: readonly PreparedObservationSlot[],
-): PreparedEvidenceDefinition => {
-  const requirements = parseDefinitionArray(
-    factRequirementAuthoritySchema,
-    definition.factRequirements(input, data),
-  ) as readonly FactRequirement[];
-  validateDefinitionStructure(slots, requirements);
-  const expectations = prepareObservationExpectations(
-    slots,
-    parseDefinitionArray(
-      observationExpectationAuthoritySchema,
-      definition.observationExpectations(input, data),
-    ) as readonly ObservationExpectation[],
-  );
-  const references = parseDefinitionArray(
-    observationReferenceAuthoritySchema,
-    definition.observationReferences(input, data),
-  ) as readonly ObservationReference[];
-  return Object.freeze({ slots, requirements, expectations, references });
-};
-
-const deriveCapabilityEvidence = <Input, Data>(
-  definition: InternalDefinitionRecord<Input, Data>,
-  input: Input,
-  data: Data,
-  evaluatedAt: UtcTimestamp,
-  prepared: PreparedEvidenceDefinition,
-  observations: EvidenceObservationProjection,
-): Readonly<DerivedCapabilityEvidence> => {
-  assertPublicEvidenceClosure(prepared, observations);
-  const slotById = new Map(prepared.slots.map((slot) => [slot.slotId, slot]));
-  const facts = new Map<string, ObservedFact>();
-  for (const requirement of prepared.requirements) {
-    const observationIds = canonicalUnique(requirement.observationSlotIds.flatMap((slotId) => {
-      const observationId = observations.get(slotId);
-      return observationId === undefined ? [] : [observationId];
-    })) as readonly ObservationId[];
-    for (const slotId of requirement.requiredObservationSlotIds) {
-      if (!observations.hasSlot(slotId)) throw new TypeError("Required fact evidence is incomplete.");
-    }
-    if (observationIds.length < requirement.minimumObservationCount) {
-      throw new TypeError("Fact evidence cardinality is incomplete.");
-    }
-    const observedSlots = requirement.observationSlotIds
-      .map((slotId) => slotById.get(slotId))
-      .filter((slot): slot is PreparedObservationSlot =>
-        slot !== undefined && observations.hasSlot(slot.slotId));
-    const evidenceAuthority = factOutcomeDefinitions[requirement.outcome].evidenceAuthority;
-    if (evidenceAuthority === "none" && observedSlots.length !== 0) {
-      throw new TypeError("Fact outcome must not claim evidence.");
-    }
-    if (evidenceAuthority === "external" && (
-      observedSlots.length === 0 || observedSlots.some((slot) => slot.kind !== "source")
-    )) throw new TypeError("External fact evidence authority is invalid.");
-    if (evidenceAuthority === "validated_input" && (
-      observedSlots.length === 0 || observedSlots.some((slot) => slot.kind !== "validated_input")
-    )) throw new TypeError("Validated-input fact evidence authority is invalid.");
-    facts.set(requirement.factId, deepFreezeValue({
-      factId: requirement.factId,
-      outcome: requirement.outcome,
-      observationIds,
-    }));
-  }
-  if (facts.size !== prepared.requirements.length) throw new TypeError("Fact output is incomplete.");
-  const factProjection = new ImmutableFactProjection(facts);
-
-  const expectedConclusionIdInput = parseDefinitionArray(
-    binderPrimitiveSchemas.fixedIdentifier,
-    definition.expectedConclusionIds(input, data),
-  );
-  const expectedConclusionIds = canonicalUnique(expectedConclusionIdInput);
-  if (expectedConclusionIds.length !== expectedConclusionIdInput.length) {
-    throw new TypeError("Expected conclusion identities are duplicated.");
-  }
-  for (const expectedId of expectedConclusionIds) {
-    const matches = definition.conclusionIdMatchers.filter((matcher) => matcher(expectedId)).length;
-    if (matches !== 1) throw new TypeError("Expected conclusion identity is undeclared or ambiguous.");
-  }
-  const drafts = parseDefinitionArray(
-    conclusionDraftAuthoritySchema,
-    definition.deriveConclusions(input, data, factProjection),
-  ) as readonly ConclusionDraft[];
-  const conclusions: Conclusion[] = drafts.map((draft) => {
-    const factIds = canonicalUnique(draft.evidenceFactIds);
-    if (factIds.length !== draft.evidenceFactIds.length) {
-      throw new TypeError("Conclusion fact evidence is duplicated.");
-    }
-    const observationIds = canonicalUnique(factIds.flatMap((factId) => {
-      const fact = facts.get(factId);
-      if (fact === undefined) throw new TypeError("Conclusion fact is unavailable.");
-      return fact.observationIds;
-    })) as readonly ObservationId[];
-    const supportingSources = observationIds.map((observationId) => {
-      const source = observations.evidenceFor(observationId);
-      if (source === undefined) throw new TypeError("Conclusion evidence is unavailable.");
-      return source;
-    });
-    assertConclusionFreshness(draft, supportingSources);
-    const outcomeFact = facts.get(draft.outcomeFactId);
-    if (outcomeFact === undefined) throw new TypeError("Conclusion outcome fact is unavailable.");
-    if (outcomeFact.observationIds.length > 0 && !factIds.includes(draft.outcomeFactId)) {
-      throw new TypeError("Conclusion evidence does not contain its outcome fact.");
-    }
-    const outcome = conclusionOutcome(outcomeFact.outcome);
-    const freshnessStatus = freshnessRuleDefinitions[draft.freshnessRuleId].status;
-    return deepFreezeValue({
-      id: draft.id,
-      status: outcome.status,
-      reason: outcome.reason,
-      observationIds,
-      freshness: {
-        status: freshnessStatus,
-        ruleId: draft.freshnessRuleId,
-        evaluatedAt,
-        observationIds,
-      },
-    }) as Conclusion;
-  }).sort((left, right) => compareCodePointSequences(left.id, right.id));
-  if (!isStrictlyOrderedUnique(conclusions.map((item) => item.id))) {
-    throw new TypeError("Conclusion identities are not unique and ordered.");
-  }
-  if (conclusions.map((conclusion) => conclusion.id).join("\0") !== expectedConclusionIds.join("\0")) {
-    throw new TypeError("Capability conclusions are incomplete or undeclared.");
-  }
-
-  const warningRequirements = parseDefinitionArray(
-    warningRequirementAuthoritySchema,
-    definition.deriveWarnings(input, data, factProjection),
-  ) as readonly WarningRequirement[];
-  const warningInputs = warningRequirements.map((candidate) => {
-    if (!definition.warningCodes.includes(candidate.code)) throw new TypeError("Warning is not declared.");
-    const factIds = canonicalUnique(candidate.factIds);
-    if (factIds.length !== candidate.factIds.length) throw new TypeError("Warning fact evidence is duplicated.");
-    const observationIds = canonicalUnique(factIds.flatMap((factId) => {
-      const fact = facts.get(factId);
-      if (fact === undefined) throw new TypeError("Warning fact is invalid.");
-      return fact.observationIds;
-    })) as readonly ObservationId[];
-    if (observationIds.length === 0) throw new TypeError("Warning evidence is invalid.");
-    return { code: candidate.code, observationIds };
-  });
-  const summary = createEvidenceSummary(conclusions, warningInputs);
-  const warningIdentities = summary.warnings.map((warning) =>
-    canonicalJsonStringify(warning as unknown as CanonicalJson));
-  if (!isStrictlyOrderedUnique(warningIdentities)) throw new TypeError("Warnings are not unique and ordered.");
-  return deepFreezeValue({
-    conclusions,
-    coverage: summary.coverage,
-    warnings: summary.warnings,
-  });
-};
-
-const replayCapabilityEvidence = <Input, Data>(
-  definition: InternalDefinitionRecord<Input, Data>,
-  input: Input,
-  data: Data,
-  success: CapabilitySuccess<Data>,
-): Readonly<DerivedCapabilityEvidence> => {
-  const slots = prepareObservationSlots(parseDefinitionArray(
-    observationSlotAuthoritySchema,
-    definition.observationSlots(input),
-  ) as readonly ObservationSlot[]);
-  const prepared = prepareEvidenceDefinition(definition, input, data, slots);
-  const observations = new ParsedEvidenceObservations(
-    definition.capabilityId,
-    slots,
-    success.evidence.sources,
-    success.meta.evaluatedAt,
-  );
-  return deriveCapabilityEvidence(
-    definition,
-    input,
-    data,
-    success.meta.evaluatedAt,
-    prepared,
-    observations,
-  );
-};
-
 const assertDerivedCapabilityEvidence = <Data>(
   success: CapabilitySuccess<Data>,
-  derived: DerivedCapabilityEvidence,
+  derived: EvidenceReplayResult,
 ): void => {
   const actual = canonicalJsonStringify({
     conclusions: success.evidence.conclusions,
@@ -1453,18 +855,6 @@ const captureInvocationPorts = <Ports extends InvocationBoundaryPorts>(ports: Po
   return Object.freeze(captured) as Ports;
 };
 
-const prepareObservationSlots = (
-  slots: readonly ObservationSlot[],
-): readonly PreparedObservationSlot[] => {
-  if (canonicalUnique(slots.map((slot) => slot.slotId)).length !== slots.length) {
-    throw new TypeError("Duplicate observation slot identity.");
-  }
-  return Object.freeze(slots.map((slot, index) => Object.freeze({
-    ...slot,
-    ordinal: String(index),
-  })));
-};
-
 export const bindCapability = <
   Definition extends AnyReadCapabilityDefinition,
   Ports extends InvocationBoundaryPorts,
@@ -1504,15 +894,15 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
   const validatedInput = deepFreezeValue(parsedInput.data);
 
   let invocationId: InvocationId;
-  let slots: readonly PreparedObservationSlot[];
+  let layout: EvidenceReplayLayout;
   try {
     invocationId = binderEvidenceSchemas.invocationId.parse(
       `inv:${randomBytes(32).toString("base64url")}`,
     );
-    slots = prepareObservationSlots(parseDefinitionArray(
-      observationSlotAuthoritySchema,
+    layout = createEvidenceReplayLayout(
+      definition.replayDefinition,
       definition.observationSlots(validatedInput),
-    ) as readonly ObservationSlot[]);
+    );
   } catch {
     return internalFailure(record.errorRegistry);
   }
@@ -1533,7 +923,8 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
   try {
     observations = new InvocationObservations(
       definition.capabilityId,
-      slots,
+      definition.replayDefinition,
+      layout,
       validatedInput,
       invocationId,
       context.clock,
@@ -1568,16 +959,19 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
   try {
     const evaluatedAt = readCanonicalClock(context.clock);
     observations.assertObservedNoLaterThan(evaluatedAt);
-    const prepared = prepareEvidenceDefinition(definition, validatedInput, result.data, slots);
-    observations.assertExpectations(prepared.expectations);
-    const derived = deriveCapabilityEvidence(
-      definition,
-      validatedInput,
-      result.data,
-      evaluatedAt,
-      prepared,
-      observations,
+    const declaration = captureEvidenceDeclaration(definition, validatedInput, result.data);
+    const expectations = new Map(
+      declaration.observationExpectations.map((expectation) => [expectation.slotId, expectation.claims]),
     );
+    observations.assertExpectations(expectations);
+    const sources = observations.evidence();
+    const derived = replayPublicEvidence({
+      definition: definition.replayDefinition,
+      layout,
+      ...declaration,
+      evaluatedAt,
+      sources,
+    });
 
     const success = {
       ok: true as const,
@@ -1589,7 +983,7 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
       },
       data: result.data,
       evidence: {
-        sources: observations.evidence(),
+        sources,
         conclusions: derived.conclusions,
         coverage: derived.coverage,
       },

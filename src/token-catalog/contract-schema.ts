@@ -6,14 +6,18 @@ import {
   blockSelectorSchema,
   canonicalAmountSchema,
   canonicalBase64UrlSchema,
+  canonicalJsonStringify,
   canonicalSha256,
   capabilityIdSchema,
   captureCanonicalJson,
   chainAnchorSchema,
   codePointLength,
+  compareCodePointSequences,
   coreContractVersion,
   coreErrorRegistry,
   createCapabilitySuccessSchema,
+  createEvidenceReplayDefinition,
+  createEvidenceReplayLayout,
   defineApplicationContract as defineCanonicalApplicationContract,
   deepFreezeValue,
   erc20AssetIdentitySchema,
@@ -27,6 +31,7 @@ import {
   operationIdByteLength,
   operationIdSchema,
   readCapabilityLimits,
+  replayPublicEvidence,
   staticScopeExclusionSchema,
   tokenStandardObservationResultSchema,
   unsignedDecimalSchema,
@@ -37,7 +42,15 @@ import {
   type CanonicalJson,
   type CapabilityId,
   type CapabilitySuccess,
+  type ConclusionDraft,
+  type EvidenceReplayDeclaration,
+  type EvidenceReplayResult,
   type EvmAccountIdentity,
+  type FactRequirement,
+  type ObservationExpectation,
+  type ObservationReference,
+  type ObservationSlot,
+  type WarningRequirement,
 } from "../core/browser.js";
 import { chainErrorDefinitions } from "../chain/error-definitions.js";
 import { runtimeErrorDefinitions } from "../runtime/error-definitions.js";
@@ -125,7 +138,10 @@ export const tokenInspectionDataSchema = z.object({
     data.runtimeCode.byteLength === "0" ||
     data.standards.asset.chainId !== data.asset.chainId ||
     data.standards.asset.address !== data.asset.address ||
+    data.standards.block.chainId !== data.block.chainId ||
+    data.standards.block.blockNumber !== data.block.blockNumber ||
     data.standards.block.blockHash !== data.block.blockHash ||
+    data.standards.block.blockTimestamp !== data.block.blockTimestamp ||
     data.standards.account !== undefined
   ) {
     context.addIssue({ code: "custom", message: "Token inspection identity is inconsistent." });
@@ -167,29 +183,250 @@ export const tokenInspectionStaticScopeExclusions = Object.freeze([
   { id: "transaction_support", message: "This inspection does not establish transaction support." },
 ].map((value) => Object.freeze(staticScopeExclusionSchema.parse(value))));
 
+export const tokenInspectionConclusionIds = Object.freeze([
+  "decimals_observed",
+  "name_observed",
+  "runtime_code_observed",
+  "symbol_observed",
+  "total_supply_observed",
+]);
+export const tokenInspectionWarningCodes = Object.freeze([
+  "decimals_unavailable",
+  "partial_result",
+] as const);
+
+export const tokenInspectionReplayDefinition = createEvidenceReplayDefinition({
+  capabilityId: tokenInspectCapabilityId,
+  conclusionIds: tokenInspectionConclusionIds,
+  warningCodes: tokenInspectionWarningCodes,
+});
+
+const tokenSourceSlot = (
+  slotId: string,
+  factId: string,
+  purpose: string,
+): ObservationSlot => ({ slotId, factId, purpose, kind: "source", sourceClass: "chain_rpc" });
+
+export const tokenInspectionObservationSlots = Object.freeze([
+  tokenSourceSlot("block", "block", "token_inspection_block"),
+  tokenSourceSlot("decimals", "decimals", "token_decimals"),
+  tokenSourceSlot("name", "name", "token_name"),
+  tokenSourceSlot("rpc_chain_id", "rpc_chain_id", "chain_id"),
+  tokenSourceSlot("runtime_code", "runtime_code", "token_runtime_code"),
+  tokenSourceSlot("symbol", "symbol", "token_symbol"),
+  tokenSourceSlot("total_supply", "total_supply", "token_total_supply"),
+]);
+
+const tokenFactRequirement = (
+  factId: string,
+  outcome: FactRequirement["outcome"],
+  slotId: string,
+): FactRequirement => ({
+  factId,
+  outcome,
+  observationSlotIds: [slotId],
+  requiredObservationSlotIds: [slotId],
+  minimumObservationCount: 1,
+});
+
+const tokenConclusion = (id: string, factId: string): ConclusionDraft => ({
+  id,
+  outcomeFactId: factId,
+  evidenceFactIds: [factId],
+  freshnessRuleId: "chain_anchor_exact",
+});
+
+const tokenClaim = (
+  role: string,
+  value: CanonicalJson,
+  data: TokenInspectionData,
+) => ({ role, value, asset: data.asset, chainAnchor: data.block });
+
+const tokenExpectation = (
+  slotId: string,
+  claims: ObservationExpectation["claims"],
+): ObservationExpectation => ({ slotId, claims });
+
+const optionalTokenFactOutcome = (
+  observation: TokenInspectionData["metadata"]["name"],
+): FactRequirement["outcome"] => observation.status === "available" ? "observed" : "source_failed";
+
+export type TokenInspectionEvidenceDeclaration =
+  EvidenceReplayDeclaration & Readonly<{ observationSlots: readonly ObservationSlot[] }>;
+
+export const createTokenInspectionEvidenceDeclaration = (
+  data: TokenInspectionData,
+): TokenInspectionEvidenceDeclaration => {
+  if (data.totalSupply.decimals.status === "not_observed") {
+    throw new TypeError("Token inspection decimals evidence is absent.");
+  }
+  const decimalsIds = data.totalSupply.decimals.status === "available"
+    ? [data.totalSupply.decimals.observationId]
+    : data.totalSupply.decimals.observationIds;
+  const unavailableMetadataFacts = [
+    ...(data.metadata.name.status === "available" ? [] : ["name"]),
+    ...(data.metadata.symbol.status === "available" ? [] : ["symbol"]),
+  ];
+  return deepFreezeValue({
+    observationSlots: tokenInspectionObservationSlots,
+    observationExpectations: [
+      tokenExpectation("block", [{
+        role: "token_inspection_block",
+        value: data.block as unknown as CanonicalJson,
+        chainAnchor: data.block,
+      }]),
+      tokenExpectation("decimals", [tokenClaim(
+        "token_decimals",
+        data.totalSupply.decimals.status === "available"
+          ? data.totalSupply.decimals.value
+          : { status: "unavailable", reason: "missing" },
+        data,
+      )]),
+      tokenExpectation("name", [tokenClaim(
+        "token_name",
+        data.metadata.name.status === "available"
+          ? data.metadata.name.value
+          : { status: "unavailable", reason: data.metadata.name.reason },
+        data,
+      )]),
+      tokenExpectation("rpc_chain_id", [{
+        role: "chain_id",
+        value: data.asset.chainId,
+        chainAnchor: data.block,
+      }]),
+      tokenExpectation(
+        "runtime_code",
+        [tokenClaim("token_runtime_code", data.runtimeCode as unknown as CanonicalJson, data)],
+      ),
+      tokenExpectation("symbol", [tokenClaim(
+        "token_symbol",
+        data.metadata.symbol.status === "available"
+          ? data.metadata.symbol.value
+          : { status: "unavailable", reason: data.metadata.symbol.reason },
+        data,
+      )]),
+      tokenExpectation("total_supply", [tokenClaim("token_total_supply", data.totalSupply.raw, data)]),
+    ],
+    observationReferences: [
+      {
+        observationId: data.totalSupply.quantityObservationId,
+        slotId: "total_supply",
+        role: "token_total_supply",
+      },
+      ...decimalsIds.map((observationId): ObservationReference => ({
+        observationId,
+        slotId: "decimals",
+        role: "token_decimals",
+      })),
+      {
+        observationId: data.metadata.name.observationId,
+        slotId: "name",
+        role: "token_name",
+      },
+      {
+        observationId: data.metadata.symbol.observationId,
+        slotId: "symbol",
+        role: "token_symbol",
+      },
+    ],
+    factRequirements: [
+      tokenFactRequirement("block", "observed", "block"),
+      tokenFactRequirement(
+        "decimals",
+        data.totalSupply.decimals.status === "available" ? "observed" : "source_failed",
+        "decimals",
+      ),
+      tokenFactRequirement("name", optionalTokenFactOutcome(data.metadata.name), "name"),
+      tokenFactRequirement("rpc_chain_id", "observed", "rpc_chain_id"),
+      tokenFactRequirement("runtime_code", "observed", "runtime_code"),
+      tokenFactRequirement("symbol", optionalTokenFactOutcome(data.metadata.symbol), "symbol"),
+      tokenFactRequirement("total_supply", "observed", "total_supply"),
+    ],
+    expectedConclusionIds: tokenInspectionConclusionIds,
+    conclusionDrafts: [
+      tokenConclusion("decimals_observed", "decimals"),
+      tokenConclusion("name_observed", "name"),
+      tokenConclusion("runtime_code_observed", "runtime_code"),
+      tokenConclusion("symbol_observed", "symbol"),
+      tokenConclusion("total_supply_observed", "total_supply"),
+    ],
+    warningRequirements: [
+      ...(data.totalSupply.decimals.status === "available"
+        ? []
+        : [{ code: "decimals_unavailable" as const, factIds: ["decimals"] }]),
+      ...(unavailableMetadataFacts.length === 0
+        ? []
+        : [{ code: "partial_result" as const, factIds: unavailableMetadataFacts }]),
+    ],
+  });
+};
+
 const canonicalTokenInspectionSuccessSchema = createCapabilitySuccessSchema(
   tokenInspectCapabilityId,
   tokenInspectionDataSchema,
 );
-const structuralTokenInspectionSuccessSchema = z.fromJSONSchema(
-  captureCanonicalJson(JSON.parse(JSON.stringify(z.toJSONSchema(canonicalTokenInspectionSuccessSchema, {
-    target: "draft-2020-12",
-    unrepresentable: "throw",
-    io: "output",
-  })))) as never,
-) as ZodType<TokenInspectionSuccess>;
 
-export const tokenInspectionSuccessSchema = structuralTokenInspectionSuccessSchema.superRefine((value, context) => {
+const tokenEvidenceProjection = (value: TokenInspectionSuccess): EvidenceReplayResult => {
+  const declaration = createTokenInspectionEvidenceDeclaration(value.data);
+  const layout = createEvidenceReplayLayout(
+    tokenInspectionReplayDefinition,
+    declaration.observationSlots,
+  );
+  return replayPublicEvidence({
+    definition: tokenInspectionReplayDefinition,
+    layout,
+    ...declaration,
+    evaluatedAt: value.meta.evaluatedAt,
+    sources: value.evidence.sources,
+  });
+};
+
+export const tokenInspectionSuccessSchema = canonicalTokenInspectionSuccessSchema.superRefine((value, context) => {
   try {
-    tokenInspectionDataSchema.parse(value.data);
     assertCapabilitySuccessChainScope(value);
     if (value.meta.chainId !== value.data.asset.chainId) {
       throw new TypeError("Token inspection chain scope mismatch.");
+    }
+    const derived = tokenEvidenceProjection(value);
+    const actual = canonicalJsonStringify({
+      conclusions: value.evidence.conclusions,
+      coverage: value.evidence.coverage,
+      warnings: value.warnings,
+    } as unknown as CanonicalJson);
+    if (actual !== canonicalJsonStringify(derived as unknown as CanonicalJson)) {
+      throw new TypeError("Token inspection evidence does not match its declaration.");
     }
   } catch {
     context.addIssue({ code: "custom", message: "Token inspection success is invalid." });
   }
 }) as ZodType<TokenInspectionSuccess>;
+
+const sortGeneratedRequiredArrays = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(sortGeneratedRequiredArrays);
+  if (typeof value !== "object" || value === null) return value;
+  const record = value as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+  for (const key of Object.keys(record)) {
+    const entry = record[key];
+    result[key] = key === "required" && Array.isArray(entry)
+      ? [...entry].map(String).sort(compareCodePointSequences)
+      : sortGeneratedRequiredArrays(entry);
+  }
+  return result;
+};
+
+const directTokenInspectionProjection = JSON.parse(JSON.stringify(z.toJSONSchema(
+  canonicalTokenInspectionSuccessSchema,
+  {
+    target: "draft-2020-12",
+    unrepresentable: "throw",
+    io: "output",
+  },
+))) as Record<string, unknown>;
+delete directTokenInspectionProjection["$schema"];
+export const tokenInspectionSuccessProjectionSchema = deepFreezeValue(captureCanonicalJson(
+  sortGeneratedRequiredArrays(directTokenInspectionProjection),
+));
 
 export const tokenInspectionDigest = (resultInput: unknown) => {
   const result = tokenInspectionSuccessSchema.parse(captureCanonicalJson(resultInput));
@@ -336,6 +573,15 @@ const sameAsset = (
   right: TokenSelection["asset"],
 ): boolean => left.chainId === right.chainId && left.address === right.address;
 
+const sameChainAnchor = (
+  left: z.output<typeof chainAnchorSchema>,
+  right: z.output<typeof chainAnchorSchema>,
+): boolean =>
+  left.chainId === right.chainId &&
+  left.blockNumber === right.blockNumber &&
+  left.blockHash === right.blockHash &&
+  left.blockTimestamp === right.blockTimestamp;
+
 const operationVariantSchema = <
   Kind extends TokenCatalogOperationKind,
   State extends TokenCatalogOperationState,
@@ -446,6 +692,11 @@ const validateTokenCatalogOperation = (
     inspection.data.asset.chainId !== operation.asset.chainId ||
     inspection.data.asset.address !== operation.asset.address
   )) addIssue("Token operation inspection identity is invalid.");
+  if (
+    inspection !== null &&
+    operation.review.officialEvidence !== null &&
+    !sameChainAnchor(operation.review.officialEvidence.verificationBlock, inspection.data.block)
+  ) addIssue("Token operation official verification anchor is invalid.");
   if (operation.state !== "completed" || operation.result === null) return;
   if (!("selection" in operation.result)) {
     addIssue("Token selection result is invalid.");

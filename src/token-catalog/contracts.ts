@@ -2,29 +2,29 @@ import { z } from "zod";
 
 import {
   canonicalSha256,
+  canonicalJsonStringify,
+  compareCodePointSequences,
   captureCanonicalJson,
   coreContractVersion,
   deepFreezeValue,
   defineReadCapability,
   getCapabilityDefinitionSnapshot,
   type CanonicalJson,
-  type ConclusionDraft,
-  type FactOutcome,
-  type FactRequirement,
-  type ObservationExpectation,
-  type ObservationReference,
-  type ObservationSlot,
-  type ObservedFact,
 } from "../core/index.js";
 import { tokenCatalogErrorDefinitions } from "./error-definitions.js";
 import {
   tokenCatalogApplicationContractList,
   tokenCatalogDigestVersions,
   tokenCatalogOperationConfirmationContract,
+  createTokenInspectionEvidenceDeclaration,
   tokenInspectCapabilityId,
+  tokenInspectionConclusionIds,
   tokenInspectionDataSchema,
   tokenInspectionInputSchema,
+  tokenInspectionObservationSlots,
   tokenInspectionStaticScopeExclusions,
+  tokenInspectionSuccessProjectionSchema,
+  tokenInspectionWarningCodes,
   type TokenInspectionData,
   type TokenInspectionInput,
 } from "./contract-schema.js";
@@ -34,46 +34,6 @@ import {
 } from "./state.js";
 
 export * from "./contract-schema.js";
-
-const sourceSlot = (
-  slotId: string,
-  factId: string,
-  purpose: string,
-): ObservationSlot => ({ slotId, factId, purpose, kind: "source", sourceClass: "chain_rpc" });
-
-const requirement = (
-  factId: string,
-  outcome: FactOutcome,
-  slotId: string,
-): FactRequirement => ({
-  factId,
-  outcome,
-  observationSlotIds: [slotId],
-  requiredObservationSlotIds: [slotId],
-  minimumObservationCount: 1,
-});
-
-const conclusion = (
-  id: string,
-  factId: string,
-  _facts: ReadonlyMap<string, ObservedFact>,
-): ConclusionDraft => ({
-  id,
-  outcomeFactId: factId,
-  evidenceFactIds: [factId],
-  freshnessRuleId: "chain_anchor_exact",
-});
-
-const claim = (
-  role: string,
-  value: CanonicalJson,
-  data: TokenInspectionData,
-) => ({ role, value, asset: data.asset, chainAnchor: data.block });
-
-const expectation = (slotId: string, claims: ObservationExpectation["claims"]): ObservationExpectation => ({
-  slotId,
-  claims,
-});
 
 const inspectionFailureCodes = Object.freeze([
   "internal_error",
@@ -88,100 +48,15 @@ const inspectionFailureCodes = Object.freeze([
   "token_total_supply_reverted",
 ]);
 
-const optionalFactOutcome = (
-  observation: TokenInspectionData["metadata"]["name"],
-): FactOutcome => observation.status === "available" ? "observed" : "source_failed";
-
 export const tokenInspectCapability = defineReadCapability<TokenInspectionInput, TokenInspectionData>({
   capabilityId: tokenInspectCapabilityId,
   inputSchema: tokenInspectionInputSchema,
   dataSchema: tokenInspectionDataSchema,
   failureCodes: inspectionFailureCodes,
-  conclusionIds: [
-    "decimals_observed",
-    "name_observed",
-    "runtime_code_observed",
-    "symbol_observed",
-    "total_supply_observed",
-  ],
-  observationSlots: () => [
-    sourceSlot("block", "block", "token_inspection_block"),
-    sourceSlot("decimals", "decimals", "token_decimals"),
-    sourceSlot("name", "name", "token_name"),
-    sourceSlot("rpc_chain_id", "rpc_chain_id", "chain_id"),
-    sourceSlot("runtime_code", "runtime_code", "token_runtime_code"),
-    sourceSlot("symbol", "symbol", "token_symbol"),
-    sourceSlot("total_supply", "total_supply", "token_total_supply"),
-  ],
-  observationExpectations: (_input, data) => [
-    expectation("block", [{
-      role: "token_inspection_block",
-      value: data.block as unknown as CanonicalJson,
-      chainAnchor: data.block,
-    }]),
-    expectation("decimals", [claim(
-      "token_decimals",
-      data.totalSupply.decimals.status === "available"
-        ? data.totalSupply.decimals.value
-        : { status: "unavailable", reason: "missing" },
-      data,
-    )]),
-    expectation("name", [claim(
-      "token_name",
-      data.metadata.name.status === "available"
-        ? data.metadata.name.value
-        : { status: "unavailable", reason: data.metadata.name.reason },
-      data,
-    )]),
-    expectation("rpc_chain_id", [{
-      role: "chain_id",
-      value: data.asset.chainId,
-      chainAnchor: data.block,
-    }]),
-    expectation("runtime_code", [claim("token_runtime_code", data.runtimeCode as unknown as CanonicalJson, data)]),
-    expectation("symbol", [claim(
-      "token_symbol",
-      data.metadata.symbol.status === "available"
-        ? data.metadata.symbol.value
-        : { status: "unavailable", reason: data.metadata.symbol.reason },
-      data,
-    )]),
-    expectation("total_supply", [claim("token_total_supply", data.totalSupply.raw, data)]),
-  ],
-  factRequirements: (_input, data) => [
-    requirement("block", "observed", "block"),
-    requirement(
-      "decimals",
-      data.totalSupply.decimals.status === "available" ? "observed" : "source_failed",
-      "decimals",
-    ),
-    requirement("name", optionalFactOutcome(data.metadata.name), "name"),
-    requirement("rpc_chain_id", "observed", "rpc_chain_id"),
-    requirement("runtime_code", "observed", "runtime_code"),
-    requirement("symbol", optionalFactOutcome(data.metadata.symbol), "symbol"),
-    requirement("total_supply", "observed", "total_supply"),
-  ],
-  deriveConclusions: (_input, _data, facts) => [
-    conclusion("decimals_observed", "decimals", facts),
-    conclusion("name_observed", "name", facts),
-    conclusion("runtime_code_observed", "runtime_code", facts),
-    conclusion("symbol_observed", "symbol", facts),
-    conclusion("total_supply_observed", "total_supply", facts),
-  ],
-  deriveWarnings: (_input, data) => {
-    const unavailableMetadataFacts = [
-      ...(data.metadata.name.status === "available" ? [] : ["name"]),
-      ...(data.metadata.symbol.status === "available" ? [] : ["symbol"]),
-    ];
-    return [
-      ...(data.totalSupply.decimals.status === "available"
-        ? []
-        : [{ code: "decimals_unavailable" as const, factIds: ["decimals"] }]),
-      ...(unavailableMetadataFacts.length === 0
-        ? []
-        : [{ code: "partial_result" as const, factIds: unavailableMetadataFacts }]),
-    ];
-  },
+  conclusionIds: tokenInspectionConclusionIds,
+  observationSlots: () => tokenInspectionObservationSlots,
+  evidenceDeclaration: (_input, data) =>
+    createTokenInspectionEvidenceDeclaration(data),
   validateSuccess: (data, context) => {
     if (data.asset.chainId !== context.chainId) throw new TypeError("Token inspection chain scope mismatch.");
   },
@@ -193,37 +68,7 @@ export const tokenInspectCapability = defineReadCapability<TokenInspectionInput,
       throw new TypeError("Token inspection block mismatch.");
     }
   },
-  observationReferences: (_input, data) => {
-    if (data.totalSupply.decimals.status === "not_observed") {
-      throw new TypeError("Token inspection decimals evidence is absent.");
-    }
-    const decimalsIds = data.totalSupply.decimals.status === "available"
-      ? [data.totalSupply.decimals.observationId]
-      : data.totalSupply.decimals.observationIds;
-    return [
-      {
-        observationId: data.totalSupply.quantityObservationId,
-        slotId: "total_supply",
-        role: "token_total_supply",
-      },
-      ...decimalsIds.map((observationId): ObservationReference => ({
-        observationId,
-        slotId: "decimals",
-        role: "token_decimals",
-      })),
-      {
-        observationId: data.metadata.name.observationId,
-        slotId: "name",
-        role: "token_name",
-      },
-      {
-        observationId: data.metadata.symbol.observationId,
-        slotId: "symbol",
-        role: "token_symbol",
-      },
-    ];
-  },
-  warningCodes: ["decimals_unavailable", "partial_result"],
+  warningCodes: tokenInspectionWarningCodes,
   staticScopeExclusions: tokenInspectionStaticScopeExclusions,
 });
 
@@ -233,34 +78,57 @@ export const tokenCatalogCapabilityIds = Object.freeze([
   ...tokenCatalogApplicationContractList.map((contract) => contract.capabilityId),
 ].sort());
 
+const tokenInspectionProjectionIdentity = canonicalJsonStringify(
+  tokenInspectionSuccessProjectionSchema,
+);
+
+const normalizeGeneratedRequiredArrays = (value: CanonicalJson): CanonicalJson => {
+  if (Array.isArray(value)) return value.map(normalizeGeneratedRequiredArrays);
+  if (typeof value !== "object" || value === null) return value;
+  const normalized: Record<string, CanonicalJson> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    normalized[key] = key === "required" && Array.isArray(entry)
+      ? [...entry].map(String).sort(compareCodePointSequences)
+      : normalizeGeneratedRequiredArrays(entry);
+  }
+  return normalized;
+};
+
+const substituteTokenInspectionProjection = (value: CanonicalJson): CanonicalJson => {
+  if (Array.isArray(value)) return value.map(substituteTokenInspectionProjection);
+  if (typeof value !== "object" || value === null) return value;
+  if (
+    !Object.hasOwn(value, "$schema") &&
+    canonicalJsonStringify(normalizeGeneratedRequiredArrays(value)) === tokenInspectionProjectionIdentity
+  ) return tokenInspectionSuccessProjectionSchema;
+  const projected: Record<string, CanonicalJson> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    projected[key] = substituteTokenInspectionProjection(entry);
+  }
+  return projected;
+};
+
+const projectSchema = (schema: z.ZodType, io: "input" | "output"): CanonicalJson =>
+  substituteTokenInspectionProjection(captureCanonicalJson(JSON.parse(JSON.stringify(z.toJSONSchema(schema, {
+    target: "draft-2020-12",
+    unrepresentable: "throw",
+    io,
+  })))));
+
 export const tokenCatalogContractProjection = deepFreezeValue({
   contractVersion: coreContractVersion,
   inspection: getCapabilityDefinitionSnapshot(tokenInspectCapability),
   applications: tokenCatalogApplicationContractList.map((contract) => ({
     capabilityId: contract.capabilityId,
     contractVersion: contract.contractVersion,
-    inputSchema: captureCanonicalJson(JSON.parse(JSON.stringify(z.toJSONSchema(contract.inputSchema, {
-      target: "draft-2020-12",
-      unrepresentable: "throw",
-      io: "input",
-    })))),
-    successSchema: captureCanonicalJson(JSON.parse(JSON.stringify(z.toJSONSchema(contract.successSchema, {
-      target: "draft-2020-12",
-      unrepresentable: "throw",
-      io: "output",
-    })))),
+    inputSchema: projectSchema(contract.inputSchema, "input"),
+    successSchema: projectSchema(contract.successSchema, "output"),
     failureCodes: contract.failureCodes,
   })),
   operationConfirmation: {
     contractVersion: tokenCatalogOperationConfirmationContract.contractVersion,
-    inputSchema: captureCanonicalJson(JSON.parse(JSON.stringify(z.toJSONSchema(
-      tokenCatalogOperationConfirmationContract.inputSchema,
-      { target: "draft-2020-12", unrepresentable: "throw", io: "input" },
-    )))),
-    successSchema: captureCanonicalJson(JSON.parse(JSON.stringify(z.toJSONSchema(
-      tokenCatalogOperationConfirmationContract.successSchema,
-      { target: "draft-2020-12", unrepresentable: "throw", io: "output" },
-    )))),
+    inputSchema: projectSchema(tokenCatalogOperationConfirmationContract.inputSchema, "input"),
+    successSchema: projectSchema(tokenCatalogOperationConfirmationContract.successSchema, "output"),
     failureCodes: tokenCatalogOperationConfirmationContract.failureCodes,
   },
   errors: tokenCatalogErrorDefinitions,

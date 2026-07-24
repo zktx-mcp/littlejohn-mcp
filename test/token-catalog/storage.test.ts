@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -37,6 +38,7 @@ import {
   tokenSelectionSetRevisionSchema,
   type TokenCatalogOperation,
   type TokenInspectionSuccess,
+  type TokenOfficialSelectionEvidence,
   type TokenSelection,
 } from "../../src/token-catalog/contracts.js";
 import { getTokenCatalogOperationFailure } from "../../src/token-catalog/operation-error.js";
@@ -55,6 +57,25 @@ const block = chainAnchorSchema.parse({
   blockHash: `0x${"ab".repeat(32)}`,
   blockTimestamp: now,
 });
+
+type IndependentJson =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly IndependentJson[]
+  | { readonly [key: string]: IndependentJson };
+
+const independentCanonicalJson = (value: IndependentJson): string => {
+  if (value === null || typeof value === "boolean" || typeof value === "number") return String(value);
+  if (typeof value === "string") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(independentCanonicalJson).join(",")}]`;
+  const object = value as { readonly [key: string]: IndependentJson };
+  return `{${Object.keys(object).sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
+    .map((key) => `${JSON.stringify(key)}:${independentCanonicalJson(
+      object[key] as IndependentJson,
+    )}`).join(",")}}`;
+};
 
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) =>
@@ -118,10 +139,11 @@ const sourceSnapshot = async (database: ProductDatabase) =>
 const verification = (
   assetUid: StockFactoryVerification["assetUid"],
   contractAddress: StockFactoryVerification["contractAddress"],
+  verificationBlock: StockFactoryVerification["block"] = block,
 ): StockFactoryVerification => Object.freeze({
   assetUid,
   contractAddress,
-  block,
+  block: verificationBlock,
   proxyAddress: parseEvmAddressInput(`0x${"aa".repeat(20)}`),
   proxyCodeHash: parseHash32(`0x${"bb".repeat(32)}`),
   implementationAddress: parseEvmAddressInput(`0x${"cc".repeat(20)}`),
@@ -149,8 +171,10 @@ const applyingOperation = (input: Readonly<{
   currentSetRevision: ReturnType<typeof tokenSelectionSetRevisionSchema.parse> | null;
   inspection: TokenInspectionSuccess | null;
   snapshotRevision: string | null;
+  officialEvidence?: TokenOfficialSelectionEvidence | null;
 }>): Extract<TokenCatalogOperation, { state: "applying" }> => {
   const id = operationId();
+  const officialEvidence = input.officialEvidence ?? null;
   const reviewDigest = tokenCatalogReviewDigest({
     operationId: id,
     kind: input.kind,
@@ -161,7 +185,7 @@ const applyingOperation = (input: Readonly<{
     selectionSetRevision: input.currentSetRevision,
     inspection: input.inspection,
     officialSnapshotRevision: input.snapshotRevision,
-    officialEvidence: null,
+    officialEvidence,
     interactionInterface: "cli",
     expiresAt: "2026-07-21T00:05:00.000Z",
   });
@@ -180,7 +204,7 @@ const applyingOperation = (input: Readonly<{
       selectionSetRevision: input.currentSetRevision,
       inspection: input.inspection,
       officialSnapshotRevision: input.snapshotRevision,
-      officialEvidence: null,
+      officialEvidence,
       reviewDigest,
     },
     result: null,
@@ -194,13 +218,14 @@ const apply = (store: TokenCatalogStore, input: Readonly<{
   operation: Extract<TokenCatalogOperation, { state: "applying" }>;
   selectionRevision: ReturnType<typeof tokenSelectionRevisionSchema.parse>;
   selectionSetRevision: ReturnType<typeof tokenSelectionSetRevisionSchema.parse>;
+  officialVerification?: StockFactoryVerification | null;
 }>) => store.applyConfirmation({
   kind: input.kind,
   operation: input.operation as never,
   expectedConnectionRevision: input.connectionRevision,
   selectionRevision: input.selectionRevision,
   selectionSetRevision: input.selectionSetRevision,
-  ...(input.kind === "add" ? { officialVerification: null } : {}),
+  ...(input.kind === "add" ? { officialVerification: input.officialVerification ?? null } : {}),
   now: later,
 } as never);
 
@@ -232,6 +257,46 @@ describe("token selection persistence", () => {
       digestVersion: tokenCatalogDigestVersions.inspection,
       result: oldResult as unknown as CanonicalJson,
     })}`;
+
+    const raw = new Database(path);
+    raw.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(chainId, inspection.data.asset.address);
+    raw.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(chainId, inspection.data.asset.address);
+    raw.prepare(`INSERT INTO token_contract_inspection(
+      chain_id, contract_address, inspection_digest, result_json
+    ) VALUES (?, ?, ?, ?)`)
+      .run(chainId, inspection.data.asset.address, inspectionDigest, resultJson);
+    raw.close();
+
+    let failure: unknown;
+    try { await ProductDatabase.open(path, now); }
+    catch (error) { failure = error; }
+    expect(getRuntimeOperationFailure(failure)?.error.code).toBe("runtime_state_unavailable");
+  });
+
+  it("rejects a matching independently digested durable semantic corruption", async () => {
+    const { database, path } = await openDatabase();
+    const inspection = await createInspectionSuccess({
+      asset: {
+        kind: "erc20",
+        chainId,
+        address: parseEvmAddressInput(`0x${"86".repeat(20)}`),
+      },
+      block: { kind: "latest" },
+    });
+    database.close();
+
+    const malformed = JSON.parse(JSON.stringify(inspection)) as {
+      evidence: { sources: unknown[] };
+    };
+    malformed.evidence.sources = malformed.evidence.sources.slice(1);
+    const resultJson = independentCanonicalJson(malformed as unknown as IndependentJson);
+    const inspectionDigest = `0x${createHash("sha256").update(independentCanonicalJson({
+      digestKind: "token_inspection",
+      digestVersion: "2",
+      result: malformed as unknown as IndependentJson,
+    }), "utf8").digest("hex")}`;
 
     const raw = new Database(path);
     raw.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
@@ -593,6 +658,90 @@ describe("token selection persistence", () => {
       selectionSetRevision: setRevision(8),
     }))).toBe("token_selection_revision_changed");
     expect(store.getSelection(account, inspection.data.asset)?.selection.revision).toBe(selectionRevision(5));
+    database.close();
+  });
+
+  it("rejects every internal official anchor mismatch before durable mutation", async () => {
+    const { database, path, connection } = await openDatabase();
+    const snapshot = await sourceSnapshot(database);
+    const manifestEntry = defaultStockTokenManifest.assets[0];
+    if (manifestEntry === undefined) throw new TypeError("Default token manifest is empty.");
+    const inspection = await createInspectionSuccess({
+      asset: {
+        kind: "erc20",
+        chainId,
+        address: manifestEntry.contractAddress,
+      },
+      block: { kind: "latest" },
+    });
+    const correctVerification = verification(
+      manifestEntry.assetUid,
+      manifestEntry.contractAddress,
+      inspection.data.block,
+    );
+    const operation = applyingOperation({
+      kind: "add",
+      connectionRevision: connection.revision,
+      asset: inspection.data.asset,
+      previousSelection: null,
+      currentSetRevision: null,
+      inspection,
+      snapshotRevision: snapshot.revision,
+      officialEvidence: {
+        assetUid: manifestEntry.assetUid,
+        snapshotRevision: snapshot.revision,
+        verificationBlock: inspection.data.block,
+      },
+    });
+    const anchorMutations = [
+      { field: "chainId", value: "eip155:1" },
+      { field: "blockNumber", value: "43" },
+      { field: "blockHash", value: `0x${"cd".repeat(32)}` },
+      { field: "blockTimestamp", value: "2026-07-18T00:00:01.000Z" },
+    ] as const;
+    const store = database.tokenCatalogStore();
+
+    for (const mutation of anchorMutations) {
+      const mismatchedVerification = {
+        ...correctVerification,
+        block: {
+          ...correctVerification.block,
+          [mutation.field]: mutation.value,
+        },
+      } as StockFactoryVerification;
+      expect(failureCode(() => apply(store, {
+        kind: "add",
+        connectionRevision: connection.revision,
+        operation,
+        selectionRevision: selectionRevision(40),
+        selectionSetRevision: setRevision(41),
+        officialVerification: mismatchedVerification,
+      }))).toBe("state_conflict");
+      expect(store.getSelection(account, inspection.data.asset)).toBeUndefined();
+      expect(store.getSelectionState(account)).toBeUndefined();
+      const raw = new Database(path, { readonly: true });
+      expect(raw.prepare("SELECT COUNT(*) AS count FROM token_contract_inspection").get())
+        .toEqual({ count: 0 });
+      raw.close();
+    }
+
+    const completed = apply(store, {
+      kind: "add",
+      connectionRevision: connection.revision,
+      operation,
+      selectionRevision: selectionRevision(40),
+      selectionSetRevision: setRevision(41),
+      officialVerification: correctVerification,
+    });
+    expect(completed).toMatchObject({
+      state: "completed",
+      result: { selection: { included: true } },
+    });
+    expect(store.getSelection(account, inspection.data.asset)?.selection.included).toBe(true);
+    const raw = new Database(path, { readonly: true });
+    expect(raw.prepare("SELECT COUNT(*) AS count FROM token_contract_inspection").get())
+      .toEqual({ count: 1 });
+    raw.close();
     database.close();
   });
 

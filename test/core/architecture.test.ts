@@ -23,6 +23,17 @@ const capabilityDefinitionOwners = new Set([
   resolve("src/token-catalog/contracts.ts"),
 ]);
 const capabilityDefinitionReexporter = resolve("src/core/index.ts");
+const evidenceReplayModule = resolve("src/core/evidence-replay.js");
+const evidenceReplayFacadeModules = new Set([
+  evidenceReplayModule,
+  resolve("src/core/browser.js"),
+]);
+const evidenceObservationConsumer = resolve("src/core/capability.ts");
+const evidenceReplayConsumers = new Set([
+  resolve("src/core/capability.ts"),
+  resolve("src/token-catalog/contract-schema.ts"),
+]);
+const accountBalanceConclusionIdentityOwner = resolve("src/core/capabilities.ts");
 const nobleHashImportsByOwner = new Map([
   [resolve("src/core/canonical-json.ts"), new Set([
     "@noble/hashes/sha2.js",
@@ -113,6 +124,93 @@ const capabilityDefinitionAuthorityViolations = (
   };
   visit(sourceFile);
   return violations;
+};
+
+const evidenceReplayAuthorityViolations = (
+  source: string,
+  importingFile: string,
+): string[] => {
+  const file = resolve(importingFile);
+  const sourceFile = ts.createSourceFile(
+    file,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const localBindings = new Map<string, "observation" | "replay">();
+  const namespaces = new Set<string>();
+  const violations: string[] = [];
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
+    const importedModule = resolveModule(file, statement.moduleSpecifier.text);
+    if (!evidenceReplayFacadeModules.has(importedModule ?? "")) continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (bindings !== undefined && ts.isNamespaceImport(bindings)) {
+      namespaces.add(bindings.name.text);
+      continue;
+    }
+    if (bindings === undefined || !ts.isNamedImports(bindings)) continue;
+    for (const element of bindings.elements) {
+      const imported = (element.propertyName ?? element.name).text;
+      if (imported === "createEvidenceObservationId" && importedModule === evidenceReplayModule) {
+        localBindings.set(element.name.text, "observation");
+      }
+      if (imported === "replayPublicEvidence") localBindings.set(element.name.text, "replay");
+    }
+  }
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const kind = ts.isIdentifier(node.expression)
+        ? localBindings.get(node.expression.text)
+        : ts.isPropertyAccessExpression(node.expression) &&
+            ts.isIdentifier(node.expression.expression) &&
+            namespaces.has(node.expression.expression.text)
+          ? node.expression.name.text === "createEvidenceObservationId"
+            ? "observation"
+            : node.expression.name.text === "replayPublicEvidence"
+              ? "replay"
+              : undefined
+          : undefined;
+      if (kind === "observation" && file !== evidenceObservationConsumer) {
+        violations.push(`${relative(sourceDirectory, file).split(sep).join("/")}:observation_id`);
+      }
+      if (kind === "replay" && !evidenceReplayConsumers.has(file)) {
+        violations.push(`${relative(sourceDirectory, file).split(sep).join("/")}:public_replay`);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return violations;
+};
+
+const tokenBalanceConclusionPrefixOccurrences = (
+  source: string,
+  sourcePath: string,
+): number => {
+  const file = resolve(sourcePath);
+  const sourceFile = ts.createSourceFile(
+    file,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  let occurrences = 0;
+  const visit = (node: ts.Node): void => {
+    const literalText = ts.isStringLiteralLike(node)
+      ? node.text
+      : node.kind === ts.SyntaxKind.TemplateHead ||
+          node.kind === ts.SyntaxKind.TemplateMiddle ||
+          node.kind === ts.SyntaxKind.TemplateTail
+        ? (node as ts.TemplateLiteralToken).text
+        : undefined;
+    if (literalText?.includes("token_balance:") === true) occurrences += 1;
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return occurrences;
 };
 
 const resolvesInsideCore = (importingFile: string, specifier: string): boolean => {
@@ -256,6 +354,52 @@ describe("core dependency boundary", () => {
       "canonical-json.ts": ["@noble/hashes/sha2.js", "@noble/hashes/utils.js"],
       "keccak256.ts": ["@noble/hashes/sha3.js", "@noble/hashes/utils.js"],
     });
+  });
+
+  it("keeps observation identity and complete replay behind their declared consumers", async () => {
+    const violations: string[] = [];
+    for (const file of await collectSourceFiles(sourceDirectory)) {
+      violations.push(...evidenceReplayAuthorityViolations(await readFile(file, "utf8"), file));
+    }
+    expect(violations).toEqual([]);
+    expect(evidenceReplayAuthorityViolations(
+      'import { createEvidenceObservationId as makeId } from "../core/evidence-replay.js"; makeId({});',
+      resolve("src/chain/unauthorized-replay.ts"),
+    )).toEqual(["chain/unauthorized-replay.ts:observation_id"]);
+    expect(evidenceReplayAuthorityViolations(
+      'import { replayPublicEvidence as replay } from "../core/evidence-replay.js"; replay({});',
+      resolve("src/chain/unauthorized-replay.ts"),
+    )).toEqual(["chain/unauthorized-replay.ts:public_replay"]);
+    expect(evidenceReplayAuthorityViolations(
+      'import * as core from "../core/browser.js"; core.replayPublicEvidence({});',
+      resolve("src/chain/unauthorized-replay.ts"),
+    )).toEqual(["chain/unauthorized-replay.ts:public_replay"]);
+    expect(evidenceReplayAuthorityViolations(
+      'import { replayPublicEvidence as replay } from "../core/browser.js"; replay({});',
+      resolve("src/chain/unauthorized-replay.ts"),
+    )).toEqual(["chain/unauthorized-replay.ts:public_replay"]);
+    expect(Object.hasOwn(publicCore, "createEvidenceObservationId")).toBe(false);
+    expect(await readFile(resolve("src/core/index.ts"), "utf8")).not.toMatch(/\bObservedFact\b/u);
+    expect(await readFile(resolve("src/core/browser.ts"), "utf8")).not.toMatch(/\bObservedFact\b/u);
+  });
+
+  it("keeps the dynamic token-balance conclusion prefix at its declaration owner", async () => {
+    const violations: string[] = [];
+    let ownerOccurrences = 0;
+    for (const file of await collectSourceFiles(sourceDirectory)) {
+      const occurrences = tokenBalanceConclusionPrefixOccurrences(await readFile(file, "utf8"), file);
+      if (file === accountBalanceConclusionIdentityOwner) {
+        ownerOccurrences += occurrences;
+      } else if (occurrences !== 0) {
+        violations.push(relative(sourceDirectory, file).split(sep).join("/"));
+      }
+    }
+    expect(ownerOccurrences).toBe(1);
+    expect(violations).toEqual([]);
+    expect(tokenBalanceConclusionPrefixOccurrences(
+      "const id = `token_balance:${address}`;",
+      resolve("src/chain/unauthorized-token-balance.ts"),
+    )).toBe(1);
   });
 
   it("detects literal and computed forbidden imports", () => {

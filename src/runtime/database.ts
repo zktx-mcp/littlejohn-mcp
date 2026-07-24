@@ -1873,7 +1873,10 @@ export class ProductDatabase {
               verification.contractAddress !== member.contractAddress ||
               verification.block.chainId !== account.chainId ||
               operation.review.officialEvidence?.assetUid !== member.assetUid ||
-              operation.review.officialEvidence.verificationBlock.blockHash !== verification.block.blockHash
+              operation.review.officialEvidence.verificationBlock.chainId !== verification.block.chainId ||
+              operation.review.officialEvidence.verificationBlock.blockNumber !== verification.block.blockNumber ||
+              operation.review.officialEvidence.verificationBlock.blockHash !== verification.block.blockHash ||
+              operation.review.officialEvidence.verificationBlock.blockTimestamp !== verification.block.blockTimestamp
             ))) throw new RuntimeOperationError("state_conflict");
           const inspectionDigest = tokenInspectionDigest(inspection);
           const resultJson = canonicalJsonStringify(inspection as unknown as CanonicalJson);
