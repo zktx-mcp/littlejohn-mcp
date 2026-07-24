@@ -4,6 +4,7 @@ import { runCli, type CliRuntimePort, type CliTerminalPort } from "../../src/cli
 import {
   captureCanonicalJson,
   chainAnchorSchema,
+  chainStatusEvidence,
   chainStatusCapability,
   erc20AssetIdentitySchema,
   type CanonicalJson,
@@ -47,13 +48,15 @@ const chainStatusSuccess = async (): Promise<CanonicalJson> => {
   });
   const harness = createCapabilityHarness(() => createdAt);
   const binding = bindForHarness(chainStatusCapability, harness, async (_input, context, observations) => {
-    observations.record("rpc_chain_id", {
+    const chain = observations.bind(chainStatusEvidence.configuredChain.target);
+    const latest = observations.bind(chainStatusEvidence.targets.latestBlock);
+    observations.record(chain.slot, {
       source: context.ports.observations.get("chain_rpc"),
-      claims: [{ role: "chain_id", value: tokenAsset.chainId }],
+      claims: [{ role: chain.roles.chainId, value: tokenAsset.chainId }],
     });
-    observations.record("latest_block", {
+    observations.record(latest.slot, {
       source: context.ports.observations.get("chain_rpc"),
-      claims: [{ role: "latest_block", value: anchor, chainAnchor: anchor }],
+      claims: [{ role: latest.roles.block, value: anchor, chainAnchor: anchor }],
     });
     return { status: "success", data: { chainId: tokenAsset.chainId, latestBlock: anchor } };
   });

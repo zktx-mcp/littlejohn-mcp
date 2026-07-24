@@ -9,6 +9,7 @@ import { extendChainSupportManifest } from "../../src/chain/application.js";
 import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
 import {
   walletConnectionCapability,
+  walletConnectionEvidence,
   type HandlerInvocationContext,
   type ObservationWriter,
 } from "../../src/core/index.js";
@@ -73,9 +74,10 @@ const walletConnection = (
         context: HandlerInvocationContext,
         observations: ObservationWriter,
       ) => {
-        observations.record("wallet_sdk", {
+        const sdk = observations.bind(walletConnectionEvidence.targets.sdk);
+        observations.record(sdk.slot, {
           source: context.ports.observations.get("wallet_sdk"),
-          claims: [{ role: "wallet_sdk_state", value: data as never }],
+          claims: [{ role: sdk.roles.state, value: data as never }],
         });
         return { status: "success" as const, data: data as never };
       },

@@ -15,9 +15,14 @@ import {
   compareCodePointSequences,
   coreContractVersion,
   coreErrorRegistry,
+  createConfiguredChainEvidenceFragment,
   createCapabilitySuccessSchema,
+  createEvidenceFactIdentityDeclaration,
+  createEvidenceObservationTargetDeclaration,
+  createEvidenceReplayBinder,
   createEvidenceReplayDefinition,
   createEvidenceReplayLayout,
+  createExactConclusionIdentityDeclaration,
   defineApplicationContract as defineCanonicalApplicationContract,
   deepFreezeValue,
   erc20AssetIdentitySchema,
@@ -43,13 +48,13 @@ import {
   type CapabilityId,
   type CapabilitySuccess,
   type ConclusionDraft,
+  type EvidenceReplayBinder,
   type EvidenceReplayDeclaration,
   type EvidenceReplayResult,
   type EvmAccountIdentity,
   type FactRequirement,
   type ObservationExpectation,
   type ObservationReference,
-  type ObservationSlot,
   type WarningRequirement,
 } from "../core/browser.js";
 import { chainErrorDefinitions } from "../chain/error-definitions.js";
@@ -183,83 +188,171 @@ export const tokenInspectionStaticScopeExclusions = Object.freeze([
   { id: "transaction_support", message: "This inspection does not establish transaction support." },
 ].map((value) => Object.freeze(staticScopeExclusionSchema.parse(value))));
 
-export const tokenInspectionConclusionIds = Object.freeze([
-  "decimals_observed",
-  "name_observed",
-  "runtime_code_observed",
-  "symbol_observed",
-  "total_supply_observed",
-]);
-export const tokenInspectionWarningCodes = Object.freeze([
-  "decimals_unavailable",
-  "partial_result",
-] as const);
+const decimalsConclusion = createExactConclusionIdentityDeclaration("decimals_observed");
+const nameConclusion = createExactConclusionIdentityDeclaration("name_observed");
+const runtimeCodeConclusion =
+  createExactConclusionIdentityDeclaration("runtime_code_observed");
+const symbolConclusion = createExactConclusionIdentityDeclaration("symbol_observed");
+const totalSupplyConclusion =
+  createExactConclusionIdentityDeclaration("total_supply_observed");
 
-export const tokenInspectionReplayDefinition = createEvidenceReplayDefinition({
+const tokenInspectionReplayDefinition = createEvidenceReplayDefinition({
   capabilityId: tokenInspectCapabilityId,
-  conclusionIds: tokenInspectionConclusionIds,
-  warningCodes: tokenInspectionWarningCodes,
+  conclusions: [
+    decimalsConclusion,
+    nameConclusion,
+    runtimeCodeConclusion,
+    symbolConclusion,
+    totalSupplyConclusion,
+  ],
+  warningCodes: ["decimals_unavailable", "partial_result"],
 });
 
-const tokenSourceSlot = (
+const tokenConfiguredChain =
+  createConfiguredChainEvidenceFragment(tokenInspectionReplayDefinition);
+const tokenFact = (
+  identity: string,
+) => createEvidenceFactIdentityDeclaration(tokenInspectionReplayDefinition, identity);
+const blockFact = tokenFact("block");
+const decimalsFact = tokenFact("decimals");
+const nameFact = tokenFact("name");
+const runtimeCodeFact = tokenFact("runtime_code");
+const symbolFact = tokenFact("symbol");
+const totalSupplyFact = tokenFact("total_supply");
+const tokenTarget = (
   slotId: string,
-  factId: string,
+  fact: FactRequirement["fact"],
   purpose: string,
-): ObservationSlot => ({ slotId, factId, purpose, kind: "source", sourceClass: "chain_rpc" });
+  role: string,
+) => createEvidenceObservationTargetDeclaration(tokenInspectionReplayDefinition, {
+  slotId,
+  fact,
+  purpose,
+  kind: "source",
+  sourceClass: "chain_rpc",
+  roles: { value: role },
+});
+const blockTarget = tokenTarget(
+  "block",
+  blockFact,
+  "token_inspection_block",
+  "token_inspection_block",
+);
+const decimalsTarget = tokenTarget(
+  "decimals",
+  decimalsFact,
+  "token_decimals",
+  "token_decimals",
+);
+const nameTarget = tokenTarget("name", nameFact, "token_name", "token_name");
+const runtimeCodeTarget = tokenTarget(
+  "runtime_code",
+  runtimeCodeFact,
+  "token_runtime_code",
+  "token_runtime_code",
+);
+const symbolTarget = tokenTarget("symbol", symbolFact, "token_symbol", "token_symbol");
+const totalSupplyTarget = tokenTarget(
+  "total_supply",
+  totalSupplyFact,
+  "token_total_supply",
+  "token_total_supply",
+);
 
-export const tokenInspectionObservationSlots = Object.freeze([
-  tokenSourceSlot("block", "block", "token_inspection_block"),
-  tokenSourceSlot("decimals", "decimals", "token_decimals"),
-  tokenSourceSlot("name", "name", "token_name"),
-  tokenSourceSlot("rpc_chain_id", "rpc_chain_id", "chain_id"),
-  tokenSourceSlot("runtime_code", "runtime_code", "token_runtime_code"),
-  tokenSourceSlot("symbol", "symbol", "token_symbol"),
-  tokenSourceSlot("total_supply", "total_supply", "token_total_supply"),
+const tokenInspectionObservationTargets = Object.freeze([
+  blockTarget,
+  decimalsTarget,
+  nameTarget,
+  tokenConfiguredChain.target,
+  runtimeCodeTarget,
+  symbolTarget,
+  totalSupplyTarget,
 ]);
 
+export const tokenInspectionEvidence = Object.freeze({
+  definition: tokenInspectionReplayDefinition,
+  configuredChain: tokenConfiguredChain,
+  facts: Object.freeze({
+    block: blockFact,
+    decimals: decimalsFact,
+    name: nameFact,
+    runtimeCode: runtimeCodeFact,
+    symbol: symbolFact,
+    totalSupply: totalSupplyFact,
+  }),
+  targets: Object.freeze({
+    block: blockTarget,
+    decimals: decimalsTarget,
+    name: nameTarget,
+    runtimeCode: runtimeCodeTarget,
+    symbol: symbolTarget,
+    totalSupply: totalSupplyTarget,
+  }),
+  conclusions: Object.freeze({
+    decimalsObserved: decimalsConclusion,
+    nameObserved: nameConclusion,
+    runtimeCodeObserved: runtimeCodeConclusion,
+    symbolObserved: symbolConclusion,
+    totalSupplyObserved: totalSupplyConclusion,
+  }),
+  warningCodes: Object.freeze([
+    "decimals_unavailable",
+    "partial_result",
+  ] as const),
+  staticScopeExclusions: tokenInspectionStaticScopeExclusions,
+});
+
 const tokenFactRequirement = (
-  factId: string,
+  fact: FactRequirement["fact"],
   outcome: FactRequirement["outcome"],
-  slotId: string,
+  slot: FactRequirement["observationSlots"][number],
 ): FactRequirement => ({
-  factId,
+  fact,
   outcome,
-  observationSlotIds: [slotId],
-  requiredObservationSlotIds: [slotId],
+  observationSlots: [slot],
+  requiredObservationSlots: [slot],
   minimumObservationCount: 1,
 });
 
-const tokenConclusion = (id: string, factId: string): ConclusionDraft => ({
-  id,
-  outcomeFactId: factId,
-  evidenceFactIds: [factId],
+const tokenConclusion = (
+  conclusion: ConclusionDraft["conclusion"],
+  fact: ConclusionDraft["outcomeFact"],
+): ConclusionDraft => ({
+  conclusion,
+  outcomeFact: fact,
+  evidenceFacts: [fact],
   freshnessRuleId: "chain_anchor_exact",
 });
 
 const tokenClaim = (
-  role: string,
+  role: ObservationExpectation["claims"][number]["role"],
   value: CanonicalJson,
   data: TokenInspectionData,
 ) => ({ role, value, asset: data.asset, chainAnchor: data.block });
 
 const tokenExpectation = (
-  slotId: string,
+  slot: ObservationExpectation["slot"],
   claims: ObservationExpectation["claims"],
-): ObservationExpectation => ({ slotId, claims });
+): ObservationExpectation => ({ slot, claims });
 
 const optionalTokenFactOutcome = (
   observation: TokenInspectionData["metadata"]["name"],
 ): FactRequirement["outcome"] => observation.status === "available" ? "observed" : "source_failed";
 
-export type TokenInspectionEvidenceDeclaration =
-  EvidenceReplayDeclaration & Readonly<{ observationSlots: readonly ObservationSlot[] }>;
-
-export const createTokenInspectionEvidenceDeclaration = (
+const createTokenInspectionEvidenceDeclaration = (
   data: TokenInspectionData,
-): TokenInspectionEvidenceDeclaration => {
+  binder: EvidenceReplayBinder,
+): EvidenceReplayDeclaration => {
   if (data.totalSupply.decimals.status === "not_observed") {
     throw new TypeError("Token inspection decimals evidence is absent.");
   }
+  const block = binder.bind(blockTarget);
+  const decimals = binder.bind(decimalsTarget);
+  const name = binder.bind(nameTarget);
+  const chain = binder.bind(tokenConfiguredChain.target);
+  const runtimeCode = binder.bind(runtimeCodeTarget);
+  const symbol = binder.bind(symbolTarget);
+  const totalSupply = binder.bind(totalSupplyTarget);
   const decimalsIds = data.totalSupply.decimals.status === "available"
     ? [data.totalSupply.decimals.observationId]
     : data.totalSupply.decimals.observationIds;
@@ -268,98 +361,132 @@ export const createTokenInspectionEvidenceDeclaration = (
     ...(data.metadata.symbol.status === "available" ? [] : ["symbol"]),
   ];
   return deepFreezeValue({
-    observationSlots: tokenInspectionObservationSlots,
     observationExpectations: [
-      tokenExpectation("block", [{
-        role: "token_inspection_block",
+      tokenExpectation(block.slot, [{
+        role: block.roles.value,
         value: data.block as unknown as CanonicalJson,
         chainAnchor: data.block,
       }]),
-      tokenExpectation("decimals", [tokenClaim(
-        "token_decimals",
+      tokenExpectation(decimals.slot, [tokenClaim(
+        decimals.roles.value,
         data.totalSupply.decimals.status === "available"
           ? data.totalSupply.decimals.value
           : { status: "unavailable", reason: "missing" },
         data,
       )]),
-      tokenExpectation("name", [tokenClaim(
-        "token_name",
+      tokenExpectation(name.slot, [tokenClaim(
+        name.roles.value,
         data.metadata.name.status === "available"
           ? data.metadata.name.value
           : { status: "unavailable", reason: data.metadata.name.reason },
         data,
       )]),
-      tokenExpectation("rpc_chain_id", [{
-        role: "chain_id",
+      tokenExpectation(chain.slot, [{
+        role: chain.roles.chainId,
         value: data.asset.chainId,
         chainAnchor: data.block,
       }]),
       tokenExpectation(
-        "runtime_code",
-        [tokenClaim("token_runtime_code", data.runtimeCode as unknown as CanonicalJson, data)],
+        runtimeCode.slot,
+        [tokenClaim(
+          runtimeCode.roles.value,
+          data.runtimeCode as unknown as CanonicalJson,
+          data,
+        )],
       ),
-      tokenExpectation("symbol", [tokenClaim(
-        "token_symbol",
+      tokenExpectation(symbol.slot, [tokenClaim(
+        symbol.roles.value,
         data.metadata.symbol.status === "available"
           ? data.metadata.symbol.value
           : { status: "unavailable", reason: data.metadata.symbol.reason },
         data,
       )]),
-      tokenExpectation("total_supply", [tokenClaim("token_total_supply", data.totalSupply.raw, data)]),
+      tokenExpectation(totalSupply.slot, [
+        tokenClaim(totalSupply.roles.value, data.totalSupply.raw, data),
+      ]),
     ],
     observationReferences: [
       {
         observationId: data.totalSupply.quantityObservationId,
-        slotId: "total_supply",
-        role: "token_total_supply",
+        slot: totalSupply.slot,
+        role: totalSupply.roles.value,
       },
       ...decimalsIds.map((observationId): ObservationReference => ({
         observationId,
-        slotId: "decimals",
-        role: "token_decimals",
+        slot: decimals.slot,
+        role: decimals.roles.value,
       })),
       {
         observationId: data.metadata.name.observationId,
-        slotId: "name",
-        role: "token_name",
+        slot: name.slot,
+        role: name.roles.value,
       },
       {
         observationId: data.metadata.symbol.observationId,
-        slotId: "symbol",
-        role: "token_symbol",
+        slot: symbol.slot,
+        role: symbol.roles.value,
       },
     ],
     factRequirements: [
-      tokenFactRequirement("block", "observed", "block"),
+      tokenFactRequirement(blockFact, "observed", block.slot),
       tokenFactRequirement(
-        "decimals",
+        decimalsFact,
         data.totalSupply.decimals.status === "available" ? "observed" : "source_failed",
-        "decimals",
+        decimals.slot,
       ),
-      tokenFactRequirement("name", optionalTokenFactOutcome(data.metadata.name), "name"),
-      tokenFactRequirement("rpc_chain_id", "observed", "rpc_chain_id"),
-      tokenFactRequirement("runtime_code", "observed", "runtime_code"),
-      tokenFactRequirement("symbol", optionalTokenFactOutcome(data.metadata.symbol), "symbol"),
-      tokenFactRequirement("total_supply", "observed", "total_supply"),
+      tokenFactRequirement(nameFact, optionalTokenFactOutcome(data.metadata.name), name.slot),
+      tokenFactRequirement(
+        tokenConfiguredChain.fact,
+        tokenConfiguredChain.outcome,
+        chain.slot,
+      ),
+      tokenFactRequirement(runtimeCodeFact, "observed", runtimeCode.slot),
+      tokenFactRequirement(
+        symbolFact,
+        optionalTokenFactOutcome(data.metadata.symbol),
+        symbol.slot,
+      ),
+      tokenFactRequirement(totalSupplyFact, "observed", totalSupply.slot),
     ],
-    expectedConclusionIds: tokenInspectionConclusionIds,
+    expectedConclusions: [
+      decimalsConclusion,
+      nameConclusion,
+      runtimeCodeConclusion,
+      symbolConclusion,
+      totalSupplyConclusion,
+    ],
     conclusionDrafts: [
-      tokenConclusion("decimals_observed", "decimals"),
-      tokenConclusion("name_observed", "name"),
-      tokenConclusion("runtime_code_observed", "runtime_code"),
-      tokenConclusion("symbol_observed", "symbol"),
-      tokenConclusion("total_supply_observed", "total_supply"),
+      tokenConclusion(decimalsConclusion, decimalsFact),
+      tokenConclusion(nameConclusion, nameFact),
+      tokenConclusion(runtimeCodeConclusion, runtimeCodeFact),
+      tokenConclusion(symbolConclusion, symbolFact),
+      tokenConclusion(totalSupplyConclusion, totalSupplyFact),
     ],
     warningRequirements: [
       ...(data.totalSupply.decimals.status === "available"
         ? []
-        : [{ code: "decimals_unavailable" as const, factIds: ["decimals"] }]),
+        : [{ code: "decimals_unavailable" as const, facts: [decimalsFact] }]),
       ...(unavailableMetadataFacts.length === 0
         ? []
-        : [{ code: "partial_result" as const, factIds: unavailableMetadataFacts }]),
+        : [{
+            code: "partial_result" as const,
+            facts: unavailableMetadataFacts.map((fact) =>
+              fact === "name" ? nameFact : symbolFact),
+          }]),
     ],
   });
 };
+
+export const tokenInspectionCapabilityEvidence = Object.freeze({
+  definition: tokenInspectionReplayDefinition,
+  observationTargets: () => tokenInspectionObservationTargets,
+  declaration: (
+    _input: TokenInspectionInput,
+    data: TokenInspectionData,
+    binder: EvidenceReplayBinder,
+  ) => createTokenInspectionEvidenceDeclaration(data, binder),
+  staticScopeExclusions: tokenInspectionStaticScopeExclusions,
+});
 
 const canonicalTokenInspectionSuccessSchema = createCapabilitySuccessSchema(
   tokenInspectCapabilityId,
@@ -367,13 +494,16 @@ const canonicalTokenInspectionSuccessSchema = createCapabilitySuccessSchema(
 );
 
 const tokenEvidenceProjection = (value: TokenInspectionSuccess): EvidenceReplayResult => {
-  const declaration = createTokenInspectionEvidenceDeclaration(value.data);
   const layout = createEvidenceReplayLayout(
-    tokenInspectionReplayDefinition,
-    declaration.observationSlots,
+    tokenInspectionCapabilityEvidence.definition,
+    tokenInspectionCapabilityEvidence.observationTargets(),
+  );
+  const declaration = createTokenInspectionEvidenceDeclaration(
+    value.data,
+    createEvidenceReplayBinder(tokenInspectionCapabilityEvidence.definition, layout),
   );
   return replayPublicEvidence({
-    definition: tokenInspectionReplayDefinition,
+    definition: tokenInspectionCapabilityEvidence.definition,
     layout,
     ...declaration,
     evaluatedAt: value.meta.evaluatedAt,

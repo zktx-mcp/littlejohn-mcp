@@ -21,6 +21,7 @@ import {
   projectCapabilities,
   transactionInspectCapability,
   walletConnectionCapability,
+  walletConnectionEvidence,
   type AnyReadCapabilityDefinition,
   type CanonicalJson,
   type ObservationWriter,
@@ -394,9 +395,10 @@ const createWalletConnectionBinding = () => {
     harness,
     async (_input, context, observations: ObservationWriter) => {
       const data = { status: "disconnected" as const, reason: "no_session" as const };
-      observations.record("wallet_sdk", {
+      const sdk = observations.bind(walletConnectionEvidence.targets.sdk);
+      observations.record(sdk.slot, {
         source: context.ports.observations.get("wallet_sdk"),
-        claims: [{ role: "wallet_sdk_state", value: data }],
+        claims: [{ role: sdk.roles.state, value: data }],
       });
       return { status: "success" as const, data };
     },

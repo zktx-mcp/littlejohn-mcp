@@ -27,6 +27,7 @@ import {
   transactionInspectCapability,
   walletConnectionDataSchema,
   walletConnectionCapability,
+  walletConnectionEvidence,
   type AnyReadCapabilityDefinition,
   type ApplicationFailure,
   type CapabilityData,
@@ -161,14 +162,16 @@ const walletConnectionResult = async (data: WalletConnectionData) => {
     walletConnectionCapability,
     createCapabilityHarness(),
     async (_input, context, observations) => {
-      observations.record("wallet_sdk", {
+      const sdk = observations.bind(walletConnectionEvidence.targets.sdk);
+      observations.record(sdk.slot, {
         source: context.ports.observations.get("wallet_sdk"),
-        claims: [{ role: "wallet_sdk_state", value: data }],
+        claims: [{ role: sdk.roles.state, value: data }],
       });
       if (data.status === "connected") {
-        observations.record("wallet_session", {
+        const session = observations.bind(walletConnectionEvidence.targets.session);
+        observations.record(session.slot, {
           source: context.ports.observations.get("wallet_session"),
-          claims: [{ role: "wallet_session_state", value: data }],
+          claims: [{ role: session.roles.state, value: data }],
         });
       }
       return { status: "success", data };

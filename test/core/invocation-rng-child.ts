@@ -20,6 +20,7 @@ syncBuiltinESMExports();
 try {
   const {
     chainAnchorSchema,
+    chainStatusEvidence,
     chainStatusCapability,
   } = await import("../../src/core/index.js");
   const {
@@ -38,13 +39,15 @@ try {
   const binding = bindForHarness(chainStatusCapability, harness, async (_input, context, observations) => {
     handlerCalls += 1;
     const source = context.ports.observations.get("chain_rpc");
-    observations.record("rpc_chain_id", {
+    const chain = observations.bind(chainStatusEvidence.configuredChain.target);
+    const latest = observations.bind(chainStatusEvidence.targets.latestBlock);
+    observations.record(chain.slot, {
       source,
-      claims: [{ role: "chain_id", value: "eip155:4663" }],
+      claims: [{ role: chain.roles.chainId, value: "eip155:4663" }],
     });
-    observations.record("latest_block", {
+    observations.record(latest.slot, {
       source,
-      claims: [{ role: "latest_block", value: block, chainAnchor: block }],
+      claims: [{ role: latest.roles.block, value: block, chainAnchor: block }],
     });
     return {
       status: "success",

@@ -1,7 +1,6 @@
 import { z } from "zod";
 
 import {
-  accountNativeDecimalsExclusion,
   accountBalanceDataSchema,
   accountBalanceInputSchema,
   assertAccountBalanceChainSemantics,
@@ -24,25 +23,38 @@ import {
   defineReadCapability,
   type AnyReadCapabilityDefinition,
   type IntrinsicDataValidationContext,
+  type ReadCapabilityEvidence,
 } from "./capability.js";
 import {
-  createEvmAddressConclusionIdentity,
-  createEvmAddressConclusionIdentityDeclaration,
+  type BoundEvidenceClaimRoleDeclaration,
+  type BoundEvidenceObservationSlotDeclaration,
   type ConclusionDraft,
+  type EvidenceReplayBinder,
   type EvidenceReplayDeclaration,
   type FactRequirement,
   type ObservationExpectation,
   type ObservationReference,
-  type ObservationSlot,
   type WarningRequirement,
 } from "./evidence-replay.js";
+import {
+  accountBalanceEvidence,
+  accountNativeDecimalsExclusion,
+  accountTokenEvidenceIdentity,
+  chainStatusEvidence,
+  contractInspectEvidence,
+  receiptLogAmountRole,
+  transactionEventDecimalsExclusion,
+  transactionInspectEvidence,
+  transactionNativeDecimalsExclusion,
+  walletConnectionEvidence,
+} from "./capability-evidence.js";
 import type { CanonicalJson } from "./canonical-json.js";
-import type { ExternalSourceClass, FactOutcome, Freshness, StaticScopeExclusion } from "./evidence.js";
+import type { FactOutcome, Freshness, StaticScopeExclusion } from "./evidence.js";
 import {
   canonicalErc20EventEncodingKind,
   matchesCanonicalErc20EventEvidence,
 } from "./erc20-events.js";
-import type { ObservationClaim } from "./invocation.js";
+import type { ObservationClaim } from "./evidence-replay.js";
 import { jsonObject } from "./json-object.js";
 import { evmAddressInputSchema } from "./evm-address-input.js";
 import { evmChainIdSchema, type EvmChainId } from "./identities.js";
@@ -62,8 +74,6 @@ import {
 
 const capabilityPrimitives = createPrimitiveSchemaSet();
 const capabilityAmounts = createAmountSchemaSet();
-const accountBalanceTokenConclusionIdentity =
-  createEvmAddressConclusionIdentityDeclaration("token_balance:");
 
 const canonicalFailureCodes = (codes: readonly string[]): readonly SnakeCaseCode[] => Object.freeze(
   sortUniqueStrings(codes.map((code) => capabilityPrimitives.snakeCaseCode.parse(code))),
@@ -238,65 +248,36 @@ export type { AccountBalanceData, AccountBalanceInput } from "./account-balance-
 export type WalletConnectionInput = z.infer<typeof walletConnectionInputSchema>;
 export type { WalletConnectionData } from "./wallet-connection.js";
 
-const exclusion = (id: string, message: string): StaticScopeExclusion =>
-  Object.freeze({ id, message }) as StaticScopeExclusion;
-const transactionEventDecimalsExclusion = exclusion(
-  "transaction_event_decimals_not_observed",
-  "Event token decimals are not read by this capability.",
-);
-const transactionNativeDecimalsExclusion = exclusion(
-  "transaction_native_decimals_not_observed",
-  "Native asset decimals are not read by this capability.",
-);
-const sourceSlot = (
-  slotId: string,
-  factId: string,
-  purpose: string,
-  sourceClass: ExternalSourceClass,
-): ObservationSlot => ({ slotId, factId, kind: "source", purpose, sourceClass });
-const inputSlot = (slotId: string, factId: string, purpose: string): ObservationSlot => ({
-  slotId,
-  factId,
-  kind: "validated_input",
-  purpose,
-});
 const requirement = (
-  factId: string,
+  fact: FactRequirement["fact"],
   outcome: FactOutcome,
-  observationSlotIds: readonly string[],
-  requiredObservationSlotIds: readonly string[] = observationSlotIds,
-  minimumObservationCount = requiredObservationSlotIds.length,
+  observationSlots: readonly BoundEvidenceObservationSlotDeclaration[],
+  requiredObservationSlots: readonly BoundEvidenceObservationSlotDeclaration[] =
+    observationSlots,
+  minimumObservationCount = requiredObservationSlots.length,
 ): FactRequirement => ({
-  factId,
-  observationSlotIds,
-  requiredObservationSlotIds,
+  fact,
+  observationSlots,
+  requiredObservationSlots,
   minimumObservationCount,
   outcome,
 });
 
 const claim = (
-  role: string,
+  role: BoundEvidenceClaimRoleDeclaration,
   value: CanonicalJson,
   options: Partial<Pick<ObservationClaim, "asset" | "chainAnchor">> = {},
 ): ObservationClaim => ({ role, value, ...options });
 
-const expectation = (slotId: string, claims: readonly ObservationClaim[]): ObservationExpectation => ({
-  slotId,
+const expectation = (
+  slot: BoundEvidenceObservationSlotDeclaration,
+  claims: readonly ObservationClaim[],
+): ObservationExpectation => ({
+  slot,
   claims,
 });
 
 const asJson = (value: unknown): CanonicalJson => value as CanonicalJson;
-
-export const createAccountBalanceTokenEvidenceIdentity = (address: EvmAddress) => {
-  const factId = createEvmAddressConclusionIdentity(accountBalanceTokenConclusionIdentity, address);
-  return Object.freeze({
-    factId,
-    balanceSlotId: capabilityPrimitives.fixedIdentifier.parse(`token:${address}:balance`),
-    decimalsSlotId: capabilityPrimitives.fixedIdentifier.parse(`token:${address}:decimals`),
-    balanceClaimRole: factId,
-    decimalsClaimRole: capabilityPrimitives.fixedIdentifier.parse(`token_decimals:${address}`),
-  });
-};
 
 const assertOrderedUnique = (values: readonly string[], label: string): void => {
   for (let index = 1; index < values.length; index += 1) {
@@ -307,110 +288,163 @@ const assertOrderedUnique = (values: readonly string[], label: string): void => 
 };
 
 const conclusionFromFact = (
-  id: string,
-  factId: string,
+  conclusion: ConclusionDraft["conclusion"],
+  fact: ConclusionDraft["outcomeFact"],
   freshnessRuleId: Freshness["ruleId"],
-  evidenceFactIds: readonly string[] = [factId],
+  evidenceFacts: readonly ConclusionDraft["outcomeFact"][] = [fact],
 ): ConclusionDraft => ({
-    id,
-    outcomeFactId: factId,
-    evidenceFactIds,
+  conclusion,
+  outcomeFact: fact,
+  evidenceFacts,
   freshnessRuleId,
 });
 
-const chainStatusConclusionIds = Object.freeze([
-  "latest_block_observed",
-  "rpc_chain_id_matches_scope",
-]);
+const chainStatusCapabilityEvidence: ReadCapabilityEvidence<
+  ChainStatusInput,
+  ChainStatusData
+> = Object.freeze({
+  definition: chainStatusEvidence.definition,
+  observationTargets: () => [
+    chainStatusEvidence.configuredChain.target,
+    chainStatusEvidence.targets.latestBlock,
+  ],
+  declaration: (
+    _input: ChainStatusInput,
+    data: ChainStatusData,
+    binder: EvidenceReplayBinder,
+  ) => {
+    const chain = binder.bind(chainStatusEvidence.configuredChain.target);
+    const latestBlock = binder.bind(chainStatusEvidence.targets.latestBlock);
+    return {
+      observationExpectations: [
+        expectation(chain.slot, [claim(chain.roles.chainId, data.chainId)]),
+        expectation(latestBlock.slot, [
+          claim(latestBlock.roles.block, asJson(data.latestBlock), {
+            chainAnchor: data.latestBlock,
+          }),
+        ]),
+      ],
+      observationReferences: [],
+      factRequirements: [
+        requirement(chainStatusEvidence.facts.latestBlock, "observed", [latestBlock.slot]),
+        requirement(
+          chainStatusEvidence.configuredChain.fact,
+          chainStatusEvidence.configuredChain.outcome,
+          [chain.slot],
+        ),
+      ],
+      expectedConclusions: [
+        chainStatusEvidence.conclusions.latestBlockObserved,
+        chainStatusEvidence.conclusions.rpcChainIdMatchesScope,
+      ],
+      conclusionDrafts: [
+        conclusionFromFact(
+          chainStatusEvidence.conclusions.latestBlockObserved,
+          chainStatusEvidence.facts.latestBlock,
+          "chain_anchor_exact",
+        ),
+        conclusionFromFact(
+          chainStatusEvidence.conclusions.rpcChainIdMatchesScope,
+          chainStatusEvidence.configuredChain.fact,
+          chainStatusEvidence.configuredChain.freshnessRuleId,
+          [
+            chainStatusEvidence.facts.latestBlock,
+            chainStatusEvidence.configuredChain.fact,
+          ],
+        ),
+      ],
+      warningRequirements: [],
+    };
+  },
+  staticScopeExclusions: chainStatusEvidence.staticScopeExclusions,
+});
 
 export const chainStatusCapability = defineReadCapability<ChainStatusInput, ChainStatusData>({
   capabilityId: "chain.status",
   inputSchema: chainStatusInputSchema,
   dataSchema: chainStatusDataSchema,
   failureCodes: rpcReadFailureCodes,
-  conclusionIds: chainStatusConclusionIds,
-  observationSlots: () => [
-    sourceSlot("rpc_chain_id", "rpc_chain_id", "chain_id", "chain_rpc"),
-    sourceSlot("latest_block", "latest_block", "latest_block", "chain_rpc"),
-  ],
-  evidenceDeclaration: (_input, data) => ({
-    observationExpectations: [
-      expectation("rpc_chain_id", [claim("chain_id", data.chainId)]),
-      expectation("latest_block", [
-        claim("latest_block", asJson(data.latestBlock), { chainAnchor: data.latestBlock }),
-      ]),
-    ],
-    observationReferences: [],
-    factRequirements: [
-      requirement("latest_block", "observed", ["latest_block"]),
-      requirement("rpc_chain_id", "observed", ["rpc_chain_id"]),
-    ],
-    expectedConclusionIds: chainStatusConclusionIds,
-    conclusionDrafts: [
-      conclusionFromFact("latest_block_observed", "latest_block", "chain_anchor_exact"),
-      {
-        ...conclusionFromFact("rpc_chain_id_matches_scope", "rpc_chain_id", "chain_anchor_exact"),
-        evidenceFactIds: ["latest_block", "rpc_chain_id"],
-      },
-    ],
-    warningRequirements: [],
-  }),
+  evidence: chainStatusCapabilityEvidence,
   validateIntrinsicData: (data) => {
     if (data.latestBlock.chainId !== data.chainId) throw new TypeError("Chain status anchor mismatch.");
   },
   validateSuccess: (data, context) => {
     if (data.chainId !== context.chainId) throw new TypeError("Chain status scope mismatch.");
   },
-  warningCodes: [],
-  staticScopeExclusions: [
-    exclusion("execution_readiness", "This capability does not establish execution readiness."),
-    exclusion("finality", "This capability does not establish block finality."),
-    exclusion("independent_provider_agreement", "This capability does not compare independent providers."),
-    exclusion("official_network_identity", "Configured scope does not establish official network identity."),
-    exclusion("provider_health", "This capability does not establish provider health beyond the observation."),
-  ],
 });
 
-const contractInspectConclusionIds = Object.freeze([
-  "account_observed",
-  "runtime_code_observed",
-]);
+const contractInspectCapabilityEvidence: ReadCapabilityEvidence<
+  ContractInspectInput,
+  ContractInspectData
+> = Object.freeze({
+  definition: contractInspectEvidence.definition,
+  observationTargets: () => [
+    contractInspectEvidence.configuredChain.target,
+    contractInspectEvidence.targets.block,
+    contractInspectEvidence.targets.runtimeCode,
+  ],
+  declaration: (
+    _input: ContractInspectInput,
+    data: ContractInspectData,
+    binder: EvidenceReplayBinder,
+  ) => {
+    const chain = binder.bind(contractInspectEvidence.configuredChain.target);
+    const block = binder.bind(contractInspectEvidence.targets.block);
+    const runtimeCode = binder.bind(contractInspectEvidence.targets.runtimeCode);
+    return {
+      observationExpectations: [
+        expectation(chain.slot, [claim(chain.roles.chainId, data.block.chainId)]),
+        expectation(block.slot, [claim(block.roles.block, asJson({
+          address: data.address,
+          block: data.block,
+        }), { chainAnchor: data.block })]),
+        expectation(runtimeCode.slot, [claim(runtimeCode.roles.runtimeCode, asJson({
+          address: data.address,
+          runtimeCode: data.runtimeCode,
+        }), { chainAnchor: data.block })]),
+      ],
+      observationReferences: [],
+      factRequirements: [
+        requirement(contractInspectEvidence.facts.account, "observed", [block.slot]),
+        requirement(
+          contractInspectEvidence.configuredChain.fact,
+          contractInspectEvidence.configuredChain.outcome,
+          [chain.slot],
+        ),
+        requirement(
+          contractInspectEvidence.facts.runtimeCode,
+          "observed",
+          [runtimeCode.slot],
+        ),
+      ],
+      expectedConclusions: [
+        contractInspectEvidence.conclusions.accountObserved,
+        contractInspectEvidence.conclusions.runtimeCodeObserved,
+      ],
+      conclusionDrafts: [
+        conclusionFromFact(
+          contractInspectEvidence.conclusions.accountObserved,
+          contractInspectEvidence.facts.account,
+          "chain_anchor_exact",
+        ),
+        conclusionFromFact(
+          contractInspectEvidence.conclusions.runtimeCodeObserved,
+          contractInspectEvidence.facts.runtimeCode,
+          "chain_anchor_exact",
+        ),
+      ],
+      warningRequirements: [],
+    };
+  },
+  staticScopeExclusions: contractInspectEvidence.staticScopeExclusions,
+});
 
 export const contractInspectCapability = defineReadCapability<ContractInspectInput, ContractInspectData>({
   capabilityId: "contract.inspect",
   inputSchema: contractInspectInputSchema,
   dataSchema: contractInspectDataSchema,
   failureCodes: rpcReadFailureCodes,
-  conclusionIds: contractInspectConclusionIds,
-  observationSlots: () => [
-    sourceSlot("rpc_chain_id", "rpc_chain_id", "chain_id", "chain_rpc"),
-    sourceSlot("block", "account", "contract_block", "chain_rpc"),
-    sourceSlot("runtime_code", "runtime_code", "runtime_code", "chain_rpc"),
-  ],
-  evidenceDeclaration: (_input, data) => ({
-    observationExpectations: [
-      expectation("rpc_chain_id", [claim("chain_id", data.block.chainId)]),
-      expectation("block", [claim("contract_block", asJson({ address: data.address, block: data.block }), {
-        chainAnchor: data.block,
-      })]),
-      expectation("runtime_code", [claim("runtime_code", asJson({
-        address: data.address,
-        runtimeCode: data.runtimeCode,
-      }), { chainAnchor: data.block })]),
-    ],
-    observationReferences: [],
-    factRequirements: [
-      requirement("account", "observed", ["block"]),
-      requirement("rpc_chain_id", "observed", ["rpc_chain_id"]),
-      requirement("runtime_code", "observed", ["runtime_code"]),
-    ],
-    expectedConclusionIds: contractInspectConclusionIds,
-    conclusionDrafts: [
-      conclusionFromFact("account_observed", "account", "chain_anchor_exact"),
-      conclusionFromFact("runtime_code_observed", "runtime_code", "chain_anchor_exact"),
-    ],
-    warningRequirements: [],
-  }),
+  evidence: contractInspectCapabilityEvidence,
   validateIntrinsicData: (data) => {
     if (data.runtimeCode.status === "present") {
       const byteLength = BigInt((data.runtimeCode.bytecode.length - 2) / 2);
@@ -433,31 +467,27 @@ export const contractInspectCapability = defineReadCapability<ContractInspectInp
       throw new TypeError("Contract block selector mismatch.");
     }
   },
-  warningCodes: [],
-  staticScopeExclusions: [
-    exclusion("abi_identity", "This capability does not establish ABI identity."),
-    exclusion("control_roles", "This capability does not inspect contract control roles."),
-    exclusion("execution_readiness", "This capability does not establish execution readiness."),
-    exclusion("protocol_identity", "This capability does not establish protocol identity."),
-    exclusion("proxy_identity", "This capability does not resolve proxy identity."),
-    exclusion("safety", "This capability does not establish contract safety."),
-    exclusion("source_verification", "This capability does not establish source verification."),
-  ],
 });
 
 const observationReference = (
   observationId: ObservationReference["observationId"],
-  slotId: string,
-  role: string,
-): ObservationReference => ({ observationId, slotId, role });
+  slot: BoundEvidenceObservationSlotDeclaration,
+  role: BoundEvidenceClaimRoleDeclaration,
+): ObservationReference => ({ observationId, slot, role });
 
 const amountObservationReferences = (
   amount: CanonicalAmount,
-  quantity: Readonly<{ readonly slotId: string; readonly role: string }>,
-  decimals?: Readonly<{ readonly slotId: string; readonly role: string }>,
+  quantity: Readonly<{
+    readonly slot: BoundEvidenceObservationSlotDeclaration;
+    readonly role: BoundEvidenceClaimRoleDeclaration;
+  }>,
+  decimals?: Readonly<{
+    readonly slot: BoundEvidenceObservationSlotDeclaration;
+    readonly role: BoundEvidenceClaimRoleDeclaration;
+  }>,
 ): readonly ObservationReference[] => {
   const references = [
-    observationReference(amount.quantityObservationId, quantity.slotId, quantity.role),
+    observationReference(amount.quantityObservationId, quantity.slot, quantity.role),
   ];
   if (amount.decimals.status === "not_observed") return references;
   if (decimals === undefined) {
@@ -469,7 +499,7 @@ const amountObservationReferences = (
   return [
     ...references,
     ...observationIds.map((observationId) =>
-      observationReference(observationId, decimals.slotId, decimals.role)),
+      observationReference(observationId, decimals.slot, decimals.role)),
   ];
 };
 
@@ -545,10 +575,15 @@ const transactionReceiptSourceValue = (
 const transactionObservationExpectations = (
   _input: TransactionInspectInput,
   data: TransactionInspectData,
+  binder: EvidenceReplayBinder,
 ): ObservationExpectation[] => {
+  const chain = binder.bind(transactionInspectEvidence.configuredChain.target);
+  const transaction = binder.bind(transactionInspectEvidence.targets.transaction);
+  const receiptTarget = binder.bind(transactionInspectEvidence.targets.receipt);
+  const block = binder.bind(transactionInspectEvidence.targets.block);
   const anchor = transactionAnchor(data);
   const transactionClaims: ObservationClaim[] = [
-    claim("transaction", asJson({
+    claim(transaction.roles.transaction, asJson({
       transactionHash: data.transactionHash,
       chainId: data.chainId,
       from: data.from,
@@ -569,56 +604,72 @@ const transactionObservationExpectations = (
             transactionIndex: data.inclusion.transactionIndex,
           },
     }), { ...(anchor === undefined ? {} : { chainAnchor: anchor }) }),
-    claim("transaction_value", data.value.raw, {
+    claim(transaction.roles.value, data.value.raw, {
       asset: data.value.asset,
       ...(anchor === undefined ? {} : { chainAnchor: anchor }),
     }),
-    claim("transaction_gas_limit", data.gasLimit.raw, { ...(anchor === undefined ? {} : { chainAnchor: anchor }) }),
+    claim(transaction.roles.gasLimit, data.gasLimit.raw, {
+      ...(anchor === undefined ? {} : { chainAnchor: anchor }),
+    }),
   ];
   if (data.fee.kind === "legacy") {
-    transactionClaims.push(claim("transaction_gas_price", data.fee.gasPrice.numerator.raw, {
+    transactionClaims.push(claim(transaction.roles.gasPrice, data.fee.gasPrice.numerator.raw, {
       asset: data.fee.gasPrice.numerator.asset,
       ...(anchor === undefined ? {} : { chainAnchor: anchor }),
     }));
   } else if (data.fee.kind === "dynamic") {
     transactionClaims.push(
-      claim("transaction_max_fee_per_gas", data.fee.maxFeePerGas.numerator.raw, {
+      claim(transaction.roles.maxFeePerGas, data.fee.maxFeePerGas.numerator.raw, {
         asset: data.fee.maxFeePerGas.numerator.asset,
         ...(anchor === undefined ? {} : { chainAnchor: anchor }),
       }),
-      claim("transaction_max_priority_fee_per_gas", data.fee.maxPriorityFeePerGas.numerator.raw, {
+      claim(
+        transaction.roles.maxPriorityFeePerGas,
+        data.fee.maxPriorityFeePerGas.numerator.raw,
+        {
         asset: data.fee.maxPriorityFeePerGas.numerator.asset,
         ...(anchor === undefined ? {} : { chainAnchor: anchor }),
-      }),
+        },
+      ),
     );
   }
   const expectations: ObservationExpectation[] = [
-    expectation("rpc_chain_id", [claim("chain_id", data.chainId)]),
-    expectation("transaction", transactionClaims),
+    expectation(chain.slot, [claim(chain.roles.chainId, data.chainId)]),
+    expectation(transaction.slot, transactionClaims),
   ];
   if (data.inclusion.status === "included") {
     const included = data.inclusion;
     const receipt = included.receipt;
     const receiptClaims: ObservationClaim[] = [
-      claim("transaction_receipt", transactionReceiptSourceValue(receipt), { chainAnchor: included.block }),
-      claim("receipt_cumulative_gas_used", receipt.cumulativeGasUsed.raw, { chainAnchor: included.block }),
-      claim("receipt_gas_used", receipt.gasUsed.raw, { chainAnchor: included.block }),
-      claim("receipt_effective_gas_price", receipt.effectiveGasPrice.numerator.raw, {
+      claim(receiptTarget.roles.receipt, transactionReceiptSourceValue(receipt), {
+        chainAnchor: included.block,
+      }),
+      claim(receiptTarget.roles.cumulativeGasUsed, receipt.cumulativeGasUsed.raw, {
+        chainAnchor: included.block,
+      }),
+      claim(receiptTarget.roles.gasUsed, receipt.gasUsed.raw, {
+        chainAnchor: included.block,
+      }),
+      claim(receiptTarget.roles.effectiveGasPrice, receipt.effectiveGasPrice.numerator.raw, {
         asset: receipt.effectiveGasPrice.numerator.asset,
         chainAnchor: included.block,
       }),
     ];
     receipt.logs.forEach((log, index) => {
       if (log.decodedEvent.kind !== "not_decoded") {
-        receiptClaims.push(claim(`receipt_log_amount:${index}`, log.decodedEvent.amount.raw, {
+        receiptClaims.push(claim(
+          binder.bindRole(receiptLogAmountRole(index)),
+          log.decodedEvent.amount.raw,
+          {
           asset: log.decodedEvent.amount.asset,
           chainAnchor: included.block,
-        }));
+          },
+        ));
       }
     });
     expectations.push(
-      expectation("receipt", receiptClaims),
-      expectation("block", [claim("transaction_block", asJson(included.block), {
+      expectation(receiptTarget.slot, receiptClaims),
+      expectation(block.slot, [claim(block.roles.block, asJson(included.block), {
         chainAnchor: included.block,
       })]),
     );
@@ -720,40 +771,42 @@ const validateTransactionIntrinsicData = (
   }
 };
 
-const transactionInspectConclusionIds = Object.freeze([
-  "inclusion_observed",
-  "receipt_observed",
-  "standard_events_decoded",
-  "transaction_observed",
-]);
-
 const transactionEvidenceDeclaration = (
   input: TransactionInspectInput,
   data: TransactionInspectData,
+  binder: EvidenceReplayBinder,
 ): EvidenceReplayDeclaration => {
+  const chain = binder.bind(transactionInspectEvidence.configuredChain.target);
+  const transaction = binder.bind(transactionInspectEvidence.targets.transaction);
+  const receiptTarget = binder.bind(transactionInspectEvidence.targets.receipt);
+  const block = binder.bind(transactionInspectEvidence.targets.block);
   const pending = data.inclusion.status === "pending";
   const rule = pending ? "pending_transaction_observed" : "chain_anchor_exact";
   const references: ObservationReference[] = [
     ...amountObservationReferences(data.value, {
-      slotId: "transaction",
-      role: "transaction_value",
+      slot: transaction.slot,
+      role: transaction.roles.value,
     }),
-    observationReference(data.gasLimit.observationId, "transaction", "transaction_gas_limit"),
+    observationReference(
+      data.gasLimit.observationId,
+      transaction.slot,
+      transaction.roles.gasLimit,
+    ),
   ];
   if (data.fee.kind === "legacy") {
     references.push(...amountObservationReferences(data.fee.gasPrice.numerator, {
-      slotId: "transaction",
-      role: "transaction_gas_price",
+      slot: transaction.slot,
+      role: transaction.roles.gasPrice,
     }));
   } else if (data.fee.kind === "dynamic") {
     references.push(
       ...amountObservationReferences(data.fee.maxFeePerGas.numerator, {
-        slotId: "transaction",
-        role: "transaction_max_fee_per_gas",
+        slot: transaction.slot,
+        role: transaction.roles.maxFeePerGas,
       }),
       ...amountObservationReferences(data.fee.maxPriorityFeePerGas.numerator, {
-        slotId: "transaction",
-        role: "transaction_max_priority_fee_per_gas",
+        slot: transaction.slot,
+        role: transaction.roles.maxPriorityFeePerGas,
       }),
     );
   }
@@ -762,67 +815,138 @@ const transactionEvidenceDeclaration = (
     references.push(
       observationReference(
         receipt.cumulativeGasUsed.observationId,
-        "receipt",
-        "receipt_cumulative_gas_used",
+        receiptTarget.slot,
+        receiptTarget.roles.cumulativeGasUsed,
       ),
-      observationReference(receipt.gasUsed.observationId, "receipt", "receipt_gas_used"),
+      observationReference(
+        receipt.gasUsed.observationId,
+        receiptTarget.slot,
+        receiptTarget.roles.gasUsed,
+      ),
       ...amountObservationReferences(receipt.effectiveGasPrice.numerator, {
-        slotId: "receipt",
-        role: "receipt_effective_gas_price",
+        slot: receiptTarget.slot,
+        role: receiptTarget.roles.effectiveGasPrice,
       }),
     );
     for (const [index, log] of receipt.logs.entries()) {
       if (log.decodedEvent.kind !== "not_decoded") {
         references.push(...amountObservationReferences(
           log.decodedEvent.amount,
-          { slotId: "receipt", role: `receipt_log_amount:${index}` },
+          {
+            slot: receiptTarget.slot,
+            role: binder.bindRole(receiptLogAmountRole(index)),
+          },
         ));
       }
     }
   }
   return {
-    observationExpectations: transactionObservationExpectations(input, data),
+    observationExpectations: transactionObservationExpectations(input, data, binder),
     observationReferences: references,
     factRequirements: [
-      requirement("block", data.inclusion.status === "included" ? "observed" : "not_present", ["block"],
-        data.inclusion.status === "included" ? ["block"] : [], data.inclusion.status === "included" ? 1 : 0),
-      requirement("receipt", data.inclusion.status === "included" ? "observed" : "not_present", ["receipt"],
-        data.inclusion.status === "included" ? ["receipt"] : [], data.inclusion.status === "included" ? 1 : 0),
-      requirement("rpc_chain_id", "observed", ["rpc_chain_id"]),
-      requirement("transaction", pending ? "pending" : "observed", ["transaction"]),
+      requirement(
+        transactionInspectEvidence.facts.block,
+        data.inclusion.status === "included" ? "observed" : "not_present",
+        [block.slot],
+        data.inclusion.status === "included" ? [block.slot] : [],
+        data.inclusion.status === "included" ? 1 : 0,
+      ),
+      requirement(
+        transactionInspectEvidence.facts.receipt,
+        data.inclusion.status === "included" ? "observed" : "not_present",
+        [receiptTarget.slot],
+        data.inclusion.status === "included" ? [receiptTarget.slot] : [],
+        data.inclusion.status === "included" ? 1 : 0,
+      ),
+      requirement(
+        transactionInspectEvidence.configuredChain.fact,
+        transactionInspectEvidence.configuredChain.outcome,
+        [chain.slot],
+      ),
+      requirement(
+        transactionInspectEvidence.facts.transaction,
+        pending ? "pending" : "observed",
+        [transaction.slot],
+      ),
     ],
-    expectedConclusionIds: transactionInspectConclusionIds,
+    expectedConclusions: [
+      transactionInspectEvidence.conclusions.inclusionObserved,
+      transactionInspectEvidence.conclusions.receiptObserved,
+      transactionInspectEvidence.conclusions.standardEventsDecoded,
+      transactionInspectEvidence.conclusions.transactionObserved,
+    ],
     conclusionDrafts: [
-      conclusionFromFact("inclusion_observed", pending ? "transaction" : "block", rule),
-      conclusionFromFact("receipt_observed", "receipt", rule, pending ? ["transaction"] : ["receipt"]),
-      conclusionFromFact("standard_events_decoded", "receipt", rule, pending ? ["transaction"] : ["receipt"]),
-      conclusionFromFact("transaction_observed", "transaction", rule),
+      conclusionFromFact(
+        transactionInspectEvidence.conclusions.inclusionObserved,
+        pending
+          ? transactionInspectEvidence.facts.transaction
+          : transactionInspectEvidence.facts.block,
+        rule,
+      ),
+      conclusionFromFact(
+        transactionInspectEvidence.conclusions.receiptObserved,
+        transactionInspectEvidence.facts.receipt,
+        rule,
+        [pending
+          ? transactionInspectEvidence.facts.transaction
+          : transactionInspectEvidence.facts.receipt],
+      ),
+      conclusionFromFact(
+        transactionInspectEvidence.conclusions.standardEventsDecoded,
+        transactionInspectEvidence.facts.receipt,
+        rule,
+        [pending
+          ? transactionInspectEvidence.facts.transaction
+          : transactionInspectEvidence.facts.receipt],
+      ),
+      conclusionFromFact(
+        transactionInspectEvidence.conclusions.transactionObserved,
+        transactionInspectEvidence.facts.transaction,
+        rule,
+      ),
     ],
     warningRequirements: [
-      { code: "decimals_unavailable", factIds: ["transaction"] },
+      {
+        code: "decimals_unavailable",
+        facts: [transactionInspectEvidence.facts.transaction],
+      },
       ...(data.inclusion.status === "included"
-        ? [{ code: "decimals_unavailable" as const, factIds: ["receipt"] }]
+        ? [{
+            code: "decimals_unavailable" as const,
+            facts: [transactionInspectEvidence.facts.receipt],
+          }]
         : []),
       ...(data.fee.kind === "unsupported"
-        ? [{ code: "unsupported_transaction_type" as const, factIds: ["transaction"] }]
+        ? [{
+            code: "unsupported_transaction_type" as const,
+            facts: [transactionInspectEvidence.facts.transaction],
+          }]
         : []),
     ],
   };
 };
+
+const transactionInspectCapabilityEvidence: ReadCapabilityEvidence<
+  TransactionInspectInput,
+  TransactionInspectData
+> = Object.freeze({
+  definition: transactionInspectEvidence.definition,
+  observationTargets: () => [
+    transactionInspectEvidence.configuredChain.target,
+    transactionInspectEvidence.targets.transaction,
+    transactionInspectEvidence.targets.receipt,
+    transactionInspectEvidence.targets.block,
+  ],
+  declaration: transactionEvidenceDeclaration,
+  staticScopeExclusions: transactionInspectEvidence.staticScopeExclusions,
+});
 
 export const transactionInspectCapability = defineReadCapability<TransactionInspectInput, TransactionInspectData>({
   capabilityId: "transaction.inspect",
   inputSchema: transactionInspectInputSchema,
   dataSchema: transactionInspectDataSchema,
   failureCodes: transactionReadFailureCodes,
-  conclusionIds: transactionInspectConclusionIds,
-  observationSlots: () => [
-    sourceSlot("rpc_chain_id", "rpc_chain_id", "chain_id", "chain_rpc"),
-    sourceSlot("transaction", "transaction", "transaction", "chain_rpc"),
-    sourceSlot("receipt", "receipt", "transaction_receipt", "chain_rpc"),
-    sourceSlot("block", "block", "transaction_block", "chain_rpc"),
-  ],
-  evidenceDeclaration: transactionEvidenceDeclaration,
+  evidence: transactionInspectCapabilityEvidence,
   validateIntrinsicData: validateTransactionIntrinsicData,
   validateSuccess: (data, context) => {
     if (data.chainId !== context.chainId) throw new TypeError("Transaction chain scope mismatch.");
@@ -848,64 +972,70 @@ export const transactionInspectCapability = defineReadCapability<TransactionInsp
   validateRequest: (input, data) => {
     if (input.transactionHash !== data.transactionHash) throw new TypeError("Transaction target mismatch.");
   },
-  warningCodes: ["decimals_unavailable", "unsupported_transaction_type"],
-  staticScopeExclusions: [
-    exclusion("asset_identity_from_symbols", "This capability does not derive asset identity from symbols."),
-    exclusion("execution_readiness", "This capability does not establish execution readiness."),
-    exclusion("finality", "This capability does not establish finality."),
-    exclusion("non_standard_abi_meaning", "This capability does not decode non-standard ABI meaning."),
-    exclusion("raw_signatures", "This capability does not resolve raw signatures."),
-    exclusion("safety", "This capability does not establish transaction safety."),
-    exclusion("traces", "This capability does not inspect execution traces."),
-    transactionEventDecimalsExclusion,
-    transactionNativeDecimalsExclusion,
-    exclusion("unsupported_type_fields", "Unsupported transaction-type fields are not interpreted."),
-  ],
 });
 
-const accountObservationSlots = (input: AccountBalanceInput): ObservationSlot[] => [
-  sourceSlot("rpc_chain_id", "rpc_chain_id", "chain_id", "chain_rpc"),
-  sourceSlot("block", "block", "balance_block", "chain_rpc"),
-  ...(input.account.kind === "address"
-    ? [inputSlot("account", "account", "account_input")]
-    : [sourceSlot("account", "account", "active_wallet_account", "wallet_session")]),
-  ...(input.includeNative ? [sourceSlot("native_balance", "native_balance", "native_balance", "chain_rpc")] : []),
+const accountObservationTargets = (input: AccountBalanceInput) => [
+  accountBalanceEvidence.configuredChain.target,
+  accountBalanceEvidence.targets.block,
+  input.account.kind === "address"
+    ? accountBalanceEvidence.validatedInput.target
+    : accountBalanceEvidence.targets.walletAccount,
+  ...(input.includeNative ? [accountBalanceEvidence.targets.nativeBalance] : []),
   ...input.tokens.flatMap((address) => {
-    const identity = createAccountBalanceTokenEvidenceIdentity(address);
-    return [
-      sourceSlot(identity.balanceSlotId, identity.factId, "token_balance", "chain_rpc"),
-      sourceSlot(identity.decimalsSlotId, identity.factId, "token_decimals", "chain_rpc"),
-    ];
+    const identity = accountTokenEvidenceIdentity(input, address);
+    return [identity.balanceTarget, identity.decimalsTarget];
   }),
 ];
 
 const accountObservationExpectations = (
   input: AccountBalanceInput,
   data: AccountBalanceData,
+  binder: EvidenceReplayBinder,
 ): ObservationExpectation[] => {
+  const chain = binder.bind(accountBalanceEvidence.configuredChain.target);
+  const block = binder.bind(accountBalanceEvidence.targets.block);
   const expectations: ObservationExpectation[] = [
-    expectation("rpc_chain_id", [claim("chain_id", data.block.chainId)]),
-    expectation("block", [claim("balance_block", asJson(data.block), { chainAnchor: data.block })]),
-    expectation("account", input.account.kind === "address"
-      ? [claim("validated_input", asJson(input))]
-      : [claim("active_wallet_account", data.account)]),
+    expectation(chain.slot, [claim(chain.roles.chainId, data.block.chainId)]),
+    expectation(block.slot, [
+      claim(block.roles.block, asJson(data.block), { chainAnchor: data.block }),
+    ]),
+    ...(input.account.kind === "address"
+      ? [expectation(
+          binder.bind(accountBalanceEvidence.validatedInput.target).slot,
+          [claim(
+            binder.bind(accountBalanceEvidence.validatedInput.target).roles.input,
+            asJson(input),
+          )],
+        )]
+      : [expectation(
+          binder.bind(accountBalanceEvidence.targets.walletAccount).slot,
+          [claim(
+            binder.bind(accountBalanceEvidence.targets.walletAccount).roles.account,
+            data.account,
+          )],
+        )]),
   ];
   if (data.native.status === "available") {
-    expectations.push(expectation("native_balance", [claim("native_balance", data.native.amount.raw, {
-      asset: data.native.amount.asset,
-      chainAnchor: data.block,
-    })]));
+    const nativeBalance = binder.bind(accountBalanceEvidence.targets.nativeBalance);
+    expectations.push(expectation(nativeBalance.slot, [
+      claim(nativeBalance.roles.balance, data.native.amount.raw, {
+        asset: data.native.amount.asset,
+        chainAnchor: data.block,
+      }),
+    ]));
   }
   for (const token of data.tokens) {
-    const identity = createAccountBalanceTokenEvidenceIdentity(token.asset.address);
+    const identity = accountTokenEvidenceIdentity(input, token.asset.address);
+    const balance = binder.bind(identity.balanceTarget);
+    const decimals = binder.bind(identity.decimalsTarget);
     if (token.result.status === "unavailable") {
       const failed = asJson({ status: "unavailable", errorCode: token.result.errorCode });
       expectations.push(
-        expectation(identity.balanceSlotId, [claim(identity.balanceClaimRole, failed, {
+        expectation(balance.slot, [claim(balance.roles.balance, failed, {
           asset: token.asset,
           chainAnchor: data.block,
         })]),
-        expectation(identity.decimalsSlotId, [claim(identity.decimalsClaimRole, failed, {
+        expectation(decimals.slot, [claim(decimals.roles.decimals, failed, {
           asset: token.asset,
           chainAnchor: data.block,
         })]),
@@ -918,11 +1048,11 @@ const accountObservationExpectations = (
     }
     const decimalsValue = amount.decimals.status === "available" ? amount.decimals.value : null;
     expectations.push(
-      expectation(identity.balanceSlotId, [claim(identity.balanceClaimRole, amount.raw, {
+      expectation(balance.slot, [claim(balance.roles.balance, amount.raw, {
         asset: amount.asset,
         chainAnchor: data.block,
       })]),
-      expectation(identity.decimalsSlotId, [claim(identity.decimalsClaimRole, decimalsValue, {
+      expectation(decimals.slot, [claim(decimals.roles.decimals, decimalsValue, {
         asset: amount.asset,
         chainAnchor: data.block,
       })]),
@@ -931,63 +1061,88 @@ const accountObservationExpectations = (
   return expectations;
 };
 
-const accountBalanceConclusionIds = Object.freeze([
-  "account_bound",
-  "native_balance_observed",
-  accountBalanceTokenConclusionIdentity,
-]);
-
 const accountBalanceEvidenceDeclaration = (
   input: AccountBalanceInput,
   data: AccountBalanceData,
+  binder: EvidenceReplayBinder,
 ): EvidenceReplayDeclaration => {
+  const chain = binder.bind(accountBalanceEvidence.configuredChain.target);
+  const block = binder.bind(accountBalanceEvidence.targets.block);
+  const account = input.account.kind === "address"
+    ? binder.bind(accountBalanceEvidence.validatedInput.target)
+    : binder.bind(accountBalanceEvidence.targets.walletAccount);
   const references: ObservationReference[] = [];
   if (data.native.status === "available") {
+    const nativeBalance = binder.bind(accountBalanceEvidence.targets.nativeBalance);
     references.push(...amountObservationReferences(
       data.native.amount,
-      { slotId: "native_balance", role: "native_balance" },
+      { slot: nativeBalance.slot, role: nativeBalance.roles.balance },
     ));
   }
   for (const token of data.tokens) {
     if (token.result.status === "available") {
-      const identity = createAccountBalanceTokenEvidenceIdentity(token.asset.address);
+      const identity = accountTokenEvidenceIdentity(input, token.asset.address);
+      const balance = binder.bind(identity.balanceTarget);
+      const decimals = binder.bind(identity.decimalsTarget);
       references.push(...amountObservationReferences(
         token.result.amount,
-        { slotId: identity.balanceSlotId, role: identity.balanceClaimRole },
-        { slotId: identity.decimalsSlotId, role: identity.decimalsClaimRole },
+        { slot: balance.slot, role: balance.roles.balance },
+        { slot: decimals.slot, role: decimals.roles.decimals },
       ));
     }
   }
 
   const warningRequirements: WarningRequirement[] = [];
   if (data.native.status === "available") {
-    warningRequirements.push({ code: "decimals_unavailable", factIds: ["native_balance"] });
+    warningRequirements.push({
+      code: "decimals_unavailable",
+      facts: [accountBalanceEvidence.facts.nativeBalance],
+    });
   }
   for (const token of data.tokens) {
-    const factId = createAccountBalanceTokenEvidenceIdentity(token.asset.address).factId;
+    const fact = accountTokenEvidenceIdentity(input, token.asset.address).fact;
     if (token.result.status === "unavailable") {
-      warningRequirements.push({ code: "partial_result", factIds: [factId] });
+      warningRequirements.push({ code: "partial_result", facts: [fact] });
     } else if (token.result.amount.decimals.status !== "available") {
-      warningRequirements.push({ code: "decimals_unavailable", factIds: [factId] });
+      warningRequirements.push({ code: "decimals_unavailable", facts: [fact] });
     }
   }
 
   return {
-    observationExpectations: accountObservationExpectations(input, data),
+    observationExpectations: accountObservationExpectations(input, data, binder),
     observationReferences: references,
     factRequirements: [
-      requirement("account", input.account.kind === "address" ? "validated_input" : "observed", ["account"]),
-      requirement("block", "observed", ["block"]),
-      ...(input.includeNative ? [requirement("native_balance", "observed", ["native_balance"])] : []),
-      requirement("rpc_chain_id", "observed", ["rpc_chain_id"]),
+      requirement(
+        accountBalanceEvidence.validatedInput.fact,
+        input.account.kind === "address"
+          ? accountBalanceEvidence.validatedInput.outcome
+          : "observed",
+        [account.slot],
+      ),
+      requirement(accountBalanceEvidence.facts.block, "observed", [block.slot]),
+      ...(input.includeNative
+        ? [requirement(
+            accountBalanceEvidence.facts.nativeBalance,
+            "observed",
+            [binder.bind(accountBalanceEvidence.targets.nativeBalance).slot],
+          )]
+        : []),
+      requirement(
+        accountBalanceEvidence.configuredChain.fact,
+        accountBalanceEvidence.configuredChain.outcome,
+        [chain.slot],
+      ),
       ...data.tokens.map((token) => {
-        const identity = createAccountBalanceTokenEvidenceIdentity(token.asset.address);
-        const slots = [identity.balanceSlotId, identity.decimalsSlotId];
+        const identity = accountTokenEvidenceIdentity(input, token.asset.address);
+        const slots = [
+          binder.bind(identity.balanceTarget).slot,
+          binder.bind(identity.decimalsTarget).slot,
+        ];
         if (token.result.status === "available") {
-          return requirement(identity.factId, "observed", slots);
+          return requirement(identity.fact, "observed", slots);
         }
         return requirement(
-          identity.factId,
+          identity.fact,
           token.result.errorCode === "source_inconsistent" ? "source_inconsistent" : "source_failed",
           slots,
           [],
@@ -995,25 +1150,51 @@ const accountBalanceEvidenceDeclaration = (
         );
       }),
     ],
-    expectedConclusionIds: [
-      "account_bound",
-      ...(input.includeNative ? ["native_balance_observed"] : []),
-      ...input.tokens.map((address) => createAccountBalanceTokenEvidenceIdentity(address).factId),
+    expectedConclusions: [
+      accountBalanceEvidence.conclusions.accountBound,
+      ...(input.includeNative
+        ? [accountBalanceEvidence.conclusions.nativeBalanceObserved]
+        : []),
+      ...input.tokens.map((address) =>
+        accountTokenEvidenceIdentity(input, address).conclusion),
     ],
     conclusionDrafts: [
-      conclusionFromFact("account_bound", "account",
-        input.account.kind === "address" ? "validated_input_current" : "wallet_session_current"),
+      conclusionFromFact(
+        accountBalanceEvidence.conclusions.accountBound,
+        accountBalanceEvidence.validatedInput.fact,
+        input.account.kind === "address"
+          ? accountBalanceEvidence.validatedInput.freshnessRuleId
+          : "wallet_session_current",
+      ),
       ...(input.includeNative
-        ? [conclusionFromFact("native_balance_observed", "native_balance", "chain_anchor_exact")]
+        ? [conclusionFromFact(
+            accountBalanceEvidence.conclusions.nativeBalanceObserved,
+            accountBalanceEvidence.facts.nativeBalance,
+            "chain_anchor_exact",
+          )]
         : []),
       ...input.tokens.map((address) => {
-        const identity = createAccountBalanceTokenEvidenceIdentity(address);
-        return conclusionFromFact(identity.factId, identity.factId, "chain_anchor_exact");
+        const identity = accountTokenEvidenceIdentity(input, address);
+        return conclusionFromFact(
+          identity.conclusion,
+          identity.fact,
+          "chain_anchor_exact",
+        );
       }),
     ],
     warningRequirements,
   };
 };
+
+const accountBalanceCapabilityEvidence: ReadCapabilityEvidence<
+  AccountBalanceInput,
+  AccountBalanceData
+> = Object.freeze({
+  definition: accountBalanceEvidence.definition,
+  observationTargets: accountObservationTargets,
+  declaration: accountBalanceEvidenceDeclaration,
+  staticScopeExclusions: accountBalanceEvidence.staticScopeExclusions,
+});
 
 export const accountBalanceCapability = defineReadCapability<AccountBalanceInput, AccountBalanceData>({
   capabilityId: "account.balance",
@@ -1026,9 +1207,7 @@ export const accountBalanceCapability = defineReadCapability<AccountBalanceInput
     }
     return { ...input, tokens: [...input.tokens].sort(compareCodePointSequences) };
   },
-  conclusionIds: accountBalanceConclusionIds,
-  observationSlots: accountObservationSlots,
-  evidenceDeclaration: accountBalanceEvidenceDeclaration,
+  evidence: accountBalanceCapabilityEvidence,
   validateIntrinsicData: (data, context) => {
     context.assertDeclaredScopeExclusion(accountNativeDecimalsExclusion);
     assertAccountBalanceDataSemantics(data);
@@ -1037,51 +1216,59 @@ export const accountBalanceCapability = defineReadCapability<AccountBalanceInput
     assertAccountBalanceChainSemantics(data, context.chainId);
   },
   validateRequest: assertAccountBalanceRequestSemantics,
-  warningCodes: ["decimals_unavailable", "partial_result"],
-  staticScopeExclusions: [
-    accountNativeDecimalsExclusion,
-    exclusion("canonical_asset_identity", "This capability does not establish canonical asset identity."),
-    exclusion("cost_basis", "This capability does not calculate cost basis."),
-    exclusion("execution_readiness", "This capability does not establish execution readiness."),
-    exclusion("portfolio_completeness", "This capability does not establish portfolio completeness."),
-    exclusion("profit_and_loss", "This capability does not calculate profit and loss."),
-    exclusion("valuation", "This capability does not calculate valuation."),
-  ],
 });
 
-const walletConnectionConclusionIds = Object.freeze(["wallet_connection_state"]);
+const walletConnectionCapabilityEvidence: ReadCapabilityEvidence<
+  WalletConnectionInput,
+  WalletConnectionData
+> = Object.freeze({
+  definition: walletConnectionEvidence.definition,
+  observationTargets: () => [
+    walletConnectionEvidence.targets.sdk,
+    walletConnectionEvidence.targets.session,
+  ],
+  declaration: (
+    _input: WalletConnectionInput,
+    data: WalletConnectionData,
+    binder: EvidenceReplayBinder,
+  ) => {
+    const sdk = binder.bind(walletConnectionEvidence.targets.sdk);
+    const session = binder.bind(walletConnectionEvidence.targets.session);
+    return {
+      observationExpectations: [
+        expectation(sdk.slot, [claim(sdk.roles.state, asJson(data))]),
+        ...(data.status === "connected"
+          ? [expectation(session.slot, [claim(session.roles.state, asJson(data))])]
+          : []),
+      ],
+      observationReferences: [],
+      factRequirements: [requirement(
+        walletConnectionEvidence.facts.connection,
+        "observed",
+        [sdk.slot, session.slot],
+        data.status === "connected" ? [sdk.slot, session.slot] : [sdk.slot],
+        data.status === "connected" ? 2 : 1,
+      )],
+      expectedConclusions: [walletConnectionEvidence.conclusions.connectionState],
+      conclusionDrafts: [
+        conclusionFromFact(
+          walletConnectionEvidence.conclusions.connectionState,
+          walletConnectionEvidence.facts.connection,
+          "wallet_session_current",
+        ),
+      ],
+      warningRequirements: [],
+    };
+  },
+  staticScopeExclusions: walletConnectionEvidence.staticScopeExclusions,
+});
 
 export const walletConnectionCapability = defineReadCapability<WalletConnectionInput, WalletConnectionData>({
   capabilityId: "wallet.connection",
   inputSchema: walletConnectionInputSchema,
   dataSchema: walletConnectionDataSchema,
   failureCodes: semanticReadFailureCodes,
-  conclusionIds: walletConnectionConclusionIds,
-  observationSlots: () => [
-    sourceSlot("wallet_sdk", "wallet_connection", "wallet_sdk_sessions", "wallet_sdk"),
-    sourceSlot("wallet_session", "wallet_connection", "wallet_session", "wallet_session"),
-  ],
-  evidenceDeclaration: (_input, data) => ({
-    observationExpectations: [
-      expectation("wallet_sdk", [claim("wallet_sdk_state", asJson(data))]),
-      ...(data.status === "connected"
-        ? [expectation("wallet_session", [claim("wallet_session_state", asJson(data))])]
-        : []),
-    ],
-    observationReferences: [],
-    factRequirements: [requirement(
-      "wallet_connection",
-      "observed",
-      ["wallet_sdk", "wallet_session"],
-      data.status === "connected" ? ["wallet_sdk", "wallet_session"] : ["wallet_sdk"],
-      data.status === "connected" ? 2 : 1,
-    )],
-    expectedConclusionIds: walletConnectionConclusionIds,
-    conclusionDrafts: [
-      conclusionFromFact("wallet_connection_state", "wallet_connection", "wallet_session_current"),
-    ],
-    warningRequirements: [],
-  }),
+  evidence: walletConnectionCapabilityEvidence,
   validateIntrinsicData: assertCanonicalWalletConnection,
   validateDataContext: (data, context) => {
     if (data.status === "connected" && Date.parse(data.expiresAt) <= Date.parse(context.evaluatedAt)) {
@@ -1093,14 +1280,6 @@ export const walletConnectionCapability = defineReadCapability<WalletConnectionI
       throw new TypeError("Wallet connection chain scope mismatch.");
     }
   },
-  warningCodes: [],
-  staticScopeExclusions: [
-    exclusion("address_ownership", "Connection state does not prove address ownership."),
-    exclusion("future_session_usability", "Connection state does not guarantee future session usability."),
-    exclusion("signing_authority", "Connection state does not grant signing authority."),
-    exclusion("transaction_approval", "Connection state does not approve a transaction."),
-    exclusion("wallet_safety", "Connection state does not establish wallet safety."),
-  ],
 });
 
 export const chainReadCapabilities = Object.freeze([

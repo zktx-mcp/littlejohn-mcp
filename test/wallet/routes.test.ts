@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   walletConnectionCapability,
+  walletConnectionEvidence,
   type HandlerInvocationContext,
   type ObservationWriter,
 } from "../../src/core/index.js";
@@ -144,9 +145,10 @@ const walletConnection = (
     context: HandlerInvocationContext,
     observations: ObservationWriter,
   ) => Promise<unknown> = async (_input, context, observations) => {
-    observations.record("wallet_sdk", {
+    const sdk = observations.bind(walletConnectionEvidence.targets.sdk);
+    observations.record(sdk.slot, {
       source: context.ports.observations.get("wallet_sdk"),
-      claims: [{ role: "wallet_sdk_state", value: disconnected }],
+      claims: [{ role: sdk.roles.state, value: disconnected }],
     });
     return { status: "success", data: disconnected };
   },

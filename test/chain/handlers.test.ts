@@ -6,9 +6,7 @@ import {
   accountBalanceCapability,
   chainStatusCapability,
   contractInspectCapability,
-  createAccountBalanceTokenEvidenceIdentity,
   erc20TransferTopic0,
-  fixedIdentifierSchema,
   keccak256FromHex,
   parseCapabilitySuccess,
   parseEvmAddress,
@@ -149,23 +147,6 @@ function expectSuccess<Value extends { readonly ok: boolean }>(
 }
 
 describe("Robinhood Chain read handlers", () => {
-  it("generates one valid account token evidence identity for every owned role", () => {
-    const identity = createAccountBalanceTokenEvidenceIdentity(token);
-
-    expect(identity.factId).toBe(`token_balance:${token}`);
-    expect(identity.balanceClaimRole).toBe(identity.factId);
-    expect(identity).toEqual({
-      factId: `token_balance:${token}`,
-      balanceSlotId: `token:${token}:balance`,
-      decimalsSlotId: `token:${token}:decimals`,
-      balanceClaimRole: `token_balance:${token}`,
-      decimalsClaimRole: `token_decimals:${token}`,
-    });
-    for (const value of Object.values(identity)) {
-      expect(fixedIdentifierSchema.safeParse(value).success).toBe(true);
-    }
-  });
-
   it("checks the exact chain ID first and preserves block integers above 2^53", async () => {
     const service = createHarness([
       rpcValue("eth_chainId", "0x1237"),

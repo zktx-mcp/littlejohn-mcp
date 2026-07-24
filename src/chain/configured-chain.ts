@@ -1,6 +1,8 @@
 import {
   deriveEip155Reference,
+  type BoundEvidenceObservationTarget,
   type ChainAnchor,
+  type ConfiguredChainEvidenceFragment,
   type EvmChainId,
   type ObservationAuthority,
   type ObservationWriter,
@@ -15,8 +17,12 @@ export const validateConfiguredChain = async (input: Readonly<{
   signal: AbortSignal;
   rpcSource?: ObservationAuthority;
   observations?: ObservationWriter;
+  target?: BoundEvidenceObservationTarget<ConfiguredChainEvidenceFragment["target"]>;
 }>): Promise<ConfiguredChainProof> => {
-  if ((input.rpcSource === undefined) !== (input.observations === undefined)) {
+  if (
+    (input.rpcSource === undefined) !== (input.observations === undefined) ||
+    (input.rpcSource === undefined) !== (input.target === undefined)
+  ) {
     throw new TypeError("Configured chain evidence inputs are incomplete.");
   }
   const result = await input.rpc.request("eth_chainId", [], input.signal);
@@ -25,11 +31,15 @@ export const validateConfiguredChain = async (input: Readonly<{
   }
   const proof = Object.freeze({}) as ConfiguredChainProof;
   configuredChainProofs.set(proof, input.chainId);
-  if (input.rpcSource !== undefined && input.observations !== undefined) {
+  if (input.rpcSource !== undefined) {
+    if (input.observations === undefined || input.target === undefined) {
+      throw new TypeError("Configured chain evidence inputs are incomplete.");
+    }
     recordConfiguredChainProof({
       proof,
       rpcSource: input.rpcSource,
       observations: input.observations,
+      target: input.target,
     });
   }
   return proof;
@@ -53,13 +63,14 @@ export const recordConfiguredChainProof = (input: Readonly<{
   proof: ConfiguredChainProof;
   rpcSource: ObservationAuthority;
   observations: ObservationWriter;
+  target: BoundEvidenceObservationTarget<ConfiguredChainEvidenceFragment["target"]>;
   chainAnchor?: ChainAnchor;
 }>): void => {
   const chainId = readConfiguredChainProof(input.proof);
-  input.observations.record("rpc_chain_id", {
+  input.observations.record(input.target.slot, {
     source: input.rpcSource,
     claims: [{
-      role: "chain_id",
+      role: input.target.roles.chainId,
       value: chainId,
       ...(input.chainAnchor === undefined ? {} : { chainAnchor: input.chainAnchor }),
     }],

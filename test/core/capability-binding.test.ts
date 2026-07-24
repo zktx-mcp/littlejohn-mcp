@@ -9,14 +9,17 @@ import {
   CapabilityBindingRegistry,
   CapabilityRegistry,
   ObservationAuthorityRegistry,
+  accountBalanceEvidence,
   accountBalanceCapability,
+  accountTokenEvidenceIdentity,
   bindCapability,
   canonicalJsonStringify,
   chainAnchorSchema,
+  chainStatusEvidence,
   chainStatusCapability,
+  contractInspectEvidence,
   contractInspectCapability,
   coreErrorRegistry,
-  createAccountBalanceTokenEvidenceIdentity,
   createCanonicalClock,
   createCapabilityInvocationAuthority,
   createObservationAuthority,
@@ -29,14 +32,22 @@ import {
   safeParseCapabilityInput,
   safeParseCapabilityData,
   sourceReferenceSchema,
+  walletConnectionEvidence,
   walletConnectionCapability,
   type ObservationClaim,
   type EvidenceSource,
   type ObservationWriter,
 } from "../../src/core/index.js";
 import {
+  createValidatedInputEvidenceFragment,
+} from "../../src/core/capability-evidence.js";
+import {
+  createEvidenceFactIdentityDeclaration,
+  createEvidenceObservationTargetDeclaration,
+  createEvidenceReplayDefinition,
   createEvmAddressConclusionIdentity,
   createEvmAddressConclusionIdentityDeclaration,
+  createExactConclusionIdentityDeclaration,
 } from "../../src/core/evidence-replay.js";
 import { defineReadCapability } from "../../src/core/capability.js";
 import { chainErrorRegistry } from "../../src/chain/errors.js";
@@ -114,9 +125,9 @@ const canonicalSourceOrder = <Source extends { readonly observationId: string }>
 const recordRpc = (
   context: Parameters<Parameters<typeof bindForHarness>[2]>[1],
   observations: ObservationWriter,
-  slotId: string,
+  slot: Parameters<ObservationWriter["record"]>[0],
   claims: readonly ObservationClaim[],
-) => observations.record(slotId, {
+) => observations.record(slot, {
   source: context.ports.observations.get("chain_rpc"),
   claims,
 });
@@ -125,9 +136,14 @@ const successfulHandler = (
   context: Parameters<Parameters<typeof bindForHarness>[2]>[1],
   observations: ObservationWriter,
 ) => {
-  recordRpc(context, observations, "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
-  recordRpc(context, observations, "latest_block", [{
-    role: "latest_block",
+  const chain = observations.bind(chainStatusEvidence.configuredChain.target);
+  const latest = observations.bind(chainStatusEvidence.targets.latestBlock);
+  recordRpc(context, observations, chain.slot, [{
+    role: chain.roles.chainId,
+    value: configuredChainId,
+  }]);
+  recordRpc(context, observations, latest.slot, [{
+    role: latest.roles.block,
     value: block,
     chainAnchor: block,
   }]);
@@ -135,6 +151,30 @@ const successfulHandler = (
     status: "success",
     data: { chainId: configuredChainId, latestBlock: block },
   };
+};
+
+const recordContractEvidence = (
+  context: Parameters<Parameters<typeof bindForHarness>[2]>[1],
+  observations: ObservationWriter,
+  address: string,
+): void => {
+  const chain = observations.bind(contractInspectEvidence.configuredChain.target);
+  const account = observations.bind(contractInspectEvidence.targets.block);
+  const runtimeCode = observations.bind(contractInspectEvidence.targets.runtimeCode);
+  recordRpc(context, observations, chain.slot, [{
+    role: chain.roles.chainId,
+    value: configuredChainId,
+  }]);
+  recordRpc(context, observations, account.slot, [{
+    role: account.roles.block,
+    value: { address, block },
+    chainAnchor: block,
+  }]);
+  recordRpc(context, observations, runtimeCode.slot, [{
+    role: runtimeCode.roles.runtimeCode,
+    value: { address, runtimeCode: { status: "empty" } },
+    chainAnchor: block,
+  }]);
 };
 
 describe("capability binding authority", () => {
@@ -231,9 +271,14 @@ describe("capability binding authority", () => {
     const otherBlock = chainAnchorSchema.parse({ ...block, chainId: otherChainId });
     const harness = createCapabilityHarness();
     const binding = bindForHarness(chainStatusCapability, harness, async (_input, context, observations) => {
-      recordRpc(context, observations, "rpc_chain_id", [{ role: "chain_id", value: otherChainId }]);
-      recordRpc(context, observations, "latest_block", [{
-        role: "latest_block",
+      const chain = observations.bind(chainStatusEvidence.configuredChain.target);
+      const latest = observations.bind(chainStatusEvidence.targets.latestBlock);
+      recordRpc(context, observations, chain.slot, [{
+        role: chain.roles.chainId,
+        value: otherChainId,
+      }]);
+      recordRpc(context, observations, latest.slot, [{
+        role: latest.roles.block,
         value: otherBlock,
         chainAnchor: otherBlock,
       }]);
@@ -329,7 +374,7 @@ describe("capability binding authority", () => {
   it("rejects forged observation tokens and a non-monotonic authority clock", async () => {
     const harness = createCapabilityHarness();
     const forged = bindForHarness(chainStatusCapability, harness, async (_input, _context, observations) => {
-      observations.record("rpc_chain_id", {} as never);
+      observations.record("rpc_chain_id" as never, {} as never);
       return { status: "success", data: { chainId: configuredChainId, latestBlock: block } };
     });
     expect((await invokeBinding(chainStatusCapability, forged, {})).ok).toBe(false);
@@ -345,9 +390,10 @@ describe("capability binding authority", () => {
           uri: "https://forged.example/",
         }),
       });
-      observations.record("rpc_chain_id", {
+      const chain = observations.bind(chainStatusEvidence.configuredChain.target);
+      observations.record(chain.slot, {
         source,
-        claims: [{ role: "chain_id", value: configuredChainId }],
+        claims: [{ role: chain.roles.chainId, value: configuredChainId }],
       });
       return { status: "success", data: { chainId: configuredChainId, latestBlock: block } };
     });
@@ -378,52 +424,56 @@ describe("capability binding authority", () => {
 
   it("fixes definition slot order before input-dependent invocation ports perform work", async () => {
     const events: string[] = [];
+    const inputConclusion = createExactConclusionIdentityDeclaration("input_validated");
+    const inputReplay = createEvidenceReplayDefinition({
+      capabilityId: "test.portlifecycle",
+      conclusions: [inputConclusion],
+      warningCodes: [],
+    });
+    const inputEvidence = createValidatedInputEvidenceFragment(inputReplay);
     const definition = defineReadCapability<{ values: string[] }, { values: string[] }>({
       capabilityId: "test.portlifecycle",
       inputSchema: z.object({ values: z.array(z.string()).min(1) }).strict(),
       dataSchema: z.object({ values: z.array(z.string()).min(1) }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
       normalizeInput: (input) => ({ values: [...input.values].sort() }),
-      conclusionIds: ["input_validated"],
-      observationSlots: (input) => {
-        events.push(`slots:${input.values.join(",")}`);
-        return [{
-          slotId: "input",
-          factId: "input",
-          kind: "validated_input" as const,
-          purpose: "validated_input",
-        }];
-      },
-      evidenceDeclaration: (input) => {
-        events.push(`declaration:${input.values.join(",")}`);
-        return {
-          observationExpectations: [{
-            slotId: "input",
-            claims: [{ role: "validated_input", value: input as never }],
-          }],
-          observationReferences: [],
-          factRequirements: [{
-            factId: "input",
-            observationSlotIds: ["input"],
-            requiredObservationSlotIds: ["input"],
-            minimumObservationCount: 1,
-            outcome: "validated_input" as const,
-          }],
-          expectedConclusionIds: ["input_validated"],
-          conclusionDrafts: [{
-            id: "input_validated",
-            outcomeFactId: "input",
-            evidenceFactIds: ["input"],
-            freshnessRuleId: "validated_input_current" as const,
-          }],
-          warningRequirements: [],
-        };
+      evidence: {
+        definition: inputReplay,
+        observationTargets: (input) => {
+          events.push(`slots:${input.values.join(",")}`);
+          return [inputEvidence.target];
+        },
+        declaration: (input, _data, binder) => {
+          events.push(`declaration:${input.values.join(",")}`);
+          const target = binder.bind(inputEvidence.target);
+          return {
+            observationExpectations: [{
+              slot: target.slot,
+              claims: [{ role: target.roles.input, value: input as never }],
+            }],
+            observationReferences: [],
+            factRequirements: [{
+              fact: inputEvidence.fact,
+              observationSlots: [target.slot],
+              requiredObservationSlots: [target.slot],
+              minimumObservationCount: 1,
+              outcome: "validated_input",
+            }],
+            expectedConclusions: [inputConclusion],
+            conclusionDrafts: [{
+              conclusion: inputConclusion,
+              outcomeFact: inputEvidence.fact,
+              evidenceFacts: [inputEvidence.fact],
+              freshnessRuleId: "validated_input_current",
+            }],
+            warningRequirements: [],
+          };
+        },
+        staticScopeExclusions: [],
       },
       validateRequest: (input, data) => {
         if (input.values.join("\0") !== data.values.join("\0")) throw new TypeError("Input mismatch.");
       },
-      warningCodes: [],
-      staticScopeExclusions: [],
     });
     const harness = createCapabilityHarness();
     const binding = bindCapability({
@@ -447,26 +497,39 @@ describe("capability binding authority", () => {
     expect((await invokeBinding(definition, binding, { values: [] })).ok).toBe(false);
     expect(events).toEqual([]);
 
+    const duplicateConclusion =
+      createExactConclusionIdentityDeclaration("value_observed");
+    const duplicateReplay = createEvidenceReplayDefinition({
+      capabilityId: "test.duplicateportlayout",
+      conclusions: [duplicateConclusion],
+      warningCodes: [],
+    });
+    const duplicateFact =
+      createEvidenceFactIdentityDeclaration(duplicateReplay, "value");
+    const duplicateTarget = createEvidenceObservationTargetDeclaration(
+      duplicateReplay,
+      {
+        slotId: "value",
+        fact: duplicateFact,
+        kind: "source",
+        purpose: "value",
+        sourceClass: "chain_rpc",
+        roles: { value: "value" },
+      },
+    );
     const duplicateDefinition = defineReadCapability<{}, { value: string }>({
       capabilityId: "test.duplicateportlayout",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
-      conclusionIds: ["value_observed"],
-      observationSlots: () => [
-        { slotId: "value", factId: "value", kind: "source", purpose: "value", sourceClass: "chain_rpc" },
-        { slotId: "value", factId: "value", kind: "source", purpose: "value", sourceClass: "chain_rpc" },
-      ],
-      evidenceDeclaration: () => ({
-        observationExpectations: [],
-        observationReferences: [],
-        factRequirements: [],
-        expectedConclusionIds: ["value_observed"],
-        conclusionDrafts: [],
-        warningRequirements: [],
-      }),
-      warningCodes: [],
-      staticScopeExclusions: [],
+      evidence: {
+        definition: duplicateReplay,
+        observationTargets: () => [duplicateTarget, duplicateTarget],
+        declaration: () => {
+          throw new Error("The duplicate layout must fail before evidence replay.");
+        },
+        staticScopeExclusions: [],
+      },
     });
     const duplicateBinding = bindCapability({
       definition: duplicateDefinition,
@@ -633,17 +696,7 @@ describe("capability binding authority", () => {
       } catch {
         mutationRejected = true;
       }
-      recordRpc(context, observations, "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
-      recordRpc(context, observations, "block", [{
-        role: "contract_block",
-        value: { address: input.address, block },
-        chainAnchor: block,
-      }]);
-      recordRpc(context, observations, "runtime_code", [{
-        role: "runtime_code",
-        value: { address: input.address, runtimeCode: { status: "empty" } },
-        chainAnchor: block,
-      }]);
+      recordContractEvidence(context, observations, input.address);
       return {
         status: "success",
         data: { address: input.address, block, runtimeCode: { status: "empty" } },
@@ -827,13 +880,15 @@ describe("capability binding authority", () => {
       expiresAt: "2026-07-13T10:16:02.000Z",
     };
     const binding = bindForHarness(walletConnectionCapability, harness, async (_input, context, observations) => {
-      observations.record("wallet_sdk", {
+      const sdk = observations.bind(walletConnectionEvidence.targets.sdk);
+      const session = observations.bind(walletConnectionEvidence.targets.session);
+      observations.record(sdk.slot, {
         source: context.ports.observations.get("wallet_sdk"),
-        claims: [{ role: "wallet_sdk_state", value: connected }],
+        claims: [{ role: sdk.roles.state, value: connected }],
       });
-      observations.record("wallet_session", {
+      observations.record(session.slot, {
         source: context.ports.observations.get("wallet_session"),
-        claims: [{ role: "wallet_session_state", value: connected }],
+        claims: [{ role: session.roles.state, value: connected }],
       });
       return { status: "success", data: connected };
     });
@@ -1067,17 +1122,7 @@ describe("capability binding authority", () => {
       contractInspectCapability,
       contractHarness,
       async (_input, context, observations) => {
-        recordRpc(context, observations, "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
-        recordRpc(context, observations, "block", [{
-          role: "contract_block",
-          value: { address, block },
-          chainAnchor: block,
-        }]);
-        recordRpc(context, observations, "runtime_code", [{
-          role: "runtime_code",
-          value: { address, runtimeCode: { status: "empty" } },
-          chainAnchor: block,
-        }]);
+        recordContractEvidence(context, observations, address);
         return {
           status: "success",
           data: { address, block, runtimeCode: { status: "empty" as const } },
@@ -1117,9 +1162,10 @@ describe("capability binding authority", () => {
       walletConnectionCapability,
       walletHarness,
       async (_input, context, observations) => {
-        observations.record("wallet_sdk", {
+        const sdk = observations.bind(walletConnectionEvidence.targets.sdk);
+        observations.record(sdk.slot, {
           source: context.ports.observations.get("wallet_sdk"),
-          claims: [{ role: "wallet_sdk_state", value: disconnected }],
+          claims: [{ role: sdk.roles.state, value: disconnected }],
         });
         return { status: "success", data: disconnected };
       },
@@ -1142,16 +1188,25 @@ describe("capability binding authority", () => {
     const accountBinding = bindForHarness(
       accountBalanceCapability,
       accountHarness,
-      async (_input, context, observations) => {
-        recordRpc(context, observations, "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
-        recordRpc(context, observations, "block", [{
-          role: "balance_block",
+      async (input, context, observations) => {
+        const chain = observations.bind(accountBalanceEvidence.configuredChain.target);
+        const blockTarget = observations.bind(accountBalanceEvidence.targets.block);
+        const native = observations.bind(accountBalanceEvidence.targets.nativeBalance);
+        const identity = accountTokenEvidenceIdentity(input, unavailableToken);
+        const tokenBalance = observations.bind(identity.balanceTarget);
+        const tokenDecimals = observations.bind(identity.decimalsTarget);
+        recordRpc(context, observations, chain.slot, [{
+          role: chain.roles.chainId,
+          value: configuredChainId,
+        }]);
+        recordRpc(context, observations, blockTarget.slot, [{
+          role: blockTarget.roles.block,
           value: block,
           chainAnchor: block,
         }]);
         const asset = { kind: "native" as const, chainId: configuredChainId };
-        const quantityObservationId = recordRpc(context, observations, "native_balance", [{
-          role: "native_balance",
+        const quantityObservationId = recordRpc(context, observations, native.slot, [{
+          role: native.roles.balance,
           value: "1",
           asset,
           chainAnchor: block,
@@ -1161,16 +1216,15 @@ describe("capability binding authority", () => {
           chainId: configuredChainId,
           address: unavailableToken,
         };
-        const identity = createAccountBalanceTokenEvidenceIdentity(unavailableToken);
         const unavailable = { status: "unavailable" as const, errorCode: "source_unavailable" as const };
-        recordRpc(context, observations, identity.balanceSlotId, [{
-          role: identity.balanceClaimRole,
+        recordRpc(context, observations, tokenBalance.slot, [{
+          role: tokenBalance.roles.balance,
           value: unavailable,
           asset: tokenAsset,
           chainAnchor: block,
         }]);
-        recordRpc(context, observations, identity.decimalsSlotId, [{
-          role: identity.decimalsClaimRole,
+        recordRpc(context, observations, tokenDecimals.slot, [{
+          role: tokenDecimals.roles.decimals,
           value: unavailable,
           asset: tokenAsset,
           chainAnchor: block,
@@ -1288,17 +1342,7 @@ describe("capability binding authority", () => {
     const contractHarness = createCapabilityHarness();
     const contractBinding = bindForHarness(contractInspectCapability, contractHarness,
       async (_input, context, observations) => {
-        recordRpc(context, observations, "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
-        recordRpc(context, observations, "block", [{
-          role: "contract_block",
-          value: { address, block },
-          chainAnchor: block,
-        }]);
-        recordRpc(context, observations, "runtime_code", [{
-          role: "runtime_code",
-          value: { address, runtimeCode: { status: "empty" } },
-          chainAnchor: block,
-        }]);
+        recordContractEvidence(context, observations, address);
         return {
           status: "success",
           data: { address, block, runtimeCode: { status: "empty" as const } },
@@ -1323,17 +1367,7 @@ describe("capability binding authority", () => {
     const outputAddress = `0x${"2".repeat(40)}`;
     const harness = createCapabilityHarness();
     const binding = bindForHarness(contractInspectCapability, harness, async (_input, context, observations) => {
-      recordRpc(context, observations, "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
-      recordRpc(context, observations, "block", [{
-        role: "contract_block",
-        value: { address: outputAddress, block },
-        chainAnchor: block,
-      }]);
-      recordRpc(context, observations, "runtime_code", [{
-        role: "runtime_code",
-        value: { address: outputAddress, runtimeCode: { status: "empty" } },
-        chainAnchor: block,
-      }]);
+      recordContractEvidence(context, observations, outputAddress);
       return {
         status: "success",
         data: { address: outputAddress, block, runtimeCode: { status: "empty" } },
@@ -1349,52 +1383,56 @@ describe("capability binding authority", () => {
 
   it("makes validated-input fact support binder-owned", async () => {
     let dataMutationRejected = false;
+    const conclusion = createExactConclusionIdentityDeclaration("input_validated");
+    const replay = createEvidenceReplayDefinition({
+      capabilityId: "test.validated",
+      conclusions: [conclusion],
+      warningCodes: [],
+    });
+    const inputEvidence = createValidatedInputEvidenceFragment(replay);
     const definition = defineReadCapability<{ value: string }, { value: string }>({
       capabilityId: "test.validated",
       inputSchema: z.object({ value: z.string() }).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
-      conclusionIds: ["input_validated"],
-      observationSlots: () => [{
-        slotId: "input",
-        factId: "input",
-        kind: "validated_input" as const,
-        purpose: "validated_input",
-      }],
-      evidenceDeclaration: (input, data) => {
-        try {
-          data.value = "mutated";
-        } catch {
-          dataMutationRejected = true;
-        }
-        return {
-          observationExpectations: [{
-            slotId: "input",
-            claims: [{ role: "validated_input", value: input as never }],
-          }],
-          observationReferences: [],
-          factRequirements: [{
-            factId: "input",
-            observationSlotIds: ["input"],
-            requiredObservationSlotIds: ["input"],
-            minimumObservationCount: 1,
-            outcome: "validated_input" as const,
-          }],
-          expectedConclusionIds: ["input_validated"],
-          conclusionDrafts: [{
-          id: "input_validated",
-          outcomeFactId: "input",
-          evidenceFactIds: ["input"],
-          freshnessRuleId: "validated_input_current" as const,
-          }],
-          warningRequirements: [],
-        };
+      evidence: {
+        definition: replay,
+        observationTargets: () => [inputEvidence.target],
+        declaration: (input, data, binder) => {
+          try {
+            data.value = "mutated";
+          } catch {
+            dataMutationRejected = true;
+          }
+          const target = binder.bind(inputEvidence.target);
+          return {
+            observationExpectations: [{
+              slot: target.slot,
+              claims: [{ role: target.roles.input, value: input as never }],
+            }],
+            observationReferences: [],
+            factRequirements: [{
+              fact: inputEvidence.fact,
+              observationSlots: [target.slot],
+              requiredObservationSlots: [target.slot],
+              minimumObservationCount: 1,
+              outcome: "validated_input",
+            }],
+            expectedConclusions: [conclusion],
+            conclusionDrafts: [{
+              conclusion,
+              outcomeFact: inputEvidence.fact,
+              evidenceFacts: [inputEvidence.fact],
+              freshnessRuleId: "validated_input_current",
+            }],
+            warningRequirements: [],
+          };
+        },
+        staticScopeExclusions: [],
       },
       validateRequest: (input, data) => {
         if (input.value !== data.value) throw new TypeError("Input mismatch.");
       },
-      warningCodes: [],
-      staticScopeExclusions: [],
     });
     const harness = createCapabilityHarness();
     const binding = bindForHarness(definition, harness, async (input) => ({
@@ -1415,51 +1453,54 @@ describe("capability binding authority", () => {
     const address = evmAddressSchema.parse(`0x${"3".repeat(40)}`);
     const conclusionIdentity =
       createEvmAddressConclusionIdentityDeclaration("address_observed:");
+    const replay = createEvidenceReplayDefinition({
+      capabilityId: "test.dynamicconclusion",
+      conclusions: [conclusionIdentity],
+      warningCodes: [],
+    });
+    const inputEvidence = createValidatedInputEvidenceFragment(replay);
     const definition = defineReadCapability<{ address: string }, { address: string }>({
       capabilityId: "test.dynamicconclusion",
       inputSchema: z.object({ address: z.string().regex(/^0x[0-9a-f]{40}$/) }).strict(),
       dataSchema: z.object({ address: z.string().regex(/^0x[0-9a-f]{40}$/) }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
-      conclusionIds: [conclusionIdentity],
-      observationSlots: () => [{
-        slotId: "input",
-        factId: "input",
-        kind: "validated_input" as const,
-        purpose: "validated_input",
-      }],
-      evidenceDeclaration: (input) => {
-        const conclusionId = createEvmAddressConclusionIdentity(
-          conclusionIdentity,
-          evmAddressSchema.parse(input.address),
-        );
-        return {
-          observationExpectations: [{
-            slotId: "input",
-            claims: [{ role: "validated_input", value: input as never }],
-          }],
-          observationReferences: [],
-          factRequirements: [{
-            factId: "input",
-            observationSlotIds: ["input"],
-            requiredObservationSlotIds: ["input"],
-            minimumObservationCount: 1,
-            outcome: "validated_input" as const,
-          }],
-          expectedConclusionIds: [conclusionId],
-          conclusionDrafts: [{
-            id: conclusionId,
-            outcomeFactId: "input",
-            evidenceFactIds: ["input"],
-            freshnessRuleId: "validated_input_current" as const,
-          }],
-          warningRequirements: [],
-        };
+      evidence: {
+        definition: replay,
+        observationTargets: () => [inputEvidence.target],
+        declaration: (input, _data, binder) => {
+          const conclusion = createEvmAddressConclusionIdentity(
+            conclusionIdentity,
+            evmAddressSchema.parse(input.address),
+          );
+          const target = binder.bind(inputEvidence.target);
+          return {
+            observationExpectations: [{
+              slot: target.slot,
+              claims: [{ role: target.roles.input, value: input as never }],
+            }],
+            observationReferences: [],
+            factRequirements: [{
+              fact: inputEvidence.fact,
+              observationSlots: [target.slot],
+              requiredObservationSlots: [target.slot],
+              minimumObservationCount: 1,
+              outcome: "validated_input",
+            }],
+            expectedConclusions: [conclusion],
+            conclusionDrafts: [{
+              conclusion,
+              outcomeFact: inputEvidence.fact,
+              evidenceFacts: [inputEvidence.fact],
+              freshnessRuleId: "validated_input_current",
+            }],
+            warningRequirements: [],
+          };
+        },
+        staticScopeExclusions: [],
       },
       validateRequest: (input, data) => {
         if (input.address !== data.address) throw new TypeError("Address mismatch.");
       },
-      warningCodes: [],
-      staticScopeExclusions: [],
     });
     const harness = createCapabilityHarness();
     const binding = bindForHarness(definition, harness, async (input) => ({ status: "success", data: input }));
@@ -1469,169 +1510,246 @@ describe("capability binding authority", () => {
   });
 
   it("rejects data meaning that references an exclusion absent from its descriptor", () => {
+    const conclusion = createExactConclusionIdentityDeclaration("value_observed");
+    const replay = createEvidenceReplayDefinition({
+      capabilityId: "test.scopeexclusion",
+      conclusions: [conclusion],
+      warningCodes: [],
+    });
+    const inputEvidence = createValidatedInputEvidenceFragment(replay);
     const definition = defineReadCapability<{}, { value: string }>({
       capabilityId: "test.scopeexclusion",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
-      conclusionIds: ["value_observed"],
-      observationSlots: () => [],
-      evidenceDeclaration: () => ({
-        observationExpectations: [],
-        observationReferences: [],
-        factRequirements: [],
-        expectedConclusionIds: ["value_observed"],
-        conclusionDrafts: [],
-        warningRequirements: [],
-      }),
+      evidence: {
+        definition: replay,
+        observationTargets: () => [inputEvidence.target],
+        declaration: () => {
+          throw new Error("Intrinsic validation must reject before replay.");
+        },
+        staticScopeExclusions: [],
+      },
       validateIntrinsicData: (_data, context) => context.assertDeclaredScopeExclusion({
         id: "missing_exclusion" as never,
         message: "This exclusion is not declared.",
       }),
-      warningCodes: [],
-      staticScopeExclusions: [],
     });
     expect(safeParseCapabilityData(definition, { value: "safe" }).success).toBe(false);
   });
 
   it("requires every observation slot to be owned by its exact fact requirement", async () => {
+    const conclusion = createExactConclusionIdentityDeclaration("value_observed");
+    const replay = createEvidenceReplayDefinition({
+      capabilityId: "test.slotownership",
+      conclusions: [conclusion],
+      warningCodes: [],
+    });
+    const fact = createEvidenceFactIdentityDeclaration(replay, "value");
+    const usedTarget = createEvidenceObservationTargetDeclaration(replay, {
+      slotId: "used",
+      fact,
+      kind: "source",
+      purpose: "used",
+      sourceClass: "chain_rpc",
+      roles: { value: "used" },
+    });
+    const orphanTarget = createEvidenceObservationTargetDeclaration(replay, {
+      slotId: "orphan",
+      fact,
+      kind: "source",
+      purpose: "orphan",
+      sourceClass: "chain_rpc",
+      roles: { value: "orphan" },
+    });
     const definition = defineReadCapability<{}, { value: string }>({
       capabilityId: "test.slotownership",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
-      conclusionIds: ["value_observed"],
-      observationSlots: () => [
-        { slotId: "used", factId: "value", kind: "source", purpose: "used", sourceClass: "chain_rpc" },
-        { slotId: "orphan", factId: "value", kind: "source", purpose: "orphan", sourceClass: "chain_rpc" },
-      ],
-      evidenceDeclaration: () => ({
-        observationExpectations: [
-          { slotId: "used", claims: [{ role: "used", value: "safe", chainAnchor: block }] },
-          { slotId: "orphan", claims: [{ role: "orphan", value: "safe", chainAnchor: block }] },
-        ],
-        observationReferences: [],
-        factRequirements: [{
-          factId: "value",
-          observationSlotIds: ["used"],
-          requiredObservationSlotIds: ["used"],
-          minimumObservationCount: 1,
-          outcome: "observed",
-        }],
-        expectedConclusionIds: ["value_observed"],
-        conclusionDrafts: [{
-          id: "value_observed",
-          outcomeFactId: "value",
-          evidenceFactIds: ["value"],
-          freshnessRuleId: "chain_anchor_exact",
-        }],
-        warningRequirements: [],
-      }),
-      warningCodes: [],
-      staticScopeExclusions: [],
+      evidence: {
+        definition: replay,
+        observationTargets: () => [usedTarget, orphanTarget],
+        declaration: (_input, _data, binder) => {
+          const used = binder.bind(usedTarget);
+          const orphan = binder.bind(orphanTarget);
+          return {
+            observationExpectations: [
+              {
+                slot: used.slot,
+                claims: [{ role: used.roles.value, value: "safe", chainAnchor: block }],
+              },
+              {
+                slot: orphan.slot,
+                claims: [{ role: orphan.roles.value, value: "safe", chainAnchor: block }],
+              },
+            ],
+            observationReferences: [],
+            factRequirements: [{
+              fact,
+              observationSlots: [used.slot],
+              requiredObservationSlots: [used.slot],
+              minimumObservationCount: 1,
+              outcome: "observed",
+            }],
+            expectedConclusions: [conclusion],
+            conclusionDrafts: [{
+              conclusion,
+              outcomeFact: fact,
+              evidenceFacts: [fact],
+              freshnessRuleId: "chain_anchor_exact",
+            }],
+            warningRequirements: [],
+          };
+        },
+        staticScopeExclusions: [],
+      },
     });
     const harness = createCapabilityHarness();
     const binding = bindForHarness(definition, harness, async (_input, context, observations) => {
-      recordRpc(context, observations, "used", [{ role: "used", value: "safe", chainAnchor: block }]);
-      recordRpc(context, observations, "orphan", [{ role: "orphan", value: "safe", chainAnchor: block }]);
+      const used = observations.bind(usedTarget);
+      const orphan = observations.bind(orphanTarget);
+      recordRpc(context, observations, used.slot, [{
+        role: used.roles.value,
+        value: "safe",
+        chainAnchor: block,
+      }]);
+      recordRpc(context, observations, orphan.slot, [{
+        role: orphan.roles.value,
+        value: "safe",
+        chainAnchor: block,
+      }]);
       return { status: "success", data: { value: "safe" } };
     });
     expect((await invokeBinding(definition, binding, {})).ok).toBe(false);
   });
 
-  it("requires each public observation reference role to be owned by its declared slot", async () => {
+  it("rejects a forged public observation reference role before projection", async () => {
     const dataSchema = z.object({ observationId: observationIdSchema }).strict();
+    const conclusion = createExactConclusionIdentityDeclaration("value_observed");
+    const replay = createEvidenceReplayDefinition({
+      capabilityId: "test.reference_role",
+      conclusions: [conclusion],
+      warningCodes: [],
+    });
+    const fact = createEvidenceFactIdentityDeclaration(replay, "value");
+    const valueTarget = createEvidenceObservationTargetDeclaration(replay, {
+      slotId: "value",
+      fact,
+      kind: "source",
+      purpose: "value",
+      sourceClass: "chain_rpc",
+      roles: { value: "expected_role" },
+    });
     const definition = defineReadCapability<{}, z.infer<typeof dataSchema>>({
       capabilityId: "test.reference_role",
       inputSchema: z.object({}).strict(),
       dataSchema,
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
-      conclusionIds: ["value_observed"],
-      observationSlots: () => [{
-        slotId: "value",
-        factId: "value",
-        kind: "source",
-        purpose: "value",
-        sourceClass: "chain_rpc",
-      }],
-      evidenceDeclaration: (_input, data) => ({
-        observationExpectations: [{
-          slotId: "value",
-          claims: [{ role: "expected_role", value: "safe", chainAnchor: block }],
-        }],
-        observationReferences: [{
-          observationId: data.observationId,
-          slotId: "value",
-          role: "wrong_role",
-        }],
-        factRequirements: [{
-          factId: "value",
-          observationSlotIds: ["value"],
-          requiredObservationSlotIds: ["value"],
-          minimumObservationCount: 1,
-          outcome: "observed",
-        }],
-        expectedConclusionIds: ["value_observed"],
-        conclusionDrafts: [{
-          id: "value_observed",
-          outcomeFactId: "value",
-          evidenceFactIds: ["value"],
-          freshnessRuleId: "chain_anchor_exact",
-        }],
-        warningRequirements: [],
-      }),
-      warningCodes: [],
-      staticScopeExclusions: [],
+      evidence: {
+        definition: replay,
+        observationTargets: () => [valueTarget],
+        declaration: (_input, data, binder) => {
+          const value = binder.bind(valueTarget);
+          return {
+            observationExpectations: [{
+              slot: value.slot,
+              claims: [{ role: value.roles.value, value: "safe", chainAnchor: block }],
+            }],
+            observationReferences: [{
+              observationId: data.observationId,
+              slot: value.slot,
+              role: {} as never,
+            }],
+            factRequirements: [{
+              fact,
+              observationSlots: [value.slot],
+              requiredObservationSlots: [value.slot],
+              minimumObservationCount: 1,
+              outcome: "observed",
+            }],
+            expectedConclusions: [conclusion],
+            conclusionDrafts: [{
+              conclusion,
+              outcomeFact: fact,
+              evidenceFacts: [fact],
+              freshnessRuleId: "chain_anchor_exact",
+            }],
+            warningRequirements: [],
+          };
+        },
+        staticScopeExclusions: [],
+      },
     });
     const harness = createCapabilityHarness();
     const binding = bindForHarness(definition, harness, async (_input, context, observations) => ({
       status: "success",
       data: {
-        observationId: recordRpc(context, observations, "value", [{
-          role: "expected_role",
+        observationId: (() => {
+          const value = observations.bind(valueTarget);
+          return recordRpc(context, observations, value.slot, [{
+          role: value.roles.value,
           value: "safe",
           chainAnchor: block,
-        }]),
+          }]);
+        })(),
       },
     }));
     expect((await invokeBinding(definition, binding, {})).ok).toBe(false);
   });
 
   it("requires each fact requirement to declare one observation authority", async () => {
+    const conclusion = createExactConclusionIdentityDeclaration("input_validated");
+    const replay = createEvidenceReplayDefinition({
+      capabilityId: "test.factauthority",
+      conclusions: [conclusion],
+      warningCodes: [],
+    });
+    const inputEvidence = createValidatedInputEvidenceFragment(replay);
+    const sourceTarget = createEvidenceObservationTargetDeclaration(replay, {
+      slotId: "source",
+      fact: inputEvidence.fact,
+      kind: "source",
+      purpose: "source",
+      sourceClass: "chain_rpc",
+      roles: { value: "source" },
+    });
     const definition = defineReadCapability<{}, { value: string }>({
       capabilityId: "test.factauthority",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
-      conclusionIds: ["input_validated"],
-      observationSlots: () => [
-        { slotId: "input", factId: "input", kind: "validated_input", purpose: "validated_input" },
-        { slotId: "source", factId: "input", kind: "source", purpose: "source", sourceClass: "chain_rpc" },
-      ],
-      evidenceDeclaration: (input) => ({
-        observationExpectations: [{
-          slotId: "input",
-          claims: [{ role: "validated_input", value: input as never }],
-        }],
-        observationReferences: [],
-        factRequirements: [{
-          factId: "input",
-          observationSlotIds: ["input", "source"],
-          requiredObservationSlotIds: ["input"],
-          minimumObservationCount: 1,
-          outcome: "validated_input",
-        }],
-        expectedConclusionIds: ["input_validated"],
-        conclusionDrafts: [{
-          id: "input_validated",
-          outcomeFactId: "input",
-          evidenceFactIds: ["input"],
-          freshnessRuleId: "validated_input_current",
-        }],
-        warningRequirements: [],
-      }),
-      warningCodes: [],
-      staticScopeExclusions: [],
+      evidence: {
+        definition: replay,
+        observationTargets: () => [inputEvidence.target, sourceTarget],
+        declaration: (input, _data, binder) => {
+          const validated = binder.bind(inputEvidence.target);
+          const source = binder.bind(sourceTarget);
+          return {
+            observationExpectations: [{
+              slot: validated.slot,
+              claims: [{ role: validated.roles.input, value: input as never }],
+            }],
+            observationReferences: [],
+            factRequirements: [{
+              fact: inputEvidence.fact,
+              observationSlots: [validated.slot, source.slot],
+              requiredObservationSlots: [validated.slot],
+              minimumObservationCount: 1,
+              outcome: "validated_input",
+            }],
+            expectedConclusions: [conclusion],
+            conclusionDrafts: [{
+              conclusion,
+              outcomeFact: inputEvidence.fact,
+              evidenceFacts: [inputEvidence.fact],
+              freshnessRuleId: "validated_input_current",
+            }],
+            warningRequirements: [],
+          };
+        },
+        staticScopeExclusions: [],
+      },
     });
     const harness = createCapabilityHarness();
     const binding = bindForHarness(definition, harness, async () => ({
@@ -1642,40 +1760,53 @@ describe("capability binding authority", () => {
   });
 
   it("does not construct freshness from a fact with no evidence", async () => {
+    const conclusion = createExactConclusionIdentityDeclaration("value_not_present");
+    const replay = createEvidenceReplayDefinition({
+      capabilityId: "test.emptyevidence",
+      conclusions: [conclusion],
+      warningCodes: [],
+    });
+    const fact = createEvidenceFactIdentityDeclaration(replay, "value");
+    const valueTarget = createEvidenceObservationTargetDeclaration(replay, {
+      slotId: "value",
+      fact,
+      kind: "source",
+      purpose: "value",
+      sourceClass: "chain_rpc",
+      roles: { value: "value" },
+    });
     const definition = defineReadCapability<{}, { value: string }>({
       capabilityId: "test.emptyevidence",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
-      conclusionIds: ["value_not_present"],
-      observationSlots: () => [{
-        slotId: "value",
-        factId: "value",
-        kind: "source",
-        purpose: "value",
-        sourceClass: "chain_rpc",
-      }],
-      evidenceDeclaration: () => ({
-        observationExpectations: [],
-        observationReferences: [],
-        factRequirements: [{
-          factId: "value",
-          observationSlotIds: ["value"],
-          requiredObservationSlotIds: [],
-          minimumObservationCount: 0,
-          outcome: "not_present",
-        }],
-        expectedConclusionIds: ["value_not_present"],
-        conclusionDrafts: [{
-          id: "value_not_present",
-          outcomeFactId: "value",
-          evidenceFactIds: ["value"],
-          freshnessRuleId: "chain_anchor_exact",
-        }],
-        warningRequirements: [],
-      }),
-      warningCodes: [],
-      staticScopeExclusions: [],
+      evidence: {
+        definition: replay,
+        observationTargets: () => [valueTarget],
+        declaration: (_input, _data, binder) => {
+          const value = binder.bind(valueTarget);
+          return {
+            observationExpectations: [],
+            observationReferences: [],
+            factRequirements: [{
+              fact,
+              observationSlots: [value.slot],
+              requiredObservationSlots: [],
+              minimumObservationCount: 0,
+              outcome: "not_present",
+            }],
+            expectedConclusions: [conclusion],
+            conclusionDrafts: [{
+              conclusion,
+              outcomeFact: fact,
+              evidenceFacts: [fact],
+              freshnessRuleId: "chain_anchor_exact",
+            }],
+            warningRequirements: [],
+          };
+        },
+        staticScopeExclusions: [],
+      },
     });
     const harness = createCapabilityHarness();
     const binding = bindForHarness(definition, harness, async () => ({

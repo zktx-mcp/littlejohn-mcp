@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  chainStatusEvidence,
   createCanonicalClock,
   createObservationAuthority,
   evmAccountIdentitySchema,
@@ -10,6 +11,10 @@ import {
   sourceReferenceSchema,
   type ObservationWriter,
 } from "../../src/core/index.js";
+import {
+  createEvidenceReplayBinder,
+  createEvidenceReplayLayout,
+} from "../../src/core/evidence-replay.js";
 import { createAccountAssetChainReadPort } from "../../src/chain/account-assets.js";
 import {
   readConfiguredCanonicalBlock,
@@ -72,14 +77,22 @@ describe("shared chain read processes", () => {
         uri: "https://rpc.example/",
       }),
     });
-    const recordedIds = new Map<string, typeof observationId>();
+    const layout = createEvidenceReplayLayout(chainStatusEvidence.definition, [
+      chainStatusEvidence.configuredChain.target,
+      chainStatusEvidence.targets.latestBlock,
+    ]);
+    const binder = createEvidenceReplayBinder(chainStatusEvidence.definition, layout);
+    const chainTarget = binder.bind(chainStatusEvidence.configuredChain.target);
+    const recordedIds = new Map<Parameters<ObservationWriter["get"]>[0], typeof observationId>();
     const observations: ObservationWriter = {
-      record: (slotId, observation) => {
-        records.push([slotId, observation]);
-        recordedIds.set(slotId, observationId);
+      bind: (target) => binder.bind(target),
+      bindRole: (role) => binder.bindRole(role),
+      record: (slot, observation) => {
+        records.push([slot, observation]);
+        recordedIds.set(slot, observationId);
         return observationId;
       },
-      get: (slotId) => recordedIds.get(slotId),
+      get: (slot) => recordedIds.get(slot),
     };
     await validateConfiguredChain({
       rpc,
@@ -87,6 +100,7 @@ describe("shared chain read processes", () => {
       rpcSource,
       signal: new AbortController().signal,
       observations,
+      target: chainTarget,
     });
     expect(rpc.calls).toEqual([{ method: "eth_chainId", params: [] }]);
     expect(records).toHaveLength(1);

@@ -1,15 +1,23 @@
 import {
   ObservationAuthorityRegistry,
+  accountBalanceEvidence,
   accountBalanceCapability,
+  accountNativeDecimalsExclusion,
+  accountTokenEvidenceIdentity,
   bindCapability,
   captureCanonicalJson,
+  chainStatusEvidence,
   chainStatusCapability,
+  contractInspectEvidence,
   contractInspectCapability,
-  createAccountBalanceTokenEvidenceIdentity,
-  getCapabilityDefinitionSnapshot,
+  receiptLogAmountRole,
+  transactionEventDecimalsExclusion,
+  transactionInspectEvidence,
   transactionInspectCapability,
+  transactionNativeDecimalsExclusion,
   type AccountBalanceData,
   type AccountBalanceInput,
+  type BoundEvidenceObservationTarget,
   type CanonicalAmount,
   type CanonicalJson,
   type ChainAnchor,
@@ -73,31 +81,6 @@ import {
   type ChainInvocationContext,
   type ChainInvocationLifecycle,
 } from "./invocation-lifecycle.js";
-
-const transactionDefinition = getCapabilityDefinitionSnapshot(transactionInspectCapability);
-const accountDefinition = getCapabilityDefinitionSnapshot(accountBalanceCapability);
-
-const scopeExclusion = (
-  exclusions: readonly StaticScopeExclusion[],
-  id: string,
-): StaticScopeExclusion => {
-  const exclusion = exclusions.find((candidate) => candidate.id === id);
-  if (exclusion === undefined) throw new TypeError("Required capability scope exclusion is unavailable.");
-  return exclusion;
-};
-
-const transactionNativeDecimals = scopeExclusion(
-  transactionDefinition.staticScopeExclusions,
-  "transaction_native_decimals_not_observed",
-);
-const transactionEventDecimals = scopeExclusion(
-  transactionDefinition.staticScopeExclusions,
-  "transaction_event_decimals_not_observed",
-);
-const accountNativeDecimals = scopeExclusion(
-  accountDefinition.staticScopeExclusions,
-  "account_native_decimals_not_observed",
-);
 
 interface ChainInvocationPorts extends InvocationBoundaryPorts {
   readonly account:
@@ -165,6 +148,9 @@ const recordChainId = async (
   dependencies: HandlerDependencies,
   signal: AbortSignal,
   observations: ObservationWriter,
+  target: BoundEvidenceObservationTarget<
+    typeof chainStatusEvidence.configuredChain.target
+  >,
 ): Promise<void> => {
   await validateConfiguredChain({
     rpc: dependencies.rpc,
@@ -172,6 +158,7 @@ const recordChainId = async (
     rpcSource: dependencies.rpcSource,
     signal,
     observations,
+    target,
   });
 };
 
@@ -180,6 +167,9 @@ const resolveBlock = async (
   selector: ContractInspectInput["block"] | AccountBalanceInput["block"],
   context: ChainInvocationContext,
   observations: ObservationWriter,
+  configuredChainTarget: BoundEvidenceObservationTarget<
+    typeof contractInspectEvidence.configuredChain.target
+  >,
 ): Promise<{
   readonly anchor: ChainAnchor;
   readonly stateReference: RpcCanonicalBlockReference;
@@ -199,6 +189,7 @@ const resolveBlock = async (
     proof: state.configuredChainProof,
     rpcSource: dependencies.rpcSource,
     observations,
+    target: configuredChainTarget,
   });
   return state;
 };
@@ -220,7 +211,7 @@ const gasRate = (
   observationId: CanonicalAmount["quantityObservationId"],
   chainId: EvmChainId,
 ): NativeGasRate => Object.freeze({
-  numerator: nativeAmount(raw, observationId, transactionNativeDecimals, chainId),
+  numerator: nativeAmount(raw, observationId, transactionNativeDecimalsExclusion, chainId),
   denominator: Object.freeze({ unit: "gas", raw: "1" }),
   observationId,
 });
@@ -232,7 +223,7 @@ const amountSourceValue = (raw: UnsignedDecimal, exclusion: StaticScopeExclusion
 });
 
 const gasRateSourceValue = (raw: UnsignedDecimal, chainId: EvmChainId) => ({
-  numerator: amountSourceValue(raw, transactionNativeDecimals, chainId),
+  numerator: amountSourceValue(raw, transactionNativeDecimalsExclusion, chainId),
   denominator: { unit: "gas" as const, raw: "1" as const },
 });
 
@@ -253,17 +244,24 @@ const transactionFeeSourceValue = (transaction: NormalizedRpcTransaction, chainI
 const transactionClaims = (
   transaction: NormalizedRpcTransaction,
   chainId: EvmChainId,
+  target: BoundEvidenceObservationTarget<
+    typeof transactionInspectEvidence.targets.transaction
+  >,
   anchor?: ChainAnchor,
 ): readonly ObservationClaim[] => {
   const anchorFields = anchor === undefined ? {} : { chainAnchor: anchor };
   const claims: ObservationClaim[] = [{
-    role: "transaction",
+    role: target.roles.transaction,
     value: asCanonicalJson({
       transactionHash: transaction.transactionHash,
       chainId: transaction.chainScope,
       from: transaction.from,
       recipient: transaction.recipient,
-      value: amountSourceValue(transaction.value, transactionNativeDecimals, chainId),
+      value: amountSourceValue(
+        transaction.value,
+        transactionNativeDecimalsExclusion,
+        chainId,
+      ),
       input: transaction.input,
       nonce: transaction.nonce,
       gasLimit: { raw: transaction.gasLimit },
@@ -281,30 +279,30 @@ const transactionClaims = (
     }),
     ...anchorFields,
   }, {
-    role: "transaction_value",
+    role: target.roles.value,
     value: transaction.value,
     asset: { kind: "native", chainId },
     ...anchorFields,
   }, {
-    role: "transaction_gas_limit",
+    role: target.roles.gasLimit,
     value: transaction.gasLimit,
     ...anchorFields,
   }];
   if (transaction.fee.kind === "legacy") {
     claims.push({
-      role: "transaction_gas_price",
+      role: target.roles.gasPrice,
       value: transaction.fee.gasPrice,
       asset: { kind: "native", chainId },
       ...anchorFields,
     });
   } else if (transaction.fee.kind === "dynamic") {
     claims.push({
-      role: "transaction_max_fee_per_gas",
+      role: target.roles.maxFeePerGas,
       value: transaction.fee.maxFeePerGas,
       asset: { kind: "native", chainId },
       ...anchorFields,
     }, {
-      role: "transaction_max_priority_fee_per_gas",
+      role: target.roles.maxPriorityFeePerGas,
       value: transaction.fee.maxPriorityFeePerGas,
       asset: { kind: "native", chainId },
       ...anchorFields,
@@ -323,7 +321,12 @@ const transactionData = (
   chainId: transaction.chainScope,
   from: transaction.from,
   recipient: transaction.recipient,
-  value: nativeAmount(transaction.value, observationId, transactionNativeDecimals, chainId),
+  value: nativeAmount(
+    transaction.value,
+    observationId,
+    transactionNativeDecimalsExclusion,
+    chainId,
+  ),
   input: transaction.input,
   nonce: transaction.nonce,
   gasLimit: Object.freeze({ raw: transaction.gasLimit, observationId }),
@@ -352,7 +355,7 @@ const decodedEventSourceValue = (
     raw: event.amountRaw,
     decimals: {
       status: "not_observed" as const,
-      scopeExclusionId: transactionEventDecimals.id,
+      scopeExclusionId: transactionEventDecimalsExclusion.id,
     },
   };
   return event.kind === "erc20_transfer"
@@ -389,21 +392,25 @@ const receiptClaims = (
   receipt: NormalizedRpcReceipt,
   block: ChainAnchor,
   chainId: EvmChainId,
+  observations: ObservationWriter,
+  target: BoundEvidenceObservationTarget<
+    typeof transactionInspectEvidence.targets.receipt
+  >,
 ): readonly ObservationClaim[] => {
   const claims: ObservationClaim[] = [{
-    role: "transaction_receipt",
+    role: target.roles.receipt,
     value: receiptSourceValue(receipt, chainId),
     chainAnchor: block,
   }, {
-    role: "receipt_cumulative_gas_used",
+    role: target.roles.cumulativeGasUsed,
     value: receipt.cumulativeGasUsed,
     chainAnchor: block,
   }, {
-    role: "receipt_gas_used",
+    role: target.roles.gasUsed,
     value: receipt.gasUsed,
     chainAnchor: block,
   }, {
-    role: "receipt_effective_gas_price",
+    role: target.roles.effectiveGasPrice,
     value: receipt.effectiveGasPrice,
     asset: { kind: "native", chainId },
     chainAnchor: block,
@@ -411,7 +418,7 @@ const receiptClaims = (
   receipt.logs.forEach((log, index) => {
     if (log.decodedEvent.kind !== "not_decoded") {
       claims.push({
-        role: `receipt_log_amount:${index}`,
+        role: observations.bindRole(receiptLogAmountRole(index)),
         value: log.decodedEvent.amountRaw,
         asset: { kind: "erc20", chainId, address: log.address },
         chainAnchor: block,
@@ -450,7 +457,7 @@ const receiptData = (
               raw: log.decodedEvent.amountRaw,
               decimals: {
                 status: "not_observed",
-                scopeExclusionId: transactionEventDecimals.id,
+                scopeExclusionId: transactionEventDecimalsExclusion.id,
               },
               quantityObservationId: observationId,
             },
@@ -465,7 +472,7 @@ const receiptData = (
               raw: log.decodedEvent.amountRaw,
               decimals: {
                 status: "not_observed",
-                scopeExclusionId: transactionEventDecimals.id,
+                scopeExclusionId: transactionEventDecimalsExclusion.id,
               },
               quantityObservationId: observationId,
             },
@@ -647,13 +654,23 @@ export const createChainReadService = (input: {
     handler: async (_request, context: HandlerInvocationContext<ChainInvocationPorts>, observations) =>
       execute(context.signal, async (chainInvocation) => {
         const signal = chainInvocation.signal;
-        await recordChainId(dependencies, signal, observations);
+        const configuredChain = observations.bind(
+          chainStatusEvidence.configuredChain.target,
+        );
+        const latestBlockTarget = observations.bind(
+          chainStatusEvidence.targets.latestBlock,
+        );
+        await recordChainId(dependencies, signal, observations, configuredChain);
         const rawBlock = await dependencies.rpc.request("eth_getBlockByNumber", ["latest", false], signal);
         if (rawBlock === null) throw new ChainOperationError("source_inconsistent");
         const latestBlock = normalizeSourceValue(() => normalizeRpcBlockAnchor(rawBlock, chainId));
-        observations.record("latest_block", {
+        observations.record(latestBlockTarget.slot, {
           source: rpcSource,
-          claims: [{ role: "latest_block", value: latestBlock, chainAnchor: latestBlock }],
+          claims: [{
+            role: latestBlockTarget.roles.block,
+            value: latestBlock,
+            chainAnchor: latestBlock,
+          }],
         });
         const data: ChainStatusData = {
           chainId,
@@ -671,7 +688,20 @@ export const createChainReadService = (input: {
     handler: async (request, context: HandlerInvocationContext<ChainInvocationPorts>, observations) =>
       execute(context.signal, async (chainInvocation) => {
         const signal = chainInvocation.signal;
-        const block = await resolveBlock(dependencies, request.block, chainInvocation, observations);
+        const configuredChain = observations.bind(
+          contractInspectEvidence.configuredChain.target,
+        );
+        const blockTarget = observations.bind(contractInspectEvidence.targets.block);
+        const runtimeCodeTarget = observations.bind(
+          contractInspectEvidence.targets.runtimeCode,
+        );
+        const block = await resolveBlock(
+          dependencies,
+          request.block,
+          chainInvocation,
+          observations,
+          configuredChain,
+        );
         const rawCode = await dependencies.rpc.request(
           "eth_getCode",
           [request.address, block.stateReference],
@@ -679,14 +709,18 @@ export const createChainReadService = (input: {
         );
         const runtimeCode = normalizeSourceValue(() => normalizeRpcRuntimeCode(rawCode));
         const data: ContractInspectData = { address: request.address, block: block.anchor, runtimeCode };
-        observations.record("block", {
-          source: rpcSource,
-          claims: [{ role: "contract_block", value: { address: data.address, block: data.block }, chainAnchor: data.block }],
-        });
-        observations.record("runtime_code", {
+        observations.record(blockTarget.slot, {
           source: rpcSource,
           claims: [{
-            role: "runtime_code",
+            role: blockTarget.roles.block,
+            value: { address: data.address, block: data.block },
+            chainAnchor: data.block,
+          }],
+        });
+        observations.record(runtimeCodeTarget.slot, {
+          source: rpcSource,
+          claims: [{
+            role: runtimeCodeTarget.roles.runtimeCode,
             value: { address: data.address, runtimeCode: data.runtimeCode },
             chainAnchor: data.block,
           }],
@@ -703,7 +737,17 @@ export const createChainReadService = (input: {
     handler: async (request, context: HandlerInvocationContext<ChainInvocationPorts>, observations) =>
       execute(context.signal, async (chainInvocation) => {
         const signal = chainInvocation.signal;
-        await recordChainId(dependencies, signal, observations);
+        const configuredChain = observations.bind(
+          transactionInspectEvidence.configuredChain.target,
+        );
+        const transactionTarget = observations.bind(
+          transactionInspectEvidence.targets.transaction,
+        );
+        const receiptTarget = observations.bind(
+          transactionInspectEvidence.targets.receipt,
+        );
+        const blockTarget = observations.bind(transactionInspectEvidence.targets.block);
+        await recordChainId(dependencies, signal, observations, configuredChain);
         const transactionRaw = await dependencies.rpc.request(
           "eth_getTransactionByHash",
           [request.transactionHash],
@@ -715,9 +759,9 @@ export const createChainReadService = (input: {
           throw new ChainOperationError("source_inconsistent");
         }
         if (normalized.position.status === "pending") {
-          const transactionObservationId = observations.record("transaction", {
+          const transactionObservationId = observations.record(transactionTarget.slot, {
             source: rpcSource,
-            claims: transactionClaims(normalized, chainId),
+            claims: transactionClaims(normalized, chainId, transactionTarget),
           });
           const data = transactionData(normalized, transactionObservationId, { status: "pending" }, chainId);
           return { status: "success", data };
@@ -740,17 +784,32 @@ export const createChainReadService = (input: {
           blockRaw,
           chainId,
         ));
-        const transactionObservationId = observations.record("transaction", {
+        const transactionObservationId = observations.record(transactionTarget.slot, {
           source: rpcSource,
-          claims: transactionClaims(included.transaction, chainId, included.block),
+          claims: transactionClaims(
+            included.transaction,
+            chainId,
+            transactionTarget,
+            included.block,
+          ),
         });
-        const receiptObservationId = observations.record("receipt", {
+        const receiptObservationId = observations.record(receiptTarget.slot, {
           source: rpcSource,
-          claims: receiptClaims(included.receipt, included.block, chainId),
+          claims: receiptClaims(
+            included.receipt,
+            included.block,
+            chainId,
+            observations,
+            receiptTarget,
+          ),
         });
-        observations.record("block", {
+        observations.record(blockTarget.slot, {
           source: rpcSource,
-          claims: [{ role: "transaction_block", value: included.block, chainAnchor: included.block }],
+          claims: [{
+            role: blockTarget.roles.block,
+            value: included.block,
+            chainAnchor: included.block,
+          }],
         });
         const receipt = receiptData(included.receipt, receiptObservationId, chainId);
         const inclusion = {
@@ -774,33 +833,64 @@ export const createChainReadService = (input: {
         const signal = chainInvocation.signal;
         const accountPort = context.ports.account;
         if (accountPort.status !== "available") throw new ChainOperationError("wallet_not_connected");
-        const block = await resolveBlock(dependencies, request.block, chainInvocation, observations);
+        const configuredChain = observations.bind(
+          accountBalanceEvidence.configuredChain.target,
+        );
+        const blockTarget = observations.bind(accountBalanceEvidence.targets.block);
+        const walletTarget = request.account.kind === "active_wallet"
+          ? observations.bind(accountBalanceEvidence.targets.walletAccount)
+          : undefined;
+        const block = await resolveBlock(
+          dependencies,
+          request.block,
+          chainInvocation,
+          observations,
+          configuredChain,
+        );
         if (accountPort.active) {
-          observations.record("account", {
+          if (walletTarget === undefined) {
+            throw new TypeError("Active account evidence target is unavailable.");
+          }
+          observations.record(walletTarget.slot, {
             source: context.ports.observations.get("wallet_session"),
-            claims: [{ role: "active_wallet_account", value: accountPort.address }],
+            claims: [{
+              role: walletTarget.roles.account,
+              value: accountPort.address,
+            }],
           });
         }
-        observations.record("block", {
+        observations.record(blockTarget.slot, {
           source: rpcSource,
-          claims: [{ role: "balance_block", value: block.anchor, chainAnchor: block.anchor }],
+          claims: [{
+            role: blockTarget.roles.block,
+            value: block.anchor,
+            chainAnchor: block.anchor,
+          }],
         });
 
         let native: AccountBalanceData["native"] = { status: "not_requested" };
         if (request.includeNative) {
+          const nativeBalanceTarget = observations.bind(
+            accountBalanceEvidence.targets.nativeBalance,
+          );
           const rawBalance = await dependencies.rpc.request(
             "eth_getBalance",
             [accountPort.address, block.stateReference],
             signal,
           );
           const raw = normalizeSourceValue(() => rpcQuantityToUnsignedDecimal(rawBalance));
-          const observationId = observations.record("native_balance", {
+          const observationId = observations.record(nativeBalanceTarget.slot, {
             source: rpcSource,
-            claims: [{ role: "native_balance", value: raw, asset: dependencies.nativeAsset, chainAnchor: block.anchor }],
+            claims: [{
+              role: nativeBalanceTarget.roles.balance,
+              value: raw,
+              asset: dependencies.nativeAsset,
+              chainAnchor: block.anchor,
+            }],
           });
           native = {
             status: "available",
-            amount: nativeAmount(raw, observationId, accountNativeDecimals, chainId),
+            amount: nativeAmount(raw, observationId, accountNativeDecimalsExclusion, chainId),
           };
         }
 
@@ -812,13 +902,15 @@ export const createChainReadService = (input: {
           signal,
         );
         const tokens: AccountBalanceData["tokens"] = tokenReads.map((token) => {
-          const identity = createAccountBalanceTokenEvidenceIdentity(token.asset.address);
+          const identity = accountTokenEvidenceIdentity(request, token.asset.address);
+          const balanceTarget = observations.bind(identity.balanceTarget);
+          const decimalsTarget = observations.bind(identity.decimalsTarget);
           if (token.balance.status === "unavailable") {
             const unavailable = { status: "unavailable" as const, errorCode: token.balance.errorCode };
-            observations.record(identity.balanceSlotId, {
+            observations.record(balanceTarget.slot, {
               source: rpcSource,
               claims: [{
-                role: identity.balanceClaimRole,
+                role: balanceTarget.roles.balance,
                 value: asCanonicalJson(unavailable),
                 asset: token.asset,
                 chainAnchor: block.anchor,
@@ -826,19 +918,19 @@ export const createChainReadService = (input: {
             });
             return { asset: token.asset, result: unavailable };
           }
-          const balanceObservationId = observations.record(identity.balanceSlotId, {
+          const balanceObservationId = observations.record(balanceTarget.slot, {
             source: rpcSource,
             claims: [{
-              role: identity.balanceClaimRole,
+              role: balanceTarget.roles.balance,
               value: token.balance.raw,
               asset: token.asset,
               chainAnchor: block.anchor,
             }],
           });
-          const decimalsObservationId = observations.record(identity.decimalsSlotId, {
+          const decimalsObservationId = observations.record(decimalsTarget.slot, {
             source: rpcSource,
             claims: [{
-              role: identity.decimalsClaimRole,
+              role: decimalsTarget.roles.decimals,
               value: token.decimals.status === "available" ? token.decimals.value : null,
               asset: token.asset,
               chainAnchor: block.anchor,

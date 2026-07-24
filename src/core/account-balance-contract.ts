@@ -10,7 +10,7 @@ import {
   readCapabilityLimits,
   type CapabilitySuccess,
 } from "./capability-contract.js";
-import type { StaticScopeExclusion } from "./evidence.js";
+import { accountNativeDecimalsExclusion } from "./capability-evidence.js";
 import { evmAddressInputSchema } from "./evm-address-input.js";
 import { jsonObject } from "./json-object.js";
 import {
@@ -68,11 +68,6 @@ export const accountBalanceDataSchema = jsonObject({
 
 export type AccountBalanceInput = z.infer<typeof accountBalanceInputSchema>;
 export type AccountBalanceData = z.infer<typeof accountBalanceDataSchema>;
-
-export const accountNativeDecimalsExclusion = Object.freeze({
-  id: "account_native_decimals_not_observed",
-  message: "Native asset decimals are not read by this capability.",
-}) as StaticScopeExclusion;
 
 export const maximumEvmBalanceRaw =
   "115792089237316195423570985008687907853269984665640564039457584007913129639935";

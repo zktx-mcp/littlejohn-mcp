@@ -29,12 +29,18 @@ export {
   utf8ByteLength,
 } from "./canonical-json.js";
 export {
+  createEvidenceFactIdentityDeclaration,
+  createEvidenceObservationTargetDeclaration,
+  createEvidenceReplayBinder,
   createEvidenceReplayDefinition,
   createEvidenceReplayLayout,
+  createExactConclusionIdentityDeclaration,
   replayPublicEvidence,
 } from "./evidence-replay.js";
 export type {
+  BoundEvidenceObservationSlotDeclaration,
   ConclusionDraft,
+  EvidenceReplayBinder,
   EvidenceReplayDeclaration,
   EvidenceReplayDefinition,
   EvidenceReplayLayout,
@@ -42,9 +48,11 @@ export type {
   FactRequirement,
   ObservationExpectation,
   ObservationReference,
-  ObservationSlot,
   WarningRequirement,
 } from "./evidence-replay.js";
+export {
+  createConfiguredChainEvidenceFragment,
+} from "./capability-evidence.js";
 export { coreContractVersion } from "./contract.js";
 export {
   canonicalUsdgAddress,
@@ -216,7 +224,6 @@ export {
 } from "./wallet-connection.js";
 export type { WalletConnectionData } from "./wallet-connection.js";
 export {
-  accountNativeDecimalsExclusion,
   accountBalanceDataSchema,
   accountBalanceInputSchema,
   assertAccountBalanceChainSemantics,
@@ -225,6 +232,9 @@ export {
   assertAccountBalanceRequestSemantics,
   maximumEvmBalanceRaw,
 } from "./account-balance-contract.js";
+export {
+  accountNativeDecimalsExclusion,
+} from "./capability-evidence.js";
 export type {
   AccountBalanceData,
   AccountBalanceInput,

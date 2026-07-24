@@ -9,12 +9,48 @@ import {
 import { deepFreezeValue } from "./immutability.js";
 import { guardJsonSchema, jsonObject } from "./json-object.js";
 
-type SourceReferenceKind = "public" | "configured_rpc" | "wallet_session" | "wallet_sdk" | "validated_input";
-type ConclusionStatus = "established" | "not_applicable" | "unavailable";
-type FactEvidenceAuthority = "external" | "validated_input" | "none";
-
 const definitionKeys = <Definition extends Readonly<Record<string, unknown>>>(definition: Definition) =>
   Object.freeze(Object.keys(definition)) as unknown as readonly [Extract<keyof Definition, string>, ...Extract<keyof Definition, string>[]];
+
+const defineOrderedVocabulary = <
+  const Values extends readonly [string, ...string[]],
+>(...values: Values): Readonly<Values> => Object.freeze(values);
+
+export const sourceReferenceKinds = defineOrderedVocabulary(
+  "public",
+  "configured_rpc",
+  "wallet_session",
+  "wallet_sdk",
+  "validated_input",
+);
+type SourceReferenceKind = (typeof sourceReferenceKinds)[number];
+
+export const conclusionStatuses = defineOrderedVocabulary(
+  "established",
+  "not_applicable",
+  "unavailable",
+);
+type ConclusionStatus = (typeof conclusionStatuses)[number];
+
+export const factEvidenceAuthorities = defineOrderedVocabulary(
+  "external",
+  "validated_input",
+  "none",
+);
+type FactEvidenceAuthority = (typeof factEvidenceAuthorities)[number];
+
+export const freshnessStatuses = defineOrderedVocabulary(
+  "fresh",
+  "stale",
+  "unknown",
+);
+
+export const coverageStatuses = defineOrderedVocabulary(
+  "complete",
+  "partial",
+  "unavailable",
+);
+type CoverageStatus = (typeof coverageStatuses)[number];
 
 export const sourceClassDefinitions = deepFreezeValue({
   official_document: { external: true, referenceKinds: ["public"] },
@@ -115,7 +151,7 @@ const coverageStatusForCounts = (
   established: number,
   notApplicable: number,
   unavailable: number,
-): "complete" | "partial" | "unavailable" => {
+): CoverageStatus => {
   const total = established + notApplicable + unavailable;
   if (total > 0 && unavailable === total) return "unavailable";
   if (notApplicable > 0 || unavailable > 0) return "partial";
@@ -136,7 +172,7 @@ export const createEvidenceSchemaSet = () => {
 
   const sourceReference = z.discriminatedUnion("kind", [
     jsonObject({
-        kind: z.literal("public"),
+        kind: z.literal(sourceReferenceKinds[0]),
         sourceId: primitive.fixedIdentifier,
         uri: z.url().refine((value) => {
           const url = new URL(value);
@@ -150,7 +186,7 @@ export const createEvidenceSchemaSet = () => {
       })
       .strict(),
     jsonObject({
-        kind: z.literal("configured_rpc"),
+        kind: z.literal(sourceReferenceKinds[1]),
         sourceId: prefixedCanonicalBase64UrlSchema("rpc:", 32),
         publicOrigin: z.url().refine((value) => {
           const url = new URL(value);
@@ -168,18 +204,18 @@ export const createEvidenceSchemaSet = () => {
       })
       .strict(),
     jsonObject({
-        kind: z.literal("wallet_session"),
+        kind: z.literal(sourceReferenceKinds[2]),
         sourceId: prefixedCanonicalBase64UrlSchema("wallet-session:", 32),
         topicDigest: digest,
       })
       .strict(),
     jsonObject({
-        kind: z.literal("wallet_sdk"),
+        kind: z.literal(sourceReferenceKinds[3]),
         sourceId: prefixedCanonicalBase64UrlSchema("wallet-sdk:", 16),
       })
       .strict(),
     jsonObject({
-        kind: z.literal("validated_input"),
+        kind: z.literal(sourceReferenceKinds[4]),
         sourceId: primitive.fixedIdentifier,
       })
       .strict(),
@@ -210,7 +246,7 @@ export const createEvidenceSchemaSet = () => {
     });
 
   const freshness = jsonObject({
-      status: z.enum(["fresh", "stale", "unknown"]),
+      status: z.enum(freshnessStatuses),
       ruleId: freshnessRuleId,
       evaluatedAt: primitive.utcTimestamp,
       observationIds: z.array(observationId).min(1).max(128),
@@ -227,7 +263,7 @@ export const createEvidenceSchemaSet = () => {
 
   const conclusion = jsonObject({
       id: primitive.fixedIdentifier,
-      status: z.enum(["established", "not_applicable", "unavailable"]),
+      status: z.enum(conclusionStatuses),
       reason: factOutcome,
       observationIds: z.array(observationId).min(1).max(128),
       freshness,
@@ -246,7 +282,7 @@ export const createEvidenceSchemaSet = () => {
     });
 
   const coverage = jsonObject({
-      status: z.enum(["complete", "partial", "unavailable"]),
+      status: z.enum(coverageStatuses),
       established: z.array(primitive.fixedIdentifier).max(64),
       notApplicable: z.array(primitive.fixedIdentifier).max(64),
       unavailable: z.array(primitive.fixedIdentifier).max(64),

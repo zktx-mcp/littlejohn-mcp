@@ -24,6 +24,26 @@ const capabilityDefinitionOwners = new Set([
 ]);
 const capabilityDefinitionReexporter = resolve("src/core/index.ts");
 const evidenceReplayModule = resolve("src/core/evidence-replay.js");
+const semanticEvidenceAuthoringSymbols = new Set([
+  "createEvidenceClaimRoleDeclaration",
+  "createEvidenceDeclarationScope",
+  "createEvidenceFactIdentityDeclaration",
+  "createEvidenceFactIdentityForConclusion",
+  "createEvidenceObservationTargetDeclaration",
+  "createEvidenceReplayDefinition",
+  "createEvmAddressConclusionIdentity",
+  "createEvmAddressConclusionIdentityDeclaration",
+  "createExactConclusionIdentityDeclaration",
+]);
+const semanticEvidenceAuthoringModules = new Set([
+  evidenceReplayModule,
+  resolve("src/core/browser.js"),
+]);
+const semanticEvidenceAuthoringOwners = new Set([
+  resolve("src/core/capability-evidence.ts"),
+  resolve("src/token-catalog/contract-schema.ts"),
+]);
+const semanticEvidenceAuthoringReexporter = resolve("src/core/browser.ts");
 const evidenceReplayFacadeModules = new Set([
   evidenceReplayModule,
   resolve("src/core/browser.js"),
@@ -33,7 +53,8 @@ const evidenceReplayConsumers = new Set([
   resolve("src/core/capability.ts"),
   resolve("src/token-catalog/contract-schema.ts"),
 ]);
-const accountBalanceConclusionIdentityOwner = resolve("src/core/capabilities.ts");
+const accountBalanceConclusionIdentityOwner =
+  resolve("src/core/capability-evidence.ts");
 const nobleHashImportsByOwner = new Map([
   [resolve("src/core/canonical-json.ts"), new Set([
     "@noble/hashes/sha2.js",
@@ -119,6 +140,179 @@ const capabilityDefinitionAuthorityViolations = (
       !capabilityDefinitionOwners.has(file)
     ) {
       report("require");
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return violations;
+};
+
+const semanticEvidenceAuthoringViolations = (
+  source: string,
+  importingFile: string,
+): string[] => {
+  const file = resolve(importingFile);
+  const sourceFile = ts.createSourceFile(
+    file,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    file.endsWith(".tsx") ? ts.ScriptKind.TSX
+      : file.endsWith(".jsx") ? ts.ScriptKind.JSX
+        : file.endsWith(".js") || file.endsWith(".mjs") || file.endsWith(".cjs")
+          ? ts.ScriptKind.JS
+          : ts.ScriptKind.TS,
+  );
+  const violations: string[] = [];
+  const report = (kind: string): void => {
+    violations.push(`${relative(sourceDirectory, file).split(sep).join("/")}:${kind}`);
+  };
+  const isAuthoringModule = (specifier: ts.Expression | undefined): boolean =>
+    specifier !== undefined && ts.isStringLiteralLike(specifier) &&
+    semanticEvidenceAuthoringModules.has(resolveModule(file, specifier.text) ?? "");
+  const includesAuthoringSymbol = (
+    elements: ts.NodeArray<ts.ImportSpecifier | ts.ExportSpecifier>,
+  ): boolean => elements.some((element) =>
+    semanticEvidenceAuthoringSymbols.has((element.propertyName ?? element.name).text));
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && isAuthoringModule(node.moduleSpecifier)) {
+      const bindings = node.importClause?.namedBindings;
+      if (
+        bindings !== undefined &&
+        ts.isNamespaceImport(bindings) &&
+        !semanticEvidenceAuthoringOwners.has(file)
+      ) {
+        report("namespace_import");
+      } else if (
+        bindings !== undefined &&
+        ts.isNamedImports(bindings) &&
+        includesAuthoringSymbol(bindings.elements) &&
+        !semanticEvidenceAuthoringOwners.has(file)
+      ) {
+        report("named_import");
+      }
+    } else if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference) &&
+      isAuthoringModule(node.moduleReference.expression) &&
+      !semanticEvidenceAuthoringOwners.has(file)
+    ) {
+      report("import_equals");
+    } else if (ts.isExportDeclaration(node) && isAuthoringModule(node.moduleSpecifier)) {
+      const exposesAuthoring = node.exportClause === undefined ||
+        ts.isNamespaceExport(node.exportClause) ||
+        includesAuthoringSymbol(node.exportClause.elements);
+      if (
+        exposesAuthoring &&
+        (
+          file !== semanticEvidenceAuthoringReexporter ||
+          node.exportClause === undefined ||
+          ts.isNamespaceExport(node.exportClause)
+        )
+      ) {
+        report("reexport");
+      }
+    } else if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      isAuthoringModule(node.arguments[0]) &&
+      !semanticEvidenceAuthoringOwners.has(file)
+    ) {
+      report("dynamic_import");
+    } else if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "require" &&
+      isAuthoringModule(node.arguments[0]) &&
+      !semanticEvidenceAuthoringOwners.has(file)
+    ) {
+      report("require");
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return violations;
+};
+
+const unwrapEvidenceExpression = (expression: ts.Expression): ts.Expression => {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isSatisfiesExpression(current) ||
+    ts.isNonNullExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
+};
+
+const isLiteralEvidenceIdentity = (expression: ts.Expression): boolean => {
+  const value = unwrapEvidenceExpression(expression);
+  return ts.isStringLiteralLike(value) || ts.isTemplateExpression(value);
+};
+
+const containsRawClaimRole = (node: ts.Node): boolean => {
+  let found = false;
+  const visit = (candidate: ts.Node): void => {
+    if (
+      ts.isPropertyAssignment(candidate) &&
+      (
+        ts.isIdentifier(candidate.name) ||
+        ts.isStringLiteralLike(candidate.name)
+      ) &&
+      candidate.name.text === "role" &&
+      isLiteralEvidenceIdentity(candidate.initializer)
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(candidate, visit);
+  };
+  visit(node);
+  return found;
+};
+
+const rawEvidenceRecordingViolations = (
+  source: string,
+  sourcePath: string,
+): string[] => {
+  const file = resolve(sourcePath);
+  const sourceFile = ts.createSourceFile(
+    file,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    file.endsWith(".tsx") ? ts.ScriptKind.TSX
+      : file.endsWith(".jsx") ? ts.ScriptKind.JSX
+        : file.endsWith(".js") || file.endsWith(".mjs") || file.endsWith(".cjs")
+          ? ts.ScriptKind.JS
+          : ts.ScriptKind.TS,
+  );
+  const violations: string[] = [];
+  const report = (kind: string): void => {
+    violations.push(`${relative(sourceDirectory, file).split(sep).join("/")}:${kind}`);
+  };
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "record" &&
+      node.arguments[0] !== undefined &&
+      isLiteralEvidenceIdentity(node.arguments[0])
+    ) {
+      report("raw_record_slot");
+    }
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "record" &&
+      node.arguments[1] !== undefined &&
+      containsRawClaimRole(node.arguments[1])
+    ) {
+      report("raw_claim_role");
     }
     ts.forEachChild(node, visit);
   };
@@ -328,6 +522,65 @@ describe("core dependency boundary", () => {
       'import core = require("../core/index.js"); core.defineReadCapability({});',
       outsideOwner,
     )).toEqual(["chain/unauthorized-capability.ts:import_equals"]);
+  });
+
+  it("limits semantic evidence identity authoring to the two definition owners", async () => {
+    const violations: string[] = [];
+    for (const file of await collectSourceFiles(sourceDirectory)) {
+      violations.push(...semanticEvidenceAuthoringViolations(
+        await readFile(file, "utf8"),
+        file,
+      ));
+    }
+    expect(violations).toEqual([]);
+
+    const outsideOwner = resolve("src/chain/unauthorized-evidence.ts");
+    expect(semanticEvidenceAuthoringViolations(
+      'import { createEvidenceReplayDefinition } from "../core/evidence-replay.js";',
+      outsideOwner,
+    )).toEqual(["chain/unauthorized-evidence.ts:named_import"]);
+    expect(semanticEvidenceAuthoringViolations(
+      'import { createEvidenceReplayDefinition as defineEvidence } from "../core/browser.js";',
+      outsideOwner,
+    )).toEqual(["chain/unauthorized-evidence.ts:named_import"]);
+    expect(semanticEvidenceAuthoringViolations(
+      'import * as replay from "../core/evidence-replay.js"; replay.createEvidenceReplayDefinition({});',
+      outsideOwner,
+    )).toEqual(["chain/unauthorized-evidence.ts:namespace_import"]);
+    expect(semanticEvidenceAuthoringViolations(
+      'export { createEvidenceReplayDefinition as defineEvidence } from "../core/browser.js";',
+      outsideOwner,
+    )).toEqual(["chain/unauthorized-evidence.ts:reexport"]);
+    expect(semanticEvidenceAuthoringViolations(
+      'void import("../core/evidence-replay.js");',
+      outsideOwner,
+    )).toEqual(["chain/unauthorized-evidence.ts:dynamic_import"]);
+    expect(semanticEvidenceAuthoringViolations(
+      'const replay = require("../core/evidence-replay.js");',
+      outsideOwner,
+    )).toEqual(["chain/unauthorized-evidence.ts:require"]);
+    expect(semanticEvidenceAuthoringViolations(
+      'import replay = require("../core/evidence-replay.js");',
+      outsideOwner,
+    )).toEqual(["chain/unauthorized-evidence.ts:import_equals"]);
+  });
+
+  it("rejects raw semantic slot and role literals at production recording sites", async () => {
+    const violations: string[] = [];
+    for (const file of await collectSourceFiles(sourceDirectory)) {
+      violations.push(...rawEvidenceRecordingViolations(await readFile(file, "utf8"), file));
+    }
+    expect(violations).toEqual([]);
+
+    const outsideOwner = resolve("src/chain/unauthorized-evidence.ts");
+    expect(rawEvidenceRecordingViolations(
+      'observations.record("latest_block" as never, { source, claims: [] });',
+      outsideOwner,
+    )).toEqual(["chain/unauthorized-evidence.ts:raw_record_slot"]);
+    expect(rawEvidenceRecordingViolations(
+      "observations.record(slot, { source, claims: [{ role: (`block` as never), value: block }] });",
+      outsideOwner,
+    )).toEqual(["chain/unauthorized-evidence.ts:raw_claim_role"]);
   });
 
   it("allows only the declared narrow hash utilities, zod, node:crypto, and sibling core modules", async () => {

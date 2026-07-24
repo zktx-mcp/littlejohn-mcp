@@ -7,6 +7,7 @@ import {
   parseCapabilityDataAt,
   parseCaip10EvmAccount,
   parseUtcTimestamp,
+  walletConnectionEvidence,
   walletConnectionCapability,
   type CapabilityBinding,
   type CanonicalJson,
@@ -575,15 +576,25 @@ export class WalletCoordinator implements WalletCoordinatorPort {
         if (!context.ports.evidenceAvailable) {
           return { status: "failure", code: "runtime_state_unavailable", issues: [] };
         }
-        observations.record("wallet_sdk", {
+        const sdkTarget = observations.bind(walletConnectionEvidence.targets.sdk);
+        const sessionTarget = observations.bind(
+          walletConnectionEvidence.targets.session,
+        );
+        observations.record(sdkTarget.slot, {
           source: wallet.sourceAuthority.sdkStoreAuthority,
-          claims: [{ role: "wallet_sdk_state", value: asCanonical(snapshot.connection) }],
+          claims: [{
+            role: sdkTarget.roles.state,
+            value: asCanonical(snapshot.connection),
+          }],
         });
         if (snapshot.connection.status === "connected") {
           if (snapshot.sessionSource === undefined) throw new TypeError("Connected wallet source is unavailable.");
-          observations.record("wallet_session", {
+          observations.record(sessionTarget.slot, {
             source: snapshot.sessionSource.observationAuthority,
-            claims: [{ role: "wallet_session_state", value: asCanonical(snapshot.connection) }],
+            claims: [{
+              role: sessionTarget.roles.state,
+              value: asCanonical(snapshot.connection),
+            }],
           });
         }
         return { status: "success", data: snapshot.connection };

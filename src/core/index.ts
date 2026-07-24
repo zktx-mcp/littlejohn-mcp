@@ -41,7 +41,6 @@ export type {
   TokenStandardObservationStatus,
 } from "./token-standards.js";
 export {
-  accountNativeDecimalsExclusion,
   accountBalanceDataSchema,
   accountBalanceInputSchema,
   assertAccountBalanceChainSemantics,
@@ -50,6 +49,23 @@ export {
   assertAccountBalanceRequestSemantics,
   maximumEvmBalanceRaw,
 } from "./account-balance-contract.js";
+export {
+  accountBalanceEvidence,
+  accountNativeDecimalsExclusion,
+  accountTokenEvidenceIdentity,
+  chainStatusEvidence,
+  contractInspectEvidence,
+  receiptLogAmountRole,
+  transactionEventDecimalsExclusion,
+  transactionInspectEvidence,
+  transactionNativeDecimalsExclusion,
+  walletConnectionEvidence,
+} from "./capability-evidence.js";
+export type {
+  AccountTokenEvidenceIdentity,
+  ConfiguredChainEvidenceFragment,
+  ValidatedInputEvidenceFragment,
+} from "./capability-evidence.js";
 export type {
   AccountBalanceData,
   AccountBalanceInput,
@@ -188,7 +204,6 @@ export {
   chainReadCapabilities,
   chainStatusCapability,
   contractInspectCapability,
-  createAccountBalanceTokenEvidenceIdentity,
   readBoundaryFailureCodes,
   readCapabilityLimits,
   readCapabilityRegistry,
@@ -233,16 +248,22 @@ export type {
   DataValidationContext,
   IntrinsicDataValidationContext,
   ObservationWriter,
+  ReadCapabilityEvidence,
   ReadCapabilityDefinition,
   SuccessValidationContext,
 } from "./capability.js";
 export type {
+  BoundEvidenceClaimRoleDeclaration,
+  BoundEvidenceObservationSlotDeclaration,
+  BoundEvidenceObservationTarget,
   ConclusionDraft,
+  EvidenceObservationTargetDeclaration,
+  EvidenceReplayBinder,
   EvidenceReplayDeclaration,
   FactRequirement,
   ObservationExpectation,
   ObservationReference,
-  ObservationSlot,
+  ObservationClaim,
   WarningRequirement,
 } from "./evidence-replay.js";
 export {
@@ -337,7 +358,6 @@ export type {
   HandlerInvocationContext,
   InvocationBoundaryPorts,
   ObservationAuthority,
-  ObservationClaim,
 } from "./invocation.js";
 export { keccak256FromHex } from "./keccak256.js";
 export {

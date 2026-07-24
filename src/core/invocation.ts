@@ -1,5 +1,3 @@
-import type { AssetIdentity } from "./amounts.js";
-import type { CanonicalJson } from "./canonical-json.js";
 import {
   parseExternalSourceClass,
   parseSourceReference,
@@ -11,18 +9,10 @@ import { parseEvmChainId, type EvmChainId } from "./identities.js";
 import {
   createPrimitiveSchemaSet,
   parseUtcTimestamp,
-  type ChainAnchor,
   type UtcTimestamp,
 } from "./primitives.js";
 
 const authorityPrimitiveSchemas = createPrimitiveSchemaSet();
-
-export interface ObservationClaim {
-  readonly role: string;
-  readonly value: CanonicalJson;
-  readonly chainAnchor?: ChainAnchor;
-  readonly asset?: AssetIdentity;
-}
 
 export interface CanonicalClock {
   now(): UtcTimestamp;

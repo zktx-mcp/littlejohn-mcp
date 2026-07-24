@@ -32,6 +32,7 @@ const sharedContractSources = new Set([
   "src/core/canonical-json-value.ts",
   "src/core/canonical-json.ts",
   "src/core/capability-contract.ts",
+  "src/core/capability-evidence.ts",
   "src/core/amounts.ts",
   "src/core/browser.ts",
   "src/core/contract.ts",

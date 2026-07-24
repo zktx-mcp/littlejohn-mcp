@@ -2,6 +2,7 @@ import {
   CapabilityBindingRegistry,
   CapabilityRegistry,
   bindCapability,
+  type BoundEvidenceObservationTarget,
   type CapabilityBinding,
   type CanonicalAmount,
   type CanonicalJson,
@@ -18,6 +19,7 @@ import {
   tokenCatalogContractLimits,
   tokenDisplayTextSchema,
   tokenInspectCapability,
+  tokenInspectionEvidence,
   type TokenInspectionData,
   type TokenInspectionInput,
 } from "../token-catalog/contracts.js";
@@ -129,6 +131,9 @@ const resolveBlock = async (
   input: TokenInspectionInput,
   context: ChainInvocationContext,
   observations: ObservationWriter,
+  configuredChainTarget: BoundEvidenceObservationTarget<
+    typeof tokenInspectionEvidence.configuredChain.target
+  >,
 ): Promise<Readonly<{
   block: CanonicalBlock;
   anchor: ChainAnchor;
@@ -149,6 +154,7 @@ const resolveBlock = async (
     proof: state.configuredChainProof,
     rpcSource: dependencies.rpcSource,
     observations,
+    target: configuredChainTarget,
     chainAnchor: state.anchor,
   });
   return Object.freeze({
@@ -249,7 +255,26 @@ const inspectionHandler = async (
 }>> => {
   if (request.asset.chainId !== dependencies.chainId) throw new ChainOperationError("invalid_input");
   const signal = context.signal;
-  const block = await resolveBlock(dependencies, request, context, observations);
+  const configuredChain = observations.bind(
+    tokenInspectionEvidence.configuredChain.target,
+  );
+  const blockTarget = observations.bind(tokenInspectionEvidence.targets.block);
+  const runtimeCodeTarget = observations.bind(
+    tokenInspectionEvidence.targets.runtimeCode,
+  );
+  const totalSupplyTarget = observations.bind(
+    tokenInspectionEvidence.targets.totalSupply,
+  );
+  const decimalsTarget = observations.bind(tokenInspectionEvidence.targets.decimals);
+  const nameTarget = observations.bind(tokenInspectionEvidence.targets.name);
+  const symbolTarget = observations.bind(tokenInspectionEvidence.targets.symbol);
+  const block = await resolveBlock(
+    dependencies,
+    request,
+    context,
+    observations,
+    configuredChain,
+  );
 
   const rawCode = await dependencies.rpc.request(
     "eth_getCode",
@@ -279,45 +304,49 @@ const inspectionHandler = async (
   const totalSupplyRaw = normalizeSource(() =>
     decodeErc20TotalSupplyResult(normalizeRpcBytes(rawTotalSupply)));
 
-  const blockObservationId = observations.record("block", {
+  const blockObservationId = observations.record(blockTarget.slot, {
     source: dependencies.rpcSource,
-    claims: [{ role: "token_inspection_block", value: block.anchor as unknown as CanonicalJson, chainAnchor: block.anchor }],
+    claims: [{
+      role: blockTarget.roles.value,
+      value: block.anchor as unknown as CanonicalJson,
+      chainAnchor: block.anchor,
+    }],
   });
   const runtimeCodeValue = Object.freeze({
     byteLength: runtimeCode.byteLength,
     codeHash: runtimeCode.codeHash,
   });
-  observations.record("runtime_code", {
+  observations.record(runtimeCodeTarget.slot, {
     source: dependencies.rpcSource,
     claims: [{
-      role: "token_runtime_code",
+      role: runtimeCodeTarget.roles.value,
       value: runtimeCodeValue as unknown as CanonicalJson,
       asset: request.asset,
       chainAnchor: block.anchor,
     }],
   });
-  const supplyObservationId = observations.record("total_supply", {
+  const supplyObservationId = observations.record(totalSupplyTarget.slot, {
     source: dependencies.rpcSource,
     claims: [{
-      role: "token_total_supply",
+      role: totalSupplyTarget.roles.value,
       value: totalSupplyRaw,
       asset: request.asset,
       chainAnchor: block.anchor,
     }],
   });
-  const decimalsObservationId = observations.record("decimals", {
+  const decimalsObservationId = observations.record(decimalsTarget.slot, {
     source: dependencies.rpcSource,
     claims: [{
-      role: "token_decimals",
+      role: decimalsTarget.roles.value,
       value: decimals ?? { status: "unavailable", reason: "missing" },
       asset: request.asset,
       chainAnchor: block.anchor,
     }],
   });
-  const nameObservationId = observations.record("name", {
+  const nameObservationId = observations.record(nameTarget.slot, {
     source: dependencies.rpcSource,
     claims: [{
-      role: "token_name",
+      role: nameTarget.roles.value,
       value: name.status === "available"
         ? name.value
         : { status: "unavailable", reason: name.reason },
@@ -325,10 +354,10 @@ const inspectionHandler = async (
       chainAnchor: block.anchor,
     }],
   });
-  const symbolObservationId = observations.record("symbol", {
+  const symbolObservationId = observations.record(symbolTarget.slot, {
     source: dependencies.rpcSource,
     claims: [{
-      role: "token_symbol",
+      role: symbolTarget.roles.value,
       value: symbol.status === "available"
         ? symbol.value
         : { status: "unavailable", reason: symbol.reason },

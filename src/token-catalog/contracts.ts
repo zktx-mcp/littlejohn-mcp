@@ -16,15 +16,11 @@ import {
   tokenCatalogApplicationContractList,
   tokenCatalogDigestVersions,
   tokenCatalogOperationConfirmationContract,
-  createTokenInspectionEvidenceDeclaration,
   tokenInspectCapabilityId,
-  tokenInspectionConclusionIds,
+  tokenInspectionCapabilityEvidence,
   tokenInspectionDataSchema,
   tokenInspectionInputSchema,
-  tokenInspectionObservationSlots,
-  tokenInspectionStaticScopeExclusions,
   tokenInspectionSuccessProjectionSchema,
-  tokenInspectionWarningCodes,
   type TokenInspectionData,
   type TokenInspectionInput,
 } from "./contract-schema.js";
@@ -53,10 +49,7 @@ export const tokenInspectCapability = defineReadCapability<TokenInspectionInput,
   inputSchema: tokenInspectionInputSchema,
   dataSchema: tokenInspectionDataSchema,
   failureCodes: inspectionFailureCodes,
-  conclusionIds: tokenInspectionConclusionIds,
-  observationSlots: () => tokenInspectionObservationSlots,
-  evidenceDeclaration: (_input, data) =>
-    createTokenInspectionEvidenceDeclaration(data),
+  evidence: tokenInspectionCapabilityEvidence,
   validateSuccess: (data, context) => {
     if (data.asset.chainId !== context.chainId) throw new TypeError("Token inspection chain scope mismatch.");
   },
@@ -68,8 +61,6 @@ export const tokenInspectCapability = defineReadCapability<TokenInspectionInput,
       throw new TypeError("Token inspection block mismatch.");
     }
   },
-  warningCodes: tokenInspectionWarningCodes,
-  staticScopeExclusions: tokenInspectionStaticScopeExclusions,
 });
 
 

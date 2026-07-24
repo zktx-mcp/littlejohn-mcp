@@ -1,6 +1,6 @@
-import { z, type ZodType } from "zod";
+import { z } from "zod";
 
-import { createAmountSchemaSet } from "./amounts.js";
+import { createAmountSchemaSet, type AssetIdentity } from "./amounts.js";
 import {
   capabilityIdSchema,
   type CapabilityId,
@@ -28,9 +28,7 @@ import {
   type Warning,
 } from "./evidence.js";
 import { deepFreezeValue } from "./immutability.js";
-import type { ObservationClaim } from "./invocation.js";
 import { jsonObject } from "./json-object.js";
-import { productDisplayName } from "./product-identity.js";
 import {
   compareCodePointSequences,
   createPrimitiveSchemaSet,
@@ -44,15 +42,72 @@ const replayPrimitives = createPrimitiveSchemaSet();
 const replayAmounts = createAmountSchemaSet();
 const replayEvidence = createEvidenceSchemaSet();
 
+declare const evidenceFactIdentityDeclarationType: unique symbol;
+export interface EvidenceFactIdentityDeclaration {
+  readonly [evidenceFactIdentityDeclarationType]: true;
+}
+
+declare const evidenceObservationSlotDeclarationType: unique symbol;
+export interface EvidenceObservationSlotDeclaration {
+  readonly [evidenceObservationSlotDeclarationType]: true;
+}
+
+declare const evidenceClaimRoleDeclarationType: unique symbol;
+export interface EvidenceClaimRoleDeclaration {
+  readonly [evidenceClaimRoleDeclarationType]: true;
+}
+
+declare const boundEvidenceObservationSlotDeclarationType: unique symbol;
+export interface BoundEvidenceObservationSlotDeclaration {
+  readonly [boundEvidenceObservationSlotDeclarationType]: true;
+}
+
+declare const boundEvidenceClaimRoleDeclarationType: unique symbol;
+export interface BoundEvidenceClaimRoleDeclaration {
+  readonly [boundEvidenceClaimRoleDeclarationType]: true;
+}
+
+export interface EvidenceObservationTargetDeclaration<
+  Roles extends Readonly<Record<string, EvidenceClaimRoleDeclaration>> =
+    Readonly<Record<string, EvidenceClaimRoleDeclaration>>,
+> {
+  readonly slot: EvidenceObservationSlotDeclaration;
+  readonly roles: Roles;
+}
+
+export type BoundEvidenceObservationTarget<
+  Target extends EvidenceObservationTargetDeclaration =
+    EvidenceObservationTargetDeclaration,
+> = Readonly<{
+  slot: BoundEvidenceObservationSlotDeclaration;
+  roles: Readonly<{
+    [Key in keyof Target["roles"]]: BoundEvidenceClaimRoleDeclaration;
+  }>;
+}>;
+
+export interface EvidenceReplayBinder {
+  bind<Target extends EvidenceObservationTargetDeclaration>(
+    target: Target,
+  ): BoundEvidenceObservationTarget<Target>;
+  bindRole(role: EvidenceClaimRoleDeclaration): BoundEvidenceClaimRoleDeclaration;
+}
+
+export interface ObservationClaim {
+  readonly role: BoundEvidenceClaimRoleDeclaration;
+  readonly value: CanonicalJson;
+  readonly chainAnchor?: ChainAnchor;
+  readonly asset?: AssetIdentity;
+}
+
 export interface FactRequirement {
-  readonly factId: string;
-  readonly observationSlotIds: readonly string[];
-  readonly requiredObservationSlotIds: readonly string[];
+  readonly fact: EvidenceFactIdentityDeclaration;
+  readonly observationSlots: readonly BoundEvidenceObservationSlotDeclaration[];
+  readonly requiredObservationSlots: readonly BoundEvidenceObservationSlotDeclaration[];
   readonly minimumObservationCount: number;
   readonly outcome: FactOutcome;
 }
 
-export type ObservationSlot =
+type ObservationSlotProjection =
   | {
       readonly slotId: string;
       readonly factId: string;
@@ -68,26 +123,26 @@ export type ObservationSlot =
     };
 
 export interface ObservationExpectation {
-  readonly slotId: string;
+  readonly slot: BoundEvidenceObservationSlotDeclaration;
   readonly claims: readonly ObservationClaim[];
 }
 
 export interface ObservationReference {
   readonly observationId: ObservationId;
-  readonly slotId: string;
-  readonly role: string;
+  readonly slot: BoundEvidenceObservationSlotDeclaration;
+  readonly role: BoundEvidenceClaimRoleDeclaration;
 }
 
 export interface ConclusionDraft {
-  readonly id: string;
-  readonly outcomeFactId: string;
-  readonly evidenceFactIds: readonly string[];
+  readonly conclusion: ExactConclusionIdentityDeclaration;
+  readonly outcomeFact: EvidenceFactIdentityDeclaration;
+  readonly evidenceFacts: readonly EvidenceFactIdentityDeclaration[];
   readonly freshnessRuleId: Freshness["ruleId"];
 }
 
 export interface WarningRequirement {
   readonly code: Warning["code"];
-  readonly factIds: readonly string[];
+  readonly facts: readonly EvidenceFactIdentityDeclaration[];
 }
 
 export interface EvidenceReplayResult {
@@ -100,75 +155,71 @@ export interface EvidenceReplayDeclaration {
   readonly observationExpectations: readonly ObservationExpectation[];
   readonly observationReferences: readonly ObservationReference[];
   readonly factRequirements: readonly FactRequirement[];
-  readonly expectedConclusionIds: readonly string[];
+  readonly expectedConclusions: readonly ExactConclusionIdentityDeclaration[];
   readonly conclusionDrafts: readonly ConclusionDraft[];
   readonly warningRequirements: readonly WarningRequirement[];
 }
 
-const observationClaimSchema = jsonObject({
-  role: replayPrimitives.fixedIdentifier,
+const observationClaimValueSchema = jsonObject({
   value: z.json(),
   chainAnchor: replayPrimitives.chainAnchor.optional(),
   asset: replayAmounts.assetIdentity.optional(),
-}).strict();
-const observationSlotSchema = z.discriminatedUnion("kind", [
-  jsonObject({
-    slotId: replayPrimitives.fixedIdentifier,
-    factId: replayPrimitives.fixedIdentifier,
-    kind: z.literal("validated_input"),
-    purpose: replayPrimitives.snakeCaseCode,
-  }).strict(),
-  jsonObject({
-    slotId: replayPrimitives.fixedIdentifier,
-    factId: replayPrimitives.fixedIdentifier,
-    kind: z.literal("source"),
-    purpose: replayPrimitives.snakeCaseCode,
-    sourceClass: replayEvidence.externalSourceClass,
-  }).strict(),
-]);
-const factRequirementSchema = jsonObject({
-  factId: replayPrimitives.fixedIdentifier,
-  observationSlotIds: z.array(replayPrimitives.fixedIdentifier).min(1).max(128),
-  requiredObservationSlotIds: z.array(replayPrimitives.fixedIdentifier).max(128),
-  minimumObservationCount: z.number().int().min(0).max(128),
-  outcome: replayEvidence.factOutcome,
-}).strict();
-const observationExpectationSchema = jsonObject({
-  slotId: replayPrimitives.fixedIdentifier,
-  claims: z.array(observationClaimSchema).min(1).max(8_192),
-}).strict();
-const observationReferenceSchema = jsonObject({
-  observationId: replayEvidence.observationId,
-  slotId: replayPrimitives.fixedIdentifier,
-  role: replayPrimitives.fixedIdentifier,
-}).strict();
-const conclusionDraftSchema = jsonObject({
-  id: replayPrimitives.fixedIdentifier,
-  outcomeFactId: replayPrimitives.fixedIdentifier,
-  evidenceFactIds: z.array(replayPrimitives.fixedIdentifier).min(1).max(128),
-  freshnessRuleId: replayEvidence.freshnessRuleId,
-}).strict();
-const warningRequirementSchema = jsonObject({
-  code: replayEvidence.warningCode,
-  factIds: z.array(replayPrimitives.fixedIdentifier).min(1).max(128),
 }).strict();
 
 const canonicalUnique = (values: readonly string[]): readonly string[] =>
   Object.freeze(sortUniqueStrings(values));
 
-const parseArray = <Value>(schema: ZodType<Value>, input: unknown): readonly Value[] => {
-  let normalized: CanonicalJson;
-  try {
-    normalized = captureCanonicalJson(input);
-  } catch {
-    throw new TypeError("Evidence replay declaration is invalid.");
+const parseBoundedArray = <Value>(
+  input: readonly Value[],
+  minimum: number,
+  maximum: number,
+  message: string,
+): readonly Value[] => {
+  if (!Array.isArray(input) || input.length < minimum || input.length > maximum) {
+    throw new TypeError(message);
   }
-  if (!Array.isArray(normalized)) throw new TypeError("Evidence replay declaration is invalid.");
-  return Object.freeze(normalized.map((value) => deepFreezeValue(schema.parse(value))));
+  return input;
 };
 
 const conclusionAddressMarker = "<address>";
 const zeroEvmAddress = "0x0000000000000000000000000000000000000000";
+
+declare const exactConclusionIdentityDeclarationType: unique symbol;
+export interface ExactConclusionIdentityDeclaration {
+  readonly [exactConclusionIdentityDeclarationType]: true;
+}
+
+interface ExactConclusionIdentityDeclarationState {
+  readonly identity: string;
+  readonly family?: EvmAddressConclusionIdentityDeclaration;
+}
+
+const exactConclusionIdentityDeclarationStates =
+  new WeakMap<object, ExactConclusionIdentityDeclarationState>();
+
+const exactConclusionIdentityDeclarationState = (
+  declaration: ExactConclusionIdentityDeclaration,
+): ExactConclusionIdentityDeclarationState => {
+  const state = typeof declaration === "object" && declaration !== null
+    ? exactConclusionIdentityDeclarationStates.get(declaration)
+    : undefined;
+  if (state === undefined) {
+    throw new TypeError("Exact conclusion identity declaration provenance is invalid.");
+  }
+  return state;
+};
+
+export const createExactConclusionIdentityDeclaration = (
+  identityInput: string,
+): ExactConclusionIdentityDeclaration => {
+  const identity = replayPrimitives.fixedIdentifier.parse(identityInput);
+  if (identity.includes("<") || identity.includes(">")) {
+    throw new TypeError("Exact conclusion identity contains placeholder syntax.");
+  }
+  const declaration = Object.freeze({}) as ExactConclusionIdentityDeclaration;
+  exactConclusionIdentityDeclarationStates.set(declaration, Object.freeze({ identity }));
+  return declaration;
+};
 
 declare const evmAddressConclusionIdentityDeclarationType: unique symbol;
 export interface EvmAddressConclusionIdentityDeclaration {
@@ -212,18 +263,42 @@ export const createEvmAddressConclusionIdentityDeclaration = (
   return declaration;
 };
 
+export type ConclusionIdentityDeclaration =
+  | ExactConclusionIdentityDeclaration
+  | EvmAddressConclusionIdentityDeclaration;
+
+declare const evidenceReplayDefinitionType: unique symbol;
+export interface EvidenceReplayDefinition {
+  readonly [evidenceReplayDefinitionType]: true;
+}
+
+declare const evidenceDeclarationScopeType: unique symbol;
+export interface EvidenceDeclarationScope {
+  readonly [evidenceDeclarationScopeType]: true;
+}
+
+const conclusionDeclarationOwners =
+  new WeakMap<object, EvidenceReplayDefinition>();
+
 export const createEvmAddressConclusionIdentity = (
   declaration: EvmAddressConclusionIdentityDeclaration,
   addressInput: EvmAddress,
-): string => {
-  const { prefix } = evmAddressConclusionIdentityDeclarationState(declaration);
+): ExactConclusionIdentityDeclaration => {
+  const family = evmAddressConclusionIdentityDeclarationState(declaration);
+  const definition = conclusionDeclarationOwners.get(declaration as object);
+  if (definition === undefined) {
+    throw new TypeError("EVM-address conclusion identity family is not definition-owned.");
+  }
   const address = replayPrimitives.evmAddress.parse(addressInput);
-  return replayPrimitives.fixedIdentifier.parse(`${prefix}${address}`);
+  const identity = replayPrimitives.fixedIdentifier.parse(`${family.prefix}${address}`);
+  const result = Object.freeze({}) as ExactConclusionIdentityDeclaration;
+  exactConclusionIdentityDeclarationStates.set(result, Object.freeze({
+    identity,
+    family: declaration,
+  }));
+  conclusionDeclarationOwners.set(result as object, definition);
+  return result;
 };
-
-export type ConclusionIdentityDeclaration =
-  | string
-  | EvmAddressConclusionIdentityDeclaration;
 
 interface ConclusionMatcher {
   readonly declaration: string;
@@ -236,11 +311,13 @@ interface ConclusionMatcher {
 const compileConclusionMatcher = (
   declarationInput: ConclusionIdentityDeclaration,
 ): ConclusionMatcher => {
-  if (typeof declarationInput === "string") {
-    const declaration = replayPrimitives.fixedIdentifier.parse(declarationInput);
-    if (declaration.includes("<") || declaration.includes(">")) {
-      throw new TypeError("Exact conclusion identity contains placeholder syntax.");
-    }
+  if (conclusionDeclarationOwners.has(declarationInput as object)) {
+    throw new TypeError("Conclusion identity declaration already has an owner.");
+  }
+  if (exactConclusionIdentityDeclarationStates.has(declarationInput as object)) {
+    const declaration = exactConclusionIdentityDeclarationState(
+      declarationInput as ExactConclusionIdentityDeclaration,
+    ).identity;
     return Object.freeze({
       declaration,
       duplicateKey: `exact:${declaration}`,
@@ -248,16 +325,17 @@ const compileConclusionMatcher = (
       matches: (value: string) => value === declaration,
     });
   }
-  const { prefix, projection } =
-    evmAddressConclusionIdentityDeclarationState(declarationInput);
+  const family = evmAddressConclusionIdentityDeclarationState(
+    declarationInput as EvmAddressConclusionIdentityDeclaration,
+  );
   return Object.freeze({
-    declaration: projection,
-    duplicateKey: `evm_address:${prefix}`,
+    declaration: family.projection,
+    duplicateKey: `evm_address:${family.prefix}`,
     dynamic: true,
-    prefix,
+    prefix: family.prefix,
     matches(value: string): boolean {
-      if (!value.startsWith(prefix)) return false;
-      return replayPrimitives.evmAddress.safeParse(value.slice(prefix.length)).success;
+      if (!value.startsWith(family.prefix)) return false;
+      return replayPrimitives.evmAddress.safeParse(value.slice(family.prefix.length)).success;
     },
   });
 };
@@ -270,19 +348,27 @@ const matchersOverlap = (left: ConclusionMatcher, right: ConclusionMatcher): boo
     : right.matches(left.declaration);
 };
 
-declare const evidenceReplayDefinitionType: unique symbol;
-export interface EvidenceReplayDefinition {
-  readonly [evidenceReplayDefinitionType]: true;
-}
-
 interface EvidenceReplayDefinitionState {
   readonly capabilityId: CapabilityId;
   readonly conclusionIds: readonly string[];
   readonly conclusionMatchers: readonly ConclusionMatcher[];
   readonly warningCodes: readonly Warning["code"][];
+  readonly factsById: Map<string, EvidenceFactIdentityDeclaration>;
+  readonly slotsById: Map<string, EvidenceObservationSlotDeclaration[]>;
+}
+
+interface EvidenceDeclarationRegistry {
+  readonly factsById: Map<string, EvidenceFactIdentityDeclaration>;
+  readonly slotsById: Map<string, EvidenceObservationSlotDeclaration[]>;
+}
+
+interface EvidenceDeclarationScopeState extends EvidenceDeclarationRegistry {
+  readonly definition: EvidenceReplayDefinition;
 }
 
 const definitionStates = new WeakMap<object, EvidenceReplayDefinitionState>();
+const declarationScopeStates = new WeakMap<object, EvidenceDeclarationScopeState>();
+const definitionsWithScopedDeclarations = new WeakSet<object>();
 
 const definitionState = (definition: EvidenceReplayDefinition): EvidenceReplayDefinitionState => {
   const state = typeof definition === "object" && definition !== null
@@ -292,13 +378,33 @@ const definitionState = (definition: EvidenceReplayDefinition): EvidenceReplayDe
   return state;
 };
 
+const declarationScopeState = (
+  definition: EvidenceReplayDefinition,
+  scope: EvidenceDeclarationScope,
+): EvidenceDeclarationScopeState => {
+  definitionState(definition);
+  const state = typeof scope === "object" && scope !== null
+    ? declarationScopeStates.get(scope)
+    : undefined;
+  if (state === undefined || state.definition !== definition) {
+    throw new TypeError("Evidence declaration scope provenance is invalid.");
+  }
+  return state;
+};
+
 export const createEvidenceReplayDefinition = (input: {
   readonly capabilityId: string;
-  readonly conclusionIds: readonly ConclusionIdentityDeclaration[];
+  readonly conclusions: readonly ConclusionIdentityDeclaration[];
   readonly warningCodes: readonly Warning["code"][];
 }): EvidenceReplayDefinition => {
-  const parsedCapabilityId = capabilityIdSchema.parse(input.capabilityId);
-  const matcherInput = input.conclusionIds.map(compileConclusionMatcher);
+  const capabilityId = capabilityIdSchema.parse(input.capabilityId);
+  const conclusions = parseBoundedArray(
+    input.conclusions,
+    1,
+    64,
+    "Evidence replay conclusion declarations are invalid.",
+  );
+  const matcherInput = conclusions.map(compileConclusionMatcher);
   if (new Set(matcherInput.map((matcher) => matcher.duplicateKey)).size !== matcherInput.length) {
     throw new TypeError("Duplicate conclusion identity.");
   }
@@ -320,34 +426,412 @@ export const createEvidenceReplayDefinition = (input: {
   const warningInput = input.warningCodes.map((value) => replayEvidence.warningCode.parse(value));
   const warningCodes = canonicalUnique(warningInput) as readonly Warning["code"][];
   if (warningCodes.length !== warningInput.length) throw new TypeError("Duplicate warning code.");
+
   const definition = Object.freeze({}) as EvidenceReplayDefinition;
-  definitionStates.set(definition, Object.freeze({
-    capabilityId: parsedCapabilityId,
+  definitionStates.set(definition, {
+    capabilityId,
     conclusionIds,
     conclusionMatchers,
     warningCodes,
-  }));
+    factsById: new Map(),
+    slotsById: new Map(),
+  });
+  for (const declaration of conclusions) {
+    conclusionDeclarationOwners.set(declaration as object, definition);
+  }
   return definition;
+};
+
+export const createEvidenceDeclarationScope = (
+  definition: EvidenceReplayDefinition,
+): EvidenceDeclarationScope => {
+  definitionState(definition);
+  definitionsWithScopedDeclarations.add(definition as object);
+  const scope = Object.freeze({}) as EvidenceDeclarationScope;
+  declarationScopeStates.set(scope, {
+    definition,
+    factsById: new Map(),
+    slotsById: new Map(),
+  });
+  return scope;
 };
 
 export const readEvidenceReplayConclusionIds = (
   definition: EvidenceReplayDefinition,
 ): readonly string[] => definitionState(definition).conclusionIds;
 
+export const readEvidenceReplayCapabilityId = (
+  definition: EvidenceReplayDefinition,
+): CapabilityId => definitionState(definition).capabilityId;
+
+export const readEvidenceReplayWarningCodes = (
+  definition: EvidenceReplayDefinition,
+): readonly Warning["code"][] => definitionState(definition).warningCodes;
+
+interface EvidenceFactIdentityDeclarationState {
+  readonly definition: EvidenceReplayDefinition;
+  readonly identity: string;
+  readonly scope?: EvidenceDeclarationScope;
+}
+
+const factIdentityDeclarationStates =
+  new WeakMap<object, EvidenceFactIdentityDeclarationState>();
+
+const factIdentityDeclarationState = (
+  definition: EvidenceReplayDefinition,
+  declaration: EvidenceFactIdentityDeclaration,
+): EvidenceFactIdentityDeclarationState => {
+  definitionState(definition);
+  const state = typeof declaration === "object" && declaration !== null
+    ? factIdentityDeclarationStates.get(declaration)
+    : undefined;
+  if (state === undefined || state.definition !== definition) {
+    throw new TypeError("Evidence fact identity declaration provenance is invalid.");
+  }
+  return state;
+};
+
+export const createEvidenceFactIdentityDeclaration = (
+  definition: EvidenceReplayDefinition,
+  identityInput: string,
+): EvidenceFactIdentityDeclaration => {
+  const state = definitionState(definition);
+  if (definitionsWithScopedDeclarations.has(definition as object)) {
+    throw new TypeError("Static evidence declarations are closed.");
+  }
+  const identity = replayPrimitives.fixedIdentifier.parse(identityInput);
+  if (state.factsById.has(identity)) throw new TypeError("Duplicate evidence fact identity.");
+  const declaration = Object.freeze({}) as EvidenceFactIdentityDeclaration;
+  factIdentityDeclarationStates.set(declaration, Object.freeze({ definition, identity }));
+  state.factsById.set(identity, declaration);
+  return declaration;
+};
+
+export const createEvidenceFactIdentityForConclusion = (
+  definition: EvidenceReplayDefinition,
+  conclusion: ExactConclusionIdentityDeclaration,
+  scope: EvidenceDeclarationScope,
+): EvidenceFactIdentityDeclaration => {
+  const registry = declarationScopeState(definition, scope);
+  const conclusionState = exactConclusionIdentityDeclarationState(conclusion);
+  if (conclusionState.family === undefined) {
+    throw new TypeError("Dynamic evidence fact requires a dynamic conclusion identity.");
+  }
+  const identity = readConclusionIdentity(definition, conclusion);
+  if (definitionState(definition).factsById.has(identity) ||
+      registry.factsById.has(identity)) {
+    throw new TypeError("Duplicate evidence fact identity.");
+  }
+  const declaration = Object.freeze({}) as EvidenceFactIdentityDeclaration;
+  factIdentityDeclarationStates.set(
+    declaration,
+    Object.freeze({ definition, identity, scope }),
+  );
+  registry.factsById.set(identity, declaration);
+  return declaration;
+};
+
+type EvidenceObservationTargetInput<
+  Roles extends Readonly<
+    Record<string, string | ExactConclusionIdentityDeclaration>
+  >,
+> = Readonly<{
+  slotId: string;
+  fact: EvidenceFactIdentityDeclaration;
+  purpose: string;
+  roles: Roles;
+}> & (
+  | Readonly<{
+      kind: "validated_input";
+      owner: string;
+      sourceId: string;
+    }>
+  | Readonly<{
+      kind: "source";
+      sourceClass: Exclude<SourceClass, "validated_input">;
+    }>
+);
+
+export interface ValidatedInputEvidenceIdentity {
+  readonly owner: string;
+  readonly sourceId: string;
+}
+
+interface EvidenceObservationSlotDeclarationState {
+  readonly definition: EvidenceReplayDefinition;
+  readonly projection: ObservationSlotProjection;
+  readonly fact: EvidenceFactIdentityDeclaration;
+  readonly target: EvidenceObservationTargetDeclaration;
+  readonly scope?: EvidenceDeclarationScope;
+  readonly validatedInputIdentity?: ValidatedInputEvidenceIdentity;
+}
+
+interface EvidenceClaimRoleDeclarationState {
+  readonly slot: EvidenceObservationSlotDeclaration;
+  readonly identity: string;
+}
+
+interface EvidenceObservationTargetDeclarationState {
+  readonly definition: EvidenceReplayDefinition;
+  readonly slot: EvidenceObservationSlotDeclaration;
+  readonly roles: Readonly<Record<string, EvidenceClaimRoleDeclaration>>;
+  readonly rolesByIdentity: Map<string, EvidenceClaimRoleDeclaration>;
+}
+
+const observationSlotDeclarationStates =
+  new WeakMap<object, EvidenceObservationSlotDeclarationState>();
+const claimRoleDeclarationStates =
+  new WeakMap<object, EvidenceClaimRoleDeclarationState>();
+const observationTargetDeclarationStates =
+  new WeakMap<object, EvidenceObservationTargetDeclarationState>();
+
+const observationTargetDeclarationState = (
+  definition: EvidenceReplayDefinition,
+  target: EvidenceObservationTargetDeclaration,
+): EvidenceObservationTargetDeclarationState => {
+  definitionState(definition);
+  const state = typeof target === "object" && target !== null
+    ? observationTargetDeclarationStates.get(target)
+    : undefined;
+  if (state === undefined || state.definition !== definition) {
+    throw new TypeError("Evidence observation target declaration provenance is invalid.");
+  }
+  return state;
+};
+
+const observationSlotDeclarationState = (
+  definition: EvidenceReplayDefinition,
+  slot: EvidenceObservationSlotDeclaration,
+): EvidenceObservationSlotDeclarationState => {
+  definitionState(definition);
+  const state = typeof slot === "object" && slot !== null
+    ? observationSlotDeclarationStates.get(slot)
+    : undefined;
+  if (state === undefined || state.definition !== definition) {
+    throw new TypeError("Evidence observation slot declaration provenance is invalid.");
+  }
+  return state;
+};
+
+const claimRoleDeclarationState = (
+  definition: EvidenceReplayDefinition,
+  role: EvidenceClaimRoleDeclaration,
+): EvidenceClaimRoleDeclarationState => {
+  definitionState(definition);
+  const state = typeof role === "object" && role !== null
+    ? claimRoleDeclarationStates.get(role)
+    : undefined;
+  const slotState = state === undefined
+    ? undefined
+    : observationSlotDeclarationStates.get(state.slot);
+  if (state === undefined || slotState?.definition !== definition) {
+    throw new TypeError("Evidence claim role declaration provenance is invalid.");
+  }
+  return state;
+};
+
+export const createEvidenceObservationTargetDeclaration = <
+  const Roles extends Readonly<
+    Record<string, string | ExactConclusionIdentityDeclaration>
+  >,
+>(
+  definition: EvidenceReplayDefinition,
+  input: EvidenceObservationTargetInput<Roles>,
+): EvidenceObservationTargetDeclaration<{
+  readonly [Key in keyof Roles]: EvidenceClaimRoleDeclaration;
+}> => {
+  const definitionValue = definitionState(definition);
+  const fact = factIdentityDeclarationState(definition, input.fact);
+  if (fact.scope === undefined &&
+      definitionsWithScopedDeclarations.has(definition as object)) {
+    throw new TypeError("Static evidence declarations are closed.");
+  }
+  const registry: EvidenceDeclarationRegistry = fact.scope === undefined
+    ? definitionValue
+    : declarationScopeState(definition, fact.scope);
+  const slotId = replayPrimitives.fixedIdentifier.parse(input.slotId);
+  const purpose = replayPrimitives.snakeCaseCode.parse(input.purpose);
+  if (typeof input.roles !== "object" || input.roles === null ||
+      Array.isArray(input.roles)) {
+    throw new TypeError("Evidence claim-role declarations are invalid.");
+  }
+  const roleInput: Readonly<Record<string, string | ExactConclusionIdentityDeclaration>> =
+    input.roles;
+  const roleEntries = Object.keys(roleInput).map((key) => {
+    const identity = roleInput[key];
+    if (identity === undefined) {
+      throw new TypeError("Evidence claim-role declaration key is invalid.");
+    }
+    return [key, identity] as const;
+  });
+  if (roleEntries.length === 0 || roleEntries.length > 8_192 ||
+      (input.kind === "validated_input" && roleEntries.length !== 1)) {
+    throw new TypeError("Evidence observation target claim roles are invalid.");
+  }
+  const roleIds = roleEntries.map(([, identity]) =>
+    typeof identity === "string"
+      ? replayPrimitives.fixedIdentifier.parse(identity)
+      : readConclusionIdentity(definition, identity));
+  if (canonicalUnique(roleIds).length !== roleIds.length) {
+    throw new TypeError("Duplicate evidence claim role identity.");
+  }
+
+  const projection: ObservationSlotProjection = input.kind === "validated_input"
+    ? Object.freeze({
+        slotId,
+        factId: fact.identity,
+        kind: "validated_input",
+        purpose,
+      })
+    : Object.freeze({
+        slotId,
+        factId: fact.identity,
+        kind: "source",
+        purpose,
+        sourceClass: replayEvidence.externalSourceClass.parse(input.sourceClass),
+      });
+  const validatedInputIdentity = input.kind === "validated_input"
+    ? Object.freeze({
+        owner: replayPrimitives.generalSingleLineText.parse(input.owner),
+        sourceId: replayPrimitives.fixedIdentifier.parse(input.sourceId),
+      })
+    : undefined;
+  const existingSlots = registry.slotsById.get(slotId) ?? [];
+  if (existingSlots.some((existing) => {
+    const existingState = observationSlotDeclarationState(definition, existing);
+    return canonicalJsonStringify(existingState.projection as unknown as CanonicalJson) ===
+        canonicalJsonStringify(projection as unknown as CanonicalJson) &&
+      canonicalJsonStringify((existingState.validatedInputIdentity ?? null) as CanonicalJson) ===
+        canonicalJsonStringify((validatedInputIdentity ?? null) as CanonicalJson);
+  })) {
+    throw new TypeError("Duplicate observation slot declaration.");
+  }
+
+  const slot = Object.freeze({}) as EvidenceObservationSlotDeclaration;
+  const roles: Record<string, EvidenceClaimRoleDeclaration> = {};
+  const rolesByIdentity = new Map<string, EvidenceClaimRoleDeclaration>();
+  for (let index = 0; index < roleEntries.length; index += 1) {
+    const key = roleEntries[index]?.[0];
+    const identity = roleIds[index];
+    if (key === undefined || identity === undefined || Object.hasOwn(roles, key)) {
+      throw new TypeError("Evidence claim-role declaration key is invalid.");
+    }
+    const role = Object.freeze({}) as EvidenceClaimRoleDeclaration;
+    claimRoleDeclarationStates.set(role, Object.freeze({ slot, identity }));
+    roles[key] = role;
+    rolesByIdentity.set(identity, role);
+  }
+  const target = Object.freeze({
+    slot,
+    roles: Object.freeze(roles),
+  }) as EvidenceObservationTargetDeclaration<{
+    readonly [Key in keyof Roles]: EvidenceClaimRoleDeclaration;
+  }>;
+  observationSlotDeclarationStates.set(slot, Object.freeze({
+    definition,
+    projection,
+    fact: input.fact,
+    target,
+    ...(fact.scope === undefined ? {} : { scope: fact.scope }),
+    ...(validatedInputIdentity === undefined ? {} : { validatedInputIdentity }),
+  }));
+  observationTargetDeclarationStates.set(target, Object.freeze({
+    definition,
+    slot,
+    roles: target.roles,
+    rolesByIdentity,
+  }));
+  registry.slotsById.set(slotId, [...existingSlots, slot]);
+  return target;
+};
+
+export const createEvidenceClaimRoleDeclaration = (
+  definition: EvidenceReplayDefinition,
+  target: EvidenceObservationTargetDeclaration,
+  identityInput: string,
+): EvidenceClaimRoleDeclaration => {
+  const targetState = observationTargetDeclarationState(definition, target);
+  const identity = replayPrimitives.fixedIdentifier.parse(identityInput);
+  if (targetState.rolesByIdentity.has(identity)) {
+    throw new TypeError("Duplicate evidence claim role identity.");
+  }
+  const role = Object.freeze({}) as EvidenceClaimRoleDeclaration;
+  claimRoleDeclarationStates.set(role, Object.freeze({
+    slot: targetState.slot,
+    identity,
+  }));
+  targetState.rolesByIdentity.set(identity, role);
+  return role;
+};
+
+const readConclusionIdentity = (
+  definition: EvidenceReplayDefinition,
+  declaration: ExactConclusionIdentityDeclaration,
+): string => {
+  const state = exactConclusionIdentityDeclarationState(declaration);
+  if (conclusionDeclarationOwners.get(declaration as object) !== definition) {
+    throw new TypeError("Conclusion identity declaration provenance is invalid.");
+  }
+  const matches = definitionState(definition).conclusionMatchers
+    .filter((matcher) => matcher.matches(state.identity));
+  if (matches.length !== 1) {
+    throw new TypeError("Conclusion identity declaration is undeclared or ambiguous.");
+  }
+  return state.identity;
+};
+
 declare const evidenceReplayLayoutType: unique symbol;
 export interface EvidenceReplayLayout {
   readonly [evidenceReplayLayoutType]: true;
 }
 
-type PreparedObservationSlot = ObservationSlot & { readonly ordinal: string };
+interface BoundEvidenceObservationSlotDeclarationState {
+  readonly definition: EvidenceReplayDefinition;
+  readonly layout: EvidenceReplayLayout;
+  readonly declaration: EvidenceObservationSlotDeclaration;
+  readonly projection: ObservationSlotProjection;
+  readonly ordinal: string;
+  readonly validatedInputIdentity?: ValidatedInputEvidenceIdentity;
+}
+
+interface BoundEvidenceClaimRoleDeclarationState {
+  readonly definition: EvidenceReplayDefinition;
+  readonly layout: EvidenceReplayLayout;
+  readonly slot: BoundEvidenceObservationSlotDeclaration;
+  readonly declaration: EvidenceClaimRoleDeclaration;
+  readonly identity: string;
+}
+
+interface PreparedObservationTarget {
+  readonly declaration: EvidenceObservationTargetDeclaration;
+  readonly bound: BoundEvidenceObservationTarget;
+  readonly projection: ObservationSlotProjection;
+  readonly ordinal: string;
+  readonly validatedInputIdentity?: ValidatedInputEvidenceIdentity;
+}
 
 interface EvidenceReplayLayoutState {
   readonly definition: EvidenceReplayDefinition;
-  readonly slots: readonly PreparedObservationSlot[];
-  readonly slotById: ReadonlyMap<string, PreparedObservationSlot>;
+  readonly targets: readonly PreparedObservationTarget[];
+  readonly targetByDeclaration: ReadonlyMap<
+    EvidenceObservationTargetDeclaration,
+    BoundEvidenceObservationTarget
+  >;
+  readonly targetBySlotDeclaration: ReadonlyMap<
+    EvidenceObservationSlotDeclaration,
+    PreparedObservationTarget
+  >;
+  readonly roleByDeclaration: Map<
+    EvidenceClaimRoleDeclaration,
+    BoundEvidenceClaimRoleDeclaration
+  >;
 }
 
 const layoutStates = new WeakMap<object, EvidenceReplayLayoutState>();
+const boundObservationSlotDeclarationStates =
+  new WeakMap<object, BoundEvidenceObservationSlotDeclarationState>();
+const boundClaimRoleDeclarationStates =
+  new WeakMap<object, BoundEvidenceClaimRoleDeclarationState>();
 
 const layoutState = (
   definition: EvidenceReplayDefinition,
@@ -361,24 +845,133 @@ const layoutState = (
   return state;
 };
 
+const boundObservationSlotDeclarationState = (
+  definition: EvidenceReplayDefinition,
+  layout: EvidenceReplayLayout,
+  slot: BoundEvidenceObservationSlotDeclaration,
+): BoundEvidenceObservationSlotDeclarationState => {
+  layoutState(definition, layout);
+  const state = typeof slot === "object" && slot !== null
+    ? boundObservationSlotDeclarationStates.get(slot)
+    : undefined;
+  if (state === undefined || state.definition !== definition || state.layout !== layout) {
+    throw new TypeError("Bound evidence observation slot provenance is invalid.");
+  }
+  return state;
+};
+
+const boundClaimRoleDeclarationState = (
+  definition: EvidenceReplayDefinition,
+  layout: EvidenceReplayLayout,
+  role: BoundEvidenceClaimRoleDeclaration,
+): BoundEvidenceClaimRoleDeclarationState => {
+  layoutState(definition, layout);
+  const state = typeof role === "object" && role !== null
+    ? boundClaimRoleDeclarationStates.get(role)
+    : undefined;
+  if (state === undefined || state.definition !== definition || state.layout !== layout) {
+    throw new TypeError("Bound evidence claim role provenance is invalid.");
+  }
+  return state;
+};
+
 export const createEvidenceReplayLayout = (
   definition: EvidenceReplayDefinition,
-  slotsInput: unknown,
+  targetsInput: readonly EvidenceObservationTargetDeclaration[],
 ): EvidenceReplayLayout => {
   definitionState(definition);
-  const slots = parseArray(observationSlotSchema, slotsInput) as readonly ObservationSlot[];
-  if (canonicalUnique(slots.map((slot) => slot.slotId)).length !== slots.length) {
+  const targets = parseBoundedArray(
+    targetsInput,
+    1,
+    128,
+    "Evidence replay layout targets are invalid.",
+  ).map((target) => observationTargetDeclarationState(definition, target));
+  const declarationScopes = new Set(
+    targets.flatMap((target) => {
+      const scope = observationSlotDeclarationState(definition, target.slot).scope;
+      return scope === undefined ? [] : [scope];
+    }),
+  );
+  if (declarationScopes.size > 1) {
+    throw new TypeError("Evidence replay layout mixes declaration scopes.");
+  }
+  if (new Set(targetsInput).size !== targetsInput.length ||
+      canonicalUnique(targets.map((target) =>
+        observationSlotDeclarationState(definition, target.slot).projection.slotId)).length !==
+        targets.length) {
     throw new TypeError("Duplicate observation slot identity.");
   }
-  const prepared = Object.freeze(slots.map((slot, index) => Object.freeze({
-    ...slot,
-    ordinal: String(index),
-  })));
+
   const layout = Object.freeze({}) as EvidenceReplayLayout;
+  const targetByDeclaration = new Map<
+    EvidenceObservationTargetDeclaration,
+    BoundEvidenceObservationTarget
+  >();
+  const targetBySlotDeclaration = new Map<
+    EvidenceObservationSlotDeclaration,
+    PreparedObservationTarget
+  >();
+  const roleByDeclaration = new Map<
+    EvidenceClaimRoleDeclaration,
+    BoundEvidenceClaimRoleDeclaration
+  >();
+  const prepared = Object.freeze(targets.map((target, index): PreparedObservationTarget => {
+    const slotState = observationSlotDeclarationState(definition, target.slot);
+    const boundSlot = Object.freeze({}) as BoundEvidenceObservationSlotDeclaration;
+    boundObservationSlotDeclarationStates.set(boundSlot, Object.freeze({
+      definition,
+      layout,
+      declaration: target.slot,
+      projection: slotState.projection,
+      ordinal: String(index),
+      ...(slotState.validatedInputIdentity === undefined
+        ? {}
+        : { validatedInputIdentity: slotState.validatedInputIdentity }),
+    }));
+    const boundRoles: Record<string, BoundEvidenceClaimRoleDeclaration> = {};
+    for (const key of Object.keys(target.roles)) {
+      const role = target.roles[key];
+      if (role === undefined) {
+        throw new TypeError("Evidence claim role declaration key is invalid.");
+      }
+      const roleState = claimRoleDeclarationState(definition, role);
+      if (roleState.slot !== target.slot) {
+        throw new TypeError("Evidence claim role does not belong to its observation slot.");
+      }
+      const boundRole = Object.freeze({}) as BoundEvidenceClaimRoleDeclaration;
+      boundClaimRoleDeclarationStates.set(boundRole, Object.freeze({
+        definition,
+        layout,
+        slot: boundSlot,
+        declaration: role,
+        identity: roleState.identity,
+      }));
+      roleByDeclaration.set(role, boundRole);
+      boundRoles[key] = boundRole;
+    }
+    const bound = Object.freeze({
+      slot: boundSlot,
+      roles: Object.freeze(boundRoles),
+    }) as BoundEvidenceObservationTarget;
+    const result = Object.freeze({
+      declaration: targetsInput[index] as EvidenceObservationTargetDeclaration,
+      bound,
+      projection: slotState.projection,
+      ordinal: String(index),
+      ...(slotState.validatedInputIdentity === undefined
+        ? {}
+        : { validatedInputIdentity: slotState.validatedInputIdentity }),
+    });
+    targetByDeclaration.set(result.declaration, bound);
+    targetBySlotDeclaration.set(target.slot, result);
+    return result;
+  }));
   layoutStates.set(layout, Object.freeze({
     definition,
-    slots: prepared,
-    slotById: new Map(prepared.map((slot) => [slot.slotId, slot])),
+    targets: prepared,
+    targetByDeclaration,
+    targetBySlotDeclaration,
+    roleByDeclaration,
   }));
   return layout;
 };
@@ -386,23 +979,103 @@ export const createEvidenceReplayLayout = (
 export const readEvidenceReplaySlots = (
   definition: EvidenceReplayDefinition,
   layout: EvidenceReplayLayout,
-): readonly ObservationSlot[] =>
-  Object.freeze(layoutState(definition, layout).slots.map(({ ordinal: _ordinal, ...slot }) => Object.freeze(slot)));
+): readonly ObservationSlotProjection[] =>
+  Object.freeze(layoutState(definition, layout).targets.map((target) => target.projection));
+
+export const readEvidenceReplayBoundTargets = (
+  definition: EvidenceReplayDefinition,
+  layout: EvidenceReplayLayout,
+): readonly BoundEvidenceObservationTarget[] =>
+  Object.freeze(layoutState(definition, layout).targets.map((target) => target.bound));
+
+export const readBoundEvidenceObservationSlot = (
+  definition: EvidenceReplayDefinition,
+  layout: EvidenceReplayLayout,
+  slot: BoundEvidenceObservationSlotDeclaration,
+): Readonly<{
+  readonly purpose: string;
+  readonly sourceClass: SourceClass;
+  readonly validatedInputIdentity?: ValidatedInputEvidenceIdentity;
+}> => {
+  const state = boundObservationSlotDeclarationState(definition, layout, slot);
+  return Object.freeze({
+    purpose: state.projection.purpose,
+    sourceClass: state.projection.kind === "validated_input"
+      ? "validated_input"
+      : state.projection.sourceClass,
+    ...(state.validatedInputIdentity === undefined
+      ? {}
+      : { validatedInputIdentity: state.validatedInputIdentity }),
+  });
+};
+
+export const bindEvidenceObservationTarget = <
+  Target extends EvidenceObservationTargetDeclaration,
+>(
+  definition: EvidenceReplayDefinition,
+  layout: EvidenceReplayLayout,
+  target: Target,
+): BoundEvidenceObservationTarget<Target> => {
+  observationTargetDeclarationState(definition, target);
+  const bound = layoutState(definition, layout).targetByDeclaration.get(target);
+  if (bound === undefined) {
+    throw new TypeError("Evidence observation target is not part of this layout.");
+  }
+  return bound as BoundEvidenceObservationTarget<Target>;
+};
+
+export const bindEvidenceClaimRole = (
+  definition: EvidenceReplayDefinition,
+  layout: EvidenceReplayLayout,
+  role: EvidenceClaimRoleDeclaration,
+): BoundEvidenceClaimRoleDeclaration => {
+  const roleState = claimRoleDeclarationState(definition, role);
+  const state = layoutState(definition, layout);
+  const existing = state.roleByDeclaration.get(role);
+  if (existing !== undefined) return existing;
+  const preparedTarget = state.targetBySlotDeclaration.get(roleState.slot);
+  if (preparedTarget === undefined) {
+    throw new TypeError("Evidence claim role observation target is not part of this layout.");
+  }
+  const boundRole = Object.freeze({}) as BoundEvidenceClaimRoleDeclaration;
+  boundClaimRoleDeclarationStates.set(boundRole, Object.freeze({
+    definition,
+    layout,
+    slot: preparedTarget.bound.slot,
+    declaration: role,
+    identity: roleState.identity,
+  }));
+  state.roleByDeclaration.set(role, boundRole);
+  return boundRole;
+};
+
+export const createEvidenceReplayBinder = (
+  definition: EvidenceReplayDefinition,
+  layout: EvidenceReplayLayout,
+): EvidenceReplayBinder => Object.freeze({
+  bind<Target extends EvidenceObservationTargetDeclaration>(
+    target: Target,
+  ): BoundEvidenceObservationTarget<Target> {
+    return bindEvidenceObservationTarget(definition, layout, target);
+  },
+  bindRole(role: EvidenceClaimRoleDeclaration): BoundEvidenceClaimRoleDeclaration {
+    return bindEvidenceClaimRole(definition, layout, role);
+  },
+});
 
 export const createEvidenceObservationId = (
   definition: EvidenceReplayDefinition,
   layout: EvidenceReplayLayout,
   input: {
-    readonly slotId: string;
+    readonly slot: BoundEvidenceObservationSlotDeclaration;
     readonly sourceId: string;
     readonly observedAt: UtcTimestamp;
     readonly chainAnchor?: ChainAnchor;
     readonly invocationId: InvocationId;
   },
 ): ObservationId => {
-  const state = layoutState(definition, layout);
-  const slot = state.slotById.get(input.slotId);
-  if (slot === undefined) throw new TypeError("Observation slot identity is invalid.");
+  const slot = boundObservationSlotDeclarationState(definition, layout, input.slot);
+  const sourceId = replayPrimitives.fixedIdentifier.parse(input.sourceId);
   const observedAt = replayPrimitives.utcTimestamp.parse(input.observedAt);
   const chainAnchor = input.chainAnchor === undefined
     ? undefined
@@ -410,8 +1083,8 @@ export const createEvidenceObservationId = (
   const invocationId = replayEvidence.invocationId.parse(input.invocationId);
   const anchor = chainAnchor === undefined ? null : chainAnchor as unknown as CanonicalJson;
   const digest = canonicalSha256Base64Url([
-    input.sourceId,
-    slot.purpose,
+    sourceId,
+    slot.projection.purpose,
     observedAt,
     anchor,
     invocationId,
@@ -420,26 +1093,113 @@ export const createEvidenceObservationId = (
   return replayEvidence.observationId.parse(`obs:${digest}`);
 };
 
-const expectedSourceClass = (slot: ObservationSlot): SourceClass =>
-  slot.kind === "validated_input" ? "validated_input" : slot.sourceClass;
+const claimProjection = (
+  definition: EvidenceReplayDefinition,
+  layout: EvidenceReplayLayout,
+  slot: BoundEvidenceObservationSlotDeclaration,
+  claim: ObservationClaim,
+): Readonly<{
+  readonly role: string;
+  readonly value: CanonicalJson;
+  readonly chainAnchor?: ChainAnchor;
+  readonly asset?: AssetIdentity;
+}> => {
+  boundObservationSlotDeclarationState(definition, layout, slot);
+  const role = boundClaimRoleDeclarationState(definition, layout, claim.role);
+  if (role.slot !== slot) {
+    throw new TypeError("Evidence claim role does not belong to its bound observation slot.");
+  }
+  let value: CanonicalJson;
+  try {
+    value = captureCanonicalJson(claim.value);
+  } catch {
+    throw new TypeError("Evidence observation claim is invalid.");
+  }
+  const parsed = observationClaimValueSchema.parse({
+    value,
+    ...(claim.chainAnchor === undefined ? {} : { chainAnchor: claim.chainAnchor }),
+    ...(claim.asset === undefined ? {} : { asset: claim.asset }),
+  });
+  return deepFreezeValue({
+    role: role.identity,
+    value: parsed.value,
+    ...(parsed.chainAnchor === undefined ? {} : { chainAnchor: parsed.chainAnchor }),
+    ...(parsed.asset === undefined ? {} : { asset: parsed.asset }),
+  });
+};
+
+export const captureEvidenceObservationClaims = (
+  definition: EvidenceReplayDefinition,
+  layout: EvidenceReplayLayout,
+  slot: BoundEvidenceObservationSlotDeclaration,
+  claimsInput: readonly ObservationClaim[],
+): readonly ObservationClaim[] => {
+  const claims = parseBoundedArray(
+    claimsInput,
+    1,
+    8_192,
+    "An observation requires bounded claims.",
+  ).map((claim) => {
+    const projection = claimProjection(definition, layout, slot, claim);
+    return Object.freeze({
+      role: claim.role,
+      value: projection.value,
+      ...(projection.chainAnchor === undefined
+        ? {}
+        : { chainAnchor: projection.chainAnchor }),
+      ...(projection.asset === undefined ? {} : { asset: projection.asset }),
+    }) as ObservationClaim;
+  }).sort((left, right) => {
+    const leftRole = boundClaimRoleDeclarationState(definition, layout, left.role).identity;
+    const rightRole = boundClaimRoleDeclarationState(definition, layout, right.role).identity;
+    return compareCodePointSequences(leftRole, rightRole);
+  });
+  const roleIds = claims.map((claim) =>
+    boundClaimRoleDeclarationState(definition, layout, claim.role).identity);
+  if (canonicalUnique(roleIds).length !== roleIds.length) {
+    throw new TypeError("Evidence observation claim roles are duplicated.");
+  }
+  return Object.freeze(claims);
+};
+
+const canonicalClaimArray = (
+  definition: EvidenceReplayDefinition,
+  layout: EvidenceReplayLayout,
+  slot: BoundEvidenceObservationSlotDeclaration,
+  claims: readonly ObservationClaim[],
+): string => canonicalJsonStringify(captureEvidenceObservationClaims(
+  definition,
+  layout,
+  slot,
+  claims,
+).map((claim) => claimProjection(definition, layout, slot, claim)) as unknown as CanonicalJson);
+
+export const evidenceObservationClaimsEqual = (
+  definition: EvidenceReplayDefinition,
+  layout: EvidenceReplayLayout,
+  slot: BoundEvidenceObservationSlotDeclaration,
+  left: readonly ObservationClaim[],
+  right: readonly ObservationClaim[],
+): boolean =>
+  canonicalClaimArray(definition, layout, slot, left) ===
+  canonicalClaimArray(definition, layout, slot, right);
 
 const canonicalOptionalAnchor = (anchor: ChainAnchor | undefined): string =>
   canonicalJsonStringify((anchor ?? null) as unknown as CanonicalJson);
 
 interface ObservedFact {
-  readonly factId: string;
   readonly outcome: FactOutcome;
   readonly observationIds: readonly ObservationId[];
 }
 
 interface EvidenceObservationProjection {
-  get(slotId: string): ObservationId | undefined;
-  hasSlot(slotId: string): boolean;
+  get(slot: BoundEvidenceObservationSlotDeclaration): ObservationId | undefined;
+  hasSlot(slot: BoundEvidenceObservationSlotDeclaration): boolean;
   evidenceFor(observationId: string): EvidenceSource | undefined;
 }
 
 class ParsedEvidenceObservations implements EvidenceObservationProjection {
-  readonly #bySlot = new Map<string, EvidenceSource>();
+  readonly #bySlot = new Map<BoundEvidenceObservationSlotDeclaration, EvidenceSource>();
   readonly #byObservationId = new Map<string, EvidenceSource>();
 
   constructor(
@@ -448,8 +1208,7 @@ class ParsedEvidenceObservations implements EvidenceObservationProjection {
     sources: readonly EvidenceSource[],
     evaluatedAt: UtcTimestamp,
   ) {
-    const definitionValue = definitionState(definition);
-    const slots = layoutState(definition, layout).slots;
+    const targets = layoutState(definition, layout).targets;
     const observationIds = sources.map((source) => source.observationId);
     if (!isStrictlyOrderedUnique(observationIds)) {
       throw new TypeError("Evidence sources must be unique and canonically ordered.");
@@ -470,11 +1229,13 @@ class ParsedEvidenceObservations implements EvidenceObservationProjection {
         throw new TypeError("One invocation uses conflicting source identities.");
       }
       authorityByClass.set(source.sourceClass, authorityIdentity);
-      const candidates = slots.filter((slot) =>
-        expectedSourceClass(slot) === source.sourceClass &&
-        slot.purpose === source.purpose &&
+      const candidates = targets.filter((target) =>
+        (target.projection.kind === "validated_input"
+          ? "validated_input"
+          : target.projection.sourceClass) === source.sourceClass &&
+        target.projection.purpose === source.purpose &&
         createEvidenceObservationId(definition, layout, {
-          slotId: slot.slotId,
+          slot: target.bound.slot,
           sourceId: source.reference.sourceId,
           observedAt: source.observedAt,
           ...(source.chainAnchor === undefined ? {} : { chainAnchor: source.chainAnchor }),
@@ -483,24 +1244,28 @@ class ParsedEvidenceObservations implements EvidenceObservationProjection {
       if (candidates.length !== 1) {
         throw new TypeError("Evidence source does not match one declared observation slot.");
       }
-      const slot = candidates[0] as PreparedObservationSlot;
-      if (this.#bySlot.has(slot.slotId)) throw new TypeError("Observation slot is duplicated.");
-      if (slot.kind === "validated_input" && (
-        source.owner !== `${productDisplayName} validated input` ||
-        source.reference.kind !== "validated_input" ||
-        source.reference.sourceId !== `input:${definitionValue.capabilityId}`
-      )) throw new TypeError("Validated-input evidence identity is invalid.");
-      this.#bySlot.set(slot.slotId, source);
+      const target = candidates[0] as PreparedObservationTarget;
+      if (this.#bySlot.has(target.bound.slot)) throw new TypeError("Observation slot is duplicated.");
+      if (target.projection.kind === "validated_input") {
+        const expected = target.validatedInputIdentity;
+        if (expected === undefined ||
+            source.owner !== expected.owner ||
+            source.reference.kind !== "validated_input" ||
+            source.reference.sourceId !== expected.sourceId) {
+          throw new TypeError("Validated-input evidence identity is invalid.");
+        }
+      }
+      this.#bySlot.set(target.bound.slot, source);
       this.#byObservationId.set(source.observationId, source);
     }
   }
 
-  get(slotId: string): ObservationId | undefined {
-    return this.#bySlot.get(slotId)?.observationId;
+  get(slot: BoundEvidenceObservationSlotDeclaration): ObservationId | undefined {
+    return this.#bySlot.get(slot)?.observationId;
   }
 
-  hasSlot(slotId: string): boolean {
-    return this.#bySlot.has(slotId);
+  hasSlot(slot: BoundEvidenceObservationSlotDeclaration): boolean {
+    return this.#bySlot.has(slot);
   }
 
   evidenceFor(observationId: string): EvidenceSource | undefined {
@@ -509,81 +1274,119 @@ class ParsedEvidenceObservations implements EvidenceObservationProjection {
 }
 
 const validateDefinitionStructure = (
-  slots: readonly PreparedObservationSlot[],
-  requirements: readonly FactRequirement[],
-): void => {
-  const factIds = canonicalUnique(requirements.map((requirement) => requirement.factId));
-  if (factIds.length !== requirements.length) throw new TypeError("Duplicate definition identity.");
-  const slotById = new Map(slots.map((slot) => [slot.slotId, slot]));
-  const requirementByFactId = new Map(requirements.map((requirement) => [requirement.factId, requirement]));
+  definition: EvidenceReplayDefinition,
+  layout: EvidenceReplayLayout,
+  requirementsInput: readonly FactRequirement[],
+): readonly FactRequirement[] => {
+  const requirements = parseBoundedArray(
+    requirementsInput,
+    1,
+    128,
+    "Evidence fact requirements are invalid.",
+  );
+  if (new Set(requirements.map((requirement) => requirement.fact)).size !== requirements.length) {
+    throw new TypeError("Duplicate definition identity.");
+  }
+  const requirementByFact = new Map<
+    EvidenceFactIdentityDeclaration,
+    FactRequirement
+  >();
   for (const requirement of requirements) {
-    const ordered = canonicalUnique(requirement.observationSlotIds);
-    if (ordered.length !== requirement.observationSlotIds.length) {
+    factIdentityDeclarationState(definition, requirement.fact);
+    const slots = parseBoundedArray(
+      requirement.observationSlots,
+      1,
+      128,
+      "Fact observation slots are invalid.",
+    );
+    const requiredSlots = parseBoundedArray(
+      requirement.requiredObservationSlots,
+      0,
+      128,
+      "Required fact observation slots are invalid.",
+    );
+    if (new Set(slots).size !== slots.length || new Set(requiredSlots).size !== requiredSlots.length) {
       throw new TypeError("Duplicate fact observation slot.");
     }
-    const required = canonicalUnique(requirement.requiredObservationSlotIds);
-    if (required.length !== requirement.requiredObservationSlotIds.length) {
-      throw new TypeError("Duplicate required fact observation slot.");
+    if (!Number.isSafeInteger(requirement.minimumObservationCount) ||
+        requirement.minimumObservationCount < requiredSlots.length ||
+        requirement.minimumObservationCount > slots.length) {
+      throw new TypeError("Fact observation cardinality is invalid.");
     }
-    if (
-      !Number.isSafeInteger(requirement.minimumObservationCount) ||
-      requirement.minimumObservationCount < required.length ||
-      requirement.minimumObservationCount > ordered.length
-    ) throw new TypeError("Fact observation cardinality is invalid.");
-    for (const slotId of ordered) {
-      const slot = slotById.get(slotId);
-      if (slot === undefined || slot.factId !== requirement.factId) {
-        throw new TypeError("Fact requirement does not own its observation slot.");
-      }
-    }
-    const authorityKind = factOutcomeDefinitions[requirement.outcome].evidenceAuthority === "validated_input"
+    const outcome = replayEvidence.factOutcome.parse(requirement.outcome);
+    const authorityKind = factOutcomeDefinitions[outcome].evidenceAuthority === "validated_input"
       ? "validated_input"
       : "source";
-    if (ordered.some((slotId) => slotById.get(slotId)?.kind !== authorityKind)) {
-      throw new TypeError("Fact requirement mixes observation authorities.");
+    for (const slot of slots) {
+      const slotState = boundObservationSlotDeclarationState(definition, layout, slot);
+      if (observationSlotDeclarationState(definition, slotState.declaration).fact !== requirement.fact) {
+        throw new TypeError("Fact requirement does not own its observation slot.");
+      }
+      if (slotState.projection.kind !== authorityKind) {
+        throw new TypeError("Fact requirement mixes observation authorities.");
+      }
     }
-    for (const slotId of required) {
-      if (!ordered.includes(slotId)) throw new TypeError("Required observation slot is not allowed by its fact.");
+    for (const slot of requiredSlots) {
+      boundObservationSlotDeclarationState(definition, layout, slot);
+      if (!slots.includes(slot)) throw new TypeError("Required observation slot is not allowed by its fact.");
     }
+    requirementByFact.set(requirement.fact, requirement);
   }
-  for (const slot of slots) {
-    const requirement = requirementByFactId.get(slot.factId);
-    if (requirement === undefined || !requirement.observationSlotIds.includes(slot.slotId)) {
+  for (const target of layoutState(definition, layout).targets) {
+    const slotState = boundObservationSlotDeclarationState(definition, layout, target.bound.slot);
+    const fact = observationSlotDeclarationState(definition, slotState.declaration).fact;
+    if (!requirementByFact.get(fact)?.observationSlots.includes(target.bound.slot)) {
       throw new TypeError("Observation slot has no owning fact requirement.");
     }
   }
+  return Object.freeze([...requirements]);
 };
 
 const prepareObservationExpectations = (
-  slots: readonly PreparedObservationSlot[],
-  expectationsInput: unknown,
-): ReadonlyMap<string, readonly ObservationClaim[]> => {
-  const expectations = parseArray(
-    observationExpectationSchema,
+  definition: EvidenceReplayDefinition,
+  layout: EvidenceReplayLayout,
+  expectationsInput: readonly ObservationExpectation[],
+): ReadonlyMap<
+  BoundEvidenceObservationSlotDeclaration,
+  readonly ObservationClaim[]
+> => {
+  const expectations = parseBoundedArray(
     expectationsInput,
-  ) as readonly ObservationExpectation[];
-  const slotIds = new Set(slots.map((slot) => slot.slotId));
-  const result = new Map<string, readonly ObservationClaim[]>();
+    0,
+    128,
+    "Observation expectations are invalid.",
+  );
+  const result = new Map<
+    BoundEvidenceObservationSlotDeclaration,
+    readonly ObservationClaim[]
+  >();
   for (const expectation of expectations) {
-    if (!slotIds.has(expectation.slotId) || result.has(expectation.slotId)) {
+    boundObservationSlotDeclarationState(definition, layout, expectation.slot);
+    if (result.has(expectation.slot)) {
       throw new TypeError("Observation expectation identity is invalid.");
     }
-    const claims = [...expectation.claims].sort((left, right) =>
-      compareCodePointSequences(left.role, right.role));
-    if (canonicalUnique(claims.map((claim) => claim.role)).length !== claims.length) {
-      throw new TypeError("Observation expectation claims are invalid.");
-    }
-    result.set(expectation.slotId, Object.freeze(claims));
+    result.set(
+      expectation.slot,
+      captureEvidenceObservationClaims(
+        definition,
+        layout,
+        expectation.slot,
+        expectation.claims,
+      ),
+    );
   }
   return result;
 };
 
 const assertExpectedSourceAnchors = (
   observations: EvidenceObservationProjection,
-  expectations: ReadonlyMap<string, readonly ObservationClaim[]>,
+  expectations: ReadonlyMap<
+    BoundEvidenceObservationSlotDeclaration,
+    readonly ObservationClaim[]
+  >,
 ): void => {
-  for (const [slotId, claims] of expectations) {
-    const observationId = observations.get(slotId);
+  for (const [slot, claims] of expectations) {
+    const observationId = observations.get(slot);
     if (observationId === undefined) continue;
     const source = observations.evidenceFor(observationId);
     if (source === undefined) throw new TypeError("Observation source is unavailable.");
@@ -599,25 +1402,50 @@ const assertExpectedSourceAnchors = (
 };
 
 const assertPublicEvidenceClosure = (
-  slots: readonly PreparedObservationSlot[],
-  expectations: ReadonlyMap<string, readonly ObservationClaim[]>,
-  references: readonly ObservationReference[],
+  definition: EvidenceReplayDefinition,
+  layout: EvidenceReplayLayout,
+  expectations: ReadonlyMap<
+    BoundEvidenceObservationSlotDeclaration,
+    readonly ObservationClaim[]
+  >,
+  referencesInput: readonly ObservationReference[],
   observations: EvidenceObservationProjection,
 ): void => {
-  for (const slot of slots) {
-    if (observations.hasSlot(slot.slotId) && !expectations.has(slot.slotId)) {
+  for (const target of layoutState(definition, layout).targets) {
+    if (observations.hasSlot(target.bound.slot) && !expectations.has(target.bound.slot)) {
       throw new TypeError("Observed slot has no definition-owned expectation.");
     }
   }
+  const references = parseBoundedArray(
+    referencesInput,
+    0,
+    8_192,
+    "Public observation references are invalid.",
+  );
   const identities = new Set<string>();
   for (const reference of references) {
-    const identity = canonicalJsonStringify(reference as unknown as CanonicalJson);
+    const observationId = replayEvidence.observationId.parse(reference.observationId);
+    boundObservationSlotDeclarationState(definition, layout, reference.slot);
+    const role = boundClaimRoleDeclarationState(definition, layout, reference.role);
+    if (role.slot !== reference.slot) {
+      throw new TypeError("Public observation reference role is not owned by its declared slot.");
+    }
+    const slotState = boundObservationSlotDeclarationState(
+      definition,
+      layout,
+      reference.slot,
+    );
+    const identity = canonicalJsonStringify({
+      observationId,
+      slotId: slotState.projection.slotId,
+      role: role.identity,
+    } as unknown as CanonicalJson);
     if (identities.has(identity)) throw new TypeError("Public observation reference is duplicated.");
     identities.add(identity);
-    if (observations.get(reference.slotId) !== reference.observationId) {
+    if (observations.get(reference.slot) !== observationId) {
       throw new TypeError("Public observation reference does not match its declared slot.");
     }
-    const claims = expectations.get(reference.slotId);
+    const claims = expectations.get(reference.slot);
     if (claims === undefined || !claims.some((claim) => claim.role === reference.role)) {
       throw new TypeError("Public observation reference role is not owned by its declared slot.");
     }
@@ -666,79 +1494,114 @@ export const replayPublicEvidence = (input: EvidenceReplayDeclaration & {
   readonly sources: readonly EvidenceSource[];
 }): EvidenceReplayResult => {
   const definition = definitionState(input.definition);
-  const layout = layoutState(input.definition, input.layout);
+  layoutState(input.definition, input.layout);
   const evaluatedAt = replayPrimitives.utcTimestamp.parse(input.evaluatedAt);
-  const sources = parseArray(replayEvidence.evidenceSource, input.sources) as readonly EvidenceSource[];
-  const requirements = parseArray(
-    factRequirementSchema,
+  const sources = Object.freeze(input.sources.map((source) =>
+    deepFreezeValue(replayEvidence.evidenceSource.parse(source)))) as readonly EvidenceSource[];
+  const requirements = validateDefinitionStructure(
+    input.definition,
+    input.layout,
     input.factRequirements,
-  ) as readonly FactRequirement[];
-  validateDefinitionStructure(layout.slots, requirements);
-  const expectations = prepareObservationExpectations(layout.slots, input.observationExpectations);
-  const references = parseArray(
-    observationReferenceSchema,
-    input.observationReferences,
-  ) as readonly ObservationReference[];
+  );
+  const expectations = prepareObservationExpectations(
+    input.definition,
+    input.layout,
+    input.observationExpectations,
+  );
   const observations = new ParsedEvidenceObservations(
     input.definition,
     input.layout,
     sources,
     evaluatedAt,
   );
-  assertPublicEvidenceClosure(layout.slots, expectations, references, observations);
+  assertPublicEvidenceClosure(
+    input.definition,
+    input.layout,
+    expectations,
+    input.observationReferences,
+    observations,
+  );
 
-  const slotById = new Map(layout.slots.map((slot) => [slot.slotId, slot]));
-  const facts = new Map<string, ObservedFact>();
+  const facts = new Map<EvidenceFactIdentityDeclaration, ObservedFact>();
   for (const requirement of requirements) {
-    const observationIds = canonicalUnique(requirement.observationSlotIds.flatMap((slotId) => {
-      const observationId = observations.get(slotId);
+    const observationIds = canonicalUnique(requirement.observationSlots.flatMap((slot) => {
+      const observationId = observations.get(slot);
       return observationId === undefined ? [] : [observationId];
     })) as readonly ObservationId[];
-    for (const slotId of requirement.requiredObservationSlotIds) {
-      if (!observations.hasSlot(slotId)) throw new TypeError("Required fact evidence is incomplete.");
+    for (const slot of requirement.requiredObservationSlots) {
+      if (!observations.hasSlot(slot)) throw new TypeError("Required fact evidence is incomplete.");
     }
     if (observationIds.length < requirement.minimumObservationCount) {
       throw new TypeError("Fact evidence cardinality is incomplete.");
     }
-    const observedSlots = requirement.observationSlotIds
-      .map((slotId) => slotById.get(slotId))
-      .filter((slot): slot is PreparedObservationSlot =>
-        slot !== undefined && observations.hasSlot(slot.slotId));
+    const observedSlots = requirement.observationSlots
+      .filter((slot) => observations.hasSlot(slot));
     const authority = factOutcomeDefinitions[requirement.outcome].evidenceAuthority;
     if (authority === "none" && observedSlots.length !== 0) {
       throw new TypeError("Fact outcome must not claim evidence.");
     }
     if (authority === "external" && (
-      observedSlots.length === 0 || observedSlots.some((slot) => slot.kind !== "source")
-    )) throw new TypeError("External fact evidence authority is invalid.");
+      observedSlots.length === 0 || observedSlots.some((slot) =>
+        boundObservationSlotDeclarationState(
+          input.definition,
+          input.layout,
+          slot,
+        ).projection.kind !== "source")
+    )) {
+      throw new TypeError("External fact evidence authority is invalid.");
+    }
     if (authority === "validated_input" && (
-      observedSlots.length === 0 || observedSlots.some((slot) => slot.kind !== "validated_input")
-    )) throw new TypeError("Validated-input fact evidence authority is invalid.");
-    facts.set(requirement.factId, deepFreezeValue({
-      factId: requirement.factId,
+      observedSlots.length === 0 || observedSlots.some((slot) =>
+        boundObservationSlotDeclarationState(
+          input.definition,
+          input.layout,
+          slot,
+        ).projection.kind !== "validated_input")
+    )) {
+      throw new TypeError("Validated-input fact evidence authority is invalid.");
+    }
+    facts.set(requirement.fact, Object.freeze({
       outcome: requirement.outcome,
       observationIds,
     }));
   }
-  if (facts.size !== requirements.length) throw new TypeError("Fact output is incomplete.");
 
-  const expectedInput = parseArray(replayPrimitives.fixedIdentifier, input.expectedConclusionIds);
-  const expectedConclusionIds = canonicalUnique(expectedInput);
-  if (expectedConclusionIds.length !== expectedInput.length) {
+  const expectedDeclarations = parseBoundedArray(
+    input.expectedConclusions,
+    1,
+    64,
+    "Expected conclusion declarations are invalid.",
+  );
+  if (new Set(expectedDeclarations).size !== expectedDeclarations.length) {
     throw new TypeError("Expected conclusion identities are duplicated.");
   }
-  for (const expectedId of expectedConclusionIds) {
-    const matches = definition.conclusionMatchers.filter((matcher) => matcher.matches(expectedId)).length;
-    if (matches !== 1) throw new TypeError("Expected conclusion identity is undeclared or ambiguous.");
+  const expectedConclusionIds = canonicalUnique(expectedDeclarations.map((declaration) =>
+    readConclusionIdentity(input.definition, declaration)));
+  if (expectedConclusionIds.length !== expectedDeclarations.length) {
+    throw new TypeError("Expected conclusion identities are duplicated.");
   }
-  const drafts = parseArray(conclusionDraftSchema, input.conclusionDrafts) as readonly ConclusionDraft[];
+
+  const drafts = parseBoundedArray(
+    input.conclusionDrafts,
+    1,
+    64,
+    "Conclusion drafts are invalid.",
+  );
   const conclusions = drafts.map((draft): Conclusion => {
-    const factIds = canonicalUnique(draft.evidenceFactIds);
-    if (factIds.length !== draft.evidenceFactIds.length) {
+    const id = readConclusionIdentity(input.definition, draft.conclusion);
+    factIdentityDeclarationState(input.definition, draft.outcomeFact);
+    const evidenceFacts = parseBoundedArray(
+      draft.evidenceFacts,
+      1,
+      128,
+      "Conclusion evidence facts are invalid.",
+    );
+    if (new Set(evidenceFacts).size !== evidenceFacts.length) {
       throw new TypeError("Conclusion fact evidence is duplicated.");
     }
-    const observationIds = canonicalUnique(factIds.flatMap((factId) => {
-      const fact = facts.get(factId);
+    const observationIds = canonicalUnique(evidenceFacts.flatMap((factDeclaration) => {
+      factIdentityDeclarationState(input.definition, factDeclaration);
+      const fact = facts.get(factDeclaration);
       if (fact === undefined) throw new TypeError("Conclusion fact is unavailable.");
       return fact.observationIds;
     })) as readonly ObservationId[];
@@ -747,21 +1610,22 @@ export const replayPublicEvidence = (input: EvidenceReplayDeclaration & {
       if (source === undefined) throw new TypeError("Conclusion evidence is unavailable.");
       return source;
     });
-    assertConclusionFreshness(draft, supportingSources);
-    const outcomeFact = facts.get(draft.outcomeFactId);
+    const freshnessRuleId = replayEvidence.freshnessRuleId.parse(draft.freshnessRuleId);
+    assertConclusionFreshness({ ...draft, freshnessRuleId }, supportingSources);
+    const outcomeFact = facts.get(draft.outcomeFact);
     if (outcomeFact === undefined) throw new TypeError("Conclusion outcome fact is unavailable.");
-    if (outcomeFact.observationIds.length > 0 && !factIds.includes(draft.outcomeFactId)) {
+    if (outcomeFact.observationIds.length > 0 && !evidenceFacts.includes(draft.outcomeFact)) {
       throw new TypeError("Conclusion evidence does not contain its outcome fact.");
     }
     const outcome = conclusionOutcome(outcomeFact.outcome);
     return deepFreezeValue({
-      id: draft.id,
+      id,
       status: outcome.status,
       reason: outcome.reason,
       observationIds,
       freshness: {
-        status: freshnessRuleDefinitions[draft.freshnessRuleId].status,
-        ruleId: draft.freshnessRuleId,
+        status: freshnessRuleDefinitions[freshnessRuleId].status,
+        ruleId: freshnessRuleId,
         evaluatedAt,
         observationIds,
       },
@@ -770,27 +1634,37 @@ export const replayPublicEvidence = (input: EvidenceReplayDeclaration & {
   if (!isStrictlyOrderedUnique(conclusions.map((conclusion) => conclusion.id))) {
     throw new TypeError("Conclusion identities are not unique and ordered.");
   }
-  if (conclusions.map((conclusion) => conclusion.id).join("\0") !== expectedConclusionIds.join("\0")) {
+  if (conclusions.map((conclusion) => conclusion.id).join("\0") !==
+      expectedConclusionIds.join("\0")) {
     throw new TypeError("Capability conclusions are incomplete or undeclared.");
   }
 
-  const warningRequirements = parseArray(
-    warningRequirementSchema,
+  const warningRequirements = parseBoundedArray(
     input.warningRequirements,
-  ) as readonly WarningRequirement[];
+    0,
+    64,
+    "Warning requirements are invalid.",
+  );
   const warningInputs = warningRequirements.map((candidate) => {
-    if (!definition.warningCodes.includes(candidate.code)) throw new TypeError("Warning is not declared.");
-    const factIds = canonicalUnique(candidate.factIds);
-    if (factIds.length !== candidate.factIds.length) {
+    const code = replayEvidence.warningCode.parse(candidate.code);
+    if (!definition.warningCodes.includes(code)) throw new TypeError("Warning is not declared.");
+    const factDeclarations = parseBoundedArray(
+      candidate.facts,
+      1,
+      128,
+      "Warning fact evidence is invalid.",
+    );
+    if (new Set(factDeclarations).size !== factDeclarations.length) {
       throw new TypeError("Warning fact evidence is duplicated.");
     }
-    const observationIds = canonicalUnique(factIds.flatMap((factId) => {
-      const fact = facts.get(factId);
+    const observationIds = canonicalUnique(factDeclarations.flatMap((factDeclaration) => {
+      factIdentityDeclarationState(input.definition, factDeclaration);
+      const fact = facts.get(factDeclaration);
       if (fact === undefined) throw new TypeError("Warning fact is invalid.");
       return fact.observationIds;
     })) as readonly ObservationId[];
     if (observationIds.length === 0) throw new TypeError("Warning evidence is invalid.");
-    return { code: candidate.code, observationIds };
+    return { code, observationIds };
   });
   const summary = createEvidenceSummary(conclusions, warningInputs);
   const warningIdentities = summary.warnings.map((warning) =>

@@ -11,6 +11,7 @@ import {
 } from "../../src/core/index.js";
 import {
   tokenInspectCapability,
+  tokenInspectionEvidence,
   tokenInspectionDataSchema,
   type TokenInspectionData,
   type TokenInspectionInput,
@@ -74,52 +75,81 @@ export const createInspectionBinding = (
       blockHash: `0x${"ab".repeat(32)}`,
       blockTimestamp: "2026-07-18T00:00:00.000Z",
     });
-    observations.record("rpc_chain_id", {
+    const chain = observations.bind(tokenInspectionEvidence.configuredChain.target);
+    const blockTarget = observations.bind(tokenInspectionEvidence.targets.block);
+    const runtimeCodeTarget = observations.bind(
+      tokenInspectionEvidence.targets.runtimeCode,
+    );
+    const totalSupplyTarget = observations.bind(
+      tokenInspectionEvidence.targets.totalSupply,
+    );
+    const decimalsTarget = observations.bind(tokenInspectionEvidence.targets.decimals);
+    const nameTarget = observations.bind(tokenInspectionEvidence.targets.name);
+    const symbolTarget = observations.bind(tokenInspectionEvidence.targets.symbol);
+    observations.record(chain.slot, {
       source,
-      claims: [{ role: "chain_id", value: input.asset.chainId, chainAnchor: block }],
+      claims: [{
+        role: chain.roles.chainId,
+        value: input.asset.chainId,
+        chainAnchor: block,
+      }],
     });
-    observations.record("block", {
+    observations.record(blockTarget.slot, {
       source,
-      claims: [{ role: "token_inspection_block", value: block as unknown as CanonicalJson, chainAnchor: block }],
+      claims: [{
+        role: blockTarget.roles.value,
+        value: block as unknown as CanonicalJson,
+        chainAnchor: block,
+      }],
     });
     const runtimeCode = {
       byteLength: options.runtimeByteLength ?? "2",
       codeHash: `0x${"cd".repeat(32)}`,
     } as const;
-    observations.record("runtime_code", {
+    observations.record(runtimeCodeTarget.slot, {
       source,
       claims: [{
-        role: "token_runtime_code",
+        role: runtimeCodeTarget.roles.value,
         value: runtimeCode as unknown as CanonicalJson,
         asset: input.asset,
         chainAnchor: block,
       }],
     });
-    const supplyObservationId = observations.record("total_supply", {
+    const supplyObservationId = observations.record(totalSupplyTarget.slot, {
       source,
       claims: [{
-        role: "token_total_supply",
+        role: totalSupplyTarget.roles.value,
         value: options.totalSupply ?? "1000000",
         asset: input.asset,
         chainAnchor: block,
       }],
     });
-    const decimalsObservationId = observations.record("decimals", {
+    const decimalsObservationId = observations.record(decimalsTarget.slot, {
       source,
       claims: [{
-        role: "token_decimals",
+        role: decimalsTarget.roles.value,
         value: options.decimals ?? "18",
         asset: input.asset,
         chainAnchor: block,
       }],
     });
-    const nameObservationId = observations.record("name", {
+    const nameObservationId = observations.record(nameTarget.slot, {
       source,
-      claims: [{ role: "token_name", value: options.name ?? "Example Token", asset: input.asset, chainAnchor: block }],
+      claims: [{
+        role: nameTarget.roles.value,
+        value: options.name ?? "Example Token",
+        asset: input.asset,
+        chainAnchor: block,
+      }],
     });
-    const symbolObservationId = observations.record("symbol", {
+    const symbolObservationId = observations.record(symbolTarget.slot, {
       source,
-      claims: [{ role: "token_symbol", value: options.symbol ?? "EXT", asset: input.asset, chainAnchor: block }],
+      claims: [{
+        role: symbolTarget.roles.value,
+        value: options.symbol ?? "EXT",
+        asset: input.asset,
+        chainAnchor: block,
+      }],
     });
     const totalSupply = {
       asset: input.asset,

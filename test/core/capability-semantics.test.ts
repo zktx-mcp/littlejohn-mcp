@@ -2,18 +2,28 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import {
+  accountBalanceEvidence,
   accountBalanceCapability,
+  accountTokenEvidenceIdentity,
   chainAnchorSchema,
-  createAccountBalanceTokenEvidenceIdentity,
   evmAddressSchema,
   evmChainIdSchema,
+  transactionInspectEvidence,
   transactionInspectCapability,
+  walletConnectionEvidence,
   walletConnectionCapability,
+  type BoundEvidenceObservationTarget,
   type HandlerInvocationContext,
   type ObservationClaim,
   type ObservationWriter,
 } from "../../src/core/index.js";
 import { defineReadCapability } from "../../src/core/capability.js";
+import {
+  createEvidenceFactIdentityDeclaration,
+  createEvidenceObservationTargetDeclaration,
+  createEvidenceReplayDefinition,
+  createExactConclusionIdentityDeclaration,
+} from "../../src/core/evidence-replay.js";
 import {
   bindForHarness,
   configuredChainId,
@@ -36,9 +46,9 @@ const record = (
   context: HandlerInvocationContext,
   observations: ObservationWriter,
   sourceClass: "chain_rpc" | "wallet_sdk" | "wallet_session",
-  slotId: string,
+  slot: Parameters<ObservationWriter["record"]>[0],
   claims: readonly ObservationClaim[],
-) => observations.record(slotId, {
+) => observations.record(slot, {
   source: context.ports.observations.get(sourceClass),
   claims,
 });
@@ -108,7 +118,12 @@ const dynamicPendingData = (transactionHash: string, observationId: string) => {
 
 type PendingData = ReturnType<typeof pendingData> | ReturnType<typeof dynamicPendingData>;
 
-const transactionClaims = (data: PendingData): readonly ObservationClaim[] => {
+const transactionClaims = (
+  data: PendingData,
+  target: BoundEvidenceObservationTarget<
+    typeof transactionInspectEvidence.targets.transaction
+  >,
+): readonly ObservationClaim[] => {
   const fee = data.fee.kind === "legacy"
     ? {
         kind: "legacy" as const,
@@ -130,7 +145,7 @@ const transactionClaims = (data: PendingData): readonly ObservationClaim[] => {
       };
   return [
     {
-      role: "transaction",
+      role: target.roles.transaction,
       value: {
         ...data,
         value: sourceAmount,
@@ -138,18 +153,22 @@ const transactionClaims = (data: PendingData): readonly ObservationClaim[] => {
         fee,
       },
     },
-    { role: "transaction_value", value: "1", asset: sourceAmount.asset },
-    { role: "transaction_gas_limit", value: "21000" },
+    { role: target.roles.value, value: "1", asset: sourceAmount.asset },
+    { role: target.roles.gasLimit, value: "21000" },
     ...(data.fee.kind === "legacy"
-      ? [{ role: "transaction_gas_price", value: data.fee.gasPrice.numerator.raw, asset: sourceAmount.asset }]
+      ? [{
+          role: target.roles.gasPrice,
+          value: data.fee.gasPrice.numerator.raw,
+          asset: sourceAmount.asset,
+        }]
       : [
           {
-            role: "transaction_max_fee_per_gas",
+            role: target.roles.maxFeePerGas,
             value: data.fee.maxFeePerGas.numerator.raw,
             asset: sourceAmount.asset,
           },
           {
-            role: "transaction_max_priority_fee_per_gas",
+            role: target.roles.maxPriorityFeePerGas,
             value: data.fee.maxPriorityFeePerGas.numerator.raw,
             asset: sourceAmount.asset,
           },
@@ -160,18 +179,29 @@ const transactionClaims = (data: PendingData): readonly ObservationClaim[] => {
 describe("capability semantic and evidence authority", () => {
   it("rejects an amount whose raw value differs from its source claim", async () => {
     const harness = createCapabilityHarness();
-    const binding = bindForHarness(accountBalanceCapability, harness, async (_input, context, observations) => {
-      const identity = createAccountBalanceTokenEvidenceIdentity(token);
-      record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
-      record(context, observations, "chain_rpc", "block", [{ role: "balance_block", value: block, chainAnchor: block }]);
-      const quantity = record(context, observations, "chain_rpc", identity.balanceSlotId, [{
-        role: identity.balanceClaimRole,
+    const binding = bindForHarness(accountBalanceCapability, harness, async (input, context, observations) => {
+      const identity = accountTokenEvidenceIdentity(input, token);
+      const chain = observations.bind(accountBalanceEvidence.configuredChain.target);
+      const blockTarget = observations.bind(accountBalanceEvidence.targets.block);
+      const balanceTarget = observations.bind(identity.balanceTarget);
+      const decimalsTarget = observations.bind(identity.decimalsTarget);
+      record(context, observations, "chain_rpc", chain.slot, [{
+        role: chain.roles.chainId,
+        value: configuredChainId,
+      }]);
+      record(context, observations, "chain_rpc", blockTarget.slot, [{
+        role: blockTarget.roles.block,
+        value: block,
+        chainAnchor: block,
+      }]);
+      const quantity = record(context, observations, "chain_rpc", balanceTarget.slot, [{
+        role: balanceTarget.roles.balance,
         value: "2",
         asset: { kind: "erc20", chainId: configuredChainId, address: token },
         chainAnchor: block,
       }]);
-      const decimals = record(context, observations, "chain_rpc", identity.decimalsSlotId, [{
-        role: identity.decimalsClaimRole,
+      const decimals = record(context, observations, "chain_rpc", decimalsTarget.slot, [{
+        role: decimalsTarget.roles.decimals,
         value: "6",
         asset: { kind: "erc20", chainId: configuredChainId, address: token },
         chainAnchor: block,
@@ -210,14 +240,19 @@ describe("capability semantic and evidence authority", () => {
     const harness = createCapabilityHarness();
     const requestedHash = `0x${"c".repeat(64)}`;
     const binding = bindForHarness(transactionInspectCapability, harness, async (_input, context, observations) => {
-      record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
+      const chain = observations.bind(transactionInspectEvidence.configuredChain.target);
+      const transaction = observations.bind(transactionInspectEvidence.targets.transaction);
+      record(context, observations, "chain_rpc", chain.slot, [{
+        role: chain.roles.chainId,
+        value: configuredChainId,
+      }]);
       const provisional = pendingData(`0x${"f".repeat(64)}`, `obs:${"A".repeat(43)}`);
       const transactionId = record(
         context,
         observations,
         "chain_rpc",
-        "transaction",
-        transactionClaims(provisional),
+        transaction.slot,
+        transactionClaims(provisional, transaction),
       );
       return { status: "success", data: pendingData(requestedHash, transactionId) };
     });
@@ -231,9 +266,20 @@ describe("capability semantic and evidence authority", () => {
     const transactionHash = `0x${"d".repeat(64)}`;
     let transactionId = "";
     const binding = bindForHarness(transactionInspectCapability, harness, async (_input, context, observations) => {
-      record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
+      const chain = observations.bind(transactionInspectEvidence.configuredChain.target);
+      const transaction = observations.bind(transactionInspectEvidence.targets.transaction);
+      record(context, observations, "chain_rpc", chain.slot, [{
+        role: chain.roles.chainId,
+        value: configuredChainId,
+      }]);
       const provisional = pendingData(transactionHash, `obs:${"A".repeat(43)}`);
-      transactionId = record(context, observations, "chain_rpc", "transaction", transactionClaims(provisional));
+      transactionId = record(
+        context,
+        observations,
+        "chain_rpc",
+        transaction.slot,
+        transactionClaims(provisional, transaction),
+      );
       return { status: "success", data: pendingData(transactionHash, transactionId) };
     });
     const result = await invokeBinding(transactionInspectCapability, binding, { transactionHash });
@@ -251,9 +297,20 @@ describe("capability semantic and evidence authority", () => {
     const harness = createCapabilityHarness();
     const transactionHash = `0x${"e".repeat(64)}`;
     const binding = bindForHarness(transactionInspectCapability, harness, async (_input, context, observations) => {
-      record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
+      const chain = observations.bind(transactionInspectEvidence.configuredChain.target);
+      const transaction = observations.bind(transactionInspectEvidence.targets.transaction);
+      record(context, observations, "chain_rpc", chain.slot, [{
+        role: chain.roles.chainId,
+        value: configuredChainId,
+      }]);
       const provisional = pendingData(transactionHash, `obs:${"A".repeat(43)}`);
-      const transactionId = record(context, observations, "chain_rpc", "transaction", transactionClaims(provisional));
+      const transactionId = record(
+        context,
+        observations,
+        "chain_rpc",
+        transaction.slot,
+        transactionClaims(provisional, transaction),
+      );
       const data = pendingData(transactionHash, transactionId);
       return {
         status: "success",
@@ -270,14 +327,19 @@ describe("capability semantic and evidence authority", () => {
       transactionInspectCapability,
       duplicateHarness,
       async (_input, context, observations) => {
-        record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
+        const chain = observations.bind(transactionInspectEvidence.configuredChain.target);
+        const transaction = observations.bind(transactionInspectEvidence.targets.transaction);
+        record(context, observations, "chain_rpc", chain.slot, [{
+          role: chain.roles.chainId,
+          value: configuredChainId,
+        }]);
         const provisional = dynamicPendingData(transactionHash, `obs:${"A".repeat(43)}`);
         const transactionId = record(
           context,
           observations,
           "chain_rpc",
-          "transaction",
-          transactionClaims(provisional),
+          transaction.slot,
+          transactionClaims(provisional, transaction),
         );
         return { status: "success", data: dynamicPendingData(transactionHash, transactionId) };
       },
@@ -294,7 +356,12 @@ describe("capability semantic and evidence authority", () => {
       transactionInspectCapability,
       invalidFeeHarness,
       async (_input, context, observations) => {
-        record(context, observations, "chain_rpc", "rpc_chain_id", [{ role: "chain_id", value: configuredChainId }]);
+        const chain = observations.bind(transactionInspectEvidence.configuredChain.target);
+        const transaction = observations.bind(transactionInspectEvidence.targets.transaction);
+        record(context, observations, "chain_rpc", chain.slot, [{
+          role: chain.roles.chainId,
+          value: configuredChainId,
+        }]);
         const provisional = dynamicPendingData(transactionHash, `obs:${"A".repeat(43)}`);
         const invalid = {
           ...provisional,
@@ -310,8 +377,8 @@ describe("capability semantic and evidence authority", () => {
           context,
           observations,
           "chain_rpc",
-          "transaction",
-          transactionClaims(invalid),
+          transaction.slot,
+          transactionClaims(invalid, transaction),
         );
         return {
           status: "success",
@@ -360,14 +427,26 @@ describe("capability semantic and evidence authority", () => {
     };
     const harness = createCapabilityHarness();
     const missing = bindForHarness(walletConnectionCapability, harness, async (_input, context, observations) => {
-      record(context, observations, "wallet_sdk", "wallet_sdk", [{ role: "wallet_sdk_state", value: connected }]);
+      const sdk = observations.bind(walletConnectionEvidence.targets.sdk);
+      record(context, observations, "wallet_sdk", sdk.slot, [{
+        role: sdk.roles.state,
+        value: connected,
+      }]);
       return { status: "success", data: connected };
     });
     expect((await invokeBinding(walletConnectionCapability, missing, {})).ok).toBe(false);
 
     const complete = bindForHarness(walletConnectionCapability, harness, async (_input, context, observations) => {
-      record(context, observations, "wallet_sdk", "wallet_sdk", [{ role: "wallet_sdk_state", value: connected }]);
-      record(context, observations, "wallet_session", "wallet_session", [{ role: "wallet_session_state", value: connected }]);
+      const sdk = observations.bind(walletConnectionEvidence.targets.sdk);
+      const session = observations.bind(walletConnectionEvidence.targets.session);
+      record(context, observations, "wallet_sdk", sdk.slot, [{
+        role: sdk.roles.state,
+        value: connected,
+      }]);
+      record(context, observations, "wallet_session", session.slot, [{
+        role: session.roles.state,
+        value: connected,
+      }]);
       return { status: "success", data: connected };
     });
     expect((await invokeBinding(walletConnectionCapability, complete, {})).ok).toBe(true);
@@ -402,8 +481,16 @@ describe("capability semantic and evidence authority", () => {
       },
     ]) {
       const binding = bindForHarness(walletConnectionCapability, harness, async (_input, context, observations) => {
-        record(context, observations, "wallet_sdk", "wallet_sdk", [{ role: "wallet_sdk_state", value: data }]);
-        record(context, observations, "wallet_session", "wallet_session", [{ role: "wallet_session_state", value: data }]);
+        const sdk = observations.bind(walletConnectionEvidence.targets.sdk);
+        const session = observations.bind(walletConnectionEvidence.targets.session);
+        record(context, observations, "wallet_sdk", sdk.slot, [{
+          role: sdk.roles.state,
+          value: data,
+        }]);
+        record(context, observations, "wallet_session", session.slot, [{
+          role: session.roles.state,
+          value: data,
+        }]);
         return { status: "success", data };
       });
       expect((await invokeBinding(walletConnectionCapability, binding, {})).ok).toBe(false);
@@ -416,45 +503,86 @@ describe("capability semantic and evidence authority", () => {
       blockNumber: "11",
       blockHash: `0x${"b".repeat(64)}`,
     });
+    const conclusion = createExactConclusionIdentityDeclaration("value_observed");
+    const replay = createEvidenceReplayDefinition({
+      capabilityId: "test.anchors",
+      conclusions: [conclusion],
+      warningCodes: [],
+    });
+    const fact = createEvidenceFactIdentityDeclaration(replay, "value");
+    const firstTarget = createEvidenceObservationTargetDeclaration(replay, {
+      slotId: "first",
+      fact,
+      kind: "source",
+      purpose: "first",
+      sourceClass: "chain_rpc",
+      roles: { value: "first" },
+    });
+    const secondTarget = createEvidenceObservationTargetDeclaration(replay, {
+      slotId: "second",
+      fact,
+      kind: "source",
+      purpose: "second",
+      sourceClass: "chain_rpc",
+      roles: { value: "second" },
+    });
     const definition = defineReadCapability({
       capabilityId: "test.anchors",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
-      conclusionIds: ["value_observed"],
-      observationSlots: () => [
-        { slotId: "first", factId: "value", kind: "source" as const, purpose: "first", sourceClass: "chain_rpc" as const },
-        { slotId: "second", factId: "value", kind: "source" as const, purpose: "second", sourceClass: "chain_rpc" as const },
-      ],
-      evidenceDeclaration: () => ({
-        observationExpectations: [
-          { slotId: "first", claims: [{ role: "first", value: "same", chainAnchor: block }] },
-          { slotId: "second", claims: [{ role: "second", value: "same", chainAnchor: otherBlock }] },
-        ],
-        observationReferences: [],
-        factRequirements: [{
-          factId: "value",
-          observationSlotIds: ["first", "second"],
-          requiredObservationSlotIds: ["first", "second"],
-          minimumObservationCount: 2,
-          outcome: "observed" as const,
-        }],
-        expectedConclusionIds: ["value_observed"],
-        conclusionDrafts: [{
-          id: "value_observed",
-          outcomeFactId: "value",
-          evidenceFactIds: ["value"],
-          freshnessRuleId: "chain_anchor_exact" as const,
-        }],
-        warningRequirements: [],
-      }),
-      warningCodes: [],
-      staticScopeExclusions: [],
+      evidence: {
+        definition: replay,
+        observationTargets: () => [firstTarget, secondTarget],
+        declaration: (_input, _data, binder) => {
+          const first = binder.bind(firstTarget);
+          const second = binder.bind(secondTarget);
+          return {
+            observationExpectations: [
+              {
+                slot: first.slot,
+                claims: [{ role: first.roles.value, value: "same", chainAnchor: block }],
+              },
+              {
+                slot: second.slot,
+                claims: [{ role: second.roles.value, value: "same", chainAnchor: otherBlock }],
+              },
+            ],
+            observationReferences: [],
+            factRequirements: [{
+              fact,
+              observationSlots: [first.slot, second.slot],
+              requiredObservationSlots: [first.slot, second.slot],
+              minimumObservationCount: 2,
+              outcome: "observed",
+            }],
+            expectedConclusions: [conclusion],
+            conclusionDrafts: [{
+              conclusion,
+              outcomeFact: fact,
+              evidenceFacts: [fact],
+              freshnessRuleId: "chain_anchor_exact",
+            }],
+            warningRequirements: [],
+          };
+        },
+        staticScopeExclusions: [],
+      },
     });
     const harness = createCapabilityHarness();
     const binding = bindForHarness(definition, harness, async (_input, context, observations) => {
-      record(context, observations, "chain_rpc", "first", [{ role: "first", value: "same", chainAnchor: block }]);
-      record(context, observations, "chain_rpc", "second", [{ role: "second", value: "same", chainAnchor: otherBlock }]);
+      const first = observations.bind(firstTarget);
+      const second = observations.bind(secondTarget);
+      record(context, observations, "chain_rpc", first.slot, [{
+        role: first.roles.value,
+        value: "same",
+        chainAnchor: block,
+      }]);
+      record(context, observations, "chain_rpc", second.slot, [{
+        role: second.roles.value,
+        value: "same",
+        chainAnchor: otherBlock,
+      }]);
       return { status: "success", data: { value: "same" } };
     });
     expect((await invokeBinding(definition, binding, {})).ok).toBe(false);
