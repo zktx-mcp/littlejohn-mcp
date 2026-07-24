@@ -44,7 +44,8 @@ issues an opaque block object whose private state binds the active invocation,
 configured-chain proof, public anchor, and exact state reference. Dependent
 state readers require that exact object and context; a plain anchor, clone,
 foreign block, or settled context fails before RPC. Every applicable invocation
-checks canonical chain ID `eip155:4663`; pins dependent state reads to one
+checks the canonical product chain owned by `docs/PRODUCT_POLICY.md` and
+`productChainId`; pins dependent state reads to one
 observed canonical block hash using
 [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898); preserves
 integers as base-10 strings; validates transaction, receipt, log, and block
@@ -412,9 +413,9 @@ to contain a malicious process already running with the same user authority.
 
 - The local control credential contains 256 random bits, is encoded as
   unpadded base64url, and remains stable across compatible owner takeover.
-- The runtime protocol version is `8`. It identifies the compatible local-owner
-  wire contract; an incompatible change replaces this value. Profile ID and
-  owner instance ID each
+- `runtimeProtocolVersion` in `src/runtime/runtime-identity.ts` owns the
+  compatible local-owner wire version; an incompatible wire-contract change
+  replaces that value. Profile ID and owner instance ID each
   contain 128 random bits encoded as unpadded base64url. Owner revision is an
   unsigned base-10 integer string.
 - A process first attempts to bind `127.0.0.1:46630`.
@@ -555,14 +556,16 @@ staging namespace fails startup without changing the final database. Concurrent
 creators converge on the final database rather than choosing or repairing a
 staging database.
 
-SQLite has one current schema definition. The SQLite schema module owns
-`databaseSchemaVersion`, currently `7`, and standard SQLite `user_version`
-equals that value. The exact current table set must also be present. A mismatch
-fails closed and never invokes a migration, old-schema reader, conversion,
-repair, or automatic replacement. A development schema change requires deleting
-the isolated local data directory before starting the current runtime. The
-database schema version and runtime protocol version have separate owners and
-advance only when their respective contracts change.
+SQLite has one current schema definition.
+`databaseSchemaVersion`, `currentSqliteSchemaSql`, and
+`currentSqliteTableNames` in `src/runtime/sqlite-schema.ts` own its exact
+version, SQL, and table-name set. Standard SQLite `user_version` equals
+`databaseSchemaVersion`, and every name in `currentSqliteTableNames` must be
+present. A mismatch fails closed and never invokes a migration, old-schema
+reader, conversion, repair, or automatic replacement. A development schema
+change requires deleting the isolated local data directory before starting the
+current runtime. The database schema version and runtime protocol version have
+separate owners and advance only when their respective contracts change.
 
 The stored owner protocol version is a projection of the process that last
 acquired the fixed port, not database schema identity. SQLite accepts a positive
@@ -571,37 +574,13 @@ runtime protocol version before constructing the application. A deferred
 process accepts a live owner only when the stored projection, signed live-owner
 identity, and current runtime protocol version agree.
 
-The current product SQLite schema contains exactly sixteen tables:
-
-- `local_profile` stores the local profile identity;
-- `runtime_owner` stores the HTTP-owner identity, compatibility version,
-  configuration identifier, process projection, and owner revision;
-- `chain` stores trusted canonical EIP-155 chain identities inserted only from
-  runtime configuration after fixed-port ownership is acquired;
-- `reference_feed_round` stores validated fixed-manifest Chainlink round
-  facts and their first admitted configured-RPC read evidence by feed, proxy,
-  phase, and aggregator-round identity;
-- `reference_feed_sync_state` stores each feed's revision, phase-scoped bounded
-  continuation, irreversible local composite-round retention cutoff, integrity
-  conflict, and terminal malformed, phase, or retention boundary;
-- `robinhood_asset_snapshot` and `robinhood_asset` store one complete admitted
-  official-source snapshot and its chain-scoped members;
-- `contract` and `token_contract` store chain-scoped contract identities
-  inserted by a confirmed addition or verified default initialization;
-- `token_contract_inspection` stores the exact canonical `token.inspect`
-  success selected by its digest;
-- `wallet_account` stores persistent `(profile, chain, address)` identities that
-  survive disconnect, account change, session deletion, and owner takeover;
-- `reference_pair_watchlist_state` stores one revision for each local profile,
-  product chain, and wallet address;
-- `reference_pair_watchlist_entry` stores that account's complete ordered set of
-  supported fixed-manifest pairs;
-- `wallet_token_selection_state` stores the account selection-set revision and
-  whether the ordered defaults were initialized;
-- `wallet_token_selection` stores the account-specific inclusion choice and
-  selection revision independently from current official classification; and
-- `current_wallet_connection` stores the secret-free current connection
-  projection and revision.
+The product schema persists local profile and runtime-owner identity, trusted
+chain configuration, admitted reference-feed history and synchronization
+state, official-asset snapshots, verified contracts and token inspections,
+durable wallet-account identity and the current secret-free connection
+projection, account watchlists, and account token-selection state. The exact
+table names and their SQL relationships are read from the SQLite schema owner,
+not maintained as an independent documentation contract.
 
 The connection projection is not the durable owner of account identity. A
 validated connected transition inserts or reuses its exact wallet-account row
@@ -1007,16 +986,17 @@ application logs, exports, and diagnostic bundles.
   no session mutation. Cancellation binds the operation identifier and the
   connection revision captured by that operation; a later connection projection
   revision does not make the independent operation impossible to cancel.
-- One target-chain account is required in an approved session. Zero or multiple
-  `eip155:4663` accounts fail validation; Little John never selects an account
-  silently.
+- One account for the canonical product chain owned by
+  `docs/PRODUCT_POLICY.md` and `productChainId` is required in an approved
+  session. Zero or multiple matching accounts fail validation; Little John
+  never selects an account silently.
 - The coordinator derives accounts, chains, methods, and events from the
   approved session namespaces as defined by the
   [WalletConnect session model](https://docs.walletconnect.network/wallet-sdk/web/usage).
 - The selected account remains usable only while its session exists, is not
-  expired, and still contains `eip155:4663`, the account, and the required
-  method. Robinhood documents `4663` as the mainnet chain ID in its
-  [official network configuration](https://docs.robinhood.com/chain/connecting/).
+  expired, and still contains the canonical product chain, the account, and the
+  required method. Product-chain identity and its official source evidence are
+  projected by `docs/PRODUCT_POLICY.md`.
 - Connection expiry and evidence availability are evaluated by one coordinator
   transition before either agent reads or the browser composite projection is
   produced. Consumers do not apply separate freshness rules.

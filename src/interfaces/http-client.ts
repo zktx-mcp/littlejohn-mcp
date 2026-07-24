@@ -13,6 +13,7 @@ import {
   toProblemDetails,
   type InterfaceErrorMappingRegistry,
 } from "../runtime/errors.js";
+import type { RouteSuccessStatus } from "../runtime/http-boundary.js";
 import type {
   RuntimeDispatchRequest,
   RuntimeDispatchResponse,
@@ -86,7 +87,7 @@ const authorityFailure = (
 export const dispatchCanonical = async (
   runtime: RuntimeDispatchPort,
   request: RuntimeDispatchRequest,
-  expectedStatus: 200 | 201,
+  expectedStatus: RouteSuccessStatus,
   authority: CanonicalDispatchAuthority,
 ): Promise<InterfaceInvocationResult> => {
   try {

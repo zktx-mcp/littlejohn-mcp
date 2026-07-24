@@ -106,6 +106,100 @@ const sourceDescendants = (root: ts.Node): readonly ts.Node[] => {
 const parseSource = async (path: string): Promise<ts.SourceFile> =>
   ts.createSourceFile(path, await readFile(path, "utf8"), ts.ScriptTarget.Latest, true);
 
+type LiteralVocabulary =
+  | Readonly<{ kind: "number"; values: readonly string[] }>
+  | Readonly<{ kind: "string"; values: readonly string[] }>;
+
+const literalVocabulary = (node: ts.Node): LiteralVocabulary | undefined => {
+  const nodes = ts.isArrayLiteralExpression(node)
+    ? node.elements
+    : ts.isUnionTypeNode(node)
+      ? node.types
+      : undefined;
+  if (nodes === undefined || nodes.length === 0) return undefined;
+
+  const values: string[] = [];
+  let kind: LiteralVocabulary["kind"] | undefined;
+  for (const member of nodes) {
+    const literal = ts.isLiteralTypeNode(member) ? member.literal : member;
+    if (ts.isStringLiteralLike(literal)) {
+      if (kind !== undefined && kind !== "string") return undefined;
+      kind = "string";
+      values.push(literal.text);
+      continue;
+    }
+    if (ts.isNumericLiteral(literal)) {
+      if (kind !== undefined && kind !== "number") return undefined;
+      kind = "number";
+      values.push(literal.text);
+      continue;
+    }
+    return undefined;
+  }
+  return kind === undefined ? undefined : { kind, values };
+};
+
+const comparisonVocabulary = (node: ts.Node): LiteralVocabulary | undefined => {
+  if (!ts.isBinaryExpression(node) ||
+    (node.operatorToken.kind !== ts.SyntaxKind.AmpersandAmpersandToken &&
+      node.operatorToken.kind !== ts.SyntaxKind.BarBarToken)) return undefined;
+
+  const comparisons: Array<Readonly<{
+    kind: LiteralVocabulary["kind"];
+    subject: string;
+    value: string;
+  }>> = [];
+  const literal = (expression: ts.Expression): Readonly<{
+    kind: LiteralVocabulary["kind"];
+    value: string;
+  }> | undefined => {
+    if (ts.isStringLiteralLike(expression)) return { kind: "string", value: expression.text };
+    if (ts.isNumericLiteral(expression)) return { kind: "number", value: expression.text };
+    return undefined;
+  };
+  const collect = (expression: ts.Expression): boolean => {
+    if (ts.isBinaryExpression(expression) &&
+      (expression.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+        expression.operatorToken.kind === ts.SyntaxKind.BarBarToken)) {
+      return collect(expression.left) && collect(expression.right);
+    }
+    if (!ts.isBinaryExpression(expression) || ![
+      ts.SyntaxKind.EqualsEqualsToken,
+      ts.SyntaxKind.EqualsEqualsEqualsToken,
+      ts.SyntaxKind.ExclamationEqualsToken,
+      ts.SyntaxKind.ExclamationEqualsEqualsToken,
+    ].includes(expression.operatorToken.kind)) return false;
+    const left = literal(expression.left);
+    const right = literal(expression.right);
+    if ((left === undefined) === (right === undefined)) return false;
+    const member = left ?? right;
+    const subject = left === undefined ? expression.left : expression.right;
+    if (member === undefined) return false;
+    comparisons.push({
+      kind: member.kind,
+      subject: subject.getText(node.getSourceFile()),
+      value: member.value,
+    });
+    return true;
+  };
+  if (!collect(node) || comparisons.length < 2) return undefined;
+  const first = comparisons[0];
+  if (first === undefined ||
+    comparisons.some((comparison) =>
+      comparison.kind !== first.kind || comparison.subject !== first.subject)) return undefined;
+  return { kind: first.kind, values: comparisons.map((comparison) => comparison.value) };
+};
+
+const hasExactMembers = (
+  actual: readonly string[],
+  expected: readonly string[],
+): boolean => {
+  const actualMembers = new Set(actual);
+  const expectedMembers = new Set(expected);
+  return actualMembers.size === expectedMembers.size &&
+    [...expectedMembers].every((member) => actualMembers.has(member));
+};
+
 const isInterfaceConsumer = (file: string): boolean =>
   interfaceConsumerEntryPoints.has(file) ||
   interfaceConsumerRoots.some((root) => isWithin(file, root));
@@ -245,12 +339,151 @@ describe("runtime architecture boundary", () => {
     expect(identifierNames(walletStart)).toContain("WalletInteractionInterface");
     expect(exactStringArrayExists(walletStart, ["cli", "web"])).toBe(false);
 
+    const walletBinding = sourceDescendants(identities).find((node): node is ts.InterfaceDeclaration =>
+      ts.isInterfaceDeclaration(node) && node.name.text === "WalletInterfaceBinding");
+    if (walletBinding === undefined) throw new TypeError("Missing WalletInterfaceBinding.");
+    expect(identifierNames(walletBinding)).toContain("RouteMethod");
+
     for (const tokenDeclaration of [
       declaration(identities, "tokenStartLocalIdentity"),
       declaration(identities, "tokenStartIdentities"),
     ]) {
       expect(identifierNames(tokenDeclaration)).not.toContain("WalletInteractionInterface");
+      expect(identifierNames(tokenDeclaration)).toContain("TokenCatalogInteractionInterface");
     }
+  });
+
+  it("keeps runtime finite vocabularies and reserved paths in their exact owners", async () => {
+    const finiteOwners = {
+      routeMethods: [] as string[],
+      routeMutations: [] as string[],
+      routeResponses: [] as string[],
+      routeStatuses: [] as string[],
+      requestOrigins: [] as string[],
+      requestBodies: [] as string[],
+      availability: [] as string[],
+      supportLevels: [] as string[],
+      interactionInterfaces: [] as string[],
+      rpcSourceOwners: [] as string[],
+    };
+    const pathOwners = {
+      runtimeIdentityPath: [] as string[],
+      publicApiPrefix: [] as string[],
+      internalApiPrefix: [] as string[],
+      localControlApiPrefix: [] as string[],
+    };
+    const records: ReadonlyArray<Readonly<{
+      expected: readonly string[];
+      key: keyof typeof finiteOwners;
+      kind: LiteralVocabulary["kind"];
+    }>> = [
+      { expected: ["GET", "POST", "DELETE"], key: "routeMethods", kind: "string" },
+      { expected: ["none", "declared_control"], key: "routeMutations", kind: "string" },
+      { expected: ["canonical_json", "browser_content"], key: "routeResponses", kind: "string" },
+      { expected: ["200", "201"], key: "routeStatuses", kind: "number" },
+      { expected: ["absent", "absent_or_fixed", "fixed"], key: "requestOrigins", kind: "string" },
+      { expected: ["none", "route_json"], key: "requestBodies", kind: "string" },
+      { expected: ["unavailable", "internal", "available"], key: "availability", kind: "string" },
+      {
+        expected: ["L0_discovered", "L1_analyzed", "L2_reviewed", "L3_executable", "L4_receipt_verified"],
+        key: "supportLevels",
+        kind: "string",
+      },
+      { expected: ["cli", "web"], key: "interactionInterfaces", kind: "string" },
+      { expected: ["Robinhood", "user_configured"], key: "rpcSourceOwners", kind: "string" },
+    ];
+    const finiteVocabularyMatches = (root: ts.Node): readonly (keyof typeof finiteOwners)[] => {
+      const matches: (keyof typeof finiteOwners)[] = [];
+      const visit = (node: ts.Node): void => {
+        for (const vocabulary of [literalVocabulary(node), comparisonVocabulary(node)]) {
+          if (vocabulary === undefined) continue;
+          for (const record of records) {
+            if (vocabulary.kind === record.kind &&
+              hasExactMembers(vocabulary.values, record.expected)) {
+              matches.push(record.key);
+            }
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(root);
+      return matches;
+    };
+
+    const counterexample = ts.createSourceFile(
+      "finite-vocabulary-counterexample.ts",
+      [
+        'const reorderedMethods = ["DELETE", "GET", "POST"] as const;',
+        'type RepeatedMethods = "POST" | "DELETE" | "GET";',
+        'type ReorderedOrigins = "fixed" | "absent" | "absent_or_fixed";',
+        "type ReorderedStatuses = 201 | 200;",
+        'type ReorderedInteractions = "web" | "cli";',
+        'type ReorderedRpcOwners = "user_configured" | "Robinhood";',
+      ].join("\n"),
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    expect([...finiteVocabularyMatches(counterexample)].sort()).toEqual([
+      "interactionInterfaces",
+      "requestOrigins",
+      "routeMethods",
+      "routeMethods",
+      "routeStatuses",
+      "rpcSourceOwners",
+    ]);
+
+    const comparisonCounterexample = ts.createSourceFile(
+      "finite-vocabulary-comparison-counterexample.ts",
+      'method !== "GET" && method !== "POST" && method !== "DELETE";',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    expect(finiteVocabularyMatches(comparisonCounterexample)).toEqual(["routeMethods"]);
+
+    const httpOwner = await parseSource(resolve(sourceRoot, "runtime/http-owner.ts"));
+    const dispatchValidator = sourceDescendants(httpOwner).find((node): node is ts.VariableDeclaration =>
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === "validateRuntimeDispatchRequest");
+    if (dispatchValidator === undefined) throw new TypeError("Missing runtime dispatch validator.");
+    expect(sourceDescendants(dispatchValidator)
+      .filter((node): node is ts.Identifier => ts.isIdentifier(node))
+      .map((node) => node.text)).toContain("routeMethods");
+    expect(finiteVocabularyMatches(dispatchValidator)).not.toContain("routeMethods");
+
+    for (const file of await collectSourceFiles(sourceRoot)) {
+      const name = relative(sourceRoot, file).split(sep).join("/");
+      const parsed = await parseSource(file);
+      for (const key of finiteVocabularyMatches(parsed)) finiteOwners[key].push(name);
+      const visit = (node: ts.Node): void => {
+        if (ts.isStringLiteralLike(node)) {
+          if (node.text === "/api/v1/runtime-identity") pathOwners.runtimeIdentityPath.push(name);
+          if (node.text === "/api/v1/") pathOwners.publicApiPrefix.push(name);
+          if (node.text === "/api/v1/internal/") pathOwners.internalApiPrefix.push(name);
+          if (node.text === "/api/v1/internal/control/") pathOwners.localControlApiPrefix.push(name);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(parsed);
+    }
+    const sorted = (values: readonly string[]): readonly string[] => [...values].sort();
+    expect(sorted(finiteOwners.routeMethods)).toEqual(["runtime/http-boundary.ts"]);
+    expect(sorted(finiteOwners.routeMutations)).toEqual(["runtime/http-boundary.ts"]);
+    expect(sorted(finiteOwners.routeResponses)).toEqual(["runtime/http-boundary.ts"]);
+    expect(sorted(finiteOwners.routeStatuses)).toEqual(["runtime/http-boundary.ts"]);
+    expect(sorted(finiteOwners.requestOrigins)).toEqual(["runtime/request-security.ts"]);
+    expect(sorted(finiteOwners.requestBodies)).toEqual(["runtime/request-security.ts"]);
+    expect(sorted(finiteOwners.availability)).toEqual(["runtime/support-manifest.ts"]);
+    expect(sorted(finiteOwners.supportLevels)).toEqual(["runtime/support-manifest.ts"]);
+    expect(sorted(finiteOwners.interactionInterfaces)).toEqual([
+      "token-catalog/state.ts",
+      "wallet/operation-state.ts",
+    ]);
+    expect(sorted(finiteOwners.rpcSourceOwners)).toEqual(["runtime/configuration.ts"]);
+    expect(sorted(pathOwners.runtimeIdentityPath)).toEqual(["runtime/http-boundary.ts"]);
+    expect(sorted(pathOwners.publicApiPrefix)).toEqual(["runtime/http-boundary.ts"]);
+    expect(sorted(pathOwners.internalApiPrefix)).toEqual(["runtime/http-boundary.ts"]);
+    expect(sorted(pathOwners.localControlApiPrefix)).toEqual(["runtime/http-boundary.ts"]);
   });
 
   it("keeps every fixed official-asset manifest literal in its single contract owner", async () => {

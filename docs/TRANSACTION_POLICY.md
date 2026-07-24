@@ -152,9 +152,10 @@ localized values, unordered fields, or approximate numeric values.
 - Account or chain changes, expired inputs, changed deployments, changed code,
   changed allowance or nonce, or commitment mismatch cancel the handoff and
   require refresh or block the request.
-- When the active session already approves the selected account,
-  `eip155:4663`, and the required method, the coordinator sends the request on
-  that session without another QR pairing.
+- When the active session already approves the selected account, the canonical
+  product chain identified by `docs/PRODUCT_POLICY.md`, and the required
+  method, the coordinator sends the request on that session without another QR
+  pairing.
 - Missing or expired session state, session deletion, missing chain, missing
   account, or missing method requires reconnection or new session approval and
   never falls back to an unapproved request.

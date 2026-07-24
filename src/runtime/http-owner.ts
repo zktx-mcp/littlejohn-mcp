@@ -47,6 +47,8 @@ import {
   problemJsonContentType,
   publicReadResponseLimitBytes,
   requestBodyLimitBytes,
+  routeMethods,
+  runtimeIdentityPath,
   type BrowserContentType,
   type RequestTarget,
 } from "./http-boundary.js";
@@ -57,8 +59,13 @@ import {
   type RuntimeRouteRegistry,
 } from "./http-routing.js";
 import {
+  localControlRequestClass,
+  ownerIdentityRequestClass,
+  publicReadRequestClass,
+  runtimeDispatchRequestClasses,
   validateRequestEnvelopeSecurity,
   validateRequestSecurity,
+  type RuntimeDispatchRequestClass,
 } from "./request-security.js";
 import {
   createResourceOwnershipScope,
@@ -409,7 +416,7 @@ const openAuthenticatedOwnerChannel = async (input: {
   try {
     const packet = await requestPacket(channel, {
       method: "GET",
-      path: "/api/v1/runtime-identity",
+      path: runtimeIdentityPath,
       headers: {
         Host: fixedHostHeader,
         "Littlejohn-Identity-Challenge": challenge,
@@ -457,7 +464,7 @@ const openAuthenticatedOwnerChannel = async (input: {
   }
 };
 
-export type RuntimeDispatchRequestClass = "local_control" | "public_read";
+export type { RuntimeDispatchRequestClass };
 
 export interface RuntimeDispatchRequest {
   readonly requestClass: RuntimeDispatchRequestClass;
@@ -477,7 +484,7 @@ const validateRuntimeDispatchRequest = (request: RuntimeDispatchRequest): Runtim
   if (target === undefined || target.query !== "") {
     throw new TypeError("Runtime dispatch path is invalid.");
   }
-  if (request.requestClass !== "local_control" && request.requestClass !== "public_read") {
+  if (!runtimeDispatchRequestClasses.includes(request.requestClass as RuntimeDispatchRequestClass)) {
     throw new TypeError("Runtime dispatch request class is invalid.");
   }
   if (request.method === "POST" && request.body === undefined) {
@@ -486,7 +493,7 @@ const validateRuntimeDispatchRequest = (request: RuntimeDispatchRequest): Runtim
   if (request.method !== "POST" && request.body !== undefined) {
     throw new TypeError("GET and DELETE runtime dispatch requests cannot contain a body.");
   }
-  if (request.method !== "GET" && request.method !== "POST" && request.method !== "DELETE") {
+  if (!routeMethods.includes(request.method)) {
     throw new TypeError("Runtime dispatch method is invalid.");
   }
   if (request.signal !== undefined && !(request.signal instanceof AbortSignal)) {
@@ -755,7 +762,7 @@ export class FixedHttpOwner {
             path: request.path,
             headers: {
               Host: fixedHostHeader,
-              ...(request.requestClass === "local_control"
+              ...(request.requestClass === localControlRequestClass
                 ? { Authorization: createControlAuthorizationHeader(this.#credential) }
                 : {}),
               ...(body === undefined ? {} : {
@@ -764,7 +771,7 @@ export class FixedHttpOwner {
               }),
             },
             ...(body === undefined ? {} : { body }),
-          }, request.requestClass === "public_read"
+          }, request.requestClass === publicReadRequestClass
             ? publicReadResponseLimitBytes
             : internalResponseLimitBytes, "dispatch", active.controller.signal);
           this.#assertActiveRuntimeDispatch(active);
@@ -843,7 +850,7 @@ export class FixedHttpOwner {
             requestInput.responseDeadlineMilliseconds < 1
           ) throw new TypeError("Owner session request limits are invalid.");
           const request = validateRuntimeDispatchRequest({
-            requestClass: "local_control",
+            requestClass: localControlRequestClass,
             method: requestInput.method,
             path: requestInput.path,
             ...(requestInput.body === undefined ? {} : { body: requestInput.body }),
@@ -1166,7 +1173,7 @@ export class FixedHttpOwner {
     try {
       const target = parseRequestTarget(request.url);
       if (target === undefined) return writeFailure(response, "invalid_input");
-      if (target.pathname === "/api/v1/runtime-identity") await this.#handleIdentity(request, response, target);
+      if (target.pathname === runtimeIdentityPath) await this.#handleIdentity(request, response, target);
       else await this.#handleApplicationRoute(request, response, target, work.controller.signal);
     } catch (error) {
       if (work.controller.signal.aborted) {
@@ -1184,7 +1191,7 @@ export class FixedHttpOwner {
 
   async #handleIdentity(request: IncomingMessage, response: ServerResponse, target: RequestTarget): Promise<void> {
     const security = validateRequestSecurity({
-      requestClass: "owner_identity",
+      requestClass: ownerIdentityRequestClass,
       params: Object.freeze({}),
       host: headerValues(request, "host"),
       origin: headerValues(request, "origin"),

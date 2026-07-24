@@ -73,6 +73,7 @@ import {
   type TokenCatalogQueryApplicationPort,
   type TokenCatalogWebStartPort,
 } from "../token-catalog/ports.js";
+import type { TokenCatalogInteractionInterface } from "../token-catalog/state.js";
 import {
   readRuntimeConfiguration,
 } from "./configuration.js";
@@ -361,7 +362,7 @@ const snapshotTokenCatalogConsumerPorts = (
     port: object,
     definition: Readonly<{
       methods: readonly string[];
-      interactionInterface?: "cli" | "web";
+      interactionInterface?: TokenCatalogInteractionInterface;
     }>,
   ): void => {
     const expectedKeys = [

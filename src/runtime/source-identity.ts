@@ -17,7 +17,7 @@ import {
 import type { ProfileId } from "./runtime-identity.js";
 
 export interface RpcSourceAuthorityPort {
-  readonly sourceOwner: "Robinhood" | "user_configured";
+  readonly sourceOwner: ConfiguredRpcEndpoint["sourceOwner"];
   readonly publicOrigin: string;
   readonly sourceId: string;
   readonly configurationDigest: string;

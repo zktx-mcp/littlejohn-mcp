@@ -1,14 +1,20 @@
+import { createHash } from "node:crypto";
+
+import { z } from "zod";
 import { describe, expect, it } from "vitest";
 
 import {
+  canonicalJsonStringify,
   coreContractVersion,
   createApplicationFailure,
   readCapabilityRegistry,
+  type CanonicalJson,
 } from "../../src/core/index.js";
 import { interfaceReadCapabilityRegistry } from "../../src/interfaces/identities.js";
 import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
 import { extendReferenceMarketSupportManifest } from "../../src/market-portfolio/support.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
+import { ownerIdentitySchema } from "../../src/runtime/runtime-identity.js";
 import {
   RuntimeOperationError,
   assertDirectInterfaceErrorMappingRegistryExtension,
@@ -43,6 +49,14 @@ const initialRuntimeSupportManifest = createInitialRuntimeSupportManifest(
 );
 const interfaceCapabilityCatalogSchema = createCapabilityCatalogSchema(interfaceReadCapabilityRegistry);
 const initialCapabilityCatalogSchema = createCapabilityCatalogSchema(readCapabilityRegistry);
+
+const outputSchema = (schema: z.ZodType): string => canonicalJsonStringify(
+  JSON.parse(JSON.stringify(z.toJSONSchema(schema, {
+    target: "draft-2020-12",
+    io: "output",
+    unrepresentable: "throw",
+  }))) as CanonicalJson,
+);
 
 const unavailable = {
   overall: "unavailable",
@@ -90,6 +104,30 @@ const chainExtensionInput = {
 };
 
 describe("runtime support manifest authority", () => {
+  it("preserves the independent runtime and owner schema projections", () => {
+    for (const [schema, bytes, digest] of [
+      [
+        runtimeSupportManifestSchema,
+        2_616,
+        "12dfb31d57143bd3d323df8e1129c2677f33172ea7090673c375e4ed3eef7282",
+      ],
+      [
+        interfaceCapabilityCatalogSchema,
+        3_328,
+        "3c07c305e4bed2d72115ac64cd2ce4b099c357b1a8b0565dfe6c5214c8264e02",
+      ],
+      [
+        ownerIdentitySchema,
+        745,
+        "d9c7cc90a6322a9bb6e8010db0c050f130498aceae98800a6513705cb71d98a8",
+      ],
+    ] as const) {
+      const projection = outputSchema(schema);
+      expect(Buffer.byteLength(projection, "utf8")).toBe(bytes);
+      expect(createHash("sha256").update(projection, "utf8").digest("hex")).toBe(digest);
+    }
+  });
+
   it("starts with only the five canonical read identities and official L0 evidence", () => {
     const snapshot = readRuntimeSupportManifest(initialRuntimeSupportManifest);
     expect(snapshot.contractVersion).toBe(coreContractVersion);

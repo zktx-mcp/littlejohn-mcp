@@ -12,6 +12,8 @@ import {
   jsonContentType,
   publicReadResponseLimitBytes,
   requestBodyLimitBytes,
+  routeMutationClasses,
+  type RouteMutation,
 } from "./http-boundary.js";
 import { parseRuntimeAuthority } from "./schema-authority.js";
 
@@ -48,14 +50,29 @@ export interface RequestSecurityInput extends RequestClassSecurityInput, Request
 
 export type RequestSecurityResult = { readonly ok: true } | { readonly ok: false; readonly code: SecurityFailureCode };
 
+const requestPolicyOriginModes = Object.freeze(["absent", "absent_or_fixed", "fixed"] as const);
+type RequestPolicyOriginMode = typeof requestPolicyOriginModes[number];
+
+const requestPolicyBodyModes = Object.freeze(["none", "route_json"] as const);
+type RequestPolicyBodyMode = typeof requestPolicyBodyModes[number];
+
+export const ownerIdentityRequestClass = "owner_identity" as const;
+export const publicReadRequestClass = "public_read" as const;
+export const localControlRequestClass = "local_control" as const;
+export const runtimeDispatchRequestClasses = Object.freeze([
+  localControlRequestClass,
+  publicReadRequestClass,
+] as const);
+export type RuntimeDispatchRequestClass = typeof runtimeDispatchRequestClasses[number];
+
 export interface RequestPolicyDefinition {
   readonly requestClass: string;
   readonly host: "fixed";
-  readonly origin: "absent" | "absent_or_fixed" | "fixed";
+  readonly origin: RequestPolicyOriginMode;
   readonly authentication: string;
-  readonly body: "none" | "route_json";
+  readonly body: RequestPolicyBodyMode;
   readonly responseLimitBytes: number;
-  readonly mutation: "none" | "declared_control";
+  readonly mutation: RouteMutation;
 }
 
 export interface AuthenticationVerifierDefinition {
@@ -71,11 +88,11 @@ export interface RequestPolicyExtension {
 const policySchema = z.object({
   requestClass: snakeCaseCodeSchema,
   host: z.literal("fixed"),
-  origin: z.enum(["absent", "absent_or_fixed", "fixed"]),
+  origin: z.enum(requestPolicyOriginModes),
   authentication: snakeCaseCodeSchema,
-  body: z.enum(["none", "route_json"]),
+  body: z.enum(requestPolicyBodyModes),
   responseLimitBytes: z.number().int().min(1).max(publicReadResponseLimitBytes),
-  mutation: z.enum(["none", "declared_control"]),
+  mutation: z.enum(routeMutationClasses),
 }).strict();
 
 const exactOne = (values: readonly string[], expected: string): boolean =>
@@ -276,16 +293,16 @@ export const createInitialRequestPolicyRegistry = (
   controlVerifier?: ControlCredentialVerifier,
 ): RequestPolicyRegistry => createRegistry({
   policies: new Map<string, RequestPolicyDefinition>([
-    ["owner_identity", Object.freeze({
-      requestClass: "owner_identity", host: "fixed", origin: "absent", authentication: "none",
+    [ownerIdentityRequestClass, Object.freeze({
+      requestClass: ownerIdentityRequestClass, host: "fixed", origin: "absent", authentication: "none",
       body: "none", responseLimitBytes: internalResponseLimitBytes, mutation: "none",
     })],
-    ["public_read", Object.freeze({
-      requestClass: "public_read", host: "fixed", origin: "absent_or_fixed", authentication: "none",
+    [publicReadRequestClass, Object.freeze({
+      requestClass: publicReadRequestClass, host: "fixed", origin: "absent_or_fixed", authentication: "none",
       body: "route_json", responseLimitBytes: publicReadResponseLimitBytes, mutation: "none",
     })],
-    ["local_control", Object.freeze({
-      requestClass: "local_control", host: "fixed", origin: "absent", authentication: "local_control",
+    [localControlRequestClass, Object.freeze({
+      requestClass: localControlRequestClass, host: "fixed", origin: "absent", authentication: "local_control",
       body: "route_json", responseLimitBytes: internalResponseLimitBytes, mutation: "declared_control",
     })],
   ]),
@@ -329,7 +346,7 @@ export const validateRequestSecurity = (
   input: RequestSecurityInput & { readonly controlVerifier?: ControlCredentialVerifier },
 ): RequestSecurityResult => {
   if (input.controlVerifier === undefined) {
-    if (input.requestClass === "local_control") return { ok: false, code: "unauthorized" };
+    if (input.requestClass === localControlRequestClass) return { ok: false, code: "unauthorized" };
     return createInitialRequestPolicyRegistry().validate(input);
   }
   return createInitialRequestPolicyRegistry(input.controlVerifier).validate(input);

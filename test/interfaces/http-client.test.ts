@@ -36,7 +36,33 @@ const throwingRuntime = (error: unknown): RuntimeDispatchPort => Object.freeze({
   dispatchRuntimeRequest: async () => { throw error; },
 });
 
+const respondingRuntime = (status: number): RuntimeDispatchPort => Object.freeze({
+  dispatchRuntimeRequest: async () => Object.freeze({
+    status,
+    body: captureCanonicalJson({ value: "ok" }),
+  }),
+});
+
 describe("interface HTTP client error boundary", () => {
+  it("accepts only the exact successful status selected by the binding", async () => {
+    expect(await dispatchCanonical(respondingRuntime(200), request, 200, walletAuthority)).toEqual({
+      ok: true,
+      value: { value: "ok" },
+    });
+    expect(await dispatchCanonical(respondingRuntime(201), request, 201, walletAuthority)).toEqual({
+      ok: true,
+      value: { value: "ok" },
+    });
+    expect(await dispatchCanonical(respondingRuntime(201), request, 200, walletAuthority)).toEqual({
+      ok: false,
+      failure: createInterfaceFailure("internal_error"),
+    });
+    expect(await dispatchCanonical(respondingRuntime(200), request, 201, walletAuthority)).toEqual({
+      ok: false,
+      failure: createInterfaceFailure("internal_error"),
+    });
+  });
+
   it("preserves only a runtime error created by the runtime authority", async () => {
     expect(await dispatchCanonical(
       throwingRuntime(new RuntimeOperationError("request_aborted")),

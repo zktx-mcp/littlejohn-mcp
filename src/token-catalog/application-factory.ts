@@ -25,9 +25,10 @@ import type {
   TokenCatalogStartApplicationPort,
   TokenCatalogStore,
 } from "./ports.js";
+import type { TokenCatalogInteractionInterface } from "./state.js";
 import { extendTokenCatalogSupportManifest } from "./support.js";
 
-const createStartPort = <InteractionInterface extends "cli" | "web">(
+const createStartPort = <InteractionInterface extends TokenCatalogInteractionInterface>(
   application: TokenCatalogApplicationPort,
   interactionInterface: InteractionInterface,
   assertOpen: () => void,

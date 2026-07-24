@@ -59,6 +59,66 @@ describe("HTTP request-class and route authority", () => {
     expect(publicReadResponseLimitBytes).toBe(maximumSuccessUtf8Bytes + 1);
     expect(publicReadResponseLimitBytes).toBe(8_388_608);
   });
+
+  it("accepts only the exact neutral route finite values", async () => {
+    const { verifier } = await credentialFixture();
+    const registry = createRuntimeRouteRegistry({ controlVerifier: verifier });
+    expect(() => registry.extend([
+      {
+        method: "GET",
+        mutation: "none",
+        pathPattern: "/api/v1/example",
+        response: "canonical_json",
+        successStatus: 200,
+        handler: success,
+      },
+      {
+        method: "POST",
+        mutation: "declared_control",
+        pathPattern: "/api/v1/internal/control/example-creations",
+        response: "canonical_json",
+        successStatus: 201,
+        handler: success,
+      },
+      {
+        method: "DELETE",
+        mutation: "declared_control",
+        pathPattern: "/api/v1/internal/control/example-deletions",
+        response: "canonical_json",
+        successStatus: 200,
+        handler: success,
+      },
+      {
+        method: "GET",
+        mutation: "none",
+        pathPattern: "/api/v1/browser-example",
+        response: "browser_content",
+        successStatus: 200,
+        handler: success,
+      },
+    ])).not.toThrow();
+
+    const valid = {
+      method: "GET",
+      mutation: "none",
+      pathPattern: "/api/v1/example",
+      response: "canonical_json",
+      successStatus: 200,
+      handler: success,
+    } as const;
+    for (const [field, value] of [
+      ["method", "PATCH"],
+      ["mutation", "implicit"],
+      ["response", "arbitrary"],
+      ["successStatus", 204],
+    ] as const) {
+      expect(() => createRuntimeRouteRegistry({ controlVerifier: verifier }).extend([{
+        ...valid,
+        [field]: value,
+      } as unknown as RouteDefinition])).toThrow("values");
+    }
+  });
+
   it("enforces the complete initial Host, Origin, authentication, and body policy", async () => {
     const { verifier, authorization } = await credentialFixture();
     expect(validateRequestSecurity(base)).toEqual({ ok: true });

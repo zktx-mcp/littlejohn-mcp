@@ -15,6 +15,9 @@ import {
 import {
   assertRequestPolicyRegistryDescendant,
   createInitialRequestPolicyRegistry,
+  localControlRequestClass,
+  ownerIdentityRequestClass,
+  publicReadRequestClass,
   type RequestPolicyExtension,
   type RequestPolicyRegistry,
   type RequestClassSecurityInput,
@@ -24,10 +27,22 @@ import {
 import {
   browserContentTypes,
   browserSetCookieLimitBytes,
+  internalApiPathPrefix,
+  localControlApiPathPrefix,
+  publicApiPathPrefix,
+  routeMethods,
+  routeMutationClasses,
+  routeResponseKinds,
+  routeSuccessStatuses,
+  runtimeIdentityPath,
   type BrowserContentType,
+  type RouteMethod,
+  type RouteMutation,
+  type RouteResponseKind,
+  type RouteSuccessStatus,
 } from "./http-boundary.js";
 
-export type RouteMethod = "GET" | "POST" | "DELETE";
+export type { RouteMethod };
 
 export interface RouteContext {
   readonly params: Readonly<Record<string, string>>;
@@ -47,10 +62,10 @@ export type RouteResult =
 
 export interface RouteDefinition {
   readonly method: RouteMethod;
-  readonly mutation: "none" | "declared_control";
+  readonly mutation: RouteMutation;
   readonly pathPattern: string;
-  readonly response: "canonical_json" | "browser_content";
-  readonly successStatus: 200 | 201;
+  readonly response: RouteResponseKind;
+  readonly successStatus: RouteSuccessStatus;
   readonly handler: (context: RouteContext) => Promise<RouteResult>;
 }
 
@@ -83,22 +98,20 @@ const captureRouteDefinition = (input: RouteDefinition): RouteDefinition => {
     }
     values[key] = descriptor.value;
   }
-  if (!(["GET", "POST", "DELETE"] as const).includes(values["method"] as RouteMethod) ||
-    !(["none", "declared_control"] as const).includes(values["mutation"] as RouteDefinition["mutation"]) ||
+  if (!routeMethods.includes(values["method"] as RouteMethod) ||
+    !routeMutationClasses.includes(values["mutation"] as RouteMutation) ||
     typeof values["pathPattern"] !== "string" ||
-    !(["canonical_json", "browser_content"] as const).includes(
-      values["response"] as RouteDefinition["response"],
-    ) ||
-    !([200, 201] as const).includes(values["successStatus"] as 200 | 201) ||
+    !routeResponseKinds.includes(values["response"] as RouteResponseKind) ||
+    !routeSuccessStatuses.includes(values["successStatus"] as RouteSuccessStatus) ||
     typeof values["handler"] !== "function") {
     throw new TypeError("Route definition values are invalid.");
   }
   return Object.freeze({
     method: values["method"] as RouteMethod,
-    mutation: values["mutation"] as RouteDefinition["mutation"],
+    mutation: values["mutation"] as RouteMutation,
     pathPattern: values["pathPattern"],
-    response: values["response"] as RouteDefinition["response"],
-    successStatus: values["successStatus"] as 200 | 201,
+    response: values["response"] as RouteResponseKind,
+    successStatus: values["successStatus"] as RouteSuccessStatus,
     handler: values["handler"] as RouteDefinition["handler"],
   });
 };
@@ -117,7 +130,7 @@ type RouteSegment =
 const parseRouteSegments = (pathPattern: string): readonly RouteSegment[] => {
   if (pathPattern === "/") return Object.freeze([]);
   if (!pathPattern.startsWith("/") || pathPattern.includes("//") || pathPattern.endsWith("/") ||
-    pathPattern === "/api/v1/runtime-identity") {
+    pathPattern === runtimeIdentityPath) {
     throw new TypeError("Route path pattern is invalid.");
   }
   const parameterNames = new Set<string>();
@@ -175,7 +188,7 @@ const captureResourcePathDefinition = (input: ResourcePathDefinition): ResourceP
   if (values["kind"] === "route") {
     if ((keys as string[]).sort(compareCodePointSequences).join("\0") !==
       ["kind", "method", "pathPattern", "requestClass"].join("\0") ||
-      !(["GET", "POST", "DELETE"] as const).includes(values["method"] as RouteMethod) ||
+      !routeMethods.includes(values["method"] as RouteMethod) ||
       typeof values["pathPattern"] !== "string" || typeof values["requestClass"] !== "string") {
       throw new TypeError("Resource path definition is invalid.");
     }
@@ -213,7 +226,7 @@ const requestClassForResource = (
     throw new TypeError("Route path is outside an owned request-class resource.");
   }
   const selected = prefixes[0] as Extract<ResourcePathDefinition, { kind: "prefix" }>;
-  if (pathPattern.startsWith("/api/v1/internal/") && selected.pathPrefix === "/api/v1/") {
+  if (pathPattern.startsWith(internalApiPathPrefix) && selected.pathPrefix === publicApiPathPrefix) {
     throw new TypeError("Internal routes require an explicitly owned resource namespace.");
   }
   return selected.requestClass;
@@ -228,7 +241,7 @@ const compile = (
   const segments = parseRouteSegments(captured.pathPattern);
   const requestClass = requestClassForResource(captured.method, captured.pathPattern, resources);
   const requestPolicy = requestPolicies.get(requestClass);
-  if (requestClass === "owner_identity" ||
+  if (requestClass === ownerIdentityRequestClass ||
     (captured.method === "POST" && requestPolicy.body === "none") ||
     (captured.mutation === "declared_control" &&
       (requestPolicy.mutation !== "declared_control" || captured.method === "GET")) ||
@@ -406,7 +419,7 @@ export class RuntimeRouteRegistry {
       const definition = captureResourcePathDefinition(input);
       requestPolicies.get(definition.requestClass);
       const ownedPath = definition.kind === "prefix" ? definition.pathPrefix : definition.pathPattern;
-      if (ownedPath === "/api/v1/runtime-identity" || ownedPath.startsWith("/api/v1/internal/control/")) {
+      if (ownedPath === runtimeIdentityPath || ownedPath.startsWith(localControlApiPathPrefix)) {
         throw new TypeError("A request policy extension cannot replace a fixed runtime resource authority.");
       }
       const key = resourceKey(definition);
@@ -551,8 +564,16 @@ export const createRuntimeRouteRegistry = (input: {
   routes: Object.freeze([]),
   requestPolicies: createInitialRequestPolicyRegistry(input.controlVerifier),
   resources: Object.freeze([
-    Object.freeze({ kind: "prefix", pathPrefix: "/api/v1/internal/control/", requestClass: "local_control" }),
-    Object.freeze({ kind: "prefix", pathPrefix: "/api/v1/", requestClass: "public_read" }),
+    Object.freeze({
+      kind: "prefix",
+      pathPrefix: localControlApiPathPrefix,
+      requestClass: localControlRequestClass,
+    }),
+    Object.freeze({
+      kind: "prefix",
+      pathPrefix: publicApiPathPrefix,
+      requestClass: publicReadRequestClass,
+    }),
   ]),
   errorMappings: input.errorMappings ?? runtimeInterfaceErrorMappings,
 });

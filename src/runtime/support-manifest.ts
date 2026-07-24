@@ -24,28 +24,48 @@ import {
 } from "./configuration.js";
 import { guardRuntimeJsonSchema, parseRuntimeAuthority } from "./schema-authority.js";
 
+const availabilityDefinitions = Object.freeze(["unavailable", "internal", "available"] as const);
+export type Availability = typeof availabilityDefinitions[number];
+const directAvailabilityDefinitions = Object.freeze([
+  availabilityDefinitions[0],
+  availabilityDefinitions[1],
+] as const);
+const unavailableAvailability = availabilityDefinitions[0];
+const internalAvailability = availabilityDefinitions[1];
+const availableAvailability = availabilityDefinitions[2];
+
+const supportLevelDefinitions = Object.freeze([
+  "L0_discovered",
+  "L1_analyzed",
+  "L2_reviewed",
+  "L3_executable",
+  "L4_receipt_verified",
+] as const);
+
 const initialReadCapabilityIds = Object.freeze(readCapabilityRegistry.values().map((definition) =>
   getCapabilityDefinitionSnapshot(definition).capabilityId));
 const walletConnectionCapabilityId = getCapabilityDefinitionSnapshot(walletConnectionCapability).capabilityId;
 
 const createSupportSchemaSet = () => {
-  const availability = z.enum(["unavailable", "internal", "available"]);
+  const availability = z.enum(availabilityDefinitions);
   const capabilityAvailability = z.object({
     overall: availability,
-    direct: z.enum(["unavailable", "internal"]),
+    direct: z.enum(directAvailabilityDefinitions),
     http: availability,
     mcp: availability,
     cli: availability,
     web: availability,
   }).strict().superRefine((value, context) => {
-    if (value.direct === "unavailable" && [value.http, value.mcp, value.cli, value.web]
-      .some((state) => state !== "unavailable")) {
+    if (value.direct === unavailableAvailability && [value.http, value.mcp, value.cli, value.web]
+      .some((state) => state !== unavailableAvailability)) {
       context.addIssue({ code: "custom", message: "Exposed bindings require an internal direct capability." });
     }
-    const userFacing = [value.http, value.mcp, value.cli, value.web].includes("available");
+    const userFacing = [value.http, value.mcp, value.cli, value.web].includes(availableAvailability);
     const expectedOverall = userFacing
-      ? "available"
-      : [value.direct, value.http, value.mcp, value.cli, value.web].includes("internal") ? "internal" : "unavailable";
+      ? availableAvailability
+      : [value.direct, value.http, value.mcp, value.cli, value.web].includes(internalAvailability)
+        ? internalAvailability
+        : unavailableAvailability;
     if (value.overall !== expectedOverall) {
       context.addIssue({ code: "custom", message: "Overall availability must follow exposed bindings." });
     }
@@ -64,7 +84,7 @@ const createSupportSchemaSet = () => {
   });
   const chainSupport = z.object({
     chainId: evmChainIdSchema,
-    supportLevel: z.literal("L0_discovered"),
+    supportLevel: z.literal(supportLevelDefinitions[0]),
     evidence: z.object({
       position: z.literal("source_defined"),
       sourceOwner: z.literal("Robinhood"),
@@ -73,7 +93,7 @@ const createSupportSchemaSet = () => {
       unsupportedConclusions: z.array(generalSingleLineTextSchema),
     }).strict(),
   }).strict();
-  const supportLevel = z.enum(["L0_discovered", "L1_analyzed", "L2_reviewed", "L3_executable", "L4_receipt_verified"]);
+  const supportLevel = z.enum(supportLevelDefinitions);
   const protocolSupport = z.object({ protocolId: fixedIdentifierSchema, supportLevel }).strict();
   const transactionActionSupport = z.object({ actionId: fixedIdentifierSchema, supportLevel }).strict();
   const manifest = z.object({
@@ -114,7 +134,6 @@ const createSupportSchemaSet = () => {
 const publicSchemas = createSupportSchemaSet();
 const authoritySchemas = createSupportSchemaSet();
 
-export type Availability = z.infer<typeof publicSchemas.availability>;
 export type CapabilityAvailabilityInput = Readonly<z.infer<typeof publicSchemas.capabilityAvailability>>;
 export interface CapabilitySupportEntryInput {
   readonly capabilityId: string;
@@ -198,12 +217,12 @@ const createManifest = (
 };
 
 const unavailable = Object.freeze({
-  overall: "unavailable",
-  direct: "unavailable",
-  http: "unavailable",
-  mcp: "unavailable",
-  cli: "unavailable",
-  web: "unavailable",
+  overall: unavailableAvailability,
+  direct: unavailableAvailability,
+  http: unavailableAvailability,
+  mcp: unavailableAvailability,
+  cli: unavailableAvailability,
+  web: unavailableAvailability,
 } as const);
 export const createInitialRuntimeSupportManifest = (
   chain: RuntimeChainConfiguration,
@@ -213,7 +232,7 @@ export const createInitialRuntimeSupportManifest = (
     contractVersion: coreContractVersion,
     chains: [{
       chainId,
-      supportLevel: "L0_discovered",
+      supportLevel: supportLevelDefinitions[0],
       evidence: {
         position: "source_defined",
         sourceOwner: "Robinhood",
@@ -239,7 +258,8 @@ const assertOrderedUnique = (values: readonly string[]): void => {
   }
 };
 
-const availabilityRank = Object.freeze({ unavailable: 0, internal: 1, available: 2 } as const);
+const availabilityRank = (availability: Availability): number =>
+  availabilityDefinitions.indexOf(availability);
 
 type CapabilityAvailability = RuntimeSupportManifestSnapshot["capabilities"][number]["availability"];
 
@@ -249,10 +269,10 @@ const assertAvailabilityMovesForward = (
 ): void => {
   let advanced = false;
   for (const binding of ["direct", "http", "mcp", "cli", "web"] as const) {
-    if (availabilityRank[next[binding]] < availabilityRank[previous[binding]]) {
+    if (availabilityRank(next[binding]) < availabilityRank(previous[binding])) {
       throw new TypeError("Support availability cannot move backward.");
     }
-    if (availabilityRank[next[binding]] > availabilityRank[previous[binding]]) advanced = true;
+    if (availabilityRank(next[binding]) > availabilityRank(previous[binding])) advanced = true;
   }
   if (!advanced) throw new TypeError("Support availability change does not move forward.");
 };
@@ -429,20 +449,20 @@ export const renderCurrentSupportSection = (manifest: RuntimeSupportManifest): s
   const chain = snapshot.chains[0];
   if (chain === undefined) throw new TypeError("Robinhood Chain support is unavailable.");
   const availableCapabilities = snapshot.capabilities
-    .filter((entry) => entry.availability.overall === "available")
+    .filter((entry) => entry.availability.overall === availableAvailability)
     .map((entry) => `\`${entry.capabilityId}\``);
   const walletConnectionAvailability = snapshot.capabilities
     .find((entry) => entry.capabilityId === walletConnectionCapabilityId)?.availability;
   const walletCapabilities = snapshot.capabilities
     .filter((entry) => entry.capabilityId.startsWith("wallet."));
   const exposedBindingLabels = (availability: CapabilityAvailability): readonly string[] => Object.freeze([
-    availability.http === "available" ? "HTTP" : undefined,
-    availability.mcp === "available" ? "MCP" : undefined,
-    availability.cli === "available" ? "CLI" : undefined,
-    availability.web === "available" ? "web" : undefined,
+    availability.http === availableAvailability ? "HTTP" : undefined,
+    availability.mcp === availableAvailability ? "MCP" : undefined,
+    availability.cli === availableAvailability ? "CLI" : undefined,
+    availability.web === availableAvailability ? "web" : undefined,
   ].filter((value): value is string => value !== undefined));
   const walletSupport = walletCapabilities
-    .filter((entry) => entry.availability.overall === "available")
+    .filter((entry) => entry.availability.overall === availableAvailability)
     .map((entry) => `\`${entry.capabilityId}\` (${exposedBindingLabels(entry.availability).join(", ")})`);
   const displayLevel = (level: string): string => level.replace("_", " ");
   const protocols = snapshot.protocols.map((entry) => `\`${entry.protocolId}\` (${displayLevel(entry.supportLevel)})`);

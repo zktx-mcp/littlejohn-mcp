@@ -55,6 +55,7 @@ import {
   type TokenSelectionDetail,
   type TokenRemovalStartInput,
   type TokenCatalogOperationKind,
+  type TokenCatalogInteractionInterface,
   type AnyTokenCatalogApplicationContract,
 } from "../token-catalog/index.js";
 import {
@@ -308,7 +309,7 @@ export interface WalletInterfaceBinding {
   readonly action: "start" | "get_operation" | "cancel_operation" | "current_operation";
   readonly contract: AnyWalletManagementContract;
   readonly control?: Readonly<{
-    readonly method: "GET" | "POST" | "DELETE";
+    readonly method: RouteMethod;
     readonly path: string | ((operationId: string) => string);
   }>;
   readonly mcp?: Readonly<{
@@ -890,7 +891,7 @@ const tokenOperationId = (input: Readonly<{ operationId: OperationId }>): Operat
 
 const tokenStartLocalIdentity = <Input>(input: Readonly<{
   kind: TokenCatalogOperationKind;
-  interactionInterface: "cli" | "web";
+  interactionInterface: TokenCatalogInteractionInterface;
   contract: Readonly<{
     applicationContract: LocalOperationContract<Input>;
     parseBoundSuccess(
@@ -1074,7 +1075,7 @@ const accountAssetCollectionReadIdentity = localOperationIdentity<
     accountAssetApplicationContracts.collection.parsePublicSuccess(input, value),
 });
 
-const tokenStartIdentities = (interactionInterface: "cli" | "web") => Object.freeze({
+const tokenStartIdentities = (interactionInterface: TokenCatalogInteractionInterface) => Object.freeze({
   addition: tokenStartLocalIdentity<TokenAdditionStartRequest>({
     kind: "add",
     interactionInterface,

@@ -24,6 +24,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   ObservationAuthorityRegistry,
+  canonicalJsonStringify,
   createCanonicalClock,
   parseEvmChainId,
   parseCapabilityDataAt,
@@ -75,6 +76,7 @@ import {
   canonicalRuntimeIdentifierSqlCheck,
   canonicalSqlTextCheck,
   currentSqliteSchemaSql,
+  currentSqliteTableNames,
   databaseSchemaVersion,
 } from "../../src/runtime/sqlite-schema.js";
 
@@ -391,6 +393,11 @@ describe("SQLite product state", () => {
     expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(23_690);
     expect(createHash("sha256").update(currentSqliteSchemaSql, "utf8").digest("hex")).toBe(
       "a969ee4a4e1cf1cf4d6da18eb1a0ab3903f0242ebcc67d719ab61a7e93af62fa",
+    );
+    const tableNames = canonicalJsonStringify([...currentSqliteTableNames]);
+    expect(Buffer.byteLength(tableNames, "utf8")).toBe(360);
+    expect(createHash("sha256").update(tableNames, "utf8").digest("hex")).toBe(
+      "6928ddec8173cd56866b1e7ac785932dbfeb86f3e288f15887c3cece3917b5de",
     );
   });
 
@@ -1432,11 +1439,20 @@ describe("configuration and source authority", () => {
     expect(rpc.configurationDigest).toBe("oA40Nw__Im-Kx0Tp9zCwwDLic15a7IjDaVCesNOhEuA");
     expect(rpc.sourceOwner).toBe("Robinhood");
     expect(rpc.publicOrigin).toBe("https://rpc.mainnet.chain.robinhood.com");
+    expect(() => createRpcSourceAuthority({
+      credential,
+      endpoint: Object.freeze({
+        publicOrigin: configuration.rpc.endpoint.publicOrigin,
+        sourceOwner: configuration.rpc.endpoint.sourceOwner,
+      }) as never,
+      clock,
+    })).toThrow("provenance");
 
     const secretConfiguration = readRuntimeConfiguration({
       LITTLEJOHN_RPC_URL: "https://user:password@rpc.example/private?key=secret",
     });
     const secretSafe = createRpcSourceAuthority({ credential, endpoint: secretConfiguration.rpc.endpoint, clock });
+    expect(secretSafe.sourceOwner).toBe("user_configured");
     expect(secretSafe.publicOrigin).toBe("https://rpc.example");
     expect(JSON.stringify(secretSafe)).not.toContain("password");
     expect(JSON.stringify(secretSafe)).not.toContain("private");
