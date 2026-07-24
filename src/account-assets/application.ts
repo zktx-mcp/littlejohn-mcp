@@ -13,7 +13,7 @@ import {
   defaultStockTokenRank,
   findOfficialAssetMember,
   officialAssetCandidatePageSize,
-  robinhoodAssetSourceUri,
+  officialAssetSnapshotEvidenceSchema,
   type CommittedOfficialAssetSnapshot,
   type OfficialAssetSourceMember,
   type StockFactoryVerification,
@@ -281,13 +281,14 @@ const pageSelections = (
   return Object.freeze({ entries, nextCursor });
 };
 
-const snapshotEvidence = (snapshot: CommittedOfficialAssetSnapshot) => Object.freeze({
-  sourceUri: robinhoodAssetSourceUri,
-  sourceObservedAt: snapshot.sourceObservedAt,
-  rawResponseDigest: snapshot.rawResponseDigest,
-  memberSetDigest: snapshot.memberSetDigest,
-  revision: snapshot.revision,
-});
+const snapshotEvidence = (snapshot: CommittedOfficialAssetSnapshot) =>
+  Object.freeze(officialAssetSnapshotEvidenceSchema.parse({
+    sourceUri: snapshot.sourceUri,
+    sourceObservedAt: snapshot.sourceObservedAt,
+    rawResponseDigest: snapshot.rawResponseDigest,
+    memberSetDigest: snapshot.memberSetDigest,
+    revision: snapshot.revision,
+  }));
 
 const classification = (
   official: OfficialView,

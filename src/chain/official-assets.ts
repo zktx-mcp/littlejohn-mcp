@@ -1,9 +1,12 @@
 import type { ChainAnchor } from "../core/index.js";
-import type { OfficialAssetSourceMember } from "../registry/official-assets.js";
+import type {
+  OfficialAssetSourceMember,
+  StockFactoryClassificationUnavailableReason,
+  StockFactoryVerification,
+} from "../registry/official-asset-contract.js";
 import {
   createStockFactoryVerifier,
   getStockFactoryVerificationErrorCode,
-  type StockFactoryVerification,
 } from "../registry/stock-factory.js";
 import {
   getChainInvocationStopReason,
@@ -34,12 +37,7 @@ export type OfficialAssetVerificationResult =
   | Readonly<{ status: "verified"; verification: StockFactoryVerification }>
   | Readonly<{
       status: "unavailable";
-      reason:
-        | "factory_identity_mismatch"
-        | "source_inconsistent"
-        | "source_unavailable"
-        | "token_code_missing"
-        | "token_identity_mismatch";
+      reason: StockFactoryClassificationUnavailableReason;
     }>;
 
 export const createOfficialAssetChainReadPort = (input: Readonly<{

@@ -11,13 +11,11 @@ import {
   type InvocationBoundaryPorts,
   type ObservationAuthority,
   type ObservationWriter,
-  type UnsignedDecimal,
+  type TokenMetadataRead,
 } from "../core/index.js";
 import type { ChainOwnerApplicationContext } from "../runtime/application-context.js";
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
 import {
-  tokenCatalogContractLimits,
-  tokenDisplayTextSchema,
   tokenInspectCapability,
   tokenInspectionEvidence,
   type TokenInspectionData,
@@ -25,8 +23,6 @@ import {
 } from "../token-catalog/contracts.js";
 import type { TokenAdditionChainReadPort } from "../token-catalog/ports.js";
 import {
-  decodeErc20DecimalsResult,
-  decodeErc20TextResult,
   decodeErc20TotalSupplyResult,
   type Erc20CallEncoder,
 } from "./evm-standard.js";
@@ -64,6 +60,7 @@ import {
   observeRequiredErc8056,
 } from "./token-standards.js";
 import type { OfficialAssetChainReadPort } from "./official-assets.js";
+import { readTokenMetadataAtBlock } from "./token-metadata.js";
 
 const requiredTotalSupplyRevertedErrors = new WeakSet<object>();
 
@@ -165,68 +162,6 @@ const resolveBlock = async (
 };
 
 type OptionalText = TokenInspectionData["metadata"]["name"];
-type OptionalTextBeforeEvidence =
-  | Readonly<{ status: "available"; value: string }>
-  | Readonly<{ status: "unavailable"; reason: "call_failed" | "malformed" | "unsafe_text" }>;
-
-const readOptionalText = async (
-  dependencies: TokenInspectionDependencies,
-  address: TokenInspectionInput["asset"]["address"],
-  reference: RpcCanonicalBlockReference,
-  signal: AbortSignal,
-  functionName: "name" | "symbol",
-): Promise<OptionalTextBeforeEvidence> => {
-  let raw: unknown;
-  try {
-    raw = await dependencies.rpc.request("eth_call", [{
-      to: address,
-      data: dependencies.encoder[functionName](),
-    }, reference], signal);
-  } catch (error) {
-    if (isRpcExecutionRevertedError(error)) {
-      return Object.freeze({ status: "unavailable", reason: "call_failed" });
-    }
-    throw error;
-  }
-  let decoded: ReturnType<typeof decodeErc20TextResult>;
-  try {
-    decoded = decodeErc20TextResult(
-      normalizeRpcBytes(raw),
-      functionName,
-      tokenCatalogContractLimits.displayTextUtf8Bytes,
-    );
-  } catch {
-    return Object.freeze({ status: "unavailable", reason: "malformed" });
-  }
-  if (decoded.status === "byte_limit_exceeded") {
-    return Object.freeze({ status: "unavailable", reason: "unsafe_text" });
-  }
-  const parsed = tokenDisplayTextSchema.safeParse(decoded.value);
-  return parsed.success
-    ? Object.freeze({ status: "available", value: parsed.data })
-    : Object.freeze({ status: "unavailable", reason: "unsafe_text" });
-};
-
-const readOptionalDecimals = async (
-  dependencies: TokenInspectionDependencies,
-  address: TokenInspectionInput["asset"]["address"],
-  reference: RpcCanonicalBlockReference,
-  signal: AbortSignal,
-): Promise<UnsignedDecimal | null> => {
-  let raw: unknown;
-  try {
-    raw = await dependencies.rpc.request("eth_call", [{
-      to: address,
-      data: dependencies.encoder.decimals(),
-    }, reference], signal);
-  } catch (error) {
-    if (isRpcExecutionRevertedError(error)) return null;
-    throw error;
-  }
-  try { return decodeErc20DecimalsResult(normalizeRpcBytes(raw)); }
-  catch { return null; }
-};
-
 const readRequiredTotalSupply = async (
   dependencies: TokenInspectionDependencies,
   address: TokenInspectionInput["asset"]["address"],
@@ -288,11 +223,13 @@ const inspectionHandler = async (
   const callSignal = AbortSignal.any([signal, stop.signal]);
   const calls = [
     readRequiredTotalSupply(dependencies, request.asset.address, block.reference, callSignal),
-    readOptionalText(dependencies, request.asset.address, block.reference, callSignal, "name"),
-    readOptionalText(dependencies, request.asset.address, block.reference, callSignal, "symbol"),
-    readOptionalDecimals(dependencies, request.asset.address, block.reference, callSignal),
+    readTokenMetadataAtBlock(dependencies, {
+      asset: request.asset,
+      stateReference: block.reference,
+      signal: callSignal,
+    }),
   ] as const;
-  let callResults: [unknown, OptionalTextBeforeEvidence, OptionalTextBeforeEvidence, UnsignedDecimal | null];
+  let callResults: [unknown, TokenMetadataRead];
   try {
     callResults = await Promise.all(calls);
   } catch (error) {
@@ -300,7 +237,8 @@ const inspectionHandler = async (
     await Promise.allSettled(calls);
     throw error;
   }
-  const [rawTotalSupply, name, symbol, decimals] = callResults;
+  const [rawTotalSupply, metadata] = callResults;
+  const { name, symbol, decimals } = metadata;
   const totalSupplyRaw = normalizeSource(() =>
     decodeErc20TotalSupplyResult(normalizeRpcBytes(rawTotalSupply)));
 

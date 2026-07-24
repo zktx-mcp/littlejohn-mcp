@@ -13,6 +13,10 @@ import {
   parseEvmChainId,
   parseUtcTimestamp,
 } from "../../src/core/index.js";
+import {
+  officialAssetSourceManifest,
+  stockFactoryAdmissionManifest,
+} from "../../src/registry/browser.js";
 import { internalResponseLimitBytes } from "../../src/runtime/http-boundary.js";
 
 const chainId = parseEvmChainId("eip155:4663");
@@ -48,7 +52,7 @@ export const verifyMaximumAccountAssetEnvelope = (): number => {
       classification: {
         kind: "robinhood_stock_token" as const,
         snapshot: {
-          sourceUri: "https://api.robinhood.com/rhj/assets",
+          sourceUri: officialAssetSourceManifest.sourceUri,
           sourceObservedAt: at,
           rawResponseDigest: `0x${"11".repeat(32)}`,
           memberSetDigest: `0x${"22".repeat(32)}`,
@@ -64,10 +68,10 @@ export const verifyMaximumAccountAssetEnvelope = (): number => {
           assetUid: `0x${(index + 1).toString(16).padStart(2, "0").repeat(32)}`,
           contractAddress: address,
           block,
-          proxyAddress: parseEvmAddressInput(`0x${"aa".repeat(20)}`),
-          proxyCodeHash: `0x${"bb".repeat(32)}`,
-          implementationAddress: parseEvmAddressInput(`0x${"cc".repeat(20)}`),
-          implementationCodeHash: `0x${"dd".repeat(32)}`,
+          proxyAddress: stockFactoryAdmissionManifest.proxyAddress,
+          proxyCodeHash: stockFactoryAdmissionManifest.proxyCodeHash,
+          implementationAddress: stockFactoryAdmissionManifest.implementationAddress,
+          implementationCodeHash: stockFactoryAdmissionManifest.implementationCodeHash,
           tokenCodeHash: `0x${"ee".repeat(32)}`,
         },
       },

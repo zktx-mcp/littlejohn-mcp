@@ -7,7 +7,6 @@ export {
   accountAssetLimits,
   accountAssetOfficialCandidateCursorSchema,
   accountAssetOfficialCandidateQueryContract,
-  accountAssetOfficialCandidateSchema,
   accountAssetViewRevisionSchema,
   contractAccountAssetSchema,
   nativeAccountAssetSchema,
@@ -22,7 +21,6 @@ export type {
   AccountAssetCursor,
   AccountAssetExactInput,
   AccountAssetExactSuccess,
-  AccountAssetOfficialCandidate,
   AccountAssetOfficialCandidateCursor,
   AccountAssetOfficialCandidateInput,
   AccountAssetOfficialCandidateRequest,
@@ -52,6 +50,5 @@ export type {
   AccountAssetEvidenceField,
   AccountAssetQuantityView,
   AccountAssetRowView,
-  AccountAssetTextIssue,
 } from "./view.js";
 export { tokenStandardDefinitionFor } from "../core/browser.js";

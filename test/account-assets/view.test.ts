@@ -19,6 +19,7 @@ import {
   parseEvmChainId,
   parseUtcTimestamp,
 } from "../../src/core/index.js";
+import { stockFactoryAdmissionManifest } from "../../src/registry/browser.js";
 import { tokenSelectionSetRevisionSchema } from "../../src/token-catalog/index.js";
 
 const chainId = parseEvmChainId("eip155:4663");
@@ -49,10 +50,10 @@ const stockToken = accountAssetClassificationSchema.parse({
     assetUid: hash,
     contractAddress: address,
     block,
-    proxyAddress: address,
-    proxyCodeHash: hash,
-    implementationAddress: address,
-    implementationCodeHash: hash,
+    proxyAddress: stockFactoryAdmissionManifest.proxyAddress,
+    proxyCodeHash: stockFactoryAdmissionManifest.proxyCodeHash,
+    implementationAddress: stockFactoryAdmissionManifest.implementationAddress,
+    implementationCodeHash: stockFactoryAdmissionManifest.implementationCodeHash,
     tokenCodeHash: hash,
   },
 });
@@ -82,8 +83,12 @@ describe("account asset view evidence", () => {
     expect(fieldValue(fields, "Source")).toBe("https://api.robinhood.com/rhj/assets");
     expect(fieldValue(fields, "Observed at")).toBe(at);
     expect(fieldValue(fields, "Snapshot revision")).toBe(revision);
-    expect(fieldValue(fields, "Verified implementation")).toBe(address);
-    expect(fieldValue(fields, "Implementation code hash")).toBe(hash);
+    expect(fieldValue(fields, "Verified implementation")).toBe(
+      "0xee351e53bce6aaf106428358838197c91e36ee0e",
+    );
+    expect(fieldValue(fields, "Implementation code hash")).toBe(
+      "0x3bfd5841605b9931c9dbb0f9f54a28b4038918ceb74d6d1081bc7f963fe528b4",
+    );
     expect(fieldValue(fields, "Token code hash")).toBe(hash);
     expect(fieldValue(fields, "Verified at block")).toBe("42");
   });

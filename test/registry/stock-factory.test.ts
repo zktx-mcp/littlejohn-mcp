@@ -1,3 +1,4 @@
+import { keccak_256 } from "@noble/hashes/sha3.js";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -19,12 +20,8 @@ import {
   getStockFactoryVerificationErrorCode,
   officialAssetCandidateListDigest,
   officialAssetMemberSetDigest,
-  robinhoodAssetSourceUri,
-  stockFactoryImplementationAddress,
-  stockFactoryImplementationCodeHash,
-  stockFactoryImplementationSlot,
-  stockFactoryProxyAddress,
-  stockFactoryProxyCodeHash,
+  officialAssetSourceManifest,
+  stockFactoryAdmissionManifest,
 } from "../../src/registry/index.js";
 import {
   stockFactoryImplementationCodeFixture,
@@ -80,9 +77,9 @@ class FactoryRpc implements RpcRequester {
   }
 }
 
-const snapshotMembers = Object.freeze([{ assetUid: uid, contractAddress: token }]);
+const snapshotMembers = [{ assetUid: uid, contractAddress: token }];
 const decodedSnapshot = assertOfficialAssetSourceSnapshot({
-  sourceUri: robinhoodAssetSourceUri,
+  sourceUri: officialAssetSourceManifest.sourceUri,
   sourceObservedAt: parseUtcTimestamp("2026-07-20T13:28:38.000Z"),
   rawResponseDigest: parseHash32(`0x${"b".repeat(64)}`),
   memberSetDigest: officialAssetMemberSetDigest(snapshotMembers),
@@ -93,12 +90,29 @@ const decodedSnapshot = assertOfficialAssetSourceSnapshot({
 const member = decodedSnapshot.members[0]!;
 
 describe("StockFactory verifier", () => {
+  it("proves the pinned code hashes from independent raw bytecode fixtures", () => {
+    const hash = (hex: string): string =>
+      `0x${Buffer.from(keccak_256(Buffer.from(hex.slice(2), "hex"))).toString("hex")}`;
+    expect(hash(stockFactoryProxyCodeFixture)).toBe(
+      "0x394c3517e9331e7c88ef8af388c0cb63c720af1b1b4d5a5cace212f7df0b045a",
+    );
+    expect(hash(stockFactoryImplementationCodeFixture)).toBe(
+      "0x3bfd5841605b9931c9dbb0f9f54a28b4038918ceb74d6d1081bc7f963fe528b4",
+    );
+  });
+
   it("shares pinned factory identity and verifies one exact decoded snapshot member", async () => {
-    expect(stockFactoryProxyAddress).toBe(expectedProxyAddress);
-    expect(stockFactoryImplementationAddress).toBe(expectedImplementationAddress);
-    expect(stockFactoryImplementationSlot).toBe(expectedImplementationSlot);
-    expect(stockFactoryProxyCodeHash).toBe(expectedProxyCodeHash);
-    expect(stockFactoryImplementationCodeHash).toBe(expectedImplementationCodeHash);
+    expect(stockFactoryAdmissionManifest.proxyAddress).toBe(expectedProxyAddress);
+    expect(stockFactoryAdmissionManifest.implementationAddress).toBe(
+      expectedImplementationAddress,
+    );
+    expect(stockFactoryAdmissionManifest.implementationSlot).toBe(
+      expectedImplementationSlot,
+    );
+    expect(stockFactoryAdmissionManifest.proxyCodeHash).toBe(expectedProxyCodeHash);
+    expect(stockFactoryAdmissionManifest.implementationCodeHash).toBe(
+      expectedImplementationCodeHash,
+    );
     const rpc = new FactoryRpc();
     const verifier = await createStockFactoryVerifier({
       rpc,

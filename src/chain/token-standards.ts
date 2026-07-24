@@ -9,12 +9,14 @@ import {
   supportedErc8056ValuesSchema,
   tokenStandardObservationSchema,
   tokenStandardObservationResultSchema,
+  tokenStandardOrder,
   type ChainAnchor,
   type Erc20AssetIdentity,
   type EvmAccountIdentity,
   type RequiredErc8056Observation,
   type SupportedErc8056Values,
   type TokenStandardObservation,
+  type TokenStandardId,
   type UnsignedDecimal,
   type TokenStandardObservationResult,
 } from "../core/index.js";
@@ -318,18 +320,19 @@ export const completeTokenStandardObservation = async (
     }
   }
 
+  const standards: Readonly<Record<TokenStandardId, TokenStandardObservation>> = Object.freeze({
+    erc20_read_surface: observation("erc20_read_surface", "observed"),
+    erc165: required.erc165,
+    erc8056: required.erc8056,
+    erc8056_pending_multiplier: required.pendingMultiplier,
+    erc8056_conversion: conversion,
+    erc8056_balances: balances,
+  });
   return deepFreezeValue(tokenStandardObservationResultSchema.parse({
     asset,
     ...(account === undefined ? {} : { account }),
     block,
-    standards: [
-      observation("erc20_read_surface", "observed"),
-      required.erc165,
-      required.erc8056,
-      required.pendingMultiplier,
-      conversion,
-      balances,
-    ],
+    standards: tokenStandardOrder.map((standardId) => standards[standardId]),
     ...(required.values === undefined ? {} : { requiredErc8056: required.values }),
     ...(balanceOfUi === undefined ? {} : { balanceOfUi }),
     ...(calculatedBalance === undefined ? {} : { calculatedBalance }),

@@ -11,7 +11,6 @@ import {
   capabilityIdSchema,
   captureCanonicalJson,
   chainAnchorSchema,
-  codePointLength,
   compareCodePointSequences,
   coreContractVersion,
   coreErrorRegistry,
@@ -30,7 +29,6 @@ import {
   evmAddressSchema,
   jsonObject,
   hash32Schema,
-  isSafeSingleLineText,
   parseHash32,
   observationIdSchema,
   operationIdByteLength,
@@ -38,10 +36,13 @@ import {
   readCapabilityLimits,
   replayPublicEvidence,
   staticScopeExclusionSchema,
+  availableTokenTextSchema,
+  tokenDisplayTextLimits,
+  tokenDisplayTextSchema,
   tokenStandardObservationResultSchema,
+  unavailableTokenTextSchema,
   unsignedDecimalSchema,
   utcTimestampSchema,
-  utf8ByteLength,
   type ApplicationFailure,
   type ApplicationContract,
   type CanonicalJson,
@@ -70,8 +71,8 @@ import {
 } from "./state.js";
 
 export const tokenCatalogContractLimits = Object.freeze({
-  displayTextCodePoints: 128,
-  displayTextUtf8Bytes: 512,
+  displayTextCodePoints: tokenDisplayTextLimits.codePoints,
+  displayTextUtf8Bytes: tokenDisplayTextLimits.utf8Bytes,
   selectionRevisionBytes: 16,
   operationIdBytes: operationIdByteLength,
   listDefaultLimit: 25,
@@ -83,33 +84,18 @@ export const tokenCatalogDigestVersions = Object.freeze({
   review: "3",
 } as const);
 
-export const tokenDisplayTextSchema = z.string()
-  .refine(
-    (value) => codePointLength(value) <= tokenCatalogContractLimits.displayTextCodePoints,
-    `Text exceeds ${tokenCatalogContractLimits.displayTextCodePoints} Unicode code points.`,
-  )
-  .refine(
-    (value) => utf8ByteLength(value) <= tokenCatalogContractLimits.displayTextUtf8Bytes,
-    `Text exceeds ${tokenCatalogContractLimits.displayTextUtf8Bytes} UTF-8 bytes.`,
-  )
-  .refine(isSafeSingleLineText, "Expected safe single-line text.");
-
 export const tokenSelectionRevisionSchema = canonicalBase64UrlSchema(
   tokenCatalogContractLimits.selectionRevisionBytes,
 );
 export const tokenCatalogOperationIdSchema = operationIdSchema;
 
 const optionalTextObservationSchema = z.discriminatedUnion("status", [
-  z.object({
-    status: z.literal("available"),
-    value: tokenDisplayTextSchema,
+  availableTokenTextSchema.extend({
     observationId: observationIdSchema,
-  }).strict(),
-  z.object({
-    status: z.literal("unavailable"),
-    reason: z.enum(["call_failed", "malformed", "unsafe_text"]),
+  }),
+  unavailableTokenTextSchema.extend({
     observationId: observationIdSchema,
-  }).strict(),
+  }),
 ]);
 
 export const tokenInspectionInputSchema = z.object({

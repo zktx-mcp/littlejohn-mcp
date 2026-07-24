@@ -1,66 +1,33 @@
 import { z } from "zod";
 
 import {
-  canonicalBase64UrlSchema,
   canonicalSha256,
-  codePointLength,
   compareCodePointSequences,
   deepFreezeValue,
-  hash32Schema,
-  isSafeSingleLineText,
   parseEvmAddressInput,
   parseHash32,
   parseUtcTimestamp,
-  productChainId,
-  productChainNumericId,
   sha256Bytes,
-  utcTimestampSchema,
-  utf8ByteLength,
   type EvmAddress,
-  type EvmChainId,
   type Hash32,
-  type UtcTimestamp,
 } from "../core/index.js";
+import {
+  committedOfficialAssetSnapshotSchema,
+  officialAssetSourceLabelSchema,
+  officialAssetSourceManifest,
+  officialAssetSourceMemberSchema,
+  officialAssetSourceSnapshotSchema,
+  type CommittedOfficialAssetSnapshot,
+  type OfficialAssetSnapshotRevision,
+  type OfficialAssetSourceMember,
+  type OfficialAssetSourceSnapshot,
+} from "./official-asset-contract.js";
 
-export const robinhoodAssetSourceUri = "https://api.robinhood.com/rhj/assets" as const;
-export const officialAssetSourceResponseByteLimit = 1_048_576;
-export const officialAssetSourceMemberLimit = 512;
-export const officialAssetSourceDeploymentLimit = 8;
-export const officialAssetSourceTimeoutMs = 10_000;
-
-const sourceLabelCodePointLimit = 128;
-const sourceLabelUtf8ByteLimit = 512;
 const admittedSourceObservations = new WeakSet<object>();
-
-export interface OfficialAssetSourceMember {
-  readonly assetUid: Hash32;
-  readonly contractAddress: EvmAddress;
-  readonly sourceName?: string;
-  readonly sourceSymbol?: string;
-}
-
-export interface OfficialAssetSourceSnapshot {
-  readonly sourceUri: typeof robinhoodAssetSourceUri;
-  readonly sourceObservedAt: UtcTimestamp;
-  readonly rawResponseDigest: Hash32;
-  readonly memberSetDigest: Hash32;
-  readonly candidateListDigest: Hash32;
-  readonly chainId: EvmChainId;
-  readonly members: readonly OfficialAssetSourceMember[];
-}
 
 declare const officialAssetSourceObservationBrand: unique symbol;
 export interface OfficialAssetSourceObservation extends OfficialAssetSourceSnapshot {
   readonly [officialAssetSourceObservationBrand]: true;
-}
-
-export const officialAssetSnapshotRevisionSchema = canonicalBase64UrlSchema(16)
-  .brand("OfficialAssetSnapshotRevision");
-export type OfficialAssetSnapshotRevision = z.infer<typeof officialAssetSnapshotRevisionSchema>;
-
-export interface CommittedOfficialAssetSnapshot extends OfficialAssetSourceSnapshot {
-  readonly revision: OfficialAssetSnapshotRevision;
-  readonly updatedAt: UtcTimestamp;
 }
 
 export interface OfficialAssetSnapshotStore {
@@ -110,23 +77,20 @@ const responseDeploymentSchema = z.object({
 const responseAssetSchema = z.object({
   id: z.unknown(),
   status: z.unknown(),
-  deployments: z.array(responseDeploymentSchema).max(officialAssetSourceDeploymentLimit),
+  deployments: z.array(responseDeploymentSchema)
+    .max(officialAssetSourceManifest.deploymentLimit),
   tokenName: z.unknown().optional(),
   tokenSymbol: z.unknown().optional(),
 }).strip();
 
 const sourceResponseSchema = z.object({
-  assets: z.array(responseAssetSchema).min(1).max(officialAssetSourceMemberLimit),
+  assets: z.array(responseAssetSchema)
+    .min(1)
+    .max(officialAssetSourceManifest.memberLimit),
 }).strip();
 
 const normalizedSourceLabel = (value: unknown): string | undefined =>
-  typeof value === "string" &&
-  value.length > 0 &&
-  codePointLength(value) <= sourceLabelCodePointLimit &&
-  utf8ByteLength(value) <= sourceLabelUtf8ByteLimit &&
-  isSafeSingleLineText(value)
-    ? value
-    : undefined;
+  officialAssetSourceLabelSchema.safeParse(value).data;
 
 const compareMembers = (
   left: OfficialAssetSourceMember,
@@ -136,29 +100,15 @@ const compareMembers = (
 
 export const assertOfficialAssetSourceMember = (
   input: OfficialAssetSourceMember,
-): OfficialAssetSourceMember => {
-  const assetUid = parseHash32(input.assetUid);
-  const contractAddress = parseEvmAddressInput(input.contractAddress);
-  const sourceName = input.sourceName === undefined ? undefined : normalizedSourceLabel(input.sourceName);
-  const sourceSymbol = input.sourceSymbol === undefined ? undefined : normalizedSourceLabel(input.sourceSymbol);
-  if (
-    (input.sourceName !== undefined && sourceName === undefined) ||
-    (input.sourceSymbol !== undefined && sourceSymbol === undefined)
-  ) throw new TypeError("Official asset snapshot labels are invalid.");
-  return deepFreezeValue({
-    assetUid,
-    contractAddress,
-    ...(sourceName === undefined ? {} : { sourceName }),
-    ...(sourceSymbol === undefined ? {} : { sourceSymbol }),
-  });
-};
+): OfficialAssetSourceMember =>
+  deepFreezeValue(officialAssetSourceMemberSchema.parse(input));
 
 const memberSetPayload = (
   members: readonly OfficialAssetSourceMember[],
 ) => ({
   version: "1",
-  chainId: productChainId,
-  sourceUri: robinhoodAssetSourceUri,
+  chainId: officialAssetSourceManifest.chainId,
+  sourceUri: officialAssetSourceManifest.sourceUri,
   members: members.map((member) => ({
     assetUid: member.assetUid,
     contractAddress: member.contractAddress,
@@ -169,8 +119,8 @@ const candidateListPayload = (
   members: readonly OfficialAssetSourceMember[],
 ) => ({
   version: "1",
-  chainId: productChainId,
-  sourceUri: robinhoodAssetSourceUri,
+  chainId: officialAssetSourceManifest.chainId,
+  sourceUri: officialAssetSourceManifest.sourceUri,
   members: members.map((member) => ({
     assetUid: member.assetUid,
     contractAddress: member.contractAddress,
@@ -192,7 +142,7 @@ const normalizeSourceResponse = (
 ): readonly OfficialAssetSourceMember[] => {
   const response = sourceResponseSchema.parse(parsed);
   const members = response.assets.map((entry): OfficialAssetSourceMember => {
-    if (entry.status !== "ASSET_STATUS_ACTIVE") {
+    if (entry.status !== officialAssetSourceManifest.activeStatus) {
       throw new TypeError("The official asset response contains a non-active status.");
     }
     const assetUid = parseHash32(entry.id);
@@ -201,7 +151,8 @@ const normalizeSourceResponse = (
       contractAddress: parseEvmAddressInput(deployment.contractAddress),
     }));
     const deployments = normalizedDeployments.filter(
-      (deployment) => deployment.chainId === productChainNumericId,
+      (deployment) =>
+        deployment.chainId === officialAssetSourceManifest.deploymentChainId,
     );
     if (deployments.length !== 1) {
       throw new TypeError("The official asset response requires one Robinhood Chain deployment.");
@@ -244,7 +195,10 @@ const parseOfficialAssetSourceResponse = (
   bytesInput: Uint8Array,
   observedAtInput: unknown,
 ): OfficialAssetSourceSnapshot => {
-  if (!(bytesInput instanceof Uint8Array) || bytesInput.byteLength > officialAssetSourceResponseByteLimit) {
+  if (
+    !(bytesInput instanceof Uint8Array) ||
+    bytesInput.byteLength > officialAssetSourceManifest.responseByteLimit
+  ) {
     throw new TypeError("The official asset response exceeds its byte limit.");
   }
   let text: string;
@@ -260,32 +214,24 @@ const parseOfficialAssetSourceResponse = (
     throw new TypeError("The official asset response is not valid JSON.");
   }
   const members = normalizeSourceResponse(parsed);
-  return deepFreezeValue({
-    sourceUri: robinhoodAssetSourceUri,
+  return deepFreezeValue(officialAssetSourceSnapshotSchema.parse({
+    sourceUri: officialAssetSourceManifest.sourceUri,
     sourceObservedAt: parseUtcTimestamp(observedAtInput),
     rawResponseDigest: exactResponseDigest(bytesInput),
     memberSetDigest: officialAssetMemberSetDigest(members),
     candidateListDigest: officialAssetCandidateListDigest(members),
-    chainId: productChainId,
+    chainId: officialAssetSourceManifest.chainId,
     members,
-  });
+  }));
 };
 
 export const assertOfficialAssetSourceSnapshot = (
   input: OfficialAssetSourceSnapshot,
 ): OfficialAssetSourceSnapshot => {
-  if (input.sourceUri !== robinhoodAssetSourceUri || input.chainId !== productChainId) {
-    throw new TypeError("Official asset snapshot authority is invalid.");
-  }
-  const sourceObservedAt = parseUtcTimestamp(input.sourceObservedAt);
-  const rawResponseDigest = parseHash32(input.rawResponseDigest);
-  if (!Array.isArray(input.members) || input.members.length < 1 ||
-    input.members.length > officialAssetSourceMemberLimit) {
-    throw new TypeError("Official asset snapshot member count is invalid.");
-  }
-  const members = input.members.map(assertOfficialAssetSourceMember);
+  const parsed = officialAssetSourceSnapshotSchema.parse(input);
+  const members = parsed.members.map(assertOfficialAssetSourceMember);
   for (let index = 0; index < members.length; index += 1) {
-    const original = input.members[index] as OfficialAssetSourceMember;
+    const original = parsed.members[index] as OfficialAssetSourceMember;
     const member = members[index] as OfficialAssetSourceMember;
     if (compareMembers(original, member) !== 0 ||
       (index > 0 && compareMembers(members[index - 1] as OfficialAssetSourceMember, member) >= 0)) {
@@ -297,21 +243,21 @@ export const assertOfficialAssetSourceSnapshot = (
   if (addresses.size !== members.length || uids.size !== members.length) {
     throw new TypeError("Official asset snapshot contains a duplicate identity.");
   }
-  const memberSetDigest = parseHash32(input.memberSetDigest);
-  const candidateListDigest = parseHash32(input.candidateListDigest);
+  const memberSetDigest = parsed.memberSetDigest;
+  const candidateListDigest = parsed.candidateListDigest;
   if (
     memberSetDigest !== officialAssetMemberSetDigest(members) ||
     candidateListDigest !== officialAssetCandidateListDigest(members)
   ) throw new TypeError("Official asset snapshot digests are invalid.");
-  return deepFreezeValue({
-    sourceUri: robinhoodAssetSourceUri,
-    sourceObservedAt,
-    rawResponseDigest,
+  return deepFreezeValue(officialAssetSourceSnapshotSchema.parse({
+    sourceUri: officialAssetSourceManifest.sourceUri,
+    sourceObservedAt: parsed.sourceObservedAt,
+    rawResponseDigest: parsed.rawResponseDigest,
     memberSetDigest,
     candidateListDigest,
-    chainId: productChainId,
+    chainId: officialAssetSourceManifest.chainId,
     members,
-  });
+  }));
 };
 
 export const assertOfficialAssetSourceObservation = (
@@ -342,7 +288,7 @@ const readBoundedResponse = async (
   const contentLength = response.headers.get("content-length");
   if (contentLength !== null) {
     if (!/^(?:0|[1-9][0-9]*)$/u.test(contentLength) ||
-      BigInt(contentLength) > BigInt(officialAssetSourceResponseByteLimit)) {
+      BigInt(contentLength) > BigInt(officialAssetSourceManifest.responseByteLimit)) {
       cancelResponseBody(response);
       throw new OfficialAssetSourceError("source_inconsistent");
     }
@@ -375,7 +321,8 @@ const readBoundedResponse = async (
       }
       if (part.value.byteLength === 0) continue;
       total += part.value.byteLength;
-      if (!Number.isSafeInteger(total) || total > officialAssetSourceResponseByteLimit) {
+      if (!Number.isSafeInteger(total) ||
+        total > officialAssetSourceManifest.responseByteLimit) {
         throw new OfficialAssetSourceError("source_inconsistent");
       }
       chunks.push(part.value);
@@ -423,11 +370,11 @@ export const createOfficialAssetSourceClient = (
       const timer = setTimeout(() => {
         deadlineReached = true;
         deadline.abort();
-      }, officialAssetSourceTimeoutMs);
+      }, officialAssetSourceManifest.responseDeadlineMs);
       timer.unref();
       const signal = AbortSignal.any([callerSignal, deadline.signal]);
       try {
-        const response = await fetchFn(robinhoodAssetSourceUri, {
+        const response = await fetchFn(officialAssetSourceManifest.sourceUri, {
           method: "GET",
           headers: { accept: "application/json" },
           redirect: "error",
@@ -469,8 +416,19 @@ export const createOfficialAssetSourceClient = (
 export const assertCommittedOfficialAssetSnapshot = (
   input: CommittedOfficialAssetSnapshot,
 ): CommittedOfficialAssetSnapshot => {
-  const snapshot = assertOfficialAssetSourceSnapshot(input);
-  const revision = officialAssetSnapshotRevisionSchema.parse(input.revision);
-  const updatedAt = utcTimestampSchema.parse(input.updatedAt) as UtcTimestamp;
-  return deepFreezeValue({ ...snapshot, revision, updatedAt });
+  const parsed = committedOfficialAssetSnapshotSchema.parse(input);
+  const snapshot = assertOfficialAssetSourceSnapshot({
+    sourceUri: parsed.sourceUri,
+    sourceObservedAt: parsed.sourceObservedAt,
+    rawResponseDigest: parsed.rawResponseDigest,
+    memberSetDigest: parsed.memberSetDigest,
+    candidateListDigest: parsed.candidateListDigest,
+    chainId: parsed.chainId,
+    members: parsed.members,
+  });
+  return deepFreezeValue({
+    ...snapshot,
+    revision: parsed.revision,
+    updatedAt: parsed.updatedAt,
+  });
 };

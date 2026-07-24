@@ -17,7 +17,7 @@ import { createChainOwnerApplication } from ${packageModule("chain/application.j
 import { createInterfaceOwnerApplication } from ${packageModule("interfaces/application.js")};
 import {
   createOfficialAssetSourceClient,
-  robinhoodAssetSourceUri,
+  officialAssetSourceManifest,
 } from ${packageModule("registry/index.js")};
 import { ProductDatabase } from ${packageModule("runtime/database.js")};
 import { LocalRuntime } from ${packageModule("runtime/index.js")};
@@ -220,7 +220,7 @@ const runtime = await LocalRuntime.create({
   officialAssetSourceClient: createOfficialAssetSourceClient({
     now: () => new Date(now()),
     fetch: (input, init) => {
-      if (input !== robinhoodAssetSourceUri) {
+      if (input !== officialAssetSourceManifest.sourceUri) {
         throw new TypeError("Release source client requested an unexpected authority.");
       }
       return fetch(assetSourceUrl, init);

@@ -11,8 +11,6 @@ export const erc20TransferTopic0 =
 export const erc20ApprovalTopic0 =
   "0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925" as const;
 
-export type CanonicalErc20EventKind = "erc20_approval" | "erc20_transfer";
-
 export type CanonicalErc20EventEvidence =
   | {
       readonly kind: "erc20_transfer";
@@ -26,6 +24,8 @@ export type CanonicalErc20EventEvidence =
       readonly spender: EvmAddress;
       readonly amountRaw: UnsignedDecimal;
     };
+
+export type CanonicalErc20EventKind = CanonicalErc20EventEvidence["kind"];
 
 const canonicalIndexedAddressWordPattern = /^0x0{24}[0-9a-f]{40}$/u;
 

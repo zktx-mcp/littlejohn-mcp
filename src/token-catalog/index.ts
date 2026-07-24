@@ -12,7 +12,6 @@ export {
   tokenCatalogOperationSchema,
   tokenCatalogConfirmedOperationSchema,
   tokenCatalogReviewDigest,
-  tokenDisplayTextSchema,
   tokenInspectCapability,
   tokenInspectionDataSchema,
   tokenInspectionDigest,

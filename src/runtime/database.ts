@@ -56,7 +56,8 @@ import {
   defaultStockTokenManifest,
   findOfficialAssetMember,
   officialAssetSnapshotRevisionSchema,
-  robinhoodAssetSourceUri,
+  officialAssetSourceManifest,
+  stockFactoryVerificationSchema,
   type CommittedOfficialAssetSnapshot,
   type OfficialAssetSnapshotStore,
   type OfficialAssetSourceMember,
@@ -544,7 +545,7 @@ const readOfficialAssetSnapshotRaw = (
     WHERE chain_id = ? ORDER BY asset_uid, contract_address`)
     .all(row.chainId) as OfficialAssetMemberRow[];
   return assertCommittedOfficialAssetSnapshot({
-    sourceUri: robinhoodAssetSourceUri,
+    sourceUri: officialAssetSourceManifest.sourceUri,
     sourceObservedAt: row.sourceObservedAt as never,
     rawResponseDigest: row.rawResponseDigest as never,
     memberSetDigest: row.memberSetDigest as never,
@@ -1430,18 +1431,35 @@ export class ProductDatabase {
           return Object.freeze({ state: currentState, selections: Object.freeze([]) });
         }
         const missing = defaultStockTokenManifest.assets.filter((entry) => {
-          if (findOfficialAssetMember(snapshot, entry.contractAddress) === undefined) return false;
           const asset = erc20AssetIdentitySchema.parse({
             kind: "erc20", chainId: account.chainId, address: entry.contractAddress,
           });
-          return this.getTokenSelectionRaw(profile.profileId, account, asset) === undefined;
+          if (this.getTokenSelectionRaw(profile.profileId, account, asset) !== undefined) return false;
+          const member = findOfficialAssetMember(snapshot, entry.contractAddress);
+          if (member === undefined) return false;
+          if (member.assetUid !== entry.assetUid) {
+            throw new RuntimeOperationError("state_conflict");
+          }
+          return true;
         });
         if (missing.length !== input.verifiedDefaults.length) {
           throw new RuntimeOperationError("state_conflict");
         }
+        const verifiedDefaults = input.verifiedDefaults.map((item) => {
+          const parsedVerification = stockFactoryVerificationSchema.safeParse(
+            item.verification,
+          );
+          if (!parsedVerification.success) {
+            throw new RuntimeOperationError("state_conflict");
+          }
+          return Object.freeze({
+            asset: item.asset,
+            verification: parsedVerification.data,
+          });
+        });
         for (let index = 0; index < missing.length; index += 1) {
           const expected = missing[index];
-          const supplied = input.verifiedDefaults[index];
+          const supplied = verifiedDefaults[index];
           if (expected === undefined || supplied === undefined ||
             supplied.asset.chainId !== account.chainId ||
             supplied.asset.address !== expected.contractAddress ||
@@ -1451,8 +1469,8 @@ export class ProductDatabase {
             throw new RuntimeOperationError("state_conflict");
           }
         }
-        const verificationBlock = input.verifiedDefaults[0]?.verification.block;
-        if (verificationBlock !== undefined && input.verifiedDefaults.some((item) =>
+        const verificationBlock = verifiedDefaults[0]?.verification.block;
+        if (verificationBlock !== undefined && verifiedDefaults.some((item) =>
           item.verification.block.chainId !== verificationBlock.chainId ||
           item.verification.block.blockHash !== verificationBlock.blockHash ||
           item.verification.block.blockNumber !== verificationBlock.blockNumber ||
@@ -1476,7 +1494,7 @@ export class ProductDatabase {
           if (update.changes !== 1) throw new RuntimeOperationError("state_conflict");
         }
         const selections: TokenSelection[] = [];
-        for (const item of input.verifiedDefaults) {
+        for (const item of verifiedDefaults) {
           this.#database.prepare(`INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)
             ON CONFLICT(chain_id, contract_address) DO NOTHING`).run(account.chainId, item.asset.address);
           this.#database.prepare(`INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)
@@ -1866,7 +1884,13 @@ export class ProductDatabase {
             throw new RuntimeOperationError("state_conflict");
           }
           const member = findOfficialAssetMember(snapshot, asset.address);
-          const verification = input.officialVerification;
+          const parsedVerification = input.officialVerification === null
+            ? null
+            : stockFactoryVerificationSchema.safeParse(input.officialVerification);
+          if (parsedVerification !== null && !parsedVerification.success) {
+            throw new RuntimeOperationError("state_conflict");
+          }
+          const verification = parsedVerification?.data ?? null;
           if ((member === undefined) !== (verification === null) ||
             (member !== undefined && verification !== null && (
               verification.assetUid !== member.assetUid ||

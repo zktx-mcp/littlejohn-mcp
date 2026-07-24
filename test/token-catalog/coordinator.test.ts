@@ -20,7 +20,6 @@ import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.
 import {
   createOfficialAssetSourceClient,
   officialAssetSnapshotRevisionSchema,
-  robinhoodAssetSourceUri,
   type CommittedOfficialAssetSnapshot,
 } from "../../src/registry/index.js";
 import type { WalletSessionSource } from "../../src/runtime/source-identity.js";

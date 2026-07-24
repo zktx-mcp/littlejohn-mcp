@@ -1,5 +1,8 @@
+import { createHash } from "node:crypto";
+
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, expectTypeOf, it } from "vitest";
+import { z } from "zod";
 
 import {
   canonicalJsonStringify,
@@ -10,6 +13,7 @@ import {
   parseCapabilitySuccess,
   parseUtcTimestamp,
   type ApplicationFailure,
+  type CanonicalJson,
 } from "../../src/core/index.js";
 import { internalResponseLimitBytes } from "../../src/runtime/http-boundary.js";
 import {
@@ -24,6 +28,7 @@ import {
   tokenCatalogOperationIdSchema,
   tokenCatalogOperationSchema,
   tokenInspectCapability,
+  tokenInspectionDataSchema,
   tokenInspectionInputSchema,
   tokenInspectionSuccessSchema,
   tokenSelectionRevisionSchema,
@@ -48,6 +53,16 @@ const revisionB = Buffer.alloc(16, 2).toString("base64url");
 const snapshotRevision = Buffer.alloc(16, 3).toString("base64url");
 const createdAt = parseUtcTimestamp("2026-07-18T00:00:03.000Z");
 const expiresAt = parseUtcTimestamp("2026-07-18T00:05:03.000Z");
+
+const canonicalOutputSchema = (schema: z.ZodType): string =>
+  canonicalJsonStringify(JSON.parse(JSON.stringify(z.toJSONSchema(schema, {
+    target: "draft-2020-12",
+    unrepresentable: "throw",
+    io: "output",
+  }))) as CanonicalJson);
+
+const sha256 = (value: string): string =>
+  createHash("sha256").update(value, "utf8").digest("hex");
 
 const selectionFor = (
   inspection: TokenInspectionSuccess,
@@ -88,6 +103,25 @@ const awaitingOperation = (input: Readonly<{
 });
 
 describe("token catalog contracts", () => {
+  it("preserves the independent token inspection schema projections", () => {
+    for (const [schema, expectedBytes, expectedDigest] of [
+      [
+        tokenInspectionDataSchema,
+        7_745,
+        "7190a01b1fc0866cf5f767891ed5d64c9700f675675bc185ff4c708c50bc0555",
+      ],
+      [
+        tokenInspectionSuccessSchema,
+        14_310,
+        "4b7a79e8dbb1809703a4687f6a5e26625077fb131f0b54b8b8d803dc28235522",
+      ],
+    ] as const) {
+      const canonical = canonicalOutputSchema(schema);
+      expect(Buffer.byteLength(canonical, "utf8")).toBe(expectedBytes);
+      expect(sha256(canonical)).toBe(expectedDigest);
+    }
+  });
+
   it("owns exactly the seven selection capability identifiers at contract version 7", () => {
     expect(coreContractVersion).toBe("7");
     expect(getCapabilityDefinitionSnapshot(tokenInspectCapability).contractVersion).toBe("7");

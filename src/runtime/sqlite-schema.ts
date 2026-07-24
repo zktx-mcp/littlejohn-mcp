@@ -5,6 +5,7 @@ import {
   referenceMarketLimits,
   referenceMarketManifest,
   referenceMarketManifestVersion,
+  tokenDisplayTextLimits,
   walletConnectionStatusDefinitions,
 } from "../core/index.js";
 import { tokenCatalogContractLimits } from "../token-catalog/contracts.js";
@@ -225,8 +226,8 @@ CREATE TABLE robinhood_asset (
   chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
   contract_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("contract_address")}),
   asset_uid TEXT NOT NULL CHECK (${canonicalHash32SqlCheck("asset_uid")}),
-  source_name TEXT CHECK (source_name IS NULL OR (${canonicalSqlTextCheck("source_name")} AND length(CAST(source_name AS BLOB)) <= 512)),
-  source_symbol TEXT CHECK (source_symbol IS NULL OR (${canonicalSqlTextCheck("source_symbol")} AND length(CAST(source_symbol AS BLOB)) <= 512)),
+  source_name TEXT CHECK (source_name IS NULL OR (${canonicalSqlTextCheck("source_name")} AND length(CAST(source_name AS BLOB)) <= ${tokenDisplayTextLimits.utf8Bytes})),
+  source_symbol TEXT CHECK (source_symbol IS NULL OR (${canonicalSqlTextCheck("source_symbol")} AND length(CAST(source_symbol AS BLOB)) <= ${tokenDisplayTextLimits.utf8Bytes})),
   PRIMARY KEY (chain_id, contract_address),
   UNIQUE (chain_id, asset_uid),
   FOREIGN KEY (chain_id) REFERENCES robinhood_asset_snapshot(chain_id)

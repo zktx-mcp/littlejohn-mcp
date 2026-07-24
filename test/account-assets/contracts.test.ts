@@ -1,17 +1,29 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import {
   accountAssetApplicationContracts,
+  accountAssetClassificationSchema,
   accountAssetOfficialCandidateQueryContract,
+  contractAccountAssetSchema,
   createAccountAssetAmount,
 } from "../../src/account-assets/contracts.js";
 import {
+  officialAssetCandidateSchema,
+  officialAssetSourceManifest,
+  stockFactoryAdmissionManifest,
+} from "../../src/registry/browser.js";
+import {
   calculateScaledUiAmount,
+  canonicalJsonStringify,
   parseEvmAddressInput,
   parseEvmChainId,
   parseUtcTimestamp,
   requiredErc8056ObservationSchema,
   tokenStandardObservationResultSchema,
+  type CanonicalJson,
 } from "../../src/core/index.js";
 import {
   tokenSelectionRevisionSchema,
@@ -67,7 +79,56 @@ const contractAsset = Object.freeze({
   requiredStandards,
 });
 
+const canonicalOutputSchema = (schema: z.ZodType): string =>
+  canonicalJsonStringify(JSON.parse(JSON.stringify(z.toJSONSchema(schema, {
+    target: "draft-2020-12",
+    unrepresentable: "throw",
+    io: "output",
+  }))) as CanonicalJson);
+
+const sha256 = (value: string): string =>
+  createHash("sha256").update(value, "utf8").digest("hex");
+
 describe("account asset contracts", () => {
+  it("preserves every independent official and account schema projection", () => {
+    for (const [schema, expectedBytes, expectedDigest] of [
+      [
+        officialAssetCandidateSchema,
+        431,
+        "a2a3edd7a20f92e8f7584e67a3a348b310fe70386dcebf98e910ad70b5e87ffa",
+      ],
+      [
+        accountAssetClassificationSchema,
+        5_238,
+        "587af3298cacd8d65c438718e62d58848acabf25c9e00c7bbcc18780da301558",
+      ],
+      [
+        contractAccountAssetSchema,
+        11_509,
+        "330297af987c0e932cb9efe1f069e7188d005494e3750b134444baff7e0f264a",
+      ],
+      [
+        accountAssetApplicationContracts.collection.successSchema,
+        14_772,
+        "4c7bc1ed8bad5205fa61c8562be9cb8fe6feffb9633368318bc7bf62c157b05b",
+      ],
+      [
+        accountAssetApplicationContracts.exact.successSchema,
+        16_033,
+        "02641a7b914a895e9db0ce6c1c0577f5c1f8ea4581e969edd86a9da1db6c334f",
+      ],
+      [
+        accountAssetOfficialCandidateQueryContract.successSchema,
+        1_776,
+        "a7e26066c6962027eae831f07631613487e07deec8dbdc7f6e28bce596e56730",
+      ],
+    ] as const) {
+      const canonical = canonicalOutputSchema(schema);
+      expect(Buffer.byteLength(canonical, "utf8")).toBe(expectedBytes);
+      expect(sha256(canonical)).toBe(expectedDigest);
+    }
+  });
+
   it("binds a collection to one account, block, selection view, and amount model", () => {
     const result = accountAssetApplicationContracts.collection.parsePublicSuccess(
       { limit: 5, cursor: null },
@@ -100,6 +161,48 @@ describe("account asset contracts", () => {
       { limit: 5, cursor: null },
       { ...result, assets: [{ ...contractAsset, selection: { ...selection, included: false } }] },
     )).toThrow();
+  });
+
+  it("rejects foreign official evidence and forged fixed factory identity at the public schema", () => {
+    const currentRevision = Buffer.alloc(16, 3).toString("base64url");
+    const official = {
+      kind: "robinhood_stock_token",
+      snapshot: {
+        sourceUri: officialAssetSourceManifest.sourceUri,
+        sourceObservedAt: at,
+        rawResponseDigest: `0x${"01".repeat(32)}`,
+        memberSetDigest: `0x${"02".repeat(32)}`,
+        revision: currentRevision,
+      },
+      member: {
+        assetUid: `0x${"03".repeat(32)}`,
+        contractAddress: tokenAddress,
+        sourceName: "Example",
+        sourceSymbol: "EXT",
+      },
+      verification: {
+        assetUid: `0x${"03".repeat(32)}`,
+        contractAddress: tokenAddress,
+        block,
+        proxyAddress: stockFactoryAdmissionManifest.proxyAddress,
+        proxyCodeHash: stockFactoryAdmissionManifest.proxyCodeHash,
+        implementationAddress: stockFactoryAdmissionManifest.implementationAddress,
+        implementationCodeHash: stockFactoryAdmissionManifest.implementationCodeHash,
+        tokenCodeHash: `0x${"04".repeat(32)}`,
+      },
+    } as const;
+    expect(accountAssetClassificationSchema.parse(official)).toEqual(official);
+    expect(() => accountAssetClassificationSchema.parse({
+      ...official,
+      snapshot: { ...official.snapshot, sourceUri: "https://example.invalid/assets" },
+    })).toThrow();
+    expect(() => accountAssetClassificationSchema.parse({
+      ...official,
+      verification: {
+        ...official.verification,
+        proxyAddress: parseEvmAddressInput(`0x${"05".repeat(20)}`),
+      },
+    })).toThrow();
   });
 
   it("binds exact standard and adjusted-balance evidence to the same block and account", () => {

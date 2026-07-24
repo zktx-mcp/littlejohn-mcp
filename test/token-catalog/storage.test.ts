@@ -23,6 +23,7 @@ import {
   assertOfficialAssetSourceSnapshot,
   createOfficialAssetSourceClient,
   defaultStockTokenManifest,
+  stockFactoryAdmissionManifest,
   type StockFactoryVerification,
 } from "../../src/registry/index.js";
 import { ProductDatabase } from "../../src/runtime/database.js";
@@ -105,11 +106,11 @@ const sourceObservation = async (additionalAssets: readonly Readonly<{
   contractAddress: string;
   tokenName: string;
   tokenSymbol: string;
-}>[] = []) => {
+}>[] = [], defaultAssetUidByAddress: Readonly<Record<string, string>> = {}) => {
   const response = {
     assets: [
       ...defaultStockTokenManifest.assets.map((entry, index) => ({
-        id: entry.assetUid,
+        id: defaultAssetUidByAddress[entry.contractAddress] ?? entry.assetUid,
         status: "ASSET_STATUS_ACTIVE",
         deployments: [{ chainId: 4663, contractAddress: entry.contractAddress }],
         tokenName: `Default ${index + 1}`,
@@ -144,10 +145,10 @@ const verification = (
   assetUid,
   contractAddress,
   block: verificationBlock,
-  proxyAddress: parseEvmAddressInput(`0x${"aa".repeat(20)}`),
-  proxyCodeHash: parseHash32(`0x${"bb".repeat(32)}`),
-  implementationAddress: parseEvmAddressInput(`0x${"cc".repeat(20)}`),
-  implementationCodeHash: parseHash32(`0x${"dd".repeat(32)}`),
+  proxyAddress: stockFactoryAdmissionManifest.proxyAddress,
+  proxyCodeHash: stockFactoryAdmissionManifest.proxyCodeHash,
+  implementationAddress: stockFactoryAdmissionManifest.implementationAddress,
+  implementationCodeHash: stockFactoryAdmissionManifest.implementationCodeHash,
   tokenCodeHash: parseHash32(`0x${"ee".repeat(32)}`),
 });
 
@@ -337,6 +338,65 @@ describe("token selection persistence", () => {
     database.close();
   });
 
+  it("rejects a persisted official label outside the shared display contract on reopen", async () => {
+    const { database, path } = await openDatabase();
+    await sourceSnapshot(database);
+    database.close();
+
+    const raw = new Database(path);
+    expect(raw.prepare("UPDATE robinhood_asset SET source_name = ?").run("A".repeat(129)).changes)
+      .toBe(defaultStockTokenManifest.assets.length);
+    raw.close();
+
+    let failure: unknown;
+    try { await ProductDatabase.open(path, now); }
+    catch (error) { failure = error; }
+    expect(getRuntimeOperationFailure(failure)?.error.code).toBe("runtime_state_unavailable");
+  });
+
+  it("rejects a persisted official snapshot with a forged member digest on reopen", async () => {
+    const { database, path } = await openDatabase();
+    await sourceSnapshot(database);
+    database.close();
+
+    const raw = new Database(path);
+    expect(raw.prepare("UPDATE robinhood_asset_snapshot SET member_set_digest = ?")
+      .run(`0x${"ff".repeat(32)}`).changes).toBe(1);
+    raw.close();
+
+    let failure: unknown;
+    try { await ProductDatabase.open(path, now); }
+    catch (error) { failure = error; }
+    expect(getRuntimeOperationFailure(failure)?.error.code).toBe("runtime_state_unavailable");
+  });
+
+  it("binds each default verification to the persisted source member identity", async () => {
+    const { database, connection } = await openDatabase();
+    const first = defaultStockTokenManifest.assets[0]!;
+    const observation = await sourceObservation([], {
+      [first.contractAddress]: `0x${"fe".repeat(32)}`,
+    });
+    const snapshot = database.officialAssetSnapshotStore().replaceSnapshot(observation, null);
+    const store = database.accountTokenSelectionStore();
+    const verifiedDefaults = defaultStockTokenManifest.assets.map((entry) => ({
+      asset: { kind: "erc20" as const, chainId, address: entry.contractAddress },
+      verification: verification(entry.assetUid, entry.contractAddress),
+    }));
+
+    expect(failureCode(() => store.initializeDefaults({
+      account,
+      expectedConnectionRevision: connection.revision,
+      snapshotRevision: snapshot.revision,
+      verifiedDefaults,
+      now,
+    }))).toBe("state_conflict");
+    expect(store.getState(account)).toBeUndefined();
+    for (const entry of verifiedDefaults) {
+      expect(store.getForAccount({ account, asset: entry.asset })).toBeUndefined();
+    }
+    database.close();
+  });
+
   it("initializes exactly the verified default set once and preserves an explicit exclusion", async () => {
     const { database, connection } = await openDatabase();
     const snapshot = await sourceSnapshot(database);
@@ -386,6 +446,52 @@ describe("token selection persistence", () => {
     });
     expect(repeated.selections).toEqual([]);
     expect(catalog.getSelection(account, excluded.selection.asset)?.selection.included).toBe(false);
+    database.close();
+  });
+
+  it("rejects every forged fixed StockFactory identity before default initialization becomes durable", async () => {
+    const { database, connection } = await openDatabase();
+    const snapshot = await sourceSnapshot(database);
+    const store = database.accountTokenSelectionStore();
+    const verifiedDefaults = defaultStockTokenManifest.assets.map((entry) => ({
+      asset: { kind: "erc20" as const, chainId, address: entry.contractAddress },
+      verification: verification(entry.assetUid, entry.contractAddress),
+    }));
+    const first = verifiedDefaults[0]!;
+
+    for (const forgedVerification of [
+      {
+        ...first.verification,
+        proxyAddress: parseEvmAddressInput(`0x${"aa".repeat(20)}`),
+      },
+      {
+        ...first.verification,
+        proxyCodeHash: parseHash32(`0x${"bb".repeat(32)}`),
+      },
+      {
+        ...first.verification,
+        implementationAddress: parseEvmAddressInput(`0x${"cc".repeat(20)}`),
+      },
+      {
+        ...first.verification,
+        implementationCodeHash: parseHash32(`0x${"dd".repeat(32)}`),
+      },
+    ] as const) {
+      expect(failureCode(() => store.initializeDefaults({
+        account,
+        expectedConnectionRevision: connection.revision,
+        snapshotRevision: snapshot.revision,
+        verifiedDefaults: [
+          { ...first, verification: forgedVerification },
+          ...verifiedDefaults.slice(1),
+        ],
+        now,
+      }))).toBe("state_conflict");
+      expect(store.getState(account)).toBeUndefined();
+      for (const entry of verifiedDefaults) {
+        expect(store.getForAccount({ account, asset: entry.asset })).toBeUndefined();
+      }
+    }
     database.close();
   });
 
@@ -723,6 +829,36 @@ describe("token selection persistence", () => {
       expect(raw.prepare("SELECT COUNT(*) AS count FROM token_contract_inspection").get())
         .toEqual({ count: 0 });
       raw.close();
+    }
+
+    for (const forgedVerification of [
+      {
+        ...correctVerification,
+        proxyAddress: parseEvmAddressInput(`0x${"aa".repeat(20)}`),
+      },
+      {
+        ...correctVerification,
+        proxyCodeHash: parseHash32(`0x${"bb".repeat(32)}`),
+      },
+      {
+        ...correctVerification,
+        implementationAddress: parseEvmAddressInput(`0x${"cc".repeat(20)}`),
+      },
+      {
+        ...correctVerification,
+        implementationCodeHash: parseHash32(`0x${"dd".repeat(32)}`),
+      },
+    ] as const) {
+      expect(failureCode(() => apply(store, {
+        kind: "add",
+        connectionRevision: connection.revision,
+        operation,
+        selectionRevision: selectionRevision(40),
+        selectionSetRevision: setRevision(41),
+        officialVerification: forgedVerification,
+      }))).toBe("state_conflict");
+      expect(store.getSelection(account, inspection.data.asset)).toBeUndefined();
+      expect(store.getSelectionState(account)).toBeUndefined();
     }
 
     const completed = apply(store, {

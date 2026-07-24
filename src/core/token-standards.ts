@@ -10,68 +10,100 @@ import { guardJsonSchema, jsonObject } from "./json-object.js";
 import { evmAccountIdentitySchema } from "./identities.js";
 import { chainAnchorSchema } from "./primitives.js";
 
+export const tokenStandardObservationStatuses = deepFreezeValue({
+  observed: "observed",
+  supported: "supported",
+  notSupported: "not_supported",
+  inconsistent: "inconsistent",
+  unknown: "unknown",
+} as const);
+
+export type TokenStandardObservationStatus =
+  (typeof tokenStandardObservationStatuses)[keyof typeof tokenStandardObservationStatuses];
+
 export const tokenStandardDefinitions = deepFreezeValue({
   erc20_read_surface: {
     displayName: "ERC-20",
     specificationUri: "https://eips.ethereum.org/EIPS/eip-20",
     explanation: "The ERC-20 reads used by Little John succeeded. ERC-20 has no ERC-165 interface ID, so this observation does not certify all transfer, allowance, event, or failure behavior.",
-    statuses: ["observed", "unknown"],
+    statuses: [
+      tokenStandardObservationStatuses.observed,
+      tokenStandardObservationStatuses.unknown,
+    ],
   },
   erc165: {
     displayName: "ERC-165",
     specificationUri: "https://eips.ethereum.org/EIPS/eip-165",
     explanation: "The contract passed the ERC-165 self-interface and invalid-interface calls with the required 30,000 gas bound. This establishes standard interface detection, not support for any particular token interface.",
-    statuses: ["supported", "not_supported", "inconsistent", "unknown"],
+    statuses: [
+      tokenStandardObservationStatuses.supported,
+      tokenStandardObservationStatuses.notSupported,
+      tokenStandardObservationStatuses.inconsistent,
+      tokenStandardObservationStatuses.unknown,
+    ],
   },
   erc8056: {
     displayName: "ERC-8056",
     specificationUri: "https://eips.ethereum.org/EIPS/eip-8056",
     explanation: "The contract declared the ERC-8056 core and required pending-multiplier interfaces and returned valid values. ERC-8056 is a draft display-scaling extension; raw ERC-20 accounting does not change.",
-    statuses: ["supported", "not_supported", "inconsistent", "unknown"],
+    statuses: [
+      tokenStandardObservationStatuses.supported,
+      tokenStandardObservationStatuses.notSupported,
+      tokenStandardObservationStatuses.inconsistent,
+      tokenStandardObservationStatuses.unknown,
+    ],
   },
   erc8056_pending_multiplier: {
     displayName: "ERC-8056 pending multiplier",
     specificationUri: "https://eips.ethereum.org/EIPS/eip-8056",
     explanation: "The required pending-multiplier interface returned the scheduled multiplier and effective timestamp used to explain a future display change.",
-    statuses: ["supported", "not_supported", "inconsistent", "unknown"],
+    statuses: [
+      tokenStandardObservationStatuses.supported,
+      tokenStandardObservationStatuses.notSupported,
+      tokenStandardObservationStatuses.inconsistent,
+      tokenStandardObservationStatuses.unknown,
+    ],
   },
   erc8056_conversion: {
     displayName: "ERC-8056 conversion",
     specificationUri: "https://eips.ethereum.org/EIPS/eip-8056",
     explanation: "The optional conversion interface exposes onchain raw-to-UI and UI-to-raw helpers. Little John still preserves raw values and uses its canonical integer calculation for display evidence.",
-    statuses: ["supported", "not_supported", "inconsistent", "unknown"],
+    statuses: [
+      tokenStandardObservationStatuses.supported,
+      tokenStandardObservationStatuses.notSupported,
+      tokenStandardObservationStatuses.inconsistent,
+      tokenStandardObservationStatuses.unknown,
+    ],
   },
   erc8056_balances: {
     displayName: "ERC-8056 balances",
     specificationUri: "https://eips.ethereum.org/EIPS/eip-8056",
     explanation: "The optional balances interface exposes UI-adjusted balance and total-supply reads. For an account result, balanceOfUI must agree with the value calculated from the same-block raw balance and multiplier.",
-    statuses: ["supported", "not_supported", "inconsistent", "unknown"],
+    statuses: [
+      tokenStandardObservationStatuses.supported,
+      tokenStandardObservationStatuses.notSupported,
+      tokenStandardObservationStatuses.inconsistent,
+      tokenStandardObservationStatuses.unknown,
+    ],
   },
 } as const);
 
 export type TokenStandardId = keyof typeof tokenStandardDefinitions;
 export const tokenStandardDefinitionFor = (standardId: TokenStandardId) =>
   tokenStandardDefinitions[standardId];
-export type TokenStandardObservationStatus =
-  | "observed"
-  | "supported"
-  | "not_supported"
-  | "inconsistent"
-  | "unknown";
 
-const tokenStandardIds = Object.freeze(Object.keys(tokenStandardDefinitions)) as readonly [
+export const tokenStandardOrder = Object.freeze(Object.keys(tokenStandardDefinitions)) as readonly [
   TokenStandardId,
   ...TokenStandardId[],
 ];
 
-export const tokenStandardIdSchema = z.enum(tokenStandardIds);
-export const tokenStandardObservationStatusSchema = z.enum([
-  "observed",
-  "supported",
-  "not_supported",
-  "inconsistent",
-  "unknown",
-]);
+const tokenStandardObservationStatusValues = Object.freeze(
+  Object.values(tokenStandardObservationStatuses),
+) as readonly [TokenStandardObservationStatus, ...TokenStandardObservationStatus[]];
+
+export const tokenStandardIdSchema = z.enum(tokenStandardOrder);
+export const tokenStandardObservationStatusSchema =
+  z.enum(tokenStandardObservationStatusValues);
 
 export const tokenStandardObservationSchema = guardJsonSchema(jsonObject({
   standardId: tokenStandardIdSchema,
@@ -140,20 +172,11 @@ export const requiredErc8056ObservationSchema = guardJsonSchema(jsonObject({
 }));
 export type RequiredErc8056Observation = z.infer<typeof requiredErc8056ObservationSchema>;
 
-const completeStandardOrder = [
-  "erc20_read_surface",
-  "erc165",
-  "erc8056",
-  "erc8056_pending_multiplier",
-  "erc8056_conversion",
-  "erc8056_balances",
-] as const;
-
 export const tokenStandardObservationResultSchema = guardJsonSchema(jsonObject({
   asset: erc20AssetIdentitySchema,
   account: evmAccountIdentitySchema.optional(),
   block: chainAnchorSchema,
-  standards: z.array(tokenStandardObservationSchema).length(completeStandardOrder.length),
+  standards: z.array(tokenStandardObservationSchema).length(tokenStandardOrder.length),
   requiredErc8056: supportedErc8056ValuesSchema.optional(),
   balanceOfUi: uint256DecimalSchema.optional(),
   calculatedBalance: scaledUiAmountSchema.optional(),
@@ -162,21 +185,25 @@ export const tokenStandardObservationResultSchema = guardJsonSchema(jsonObject({
     (value.account !== undefined && value.account.chainId !== value.block.chainId)) {
     context.addIssue({ code: "custom", message: "The standard result identities and block differ." });
   }
-  if (value.standards.some((entry, index) => entry.standardId !== completeStandardOrder[index])) {
+  if (value.standards.some((entry, index) => entry.standardId !== tokenStandardOrder[index])) {
     context.addIssue({ code: "custom", message: "The standard observations are not in canonical order." });
   }
-  if (value.standards[0]?.status !== "observed") {
+  const standards: Partial<Record<TokenStandardId, TokenStandardObservation>> = {};
+  for (const entry of value.standards) standards[entry.standardId] = entry;
+  if (standards.erc20_read_surface?.status !== tokenStandardObservationStatuses.observed) {
     context.addIssue({ code: "custom", message: "The ERC-20 read surface was not observed." });
   }
-  const requiredSupported = value.standards[1]?.status === "supported" &&
-    value.standards[2]?.status === "supported" &&
-    value.standards[3]?.status === "supported";
+  const requiredSupported =
+    standards.erc165?.status === tokenStandardObservationStatuses.supported &&
+    standards.erc8056?.status === tokenStandardObservationStatuses.supported &&
+    standards.erc8056_pending_multiplier?.status ===
+      tokenStandardObservationStatuses.supported;
   if ((value.requiredErc8056 !== undefined) !== requiredSupported) {
     context.addIssue({ code: "custom", message: "The complete ERC-8056 values and statuses differ." });
   }
-  const erc165Status = value.standards[1]?.status;
-  const erc8056Status = value.standards[2]?.status;
-  const pendingStatus = value.standards[3]?.status;
+  const erc165Status = standards.erc165?.status;
+  const erc8056Status = standards.erc8056?.status;
+  const pendingStatus = standards.erc8056_pending_multiplier?.status;
   if (
     erc165Status === "supported" &&
     erc8056Status !== undefined &&
@@ -188,14 +215,14 @@ export const tokenStandardObservationResultSchema = guardJsonSchema(jsonObject({
   if (erc165Status !== "supported" && (
     erc8056Status !== "unknown" ||
     pendingStatus !== "unknown" ||
-    value.standards[4]?.status !== "unknown" ||
-    value.standards[5]?.status !== "unknown"
+    standards.erc8056_conversion?.status !== tokenStandardObservationStatuses.unknown ||
+    standards.erc8056_balances?.status !== tokenStandardObservationStatuses.unknown
   )) {
     context.addIssue({ code: "custom", message: "The result claims standards without valid ERC-165." });
   }
   if (!requiredSupported && (
-    value.standards[4]?.status === "supported" ||
-    value.standards[5]?.status === "supported"
+    standards.erc8056_conversion?.status === tokenStandardObservationStatuses.supported ||
+    standards.erc8056_balances?.status === tokenStandardObservationStatuses.supported
   )) {
     context.addIssue({ code: "custom", message: "An optional ERC-8056 extension lacks required support." });
   }
@@ -207,21 +234,21 @@ export const tokenStandardObservationResultSchema = guardJsonSchema(jsonObject({
   } else if (
     value.account !== undefined &&
     value.requiredErc8056 !== undefined &&
-    value.standards[5]?.status !== "unknown" &&
-    value.standards[5]?.status !== "inconsistent"
+    standards.erc8056_balances?.status !== tokenStandardObservationStatuses.unknown &&
+    standards.erc8056_balances?.status !== tokenStandardObservationStatuses.inconsistent
   ) {
     context.addIssue({ code: "custom", message: "The account result omits its scaled-balance conclusion." });
   }
   if (value.balanceOfUi !== undefined && (
     value.calculatedBalance?.status !== "available" ||
     value.balanceOfUi !== value.calculatedBalance.adjustedRaw ||
-    value.standards[5]?.status !== "supported"
+    standards.erc8056_balances?.status !== tokenStandardObservationStatuses.supported
   )) {
     context.addIssue({ code: "custom", message: "The onchain UI balance is not cross-checked." });
   }
   if (
     value.account !== undefined &&
-    value.standards[5]?.status === "supported" &&
+    standards.erc8056_balances?.status === tokenStandardObservationStatuses.supported &&
     value.balanceOfUi === undefined
   ) {
     context.addIssue({ code: "custom", message: "The declared balances extension lacks its account cross-check." });

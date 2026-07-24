@@ -57,9 +57,7 @@ import type {
 import { bindForHarness, createCapabilityHarness } from "../core/capability-harness.js";
 import { tokenInspectCapability, tokenInspectionDigest } from "../../src/token-catalog/index.js";
 import {
-  stockFactoryImplementationAddress,
-  stockFactoryImplementationSlot,
-  stockFactoryProxyAddress,
+  stockFactoryAdmissionManifest,
 } from "../../src/registry/index.js";
 import {
   stockFactoryImplementationCodeFixture,
@@ -621,12 +619,20 @@ describe("chain owner application", () => {
   it("preserves a fatal source inconsistency and drains every sibling call before completion", async () => {
     const blockHash = `0x${"ac".repeat(32)}`;
     let delayedStarted = 0;
-    let delayedAborted = 0;
+    let metadataAborted = 0;
+    let totalSupplyAborted = 0;
     let markStarted!: () => void;
     const started = new Promise<void>((resolveStarted) => { markStarted = resolveStarted; });
-    let markAborted!: () => void;
-    const aborted = new Promise<void>((resolveAborted) => { markAborted = resolveAborted; });
-    const releaseDelayed: Array<() => void> = [];
+    let markMetadataAborted!: () => void;
+    const metadataSiblingsAborted = new Promise<void>((resolveAborted) => {
+      markMetadataAborted = resolveAborted;
+    });
+    let markTotalSupplyAborted!: () => void;
+    const totalSupplySiblingAborted = new Promise<void>((resolveAborted) => {
+      markTotalSupplyAborted = resolveAborted;
+    });
+    const releaseMetadata: Array<() => void> = [];
+    let releaseTotalSupply!: () => void;
     const requester = new FakeRequester(async (method, params, signal) => {
       if (method === "eth_chainId") return "0x1237";
       if (method === "eth_getBlockByNumber") return {
@@ -640,12 +646,19 @@ describe("chain owner application", () => {
         if (call.data === "0x06fdde03") throw new ChainRpcError("source_inconsistent");
         return await new Promise<never>((_resolve, reject) => {
           const onAbort = (): void => {
-            delayedAborted += 1;
-            if (delayedAborted === 3) markAborted();
+            if (call.data === "0x18160ddd") {
+              totalSupplyAborted += 1;
+              markTotalSupplyAborted();
+            } else {
+              metadataAborted += 1;
+              if (metadataAborted === 2) markMetadataAborted();
+            }
           };
           signal.addEventListener("abort", onAbort, { once: true });
           if (signal.aborted) onAbort();
-          releaseDelayed.push(() => reject(new ChainRpcError("request_aborted")));
+          const release = (): void => reject(new ChainRpcError("request_aborted"));
+          if (call.data === "0x18160ddd") releaseTotalSupply = release;
+          else releaseMetadata.push(release);
           delayedStarted += 1;
           if (delayedStarted === 3) markStarted();
         });
@@ -671,17 +684,23 @@ describe("chain owner application", () => {
       return result;
     });
     await started;
-    await aborted;
+    await metadataSiblingsAborted;
     await new Promise<void>((resolveTurn) => { setImmediate(resolveTurn); });
     expect(invocationSettled).toBe(false);
+    expect(totalSupplyAborted).toBe(0);
 
-    for (const release of releaseDelayed) release();
+    for (const release of releaseMetadata) release();
+    await totalSupplySiblingAborted;
+    await new Promise<void>((resolveTurn) => { setImmediate(resolveTurn); });
+    expect(invocationSettled).toBe(false);
+    releaseTotalSupply();
     await expect(invocation).resolves.toMatchObject({
       ok: false,
       error: { code: "source_inconsistent" },
     });
     await application.close();
-    expect(delayedAborted).toBe(3);
+    expect(metadataAborted).toBe(2);
+    expect(totalSupplyAborted).toBe(1);
   });
 
   it("fails closed for a wrong input chain and for missing runtime code", async () => {
@@ -777,7 +796,8 @@ describe("chain owner application", () => {
     vi.useFakeTimers();
     const blockHash = `0x${"cd".repeat(32)}` as const;
     const assetUid = parseHash32(`0x${"12".repeat(32)}`);
-    const implementationWord = `0x${"0".repeat(24)}${stockFactoryImplementationAddress.slice(2)}`;
+    const implementationWord =
+      `0x${"0".repeat(24)}${stockFactoryAdmissionManifest.implementationAddress.slice(2)}`;
     const mappedAddressWord = `0x${"0".repeat(24)}${tokenAddress.slice(2)}`;
     let tokenCodeReads = 0;
     let releaseInspectionCode!: () => void;
@@ -803,17 +823,23 @@ describe("chain owner application", () => {
           }
           return "0x6000";
         }
-        if (address === stockFactoryProxyAddress) return stockFactoryProxyCodeFixture;
-        if (address === stockFactoryImplementationAddress) return stockFactoryImplementationCodeFixture;
+        if (address === stockFactoryAdmissionManifest.proxyAddress) {
+          return stockFactoryProxyCodeFixture;
+        }
+        if (address === stockFactoryAdmissionManifest.implementationAddress) {
+          return stockFactoryImplementationCodeFixture;
+        }
       }
       if (method === "eth_getStorageAt") {
-        expect(params[0]).toBe(stockFactoryProxyAddress);
-        expect(params[1]).toBe(stockFactoryImplementationSlot);
+        expect(params[0]).toBe(stockFactoryAdmissionManifest.proxyAddress);
+        expect(params[1]).toBe(stockFactoryAdmissionManifest.implementationSlot);
         return implementationWord;
       }
       if (method === "eth_call") {
         const call = params[0] as { readonly to: string; readonly data: string };
-        if (call.to === stockFactoryProxyAddress) return mappedAddressWord;
+        if (call.to === stockFactoryAdmissionManifest.proxyAddress) {
+          return mappedAddressWord;
+        }
         if (call.data === "0x18160ddd") return rpcWord(7n);
         if (call.data === "0x06fdde03") return rpcText("Token");
         if (call.data === "0x95d89b41") return rpcText("TKN");

@@ -5,9 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createOfficialAssetSourceClient,
   getOfficialAssetSourceErrorCode,
-  officialAssetSourceMemberLimit,
-  officialAssetSourceResponseByteLimit,
-  robinhoodAssetSourceUri,
+  officialAssetSourceManifest,
 } from "../../src/registry/index.js";
 import {
   parseEvmAddress,
@@ -47,7 +45,7 @@ describe("official asset source", () => {
     ], ignored: true });
     const snapshot = await readSnapshot(responseBytes);
 
-    expect(robinhoodAssetSourceUri).toBe(expectedSourceUri);
+    expect(officialAssetSourceManifest.sourceUri).toBe(expectedSourceUri);
     expect(snapshot.sourceUri).toBe(expectedSourceUri);
     expect(snapshot.rawResponseDigest).toBe(sha256(responseBytes));
     expect(snapshot.members.map(({ assetUid, contractAddress }) => ({ assetUid, contractAddress }))).toEqual([
@@ -85,7 +83,10 @@ describe("official asset source", () => {
         { chainId: 1, contractAddress: "not-an-address" },
       ] })] },
       { assets: [asset(1, { id: `0x${"A".repeat(64)}` })] },
-      { assets: Array.from({ length: officialAssetSourceMemberLimit + 1 }, (_, index) => asset(index + 1)) },
+      { assets: Array.from(
+        { length: officialAssetSourceManifest.memberLimit + 1 },
+        (_, index) => asset(index + 1),
+      ) },
     ];
     for (const response of invalidResponses) {
       await expect(readSnapshot(bytes(response))).rejects.toSatisfy(
@@ -97,14 +98,16 @@ describe("official asset source", () => {
   it("accepts the maximum complete source set without requiring an RPC dependency", async () => {
     const snapshot = await readSnapshot(bytes({
       assets: Array.from(
-        { length: officialAssetSourceMemberLimit },
+        { length: officialAssetSourceManifest.memberLimit },
         (_, index) => asset(index + 1),
       ),
     }));
 
-    expect(snapshot.members).toHaveLength(officialAssetSourceMemberLimit);
+    expect(snapshot.members).toHaveLength(officialAssetSourceManifest.memberLimit);
     expect(snapshot.members[0]?.assetUid).toBe(uid(1));
-    expect(snapshot.members.at(-1)?.assetUid).toBe(uid(officialAssetSourceMemberLimit));
+    expect(snapshot.members.at(-1)?.assetUid).toBe(
+      uid(officialAssetSourceManifest.memberLimit),
+    );
   });
 
   it("owns the exact HTTP request and response boundary", async () => {
@@ -137,10 +140,10 @@ describe("official asset source", () => {
         status: 200,
         headers: {
           "content-type": "application/json",
-          "content-length": String(officialAssetSourceResponseByteLimit + 1),
+          "content-length": String(officialAssetSourceManifest.responseByteLimit + 1),
         },
       }),
-      new Response(new Uint8Array(officialAssetSourceResponseByteLimit + 1), {
+      new Response(new Uint8Array(officialAssetSourceManifest.responseByteLimit + 1), {
         status: 200,
         headers: { "content-type": "application/json" },
       }),

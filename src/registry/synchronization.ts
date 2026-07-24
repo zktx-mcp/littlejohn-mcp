@@ -2,6 +2,8 @@ import type { ApplicationFailure } from "../core/index.js";
 import type {
   CommittedOfficialAssetSnapshot,
   OfficialAssetSnapshotRevision,
+} from "./official-asset-contract.js";
+import type {
   OfficialAssetSnapshotStore,
   OfficialAssetSourceClient,
 } from "./official-assets.js";

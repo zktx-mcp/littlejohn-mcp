@@ -1,8 +1,6 @@
 import {
   deepFreezeValue,
   parseEvmAddressInput,
-  parseHash32,
-  productChainId,
   type ChainAnchor,
   type EvmAddress,
   type Hash32,
@@ -24,32 +22,14 @@ import {
 } from "../chain/rpc.js";
 import {
   assertOfficialAssetSourceMember,
-  type OfficialAssetSourceMember,
 } from "./official-assets.js";
-
-export const stockFactoryProxyAddress = parseEvmAddressInput(
-  "0x4783C67b63dE2B358Ac5951a7D41F47A38F3C046",
-);
-export const stockFactoryImplementationAddress = parseEvmAddressInput(
-  "0xEe351E53BCe6AAF106428358838197C91e36EE0E",
-);
-export const stockFactoryImplementationSlot = parseHash32(
-  "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
-);
-export const stockFactoryProxyCodeHash = parseHash32(
-  "0x394c3517e9331e7c88ef8af388c0cb63c720af1b1b4d5a5cace212f7df0b045a",
-);
-export const stockFactoryImplementationCodeHash = parseHash32(
-  "0x3bfd5841605b9931c9dbb0f9f54a28b4038918ceb74d6d1081bc7f963fe528b4",
-);
-
-export type StockFactoryVerificationErrorCode =
-  | "factory_identity_mismatch"
-  | "request_aborted"
-  | "source_inconsistent"
-  | "source_unavailable"
-  | "token_code_missing"
-  | "token_identity_mismatch";
+import {
+  stockFactoryAdmissionManifest,
+  stockFactoryVerificationSchema,
+  type OfficialAssetSourceMember,
+  type StockFactoryVerification,
+  type StockFactoryVerificationErrorCode,
+} from "./official-asset-contract.js";
 
 const verificationErrorCodes = new WeakMap<object, StockFactoryVerificationErrorCode>();
 
@@ -69,17 +49,6 @@ export const getStockFactoryVerificationErrorCode = (
   error: unknown,
 ): StockFactoryVerificationErrorCode | undefined =>
   typeof error === "object" && error !== null ? verificationErrorCodes.get(error) : undefined;
-
-export interface StockFactoryVerification {
-  readonly assetUid: Hash32;
-  readonly contractAddress: EvmAddress;
-  readonly block: ChainAnchor;
-  readonly proxyAddress: EvmAddress;
-  readonly proxyCodeHash: Hash32;
-  readonly implementationAddress: EvmAddress;
-  readonly implementationCodeHash: Hash32;
-  readonly tokenCodeHash: Hash32;
-}
 
 export interface StockFactoryVerifier {
   readonly block: ChainAnchor;
@@ -127,7 +96,7 @@ const requiredRuntimeCodeHash = (
 export const createStockFactoryVerifier = async (
   input: StockFactoryVerifierInput,
 ): Promise<StockFactoryVerifier> => {
-  if (input.block.chainId !== productChainId) {
+  if (input.block.chainId !== stockFactoryAdmissionManifest.chainId) {
     throw new TypeError("StockFactory verification requires Robinhood Chain.");
   }
   if (input.stateReference.blockHash !== input.block.blockHash) {
@@ -141,20 +110,24 @@ export const createStockFactoryVerifier = async (
     const [proxyCodeRaw, implementationWordRaw] = await Promise.all([
       input.rpc.request(
         "eth_getCode",
-        [stockFactoryProxyAddress, input.stateReference],
+        [stockFactoryAdmissionManifest.proxyAddress, input.stateReference],
         input.signal,
       ),
       input.rpc.request(
         "eth_getStorageAt",
-        [stockFactoryProxyAddress, stockFactoryImplementationSlot, input.stateReference],
+        [
+          stockFactoryAdmissionManifest.proxyAddress,
+          stockFactoryAdmissionManifest.implementationSlot,
+          input.stateReference,
+        ],
         input.signal,
       ),
     ]);
     proxyCodeHash = requiredRuntimeCodeHash(proxyCodeRaw, "factory_identity_mismatch");
     implementationAddress = decodeImplementationAddress(implementationWordRaw);
     if (
-      proxyCodeHash !== stockFactoryProxyCodeHash ||
-      implementationAddress !== stockFactoryImplementationAddress
+      proxyCodeHash !== stockFactoryAdmissionManifest.proxyCodeHash ||
+      implementationAddress !== stockFactoryAdmissionManifest.implementationAddress
     ) throw new StockFactoryVerificationError("factory_identity_mismatch");
     const implementationCodeRaw = await input.rpc.request(
       "eth_getCode",
@@ -165,7 +138,9 @@ export const createStockFactoryVerifier = async (
       implementationCodeRaw,
       "factory_identity_mismatch",
     );
-    if (implementationCodeHash !== stockFactoryImplementationCodeHash) {
+    if (
+      implementationCodeHash !== stockFactoryAdmissionManifest.implementationCodeHash
+    ) {
       throw new StockFactoryVerificationError("factory_identity_mismatch");
     }
   } catch (error) {
@@ -179,7 +154,7 @@ export const createStockFactoryVerifier = async (
       try {
         const [mappedAddressRaw, tokenCodeRaw] = await Promise.all([
           input.rpc.request("eth_call", [{
-            to: stockFactoryProxyAddress,
+            to: stockFactoryAdmissionManifest.proxyAddress,
             data: encoder.tokenAddress(validatedMember.assetUid),
           }, input.stateReference], input.signal),
           input.rpc.request(
@@ -193,16 +168,16 @@ export const createStockFactoryVerifier = async (
           throw new StockFactoryVerificationError("token_identity_mismatch");
         }
         const tokenCodeHash = requiredRuntimeCodeHash(tokenCodeRaw, "token_code_missing");
-        return deepFreezeValue({
+        return deepFreezeValue(stockFactoryVerificationSchema.parse({
           assetUid: validatedMember.assetUid,
           contractAddress: validatedMember.contractAddress,
           block: input.block,
-          proxyAddress: stockFactoryProxyAddress,
+          proxyAddress: stockFactoryAdmissionManifest.proxyAddress,
           proxyCodeHash,
           implementationAddress,
           implementationCodeHash,
           tokenCodeHash,
-        });
+        }));
       } catch (error) {
         throw normalizeFailure(error, input.signal);
       }

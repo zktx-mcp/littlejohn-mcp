@@ -48,6 +48,7 @@ const browserCoreConsumers = new Set([
   "interfaces/web/wallet-dialog-view.ts",
   "runtime/error-definitions.ts",
   "market-portfolio/contracts.ts",
+  "registry/official-asset-contract.ts",
   "token-catalog/contract-schema.ts",
   "wallet/management-contracts.ts",
   "wallet/operation-contract.ts",
@@ -180,6 +181,51 @@ describe("runtime architecture boundary", () => {
     }
     expect([...new Set(productChainLiteralOwners)]).toEqual(["core/product-identity.ts"]);
     expect(productChainNumericLiteralOwners).toEqual([]);
+  });
+
+  it("keeps every fixed official-asset manifest literal in its single contract owner", async () => {
+    const expectedOwner = "registry/official-asset-contract.ts";
+    const fixedTextLiterals = new Set([
+      "https://api.robinhood.com/rhj/assets",
+      "https://docs.robinhood.com/chain/contracts/",
+      "ASSET_STATUS_ACTIVE",
+      "2026-07-20",
+      "14660943",
+      "https://robinhoodchain.blockscout.com/address/0x4783C67b63dE2B358Ac5951a7D41F47A38F3C046",
+      "https://robinhoodchain.blockscout.com/address/0xEe351E53BCe6AAF106428358838197C91e36EE0E",
+    ]);
+    const fixedHexLiterals = new Set([
+      "0x4783c67b63de2b358ac5951a7d41f47a38f3c046",
+      "0xee351e53bce6aaf106428358838197c91e36ee0e",
+      "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
+      "0x394c3517e9331e7c88ef8af388c0cb63c720af1b1b4d5a5cace212f7df0b045a",
+      "0x3bfd5841605b9931c9dbb0f9f54a28b4038918ceb74d6d1081bc7f963fe528b4",
+      "0x94d90a8691fc4fc7a4fb48a86755f948f2a1110325d6c8257dbfeaddaf8832b0",
+    ]);
+    const owners = new Map(
+      [...fixedTextLiterals, ...fixedHexLiterals]
+        .map((literal) => [literal, new Set<string>()]),
+    );
+    for (const file of await collectSourceFiles(sourceRoot)) {
+      const name = relative(sourceRoot, file).split(sep).join("/");
+      const source = await readFile(file, "utf8");
+      const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+      const visit = (node: ts.Node): void => {
+        if (ts.isStringLiteralLike(node)) {
+          const key = fixedTextLiterals.has(node.text)
+            ? node.text
+            : fixedHexLiterals.has(node.text.toLowerCase())
+              ? node.text.toLowerCase()
+              : undefined;
+          if (key !== undefined) owners.get(key)?.add(name);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(parsed);
+    }
+    for (const [literal, files] of owners) {
+      expect([...files], literal).toEqual([expectedOwner]);
+    }
   });
 
   it("keeps every reference-market capability identifier in its contract owner", async () => {

@@ -6,17 +6,12 @@ import {
   type Erc20AssetIdentity,
   type EvmAccountIdentity,
   type RequiredErc8056Observation,
+  type TokenMetadataRead,
   type TokenStandardObservationResult,
   type UnsignedDecimal,
 } from "../core/index.js";
-import { tokenCatalogContractLimits, tokenDisplayTextSchema } from "../token-catalog/contracts.js";
 import type { Erc20CallEncoder } from "./evm-standard.js";
-import {
-  decodeErc20BalanceOfResult,
-  decodeErc20DecimalsResult,
-  decodeErc20TextResult,
-  decodeErc20TotalSupplyResult,
-} from "./evm-standard.js";
+import { decodeErc20BalanceOfResult, decodeErc20TotalSupplyResult } from "./evm-standard.js";
 import {
   readConfiguredCanonicalBlock,
   resolveConfiguredCanonicalBlock,
@@ -39,16 +34,10 @@ import {
   completeTokenStandardObservation,
   observeRequiredErc8056,
 } from "./token-standards.js";
+import { readTokenMetadataAtBlock } from "./token-metadata.js";
 
-export type CurrentTokenText =
-  | Readonly<{ status: "available"; value: string }>
-  | Readonly<{ status: "unavailable"; reason: "call_failed" | "malformed" | "unsafe_text" }>;
-
-export interface CurrentAccountTokenRead {
+export interface CurrentAccountTokenRead extends TokenMetadataRead {
   readonly asset: Erc20AssetIdentity;
-  readonly name: CurrentTokenText;
-  readonly symbol: CurrentTokenText;
-  readonly decimals: UnsignedDecimal | null;
   readonly rawBalance: UnsignedDecimal;
   readonly requiredStandards: RequiredErc8056Observation;
 }
@@ -137,64 +126,6 @@ const requireIdentities = (
   });
 };
 
-const readText = async (
-  dependencies: Dependencies,
-  asset: Erc20AssetIdentity,
-  reference: RpcCanonicalBlockReference,
-  signal: AbortSignal,
-  field: "name" | "symbol",
-): Promise<CurrentTokenText> => {
-  let raw: unknown;
-  try {
-    raw = await dependencies.rpc.request("eth_call", [{
-      to: asset.address,
-      data: dependencies.encoder[field](),
-    }, reference], signal);
-  } catch (error) {
-    if (isRpcExecutionRevertedError(error)) {
-      return Object.freeze({ status: "unavailable", reason: "call_failed" });
-    }
-    throw error;
-  }
-  let decoded: ReturnType<typeof decodeErc20TextResult>;
-  try {
-    decoded = decodeErc20TextResult(
-      normalizeRpcBytes(raw),
-      field,
-      tokenCatalogContractLimits.displayTextUtf8Bytes,
-    );
-  } catch {
-    return Object.freeze({ status: "unavailable", reason: "malformed" });
-  }
-  if (decoded.status === "byte_limit_exceeded") {
-    return Object.freeze({ status: "unavailable", reason: "unsafe_text" });
-  }
-  const parsed = tokenDisplayTextSchema.safeParse(decoded.value);
-  return parsed.success
-    ? Object.freeze({ status: "available", value: parsed.data })
-    : Object.freeze({ status: "unavailable", reason: "unsafe_text" });
-};
-
-const readDecimals = async (
-  dependencies: Dependencies,
-  asset: Erc20AssetIdentity,
-  reference: RpcCanonicalBlockReference,
-  signal: AbortSignal,
-): Promise<UnsignedDecimal | null> => {
-  let raw: unknown;
-  try {
-    raw = await dependencies.rpc.request("eth_call", [{
-      to: asset.address,
-      data: dependencies.encoder.decimals(),
-    }, reference], signal);
-  } catch (error) {
-    if (isRpcExecutionRevertedError(error)) return null;
-    throw error;
-  }
-  try { return decodeErc20DecimalsResult(normalizeRpcBytes(raw)); }
-  catch { return null; }
-};
-
 const readRequiredUint256 = async (
   dependencies: Dependencies,
   asset: Erc20AssetIdentity,
@@ -222,15 +153,19 @@ const readToken = async (
   reference: RpcCanonicalBlockReference,
   signal: AbortSignal,
 ): Promise<CurrentAccountTokenRead> => {
-  const [name, symbol, decimals, rawBalance, requiredStandards] = await Promise.all([
-    readText(dependencies, asset, reference, signal, "name"),
-    readText(dependencies, asset, reference, signal, "symbol"),
-    readDecimals(dependencies, asset, reference, signal),
+  const stop = new AbortController();
+  const callSignal = AbortSignal.any([signal, stop.signal]);
+  const calls = [
+    readTokenMetadataAtBlock(dependencies, {
+      asset,
+      stateReference: reference,
+      signal: callSignal,
+    }),
     readRequiredUint256(
       dependencies,
       asset,
       reference,
-      signal,
+      callSignal,
       dependencies.encoder.balanceOf(account.address),
       decodeErc20BalanceOfResult,
     ),
@@ -239,10 +174,19 @@ const readToken = async (
       asset,
       block,
       stateReference: reference,
-      signal,
+      signal: callSignal,
     }),
-  ]);
-  return deepFreezeValue({ asset, name, symbol, decimals, rawBalance, requiredStandards });
+  ] as const;
+  let results: [TokenMetadataRead, UnsignedDecimal, RequiredErc8056Observation];
+  try {
+    results = await Promise.all(calls);
+  } catch (error) {
+    stop.abort();
+    await Promise.allSettled(calls);
+    throw error;
+  }
+  const [metadata, rawBalance, requiredStandards] = results;
+  return deepFreezeValue({ asset, ...metadata, rawBalance, requiredStandards });
 };
 
 const readTokensInOrder = async (
@@ -289,11 +233,13 @@ export const createAccountAssetChainReadPort = (
         input.block,
         context,
       );
-      const [nativeRawBalance, tokens] = await Promise.all([
+      const stop = new AbortController();
+      const callSignal = AbortSignal.any([context.signal, stop.signal]);
+      const calls = [
         dependencies.rpc.request(
           "eth_getBalance",
           [identities.account.address, identities.reference],
-          context.signal,
+          callSignal,
         ).then(rpcQuantityToUnsignedDecimal),
         readTokensInOrder(
           dependencies,
@@ -301,9 +247,18 @@ export const createAccountAssetChainReadPort = (
           identities.assets,
           identities.block,
           identities.reference,
-          context.signal,
+          callSignal,
         ),
-      ]);
+      ] as const;
+      let results: [UnsignedDecimal, readonly CurrentAccountTokenRead[]];
+      try {
+        results = await Promise.all(calls);
+      } catch (error) {
+        stop.abort();
+        await Promise.allSettled(calls);
+        throw error;
+      }
+      const [nativeRawBalance, tokens] = results;
       return deepFreezeValue({
         account: identities.account,
         block: identities.block,
@@ -328,24 +283,35 @@ export const createAccountAssetChainReadPort = (
         context,
       );
       const asset = identities.assets[0] as Erc20AssetIdentity;
-      const [token, totalSupply] = await Promise.all([
+      const stop = new AbortController();
+      const callSignal = AbortSignal.any([context.signal, stop.signal]);
+      const calls = [
         readToken(
           dependencies,
           identities.account,
           asset,
           identities.block,
           identities.reference,
-          context.signal,
+          callSignal,
         ),
         readRequiredUint256(
           dependencies,
           asset,
           identities.reference,
-          context.signal,
+          callSignal,
           dependencies.encoder.totalSupply(),
           decodeErc20TotalSupplyResult,
         ),
-      ]);
+      ] as const;
+      let results: [CurrentAccountTokenRead, UnsignedDecimal];
+      try {
+        results = await Promise.all(calls);
+      } catch (error) {
+        stop.abort();
+        await Promise.allSettled(calls);
+        throw error;
+      }
+      const [token, totalSupply] = results;
       const standards = await completeTokenStandardObservation({
         rpc: dependencies.rpc,
         asset,

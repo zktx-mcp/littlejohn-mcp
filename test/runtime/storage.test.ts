@@ -1,5 +1,5 @@
 import { fork, type ChildProcess } from "node:child_process";
-import { createHmac, hkdfSync } from "node:crypto";
+import { createHash, createHmac, hkdfSync } from "node:crypto";
 import { chmodSync, copyFileSync, renameSync } from "node:fs";
 import {
   chmod,
@@ -74,6 +74,7 @@ import {
   canonicalRuntimeConfigurationMacSqlCheck,
   canonicalRuntimeIdentifierSqlCheck,
   canonicalSqlTextCheck,
+  currentSqliteSchemaSql,
   databaseSchemaVersion,
 } from "../../src/runtime/sqlite-schema.js";
 
@@ -386,6 +387,13 @@ describe("application data and local credential", () => {
 });
 
 describe("SQLite product state", () => {
+  it("preserves the independent canonical SQLite schema bytes", () => {
+    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(23_690);
+    expect(createHash("sha256").update(currentSqliteSchemaSql, "utf8").digest("hex")).toBe(
+      "a969ee4a4e1cf1cf4d6da18eb1a0ab3903f0242ebcc67d719ab61a7e93af62fa",
+    );
+  });
+
   it("exposes catalog queries through a runtime object without mutation methods", async () => {
     const directory = await temporaryDirectory();
     await ensureOwnerOnlyDirectory(directory);

@@ -3,7 +3,6 @@ import { z, type ZodType } from "zod";
 import {
   applicationFailureSchemaFor,
   calculateScaledUiAmount,
-  canonicalBase64UrlSchema,
   capabilityIdSchema,
   chainAnchorSchema,
   defineApplicationContract,
@@ -15,22 +14,28 @@ import {
   generalSingleLineTextSchema,
   hash32Schema,
   jsonObject,
+  optionalTokenTextSchema,
   requiredErc8056ObservationSchema,
   scaledUiAmountSchema,
   tokenStandardObservationResultSchema,
   unsignedDecimalSchema,
-  utcTimestampSchema,
   type ApplicationContract,
   type ApplicationFailure,
   type Erc20AssetIdentity,
   type ScaledUiAmount,
 } from "../core/browser.js";
 import {
-  tokenDisplayTextSchema,
   tokenSelectionSchema,
   tokenSelectionSetRevisionSchema,
 } from "../token-catalog/browser.js";
-import { officialAssetCandidatePageSize } from "../registry/browser.js";
+import {
+  officialAssetCandidatePageSize,
+  officialAssetCandidateSchema,
+  officialAssetSnapshotEvidenceSchema,
+  officialAssetSnapshotRevisionSchema,
+  stockFactoryClassificationUnavailableReasonSchema,
+  stockFactoryVerificationSchema,
+} from "../registry/browser.js";
 import { accountAssetErrorRegistry } from "./error-registry.js";
 
 export const accountAssetLimits = Object.freeze({
@@ -38,12 +43,9 @@ export const accountAssetLimits = Object.freeze({
   maximumPageSize: 5,
 });
 
-const sourceLabelSchema = tokenDisplayTextSchema.nullable();
-const snapshotRevisionSchema = canonicalBase64UrlSchema(16);
-
 export const accountAssetViewRevisionSchema = jsonObject({
   officialSnapshotStatus: z.enum(["current", "unavailable"]),
-  officialSnapshotRevision: snapshotRevisionSchema.nullable(),
+  officialSnapshotRevision: officialAssetSnapshotRevisionSchema.nullable(),
   selectionSetRevision: tokenSelectionSetRevisionSchema.nullable(),
 }).strict().superRefine((value, context) => {
   if (value.officialSnapshotStatus === "current" && value.officialSnapshotRevision === null) {
@@ -54,7 +56,7 @@ export type AccountAssetViewRevision = z.infer<typeof accountAssetViewRevisionSc
 
 const cursorCommon = {
   officialSnapshotStatus: z.enum(["current", "unavailable"]),
-  officialSnapshotRevision: snapshotRevisionSchema.nullable(),
+  officialSnapshotRevision: officialAssetSnapshotRevisionSchema.nullable(),
   selectionSetRevision: tokenSelectionSetRevisionSchema.nullable(),
   address: evmAddressSchema,
 };
@@ -71,38 +73,11 @@ export const accountAssetCursorSchema = z.discriminatedUnion("group", [
 ]);
 export type AccountAssetCursor = z.infer<typeof accountAssetCursorSchema>;
 
-const officialSnapshotEvidenceSchema = jsonObject({
-  sourceUri: z.string().url(),
-  sourceObservedAt: utcTimestampSchema,
-  rawResponseDigest: hash32Schema,
-  memberSetDigest: hash32Schema,
-  revision: snapshotRevisionSchema,
-}).strict();
-
-export const accountAssetOfficialCandidateSchema = jsonObject({
-  assetUid: hash32Schema,
-  contractAddress: evmAddressSchema,
-  sourceName: sourceLabelSchema,
-  sourceSymbol: sourceLabelSchema,
-}).strict();
-export type AccountAssetOfficialCandidate = z.infer<typeof accountAssetOfficialCandidateSchema>;
-
-const stockFactoryVerificationSchema = jsonObject({
-  assetUid: hash32Schema,
-  contractAddress: evmAddressSchema,
-  block: chainAnchorSchema,
-  proxyAddress: evmAddressSchema,
-  proxyCodeHash: hash32Schema,
-  implementationAddress: evmAddressSchema,
-  implementationCodeHash: hash32Schema,
-  tokenCodeHash: hash32Schema,
-}).strict();
-
 export const accountAssetClassificationSchema = z.discriminatedUnion("kind", [
   jsonObject({
     kind: z.literal("robinhood_stock_token"),
-    snapshot: officialSnapshotEvidenceSchema,
-    member: accountAssetOfficialCandidateSchema,
+    snapshot: officialAssetSnapshotEvidenceSchema,
+    member: officialAssetCandidateSchema,
     verification: stockFactoryVerificationSchema,
   }).strict().superRefine((value, context) => {
     if (
@@ -112,20 +87,14 @@ export const accountAssetClassificationSchema = z.discriminatedUnion("kind", [
   }),
   jsonObject({
     kind: z.literal("custom_erc20"),
-    snapshot: officialSnapshotEvidenceSchema,
+    snapshot: officialAssetSnapshotEvidenceSchema,
   }).strict(),
   jsonObject({
     kind: z.literal("classification_unavailable"),
-    storedRevision: snapshotRevisionSchema.nullable(),
-    snapshot: officialSnapshotEvidenceSchema.nullable(),
-    member: accountAssetOfficialCandidateSchema.nullable(),
-    reason: z.enum([
-      "factory_identity_mismatch",
-      "source_inconsistent",
-      "source_unavailable",
-      "token_code_missing",
-      "token_identity_mismatch",
-    ]),
+    storedRevision: officialAssetSnapshotRevisionSchema.nullable(),
+    snapshot: officialAssetSnapshotEvidenceSchema.nullable(),
+    member: officialAssetCandidateSchema.nullable(),
+    reason: stockFactoryClassificationUnavailableReasonSchema,
   }).strict().superRefine((value, context) => {
     if ((value.snapshot === null) !== (value.member === null) ||
       (value.snapshot !== null && value.snapshot.revision !== value.storedRevision)) {
@@ -134,14 +103,6 @@ export const accountAssetClassificationSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 export type AccountAssetClassification = z.infer<typeof accountAssetClassificationSchema>;
-
-const currentTokenTextSchema = z.discriminatedUnion("status", [
-  jsonObject({ status: z.literal("available"), value: tokenDisplayTextSchema }).strict(),
-  jsonObject({
-    status: z.literal("unavailable"),
-    reason: z.enum(["call_failed", "malformed", "unsafe_text"]),
-  }).strict(),
-]);
 
 export const accountAssetAmountSchema = jsonObject({
   raw: unsignedDecimalSchema,
@@ -171,8 +132,8 @@ export type NativeAccountAsset = z.infer<typeof nativeAccountAssetSchema>;
 export const contractAccountAssetSchema = jsonObject({
   kind: z.literal("erc20"),
   selection: tokenSelectionSchema,
-  name: currentTokenTextSchema,
-  symbol: currentTokenTextSchema,
+  name: optionalTokenTextSchema,
+  symbol: optionalTokenTextSchema,
   classification: accountAssetClassificationSchema,
   amount: accountAssetAmountSchema,
   requiredStandards: requiredErc8056ObservationSchema,
@@ -212,7 +173,7 @@ const exactInputSchema = jsonObject({
 export const accountAssetOfficialCandidateCursorSchema = jsonObject({
   assetUid: hash32Schema,
   contractAddress: evmAddressSchema,
-  officialSnapshotRevision: snapshotRevisionSchema,
+  officialSnapshotRevision: officialAssetSnapshotRevisionSchema,
   selectionSetRevision: tokenSelectionSetRevisionSchema,
 }).strict();
 export type AccountAssetOfficialCandidateCursor = z.infer<
@@ -338,7 +299,7 @@ const exactSuccessSchema = jsonObject({
 const officialCandidateSuccessSchema = jsonObject({
   account: evmAccountIdentitySchema,
   viewRevision: accountAssetViewRevisionSchema,
-  candidates: z.array(accountAssetOfficialCandidateSchema)
+  candidates: z.array(officialAssetCandidateSchema)
     .max(officialAssetCandidatePageSize),
   nextCursor: accountAssetOfficialCandidateCursorSchema.nullable(),
 }).strict().superRefine((value, context) => {

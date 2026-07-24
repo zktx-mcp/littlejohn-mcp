@@ -30,7 +30,9 @@ export {
   tokenStandardIdSchema,
   tokenStandardObservationSchema,
   tokenStandardObservationResultSchema,
+  tokenStandardObservationStatuses,
   tokenStandardObservationStatusSchema,
+  tokenStandardOrder,
 } from "./token-standards.js";
 export type {
   RequiredErc8056Observation,
@@ -40,6 +42,22 @@ export type {
   TokenStandardObservationResult,
   TokenStandardObservationStatus,
 } from "./token-standards.js";
+export {
+  availableTokenTextSchema,
+  optionalTokenTextSchema,
+  tokenDisplayTextLimits,
+  tokenDisplayTextSchema,
+  tokenMetadataReadSchema,
+  tokenOptionalTextUnavailableReasons,
+  tokenOptionalTextUnavailableReasonSchema,
+  unavailableTokenTextSchema,
+} from "./token-metadata.js";
+export type {
+  OptionalTokenText,
+  TokenDisplayText,
+  TokenMetadataRead,
+  TokenOptionalTextUnavailableReason,
+} from "./token-metadata.js";
 export {
   accountBalanceDataSchema,
   accountBalanceInputSchema,

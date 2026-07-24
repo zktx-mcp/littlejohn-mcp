@@ -6,7 +6,11 @@ export {
   coreErrorDefinitions,
   internalErrorDefinition,
 } from "./error-definitions.js";
-export { productDisplayName } from "./product-identity.js";
+export {
+  productChainId,
+  productChainNumericId,
+  productDisplayName,
+} from "./product-identity.js";
 export type { ApplicationFailure } from "./errors.js";
 export {
   ApplicationErrorRegistry,
@@ -168,7 +172,9 @@ export {
   tokenStandardIdSchema,
   tokenStandardObservationSchema,
   tokenStandardObservationResultSchema,
+  tokenStandardObservationStatuses,
   tokenStandardObservationStatusSchema,
+  tokenStandardOrder,
 } from "./token-standards.js";
 export type {
   RequiredErc8056Observation,
@@ -178,6 +184,22 @@ export type {
   TokenStandardObservationResult,
   TokenStandardObservationStatus,
 } from "./token-standards.js";
+export {
+  availableTokenTextSchema,
+  optionalTokenTextSchema,
+  tokenDisplayTextLimits,
+  tokenDisplayTextSchema,
+  tokenMetadataReadSchema,
+  tokenOptionalTextUnavailableReasons,
+  tokenOptionalTextUnavailableReasonSchema,
+  unavailableTokenTextSchema,
+} from "./token-metadata.js";
+export type {
+  OptionalTokenText,
+  TokenDisplayText,
+  TokenMetadataRead,
+  TokenOptionalTextUnavailableReason,
+} from "./token-metadata.js";
 export {
   operationIdByteLength,
   operationIdFromBytes,

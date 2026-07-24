@@ -1,4 +1,31 @@
 export {
+  committedOfficialAssetSnapshotSchema,
+  officialAssetCandidateSchema,
+  officialAssetSnapshotEvidenceSchema,
+  officialAssetSnapshotRevisionSchema,
+  officialAssetSourceLabelSchema,
+  officialAssetSourceManifest,
+  officialAssetSourceMemberSchema,
+  officialAssetSourceSnapshotSchema,
+  stockFactoryAdmissionManifest,
+  stockFactoryClassificationUnavailableReasons,
+  stockFactoryClassificationUnavailableReasonSchema,
+  stockFactoryVerificationErrorCodeSchema,
+  stockFactoryVerificationFailureDefinitions,
+  stockFactoryVerificationSchema,
+} from "./official-asset-contract.js";
+export type {
+  CommittedOfficialAssetSnapshot,
+  OfficialAssetCandidate,
+  OfficialAssetSnapshotEvidence,
+  OfficialAssetSnapshotRevision,
+  OfficialAssetSourceMember,
+  OfficialAssetSourceSnapshot,
+  StockFactoryClassificationUnavailableReason,
+  StockFactoryVerification,
+  StockFactoryVerificationErrorCode,
+} from "./official-asset-contract.js";
+export {
   assertCommittedOfficialAssetSnapshot,
   assertOfficialAssetSourceObservation,
   assertOfficialAssetSourceMember,
@@ -7,13 +34,7 @@ export {
   getOfficialAssetSourceErrorCode,
   officialAssetCandidateListDigest,
   officialAssetMemberSetDigest,
-  officialAssetSnapshotRevisionSchema,
-  officialAssetSourceDeploymentLimit,
-  officialAssetSourceMemberLimit,
-  officialAssetSourceResponseByteLimit,
-  officialAssetSourceTimeoutMs,
   findOfficialAssetMember,
-  robinhoodAssetSourceUri,
   OfficialAssetSourceError,
 } from "./official-assets.js";
 export { officialAssetCandidatePageSize } from "./browser.js";
@@ -29,29 +50,18 @@ export type {
   OfficialAssetSynchronizationResult,
 } from "./synchronization.js";
 export type {
-  CommittedOfficialAssetSnapshot,
-  OfficialAssetSnapshotRevision,
   OfficialAssetSnapshotStore,
   OfficialAssetSourceClient,
   OfficialAssetSourceClientOptions,
   OfficialAssetSourceErrorCode,
-  OfficialAssetSourceMember,
   OfficialAssetSourceObservation,
-  OfficialAssetSourceSnapshot,
 } from "./official-assets.js";
 export {
   createStockFactoryVerifier,
   getStockFactoryVerificationErrorCode,
-  stockFactoryImplementationAddress,
-  stockFactoryImplementationCodeHash,
-  stockFactoryImplementationSlot,
-  stockFactoryProxyAddress,
-  stockFactoryProxyCodeHash,
   StockFactoryVerificationError,
 } from "./stock-factory.js";
 export type {
-  StockFactoryVerification,
-  StockFactoryVerificationErrorCode,
   StockFactoryVerifier,
   StockFactoryVerifierInput,
 } from "./stock-factory.js";

@@ -24,9 +24,11 @@ import {
   type OfficialAssetChainReadPort,
 } from "../../src/chain/index.js";
 import {
+  committedOfficialAssetSnapshotSchema,
   defaultStockTokenManifest,
+  officialAssetSourceManifest,
   officialAssetSnapshotRevisionSchema,
-  robinhoodAssetSourceUri,
+  stockFactoryAdmissionManifest,
   type CommittedOfficialAssetSnapshot,
 } from "../../src/registry/index.js";
 import {
@@ -106,17 +108,17 @@ const member = (address: EvmAddress, byte: string, symbol: string) => Object.fre
 });
 const defaultMember = member(defaultStockTokenManifest.assets[0]!.contractAddress, "11", "AAPL");
 const unselectedMember = member(candidateAddress, "22", "NEXT");
-const snapshot = Object.freeze({
-  sourceUri: robinhoodAssetSourceUri,
+const snapshot = committedOfficialAssetSnapshotSchema.parse({
+  sourceUri: officialAssetSourceManifest.sourceUri,
   sourceObservedAt: at,
   rawResponseDigest: parseHash32(`0x${"33".repeat(32)}`),
   memberSetDigest: parseHash32(`0x${"44".repeat(32)}`),
   candidateListDigest: parseHash32(`0x${"55".repeat(32)}`),
   chainId,
-  members: Object.freeze([defaultMember, unselectedMember]),
+  members: [defaultMember, unselectedMember],
   revision: snapshotRevision,
   updatedAt: at,
-}) satisfies CommittedOfficialAssetSnapshot;
+});
 
 const detail = (address: EvmAddress, byte: number, included = true): TokenSelectionDetail =>
   tokenSelectionDetailSchema.parse({
@@ -220,10 +222,10 @@ const fixture = (options: Readonly<{
     assetUid,
     contractAddress,
     block: verificationBlock,
-    proxyAddress: parseEvmAddressInput(`0x${"aa".repeat(20)}`),
-    proxyCodeHash: parseHash32(`0x${"bb".repeat(32)}`),
-    implementationAddress: parseEvmAddressInput(`0x${"cc".repeat(20)}`),
-    implementationCodeHash: parseHash32(`0x${"dd".repeat(32)}`),
+    proxyAddress: stockFactoryAdmissionManifest.proxyAddress,
+    proxyCodeHash: stockFactoryAdmissionManifest.proxyCodeHash,
+    implementationAddress: stockFactoryAdmissionManifest.implementationAddress,
+    implementationCodeHash: stockFactoryAdmissionManifest.implementationCodeHash,
     tokenCodeHash: parseHash32(`0x${"ee".repeat(32)}`),
   });
   const owner = new AbortController();

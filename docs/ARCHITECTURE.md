@@ -57,14 +57,17 @@ the chain decoder. Explicit account reads do not consume wallet state. Only
 `account.balance` with `active_wallet` captures the current validated
 WalletConnect account.
 
-The internal `token-catalog` module owns canonical token inspection,
+The browser-safe core token-metadata contract owns display-text admission,
+optional metadata outcomes, and their limits. One chain token-metadata process
+reads ERC-20 `name`, `symbol`, and `decimals` at one supplied EIP-1898 block
+reference for both token inspection and account assets. The standardized
+`eth_call` execution-reverted response makes an optional method unavailable;
+malformed, mismatched, transport, and source failures retain their own failure
+meaning. The internal `token-catalog` module owns canonical token inspection,
 account-specific token selection, operation, error, and downstream port
-contracts. Its chain adapter inspects deployed code and ERC-20 `totalSupply`,
-optional `name`, optional `symbol`, and optional `decimals` at one EIP-1898
-block reference. The standardized `eth_call` execution-reverted response makes
-an optional method unavailable; malformed, mismatched, transport, and source
-failures retain their own failure meaning. A fatal inspection call aborts and
-drains its sibling calls before the inspection returns or the owner closes.
+contracts. Its chain adapter composes the shared metadata process with deployed
+code and ERC-20 `totalSupply`. A fatal inspection call aborts and drains its
+sibling calls before the inspection returns or the owner closes.
 The catalog runtime persists an inspection only when a confirmed addition
 commits. The query application receives only exact-selection and bounded-list
 storage methods. Exact get returns the selection and any historical inspection;
@@ -75,9 +78,12 @@ connection revision through the canonical confirmation contract, and commits
 each change through one SQLite transaction. The interface layer exposes token
 inspection and the account-specific selection set through their declared HTTP,
 MCP, and CLI bindings. The web surface starts and reviews changes through
-operation resources and consumes account-assets for display. Official Stock
-Token classification is established only by the `registry` source observation
-and same-block StockFactory verification; no surface establishes safety, price,
+operation resources and consumes account-assets for display. The browser-safe
+registry official-asset contract owns the validated official source and
+StockFactory admission manifests, source evidence schemas, fixed verification
+identity, and failure language. Official Stock Token classification is
+established only by a complete admitted registry source observation and
+same-block StockFactory verification; no surface establishes safety, price,
 valuation, or transaction support.
 
 The `market-portfolio` module owns one closed reference-market application for

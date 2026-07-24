@@ -1,3 +1,5 @@
+import type { TokenOptionalTextUnavailableReason } from "../core/browser.js";
+import type { StockFactoryClassificationUnavailableReason } from "../registry/browser.js";
 import type { TokenSelection } from "../token-catalog/browser.js";
 import type {
   AccountAssetClassification,
@@ -6,8 +8,6 @@ import type {
   AccountAssetViewRevision,
   ContractAccountAsset,
 } from "./contracts.js";
-
-export type AccountAssetTextIssue = "call_failed" | "malformed" | "unsafe_text";
 
 export interface AccountAssetEvidenceField {
   readonly label: string;
@@ -25,9 +25,9 @@ export interface AccountAssetQuantityView {
 export interface AccountAssetRowView {
   readonly selection: TokenSelection;
   readonly name: string | null;
-  readonly nameIssue: AccountAssetTextIssue | null;
+  readonly nameIssue: TokenOptionalTextUnavailableReason | null;
   readonly symbol: string | null;
-  readonly symbolIssue: AccountAssetTextIssue | null;
+  readonly symbolIssue: TokenOptionalTextUnavailableReason | null;
   readonly classification: AccountAssetClassification;
   readonly quantity: AccountAssetQuantityView;
   readonly requiredStandards: ContractAccountAsset["requiredStandards"];
@@ -64,10 +64,9 @@ export const classificationLabel = (classification: AccountAssetClassification):
   }
 };
 
-const classificationUnavailableReason: Readonly<Record<
-  Extract<AccountAssetClassification, { kind: "classification_unavailable" }>["reason"],
-  string
->> = Object.freeze({
+const classificationUnavailableReason: Readonly<
+  Record<StockFactoryClassificationUnavailableReason, string>
+> = Object.freeze({
   factory_identity_mismatch: "The StockFactory deployment identity did not match the accepted proxy and implementation.",
   source_inconsistent: "The official asset source returned inconsistent evidence.",
   source_unavailable: "The official asset source was unavailable.",
@@ -122,7 +121,7 @@ export const officialSnapshotFresh = (revision: AccountAssetViewRevision): boole
 export const officialSnapshotStatusText = (revision: AccountAssetViewRevision): string =>
   officialSnapshotFresh(revision) ? "Official data current" : "Official data unavailable";
 
-const textIssue: Readonly<Record<AccountAssetTextIssue, string>> = Object.freeze({
+const textIssue: Readonly<Record<TokenOptionalTextUnavailableReason, string>> = Object.freeze({
   call_failed: "read call failed",
   malformed: "returned malformed data",
   unsafe_text: "contained unsafe text and was withheld",
