@@ -23,163 +23,209 @@ import {
 } from "./primitives.js";
 
 export const referenceMarketManifestVersion = 1 as const;
-export const referenceMarketSourceUri =
-  "https://docs.chain.link/data-feeds/price-feeds/addresses?network=robinhood" as const;
-export const referenceMarketSourceObservedAt = "2026-07-23T02:00:12.000Z" as const;
 
-export const referenceHistoryWindowSchema = z.enum(["1d", "7d", "30d"]);
-export type ReferenceHistoryWindow = z.infer<typeof referenceHistoryWindowSchema>;
-export const referenceHistoryWindowDefinitions = Object.freeze({
-  "1d": Object.freeze({
+const definitionValues = <
+  const Definitions extends readonly [
+    Readonly<Record<string, unknown>>,
+    ...Readonly<Record<string, unknown>>[],
+  ],
+  const Key extends keyof Definitions[number],
+>(
+  definitions: Definitions,
+  key: Key,
+): { readonly [Index in keyof Definitions]: Definitions[Index][Key] } =>
+  Object.freeze(definitions.map((definition) =>
+    definition[key as keyof typeof definition])) as {
+    readonly [Index in keyof Definitions]: Definitions[Index][Key];
+  };
+
+type StringLiteralSchemas<Values extends readonly string[]> = {
+  readonly [Index in keyof Values]:
+    Values[Index] extends string ? z.ZodLiteral<Values[Index]> : never;
+};
+const literalTupleSchema = <
+  const Values extends readonly [string, ...string[]],
+>(values: Values) => z.tuple(
+  values.map((value) => z.literal(value)) as unknown as StringLiteralSchemas<Values>,
+);
+
+const referenceHistoryWindowDefinitionEntries = deepFreezeValue([
+  {
+    window: "1d",
     windowMilliseconds: 24 * 60 * 60 * 1_000,
     bucketMilliseconds: 15 * 60 * 1_000,
     maximumBuckets: 96,
-  }),
-  "7d": Object.freeze({
+  },
+  {
+    window: "7d",
     windowMilliseconds: 7 * 24 * 60 * 60 * 1_000,
     bucketMilliseconds: 60 * 60 * 1_000,
     maximumBuckets: 168,
-  }),
-  "30d": Object.freeze({
+  },
+  {
+    window: "30d",
     windowMilliseconds: 30 * 24 * 60 * 60 * 1_000,
     bucketMilliseconds: 4 * 60 * 60 * 1_000,
     maximumBuckets: 180,
-  }),
-});
-export const referenceHistoryRetentionMilliseconds =
-  referenceHistoryWindowDefinitions["30d"].windowMilliseconds;
+  },
+] as const);
+const referenceHistoryWindowIds =
+  definitionValues(referenceHistoryWindowDefinitionEntries, "window");
+const maximumReferenceHistoryWindowDefinition =
+  referenceHistoryWindowDefinitionEntries[referenceHistoryWindowDefinitionEntries.length - 1]!;
 
-const fixedReferenceFeedDecimals = 8 as const;
-const fixedReferenceFeedHeartbeatSeconds = 86_400 as const;
+export const referenceHistoryWindowSchema = z.enum(referenceHistoryWindowIds);
+export type ReferenceHistoryWindow = z.infer<typeof referenceHistoryWindowSchema>;
+type ReferenceHistoryWindowDefinition = Readonly<{
+  windowMilliseconds: number;
+  bucketMilliseconds: number;
+  maximumBuckets: number;
+}>;
+const referenceHistoryWindowDefinitionRecord =
+  {} as Record<ReferenceHistoryWindow, ReferenceHistoryWindowDefinition>;
+const referenceHistoryCandleBucketRecord =
+  {} as Record<ReferenceHistoryWindow, number>;
+for (const definition of referenceHistoryWindowDefinitionEntries) {
+  referenceHistoryWindowDefinitionRecord[definition.window] = Object.freeze({
+    windowMilliseconds: definition.windowMilliseconds,
+    bucketMilliseconds: definition.bucketMilliseconds,
+    maximumBuckets: definition.maximumBuckets,
+  });
+  referenceHistoryCandleBucketRecord[definition.window] = definition.maximumBuckets;
+}
+export const referenceHistoryWindowDefinitions =
+  Object.freeze(referenceHistoryWindowDefinitionRecord);
+const referenceHistoryCandleBuckets = Object.freeze(referenceHistoryCandleBucketRecord);
+export const referenceHistoryRetentionMilliseconds =
+  maximumReferenceHistoryWindowDefinition.windowMilliseconds;
+
 const maximumReferencePairSources = 2 as const;
 
-const referenceMarketMappingExclusions = Object.freeze([
-  "all_other_networks_and_feeds",
-] as const);
-const referenceMarketMappingSupportedConclusions = Object.freeze([
-  "feed_address_association_at_observation_time",
-  "feed_description_at_observation_time",
-  "feed_decimals_at_observation_time",
-  "feed_heartbeat_at_observation_time",
-] as const);
-const referenceMarketMappingUnsupportedConclusions = Object.freeze([
-  "ongoing_directory_membership",
-  "proxy_correctness_after_observation",
-  "source_uptime",
-  "price_correctness",
-  "endorsement",
-  "trade_price",
-  "sequencer_status",
-  "legal_value",
-] as const);
+const referenceMarketMappingEvidenceDefinition = deepFreezeValue({
+  sourceOwner: "Chainlink Foundation",
+  sourceClass: "official_document",
+  sourceUri: "https://docs.chain.link/data-feeds/price-feeds/addresses?network=robinhood",
+  sourceObservedAt: "2026-07-23T02:00:12.000Z",
+  freshnessStatus: "unknown",
+  freshnessRule: "not_revalidated_at_runtime",
+  coverage: "two_named_robinhood_chain_standard_proxy_mappings",
+  exclusions: ["all_other_networks_and_feeds"],
+  supportedConclusions: [
+    "feed_address_association_at_observation_time",
+    "feed_description_at_observation_time",
+    "feed_decimals_at_observation_time",
+    "feed_heartbeat_at_observation_time",
+  ],
+  unsupportedConclusions: [
+    "ongoing_directory_membership",
+    "proxy_correctness_after_observation",
+    "source_uptime",
+    "price_correctness",
+    "endorsement",
+    "trade_price",
+    "sequencer_status",
+    "legal_value",
+  ],
+} as const);
+
+export const referenceMarketSourceUri = referenceMarketMappingEvidenceDefinition.sourceUri;
+export const referenceMarketSourceObservedAt =
+  referenceMarketMappingEvidenceDefinition.sourceObservedAt;
 
 export const referenceMarketMappingEvidenceSchema = jsonObject({
-  sourceOwner: z.literal("Chainlink Foundation"),
-  sourceClass: z.literal("official_document"),
+  sourceOwner: z.literal(referenceMarketMappingEvidenceDefinition.sourceOwner),
+  sourceClass: z.literal(referenceMarketMappingEvidenceDefinition.sourceClass),
   sourceUri: z.literal(referenceMarketSourceUri),
   sourceObservedAt: z.literal(referenceMarketSourceObservedAt),
-  freshnessStatus: z.literal("unknown"),
-  freshnessRule: z.literal("not_revalidated_at_runtime"),
-  coverage: z.literal("two_named_robinhood_chain_standard_proxy_mappings"),
-  exclusions: z.tuple([z.literal("all_other_networks_and_feeds")]),
-  supportedConclusions: z.tuple([
-    z.literal("feed_address_association_at_observation_time"),
-    z.literal("feed_description_at_observation_time"),
-    z.literal("feed_decimals_at_observation_time"),
-    z.literal("feed_heartbeat_at_observation_time"),
-  ]),
-  unsupportedConclusions: z.tuple([
-    z.literal("ongoing_directory_membership"),
-    z.literal("proxy_correctness_after_observation"),
-    z.literal("source_uptime"),
-    z.literal("price_correctness"),
-    z.literal("endorsement"),
-    z.literal("trade_price"),
-    z.literal("sequencer_status"),
-    z.literal("legal_value"),
-  ]),
+  freshnessStatus: z.literal(referenceMarketMappingEvidenceDefinition.freshnessStatus),
+  freshnessRule: z.literal(referenceMarketMappingEvidenceDefinition.freshnessRule),
+  coverage: z.literal(referenceMarketMappingEvidenceDefinition.coverage),
+  exclusions: literalTupleSchema(referenceMarketMappingEvidenceDefinition.exclusions),
+  supportedConclusions:
+    literalTupleSchema(referenceMarketMappingEvidenceDefinition.supportedConclusions),
+  unsupportedConclusions:
+    literalTupleSchema(referenceMarketMappingEvidenceDefinition.unsupportedConclusions),
 }).strict();
 export type ReferenceMarketMappingEvidence = z.infer<typeof referenceMarketMappingEvidenceSchema>;
 
 export const referenceMarketMappingEvidence = deepFreezeValue(
-  referenceMarketMappingEvidenceSchema.parse({
-    sourceOwner: "Chainlink Foundation",
-    sourceClass: "official_document",
-    sourceUri: referenceMarketSourceUri,
-    sourceObservedAt: referenceMarketSourceObservedAt,
-    freshnessStatus: "unknown",
-    freshnessRule: "not_revalidated_at_runtime",
-    coverage: "two_named_robinhood_chain_standard_proxy_mappings",
-    exclusions: referenceMarketMappingExclusions,
-    supportedConclusions: referenceMarketMappingSupportedConclusions,
-    unsupportedConclusions: referenceMarketMappingUnsupportedConclusions,
-  }),
+  referenceMarketMappingEvidenceSchema.parse(referenceMarketMappingEvidenceDefinition),
 );
 
-export const referenceMarketLimits = Object.freeze({
-  feedCount: 2,
-  pairCount: 3,
-  watchlistEntries: 3,
-  maximumPairSources: maximumReferencePairSources,
-  historyProbes: 1_024,
-  providerBatchCalls: 32,
-  historyRoundsPerFeed: 16_384,
-  historySourceObservations:
-    referenceHistoryWindowDefinitions["30d"].maximumBuckets * 4 * maximumReferencePairSources,
-  synchronizationWaiters: 32,
-  revisionBytes: 16,
-  exactRationalDigits: 96,
-  candleBuckets: Object.freeze({
-    "1d": referenceHistoryWindowDefinitions["1d"].maximumBuckets,
-    "7d": referenceHistoryWindowDefinitions["7d"].maximumBuckets,
-    "30d": referenceHistoryWindowDefinitions["30d"].maximumBuckets,
-  }),
-});
-
-const canonicalEthUsdProxy = evmAddressSchema.parse(
-  "0x78f3556b67e17df817d51ef5a990cdaf09e8d3a9",
-);
-const canonicalUsdgUsdProxy = evmAddressSchema.parse(
-  "0x61b7e5650328764b076a108eff5fa7282a1b9ad2",
-);
 export const canonicalUsdgAddress = evmAddressSchema.parse(
   "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
 );
 
-export const referenceFeedIdSchema = z.enum(["eth_usd", "usdg_usd"]);
-export type ReferenceFeedId = z.infer<typeof referenceFeedIdSchema>;
+const referenceFeedDefinitions = deepFreezeValue([
+  {
+    feedId: "eth_usd",
+    chainId: productChainId,
+    asset: "native_eth",
+    quote: "usd_reference",
+    standardProxy: evmAddressSchema.parse("0x78f3556b67e17df817d51ef5a990cdaf09e8d3a9"),
+    expectedDescription: "ETH / USD",
+    decimals: 8,
+    heartbeatSeconds: 86_400,
+    availability: "continuous_24_7",
+    mappingBasis: "manual_official_source_association",
+    sequencerEvidence: "sequencer_status_unavailable",
+  },
+  {
+    feedId: "usdg_usd",
+    chainId: productChainId,
+    asset: "canonical_usdg",
+    quote: "usd_reference",
+    standardProxy: evmAddressSchema.parse("0x61b7e5650328764b076a108eff5fa7282a1b9ad2"),
+    expectedDescription: "USDG / USD",
+    decimals: 8,
+    heartbeatSeconds: 86_400,
+    availability: "continuous_24_7",
+    mappingBasis: "manual_official_source_association",
+    sequencerEvidence: "sequencer_status_unavailable",
+  },
+] as const);
 
-const canonicalFeedIdentity = Object.freeze({
-  eth_usd: Object.freeze({
-    asset: "native_eth" as const,
-    standardProxy: canonicalEthUsdProxy,
-    expectedDescription: "ETH / USD" as const,
-  }),
-  usdg_usd: Object.freeze({
-    asset: "canonical_usdg" as const,
-    standardProxy: canonicalUsdgUsdProxy,
-    expectedDescription: "USDG / USD" as const,
-  }),
-});
+const referenceFeedDefinitionIds = definitionValues(referenceFeedDefinitions, "feedId");
+const referenceFeedAssets = definitionValues(referenceFeedDefinitions, "asset");
+const referenceFeedDescriptions =
+  definitionValues(referenceFeedDefinitions, "expectedDescription");
+const fixedReferenceFeedDecimals = referenceFeedDefinitions[0].decimals;
+const fixedReferenceFeedHeartbeatSeconds = referenceFeedDefinitions[0].heartbeatSeconds;
+
+export const referenceFeedIdSchema = z.enum(referenceFeedDefinitionIds);
+export type ReferenceFeedId = z.infer<typeof referenceFeedIdSchema>;
+export const referenceFeedIds: readonly ReferenceFeedId[] = referenceFeedDefinitionIds;
+
+const referenceFeedDefinitionById = new Map(
+  referenceFeedDefinitions.map((definition) => [definition.feedId, definition] as const),
+);
 
 export const referenceFeedManifestEntrySchema = jsonObject({
   feedId: referenceFeedIdSchema,
-  chainId: z.literal(productChainId),
-  asset: z.enum(["native_eth", "canonical_usdg"]),
-  quote: z.literal("usd_reference"),
+  chainId: z.literal(referenceFeedDefinitions[0].chainId),
+  asset: z.enum(referenceFeedAssets),
+  quote: z.literal(referenceFeedDefinitions[0].quote),
   standardProxy: evmAddressSchema,
-  expectedDescription: z.enum(["ETH / USD", "USDG / USD"]),
-  decimals: z.literal(fixedReferenceFeedDecimals),
-  heartbeatSeconds: z.literal(fixedReferenceFeedHeartbeatSeconds),
-  availability: z.literal("continuous_24_7"),
-  mappingBasis: z.literal("manual_official_source_association"),
-  sequencerEvidence: z.literal("sequencer_status_unavailable"),
+  expectedDescription: z.enum(referenceFeedDescriptions),
+  decimals: z.literal(referenceFeedDefinitions[0].decimals),
+  heartbeatSeconds: z.literal(referenceFeedDefinitions[0].heartbeatSeconds),
+  availability: z.literal(referenceFeedDefinitions[0].availability),
+  mappingBasis: z.literal(referenceFeedDefinitions[0].mappingBasis),
+  sequencerEvidence: z.literal(referenceFeedDefinitions[0].sequencerEvidence),
 }).strict().superRefine((value, context) => {
-  const expected = canonicalFeedIdentity[value.feedId];
+  const expected = referenceFeedDefinitionById.get(value.feedId);
   if (
+    expected === undefined ||
+    value.chainId !== expected.chainId ||
     value.asset !== expected.asset ||
+    value.quote !== expected.quote ||
     value.standardProxy !== expected.standardProxy ||
-    value.expectedDescription !== expected.expectedDescription
+    value.expectedDescription !== expected.expectedDescription ||
+    value.decimals !== expected.decimals ||
+    value.heartbeatSeconds !== expected.heartbeatSeconds ||
+    value.availability !== expected.availability ||
+    value.mappingBasis !== expected.mappingBasis ||
+    value.sequencerEvidence !== expected.sequencerEvidence
   ) {
     context.addIssue({ code: "custom", message: "Reference feed identity differs from the manifest." });
   }
@@ -202,7 +248,7 @@ export const referencePairContractSchema = jsonObject({
   base: referenceAssetSchema,
   quote: referenceAssetSchema,
   seriesType: z.literal("reference_price"),
-  sourceIds: z.array(referenceFeedIdSchema).min(1).max(referenceMarketLimits.maximumPairSources),
+  sourceIds: z.array(referenceFeedIdSchema).min(1).max(maximumReferencePairSources),
 }).strict().superRefine((value, context) => {
   if (new Set(value.sourceIds).size !== value.sourceIds.length) {
     context.addIssue({ code: "custom", message: "Reference pair sources must be unique." });
@@ -224,47 +270,89 @@ const canonicalUsdg = Object.freeze({
 });
 const usdReference = Object.freeze({ kind: "reference_currency" as const, code: "USD" as const });
 
-const pairContract = (input: ReferencePairContract): ReferencePairContract =>
-  deepFreezeValue(referencePairContractSchema.parse(input));
+const pairContract = (input: Readonly<{
+  chainId: ReferencePairContract["chainId"];
+  base: ReferencePairContract["base"];
+  quote: ReferencePairContract["quote"];
+  seriesType: ReferencePairContract["seriesType"];
+  sourceIds: readonly ReferenceFeedId[];
+}>): ReferencePairContract => deepFreezeValue(referencePairContractSchema.parse(input));
 
-const ethUsdContract = pairContract({
-  chainId: productChainId,
-  base: nativeEth,
-  quote: usdReference,
-  seriesType: "reference_price",
-  sourceIds: ["eth_usd"],
-});
-const usdgUsdContract = pairContract({
-  chainId: productChainId,
-  base: canonicalUsdg,
-  quote: usdReference,
-  seriesType: "reference_price",
-  sourceIds: ["usdg_usd"],
-});
-const ethUsdgContract = pairContract({
-  chainId: productChainId,
-  base: nativeEth,
-  quote: canonicalUsdg,
-  seriesType: "reference_price",
-  sourceIds: ["eth_usd", "usdg_usd"],
-});
+const referencePairDefinitions = deepFreezeValue([
+  {
+    label: "ETH/USD",
+    starter: true,
+    contract: {
+      chainId: productChainId,
+      base: nativeEth,
+      quote: usdReference,
+      seriesType: "reference_price",
+      sourceIds: [referenceFeedDefinitions[0].feedId],
+    },
+  },
+  {
+    label: "USDG/USD",
+    starter: true,
+    contract: {
+      chainId: productChainId,
+      base: canonicalUsdg,
+      quote: usdReference,
+      seriesType: "reference_price",
+      sourceIds: [referenceFeedDefinitions[1].feedId],
+    },
+  },
+  {
+    label: "ETH/USDG",
+    starter: false,
+    contract: {
+      chainId: productChainId,
+      base: nativeEth,
+      quote: canonicalUsdg,
+      seriesType: "reference_price",
+      sourceIds: [
+        referenceFeedDefinitions[0].feedId,
+        referenceFeedDefinitions[1].feedId,
+      ],
+    },
+  },
+] as const);
 
-const canonicalPairEntries = [{
-  pairId: pairIdFor(ethUsdContract),
-  label: "ETH/USD" as const,
-  starter: true,
-  contract: ethUsdContract,
-}, {
-  pairId: pairIdFor(usdgUsdContract),
-  label: "USDG/USD" as const,
-  starter: true,
-  contract: usdgUsdContract,
-}, {
-  pairId: pairIdFor(ethUsdgContract),
-  label: "ETH/USDG" as const,
-  starter: false,
-  contract: ethUsdgContract,
-}] as const;
+const referencePairLabels = definitionValues(referencePairDefinitions, "label");
+const canonicalPairEntries = deepFreezeValue(referencePairDefinitions.map((definition) => {
+  const contract = pairContract(definition.contract);
+  return {
+    pairId: pairIdFor(contract),
+    label: definition.label,
+    starter: definition.starter,
+    contract,
+  };
+}));
+const canonicalPairEntryById = new Map(
+  canonicalPairEntries.map((entry) => [entry.pairId, entry] as const),
+);
+
+export const referencePairIds = Object.freeze(
+  canonicalPairEntries.map((entry) => entry.pairId),
+);
+export const referenceStarterPairIds = Object.freeze(canonicalPairEntries
+  .filter((entry) => entry.starter)
+  .map((entry) => entry.pairId));
+
+export const referenceMarketLimits = Object.freeze({
+  feedCount: referenceFeedDefinitions.length,
+  pairCount: referencePairDefinitions.length,
+  watchlistEntries: 3,
+  maximumPairSources: maximumReferencePairSources,
+  historyProbes: 1_024,
+  providerBatchCalls: 32,
+  historyRoundsPerFeed: 16_384,
+  historySourceObservations:
+    maximumReferenceHistoryWindowDefinition.maximumBuckets * 4 * maximumReferencePairSources,
+  synchronizationWaiters: 32,
+  revisionBytes: 16,
+  exactRationalDigits: 96,
+  candleBuckets: referenceHistoryCandleBuckets,
+});
 
 const exactPairEntry = (value: {
   pairId: ReferencePairId;
@@ -272,7 +360,7 @@ const exactPairEntry = (value: {
   starter: boolean;
   contract: ReferencePairContract;
 }): boolean => {
-  const expected = canonicalPairEntries.find((entry) => entry.pairId === value.pairId);
+  const expected = canonicalPairEntryById.get(value.pairId);
   return expected !== undefined &&
     value.label === expected.label &&
     value.starter === expected.starter &&
@@ -281,7 +369,7 @@ const exactPairEntry = (value: {
 
 export const referencePairManifestEntrySchema = jsonObject({
   pairId: referencePairIdSchema,
-  label: z.enum(["ETH/USD", "USDG/USD", "ETH/USDG"]),
+  label: z.enum(referencePairLabels),
   starter: z.boolean(),
   contract: referencePairContractSchema,
 }).strict().superRefine((value, context) => {
@@ -298,11 +386,11 @@ export const referenceMarketManifestSchema = jsonObject({
   feeds: z.array(referenceFeedManifestEntrySchema).length(referenceMarketLimits.feedCount),
   pairs: z.array(referencePairManifestEntrySchema).length(referenceMarketLimits.pairCount),
 }).strict().superRefine((value, context) => {
-  if (value.feeds.map((entry) => entry.feedId).join("\0") !== "eth_usd\0usdg_usd") {
+  if (value.feeds.map((entry) => entry.feedId).join("\0") !== referenceFeedIds.join("\0")) {
     context.addIssue({ code: "custom", message: "Reference feed order is invalid." });
   }
   if (value.pairs.map((entry) => entry.pairId).join("\0") !==
-    canonicalPairEntries.map((entry) => entry.pairId).join("\0")) {
+    referencePairIds.join("\0")) {
     context.addIssue({ code: "custom", message: "Reference pair order is invalid." });
   }
   const feedIds = new Set(value.feeds.map((entry) => entry.feedId));
@@ -316,25 +404,16 @@ export const referenceMarketManifest = deepFreezeValue(referenceMarketManifestSc
   version: referenceMarketManifestVersion,
   chainId: productChainId,
   mappingEvidence: referenceMarketMappingEvidence,
-  feeds: (["eth_usd", "usdg_usd"] as const).map((feedId) => ({
-    feedId,
-    chainId: productChainId,
-    ...canonicalFeedIdentity[feedId],
-    quote: "usd_reference",
-    decimals: fixedReferenceFeedDecimals,
-    heartbeatSeconds: fixedReferenceFeedHeartbeatSeconds,
-    availability: "continuous_24_7",
-    mappingBasis: "manual_official_source_association",
-    sequencerEvidence: "sequencer_status_unavailable",
-  })),
+  feeds: referenceFeedDefinitions,
   pairs: canonicalPairEntries,
 }));
 
-export const referencePairIds = Object.freeze(referenceMarketManifest.pairs.map((entry) => entry.pairId));
-export const referenceFeedIds = Object.freeze(referenceMarketManifest.feeds.map((entry) => entry.feedId));
-export const referenceStarterPairIds = Object.freeze(referenceMarketManifest.pairs
-  .filter((entry) => entry.starter)
-  .map((entry) => entry.pairId));
+const referenceFeedById = new Map(
+  referenceMarketManifest.feeds.map((entry) => [entry.feedId, entry] as const),
+);
+const referencePairById = new Map(
+  referenceMarketManifest.pairs.map((entry) => [entry.pairId, entry] as const),
+);
 
 export const referenceSupportedPairIdSchema = referencePairIdSchema.refine(
   (pairId) => referencePairIds.includes(pairId),
@@ -342,13 +421,13 @@ export const referenceSupportedPairIdSchema = referencePairIdSchema.refine(
 );
 
 export const findReferenceFeed = (feedId: ReferenceFeedId): ReferenceFeedManifestEntry => {
-  const feed = referenceMarketManifest.feeds.find((entry) => entry.feedId === feedId);
+  const feed = referenceFeedById.get(feedId);
   if (feed === undefined) throw new TypeError("Reference feed is not supported.");
   return feed;
 };
 
 export const findReferencePair = (pairId: ReferencePairId): ReferencePairManifestEntry => {
-  const pair = referenceMarketManifest.pairs.find((entry) => entry.pairId === pairId);
+  const pair = referencePairById.get(pairId);
   if (pair === undefined) throw new TypeError("Reference pair is not supported.");
   return pair;
 };
@@ -874,7 +953,7 @@ export const referenceHistoryCoverageSchema = jsonObject({
   requestedStart: utcTimestampSchema,
   requestedEnd: utcTimestampSchema,
   emptyBucketStarts: z.array(utcTimestampSchema)
-    .max(referenceMarketLimits.candleBuckets["30d"]),
+    .max(maximumReferenceHistoryWindowDefinition.maximumBuckets),
   limitations: z.array(referenceHistoryLimitationCodeSchema)
     .min(1)
     .max(referenceHistoryLimitationCodes.length),
@@ -910,7 +989,7 @@ const historyCommon = {
   block: chainAnchorSchema,
   mappingEvidence: referenceMarketMappingEvidenceSchema,
   coverage: referenceHistoryCoverageSchema,
-  candles: z.array(referenceCandleSchema).max(referenceMarketLimits.candleBuckets["30d"]),
+  candles: z.array(referenceCandleSchema).max(maximumReferenceHistoryWindowDefinition.maximumBuckets),
   sourceObservations: z.array(referenceRoundObservationSchema)
     .max(referenceMarketLimits.historySourceObservations),
   warnings: z.array(referenceMarketWarningCodeSchema).min(referenceHistoryWarnings.length)
@@ -922,7 +1001,7 @@ export const referenceHistorySuccessSchema = z.discriminatedUnion("status", [
     ...historyCommon,
     candles: z.array(referenceCandleSchema)
       .min(1)
-      .max(referenceMarketLimits.candleBuckets["30d"]),
+      .max(maximumReferenceHistoryWindowDefinition.maximumBuckets),
   }).strict(),
   jsonObject({
     status: z.literal("unavailable"),

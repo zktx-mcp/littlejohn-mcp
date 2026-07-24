@@ -424,6 +424,129 @@ describe("runtime architecture boundary", () => {
     expect(forbiddenLogReaders).toEqual([]);
     expect(referenceMarketSurfaceFiles.filter((name) =>
       /(?:^|[-/])(?:indexer|provider)(?:[-/.]|$)/u.test(name))).toEqual([]);
+
+    const owner = await parseSource(resolve(sourceRoot, "core/reference-market.ts"));
+    const declaration = (name: string): ts.VariableDeclaration | undefined =>
+      sourceDescendants(owner).find((node): node is ts.VariableDeclaration =>
+        ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name);
+    const declarationIdentifiers = (name: string): readonly string[] => {
+      const found = declaration(name);
+      if (found === undefined) throw new TypeError(`Missing declaration: ${name}`);
+      return sourceDescendants(found)
+        .filter((node): node is ts.Identifier => ts.isIdentifier(node))
+        .map((identifier) => identifier.text);
+    };
+    const containingDeclaration = (node: ts.Node): string | undefined => {
+      let current: ts.Node | undefined = node;
+      while (current !== undefined) {
+        if (ts.isVariableDeclaration(current) && ts.isIdentifier(current.name)) {
+          return current.name.text;
+        }
+        current = current.parent;
+      }
+      return undefined;
+    };
+
+    const definitionLiteralOwners = new Map<string, string>([
+      ["1d", "referenceHistoryWindowDefinitionEntries"],
+      ["7d", "referenceHistoryWindowDefinitionEntries"],
+      ["30d", "referenceHistoryWindowDefinitionEntries"],
+      [
+        "https://docs.chain.link/data-feeds/price-feeds/addresses?network=robinhood",
+        "referenceMarketMappingEvidenceDefinition",
+      ],
+      ["2026-07-23T02:00:12.000Z", "referenceMarketMappingEvidenceDefinition"],
+      ["all_other_networks_and_feeds", "referenceMarketMappingEvidenceDefinition"],
+      [
+        "feed_address_association_at_observation_time",
+        "referenceMarketMappingEvidenceDefinition",
+      ],
+      ["feed_description_at_observation_time", "referenceMarketMappingEvidenceDefinition"],
+      ["feed_decimals_at_observation_time", "referenceMarketMappingEvidenceDefinition"],
+      ["feed_heartbeat_at_observation_time", "referenceMarketMappingEvidenceDefinition"],
+      ["ongoing_directory_membership", "referenceMarketMappingEvidenceDefinition"],
+      ["proxy_correctness_after_observation", "referenceMarketMappingEvidenceDefinition"],
+      ["source_uptime", "referenceMarketMappingEvidenceDefinition"],
+      ["price_correctness", "referenceMarketMappingEvidenceDefinition"],
+      ["endorsement", "referenceMarketMappingEvidenceDefinition"],
+      ["trade_price", "referenceMarketMappingEvidenceDefinition"],
+      ["sequencer_status", "referenceMarketMappingEvidenceDefinition"],
+      ["legal_value", "referenceMarketMappingEvidenceDefinition"],
+      ["eth_usd", "referenceFeedDefinitions"],
+      ["usdg_usd", "referenceFeedDefinitions"],
+      ["0x78f3556b67e17df817d51ef5a990cdaf09e8d3a9", "referenceFeedDefinitions"],
+      ["0x61b7e5650328764b076a108eff5fa7282a1b9ad2", "referenceFeedDefinitions"],
+      ["ETH / USD", "referenceFeedDefinitions"],
+      ["USDG / USD", "referenceFeedDefinitions"],
+      ["ETH/USD", "referencePairDefinitions"],
+      ["USDG/USD", "referencePairDefinitions"],
+      ["ETH/USDG", "referencePairDefinitions"],
+    ]);
+    const actualDefinitionLiteralOwners = new Map(
+      [...definitionLiteralOwners.keys()].map((literal) => [literal, [] as string[]]),
+    );
+    for (const node of sourceDescendants(owner)) {
+      if (!ts.isStringLiteralLike(node)) continue;
+      const declarations = actualDefinitionLiteralOwners.get(node.text);
+      if (declarations !== undefined) {
+        declarations.push(containingDeclaration(node) ?? "<none>");
+      }
+    }
+    for (const [literal, expectedOwner] of definitionLiteralOwners) {
+      expect(actualDefinitionLiteralOwners.get(literal), literal).toEqual([expectedOwner]);
+    }
+
+    expect(declarationIdentifiers("referenceMarketMappingEvidenceSchema"))
+      .toContain("referenceMarketMappingEvidenceDefinition");
+    expect(declarationIdentifiers("referenceHistoryWindowSchema"))
+      .toContain("referenceHistoryWindowIds");
+    expect(declarationIdentifiers("referenceHistoryWindowDefinitions"))
+      .toContain("referenceHistoryWindowDefinitionRecord");
+    const historyProjection = sourceDescendants(owner).find((node): node is ts.ForOfStatement =>
+      ts.isForOfStatement(node) &&
+      node.expression.getText(owner) === "referenceHistoryWindowDefinitionEntries");
+    if (historyProjection === undefined) throw new TypeError("Missing history-window projection.");
+    const historyProjectionIdentifiers = sourceDescendants(historyProjection)
+      .filter((node): node is ts.Identifier => ts.isIdentifier(node))
+      .map((identifier) => identifier.text);
+    expect(historyProjectionIdentifiers).toEqual(expect.arrayContaining([
+      "referenceHistoryWindowDefinitionRecord",
+      "referenceHistoryCandleBucketRecord",
+    ]));
+    expect(declarationIdentifiers("referenceFeedIdSchema"))
+      .toContain("referenceFeedDefinitionIds");
+    expect(declarationIdentifiers("referenceFeedManifestEntrySchema"))
+      .toEqual(expect.arrayContaining([
+        "referenceFeedAssets",
+        "referenceFeedDescriptions",
+        "referenceFeedDefinitionById",
+      ]));
+    expect(declarationIdentifiers("referencePairManifestEntrySchema"))
+      .toEqual(expect.arrayContaining(["referencePairLabels", "exactPairEntry"]));
+    expect(declarationIdentifiers("exactPairEntry")).toContain("canonicalPairEntryById");
+    expect(declarationIdentifiers("referenceMarketLimits"))
+      .toEqual(expect.arrayContaining([
+        "referenceHistoryCandleBuckets",
+        "referenceFeedDefinitions",
+        "referencePairDefinitions",
+      ]));
+    expect(declarationIdentifiers("referenceMarketManifestSchema"))
+      .toEqual(expect.arrayContaining(["referenceFeedIds", "referencePairIds"]));
+    expect(declarationIdentifiers("referenceMarketManifest"))
+      .toEqual(expect.arrayContaining(["referenceFeedDefinitions", "canonicalPairEntries"]));
+
+    for (const obsoleteDeclaration of [
+      "canonicalFeedIdentity",
+      "ethUsdContract",
+      "usdgUsdContract",
+      "ethUsdgContract",
+    ]) {
+      expect(declaration(obsoleteDeclaration)).toBeUndefined();
+    }
+    expect(sourceDescendants(owner).some((node) =>
+      ts.isStringLiteralLike(node) &&
+      node.text.includes("eth_usd") &&
+      node.text.includes("usdg_usd"))).toBe(false);
   });
 
   it("requires interface and package consumers to enter the token catalog through their exact public handoff", async () => {

@@ -1,5 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 
+import { describe, expect, it } from "vitest";
+import { z } from "zod";
+
+import {
+  canonicalJsonStringify,
+  type CanonicalJson,
+} from "../../src/core/canonical-json.js";
 import {
   createExactRational,
   createReferenceHistoryWorkPlan,
@@ -7,17 +14,27 @@ import {
   exactRationalSchema,
   initialReferenceWatchlistRevision,
   parseReferenceCompositeRoundId,
+  referenceFeedManifestEntrySchema,
   referenceFeedTraversalStateSchema,
+  referenceHistoryInputSchema,
   referenceHistorySuccessSchema,
+  referenceHistoryWindowDefinitions,
+  referenceHistoryWindowSchema,
   referenceHistoryWarnings,
   referenceCompositeRoundIdSchema,
+  referenceMarketLimits,
+  referenceMarketMappingEvidence,
   referenceMarketMappingEvidenceSchema,
   referenceMarketManifest,
   referenceMarketManifestSchema,
+  referencePairManifestEntrySchema,
   referencePairIds,
+  referencePriceInputSchema,
   referencePriceSuccessSchema,
   referencePriceWarnings,
   referenceRoundObservationSchema,
+  referenceWatchlistInputSchema,
+  referenceWatchlistMutationInputSchema,
   referenceWatchlistReorderInputSchema,
   referenceWatchlistRevisionSchema,
   referenceWatchlistSuccessSchema,
@@ -58,6 +75,117 @@ const mappingEvidence = {
     "legal_value",
   ],
 } as const;
+
+const expectedReferenceMarketManifest = {
+  version: 1,
+  chainId: "eip155:4663",
+  mappingEvidence,
+  feeds: [
+    {
+      feedId: "eth_usd",
+      chainId: "eip155:4663",
+      asset: "native_eth",
+      quote: "usd_reference",
+      standardProxy: "0x78f3556b67e17df817d51ef5a990cdaf09e8d3a9",
+      expectedDescription: "ETH / USD",
+      decimals: 8,
+      heartbeatSeconds: 86_400,
+      availability: "continuous_24_7",
+      mappingBasis: "manual_official_source_association",
+      sequencerEvidence: "sequencer_status_unavailable",
+    },
+    {
+      feedId: "usdg_usd",
+      chainId: "eip155:4663",
+      asset: "canonical_usdg",
+      quote: "usd_reference",
+      standardProxy: "0x61b7e5650328764b076a108eff5fa7282a1b9ad2",
+      expectedDescription: "USDG / USD",
+      decimals: 8,
+      heartbeatSeconds: 86_400,
+      availability: "continuous_24_7",
+      mappingBasis: "manual_official_source_association",
+      sequencerEvidence: "sequencer_status_unavailable",
+    },
+  ],
+  pairs: [
+    {
+      pairId: ethUsdPairId,
+      label: "ETH/USD",
+      starter: true,
+      contract: {
+        chainId: "eip155:4663",
+        base: { kind: "native_eth", chainId: "eip155:4663" },
+        quote: { kind: "reference_currency", code: "USD" },
+        seriesType: "reference_price",
+        sourceIds: ["eth_usd"],
+      },
+    },
+    {
+      pairId: usdgUsdPairId,
+      label: "USDG/USD",
+      starter: true,
+      contract: {
+        chainId: "eip155:4663",
+        base: {
+          kind: "erc20",
+          chainId: "eip155:4663",
+          address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+        },
+        quote: { kind: "reference_currency", code: "USD" },
+        seriesType: "reference_price",
+        sourceIds: ["usdg_usd"],
+      },
+    },
+    {
+      pairId: ethUsdgPairId,
+      label: "ETH/USDG",
+      starter: false,
+      contract: {
+        chainId: "eip155:4663",
+        base: { kind: "native_eth", chainId: "eip155:4663" },
+        quote: {
+          kind: "erc20",
+          chainId: "eip155:4663",
+          address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+        },
+        seriesType: "reference_price",
+        sourceIds: ["eth_usd", "usdg_usd"],
+      },
+    },
+  ],
+} as const;
+
+const expectedReferenceHistoryWindowDefinitions = {
+  "1d": {
+    windowMilliseconds: 24 * 60 * 60 * 1_000,
+    bucketMilliseconds: 15 * 60 * 1_000,
+    maximumBuckets: 96,
+  },
+  "7d": {
+    windowMilliseconds: 7 * 24 * 60 * 60 * 1_000,
+    bucketMilliseconds: 60 * 60 * 1_000,
+    maximumBuckets: 168,
+  },
+  "30d": {
+    windowMilliseconds: 30 * 24 * 60 * 60 * 1_000,
+    bucketMilliseconds: 4 * 60 * 60 * 1_000,
+    maximumBuckets: 180,
+  },
+} as const;
+
+const canonicalSchema = (
+  schema: z.ZodType,
+  io: "input" | "output",
+): CanonicalJson => JSON.parse(JSON.stringify(z.toJSONSchema(schema, {
+  target: "draft-2020-12",
+  unrepresentable: "throw",
+  io,
+}))) as CanonicalJson;
+
+const canonicalBytes = (value: CanonicalJson): string => canonicalJsonStringify(value);
+const sha256 = (value: string): string =>
+  createHash("sha256").update(value, "utf8").digest("hex");
 
 const blockAt = (blockTimestamp: string) => ({
   chainId: "eip155:4663",
@@ -244,6 +372,72 @@ describe("reference market core contract", () => {
     expect(() => parseReferenceCompositeRoundId(`0${roundId}`)).toThrow();
   });
 
+  it("preserves the complete manifest and ordered history windows from independent fixtures", () => {
+    expect(referenceMarketManifest).toEqual(expectedReferenceMarketManifest);
+    expect(referenceHistoryWindowDefinitions).toEqual(
+      expectedReferenceHistoryWindowDefinitions,
+    );
+    expect(referenceMarketLimits).toMatchObject({
+      feedCount: 2,
+      pairCount: 3,
+      watchlistEntries: 3,
+      maximumPairSources: 2,
+      historySourceObservations: 1_440,
+      candleBuckets: {
+        "1d": 96,
+        "7d": 168,
+        "30d": 180,
+      },
+    });
+  });
+
+  it("preserves the exact manifest, owner schemas, and public contract bytes", () => {
+    const manifest = canonicalBytes(referenceMarketManifest as unknown as CanonicalJson);
+    expect(Buffer.byteLength(manifest, "utf8")).toBe(2_611);
+    expect(sha256(manifest)).toBe(
+      "28c6e39d6752e10a1aa3dd42c7d7da1c844f8415c446f1cc66a5aecdbc54807e",
+    );
+
+    const mapping = canonicalBytes(referenceMarketMappingEvidence as unknown as CanonicalJson);
+    expect(Buffer.byteLength(mapping, "utf8")).toBe(766);
+    expect(sha256(mapping)).toBe(
+      "acb80cc3a23cd8f7a824c796bd9116a4d5d6d6c1bbf1148acd4585dbf7a3505d",
+    );
+
+    const ownerProjection = canonicalBytes({
+      manifest: referenceMarketManifest,
+      mappingEvidence: referenceMarketMappingEvidence,
+      schemas: {
+        feedEntry: canonicalSchema(referenceFeedManifestEntrySchema, "output"),
+        pairEntry: canonicalSchema(referencePairManifestEntrySchema, "output"),
+        mappingEvidence: canonicalSchema(referenceMarketMappingEvidenceSchema, "output"),
+        manifest: canonicalSchema(referenceMarketManifestSchema, "output"),
+        historyWindow: canonicalSchema(referenceHistoryWindowSchema, "input"),
+      },
+    } as unknown as CanonicalJson);
+    expect(Buffer.byteLength(ownerProjection, "utf8")).toBe(12_985);
+    expect(sha256(ownerProjection)).toBe(
+      "faa09e1e2ecc83a15f9f580bdfd88da90476b87e1c842d264e2f6f16f1ee20a5",
+    );
+
+    const publicContractProjection = canonicalBytes({
+      priceInput: canonicalSchema(referencePriceInputSchema, "input"),
+      priceSuccess: canonicalSchema(referencePriceSuccessSchema, "output"),
+      historyInput: canonicalSchema(referenceHistoryInputSchema, "input"),
+      historySuccess: canonicalSchema(referenceHistorySuccessSchema, "output"),
+      watchlistInput: canonicalSchema(referenceWatchlistInputSchema, "input"),
+      watchlistSuccess: canonicalSchema(referenceWatchlistSuccessSchema, "output"),
+      watchlistMutationInput:
+        canonicalSchema(referenceWatchlistMutationInputSchema, "input"),
+      watchlistReorderInput:
+        canonicalSchema(referenceWatchlistReorderInputSchema, "input"),
+    } as unknown as CanonicalJson);
+    expect(Buffer.byteLength(publicContractProjection, "utf8")).toBe(57_004);
+    expect(sha256(publicContractProjection)).toBe(
+      "135ddbfe094430f0c7b99098b0fc4271663c2e899bba7a67f25f62e72f0b0212",
+    );
+  });
+
   it("fixes exact feed and pair identities instead of accepting same-shaped substitutions", () => {
     expect(referencePairIds).toEqual([ethUsdPairId, usdgUsdPairId, ethUsdgPairId]);
 
@@ -265,10 +459,46 @@ describe("reference market core contract", () => {
     };
     [reordered.pairs[0], reordered.pairs[1]] = [reordered.pairs[1]!, reordered.pairs[0]!];
     expect(referenceMarketManifestSchema.safeParse(reordered).success).toBe(false);
+
+    const duplicatedFeed = structuredClone(referenceMarketManifest) as unknown as {
+      feeds: Array<Record<string, unknown>>;
+    };
+    duplicatedFeed.feeds[1] = structuredClone(duplicatedFeed.feeds[0]!);
+    expect(referenceMarketManifestSchema.safeParse(duplicatedFeed).success).toBe(false);
+
+    const missingFeed = structuredClone(referenceMarketManifest) as unknown as {
+      feeds: Array<Record<string, unknown>>;
+    };
+    missingFeed.feeds.pop();
+    expect(referenceMarketManifestSchema.safeParse(missingFeed).success).toBe(false);
+
+    const reorderedFeeds = structuredClone(referenceMarketManifest) as unknown as {
+      feeds: Array<Record<string, unknown>>;
+    };
+    [reorderedFeeds.feeds[0], reorderedFeeds.feeds[1]] =
+      [reorderedFeeds.feeds[1]!, reorderedFeeds.feeds[0]!];
+    expect(referenceMarketManifestSchema.safeParse(reorderedFeeds).success).toBe(false);
+
+    const duplicatedPair = structuredClone(referenceMarketManifest) as unknown as {
+      pairs: Array<Record<string, unknown>>;
+    };
+    duplicatedPair.pairs[1] = structuredClone(duplicatedPair.pairs[0]!);
+    expect(referenceMarketManifestSchema.safeParse(duplicatedPair).success).toBe(false);
+
+    const missingPair = structuredClone(referenceMarketManifest) as unknown as {
+      pairs: Array<Record<string, unknown>>;
+    };
+    missingPair.pairs.pop();
+    expect(referenceMarketManifestSchema.safeParse(missingPair).success).toBe(false);
+
     expect(referenceMarketMappingEvidenceSchema.parse(mappingEvidence)).toEqual(mappingEvidence);
     expect(referenceMarketMappingEvidenceSchema.safeParse({
       ...mappingEvidence,
       sourceOwner: "Unknown",
+    }).success).toBe(false);
+    expect(referenceMarketMappingEvidenceSchema.safeParse({
+      ...mappingEvidence,
+      supportedConclusions: [...mappingEvidence.supportedConclusions].reverse(),
     }).success).toBe(false);
   });
 
