@@ -2,10 +2,15 @@ import type {
   WalletCurrentOperationProjection,
   WalletManagementOperation,
   WalletOperationFailure,
+  WalletOperationOutcome,
+  WalletOperationOutcomeForKind,
   WalletOperationPresentation,
   WalletOperationResult,
 } from "../../src/wallet/contracts.js";
-import type { WalletNonterminalOperationState } from "../../src/wallet/operation-state.js";
+import type {
+  WalletInteractionInterface,
+  WalletNonterminalOperationState,
+} from "../../src/wallet/operation-state.js";
 
 type Equal<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends
@@ -33,6 +38,16 @@ type _ConnectNeverDisconnects = Assert<Equal<
 type _DisconnectNeverCancelsAttempt = Assert<Equal<
   Extract<WalletManagementOperation, { readonly kind: "disconnect"; readonly state: "cancelling" }>,
   never
+>>;
+type _InteractionInterface = Assert<Equal<WalletInteractionInterface, "cli" | "web">>;
+type _ConnectOutcome = Assert<Equal<WalletOperationOutcomeForKind<"connect">, "connected">>;
+type _DisconnectOutcome = Assert<Equal<
+  WalletOperationOutcomeForKind<"disconnect">,
+  "disconnected" | "already_disconnected"
+>>;
+type _OperationOutcome = Assert<Equal<
+  WalletOperationOutcome,
+  "connected" | "disconnected" | "already_disconnected"
 >>;
 type CurrentOperation = Extract<
   WalletCurrentOperationProjection,
@@ -89,6 +104,10 @@ export type WalletOperationTypeContracts =
   | _DisconnectRejected
   | _ConnectNeverDisconnects
   | _DisconnectNeverCancelsAttempt
+  | _InteractionInterface
+  | _ConnectOutcome
+  | _DisconnectOutcome
+  | _OperationOutcome
   | _CurrentOperationStates
   | _CurrentOperationRejectsTerminalStates
   | _RetainedOperationKeepsTerminalStates;

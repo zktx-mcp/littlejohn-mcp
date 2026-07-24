@@ -44,6 +44,7 @@ import {
   type WalletOperationCreate,
   type WalletOperationFailureCode,
   type WalletLocalControlOperationPort,
+  type WalletOperationOutcome,
   type WalletOperationPresentation,
   type WalletOperationPresentationPort,
   type WalletWebOperationPort,
@@ -1342,7 +1343,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     return next;
   }
 
-  #complete(entry: OperationEntry, outcome: "connected" | "disconnected" | "already_disconnected"): OperationEntry {
+  #complete(entry: OperationEntry, outcome: WalletOperationOutcome): OperationEntry {
     const connection = this.#connectionSnapshot.record.connection;
     let result: WalletOperationResult;
     if (entry.identity.kind !== "disconnect") {

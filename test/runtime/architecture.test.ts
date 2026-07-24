@@ -93,6 +93,19 @@ const resolveSourceModule = (file: string, specifier: string): string | undefine
   }
 };
 
+const sourceDescendants = (root: ts.Node): readonly ts.Node[] => {
+  const nodes: ts.Node[] = [];
+  const visit = (node: ts.Node): void => {
+    nodes.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return nodes;
+};
+
+const parseSource = async (path: string): Promise<ts.SourceFile> =>
+  ts.createSourceFile(path, await readFile(path, "utf8"), ts.ScriptTarget.Latest, true);
+
 const isInterfaceConsumer = (file: string): boolean =>
   interfaceConsumerEntryPoints.has(file) ||
   interfaceConsumerRoots.some((root) => isWithin(file, root));
@@ -181,6 +194,63 @@ describe("runtime architecture boundary", () => {
     }
     expect([...new Set(productChainLiteralOwners)]).toEqual(["core/product-identity.ts"]);
     expect(productChainNumericLiteralOwners).toEqual([]);
+  });
+
+  it("keeps wallet finite vocabularies in their owners without coupling token interfaces", async () => {
+    const [
+      operationContract,
+      managementContracts,
+      coordinator,
+      identities,
+    ] = await Promise.all([
+      parseSource(resolve(sourceRoot, "wallet/operation-contract.ts")),
+      parseSource(resolve(sourceRoot, "wallet/management-contracts.ts")),
+      parseSource(resolve(sourceRoot, "wallet/coordinator.ts")),
+      parseSource(resolve(sourceRoot, "interfaces/identities.ts")),
+    ]);
+    const declaration = (source: ts.SourceFile, name: string): ts.VariableDeclaration => {
+      const found = sourceDescendants(source).find((node): node is ts.VariableDeclaration =>
+        ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name);
+      if (found === undefined) throw new TypeError(`Missing declaration: ${name}`);
+      return found;
+    };
+    const identifierNames = (node: ts.Node): readonly string[] =>
+      sourceDescendants(node)
+        .filter((descendant): descendant is ts.Identifier => ts.isIdentifier(descendant))
+        .map((identifier) => identifier.text);
+    const exactStringArrayExists = (node: ts.Node, expected: readonly string[]): boolean =>
+      sourceDescendants(node).some((descendant) =>
+        ts.isArrayLiteralExpression(descendant) &&
+        descendant.elements.length === expected.length &&
+        descendant.elements.every((element, index) =>
+          ts.isStringLiteralLike(element) && element.text === expected[index]));
+
+    const interactionSchema = declaration(operationContract, "walletInteractionInterfaceSchema");
+    expect(identifierNames(interactionSchema)).toContain("walletInteractionInterfaces");
+
+    const operationFailure = declaration(operationContract, "operationFailureErrorSchema");
+    expect(identifierNames(operationFailure)).toContain("walletOperationFailureCategories");
+    expect(exactStringArrayExists(operationFailure, ["internal", "runtime", "wallet"])).toBe(false);
+
+    const internalContext = declaration(managementContracts, "walletManagementInternalContextSchema");
+    expect(identifierNames(internalContext)).toContain("walletInteractionInterfaceSchema");
+    expect(exactStringArrayExists(internalContext, ["cli", "web"])).toBe(false);
+
+    const complete = sourceDescendants(coordinator).find((node): node is ts.MethodDeclaration =>
+      ts.isMethodDeclaration(node) && node.name.getText(coordinator) === "#complete");
+    if (complete === undefined) throw new TypeError("Missing WalletCoordinator completion method.");
+    expect(complete.parameters[1]?.type?.getText(coordinator)).toBe("WalletOperationOutcome");
+
+    const walletStart = declaration(identities, "walletStartLocalIdentity");
+    expect(identifierNames(walletStart)).toContain("WalletInteractionInterface");
+    expect(exactStringArrayExists(walletStart, ["cli", "web"])).toBe(false);
+
+    for (const tokenDeclaration of [
+      declaration(identities, "tokenStartLocalIdentity"),
+      declaration(identities, "tokenStartIdentities"),
+    ]) {
+      expect(identifierNames(tokenDeclaration)).not.toContain("WalletInteractionInterface");
+    }
   });
 
   it("keeps every fixed official-asset manifest literal in its single contract owner", async () => {

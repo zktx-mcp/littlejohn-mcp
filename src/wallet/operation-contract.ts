@@ -51,6 +51,23 @@ const walletOperationFailureDefinitions = Object.freeze([
   walletTimeoutErrorDefinition,
 ] as const);
 
+const distinctDefinitionCategories = <
+  const Definitions extends readonly [
+    Readonly<{ category: ApplicationFailure["error"]["category"] }>,
+    ...Readonly<{ category: ApplicationFailure["error"]["category"] }>[],
+  ],
+>(definitions: Definitions): readonly [
+  Definitions[number]["category"],
+  ...Definitions[number]["category"][],
+] => {
+  const categories = [...new Set(definitions.map((definition) => definition.category))];
+  if (categories.length === 0) throw new TypeError("Application error definitions are empty.");
+  return Object.freeze(categories) as readonly [
+    Definitions[number]["category"],
+    ...Definitions[number]["category"][],
+  ];
+};
+
 const definitionCodes = <
   const Definitions extends readonly { readonly code: string }[],
 >(definitions: Definitions): { readonly [Index in keyof Definitions]: Definitions[Index]["code"] } =>
@@ -72,10 +89,12 @@ export const walletTerminalStateFailureCodes = Object.freeze({
 const operationFailureDefinitionByCode = new Map(
   walletOperationFailureDefinitions.map((definition) => [definition.code, definition] as const),
 );
+const walletOperationFailureCategories =
+  distinctDefinitionCategories(walletOperationFailureDefinitions);
 
 const operationFailureErrorSchema = z.object({
   code: z.enum(walletOperationFailureCodes).and(snakeCaseCodeSchema),
-  category: z.enum(["internal", "runtime", "wallet"]),
+  category: z.enum(walletOperationFailureCategories),
   message: z.string(),
   retryable: z.boolean(),
   issues: z.array(z.unknown()).length(0) as
@@ -102,13 +121,22 @@ export type WalletOperationFailure = ApplicationFailure & {
 };
 
 
+export const walletOperationOutcomes = Object.freeze({
+  connect: Object.freeze(["connected"] as const),
+  disconnect: Object.freeze(["disconnected", "already_disconnected"] as const),
+});
+export type WalletOperationOutcomeForKind<Kind extends WalletOperationKind> =
+  typeof walletOperationOutcomes[Kind][number];
+export type WalletOperationOutcome =
+  typeof walletOperationOutcomes[keyof typeof walletOperationOutcomes][number];
+
 const connectOperationResultSchema = z.object({
-  outcome: z.literal("connected"),
+  outcome: z.literal(walletOperationOutcomes.connect[0]),
   connection: canonicalWalletConnectionSchema("connected"),
 }).strict();
 
 const disconnectOperationResultSchema = z.object({
-  outcome: z.enum(["disconnected", "already_disconnected"]),
+  outcome: z.enum(walletOperationOutcomes.disconnect),
   connection: canonicalWalletConnectionSchema("disconnected"),
 }).strict();
 
@@ -217,9 +245,11 @@ export const walletNonterminalManagementOperationSchema =
   operationUnion(nonterminalOperationVariantSchemas) as
     z.ZodType<WalletNonterminalManagementOperation>;
 
+export const walletInteractionInterfaceSchema = z.enum(walletInteractionInterfaces);
+
 export const walletOperationControlSchema = z.object({
   operationId: walletOperationIdSchema,
-  interactionInterface: z.enum(walletInteractionInterfaces),
+  interactionInterface: walletInteractionInterfaceSchema,
 }).strict();
 export type WalletOperationControl = z.infer<typeof walletOperationControlSchema>;
 

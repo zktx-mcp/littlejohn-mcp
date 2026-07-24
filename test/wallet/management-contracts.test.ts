@@ -1,8 +1,20 @@
+import { createHash } from "node:crypto";
+
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import { walletManagementContracts } from "../../src/wallet/management-contracts.js";
+import {
+  applicationFailureSchemaFor,
+  canonicalJsonStringify,
+  type CanonicalJson,
+} from "../../src/core/index.js";
+import {
+  walletManagementContracts,
+  walletManagementInternalContextSchema,
+  walletOperationConfirmationContract,
+  type AnyWalletManagementContract,
+} from "../../src/wallet/management-contracts.js";
 import {
   parseWalletManagementOperation,
   walletOperationIdByteLength,
@@ -34,7 +46,75 @@ const operation = (
   failure: null,
 });
 
+const outputSchema = (schema: z.ZodType): Record<string, unknown> =>
+  JSON.parse(JSON.stringify(z.toJSONSchema(schema, {
+    target: "draft-2020-12",
+    io: "output",
+    unrepresentable: "throw",
+  }))) as Record<string, unknown>;
+
+const managementContractProjection = (contract: AnyWalletManagementContract) => ({
+  capabilityId: contract.capabilityId,
+  contractVersion: contract.contractVersion,
+  inputSchema: outputSchema(contract.inputSchema),
+  successSchema: outputSchema(contract.successSchema),
+  failureCodes: contract.failureCodes,
+  failureSchema: outputSchema(applicationFailureSchemaFor(
+    contract.applicationContract.errorRegistry,
+    contract.failureCodes,
+  )),
+});
+
+const canonicalManagementProjection = (): string => canonicalJsonStringify(
+  JSON.parse(JSON.stringify({
+    internalContext: outputSchema(walletManagementInternalContextSchema),
+    cancelOperation: managementContractProjection(walletManagementContracts.cancelOperation),
+    connect: managementContractProjection(walletManagementContracts.connect),
+    currentOperation: managementContractProjection(walletManagementContracts.currentOperation),
+    disconnect: managementContractProjection(walletManagementContracts.disconnect),
+    operation: managementContractProjection(walletManagementContracts.operation),
+    confirmation: {
+      contractVersion: walletOperationConfirmationContract.contractVersion,
+      inputSchema: outputSchema(walletOperationConfirmationContract.inputSchema),
+      successSchema: outputSchema(walletOperationConfirmationContract.successSchema),
+      failureCodes: walletOperationConfirmationContract.failureCodes,
+      failureSchema: outputSchema(applicationFailureSchemaFor(
+        walletOperationConfirmationContract.errorRegistry,
+        walletOperationConfirmationContract.failureCodes,
+      )),
+    },
+  })) as CanonicalJson,
+);
+
 describe("wallet management contract authority", () => {
+  it("preserves the complete wallet management projection", () => {
+    const canonical = canonicalManagementProjection();
+    expect(Buffer.byteLength(canonical, "utf8")).toBe(124_357);
+    expect(createHash("sha256").update(canonical, "utf8").digest("hex")).toBe(
+      "b2b6e06d304d7006e3b927f54e712f1790aa172d37058469a77826df2087b48b",
+    );
+  });
+
+  it("uses the exact optional wallet interaction contract for internal context", () => {
+    const validator = new Ajv2020({ strict: true }).compile(
+      outputSchema(walletManagementInternalContextSchema),
+    );
+    for (const context of [{}, { interactionInterface: "cli" }, { interactionInterface: "web" }]) {
+      expect(walletManagementInternalContextSchema.parse(context)).toEqual(context);
+      expect(validator(context)).toBe(true);
+    }
+    for (const interactionInterface of ["mcp", "CLI", "browser", "", null]) {
+      const context = { interactionInterface };
+      expect(() => walletManagementInternalContextSchema.parse(context)).toThrow();
+      expect(validator(context)).toBe(false);
+    }
+    expect(() => walletManagementInternalContextSchema.parse({
+      interactionInterface: "web",
+      extra: true,
+    })).toThrow();
+    expect(validator({ interactionInterface: "web", extra: true })).toBe(false);
+  });
+
   it("declares fixed-owner contention as canonical management failures", () => {
     for (const contract of Object.values(walletManagementContracts)) {
       expect(contract.failureCodes).toContain("runtime_busy");

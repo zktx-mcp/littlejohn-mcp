@@ -16,6 +16,7 @@ import { walletErrorDefinitions } from "./error-definitions.js";
 import {
   walletCurrentOperationProjectionSchema,
   walletCurrentConnectionStartResultSchema,
+  walletInteractionInterfaceSchema,
   walletManagementOperationSchema,
   walletOperationConfirmationSchema,
   walletOperationIdSchema,
@@ -73,7 +74,7 @@ const walletManagementErrorRegistry = coreErrorRegistry
 
 export const walletManagementInternalContextSchema = z.object({
   operationId: operationIdSchema.optional(),
-  interactionInterface: z.enum(["cli", "web"]).optional(),
+  interactionInterface: walletInteractionInterfaceSchema.optional(),
 }).strict();
 export type WalletManagementInternalContext = z.infer<typeof walletManagementInternalContextSchema>;
 

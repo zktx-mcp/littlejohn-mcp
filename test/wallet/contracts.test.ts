@@ -1,4 +1,12 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
+
+import {
+  canonicalJsonStringify,
+  type CanonicalJson,
+} from "../../src/core/index.js";
 
 import {
   parseWalletManagementOperation,
@@ -12,8 +20,24 @@ import {
   parseWalletOperationResponse,
   parseWalletOperationStartResponse,
   parseWalletWebOperationCreate,
+  walletCurrentOperationPresentationSchema,
+  walletCurrentOperationProjectionSchema,
+  walletInteractionInterfaceSchema,
+  walletManagementOperationSchema,
+  walletNonterminalManagementOperationSchema,
   walletOperationAllowsQr,
+  walletOperationConfirmationSchema,
+  walletOperationControlSchema,
+  walletOperationFailureCodes,
   walletOperationIdByteLength,
+  walletOperationOutcomes,
+  walletOperationPresentationAccess,
+  walletOperationPresentationSchema,
+  walletOperationResponseSchema,
+  walletOperationStartResponseSchema,
+  walletOperationStartResultSchema,
+  walletTerminalStateFailureCodes,
+  walletWebOperationCreateSchema,
   walletQrMatrixSizeLimits,
   type WalletOperationConfirmationPort,
   type WalletOperationPresentationPort,
@@ -22,6 +46,9 @@ import {
   isWalletOperationCancellableState,
   isWalletOperationConfirmableState,
   isWalletOperationTerminalState,
+  walletInteractionInterfaces,
+  walletOperationKinds,
+  walletOperationStateDefinitions,
   walletOperationStates,
 } from "../../src/wallet/operation-state.js";
 import { createWalletFailure } from "../../src/wallet/errors.js";
@@ -50,7 +77,63 @@ const operation = (overrides: Readonly<Record<string, unknown>> = {}) => ({
   ...overrides,
 });
 
+const outputSchema = (schema: z.ZodType): CanonicalJson =>
+  JSON.parse(JSON.stringify(z.toJSONSchema(schema, {
+    target: "draft-2020-12",
+    io: "output",
+    unrepresentable: "throw",
+  }))) as CanonicalJson;
+
+const canonicalOperationProjection = (): string => canonicalJsonStringify(
+  JSON.parse(JSON.stringify({
+    interactionInterfaces: walletInteractionInterfaces,
+    operationKinds: walletOperationKinds,
+    operationStateDefinitions: walletOperationStateDefinitions,
+    operationFailureCodes: walletOperationFailureCodes,
+    terminalStateFailureCodes: walletTerminalStateFailureCodes,
+    presentationAccess: walletOperationPresentationAccess,
+    schemas: {
+      managementOperation: outputSchema(walletManagementOperationSchema),
+      nonterminalManagementOperation: outputSchema(walletNonterminalManagementOperationSchema),
+      operationControl: outputSchema(walletOperationControlSchema),
+      webOperationCreate: outputSchema(walletWebOperationCreateSchema),
+      operationConfirmation: outputSchema(walletOperationConfirmationSchema),
+      operationResponse: outputSchema(walletOperationResponseSchema),
+      operationStartResult: outputSchema(walletOperationStartResultSchema),
+      operationStartResponse: outputSchema(walletOperationStartResponseSchema),
+      operationPresentation: outputSchema(walletOperationPresentationSchema),
+      currentOperationPresentation: outputSchema(walletCurrentOperationPresentationSchema),
+      currentOperationProjection: outputSchema(walletCurrentOperationProjectionSchema),
+    },
+  })) as CanonicalJson,
+);
+
 describe("wallet management contracts", () => {
+  it("preserves the complete wallet operation projection", () => {
+    const canonical = canonicalOperationProjection();
+    expect(Buffer.byteLength(canonical, "utf8")).toBe(110_890);
+    expect(createHash("sha256").update(canonical, "utf8").digest("hex")).toBe(
+      "fe0c81b853949e6056cda607dd1a168f4f56e2d6f061c3f7898d0bc3f1705b93",
+    );
+  });
+
+  it("owns exact interaction and per-kind outcome vocabularies", () => {
+    expect(walletInteractionInterfaces).toEqual(["cli", "web"]);
+    expect(walletOperationOutcomes).toEqual({
+      connect: ["connected"],
+      disconnect: ["disconnected", "already_disconnected"],
+    });
+    expect(Object.isFrozen(walletOperationOutcomes)).toBe(true);
+    expect(Object.isFrozen(walletOperationOutcomes.connect)).toBe(true);
+    expect(Object.isFrozen(walletOperationOutcomes.disconnect)).toBe(true);
+
+    expect(walletInteractionInterfaceSchema.parse("cli")).toBe("cli");
+    expect(walletInteractionInterfaceSchema.parse("web")).toBe("web");
+    for (const invalid of ["mcp", "CLI", "browser", "", null, undefined]) {
+      expect(() => walletInteractionInterfaceSchema.parse(invalid)).toThrow();
+    }
+  });
+
   it("owns canonical operation identifiers and presentation access", () => {
     expect(parseWalletOperationId(operationId)).toBe(operationId);
     for (const invalidOperationId of [
@@ -197,19 +280,71 @@ describe("wallet management contracts", () => {
   });
 
   it("accepts only canonical failures in failed operations", () => {
-    const failure = createWalletFailure("wallet_timeout");
-    expect(parseWalletManagementOperation(operation({
-      state: "failed",
-      result: null,
-      failure,
-    })).failure).toEqual(failure);
+    const independentFailures = [
+      {
+        ok: false,
+        error: {
+          code: "internal_error",
+          category: "internal",
+          message: "The request could not be completed.",
+          retryable: false,
+          issues: [],
+        },
+      },
+      {
+        ok: false,
+        error: {
+          code: "runtime_state_unavailable",
+          category: "runtime",
+          message: "Local runtime state is unavailable.",
+          retryable: false,
+          issues: [],
+        },
+      },
+      {
+        ok: false,
+        error: {
+          code: "wallet_session_unusable",
+          category: "wallet",
+          message: "The WalletConnect session cannot satisfy this request.",
+          retryable: false,
+          issues: [],
+        },
+      },
+      {
+        ok: false,
+        error: {
+          code: "wallet_timeout",
+          category: "wallet",
+          message: "The wallet request timed out.",
+          retryable: true,
+          issues: [],
+        },
+      },
+    ] as const;
+
+    for (const failure of independentFailures) {
+      expect(parseWalletManagementOperation(operation({
+        state: "failed",
+        result: null,
+        failure,
+      })).failure).toEqual(failure);
+      expect(() => parseWalletManagementOperation(operation({
+        state: "failed",
+        result: null,
+        failure: {
+          ...failure,
+          error: { ...failure.error, category: "domain" },
+        },
+      }))).toThrow();
+    }
 
     expect(() => parseWalletManagementOperation(operation({
       state: "failed",
       result: null,
       failure: {
-        ...failure,
-        error: { ...failure.error, message: "forged" },
+        ...independentFailures[3],
+        error: { ...independentFailures[3].error, message: "forged" },
       },
     }))).toThrow();
 
@@ -230,9 +365,9 @@ describe("wallet management contracts", () => {
       state: "failed",
       result: null,
       failure: {
-        ...failure,
+        ...independentFailures[3],
         error: {
-          ...failure.error,
+          ...independentFailures[3].error,
           issues: [{
             path: "/operation",
             code: "invalid_value",
@@ -276,6 +411,16 @@ describe("wallet management contracts", () => {
       interactionInterface: "cli",
       connectionRevision: null,
     });
+    for (const interactionInterface of ["mcp", "CLI", "browser", "", null, undefined]) {
+      expect(() => parseWalletOperationCreate({
+        control: { operationId, interactionInterface },
+        request: { kind: "connect", connectionRevision: null },
+      })).toThrow();
+    }
+    expect(() => parseWalletOperationCreate({
+      control: { operationId, interactionInterface: "web", extra: true },
+      request: { kind: "connect", connectionRevision: null },
+    })).toThrow();
     expect(() => parseWalletOperationCreate({
       control: { operationId, interactionInterface: "web" },
       request: { kind: "other", connectionRevision: "3" },

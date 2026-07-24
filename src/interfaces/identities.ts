@@ -70,7 +70,10 @@ import {
   type WalletOperationStartResponse,
 } from "../wallet/contracts.js";
 import { walletErrorRegistry, walletInterfaceErrorMappings } from "../wallet/errors.js";
-import type { WalletOperationKind } from "../wallet/operation-state.js";
+import type {
+  WalletInteractionInterface,
+  WalletOperationKind,
+} from "../wallet/operation-state.js";
 import { walletControlRoutes } from "../wallet/routes.js";
 import type { CanonicalDispatchAuthority } from "./http-client.js";
 import type { ReferenceMarketDeliveryAction } from "./reference-market-delivery.js";
@@ -714,7 +717,7 @@ const operationInputId = (input: Readonly<{ operationId: OperationId }>): Operat
 
 const walletStartLocalIdentity = (
   kind: WalletOperationKind,
-  interactionInterface: "cli" | "web",
+  interactionInterface: WalletInteractionInterface,
 ): LocalOperationIdentity<
   ReturnType<typeof walletManagementContracts.connect.parseInput>,
   WalletOperationStartResponse
