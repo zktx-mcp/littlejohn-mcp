@@ -135,7 +135,8 @@ class FakeWalletConnectClient implements WalletConnectClientPort {
 
 const createBootstrap = (privateStoreDirectory: string): WalletOwnerBootstrapPort => {
   const clock = createCanonicalClock(() => observedAt);
-  const configuration = readRuntimeConfiguration({}).wallet;
+  const runtimeConfiguration = readRuntimeConfiguration({});
+  const configuration = runtimeConfiguration.wallet;
   const sdkStoreAuthority = createObservationAuthority({
     clock,
     sourceClass: "wallet_sdk",
@@ -145,7 +146,10 @@ const createBootstrap = (privateStoreDirectory: string): WalletOwnerBootstrapPor
       sourceId: `wallet-sdk:${"A".repeat(22)}`,
     }),
   });
-  const invocationAuthority = createCapabilityInvocationAuthority(clock, configuration.chain.chainId);
+  const invocationAuthority = createCapabilityInvocationAuthority(
+    clock,
+    runtimeConfiguration.chain.chainId,
+  );
   return Object.freeze({
     configuration,
     privateStoreDirectory: Object.freeze({ ensureDirectory: async () => privateStoreDirectory }),

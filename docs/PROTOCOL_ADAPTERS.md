@@ -37,6 +37,9 @@ mapping, activation, commercial behavior, and adapter verification policy.
   SDK client, mutates no state, and starts no background work.
 - Runtime dependencies enter through an explicit factory context at composition
   time.
+- Each package applies the runtime external-integration ownership model in
+  `docs/ARCHITECTURE.md#external-integration-model`. This document adds only the
+  protocol-package contracts below.
 
 ## Registration Model
 
@@ -50,6 +53,10 @@ One protocol integration package descriptor contains:
 - commercial capability evidence when the package supports a revenue mechanism;
 - read capability descriptors; and
 - action adapter descriptors.
+
+Each implemented package descriptor is recorded with its current external
+integration classification under
+`docs/ARCHITECTURE.md#external-integration-model`.
 
 The top-level package descriptor is not a single large adapter implementation.
 Each read capability and action adapter implements a narrow contract.

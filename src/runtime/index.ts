@@ -36,8 +36,6 @@ export type {
   RuntimeChainConfiguration,
   RuntimeConfiguration,
   RuntimeRpcConfiguration,
-  WalletConnectConfiguration,
-  WalletConnectProjectId,
 } from "./configuration.js";
 export {
   RuntimeOperationError,

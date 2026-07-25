@@ -5,8 +5,8 @@ import type {
 } from "./official-asset-contract.js";
 import type {
   OfficialAssetSnapshotStore,
-  OfficialAssetSourceClient,
-} from "./official-assets.js";
+  RobinhoodOfficialAssetSourceClient,
+} from "./official-asset-source-contract.js";
 
 export type OfficialAssetSynchronizationResult =
   | Readonly<{
@@ -26,7 +26,7 @@ export interface OfficialAssetSynchronizationPort {
 }
 
 export interface OfficialAssetSynchronizationDependencies {
-  readonly source: OfficialAssetSourceClient;
+  readonly source: RobinhoodOfficialAssetSourceClient;
   readonly store: OfficialAssetSnapshotStore;
   readonly signal: AbortSignal;
   readonly failureFor: (error: unknown) => ApplicationFailure;

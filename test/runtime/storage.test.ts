@@ -29,7 +29,6 @@ import {
   parseEvmChainId,
   parseCapabilityDataAt,
   parseUtcTimestamp,
-  productDisplayName,
   referenceMarketLimits,
   walletConnectionCapability,
 } from "../../src/core/index.js";
@@ -79,6 +78,9 @@ import {
   currentSqliteTableNames,
   databaseSchemaVersion,
 } from "../../src/runtime/sqlite-schema.js";
+import {
+  createWalletConnectConfiguration,
+} from "../../src/wallet/walletconnect-configuration.js";
 
 const directories: string[] = [];
 const childProcesses: ChildProcess[] = [];
@@ -1396,22 +1398,12 @@ describe("configuration and source authority", () => {
     const credential = await loadOrCreateControlCredential(directory, paths.controlCredential);
     const clock = createCanonicalClock(() => observedAt);
     const configuration = readRuntimeConfiguration({});
-    expect(configuration.wallet).toEqual({
-      projectId: "cd33d6deaa901b3c96185d9cb1f320ef",
-      chain: { chainId: "eip155:4663" },
-      requiredMethods: ["eth_sendTransaction"],
-      requiredEvents: ["accountsChanged", "chainChanged"],
-      metadata: {
-        name: productDisplayName,
-        description: "Local Robinhood Chain wallet connection",
-        url: "http://127.0.0.1:46630",
-        icons: [],
-      },
-    });
+    expect(Reflect.ownKeys(configuration.wallet)).toEqual([]);
+    expect(Object.isFrozen(configuration.wallet)).toBe(true);
     const configurationFields = [
       Buffer.from(configuration.chain.chainId, "utf8"),
       Buffer.from(readConfiguredRpcEndpoint(configuration.rpc.endpoint).exactUri, "utf8"),
-      Buffer.from(configuration.wallet.projectId, "utf8"),
+      Buffer.from("cd33d6deaa901b3c96185d9cb1f320ef", "utf8"),
     ];
     const payload = Buffer.alloc(configurationFields.reduce((sum, field) => sum + 4 + field.length, 0));
     let payloadOffset = 0;
@@ -1428,13 +1420,27 @@ describe("configuration and source authority", () => {
       Buffer.from("littlejohn/runtime-configuration/v2", "utf8"),
       32,
     ))).update(payload).digest("base64url");
-    expect(deriveRuntimeConfigurationMac(credential, configuration)).toBe(independentConfigurationMac);
+    const expectedConfigurationMac = "2ZFsgqN-qp0KI0FGQcHNB1saV3YG7AQlZP3iW0NmcBk";
+    expect(payload.toString("hex")).toBe(
+      "0000000b6569703135353a343636330000002768747470733a2f2f7270632e6d61696e6e65742e636861696e2e726f62696e686f6f642e636f6d000000206364333364366465616139303162336339363138356439636231663332306566",
+    );
+    expect(independentConfigurationMac).toBe(expectedConfigurationMac);
+    expect(deriveRuntimeConfigurationMac(credential, configuration)).toBe(expectedConfigurationMac);
+    expect(() => readRuntimeConfiguration({
+      LITTLEJOHN_WALLETCONNECT_PROJECT_ID: "not-a-project-id",
+    })).toThrow();
     const forgedChain = Object.freeze({ chainId: configuration.chain.chainId });
     expect(() => deriveRuntimeConfigurationMac(credential, {
       chain: forgedChain,
       rpc: Object.freeze({ chain: forgedChain, endpoint: configuration.rpc.endpoint }),
-      wallet: Object.freeze({ ...configuration.wallet, chain: forgedChain }),
+      wallet: Object.freeze({}),
     } as never)).toThrow("provenance");
+    const wrongChain = Object.freeze({ chainId: alternateChainId });
+    expect(() => deriveRuntimeConfigurationMac(credential, {
+      chain: configuration.chain,
+      rpc: configuration.rpc,
+      wallet: createWalletConnectConfiguration(undefined, wrongChain as never),
+    })).toThrow("chain authority");
     const rpc = createRpcSourceAuthority({ credential, endpoint: configuration.rpc.endpoint, clock });
     expect(rpc.configurationDigest).toBe("oA40Nw__Im-Kx0Tp9zCwwDLic15a7IjDaVCesNOhEuA");
     expect(rpc.sourceOwner).toBe("Robinhood");

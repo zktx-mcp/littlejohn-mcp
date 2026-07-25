@@ -1,8 +1,10 @@
 import { z } from "zod";
 
 import {
+  canonicalSha256,
   canonicalBase64UrlSchema,
   chainAnchorSchema,
+  compareCodePointSequences,
   deepFreezeValue,
   evmAddressSchema,
   evmChainIdSchema,
@@ -11,47 +13,34 @@ import {
   parseEvmAddressInput,
   parseHash32,
   productChainId,
-  productChainNumericId,
   tokenDisplayTextSchema,
   unsignedDecimalSchema,
   utcTimestampSchema,
+  type EvmAddress,
 } from "../core/browser.js";
 
 const positiveSafeIntegerSchema = z.number().int().positive().safe();
 
-const officialAssetSourceManifestSchema = jsonObject({
+const officialAssetSourceDefinitionSchema = jsonObject({
   sourceUri: z.string().url(),
   documentationSourceUri: z.string().url(),
   chainId: evmChainIdSchema,
-  deploymentChainId: positiveSafeIntegerSchema,
-  activeStatus: z.string().min(1),
-  responseByteLimit: positiveSafeIntegerSchema,
   memberLimit: positiveSafeIntegerSchema,
-  deploymentLimit: positiveSafeIntegerSchema,
-  responseDeadlineMs: positiveSafeIntegerSchema,
 }).strict().superRefine((value, context) => {
-  if (
-    value.chainId !== productChainId ||
-    value.deploymentChainId !== productChainNumericId
-  ) {
+  if (value.chainId !== productChainId) {
     context.addIssue({
       code: "custom",
-      message: "Official asset source manifest chain is invalid.",
+      message: "Official asset source definition chain is invalid.",
     });
   }
 });
 
-export const officialAssetSourceManifest = deepFreezeValue(
-  officialAssetSourceManifestSchema.parse({
+export const officialAssetSourceDefinition = deepFreezeValue(
+  officialAssetSourceDefinitionSchema.parse({
     sourceUri: "https://api.robinhood.com/rhj/assets",
     documentationSourceUri: "https://docs.robinhood.com/chain/contracts/",
     chainId: productChainId,
-    deploymentChainId: productChainNumericId,
-    activeStatus: "ASSET_STATUS_ACTIVE",
-    responseByteLimit: 1_048_576,
     memberLimit: 512,
-    deploymentLimit: 8,
-    responseDeadlineMs: 10_000,
   }),
 );
 
@@ -134,15 +123,15 @@ const officialAssetSourceSnapshotShape = {
   chainId: evmChainIdSchema,
   members: z.array(officialAssetSourceMemberSchema)
     .min(1)
-    .max(officialAssetSourceManifest.memberLimit),
+    .max(officialAssetSourceDefinition.memberLimit),
 } as const;
 
 export const officialAssetSourceSnapshotSchema = jsonObject(
   officialAssetSourceSnapshotShape,
 ).strict().superRefine((value, context) => {
   if (
-    value.sourceUri !== officialAssetSourceManifest.sourceUri ||
-    value.chainId !== officialAssetSourceManifest.chainId
+    value.sourceUri !== officialAssetSourceDefinition.sourceUri ||
+    value.chainId !== officialAssetSourceDefinition.chainId
   ) {
     context.addIssue({
       code: "custom",
@@ -164,8 +153,8 @@ export const committedOfficialAssetSnapshotSchema = jsonObject({
   updatedAt: utcTimestampSchema,
 }).strict().superRefine((value, context) => {
   if (
-    value.sourceUri !== officialAssetSourceManifest.sourceUri ||
-    value.chainId !== officialAssetSourceManifest.chainId
+    value.sourceUri !== officialAssetSourceDefinition.sourceUri ||
+    value.chainId !== officialAssetSourceDefinition.chainId
   ) {
     context.addIssue({
       code: "custom",
@@ -177,6 +166,123 @@ export type CommittedOfficialAssetSnapshot = z.infer<
   typeof committedOfficialAssetSnapshotSchema
 >;
 
+const compareOfficialAssetSourceMembers = (
+  left: OfficialAssetSourceMember,
+  right: OfficialAssetSourceMember,
+): number => compareCodePointSequences(left.assetUid, right.assetUid) ||
+  compareCodePointSequences(left.contractAddress, right.contractAddress);
+
+export const assertOfficialAssetSourceMember = (
+  input: OfficialAssetSourceMember,
+): OfficialAssetSourceMember =>
+  deepFreezeValue(officialAssetSourceMemberSchema.parse(input));
+
+const memberSetPayload = (
+  members: readonly OfficialAssetSourceMember[],
+) => ({
+  version: "1",
+  chainId: officialAssetSourceDefinition.chainId,
+  sourceUri: officialAssetSourceDefinition.sourceUri,
+  members: members.map((member) => ({
+    assetUid: member.assetUid,
+    contractAddress: member.contractAddress,
+  })),
+}) as const;
+
+const candidateListPayload = (
+  members: readonly OfficialAssetSourceMember[],
+) => ({
+  version: "1",
+  chainId: officialAssetSourceDefinition.chainId,
+  sourceUri: officialAssetSourceDefinition.sourceUri,
+  members: members.map((member) => ({
+    assetUid: member.assetUid,
+    contractAddress: member.contractAddress,
+    sourceName: member.sourceName ?? null,
+    sourceSymbol: member.sourceSymbol ?? null,
+  })),
+}) as const;
+
+export const officialAssetMemberSetDigest = (
+  members: readonly OfficialAssetSourceMember[],
+) => parseHash32(`0x${canonicalSha256(memberSetPayload(members))}`);
+
+export const officialAssetCandidateListDigest = (
+  members: readonly OfficialAssetSourceMember[],
+) => parseHash32(`0x${canonicalSha256(candidateListPayload(members))}`);
+
+export const assertOfficialAssetSourceSnapshot = (
+  input: OfficialAssetSourceSnapshot,
+): OfficialAssetSourceSnapshot => {
+  const parsed = officialAssetSourceSnapshotSchema.parse(input);
+  const members = parsed.members.map(assertOfficialAssetSourceMember);
+  for (let index = 0; index < members.length; index += 1) {
+    const original = parsed.members[index] as OfficialAssetSourceMember;
+    const member = members[index] as OfficialAssetSourceMember;
+    if (
+      compareOfficialAssetSourceMembers(original, member) !== 0 ||
+      (
+        index > 0 &&
+        compareOfficialAssetSourceMembers(
+          members[index - 1] as OfficialAssetSourceMember,
+          member,
+        ) >= 0
+      )
+    ) {
+      throw new TypeError("Official asset snapshot members are not in canonical order.");
+    }
+  }
+  const addresses = new Set(members.map((member) => member.contractAddress));
+  const uids = new Set(members.map((member) => member.assetUid));
+  if (addresses.size !== members.length || uids.size !== members.length) {
+    throw new TypeError("Official asset snapshot contains a duplicate identity.");
+  }
+  const memberSetDigest = parsed.memberSetDigest;
+  const candidateListDigest = parsed.candidateListDigest;
+  if (
+    memberSetDigest !== officialAssetMemberSetDigest(members) ||
+    candidateListDigest !== officialAssetCandidateListDigest(members)
+  ) {
+    throw new TypeError("Official asset snapshot digests are invalid.");
+  }
+  return deepFreezeValue(officialAssetSourceSnapshotSchema.parse({
+    sourceUri: officialAssetSourceDefinition.sourceUri,
+    sourceObservedAt: parsed.sourceObservedAt,
+    rawResponseDigest: parsed.rawResponseDigest,
+    memberSetDigest,
+    candidateListDigest,
+    chainId: officialAssetSourceDefinition.chainId,
+    members,
+  }));
+};
+
+export const assertCommittedOfficialAssetSnapshot = (
+  input: CommittedOfficialAssetSnapshot,
+): CommittedOfficialAssetSnapshot => {
+  const parsed = committedOfficialAssetSnapshotSchema.parse(input);
+  const snapshot = assertOfficialAssetSourceSnapshot({
+    sourceUri: parsed.sourceUri,
+    sourceObservedAt: parsed.sourceObservedAt,
+    rawResponseDigest: parsed.rawResponseDigest,
+    memberSetDigest: parsed.memberSetDigest,
+    candidateListDigest: parsed.candidateListDigest,
+    chainId: parsed.chainId,
+    members: parsed.members,
+  });
+  return deepFreezeValue({
+    ...snapshot,
+    revision: parsed.revision,
+    updatedAt: parsed.updatedAt,
+  });
+};
+
+export const findOfficialAssetMember = (
+  snapshot: OfficialAssetSourceSnapshot,
+  contractAddress: EvmAddress,
+): OfficialAssetSourceMember | undefined => snapshot.members.find(
+  (member) => member.contractAddress === contractAddress,
+);
+
 export const officialAssetSnapshotEvidenceSchema = jsonObject({
   sourceUri: z.string().url(),
   sourceObservedAt: utcTimestampSchema,
@@ -184,7 +290,7 @@ export const officialAssetSnapshotEvidenceSchema = jsonObject({
   memberSetDigest: hash32Schema,
   revision: officialAssetSnapshotRevisionSchema,
 }).strict().superRefine((value, context) => {
-  if (value.sourceUri !== officialAssetSourceManifest.sourceUri) {
+  if (value.sourceUri !== officialAssetSourceDefinition.sourceUri) {
     context.addIssue({
       code: "custom",
       message: "Official asset evidence source is invalid.",

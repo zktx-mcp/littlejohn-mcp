@@ -1,19 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  createOfficialAssetSourceClient,
   createOfficialAssetSynchronization,
   officialAssetSnapshotRevisionSchema,
   type CommittedOfficialAssetSnapshot,
   type OfficialAssetSnapshotStore,
-  type OfficialAssetSourceClient,
-  type OfficialAssetSourceObservation,
 } from "../../src/registry/index.js";
+import {
+  createRobinhoodOfficialAssetSourceClient,
+} from "../../src/registry/official-assets.js";
+import type {
+  RobinhoodOfficialAssetSourceClient,
+  RobinhoodOfficialAssetSourceObservation,
+} from "../../src/registry/official-asset-source-contract.js";
 import { createTokenCatalogFailure } from "../../src/token-catalog/index.js";
 
 const observedAt = "2026-07-21T00:00:00.000Z";
-const sourceObservation = async (): Promise<OfficialAssetSourceObservation> =>
-  await createOfficialAssetSourceClient({
+const sourceObservation = async (): Promise<RobinhoodOfficialAssetSourceObservation> =>
+  await createRobinhoodOfficialAssetSourceClient({
     fetch: (async () => new Response(JSON.stringify({
       assets: [{
         id: `0x${"11".repeat(32)}`,
@@ -25,7 +29,7 @@ const sourceObservation = async (): Promise<OfficialAssetSourceObservation> =>
   }).read(new AbortController().signal);
 
 const committed = (
-  observation: OfficialAssetSourceObservation,
+  observation: RobinhoodOfficialAssetSourceObservation,
   byte: number,
 ): CommittedOfficialAssetSnapshot => Object.freeze({
   ...observation,
@@ -47,7 +51,7 @@ describe("official asset synchronization", () => {
       return observation;
     });
     let stored: CommittedOfficialAssetSnapshot | undefined;
-    const replaceSnapshot = vi.fn((input: OfficialAssetSourceObservation) => {
+    const replaceSnapshot = vi.fn((input: RobinhoodOfficialAssetSourceObservation) => {
       stored = committed(input, 1);
       return stored;
     });
@@ -98,8 +102,9 @@ describe("official asset synchronization", () => {
 
   it("aborts and drains the owned source read before close resolves", async () => {
     let settled = false;
-    const source: OfficialAssetSourceClient = Object.freeze({
-      read: async (signal: AbortSignal) => await new Promise<OfficialAssetSourceObservation>((_resolve, reject) => {
+    const source: RobinhoodOfficialAssetSourceClient = Object.freeze({
+      read: async (signal: AbortSignal) =>
+        await new Promise<RobinhoodOfficialAssetSourceObservation>((_resolve, reject) => {
         signal.addEventListener("abort", () => {
           settled = true;
           reject(new DOMException("aborted", "AbortError"));

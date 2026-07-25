@@ -26,7 +26,7 @@ import {
 import {
   committedOfficialAssetSnapshotSchema,
   defaultStockTokenManifest,
-  officialAssetSourceManifest,
+  officialAssetSourceDefinition,
   officialAssetSnapshotRevisionSchema,
   stockFactoryAdmissionManifest,
   type CommittedOfficialAssetSnapshot,
@@ -109,7 +109,7 @@ const member = (address: EvmAddress, byte: string, symbol: string) => Object.fre
 const defaultMember = member(defaultStockTokenManifest.assets[0]!.contractAddress, "11", "AAPL");
 const unselectedMember = member(candidateAddress, "22", "NEXT");
 const snapshot = committedOfficialAssetSnapshotSchema.parse({
-  sourceUri: officialAssetSourceManifest.sourceUri,
+  sourceUri: officialAssetSourceDefinition.sourceUri,
   sourceObservedAt: at,
   rawResponseDigest: parseHash32(`0x${"33".repeat(32)}`),
   memberSetDigest: parseHash32(`0x${"44".repeat(32)}`),

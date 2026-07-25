@@ -70,6 +70,10 @@ import type {
   WalletConnectSessionSnapshot,
 } from "./walletconnect-client.js";
 import { isWalletConnectClientError } from "./walletconnect-client.js";
+import {
+  readWalletConnectSessionRequirements,
+  type WalletConnectSessionRequirements,
+} from "./walletconnect-configuration.js";
 
 const userActionWaitMilliseconds = 5 * 60 * 1_000;
 const walletSdkOperationMilliseconds = 5 * 60 * 1_000;
@@ -136,9 +140,9 @@ const captureSessionSetIdentity = (
 const validateSession = (
   session: WalletConnectSessionSnapshot,
   evaluatedAt: UtcTimestamp,
-  configuration: WalletOwnerBootstrapPort["configuration"],
+  requirements: WalletConnectSessionRequirements,
 ): WalletConnectionData | undefined => {
-  const targetChainId = configuration.chain.chainId;
+  const targetChainId = requirements.chain.chainId;
   const namespaceKeys = Object.keys(session.namespaces).sort(compareCodePointSequences);
   const namespace = session.namespaces[targetNamespace];
   if (namespaceKeys.length !== 1 || namespaceKeys[0] !== targetNamespace || namespace === undefined ||
@@ -154,8 +158,8 @@ const validateSession = (
   const approvedMethods = canonicalUnique(namespace.methods);
   const approvedEvents = canonicalUnique(namespace.events);
   if (approvedMethods === undefined || approvedEvents === undefined ||
-    !configuration.requiredMethods.every((method) => approvedMethods.includes(method)) ||
-    !configuration.requiredEvents.every((event) => approvedEvents.includes(event))) {
+    !requirements.requiredMethods.every((method) => approvedMethods.includes(method)) ||
+    !requirements.requiredEvents.every((event) => approvedEvents.includes(event))) {
     return undefined;
   }
   let expiresAt: UtcTimestamp;
@@ -496,6 +500,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
 
   readonly #client: WalletConnectClientPort;
   readonly #wallet: WalletOwnerBootstrapPort;
+  readonly #sessionRequirements: WalletConnectSessionRequirements;
   readonly #operations = new Map<string, OperationEntry>();
   readonly #mailbox: ActorRequest<unknown>[] = [];
   readonly #deferredSessionTopics = new Set<string>();
@@ -526,6 +531,9 @@ export class WalletCoordinator implements WalletCoordinatorPort {
   private constructor(client: WalletConnectClientPort, wallet: WalletOwnerBootstrapPort) {
     this.#client = client;
     this.#wallet = wallet;
+    this.#sessionRequirements = readWalletConnectSessionRequirements(
+      wallet.configuration,
+    );
     this.#connectionSnapshot = Object.freeze({ record: wallet.projection.read() });
     this.activeWallet = Object.freeze({ capture: () => this.#captureActiveWallet() });
     this.operation = Object.freeze({
@@ -1598,7 +1606,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
           const connection = validateSession(
             continuousSession,
             this.#now(),
-            this.#wallet.configuration,
+            this.#sessionRequirements,
           );
           if (connection === undefined || connection.status !== "connected" ||
             deriveCaip10Account({ chainId: connection.chainId, address: connection.address }) !== continuity.account) {
@@ -1659,7 +1667,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     }
 
     const session = sessions[0] as WalletConnectSessionSnapshot;
-    const connection = validateSession(session, this.#now(), this.#wallet.configuration);
+    const connection = validateSession(session, this.#now(), this.#sessionRequirements);
     if (connection !== undefined) {
       try { this.#publishSdkState(connection, sessions, evidenceEpoch, session.topic); }
       catch { return undefined; }
@@ -2372,7 +2380,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     const sessions = this.#client.listSessions();
     const approved = sessions.find(({ topic }) => topic === outcomeSession.topic);
     const connection = sessions.length === 1 && approved !== undefined
-      ? validateSession(approved, this.#now(), this.#wallet.configuration)
+      ? validateSession(approved, this.#now(), this.#sessionRequirements)
       : undefined;
     if (connection !== undefined && approved !== undefined) {
       if (!this.#publishSdkState(connection, sessions, evidenceEpoch, approved.topic)) {
@@ -2675,7 +2683,7 @@ export class WalletCoordinator implements WalletCoordinatorPort {
       return;
     }
     const targetChainHex = `0x${BigInt(
-      deriveEip155Reference(this.#wallet.configuration.chain.chainId),
+      deriveEip155Reference(this.#sessionRequirements.chain.chainId),
     ).toString(16)}`;
     if (event.data !== targetChainHex) {
       await this.#invalidateSession(activeTopic);

@@ -34,10 +34,10 @@ import {
   type TokenCatalogApplication,
 } from "../token-catalog/application-factory.js";
 import {
-  createOfficialAssetSourceClient,
+  createRobinhoodOfficialAssetSourceClient,
   createOfficialAssetSynchronization,
-  getOfficialAssetSourceErrorCode,
-  type OfficialAssetSourceClient,
+  getRobinhoodOfficialAssetSourceErrorCode,
+  type RobinhoodOfficialAssetSourceClient,
   type OfficialAssetSynchronizationPort,
 } from "../registry/index.js";
 import type {
@@ -179,7 +179,7 @@ export interface ReferenceMarketOwnerHandoff {
 interface LocalRuntimeBaseOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly now?: () => UtcTimestamp;
-  readonly officialAssetSourceClient?: OfficialAssetSourceClient;
+  readonly robinhoodOfficialAssetSourceClient?: RobinhoodOfficialAssetSourceClient;
 }
 
 type LocalRuntimeApplicationFactories<
@@ -808,7 +808,8 @@ export class LocalRuntime {
     const walletApplicationFactory = options.walletApplicationFactory;
     const chainApplicationFactory = options.chainApplicationFactory;
     const interfaceApplicationFactory = options.interfaceApplicationFactory;
-    const officialAssetSourceClient = options.officialAssetSourceClient;
+    const robinhoodOfficialAssetSourceClient =
+      options.robinhoodOfficialAssetSourceClient;
     if ((walletApplicationFactory === undefined && (chainApplicationFactory !== undefined || interfaceApplicationFactory !== undefined)) ||
       (chainApplicationFactory === undefined && interfaceApplicationFactory !== undefined)) {
       throw new TypeError("Owner application factories must form a dependency prefix.");
@@ -886,13 +887,14 @@ export class LocalRuntime {
             const store = database.tokenCatalogStore();
             const readStore = database.tokenCatalogReadStore();
             const accountTokenSelectionStore = database.accountTokenSelectionStore();
-            const source = officialAssetSourceClient ?? createOfficialAssetSourceClient();
+            const source = robinhoodOfficialAssetSourceClient ??
+              createRobinhoodOfficialAssetSourceClient();
             const officialAssets = createOfficialAssetSynchronization({
               source,
               store: database.officialAssetSnapshotStore(),
               signal,
               failureFor: (error) => {
-                const sourceCode = getOfficialAssetSourceErrorCode(error);
+                const sourceCode = getRobinhoodOfficialAssetSourceErrorCode(error);
                 return sourceCode === undefined
                   ? normalizeTokenCatalogError(error).failure
                   : createTokenCatalogFailure(sourceCode);

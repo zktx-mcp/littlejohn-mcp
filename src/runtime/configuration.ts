@@ -1,15 +1,14 @@
-import { z } from "zod";
-
 import {
   parseEvmChainId,
   productChainId,
-  productDisplayName,
   type EvmChainId,
 } from "../core/index.js";
-import { fixedOrigin } from "./http-boundary.js";
+import {
+  createWalletConnectConfiguration,
+  type WalletConnectConfiguration,
+} from "../wallet/walletconnect-configuration.js";
 
 export const defaultRpcUrl = "https://rpc.mainnet.chain.robinhood.com";
-export const defaultWalletConnectProjectId = "cd33d6deaa901b3c96185d9cb1f320ef";
 
 export interface ConfiguredRpcEndpoint {
   readonly publicOrigin: string;
@@ -23,19 +22,6 @@ interface ConfiguredRpcEndpointState {
 }
 
 const configuredRpcStates = new WeakMap<object, ConfiguredRpcEndpointState>();
-
-export interface WalletConnectConfiguration {
-  readonly projectId: WalletConnectProjectId;
-  readonly chain: RuntimeChainConfiguration;
-  readonly requiredMethods: readonly ["eth_sendTransaction"];
-  readonly requiredEvents: readonly ["accountsChanged", "chainChanged"];
-  readonly metadata: {
-    readonly name: typeof productDisplayName;
-    readonly description: "Local Robinhood Chain wallet connection";
-    readonly url: typeof fixedOrigin;
-    readonly icons: readonly [];
-  };
-}
 
 export interface RuntimeChainConfiguration {
   readonly chainId: EvmChainId;
@@ -71,9 +57,6 @@ export const readRuntimeChainConfiguration = (
   return chain;
 };
 
-export const walletConnectProjectIdSchema = z.string().regex(/^[0-9a-f]{32}$/)
-  .brand("WalletConnectProjectId");
-export type WalletConnectProjectId = z.infer<typeof walletConnectProjectIdSchema>;
 const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -127,20 +110,9 @@ export const readRuntimeConfiguration = (
   const chain = createRuntimeChainConfiguration(productChainId);
   const endpoint = parseConfiguredRpc(environment["LITTLEJOHN_RPC_URL"] ?? defaultRpcUrl);
   const rpc = Object.freeze({ chain, endpoint });
-  const projectId = walletConnectProjectIdSchema.parse(
-    environment["LITTLEJOHN_WALLETCONNECT_PROJECT_ID"] ?? defaultWalletConnectProjectId,
-  );
-  const wallet = Object.freeze({
-    projectId,
+  const wallet = createWalletConnectConfiguration(
+    environment["LITTLEJOHN_WALLETCONNECT_PROJECT_ID"],
     chain,
-    requiredMethods: Object.freeze(["eth_sendTransaction"] as const),
-    requiredEvents: Object.freeze(["accountsChanged", "chainChanged"] as const),
-    metadata: Object.freeze({
-      name: productDisplayName,
-      description: "Local Robinhood Chain wallet connection" as const,
-      url: fixedOrigin,
-      icons: Object.freeze([]) as readonly [],
-    }),
-  });
+  );
   return Object.freeze({ chain, rpc, wallet });
 };

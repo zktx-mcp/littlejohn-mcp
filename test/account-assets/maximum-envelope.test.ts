@@ -14,7 +14,7 @@ import {
   parseUtcTimestamp,
 } from "../../src/core/index.js";
 import {
-  officialAssetSourceManifest,
+  officialAssetSourceDefinition,
   stockFactoryAdmissionManifest,
 } from "../../src/registry/browser.js";
 import { internalResponseLimitBytes } from "../../src/runtime/http-boundary.js";
@@ -52,7 +52,7 @@ export const verifyMaximumAccountAssetEnvelope = (): number => {
       classification: {
         kind: "robinhood_stock_token" as const,
         snapshot: {
-          sourceUri: officialAssetSourceManifest.sourceUri,
+          sourceUri: officialAssetSourceDefinition.sourceUri,
           sourceObservedAt: at,
           rawResponseDigest: `0x${"11".repeat(32)}`,
           memberSetDigest: `0x${"22".repeat(32)}`,

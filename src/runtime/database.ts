@@ -51,12 +51,12 @@ import {
 } from "../core/index.js";
 import {
   assertCommittedOfficialAssetSnapshot,
-  assertOfficialAssetSourceObservation,
+  assertRobinhoodOfficialAssetSourceObservation,
   assertOfficialAssetSourceMember,
   defaultStockTokenManifest,
   findOfficialAssetMember,
   officialAssetSnapshotRevisionSchema,
-  officialAssetSourceManifest,
+  officialAssetSourceDefinition,
   stockFactoryVerificationSchema,
   type CommittedOfficialAssetSnapshot,
   type OfficialAssetSnapshotStore,
@@ -545,7 +545,7 @@ const readOfficialAssetSnapshotRaw = (
     WHERE chain_id = ? ORDER BY asset_uid, contract_address`)
     .all(row.chainId) as OfficialAssetMemberRow[];
   return assertCommittedOfficialAssetSnapshot({
-    sourceUri: officialAssetSourceManifest.sourceUri,
+    sourceUri: officialAssetSourceDefinition.sourceUri,
     sourceObservedAt: row.sourceObservedAt as never,
     rawResponseDigest: row.rawResponseDigest as never,
     memberSetDigest: row.memberSetDigest as never,
@@ -1233,7 +1233,7 @@ export class ProductDatabase {
     expectedRevisionInput: Parameters<OfficialAssetSnapshotStore["replaceSnapshot"]>[1],
   ): CommittedOfficialAssetSnapshot {
     try {
-      const snapshot = assertOfficialAssetSourceObservation(snapshotInput);
+      const snapshot = assertRobinhoodOfficialAssetSourceObservation(snapshotInput);
       const expectedRevision = expectedRevisionInput === null
         ? null
         : officialAssetSnapshotRevisionSchema.parse(expectedRevisionInput);

@@ -304,8 +304,12 @@ const createBootstrap = (): {
     });
   };
   const projection = new MemoryWalletProjection(clock);
-  const configuration = readRuntimeConfiguration({}).wallet;
-  const invocationAuthority = createCapabilityInvocationAuthority(clock, configuration.chain.chainId);
+  const runtimeConfiguration = readRuntimeConfiguration({});
+  const configuration = runtimeConfiguration.wallet;
+  const invocationAuthority = createCapabilityInvocationAuthority(
+    clock,
+    runtimeConfiguration.chain.chainId,
+  );
   return Object.freeze({
     projection,
     wallet: Object.freeze({
@@ -416,6 +420,18 @@ describe("WalletCoordinator", () => {
   });
 
   afterEach(() => { vi.useRealTimers(); });
+
+  it("rejects configuration without wallet-owned provenance before startup", async () => {
+    const client = new FakeWalletConnectClient();
+    const bootstrap = createBootstrap();
+    await expect(createWalletCoordinator({
+      client,
+      wallet: Object.freeze({
+        ...bootstrap.wallet,
+        configuration: Object.freeze({}),
+      }) as never,
+    })).rejects.toThrow("provenance");
+  });
 
   it("restores the only valid SDK session from an unavailable persisted projection", async () => {
     const { client, coordinator, projection } = await createSubject(

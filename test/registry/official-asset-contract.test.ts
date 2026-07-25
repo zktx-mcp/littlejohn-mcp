@@ -11,7 +11,7 @@ import {
 import {
   officialAssetCandidateSchema,
   officialAssetSnapshotEvidenceSchema,
-  officialAssetSourceManifest,
+  officialAssetSourceDefinition,
   stockFactoryAdmissionManifest,
   stockFactoryClassificationUnavailableReasons,
   stockFactoryVerificationFailureDefinitions,
@@ -27,16 +27,11 @@ const canonicalOutputSchema = (schema: z.ZodType): string =>
 
 describe("official asset contract", () => {
   it("owns the exact official source and StockFactory admission manifests", () => {
-    expect(officialAssetSourceManifest).toEqual({
+    expect(officialAssetSourceDefinition).toEqual({
       sourceUri: "https://api.robinhood.com/rhj/assets",
       documentationSourceUri: "https://docs.robinhood.com/chain/contracts/",
       chainId: "eip155:4663",
-      deploymentChainId: 4663,
-      activeStatus: "ASSET_STATUS_ACTIVE",
-      responseByteLimit: 1_048_576,
       memberLimit: 512,
-      deploymentLimit: 8,
-      responseDeadlineMs: 10_000,
     });
     expect(stockFactoryAdmissionManifest).toEqual({
       chainId: "eip155:4663",
@@ -57,7 +52,7 @@ describe("official asset contract", () => {
       implementationSourceUri:
         "https://robinhoodchain.blockscout.com/address/0xEe351E53BCe6AAF106428358838197C91e36EE0E",
     });
-    expect(Object.isFrozen(officialAssetSourceManifest)).toBe(true);
+    expect(Object.isFrozen(officialAssetSourceDefinition)).toBe(true);
     expect(Object.isFrozen(stockFactoryAdmissionManifest)).toBe(true);
   });
 

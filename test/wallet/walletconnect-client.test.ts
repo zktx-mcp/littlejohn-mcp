@@ -9,9 +9,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   readRuntimeConfiguration,
-  walletConnectProjectIdSchema,
 } from "../../src/runtime/configuration.js";
 import { walletQrMatrixSizeLimits } from "../../src/wallet/contracts.js";
+import {
+  createWalletConnectConfiguration,
+} from "../../src/wallet/walletconnect-configuration.js";
 
 import {
   createWalletConnectClient,
@@ -32,10 +34,16 @@ import {
   type WalletConnectSdkPort,
 } from "../../src/wallet/walletconnect-client.js";
 
-const configuredWallet = readRuntimeConfiguration({}).wallet;
-const projectId = walletConnectProjectIdSchema.parse("1".repeat(32));
-const wallet = Object.freeze({ ...configuredWallet, projectId });
-const metadata = wallet.metadata;
+const configuredRuntime = readRuntimeConfiguration({});
+const projectId = "1".repeat(32);
+const wallet = createWalletConnectConfiguration(projectId, configuredRuntime.chain);
+const chainId = "eip155:4663" as const;
+const metadata = Object.freeze({
+  name: "Little John",
+  description: "Local Robinhood Chain wallet connection",
+  url: "http://127.0.0.1:46630",
+  icons: Object.freeze([]) as readonly [],
+});
 const pairingTopic = "2".repeat(64);
 const firstSessionTopic = "3".repeat(64);
 const secondSessionTopic = "4".repeat(64);
@@ -2342,10 +2350,10 @@ describe("WalletConnect client adapter", () => {
     sdk.emit("session_event", {
       topic: firstSessionTopic,
       params: {
-        chainId: wallet.chain.chainId,
+        chainId,
         event: {
           name: "accountsChanged",
-          data: [`${wallet.chain.chainId}:${checksummedAddress}`],
+          data: [`${chainId}:${checksummedAddress}`],
         },
       },
     });
@@ -2354,7 +2362,7 @@ describe("WalletConnect client adapter", () => {
       kind: "session_event",
       topic: firstSessionTopic,
       eventName: "accountsChanged",
-      data: [`${wallet.chain.chainId}:${canonicalAddress}`],
+      data: [`${chainId}:${canonicalAddress}`],
     }]);
 
     unsubscribe();

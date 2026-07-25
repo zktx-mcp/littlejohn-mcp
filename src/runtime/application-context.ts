@@ -11,7 +11,8 @@ import type {
   transactionInspectCapability,
   walletConnectionCapability,
 } from "../core/index.js";
-import type { RuntimeRpcConfiguration, WalletConnectConfiguration } from "./configuration.js";
+import type { WalletConnectConfiguration } from "../wallet/walletconnect-configuration.js";
+import type { RuntimeRpcConfiguration } from "./configuration.js";
 import type { RuntimeRouteRegistry } from "./http-routing.js";
 import type { OwnedResourceRegistry } from "./resource-ownership.js";
 import type {

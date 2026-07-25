@@ -9,6 +9,7 @@ import {
   readRuntimeChainConfiguration,
   type RuntimeConfiguration,
 } from "./configuration.js";
+import { readWalletConnectConfigurationIdentity } from "../wallet/walletconnect-configuration.js";
 import {
   createOwnerOnlyStateFileForWrite,
   ensureOwnerOnlyDirectory,
@@ -260,16 +261,16 @@ export const deriveRuntimeConfigurationMac = (
   configuration: RuntimeConfiguration,
 ): RuntimeConfigurationMac => {
   if (
-    configuration.rpc.chain !== configuration.chain ||
-    configuration.wallet.chain !== configuration.chain
+    configuration.rpc.chain !== configuration.chain
   ) throw new TypeError("Runtime configuration chain authority is inconsistent.");
   const chain = readRuntimeChainConfiguration(configuration.chain);
   const rpc = readConfiguredRpcEndpoint(configuration.rpc.endpoint);
+  const wallet = readWalletConnectConfigurationIdentity(configuration.wallet, chain);
   const key = deriveControlCredentialKey(credential, "littlejohn/runtime-configuration/v2");
   const payload = encodeLengthPrefixedFields([
     Buffer.from(chain.chainId, "utf8"),
     rpc.exactUtf8,
-    Buffer.from(configuration.wallet.projectId, "utf8"),
+    wallet.projectIdUtf8,
   ]);
   try {
     return parseRuntimeConfigurationMac(

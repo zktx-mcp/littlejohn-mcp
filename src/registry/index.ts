@@ -1,10 +1,13 @@
 export {
+  assertCommittedOfficialAssetSnapshot,
+  assertOfficialAssetSourceMember,
   committedOfficialAssetSnapshotSchema,
+  findOfficialAssetMember,
   officialAssetCandidateSchema,
   officialAssetSnapshotEvidenceSchema,
   officialAssetSnapshotRevisionSchema,
+  officialAssetSourceDefinition,
   officialAssetSourceLabelSchema,
-  officialAssetSourceManifest,
   officialAssetSourceMemberSchema,
   officialAssetSourceSnapshotSchema,
   stockFactoryAdmissionManifest,
@@ -26,17 +29,12 @@ export type {
   StockFactoryVerificationErrorCode,
 } from "./official-asset-contract.js";
 export {
-  assertCommittedOfficialAssetSnapshot,
-  assertOfficialAssetSourceObservation,
-  assertOfficialAssetSourceMember,
-  assertOfficialAssetSourceSnapshot,
-  createOfficialAssetSourceClient,
-  getOfficialAssetSourceErrorCode,
-  officialAssetCandidateListDigest,
-  officialAssetMemberSetDigest,
-  findOfficialAssetMember,
-  OfficialAssetSourceError,
+  createRobinhoodOfficialAssetSourceClient,
 } from "./official-assets.js";
+export {
+  assertRobinhoodOfficialAssetSourceObservation,
+  getRobinhoodOfficialAssetSourceErrorCode,
+} from "./official-asset-source-contract.js";
 export { officialAssetCandidatePageSize } from "./browser.js";
 export {
   defaultStockTokenManifest,
@@ -51,11 +49,8 @@ export type {
 } from "./synchronization.js";
 export type {
   OfficialAssetSnapshotStore,
-  OfficialAssetSourceClient,
-  OfficialAssetSourceClientOptions,
-  OfficialAssetSourceErrorCode,
-  OfficialAssetSourceObservation,
-} from "./official-assets.js";
+  RobinhoodOfficialAssetSourceClient,
+} from "./official-asset-source-contract.js";
 export {
   createStockFactoryVerifier,
   getStockFactoryVerificationErrorCode,

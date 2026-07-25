@@ -61,6 +61,7 @@ const now = parseUtcTimestamp("2026-07-12T10:16:02.000Z");
 const ownerIdentityPath = "/api/v1/runtime-identity";
 const ownerOperationMethod = "GET";
 const ownerOperationPath = "/api/v1/internal/control/example";
+const independentWalletConnectProjectId = "cd33d6deaa901b3c96185d9cb1f320ef";
 
 type RawPeerRequestKind = "identity" | "operation" | "unrelated";
 
@@ -233,7 +234,7 @@ const independentConfigurationMac = (
   const fields = [
     chainId,
     readConfiguredRpcEndpoint(configuration.rpc.endpoint).exactUri,
-    configuration.wallet.projectId,
+    independentWalletConnectProjectId,
   ].map((value) => Buffer.from(value, "utf8"));
   const payload = Buffer.alloc(fields.reduce((sum, value) => sum + 4 + value.length, 0));
   let offset = 0;

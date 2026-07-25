@@ -12,7 +12,7 @@ import {
 } from "../../src/account-assets/contracts.js";
 import {
   officialAssetCandidateSchema,
-  officialAssetSourceManifest,
+  officialAssetSourceDefinition,
   stockFactoryAdmissionManifest,
 } from "../../src/registry/browser.js";
 import {
@@ -168,7 +168,7 @@ describe("account asset contracts", () => {
     const official = {
       kind: "robinhood_stock_token",
       snapshot: {
-        sourceUri: officialAssetSourceManifest.sourceUri,
+        sourceUri: officialAssetSourceDefinition.sourceUri,
         sourceObservedAt: at,
         rawResponseDigest: `0x${"01".repeat(32)}`,
         memberSetDigest: `0x${"02".repeat(32)}`,

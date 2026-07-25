@@ -20,12 +20,16 @@ import {
   type EvmAccountIdentity,
 } from "../../src/core/index.js";
 import {
-  assertOfficialAssetSourceSnapshot,
-  createOfficialAssetSourceClient,
   defaultStockTokenManifest,
   stockFactoryAdmissionManifest,
   type StockFactoryVerification,
 } from "../../src/registry/index.js";
+import {
+  assertOfficialAssetSourceSnapshot,
+} from "../../src/registry/official-asset-contract.js";
+import {
+  createRobinhoodOfficialAssetSourceClient,
+} from "../../src/registry/official-assets.js";
 import { ProductDatabase } from "../../src/runtime/database.js";
 import { getRuntimeOperationFailure } from "../../src/runtime/errors.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
@@ -125,7 +129,7 @@ const sourceObservation = async (additionalAssets: readonly Readonly<{
       })),
     ],
   };
-  return await createOfficialAssetSourceClient({
+  return await createRobinhoodOfficialAssetSourceClient({
     fetch: (async () => new Response(JSON.stringify(response), {
       status: 200,
       headers: { "content-type": "application/json" },

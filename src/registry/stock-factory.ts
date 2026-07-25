@@ -22,8 +22,6 @@ import {
 } from "../chain/rpc.js";
 import {
   assertOfficialAssetSourceMember,
-} from "./official-assets.js";
-import {
   stockFactoryAdmissionManifest,
   stockFactoryVerificationSchema,
   type OfficialAssetSourceMember,

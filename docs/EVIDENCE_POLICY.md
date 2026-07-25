@@ -77,10 +77,12 @@ into a positive conclusion.
 ## Robinhood Stock Token Classification
 
 Current Robinhood Stock Token membership is owned by a complete successful
-response admitted under `officialAssetSourceManifest` in
-`src/registry/official-asset-contract.ts`. That validated manifest is the sole
-exact implementation owner of the source URI, documentation source, chain
-deployment, active-member discriminator, and acquisition limits. Robinhood's
+response from the canonical Robinhood source that passes the normalized
+registry admission contract. `officialAssetSourceDefinition` in
+`src/registry/official-asset-contract.ts` is the sole implementation owner of
+the source URI, documentation source, product chain, and normalized member
+limit. Runtime adapter, configuration, and composition ownership follow
+`docs/ARCHITECTURE.md#external-integration-model`. Robinhood's
 [official Token Contracts page](https://docs.robinhood.com/chain/contracts/)
 establishes the source-owner contract table. A malformed, partial, oversized,
 or failed response establishes neither membership nor absence. A stored

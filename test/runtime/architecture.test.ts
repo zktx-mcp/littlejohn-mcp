@@ -18,6 +18,7 @@ import {
 
 const repositoryRoot = resolve(".");
 const sourceRoot = resolve(repositoryRoot, "src");
+const testRoot = resolve(repositoryRoot, "test");
 const coreRoot = resolve("src/core");
 const tokenCatalogRoot = resolve(sourceRoot, "token-catalog");
 const browserInterfaceRoot = resolve(sourceRoot, "interfaces/web");
@@ -213,6 +214,844 @@ const resolvesInsideTokenCatalog = (file: string, specifier: string): string | u
   const inside = fromCatalog === "" || (!isAbsolute(fromCatalog) && fromCatalog !== ".." &&
     !fromCatalog.startsWith(`..${sep}`));
   return inside ? fromCatalog.split(sep).join("/") : undefined;
+};
+
+const walletConnectConfigurationModule =
+  resolve(sourceRoot, "wallet/walletconnect-configuration.ts");
+const walletConnectClientModule =
+  resolve(sourceRoot, "wallet/walletconnect-client.ts");
+const walletApplicationModule =
+  resolve(sourceRoot, "wallet/application.ts");
+const walletExternalModulesSourceModule =
+  resolve(sourceRoot, "wallet/external-modules.cts");
+const walletExternalModulesRuntimeModule =
+  resolve(sourceRoot, "wallet/external-modules.cjs");
+const robinhoodOfficialAssetSemanticContractModule =
+  resolve(sourceRoot, "registry/official-asset-contract.ts");
+const robinhoodOfficialAssetSourceContractModule =
+  resolve(sourceRoot, "registry/official-asset-source-contract.ts");
+const robinhoodOfficialAssetAdapterModule =
+  resolve(sourceRoot, "registry/official-assets.ts");
+const registryServerEntryModule =
+  resolve(sourceRoot, "registry/index.ts");
+const registryBrowserEntryModule =
+  resolve(sourceRoot, "registry/browser.ts");
+
+interface ExternalIntegrationAuthorityRule {
+  readonly module: string;
+  readonly symbol: string;
+  readonly importers: ReadonlySet<string>;
+  readonly reexporters: ReadonlySet<string>;
+}
+
+interface ExternalIntegrationResultEdge {
+  readonly file: string;
+  readonly exportName: string;
+  readonly sourceModule: string;
+  readonly sourceSymbol: string;
+}
+
+const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRule[] =
+  Object.freeze([
+    {
+      module: walletConnectConfigurationModule,
+      symbol: "createWalletConnectConfiguration",
+      importers: new Set([resolve(sourceRoot, "runtime/configuration.ts")]),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: walletConnectConfigurationModule,
+      symbol: "readWalletConnectConfiguration",
+      importers: new Set([walletConnectClientModule]),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: walletConnectConfigurationModule,
+      symbol: "readWalletConnectSessionRequirements",
+      importers: new Set([resolve(sourceRoot, "wallet/coordinator.ts")]),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: walletConnectConfigurationModule,
+      symbol: "readWalletConnectConfigurationIdentity",
+      importers: new Set([resolve(sourceRoot, "runtime/control-credential.ts")]),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: walletConnectClientModule,
+      symbol: "createWalletConnectClient",
+      importers: new Set([resolve(sourceRoot, "wallet/application.ts")]),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: robinhoodOfficialAssetSemanticContractModule,
+      symbol: "assertOfficialAssetSourceMember",
+      importers: new Set([
+        robinhoodOfficialAssetAdapterModule,
+        resolve(sourceRoot, "registry/stock-factory.ts"),
+      ]),
+      reexporters: new Set([registryServerEntryModule]),
+    },
+    {
+      module: robinhoodOfficialAssetSemanticContractModule,
+      symbol: "assertOfficialAssetSourceSnapshot",
+      importers: new Set([robinhoodOfficialAssetSourceContractModule]),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: robinhoodOfficialAssetSemanticContractModule,
+      symbol: "assertCommittedOfficialAssetSnapshot",
+      importers: new Set<string>(),
+      reexporters: new Set([registryServerEntryModule]),
+    },
+    {
+      module: robinhoodOfficialAssetSemanticContractModule,
+      symbol: "findOfficialAssetMember",
+      importers: new Set<string>(),
+      reexporters: new Set([registryServerEntryModule]),
+    },
+    {
+      module: robinhoodOfficialAssetSemanticContractModule,
+      symbol: "officialAssetMemberSetDigest",
+      importers: new Set([robinhoodOfficialAssetAdapterModule]),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: robinhoodOfficialAssetSemanticContractModule,
+      symbol: "officialAssetCandidateListDigest",
+      importers: new Set([robinhoodOfficialAssetAdapterModule]),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: robinhoodOfficialAssetSourceContractModule,
+      symbol: "admitRobinhoodOfficialAssetSourceObservation",
+      importers: new Set([robinhoodOfficialAssetAdapterModule]),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: robinhoodOfficialAssetSourceContractModule,
+      symbol: "assertRobinhoodOfficialAssetSourceObservation",
+      importers: new Set<string>(),
+      reexporters: new Set([registryServerEntryModule]),
+    },
+    {
+      module: robinhoodOfficialAssetSourceContractModule,
+      symbol: "getRobinhoodOfficialAssetSourceErrorCode",
+      importers: new Set([robinhoodOfficialAssetAdapterModule]),
+      reexporters: new Set([registryServerEntryModule]),
+    },
+    {
+      module: robinhoodOfficialAssetSourceContractModule,
+      symbol: "RobinhoodOfficialAssetSourceError",
+      importers: new Set([robinhoodOfficialAssetAdapterModule]),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: robinhoodOfficialAssetSourceContractModule,
+      symbol: "RobinhoodOfficialAssetSourceClient",
+      importers: new Set([
+        robinhoodOfficialAssetAdapterModule,
+        resolve(sourceRoot, "registry/synchronization.ts"),
+      ]),
+      reexporters: new Set([registryServerEntryModule]),
+    },
+    {
+      module: robinhoodOfficialAssetSourceContractModule,
+      symbol: "RobinhoodOfficialAssetSourceObservation",
+      importers: new Set([robinhoodOfficialAssetAdapterModule]),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: robinhoodOfficialAssetSourceContractModule,
+      symbol: "OfficialAssetSnapshotStore",
+      importers: new Set([resolve(sourceRoot, "registry/synchronization.ts")]),
+      reexporters: new Set([registryServerEntryModule]),
+    },
+    {
+      module: robinhoodOfficialAssetSourceContractModule,
+      symbol: "RobinhoodOfficialAssetSourceErrorCode",
+      importers: new Set<string>(),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: robinhoodOfficialAssetAdapterModule,
+      symbol: "createRobinhoodOfficialAssetSourceClient",
+      importers: new Set<string>(),
+      reexporters: new Set([registryServerEntryModule]),
+    },
+    {
+      module: registryServerEntryModule,
+      symbol: "createRobinhoodOfficialAssetSourceClient",
+      importers: new Set([resolve(sourceRoot, "runtime/composition.ts")]),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: registryServerEntryModule,
+      symbol: "assertOfficialAssetSourceMember",
+      importers: new Set([resolve(sourceRoot, "runtime/database.ts")]),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: registryServerEntryModule,
+      symbol: "assertCommittedOfficialAssetSnapshot",
+      importers: new Set([resolve(sourceRoot, "runtime/database.ts")]),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: registryServerEntryModule,
+      symbol: "findOfficialAssetMember",
+      importers: new Set([
+        resolve(sourceRoot, "account-assets/application.ts"),
+        resolve(sourceRoot, "runtime/database.ts"),
+        resolve(sourceRoot, "token-catalog/coordinator.ts"),
+      ]),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: registryServerEntryModule,
+      symbol: "assertRobinhoodOfficialAssetSourceObservation",
+      importers: new Set([resolve(sourceRoot, "runtime/database.ts")]),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: registryServerEntryModule,
+      symbol: "getRobinhoodOfficialAssetSourceErrorCode",
+      importers: new Set([resolve(sourceRoot, "runtime/composition.ts")]),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: registryServerEntryModule,
+      symbol: "RobinhoodOfficialAssetSourceClient",
+      importers: new Set([resolve(sourceRoot, "runtime/composition.ts")]),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: registryServerEntryModule,
+      symbol: "OfficialAssetSnapshotStore",
+      importers: new Set([resolve(sourceRoot, "runtime/database.ts")]),
+      reexporters: new Set<string>(),
+    },
+  ]);
+
+const externalIntegrationRulesByModule = new Map<string, ReadonlyMap<
+  string,
+  ExternalIntegrationAuthorityRule
+>>();
+for (const rule of externalIntegrationAuthorityRules) {
+  const current = new Map(externalIntegrationRulesByModule.get(rule.module) ?? []);
+  current.set(rule.symbol, rule);
+  externalIntegrationRulesByModule.set(rule.module, current);
+}
+
+const externalIntegrationResultEdges: readonly ExternalIntegrationResultEdge[] =
+  Object.freeze([
+    {
+      file: robinhoodOfficialAssetSourceContractModule,
+      exportName: "assertRobinhoodOfficialAssetSourceObservation",
+      sourceModule: robinhoodOfficialAssetSemanticContractModule,
+      sourceSymbol: "assertOfficialAssetSourceSnapshot",
+    },
+    {
+      file: robinhoodOfficialAssetAdapterModule,
+      exportName: "createRobinhoodOfficialAssetSourceClient",
+      sourceModule: robinhoodOfficialAssetSourceContractModule,
+      sourceSymbol: "admitRobinhoodOfficialAssetSourceObservation",
+    },
+  ]);
+
+const sourceName = (file: string): string =>
+  relative(sourceRoot, file).split(sep).join("/");
+
+const hasExportModifier = (node: ts.Node): boolean =>
+  ts.canHaveModifiers(node) &&
+  ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true;
+
+const isPrivateClassElement = (node: ts.ClassElement): boolean =>
+  (node.name !== undefined && ts.isPrivateIdentifier(node.name)) ||
+  (
+    ts.canHaveModifiers(node) &&
+    ts.getModifiers(node)?.some(
+      (modifier) => modifier.kind === ts.SyntaxKind.PrivateKeyword,
+    ) === true
+  );
+
+const exportedDeclarationNames = (source: ts.SourceFile): readonly string[] => {
+  const names: string[] = [];
+  for (const statement of source.statements) {
+    if (ts.isVariableStatement(statement) && hasExportModifier(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name)) names.push(declaration.name.text);
+      }
+      continue;
+    }
+    if (
+      (
+        ts.isFunctionDeclaration(statement) ||
+        ts.isClassDeclaration(statement) ||
+        ts.isInterfaceDeclaration(statement) ||
+        ts.isTypeAliasDeclaration(statement) ||
+        ts.isEnumDeclaration(statement)
+      ) &&
+      statement.name !== undefined &&
+      hasExportModifier(statement)
+    ) {
+      names.push(statement.name.text);
+      continue;
+    }
+    if (ts.isExportAssignment(statement)) {
+      names.push("default");
+      continue;
+    }
+    if (!ts.isExportDeclaration(statement)) continue;
+    if (statement.exportClause === undefined) {
+      names.push("*");
+    } else if (ts.isNamespaceExport(statement.exportClause)) {
+      names.push(`* as ${statement.exportClause.name.text}`);
+    } else {
+      names.push(...statement.exportClause.elements.map((element) => element.name.text));
+    }
+  }
+  return names;
+};
+
+const walletConnectConfigurationExports = Object.freeze([
+  "WalletConnectConfiguration",
+  "WalletConnectSessionRequirements",
+  "createWalletConnectConfiguration",
+  "readWalletConnectConfiguration",
+  "readWalletConnectConfigurationIdentity",
+  "readWalletConnectSessionRequirements",
+] as const);
+
+const robinhoodOfficialAssetSemanticContractExports = Object.freeze([
+  "CommittedOfficialAssetSnapshot",
+  "OfficialAssetCandidate",
+  "OfficialAssetSnapshotEvidence",
+  "OfficialAssetSnapshotRevision",
+  "OfficialAssetSourceMember",
+  "OfficialAssetSourceSnapshot",
+  "StockFactoryClassificationUnavailableReason",
+  "StockFactoryVerification",
+  "StockFactoryVerificationErrorCode",
+  "assertCommittedOfficialAssetSnapshot",
+  "assertOfficialAssetSourceMember",
+  "assertOfficialAssetSourceSnapshot",
+  "committedOfficialAssetSnapshotSchema",
+  "findOfficialAssetMember",
+  "officialAssetCandidateListDigest",
+  "officialAssetCandidateSchema",
+  "officialAssetMemberSetDigest",
+  "officialAssetSnapshotEvidenceSchema",
+  "officialAssetSnapshotRevisionSchema",
+  "officialAssetSourceDefinition",
+  "officialAssetSourceLabelSchema",
+  "officialAssetSourceMemberSchema",
+  "officialAssetSourceSnapshotSchema",
+  "stockFactoryAdmissionManifest",
+  "stockFactoryClassificationUnavailableReasonSchema",
+  "stockFactoryClassificationUnavailableReasons",
+  "stockFactoryVerificationErrorCodeSchema",
+  "stockFactoryVerificationFailureDefinitions",
+  "stockFactoryVerificationSchema",
+] as const);
+
+const robinhoodOfficialAssetSourceContractExports = Object.freeze([
+  "OfficialAssetSnapshotStore",
+  "RobinhoodOfficialAssetSourceClient",
+  "RobinhoodOfficialAssetSourceError",
+  "RobinhoodOfficialAssetSourceErrorCode",
+  "RobinhoodOfficialAssetSourceObservation",
+  "admitRobinhoodOfficialAssetSourceObservation",
+  "assertRobinhoodOfficialAssetSourceObservation",
+  "getRobinhoodOfficialAssetSourceErrorCode",
+] as const);
+
+const robinhoodOfficialAssetAdapterExports = Object.freeze([
+  "createRobinhoodOfficialAssetSourceClient",
+] as const);
+
+const registryServerEntryExports = Object.freeze([
+  "CommittedOfficialAssetSnapshot",
+  "DefaultStockTokenManifest",
+  "OfficialAssetCandidate",
+  "OfficialAssetSnapshotEvidence",
+  "OfficialAssetSnapshotRevision",
+  "OfficialAssetSnapshotStore",
+  "OfficialAssetSourceMember",
+  "OfficialAssetSourceSnapshot",
+  "OfficialAssetSynchronizationDependencies",
+  "OfficialAssetSynchronizationPort",
+  "OfficialAssetSynchronizationResult",
+  "RobinhoodOfficialAssetSourceClient",
+  "StockFactoryClassificationUnavailableReason",
+  "StockFactoryVerification",
+  "StockFactoryVerificationError",
+  "StockFactoryVerificationErrorCode",
+  "StockFactoryVerifier",
+  "StockFactoryVerifierInput",
+  "assertCommittedOfficialAssetSnapshot",
+  "assertOfficialAssetSourceMember",
+  "assertRobinhoodOfficialAssetSourceObservation",
+  "committedOfficialAssetSnapshotSchema",
+  "createOfficialAssetSynchronization",
+  "createRobinhoodOfficialAssetSourceClient",
+  "createStockFactoryVerifier",
+  "defaultStockTokenManifest",
+  "defaultStockTokenRank",
+  "findOfficialAssetMember",
+  "getRobinhoodOfficialAssetSourceErrorCode",
+  "getStockFactoryVerificationErrorCode",
+  "officialAssetCandidatePageSize",
+  "officialAssetCandidateSchema",
+  "officialAssetSnapshotEvidenceSchema",
+  "officialAssetSnapshotRevisionSchema",
+  "officialAssetSourceDefinition",
+  "officialAssetSourceLabelSchema",
+  "officialAssetSourceMemberSchema",
+  "officialAssetSourceSnapshotSchema",
+  "stockFactoryAdmissionManifest",
+  "stockFactoryClassificationUnavailableReasonSchema",
+  "stockFactoryClassificationUnavailableReasons",
+  "stockFactoryVerificationErrorCodeSchema",
+  "stockFactoryVerificationFailureDefinitions",
+  "stockFactoryVerificationSchema",
+] as const);
+
+const registryBrowserEntryExports = Object.freeze([
+  "CommittedOfficialAssetSnapshot",
+  "OfficialAssetCandidate",
+  "OfficialAssetSnapshotEvidence",
+  "OfficialAssetSnapshotRevision",
+  "OfficialAssetSourceMember",
+  "OfficialAssetSourceSnapshot",
+  "StockFactoryClassificationUnavailableReason",
+  "StockFactoryVerification",
+  "StockFactoryVerificationErrorCode",
+  "committedOfficialAssetSnapshotSchema",
+  "officialAssetCandidatePageSize",
+  "officialAssetCandidateSchema",
+  "officialAssetSnapshotEvidenceSchema",
+  "officialAssetSnapshotRevisionSchema",
+  "officialAssetSourceDefinition",
+  "officialAssetSourceLabelSchema",
+  "officialAssetSourceMemberSchema",
+  "officialAssetSourceSnapshotSchema",
+  "stockFactoryAdmissionManifest",
+  "stockFactoryClassificationUnavailableReasonSchema",
+  "stockFactoryClassificationUnavailableReasons",
+  "stockFactoryVerificationErrorCodeSchema",
+  "stockFactoryVerificationFailureDefinitions",
+  "stockFactoryVerificationSchema",
+] as const);
+
+const exactModuleExportViolations = (
+  source: string,
+  module: string,
+  expected: readonly string[],
+  allowExternalReexports: boolean,
+): readonly string[] => {
+  const parsed = ts.createSourceFile(
+    module,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const actual = exportedDeclarationNames(parsed);
+  const violations: string[] = [];
+  for (const statement of parsed.statements) {
+    if (
+      !allowExternalReexports &&
+      ts.isExportDeclaration(statement) &&
+      statement.moduleSpecifier !== undefined
+    ) {
+      violations.push(`external_reexport:${statement.moduleSpecifier.getText(parsed)}`);
+    }
+  }
+  for (const name of expected) {
+    if (!actual.includes(name)) violations.push(`missing_export:${name}`);
+  }
+  for (const name of actual) {
+    if (!expected.includes(name)) {
+      violations.push(`unexpected_export:${name}`);
+    }
+  }
+  if (new Set(actual).size !== actual.length) violations.push("duplicate_export");
+  return violations;
+};
+
+const exactExternalIntegrationExportRules = new Map<string, Readonly<{
+  expected: readonly string[];
+  allowExternalReexports: boolean;
+}>>([
+  [walletConnectConfigurationModule, {
+    expected: walletConnectConfigurationExports,
+    allowExternalReexports: false,
+  }],
+  [robinhoodOfficialAssetSemanticContractModule, {
+    expected: robinhoodOfficialAssetSemanticContractExports,
+    allowExternalReexports: false,
+  }],
+  [robinhoodOfficialAssetSourceContractModule, {
+    expected: robinhoodOfficialAssetSourceContractExports,
+    allowExternalReexports: false,
+  }],
+  [robinhoodOfficialAssetAdapterModule, {
+    expected: robinhoodOfficialAssetAdapterExports,
+    allowExternalReexports: false,
+  }],
+  [registryServerEntryModule, {
+    expected: registryServerEntryExports,
+    allowExternalReexports: true,
+  }],
+  [registryBrowserEntryModule, {
+    expected: registryBrowserEntryExports,
+    allowExternalReexports: true,
+  }],
+]);
+
+const externalIntegrationAuthorityViolations = (
+  source: string,
+  file: string,
+  observedEdges?: Set<string>,
+): readonly string[] => {
+  const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const violations: string[] = [];
+  const localBindings =
+    new Map<string, ReadonlySet<ExternalIntegrationAuthorityRule>>();
+  const report = (kind: string, detail: string): void => {
+    violations.push(`${sourceName(file)}:${kind}:${detail}`);
+  };
+  const targetRules = (
+    specifier: ts.Expression | undefined,
+  ): ReadonlyMap<string, ExternalIntegrationAuthorityRule> | undefined => {
+    if (specifier === undefined || !ts.isStringLiteralLike(specifier)) return undefined;
+    const target = resolveSourceModule(file, specifier.text);
+    return target === undefined ? undefined : externalIntegrationRulesByModule.get(target);
+  };
+  const directlyExposedRules = (
+    expression: ts.Expression,
+  ): ReadonlySet<ExternalIntegrationAuthorityRule> => {
+    const exposed = new Set<ExternalIntegrationAuthorityRule>();
+    const include = (
+      rules: ReadonlySet<ExternalIntegrationAuthorityRule> | undefined,
+    ): void => {
+      if (rules === undefined) return;
+      for (const rule of rules) exposed.add(rule);
+    };
+    const visitReturns = (body: ts.ConciseBody | undefined): void => {
+      if (body === undefined) return;
+      if (!ts.isBlock(body)) {
+        visitValue(body);
+        return;
+      }
+      const visit = (node: ts.Node): void => {
+        if (node !== body && (
+          ts.isArrowFunction(node) ||
+          ts.isFunctionExpression(node) ||
+          ts.isFunctionDeclaration(node) ||
+          ts.isMethodDeclaration(node) ||
+          ts.isGetAccessorDeclaration(node) ||
+          ts.isSetAccessorDeclaration(node) ||
+          ts.isConstructorDeclaration(node)
+        )) return;
+        if (ts.isReturnStatement(node)) {
+          if (node.expression !== undefined) visitValue(node.expression);
+          return;
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(body);
+    };
+    const visitClassMembers = (
+      members: ts.NodeArray<ts.ClassElement>,
+    ): void => {
+      for (const member of members) {
+        if (isPrivateClassElement(member)) continue;
+        if (ts.isPropertyDeclaration(member) && member.initializer !== undefined) {
+          visitValue(member.initializer);
+        } else if (
+          ts.isMethodDeclaration(member) ||
+          ts.isGetAccessorDeclaration(member) ||
+          ts.isSetAccessorDeclaration(member) ||
+          ts.isConstructorDeclaration(member)
+        ) {
+          visitReturns(member.body);
+        }
+      }
+    };
+    const visitValue = (node: ts.Node): void => {
+      if (ts.isIdentifier(node)) {
+        include(localBindings.get(node.text));
+        return;
+      }
+      if (ts.isCallExpression(node)) {
+        visitValue(node.expression);
+        for (const argument of node.arguments) visitValue(argument);
+        return;
+      }
+      if (ts.isNewExpression(node)) {
+        visitValue(node.expression);
+        for (const argument of node.arguments ?? []) visitValue(argument);
+        return;
+      }
+      if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+        visitReturns(node.body);
+        return;
+      }
+      if (
+        ts.isMethodDeclaration(node) ||
+        ts.isGetAccessorDeclaration(node) ||
+        ts.isSetAccessorDeclaration(node)
+      ) {
+        visitReturns(node.body);
+        return;
+      }
+      if (ts.isClassExpression(node)) {
+        visitClassMembers(node.members);
+        return;
+      }
+      ts.forEachChild(node, visitValue);
+    };
+    visitValue(expression);
+    return exposed;
+  };
+  const isPermittedResultEdge = (
+    exportName: string,
+    rule: ExternalIntegrationAuthorityRule,
+  ): boolean =>
+    externalIntegrationResultEdges.some((edge) =>
+      edge.file === file &&
+      edge.exportName === exportName &&
+      edge.sourceModule === rule.module &&
+      edge.sourceSymbol === rule.symbol);
+  const isPermittedWalletApplicationComposition = (
+    declaration: ts.VariableDeclaration,
+    rules: ReadonlySet<ExternalIntegrationAuthorityRule>,
+  ): boolean => {
+    if (
+      file !== walletApplicationModule ||
+      !ts.isIdentifier(declaration.name) ||
+      declaration.name.text !== "createWalletOwnerApplication" ||
+      declaration.initializer === undefined ||
+      !ts.isCallExpression(declaration.initializer) ||
+      !ts.isIdentifier(declaration.initializer.expression) ||
+      declaration.initializer.expression.text !==
+        "createWalletOwnerApplicationFactory" ||
+      declaration.initializer.arguments.length !== 1
+    ) return false;
+    const argument = declaration.initializer.arguments[0];
+    if (argument === undefined || !ts.isIdentifier(argument)) return false;
+    const argumentRules = localBindings.get(argument.text);
+    return argumentRules !== undefined &&
+      rules.size === 1 &&
+      argumentRules.size === 1 &&
+      [...rules][0]?.symbol === "createWalletConnectClient" &&
+      [...argumentRules][0]?.symbol === "createWalletConnectClient";
+  };
+
+  for (const statement of parsed.statements) {
+    if (ts.isImportDeclaration(statement)) {
+      const rules = targetRules(statement.moduleSpecifier);
+      if (rules === undefined) continue;
+      const bindings = statement.importClause?.namedBindings;
+      if (statement.importClause?.name !== undefined) {
+        report("default_import", statement.moduleSpecifier.getText(parsed));
+      }
+      if (bindings !== undefined && ts.isNamespaceImport(bindings)) {
+        report("namespace_import", statement.moduleSpecifier.getText(parsed));
+      } else if (bindings !== undefined && ts.isNamedImports(bindings)) {
+        for (const element of bindings.elements) {
+          const imported = (element.propertyName ?? element.name).text;
+          const rule = rules.get(imported);
+          if (rule === undefined) continue;
+          localBindings.set(element.name.text, new Set([rule]));
+          observedEdges?.add(`import:${rule.module}:${rule.symbol}:${file}`);
+          if (!rule.importers.has(file)) report("named_import", imported);
+        }
+      }
+      continue;
+    }
+
+    if (
+      ts.isImportEqualsDeclaration(statement) &&
+      ts.isExternalModuleReference(statement.moduleReference)
+    ) {
+      const rules = targetRules(statement.moduleReference.expression);
+      if (rules !== undefined) {
+        report("import_equals", statement.moduleReference.expression?.getText(parsed) ?? "unknown");
+      }
+      continue;
+    }
+
+    if (ts.isExportDeclaration(statement)) {
+      const rules = targetRules(statement.moduleSpecifier);
+      if (rules !== undefined) {
+        if (
+          statement.exportClause === undefined ||
+          ts.isNamespaceExport(statement.exportClause)
+        ) {
+          report("wildcard_reexport", statement.moduleSpecifier?.getText(parsed) ?? "local");
+        } else {
+          for (const element of statement.exportClause.elements) {
+            const imported = (element.propertyName ?? element.name).text;
+            const rule = rules.get(imported);
+            if (rule === undefined) continue;
+            observedEdges?.add(`reexport:${rule.module}:${rule.symbol}:${file}`);
+            if (!rule.reexporters.has(file) || element.name.text !== imported) {
+              report("reexport", imported);
+            }
+          }
+        }
+      } else if (
+        statement.moduleSpecifier === undefined &&
+        statement.exportClause !== undefined &&
+        ts.isNamedExports(statement.exportClause)
+      ) {
+        for (const element of statement.exportClause.elements) {
+          const local = (element.propertyName ?? element.name).text;
+          const rules = localBindings.get(local);
+          if (rules !== undefined) {
+            for (const rule of rules) report("local_reexport", rule.symbol);
+          }
+        }
+      }
+      continue;
+    }
+
+    if (ts.isExportAssignment(statement)) {
+      for (const rule of directlyExposedRules(statement.expression)) {
+        report("default_reexport", rule.symbol);
+      }
+      continue;
+    }
+
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (
+          declaration.initializer === undefined ||
+          !ts.isIdentifier(declaration.name)
+        ) continue;
+        const rules = directlyExposedRules(declaration.initializer);
+        if (rules.size > 0) localBindings.set(declaration.name.text, rules);
+        if (
+          hasExportModifier(statement) &&
+          !isPermittedWalletApplicationComposition(declaration, rules)
+        ) {
+          for (const rule of rules) {
+            if (!isPermittedResultEdge(declaration.name.text, rule)) {
+              report("exported_binding", rule.symbol);
+            }
+          }
+        }
+      }
+      continue;
+    }
+
+    if (ts.isClassDeclaration(statement) && hasExportModifier(statement)) {
+      for (const member of statement.members) {
+        if (isPrivateClassElement(member)) continue;
+        if (ts.isPropertyDeclaration(member) && member.initializer !== undefined) {
+          for (const rule of directlyExposedRules(member.initializer)) {
+            report("exported_binding", rule.symbol);
+          }
+        } else if (
+          ts.isMethodDeclaration(member) ||
+          ts.isGetAccessorDeclaration(member) ||
+          ts.isSetAccessorDeclaration(member)
+        ) {
+          const method = ts.factory.createArrowFunction(
+            undefined,
+            undefined,
+            [],
+            undefined,
+            undefined,
+            member.body ?? ts.factory.createBlock([]),
+          );
+          for (const rule of directlyExposedRules(method)) {
+            report("exported_binding", rule.symbol);
+          }
+        }
+      }
+      continue;
+    }
+
+    if (
+      ts.isFunctionDeclaration(statement) &&
+      hasExportModifier(statement) &&
+      statement.body !== undefined
+    ) {
+      const functionValue = ts.factory.createArrowFunction(
+        undefined,
+        undefined,
+        [],
+        undefined,
+        undefined,
+        statement.body,
+      );
+      for (const rule of directlyExposedRules(functionValue)) {
+        report("exported_binding", rule.symbol);
+      }
+    }
+  }
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
+      const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require";
+      if (isDynamicImport || isRequire) {
+        const rules = targetRules(node.arguments[0]);
+        if (rules !== undefined) {
+          report(isDynamicImport ? "dynamic_import" : "require", node.arguments[0]?.getText(parsed) ?? "unknown");
+        }
+      }
+    }
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      (
+        (
+          ts.isPropertyAccessExpression(node.left) &&
+          (
+            (
+              ts.isIdentifier(node.left.expression) &&
+              node.left.expression.text === "exports"
+            ) ||
+            (
+              ts.isPropertyAccessExpression(node.left.expression) &&
+              ts.isIdentifier(node.left.expression.expression) &&
+              node.left.expression.expression.text === "module" &&
+              node.left.expression.name.text === "exports"
+            )
+          )
+        ) ||
+        (
+          ts.isPropertyAccessExpression(node.left) &&
+          ts.isIdentifier(node.left.expression) &&
+          node.left.expression.text === "module" &&
+          node.left.name.text === "exports"
+        )
+      )
+    ) {
+      for (const rule of directlyExposedRules(node.right)) {
+        report("commonjs_reexport", rule.symbol);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(parsed);
+
+  const exportRule = exactExternalIntegrationExportRules.get(file);
+  if (exportRule !== undefined) {
+    violations.push(...exactModuleExportViolations(
+      source,
+      file,
+      exportRule.expected,
+      exportRule.allowExternalReexports,
+    )
+      .map((violation) => `${sourceName(file)}:${violation}`));
+  }
+  return violations;
 };
 
 describe("runtime architecture boundary", () => {
@@ -486,27 +1325,32 @@ describe("runtime architecture boundary", () => {
     expect(sorted(pathOwners.localControlApiPrefix)).toEqual(["runtime/http-boundary.ts"]);
   });
 
-  it("keeps every fixed official-asset manifest literal in its single contract owner", async () => {
-    const expectedOwner = "registry/official-asset-contract.ts";
-    const fixedTextLiterals = new Set([
-      "https://api.robinhood.com/rhj/assets",
-      "https://docs.robinhood.com/chain/contracts/",
-      "ASSET_STATUS_ACTIVE",
-      "2026-07-20",
-      "14660943",
-      "https://robinhoodchain.blockscout.com/address/0x4783C67b63dE2B358Ac5951a7D41F47A38F3C046",
-      "https://robinhoodchain.blockscout.com/address/0xEe351E53BCe6AAF106428358838197C91e36EE0E",
+  it("keeps fixed official-asset semantic and provider literals in their separate owners", async () => {
+    const fixedTextLiterals = new Map([
+      ["https://api.robinhood.com/rhj/assets", "registry/official-asset-contract.ts"],
+      ["https://docs.robinhood.com/chain/contracts/", "registry/official-asset-contract.ts"],
+      ["ASSET_STATUS_ACTIVE", "registry/official-assets.ts"],
+      ["2026-07-20", "registry/official-asset-contract.ts"],
+      ["14660943", "registry/official-asset-contract.ts"],
+      [
+        "https://robinhoodchain.blockscout.com/address/0x4783C67b63dE2B358Ac5951a7D41F47A38F3C046",
+        "registry/official-asset-contract.ts",
+      ],
+      [
+        "https://robinhoodchain.blockscout.com/address/0xEe351E53BCe6AAF106428358838197C91e36EE0E",
+        "registry/official-asset-contract.ts",
+      ],
     ]);
-    const fixedHexLiterals = new Set([
-      "0x4783c67b63de2b358ac5951a7d41f47a38f3c046",
-      "0xee351e53bce6aaf106428358838197c91e36ee0e",
-      "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
-      "0x394c3517e9331e7c88ef8af388c0cb63c720af1b1b4d5a5cace212f7df0b045a",
-      "0x3bfd5841605b9931c9dbb0f9f54a28b4038918ceb74d6d1081bc7f963fe528b4",
-      "0x94d90a8691fc4fc7a4fb48a86755f948f2a1110325d6c8257dbfeaddaf8832b0",
+    const fixedHexLiterals = new Map([
+      ["0x4783c67b63de2b358ac5951a7d41f47a38f3c046", "registry/official-asset-contract.ts"],
+      ["0xee351e53bce6aaf106428358838197c91e36ee0e", "registry/official-asset-contract.ts"],
+      ["0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc", "registry/official-asset-contract.ts"],
+      ["0x394c3517e9331e7c88ef8af388c0cb63c720af1b1b4d5a5cace212f7df0b045a", "registry/official-asset-contract.ts"],
+      ["0x3bfd5841605b9931c9dbb0f9f54a28b4038918ceb74d6d1081bc7f963fe528b4", "registry/official-asset-contract.ts"],
+      ["0x94d90a8691fc4fc7a4fb48a86755f948f2a1110325d6c8257dbfeaddaf8832b0", "registry/official-asset-contract.ts"],
     ]);
     const owners = new Map(
-      [...fixedTextLiterals, ...fixedHexLiterals]
+      [...fixedTextLiterals.keys(), ...fixedHexLiterals.keys()]
         .map((literal) => [literal, new Set<string>()]),
     );
     for (const file of await collectSourceFiles(sourceRoot)) {
@@ -527,8 +1371,498 @@ describe("runtime architecture boundary", () => {
       visit(parsed);
     }
     for (const [literal, files] of owners) {
-      expect([...files], literal).toEqual([expectedOwner]);
+      expect([...files], literal).toEqual([
+        fixedTextLiterals.get(literal) ?? fixedHexLiterals.get(literal),
+      ]);
     }
+  });
+
+  it("keeps current external-integration configuration and construction in their exact owners", async () => {
+    const obsoleteNames = new Set([
+      "officialAssetSourceManifest",
+      "officialAssetSourceClient",
+      "OfficialAssetSourceClient",
+      "OfficialAssetSourceClientOptions",
+      "OfficialAssetSourceError",
+      "OfficialAssetSourceErrorCode",
+      "OfficialAssetSourceObservation",
+      "createOfficialAssetSourceClient",
+      "assertOfficialAssetSourceObservation",
+      "getOfficialAssetSourceErrorCode",
+    ]);
+    const obsoleteOwners = new Set<string>();
+    const authorityViolations: string[] = [];
+    const observedEdges = new Set<string>();
+
+    for (const file of await collectSourceFiles(sourceRoot)) {
+      const name = relative(sourceRoot, file).split(sep).join("/");
+      const source = await readFile(file, "utf8");
+      const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+      authorityViolations.push(...externalIntegrationAuthorityViolations(
+        source,
+        file,
+        observedEdges,
+      ));
+      const visit = (node: ts.Node): void => {
+        if (ts.isIdentifier(node) && obsoleteNames.has(node.text)) obsoleteOwners.add(name);
+        ts.forEachChild(node, visit);
+      };
+      visit(parsed);
+    }
+
+    expect(authorityViolations).toEqual([]);
+    const expectedEdges = externalIntegrationAuthorityRules.flatMap((rule) => [
+      ...[...rule.importers]
+        .map((file) => `import:${rule.module}:${rule.symbol}:${file}`),
+      ...[...rule.reexporters]
+        .map((file) => `reexport:${rule.module}:${rule.symbol}:${file}`),
+    ]);
+    expect([...observedEdges].sort()).toEqual(expectedEdges.sort());
+    expect([...obsoleteOwners]).toEqual([]);
+
+    const walletConfiguration = await parseSource(
+      resolve(sourceRoot, "wallet/walletconnect-configuration.ts"),
+    );
+    const robinhoodAdapter = await parseSource(
+      resolve(sourceRoot, "registry/official-assets.ts"),
+    );
+    const declarationNames = (source: ts.SourceFile): readonly string[] =>
+      sourceDescendants(source)
+        .flatMap((node) =>
+          ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)
+            ? [node.name.text]
+            : []);
+    expect(declarationNames(walletConfiguration)).toContain(
+      "defaultWalletConnectProjectId",
+    );
+    expect(declarationNames(robinhoodAdapter)).toContain(
+      "robinhoodOfficialAssetSourceSettings",
+    );
+
+    const architecture = await readFile(resolve(repositoryRoot, "docs/ARCHITECTURE.md"), "utf8");
+    const currentTable = architecture
+      .split("The current external integration classification is:", 2)[1]
+      ?.split("This table contains implemented external integrations only.", 1)[0];
+    if (currentTable === undefined) {
+      throw new TypeError("The current external integration classification table is missing.");
+    }
+    expect(currentTable.split("\n")
+      .filter((line) => /^\| (?!External identity|---)/u.test(line))
+      .map((line) => line.split("|").slice(1, -1).map((cell) => cell.trim())))
+      .toEqual([
+        [
+          "Ethereum JSON-RPC endpoint",
+          "Standard chain transport",
+          "`docs/PRODUCT_POLICY.md` owns chain identity; `chain` owns RPC methods, normalization, limits, and failures",
+          "`runtime` owns the exact configured URI and source identity; `chain` owns the bounded requester",
+          "Runtime constructs one requester and passes chain-read ports to features",
+        ],
+        [
+          "WalletConnect",
+          "Binding product transport",
+          "`docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture",
+          "`wallet` owns SDK adaptation, project-ID validation, required namespace settings, metadata, SDK options, lifecycle, and provider defaults",
+          "The wallet application factory constructs one `WalletConnectClientPort` from opaque configuration received through runtime composition; other modules receive wallet product ports",
+        ],
+        [
+          "Robinhood official-asset source",
+          "Binding source authority",
+          "`docs/EVIDENCE_POLICY.md` owns source authority; the registry product contract owns normalized observations, failures, evidence, and storage ports",
+          "`src/registry/official-assets.ts` owns Robinhood request and response admission implementation, endpoint consumption, transport behavior, deadlines, and operational limits",
+          "Runtime composition constructs one source client; registry synchronization consumes the product-owned client and store ports",
+        ],
+      ]);
+
+    const sourceContract = await readFile(
+      robinhoodOfficialAssetSourceContractModule,
+      "utf8",
+    );
+    const providerOnlyIdentifiers = new Set([
+      "fetch",
+      "Response",
+      "responseByteLimit",
+      "responseDeadlineMs",
+      "responseDeploymentSchema",
+      "responseAssetSchema",
+      "sourceResponseSchema",
+      "robinhoodOfficialAssetSourceSettings",
+    ]);
+    const sourceContractProviderIdentifiers = new Set<string>();
+    const parsedSourceContract = ts.createSourceFile(
+      robinhoodOfficialAssetSourceContractModule,
+      sourceContract,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    const visitSourceContract = (node: ts.Node): void => {
+      if (ts.isIdentifier(node) && providerOnlyIdentifiers.has(node.text)) {
+        sourceContractProviderIdentifiers.add(node.text);
+      }
+      ts.forEachChild(node, visitSourceContract);
+    };
+    visitSourceContract(parsedSourceContract);
+    expect([...sourceContractProviderIdentifiers]).toEqual([]);
+
+    const testConfigurationReaderViolations: string[] = [];
+    for (const testFile of await collectSourceFiles(testRoot)) {
+      const parsed = await parseSource(testFile);
+      const testName = relative(testRoot, testFile).split(sep).join("/");
+      const isWalletConfigurationTarget = (
+        expression: ts.Expression | undefined,
+      ): boolean =>
+        expression !== undefined &&
+        ts.isStringLiteralLike(expression) &&
+        resolveSourceModule(testFile, expression.text) === walletConnectConfigurationModule;
+      for (const node of sourceDescendants(parsed)) {
+        if (
+          ts.isImportDeclaration(node) &&
+          isWalletConfigurationTarget(node.moduleSpecifier)
+        ) {
+          const clause = node.importClause;
+          if (clause?.name !== undefined || (
+            clause?.namedBindings !== undefined &&
+            ts.isNamespaceImport(clause.namedBindings)
+          )) {
+            testConfigurationReaderViolations.push(
+              `${testName}:broad_configuration_import`,
+            );
+          } else if (
+            clause?.namedBindings !== undefined &&
+            ts.isNamedImports(clause.namedBindings) &&
+            clause.namedBindings.elements.some(
+              (element) =>
+                (element.propertyName ?? element.name).text ===
+                  "readWalletConnectConfiguration",
+            )
+          ) {
+            testConfigurationReaderViolations.push(
+              `${testName}:full_configuration_reader`,
+            );
+          }
+        }
+        if (
+          ts.isImportEqualsDeclaration(node) &&
+          ts.isExternalModuleReference(node.moduleReference) &&
+          isWalletConfigurationTarget(node.moduleReference.expression)
+        ) {
+          testConfigurationReaderViolations.push(
+            `${testName}:configuration_import_equals`,
+          );
+        }
+        if (
+          ts.isCallExpression(node) &&
+          (
+            node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+            (ts.isIdentifier(node.expression) && node.expression.text === "require")
+          ) &&
+          isWalletConfigurationTarget(node.arguments[0])
+        ) {
+          testConfigurationReaderViolations.push(
+            `${testName}:dynamic_configuration_import`,
+          );
+        }
+      }
+    }
+    expect(testConfigurationReaderViolations).toEqual([]);
+
+    const sdkPackageImporters = new Map<string, string[]>([
+      ["@walletconnect/sign-client", []],
+      ["qrcode", []],
+    ]);
+    const walletExternalModuleConsumers: string[] = [];
+    const importsWalletExternalModules = (
+      file: string,
+      specifier: string | undefined,
+    ): boolean => {
+      if (specifier === undefined || !specifier.startsWith(".")) return false;
+      try {
+        return fileURLToPath(new URL(specifier, pathToFileURL(file))) ===
+          walletExternalModulesRuntimeModule;
+      } catch {
+        return false;
+      }
+    };
+    for (const file of await collectSourceFiles(sourceRoot)) {
+      for (const reference of (await inspectSourceFile(file)).moduleImports) {
+        if (!reference.runtime) continue;
+        const packageImporters = reference.packageRoot === undefined
+          ? undefined
+          : sdkPackageImporters.get(reference.packageRoot);
+        if (packageImporters !== undefined) packageImporters.push(sourceName(file));
+        if (importsWalletExternalModules(file, reference.specifier)) {
+          walletExternalModuleConsumers.push(sourceName(file));
+        }
+      }
+    }
+    expect(sdkPackageImporters).toEqual(new Map([
+      ["@walletconnect/sign-client", [sourceName(walletExternalModulesSourceModule)]],
+      ["qrcode", [sourceName(walletExternalModulesSourceModule)]],
+    ]));
+    expect(walletExternalModuleConsumers).toEqual(["wallet/walletconnect-client.ts"]);
+
+    const verificationExternalModuleConsumers: string[] = [];
+    const verificationSdkPackageImporters: string[] = [];
+    for (const file of await collectSourceFiles(testRoot)) {
+      for (const reference of (await inspectSourceFile(file)).moduleImports) {
+        if (!reference.runtime) continue;
+        if (
+          reference.packageRoot === "@walletconnect/sign-client" ||
+          reference.packageRoot === "qrcode"
+        ) verificationSdkPackageImporters.push(relative(testRoot, file).split(sep).join("/"));
+        if (importsWalletExternalModules(file, reference.specifier)) {
+          verificationExternalModuleConsumers.push(
+            relative(testRoot, file).split(sep).join("/"),
+          );
+        }
+      }
+    }
+    expect(verificationSdkPackageImporters).toEqual([]);
+    expect(verificationExternalModuleConsumers).toEqual([
+      "wallet/walletconnect-natural-exit-worker.ts",
+    ]);
+
+    const browserExports = new Set<string>(registryBrowserEntryExports);
+    for (const forbidden of [
+      ...robinhoodOfficialAssetSourceContractExports,
+      ...robinhoodOfficialAssetAdapterExports,
+    ]) {
+      expect(browserExports.has(forbidden), forbidden).toBe(false);
+    }
+  });
+
+  it("rejects syntax that bypasses external-integration symbol ownership", () => {
+    const unauthorized = resolve(sourceRoot, "chain/unauthorized-integration.ts");
+    const violationKinds = (source: string, file: string = unauthorized): readonly string[] =>
+      externalIntegrationAuthorityViolations(source, file)
+        .map((violation) => violation.split(":").slice(1, 3).join(":"));
+
+    expect(externalIntegrationAuthorityViolations(
+      'import { createWalletConnectConfiguration as createConfiguration } from "../wallet/walletconnect-configuration.js";',
+      resolve(sourceRoot, "runtime/configuration.ts"),
+    )).toEqual([]);
+    expect(externalIntegrationAuthorityViolations(
+      'export { createRobinhoodOfficialAssetSourceClient } from "./official-assets.js";',
+      registryServerEntryModule,
+    ).filter((violation) => violation.includes(":reexport:"))).toEqual([]);
+    expect(violationKinds(
+      'import { readWalletConnectConfiguration as readConfiguration } from "../wallet/walletconnect-configuration.js";',
+    )).toContain("named_import:readWalletConnectConfiguration");
+    expect(violationKinds(
+      'import * as configuration from "../wallet/walletconnect-configuration.js";',
+    )).toContain("namespace_import:\"../wallet/walletconnect-configuration.js\"");
+    expect(violationKinds(
+      'export { readWalletConnectConfiguration as readConfiguration } from "../wallet/walletconnect-configuration.js";',
+    )).toContain("reexport:readWalletConnectConfiguration");
+    expect(violationKinds(
+      'export * from "../wallet/walletconnect-configuration.js";',
+    )).toContain("wildcard_reexport:\"../wallet/walletconnect-configuration.js\"");
+    expect(violationKinds(
+      'void import("../wallet/walletconnect-configuration.js");',
+    )).toContain("dynamic_import:\"../wallet/walletconnect-configuration.js\"");
+    expect(violationKinds(
+      'const configuration = require("../wallet/walletconnect-configuration.js");',
+    )).toContain("require:\"../wallet/walletconnect-configuration.js\"");
+    expect(violationKinds(
+      'import configuration = require("../wallet/walletconnect-configuration.js");',
+    )).toContain("import_equals:\"../wallet/walletconnect-configuration.js\"");
+    expect(violationKinds(`
+      import {
+        readWalletConnectConfiguration as configuration,
+      } from "./walletconnect-configuration.js";
+      export default { configuration };
+    `, walletConnectClientModule)).toContain(
+      "default_reexport:readWalletConnectConfiguration",
+    );
+    expect(violationKinds(`
+      import {
+        readWalletConnectConfiguration as configuration,
+      } from "./walletconnect-configuration.js";
+      export default Object.freeze({ configuration });
+    `, walletConnectClientModule)).toContain(
+      "default_reexport:readWalletConnectConfiguration",
+    );
+    expect(violationKinds(`
+      import {
+        readWalletConnectConfiguration as configuration,
+      } from "./walletconnect-configuration.js";
+      export const leakedConfiguration = Object.freeze({ configuration });
+    `, walletConnectClientModule)).toContain(
+      "exported_binding:readWalletConnectConfiguration",
+    );
+    expect(violationKinds(`
+      import {
+        readWalletConnectConfiguration as configuration,
+      } from "./walletconnect-configuration.js";
+      export const leakedConfiguration = () => configuration;
+    `, walletConnectClientModule)).toContain(
+      "exported_binding:readWalletConnectConfiguration",
+    );
+    expect(violationKinds(`
+      import {
+        readWalletConnectConfiguration as configuration,
+      } from "./walletconnect-configuration.js";
+      export default function leakedConfiguration() {
+        return configuration;
+      }
+    `, walletConnectClientModule)).toContain(
+      "exported_binding:readWalletConnectConfiguration",
+    );
+    expect(violationKinds(`
+      import {
+        readWalletConnectConfiguration as configuration,
+      } from "./walletconnect-configuration.js";
+      export const LeakedConfiguration = class {
+        static readonly value = configuration;
+      };
+    `, walletConnectClientModule)).toContain(
+      "exported_binding:readWalletConnectConfiguration",
+    );
+    expect(violationKinds(`
+      import {
+        readWalletConnectConfiguration as configuration,
+      } from "./walletconnect-configuration.js";
+      export default new Wrapper(configuration);
+    `, walletConnectClientModule)).toContain(
+      "default_reexport:readWalletConnectConfiguration",
+    );
+    expect(violationKinds(`
+      import {
+        readWalletConnectConfiguration as configuration,
+      } from "./walletconnect-configuration.js";
+      const leakedConfiguration = Object.freeze({ configuration });
+      export { leakedConfiguration };
+    `, walletConnectClientModule)).toContain(
+      "local_reexport:readWalletConnectConfiguration",
+    );
+    expect(violationKinds(`
+      import {
+        readWalletConnectConfiguration as configuration,
+      } from "./walletconnect-configuration.js";
+      module.exports = { configuration };
+    `, walletConnectClientModule)).toContain(
+      "commonjs_reexport:readWalletConnectConfiguration",
+    );
+    expect(violationKinds(`
+      import {
+        readWalletConnectConfiguration as configuration,
+      } from "./walletconnect-configuration.js";
+      export const leakedConfiguration = configuration;
+    `, walletConnectClientModule)).toContain(
+      "exported_binding:readWalletConnectConfiguration",
+    );
+    expect(violationKinds(`
+      import {
+        readWalletConnectConfiguration as configuration,
+      } from "./walletconnect-configuration.js";
+      export class LeakedConfiguration {
+        static readonly value = configuration;
+      }
+    `, walletConnectClientModule)).toContain(
+      "exported_binding:readWalletConnectConfiguration",
+    );
+    expect(violationKinds(`
+      import {
+        readWalletConnectConfiguration as configuration,
+      } from "./walletconnect-configuration.js";
+      export const consumeConfiguration = (input: unknown) =>
+        configuration(input as never);
+    `, walletConnectClientModule)).toContain(
+      "exported_binding:readWalletConnectConfiguration",
+    );
+    expect(violationKinds(`
+      import {
+        readWalletConnectConfiguration as configuration,
+      } from "./walletconnect-configuration.js";
+      export default configuration(undefined as never);
+    `, walletConnectClientModule)).toContain(
+      "default_reexport:readWalletConnectConfiguration",
+    );
+    expect(violationKinds(`
+      import {
+        readWalletConnectConfiguration as configuration,
+      } from "./walletconnect-configuration.js";
+      export class LeakedConfiguration {
+        read(input: unknown) {
+          return configuration(input as never);
+        }
+      }
+    `, walletConnectClientModule)).toContain(
+      "exported_binding:readWalletConnectConfiguration",
+    );
+    expect(violationKinds(`
+      import {
+        readWalletConnectConfiguration as configuration,
+      } from "./walletconnect-configuration.js";
+      module.exports = configuration(undefined as never);
+    `, walletConnectClientModule)).toContain(
+      "commonjs_reexport:readWalletConnectConfiguration",
+    );
+    expect(externalIntegrationAuthorityViolations(`
+      import {
+        readWalletConnectConfiguration as configuration,
+      } from "./walletconnect-configuration.js";
+      export const consumeConfiguration = (input: unknown) => {
+        configuration(input as never);
+        return true;
+      };
+    `, walletConnectClientModule)).toEqual([]);
+    expect(externalIntegrationAuthorityViolations(`
+      import {
+        createWalletConnectClient,
+      } from "./walletconnect-client.js";
+      const createWalletOwnerApplicationFactory = (
+        createClient: unknown,
+      ) => createClient;
+      export const createWalletOwnerApplication =
+        createWalletOwnerApplicationFactory(createWalletConnectClient);
+    `, walletApplicationModule)).toEqual([]);
+    expect(violationKinds(
+      'const robinhoodOfficialAssetSourceSettings = {}; export { robinhoodOfficialAssetSourceSettings as settings };',
+      robinhoodOfficialAssetAdapterModule,
+    )).toContain("unexpected_export:settings");
+
+    const leakedConfigurationModule = `
+      export interface WalletConnectConfiguration {}
+      export interface WalletConnectSessionRequirements {}
+      export const createWalletConnectConfiguration = () => undefined;
+      export const readWalletConnectConfiguration = () => undefined;
+      export const readWalletConnectConfigurationIdentity = () => undefined;
+      export const readWalletConnectSessionRequirements = () => undefined;
+      export const walletConnectProjectIdSchema = {};
+    `;
+    expect(exactModuleExportViolations(
+      leakedConfigurationModule,
+      walletConnectConfigurationModule,
+      walletConnectConfigurationExports,
+      false,
+    ))
+      .toContain("unexpected_export:walletConnectProjectIdSchema");
+    expect(exactModuleExportViolations(`
+      export type { WalletConnectConfiguration } from "./other-owner.js";
+      export interface WalletConnectSessionRequirements {}
+      export const createWalletConnectConfiguration = () => undefined;
+      export const readWalletConnectConfiguration = () => undefined;
+      export const readWalletConnectConfigurationIdentity = () => undefined;
+      export const readWalletConnectSessionRequirements = () => undefined;
+    `, walletConnectConfigurationModule, walletConnectConfigurationExports, false))
+      .toContain('external_reexport:"./other-owner.js"');
+
+    const leakedProvider = `
+      export const createRobinhoodOfficialAssetSourceClient = () => undefined;
+      const providerSettings = {};
+      export { providerSettings as derivedConfiguration };
+    `;
+    expect(exactModuleExportViolations(
+      leakedProvider,
+      robinhoodOfficialAssetAdapterModule,
+      robinhoodOfficialAssetAdapterExports,
+      false,
+    )).toContain("unexpected_export:derivedConfiguration");
+
+    expect(violationKinds(
+      'import { admitRobinhoodOfficialAssetSourceObservation as admit } from "../registry/official-asset-source-contract.js";',
+    )).toContain("named_import:admitRobinhoodOfficialAssetSourceObservation");
   });
 
   it("keeps every reference-market capability identifier in its contract owner", async () => {

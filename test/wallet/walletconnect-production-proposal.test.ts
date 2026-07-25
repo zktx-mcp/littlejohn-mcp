@@ -4,17 +4,19 @@ import { describe, expect, it } from "vitest";
 
 import {
   readRuntimeConfiguration,
-  walletConnectProjectIdSchema,
 } from "../../src/runtime/configuration.js";
+import {
+  createWalletConnectConfiguration,
+} from "../../src/wallet/walletconnect-configuration.js";
 import {
   createWalletConnectClient,
   createWalletConnectAcquisitionScope,
   type WalletConnectClientAcquisition,
 } from "../../src/wallet/walletconnect-client.js";
 
-const configuredWallet = readRuntimeConfiguration({}).wallet;
-const projectId = walletConnectProjectIdSchema.parse("1".repeat(32));
-const wallet = Object.freeze({ ...configuredWallet, projectId });
+const configuredRuntime = readRuntimeConfiguration({});
+const projectId = "1".repeat(32);
+const wallet = createWalletConnectConfiguration(projectId, configuredRuntime.chain);
 const firstPairingTopic = "2".repeat(64);
 const secondPairingTopic = "6".repeat(64);
 const firstSessionTopic = "3".repeat(64);

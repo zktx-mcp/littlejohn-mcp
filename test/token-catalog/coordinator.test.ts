@@ -18,10 +18,12 @@ import { ProductDatabase } from "../../src/runtime/database.js";
 import { RuntimeOperationError } from "../../src/runtime/errors.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
 import {
-  createOfficialAssetSourceClient,
   officialAssetSnapshotRevisionSchema,
   type CommittedOfficialAssetSnapshot,
 } from "../../src/registry/index.js";
+import {
+  createRobinhoodOfficialAssetSourceClient,
+} from "../../src/registry/official-assets.js";
 import type { WalletSessionSource } from "../../src/runtime/source-identity.js";
 import {
   TokenCatalogCoordinator,
@@ -133,7 +135,7 @@ const createState = async (
   let liveConnectionRevision = connection.revision;
   const controller = new AbortController();
   const catalogStore = database.tokenCatalogStore();
-  const observation = await createOfficialAssetSourceClient({
+  const observation = await createRobinhoodOfficialAssetSourceClient({
     fetch: (async () => new Response(JSON.stringify({
       assets: [{
         id: `0x${"11".repeat(32)}`,

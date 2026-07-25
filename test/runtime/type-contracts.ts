@@ -29,8 +29,10 @@ import type {
   RuntimeChainConfiguration,
   RuntimeConfiguration,
   RuntimeRpcConfiguration,
-  WalletConnectConfiguration,
 } from "../../src/runtime/configuration.js";
+import type {
+  WalletConnectConfiguration,
+} from "../../src/wallet/walletconnect-configuration.js";
 import type { LocalRuntime, WalletSessionSource } from "../../src/runtime/index.js";
 import { tokenCatalogConsumerPortContract } from "../../src/token-catalog/ports.js";
 import type {
@@ -115,6 +117,10 @@ type _WalletPortConfiguration = Assert<Equal<
   WalletOwnerBootstrapPort["configuration"],
   WalletConnectConfiguration
 >>;
+type _WalletConfigurationExposesNoProviderField = Assert<Equal<
+  Extract<keyof WalletConnectConfiguration, string | number>,
+  never
+>>;
 type _PrivateStoreDirectoryKeys = Assert<Equal<keyof WalletPrivateStoreDirectoryPort, "ensureDirectory">>;
 type _ChainPortKeys = Assert<Equal<
   keyof ChainOwnerBootstrapPort,
@@ -151,7 +157,7 @@ type _RuntimeHandleKeys = Assert<Equal<
 >>;
 type _RuntimeOptionKeys = Assert<Equal<
   keyof LocalRuntimeOptions<TestActiveWallet, TestWalletOperations>,
-  "environment" | "now" | "officialAssetSourceClient" | "walletApplicationFactory" |
+  "environment" | "now" | "robinhoodOfficialAssetSourceClient" | "walletApplicationFactory" |
     "chainApplicationFactory" | "interfaceApplicationFactory"
 >>;
 type _NoFactoryPrefix = Assert<{} extends LocalRuntimeOptions<TestActiveWallet, TestWalletOperations> ? true : false>;

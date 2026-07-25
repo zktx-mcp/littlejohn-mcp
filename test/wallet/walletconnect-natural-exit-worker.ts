@@ -1,18 +1,20 @@
 import { resolve } from "node:path";
 
-import {
-  readRuntimeConfiguration,
-  walletConnectProjectIdSchema,
-} from "../../src/runtime/configuration.js";
+import { evmChainIdSchema } from "../../src/core/index.js";
 import walletExternalModulesValue from "../../src/wallet/external-modules.cjs";
 import {
   loadWalletConnectProductionDependencies,
   type WalletConnectSdkInitOptions,
 } from "../../src/wallet/walletconnect-client.js";
 
-const wallet = readRuntimeConfiguration({}).wallet;
-const projectId = walletConnectProjectIdSchema.parse("1".repeat(32));
-const metadata = wallet.metadata;
+const projectId = "1".repeat(32);
+const chainId = evmChainIdSchema.parse("eip155:4663");
+const metadata = Object.freeze({
+  name: "Little John",
+  description: "Local Robinhood Chain wallet connection",
+  url: "http://127.0.0.1:46630",
+  icons: Object.freeze([]) as readonly [],
+});
 const storeRoot = process.env["LITTLEJOHN_TEST_WALLETCONNECT_STORE_ROOT"];
 if (storeRoot === undefined || storeRoot.length === 0) {
   throw new TypeError("The test WalletConnect store root is unavailable.");
@@ -284,7 +286,7 @@ await sdk.initializeConnectionAttempts();
 const connection = await sdk.startConnection({
   requiredNamespaces: {
     eip155: {
-      chains: [wallet.chain.chainId],
+      chains: [chainId],
       methods: ["eth_sendTransaction"],
       events: ["accountsChanged", "chainChanged"],
     },

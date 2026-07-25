@@ -15,14 +15,16 @@ import {
   type ChainAnchor,
 } from "../../src/core/index.js";
 import {
-  assertOfficialAssetSourceSnapshot,
   createStockFactoryVerifier,
   getStockFactoryVerificationErrorCode,
+} from "../../src/registry/index.js";
+import {
+  assertOfficialAssetSourceSnapshot,
   officialAssetCandidateListDigest,
   officialAssetMemberSetDigest,
-  officialAssetSourceManifest,
+  officialAssetSourceDefinition,
   stockFactoryAdmissionManifest,
-} from "../../src/registry/index.js";
+} from "../../src/registry/official-asset-contract.js";
 import {
   stockFactoryImplementationCodeFixture,
   stockFactoryProxyCodeFixture,
@@ -79,7 +81,7 @@ class FactoryRpc implements RpcRequester {
 
 const snapshotMembers = [{ assetUid: uid, contractAddress: token }];
 const decodedSnapshot = assertOfficialAssetSourceSnapshot({
-  sourceUri: officialAssetSourceManifest.sourceUri,
+  sourceUri: officialAssetSourceDefinition.sourceUri,
   sourceObservedAt: parseUtcTimestamp("2026-07-20T13:28:38.000Z"),
   rawResponseDigest: parseHash32(`0x${"b".repeat(64)}`),
   memberSetDigest: officialAssetMemberSetDigest(snapshotMembers),

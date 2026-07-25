@@ -191,6 +191,25 @@ the required correction changes an accepted plan.
   results.
 - Check final repository status and classify unexpected files.
 
+### External Integration Work
+
+- Before adding or changing a hosted service, vendor SDK, protocol integration,
+  or other externally operated dependency, identify it under the complete
+  classification and current-integration tables in
+  `docs/ARCHITECTURE.md#external-integration-model` for runtime ownership and
+  `docs/PROTOCOL_ADAPTERS.md` for protocol packages.
+- At plan creation, before every affected work unit starts, at every affected
+  work-unit boundary, and during integrated review, read the classification
+  and current-integration tables in
+  `docs/ARCHITECTURE.md#external-integration-model`. Record the applicable class,
+  semantic SoT, configuration owner, adapter boundary, and replacement boundary
+  in the task plan or current progress state. A stale or missing classification
+  blocks the affected integration work.
+- A task that implements or removes an external integration updates the current
+  integration table in its final documentation unit. Do not add an unavailable
+  integration to that current-state table. Protocol integrations additionally
+  update their package descriptor under `docs/PROTOCOL_ADAPTERS.md`.
+
 ### Shared Process Ownership
 
 - When more than one code path performs the same ordered operation with the same

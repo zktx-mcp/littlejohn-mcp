@@ -80,9 +80,13 @@ each change through one SQLite transaction. The interface layer exposes token
 inspection and the account-specific selection set through their declared HTTP,
 MCP, and CLI bindings. The web surface starts and reviews changes through
 operation resources and consumes account-assets for display. The browser-safe
-registry official-asset contract owns the validated official source and
-StockFactory admission manifests, source evidence schemas, fixed verification
-identity, and failure language. Official Stock Token classification is
+registry official-asset contract owns the validated official-source definition,
+normalized source evidence schemas, StockFactory admission manifest, fixed
+verification identity, canonical digests, and member lookup. A server-only
+registry source contract owns the Robinhood client and snapshot-store ports,
+normalized failures, and admitted-observation provenance. The Robinhood adapter
+owns only the source request, provider response admission, deployment matching,
+operational limits, and construction. Official Stock Token classification is
 established only by a complete admitted registry source observation and
 same-block StockFactory verification; no surface establishes safety, price,
 valuation, or transaction support.
@@ -304,6 +308,126 @@ package verification does not replace manual host and wallet gates.
 - Short-lived wallet request material remains separate from durable evidence
   and receipts.
 - Cached and collected data never replaces execution-time chain verification.
+
+## External Integration Model
+
+Every external integration declares one of three identities:
+
+- a binding product transport, source authority, or protocol identity whose
+  external owner is part of the accepted product or evidence meaning;
+- a replaceable implementation provider that satisfies a provider-neutral
+  product role; or
+- an Ethereum JSON-RPC endpoint implementing the standard chain transport.
+
+The classification determines ownership and replacement:
+
+| External integration class | Semantic SoT | Operational configuration SoT | Runtime representation | Replacement boundary |
+| --- | --- | --- | --- | --- |
+| Binding product transport, source authority, or protocol identity | Its owning product, evidence, or protocol contract names the external identity and exact supported meaning | The owning adapter module owns endpoints, SDK settings, request and response admission, limits, and provider-specific defaults | Runtime composition receives one validated opaque configuration and one explicit identity-specific port | Changing implementation details inside the same external identity preserves the contract; changing the external owner requires an accepted product, evidence, or protocol change |
+| Replaceable implementation provider | The feature module owns a provider-neutral role port, normalized result, failures, evidence requirements, and lifecycle | Each provider adapter privately owns its endpoint, request and response schemas, authentication, transport behavior, limits, and provider identity | Runtime composition selects and constructs one adapter that returns the role port; consumers cannot observe provider configuration | A provider may be replaced only when the new adapter satisfies the complete unchanged role; otherwise it is a product-contract change |
+| Ethereum JSON-RPC endpoint | Product chain identity and chain RPC method and normalization contracts remain authoritative | Runtime configuration owns the exact validated URI and source identity; `chain` owns methods, deadlines, concurrency, byte limits, normalization, and failures | Features receive only the canonical RPC requester and pinned chain-read ports | A conforming endpoint changes through validated configuration without changing feature contracts |
+
+The current external integration classification is:
+
+| External identity | Class | Product role and semantic SoT | Required adapter and configuration owner | Composition boundary |
+| --- | --- | --- | --- | --- |
+| Ethereum JSON-RPC endpoint | Standard chain transport | `docs/PRODUCT_POLICY.md` owns chain identity; `chain` owns RPC methods, normalization, limits, and failures | `runtime` owns the exact configured URI and source identity; `chain` owns the bounded requester | Runtime constructs one requester and passes chain-read ports to features |
+| WalletConnect | Binding product transport | `docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture | `wallet` owns SDK adaptation, project-ID validation, required namespace settings, metadata, SDK options, lifecycle, and provider defaults | The wallet application factory constructs one `WalletConnectClientPort` from opaque configuration received through runtime composition; other modules receive wallet product ports |
+| Robinhood official-asset source | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority; the registry product contract owns normalized observations, failures, evidence, and storage ports | `src/registry/official-assets.ts` owns Robinhood request and response admission implementation, endpoint consumption, transport behavior, deadlines, and operational limits | Runtime composition constructs one source client; registry synchronization consumes the product-owned client and store ports |
+
+This table contains implemented external integrations only. The implementation
+task that adds or removes an integration updates the table after the runtime
+boundary exists or is removed. A proposed, researched, or unavailable
+integration remains in its task plan or research material and is not listed as
+current architecture.
+
+Configuration values are classified independently from where the process reads
+them:
+
+- product-semantic values remain in the owning product, evidence, or protocol
+  contract;
+- provider operational values remain in the adapter module;
+- an adapter-owned configuration may project a product identity, chain
+  identity, fixed local origin, or another canonical value from its existing
+  owner, but does not copy that literal or become its semantic owner;
+- an exact binding-source URI that is canonical evidence identity and persisted
+  provenance remains in the evidence contract and is consumed by the adapter
+  without a second copy;
+- credentials and user-supplied endpoint values may enter through the runtime
+  environment, but the owning adapter validates them and runtime composition
+  carries only the resulting opaque configuration;
+- canonical provider or source identity may enter evidence only through the
+  evidence owner; and
+- no aggregate runtime configuration module restates provider defaults,
+  provider schemas, SDK options, or provider limits.
+
+WalletConnect is the current binding wallet transport. Robinhood is the binding
+official-asset source owner. A supported DeFi protocol is a binding protocol
+identity. Replacing any of those with a different external owner changes its
+owning product, evidence, or protocol contract; adapter isolation does not
+pretend otherwise.
+
+An externally operated service or vendor SDK enters the runtime through one
+product-role port owned by the module that needs the role. The role is named for
+the product responsibility when the implementation provider is replaceable. A
+binding external identity remains explicit in its role name and evidence. A
+consumer receives only validated product inputs, normalized results, documented
+failures, and the lifecycle operations required by that role.
+
+One provider adapter implements that port and owns:
+
+- endpoint origins, path templates, request fields, headers, authentication, and
+  transport settings, except an exact binding-source URI that the evidence
+  contract owns as canonical source identity and persisted provenance;
+- provider request and response schemas, SDK types, status and error mapping,
+  rate and size limits, deadlines, retries, cancellation, cleanup, and resource
+  ownership; and
+- provider identity and terms metadata needed for dependency review.
+
+Those provider details do not enter core schemas, feature contracts, shared
+runtime configuration, persistence adapters, interface projections, or another
+feature module. Canonical source identity and provenance may cross the adapter
+only through the evidence contract that owns their product meaning.
+
+The composition root may import one provider construction or registration entry
+point. When an owning application factory already owns the complete external
+resource lifecycle, the current-integration table may designate that factory as
+the sole construction boundary instead. No handler, interface, browser
+component, durable store, or unrelated feature imports the provider adapter. A
+replaceable provider changes only the adapter and composition selection while
+preserving the role contract. A binding external identity may change
+implementation details behind its explicit port, but changing its external
+owner is a product, evidence, or protocol decision.
+
+Provider configuration is owned and validated by the adapter's module. Runtime
+environment aggregation may invoke that parser and carry the resulting opaque
+validated configuration to composition, but it does not copy provider defaults,
+schemas, limits, or SDK settings into a second configuration authority.
+
+A repository-owned configuration-integrity mechanism may consume one canonical
+identity projection produced by the configuration owner when it must bind that
+configuration to an existing MAC or local authority. The configuration owner
+defines and validates that projection. The integrity mechanism does not inspect
+or reconstruct provider settings, and the projection is not exposed to feature
+consumers or public interfaces.
+
+The repository does not maintain a generic external-service registry or dynamic
+plugin system. A role port exists only for an implemented product
+responsibility. Multiple providers, selection policy, fallback, failover, or
+aggregation require their own accepted product and evidence contracts.
+
+Ethereum JSON-RPC remains the standard chain-transport exception. The validated
+RPC URI and source identity are runtime configuration, while RPC methods,
+normalization, limits, failures, and transport behavior remain in `chain`.
+Features consume the chain RPC port and never provider-specific endpoint
+behavior. Protocol packages follow `docs/PROTOCOL_ADAPTERS.md` in addition to
+this model.
+
+Architecture verification checks the complete current classification and exact
+module export and import graph. Provider-specific imports and literals remain
+in the adapter owner, only the declared composition boundary constructs the
+adapter, consumers use product-owned ports, and independent tests do not derive
+their oracle from the provider implementation.
 
 ## Interface Contract Model
 

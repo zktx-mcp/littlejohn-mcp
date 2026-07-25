@@ -11,10 +11,6 @@ import {
 } from "../core/index.js";
 import type { CanonicalJson, EvmAddress, EvmChainId } from "../core/index.js";
 import {
-  walletConnectProjectIdSchema,
-  type WalletConnectConfiguration,
-} from "../runtime/configuration.js";
-import {
   createResourceOwnershipScope,
   type OwnedResource,
   type OwnedResourceRegistration,
@@ -22,11 +18,18 @@ import {
   type ResourceOwnershipScope,
 } from "../runtime/resource-ownership.js";
 import {
+  readWalletConnectConfiguration,
+  type WalletConnectConfiguration,
+} from "./walletconnect-configuration.js";
+import {
   parseWalletQrMatrix,
   walletQrMatrixSizeLimits,
   type WalletQrMatrix,
 } from "./contracts.js";
 import walletExternalModulesValue from "./external-modules.cjs";
+
+type WalletConnectConfigurationState =
+  ReturnType<typeof readWalletConnectConfiguration>;
 
 export type WalletExternalModuleLoader = (
   key: "signClient" | "qrCode",
@@ -187,8 +190,8 @@ export interface WalletConnectSdkLogger {
 
 export interface WalletConnectSdkInitOptions {
   readonly projectId: string;
-  readonly name: WalletConnectConfiguration["metadata"]["name"];
-  readonly metadata: WalletConnectConfiguration["metadata"];
+  readonly name: WalletConnectConfigurationState["metadata"]["name"];
+  readonly metadata: WalletConnectConfigurationState["metadata"];
   readonly storageOptions: { readonly database: string };
   readonly telemetryEnabled: false;
   readonly logger: WalletConnectSdkLogger;
@@ -198,8 +201,8 @@ export interface WalletConnectSdkConnectInput {
   readonly requiredNamespaces: {
     readonly eip155: {
       readonly chains: readonly EvmChainId[];
-      readonly methods: WalletConnectConfiguration["requiredMethods"];
-      readonly events: WalletConnectConfiguration["requiredEvents"];
+      readonly methods: WalletConnectConfigurationState["requiredMethods"];
+      readonly events: WalletConnectConfigurationState["requiredEvents"];
     };
   };
 }
@@ -2181,7 +2184,7 @@ class WalletConnectClient implements WalletConnectClientPort {
   constructor(
     private readonly sdk: WalletConnectSdkPort,
     private readonly qrEncoder: WalletQrEncoder,
-    private readonly configuration: WalletConnectConfiguration,
+    private readonly configuration: WalletConnectConfigurationState,
   ) {}
 
   async initialize(): Promise<void> {
@@ -2728,8 +2731,13 @@ export const createWalletConnectClient = async (
   sdkFactory?: WalletConnectSdkFactory,
   moduleLoader: WalletExternalModuleLoader = loadWalletExternalModule,
 ): Promise<WalletConnectClientAcquisition> => {
+  let wallet: WalletConnectConfigurationState;
+  try {
+    wallet = readWalletConnectConfiguration(configuration.wallet);
+  } catch {
+    throw clientError("invalid_configuration");
+  }
   if (
-    !walletConnectProjectIdSchema.safeParse(configuration.wallet.projectId).success ||
     !isAbsolute(configuration.privateStoreDirectory) ||
     configuration.privateStoreDirectory.includes("\0")
   ) {
@@ -2750,9 +2758,9 @@ export const createWalletConnectClient = async (
     const sdk = await acquisitionBudget.run(() => {
       const factoryResult = Promise.resolve()
         .then(() => (sdkFactory ?? productionDependencies.sdkFactory)({
-        projectId: configuration.wallet.projectId,
-        name: configuration.wallet.metadata.name,
-        metadata: configuration.wallet.metadata,
+        projectId: wallet.projectId,
+        name: wallet.metadata.name,
+        metadata: wallet.metadata,
         storageOptions: { database: configuration.privateStoreDirectory },
         telemetryEnabled: false,
         logger,
@@ -2771,7 +2779,7 @@ export const createWalletConnectClient = async (
     const client = new WalletConnectClient(
       sdk,
       productionDependencies.qrEncoder,
-      configuration.wallet,
+      wallet,
     );
     acquisitionResource.retainCleanup(async () => client.close());
     await acquisitionBudget.run(() => client.initialize());
