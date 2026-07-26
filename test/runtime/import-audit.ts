@@ -64,7 +64,7 @@ export type ModuleSpecifierClass = "forbidden" | "node_builtin" | "package" | "r
 export interface PackageImportPolicy {
   readonly auditedSourceFiles: ReadonlySet<string>;
   readonly repositoryRoot: string;
-  readonly runtimePackageOwners: ReadonlyMap<string, string>;
+  readonly runtimePackageOwners: ReadonlyMap<string, ReadonlySet<string>>;
   readonly toolPackages: ReadonlySet<string>;
 }
 
@@ -74,17 +74,17 @@ export interface PackageManifest {
 }
 
 export const runtimePackageSourceRoots = Object.freeze({
-  "@modelcontextprotocol/sdk": "src/interfaces",
-  "@noble/hashes": "src/core",
-  "@walletconnect/sign-client": "src/wallet",
-  "better-sqlite3": "src/runtime",
-  "lucide-react": "src/interfaces",
-  qrcode: "src/wallet",
-  react: "src/interfaces",
-  "react-dom": "src/interfaces",
-  viem: "src/chain",
-  zod: "src",
-} satisfies Readonly<Record<string, string>>);
+  "@modelcontextprotocol/sdk": ["src/interfaces"],
+  "@noble/hashes": ["src/core"],
+  "@walletconnect/sign-client": ["src/wallet"],
+  "better-sqlite3": ["src/runtime"],
+  "lucide-react": ["src/interfaces"],
+  qrcode: ["src/wallet"],
+  react: ["src/interfaces"],
+  "react-dom": ["src/interfaces"],
+  viem: ["src/chain", "src/intelligence"],
+  zod: ["src"],
+} satisfies Readonly<Record<string, readonly string[]>>);
 
 interface SourceContext {
   readonly checker: ts.TypeChecker;
@@ -248,11 +248,17 @@ export const createPackageImportPolicy = (
   auditedSourceFiles: readonly string[] = [],
 ): PackageImportPolicy => {
   const manifest = parsePackageManifest(manifestValue);
-  const runtimePackageOwners = new Map<string, string>();
+  const runtimePackageOwners = new Map<string, ReadonlySet<string>>();
   for (const name of Object.keys(manifest.dependencies)) {
-    const sourceRoot = runtimePackageSourceRoots[name as keyof typeof runtimePackageSourceRoots];
-    if (sourceRoot === undefined) throw new TypeError(`Runtime package has no source owner: ${name}`);
-    runtimePackageOwners.set(name, validatedSourceRoot(name, sourceRoot, repositoryRoot));
+    const sourceRoots = runtimePackageSourceRoots[name as keyof typeof runtimePackageSourceRoots];
+    if (sourceRoots === undefined || sourceRoots.length === 0) {
+      throw new TypeError(`Runtime package has no source owner: ${name}`);
+    }
+    runtimePackageOwners.set(
+      name,
+      new Set(sourceRoots.map((sourceRoot) =>
+        validatedSourceRoot(name, sourceRoot, repositoryRoot))),
+    );
   }
   for (const name of Object.keys(runtimePackageSourceRoots)) {
     if (!Object.hasOwn(manifest.dependencies, name)) {
@@ -786,11 +792,13 @@ export const moduleImportPolicyViolations = (
     }
 
     if (reference.packageRoot !== undefined) {
-      const owner = policy.runtimePackageOwners.get(reference.packageRoot);
-      if (owner !== undefined) {
-        if (!isWithin(file, owner)) {
-          violations.push(`${name}:${reference.packageRoot}:${relative(policy.repositoryRoot, owner)
-            .split(sep).join("/")}`);
+      const owners = policy.runtimePackageOwners.get(reference.packageRoot);
+      if (owners !== undefined) {
+        if (![...owners].some((owner) => isWithin(file, owner))) {
+          const ownerNames = [...owners]
+            .map((owner) => relative(policy.repositoryRoot, owner).split(sep).join("/"))
+            .join("|");
+          violations.push(`${name}:${reference.packageRoot}:${ownerNames}`);
         }
       } else if (policy.toolPackages.has(reference.packageRoot)) {
         if (!isToolSource(file, policy.repositoryRoot)) {

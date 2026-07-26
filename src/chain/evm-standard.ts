@@ -10,7 +10,26 @@ import {
   type HexBytes,
   type UnsignedDecimal,
 } from "../core/index.js";
-import viemStandardValue from "./viem-standard.cjs";
+import * as viemStandardNamespace from "./viem-standard.cjs";
+
+type ViemStandardFunctionName =
+  | "balanceOf"
+  | "balanceOfUI"
+  | "decimals"
+  | "DEFAULT_ADMIN_ROLE"
+  | "effectiveAt"
+  | "getRoleMember"
+  | "getRoleMemberCount"
+  | "implementation"
+  | "name"
+  | "newUIMultiplier"
+  | "owner"
+  | "paused"
+  | "supportsInterface"
+  | "symbol"
+  | "tokenAddress"
+  | "totalSupply"
+  | "uiMultiplier";
 
 type ViemStandardModule = Readonly<{
   decodeEventLog(input: {
@@ -22,18 +41,7 @@ type ViemStandardModule = Readonly<{
   }): unknown;
   decodeFunctionResult(input: {
     readonly abi: readonly unknown[];
-    readonly functionName:
-      | "balanceOf"
-      | "balanceOfUI"
-      | "decimals"
-      | "effectiveAt"
-      | "name"
-      | "newUIMultiplier"
-      | "supportsInterface"
-      | "symbol"
-      | "tokenAddress"
-      | "totalSupply"
-      | "uiMultiplier";
+    readonly functionName: ViemStandardFunctionName;
     readonly data: string;
   }): unknown;
   encodeEventTopics(input: {
@@ -42,29 +50,33 @@ type ViemStandardModule = Readonly<{
   }): unknown;
   encodeFunctionData(input: {
     readonly abi: readonly unknown[];
-    readonly functionName:
-      | "balanceOf"
-      | "balanceOfUI"
-      | "decimals"
-      | "effectiveAt"
-      | "name"
-      | "newUIMultiplier"
-      | "supportsInterface"
-      | "symbol"
-      | "tokenAddress"
-      | "totalSupply"
-      | "uiMultiplier";
+    readonly functionName: ViemStandardFunctionName;
     readonly args?: readonly unknown[];
   }): unknown;
   readonly erc20Abi: unknown;
   keccak256(input: string): unknown;
 }>;
 
-const viemStandard = viemStandardValue as unknown as ViemStandardModule;
+const viemStandard = (
+  viemStandardNamespace as unknown as Readonly<{ readonly default: unknown }>
+).default as ViemStandardModule;
 if (!Array.isArray(viemStandard.erc20Abi)) {
   throw new TypeError("Viem ERC-20 ABI is unavailable.");
 }
 const erc20Abi: readonly unknown[] = viemStandard.erc20Abi;
+
+const eip1967StorageSlot = (name: "implementation" | "beacon" | "admin"): Hash32 => {
+  const label = `eip1967.proxy.${name}`;
+  const encoded = `0x${Buffer.from(label, "utf8").toString("hex")}`;
+  const hash = parseHash32(viemStandard.keccak256(encoded));
+  return parseHash32(`0x${(BigInt(hash) - 1n).toString(16).padStart(64, "0")}`);
+};
+
+export const eip1967StorageSlots = deepFreezeValue({
+  implementation: eip1967StorageSlot("implementation"),
+  beacon: eip1967StorageSlot("beacon"),
+  admin: eip1967StorageSlot("admin"),
+});
 
 const erc165Abi = Object.freeze([{
   type: "function",
@@ -112,6 +124,54 @@ const stockFactoryAbi = Object.freeze([{
   inputs: [{ name: "uid", type: "bytes32" }],
   outputs: [{ name: "", type: "address" }],
 }] as const);
+
+const contractAnalysisAbi = Object.freeze([
+  {
+    type: "function",
+    name: "implementation",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+  {
+    type: "function",
+    name: "owner",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+  {
+    type: "function",
+    name: "paused",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "DEFAULT_ADMIN_ROLE",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "bytes32" }],
+  },
+  {
+    type: "function",
+    name: "getRoleMemberCount",
+    stateMutability: "view",
+    inputs: [{ name: "role", type: "bytes32" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "getRoleMember",
+    stateMutability: "view",
+    inputs: [
+      { name: "role", type: "bytes32" },
+      { name: "index", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "address" }],
+  },
+] as const);
 
 const canonicalWordPattern = /^0x[0-9a-f]{64}$/u;
 const canonicalIndexedAddressWordPattern = /^0x0{24}[0-9a-f]{40}$/u;
@@ -449,6 +509,15 @@ export interface StockFactoryCallEncoder {
   tokenAddress(uid: Hash32): HexBytes;
 }
 
+export interface ContractAnalysisCallEncoder {
+  beaconImplementation(): HexBytes;
+  owner(): HexBytes;
+  paused(): HexBytes;
+  defaultAdminRole(): HexBytes;
+  defaultAdminMemberCount(role: HexBytes): HexBytes;
+  defaultAdminMember(role: HexBytes, index: UnsignedDecimal): HexBytes;
+}
+
 const parseEncodedCall = (value: unknown, expected: string): HexBytes => {
   const parsed = parseHexBytes(value);
   if (parsed !== expected) throw new TypeError("Viem produced an unexpected ERC-20 call encoding.");
@@ -540,3 +609,47 @@ export const createStockFactoryCallEncoder = (): StockFactoryCallEncoder => Obje
     }), `0x97bb3ce9${uid.slice(2)}`);
   },
 });
+
+export const createContractAnalysisCallEncoder = (): ContractAnalysisCallEncoder => {
+  const beaconImplementation = parseEncodedCall(viemStandard.encodeFunctionData({
+    abi: contractAnalysisAbi,
+    functionName: "implementation",
+  }), "0x5c60da1b");
+  const owner = parseEncodedCall(viemStandard.encodeFunctionData({
+    abi: contractAnalysisAbi,
+    functionName: "owner",
+  }), "0x8da5cb5b");
+  const paused = parseEncodedCall(viemStandard.encodeFunctionData({
+    abi: contractAnalysisAbi,
+    functionName: "paused",
+  }), "0x5c975abb");
+  const defaultAdminRole = parseEncodedCall(viemStandard.encodeFunctionData({
+    abi: contractAnalysisAbi,
+    functionName: "DEFAULT_ADMIN_ROLE",
+  }), "0xa217fddf");
+  return Object.freeze({
+    beaconImplementation(): HexBytes { return beaconImplementation; },
+    owner(): HexBytes { return owner; },
+    paused(): HexBytes { return paused; },
+    defaultAdminRole(): HexBytes { return defaultAdminRole; },
+    defaultAdminMemberCount(roleInput: HexBytes): HexBytes {
+      const role = parseHexBytes(roleInput);
+      if (!canonicalWordPattern.test(role)) throw new TypeError("Default-administrator role is invalid.");
+      return parseEncodedCall(viemStandard.encodeFunctionData({
+        abi: contractAnalysisAbi,
+        functionName: "getRoleMemberCount",
+        args: [role],
+      }), `0xca15c873${role.slice(2)}`);
+    },
+    defaultAdminMember(roleInput: HexBytes, indexInput: UnsignedDecimal): HexBytes {
+      const role = parseHexBytes(roleInput);
+      if (!canonicalWordPattern.test(role)) throw new TypeError("Default-administrator role is invalid.");
+      const index = parseUnsignedDecimal(indexInput);
+      return parseEncodedCall(viemStandard.encodeFunctionData({
+        abi: contractAnalysisAbi,
+        functionName: "getRoleMember",
+        args: [role, BigInt(index)],
+      }), `0x9010d07c${role.slice(2)}${uint256Word(index).slice(2)}`);
+    },
+  });
+};

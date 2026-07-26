@@ -39,6 +39,8 @@ import {
 import type { BrowserAssetBundle } from "../../src/interfaces/browser-assets.js";
 import { createBrowserRequestCredentialAuthority } from "../../src/interfaces/browser-credentials.js";
 import { extendBrowserInterfaceRoutes } from "../../src/interfaces/browser-routes.js";
+import type { BrowserFetch } from "../../src/interfaces/web/browser-client.js";
+import { inspectTokenContract } from "../../src/interfaces/web/token-catalog-client.js";
 import { extendPublicInterfaceRoutes } from "../../src/interfaces/http-routes.js";
 import { dispatchCanonical, type RuntimeDispatchPort } from "../../src/interfaces/http-client.js";
 import {
@@ -272,6 +274,7 @@ const withoutInvocationCorrelation = (input: unknown, parentKey?: string): Canon
     "observationId",
     "observationIds",
     "quantityObservationId",
+    "recordDigest",
   ]);
   return Object.fromEntries(Object.entries(input)
     .filter(([key]) => !omitted.has(key))
@@ -435,6 +438,9 @@ const createReadParityCases = async (): Promise<readonly ReadParityCase[]> => {
     rpcValue("eth_chainId", "0x1237"),
     rpcValue("eth_getBlockByNumber", providerBlock()),
     rpcValue("eth_getCode", bytecode),
+    rpcValue("eth_getStorageAt", `0x${"0".repeat(64)}`),
+    rpcValue("eth_getStorageAt", `0x${"0".repeat(64)}`),
+    rpcValue("eth_getStorageAt", `0x${"0".repeat(64)}`),
   ]);
   const transactionInput = captureCanonicalJson({ transactionHash });
   const transaction = await invokeChainRead(transactionInspectCapability, transactionInput, [
@@ -485,9 +491,14 @@ const createReadParityCases = async (): Promise<readonly ReadParityCase[]> => {
       humanOutput: [
         `Contract: ${account}`,
         `Block: ${blockNumber}`,
-        "Runtime code: present",
-        "Byte length: 5",
-        `Code hash: ${keccak256FromHex(bytecode)}`,
+        "Runtime code bytes: 5",
+        `Runtime code hash: ${keccak256FromHex(bytecode)}`,
+        "Proxy: no_supported_proxy_observed",
+        `Source target: no_record_observed (${account})`,
+        "Declared functions: unavailable (exact_abi_unavailable)",
+        "Owner: unavailable",
+        "Paused: unavailable",
+        "Default administrators: unavailable",
         "",
       ].join("\n"),
     }),
@@ -705,7 +716,6 @@ const createTokenParityContext = async () => {
     walletOperations: browserOperations(operation()),
     accountAssets: accountAssetInterfaceHarnessPort(),
     referenceMarkets: referenceMarketInterfaceHarnessPort(),
-    tokenInspection: ports.inspection,
     tokenCatalogWebStart: ports.webStart,
     tokenCatalogBrowserOperations: ports.browserOperations,
   });
@@ -827,17 +837,31 @@ describe("interface parity", () => {
         withoutInvocationCorrelation(context.values.inspection),
       );
 
-      const browser = await invokeRoute(
-        context.routes,
-        "POST",
-        tokenCatalogBrowserRoutes.inspections,
-        input,
-      );
-      expect(browser.ok).toBe(true);
-      if (!browser.ok || browser.response !== "canonical_json") {
-        throw new Error("The browser token inspection did not return canonical JSON.");
-      }
-      expect(withoutInvocationCorrelation(browser.body)).toEqual(
+      const browserRequest: BrowserFetch = async (path, init) => {
+        expect(path).toBe(tokenInspectInterface.http.path);
+        expect(init).toMatchObject({
+          method: "POST",
+          credentials: "omit",
+          cache: "no-store",
+        });
+        const response = await invokeRoute(
+          context.routes,
+          init.method,
+          path,
+          init.body === undefined ? {} : JSON.parse(init.body),
+        );
+        if (!response.ok || response.response !== "canonical_json") {
+          throw new Error("The public token inspection route did not return canonical JSON.");
+        }
+        const responseBody = response.body;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => responseBody,
+        };
+      };
+      const browser = await inspectTokenContract(input, { request: browserRequest });
+      expect(withoutInvocationCorrelation(browser)).toEqual(
         withoutInvocationCorrelation(context.values.inspection),
       );
     } finally {

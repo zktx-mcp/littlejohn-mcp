@@ -13,10 +13,12 @@ import {
   declaredMcpToolNames,
   interfaceReadCapabilityRegistry,
   accountAssetInterfaceBindingList,
+  contractInspectInterface,
   readInterfaceIdentities,
   tokenCatalogInterfaceBindingList,
   tokenInspectInterface,
 } from "../../src/interfaces/identities.js";
+import { publicInspectionPaths } from "../../src/interfaces/browser-contract.js";
 import { extendInterfaceSupportManifest } from "../../src/interfaces/support.js";
 import { extendReferenceMarketSupportManifest } from "../../src/market-portfolio/support.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
@@ -67,6 +69,9 @@ describe("interface binding identity authority", () => {
       argumentSyntax: "<token-address> --block <latest|block-number> [--json]",
     });
     expect(tokenInspectInterface.web).toBe(true);
+    expect(contractInspectInterface.web).toBe(true);
+    expect(contractInspectInterface.http.path).toBe(publicInspectionPaths.contractQueries);
+    expect(tokenInspectInterface.http.path).toBe(publicInspectionPaths.tokenQueries);
     expect(readCapabilityRegistry.owns(tokenInspectCapability)).toBe(false);
   });
 

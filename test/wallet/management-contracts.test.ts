@@ -105,7 +105,7 @@ describe("wallet management contract authority", () => {
     const canonical = canonicalManagementProjection();
     expect(Buffer.byteLength(canonical, "utf8")).toBe(124_357);
     expect(createHash("sha256").update(canonical, "utf8").digest("hex")).toBe(
-      "8042ad60561dd18cadb6efebf1d8e349fc7a0b112ebc5bc86c8f19791913adaa",
+      "1b6a7846bba9a829efe6cad4dc54d313515cb25f6391946c413bec3a530a362e",
     );
   });
 

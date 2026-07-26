@@ -47,6 +47,10 @@ import {
 } from "../../src/token-catalog/contracts.js";
 import { getTokenCatalogOperationFailure } from "../../src/token-catalog/operation-error.js";
 import type { TokenCatalogStore } from "../../src/token-catalog/ports.js";
+import {
+  createExactResolvedAnalysis,
+  validContractAnalysisClaimMutations,
+} from "../core/contract-analysis-fixtures.js";
 import { createInspectionSuccess } from "./harness.js";
 
 const directories: string[] = [];
@@ -207,6 +211,9 @@ const applyingOperation = (input: Readonly<{
       previousSelection: input.previousSelection,
       selectionSetRevision: input.currentSetRevision,
       inspection: input.inspection,
+      inspectionDigest: input.kind === "add" && input.inspection !== null
+        ? tokenInspectionDigest(input.inspection)
+        : null,
       officialSnapshotRevision: input.snapshotRevision,
       officialEvidence,
       reviewDigest,
@@ -239,7 +246,7 @@ const failureCode = (effect: () => unknown): string | undefined => {
 };
 
 describe("token selection persistence", () => {
-  it("rejects a stored token inspection without the required source claim digests", async () => {
+  it("rejects a stored token inspection without the required source record digests", async () => {
     const { database, path } = await openDatabase();
     const inspection = await createInspectionSuccess({
       asset: {
@@ -254,7 +261,7 @@ describe("token selection persistence", () => {
     const oldResult = JSON.parse(canonicalJsonStringify(inspection as unknown as CanonicalJson)) as {
       evidence: { sources: Array<Record<string, unknown>> };
     };
-    for (const source of oldResult.evidence.sources) delete source["claimsDigest"];
+    for (const source of oldResult.evidence.sources) delete source["recordDigest"];
     const resultJson = independentCanonicalJson(oldResult as unknown as IndependentJson);
     const inspectionDigest = `0x${createHash("sha256").update(independentCanonicalJson({
       digestKind: "token_inspection",
@@ -281,24 +288,37 @@ describe("token selection persistence", () => {
 
   it("rejects a matching independently digested durable semantic corruption", async () => {
     const { database, path } = await openDatabase();
+    const address = parseEvmAddressInput(`0x${"86".repeat(20)}`);
+    const analysisBlock = chainAnchorSchema.parse({
+      chainId,
+      blockNumber: "42",
+      blockHash: `0x${"ab".repeat(32)}`,
+      blockTimestamp: "2026-07-18T00:00:00.000Z",
+    });
+    const analysis = createExactResolvedAnalysis(address, analysisBlock);
     const inspection = await createInspectionSuccess({
       asset: {
         kind: "erc20",
         chainId,
-        address: parseEvmAddressInput(`0x${"86".repeat(20)}`),
+        address,
       },
       block: { kind: "latest" },
-    });
+    }, { analysis });
     database.close();
 
+    const changedOwner = validContractAnalysisClaimMutations(analysis).find(
+      (mutation) => mutation.label === "owner",
+    )?.analysis;
+    expect(changedOwner).toBeDefined();
+    if (changedOwner === undefined) return;
     const malformed = JSON.parse(JSON.stringify(inspection)) as {
-      evidence: { sources: unknown[] };
+      data: { analysis: unknown };
     };
-    malformed.evidence.sources = malformed.evidence.sources.slice(1);
+    malformed.data.analysis = changedOwner;
     const resultJson = independentCanonicalJson(malformed as unknown as IndependentJson);
     const inspectionDigest = `0x${createHash("sha256").update(independentCanonicalJson({
       digestKind: "token_inspection",
-      digestVersion: "3",
+      digestVersion: "4",
       result: malformed as unknown as IndependentJson,
     }), "utf8").digest("hex")}`;
 
@@ -786,7 +806,7 @@ describe("token selection persistence", () => {
     const correctVerification = verification(
       manifestEntry.assetUid,
       manifestEntry.contractAddress,
-      inspection.data.block,
+      inspection.data.analysis.block,
     );
     const operation = applyingOperation({
       kind: "add",
@@ -799,7 +819,7 @@ describe("token selection persistence", () => {
       officialEvidence: {
         assetUid: manifestEntry.assetUid,
         snapshotRevision: snapshot.revision,
-        verificationBlock: inspection.data.block,
+        verificationBlock: inspection.data.analysis.block,
       },
     });
     const anchorMutations = [

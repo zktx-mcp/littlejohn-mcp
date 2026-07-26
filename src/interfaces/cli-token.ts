@@ -302,11 +302,20 @@ const inspectionHuman = (inspection: HistoricalInspection): string => {
   return [
     `Token: ${data.asset.address}`,
     `Chain: ${data.asset.chainId}`,
-    `Block number: ${data.block.blockNumber}`,
-    `Block hash: ${data.block.blockHash}`,
-    `Block timestamp: ${data.block.blockTimestamp}`,
-    `Runtime code bytes: ${data.runtimeCode.byteLength}`,
-    `Runtime code hash: ${data.runtimeCode.codeHash}`,
+    `Block number: ${data.analysis.block.blockNumber}`,
+    `Block hash: ${data.analysis.block.blockHash}`,
+    `Block timestamp: ${data.analysis.block.blockTimestamp}`,
+    `Runtime code bytes: ${data.analysis.targetRuntimeCode.byteLength}`,
+    `Runtime code hash: ${data.analysis.targetRuntimeCode.codeHash}`,
+    `Proxy: ${data.analysis.proxy.status}`,
+    ...data.analysis.sources.map((source) =>
+      `Source ${source.role}: ${source.status} (${source.address})`),
+    `Declared functions: ${data.analysis.declaredFunctions.status === "observed"
+      ? data.analysis.declaredFunctions.signatures.length
+      : `unavailable (${data.analysis.declaredFunctions.reason})`}`,
+    `Owner: ${data.analysis.controls.owner.status}`,
+    `Paused: ${data.analysis.controls.paused.status}`,
+    `Default administrators: ${data.analysis.controls.defaultAdmins.status}`,
     `Name: ${observationText(data.metadata.name)}`,
     `Symbol: ${observationText(data.metadata.symbol)}`,
     `Decimals: ${decimalsText(data.totalSupply.decimals)}`,

@@ -81,7 +81,10 @@ import type { ReferenceMarketDeliveryAction } from "./reference-market-delivery.
 import type { OperationDeliveryAction } from "./operation-delivery.js";
 import type { InterfaceErrorMappingRegistry } from "../runtime/errors.js";
 import type { RouteMethod } from "../runtime/http-routing.js";
-import { referenceMarketPublicRoutes } from "./browser-contract.js";
+import {
+  publicInspectionPaths,
+  referenceMarketPublicRoutes,
+} from "./browser-contract.js";
 
 export const referenceMarketLocalMutationPaths = Object.freeze({
   add: "/api/v1/internal/control/reference-market-watchlist/entry-additions",
@@ -210,7 +213,7 @@ export const chainStatusInterface = identity({
 
 export const contractInspectInterface = identity({
   definition: contractInspectCapability,
-  http: { method: "POST", path: "/api/v1/contract-inspections" },
+  http: { method: "POST", path: publicInspectionPaths.contractQueries },
   mcp: {
     name: "read_inspect_contract",
     description: "Inspect contract runtime code at one Robinhood Chain block.",
@@ -222,6 +225,7 @@ export const contractInspectInterface = identity({
     argumentSyntax: "<address> --block <latest|block-number> [--json]",
   },
   responseAuthority: chainResponseAuthority,
+  web: true,
 });
 
 export const transactionInspectInterface = identity({
@@ -266,7 +270,7 @@ export const walletConnectionInterface = identity({
 
 export const tokenInspectInterface = identity({
   definition: tokenInspectCapability,
-  http: { method: "POST", path: "/api/v1/token-inspections" },
+  http: { method: "POST", path: publicInspectionPaths.tokenQueries },
   mcp: {
     name: "token_inspect_contract",
     description: "Inspect one token contract at one Robinhood Chain block.",

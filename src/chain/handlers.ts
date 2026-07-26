@@ -38,6 +38,12 @@ import {
   type TransactionInspectInput,
   type UnsignedDecimal,
 } from "../core/index.js";
+import {
+  analyzeContract,
+  isContractAnalysisTargetNotFoundError,
+  recordContractAnalysisEvidence,
+} from "../intelligence/contract-analysis.js";
+import type { ContractSourceVerificationPort } from "../intelligence/ports.js";
 import type {
   ChainOwnerApplicationContext,
   ChainReadCapabilityPort,
@@ -48,7 +54,12 @@ import {
   ChainOperationError,
   getChainOperationFailure,
 } from "./errors.js";
-import type { Erc20CallEncoder } from "./evm-standard.js";
+import {
+  createContractAnalysisCallEncoder,
+  type ContractAnalysisCallEncoder,
+  type Erc20CallEncoder,
+} from "./evm-standard.js";
+import { createContractAnalysisChainReadPort } from "./contract-analysis.js";
 import {
   normalizeAbiDecimals,
   normalizeAbiUint256,
@@ -92,6 +103,8 @@ interface ChainInvocationPorts extends InvocationBoundaryPorts {
 interface HandlerDependencies {
   readonly rpc: RpcRequester;
   readonly encoder: Erc20CallEncoder;
+  readonly contractAnalysisEncoder: ContractAnalysisCallEncoder;
+  readonly contractSourceVerification: ContractSourceVerificationPort;
   readonly rpcSource: ObservationAuthority;
   readonly chainId: EvmChainId;
   readonly nativeAsset: Readonly<{ readonly kind: "native"; readonly chainId: EvmChainId }>;
@@ -601,6 +614,8 @@ export const createChainReadService = (input: {
   const dependencies: HandlerDependencies = Object.freeze({
     rpc: input.rpc,
     encoder: input.encoder,
+    contractAnalysisEncoder: createContractAnalysisCallEncoder(),
+    contractSourceVerification: input.context.chain.contractSourceVerification,
     rpcSource,
     chainId,
     nativeAsset,
@@ -692,9 +707,6 @@ export const createChainReadService = (input: {
           contractInspectEvidence.configuredChain.target,
         );
         const blockTarget = observations.bind(contractInspectEvidence.targets.block);
-        const runtimeCodeTarget = observations.bind(
-          contractInspectEvidence.targets.runtimeCode,
-        );
         const block = await resolveBlock(
           dependencies,
           request.block,
@@ -702,27 +714,51 @@ export const createChainReadService = (input: {
           observations,
           configuredChain,
         );
-        const rawCode = await dependencies.rpc.request(
-          "eth_getCode",
-          [request.address, block.stateReference],
+        const chain = createContractAnalysisChainReadPort({
+          rpc: dependencies.rpc,
+          encoder: dependencies.contractAnalysisEncoder,
+          chainId: dependencies.chainId,
+          block: block.anchor,
+          stateReference: block.stateReference,
           signal,
-        );
-        const runtimeCode = normalizeSourceValue(() => normalizeRpcRuntimeCode(rawCode));
-        const data: ContractInspectData = { address: request.address, block: block.anchor, runtimeCode };
+        });
+        let execution;
+        try {
+          execution = await analyzeContract({
+            target: request.address,
+            chain,
+            sourceVerification: dependencies.contractSourceVerification,
+            signal,
+          });
+        } catch (error) {
+          if (isContractAnalysisTargetNotFoundError(error)) {
+            throw new ChainOperationError("not_found");
+          }
+          throw error;
+        }
+        const analysis = recordContractAnalysisEvidence({
+          target: {
+            chainId: dependencies.chainId,
+            address: request.address,
+            block: block.anchor,
+            runtimeCode: execution.targetRuntimeCode.identity,
+          },
+          sourceVerification: dependencies.contractSourceVerification,
+          execution,
+          fragment: contractInspectEvidence.analysis,
+          observations,
+          chainAuthority: rpcSource,
+        });
+        const data: ContractInspectData = {
+          analysis,
+          runtimeCode: execution.targetRuntimeCode.bytecode,
+        };
         observations.record(blockTarget.slot, {
           source: rpcSource,
           claims: [{
             role: blockTarget.roles.block,
-            value: { address: data.address, block: data.block },
-            chainAnchor: data.block,
-          }],
-        });
-        observations.record(runtimeCodeTarget.slot, {
-          source: rpcSource,
-          claims: [{
-            role: runtimeCodeTarget.roles.runtimeCode,
-            value: { address: data.address, runtimeCode: data.runtimeCode },
-            chainAnchor: data.block,
+            value: { address: analysis.target, block: analysis.block },
+            chainAnchor: analysis.block,
           }],
         });
         return { status: "success", data };

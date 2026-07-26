@@ -23,7 +23,7 @@ const validEvidenceSource = () => ({
   purpose: "latest_block",
   observedAt: "2026-07-12T10:16:02.000Z",
   reference: { kind: "public" as const, sourceId: "rpc_test", uri: "https://rpc.example/" },
-  claimsDigest: "A".repeat(43),
+  recordDigest: "A".repeat(43),
 });
 
 describe("evidence identity", () => {
@@ -82,11 +82,11 @@ describe("evidence identity", () => {
     expect(evidenceSourceSchema.safeParse({ ...source, invocationId: "inv:not-canonical" }).success).toBe(false);
   });
 
-  it("requires one canonical claim digest on every evidence source", () => {
+  it("requires one canonical record digest on every evidence source", () => {
     const source = validEvidenceSource();
     expect(evidenceSourceSchema.safeParse(source).success).toBe(true);
-    expect(evidenceSourceSchema.safeParse({ ...source, claimsDigest: undefined }).success).toBe(false);
-    expect(evidenceSourceSchema.safeParse({ ...source, claimsDigest: "not-canonical" }).success).toBe(false);
+    expect(evidenceSourceSchema.safeParse({ ...source, recordDigest: undefined }).success).toBe(false);
+    expect(evidenceSourceSchema.safeParse({ ...source, recordDigest: "not-canonical" }).success).toBe(false);
   });
 
   it("accepts public evidence only through credential-free HTTPS references", () => {

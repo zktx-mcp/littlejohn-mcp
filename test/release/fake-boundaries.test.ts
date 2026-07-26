@@ -152,7 +152,7 @@ describe("release fake boundaries", () => {
     );
     const source = renderPackagedOwnerWorkerSource(identity.installRelativePath);
     const imports = inspectModuleImports(source, "release-owner-worker.mjs");
-    expect(imports).toHaveLength(9);
+    expect(imports).toHaveLength(10);
     expect(imports.every((entry) =>
       entry.kind === "module" &&
       typeof entry.specifier === "string" &&

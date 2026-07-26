@@ -28,6 +28,25 @@ export {
 } from "./capability-contract.js";
 export type { CapabilityId, CapabilitySuccess } from "./capability-contract.js";
 export {
+  defineReadCapability,
+  getCapabilityDefinitionSnapshot,
+  parseCapabilityInput,
+  parseCapabilitySuccess,
+} from "./capability.js";
+export type {
+  AnyReadCapabilityDefinition,
+  CapabilityData,
+  CapabilityInput,
+  ReadCapabilityDefinition,
+} from "./capability.js";
+export {
+  contractInspectCapability,
+} from "./capabilities.js";
+export type {
+  ContractInspectData,
+  ContractInspectInput,
+} from "./capabilities.js";
+export {
   canonicalJsonStringify,
   canonicalSha256,
   utf8ByteLength,
@@ -56,7 +75,21 @@ export type {
 } from "./evidence-replay.js";
 export {
   createConfiguredChainEvidenceFragment,
+  createContractAnalysisEvidenceConclusions,
+  createContractAnalysisEvidenceDeclaration,
+  createContractAnalysisEvidenceFragment,
 } from "./capability-evidence.js";
+export {
+  assertContractAnalysisForTarget,
+  contractAnalysisSchema,
+} from "./contract-analysis.js";
+export type {
+  ContractAnalysis,
+  ContractControlFailureReason,
+  ContractProxyResult,
+  ContractRuntimeCodeIdentity,
+  ContractSourceVerificationStatus,
+} from "./contract-analysis.js";
 export { coreContractVersion } from "./contract.js";
 export {
   canonicalUsdgAddress,

@@ -5,8 +5,10 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import { z } from "zod";
 
 import {
+  assertContractAnalysisForTarget,
   canonicalJsonStringify,
   captureCanonicalJson,
+  chainAnchorSchema,
   coreContractVersion,
   erc20AssetIdentitySchema,
   getCapabilityDefinitionSnapshot,
@@ -28,6 +30,7 @@ import {
   tokenCatalogOperationIdSchema,
   tokenCatalogOperationSchema,
   tokenInspectCapability,
+  tokenInspectionDigest,
   tokenInspectionDataSchema,
   tokenInspectionInputSchema,
   tokenInspectionSuccessSchema,
@@ -40,6 +43,12 @@ import {
 } from "../../src/token-catalog/index.js";
 import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
 import { createInspectionSuccess, walletAddress } from "./harness.js";
+import {
+  changeUnavailableOwnerReason,
+  createExactResolvedAnalysis,
+  reversedDeclaredFunctions,
+  validContractAnalysisClaimMutations,
+} from "../core/contract-analysis-fixtures.js";
 
 const asset = erc20AssetIdentitySchema.parse({
   kind: "erc20",
@@ -109,6 +118,7 @@ const awaitingOperation = (input: Readonly<{
     previousSelection: input.previousSelection,
     selectionSetRevision: null,
     inspection: input.kind === "add" ? input.inspection : null,
+    inspectionDigest: input.kind === "add" ? tokenInspectionDigest(input.inspection) : null,
     officialSnapshotRevision: input.kind === "add" ? snapshotRevision : null,
     officialEvidence: null,
     reviewDigest: `0x${"ab".repeat(32)}`,
@@ -122,13 +132,13 @@ describe("token catalog contracts", () => {
     for (const [schema, expectedBytes, expectedDigest] of [
       [
         tokenInspectionDataSchema,
-        7_745,
-        "7190a01b1fc0866cf5f767891ed5d64c9700f675675bc185ff4c708c50bc0555",
+        13_015,
+        "e12e2f6330a05bc98e3feeb9acd2e6a71948bfb3cb561a45a6da34513baf762f",
       ],
       [
         tokenInspectionSuccessSchema,
-        14_408,
-        "e50a9e6afb271ff20e00f5fa66b1f96dc99fc22f5012f3bebb28eb91224eeac0",
+        19_744,
+        "84983c62b497a4d2528309293717edc0fe8bb050922a4166146b54906eb321d3",
       ],
     ] as const) {
       const canonical = canonicalOutputSchema(schema);
@@ -137,9 +147,9 @@ describe("token catalog contracts", () => {
     }
   });
 
-  it("owns exactly the seven selection capability identifiers at contract version 8", () => {
-    expect(coreContractVersion).toBe("8");
-    expect(getCapabilityDefinitionSnapshot(tokenInspectCapability).contractVersion).toBe("8");
+  it("owns exactly the seven selection capability identifiers at contract version 9", () => {
+    expect(coreContractVersion).toBe("9");
+    expect(getCapabilityDefinitionSnapshot(tokenInspectCapability).contractVersion).toBe("9");
     expect(tokenCatalogCapabilityIds).toEqual([
       "token.cancel_operation",
       "token.inspect",
@@ -149,7 +159,7 @@ describe("token catalog contracts", () => {
       "token.start_addition",
       "token.start_removal",
     ]);
-    expect(tokenCatalogContractProjection.contractVersion).toBe("8");
+    expect(tokenCatalogContractProjection.contractVersion).toBe("9");
     expect(tokenCatalogContractProjectionDigest).toMatch(/^0x[0-9a-f]{64}$/u);
     expect(Object.isFrozen(tokenCatalogContractProjection)).toBe(true);
     expect(tokenCatalogErrorDefinitions).toContainEqual({
@@ -191,20 +201,20 @@ describe("token catalog contracts", () => {
     const input = { asset, block: { kind: "latest" as const } };
     expect(() => parseCapabilitySuccess(tokenInspectCapability, input, inspection)).not.toThrow();
     expect(inspection.evidence.sources.every((source) =>
-      /^[A-Za-z0-9_-]{43}$/u.test(source.claimsDigest))).toBe(true);
+      /^[A-Za-z0-9_-]{43}$/u.test(source.recordDigest))).toBe(true);
 
-    const runtimeCodeSource = inspection.evidence.sources.find(
-      (source) => source.purpose === "token_runtime_code",
+    const deploymentSource = inspection.evidence.sources.find(
+      (source) => source.purpose === "contract_deployment",
     );
-    expect(runtimeCodeSource).toBeDefined();
-    if (runtimeCodeSource === undefined) return;
+    expect(deploymentSource).toBeDefined();
+    if (deploymentSource === undefined) return;
     expect(() => parseCapabilitySuccess(tokenInspectCapability, input, {
       ...inspection,
       data: {
         ...inspection.data,
         totalSupply: {
           ...inspection.data.totalSupply,
-          quantityObservationId: runtimeCodeSource.observationId,
+          quantityObservationId: deploymentSource.observationId,
         },
       },
     })).toThrow();
@@ -222,18 +232,89 @@ describe("token catalog contracts", () => {
           },
         },
       },
-    })).toThrow("claims");
+    })).toThrow("record");
     for (const source of inspection.evidence.sources) {
       expect(() => parseCapabilitySuccess(tokenInspectCapability, input, {
         ...inspection,
         evidence: {
           ...inspection.evidence,
           sources: inspection.evidence.sources.map((candidate) => candidate === source
-            ? { ...candidate, claimsDigest: "A".repeat(43) as typeof candidate.claimsDigest }
+            ? { ...candidate, recordDigest: "A".repeat(43) as typeof candidate.recordDigest }
             : candidate),
         },
       })).toThrow();
     }
+  });
+
+  it("rejects every token-analysis claim change while retaining the original evidence", async () => {
+    const input = { asset, block: { kind: "latest" as const } };
+    const analysisBlock = chainAnchorSchema.parse({
+      chainId: asset.chainId,
+      blockNumber: "42",
+      blockHash: `0x${"ab".repeat(32)}`,
+      blockTimestamp: "2026-07-18T00:00:00.000Z",
+    });
+    const originalAnalysis = createExactResolvedAnalysis(asset.address, analysisBlock);
+    const original = await createInspectionSuccess(input, { analysis: originalAnalysis });
+    const target = {
+      chainId: asset.chainId,
+      address: asset.address,
+      block: analysisBlock,
+      runtimeCode: originalAnalysis.targetRuntimeCode,
+    };
+    for (const mutation of validContractAnalysisClaimMutations(originalAnalysis)) {
+      expect(() => assertContractAnalysisForTarget(target, mutation.analysis), mutation.label)
+        .not.toThrow();
+      expect(() => parseCapabilitySuccess(tokenInspectCapability, input, {
+        ...original,
+        data: { ...original.data, analysis: mutation.analysis },
+      }), mutation.label).toThrow();
+    }
+
+    const changedOwner = validContractAnalysisClaimMutations(originalAnalysis).find(
+      (mutation) => mutation.label === "owner",
+    )?.analysis;
+    expect(changedOwner).toBeDefined();
+    if (changedOwner === undefined) return;
+    const changedInspection = {
+      ...original,
+      data: { ...original.data, analysis: changedOwner },
+    };
+    const operation = awaitingOperation({
+      inspection: original,
+      kind: "add",
+      previousSelection: null,
+    });
+    expect(() => tokenCatalogOperationSchema.parse({
+      ...operation,
+      review: {
+        ...operation.review,
+        inspection: changedInspection,
+        inspectionDigest: tokenInspectionDigest(changedInspection),
+      },
+    }), "operation review").toThrow();
+
+    expect(() => parseCapabilitySuccess(tokenInspectCapability, input, {
+      ...original,
+      data: {
+        ...original.data,
+        analysis: reversedDeclaredFunctions(originalAnalysis),
+      },
+    }), "declared-function order").toThrow();
+
+    const unavailableAnalysis = createExactResolvedAnalysis(asset.address, analysisBlock, {
+      status: "unavailable",
+      reason: "call_reverted",
+    });
+    const unavailable = await createInspectionSuccess(input, {
+      analysis: unavailableAnalysis,
+    });
+    const changedReason = changeUnavailableOwnerReason(unavailableAnalysis);
+    expect(() => assertContractAnalysisForTarget(target, changedReason)).not.toThrow();
+    expect(() => parseCapabilitySuccess(tokenInspectCapability, input, {
+      ...unavailable,
+      data: { ...unavailable.data, analysis: changedReason },
+    }), "unavailable reason").toThrow();
   });
 
   it("rejects every independent field mismatch in both token anchor relations", async () => {
@@ -261,7 +342,7 @@ describe("token catalog contracts", () => {
     const officialEvidence = {
       assetUid: `0x${"56".repeat(32)}`,
       snapshotRevision,
-      verificationBlock: inspection.data.block,
+      verificationBlock: inspection.data.analysis.block,
     };
     expect(() => tokenCatalogOperationSchema.parse({
       ...add,

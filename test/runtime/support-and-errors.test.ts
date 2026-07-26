@@ -123,17 +123,17 @@ describe("runtime support manifest authority", () => {
       [
         runtimeSupportManifestSchema,
         2_616,
-        "44dcbdfeb0b5c4f9e57c35536f3add76f56b63fa024d781da0f10c2daba7b72a",
+        "e42ad46bd43be663feaf3c57c0e2e5d842e27aa34d9b5e6de613a169c0c1a1fc",
       ],
       [
         interfaceCapabilityCatalogSchema,
         3_328,
-        "9209da8bcaf161cae40d787c8d0ae0186d4fe18381822146798ffacc15e4cc24",
+        "94e76cb0c3ee5a8e35a21a61adb863c0206c5101fbaa614c8db5a1c3d4c679cc",
       ],
       [
         ownerIdentitySchema,
-        745,
-        "cb63a8085d4c2f675b56ed92e01ecc966b62285c811bb7260964046c0a54ff2c",
+        746,
+        "7052a70191526323cf58816d850423148f1d72d8a7fd7e3606ee5a322aa43a85",
       ],
     ] as const) {
       const projection = outputSchema(schema);

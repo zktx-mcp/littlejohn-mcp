@@ -12,20 +12,26 @@ import {
   accountBalanceEvidence,
   accountBalanceCapability,
   accountTokenEvidenceIdentity,
+  assertContractAnalysisForTarget,
   bindCapability,
   canonicalJsonStringify,
   chainAnchorSchema,
   chainStatusEvidence,
   chainStatusCapability,
+  contractAnalysisSchema,
   contractInspectEvidence,
   contractInspectCapability,
   coreErrorRegistry,
   createCanonicalClock,
   createCapabilityInvocationAuthority,
+  createContractAnalysisChainClaims,
+  createContractAnalysisSourceClaim,
   createObservationAuthority,
+  createObservationAuthorityIssuer,
   evmAddressSchema,
   evmChainIdSchema,
   getCapabilityDefinitionSnapshot,
+  keccak256FromHex,
   observationIdSchema,
   parseCapabilitySuccess,
   productDisplayName,
@@ -35,8 +41,10 @@ import {
   walletConnectionEvidence,
   walletConnectionCapability,
   type CanonicalJson,
+  type ContractAnalysis,
   type ObservationClaim,
   type EvidenceSource,
+  type ObservationAuthority,
   type ObservationWriter,
 } from "../../src/core/index.js";
 import {
@@ -59,6 +67,12 @@ import {
   fixedEvaluationTime,
   invokeBinding,
 } from "./capability-harness.js";
+import {
+  changeUnavailableOwnerReason,
+  createExactResolvedAnalysis,
+  reversedDeclaredFunctions,
+  validContractAnalysisClaimMutations,
+} from "./contract-analysis-fixtures.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -117,13 +131,15 @@ const independentObservationId = (
   ordinal,
 ]), "utf8").digest("base64url")}` as EvidenceSource["observationId"];
 
-const independentClaimsDigest = (
+const independentRecordDigest = (
+  source: Omit<EvidenceSource, "recordDigest">,
   claims: readonly CanonicalJson[],
-): EvidenceSource["claimsDigest"] =>
+): EvidenceSource["recordDigest"] =>
   createHash("sha256").update(independentCanonicalJson({
     claims,
-    digestKind: "evidence_source_claims",
-  }), "utf8").digest("base64url") as EvidenceSource["claimsDigest"];
+    digestKind: "evidence_source_record",
+    source,
+  }), "utf8").digest("base64url") as EvidenceSource["recordDigest"];
 
 const canonicalSourceOrder = <Source extends { readonly observationId: string }>(
   sources: readonly Source[],
@@ -166,27 +182,253 @@ const recordContractEvidence = (
   context: Parameters<Parameters<typeof bindForHarness>[2]>[1],
   observations: ObservationWriter,
   address: string,
-): void => {
+  source: ObservationAuthority,
+) => {
+  const runtimeCode = "0x6000";
+  const analysis = contractAnalysisSchema.parse({
+    chainId: configuredChainId,
+    target: address,
+    block,
+    targetRuntimeCode: {
+      byteLength: "2",
+      codeHash: keccak256FromHex(runtimeCode),
+    },
+    proxy: { status: "no_supported_proxy_observed" },
+    sources: [{ role: "target", address, status: "no_record_observed" }],
+    declaredFunctions: { status: "unavailable", reason: "exact_abi_unavailable" },
+    controls: {
+      owner: { status: "unavailable", reason: "exact_abi_unavailable" },
+      paused: { status: "unavailable", reason: "exact_abi_unavailable" },
+      defaultAdmins: { status: "unavailable", reason: "exact_abi_unavailable" },
+    },
+  });
+  return recordContractAnalysisFixture(
+    context,
+    observations,
+    analysis,
+    runtimeCode,
+    () => source,
+  );
+};
+
+const recordContractAnalysisFixture = (
+  context: Parameters<Parameters<typeof bindForHarness>[2]>[1],
+  observations: ObservationWriter,
+  analysis: ContractAnalysis,
+  runtimeCode: string,
+  sourceFor: (address: string) => ObservationAuthority,
+) => {
   const chain = observations.bind(contractInspectEvidence.configuredChain.target);
   const account = observations.bind(contractInspectEvidence.targets.block);
-  const runtimeCode = observations.bind(contractInspectEvidence.targets.runtimeCode);
+  const deployment = observations.bind(contractInspectEvidence.analysis.targets.deployment);
+  const controls = observations.bind(contractInspectEvidence.analysis.targets.controls);
+  const targetSource = observations.bind(contractInspectEvidence.analysis.targets.targetSource);
+  const implementationSource = observations.bind(
+    contractInspectEvidence.analysis.targets.implementationSource,
+  );
+  const chainClaims = createContractAnalysisChainClaims(analysis);
   recordRpc(context, observations, chain.slot, [{
     role: chain.roles.chainId,
     value: configuredChainId,
   }]);
   recordRpc(context, observations, account.slot, [{
     role: account.roles.block,
-    value: { address, block },
+    value: { address: analysis.target, block: analysis.block },
     chainAnchor: block,
   }]);
-  recordRpc(context, observations, runtimeCode.slot, [{
-    role: runtimeCode.roles.runtimeCode,
-    value: { address, runtimeCode: { status: "empty" } },
+  recordRpc(context, observations, deployment.slot, [{
+    role: deployment.roles.value,
+    value: chainClaims.deployment,
     chainAnchor: block,
   }]);
+  if (chainClaims.controlResults !== undefined) {
+    recordRpc(context, observations, controls.slot, [{
+      role: controls.roles.value,
+      value: chainClaims.controlResults,
+      chainAnchor: block,
+    }]);
+  }
+  for (const source of analysis.sources) {
+    const target = source.role === "target" ? targetSource : implementationSource;
+    observations.record(target.slot, {
+      source: sourceFor(source.address),
+      claims: [{
+        role: target.roles.value,
+        value: createContractAnalysisSourceClaim(analysis, source.role),
+        chainAnchor: block,
+      }],
+    });
+  }
+  return { analysis, runtimeCode };
 };
 
 describe("capability binding authority", () => {
+  it("keeps single-reference authorities fixed and admits registered same-owner references", () => {
+    const clock = createCanonicalClock(() => fixedEvaluationTime);
+    const firstRpc = createObservationAuthority({
+      clock,
+      sourceClass: "chain_rpc",
+      owner: "user_configured",
+      reference: sourceReferenceSchema.parse({
+        kind: "public",
+        sourceId: "rpc-test",
+        uri: "https://rpc-one.example/",
+      }),
+    });
+    const secondRpc = createObservationAuthority({
+      clock,
+      sourceClass: "chain_rpc",
+      owner: "user_configured",
+      reference: sourceReferenceSchema.parse({
+        kind: "public",
+        sourceId: "rpc-test",
+        uri: "https://rpc-two.example/",
+      }),
+    });
+    expect(() => new ObservationAuthorityRegistry(clock, [firstRpc, secondRpc]))
+      .toThrow("Duplicate observation source class");
+
+    const configured = createObservationAuthorityIssuer({
+      clock,
+      sourceClass: "contract_verification_service",
+      owner: "Sourcify",
+      referenceKind: "public",
+      sourceId: "sourcify-v2",
+    });
+    const foreign = createObservationAuthorityIssuer({
+      clock,
+      sourceClass: "contract_verification_service",
+      owner: "Sourcify",
+      referenceKind: "public",
+      sourceId: "sourcify-v2",
+    });
+    const firstReference = sourceReferenceSchema.parse({
+      kind: "public",
+      sourceId: "sourcify-v2",
+      uri: "https://sourcify.example/contract/one",
+    });
+    const secondReference = sourceReferenceSchema.parse({
+      kind: "public",
+      sourceId: "sourcify-v2",
+      uri: "https://sourcify.example/contract/two",
+    });
+    const registry = new ObservationAuthorityRegistry(clock, [configured.registration]);
+    expect(registry.owns(
+      "contract_verification_service",
+      configured.issue(firstReference),
+    )).toBe(true);
+    expect(registry.owns(
+      "contract_verification_service",
+      configured.issue(secondReference),
+    )).toBe(true);
+    expect(registry.owns(
+      "contract_verification_service",
+      foreign.issue(firstReference),
+    )).toBe(false);
+    const differentOwner = createObservationAuthorityIssuer({
+      clock,
+      sourceClass: "contract_verification_service",
+      owner: "another_owner",
+      referenceKind: "public",
+      sourceId: "sourcify-v2",
+    });
+    expect(registry.owns(
+      "contract_verification_service",
+      differentOwner.issue(firstReference),
+    )).toBe(false);
+    expect(registry.owns(
+      "contract_verification_service",
+      {} as ObservationAuthority,
+    )).toBe(false);
+    const rpcConfigurationDigest = "A".repeat(43);
+    expect(() => configured.issue(sourceReferenceSchema.parse({
+      kind: "configured_rpc",
+      sourceId: `rpc:${rpcConfigurationDigest}`,
+      publicOrigin: "https://sourcify.example",
+      configurationDigest: rpcConfigurationDigest,
+    }))).toThrow("does not match its registration");
+    expect(() => configured.issue(sourceReferenceSchema.parse({
+      kind: "public",
+      sourceId: "another-source",
+      uri: "https://sourcify.example/contract/one",
+    }))).toThrow("does not match its registration");
+    expect(() => createObservationAuthorityIssuer({
+      clock,
+      sourceClass: "contract_verification_service",
+      owner: "Sourcify",
+      referenceKind: "configured_rpc",
+      sourceId: "sourcify-v2",
+    })).toThrow("reference kind is invalid");
+    expect(() => createObservationAuthorityIssuer({
+      clock,
+      sourceClass: "contract_verification_service",
+      owner: "Sourcify",
+      referenceKind: "public",
+      sourceId: "" as never,
+    })).toThrow();
+  });
+
+  it("rejects every contract-analysis claim change while retaining the original evidence", async () => {
+    const address = evmAddressSchema.parse(`0x${"7".repeat(40)}`);
+    const input = { address, block: { kind: "latest" as const } };
+    const createSuccess = async (analysis: ContractAnalysis) => {
+      const harness = createCapabilityHarness();
+      const binding = bindForHarness(
+        contractInspectCapability,
+        harness,
+        async (_input, context, observations) => ({
+          status: "success",
+          data: recordContractAnalysisFixture(
+            context,
+            observations,
+            analysis,
+            "0x6000",
+            (sourceAddress) => harness.contractVerificationSource(sourceAddress),
+          ),
+        }),
+      );
+      const result = await invokeBinding(contractInspectCapability, binding, input);
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new TypeError("Contract analysis claim fixture did not succeed.");
+      return result;
+    };
+
+    const originalAnalysis = createExactResolvedAnalysis(address, block);
+    const original = await createSuccess(originalAnalysis);
+    const target = {
+      chainId: configuredChainId,
+      address,
+      block,
+      runtimeCode: originalAnalysis.targetRuntimeCode,
+    };
+    for (const mutation of validContractAnalysisClaimMutations(originalAnalysis)) {
+      expect(() => assertContractAnalysisForTarget(target, mutation.analysis), mutation.label)
+        .not.toThrow();
+      expect(() => parseCapabilitySuccess(contractInspectCapability, input, {
+        ...original,
+        data: { ...original.data, analysis: mutation.analysis },
+      }), mutation.label).toThrow();
+    }
+
+    const reordered = reversedDeclaredFunctions(originalAnalysis);
+    expect(() => parseCapabilitySuccess(contractInspectCapability, input, {
+      ...original,
+      data: { ...original.data, analysis: reordered },
+    }), "declared-function order").toThrow();
+
+    const unavailableAnalysis = createExactResolvedAnalysis(address, block, {
+      status: "unavailable",
+      reason: "call_reverted",
+    });
+    const unavailable = await createSuccess(unavailableAnalysis);
+    const changedReason = changeUnavailableOwnerReason(unavailableAnalysis);
+    expect(() => assertContractAnalysisForTarget(target, changedReason)).not.toThrow();
+    expect(() => parseCapabilitySuccess(contractInspectCapability, input, {
+      ...unavailable,
+      data: { ...unavailable.data, analysis: changedReason },
+    }), "unavailable reason").toThrow();
+  });
+
   it("derives canonical conclusions, coverage, and deterministic observation identity", async () => {
     const harness = createCapabilityHarness();
     const binding = bindForHarness(chainStatusCapability, harness, async (_input, context, observations) =>
@@ -204,8 +446,11 @@ describe("capability binding authority", () => {
     const latestBlockSource = result.evidence.sources.find((item) => item.purpose === "latest_block");
     expect(chainIdSource).toBeDefined();
     expect(latestBlockSource).toBeDefined();
+    if (chainIdSource === undefined || latestBlockSource === undefined) {
+      throw new Error("Expected chain evidence sources.");
+    }
     expect(result.evidence.sources.every((source) =>
-      /^[A-Za-z0-9_-]{43}$/u.test(source.claimsDigest))).toBe(true);
+      /^[A-Za-z0-9_-]{43}$/u.test(source.recordDigest))).toBe(true);
     const expected = `obs:${createHash("sha256").update(canonicalJsonStringify([
       "rpc_test",
       "chain_id",
@@ -215,13 +460,18 @@ describe("capability binding authority", () => {
       "0",
     ])).digest("base64url")}`;
     expect(chainIdSource?.observationId).toBe(expected);
-    expect(independentClaimsDigest([{
+    const { recordDigest: _chainIdDigest, ...chainIdRecord } = chainIdSource;
+    const { recordDigest: _latestBlockDigest, ...latestBlockRecord } = latestBlockSource;
+    expect(independentRecordDigest(chainIdRecord, [{
       role: "chain_id",
       value: configuredChainId,
-    }])).toBe("jxlez_R4lwimoz7QofFJLou8ECkYQi4P7Ic9RKdgu_Q");
-    expect(chainIdSource?.claimsDigest)
-      .toBe("jxlez_R4lwimoz7QofFJLou8ECkYQi4P7Ic9RKdgu_Q");
-    expect(latestBlockSource?.claimsDigest).toBe(independentClaimsDigest([{
+    }])).toBe(chainIdSource.recordDigest);
+    expect(chainIdSource?.recordDigest)
+      .toBe(independentRecordDigest(chainIdRecord, [{
+        role: "chain_id",
+        value: configuredChainId,
+      }]));
+    expect(latestBlockSource?.recordDigest).toBe(independentRecordDigest(latestBlockRecord, [{
       chainAnchor: block,
       role: "latest_block",
       value: block,
@@ -230,10 +480,10 @@ describe("capability binding authority", () => {
     expect(Object.isFrozen(result)).toBe(true);
   });
 
-  it("binds a public claim digest through one generic production and replay path", async () => {
-    const conclusion = createExactConclusionIdentityDeclaration("claims_observed");
+  it("binds a public source record through one generic production and replay path", async () => {
+    const conclusion = createExactConclusionIdentityDeclaration("record_observed");
     const replay = createEvidenceReplayDefinition({
-      capabilityId: "test.public_claim_digest",
+      capabilityId: "test.public_record_digest",
       conclusions: [conclusion],
       warningCodes: [],
     });
@@ -275,7 +525,7 @@ describe("capability binding authority", () => {
       metadata: { name: "Example", tags: ["stock", "verified"] },
     });
     const definition = defineReadCapability<{}, z.infer<typeof dataSchema>>({
-      capabilityId: "test.public_claim_digest",
+      capabilityId: "test.public_record_digest",
       inputSchema: z.object({}).strict(),
       dataSchema,
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
@@ -342,10 +592,23 @@ describe("capability binding authority", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.evidence.sources.every((source) =>
-      /^[A-Za-z0-9_-]{43}$/u.test(source.claimsDigest))).toBe(true);
+      /^[A-Za-z0-9_-]{43}$/u.test(source.recordDigest))).toBe(true);
     expect(result.evidence.sources).toHaveLength(1);
-    expect(result.evidence.sources[0]?.claimsDigest)
-      .toBe("IP2urjh-5Mw_PmkOwt_2B8zy-4ftiiiXq5ikfQ8xXpo");
+    const source = result.evidence.sources[0];
+    if (source === undefined) throw new Error("Expected one evidence source.");
+    const { recordDigest: _recordDigest, ...sourceRecord } = source;
+    expect(source.recordDigest).toBe(independentRecordDigest(sourceRecord, [
+      {
+        asset: digestAsset,
+        chainAnchor: digestBlock,
+        role: "token_balance",
+        value: data.balance,
+      },
+      {
+        role: "token_metadata",
+        value: data.metadata,
+      },
+    ] as unknown as CanonicalJson[]));
     expect(() => parseCapabilitySuccess(definition, {}, result)).not.toThrow();
     expect(() => parseCapabilitySuccess(definition, {}, {
       ...result,
@@ -353,17 +616,43 @@ describe("capability binding authority", () => {
         ...result.data,
         metadata: { ...result.data.metadata, name: "Changed" },
       },
-    })).toThrow("claims");
+    })).toThrow("record");
+    expect(() => parseCapabilitySuccess(definition, {}, {
+      ...result,
+      evidence: {
+        ...result.evidence,
+        sources: [{
+          ...source,
+          owner: "changed_owner",
+        }],
+      },
+    })).toThrow("record");
+    if (source.reference.kind !== "public") {
+      throw new Error("Expected the test RPC authority to use a public reference.");
+    }
+    expect(() => parseCapabilitySuccess(definition, {}, {
+      ...result,
+      evidence: {
+        ...result.evidence,
+        sources: [{
+          ...source,
+          reference: {
+            ...source.reference,
+            uri: "https://changed.example/",
+          },
+        }],
+      },
+    })).toThrow("record");
     expect(() => parseCapabilitySuccess(definition, {}, {
       ...result,
       evidence: {
         ...result.evidence,
         sources: result.evidence.sources.map((source) => ({
           ...source,
-          claimsDigest: "A".repeat(43) as EvidenceSource["claimsDigest"],
+          recordDigest: "A".repeat(43) as EvidenceSource["recordDigest"],
         })),
       },
-    })).toThrow("claims");
+    })).toThrow("record");
   });
 
   it("separates concurrent invocations that observe the same millisecond", async () => {
@@ -856,10 +1145,15 @@ describe("capability binding authority", () => {
       } catch {
         mutationRejected = true;
       }
-      recordContractEvidence(context, observations, input.address);
+      const data = recordContractEvidence(
+        context,
+        observations,
+        input.address,
+        harness.contractVerificationSource(input.address),
+      );
       return {
         status: "success",
-        data: { address: input.address, block, runtimeCode: { status: "empty" } },
+        data,
       };
     });
     const result = await invokeBinding(contractInspectCapability, binding, {
@@ -1056,7 +1350,7 @@ describe("capability binding authority", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.evidence.sources.every((source) =>
-      /^[A-Za-z0-9_-]{43}$/u.test(source.claimsDigest))).toBe(true);
+      /^[A-Za-z0-9_-]{43}$/u.test(source.recordDigest))).toBe(true);
 
     const parsed = parseCapabilitySuccess(walletConnectionCapability, {}, result);
     expect(parsed).toEqual(result);
@@ -1082,14 +1376,14 @@ describe("capability binding authority", () => {
     expect(() => parseCapabilitySuccess(walletConnectionCapability, {}, {
       ...result,
       data: { ...result.data, expiresAt: "2026-07-13T10:17:02.000Z" },
-    })).toThrow("claims");
+    })).toThrow("record");
     for (const source of result.evidence.sources) {
       expect(() => parseCapabilitySuccess(walletConnectionCapability, {}, {
         ...result,
         evidence: {
           ...result.evidence,
           sources: result.evidence.sources.map((candidate) => candidate === source
-            ? { ...candidate, claimsDigest: "A".repeat(43) as EvidenceSource["claimsDigest"] }
+            ? { ...candidate, recordDigest: "A".repeat(43) as EvidenceSource["recordDigest"] }
             : candidate),
         },
       })).toThrow();
@@ -1152,23 +1446,23 @@ describe("capability binding authority", () => {
           : source),
       },
       {
-        label: "missing claims digest",
+        label: "missing record digest",
         sources: result.evidence.sources.map((source) => {
           if (source !== chainIdSource) return source;
-          const { claimsDigest: _claimsDigest, ...withoutClaimsDigest } = source;
-          return withoutClaimsDigest as EvidenceSource;
+          const { recordDigest: _recordDigest, ...withoutRecordDigest } = source;
+          return withoutRecordDigest as EvidenceSource;
         }),
       },
       {
-        label: "malformed claims digest",
+        label: "malformed record digest",
         sources: result.evidence.sources.map((source) => source === chainIdSource
-          ? { ...source, claimsDigest: "not-a-digest" as EvidenceSource["claimsDigest"] }
+          ? { ...source, recordDigest: "not-a-digest" as EvidenceSource["recordDigest"] }
           : source),
       },
       {
-        label: "different valid claims digest",
+        label: "different valid record digest",
         sources: result.evidence.sources.map((source) => source === chainIdSource
-          ? { ...source, claimsDigest: "A".repeat(43) as EvidenceSource["claimsDigest"] }
+          ? { ...source, recordDigest: "A".repeat(43) as EvidenceSource["recordDigest"] }
           : source),
       },
       {
@@ -1239,7 +1533,7 @@ describe("capability binding authority", () => {
         evidence: {
           ...result.evidence,
           sources: result.evidence.sources.map((candidate) => candidate === source
-            ? { ...candidate, claimsDigest: "A".repeat(43) as EvidenceSource["claimsDigest"] }
+            ? { ...candidate, recordDigest: "A".repeat(43) as EvidenceSource["recordDigest"] }
             : candidate),
         },
       })).toThrow();
@@ -1330,10 +1624,15 @@ describe("capability binding authority", () => {
       contractInspectCapability,
       contractHarness,
       async (_input, context, observations) => {
-        recordContractEvidence(context, observations, address);
+        const data = recordContractEvidence(
+          context,
+          observations,
+          address,
+          contractHarness.contractVerificationSource(address),
+        );
         return {
           status: "success",
-          data: { address, block, runtimeCode: { status: "empty" as const } },
+          data,
         };
       },
     );
@@ -1463,7 +1762,7 @@ describe("capability binding authority", () => {
     expect(accountResult.ok).toBe(true);
     if (!accountResult.ok) return;
     expect(accountResult.evidence.sources.every((source) =>
-      /^[A-Za-z0-9_-]{43}$/u.test(source.claimsDigest))).toBe(true);
+      /^[A-Za-z0-9_-]{43}$/u.test(source.recordDigest))).toBe(true);
     expect(accountResult.warnings.map((warning) => warning.code)).toEqual([
       "decimals_unavailable",
       "partial_result",
@@ -1531,14 +1830,14 @@ describe("capability binding authority", () => {
           },
         },
       },
-    })).toThrow("claims");
+    })).toThrow("record");
     for (const source of accountResult.evidence.sources) {
       expect(() => parseCapabilitySuccess(accountBalanceCapability, accountInput, {
         ...accountResult,
         evidence: {
           ...accountResult.evidence,
           sources: accountResult.evidence.sources.map((candidate) => candidate === source
-            ? { ...candidate, claimsDigest: "A".repeat(43) as EvidenceSource["claimsDigest"] }
+            ? { ...candidate, recordDigest: "A".repeat(43) as EvidenceSource["recordDigest"] }
             : candidate),
         },
       })).toThrow();
@@ -1576,10 +1875,15 @@ describe("capability binding authority", () => {
     const contractHarness = createCapabilityHarness();
     const contractBinding = bindForHarness(contractInspectCapability, contractHarness,
       async (_input, context, observations) => {
-        recordContractEvidence(context, observations, address);
+        const data = recordContractEvidence(
+          context,
+          observations,
+          address,
+          contractHarness.contractVerificationSource(address),
+        );
         return {
           status: "success",
-          data: { address, block, runtimeCode: { status: "empty" as const } },
+          data,
         };
       });
     const contractResult = await invokeBinding(
@@ -1601,10 +1905,15 @@ describe("capability binding authority", () => {
     const outputAddress = `0x${"2".repeat(40)}`;
     const harness = createCapabilityHarness();
     const binding = bindForHarness(contractInspectCapability, harness, async (_input, context, observations) => {
-      recordContractEvidence(context, observations, outputAddress);
+      const data = recordContractEvidence(
+        context,
+        observations,
+        outputAddress,
+        harness.contractVerificationSource(outputAddress),
+      );
       return {
         status: "success",
-        data: { address: outputAddress, block, runtimeCode: { status: "empty" } },
+        data,
       };
     });
     const result = await invokeBinding(

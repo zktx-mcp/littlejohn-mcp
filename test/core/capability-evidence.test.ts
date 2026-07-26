@@ -59,7 +59,7 @@ describe("capability evidence identity authority", () => {
     const contractLayout = createEvidenceReplayLayout(contractInspectEvidence.definition, [
       contractInspectEvidence.configuredChain.target,
       contractInspectEvidence.targets.block,
-      contractInspectEvidence.targets.runtimeCode,
+      ...Object.values(contractInspectEvidence.analysis.targets),
     ]);
     expect(() => createEvidenceReplayBinder(
       chainStatusEvidence.definition,
@@ -202,7 +202,12 @@ describe("capability evidence identity authority", () => {
       walletConnectionEvidence,
     ].map((evidence) => readEvidenceReplayConclusionIds(evidence.definition))).toEqual([
       ["latest_block_observed", "rpc_chain_id_matches_scope"],
-      ["account_observed", "runtime_code_observed"],
+      [
+        "account_observed",
+        "contract_controls_observed",
+        "contract_deployment_observed",
+        "contract_source_checked",
+      ],
       [
         "inclusion_observed",
         "receipt_observed",

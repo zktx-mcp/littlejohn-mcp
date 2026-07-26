@@ -15,6 +15,7 @@ import { resolve } from "node:path";
 
 import { createChainOwnerApplication } from ${packageModule("chain/application.js")};
 import { createInterfaceOwnerApplication } from ${packageModule("interfaces/application.js")};
+import { createSourcifyContractSourceVerification } from ${packageModule("intelligence/sourcify.js")};
 import {
   createRobinhoodOfficialAssetSourceClient,
   officialAssetSourceDefinition,
@@ -39,6 +40,39 @@ const sessionAccount = "eip155:4663:0x1111111111111111111111111111111111111111";
 const alternateSessionAccount = "eip155:4663:0x3333333333333333333333333333333333333333";
 const now = () => readFileSync(clockPath, "utf8").trim();
 const sessionExpiry = () => Math.floor(Date.parse(now()) / 1000) + 7 * 24 * 60 * 60;
+
+const createContractSourceVerification = (clock) =>
+  createSourcifyContractSourceVerification({
+    clock,
+    fetch: async (input, init) => {
+      if (
+        typeof input !== "string" ||
+        init?.method !== "GET" ||
+        init?.redirect !== "error"
+      ) throw new TypeError("Release source verifier received an invalid request.");
+      const url = new URL(input);
+      const segments = url.pathname.split("/");
+      const chainId = segments.at(-2);
+      const address = segments.at(-1);
+      if (
+        url.protocol !== "https:" ||
+        url.hostname !== "sourcify.dev" ||
+        url.port !== "" ||
+        chainId !== "4663" ||
+        typeof address !== "string"
+      ) throw new TypeError("Release source verifier received an unexpected identity.");
+      return new Response(JSON.stringify({
+        address,
+        chainId,
+        creationMatch: null,
+        match: null,
+        runtimeMatch: null,
+      }), {
+        status: 404,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
 
 const session = (expiry = sessionExpiry(), account = sessionAccount) => Object.freeze({
   topic: sessionTopic,
@@ -226,6 +260,7 @@ const runtime = await LocalRuntime.create({
       return fetch(assetSourceUrl, init);
     },
   }),
+  contractSourceVerificationFactory: createContractSourceVerification,
   walletApplicationFactory: createWalletOwnerApplicationFactory(createFakeClient),
   chainApplicationFactory: createChainOwnerApplication,
   interfaceApplicationFactory: createInterfaceOwnerApplication,

@@ -20,9 +20,12 @@ const capabilityDefinitionModules = new Set([
 ]);
 const capabilityDefinitionOwners = new Set([
   resolve("src/core/capabilities.ts"),
-  resolve("src/token-catalog/contracts.ts"),
+  resolve("src/token-catalog/contract-schema.ts"),
 ]);
-const capabilityDefinitionReexporter = resolve("src/core/index.ts");
+const capabilityDefinitionReexporters = new Set([
+  resolve("src/core/browser.ts"),
+  resolve("src/core/index.ts"),
+]);
 const evidenceReplayModule = resolve("src/core/evidence-replay.js");
 const semanticEvidenceAuthoringSymbols = new Set([
   "createEvidenceClaimRoleDeclaration",
@@ -48,9 +51,10 @@ const evidenceReplayFacadeModules = new Set([
   evidenceReplayModule,
   resolve("src/core/browser.js"),
 ]);
-const evidenceObservationConsumer = resolve("src/core/capability.ts");
+const evidenceObservationConsumer = resolve("src/core/capability-execution.ts");
 const evidenceReplayConsumers = new Set([
   resolve("src/core/capability.ts"),
+  resolve("src/core/capability-execution.ts"),
   resolve("src/token-catalog/contract-schema.ts"),
 ]);
 const accountBalanceConclusionIdentityOwner =
@@ -119,9 +123,9 @@ const capabilityDefinitionAuthorityViolations = (
         ts.isNamespaceExport(node.exportClause) ||
         node.exportClause.elements.some(
           (element) => (element.propertyName ?? element.name).text === capabilityDefinitionConstructor,
-        );
+      );
       if (exposesConstructor && (
-        file !== capabilityDefinitionReexporter ||
+        !capabilityDefinitionReexporters.has(file) ||
         node.exportClause === undefined ||
         ts.isNamespaceExport(node.exportClause)
       )) report("reexport");

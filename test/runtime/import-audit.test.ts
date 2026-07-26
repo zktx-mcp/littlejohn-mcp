@@ -18,7 +18,7 @@ import {
 } from "./import-audit.js";
 
 const testPolicy = (
-  runtimePackageOwners: ReadonlyMap<string, string> = new Map(),
+  runtimePackageOwners: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
   toolPackages: ReadonlySet<string> = new Set(),
   repositoryRoot = resolve("src"),
   auditedSourceFiles: readonly string[] = [],
@@ -82,13 +82,17 @@ describe("module import audit", () => {
     const manifest = await loadPackageManifest();
     const policy = createPackageImportPolicy(manifest);
     expect(Object.keys(runtimePackageSourceRoots).sort()).toEqual(Object.keys(manifest.dependencies).sort());
-    expect(policy.runtimePackageOwners.get("zod")).toBe(resolve("src"));
-    expect(policy.runtimePackageOwners.get("@noble/hashes")).toBe(resolve("src/core"));
-    expect(policy.runtimePackageOwners.get("better-sqlite3")).toBe(resolve("src/runtime"));
-    expect(policy.runtimePackageOwners.get("@walletconnect/sign-client")).toBe(resolve("src/wallet"));
-    expect(policy.runtimePackageOwners.get("qrcode")).toBe(resolve("src/wallet"));
-    expect(policy.runtimePackageOwners.get("viem")).toBe(resolve("src/chain"));
-    expect(policy.runtimePackageOwners.get("react")).toBe(resolve("src/interfaces"));
+    expect(policy.runtimePackageOwners.get("zod")).toEqual(new Set([resolve("src")]));
+    expect(policy.runtimePackageOwners.get("@noble/hashes")).toEqual(new Set([resolve("src/core")]));
+    expect(policy.runtimePackageOwners.get("better-sqlite3")).toEqual(new Set([resolve("src/runtime")]));
+    expect(policy.runtimePackageOwners.get("@walletconnect/sign-client"))
+      .toEqual(new Set([resolve("src/wallet")]));
+    expect(policy.runtimePackageOwners.get("qrcode")).toEqual(new Set([resolve("src/wallet")]));
+    expect(policy.runtimePackageOwners.get("viem")).toEqual(new Set([
+      resolve("src/chain"),
+      resolve("src/intelligence"),
+    ]));
+    expect(policy.runtimePackageOwners.get("react")).toEqual(new Set([resolve("src/interfaces")]));
     expect(policy.toolPackages.has("typescript")).toBe(true);
 
     const missingReact = { ...manifest.dependencies };
@@ -165,6 +169,11 @@ describe("module import audit", () => {
       resolve("src/chain/client.ts"),
       policy,
     )).toEqual([]);
+    expect(moduleViolations(
+      `import { formatAbiItem } from "viem/utils";`,
+      resolve("src/intelligence/source-adapter.ts"),
+      policy,
+    )).toEqual([]);
     expect(moduleViolations(`
       import SignClient from "@walletconnect/sign-client";
       import QRCode from "qrcode";
@@ -204,7 +213,11 @@ describe("module import audit", () => {
 
   it("collects only unshadowed direct lexical require and restricts it to CommonJS source forms", () => {
     const sourceRoot = resolve("src");
-    const policy = testPolicy(new Map([["qrcode", resolve("src/wallet")]]), new Set(), sourceRoot);
+    const policy = testPolicy(
+      new Map([["qrcode", new Set([resolve("src/wallet")])]]),
+      new Set(),
+      sourceRoot,
+    );
     const cjsFile = resolve("src/wallet/loader.cjs");
     expect(moduleViolations('require("qrcode");', cjsFile, policy)).toEqual([]);
     for (const source of [

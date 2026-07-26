@@ -37,11 +37,16 @@ import {
   type WarningRequirement,
 } from "./evidence-replay.js";
 import {
+  assertContractAnalysisForTarget,
+  contractAnalysisSchema,
+} from "./contract-analysis.js";
+import {
   accountBalanceEvidence,
   accountNativeDecimalsExclusion,
   accountTokenEvidenceIdentity,
   chainStatusEvidence,
   contractInspectEvidence,
+  createContractAnalysisEvidenceDeclaration,
   receiptLogAmountRole,
   transactionEventDecimalsExclusion,
   transactionInspectEvidence,
@@ -130,17 +135,10 @@ const contractInspectInputSchema = jsonObject({
   block: blockSelectorSchema,
 }).strict();
 const contractInspectDataSchema = jsonObject({
-  address: evmAddressSchema,
-  block: chainAnchorSchema,
-  runtimeCode: z.discriminatedUnion("status", [
-    jsonObject({ status: z.literal("empty") }).strict(),
-    jsonObject({
-      status: z.literal("present"),
-      bytecode: hexBytesSchema.max(readCapabilityLimits.runtimeCodeBytes * 2 + 2),
-      byteLength: unsignedDecimalSchema,
-      codeHash: hash32Schema,
-    }).strict(),
-  ]),
+  analysis: contractAnalysisSchema,
+  runtimeCode: hexBytesSchema
+    .max(readCapabilityLimits.runtimeCodeBytes * 2 + 2)
+    .refine((value) => value !== "0x", "Contract runtime code is empty."),
 }).strict();
 
 const transactionLogSchema = jsonObject({
@@ -381,7 +379,7 @@ const contractInspectCapabilityEvidence: ReadCapabilityEvidence<
   observationTargets: () => [
     contractInspectEvidence.configuredChain.target,
     contractInspectEvidence.targets.block,
-    contractInspectEvidence.targets.runtimeCode,
+    ...Object.values(contractInspectEvidence.analysis.targets),
   ],
   declaration: (
     _input: ContractInspectInput,
@@ -390,20 +388,21 @@ const contractInspectCapabilityEvidence: ReadCapabilityEvidence<
   ) => {
     const chain = binder.bind(contractInspectEvidence.configuredChain.target);
     const block = binder.bind(contractInspectEvidence.targets.block);
-    const runtimeCode = binder.bind(contractInspectEvidence.targets.runtimeCode);
+    const analysis = createContractAnalysisEvidenceDeclaration(
+      data.analysis,
+      contractInspectEvidence.analysis,
+      binder,
+    );
     return {
       observationExpectations: [
-        expectation(chain.slot, [claim(chain.roles.chainId, data.block.chainId)]),
+        expectation(chain.slot, [claim(chain.roles.chainId, data.analysis.block.chainId)]),
         expectation(block.slot, [claim(block.roles.block, asJson({
-          address: data.address,
-          block: data.block,
-        }), { chainAnchor: data.block })]),
-        expectation(runtimeCode.slot, [claim(runtimeCode.roles.runtimeCode, asJson({
-          address: data.address,
-          runtimeCode: data.runtimeCode,
-        }), { chainAnchor: data.block })]),
+          address: data.analysis.target,
+          block: data.analysis.block,
+        }), { chainAnchor: data.analysis.block })]),
+        ...analysis.observationExpectations,
       ],
-      observationReferences: [],
+      observationReferences: analysis.observationReferences,
       factRequirements: [
         requirement(contractInspectEvidence.facts.account, "observed", [block.slot]),
         requirement(
@@ -411,15 +410,11 @@ const contractInspectCapabilityEvidence: ReadCapabilityEvidence<
           contractInspectEvidence.configuredChain.outcome,
           [chain.slot],
         ),
-        requirement(
-          contractInspectEvidence.facts.runtimeCode,
-          "observed",
-          [runtimeCode.slot],
-        ),
+        ...analysis.factRequirements,
       ],
       expectedConclusions: [
         contractInspectEvidence.conclusions.accountObserved,
-        contractInspectEvidence.conclusions.runtimeCodeObserved,
+        ...analysis.expectedConclusions,
       ],
       conclusionDrafts: [
         conclusionFromFact(
@@ -427,13 +422,9 @@ const contractInspectCapabilityEvidence: ReadCapabilityEvidence<
           contractInspectEvidence.facts.account,
           "chain_anchor_exact",
         ),
-        conclusionFromFact(
-          contractInspectEvidence.conclusions.runtimeCodeObserved,
-          contractInspectEvidence.facts.runtimeCode,
-          "chain_anchor_exact",
-        ),
+        ...analysis.conclusionDrafts,
       ],
-      warningRequirements: [],
+      warningRequirements: analysis.warningRequirements,
     };
   },
   staticScopeExclusions: contractInspectEvidence.staticScopeExclusions,
@@ -443,27 +434,35 @@ export const contractInspectCapability = defineReadCapability<ContractInspectInp
   capabilityId: "contract.inspect",
   inputSchema: contractInspectInputSchema,
   dataSchema: contractInspectDataSchema,
-  failureCodes: rpcReadFailureCodes,
+  failureCodes: transactionReadFailureCodes,
   evidence: contractInspectCapabilityEvidence,
   validateIntrinsicData: (data) => {
-    if (data.runtimeCode.status === "present") {
-      const byteLength = BigInt((data.runtimeCode.bytecode.length - 2) / 2);
-      if (
-        data.runtimeCode.bytecode === "0x" ||
-        byteLength > BigInt(readCapabilityLimits.runtimeCodeBytes) ||
-        byteLength.toString(10) !== data.runtimeCode.byteLength ||
-        keccak256FromHex(data.runtimeCode.bytecode) !== data.runtimeCode.codeHash
-      ) {
-        throw new TypeError("Runtime code identity mismatch.");
-      }
+    const byteLength = BigInt((data.runtimeCode.length - 2) / 2);
+    if (
+      data.runtimeCode === "0x" ||
+      byteLength > BigInt(readCapabilityLimits.runtimeCodeBytes) ||
+      byteLength.toString(10) !== data.analysis.targetRuntimeCode.byteLength ||
+      keccak256FromHex(data.runtimeCode) !== data.analysis.targetRuntimeCode.codeHash
+    ) {
+      throw new TypeError("Runtime code identity mismatch.");
     }
   },
   validateSuccess: (data, context) => {
-    if (data.block.chainId !== context.chainId) throw new TypeError("Contract chain scope mismatch.");
+    if (data.analysis.block.chainId !== context.chainId) {
+      throw new TypeError("Contract chain scope mismatch.");
+    }
   },
   validateRequest: (input, data) => {
-    if (input.address !== data.address) throw new TypeError("Contract target mismatch.");
-    if (input.block.kind === "number" && input.block.blockNumber !== data.block.blockNumber) {
+    assertContractAnalysisForTarget({
+      chainId: data.analysis.chainId,
+      address: input.address,
+      block: data.analysis.block,
+      runtimeCode: data.analysis.targetRuntimeCode,
+    }, data.analysis);
+    if (
+      input.block.kind === "number" &&
+      input.block.blockNumber !== data.analysis.block.blockNumber
+    ) {
       throw new TypeError("Contract block selector mismatch.");
     }
   },

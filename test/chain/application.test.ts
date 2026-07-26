@@ -14,6 +14,7 @@ import {
   createCanonicalClock,
   createCapabilityInvocationAuthority,
   createObservationAuthority,
+  createObservationAuthorityIssuer,
   getCapabilityDefinitionSnapshot,
   parseCapabilityDataAt,
   parseEvmAddressInput,
@@ -30,6 +31,10 @@ import {
   createChainOwnerApplicationFactory,
 } from "../../src/chain/application.js";
 import type { Erc20CallEncoder } from "../../src/chain/evm-standard.js";
+import {
+  createContractSourceVerificationPort,
+  type ContractSourceVerificationRequest,
+} from "../../src/intelligence/ports.js";
 import {
   ChainRpcError,
   createBoundedRpcRequester,
@@ -71,6 +76,7 @@ const configuredChainId = parseEvmChainId("eip155:4663");
 const runtimeConfiguration = readRuntimeConfiguration({ LITTLEJOHN_RPC_URL: exactRpcUrl });
 const tokenAddress = parseEvmAddressInput(`0x${"ab".repeat(20)}`);
 const rpcWord = (value: bigint) => `0x${value.toString(16).padStart(64, "0")}`;
+const emptyStorageWord = rpcWord(0n);
 const rpcText = (value: string) => {
   const bytes = Buffer.from(value, "utf8");
   const padding = (32 - bytes.length % 32) % 32;
@@ -96,6 +102,7 @@ const createBoundedErc20Requester = (
       timestamp: "0x687787a4",
     };
     else if (request.method === "eth_getCode") result = "0x6000";
+    else if (request.method === "eth_getStorageAt") result = emptyStorageWord;
     else if (request.method === "eth_call") {
       const data = (request.params[0] as { readonly data: string }).data;
       const override = overrideEthCall(data, request.id);
@@ -194,6 +201,13 @@ const createContext = async () => {
       uri: "https://rpc.example/",
     }),
   });
+  const contractVerification = createObservationAuthorityIssuer({
+    clock,
+    sourceClass: "contract_verification_service",
+    owner: "Sourcify",
+    referenceKind: "public",
+    sourceId: "sourcify-v2",
+  });
   const walletHarness = createCapabilityHarness(() => observedAt);
   const disconnected = parseCapabilityDataAt(
     walletConnectionCapability,
@@ -228,6 +242,22 @@ const createContext = async () => {
     activeWallet,
     chain: Object.freeze({
       configuration: runtimeConfiguration.rpc,
+      contractSourceVerification: createContractSourceVerificationPort({
+        observationAuthorityRegistration: contractVerification.registration,
+        async inspect(request: ContractSourceVerificationRequest) {
+          const reference = sourceReferenceSchema.parse({
+            kind: "public",
+            sourceId: "sourcify-v2",
+            uri: `https://sourcify.example/contract/${request.address}`,
+          });
+          if (reference.kind !== "public") throw new TypeError("Expected public source reference.");
+          return Object.freeze({
+            status: "no_record_observed" as const,
+            reference,
+            observationAuthority: contractVerification.issue(reference),
+          });
+        },
+      }),
       sourceAuthority: Object.freeze({
         sourceOwner: "user_configured" as const,
         publicOrigin: "https://rpc.example",
@@ -239,7 +269,10 @@ const createContext = async () => {
         clock,
         invocationAuthority: createCapabilityInvocationAuthority(clock, configuredChainId),
         invocationPorts: Object.freeze({
-          observations: new ObservationAuthorityRegistry(clock, [rpcAuthority]),
+          observations: new ObservationAuthorityRegistry(
+            clock,
+            [rpcAuthority, contractVerification.registration],
+          ),
         }),
       }),
     }),
@@ -280,6 +313,7 @@ describe("chain owner application", () => {
         timestamp: `0x${blockTimestampSeconds.toString(16)}`,
       };
       if (method === "eth_getCode") return "0x6000";
+      if (method === "eth_getStorageAt") return emptyStorageWord;
       if (method === "eth_call") {
         const call = params[0] as { readonly data: string };
         if (call.data === "0x18160ddd") return rpcWord(1_000_000n);
@@ -309,8 +343,10 @@ describe("chain owner application", () => {
       ok: true,
       data: {
         asset: { kind: "erc20", chainId: configuredChainId, address: tokenAddress },
-        block: { blockNumber: "42", blockHash },
-        runtimeCode: { byteLength: "2" },
+        analysis: {
+          block: { blockNumber: "42", blockHash },
+          targetRuntimeCode: { byteLength: "2" },
+        },
         totalSupply: { raw: "1000000", decimals: { status: "available", value: "18" } },
         metadata: {
           name: { status: "available", value: "Example Token" },
@@ -326,9 +362,12 @@ describe("chain owner application", () => {
       expect(tokenInspectionDigest(result)).toBe(digest);
     }
     const stateReferences = requester.calls
-      .filter((call) => call.method === "eth_getCode" || call.method === "eth_call")
-      .map((call) => call.params[1]);
-    expect(stateReferences).toHaveLength(6);
+      .flatMap((call) => call.method === "eth_getStorageAt"
+        ? [call.params[2]]
+        : call.method === "eth_getCode" || call.method === "eth_call"
+          ? [call.params[1]]
+          : []);
+    expect(stateReferences).toHaveLength(9);
     expect(stateReferences.every((reference) => JSON.stringify(reference) === JSON.stringify({
       blockHash,
       requireCanonical: true,
@@ -355,6 +394,7 @@ describe("chain owner application", () => {
           timestamp: "0x687787a4",
         };
         else if (request.method === "eth_getCode") result = "0x6000";
+        else if (request.method === "eth_getStorageAt") result = emptyStorageWord;
         else if (request.method === "eth_call") {
           const call = request.params[0] as { readonly data: string };
           if (call.data === "0x18160ddd") result = rpcWord(7n);
@@ -401,7 +441,7 @@ describe("chain owner application", () => {
         "partial_result",
       ]);
       const partial = result.warnings.find((warning) => warning.code === "partial_result");
-      expect(new Set(partial?.observationIds)).toEqual(new Set([
+      expect(partial?.observationIds).toEqual(expect.arrayContaining([
         result.data.metadata.name.observationId,
         result.data.metadata.symbol.observationId,
       ]));
@@ -412,7 +452,7 @@ describe("chain owner application", () => {
   it.each([
     ["name", "0x06fdde03", "symbol"],
     ["symbol", "0x95d89b41", "name"],
-  ] as const)("links a %s-only metadata failure to exactly that warning evidence", async (
+  ] as const)("links a %s-only metadata failure without linking available metadata", async (
     unavailableField,
     revertedSelector,
     availableField,
@@ -437,9 +477,9 @@ describe("chain owner application", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       const partial = result.warnings.find((warning) => warning.code === "partial_result");
-      expect(partial?.observationIds).toEqual([
+      expect(partial?.observationIds).toContain(
         result.data.metadata[unavailableField].observationId,
-      ]);
+      );
       expect(partial?.observationIds).not.toContain(
         result.data.metadata[availableField].observationId,
       );
@@ -581,6 +621,7 @@ describe("chain owner application", () => {
         timestamp: "0x687787a4",
       };
       if (method === "eth_getCode") return "0x6000";
+      if (method === "eth_getStorageAt") return emptyStorageWord;
       if (method === "eth_call") {
         const call = params[0] as { readonly data: string };
         if (call.data === "0x18160ddd") return rpcWord(7n);
@@ -641,8 +682,10 @@ describe("chain owner application", () => {
         timestamp: "0x687787a4",
       };
       if (method === "eth_getCode") return "0x6000";
+      if (method === "eth_getStorageAt") return emptyStorageWord;
       if (method === "eth_call") {
         const call = params[0] as { readonly data: string };
+        if (call.data.startsWith("0x01ffc9a7")) return rpcWord(0n);
         if (call.data === "0x06fdde03") throw new ChainRpcError("source_inconsistent");
         return await new Promise<never>((_resolve, reject) => {
           const onAbort = (): void => {
@@ -705,7 +748,7 @@ describe("chain owner application", () => {
 
   it("fails closed for a wrong input chain and for missing runtime code", async () => {
     const state = await createContext();
-    const requester = new FakeRequester(async (method) => {
+    const requester = new FakeRequester(async (method, params) => {
       if (method === "eth_chainId") return "0x1237";
       if (method === "eth_getBlockByNumber") return {
         number: "0x2c",
@@ -713,6 +756,14 @@ describe("chain owner application", () => {
         timestamp: "0x687787a4",
       };
       if (method === "eth_getCode") return "0x";
+      if (method === "eth_call") {
+        const call = params[0] as { readonly data: string };
+        if (call.data === "0x18160ddd") return rpcWord(7n);
+        if (call.data === "0x06fdde03") return rpcText("Token");
+        if (call.data === "0x95d89b41") return rpcText("TKN");
+        if (call.data === "0x313ce567") return rpcWord(18n);
+        if (call.data.startsWith("0x01ffc9a7")) return rpcWord(0n);
+      }
       throw new Error(`Unexpected RPC method: ${method}`);
     });
     const application = await createChainOwnerApplicationFactory(
@@ -831,6 +882,7 @@ describe("chain owner application", () => {
         }
       }
       if (method === "eth_getStorageAt") {
+        if (params[0] === tokenAddress) return emptyStorageWord;
         expect(params[0]).toBe(stockFactoryAdmissionManifest.proxyAddress);
         expect(params[1]).toBe(stockFactoryAdmissionManifest.implementationSlot);
         return implementationWord;
@@ -870,7 +922,7 @@ describe("chain owner application", () => {
         ok: true,
         data: {
           asset: { kind: "erc20", chainId: configuredChainId, address: tokenAddress },
-          block: { blockHash },
+          analysis: { block: { blockHash } },
         },
       },
       officialVerification: {
@@ -880,7 +932,7 @@ describe("chain owner application", () => {
       },
     });
     if ("inspection" in result && result.inspection.ok) {
-      expect(result.officialVerification?.block).toEqual(result.inspection.data.block);
+      expect(result.officialVerification?.block).toEqual(result.inspection.data.analysis.block);
     }
     const stateReferences = requester.calls.flatMap(({ method, params }) => {
       if (method === "eth_call") return [params[1]];

@@ -222,3 +222,23 @@ property-based invariants that cover:
 - every declared rounding direction;
 - conflicting and changed decimals; and
 - adapter and SDK normalization boundaries.
+
+## Contract Control Enumeration
+
+One contract analysis admits at most `8,192` declared function signatures, and
+each canonical signature contains at most `1,024` UTF-16 code units. Core owns
+both limits. The source-verification adapter consumes them and does not copy
+them. The adapter's smaller response-byte limit further bounds the functions
+that one provider response can supply.
+
+One contract-analysis result admits at most `32` observed default-administrator
+members. The limit bounds one public result and one same-block RPC batch.
+An observed count above the limit produces the explicit `limit_exceeded`
+result and no member calls. Returned members are canonical addresses in
+strict code-point order with no duplicates.
+
+This public limit is owned by the contract-analysis core contract. The chain
+adapter verifies that it does not exceed the chain RPC batch limit and does not
+copy or redefine either value. Source-provider response size, request deadline,
+and active-request limits are private adapter resource controls and do not
+change this public enumeration limit.

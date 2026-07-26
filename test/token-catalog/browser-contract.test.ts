@@ -41,7 +41,7 @@ describe("token catalog browser contract", () => {
     expect(browserContracts.tokenCatalogOperationConfirmationContract).toBe(serverConfirmationContract);
     expect(browserContracts.tokenInspectionSuccessSchema).toBe(serverInspectionSuccessSchema);
     const fixedDigest =
-      "0xf4643b4d07351d0996407bdb77664c55d40663fdcc1e4145124650f71872d2cc";
+      "0x31f6a7c3f60dba433a0a8877e13c5f8da1c63eb7142df7c67ddad10e093e817f";
     expect(`0x${createHash("sha256")
       .update(independentCanonicalJson(tokenCatalogContractProjection), "utf8")
       .digest("hex")}`).toBe(fixedDigest);
@@ -90,8 +90,16 @@ describe("token catalog browser contract", () => {
       },
       (candidate: Record<string, unknown>) => {
         const evidence = candidate["evidence"] as Record<string, unknown>;
-        const source = (evidence["sources"] as Array<Record<string, unknown>>)[0];
-        if (source === undefined) throw new TypeError("Token fixture has no evidence source.");
+        const warningObservationIds = new Set(
+          (candidate["warnings"] as Array<Record<string, unknown>>)
+            .flatMap((warning) => warning["observationIds"] as string[]),
+        );
+        const source = (evidence["sources"] as Array<Record<string, unknown>>)
+          .find((candidateSource) =>
+            !warningObservationIds.has(candidateSource["observationId"] as string));
+        if (source === undefined) {
+          throw new TypeError("Token fixture has no observation outside the partial-result warning.");
+        }
         candidate["warnings"] = [{
           code: "partial_result",
           message: "Some requested results are unavailable.",

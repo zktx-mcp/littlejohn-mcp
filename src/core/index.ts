@@ -73,6 +73,9 @@ export {
   accountTokenEvidenceIdentity,
   chainStatusEvidence,
   contractInspectEvidence,
+  createContractAnalysisEvidenceConclusions,
+  createContractAnalysisEvidenceDeclaration,
+  createContractAnalysisEvidenceFragment,
   receiptLogAmountRole,
   transactionEventDecimalsExclusion,
   transactionInspectEvidence,
@@ -81,6 +84,8 @@ export {
 } from "./capability-evidence.js";
 export type {
   AccountTokenEvidenceIdentity,
+  ContractAnalysisEvidenceConclusions,
+  ContractAnalysisEvidenceFragment,
   ConfiguredChainEvidenceFragment,
   ValidatedInputEvidenceFragment,
 } from "./capability-evidence.js";
@@ -243,9 +248,7 @@ export {
 } from "./wallet-connection.js";
 export type { WalletConnectionData } from "./wallet-connection.js";
 export {
-  CapabilityBindingRegistry,
   CapabilityRegistry,
-  bindCapability,
   capabilityIdSchema,
   defineReadCapability,
   getCapabilityDefinitionSnapshot,
@@ -258,18 +261,51 @@ export {
 } from "./capability.js";
 export type {
   AnyReadCapabilityDefinition,
-  CapabilityBinding,
   CapabilityData,
   CapabilityDefinitionSnapshot,
   CapabilityId,
   CapabilityInput,
   DataValidationContext,
   IntrinsicDataValidationContext,
-  ObservationWriter,
   ReadCapabilityEvidence,
   ReadCapabilityDefinition,
   SuccessValidationContext,
 } from "./capability.js";
+export {
+  CapabilityBindingRegistry,
+  bindCapability,
+} from "./capability-execution.js";
+export type {
+  CapabilityBinding,
+  ObservationWriter,
+} from "./capability-execution.js";
+export {
+  assertContractAnalysisForTarget,
+  createContractAnalysisChainClaims,
+  createContractAnalysisSourceClaim,
+  contractAnalysisSchema,
+  contractControlFailureReasons,
+  contractControlInterfaceDefinitions,
+  contractDeclaredFunctionCountLimit,
+  contractDeclaredFunctionUtf16CodeUnitLimit,
+  contractDefaultAdminMemberLimit,
+  exactContractInterfaceSchema,
+  contractProxyMethods,
+  contractProxyUnresolvedReasons,
+  contractRuntimeCodeIdentitySchema,
+  contractSourceVerificationStatuses,
+} from "./contract-analysis.js";
+export type {
+  ContractAnalysis,
+  ContractAnalysisTarget,
+  ContractControlFailureReason,
+  ContractControlEventDefinition,
+  ContractControlFunctionDefinition,
+  ExactContractInterface,
+  ContractRuntimeCodeIdentity,
+  ContractSourceAddress,
+  ContractSourceVerificationStatus,
+} from "./contract-analysis.js";
 export type {
   BoundEvidenceClaimRoleDeclaration,
   BoundEvidenceObservationSlotDeclaration,
@@ -318,6 +354,7 @@ export {
   freshnessSchema,
   invocationIdSchema,
   observationIdSchema,
+  parseSourceReference,
   sourceClassSchema,
   sourceReferenceSchema,
   staticScopeExclusionSchema,
@@ -369,6 +406,9 @@ export {
   createCanonicalClock,
   createCapabilityInvocationAuthority,
   createObservationAuthority,
+  createObservationAuthorityIssuer,
+  assertObservationAuthorityReference,
+  assertObservationAuthorityRegistrationOwns,
 } from "./invocation.js";
 export type {
   CanonicalClock,
@@ -376,6 +416,7 @@ export type {
   HandlerInvocationContext,
   InvocationBoundaryPorts,
   ObservationAuthority,
+  ObservationAuthorityRegistration,
 } from "./invocation.js";
 export { keccak256FromHex } from "./keccak256.js";
 export {

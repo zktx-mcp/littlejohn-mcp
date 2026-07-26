@@ -2,6 +2,7 @@ import { z, type ZodType } from "zod";
 
 import {
   assertCapabilitySuccessChainScope,
+  assertContractAnalysisForTarget,
   applicationFailureSchemaFor,
   blockSelectorSchema,
   canonicalAmountSchema,
@@ -12,10 +13,14 @@ import {
   captureCanonicalJson,
   chainAnchorSchema,
   compareCodePointSequences,
+  contractAnalysisSchema,
   coreContractVersion,
   coreErrorRegistry,
-  createConfiguredChainEvidenceFragment,
   createCapabilitySuccessSchema,
+  createConfiguredChainEvidenceFragment,
+  createContractAnalysisEvidenceConclusions,
+  createContractAnalysisEvidenceDeclaration,
+  createContractAnalysisEvidenceFragment,
   createEvidenceFactIdentityDeclaration,
   createEvidenceObservationTargetDeclaration,
   createEvidenceReplayBinder,
@@ -24,6 +29,7 @@ import {
   createExactConclusionIdentityDeclaration,
   defineApplicationContract as defineCanonicalApplicationContract,
   deepFreezeValue,
+  defineReadCapability,
   erc20AssetIdentitySchema,
   evmAccountIdentitySchema,
   evmAddressSchema,
@@ -80,8 +86,8 @@ export const tokenCatalogContractLimits = Object.freeze({
 });
 
 export const tokenCatalogDigestVersions = Object.freeze({
-  inspection: "3",
-  review: "4",
+  inspection: "4",
+  review: "5",
 } as const);
 
 export const tokenSelectionRevisionSchema = canonicalBase64UrlSchema(
@@ -106,14 +112,7 @@ export type TokenInspectionInput = z.infer<typeof tokenInspectionInputSchema>;
 
 export const tokenInspectionDataSchema = z.object({
   asset: erc20AssetIdentitySchema,
-  block: chainAnchorSchema,
-  runtimeCode: z.object({
-    byteLength: unsignedDecimalSchema.refine(
-      (value) => BigInt(value) > 0n && BigInt(value) <= BigInt(readCapabilityLimits.runtimeCodeBytes),
-      "Runtime code size is outside the inspection boundary.",
-    ),
-    codeHash: hash32Schema,
-  }).strict(),
+  analysis: contractAnalysisSchema,
   totalSupply: canonicalAmountSchema,
   metadata: z.object({
     name: optionalTextObservationSchema,
@@ -121,18 +120,28 @@ export const tokenInspectionDataSchema = z.object({
   }).strict(),
   standards: tokenStandardObservationResultSchema,
 }).strict().superRefine((data, context) => {
+  try {
+    assertContractAnalysisForTarget({
+      chainId: data.asset.chainId,
+      address: data.asset.address,
+      block: data.analysis.block,
+      runtimeCode: data.analysis.targetRuntimeCode,
+    }, data.analysis);
+  } catch {
+    context.addIssue({ code: "custom", message: "Token contract analysis is inconsistent." });
+  }
   if (
-    data.asset.chainId !== data.block.chainId ||
+    data.asset.chainId !== data.analysis.block.chainId ||
+    data.asset.address !== data.analysis.target ||
     data.totalSupply.asset.kind !== "erc20" ||
     data.totalSupply.asset.chainId !== data.asset.chainId ||
     data.totalSupply.asset.address !== data.asset.address ||
-    data.runtimeCode.byteLength === "0" ||
     data.standards.asset.chainId !== data.asset.chainId ||
     data.standards.asset.address !== data.asset.address ||
-    data.standards.block.chainId !== data.block.chainId ||
-    data.standards.block.blockNumber !== data.block.blockNumber ||
-    data.standards.block.blockHash !== data.block.blockHash ||
-    data.standards.block.blockTimestamp !== data.block.blockTimestamp ||
+    data.standards.block.chainId !== data.analysis.block.chainId ||
+    data.standards.block.blockNumber !== data.analysis.block.blockNumber ||
+    data.standards.block.blockHash !== data.analysis.block.blockHash ||
+    data.standards.block.blockTimestamp !== data.analysis.block.blockTimestamp ||
     data.standards.account !== undefined
   ) {
     context.addIssue({ code: "custom", message: "Token inspection identity is inconsistent." });
@@ -163,46 +172,64 @@ export type TokenInspectionSuccess = CapabilitySuccess<TokenInspectionData>;
 
 export const tokenInspectCapabilityId = capabilityIdSchema.parse("token.inspect");
 
+const inspectionFailureCodes = Object.freeze([
+  "internal_error",
+  "invalid_input",
+  "not_found",
+  "rate_limited",
+  "request_aborted",
+  "result_too_large",
+  "runtime_busy",
+  "source_inconsistent",
+  "source_unavailable",
+  "token_total_supply_reverted",
+]);
+
 export const tokenInspectionStaticScopeExclusions = Object.freeze([
   { id: "account_balance", message: "This inspection does not read an account balance." },
   { id: "official_asset_identity", message: "This inspection does not establish official asset identity." },
   { id: "price_and_liquidity", message: "This inspection does not establish price or liquidity." },
   { id: "protocol_identity", message: "This inspection does not establish protocol identity." },
-  { id: "proxy_and_controls", message: "This inspection does not inspect proxy or control authority." },
   { id: "safety", message: "This inspection does not establish token safety." },
-  { id: "source_verification", message: "This inspection does not establish source verification." },
+  {
+    id: "unsupported_contract_controls",
+    message: "This inspection does not infer custom proxy, role, fee, blocklist, mint, or burn controls.",
+  },
   { id: "transaction_support", message: "This inspection does not establish transaction support." },
 ].map((value) => Object.freeze(staticScopeExclusionSchema.parse(value))));
 
 const decimalsConclusion = createExactConclusionIdentityDeclaration("decimals_observed");
 const nameConclusion = createExactConclusionIdentityDeclaration("name_observed");
-const runtimeCodeConclusion =
-  createExactConclusionIdentityDeclaration("runtime_code_observed");
 const symbolConclusion = createExactConclusionIdentityDeclaration("symbol_observed");
 const totalSupplyConclusion =
   createExactConclusionIdentityDeclaration("total_supply_observed");
+const tokenContractAnalysisConclusions = createContractAnalysisEvidenceConclusions();
 
 const tokenInspectionReplayDefinition = createEvidenceReplayDefinition({
   capabilityId: tokenInspectCapabilityId,
   conclusions: [
     decimalsConclusion,
     nameConclusion,
-    runtimeCodeConclusion,
     symbolConclusion,
     totalSupplyConclusion,
+    tokenContractAnalysisConclusions.deploymentObserved,
+    tokenContractAnalysisConclusions.sourceChecked,
+    tokenContractAnalysisConclusions.controlsObserved,
   ],
   warningCodes: ["decimals_unavailable", "partial_result"],
 });
 
 const tokenConfiguredChain =
   createConfiguredChainEvidenceFragment(tokenInspectionReplayDefinition);
+const tokenContractAnalysis = createContractAnalysisEvidenceFragment(
+  tokenInspectionReplayDefinition,
+  tokenContractAnalysisConclusions,
+);
 const tokenFact = (
   identity: string,
 ) => createEvidenceFactIdentityDeclaration(tokenInspectionReplayDefinition, identity);
-const blockFact = tokenFact("block");
 const decimalsFact = tokenFact("decimals");
 const nameFact = tokenFact("name");
-const runtimeCodeFact = tokenFact("runtime_code");
 const symbolFact = tokenFact("symbol");
 const totalSupplyFact = tokenFact("total_supply");
 const tokenTarget = (
@@ -218,12 +245,6 @@ const tokenTarget = (
   sourceClass: "chain_rpc",
   roles: { value: role },
 });
-const blockTarget = tokenTarget(
-  "block",
-  blockFact,
-  "token_inspection_block",
-  "token_inspection_block",
-);
 const decimalsTarget = tokenTarget(
   "decimals",
   decimalsFact,
@@ -231,12 +252,6 @@ const decimalsTarget = tokenTarget(
   "token_decimals",
 );
 const nameTarget = tokenTarget("name", nameFact, "token_name", "token_name");
-const runtimeCodeTarget = tokenTarget(
-  "runtime_code",
-  runtimeCodeFact,
-  "token_runtime_code",
-  "token_runtime_code",
-);
 const symbolTarget = tokenTarget("symbol", symbolFact, "token_symbol", "token_symbol");
 const totalSupplyTarget = tokenTarget(
   "total_supply",
@@ -246,11 +261,10 @@ const totalSupplyTarget = tokenTarget(
 );
 
 const tokenInspectionObservationTargets = Object.freeze([
-  blockTarget,
   decimalsTarget,
   nameTarget,
   tokenConfiguredChain.target,
-  runtimeCodeTarget,
+  ...Object.values(tokenContractAnalysis.targets),
   symbolTarget,
   totalSupplyTarget,
 ]);
@@ -258,26 +272,22 @@ const tokenInspectionObservationTargets = Object.freeze([
 export const tokenInspectionEvidence = Object.freeze({
   definition: tokenInspectionReplayDefinition,
   configuredChain: tokenConfiguredChain,
+  analysis: tokenContractAnalysis,
   facts: Object.freeze({
-    block: blockFact,
     decimals: decimalsFact,
     name: nameFact,
-    runtimeCode: runtimeCodeFact,
     symbol: symbolFact,
     totalSupply: totalSupplyFact,
   }),
   targets: Object.freeze({
-    block: blockTarget,
     decimals: decimalsTarget,
     name: nameTarget,
-    runtimeCode: runtimeCodeTarget,
     symbol: symbolTarget,
     totalSupply: totalSupplyTarget,
   }),
   conclusions: Object.freeze({
     decimalsObserved: decimalsConclusion,
     nameObserved: nameConclusion,
-    runtimeCodeObserved: runtimeCodeConclusion,
     symbolObserved: symbolConclusion,
     totalSupplyObserved: totalSupplyConclusion,
   }),
@@ -314,7 +324,7 @@ const tokenClaim = (
   role: ObservationExpectation["claims"][number]["role"],
   value: CanonicalJson,
   data: TokenInspectionData,
-) => ({ role, value, asset: data.asset, chainAnchor: data.block });
+) => ({ role, value, asset: data.asset, chainAnchor: data.analysis.block });
 
 const tokenExpectation = (
   slot: ObservationExpectation["slot"],
@@ -332,11 +342,14 @@ const createTokenInspectionEvidenceDeclaration = (
   if (data.totalSupply.decimals.status === "not_observed") {
     throw new TypeError("Token inspection decimals evidence is absent.");
   }
-  const block = binder.bind(blockTarget);
+  const analysis = createContractAnalysisEvidenceDeclaration(
+    data.analysis,
+    tokenContractAnalysis,
+    binder,
+  );
   const decimals = binder.bind(decimalsTarget);
   const name = binder.bind(nameTarget);
   const chain = binder.bind(tokenConfiguredChain.target);
-  const runtimeCode = binder.bind(runtimeCodeTarget);
   const symbol = binder.bind(symbolTarget);
   const totalSupply = binder.bind(totalSupplyTarget);
   const decimalsIds = data.totalSupply.decimals.status === "available"
@@ -346,13 +359,15 @@ const createTokenInspectionEvidenceDeclaration = (
     ...(data.metadata.name.status === "available" ? [] : ["name"]),
     ...(data.metadata.symbol.status === "available" ? [] : ["symbol"]),
   ];
+  const analysisPartialFacts = analysis.warningRequirements
+    .filter((warning) => warning.code === "partial_result")
+    .flatMap((warning) => warning.facts);
+  const partialFacts = [
+    ...analysisPartialFacts,
+    ...unavailableMetadataFacts.map((fact) => fact === "name" ? nameFact : symbolFact),
+  ];
   return deepFreezeValue({
     observationExpectations: [
-      tokenExpectation(block.slot, [{
-        role: block.roles.value,
-        value: data.block as unknown as CanonicalJson,
-        chainAnchor: data.block,
-      }]),
       tokenExpectation(decimals.slot, [tokenClaim(
         decimals.roles.value,
         data.totalSupply.decimals.status === "available"
@@ -370,16 +385,9 @@ const createTokenInspectionEvidenceDeclaration = (
       tokenExpectation(chain.slot, [{
         role: chain.roles.chainId,
         value: data.asset.chainId,
-        chainAnchor: data.block,
+        chainAnchor: data.analysis.block,
       }]),
-      tokenExpectation(
-        runtimeCode.slot,
-        [tokenClaim(
-          runtimeCode.roles.value,
-          data.runtimeCode as unknown as CanonicalJson,
-          data,
-        )],
-      ),
+      ...analysis.observationExpectations,
       tokenExpectation(symbol.slot, [tokenClaim(
         symbol.roles.value,
         data.metadata.symbol.status === "available"
@@ -414,7 +422,6 @@ const createTokenInspectionEvidenceDeclaration = (
       },
     ],
     factRequirements: [
-      tokenFactRequirement(blockFact, "observed", block.slot),
       tokenFactRequirement(
         decimalsFact,
         data.totalSupply.decimals.status === "available" ? "observed" : "source_failed",
@@ -426,7 +433,7 @@ const createTokenInspectionEvidenceDeclaration = (
         tokenConfiguredChain.outcome,
         chain.slot,
       ),
-      tokenFactRequirement(runtimeCodeFact, "observed", runtimeCode.slot),
+      ...analysis.factRequirements,
       tokenFactRequirement(
         symbolFact,
         optionalTokenFactOutcome(data.metadata.symbol),
@@ -437,27 +444,26 @@ const createTokenInspectionEvidenceDeclaration = (
     expectedConclusions: [
       decimalsConclusion,
       nameConclusion,
-      runtimeCodeConclusion,
       symbolConclusion,
       totalSupplyConclusion,
+      ...analysis.expectedConclusions,
     ],
     conclusionDrafts: [
       tokenConclusion(decimalsConclusion, decimalsFact),
       tokenConclusion(nameConclusion, nameFact),
-      tokenConclusion(runtimeCodeConclusion, runtimeCodeFact),
       tokenConclusion(symbolConclusion, symbolFact),
       tokenConclusion(totalSupplyConclusion, totalSupplyFact),
+      ...analysis.conclusionDrafts,
     ],
     warningRequirements: [
       ...(data.totalSupply.decimals.status === "available"
         ? []
         : [{ code: "decimals_unavailable" as const, facts: [decimalsFact] }]),
-      ...(unavailableMetadataFacts.length === 0
+      ...(partialFacts.length === 0
         ? []
         : [{
             code: "partial_result" as const,
-            facts: unavailableMetadataFacts.map((fact) =>
-              fact === "name" ? nameFact : symbolFact),
+            facts: Object.freeze([...new Set(partialFacts)]),
           }]),
     ],
   });
@@ -473,6 +479,40 @@ export const tokenInspectionCapabilityEvidence = Object.freeze({
   ) => createTokenInspectionEvidenceDeclaration(data, binder),
   staticScopeExclusions: tokenInspectionStaticScopeExclusions,
 });
+
+export const tokenInspectCapability =
+  defineReadCapability<TokenInspectionInput, TokenInspectionData>({
+    capabilityId: tokenInspectCapabilityId,
+    inputSchema: tokenInspectionInputSchema,
+    dataSchema: tokenInspectionDataSchema,
+    failureCodes: inspectionFailureCodes,
+    evidence: tokenInspectionCapabilityEvidence,
+    validateSuccess: (data, context) => {
+      if (data.asset.chainId !== context.chainId) {
+        throw new TypeError("Token inspection chain scope mismatch.");
+      }
+      assertContractAnalysisForTarget({
+        chainId: data.asset.chainId,
+        address: data.asset.address,
+        block: data.analysis.block,
+        runtimeCode: data.analysis.targetRuntimeCode,
+      }, data.analysis);
+    },
+    validateRequest: (input, data) => {
+      if (
+        input.asset.chainId !== data.asset.chainId ||
+        input.asset.address !== data.asset.address
+      ) {
+        throw new TypeError("Token inspection target mismatch.");
+      }
+      if (
+        input.block.kind === "number" &&
+        input.block.blockNumber !== data.analysis.block.blockNumber
+      ) {
+        throw new TypeError("Token inspection block mismatch.");
+      }
+    },
+  });
 
 const canonicalTokenInspectionSuccessSchema = createCapabilitySuccessSchema(
   tokenInspectCapabilityId,
@@ -663,6 +703,7 @@ const operationReviewSchema = z.object({
   previousSelection: tokenSelectionSchema.nullable(),
   selectionSetRevision: tokenSelectionSetRevisionSchema.nullable(),
   inspection: tokenInspectionSuccessSchema.nullable(),
+  inspectionDigest: hash32Schema.nullable(),
   officialSnapshotRevision: canonicalBase64UrlSchema(16).nullable(),
   officialEvidence: tokenOfficialSelectionEvidenceSchema.nullable(),
   reviewDigest: hash32Schema,
@@ -804,6 +845,12 @@ const validateTokenCatalogOperation = (
     addIssue("Token operation review does not match its kind.");
   }
   const inspection = operation.review.inspection;
+  const inspectionDigest = operation.review.inspectionDigest;
+  if (
+    (inspection === null) !== (inspectionDigest === null) ||
+    (inspection !== null &&
+      inspectionDigest !== tokenInspectionDigest(inspection))
+  ) addIssue("Token operation inspection digest is invalid.");
   if (inspection !== null && (
     inspection.data.asset.chainId !== operation.asset.chainId ||
     inspection.data.asset.address !== operation.asset.address
@@ -811,7 +858,10 @@ const validateTokenCatalogOperation = (
   if (
     inspection !== null &&
     operation.review.officialEvidence !== null &&
-    !sameChainAnchor(operation.review.officialEvidence.verificationBlock, inspection.data.block)
+    !sameChainAnchor(
+      operation.review.officialEvidence.verificationBlock,
+      inspection.data.analysis.block,
+    )
   ) addIssue("Token operation official verification anchor is invalid.");
   if (operation.state !== "completed" || operation.result === null) return;
   if (!("selection" in operation.result)) {

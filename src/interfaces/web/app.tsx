@@ -50,6 +50,10 @@ import {
   isBrowserResponseCode,
 } from "./browser-client.js";
 import { createBrowserSessionRecovery } from "./browser-session-recovery.js";
+import {
+  ContractInspectionView,
+  TokenInspectionAnalysisDetails,
+} from "./contract-inspection-view.js";
 import type { NotificationNotice } from "./notification.js";
 import { createBrowserRequestAuthority, type BrowserRequest } from "./request-authority.js";
 import { ReferenceMarketView } from "./reference-market-view.js";
@@ -63,7 +67,6 @@ import {
   startTokenRemoval,
 } from "./token-catalog-client.js";
 import {
-  tokenInspectionFields,
   tokenOperationCopy,
   tokenOperationNotification,
 } from "./token-catalog-view.js";
@@ -332,11 +335,13 @@ const TokenOperationDetails = ({
         {operation.review.officialEvidence === null ? null : (
           <><dt>Official asset UID</dt><dd>{operation.review.officialEvidence.assetUid}</dd></>
         )}
-        {(operation.review.inspection === null ? [] : tokenInspectionFields(operation.review.inspection)).flatMap((field) => [
-          <dt key={`${field.label}:label`}>{field.label}</dt>,
-          <dd key={`${field.label}:value`}>{field.value}</dd>,
-        ])}
+        <dt>Inspection digest</dt>
+        <dd>{operation.review.inspectionDigest ?? "Not applicable"}</dd>
+        <dt>Review digest</dt><dd>{operation.review.reviewDigest}</dd>
       </dl>
+      {operation.review.inspection === null ? null : (
+        <TokenInspectionAnalysisDetails inspection={operation.review.inspection} />
+      )}
       {operation.interactionInterface === "cli" ? (
         <div className="notice"><strong>Read-only review</strong><p>Continue this token change in the CLI.</p></div>
       ) : null}
@@ -1093,6 +1098,7 @@ export const App = () => {
           {walletNavigationLabel(currentWallet)}
         </button>
       </nav>
+      <ContractInspectionView />
       <ReferenceMarketView walletConnected={currentAccount !== undefined} csrfToken={csrfToken} />
       {state.status === "loading" ? (
         <main className="intro">

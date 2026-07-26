@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { browserCsrfHeaderName } from "../../../src/interfaces/browser-contract.js";
+import {
+  browserCsrfHeaderName,
+  publicInspectionPaths,
+} from "../../../src/interfaces/browser-contract.js";
 import type { BrowserFetch } from "../../../src/interfaces/web/browser-client.js";
 import {
   cancelTokenOperation,
   confirmTokenOperation,
+  inspectTokenContract,
   loadCurrentTokenOperation,
   loadTokenOperation,
   startTokenSelection,
@@ -64,6 +68,52 @@ const fixtures = async () => {
 };
 
 describe("token catalog browser client", () => {
+  it("uses the public token route without credentials and applies complete public validation", async () => {
+    const fixture = await fixtures();
+    const input = {
+      asset: fixture.inspection.data.asset,
+      block: { kind: "latest" as const },
+    };
+    const valid = queuedFetch([jsonResponse(200, fixture.inspection)]);
+    const signal = new AbortController().signal;
+
+    await expect(inspectTokenContract(input, { request: valid.request, signal }))
+      .resolves.toEqual(fixture.inspection);
+    expect(valid.requests).toEqual([{
+      path: publicInspectionPaths.tokenQueries,
+      init: expect.objectContaining({
+        method: "POST",
+        credentials: "omit",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+        signal,
+      }),
+    }]);
+
+    if (fixture.inspection.data.metadata.name.status !== "available") {
+      throw new Error("The token inspection fixture has no name claim.");
+    }
+    const changedClaim = {
+      ...fixture.inspection,
+      data: {
+        ...fixture.inspection.data,
+        metadata: {
+          ...fixture.inspection.data.metadata,
+          name: {
+            ...fixture.inspection.data.metadata.name,
+            value: "Different Token",
+          },
+        },
+      },
+    };
+    const invalid = queuedFetch([jsonResponse(200, changedClaim)]);
+    await expect(inspectTokenContract(input, { request: invalid.request }))
+      .rejects.toMatchObject({
+        message: "The token inspection response is invalid.",
+      });
+  });
+
   it("starts membership addition with one canonical browser-control request", async () => {
     const fixture = await fixtures();
     const transport = queuedFetch([jsonResponse(200, { operation: fixture.add })]);

@@ -1,4 +1,6 @@
 import {
+  parseCapabilityInput,
+  parseCapabilitySuccess,
   parseEvmAddressInput,
 } from "../../core/browser.js";
 import {
@@ -6,17 +8,21 @@ import {
   tokenCatalogBrowserRoutes,
   tokenCatalogCurrentOperationSchema,
   tokenCatalogOperationConfirmationContract,
+  tokenInspectCapability,
   type TokenCatalogCancellationResult,
   type TokenCatalogConfirmedOperation,
   type TokenCatalogOperation,
   type TokenCatalogOperationResult,
   type TokenCatalogOperationStartResult,
+  type TokenInspectionSuccess,
   type TokenSelection,
 } from "../../token-catalog/browser.js";
+import { publicInspectionPaths } from "../browser-contract.js";
 import {
   BrowserResponseError,
   controlBrowserActionJson,
   invalidBrowserResponse,
+  queryPublicBrowserJson,
   readBrowserJson,
   type BrowserRequestOptions,
 } from "./browser-client.js";
@@ -29,6 +35,9 @@ import { createBrowserOperationId } from "./operation-id.js";
 const invalidCatalogResponse = (): BrowserResponseError =>
   invalidBrowserResponse("The account token response is invalid.");
 
+const invalidInspectionResponse = (): BrowserResponseError =>
+  invalidBrowserResponse("The token inspection response is invalid.");
+
 type TokenChainId = TokenSelection["asset"]["chainId"];
 type TokenAddress = TokenSelection["asset"]["address"];
 
@@ -40,6 +49,27 @@ const tokenAsset = (chainId: TokenChainId, addressInput: unknown) => Object.free
 
 export const parseTokenAddressInput = (input: unknown): TokenAddress =>
   parseEvmAddressInput(input);
+
+export const inspectTokenContract = async (
+  input: unknown,
+  options: BrowserRequestOptions = {},
+): Promise<TokenInspectionSuccess> => {
+  const request = parseCapabilityInput(tokenInspectCapability, input);
+  try {
+    return parseCapabilitySuccess(
+      tokenInspectCapability,
+      request,
+      await queryPublicBrowserJson(
+        publicInspectionPaths.tokenQueries,
+        request,
+        options,
+      ),
+    );
+  } catch (error) {
+    if (error instanceof BrowserResponseError) throw error;
+    throw invalidInspectionResponse();
+  }
+};
 
 export const startTokenSelection = async (
   chainId: TokenChainId,

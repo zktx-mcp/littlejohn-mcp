@@ -10,6 +10,7 @@ export type {
 export { chainErrorRegistry, chainInterfaceErrorMappings } from "./errors.js";
 export {
   createStockFactoryCallEncoder,
+  createContractAnalysisCallEncoder,
   createTokenStandardCallEncoder,
   createErc20CallEncoder,
   decodeAbiAddressResult,
@@ -19,10 +20,12 @@ export {
   decodeErc20TotalSupplyResult,
 } from "./evm-standard.js";
 export type {
+  ContractAnalysisCallEncoder,
   Erc20CallEncoder,
   StockFactoryCallEncoder,
   TokenStandardCallEncoder,
 } from "./evm-standard.js";
+export { createContractAnalysisChainReadPort } from "./contract-analysis.js";
 export { createChainReadService } from "./handlers.js";
 export type { ChainReadService } from "./handlers.js";
 export {

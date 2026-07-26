@@ -13,6 +13,7 @@ import { RuntimeOperationError } from "../../src/runtime/errors.js";
 import { createTokenCatalogApplication } from "../../src/token-catalog/application.js";
 import {
   tokenCatalogOperationSchema,
+  tokenInspectionDigest,
   tokenSelectionDetailSchema,
   type TokenCatalogAwaitingOperation,
   type TokenCatalogOperation,
@@ -192,6 +193,7 @@ describe("token catalog internal application", () => {
         previousSelection: null,
         selectionSetRevision: null,
         inspection,
+        inspectionDigest: tokenInspectionDigest(inspection),
         officialSnapshotRevision: snapshotRevision,
         officialEvidence: null,
         reviewDigest: `0x${"ab".repeat(32)}`,
@@ -259,6 +261,7 @@ describe("token catalog internal application", () => {
         previousSelection: null,
         selectionSetRevision: null,
         inspection,
+        inspectionDigest: tokenInspectionDigest(inspection),
         officialSnapshotRevision: snapshotRevision,
         officialEvidence: null,
         reviewDigest: `0x${"ab".repeat(32)}`,
@@ -327,6 +330,7 @@ describe("token catalog internal application", () => {
         previousSelection: null,
         selectionSetRevision: null,
         inspection,
+        inspectionDigest: tokenInspectionDigest(inspection),
         officialSnapshotRevision: snapshotRevision,
         officialEvidence: null,
         reviewDigest: `0x${"ab".repeat(32)}`,

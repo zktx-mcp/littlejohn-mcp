@@ -294,7 +294,6 @@ describe("wallet browser routes", () => {
       ["GET", browserOperationPath(operationId), "browser_read", "canonical_json", "none"],
       ["POST", browserOperationConfirmationPath(operationId), "browser_control", "canonical_json", "declared_control"],
       ["POST", browserOperationCancellationPath(operationId), "browser_control", "canonical_json", "declared_control"],
-      ["POST", tokenCatalogBrowserRoutes.inspections, "browser_query", "canonical_json", "none"],
       ["POST", tokenCatalogBrowserRoutes.operations, "browser_control", "canonical_json", "declared_control"],
       ["GET", tokenCatalogBrowserRoutes.currentOperation, "browser_read", "canonical_json", "none"],
       ["GET", tokenCatalogBrowserRoutes.operation(operationId), "browser_read", "canonical_json", "none"],
@@ -419,16 +418,16 @@ describe("wallet browser routes", () => {
     expect(registry.match("GET", "/tokens").status).toBe("not_found");
     const currentMatch = registry.match("GET", browserWalletApiPaths.currentOperation);
     const startMatch = registry.match("POST", browserWalletApiPaths.operations);
-    const tokenQueryMatch = registry.match("POST", tokenCatalogBrowserRoutes.inspections);
     const tokenControlMatch = registry.match("POST", tokenCatalogBrowserRoutes.operations);
     if (
       currentMatch.status !== "matched" ||
       startMatch.status !== "matched" ||
-      tokenQueryMatch.status !== "matched" ||
       tokenControlMatch.status !== "matched"
     ) {
       throw new Error("Expected wallet browser API routes.");
     }
+    expect(registry.match("POST", "/api/v1/token-catalog/inspections").status)
+      .toBe("not_found");
     const readInput = {
       host: [fixedHostHeader],
       origin: [],
@@ -468,20 +467,6 @@ describe("wallet browser routes", () => {
     expect(registry.validateSecurity(startMatch, {
       ...controlInput,
       csrfToken: [],
-    })).toEqual({ ok: false, code: "unauthorized" });
-    const queryInput = {
-      ...readInput,
-      contentType: [jsonContentType],
-      bodyLength: 43,
-    } as const;
-    expect(registry.validateSecurity(tokenQueryMatch, queryInput)).toEqual({ ok: true });
-    expect(registry.validateSecurity(tokenQueryMatch, {
-      ...queryInput,
-      cookie: [],
-    })).toEqual({ ok: false, code: "unauthorized" });
-    expect(registry.validateSecurity(tokenQueryMatch, {
-      ...queryInput,
-      csrfToken: [csrfToken],
     })).toEqual({ ok: false, code: "unauthorized" });
     expect(registry.validateSecurity(tokenControlMatch, controlInput)).toEqual({ ok: true });
     credentials.close();

@@ -471,9 +471,9 @@ const assertPackagedClaimsDigests = (content, label) => {
     !Array.isArray(sources) ||
     sources.length === 0 ||
     sources.some((source) =>
-      typeof source?.claimsDigest !== "string" ||
-      !/^[A-Za-z0-9_-]{43}$/u.test(source.claimsDigest))
-  ) throw new TypeError(`${label} does not carry every source claims digest.`);
+      typeof source?.recordDigest !== "string" ||
+      !/^[A-Za-z0-9_-]{43}$/u.test(source.recordDigest))
+  ) throw new TypeError(`${label} does not carry every source record digest.`);
 };
 
 const readPackagedRuntimeIdentity = async () => {
@@ -498,7 +498,7 @@ const readPackagedRuntimeIdentity = async () => {
     Array.isArray(identity) ||
     JSON.stringify(Object.keys(identity).sort()) !== JSON.stringify(expectedFields) ||
     identity.challenge !== challenge ||
-    identity.runtimeProtocolVersion !== 9 ||
+    identity.runtimeProtocolVersion !== 10 ||
     typeof identity.profileId !== "string" ||
     !/^[A-Za-z0-9_-]{22}$/u.test(identity.profileId) ||
     typeof identity.ownerInstanceId !== "string" ||
@@ -509,7 +509,7 @@ const readPackagedRuntimeIdentity = async () => {
     !/^[A-Za-z0-9_-]{43}$/u.test(identity.proof) ||
     typeof identity.ownerRevision !== "string" ||
     !/^(?:0|[1-9][0-9]*)$/u.test(identity.ownerRevision)
-  ) throw new TypeError("Packaged runtime identity is not the exact protocol-9 contract.");
+  ) throw new TypeError("Packaged runtime identity is not the exact protocol-10 contract.");
   return identity;
 };
 
@@ -604,7 +604,8 @@ const assertTokenInspection = (inspection, fakeRpc) => {
     inspection.data?.asset?.kind !== asset.kind ||
     inspection.data.asset.chainId !== asset.chainId ||
     inspection.data.asset.address !== asset.address ||
-    inspection.data?.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
+    inspection.data?.analysis?.target !== asset.address ||
+    inspection.data.analysis.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
     inspection.data?.totalSupply?.raw !== fakeRpc.token.totalSupplyRaw ||
     inspection.data?.totalSupply?.decimals?.status !== "available" ||
     inspection.data.totalSupply.decimals.value !== fakeRpc.token.decimals ||
@@ -1011,7 +1012,7 @@ const assertPackagedPersistence = (inspection, runtimeIdentity) => {
     Array.isArray(owner) ||
     owner.profileId !== runtimeIdentity.profileId ||
     owner.configurationMac !== runtimeIdentity.configurationMac ||
-    owner.protocolVersion !== 9
+    owner.protocolVersion !== 10
   ) throw new TypeError("Packaged SQLite owner configuration identity is invalid.");
   const connection = inspection.connection;
   if (
@@ -1134,8 +1135,8 @@ export const verifyPackagedIntegration = async (prepared) => {
     ) {
       throw new TypeError("Packaged chain status schema contains a parallel chain identity.");
     }
-    if (!jsonSchemaRequiresProperty(chainStatusTool?.outputSchema, "claimsDigest")) {
-      throw new TypeError("Packaged chain status schema does not require source claim digests.");
+    if (!jsonSchemaRequiresProperty(chainStatusTool?.outputSchema, "recordDigest")) {
+      throw new TypeError("Packaged chain status schema does not require source record digests.");
     }
     const catalog = await firstMcp.callTool("read_list_capabilities");
     const catalogEntries = catalog.structuredContent?.capabilities;
@@ -1144,7 +1145,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     }
     const capabilityIds = catalogEntries.map((entry) => entry?.capabilityId);
     if (
-      catalog.structuredContent?.contractVersion !== "8" ||
+      catalog.structuredContent?.contractVersion !== "9" ||
       JSON.stringify(capabilityIds) !== JSON.stringify(expectedCapabilityIds) ||
       catalogEntries.some((entry) =>
         entry?.maximumSuccessUtf8Bytes !== 8_388_607 ||
@@ -1199,15 +1200,20 @@ export const verifyPackagedIntegration = async (prepared) => {
     );
     assertPackagedClaimsDigests(contractContent, "Packaged MCP contract inspection");
     if (
-      contractContent.data?.address !== fakeRpc.semanticReads.contract.address ||
-      contractContent.data?.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
-      contractContent.data?.runtimeCode?.status !== "present" ||
-      contractContent.data.runtimeCode.bytecode !== fakeRpc.semanticReads.contract.runtimeCode ||
-      contractContent.data.runtimeCode.byteLength !== fakeRpc.semanticReads.contract.byteLength ||
-      contractContent.data.runtimeCode.codeHash !== fakeRpc.semanticReads.contract.codeHash ||
+      contractContent.data?.analysis?.target !== fakeRpc.semanticReads.contract.address ||
+      contractContent.data.analysis.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
+      contractContent.data.analysis.targetRuntimeCode?.byteLength !==
+        fakeRpc.semanticReads.contract.byteLength ||
+      contractContent.data.analysis.targetRuntimeCode?.codeHash !==
+        fakeRpc.semanticReads.contract.codeHash ||
+      contractContent.data?.runtimeCode !== fakeRpc.semanticReads.contract.runtimeCode ||
       JSON.stringify(contractContent.evidence?.conclusions?.map(({ id }) => id)) !==
-        JSON.stringify(["account_observed", "runtime_code_observed"]) ||
-      contractContent.evidence?.coverage?.status !== "complete"
+        JSON.stringify([
+          "account_observed",
+          "contract_deployment_observed",
+          "contract_source_checked",
+        ]) ||
+      contractContent.evidence?.coverage?.status !== "partial"
     ) throw new TypeError("Packaged MCP contract inspection is invalid.");
 
     const sourceResponseLimitBytes = 8 * 1024 * 1024;
@@ -1656,7 +1662,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     const officialStart = await firstMcp.callTool("token_start_addition", {
       asset: officialCandidateAsset,
     });
-    assertRpcRequestBudget(fakeRpc, officialAdditionRequestCount, 21, "Official token addition");
+    assertRpcRequestBudget(fakeRpc, officialAdditionRequestCount, 24, "Official token addition");
     const pendingTokenOperation = tokenStartOperation(officialStart);
     if (
       pendingTokenOperation.kind !== "add" ||
@@ -1771,7 +1777,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     const customStart = await firstMcp.callTool("token_start_addition", {
       asset: catalogAsset,
     });
-    assertRpcRequestBudget(fakeRpc, customAdditionRequestCount, 21, "Custom token addition");
+    assertRpcRequestBudget(fakeRpc, customAdditionRequestCount, 24, "Custom token addition");
     const pendingCustomAddition = tokenStartOperation(customStart);
     if (
       pendingCustomAddition.kind !== "add" ||

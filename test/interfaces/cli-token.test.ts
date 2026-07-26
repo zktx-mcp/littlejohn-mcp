@@ -207,7 +207,10 @@ describe("token CLI", () => {
     expect(output.output.join("\n")).toContain("Add token");
     expect(output.output.join("\n")).toContain("Block hash:");
     expect(output.output.join("\n")).toContain("Runtime code hash:");
-    expect(output.output.join("\n")).toContain("Evidence coverage: complete");
+    expect(output.output.join("\n")).toContain("Evidence coverage: partial");
+    expect(output.output.join("\n")).toContain(
+      "Source target: no_record_observed",
+    );
     expect(output.output.join("\n")).toContain("Token added.");
     expect(output.output.join("\n").match(/Reviewed token inspection/gu)).toHaveLength(1);
     expect(output.output.join("\n")).not.toContain(operationSet.awaiting.review.reviewDigest);

@@ -124,7 +124,7 @@ type _WalletConfigurationExposesNoProviderField = Assert<Equal<
 type _PrivateStoreDirectoryKeys = Assert<Equal<keyof WalletPrivateStoreDirectoryPort, "ensureDirectory">>;
 type _ChainPortKeys = Assert<Equal<
   keyof ChainOwnerBootstrapPort,
-  "configuration" | "sourceAuthority" | "capabilityAuthority"
+  "configuration" | "sourceAuthority" | "capabilityAuthority" | "contractSourceVerification"
 >>;
 type _ChainPortConfiguration = Assert<Equal<
   ChainOwnerBootstrapPort["configuration"],
@@ -157,7 +157,8 @@ type _RuntimeHandleKeys = Assert<Equal<
 >>;
 type _RuntimeOptionKeys = Assert<Equal<
   keyof LocalRuntimeOptions<TestActiveWallet, TestWalletOperations>,
-  "environment" | "now" | "robinhoodOfficialAssetSourceClient" | "walletApplicationFactory" |
+  "environment" | "now" | "robinhoodOfficialAssetSourceClient" |
+    "contractSourceVerificationFactory" | "walletApplicationFactory" |
     "chainApplicationFactory" | "interfaceApplicationFactory"
 >>;
 type _NoFactoryPrefix = Assert<{} extends LocalRuntimeOptions<TestActiveWallet, TestWalletOperations> ? true : false>;

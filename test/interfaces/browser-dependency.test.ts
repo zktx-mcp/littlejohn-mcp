@@ -39,6 +39,8 @@ const browserContractSource = resolve(repositoryRoot, "src/interfaces/browser-co
 const webApplicationSource = resolve(webSourceRoot, "app.tsx");
 const walletClientSource = resolve(webSourceRoot, "wallet-client.ts");
 const browserClientSource = resolve(webSourceRoot, "browser-client.ts");
+const contractInspectionClientSource = resolve(webSourceRoot, "contract-inspection-client.ts");
+const contractInspectionViewSource = resolve(webSourceRoot, "contract-inspection-view.tsx");
 const tokenCatalogClientSource = resolve(webSourceRoot, "token-catalog-client.ts");
 const accountAssetsClientSource = resolve(webSourceRoot, "account-assets-client.ts");
 const accountAssetsPageSource = resolve(webSourceRoot, "account-assets-page.tsx");
@@ -65,6 +67,10 @@ const accountAssetsViewSource = resolve(repositoryRoot, "src/account-assets/view
 const referenceMarketContractsSource = resolve(repositoryRoot, "src/market-portfolio/contracts.ts");
 const referenceMarketDeliverySource = resolve(repositoryRoot, "src/interfaces/reference-market-delivery.ts");
 const referenceMarketCoreSource = resolve(repositoryRoot, "src/core/reference-market.ts");
+const capabilitySource = resolve(repositoryRoot, "src/core/capability.ts");
+const capabilitiesSource = resolve(repositoryRoot, "src/core/capabilities.ts");
+const contractAnalysisSource = resolve(repositoryRoot, "src/core/contract-analysis.ts");
+const erc20EventsSource = resolve(repositoryRoot, "src/core/erc20-events.ts");
 const invocationSource = resolve(repositoryRoot, "src/core/invocation.ts");
 const allowedVirtualModules = new Set([
   "\0commonjsHelpers.js",
@@ -89,6 +95,8 @@ describe("browser runtime dependency boundary", () => {
   it("keeps the allowlist closed against server and foreign runtime families", () => {
     const allowed = [
       resolve(webSourceRoot, "main.tsx"),
+      contractInspectionClientSource,
+      contractInspectionViewSource,
       operationStateSource,
       resolve(repositoryRoot, "src/wallet/operation-contract.ts"),
       resolve(repositoryRoot, "src/core/wallet-connection.ts"),
@@ -106,6 +114,10 @@ describe("browser runtime dependency boundary", () => {
       browserContractSource,
       referenceMarketDeliverySource,
       referenceMarketCoreSource,
+      capabilitySource,
+      capabilitiesSource,
+      contractAnalysisSource,
+      erc20EventsSource,
       invocationSource,
       resolve(nodeModulesRoot, "react/index.js"),
       resolve(nodeModulesRoot, "react-dom/client.js"),
@@ -121,6 +133,8 @@ describe("browser runtime dependency boundary", () => {
       resolve(repositoryRoot, "src/runtime/control-credential.ts"),
       resolve(repositoryRoot, "src/runtime/database.ts"),
       resolve(repositoryRoot, "src/chain/rpc.ts"),
+      resolve(repositoryRoot, "src/core/capability-execution.ts"),
+      resolve(repositoryRoot, "src/intelligence/sourcify.ts"),
       resolve(repositoryRoot, "src/token-catalog/contracts.ts"),
       resolve(repositoryRoot, "src/token-catalog/errors.ts"),
       resolve(repositoryRoot, "src/token-catalog/index.ts"),
@@ -325,6 +339,8 @@ describe("browser runtime dependency boundary", () => {
       const moduleIds = chunks.flatMap((chunk) => Object.keys(chunk.modules)).sort();
       expect(moduleIds).toContain(browserContractSource);
       expect(moduleIds).toContain(browserClientSource);
+      expect(moduleIds).toContain(contractInspectionClientSource);
+      expect(moduleIds).toContain(contractInspectionViewSource);
       expect(moduleIds).toContain(walletClientSource);
       expect(moduleIds).toContain(tokenCatalogClientSource);
       expect(moduleIds).toContain(accountAssetsClientSource);
@@ -340,6 +356,10 @@ describe("browser runtime dependency boundary", () => {
       expect(moduleIds).toContain(tokenCatalogBrowserSource);
       expect(moduleIds).toContain(tokenCatalogContractSchemaSource);
       expect(moduleIds).toContain(tokenCatalogErrorDefinitionsSource);
+      expect(moduleIds).toContain(capabilitySource);
+      expect(moduleIds).toContain(capabilitiesSource);
+      expect(moduleIds).toContain(contractAnalysisSource);
+      expect(moduleIds).toContain(erc20EventsSource);
       expect(moduleIds).toContain(accountAssetsBrowserSource);
       expect(moduleIds).toContain(accountAssetsContractsSource);
       expect(moduleIds).toContain(accountAssetsErrorRegistrySource);

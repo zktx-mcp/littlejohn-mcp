@@ -45,18 +45,21 @@ satisfy a record format. It records the source version or revision when the
 source owner publishes a stable one. Its conclusion remains limited to the
 identity or definition and does not imply current availability or live state.
 
-Every public evidence source records `claimsDigest`, the SHA-256 digest of the
-canonical ordered claims accepted for that observation. Public validation
-derives the expected claims from the canonical request and result and rejects a
-different, missing, or malformed digest.
+Every public evidence source records `recordDigest`, the SHA-256 digest of the
+complete canonical public source record, excluding the digest field itself,
+and the canonical ordered claims accepted for that observation. Public
+validation derives the expected claims from the canonical request and result,
+recomputes the digest from those claims and the public source record, and
+rejects a changed, missing, or malformed digest.
 
-`claimsDigest` establishes only consistency between the public result and the
-claims accepted by the local producer while the rest of the result is
-unchanged. It is not a signature, message authentication code, external
-attestation, safety conclusion, or proof that the local runtime is
+`recordDigest` establishes only consistency between the public source record,
+the public result, and the claims accepted by the local producer while the
+digest remains unchanged. It is not a signature, message authentication code,
+external attestation, safety conclusion, or proof that the local runtime is
 uncompromised. A party able to replace the complete result can replace the
 digest. Credentials, secret source identifiers, and provider-only values that
-cannot be derived from the public request or result never enter this digest.
+cannot be derived from the public source record, request, or result never enter
+this digest.
 
 A source-owner or standards link used only to define a normative policy term is
 a citation, not runtime evidence and not a support claim. Any current support,
@@ -195,6 +198,32 @@ source coverage.
   proof of safety.
 - Provider disagreement is conflicting evidence. It fails closed when it affects
   identity, transaction meaning, numeric interpretation, or authorization.
+
+## Contract Source And Control Evidence
+
+Contract source verification binds one provider record to one exact chain,
+address, and observed runtime bytecode. Only an exact runtime-bytecode match
+may supply an ABI for declared-function or control analysis. A non-exact match,
+missing record, unavailable lookup, malformed response, conflicting identity,
+or runtime-bytecode mismatch establishes no ABI-dependent conclusion.
+
+Proxy analysis records only the supported standard form that the pinned chain
+reads establish. Absence of a supported proxy marker does not establish that a
+contract is direct. An unresolved implementation prevents ABI-dependent
+control conclusions.
+
+An admitted exact ABI may establish its complete declared function signatures
+and whether the fixed owner, pause, and default-administrator interfaces are
+declared. A positive control result additionally requires the applicable
+pinned chain read at the same canonical block. A missing, non-exact, or
+unavailable ABI never establishes that a control is absent.
+
+Source unavailability, unsupported proxy forms, unrecognized contract-specific
+controls, and non-enumerable roles remain explicit limitations. Contract
+source, proxy, declared-function, owner, pause, administrator, and
+unavailability observations are evidence. They are not a safety score,
+malicious-contract classification, honeypot decision, transaction approval, or
+investment recommendation.
 
 ## Public Claims
 

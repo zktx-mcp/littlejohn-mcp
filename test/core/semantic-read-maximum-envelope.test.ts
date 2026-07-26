@@ -10,6 +10,8 @@ import {
   canonicalJsonStringify,
   chainAnchorSchema,
   chainStatusCapability,
+  contractAnalysisSchema,
+  contractDeclaredFunctionCountLimit,
   contractInspectCapability,
   getCapabilityDefinitionSnapshot,
   maximumEvmBalanceRaw,
@@ -42,6 +44,7 @@ import {
 } from "../../src/runtime/http-boundary.js";
 import { referenceMarketApplicationContracts } from "../../src/market-portfolio/application-contracts.js";
 import { tokenInspectCapability } from "../../src/token-catalog/contracts.js";
+import { createSourcifyContractSourceVerification } from "../../src/intelligence/sourcify.js";
 import {
   tokenAddress,
   chainId as tokenChainId,
@@ -51,6 +54,7 @@ import {
   ScriptedRpc,
   configuredChainId,
   createChainHandlerHarness,
+  handlerClock,
   rpcValue,
 } from "../chain/handler-harness.js";
 import {
@@ -69,6 +73,7 @@ const transactionHash = parseHash32(`0x${"33".repeat(32)}`);
 const blockHash = parseHash32(`0x${"44".repeat(32)}`);
 const otherHash = parseHash32(`0x${"55".repeat(32)}`);
 const blockTimestamp = "0x65a00000";
+const sourcifyMaximumFixtureBytes = 1_048_576;
 
 let encoder: Erc20CallEncoder;
 
@@ -94,10 +99,14 @@ const independentCanonicalJson = (value: unknown): string => {
 const canonicalUtf8Bytes = (value: unknown): number =>
   Buffer.byteLength(independentCanonicalJson(value), "utf8");
 
-const independentClaimsDigest = (claims: readonly unknown[]): string =>
+const independentRecordDigest = (
+  source: Readonly<Record<string, unknown>>,
+  claims: readonly unknown[],
+): string =>
   createHash("sha256").update(independentCanonicalJson({
     claims,
-    digestKind: "evidence_source_claims",
+    digestKind: "evidence_source_record",
+    source,
   }), "utf8").digest("base64url");
 
 const providerBlock = (transactions: readonly string[] = []) => Object.freeze({
@@ -107,13 +116,62 @@ const providerBlock = (transactions: readonly string[] = []) => Object.freeze({
   transactions,
 });
 
+const maximumSourcifyResponse = (
+  address: string,
+  runtimeCode: string,
+): Readonly<{ readonly body: string; readonly nextBodyBytes: number }> => {
+  const emptyBody = JSON.stringify({
+    chainId: "4663",
+    address,
+    runtimeMatch: "exact_match",
+    runtimeBytecode: { onchainBytecode: runtimeCode },
+    abi: [],
+  });
+  if (!emptyBody.endsWith("[]}")) {
+    throw new TypeError("The source-response fixture shape is invalid.");
+  }
+  const prefix = emptyBody.slice(0, -3);
+  const entryTexts: string[] = [];
+  let bodyBytes = Buffer.byteLength(emptyBody, "utf8");
+  let nextBodyBytes = 0;
+  for (let index = 0; index < contractDeclaredFunctionCountLimit; index += 1) {
+    const entryText = JSON.stringify({
+      type: "function",
+      name: `f${index.toString().padStart(4, "0")}${"x".repeat(48)}`,
+      inputs: [],
+      outputs: [],
+      stateMutability: "view",
+    });
+    const candidateBytes = bodyBytes + Buffer.byteLength(entryText, "utf8") +
+      (entryTexts.length === 0 ? 0 : 1);
+    if (candidateBytes > sourcifyMaximumFixtureBytes) {
+      nextBodyBytes = candidateBytes;
+      break;
+    }
+    entryTexts.push(entryText);
+    bodyBytes = candidateBytes;
+  }
+  const body = `${prefix}[${entryTexts.join(",")}]}`;
+  if (nextBodyBytes === 0) {
+    throw new TypeError("The source-response fixture did not reach its byte boundary.");
+  }
+  return Object.freeze({ body, nextBodyBytes });
+};
+
 const invokeChain = async <Definition extends AnyReadCapabilityDefinition>(
   definition: Definition,
   input: unknown,
   steps: ConstructorParameters<typeof ScriptedRpc>[0],
+  contractSourceVerification?: Parameters<typeof createChainHandlerHarness>[0][
+    "contractSourceVerification"
+  ],
 ): Promise<CapabilitySuccess<CapabilityData<Definition>> | ApplicationFailure> => {
   const rpc = new ScriptedRpc(steps);
-  const harness = createChainHandlerHarness({ rpc, encoder });
+  const harness = createChainHandlerHarness({
+    rpc,
+    encoder,
+    ...(contractSourceVerification === undefined ? {} : { contractSourceVerification }),
+  });
   try {
     const result = await harness.invoke(definition, input);
     if (!result.ok && result.error.code === "internal_error") {
@@ -246,13 +304,16 @@ const exactWalletBoundary = async () => {
     evidence: {
       ...exact.evidence,
       sources: exact.evidence.sources.map((source) => source.purpose === "wallet_sdk_sessions"
-        ? {
-            ...source,
-            claimsDigest: independentClaimsDigest([{
+        ? (() => {
+            const { recordDigest: _recordDigest, ...sourceRecord } = source;
+            return {
+              ...sourceRecord,
+              recordDigest: independentRecordDigest(sourceRecord, [{
               role: "wallet_sdk_state",
               value: { status: "unresolved", sessionCount: `${sessionCount}9` },
-            }]),
-          }
+              }]),
+            };
+          })()
         : source),
     },
   };
@@ -335,6 +396,16 @@ export const verifySemanticReadMaximumEnvelopes = async (): Promise<void> => {
   expect(chain.ok).toBe(true);
 
   const runtimeCode = `0x${"ff".repeat(readCapabilityLimits.runtimeCodeBytes)}`;
+  const sourceResponse = maximumSourcifyResponse(account, runtimeCode);
+  expect(Buffer.byteLength(sourceResponse.body, "utf8"))
+    .toBeLessThanOrEqual(sourcifyMaximumFixtureBytes);
+  expect(sourceResponse.nextBodyBytes).toBeGreaterThan(sourcifyMaximumFixtureBytes);
+  const sourceVerification = createSourcifyContractSourceVerification({
+    clock: handlerClock,
+    fetch: async () => new Response(sourceResponse.body, {
+      headers: { "content-type": "application/json" },
+    }),
+  });
   const contract = await invokeChain(contractInspectCapability, {
     address: account,
     block: { kind: "latest" },
@@ -342,10 +413,17 @@ export const verifySemanticReadMaximumEnvelopes = async (): Promise<void> => {
     rpcValue("eth_chainId", "0x1237"),
     rpcValue("eth_getBlockByNumber", providerBlock()),
     rpcValue("eth_getCode", runtimeCode),
-  ]);
+    rpcValue("eth_getStorageAt", `0x${"0".repeat(64)}`),
+    rpcValue("eth_getStorageAt", `0x${"0".repeat(64)}`),
+    rpcValue("eth_getStorageAt", `0x${"0".repeat(64)}`),
+  ], sourceVerification);
   if (!contract.ok) throw new Error(`Maximum contract inspection failed: ${contract.error.code}`);
   expect(contract).toMatchObject({ ok: true });
-  if (contract.ok) expect(contract.data.runtimeCode).toMatchObject({ byteLength: String(readCapabilityLimits.runtimeCodeBytes) });
+  if (contract.ok) {
+    expect(contract.data.analysis.targetRuntimeCode)
+      .toMatchObject({ byteLength: String(readCapabilityLimits.runtimeCodeBytes) });
+    expect(contract.data.runtimeCode).toBe(runtimeCode);
+  }
 
   const accountResult = await maximumAccountSuccess();
   const wallet = await exactWalletBoundary();
@@ -357,7 +435,22 @@ export const verifySemanticReadMaximumEnvelopes = async (): Promise<void> => {
     blockHash: `0x${"ab".repeat(32)}`,
     blockTimestamp: "2026-07-18T00:00:00.000Z",
   });
+  if (contract.data.analysis.declaredFunctions.status !== "observed") {
+    throw new TypeError("Maximum contract source did not expose its admitted functions.");
+  }
+  const tokenAnalysis = contractAnalysisSchema.parse({
+    ...contract.data.analysis,
+    chainId: tokenChainId,
+    target: tokenAddress,
+    block,
+    sources: [{
+      role: "target",
+      address: tokenAddress,
+      status: "exact_match",
+    }],
+  });
   const token = await createInspectionSuccess(undefined, {
+    analysis: tokenAnalysis,
     decimals: "255",
     name: "😀".repeat(128),
     runtimeByteLength: String(readCapabilityLimits.runtimeCodeBytes),

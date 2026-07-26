@@ -24,8 +24,10 @@ import {
   transactionInspectCapability,
   walletConnectionCapability,
   type AnyReadCapabilityDefinition,
+  type CanonicalClock,
   type CapabilityBinding,
   type InvocationBoundaryPorts,
+  type ObservationAuthorityRegistration,
   type UtcTimestamp,
 } from "../core/index.js";
 import { referenceMarketCapabilityIds } from "../market-portfolio/contracts.js";
@@ -50,6 +52,8 @@ import type {
   ChainOwnerApplication,
   ChainOwnerApplicationFactory,
 } from "../chain/application.js";
+import { createSourcifyContractSourceVerification } from "../intelligence/sourcify.js";
+import type { ContractSourceVerificationPort } from "../intelligence/ports.js";
 import type {
   InterfaceOwnerApplication,
   InterfaceOwnerApplicationContext,
@@ -180,6 +184,12 @@ interface LocalRuntimeBaseOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly now?: () => UtcTimestamp;
   readonly robinhoodOfficialAssetSourceClient?: RobinhoodOfficialAssetSourceClient;
+  readonly contractSourceVerificationFactory?: (
+    clock: CanonicalClock,
+  ) => Readonly<{
+    readonly port: ContractSourceVerificationPort;
+    readonly observationAuthorityRegistration: ObservationAuthorityRegistration;
+  }>;
 }
 
 type LocalRuntimeApplicationFactories<
@@ -810,6 +820,8 @@ export class LocalRuntime {
     const interfaceApplicationFactory = options.interfaceApplicationFactory;
     const robinhoodOfficialAssetSourceClient =
       options.robinhoodOfficialAssetSourceClient;
+    const contractSourceVerificationFactory =
+      options.contractSourceVerificationFactory;
     if ((walletApplicationFactory === undefined && (chainApplicationFactory !== undefined || interfaceApplicationFactory !== undefined)) ||
       (chainApplicationFactory === undefined && interfaceApplicationFactory !== undefined)) {
       throw new TypeError("Owner application factories must form a dependency prefix.");
@@ -828,9 +840,15 @@ export class LocalRuntime {
         endpoint: configuration.rpc.endpoint,
         clock,
       });
+      const contractSourceVerification = contractSourceVerificationFactory === undefined
+        ? createSourcifyContractSourceVerification({ clock })
+        : contractSourceVerificationFactory(clock);
       const walletSource = createWalletSourceAuthority({ credential, profileId: profile.profileId, clock });
       const chainPorts = Object.freeze({
-        observations: new ObservationAuthorityRegistry(clock, [rpcSource.observationAuthority]),
+        observations: new ObservationAuthorityRegistry(clock, [
+          rpcSource.observationAuthority,
+          contractSourceVerification.observationAuthorityRegistration,
+        ]),
       });
       const walletCapabilityAuthority: WalletCapabilityAuthorityPort = Object.freeze({
         clock,
@@ -877,6 +895,7 @@ export class LocalRuntime {
               invocationAuthority,
               invocationPorts: chainPorts,
             }),
+            contractSourceVerification: contractSourceVerification.port,
           }),
         });
       const tokenCatalogStage: TokenCatalogOwnerApplicationStage<ActiveWallet> | undefined =

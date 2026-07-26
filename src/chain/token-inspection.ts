@@ -5,7 +5,6 @@ import {
   type BoundEvidenceObservationTarget,
   type CapabilityBinding,
   type CanonicalAmount,
-  type CanonicalJson,
   type ChainAnchor,
   type HandlerInvocationContext,
   type InvocationBoundaryPorts,
@@ -13,6 +12,12 @@ import {
   type ObservationWriter,
   type TokenMetadataRead,
 } from "../core/index.js";
+import {
+  analyzeContract,
+  isContractAnalysisTargetNotFoundError,
+  recordContractAnalysisEvidence,
+} from "../intelligence/contract-analysis.js";
+import type { ContractSourceVerificationPort } from "../intelligence/ports.js";
 import type { ChainOwnerApplicationContext } from "../runtime/application-context.js";
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
 import {
@@ -23,13 +28,12 @@ import {
 } from "../token-catalog/contracts.js";
 import type { TokenAdditionChainReadPort } from "../token-catalog/ports.js";
 import {
+  createContractAnalysisCallEncoder,
   decodeErc20TotalSupplyResult,
+  type ContractAnalysisCallEncoder,
   type Erc20CallEncoder,
 } from "./evm-standard.js";
-import {
-  normalizeRpcBytes,
-  normalizeRpcRuntimeCode,
-} from "./normalization.js";
+import { normalizeRpcBytes } from "./normalization.js";
 import {
   getChainRpcErrorCode,
   isRpcExecutionRevertedError,
@@ -61,6 +65,7 @@ import {
 } from "./token-standards.js";
 import type { OfficialAssetChainReadPort } from "./official-assets.js";
 import { readTokenMetadataAtBlock } from "./token-metadata.js";
+import { createContractAnalysisChainReadPort } from "./contract-analysis.js";
 
 const requiredTotalSupplyRevertedErrors = new WeakSet<object>();
 
@@ -78,6 +83,8 @@ const isRequiredTotalSupplyRevertedError = (error: unknown): boolean =>
 interface TokenInspectionDependencies {
   readonly rpc: RpcRequester;
   readonly encoder: Erc20CallEncoder;
+  readonly contractAnalysisEncoder: ContractAnalysisCallEncoder;
+  readonly contractSourceVerification: ContractSourceVerificationPort;
   readonly rpcSource: ObservationAuthority;
   readonly chainId: TokenInspectionInput["asset"]["chainId"];
 }
@@ -92,6 +99,7 @@ const inspectionFailureCode = (
   if (stopReason !== undefined) {
     return stopReason === "caller_aborted" ? "request_aborted" : "source_unavailable";
   }
+  if (isContractAnalysisTargetNotFoundError(error)) return "not_found";
   if (isRequiredTotalSupplyRevertedError(error)) return "token_total_supply_reverted";
   const operationFailure = getChainOperationFailure(error);
   if (operationFailure !== undefined) return operationFailure.error.code;
@@ -193,10 +201,6 @@ const inspectionHandler = async (
   const configuredChain = observations.bind(
     tokenInspectionEvidence.configuredChain.target,
   );
-  const blockTarget = observations.bind(tokenInspectionEvidence.targets.block);
-  const runtimeCodeTarget = observations.bind(
-    tokenInspectionEvidence.targets.runtimeCode,
-  );
   const totalSupplyTarget = observations.bind(
     tokenInspectionEvidence.targets.totalSupply,
   );
@@ -211,58 +215,74 @@ const inspectionHandler = async (
     configuredChain,
   );
 
-  const rawCode = await dependencies.rpc.request(
-    "eth_getCode",
-    [request.asset.address, block.reference],
-    signal,
-  );
-  const runtimeCode = normalizeSource(() => normalizeRpcRuntimeCode(rawCode));
-  if (runtimeCode.status === "empty") throw new ChainOperationError("not_found");
-
   const stop = new AbortController();
   const callSignal = AbortSignal.any([signal, stop.signal]);
+  const analysisChain = createContractAnalysisChainReadPort({
+    rpc: dependencies.rpc,
+    encoder: dependencies.contractAnalysisEncoder,
+    chainId: dependencies.chainId,
+    block: block.anchor,
+    stateReference: block.reference,
+    signal: callSignal,
+  });
   const calls = [
+    analyzeContract({
+      target: request.asset.address,
+      chain: analysisChain,
+      sourceVerification: dependencies.contractSourceVerification,
+      signal: callSignal,
+    }),
     readRequiredTotalSupply(dependencies, request.asset.address, block.reference, callSignal),
     readTokenMetadataAtBlock(dependencies, {
       asset: request.asset,
       stateReference: block.reference,
       signal: callSignal,
     }),
+    (async () => {
+      const requiredStandards = await observeRequiredErc8056({
+        rpc: dependencies.rpc,
+        asset: request.asset,
+        block: block.anchor,
+        stateReference: block.reference,
+        signal: callSignal,
+      });
+      return completeTokenStandardObservation({
+        rpc: dependencies.rpc,
+        asset: request.asset,
+        block: block.anchor,
+        stateReference: block.reference,
+        signal: callSignal,
+        erc20ReadSurfaceObserved: true,
+      }, requiredStandards);
+    })(),
   ] as const;
-  let callResults: [unknown, TokenMetadataRead];
-  try {
-    callResults = await Promise.all(calls);
-  } catch (error) {
-    stop.abort();
-    await Promise.allSettled(calls);
-    throw error;
-  }
-  const [rawTotalSupply, metadata] = callResults;
+  const callResults = await (async () => {
+    try {
+      return await Promise.all(calls);
+    } catch (error) {
+      stop.abort();
+      await Promise.allSettled(calls);
+      throw error;
+    }
+  })();
+  const [analysisExecution, rawTotalSupply, metadata, standards] = callResults;
+  const analysis = recordContractAnalysisEvidence({
+    target: {
+      chainId: dependencies.chainId,
+      address: request.asset.address,
+      block: block.anchor,
+      runtimeCode: analysisExecution.targetRuntimeCode.identity,
+    },
+    sourceVerification: dependencies.contractSourceVerification,
+    execution: analysisExecution,
+    fragment: tokenInspectionEvidence.analysis,
+    observations,
+    chainAuthority: dependencies.rpcSource,
+  });
   const { name, symbol, decimals } = metadata;
   const totalSupplyRaw = normalizeSource(() =>
     decodeErc20TotalSupplyResult(normalizeRpcBytes(rawTotalSupply)));
 
-  const blockObservationId = observations.record(blockTarget.slot, {
-    source: dependencies.rpcSource,
-    claims: [{
-      role: blockTarget.roles.value,
-      value: block.anchor as unknown as CanonicalJson,
-      chainAnchor: block.anchor,
-    }],
-  });
-  const runtimeCodeValue = Object.freeze({
-    byteLength: runtimeCode.byteLength,
-    codeHash: runtimeCode.codeHash,
-  });
-  observations.record(runtimeCodeTarget.slot, {
-    source: dependencies.rpcSource,
-    claims: [{
-      role: runtimeCodeTarget.roles.value,
-      value: runtimeCodeValue as unknown as CanonicalJson,
-      asset: request.asset,
-      chainAnchor: block.anchor,
-    }],
-  });
   const supplyObservationId = observations.record(totalSupplyTarget.slot, {
     source: dependencies.rpcSource,
     claims: [{
@@ -303,7 +323,6 @@ const inspectionHandler = async (
       chainAnchor: block.anchor,
     }],
   });
-  void blockObservationId;
 
   const totalSupply: CanonicalAmount = Object.freeze({
     asset: request.asset,
@@ -313,25 +332,9 @@ const inspectionHandler = async (
       : Object.freeze({ status: "available" as const, value: decimals, observationId: decimalsObservationId }),
     quantityObservationId: supplyObservationId,
   });
-  const requiredStandards = await observeRequiredErc8056({
-    rpc: dependencies.rpc,
-    asset: request.asset,
-    block: block.anchor,
-    stateReference: block.reference,
-    signal,
-  });
-  const standards = await completeTokenStandardObservation({
-    rpc: dependencies.rpc,
-    asset: request.asset,
-    block: block.anchor,
-    stateReference: block.reference,
-    signal,
-    erc20ReadSurfaceObserved: true,
-  }, requiredStandards);
   const data: TokenInspectionData = Object.freeze({
     asset: request.asset,
-    block: block.anchor,
-    runtimeCode: runtimeCodeValue,
+    analysis,
     totalSupply,
     metadata: Object.freeze({
       name: Object.freeze({ ...name, observationId: nameObservationId }) as OptionalText,
@@ -360,6 +363,8 @@ export const createTokenInspectionService = (input: {
   const dependencies: TokenInspectionDependencies = Object.freeze({
     rpc: input.rpc,
     encoder: input.encoder,
+    contractAnalysisEncoder: createContractAnalysisCallEncoder(),
+    contractSourceVerification: input.context.chain.contractSourceVerification,
     rpcSource: input.context.chain.sourceAuthority.observationAuthority,
     chainId: input.context.chain.configuration.chain.chainId,
   });

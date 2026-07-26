@@ -43,6 +43,8 @@ const browserCoreConsumers = new Set([
   "interfaces/web/reference-market-view.tsx",
   "interfaces/web/app.tsx",
   "interfaces/web/browser-client.ts",
+  "interfaces/web/contract-inspection-client.ts",
+  "interfaces/web/contract-inspection-view.tsx",
   "interfaces/web/main.tsx",
   "interfaces/web/operation-id.ts",
   "interfaces/web/token-catalog-client.ts",
@@ -232,6 +234,8 @@ const robinhoodOfficialAssetSourceContractModule =
   resolve(sourceRoot, "registry/official-asset-source-contract.ts");
 const robinhoodOfficialAssetAdapterModule =
   resolve(sourceRoot, "registry/official-assets.ts");
+const sourcifyAdapterModule =
+  resolve(sourceRoot, "intelligence/sourcify.ts");
 const registryServerEntryModule =
   resolve(sourceRoot, "registry/index.ts");
 const registryBrowserEntryModule =
@@ -431,6 +435,12 @@ const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRu
       importers: new Set([resolve(sourceRoot, "runtime/database.ts")]),
       reexporters: new Set<string>(),
     },
+    {
+      module: sourcifyAdapterModule,
+      symbol: "createSourcifyContractSourceVerification",
+      importers: new Set([resolve(sourceRoot, "runtime/composition.ts")]),
+      reexporters: new Set<string>(),
+    },
   ]);
 
 const externalIntegrationRulesByModule = new Map<string, ReadonlyMap<
@@ -570,6 +580,10 @@ const robinhoodOfficialAssetAdapterExports = Object.freeze([
   "createRobinhoodOfficialAssetSourceClient",
 ] as const);
 
+const sourcifyAdapterExports = Object.freeze([
+  "createSourcifyContractSourceVerification",
+] as const);
+
 const registryServerEntryExports = Object.freeze([
   "CommittedOfficialAssetSnapshot",
   "DefaultStockTokenManifest",
@@ -698,6 +712,10 @@ const exactExternalIntegrationExportRules = new Map<string, Readonly<{
   }],
   [robinhoodOfficialAssetAdapterModule, {
     expected: robinhoodOfficialAssetAdapterExports,
+    allowExternalReexports: false,
+  }],
+  [sourcifyAdapterModule, {
+    expected: sourcifyAdapterExports,
     allowExternalReexports: false,
   }],
   [registryServerEntryModule, {
@@ -1471,6 +1489,13 @@ describe("runtime architecture boundary", () => {
           "`src/registry/official-assets.ts` owns Robinhood request and response admission implementation, endpoint consumption, transport behavior, deadlines, and operational limits",
           "Runtime composition constructs one source client; registry synchronization consumes the product-owned client and store ports",
         ],
+        [
+          "Sourcify API v2",
+          "Replaceable implementation provider",
+          "`intelligence` owns `ContractSourceVerificationPort`, its normalized results and failures, evidence requirements, and lifecycle",
+          "`src/intelligence/sourcify.ts` owns the origin, path, request and response admission, deadline, response-size and concurrency limits, cleanup, and provider identity",
+          "Runtime composition constructs one Sourcify adapter and passes only `ContractSourceVerificationPort` to the shared contract-analysis process",
+        ],
       ]);
 
     const sourceContract = await readFile(
@@ -1859,6 +1884,11 @@ describe("runtime architecture boundary", () => {
       robinhoodOfficialAssetAdapterExports,
       false,
     )).toContain("unexpected_export:derivedConfiguration");
+    expect(exactModuleExportViolations(`
+      export const createSourcifyContractSourceVerification = () => undefined;
+      export const sourcifyOrigin = "https://sourcify.dev";
+    `, sourcifyAdapterModule, sourcifyAdapterExports, false))
+      .toContain("unexpected_export:sourcifyOrigin");
 
     expect(violationKinds(
       'import { admitRobinhoodOfficialAssetSourceObservation as admit } from "../registry/official-asset-source-contract.js";',

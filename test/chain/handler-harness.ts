@@ -8,6 +8,7 @@ import {
   createCanonicalClock,
   createCapabilityInvocationAuthority,
   createObservationAuthority,
+  createObservationAuthorityIssuer,
   parseEvmChainId,
   parseCapabilityDataAt,
   parseUnsignedDecimal,
@@ -21,11 +22,17 @@ import {
   type EvmChainId,
   type UtcTimestamp,
   type SourceReference,
+  type ObservationAuthorityRegistration,
   type WalletConnectionData,
 } from "../../src/core/index.js";
 import type { Erc20CallEncoder } from "../../src/chain/evm-standard.js";
 import { createChainReadService, type ChainReadService } from "../../src/chain/handlers.js";
 import { createChainInvocationLifecycle } from "../../src/chain/invocation-lifecycle.js";
+import {
+  createContractSourceVerificationPort,
+  type ContractSourceVerificationPort,
+  type ContractSourceVerificationRequest,
+} from "../../src/intelligence/ports.js";
 import {
   ChainRpcError,
   type ChainRpcMethod,
@@ -40,7 +47,7 @@ import type {
 } from "../../src/wallet/coordinator.js";
 
 export const handlerEvaluationTime = "2026-07-15T06:00:00.000Z" as UtcTimestamp;
-const handlerClock = createCanonicalClock(() => handlerEvaluationTime);
+export const handlerClock = createCanonicalClock(() => handlerEvaluationTime);
 export const configuredChainId = parseEvmChainId("eip155:4663");
 const runtimeConfiguration = readRuntimeConfiguration({});
 
@@ -186,6 +193,10 @@ export const createChainHandlerHarness = (input: {
   readonly encoder: Erc20CallEncoder;
   readonly wallet?: ActiveWalletHarness;
   readonly chainRpc?: Readonly<{ owner: string; reference: SourceReference }>;
+  readonly contractSourceVerification?: Readonly<{
+    readonly port: ContractSourceVerificationPort;
+    readonly observationAuthorityRegistration: ObservationAuthorityRegistration;
+  }>;
 }): ChainHandlerHarness => {
   const configurationDigest = "A".repeat(43);
   const rpcAuthority = createObservationAuthority({
@@ -200,6 +211,32 @@ export const createChainHandlerHarness = (input: {
     }),
   });
   const invocationAuthority = createCapabilityInvocationAuthority(handlerClock, configuredChainId);
+  const defaultContractVerification = createObservationAuthorityIssuer({
+    clock: handlerClock,
+    sourceClass: "contract_verification_service",
+    owner: "Sourcify",
+    referenceKind: "public",
+    sourceId: "sourcify-v2",
+  });
+  const contractSourceVerification = input.contractSourceVerification ?? Object.freeze({
+    observationAuthorityRegistration: defaultContractVerification.registration,
+    port: createContractSourceVerificationPort({
+      observationAuthorityRegistration: defaultContractVerification.registration,
+      async inspect(request: ContractSourceVerificationRequest) {
+        const reference = sourceReferenceSchema.parse({
+          kind: "public",
+          sourceId: "sourcify-v2",
+          uri: `https://sourcify.example/contract/${request.address}`,
+        });
+        if (reference.kind !== "public") throw new TypeError("Expected public source reference.");
+        return Object.freeze({
+          status: "no_record_observed" as const,
+          reference,
+          observationAuthority: defaultContractVerification.issue(reference),
+        });
+      },
+    }),
+  });
   const wallet = input.wallet ?? disconnectedWallet();
   const owner = new AbortController();
   const context = {
@@ -207,12 +244,16 @@ export const createChainHandlerHarness = (input: {
     signal: owner.signal,
     chain: {
       configuration: runtimeConfiguration.rpc,
+      contractSourceVerification: contractSourceVerification.port,
       sourceAuthority: { observationAuthority: rpcAuthority },
       capabilityAuthority: {
         clock: handlerClock,
         invocationAuthority,
         invocationPorts: Object.freeze({
-          observations: new ObservationAuthorityRegistry(handlerClock, [rpcAuthority]),
+          observations: new ObservationAuthorityRegistry(
+            handlerClock,
+            [rpcAuthority, contractSourceVerification.observationAuthorityRegistration],
+          ),
         }),
       },
     },

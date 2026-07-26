@@ -1,5 +1,10 @@
 import { readCapabilityLimits } from "./capability-contract.js";
 import {
+  createContractAnalysisChainClaims,
+  createContractAnalysisSourceClaim,
+  type ContractAnalysis,
+} from "./contract-analysis.js";
+import {
   createEvidenceClaimRoleDeclaration,
   createEvidenceDeclarationScope,
   createEvidenceFactIdentityDeclaration,
@@ -13,8 +18,13 @@ import {
   type EvidenceClaimRoleDeclaration,
   type EvidenceFactIdentityDeclaration,
   type EvidenceObservationTargetDeclaration,
+  type EvidenceReplayBinder,
+  type EvidenceReplayDeclaration,
   type EvidenceReplayDefinition,
   type ExactConclusionIdentityDeclaration,
+  type FactRequirement,
+  type ObservationExpectation,
+  type WarningRequirement,
 } from "./evidence-replay.js";
 import {
   staticScopeExclusionSchema,
@@ -94,6 +104,302 @@ export const createValidatedInputEvidenceFragment = (
   });
 };
 
+export interface ContractAnalysisEvidenceConclusions {
+  readonly deploymentObserved: ExactConclusionIdentityDeclaration;
+  readonly sourceChecked: ExactConclusionIdentityDeclaration;
+  readonly controlsObserved: ExactConclusionIdentityDeclaration;
+}
+
+export const createContractAnalysisEvidenceConclusions =
+  (): ContractAnalysisEvidenceConclusions => Object.freeze({
+    deploymentObserved: exactConclusion("contract_deployment_observed"),
+    sourceChecked: exactConclusion("contract_source_checked"),
+    controlsObserved: exactConclusion("contract_controls_observed"),
+  });
+
+export interface ContractAnalysisEvidenceFragment {
+  readonly definition: EvidenceReplayDefinition;
+  readonly facts: Readonly<{
+    readonly deployment: EvidenceFactIdentityDeclaration;
+    readonly controls: EvidenceFactIdentityDeclaration;
+    readonly targetSource: EvidenceFactIdentityDeclaration;
+    readonly implementationSource: EvidenceFactIdentityDeclaration;
+  }>;
+  readonly targets: Readonly<{
+    readonly deployment: EvidenceObservationTargetDeclaration<{
+      readonly value: EvidenceClaimRoleDeclaration;
+    }>;
+    readonly controls: EvidenceObservationTargetDeclaration<{
+      readonly value: EvidenceClaimRoleDeclaration;
+    }>;
+    readonly targetSource: EvidenceObservationTargetDeclaration<{
+      readonly value: EvidenceClaimRoleDeclaration;
+    }>;
+    readonly implementationSource: EvidenceObservationTargetDeclaration<{
+      readonly value: EvidenceClaimRoleDeclaration;
+    }>;
+  }>;
+  readonly conclusions: ContractAnalysisEvidenceConclusions;
+}
+
+export const createContractAnalysisEvidenceFragment = (
+  definition: EvidenceReplayDefinition,
+  conclusions: ContractAnalysisEvidenceConclusions,
+): ContractAnalysisEvidenceFragment => {
+  const deployment = createEvidenceFactIdentityDeclaration(
+    definition,
+    "contract_deployment",
+  );
+  const controls = createEvidenceFactIdentityDeclaration(
+    definition,
+    "contract_controls",
+  );
+  const targetSource = createEvidenceFactIdentityDeclaration(
+    definition,
+    "contract_source_target",
+  );
+  const implementationSource = createEvidenceFactIdentityDeclaration(
+    definition,
+    "contract_source_implementation",
+  );
+  return Object.freeze({
+    definition,
+    facts: Object.freeze({
+      deployment,
+      controls,
+      targetSource,
+      implementationSource,
+    }),
+    targets: Object.freeze({
+      deployment: createEvidenceObservationTargetDeclaration(definition, {
+        slotId: "contract_deployment",
+        fact: deployment,
+        kind: "source",
+        purpose: "contract_deployment",
+        sourceClass: "chain_rpc",
+        roles: { value: "contract_deployment" },
+      }),
+      controls: createEvidenceObservationTargetDeclaration(definition, {
+        slotId: "contract_controls",
+        fact: controls,
+        kind: "source",
+        purpose: "contract_controls",
+        sourceClass: "chain_rpc",
+        roles: { value: "contract_controls" },
+      }),
+      targetSource: createEvidenceObservationTargetDeclaration(definition, {
+        slotId: "contract_source_target",
+        fact: targetSource,
+        kind: "source",
+        purpose: "contract_source_target",
+        sourceClass: "contract_verification_service",
+        roles: { value: "contract_source_target" },
+      }),
+      implementationSource: createEvidenceObservationTargetDeclaration(definition, {
+        slotId: "contract_source_implementation",
+        fact: implementationSource,
+        kind: "source",
+        purpose: "contract_source_implementation",
+        sourceClass: "contract_verification_service",
+        roles: { value: "contract_source_implementation" },
+      }),
+    }),
+    conclusions,
+  });
+};
+
+const contractAnalysisFactRequirement = (
+  fact: FactRequirement["fact"],
+  outcome: FactRequirement["outcome"],
+  slot: FactRequirement["observationSlots"][number],
+): FactRequirement => ({
+  fact,
+  outcome,
+  observationSlots: [slot],
+  requiredObservationSlots: [slot],
+  minimumObservationCount: 1,
+});
+
+const contractAnalysisUnobservedFactRequirement = (
+  fact: FactRequirement["fact"],
+  slot: FactRequirement["observationSlots"][number],
+): FactRequirement => ({
+  fact,
+  outcome: "not_observed",
+  observationSlots: [slot],
+  requiredObservationSlots: [],
+  minimumObservationCount: 0,
+});
+
+const contractAnalysisConclusion = (
+  conclusion: ExactConclusionIdentityDeclaration,
+  fact: FactRequirement["fact"],
+  freshnessRuleId: Freshness["ruleId"],
+): Readonly<{
+  readonly conclusion: ExactConclusionIdentityDeclaration;
+  readonly outcomeFact: FactRequirement["fact"];
+  readonly evidenceFacts: readonly FactRequirement["fact"][];
+  readonly freshnessRuleId: Freshness["ruleId"];
+}> => ({
+  conclusion,
+  outcomeFact: fact,
+  evidenceFacts: [fact],
+  freshnessRuleId,
+});
+
+const contractSourceOutcome = (
+  status: ContractAnalysis["sources"][number]["status"],
+): FactRequirement["outcome"] =>
+  status === "exact_match"
+    ? "observed"
+    : status === "inconsistent"
+      ? "source_inconsistent"
+      : "source_failed";
+
+export const createContractAnalysisEvidenceDeclaration = (
+  analysis: ContractAnalysis,
+  fragment: ContractAnalysisEvidenceFragment,
+  binder: EvidenceReplayBinder,
+): EvidenceReplayDeclaration => {
+  const deployment = binder.bind(fragment.targets.deployment);
+  const controls = binder.bind(fragment.targets.controls);
+  const targetSource = binder.bind(fragment.targets.targetSource);
+  const implementationSource = binder.bind(fragment.targets.implementationSource);
+  const chainClaims = createContractAnalysisChainClaims(analysis);
+  const implementation = analysis.sources.find((source) =>
+    source.role === "implementation");
+  const effectiveSource = analysis.proxy.status === "resolved"
+    ? implementation
+    : analysis.sources[0];
+  if (effectiveSource === undefined) {
+    throw new TypeError("Contract analysis effective source is absent.");
+  }
+  const controlUnavailable = Object.values(analysis.controls).some((control) =>
+    control.status === "unavailable");
+  const partialFacts = [
+    ...(analysis.proxy.status === "unresolved" ? [fragment.facts.deployment] : []),
+    ...analysis.sources
+      .filter((source) => source.status !== "exact_match")
+      .map((source) => source.role === "target"
+        ? fragment.facts.targetSource
+        : fragment.facts.implementationSource),
+    ...(controlUnavailable && chainClaims.controlResults !== undefined
+      ? [fragment.facts.controls]
+      : []),
+  ];
+  const sourceConclusionFact = effectiveSource.role === "target"
+    ? fragment.facts.targetSource
+    : fragment.facts.implementationSource;
+  const sourceConclusion = contractAnalysisConclusion(
+    fragment.conclusions.sourceChecked,
+    sourceConclusionFact,
+    "contract_source_at_chain_anchor",
+  );
+  const observationExpectations: ObservationExpectation[] = [
+    {
+      slot: deployment.slot,
+      claims: [{
+        role: deployment.roles.value,
+        value: chainClaims.deployment,
+        chainAnchor: analysis.block,
+      }],
+    },
+    {
+      slot: targetSource.slot,
+      claims: [{
+        role: targetSource.roles.value,
+        value: createContractAnalysisSourceClaim(analysis, "target"),
+        chainAnchor: analysis.block,
+      }],
+    },
+    ...(implementation === undefined
+      ? []
+      : [{
+          slot: implementationSource.slot,
+          claims: [{
+            role: implementationSource.roles.value,
+            value: createContractAnalysisSourceClaim(analysis, "implementation"),
+            chainAnchor: analysis.block,
+          }],
+        }]),
+    ...(chainClaims.controlResults === undefined
+      ? []
+      : [{
+          slot: controls.slot,
+          claims: [{
+            role: controls.roles.value,
+            value: chainClaims.controlResults,
+            chainAnchor: analysis.block,
+          }],
+        }]),
+  ];
+  const factRequirements: FactRequirement[] = [
+    contractAnalysisFactRequirement(
+      fragment.facts.deployment,
+      "observed",
+      deployment.slot,
+    ),
+    contractAnalysisFactRequirement(
+      fragment.facts.targetSource,
+      contractSourceOutcome(analysis.sources[0]?.status ?? "inconsistent"),
+      targetSource.slot,
+    ),
+    implementation === undefined
+      ? contractAnalysisUnobservedFactRequirement(
+          fragment.facts.implementationSource,
+          implementationSource.slot,
+        )
+      : contractAnalysisFactRequirement(
+          fragment.facts.implementationSource,
+          contractSourceOutcome(implementation.status),
+          implementationSource.slot,
+        ),
+    chainClaims.controlResults === undefined
+      ? contractAnalysisUnobservedFactRequirement(
+          fragment.facts.controls,
+          controls.slot,
+        )
+      : contractAnalysisFactRequirement(
+          fragment.facts.controls,
+          controlUnavailable ? "source_failed" : "observed",
+          controls.slot,
+        ),
+  ];
+  const expectedConclusions = [
+    fragment.conclusions.deploymentObserved,
+    fragment.conclusions.sourceChecked,
+    ...(chainClaims.controlResults === undefined
+      ? []
+      : [fragment.conclusions.controlsObserved]),
+  ];
+  const conclusionDrafts = [
+    contractAnalysisConclusion(
+      fragment.conclusions.deploymentObserved,
+      fragment.facts.deployment,
+      "chain_anchor_exact",
+    ),
+    sourceConclusion,
+    ...(chainClaims.controlResults === undefined
+      ? []
+      : [contractAnalysisConclusion(
+          fragment.conclusions.controlsObserved,
+          fragment.facts.controls,
+          "chain_anchor_exact",
+        )]),
+  ];
+  const warningRequirements: WarningRequirement[] = partialFacts.length === 0
+    ? []
+    : [{ code: "partial_result", facts: Object.freeze([...new Set(partialFacts)]) }];
+  return Object.freeze({
+    observationExpectations: Object.freeze(observationExpectations),
+    observationReferences: Object.freeze([]),
+    factRequirements: Object.freeze(factRequirements),
+    expectedConclusions: Object.freeze(expectedConclusions),
+    conclusionDrafts: Object.freeze(conclusionDrafts),
+    warningRequirements: Object.freeze(warningRequirements),
+  });
+};
+
 const chainStatusLatestBlockConclusion = exactConclusion("latest_block_observed");
 const chainStatusChainConclusion = exactConclusion("rpc_chain_id_matches_scope");
 const chainStatusReplay = createEvidenceReplayDefinition({
@@ -152,16 +458,23 @@ export const chainStatusEvidence = Object.freeze({
 });
 
 const contractAccountConclusion = exactConclusion("account_observed");
-const contractRuntimeCodeConclusion = exactConclusion("runtime_code_observed");
+const contractAnalysisConclusions = createContractAnalysisEvidenceConclusions();
 const contractReplay = createEvidenceReplayDefinition({
   capabilityId: "contract.inspect",
-  conclusions: [contractAccountConclusion, contractRuntimeCodeConclusion],
-  warningCodes: [],
+  conclusions: [
+    contractAccountConclusion,
+    contractAnalysisConclusions.deploymentObserved,
+    contractAnalysisConclusions.sourceChecked,
+    contractAnalysisConclusions.controlsObserved,
+  ],
+  warningCodes: ["partial_result"],
 });
 const contractConfiguredChain = createConfiguredChainEvidenceFragment(contractReplay);
+const contractAnalysis = createContractAnalysisEvidenceFragment(
+  contractReplay,
+  contractAnalysisConclusions,
+);
 const contractAccountFact = createEvidenceFactIdentityDeclaration(contractReplay, "account");
-const contractRuntimeCodeFact =
-  createEvidenceFactIdentityDeclaration(contractReplay, "runtime_code");
 const contractBlockTarget = createEvidenceObservationTargetDeclaration(contractReplay, {
   slotId: "block",
   fact: contractAccountFact,
@@ -170,44 +483,28 @@ const contractBlockTarget = createEvidenceObservationTargetDeclaration(contractR
   sourceClass: "chain_rpc",
   roles: { block: "contract_block" },
 });
-const contractRuntimeCodeTarget = createEvidenceObservationTargetDeclaration(
-  contractReplay,
-  {
-    slotId: "runtime_code",
-    fact: contractRuntimeCodeFact,
-    kind: "source",
-    purpose: "runtime_code",
-    sourceClass: "chain_rpc",
-    roles: { runtimeCode: "runtime_code" },
-  },
-);
 
 export const contractInspectEvidence = Object.freeze({
   definition: contractReplay,
   configuredChain: contractConfiguredChain,
+  analysis: contractAnalysis,
   facts: Object.freeze({
     account: contractAccountFact,
-    runtimeCode: contractRuntimeCodeFact,
   }),
   targets: Object.freeze({
     block: contractBlockTarget,
-    runtimeCode: contractRuntimeCodeTarget,
   }),
   conclusions: Object.freeze({
     accountObserved: contractAccountConclusion,
-    runtimeCodeObserved: contractRuntimeCodeConclusion,
   }),
-  warningCodes: Object.freeze([]),
+  warningCodes: Object.freeze(["partial_result"] as const),
   staticScopeExclusions: Object.freeze([
-    exclusion("abi_identity", "This capability does not establish ABI identity."),
-    exclusion("control_roles", "This capability does not inspect contract control roles."),
     exclusion("execution_readiness", "This capability does not establish execution readiness."),
     exclusion("protocol_identity", "This capability does not establish protocol identity."),
-    exclusion("proxy_identity", "This capability does not resolve proxy identity."),
     exclusion("safety", "This capability does not establish contract safety."),
     exclusion(
-      "source_verification",
-      "This capability does not establish source verification.",
+      "unsupported_contract_controls",
+      "This capability does not infer custom proxy, role, fee, blocklist, mint, or burn controls.",
     ),
   ]),
 });

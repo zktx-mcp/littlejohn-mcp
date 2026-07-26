@@ -11,6 +11,7 @@ import type {
   transactionInspectCapability,
   walletConnectionCapability,
 } from "../core/index.js";
+import type { ContractSourceVerificationPort } from "../intelligence/ports.js";
 import type { WalletConnectConfiguration } from "../wallet/walletconnect-configuration.js";
 import type { RuntimeRpcConfiguration } from "./configuration.js";
 import type { RuntimeRouteRegistry } from "./http-routing.js";
@@ -54,6 +55,7 @@ export interface ChainOwnerBootstrapPort {
   readonly configuration: RuntimeRpcConfiguration;
   readonly sourceAuthority: RpcSourceAuthorityPort;
   readonly capabilityAuthority: ChainCapabilityAuthorityPort;
+  readonly contractSourceVerification: ContractSourceVerificationPort;
 }
 
 export interface WalletConnectionReadCapabilityPort {

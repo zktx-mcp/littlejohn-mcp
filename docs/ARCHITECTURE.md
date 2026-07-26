@@ -58,6 +58,16 @@ the chain decoder. Explicit account reads do not consume wallet state. Only
 `account.balance` with `active_wallet` captures the current validated
 WalletConnect account.
 
+Contract and token inspection use one ordered contract-analysis process at the
+same canonical block as the inspection. It records target runtime-code
+identity, supported proxy observations, exact source-verification status,
+declared functions when an exact source record is available, and the supported
+owner, pause, and default-administrator observations. Sourcify API v2 is the
+current source-verification implementation behind the product-owned
+`ContractSourceVerificationPort`. Missing or non-exact source information and
+unsupported control forms remain explicit unavailable or unresolved results;
+they do not establish safety.
+
 The browser-safe core token-metadata contract owns display-text admission,
 optional metadata outcomes, and their limits. One chain token-metadata process
 reads ERC-20 `name`, `symbol`, and `decimals` at one supplied EIP-1898 block
@@ -135,16 +145,20 @@ CSRF token, local control credential, signing, or transaction material.
 The fixed-origin React surface serves one application at `/`; `/tokens` is not
 a page. The product identity remains at the left of the navigation bar and the
 wallet control remains at the right. A disconnected account sees the product
-description and connection action. A connected account sees one fresh bounded
-asset page with native balance, included-token balances, refresh, pagination,
-and contextual add and removal actions. The same root includes reference-market
-starter or saved cards, one selected exact-price history chart, and the current
-account's supported-pair watchlist controls. One modal host derives priority across
-wallet operations, token operations, and the add form. A CLI-created catalog
-operation is read-only in the browser. The modal acts only after a direct user
-action, renders canonical states without inventing a second lifecycle, and
-replaces a first terminal observation with one transient non-modal
-notification.
+description, connection action, and contract and token inspection. Those
+inspection views use the public contract and token inspection routes and apply
+the same complete public-result validation as the server. A connected account
+also sees one fresh bounded asset page with native balance, included-token
+balances, refresh, pagination, and contextual add and removal actions. Token
+addition review presents the same contract analysis and the server-produced
+inspection and review digests without recalculating them. The same root includes
+reference-market starter or saved cards, one selected exact-price history
+chart, and the current account's supported-pair watchlist controls. One modal
+host derives priority across wallet operations, token operations, and the add
+form. A CLI-created catalog operation is read-only in the browser. The modal
+acts only after a direct user action, renders canonical states without
+inventing a second lifecycle, and replaces a first terminal observation with
+one transient non-modal notification.
 
 The root bootstrap issues an `HttpOnly`, `SameSite=Strict` browser-session
 cookie scoped to `/api/v1` and an independent CSRF token.
@@ -337,6 +351,7 @@ The current external integration classification is:
 | Ethereum JSON-RPC endpoint | Standard chain transport | `docs/PRODUCT_POLICY.md` owns chain identity; `chain` owns RPC methods, normalization, limits, and failures | `runtime` owns the exact configured URI and source identity; `chain` owns the bounded requester | Runtime constructs one requester and passes chain-read ports to features |
 | WalletConnect | Binding product transport | `docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture | `wallet` owns SDK adaptation, project-ID validation, required namespace settings, metadata, SDK options, lifecycle, and provider defaults | The wallet application factory constructs one `WalletConnectClientPort` from opaque configuration received through runtime composition; other modules receive wallet product ports |
 | Robinhood official-asset source | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority; the registry product contract owns normalized observations, failures, evidence, and storage ports | `src/registry/official-assets.ts` owns Robinhood request and response admission implementation, endpoint consumption, transport behavior, deadlines, and operational limits | Runtime composition constructs one source client; registry synchronization consumes the product-owned client and store ports |
+| Sourcify API v2 | Replaceable implementation provider | `intelligence` owns `ContractSourceVerificationPort`, its normalized results and failures, evidence requirements, and lifecycle | `src/intelligence/sourcify.ts` owns the origin, path, request and response admission, deadline, response-size and concurrency limits, cleanup, and provider identity | Runtime composition constructs one Sourcify adapter and passes only `ContractSourceVerificationPort` to the shared contract-analysis process |
 
 This table contains implemented external integrations only. The implementation
 task that adds or removes an integration updates the table after the runtime
@@ -431,6 +446,36 @@ module export and import graph. Provider-specific imports and literals remain
 in the adapter owner, only the declared composition boundary constructs the
 adapter, consumers use product-owned ports, and independent tests do not derive
 their oracle from the provider implementation.
+
+### Contract Analysis Boundary
+
+The `intelligence` module owns the ordered contract-analysis process used by
+contract and token inspection. Core owns the serializable analysis contract,
+target-dependent relation validation, and public evidence declarations.
+`chain` implements one narrow `ContractAnalysisChainReadPort` whose instance is
+already bound to one canonical block. The port exposes only the named runtime
+code, supported proxy, owner, pause, and default-administrator reads; it does
+not expose arbitrary RPC methods, calldata, storage slots, batching controls,
+or block selection.
+
+`intelligence` owns the provider-neutral
+`ContractSourceVerificationPort`. A replaceable source-verification adapter
+privately owns its endpoint, request and response admission, provider limits,
+cleanup, and terms identity. It returns only a normalized exact-contract
+interface, public source reference, and observation authority. Raw provider ABI
+objects and provider response types do not cross that port.
+
+One analysis execution contains the validated public analysis and the ordered
+source observations that produced it. Contract and token capability handlers
+consume that complete execution and cannot combine analysis data with source
+observations from another execution.
+
+Complete public capability validation is browser-safe and owns input parsing,
+target-dependent result checks, public source-record digest comparison, evidence
+replay, and result-size admission. Node-only capability execution separately
+owns bindings, invocation identifiers, handler execution, and live observation
+recording. A browser, transport, or stored-result reader does not implement a
+weaker result parser.
 
 ## Interface Contract Model
 
@@ -913,6 +958,12 @@ application logs, exports, and diagnostic bundles.
   connected account. Account or connection-revision change aborts older reads,
   clears their presentation, and starts a new first-page read. A manual refresh
   failure retains the last verified snapshot and marks it stale.
+- Contract and token inspection use only the public
+  `/api/v1/contract-inspections` and `/api/v1/token-inspections` routes and omit
+  browser credentials. The browser applies the complete capability validator
+  before presentation and performs no source lookup, chain read, evidence
+  reconstruction, or digest calculation. A newer inspection or explicit
+  cancellation invalidates an older response.
 - The modal presents add, removal, information, and retained operation review as
   independent canonical views. Add inspects before the operation is admitted.
   Removal uses the current selection revision. The add view lists bounded

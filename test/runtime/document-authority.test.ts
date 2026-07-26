@@ -118,8 +118,8 @@ describe("binding document authority", () => {
 
   it("keeps exact machine current state in its code and Product Policy owners", async () => {
     expect(productChainId).toBe("eip155:4663");
-    expect(runtimeProtocolVersion).toBe(9);
-    expect(databaseSchemaVersion).toBe(8);
+    expect(runtimeProtocolVersion).toBe(10);
+    expect(databaseSchemaVersion).toBe(9);
     expect(currentSqliteTableNames).toEqual(currentTableNames);
     expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(23_690);
     expect(createHash("sha256").update(currentSqliteSchemaSql, "utf8").digest("hex")).toBe(

@@ -10,7 +10,7 @@ import {
   createEvidenceFactIdentityForConclusion,
   createEvidenceObservationId,
   createEvidenceObservationTargetDeclaration,
-  createEvidenceSourceClaimsDigest,
+  createEvidenceSourceRecordDigest,
   createEvidenceReplayBinder,
   createEvidenceReplayDefinition,
   createEvidenceReplayLayout,
@@ -24,6 +24,7 @@ import {
   replayPublicEvidence,
 } from "../../src/core/evidence-replay.js";
 import {
+  evidenceSourceRecordSchema,
   evidenceSourceSchema,
   invocationIdSchema,
 } from "../../src/core/evidence.js";
@@ -74,7 +75,7 @@ const createSource = (
     observedAt: evaluatedAt,
     invocationId,
   });
-  return evidenceSourceSchema.parse({
+  const sourceRecord = evidenceSourceRecordSchema.parse({
     observationId,
     invocationId,
     sourceClass: "validated_input",
@@ -82,10 +83,14 @@ const createSource = (
     purpose: "validated_input",
     observedAt: evaluatedAt,
     reference: { kind: "validated_input", sourceId: validatedInputSourceId },
-    claimsDigest: createEvidenceSourceClaimsDigest(
+  });
+  return evidenceSourceSchema.parse({
+    ...sourceRecord,
+    recordDigest: createEvidenceSourceRecordDigest(
       definition,
       layout,
       bound.slot,
+      sourceRecord,
       claims,
     ),
   });
@@ -128,12 +133,12 @@ describe("public evidence replay", () => {
     } as never)).toBe(observationId);
   });
 
-  it("keeps observation identity separate from the claim digest", () => {
+  it("keeps observation identity separate from the record digest", () => {
     const { layout } = createLayout();
     const original = createSource(layout, validatedInputOwner, { value: "safe" });
     const changed = createSource(layout, validatedInputOwner, { value: "changed" });
     expect(changed.observationId).toBe(original.observationId);
-    expect(changed.claimsDigest).not.toBe(original.claimsDigest);
+    expect(changed.recordDigest).not.toBe(original.recordDigest);
   });
 
   it("derives the complete public result from definition- and layout-bound declarations", () => {

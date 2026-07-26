@@ -16,6 +16,8 @@ describe("root browser application structure", () => {
     expect(main).not.toContain("location.pathname");
     expect(app).toContain("href={browserPagePaths.root}");
     expect(app).toContain("<AccountAssetsPage");
+    expect(app).toContain('import {\n  ContractInspectionView,');
+    expect(app.match(/<ContractInspectionView\b/gu)).toHaveLength(1);
     expect(app).toContain('import { ReferenceMarketView } from "./reference-market-view.js"');
     expect(app.match(/<ReferenceMarketView\b/gu)).toHaveLength(1);
     expect(app).not.toContain("browserPagePaths.tokens");
@@ -96,6 +98,18 @@ describe("root browser application structure", () => {
     expect(app).toContain("selection: result.asset.selection");
     expect(app).not.toContain("visibleExactAsset");
     expect(app).not.toContain("startTokenSelectionUpdate");
+  });
+
+  it("displays server-produced token review commitments and the shared contract analysis", () => {
+    const app = source("src/interfaces/web/app.tsx");
+
+    expect(app).toContain("operation.review.inspectionDigest ??");
+    expect(app).toContain("operation.review.reviewDigest");
+    expect(app).toContain(
+      "<TokenInspectionAnalysisDetails inspection={operation.review.inspection} />",
+    );
+    expect(app).not.toContain("tokenInspectionDigest(");
+    expect(app).not.toContain("tokenReviewDigest(");
   });
 
   it("gives wallet identifiers the full dialog width without wrapping", () => {

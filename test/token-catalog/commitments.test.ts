@@ -21,11 +21,28 @@ const independentCanonicalJson = (value: Json): string => {
 const independentSha256 = (value: Json): string =>
   `0x${createHash("sha256").update(independentCanonicalJson(value), "utf8").digest("hex")}`;
 
-const independentClaimsDigest = (claims: readonly Json[]): string =>
+const independentRecordDigest = (
+  source: Json,
+  claims: readonly Json[],
+): string =>
   createHash("sha256").update(independentCanonicalJson({
     claims,
-    digestKind: "evidence_source_claims",
+    digestKind: "evidence_source_record",
+    source,
   }), "utf8").digest("base64url");
+
+const independentObservationId = (
+  sourceId: string,
+  purpose: string,
+  ordinal: string,
+): string => `obs:${createHash("sha256").update(independentCanonicalJson([
+  sourceId,
+  purpose,
+  evaluatedAt,
+  block,
+  invocationId,
+  ordinal,
+]), "utf8").digest("base64url")}`;
 
 const chainId = "eip155:4663";
 const asset = {
@@ -52,31 +69,50 @@ const sourceReference = {
   publicOrigin: "https://rpc.example",
   configurationDigest,
 } as const;
+const sourceVerificationReference = {
+  kind: "public",
+  sourceId: "sourcify-v2",
+  uri: `https://sourcify.example/contract/${asset.address}`,
+} as const;
 const observationIds = {
-  block: "obs:7akp-rwGZAogHyDDsTluzS5vsDv-o38cNZYqaRR0UVM",
-  decimals: "obs:tZolIA-dsvYqp8jCSLNILtjDbG5rzmRgCU8Qud-1SPU",
-  name: "obs:Ly6fdMj3RPYTMqzoXLRlhUfhZtzq2qgidU1cTKcAV9g",
-  rpcChainId: "obs:2hb2nD1C6HdQrYxqapU-6Is4bhvgXZLt0uv0j80cIOw",
-  runtimeCode: "obs:jU6_aPbZ-FDEuxDyEw34iAoJ_CTRZGfjKvIxUQ2Dzqc",
-  symbol: "obs:aCciZ6NS574fhogzLZRapksN_3GG66EtXlI_z7fqcFU",
-  totalSupply: "obs:3XLffN4EIF_cfanOZ_GOBFCItq5rL02AD_ON3RqWwL4",
+  decimals: "obs:KjVdvtRZIJy3zwHA7Otc5wCEv_RCinW1N7dbJRfdlhU",
+  deployment: "obs:hWfkMakSUe8KgiSHDs3WKlLSL6W1awVPlEPIxSWwTlM",
+  name: "obs:BNFneuqTJMHZ1m-uaj2idKCQDFvWtFcBPdCvvW-WK0E",
+  rpcChainId: "obs:zHDbjtsuyiSFjUWZZPSi9CAHJlAwRMP3mKWiOtc7eeU",
+  symbol: "obs:i02ZI2JnPdx5FzUropgVeHtNXLdlZ7t1aQN0yMpkFiQ",
+  targetSource: "obs:eGbnBLdPYHAGbLcR4Fcd5CdsIAQhMaOY-LPo2FAVRTY",
+  totalSupply: "obs:NrlK_XIOATGCNUGv1tLrwzX3dDBG8suvWtoss0XQOhE",
 } as const;
 
 const source = (
   observationId: string,
   purpose: string,
   claims: readonly Json[],
-) => ({
+  authority: Readonly<{
+    sourceClass: "chain_rpc" | "contract_verification_service";
+    owner: string;
+    reference: Json;
+  }> = {
+    sourceClass: "chain_rpc",
+    owner: "user_configured",
+    reference: sourceReference,
+  },
+) => {
+  const sourceRecord = {
   observationId,
   invocationId,
-  sourceClass: "chain_rpc",
-  owner: "user_configured",
+  sourceClass: authority.sourceClass,
+  owner: authority.owner,
   purpose,
   observedAt: evaluatedAt,
-  reference: sourceReference,
+  reference: authority.reference,
   chainAnchor: block,
-  claimsDigest: independentClaimsDigest(claims),
-});
+  } as const;
+  return {
+    ...sourceRecord,
+    recordDigest: independentRecordDigest(sourceRecord, claims),
+  };
+};
 
 const conclusion = (
   id: string,
@@ -94,21 +130,74 @@ const conclusion = (
   },
 });
 
+const unavailableConclusion = (
+  id: string,
+  observationId: string,
+) => ({
+  id,
+  status: "unavailable",
+  reason: "source_failed",
+  observationIds: [observationId],
+  freshness: {
+    status: "fresh",
+    ruleId: "contract_source_at_chain_anchor",
+    evaluatedAt,
+    observationIds: [observationId],
+  },
+});
+
+const runtimeCode = {
+  byteLength: "2",
+  codeHash: "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+} as const;
+const unavailableControls = {
+  owner: { status: "unavailable", reason: "exact_abi_unavailable" },
+  paused: { status: "unavailable", reason: "exact_abi_unavailable" },
+  defaultAdmins: { status: "unavailable", reason: "exact_abi_unavailable" },
+} as const;
+const analysis = {
+  chainId,
+  target: asset.address,
+  block,
+  targetRuntimeCode: runtimeCode,
+  proxy: { status: "no_supported_proxy_observed" },
+  sources: [{
+    role: "target",
+    address: asset.address,
+    status: "no_record_observed",
+  }],
+  declaredFunctions: {
+    status: "unavailable",
+    reason: "exact_abi_unavailable",
+  },
+  controls: unavailableControls,
+} as const;
+const deploymentClaim = {
+  chainId,
+  target: asset.address,
+  block,
+  targetRuntimeCode: runtimeCode,
+  proxy: analysis.proxy,
+} as const;
+const targetSourceClaim = {
+  role: "target",
+  address: asset.address,
+  status: "no_record_observed",
+  declaredFunctions: analysis.declaredFunctions,
+  controls: unavailableControls,
+} as const;
+
 const inspection = {
   ok: true,
   meta: {
     capabilityId: "token.inspect",
-    contractVersion: "8",
+    contractVersion: "9",
     chainId,
     evaluatedAt,
   },
   data: {
     asset,
-    block,
-    runtimeCode: {
-      byteLength: "2",
-      codeHash: "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
-    },
+    analysis,
     totalSupply: {
       asset,
       raw: "1000000",
@@ -146,42 +235,11 @@ const inspection = {
   },
   evidence: {
     sources: [
-      source(observationIds.rpcChainId, "chain_id", [{
-        chainAnchor: block,
-        role: "chain_id",
-        value: chainId,
-      }]),
-      source(observationIds.totalSupply, "token_total_supply", [{
-        asset,
-        chainAnchor: block,
-        role: "token_total_supply",
-        value: "1000000",
-      }]),
-      source(observationIds.block, "token_inspection_block", [{
-        chainAnchor: block,
-        role: "token_inspection_block",
-        value: block,
-      }]),
       source(observationIds.name, "token_name", [{
         asset,
         chainAnchor: block,
         role: "token_name",
         value: "Example Token",
-      }]),
-      source(observationIds.symbol, "token_symbol", [{
-        asset,
-        chainAnchor: block,
-        role: "token_symbol",
-        value: "EXT",
-      }]),
-      source(observationIds.runtimeCode, "token_runtime_code", [{
-        asset,
-        chainAnchor: block,
-        role: "token_runtime_code",
-        value: {
-          byteLength: "2",
-          codeHash: "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
-        },
       }]),
       source(observationIds.decimals, "token_decimals", [{
         asset,
@@ -189,28 +247,64 @@ const inspection = {
         role: "token_decimals",
         value: "18",
       }]),
+      source(observationIds.totalSupply, "token_total_supply", [{
+        asset,
+        chainAnchor: block,
+        role: "token_total_supply",
+        value: "1000000",
+      }]),
+      source(observationIds.targetSource, "contract_source_target", [{
+        chainAnchor: block,
+        role: "contract_source_target",
+        value: targetSourceClaim,
+      }], {
+        sourceClass: "contract_verification_service",
+        owner: "Sourcify",
+        reference: sourceVerificationReference,
+      }),
+      source(observationIds.deployment, "contract_deployment", [{
+        chainAnchor: block,
+        role: "contract_deployment",
+        value: deploymentClaim,
+      }]),
+      source(observationIds.symbol, "token_symbol", [{
+        asset,
+        chainAnchor: block,
+        role: "token_symbol",
+        value: "EXT",
+      }]),
+      source(observationIds.rpcChainId, "chain_id", [{
+        chainAnchor: block,
+        role: "chain_id",
+        value: chainId,
+      }]),
     ],
     conclusions: [
+      conclusion("contract_deployment_observed", observationIds.deployment),
+      unavailableConclusion("contract_source_checked", observationIds.targetSource),
       conclusion("decimals_observed", observationIds.decimals),
       conclusion("name_observed", observationIds.name),
-      conclusion("runtime_code_observed", observationIds.runtimeCode),
       conclusion("symbol_observed", observationIds.symbol),
       conclusion("total_supply_observed", observationIds.totalSupply),
     ],
     coverage: {
-      status: "complete",
+      status: "partial",
       established: [
+        "contract_deployment_observed",
         "decimals_observed",
         "name_observed",
-        "runtime_code_observed",
         "symbol_observed",
         "total_supply_observed",
       ],
       notApplicable: [],
-      unavailable: [],
+      unavailable: ["contract_source_checked"],
     },
   },
-  warnings: [],
+  warnings: [{
+    code: "partial_result",
+    message: "Some requested results are unavailable.",
+    observationIds: [observationIds.targetSource],
+  }],
 } as const;
 
 const additionReview = {
@@ -258,12 +352,29 @@ const removalReview = {
 
 describe("token commitment independent vectors", () => {
   it("fixes the complete inspection preimage without a production encoder or version owner", () => {
+    expect(observationIds).toEqual({
+      decimals: independentObservationId(sourceReference.sourceId, "token_decimals", "0"),
+      deployment: independentObservationId(sourceReference.sourceId, "contract_deployment", "3"),
+      name: independentObservationId(sourceReference.sourceId, "token_name", "1"),
+      rpcChainId: independentObservationId(sourceReference.sourceId, "chain_id", "2"),
+      symbol: independentObservationId(sourceReference.sourceId, "token_symbol", "7"),
+      targetSource: independentObservationId(
+        sourceVerificationReference.sourceId,
+        "contract_source_target",
+        "5",
+      ),
+      totalSupply: independentObservationId(
+        sourceReference.sourceId,
+        "token_total_supply",
+        "8",
+      ),
+    });
     const preimage = {
       digestKind: "token_inspection",
-      digestVersion: "3",
+      digestVersion: "4",
       result: inspection,
     } as const;
-    const expected = "0x58636d6717597ddea77cd6a69708e992fcf7f5adb98815d8ea1fa4eb8c71bfbd";
+    const expected = "0xbc90554c910dbd7d18b51181f8db02976ba54ac70af7a6f0bf67a5a635cee9c4";
     expect(independentSha256(preimage)).toBe(expected);
     expect(tokenInspectionDigest(inspection)).toBe(expected);
   });
@@ -271,8 +382,8 @@ describe("token commitment independent vectors", () => {
   it("fixes the official-addition null branches and complete anchor", () => {
     const preimage = {
       digestKind: "token_catalog_review",
-      digestVersion: "4",
-      coreContractVersion: "8",
+      digestVersion: "5",
+      coreContractVersion: "9",
       operationId: additionReview.operationId,
       operationKind: additionReview.kind,
       account,
@@ -286,7 +397,7 @@ describe("token commitment independent vectors", () => {
       interactionInterface: additionReview.interactionInterface,
       expiresAt: additionReview.expiresAt,
     } as const;
-    const expected = "0x09a7a49803483341875d70ddf0217fc8773f71d69392b0972a4e04f1140c0cd4";
+    const expected = "0x0265b32139927ae163b7ad1348f9aac2a83a59c180e3bf3b769b4ee829987211";
     expect(independentSha256(preimage)).toBe(expected);
     expect(tokenCatalogReviewDigest(additionReview)).toBe(expected);
   });
@@ -294,8 +405,8 @@ describe("token commitment independent vectors", () => {
   it("fixes the removal non-null selection branches", () => {
     const preimage = {
       digestKind: "token_catalog_review",
-      digestVersion: "4",
-      coreContractVersion: "8",
+      digestVersion: "5",
+      coreContractVersion: "9",
       operationId: removalReview.operationId,
       operationKind: removalReview.kind,
       account,
@@ -309,7 +420,7 @@ describe("token commitment independent vectors", () => {
       interactionInterface: removalReview.interactionInterface,
       expiresAt: removalReview.expiresAt,
     } as const;
-    const expected = "0xed5d23503e039ae4622905dd3532f21f705837e24f8652c5a055aac3dfe17366";
+    const expected = "0x2bec75e7eeec1314601ccba16a9e047a505c9d07b6a68dc84a8af6754fc5d363";
     expect(independentSha256(preimage)).toBe(expected);
     expect(tokenCatalogReviewDigest(removalReview)).toBe(expected);
   });

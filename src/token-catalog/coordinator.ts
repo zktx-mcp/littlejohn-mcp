@@ -21,6 +21,7 @@ import {
   tokenCatalogOperationConfirmationContract,
   tokenCatalogOperationSchema,
   tokenCatalogReviewDigest,
+  tokenInspectionDigest,
   parseTokenOperationFailure,
   tokenSelectionRevisionSchema,
   tokenSelectionSetRevisionSchema,
@@ -471,6 +472,9 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
   }>): TokenCatalogOperationStartResult<Kind> {
     const createdAt = this.#now();
     const expiresAt = addMilliseconds(createdAt, tokenCatalogCoordinatorPolicy.userActionMilliseconds);
+    const inspectionDigest = input.inspection === null
+      ? null
+      : tokenInspectionDigest(input.inspection);
     const reviewDigest = tokenCatalogReviewDigest({
       operationId: input.operationId,
       kind: input.kind,
@@ -499,6 +503,7 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
         previousSelection: input.previousSelection,
         selectionSetRevision: input.selectionSetRevision,
         inspection: input.inspection,
+        inspectionDigest,
         officialSnapshotRevision: input.officialSnapshotRevision,
         officialEvidence: input.officialEvidence,
         reviewDigest,

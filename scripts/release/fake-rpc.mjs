@@ -105,6 +105,11 @@ const tokenAddresses = Object.freeze([
   customTokenAddress,
 ]);
 const canonicalBlockReference = Object.freeze({ blockHash, requireCanonical: true });
+const eip1967StorageSlots = Object.freeze(new Set([
+  stockFactoryImplementationSlot,
+  "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50",
+  "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103",
+]));
 
 const uint256Result = (value) => `0x${BigInt(value).toString(16).padStart(64, "0")}`;
 
@@ -372,6 +377,13 @@ const resultFor = (method, params) => {
     params[1] === stockFactoryImplementationSlot &&
     exactBlockReference(params[2])
   ) return `0x${"0".repeat(24)}${stockFactoryImplementationAddress.slice(2)}`;
+  if (
+    method === "eth_getStorageAt" &&
+    params.length === 3 &&
+    (params[0] === inspectedContractAddress || token !== undefined) &&
+    eip1967StorageSlots.has(params[1]) &&
+    exactBlockReference(params[2])
+  ) return `0x${"0".repeat(64)}`;
   if (
     method === "eth_getBalance" &&
     params.length === 2 &&

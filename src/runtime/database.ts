@@ -1879,6 +1879,10 @@ export class ProductDatabase {
 
         if (input.kind === "add" && operation.kind === "add") {
           if (inspection === null) throw new TokenCatalogOperationError("internal_error");
+          const inspectionDigest = operation.review.inspectionDigest;
+          if (inspectionDigest === null) {
+            throw new TokenCatalogOperationError("internal_error");
+          }
           const snapshot = readOfficialAssetSnapshotRaw(this.#database);
           if (snapshot === undefined || snapshot.revision !== operation.review.officialSnapshotRevision) {
             throw new RuntimeOperationError("state_conflict");
@@ -1902,7 +1906,6 @@ export class ProductDatabase {
               operation.review.officialEvidence.verificationBlock.blockHash !== verification.block.blockHash ||
               operation.review.officialEvidence.verificationBlock.blockTimestamp !== verification.block.blockTimestamp
             ))) throw new RuntimeOperationError("state_conflict");
-          const inspectionDigest = tokenInspectionDigest(inspection);
           const resultJson = canonicalJsonStringify(inspection as unknown as CanonicalJson);
           if (current?.selection.included === true) {
             throw new TokenCatalogOperationError("token_selection_already_included");

@@ -170,6 +170,7 @@ describe("interface owner application", () => {
       ["GET", "/api/v1/wallet/connection"],
       ["GET", "/api/v1/capabilities"],
       ["GET", "/"],
+      ["POST", "/api/v1/contract-inspections"],
       ["POST", "/api/v1/account-assets/queries"],
       ["POST", "/api/v1/account-assets/eip155:4663/0x1111111111111111111111111111111111111111"],
       ["POST", "/api/v1/account-assets/official-candidate-queries"],
@@ -181,7 +182,6 @@ describe("interface owner application", () => {
       ["GET", `/api/v1/internal/control/token-catalog/operations/${operationId}`],
       ["POST", `/api/v1/internal/control/token-catalog/operations/${operationId}/confirmation`],
       ["DELETE", `/api/v1/internal/control/token-catalog/operations/${operationId}`],
-      ["POST", "/api/v1/token-catalog/inspections"],
       ["POST", "/api/v1/token-catalog/operations"],
       ["GET", "/api/v1/token-catalog/current-operation"],
       ["GET", `/api/v1/token-catalog/operations/${operationId}`],
@@ -193,6 +193,8 @@ describe("interface owner application", () => {
       ["POST", `/api/v1/wallet/operations/${operationId}/confirmation`],
       ["POST", `/api/v1/wallet/operations/${operationId}/cancellation`],
     ] as const) expect(application.routes.match(method, path).status).toBe("matched");
+    expect(application.routes.match("POST", "/api/v1/token-catalog/inspections").status)
+      .toBe("not_found");
     expect(application.routes.match("GET", "/wallet").status)
       .toBe("not_found");
     expect(application.routes.match("GET", "/tokens").status)
@@ -235,11 +237,15 @@ describe("interface owner application", () => {
     const availability = new Map<string, typeof supportSnapshot.capabilities[number]["availability"]>(
       supportSnapshot.capabilities.map((entry) => [entry.capabilityId, entry.availability]),
     );
-    for (const capabilityId of [
-      "account.balance", "chain.status", "contract.inspect", "transaction.inspect",
-    ]) expect(availability.get(capabilityId)).toEqual({
+    for (const capabilityId of ["account.balance", "chain.status", "transaction.inspect"]) {
+      expect(availability.get(capabilityId)).toEqual({
+        overall: "available", direct: "internal", http: "available",
+        mcp: "available", cli: "available", web: "unavailable",
+      });
+    }
+    expect(availability.get("contract.inspect")).toEqual({
       overall: "available", direct: "internal", http: "available",
-      mcp: "available", cli: "available", web: "unavailable",
+      mcp: "available", cli: "available", web: "available",
     });
     expect(availability.get("wallet.connection")).toEqual({
       overall: "available", direct: "internal", http: "available",

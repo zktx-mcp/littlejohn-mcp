@@ -68,29 +68,47 @@ describe("capability schemas", () => {
   });
 
   it("independently verifies runtime-code length and Keccak identity", () => {
+    const block = {
+      chainId: "eip155:4663",
+      blockNumber: "1",
+      blockHash: `0x${"a".repeat(64)}`,
+      blockTimestamp: "2026-07-12T10:16:02.000Z",
+    };
+    const targetRuntimeCode = {
+      byteLength: "1",
+      codeHash: "0xbc36789e7a1e281436464229828f817d6612f7b477d66591ff96a9e064bcc98a",
+    };
     const data = {
-      address: address1,
-      block: {
+      analysis: {
         chainId: "eip155:4663",
-        blockNumber: "1",
-        blockHash: `0x${"a".repeat(64)}`,
-        blockTimestamp: "2026-07-12T10:16:02.000Z",
+        target: address1,
+        block,
+        targetRuntimeCode,
+        proxy: { status: "no_supported_proxy_observed" },
+        sources: [{ role: "target", address: address1, status: "no_record_observed" }],
+        declaredFunctions: { status: "unavailable", reason: "exact_abi_unavailable" },
+        controls: {
+          owner: { status: "unavailable", reason: "exact_abi_unavailable" },
+          paused: { status: "unavailable", reason: "exact_abi_unavailable" },
+          defaultAdmins: { status: "unavailable", reason: "exact_abi_unavailable" },
+        },
       },
-      runtimeCode: {
-        status: "present",
-        bytecode: "0x00",
-        byteLength: "1",
-        codeHash: "0xbc36789e7a1e281436464229828f817d6612f7b477d66591ff96a9e064bcc98a",
-      },
+      runtimeCode: "0x00",
     };
     expect(safeParseCapabilityData(contractInspectCapability, data).success).toBe(true);
     expect(safeParseCapabilityData(contractInspectCapability, {
       ...data,
-      runtimeCode: { ...data.runtimeCode, byteLength: "2" },
+      analysis: {
+        ...data.analysis,
+        targetRuntimeCode: { ...targetRuntimeCode, byteLength: "2" },
+      },
     }).success).toBe(false);
     expect(safeParseCapabilityData(contractInspectCapability, {
       ...data,
-      runtimeCode: { ...data.runtimeCode, codeHash: `0x${"0".repeat(64)}` },
+      analysis: {
+        ...data.analysis,
+        targetRuntimeCode: { ...targetRuntimeCode, codeHash: `0x${"0".repeat(64)}` },
+      },
     }).success).toBe(false);
   });
 

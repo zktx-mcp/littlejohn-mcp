@@ -6,6 +6,7 @@ import {
   createCanonicalClock,
   createCapabilityInvocationAuthority,
   createObservationAuthority,
+  createObservationAuthorityIssuer,
   evmChainIdSchema,
   sourceReferenceSchema,
   type AnyReadCapabilityDefinition,
@@ -15,6 +16,7 @@ import {
   type HandlerInvocationContext,
   type InvocationBoundaryPorts,
   type ObservationWriter,
+  type ObservationAuthority,
   type SourceReference,
 } from "../../src/core/index.js";
 import { chainErrorRegistry } from "../../src/chain/errors.js";
@@ -25,6 +27,7 @@ export const configuredChainId = evmChainIdSchema.parse("eip155:4663");
 export interface CapabilityHarness {
   readonly invocationAuthority: ReturnType<typeof createCapabilityInvocationAuthority>;
   readonly ports: InvocationBoundaryPorts;
+  contractVerificationSource(address: string): ObservationAuthority;
 }
 
 export const createCapabilityHarness = (
@@ -43,6 +46,13 @@ export const createCapabilityHarness = (
   }),
 ): CapabilityHarness => {
   const clock = createCanonicalClock(now);
+  const contractVerification = createObservationAuthorityIssuer({
+    clock,
+    sourceClass: "contract_verification_service",
+    owner: "Sourcify",
+    referenceKind: "public",
+    sourceId: "sourcify-v2",
+  });
   const authorities = [
     createObservationAuthority({
       clock,
@@ -69,10 +79,18 @@ export const createCapabilityHarness = (
         topicDigest: "A".repeat(43),
       }),
     }),
+    contractVerification.registration,
   ];
   return Object.freeze({
     invocationAuthority: createCapabilityInvocationAuthority(clock, evmChainIdSchema.parse(chainId)),
     ports: Object.freeze({ observations: new ObservationAuthorityRegistry(clock, authorities) }),
+    contractVerificationSource(address: string): ObservationAuthority {
+      return contractVerification.issue(sourceReferenceSchema.parse({
+        kind: "public",
+        sourceId: "sourcify-v2",
+        uri: `https://sourcify.example/contract/${address}`,
+      }));
+    },
   });
 };
 

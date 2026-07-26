@@ -40,6 +40,11 @@ export const referenceMarketPublicRoutes = Object.freeze({
   watchlistQueries: "/api/v1/reference-market-watchlist/queries",
 } as const);
 
+export const publicInspectionPaths = Object.freeze({
+  contractQueries: "/api/v1/contract-inspections",
+  tokenQueries: "/api/v1/token-inspections",
+} as const);
+
 export const referenceMarketBrowserMutationPaths = Object.freeze({
   add: "/api/v1/reference-market-watchlist/entry-additions",
   remove: "/api/v1/reference-market-watchlist/entry-removals",

@@ -241,12 +241,27 @@ const chainStatusHuman = (data: ChainStatusData): string => [
 ].join("\n");
 
 const contractHuman = (data: ContractInspectData): string => [
-  `Contract: ${data.address}`,
-  `Block: ${data.block.blockNumber}`,
-  `Runtime code: ${data.runtimeCode.status}`,
-  ...(data.runtimeCode.status === "present"
-    ? [`Byte length: ${data.runtimeCode.byteLength}`, `Code hash: ${data.runtimeCode.codeHash}`]
-    : []),
+  `Contract: ${data.analysis.target}`,
+  `Block: ${data.analysis.block.blockNumber}`,
+  `Runtime code bytes: ${data.analysis.targetRuntimeCode.byteLength}`,
+  `Runtime code hash: ${data.analysis.targetRuntimeCode.codeHash}`,
+  `Proxy: ${data.analysis.proxy.status}`,
+  ...(data.analysis.proxy.status === "resolved"
+    ? [
+        `Proxy method: ${data.analysis.proxy.method}`,
+        `Implementation: ${data.analysis.proxy.implementation}`,
+      ]
+    : data.analysis.proxy.status === "unresolved"
+      ? [`Proxy reason: ${data.analysis.proxy.reason}`]
+      : []),
+  ...data.analysis.sources.map((source) =>
+    `Source ${source.role}: ${source.status} (${source.address})`),
+  `Declared functions: ${data.analysis.declaredFunctions.status === "observed"
+    ? data.analysis.declaredFunctions.signatures.length
+    : `unavailable (${data.analysis.declaredFunctions.reason})`}`,
+  `Owner: ${data.analysis.controls.owner.status}`,
+  `Paused: ${data.analysis.controls.paused.status}`,
+  `Default administrators: ${data.analysis.controls.defaultAdmins.status}`,
 ].join("\n");
 
 const transactionHuman = (data: TransactionInspectData): string => [

@@ -7,7 +7,6 @@ import {
   captureCanonicalJson,
   coreContractVersion,
   deepFreezeValue,
-  defineReadCapability,
   getCapabilityDefinitionSnapshot,
   type CanonicalJson,
 } from "../core/index.js";
@@ -16,13 +15,8 @@ import {
   tokenCatalogApplicationContractList,
   tokenCatalogDigestVersions,
   tokenCatalogOperationConfirmationContract,
-  tokenInspectCapabilityId,
-  tokenInspectionCapabilityEvidence,
-  tokenInspectionDataSchema,
-  tokenInspectionInputSchema,
+  tokenInspectCapability,
   tokenInspectionSuccessProjectionSchema,
-  type TokenInspectionData,
-  type TokenInspectionInput,
 } from "./contract-schema.js";
 import {
   tokenCatalogOperationKinds,
@@ -30,39 +24,6 @@ import {
 } from "./state.js";
 
 export * from "./contract-schema.js";
-
-const inspectionFailureCodes = Object.freeze([
-  "internal_error",
-  "invalid_input",
-  "not_found",
-  "rate_limited",
-  "request_aborted",
-  "result_too_large",
-  "runtime_busy",
-  "source_inconsistent",
-  "source_unavailable",
-  "token_total_supply_reverted",
-]);
-
-export const tokenInspectCapability = defineReadCapability<TokenInspectionInput, TokenInspectionData>({
-  capabilityId: tokenInspectCapabilityId,
-  inputSchema: tokenInspectionInputSchema,
-  dataSchema: tokenInspectionDataSchema,
-  failureCodes: inspectionFailureCodes,
-  evidence: tokenInspectionCapabilityEvidence,
-  validateSuccess: (data, context) => {
-    if (data.asset.chainId !== context.chainId) throw new TypeError("Token inspection chain scope mismatch.");
-  },
-  validateRequest: (input, data) => {
-    if (input.asset.chainId !== data.asset.chainId || input.asset.address !== data.asset.address) {
-      throw new TypeError("Token inspection target mismatch.");
-    }
-    if (input.block.kind === "number" && input.block.blockNumber !== data.block.blockNumber) {
-      throw new TypeError("Token inspection block mismatch.");
-    }
-  },
-});
-
 
 export const tokenCatalogCapabilityIds = Object.freeze([
   getCapabilityDefinitionSnapshot(tokenInspectCapability).capabilityId,

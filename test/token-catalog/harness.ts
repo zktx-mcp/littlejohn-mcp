@@ -1,12 +1,16 @@
 import {
   CapabilityBindingRegistry,
   CapabilityRegistry,
+  assertContractAnalysisForTarget,
   chainAnchorSchema,
+  contractAnalysisSchema,
+  createContractAnalysisChainClaims,
+  createContractAnalysisSourceClaim,
   parseEvmAddressInput,
   parseEvmChainId,
   sourceReferenceSchema,
   tokenStandardObservationResultSchema,
-  type CanonicalJson,
+  type ContractAnalysis,
   type SourceReference,
 } from "../../src/core/index.js";
 import {
@@ -19,6 +23,7 @@ import {
 } from "../../src/token-catalog/contracts.js";
 import {
   tokenCatalogOperationSchema,
+  tokenInspectionDigest,
   tokenSelectionDetailSchema,
   tokenSelectionSchema,
   type TokenCatalogOperation,
@@ -38,6 +43,7 @@ export const walletAddress = parseEvmAddressInput(`0x${"34".repeat(20)}`);
 export const chainId = parseEvmChainId("eip155:4663");
 
 export interface InspectionHarnessOptions {
+  readonly analysis?: ContractAnalysis;
   readonly chainRpc?: Readonly<{ owner: string; reference: SourceReference }>;
   readonly decimals?: string;
   readonly name?: string;
@@ -76,9 +82,17 @@ export const createInspectionBinding = (
       blockTimestamp: "2026-07-18T00:00:00.000Z",
     });
     const chain = observations.bind(tokenInspectionEvidence.configuredChain.target);
-    const blockTarget = observations.bind(tokenInspectionEvidence.targets.block);
-    const runtimeCodeTarget = observations.bind(
-      tokenInspectionEvidence.targets.runtimeCode,
+    const deploymentTarget = observations.bind(
+      tokenInspectionEvidence.analysis.targets.deployment,
+    );
+    const controlsTarget = observations.bind(
+      tokenInspectionEvidence.analysis.targets.controls,
+    );
+    const targetSourceTarget = observations.bind(
+      tokenInspectionEvidence.analysis.targets.targetSource,
+    );
+    const implementationSourceTarget = observations.bind(
+      tokenInspectionEvidence.analysis.targets.implementationSource,
     );
     const totalSupplyTarget = observations.bind(
       tokenInspectionEvidence.targets.totalSupply,
@@ -94,27 +108,70 @@ export const createInspectionBinding = (
         chainAnchor: block,
       }],
     });
-    observations.record(blockTarget.slot, {
-      source,
-      claims: [{
-        role: blockTarget.roles.value,
-        value: block as unknown as CanonicalJson,
-        chainAnchor: block,
-      }],
-    });
-    const runtimeCode = {
+    const defaultRuntimeCode = {
       byteLength: options.runtimeByteLength ?? "2",
       codeHash: `0x${"cd".repeat(32)}`,
     } as const;
-    observations.record(runtimeCodeTarget.slot, {
+    const analysis = options.analysis === undefined
+      ? contractAnalysisSchema.parse({
+          chainId: input.asset.chainId,
+          target: input.asset.address,
+          block,
+          targetRuntimeCode: defaultRuntimeCode,
+          proxy: { status: "no_supported_proxy_observed" },
+          sources: [{
+            role: "target",
+            address: input.asset.address,
+            status: "no_record_observed",
+          }],
+          declaredFunctions: {
+            status: "unavailable",
+            reason: "exact_abi_unavailable",
+          },
+          controls: {
+            owner: { status: "unavailable", reason: "exact_abi_unavailable" },
+            paused: { status: "unavailable", reason: "exact_abi_unavailable" },
+            defaultAdmins: { status: "unavailable", reason: "exact_abi_unavailable" },
+          },
+        })
+      : assertContractAnalysisForTarget({
+          chainId: input.asset.chainId,
+          address: input.asset.address,
+          block,
+          runtimeCode: options.analysis.targetRuntimeCode,
+        }, options.analysis);
+    const chainClaims = createContractAnalysisChainClaims(analysis);
+    observations.record(deploymentTarget.slot, {
       source,
       claims: [{
-        role: runtimeCodeTarget.roles.value,
-        value: runtimeCode as unknown as CanonicalJson,
-        asset: input.asset,
+        role: deploymentTarget.roles.value,
+        value: chainClaims.deployment,
         chainAnchor: block,
       }],
     });
+    if (chainClaims.controlResults !== undefined) {
+      observations.record(controlsTarget.slot, {
+        source,
+        claims: [{
+          role: controlsTarget.roles.value,
+          value: chainClaims.controlResults,
+          chainAnchor: block,
+        }],
+      });
+    }
+    for (const sourceEntry of analysis.sources) {
+      const sourceTarget = sourceEntry.role === "target"
+        ? targetSourceTarget
+        : implementationSourceTarget;
+      observations.record(sourceTarget.slot, {
+        source: harness.contractVerificationSource(sourceEntry.address),
+        claims: [{
+          role: sourceTarget.roles.value,
+          value: createContractAnalysisSourceClaim(analysis, sourceEntry.role),
+          chainAnchor: block,
+        }],
+      });
+    }
     const supplyObservationId = observations.record(totalSupplyTarget.slot, {
       source,
       claims: [{
@@ -159,8 +216,7 @@ export const createInspectionBinding = (
     };
     const data: TokenInspectionData = tokenInspectionDataSchema.parse({
       asset: input.asset,
-      block,
-      runtimeCode,
+      analysis,
       totalSupply,
       metadata: {
         name: { status: "available", value: options.name ?? "Example Token", observationId: nameObservationId },
@@ -255,6 +311,9 @@ export const createTokenOperation = async (options: Readonly<{
       previousSelection,
       selectionSetRevision: Buffer.alloc(16, 3).toString("base64url"),
       inspection: options.kind === "add" ? inspection : null,
+      inspectionDigest: options.kind === "add"
+        ? tokenInspectionDigest(inspection)
+        : null,
       officialSnapshotRevision: options.kind === "add"
         ? Buffer.alloc(16, 4).toString("base64url")
         : null,

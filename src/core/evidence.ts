@@ -1,6 +1,10 @@
 import { z } from "zod";
 
 import {
+  canonicalJsonStringify,
+  captureCanonicalJson,
+} from "./canonical-json.js";
+import {
   canonicalBase64UrlSchema,
   compareCodePointSequences,
   createPrimitiveSchemaSet,
@@ -53,12 +57,41 @@ export const coverageStatuses = defineOrderedVocabulary(
 type CoverageStatus = (typeof coverageStatuses)[number];
 
 export const sourceClassDefinitions = deepFreezeValue({
-  official_document: { external: true, referenceKinds: ["public"] },
-  chain_rpc: { external: true, referenceKinds: ["public", "configured_rpc"] },
-  wallet_sdk: { external: true, referenceKinds: ["wallet_sdk"] },
-  wallet_session: { external: true, referenceKinds: ["wallet_session"] },
-  validated_input: { external: false, referenceKinds: ["validated_input"] },
-} satisfies Record<string, { readonly external: boolean; readonly referenceKinds: readonly SourceReferenceKind[] }>);
+  official_document: {
+    external: true,
+    referenceKinds: ["public"],
+    invocationReferenceCardinality: "single",
+  },
+  chain_rpc: {
+    external: true,
+    referenceKinds: ["public", "configured_rpc"],
+    invocationReferenceCardinality: "single",
+  },
+  contract_verification_service: {
+    external: true,
+    referenceKinds: ["public"],
+    invocationReferenceCardinality: "multiple_same_owner",
+  },
+  wallet_sdk: {
+    external: true,
+    referenceKinds: ["wallet_sdk"],
+    invocationReferenceCardinality: "single",
+  },
+  wallet_session: {
+    external: true,
+    referenceKinds: ["wallet_session"],
+    invocationReferenceCardinality: "single",
+  },
+  validated_input: {
+    external: false,
+    referenceKinds: ["validated_input"],
+    invocationReferenceCardinality: "single",
+  },
+} satisfies Record<string, {
+  readonly external: boolean;
+  readonly referenceKinds: readonly SourceReferenceKind[];
+  readonly invocationReferenceCardinality: "single" | "multiple_same_owner";
+}>);
 
 export const sourceClasses = definitionKeys(sourceClassDefinitions);
 export const externalSourceClasses = Object.freeze(sourceClasses.filter((sourceClass) =>
@@ -71,6 +104,15 @@ export const sourceClassAcceptsReference = (
   sourceClass: (typeof sourceClasses)[number],
   referenceKind: SourceReferenceKind,
 ): boolean => sourceClassDefinitions[sourceClass].referenceKinds.includes(referenceKind as never);
+
+export const invocationSourceIdentity = (
+  sourceClass: (typeof sourceClasses)[number],
+  owner: string,
+  reference: Readonly<{ readonly kind: SourceReferenceKind; readonly sourceId: string }>,
+  exactReference: string,
+): string => sourceClassDefinitions[sourceClass].invocationReferenceCardinality === "single"
+  ? `${owner}\u0000${reference.kind}\u0000${reference.sourceId}\u0000${exactReference}`
+  : `${owner}\u0000${reference.kind}\u0000${reference.sourceId}`;
 
 export const factOutcomeDefinitions = deepFreezeValue({
   not_observed: { conclusionStatus: "not_applicable", evidenceAuthority: "none" },
@@ -93,6 +135,11 @@ export const freshnessRuleDefinitions = deepFreezeValue({
   chain_anchor_exact: {
     status: "fresh",
     sourceClasses: ["chain_rpc"],
+    anchor: "consistent_present",
+  },
+  contract_source_at_chain_anchor: {
+    status: "fresh",
+    sourceClasses: ["contract_verification_service"],
     anchor: "consistent_present",
   },
   wallet_session_current: {
@@ -228,23 +275,36 @@ export const createEvidenceSchemaSet = () => {
     }
   });
 
-  const evidenceSource = jsonObject({
-      observationId,
-      invocationId,
-      sourceClass,
-      owner: primitive.generalSingleLineText,
-      purpose: primitive.snakeCaseCode,
-      observedAt: primitive.utcTimestamp,
-      reference: sourceReference,
-      chainAnchor: primitive.chainAnchor.optional(),
-      claimsDigest: digest,
-    })
+  const evidenceSourceRecordFields = {
+    observationId,
+    invocationId,
+    sourceClass,
+    owner: primitive.generalSingleLineText,
+    purpose: primitive.snakeCaseCode,
+    observedAt: primitive.utcTimestamp,
+    reference: sourceReference,
+    chainAnchor: primitive.chainAnchor.optional(),
+  };
+  const validateEvidenceSourceRecord = (
+    value: {
+      readonly sourceClass: (typeof sourceClasses)[number];
+      readonly reference: { readonly kind: SourceReferenceKind };
+    },
+    context: z.RefinementCtx,
+  ): void => {
+    if (!sourceClassAcceptsReference(value.sourceClass, value.reference.kind)) {
+      context.addIssue({ code: "custom", message: "Evidence source class and reference are inconsistent." });
+    }
+  };
+  const evidenceSourceRecord = jsonObject(evidenceSourceRecordFields)
     .strict()
-    .superRefine((value, context) => {
-      if (!sourceClassAcceptsReference(value.sourceClass, value.reference.kind)) {
-        context.addIssue({ code: "custom", message: "Evidence source class and reference are inconsistent." });
-      }
-    });
+    .superRefine(validateEvidenceSourceRecord);
+  const evidenceSource = jsonObject({
+    ...evidenceSourceRecordFields,
+    recordDigest: digest,
+  })
+    .strict()
+    .superRefine(validateEvidenceSourceRecord);
 
   const freshness = jsonObject({
       status: z.enum(freshnessStatuses),
@@ -347,6 +407,7 @@ export const createEvidenceSchemaSet = () => {
     warningCode,
     fieldIssueCode,
     sourceReference,
+    evidenceSourceRecord,
     evidenceSource,
     freshness,
     conclusion,
@@ -384,6 +445,12 @@ export const freshnessRuleIdSchema = publicSchemas.freshnessRuleId;
 export const warningCodeSchema = publicSchemas.warningCode;
 export const sourceReferenceSchema = guardJsonSchema(publicSchemas.sourceReference);
 export type SourceReference = z.infer<typeof sourceReferenceSchema>;
+
+export const sourceReferenceIdentity = (referenceInput: SourceReference): string =>
+  canonicalJsonStringify(captureCanonicalJson(sourceReferenceSchema.parse(referenceInput)));
+
+export const evidenceSourceRecordSchema = guardJsonSchema(publicSchemas.evidenceSourceRecord);
+export type EvidenceSourceRecord = z.infer<typeof evidenceSourceRecordSchema>;
 
 export const evidenceSourceSchema = guardJsonSchema(publicSchemas.evidenceSource);
 export type EvidenceSource = z.infer<typeof evidenceSourceSchema>;

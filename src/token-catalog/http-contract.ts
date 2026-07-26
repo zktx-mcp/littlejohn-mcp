@@ -43,7 +43,6 @@ export const tokenSelectionListRequestBody = (
 
 export const tokenCatalogBrowserRoutes = Object.freeze({
   root: browserRoot,
-  inspections: `${browserRoot}/inspections`,
   selectionQueries: `${browserRoot}/selection-queries`,
   selectionPattern: `${browserRoot}/selections/{chainId}/{tokenAddress}`,
   operations: browserOperationsRoot,

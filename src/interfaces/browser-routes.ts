@@ -11,8 +11,6 @@ import {
   type AccountAssetApplicationPort,
 } from "../account-assets/index.js";
 import {
-  CapabilityBindingRegistry,
-  CapabilityRegistry,
   captureCanonicalJson,
   type ApplicationFailure,
 } from "../core/index.js";
@@ -38,9 +36,7 @@ import {
   tokenCatalogStartContract,
   normalizeTokenCatalogError,
   TokenCatalogOperationError,
-  tokenInspectCapability,
   type TokenCatalogBrowserOperationPort,
-  type TokenCatalogInspectionPort,
   type TokenCatalogWebStartPort,
 } from "../token-catalog/index.js";
 import {
@@ -176,12 +172,6 @@ const browserApiResources: readonly ResourcePathDefinition[] = Object.freeze([
   Object.freeze({
     kind: "route",
     method: "POST",
-    pathPattern: tokenCatalogBrowserRoutes.inspections,
-    requestClass: "browser_query",
-  }),
-  Object.freeze({
-    kind: "route",
-    method: "POST",
     pathPattern: tokenCatalogBrowserRoutes.operations,
     requestClass: "browser_control",
   }),
@@ -233,7 +223,6 @@ export const extendBrowserInterfaceRoutes = (input: {
   readonly walletOperations: WalletInterfaceOperations;
   readonly accountAssets: AccountAssetApplicationPort;
   readonly referenceMarkets: ReferenceMarketApplicationPort;
-  readonly tokenInspection: TokenCatalogInspectionPort;
   readonly tokenCatalogWebStart: TokenCatalogWebStartPort;
   readonly tokenCatalogBrowserOperations: TokenCatalogBrowserOperationPort;
 }): RuntimeRouteRegistry => {
@@ -252,10 +241,6 @@ export const extendBrowserInterfaceRoutes = (input: {
     input.tokenCatalogBrowserOperations.interactionInterface !== "web") {
     throw new TypeError("Browser token catalog ports require the web interaction interface.");
   }
-  const tokenInspections = new CapabilityBindingRegistry(
-    new CapabilityRegistry([tokenInspectCapability]),
-    [input.tokenInspection],
-  );
   const bootstrap = async (): Promise<RouteResult> => {
     try {
       const issued = input.credentials.issue();
@@ -455,23 +440,6 @@ export const extendBrowserInterfaceRoutes = (input: {
         } catch (error) {
           return normalizeFailure(error);
         }
-      },
-    },
-    {
-      method: "POST",
-      mutation: "none",
-      pathPattern: tokenCatalogBrowserRoutes.inspections,
-      response: "canonical_json",
-      successStatus: 200,
-      handler: async (context) => {
-        try {
-          const result = await tokenInspections.invoke(
-            tokenInspectCapability,
-            context.body,
-            { signal: context.signal },
-          );
-          return result.ok ? success(result) : failure(result);
-        } catch (error) { return normalizeTokenFailure(error); }
       },
     },
     {

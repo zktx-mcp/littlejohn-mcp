@@ -1,6 +1,10 @@
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { createErc20CallEncoder, type Erc20CallEncoder } from "../../src/chain/evm-standard.js";
+import {
+  createErc20CallEncoder,
+  eip1967StorageSlots,
+  type Erc20CallEncoder,
+} from "../../src/chain/evm-standard.js";
 import { ChainRpcError } from "../../src/chain/rpc.js";
 import {
   accountBalanceCapability,
@@ -33,6 +37,7 @@ const recipient = parseEvmAddress(`0x${"22".repeat(20)}`);
 const contract = parseEvmAddress(`0x${"33".repeat(20)}`);
 const token = parseEvmAddress(`0x${"44".repeat(20)}`);
 const secondToken = parseEvmAddress(`0x${"45".repeat(20)}`);
+const implementation = parseEvmAddress(`0x${"46".repeat(20)}`);
 const transferFrom = parseEvmAddress(`0x${"55".repeat(20)}`);
 const transferTo = parseEvmAddress(`0x${"66".repeat(20)}`);
 const transactionHash = parseHash32(`0x${"77".repeat(32)}`);
@@ -156,7 +161,7 @@ describe("Robinhood Chain read handlers", () => {
     const result = await service.invoke(chainStatusCapability, {});
     expectSuccess(result);
     expect(result.evidence.sources.every((source) =>
-      /^[A-Za-z0-9_-]{43}$/u.test(source.claimsDigest))).toBe(true);
+      /^[A-Za-z0-9_-]{43}$/u.test(source.recordDigest))).toBe(true);
     expect(result.data).toEqual({
       chainId: configuredChainId,
       latestBlock: {
@@ -182,10 +187,14 @@ describe("Robinhood Chain read handlers", () => {
 
   it("anchors contract bytecode to the exact canonical block hash and computes exact code identity", async () => {
     const bytecode = "0x6001600055" as const;
+    const emptyStorageWord = `0x${"00".repeat(32)}`;
     const service = createHarness([
       rpcValue("eth_chainId", "0x1237"),
       rpcValue("eth_getBlockByNumber", block()),
       rpcValue("eth_getCode", bytecode),
+      rpcValue("eth_getStorageAt", emptyStorageWord),
+      rpcValue("eth_getStorageAt", emptyStorageWord),
+      rpcValue("eth_getStorageAt", emptyStorageWord),
     ]);
 
     const result = await service.invoke(contractInspectCapability, {
@@ -194,21 +203,38 @@ describe("Robinhood Chain read handlers", () => {
     });
     expectSuccess(result);
     expect(result.evidence.sources.every((source) =>
-      /^[A-Za-z0-9_-]{43}$/u.test(source.claimsDigest))).toBe(true);
+      /^[A-Za-z0-9_-]{43}$/u.test(source.recordDigest))).toBe(true);
     expect(result.data).toEqual({
-      address: contract,
-      block: {
+      analysis: {
         chainId: configuredChainId,
-        blockNumber: largeDecimal,
-        blockHash,
-        blockTimestamp: expectedBlockTimestamp,
+        target: contract,
+        block: {
+          chainId: configuredChainId,
+          blockNumber: largeDecimal,
+          blockHash,
+          blockTimestamp: expectedBlockTimestamp,
+        },
+        targetRuntimeCode: {
+          byteLength: "5",
+          codeHash: keccak256FromHex(bytecode),
+        },
+        proxy: { status: "no_supported_proxy_observed" },
+        sources: [{
+          role: "target",
+          address: contract,
+          status: "no_record_observed",
+        }],
+        declaredFunctions: {
+          status: "unavailable",
+          reason: "exact_abi_unavailable",
+        },
+        controls: {
+          owner: { status: "unavailable", reason: "exact_abi_unavailable" },
+          paused: { status: "unavailable", reason: "exact_abi_unavailable" },
+          defaultAdmins: { status: "unavailable", reason: "exact_abi_unavailable" },
+        },
       },
-      runtimeCode: {
-        status: "present",
-        bytecode,
-        byteLength: "5",
-        codeHash: keccak256FromHex(bytecode),
-      },
+      runtimeCode: bytecode,
     });
     expect(() => parseCapabilitySuccess(
       contractInspectCapability,
@@ -223,15 +249,10 @@ describe("Robinhood Chain read handlers", () => {
         ...result,
         data: {
           ...result.data,
-          runtimeCode: {
-            status: "present",
-            bytecode: changedBytecode,
-            byteLength: "2",
-            codeHash: keccak256FromHex(changedBytecode),
-          },
+          runtimeCode: changedBytecode,
         },
       },
-    )).toThrow("claims");
+    )).toThrow();
     for (const source of result.evidence.sources) {
       expect(() => parseCapabilitySuccess(
         contractInspectCapability,
@@ -241,7 +262,7 @@ describe("Robinhood Chain read handlers", () => {
           evidence: {
             ...result.evidence,
             sources: result.evidence.sources.map((candidate) => candidate === source
-              ? { ...candidate, claimsDigest: "A".repeat(43) as typeof candidate.claimsDigest }
+              ? { ...candidate, recordDigest: "A".repeat(43) as typeof candidate.recordDigest }
               : candidate),
           },
         },
@@ -251,7 +272,185 @@ describe("Robinhood Chain read handlers", () => {
       { method: "eth_chainId", params: [] },
       { method: "eth_getBlockByNumber", params: [largeQuantity, false] },
       { method: "eth_getCode", params: [contract, blockReference] },
+      {
+        method: "eth_getStorageAt",
+        params: [contract, eip1967StorageSlots.implementation, blockReference],
+      },
+      {
+        method: "eth_getStorageAt",
+        params: [contract, eip1967StorageSlots.beacon, blockReference],
+      },
+      {
+        method: "eth_getStorageAt",
+        params: [contract, eip1967StorageSlots.admin, blockReference],
+      },
     ]);
+  });
+
+  it("records both proxy source URIs under one source service and rejects split RPC identity", async () => {
+    const targetBytecode = "0x6000" as const;
+    const implementationBytecode = "0x6001" as const;
+    const emptyStorageWord = `0x${"00".repeat(32)}`;
+    const implementationStorageWord = `0x${"00".repeat(12)}${implementation.slice(2)}`;
+    const service = createHarness([
+      rpcValue("eth_chainId", "0x1237"),
+      rpcValue("eth_getBlockByNumber", block()),
+      rpcValue("eth_getCode", targetBytecode),
+      rpcValue("eth_getStorageAt", implementationStorageWord),
+      rpcValue("eth_getStorageAt", emptyStorageWord),
+      rpcValue("eth_getStorageAt", emptyStorageWord),
+      rpcValue("eth_getCode", implementationBytecode),
+    ]);
+
+    const input = {
+      address: contract,
+      block: { kind: "number" as const, blockNumber: largeDecimal },
+    };
+    const result = await service.invoke(contractInspectCapability, input);
+    expectSuccess(result);
+    expect(result.data.analysis).toMatchObject({
+      proxy: {
+        status: "resolved",
+        method: "eip1967_implementation",
+        implementation,
+      },
+      sources: [
+        { role: "target", address: contract, status: "no_record_observed" },
+        { role: "implementation", address: implementation, status: "no_record_observed" },
+      ],
+    });
+    const verificationSources = result.evidence.sources.filter(
+      (source) => source.sourceClass === "contract_verification_service",
+    );
+    expect(verificationSources).toHaveLength(2);
+    expect(new Set(verificationSources.map((source) => source.owner))).toEqual(new Set(["Sourcify"]));
+    expect(new Set(verificationSources.map((source) => source.reference.sourceId)))
+      .toEqual(new Set(["sourcify-v2"]));
+    expect(new Set(verificationSources.map((source) =>
+      source.reference.kind === "public" ? source.reference.uri : null))).toEqual(new Set([
+      `https://sourcify.example/contract/${contract}`,
+      `https://sourcify.example/contract/${implementation}`,
+    ]));
+    expect(() => parseCapabilitySuccess(contractInspectCapability, input, result)).not.toThrow();
+
+    const verificationUris = verificationSources.map((source) => {
+      if (source.reference.kind !== "public") {
+        throw new Error("Expected a public source-verification reference.");
+      }
+      return source.reference.uri;
+    });
+    expect(() => parseCapabilitySuccess(contractInspectCapability, input, {
+      ...result,
+      evidence: {
+        ...result.evidence,
+        sources: result.evidence.sources.map((source) =>
+          source.sourceClass === "contract_verification_service"
+            ? { ...source, owner: "changed_owner" }
+            : source),
+      },
+    })).toThrow("record");
+    expect(() => parseCapabilitySuccess(contractInspectCapability, input, {
+      ...result,
+      evidence: {
+        ...result.evidence,
+        sources: result.evidence.sources.map((source) => {
+          const index = verificationSources.indexOf(source);
+          if (index < 0 || source.reference.kind !== "public") return source;
+          return {
+            ...source,
+            reference: {
+              ...source.reference,
+              uri: verificationUris[verificationUris.length - 1 - index] as string,
+            },
+          };
+        }),
+      },
+    })).toThrow("record");
+
+    const rpcSources = result.evidence.sources.filter((source) => source.sourceClass === "chain_rpc");
+    expect(rpcSources.length).toBeGreaterThan(1);
+    const changedSource = rpcSources[0];
+    expect(changedSource?.reference.kind).toBe("configured_rpc");
+    if (changedSource === undefined || changedSource.reference.kind !== "configured_rpc") return;
+    expect(() => parseCapabilitySuccess(contractInspectCapability, input, {
+      ...result,
+      evidence: {
+        ...result.evidence,
+        sources: result.evidence.sources.map((source) => source === changedSource
+          ? {
+              ...source,
+              reference: {
+                ...source.reference,
+                publicOrigin: "https://different-rpc.example",
+              },
+            }
+          : source),
+      },
+    })).toThrow("conflicting source identities");
+    expect(() => parseCapabilitySuccess(contractInspectCapability, input, {
+      ...result,
+      evidence: {
+        ...result.evidence,
+        sources: result.evidence.sources.map((source) =>
+          source.sourceClass === "chain_rpc" && source.reference.kind === "configured_rpc"
+            ? {
+                ...source,
+                owner: "changed_owner",
+                reference: {
+                  ...source.reference,
+                  publicOrigin: "https://different-rpc.example",
+                },
+              }
+            : source),
+      },
+    })).toThrow("record");
+    expect(service.rpc.remainingSteps).toBe(0);
+  });
+
+  it("records both evidence roles when a proxy implementation points to the target", async () => {
+    const bytecode = "0x6000" as const;
+    const emptyStorageWord = `0x${"00".repeat(32)}`;
+    const selfImplementationWord = `0x${"00".repeat(12)}${contract.slice(2)}`;
+    const service = createHarness([
+      rpcValue("eth_chainId", "0x1237"),
+      rpcValue("eth_getBlockByNumber", block()),
+      rpcValue("eth_getCode", bytecode),
+      rpcValue("eth_getStorageAt", selfImplementationWord),
+      rpcValue("eth_getStorageAt", emptyStorageWord),
+      rpcValue("eth_getStorageAt", emptyStorageWord),
+      rpcValue("eth_getCode", bytecode),
+    ]);
+    const input = {
+      address: contract,
+      block: { kind: "number" as const, blockNumber: largeDecimal },
+    };
+    const result = await service.invoke(contractInspectCapability, input);
+    expectSuccess(result);
+    expect(result.data.analysis).toMatchObject({
+      proxy: {
+        status: "resolved",
+        method: "eip1967_implementation",
+        implementation: contract,
+        implementationRuntimeCode: {
+          byteLength: "2",
+          codeHash: keccak256FromHex(bytecode),
+        },
+      },
+      sources: [
+        { role: "target", address: contract, status: "no_record_observed" },
+        { role: "implementation", address: contract, status: "no_record_observed" },
+      ],
+    });
+    const verificationSources = result.evidence.sources.filter(
+      (source) => source.sourceClass === "contract_verification_service",
+    );
+    expect(verificationSources).toHaveLength(2);
+    expect(new Set(verificationSources.map((source) =>
+      source.reference.kind === "public" ? source.reference.uri : null))).toEqual(new Set([
+      `https://sourcify.example/contract/${contract}`,
+    ]));
+    expect(() => parseCapabilitySuccess(contractInspectCapability, input, result)).not.toThrow();
+    expect(service.rpc.remainingSteps).toBe(0);
   });
 
   it("returns an exact pending transaction without requesting a receipt", async () => {
@@ -263,7 +462,7 @@ describe("Robinhood Chain read handlers", () => {
     const result = await service.invoke(transactionInspectCapability, { transactionHash });
     expectSuccess(result);
     expect(result.evidence.sources.every((source) =>
-      /^[A-Za-z0-9_-]{43}$/u.test(source.claimsDigest))).toBe(true);
+      /^[A-Za-z0-9_-]{43}$/u.test(source.recordDigest))).toBe(true);
     expect(result.data.value.raw).toBe(largeDecimal);
     expect(result.data.nonce).toBe(largeDecimal);
     expect(result.data.gasLimit.raw).toBe(largeDecimal);
@@ -306,7 +505,7 @@ describe("Robinhood Chain read handlers", () => {
           from: parseEvmAddress(`0x${"99".repeat(20)}`),
         },
       },
-    )).toThrow("claims");
+    )).toThrow("record");
     for (const source of result.evidence.sources) {
       expect(() => parseCapabilitySuccess(
         transactionInspectCapability,
@@ -316,7 +515,7 @@ describe("Robinhood Chain read handlers", () => {
           evidence: {
             ...result.evidence,
             sources: result.evidence.sources.map((candidate) => candidate === source
-              ? { ...candidate, claimsDigest: "A".repeat(43) as typeof candidate.claimsDigest }
+              ? { ...candidate, recordDigest: "A".repeat(43) as typeof candidate.recordDigest }
               : candidate),
           },
         },

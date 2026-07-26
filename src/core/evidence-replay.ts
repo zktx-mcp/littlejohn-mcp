@@ -16,10 +16,13 @@ import {
   createEvidenceSummary,
   factOutcomeDefinitions,
   freshnessRuleDefinitions,
+  invocationSourceIdentity,
   isStrictlyOrderedUnique,
+  sourceReferenceIdentity,
   type Conclusion,
   type Coverage,
   type EvidenceSource,
+  type EvidenceSourceRecord,
   type FactOutcome,
   type Freshness,
   type InvocationId,
@@ -1188,17 +1191,24 @@ const canonicalClaimArray = (
   captureCanonicalJson(projectEvidenceObservationClaims(definition, layout, slot, claims)),
 );
 
-export const createEvidenceSourceClaimsDigest = (
+export const createEvidenceSourceRecordDigest = (
   definition: EvidenceReplayDefinition,
   layout: EvidenceReplayLayout,
   slot: BoundEvidenceObservationSlotDeclaration,
+  sourceRecordInput: EvidenceSourceRecord,
   claims: readonly ObservationClaim[],
-): EvidenceSource["claimsDigest"] => replayEvidence.digest.parse(canonicalSha256Base64Url(
-  captureCanonicalJson({
-    claims: projectEvidenceObservationClaims(definition, layout, slot, claims),
-    digestKind: "evidence_source_claims",
-  }),
-));
+): EvidenceSource["recordDigest"] => {
+  const source = deepFreezeValue(
+    replayEvidence.evidenceSourceRecord.parse(sourceRecordInput),
+  );
+  return replayEvidence.digest.parse(canonicalSha256Base64Url(
+    captureCanonicalJson({
+      claims: projectEvidenceObservationClaims(definition, layout, slot, claims),
+      digestKind: "evidence_source_record",
+      source,
+    }),
+  ));
+};
 
 export const evidenceObservationClaimsEqual = (
   definition: EvidenceReplayDefinition,
@@ -1246,10 +1256,12 @@ class ParsedEvidenceObservations implements EvidenceObservationProjection {
       if (source.invocationId !== invocationId) {
         throw new TypeError("Evidence source invocation identity is inconsistent.");
       }
-      const authorityIdentity = canonicalJsonStringify({
-        owner: source.owner,
-        reference: source.reference,
-      } as unknown as CanonicalJson);
+      const authorityIdentity = invocationSourceIdentity(
+        source.sourceClass,
+        source.owner,
+        source.reference,
+        sourceReferenceIdentity(source.reference),
+      );
       const currentAuthority = authorityByClass.get(source.sourceClass);
       if (currentAuthority !== undefined && currentAuthority !== authorityIdentity) {
         throw new TypeError("One invocation uses conflicting source identities.");
@@ -1427,7 +1439,7 @@ const assertExpectedSourceAnchors = (
   }
 };
 
-const assertExpectedSourceClaimsDigests = (
+const assertExpectedSourceRecordDigests = (
   definition: EvidenceReplayDefinition,
   layout: EvidenceReplayLayout,
   observations: EvidenceObservationProjection,
@@ -1441,14 +1453,16 @@ const assertExpectedSourceClaimsDigests = (
     if (observationId === undefined) continue;
     const source = observations.evidenceFor(observationId);
     if (source === undefined) throw new TypeError("Observation source is unavailable.");
-    const expectedDigest = createEvidenceSourceClaimsDigest(
+    const { recordDigest: _recordDigest, ...sourceRecord } = source;
+    const expectedDigest = createEvidenceSourceRecordDigest(
       definition,
       layout,
       slot,
+      sourceRecord,
       claims,
     );
-    if (source.claimsDigest !== expectedDigest) {
-      throw new TypeError("Observation source claims do not match their digest.");
+    if (source.recordDigest !== expectedDigest) {
+      throw new TypeError("Observation source record does not match its digest.");
     }
   }
 };
@@ -1503,7 +1517,7 @@ const assertPublicEvidenceClosure = (
     }
   }
   assertExpectedSourceAnchors(observations, expectations);
-  assertExpectedSourceClaimsDigests(
+  assertExpectedSourceRecordDigests(
     definition,
     layout,
     observations,
