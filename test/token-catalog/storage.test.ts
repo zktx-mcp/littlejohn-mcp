@@ -8,7 +8,6 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   canonicalJsonStringify,
-  canonicalSha256,
   chainAnchorSchema,
   parseCapabilityDataAt,
   parseEvmAddressInput,
@@ -240,7 +239,7 @@ const failureCode = (effect: () => unknown): string | undefined => {
 };
 
 describe("token selection persistence", () => {
-  it("rejects a stored core-5 token inspection under the current schema", async () => {
+  it("rejects a stored token inspection without the required source claim digests", async () => {
     const { database, path } = await openDatabase();
     const inspection = await createInspectionSuccess({
       asset: {
@@ -253,15 +252,15 @@ describe("token selection persistence", () => {
     database.close();
 
     const oldResult = JSON.parse(canonicalJsonStringify(inspection as unknown as CanonicalJson)) as {
-      meta: { contractVersion: string };
+      evidence: { sources: Array<Record<string, unknown>> };
     };
-    oldResult.meta.contractVersion = "5";
-    const resultJson = canonicalJsonStringify(oldResult as unknown as CanonicalJson);
-    const inspectionDigest = `0x${canonicalSha256({
+    for (const source of oldResult.evidence.sources) delete source["claimsDigest"];
+    const resultJson = independentCanonicalJson(oldResult as unknown as IndependentJson);
+    const inspectionDigest = `0x${createHash("sha256").update(independentCanonicalJson({
       digestKind: "token_inspection",
       digestVersion: tokenCatalogDigestVersions.inspection,
-      result: oldResult as unknown as CanonicalJson,
-    })}`;
+      result: oldResult as unknown as IndependentJson,
+    }), "utf8").digest("hex")}`;
 
     const raw = new Database(path);
     raw.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
@@ -299,7 +298,7 @@ describe("token selection persistence", () => {
     const resultJson = independentCanonicalJson(malformed as unknown as IndependentJson);
     const inspectionDigest = `0x${createHash("sha256").update(independentCanonicalJson({
       digestKind: "token_inspection",
-      digestVersion: "2",
+      digestVersion: "3",
       result: malformed as unknown as IndependentJson,
     }), "utf8").digest("hex")}`;
 

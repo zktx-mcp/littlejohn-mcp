@@ -322,7 +322,7 @@ describe("chain owner application", () => {
       const digest = tokenInspectionDigest(result);
       const changed = structuredClone(result);
       changed.data.totalSupply.raw = "1000001" as typeof changed.data.totalSupply.raw;
-      expect(tokenInspectionDigest(changed)).not.toBe(digest);
+      expect(() => tokenInspectionDigest(changed)).toThrow("Token inspection success is invalid");
       expect(tokenInspectionDigest(result)).toBe(digest);
     }
     const stateReferences = requester.calls

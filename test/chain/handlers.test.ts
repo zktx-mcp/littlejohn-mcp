@@ -155,6 +155,8 @@ describe("Robinhood Chain read handlers", () => {
 
     const result = await service.invoke(chainStatusCapability, {});
     expectSuccess(result);
+    expect(result.evidence.sources.every((source) =>
+      /^[A-Za-z0-9_-]{43}$/u.test(source.claimsDigest))).toBe(true);
     expect(result.data).toEqual({
       chainId: configuredChainId,
       latestBlock: {
@@ -191,6 +193,8 @@ describe("Robinhood Chain read handlers", () => {
       block: { kind: "number", blockNumber: largeDecimal },
     });
     expectSuccess(result);
+    expect(result.evidence.sources.every((source) =>
+      /^[A-Za-z0-9_-]{43}$/u.test(source.claimsDigest))).toBe(true);
     expect(result.data).toEqual({
       address: contract,
       block: {
@@ -206,6 +210,43 @@ describe("Robinhood Chain read handlers", () => {
         codeHash: keccak256FromHex(bytecode),
       },
     });
+    expect(() => parseCapabilitySuccess(
+      contractInspectCapability,
+      { address: contract, block: { kind: "number", blockNumber: largeDecimal } },
+      result,
+    )).not.toThrow();
+    const changedBytecode = "0x6002" as const;
+    expect(() => parseCapabilitySuccess(
+      contractInspectCapability,
+      { address: contract, block: { kind: "number", blockNumber: largeDecimal } },
+      {
+        ...result,
+        data: {
+          ...result.data,
+          runtimeCode: {
+            status: "present",
+            bytecode: changedBytecode,
+            byteLength: "2",
+            codeHash: keccak256FromHex(changedBytecode),
+          },
+        },
+      },
+    )).toThrow("claims");
+    for (const source of result.evidence.sources) {
+      expect(() => parseCapabilitySuccess(
+        contractInspectCapability,
+        { address: contract, block: { kind: "number", blockNumber: largeDecimal } },
+        {
+          ...result,
+          evidence: {
+            ...result.evidence,
+            sources: result.evidence.sources.map((candidate) => candidate === source
+              ? { ...candidate, claimsDigest: "A".repeat(43) as typeof candidate.claimsDigest }
+              : candidate),
+          },
+        },
+      )).toThrow();
+    }
     expect(service.rpc.calls).toEqual([
       { method: "eth_chainId", params: [] },
       { method: "eth_getBlockByNumber", params: [largeQuantity, false] },
@@ -221,6 +262,8 @@ describe("Robinhood Chain read handlers", () => {
 
     const result = await service.invoke(transactionInspectCapability, { transactionHash });
     expectSuccess(result);
+    expect(result.evidence.sources.every((source) =>
+      /^[A-Za-z0-9_-]{43}$/u.test(source.claimsDigest))).toBe(true);
     expect(result.data.value.raw).toBe(largeDecimal);
     expect(result.data.nonce).toBe(largeDecimal);
     expect(result.data.gasLimit.raw).toBe(largeDecimal);
@@ -253,6 +296,32 @@ describe("Robinhood Chain read handlers", () => {
         },
       },
     )).toThrow();
+    expect(() => parseCapabilitySuccess(
+      transactionInspectCapability,
+      { transactionHash },
+      {
+        ...result,
+        data: {
+          ...result.data,
+          from: parseEvmAddress(`0x${"99".repeat(20)}`),
+        },
+      },
+    )).toThrow("claims");
+    for (const source of result.evidence.sources) {
+      expect(() => parseCapabilitySuccess(
+        transactionInspectCapability,
+        { transactionHash },
+        {
+          ...result,
+          evidence: {
+            ...result.evidence,
+            sources: result.evidence.sources.map((candidate) => candidate === source
+              ? { ...candidate, claimsDigest: "A".repeat(43) as typeof candidate.claimsDigest }
+              : candidate),
+          },
+        },
+      )).toThrow();
+    }
     expect(service.rpc.calls).toEqual([
       { method: "eth_chainId", params: [] },
       { method: "eth_getTransactionByHash", params: [transactionHash] },

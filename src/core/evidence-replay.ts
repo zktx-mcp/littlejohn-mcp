@@ -1162,17 +1162,43 @@ export const captureEvidenceObservationClaims = (
   return Object.freeze(claims);
 };
 
+const projectEvidenceObservationClaims = (
+  definition: EvidenceReplayDefinition,
+  layout: EvidenceReplayLayout,
+  slot: BoundEvidenceObservationSlotDeclaration,
+  claims: readonly ObservationClaim[],
+): readonly Readonly<{
+  readonly role: string;
+  readonly value: CanonicalJson;
+  readonly chainAnchor?: ChainAnchor;
+  readonly asset?: AssetIdentity;
+}>[] => Object.freeze(captureEvidenceObservationClaims(
+    definition,
+    layout,
+    slot,
+    claims,
+  ).map((claim) => claimProjection(definition, layout, slot, claim)));
+
 const canonicalClaimArray = (
   definition: EvidenceReplayDefinition,
   layout: EvidenceReplayLayout,
   slot: BoundEvidenceObservationSlotDeclaration,
   claims: readonly ObservationClaim[],
-): string => canonicalJsonStringify(captureEvidenceObservationClaims(
-  definition,
-  layout,
-  slot,
-  claims,
-).map((claim) => claimProjection(definition, layout, slot, claim)) as unknown as CanonicalJson);
+): string => canonicalJsonStringify(
+  captureCanonicalJson(projectEvidenceObservationClaims(definition, layout, slot, claims)),
+);
+
+export const createEvidenceSourceClaimsDigest = (
+  definition: EvidenceReplayDefinition,
+  layout: EvidenceReplayLayout,
+  slot: BoundEvidenceObservationSlotDeclaration,
+  claims: readonly ObservationClaim[],
+): EvidenceSource["claimsDigest"] => replayEvidence.digest.parse(canonicalSha256Base64Url(
+  captureCanonicalJson({
+    claims: projectEvidenceObservationClaims(definition, layout, slot, claims),
+    digestKind: "evidence_source_claims",
+  }),
+));
 
 export const evidenceObservationClaimsEqual = (
   definition: EvidenceReplayDefinition,
@@ -1401,6 +1427,32 @@ const assertExpectedSourceAnchors = (
   }
 };
 
+const assertExpectedSourceClaimsDigests = (
+  definition: EvidenceReplayDefinition,
+  layout: EvidenceReplayLayout,
+  observations: EvidenceObservationProjection,
+  expectations: ReadonlyMap<
+    BoundEvidenceObservationSlotDeclaration,
+    readonly ObservationClaim[]
+  >,
+): void => {
+  for (const [slot, claims] of expectations) {
+    const observationId = observations.get(slot);
+    if (observationId === undefined) continue;
+    const source = observations.evidenceFor(observationId);
+    if (source === undefined) throw new TypeError("Observation source is unavailable.");
+    const expectedDigest = createEvidenceSourceClaimsDigest(
+      definition,
+      layout,
+      slot,
+      claims,
+    );
+    if (source.claimsDigest !== expectedDigest) {
+      throw new TypeError("Observation source claims do not match their digest.");
+    }
+  }
+};
+
 const assertPublicEvidenceClosure = (
   definition: EvidenceReplayDefinition,
   layout: EvidenceReplayLayout,
@@ -1451,6 +1503,12 @@ const assertPublicEvidenceClosure = (
     }
   }
   assertExpectedSourceAnchors(observations, expectations);
+  assertExpectedSourceClaimsDigests(
+    definition,
+    layout,
+    observations,
+    expectations,
+  );
 };
 
 const assertConclusionFreshness = (

@@ -429,7 +429,7 @@ describe("SQLite product state", () => {
     expect(parseProfileId(profileId)).toBe(profileId);
     expect(parseOwnerInstanceId(ownerInstanceId)).toBe(ownerInstanceId);
     expect(parseRuntimeRevision("0")).toBe("0");
-    expect(runtimeProtocolVersion).toBe(8);
+    expect(runtimeProtocolVersion).toBe(9);
     const noncanonicalTail = `${"A".repeat(21)}B`;
     expect(() => parseProfileId(noncanonicalTail)).toThrow();
     expect(() => parseOwnerInstanceId(noncanonicalTail)).toThrow();

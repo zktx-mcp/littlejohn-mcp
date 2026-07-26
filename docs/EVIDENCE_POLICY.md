@@ -45,6 +45,19 @@ satisfy a record format. It records the source version or revision when the
 source owner publishes a stable one. Its conclusion remains limited to the
 identity or definition and does not imply current availability or live state.
 
+Every public evidence source records `claimsDigest`, the SHA-256 digest of the
+canonical ordered claims accepted for that observation. Public validation
+derives the expected claims from the canonical request and result and rejects a
+different, missing, or malformed digest.
+
+`claimsDigest` establishes only consistency between the public result and the
+claims accepted by the local producer while the rest of the result is
+unchanged. It is not a signature, message authentication code, external
+attestation, safety conclusion, or proof that the local runtime is
+uncompromised. A party able to replace the complete result can replace the
+digest. Credentials, secret source identifiers, and provider-only values that
+cannot be derived from the public request or result never enter this digest.
+
 A source-owner or standards link used only to define a normative policy term is
 a citation, not runtime evidence and not a support claim. Any current support,
 runtime observation, identity conclusion, or user-visible external fact requires

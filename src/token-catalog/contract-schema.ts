@@ -80,8 +80,8 @@ export const tokenCatalogContractLimits = Object.freeze({
 });
 
 export const tokenCatalogDigestVersions = Object.freeze({
-  inspection: "2",
-  review: "3",
+  inspection: "3",
+  review: "4",
 } as const);
 
 export const tokenSelectionRevisionSchema = canonicalBase64UrlSchema(

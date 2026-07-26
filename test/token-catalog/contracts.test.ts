@@ -54,8 +54,23 @@ const snapshotRevision = Buffer.alloc(16, 3).toString("base64url");
 const createdAt = parseUtcTimestamp("2026-07-18T00:00:03.000Z");
 const expiresAt = parseUtcTimestamp("2026-07-18T00:05:03.000Z");
 
+const independentCanonicalJson = (value: unknown): string => {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(independentCanonicalJson).join(",")}]`;
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    return `{${entries.map(([key, entry]) =>
+      `${JSON.stringify(key)}:${independentCanonicalJson(entry)}`).join(",")}}`;
+  }
+  throw new TypeError("Unsupported test canonical JSON value.");
+};
+
 const canonicalOutputSchema = (schema: z.ZodType): string =>
-  canonicalJsonStringify(JSON.parse(JSON.stringify(z.toJSONSchema(schema, {
+  independentCanonicalJson(JSON.parse(JSON.stringify(z.toJSONSchema(schema, {
     target: "draft-2020-12",
     unrepresentable: "throw",
     io: "output",
@@ -112,8 +127,8 @@ describe("token catalog contracts", () => {
       ],
       [
         tokenInspectionSuccessSchema,
-        14_310,
-        "4b7a79e8dbb1809703a4687f6a5e26625077fb131f0b54b8b8d803dc28235522",
+        14_408,
+        "e50a9e6afb271ff20e00f5fa66b1f96dc99fc22f5012f3bebb28eb91224eeac0",
       ],
     ] as const) {
       const canonical = canonicalOutputSchema(schema);
@@ -122,9 +137,9 @@ describe("token catalog contracts", () => {
     }
   });
 
-  it("owns exactly the seven selection capability identifiers at contract version 7", () => {
-    expect(coreContractVersion).toBe("7");
-    expect(getCapabilityDefinitionSnapshot(tokenInspectCapability).contractVersion).toBe("7");
+  it("owns exactly the seven selection capability identifiers at contract version 8", () => {
+    expect(coreContractVersion).toBe("8");
+    expect(getCapabilityDefinitionSnapshot(tokenInspectCapability).contractVersion).toBe("8");
     expect(tokenCatalogCapabilityIds).toEqual([
       "token.cancel_operation",
       "token.inspect",
@@ -134,7 +149,7 @@ describe("token catalog contracts", () => {
       "token.start_addition",
       "token.start_removal",
     ]);
-    expect(tokenCatalogContractProjection.contractVersion).toBe("7");
+    expect(tokenCatalogContractProjection.contractVersion).toBe("8");
     expect(tokenCatalogContractProjectionDigest).toMatch(/^0x[0-9a-f]{64}$/u);
     expect(Object.isFrozen(tokenCatalogContractProjection)).toBe(true);
     expect(tokenCatalogErrorDefinitions).toContainEqual({
@@ -175,6 +190,8 @@ describe("token catalog contracts", () => {
     const inspection = await createInspectionSuccess();
     const input = { asset, block: { kind: "latest" as const } };
     expect(() => parseCapabilitySuccess(tokenInspectCapability, input, inspection)).not.toThrow();
+    expect(inspection.evidence.sources.every((source) =>
+      /^[A-Za-z0-9_-]{43}$/u.test(source.claimsDigest))).toBe(true);
 
     const runtimeCodeSource = inspection.evidence.sources.find(
       (source) => source.purpose === "token_runtime_code",
@@ -191,6 +208,32 @@ describe("token catalog contracts", () => {
         },
       },
     })).toThrow();
+    expect(inspection.data.metadata.symbol.status).toBe("available");
+    if (inspection.data.metadata.symbol.status !== "available") return;
+    expect(() => parseCapabilitySuccess(tokenInspectCapability, input, {
+      ...inspection,
+      data: {
+        ...inspection.data,
+        metadata: {
+          ...inspection.data.metadata,
+          symbol: {
+            ...inspection.data.metadata.symbol,
+            value: "ALT",
+          },
+        },
+      },
+    })).toThrow("claims");
+    for (const source of inspection.evidence.sources) {
+      expect(() => parseCapabilitySuccess(tokenInspectCapability, input, {
+        ...inspection,
+        evidence: {
+          ...inspection.evidence,
+          sources: inspection.evidence.sources.map((candidate) => candidate === source
+            ? { ...candidate, claimsDigest: "A".repeat(43) as typeof candidate.claimsDigest }
+            : candidate),
+        },
+      })).toThrow();
+    }
   });
 
   it("rejects every independent field mismatch in both token anchor relations", async () => {

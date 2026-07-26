@@ -10,6 +10,7 @@ import {
   createEvidenceFactIdentityForConclusion,
   createEvidenceObservationId,
   createEvidenceObservationTargetDeclaration,
+  createEvidenceSourceClaimsDigest,
   createEvidenceReplayBinder,
   createEvidenceReplayDefinition,
   createEvidenceReplayLayout,
@@ -26,6 +27,7 @@ import {
   evidenceSourceSchema,
   invocationIdSchema,
 } from "../../src/core/evidence.js";
+import type { CanonicalJson } from "../../src/core/canonical-json.js";
 import { evmAddressSchema } from "../../src/core/identities.js";
 import { productDisplayName } from "../../src/core/product-identity.js";
 import { parseUtcTimestamp } from "../../src/core/primitives.js";
@@ -62,8 +64,10 @@ const createLayout = () => {
 const createSource = (
   layout: ReturnType<typeof createEvidenceReplayLayout>,
   owner = validatedInputOwner,
+  value: CanonicalJson = { value: "safe" },
 ) => {
   const bound = createEvidenceReplayBinder(definition, layout).bind(target);
+  const claims = [{ role: bound.roles.value, value }];
   const observationId = createEvidenceObservationId(definition, layout, {
     slot: bound.slot,
     sourceId: validatedInputSourceId,
@@ -78,6 +82,12 @@ const createSource = (
     purpose: "validated_input",
     observedAt: evaluatedAt,
     reference: { kind: "validated_input", sourceId: validatedInputSourceId },
+    claimsDigest: createEvidenceSourceClaimsDigest(
+      definition,
+      layout,
+      bound.slot,
+      claims,
+    ),
   });
 };
 
@@ -116,6 +126,14 @@ describe("public evidence replay", () => {
       invocationId,
       ordinal: "99",
     } as never)).toBe(observationId);
+  });
+
+  it("keeps observation identity separate from the claim digest", () => {
+    const { layout } = createLayout();
+    const original = createSource(layout, validatedInputOwner, { value: "safe" });
+    const changed = createSource(layout, validatedInputOwner, { value: "changed" });
+    expect(changed.observationId).toBe(original.observationId);
+    expect(changed.claimsDigest).not.toBe(original.claimsDigest);
   });
 
   it("derives the complete public result from definition- and layout-bound declarations", () => {
@@ -396,7 +414,7 @@ describe("public evidence replay", () => {
         sourceId: validatedInputSourceId,
       },
     });
-    const source = createSource(layout, "Wrong owner");
+    const source = createSource(layout, "Wrong owner", "safe");
     expect(() => replayPublicEvidence({
       definition,
       layout,

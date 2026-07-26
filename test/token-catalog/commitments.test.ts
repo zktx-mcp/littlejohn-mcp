@@ -21,6 +21,12 @@ const independentCanonicalJson = (value: Json): string => {
 const independentSha256 = (value: Json): string =>
   `0x${createHash("sha256").update(independentCanonicalJson(value), "utf8").digest("hex")}`;
 
+const independentClaimsDigest = (claims: readonly Json[]): string =>
+  createHash("sha256").update(independentCanonicalJson({
+    claims,
+    digestKind: "evidence_source_claims",
+  }), "utf8").digest("base64url");
+
 const chainId = "eip155:4663";
 const asset = {
   kind: "erc20",
@@ -59,6 +65,7 @@ const observationIds = {
 const source = (
   observationId: string,
   purpose: string,
+  claims: readonly Json[],
 ) => ({
   observationId,
   invocationId,
@@ -68,6 +75,7 @@ const source = (
   observedAt: evaluatedAt,
   reference: sourceReference,
   chainAnchor: block,
+  claimsDigest: independentClaimsDigest(claims),
 });
 
 const conclusion = (
@@ -90,7 +98,7 @@ const inspection = {
   ok: true,
   meta: {
     capabilityId: "token.inspect",
-    contractVersion: "7",
+    contractVersion: "8",
     chainId,
     evaluatedAt,
   },
@@ -138,13 +146,49 @@ const inspection = {
   },
   evidence: {
     sources: [
-      source(observationIds.rpcChainId, "chain_id"),
-      source(observationIds.totalSupply, "token_total_supply"),
-      source(observationIds.block, "token_inspection_block"),
-      source(observationIds.name, "token_name"),
-      source(observationIds.symbol, "token_symbol"),
-      source(observationIds.runtimeCode, "token_runtime_code"),
-      source(observationIds.decimals, "token_decimals"),
+      source(observationIds.rpcChainId, "chain_id", [{
+        chainAnchor: block,
+        role: "chain_id",
+        value: chainId,
+      }]),
+      source(observationIds.totalSupply, "token_total_supply", [{
+        asset,
+        chainAnchor: block,
+        role: "token_total_supply",
+        value: "1000000",
+      }]),
+      source(observationIds.block, "token_inspection_block", [{
+        chainAnchor: block,
+        role: "token_inspection_block",
+        value: block,
+      }]),
+      source(observationIds.name, "token_name", [{
+        asset,
+        chainAnchor: block,
+        role: "token_name",
+        value: "Example Token",
+      }]),
+      source(observationIds.symbol, "token_symbol", [{
+        asset,
+        chainAnchor: block,
+        role: "token_symbol",
+        value: "EXT",
+      }]),
+      source(observationIds.runtimeCode, "token_runtime_code", [{
+        asset,
+        chainAnchor: block,
+        role: "token_runtime_code",
+        value: {
+          byteLength: "2",
+          codeHash: "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        },
+      }]),
+      source(observationIds.decimals, "token_decimals", [{
+        asset,
+        chainAnchor: block,
+        role: "token_decimals",
+        value: "18",
+      }]),
     ],
     conclusions: [
       conclusion("decimals_observed", observationIds.decimals),
@@ -216,10 +260,10 @@ describe("token commitment independent vectors", () => {
   it("fixes the complete inspection preimage without a production encoder or version owner", () => {
     const preimage = {
       digestKind: "token_inspection",
-      digestVersion: "2",
+      digestVersion: "3",
       result: inspection,
     } as const;
-    const expected = "0xc375d94aed42f211328af631fdff8d609892d01113cb9b57297646314128a802";
+    const expected = "0x58636d6717597ddea77cd6a69708e992fcf7f5adb98815d8ea1fa4eb8c71bfbd";
     expect(independentSha256(preimage)).toBe(expected);
     expect(tokenInspectionDigest(inspection)).toBe(expected);
   });
@@ -227,8 +271,8 @@ describe("token commitment independent vectors", () => {
   it("fixes the official-addition null branches and complete anchor", () => {
     const preimage = {
       digestKind: "token_catalog_review",
-      digestVersion: "3",
-      coreContractVersion: "7",
+      digestVersion: "4",
+      coreContractVersion: "8",
       operationId: additionReview.operationId,
       operationKind: additionReview.kind,
       account,
@@ -242,7 +286,7 @@ describe("token commitment independent vectors", () => {
       interactionInterface: additionReview.interactionInterface,
       expiresAt: additionReview.expiresAt,
     } as const;
-    const expected = "0x09a2c7d6b09d74a0ec614eddaa7ae2a527b13d6f55af9816343dc9bad6225267";
+    const expected = "0x09a7a49803483341875d70ddf0217fc8773f71d69392b0972a4e04f1140c0cd4";
     expect(independentSha256(preimage)).toBe(expected);
     expect(tokenCatalogReviewDigest(additionReview)).toBe(expected);
   });
@@ -250,8 +294,8 @@ describe("token commitment independent vectors", () => {
   it("fixes the removal non-null selection branches", () => {
     const preimage = {
       digestKind: "token_catalog_review",
-      digestVersion: "3",
-      coreContractVersion: "7",
+      digestVersion: "4",
+      coreContractVersion: "8",
       operationId: removalReview.operationId,
       operationKind: removalReview.kind,
       account,
@@ -265,7 +309,7 @@ describe("token commitment independent vectors", () => {
       interactionInterface: removalReview.interactionInterface,
       expiresAt: removalReview.expiresAt,
     } as const;
-    const expected = "0x85d0364d15f8670737e860ee1899ebe56ece50ba0a98889580f514bb84ba3c84";
+    const expected = "0xed5d23503e039ae4622905dd3532f21f705837e24f8652c5a055aac3dfe17366";
     expect(independentSha256(preimage)).toBe(expected);
     expect(tokenCatalogReviewDigest(removalReview)).toBe(expected);
   });

@@ -440,6 +440,42 @@ const jsonSchemaPropertyNames = (schema) => {
   return names;
 };
 
+const jsonSchemaRequiresProperty = (schema, propertyName) => {
+  const pending = [schema];
+  const visited = new WeakSet();
+  while (pending.length !== 0) {
+    const value = pending.pop();
+    if (typeof value !== "object" || value === null || visited.has(value)) continue;
+    visited.add(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const properties = descriptors["properties"]?.value;
+    const required = descriptors["required"]?.value;
+    if (
+      typeof properties === "object" &&
+      properties !== null &&
+      !Array.isArray(properties) &&
+      Object.hasOwn(properties, propertyName) &&
+      Array.isArray(required) &&
+      required.includes(propertyName)
+    ) return true;
+    for (const descriptor of Object.values(descriptors)) {
+      if ("value" in descriptor) pending.push(descriptor.value);
+    }
+  }
+  return false;
+};
+
+const assertPackagedClaimsDigests = (content, label) => {
+  const sources = content?.evidence?.sources;
+  if (
+    !Array.isArray(sources) ||
+    sources.length === 0 ||
+    sources.some((source) =>
+      typeof source?.claimsDigest !== "string" ||
+      !/^[A-Za-z0-9_-]{43}$/u.test(source.claimsDigest))
+  ) throw new TypeError(`${label} does not carry every source claims digest.`);
+};
+
 const readPackagedRuntimeIdentity = async () => {
   const challenge = randomBytes(32).toString("base64url");
   const response = await fetch(`${fixedOrigin}/api/v1/runtime-identity`, {
@@ -462,7 +498,7 @@ const readPackagedRuntimeIdentity = async () => {
     Array.isArray(identity) ||
     JSON.stringify(Object.keys(identity).sort()) !== JSON.stringify(expectedFields) ||
     identity.challenge !== challenge ||
-    identity.runtimeProtocolVersion !== 8 ||
+    identity.runtimeProtocolVersion !== 9 ||
     typeof identity.profileId !== "string" ||
     !/^[A-Za-z0-9_-]{22}$/u.test(identity.profileId) ||
     typeof identity.ownerInstanceId !== "string" ||
@@ -473,7 +509,7 @@ const readPackagedRuntimeIdentity = async () => {
     !/^[A-Za-z0-9_-]{43}$/u.test(identity.proof) ||
     typeof identity.ownerRevision !== "string" ||
     !/^(?:0|[1-9][0-9]*)$/u.test(identity.ownerRevision)
-  ) throw new TypeError("Packaged runtime identity is not the exact protocol-8 contract.");
+  ) throw new TypeError("Packaged runtime identity is not the exact protocol-9 contract.");
   return identity;
 };
 
@@ -577,6 +613,7 @@ const assertTokenInspection = (inspection, fakeRpc) => {
     inspection.data?.metadata?.symbol?.status !== "available" ||
     inspection.data.metadata.symbol.value !== fakeRpc.token.symbol
   ) throw new TypeError("Packaged token inspection does not match the release fake authority.");
+  assertPackagedClaimsDigests(inspection, "Packaged token inspection");
 };
 
 /**
@@ -974,7 +1011,7 @@ const assertPackagedPersistence = (inspection, runtimeIdentity) => {
     Array.isArray(owner) ||
     owner.profileId !== runtimeIdentity.profileId ||
     owner.configurationMac !== runtimeIdentity.configurationMac ||
-    owner.protocolVersion !== 8
+    owner.protocolVersion !== 9
   ) throw new TypeError("Packaged SQLite owner configuration identity is invalid.");
   const connection = inspection.connection;
   if (
@@ -1091,8 +1128,14 @@ export const verifyPackagedIntegration = async (prepared) => {
     ) throw new TypeError("Packaged wallet connection schema contains a stale identity contract.");
     const chainStatusTool = tools.find((tool) => tool.name === "read_get_chain_status");
     const chainStatusProperties = jsonSchemaPropertyNames(chainStatusTool?.outputSchema);
-    if (!chainStatusProperties.has("chainId") || chainStatusProperties.has("caip2")) {
+    if (
+      !chainStatusProperties.has("chainId") ||
+      chainStatusProperties.has("caip2")
+    ) {
       throw new TypeError("Packaged chain status schema contains a parallel chain identity.");
+    }
+    if (!jsonSchemaRequiresProperty(chainStatusTool?.outputSchema, "claimsDigest")) {
+      throw new TypeError("Packaged chain status schema does not require source claim digests.");
     }
     const catalog = await firstMcp.callTool("read_list_capabilities");
     const catalogEntries = catalog.structuredContent?.capabilities;
@@ -1101,7 +1144,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     }
     const capabilityIds = catalogEntries.map((entry) => entry?.capabilityId);
     if (
-      catalog.structuredContent?.contractVersion !== "7" ||
+      catalog.structuredContent?.contractVersion !== "8" ||
       JSON.stringify(capabilityIds) !== JSON.stringify(expectedCapabilityIds) ||
       catalogEntries.some((entry) =>
         entry?.maximumSuccessUtf8Bytes !== 8_388_607 ||
@@ -1113,6 +1156,7 @@ export const verifyPackagedIntegration = async (prepared) => {
       chainStatus.structuredContent?.data?.chainId !== expectedChainId ||
       Object.hasOwn(chainStatus.structuredContent?.data ?? {}, "caip2")
     ) throw new TypeError("Packaged MCP chain status is invalid.");
+    assertPackagedClaimsDigests(chainStatus.structuredContent, "Packaged MCP chain status");
 
     const accountBalance = await callSemanticRead(firstMcp, "read_get_account_balance", {
       account: { kind: "address", address: fakeRpc.semanticReads.account.address },
@@ -1124,6 +1168,7 @@ export const verifyPackagedIntegration = async (prepared) => {
       accountBalance,
       "Packaged MCP account balance",
     );
+    assertPackagedClaimsDigests(accountBalanceContent, "Packaged MCP account balance");
     const accountToken = accountBalanceContent.data?.tokens?.[0];
     const accountConclusionIds = accountBalanceContent.evidence?.conclusions?.map(({ id }) => id);
     if (
@@ -1152,6 +1197,7 @@ export const verifyPackagedIntegration = async (prepared) => {
       contractInspection,
       "Packaged MCP contract inspection",
     );
+    assertPackagedClaimsDigests(contractContent, "Packaged MCP contract inspection");
     if (
       contractContent.data?.address !== fakeRpc.semanticReads.contract.address ||
       contractContent.data?.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
@@ -1181,6 +1227,7 @@ export const verifyPackagedIntegration = async (prepared) => {
       transactionInspection,
       "Packaged MCP transaction inspection",
     );
+    assertPackagedClaimsDigests(transactionContent, "Packaged MCP transaction inspection");
     const receipt = transactionContent.data?.inclusion?.receipt;
     const transactionWarnings = transactionContent.warnings;
     const transactionBytes = Buffer.byteLength(JSON.stringify(transactionContent), "utf8");
@@ -1417,6 +1464,10 @@ export const verifyPackagedIntegration = async (prepared) => {
     ) {
       throw new TypeError("Packaged MCP wallet connection is not connected.");
     }
+    assertPackagedClaimsDigests(
+      firstConnection.structuredContent,
+      "Packaged MCP wallet connection",
+    );
     const connectedBrowserState = await jsonResponse(await browserCurrent(browser));
     if (
       connectedBrowserState.status !== "absent" ||

@@ -194,8 +194,11 @@ projects the completed wallet, chain, token-catalog, account-assets, and referen
 into HTTP, MCP, CLI, and the React application.
 Read-result consumers revalidate the normalized request, result chain scope,
 and evidence-anchor chain scope through the same definition-owned checks used
-by the local producer. Observation-claim binding remains producer-only because
-those claims do not cross the transport boundary.
+by the local producer. The producer and public validation use one canonical
+claim projection. Every public evidence source carries the digest of its
+canonical claims, and public validation rejects a result when the claims
+derived from the request and result do not match that digest. The meaning and
+limits of this digest are owned by `docs/EVIDENCE_POLICY.md#evidence-record`.
 The semantic-read result owner accepts a complete canonical success only when
 its UTF-8 JSON representation is at most 8,388,607 bytes. Every generated read
 projection exposes that aggregate limit and the `result_too_large` failure. The

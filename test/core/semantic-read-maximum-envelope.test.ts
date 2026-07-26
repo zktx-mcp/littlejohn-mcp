@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 
 import { beforeAll, describe, expect, it } from "vitest";
 
@@ -75,8 +76,29 @@ beforeAll(async () => {
   encoder = await createErc20CallEncoder();
 });
 
+const independentCanonicalJson = (value: unknown): string => {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(independentCanonicalJson).join(",")}]`;
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    return `{${entries.map(([key, entry]) =>
+      `${JSON.stringify(key)}:${independentCanonicalJson(entry)}`).join(",")}}`;
+  }
+  throw new TypeError("Unsupported test canonical JSON value.");
+};
+
 const canonicalUtf8Bytes = (value: unknown): number =>
-  Buffer.byteLength(canonicalJsonStringify(value as CanonicalJson), "utf8");
+  Buffer.byteLength(independentCanonicalJson(value), "utf8");
+
+const independentClaimsDigest = (claims: readonly unknown[]): string =>
+  createHash("sha256").update(independentCanonicalJson({
+    claims,
+    digestKind: "evidence_source_claims",
+  }), "utf8").digest("base64url");
 
 const providerBlock = (transactions: readonly string[] = []) => Object.freeze({
   number: maximumQuantity,
@@ -207,7 +229,11 @@ const maximumConnectedWallet = async () => {
 };
 
 const exactWalletBoundary = async () => {
-  const sessionCount = "9".repeat(8_387_589);
+  const baseline = await unresolvedWallet("2");
+  expect(baseline.ok).toBe(true);
+  if (!baseline.ok) throw new TypeError("The wallet boundary baseline did not succeed.");
+  const fixedBytes = canonicalUtf8Bytes(baseline) - 1;
+  const sessionCount = "9".repeat(maximumSuccessUtf8Bytes - fixedBytes);
   const exact = await unresolvedWallet(sessionCount);
   expect(exact.ok).toBe(true);
   if (!exact.ok) throw new TypeError("The exact wallet boundary did not succeed.");
@@ -217,6 +243,18 @@ const exactWalletBoundary = async () => {
   const oversizedTransportSuccess = {
     ...exact,
     data: { status: "unresolved" as const, sessionCount: `${sessionCount}9` },
+    evidence: {
+      ...exact.evidence,
+      sources: exact.evidence.sources.map((source) => source.purpose === "wallet_sdk_sessions"
+        ? {
+            ...source,
+            claimsDigest: independentClaimsDigest([{
+              role: "wallet_sdk_state",
+              value: { status: "unresolved", sessionCount: `${sessionCount}9` },
+            }]),
+          }
+        : source),
+    },
   };
   expect(canonicalUtf8Bytes(oversizedTransportSuccess)).toBe(8_388_608);
   expect(() => parseCapabilitySuccess(walletConnectionCapability, {}, oversizedTransportSuccess)).toThrow(
@@ -374,7 +412,8 @@ export const verifySemanticReadMaximumEnvelopes = async (): Promise<void> => {
   const fixedCounterexampleBytes = canonicalUtf8Bytes(calibration) - calibrationLogBytes * 2;
   const targetLogBytes = 2_094_754;
   expect(targetLogBytes).toBeLessThanOrEqual(readCapabilityLimits.transactionCalldataBytes);
-  expect(fixedCounterexampleBytes + targetLogBytes * 2 + 1).toBe(8_390_974);
+  expect(fixedCounterexampleBytes + targetLogBytes * 2 + 1)
+    .toBeGreaterThan(maximumSuccessUtf8Bytes);
 
   const receiptProvider = maximumIncludedReceipt(targetLogBytes);
   expect(Buffer.byteLength(JSON.stringify(includedProvider), "utf8")).toBeLessThan(publicReadResponseLimitBytes);

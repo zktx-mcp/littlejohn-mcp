@@ -237,6 +237,7 @@ export const createEvidenceSchemaSet = () => {
       observedAt: primitive.utcTimestamp,
       reference: sourceReference,
       chainAnchor: primitive.chainAnchor.optional(),
+      claimsDigest: digest,
     })
     .strict()
     .superRefine((value, context) => {

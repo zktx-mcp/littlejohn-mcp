@@ -6,7 +6,6 @@ import { z } from "zod";
 
 import {
   applicationFailureSchemaFor,
-  canonicalJsonStringify,
   type CanonicalJson,
 } from "../../src/core/index.js";
 import {
@@ -65,7 +64,22 @@ const managementContractProjection = (contract: AnyWalletManagementContract) => 
   )),
 });
 
-const canonicalManagementProjection = (): string => canonicalJsonStringify(
+const independentCanonicalJson = (value: unknown): string => {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(independentCanonicalJson).join(",")}]`;
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    return `{${entries.map(([key, entry]) =>
+      `${JSON.stringify(key)}:${independentCanonicalJson(entry)}`).join(",")}}`;
+  }
+  throw new TypeError("Unsupported test canonical JSON value.");
+};
+
+const canonicalManagementProjection = (): string => independentCanonicalJson(
   JSON.parse(JSON.stringify({
     internalContext: outputSchema(walletManagementInternalContextSchema),
     cancelOperation: managementContractProjection(walletManagementContracts.cancelOperation),
@@ -91,7 +105,7 @@ describe("wallet management contract authority", () => {
     const canonical = canonicalManagementProjection();
     expect(Buffer.byteLength(canonical, "utf8")).toBe(124_357);
     expect(createHash("sha256").update(canonical, "utf8").digest("hex")).toBe(
-      "b2b6e06d304d7006e3b927f54e712f1790aa172d37058469a77826df2087b48b",
+      "8042ad60561dd18cadb6efebf1d8e349fc7a0b112ebc5bc86c8f19791913adaa",
     );
   });
 

@@ -65,7 +65,7 @@ const duplicateMachineState = (document: string): readonly DuplicateMachineState
       /\bruntime protocol\b/u.test(statement) ||
       /\bprotocol (?:version|revision)\b/u.test(statement) ||
       /\bwire (?:contract|version|revision)\b/u.test(statement);
-    if (isRuntimeProtocolContext && containsVersionValue(statement, "8", "eight")) {
+    if (isRuntimeProtocolContext && containsVersionValue(statement, "9", "nine")) {
       violations.add("runtime-protocol-version");
     }
 
@@ -75,7 +75,7 @@ const duplicateMachineState = (document: string): readonly DuplicateMachineState
       /\bschema (?:version|revision)\b/u.test(statement) ||
       /\buser_version\b/u.test(statement) ||
       /\bdatabaseschemaversion\b/u.test(statement);
-    if (isDatabaseSchemaContext && containsVersionValue(statement, "7", "seven")) {
+    if (isDatabaseSchemaContext && containsVersionValue(statement, "8", "eight")) {
       violations.add("database-schema-version");
     }
 
@@ -97,13 +97,13 @@ const duplicateMachineState = (document: string): readonly DuplicateMachineState
 
 describe("binding document authority", () => {
   it("detects equivalent duplicate machine-state claims without relying on prose or Markdown form", () => {
-    expect(duplicateMachineState("`runtimeProtocolVersion` equals `8`.")).toEqual([
+    expect(duplicateMachineState("`runtimeProtocolVersion` equals `9`.")).toEqual([
       "runtime-protocol-version",
     ]);
     expect(duplicateMachineState([
       "The EIP-155 chain reference is 4663.",
-      "The compatible wire contract uses version 8.",
-      "`databaseSchemaVersion` equals `7`.",
+      "The compatible wire contract uses version 9.",
+      "`databaseSchemaVersion` equals `8`.",
       "There are sixteen current SQLite tables.",
       "The current database tables include runtime_owner and local_profile.",
     ].join("\n\n"))).toEqual([
@@ -118,8 +118,8 @@ describe("binding document authority", () => {
 
   it("keeps exact machine current state in its code and Product Policy owners", async () => {
     expect(productChainId).toBe("eip155:4663");
-    expect(runtimeProtocolVersion).toBe(8);
-    expect(databaseSchemaVersion).toBe(7);
+    expect(runtimeProtocolVersion).toBe(9);
+    expect(databaseSchemaVersion).toBe(8);
     expect(currentSqliteTableNames).toEqual(currentTableNames);
     expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(23_690);
     expect(createHash("sha256").update(currentSqliteSchemaSql, "utf8").digest("hex")).toBe(

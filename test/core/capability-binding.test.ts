@@ -34,6 +34,7 @@ import {
   sourceReferenceSchema,
   walletConnectionEvidence,
   walletConnectionCapability,
+  type CanonicalJson,
   type ObservationClaim,
   type EvidenceSource,
   type ObservationWriter,
@@ -116,6 +117,14 @@ const independentObservationId = (
   ordinal,
 ]), "utf8").digest("base64url")}` as EvidenceSource["observationId"];
 
+const independentClaimsDigest = (
+  claims: readonly CanonicalJson[],
+): EvidenceSource["claimsDigest"] =>
+  createHash("sha256").update(independentCanonicalJson({
+    claims,
+    digestKind: "evidence_source_claims",
+  }), "utf8").digest("base64url") as EvidenceSource["claimsDigest"];
+
 const canonicalSourceOrder = <Source extends { readonly observationId: string }>(
   sources: readonly Source[],
 ): readonly Source[] =>
@@ -192,7 +201,11 @@ describe("capability binding authority", () => {
       "rpc_chain_id_matches_scope",
     ]);
     const chainIdSource = result.evidence.sources.find((item) => item.purpose === "chain_id");
+    const latestBlockSource = result.evidence.sources.find((item) => item.purpose === "latest_block");
     expect(chainIdSource).toBeDefined();
+    expect(latestBlockSource).toBeDefined();
+    expect(result.evidence.sources.every((source) =>
+      /^[A-Za-z0-9_-]{43}$/u.test(source.claimsDigest))).toBe(true);
     const expected = `obs:${createHash("sha256").update(canonicalJsonStringify([
       "rpc_test",
       "chain_id",
@@ -202,8 +215,155 @@ describe("capability binding authority", () => {
       "0",
     ])).digest("base64url")}`;
     expect(chainIdSource?.observationId).toBe(expected);
+    expect(independentClaimsDigest([{
+      role: "chain_id",
+      value: configuredChainId,
+    }])).toBe("jxlez_R4lwimoz7QofFJLou8ECkYQi4P7Ic9RKdgu_Q");
+    expect(chainIdSource?.claimsDigest)
+      .toBe("jxlez_R4lwimoz7QofFJLou8ECkYQi4P7Ic9RKdgu_Q");
+    expect(latestBlockSource?.claimsDigest).toBe(independentClaimsDigest([{
+      chainAnchor: block,
+      role: "latest_block",
+      value: block,
+    } as unknown as CanonicalJson]));
     expect(result.evidence.sources.every((source) => source.invocationId === chainIdSource?.invocationId)).toBe(true);
     expect(Object.isFrozen(result)).toBe(true);
+  });
+
+  it("binds a public claim digest through one generic production and replay path", async () => {
+    const conclusion = createExactConclusionIdentityDeclaration("claims_observed");
+    const replay = createEvidenceReplayDefinition({
+      capabilityId: "test.public_claim_digest",
+      conclusions: [conclusion],
+      warningCodes: [],
+    });
+    const fact = createEvidenceFactIdentityDeclaration(replay, "claims");
+    const valueTarget = createEvidenceObservationTargetDeclaration(replay, {
+      slotId: "claims",
+      fact,
+      kind: "source",
+      purpose: "claims",
+      sourceClass: "chain_rpc",
+      roles: {
+        balance: "token_balance",
+        metadata: "token_metadata",
+      },
+    });
+    const dataSchema = z.object({
+      balance: z.object({
+        raw: z.string(),
+        source: z.object({ kind: z.literal("rpc"), valid: z.literal(true) }).strict(),
+      }).strict(),
+      metadata: z.object({
+        name: z.string(),
+        tags: z.array(z.string()),
+      }).strict(),
+    }).strict();
+    const digestBlock = chainAnchorSchema.parse({
+      chainId: configuredChainId,
+      blockNumber: "42",
+      blockHash: `0x${"a".repeat(64)}`,
+      blockTimestamp: "2026-07-26T00:00:00.000Z",
+    });
+    const digestAsset = {
+      kind: "erc20" as const,
+      chainId: configuredChainId,
+      address: evmAddressSchema.parse(`0x${"1".repeat(40)}`),
+    };
+    const data = dataSchema.parse({
+      balance: { raw: "123456789", source: { kind: "rpc", valid: true } },
+      metadata: { name: "Example", tags: ["stock", "verified"] },
+    });
+    const definition = defineReadCapability<{}, z.infer<typeof dataSchema>>({
+      capabilityId: "test.public_claim_digest",
+      inputSchema: z.object({}).strict(),
+      dataSchema,
+      failureCodes: ["internal_error", "invalid_input", "result_too_large"],
+      evidence: {
+        definition: replay,
+        observationTargets: () => [valueTarget],
+        declaration: (_input, data, binder) => {
+          const value = binder.bind(valueTarget);
+          return {
+            observationExpectations: [{
+              slot: value.slot,
+              claims: [
+                {
+                  role: value.roles.balance,
+                  value: data.balance,
+                  asset: digestAsset,
+                  chainAnchor: digestBlock,
+                },
+                {
+                  role: value.roles.metadata,
+                  value: data.metadata,
+                },
+              ],
+            }],
+            observationReferences: [],
+            factRequirements: [{
+              fact,
+              observationSlots: [value.slot],
+              requiredObservationSlots: [value.slot],
+              minimumObservationCount: 1,
+              outcome: "observed",
+            }],
+            expectedConclusions: [conclusion],
+            conclusionDrafts: [{
+              conclusion,
+              outcomeFact: fact,
+              evidenceFacts: [fact],
+              freshnessRuleId: "chain_anchor_exact",
+            }],
+            warningRequirements: [],
+          };
+        },
+        staticScopeExclusions: [],
+      },
+    });
+    const harness = createCapabilityHarness();
+    const binding = bindForHarness(definition, harness, async (_input, context, observations) => {
+      const value = observations.bind(valueTarget);
+      recordRpc(context, observations, value.slot, [
+        {
+          role: value.roles.metadata,
+          value: data.metadata,
+        },
+        {
+          role: value.roles.balance,
+          value: data.balance,
+          asset: digestAsset,
+          chainAnchor: digestBlock,
+        },
+      ]);
+      return { status: "success", data };
+    });
+    const result = await invokeBinding(definition, binding, {});
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.evidence.sources.every((source) =>
+      /^[A-Za-z0-9_-]{43}$/u.test(source.claimsDigest))).toBe(true);
+    expect(result.evidence.sources).toHaveLength(1);
+    expect(result.evidence.sources[0]?.claimsDigest)
+      .toBe("IP2urjh-5Mw_PmkOwt_2B8zy-4ftiiiXq5ikfQ8xXpo");
+    expect(() => parseCapabilitySuccess(definition, {}, result)).not.toThrow();
+    expect(() => parseCapabilitySuccess(definition, {}, {
+      ...result,
+      data: {
+        ...result.data,
+        metadata: { ...result.data.metadata, name: "Changed" },
+      },
+    })).toThrow("claims");
+    expect(() => parseCapabilitySuccess(definition, {}, {
+      ...result,
+      evidence: {
+        ...result.evidence,
+        sources: result.evidence.sources.map((source) => ({
+          ...source,
+          claimsDigest: "A".repeat(43) as EvidenceSource["claimsDigest"],
+        })),
+      },
+    })).toThrow("claims");
   });
 
   it("separates concurrent invocations that observe the same millisecond", async () => {
@@ -895,6 +1055,8 @@ describe("capability binding authority", () => {
     const result = await invokeBinding(walletConnectionCapability, binding, {});
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+    expect(result.evidence.sources.every((source) =>
+      /^[A-Za-z0-9_-]{43}$/u.test(source.claimsDigest))).toBe(true);
 
     const parsed = parseCapabilitySuccess(walletConnectionCapability, {}, result);
     expect(parsed).toEqual(result);
@@ -917,6 +1079,21 @@ describe("capability binding authority", () => {
       ...result,
       meta: { ...result.meta, evaluatedAt: connected.expiresAt },
     })).toThrow();
+    expect(() => parseCapabilitySuccess(walletConnectionCapability, {}, {
+      ...result,
+      data: { ...result.data, expiresAt: "2026-07-13T10:17:02.000Z" },
+    })).toThrow("claims");
+    for (const source of result.evidence.sources) {
+      expect(() => parseCapabilitySuccess(walletConnectionCapability, {}, {
+        ...result,
+        evidence: {
+          ...result.evidence,
+          sources: result.evidence.sources.map((candidate) => candidate === source
+            ? { ...candidate, claimsDigest: "A".repeat(43) as EvidenceSource["claimsDigest"] }
+            : candidate),
+        },
+      })).toThrow();
+    }
 
     let getterReads = 0;
     const hostile = Object.defineProperty({}, "ok", {
@@ -972,6 +1149,26 @@ describe("capability binding authority", () => {
         label: "wrong source class",
         sources: result.evidence.sources.map((source) => source === chainIdSource
           ? { ...source, sourceClass: "official_document" as const }
+          : source),
+      },
+      {
+        label: "missing claims digest",
+        sources: result.evidence.sources.map((source) => {
+          if (source !== chainIdSource) return source;
+          const { claimsDigest: _claimsDigest, ...withoutClaimsDigest } = source;
+          return withoutClaimsDigest as EvidenceSource;
+        }),
+      },
+      {
+        label: "malformed claims digest",
+        sources: result.evidence.sources.map((source) => source === chainIdSource
+          ? { ...source, claimsDigest: "not-a-digest" as EvidenceSource["claimsDigest"] }
+          : source),
+      },
+      {
+        label: "different valid claims digest",
+        sources: result.evidence.sources.map((source) => source === chainIdSource
+          ? { ...source, claimsDigest: "A".repeat(43) as EvidenceSource["claimsDigest"] }
           : source),
       },
       {
@@ -1035,6 +1232,17 @@ describe("capability binding authority", () => {
         }),
         counterexample.label,
       ).toThrow();
+    }
+    for (const source of result.evidence.sources) {
+      expect(() => parseCapabilitySuccess(chainStatusCapability, {}, {
+        ...result,
+        evidence: {
+          ...result.evidence,
+          sources: result.evidence.sources.map((candidate) => candidate === source
+            ? { ...candidate, claimsDigest: "A".repeat(43) as EvidenceSource["claimsDigest"] }
+            : candidate),
+        },
+      })).toThrow();
     }
 
     const conclusionCounterexamples = [
@@ -1254,6 +1462,8 @@ describe("capability binding authority", () => {
     const accountResult = await invokeBinding(accountBalanceCapability, accountBinding, accountInput);
     expect(accountResult.ok).toBe(true);
     if (!accountResult.ok) return;
+    expect(accountResult.evidence.sources.every((source) =>
+      /^[A-Za-z0-9_-]{43}$/u.test(source.claimsDigest))).toBe(true);
     expect(accountResult.warnings.map((warning) => warning.code)).toEqual([
       "decimals_unavailable",
       "partial_result",
@@ -1309,6 +1519,30 @@ describe("capability binding authority", () => {
           }
         : warning),
     })).toThrow();
+    expect(() => parseCapabilitySuccess(accountBalanceCapability, accountInput, {
+      ...accountResult,
+      data: {
+        ...accountResult.data,
+        native: {
+          ...accountResult.data.native,
+          amount: {
+            ...native.amount,
+            raw: "2",
+          },
+        },
+      },
+    })).toThrow("claims");
+    for (const source of accountResult.evidence.sources) {
+      expect(() => parseCapabilitySuccess(accountBalanceCapability, accountInput, {
+        ...accountResult,
+        evidence: {
+          ...accountResult.evidence,
+          sources: accountResult.evidence.sources.map((candidate) => candidate === source
+            ? { ...candidate, claimsDigest: "A".repeat(43) as EvidenceSource["claimsDigest"] }
+            : candidate),
+        },
+      })).toThrow();
+    }
   });
 
   it("binds a transport success to its chain scope, evidence anchors, and request", async () => {

@@ -4,7 +4,6 @@ import { z } from "zod";
 import { describe, expect, it } from "vitest";
 
 import {
-  canonicalJsonStringify,
   coreContractVersion,
   createApplicationFailure,
   readCapabilityRegistry,
@@ -50,7 +49,22 @@ const initialRuntimeSupportManifest = createInitialRuntimeSupportManifest(
 const interfaceCapabilityCatalogSchema = createCapabilityCatalogSchema(interfaceReadCapabilityRegistry);
 const initialCapabilityCatalogSchema = createCapabilityCatalogSchema(readCapabilityRegistry);
 
-const outputSchema = (schema: z.ZodType): string => canonicalJsonStringify(
+const independentCanonicalJson = (value: unknown): string => {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(independentCanonicalJson).join(",")}]`;
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    return `{${entries.map(([key, entry]) =>
+      `${JSON.stringify(key)}:${independentCanonicalJson(entry)}`).join(",")}}`;
+  }
+  throw new TypeError("Unsupported test canonical JSON value.");
+};
+
+const outputSchema = (schema: z.ZodType): string => independentCanonicalJson(
   JSON.parse(JSON.stringify(z.toJSONSchema(schema, {
     target: "draft-2020-12",
     io: "output",
@@ -109,17 +123,17 @@ describe("runtime support manifest authority", () => {
       [
         runtimeSupportManifestSchema,
         2_616,
-        "12dfb31d57143bd3d323df8e1129c2677f33172ea7090673c375e4ed3eef7282",
+        "44dcbdfeb0b5c4f9e57c35536f3add76f56b63fa024d781da0f10c2daba7b72a",
       ],
       [
         interfaceCapabilityCatalogSchema,
         3_328,
-        "3c07c305e4bed2d72115ac64cd2ce4b099c357b1a8b0565dfe6c5214c8264e02",
+        "9209da8bcaf161cae40d787c8d0ae0186d4fe18381822146798ffacc15e4cc24",
       ],
       [
         ownerIdentitySchema,
         745,
-        "d9c7cc90a6322a9bb6e8010db0c050f130498aceae98800a6513705cb71d98a8",
+        "cb63a8085d4c2f675b56ed92e01ecc966b62285c811bb7260964046c0a54ff2c",
       ],
     ] as const) {
       const projection = outputSchema(schema);

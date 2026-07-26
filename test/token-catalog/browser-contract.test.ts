@@ -12,6 +12,7 @@ import { parseCapabilitySuccess } from "../../src/core/index.js";
 import * as browserContracts from "../../src/token-catalog/browser.js";
 import {
   tokenCatalogApplicationContracts as serverApplicationContracts,
+  tokenCatalogContractProjection,
   tokenCatalogContractProjectionDigest,
   tokenCatalogOperationConfirmationContract as serverConfirmationContract,
   tokenInspectCapability,
@@ -19,14 +20,32 @@ import {
 } from "../../src/token-catalog/contracts.js";
 import { createInspectionSuccess } from "./harness.js";
 
+const independentCanonicalJson = (value: unknown): string => {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(independentCanonicalJson).join(",")}]`;
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    return `{${entries.map(([key, entry]) =>
+      `${JSON.stringify(key)}:${independentCanonicalJson(entry)}`).join(",")}}`;
+  }
+  throw new TypeError("Unsupported test canonical JSON value.");
+};
+
 describe("token catalog browser contract", () => {
   it("uses one canonical parser owner in server and browser graphs", () => {
     expect(browserContracts.tokenCatalogApplicationContracts).toBe(serverApplicationContracts);
     expect(browserContracts.tokenCatalogOperationConfirmationContract).toBe(serverConfirmationContract);
     expect(browserContracts.tokenInspectionSuccessSchema).toBe(serverInspectionSuccessSchema);
-    expect(tokenCatalogContractProjectionDigest).toBe(
-      "0x45b03c110a62470c4c9e32422fb994cb77e80d7eb47da1ae29c66f4bda4f4180",
-    );
+    const fixedDigest =
+      "0xf4643b4d07351d0996407bdb77664c55d40663fdcc1e4145124650f71872d2cc";
+    expect(`0x${createHash("sha256")
+      .update(independentCanonicalJson(tokenCatalogContractProjection), "utf8")
+      .digest("hex")}`).toBe(fixedDigest);
+    expect(tokenCatalogContractProjectionDigest).toBe(fixedDigest);
   });
 
   it("preserves canonical SHA-256 bytes for ASCII, Unicode, and escaped NUL input", () => {

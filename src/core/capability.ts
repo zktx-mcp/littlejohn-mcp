@@ -36,6 +36,7 @@ import {
 } from "./evidence.js";
 import {
   captureEvidenceObservationClaims,
+  createEvidenceSourceClaimsDigest,
   createEvidenceReplayBinder,
   createEvidenceObservationId,
   createEvidenceReplayLayout,
@@ -692,6 +693,12 @@ class InvocationObservations implements ObservationWriter {
       observedAt: details.observedAt,
       reference: details.reference,
       ...(details.chainAnchor === undefined ? {} : { chainAnchor: details.chainAnchor }),
+      claimsDigest: createEvidenceSourceClaimsDigest(
+        this.#definition,
+        this.#layout,
+        slot,
+        claims,
+      ),
     }) as EvidenceSource;
     this.#evidence.set(slot, evidence);
     this.#claims.set(slot, claims);
