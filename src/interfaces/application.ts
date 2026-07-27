@@ -3,12 +3,14 @@ import type {
   RuntimeApplicationContext,
   WalletConnectionReadCapabilityPort,
 } from "../runtime/application-context.js";
+import type { CapabilityBinding } from "../core/index.js";
+import type { uniswapV2QuoteCapability } from "../protocols/uniswap-v2/index.js";
 import type {
   HttpOwnerApplication,
 } from "../runtime/http-owner.js";
 import type {
   InterfaceRuntimeSupportManifest,
-  ReferenceMarketRuntimeSupportManifest,
+  ProtocolRuntimeSupportManifest,
 } from "../runtime/support-manifest.js";
 import type { WalletInterfaceOperations } from "../wallet/contracts.js";
 import {
@@ -38,10 +40,11 @@ export interface InterfaceApplicationDependencies {
 
 export interface InterfaceOwnerApplicationContext<WalletOperations extends object>
   extends RuntimeApplicationContext, Omit<TokenCatalogConsumerPorts, "accountTokenSelectionStore"> {
-  readonly supportManifest: ReferenceMarketRuntimeSupportManifest;
+  readonly supportManifest: ProtocolRuntimeSupportManifest;
   readonly walletConnection: WalletConnectionReadCapabilityPort;
   readonly walletOperations: WalletOperations;
   readonly chainReads: ChainReadCapabilityPort;
+  readonly uniswapV2Quote: CapabilityBinding<typeof uniswapV2QuoteCapability>;
   readonly tokenInspection: TokenCatalogInspectionPort;
   readonly accountAssets: AccountAssetApplicationPort;
   readonly referenceMarkets: ReferenceMarketApplicationPort;
@@ -72,6 +75,7 @@ export const createInterfaceOwnerApplicationFactory = (
       chainReads: context.chainReads,
       walletConnection: context.walletConnection,
       tokenInspection: context.tokenInspection,
+      uniswapV2Quote: context.uniswapV2Quote,
       supportManifest,
     });
     const controlRoutes = extendTokenCatalogControlRouteRegistry({

@@ -843,7 +843,10 @@ export const runCli = async (
     failure ??= normalizeCliFailure(error);
   };
   try {
-    if (!mcpMode && argumentsInput[0] === "read") {
+    if (
+      !mcpMode &&
+      (argumentsInput[0] === "read" || argumentsInput[0] === "uniswap-v2")
+    ) {
       try { readCommand = parseReadCliCommand(argumentsInput); }
       catch { throw new WalletOperationError("invalid_input"); }
     } else if (!mcpMode && argumentsInput[0] === "token") {

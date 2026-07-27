@@ -318,7 +318,7 @@ describe("token selection persistence", () => {
     const resultJson = independentCanonicalJson(malformed as unknown as IndependentJson);
     const inspectionDigest = `0x${createHash("sha256").update(independentCanonicalJson({
       digestKind: "token_inspection",
-      digestVersion: "4",
+      digestVersion: "5",
       result: malformed as unknown as IndependentJson,
     }), "utf8").digest("hex")}`;
 

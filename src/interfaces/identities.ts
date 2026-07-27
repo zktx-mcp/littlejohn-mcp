@@ -35,6 +35,11 @@ import {
   type AnyReferenceMarketApplicationContract,
 } from "../market-portfolio/index.js";
 import {
+  uniswapV2InterfaceErrorMappings,
+  uniswapV2ErrorRegistry,
+  uniswapV2QuoteCapability,
+} from "../protocols/uniswap-v2/index.js";
+import {
   tokenCatalogApplicationContracts,
   tokenCatalogErrorRegistry,
   tokenCatalogInterfaceErrorMappings,
@@ -84,6 +89,7 @@ import type { RouteMethod } from "../runtime/http-routing.js";
 import {
   publicInspectionPaths,
   referenceMarketPublicRoutes,
+  uniswapV2PublicRoutes,
 } from "./browser-contract.js";
 
 export const referenceMarketLocalMutationPaths = Object.freeze({
@@ -129,7 +135,7 @@ export interface InterfaceToolAnnotations {
 }
 
 export interface CliInterfaceIdentity {
-  readonly domain: "market" | "read" | "token" | "wallet";
+  readonly domain: "market" | "read" | "token" | "uniswap-v2" | "wallet";
   readonly command: string;
   readonly argumentSyntax: string;
 }
@@ -167,6 +173,10 @@ const accountAssetResponseAuthority = Object.freeze({
 const referenceMarketResponseAuthority = Object.freeze({
   applicationErrors: referenceMarketErrorRegistry,
   interfaceMappings: referenceMarketInterfaceErrorMappings,
+});
+const uniswapV2ResponseAuthority = Object.freeze({
+  applicationErrors: uniswapV2ErrorRegistry,
+  interfaceMappings: uniswapV2InterfaceErrorMappings,
 });
 
 const readAnnotations = (openWorldHint: boolean): InterfaceToolAnnotations => Object.freeze({
@@ -285,12 +295,30 @@ export const tokenInspectInterface = identity({
   web: true,
 });
 
+export const uniswapV2QuoteInterface = identity({
+  definition: uniswapV2QuoteCapability,
+  http: { method: "POST", path: uniswapV2PublicRoutes.exactInputQuotes },
+  mcp: {
+    name: "uniswap_v2_quote_exact_input",
+    description: "Quote exact raw input across the declared Uniswap V2 routes.",
+    openWorldHint: true,
+  },
+  cli: {
+    domain: "uniswap-v2",
+    command: "quote-exact-input",
+    argumentSyntax: "--factory <factory-address> --token-in <token-address> --token-out <token-address> --amount-in <raw-uint256> --block <latest|block-number> [--json]",
+  },
+  responseAuthority: uniswapV2ResponseAuthority,
+  web: true,
+});
+
 export const readInterfaceIdentities = Object.freeze([
   accountBalanceInterface,
   chainStatusInterface,
   contractInspectInterface,
   tokenInspectInterface,
   transactionInspectInterface,
+  uniswapV2QuoteInterface,
   walletConnectionInterface,
 ].sort((left, right) => compareCodePointSequences(left.capabilityId, right.capabilityId)));
 

@@ -41,7 +41,7 @@ describe("token catalog browser contract", () => {
     expect(browserContracts.tokenCatalogOperationConfirmationContract).toBe(serverConfirmationContract);
     expect(browserContracts.tokenInspectionSuccessSchema).toBe(serverInspectionSuccessSchema);
     const fixedDigest =
-      "0x31f6a7c3f60dba433a0a8877e13c5f8da1c63eb7142df7c67ddad10e093e817f";
+      "0xc63c54b7304a7d6c98b76478b853d6fbbd1f89623efc4cfd6dbedaa3e6b07ebc";
     expect(`0x${createHash("sha256")
       .update(independentCanonicalJson(tokenCatalogContractProjection), "utf8")
       .digest("hex")}`).toBe(fixedDigest);

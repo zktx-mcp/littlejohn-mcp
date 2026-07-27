@@ -49,8 +49,16 @@ const browserCoreConsumers = new Set([
   "interfaces/web/operation-id.ts",
   "interfaces/web/token-catalog-client.ts",
   "interfaces/web/wallet-dialog-view.ts",
+  "interfaces/web/uniswap-v2-client.ts",
+  "interfaces/web/uniswap-v2-quote-view.tsx",
   "runtime/error-definitions.ts",
   "market-portfolio/contracts.ts",
+  "protocols/contracts.ts",
+  "protocols/registry.ts",
+  "protocols/uniswap-v2/contracts.ts",
+  "protocols/uniswap-v2/deployment.ts",
+  "protocols/uniswap-v2/evidence.ts",
+  "protocols/uniswap-v2/quote.ts",
   "registry/official-asset-contract.ts",
   "token-catalog/contract-schema.ts",
   "wallet/management-contracts.ts",
@@ -1331,7 +1339,7 @@ describe("runtime architecture boundary", () => {
     expect(sorted(finiteOwners.requestOrigins)).toEqual(["runtime/request-security.ts"]);
     expect(sorted(finiteOwners.requestBodies)).toEqual(["runtime/request-security.ts"]);
     expect(sorted(finiteOwners.availability)).toEqual(["runtime/support-manifest.ts"]);
-    expect(sorted(finiteOwners.supportLevels)).toEqual(["runtime/support-manifest.ts"]);
+    expect(sorted(finiteOwners.supportLevels)).toEqual(["core/support-level.ts"]);
     expect(sorted(finiteOwners.interactionInterfaces)).toEqual([
       "token-catalog/state.ts",
       "wallet/operation-state.ts",
@@ -1495,6 +1503,13 @@ describe("runtime architecture boundary", () => {
           "`intelligence` owns `ContractSourceVerificationPort`, its normalized results and failures, evidence requirements, and lifecycle",
           "`src/intelligence/sourcify.ts` owns the origin, path, request and response admission, deadline, response-size and concurrency limits, cleanup, and provider identity",
           "Runtime composition constructs one Sourcify adapter and passes only `ContractSourceVerificationPort` to the shared contract-analysis process",
+        ],
+        [
+          "Uniswap V2",
+          "Binding protocol identity",
+          "`docs/PROTOCOL_ADAPTERS.md` and `src/protocols/uniswap-v2` own the exact V2 package, deployment, capability, arithmetic, and evidence meaning",
+          "`src/protocols/uniswap-v2/sdk.ts` owns the pinned Uniswap SDK loading and admission boundary; the package owns immutable deployment and route-asset records",
+          "Runtime composition constructs the statically registered V2 package once and passes only its canonical quote binding to interfaces",
         ],
       ]);
 

@@ -6,7 +6,7 @@ import {
 } from "../core/index.js";
 import type { ControlCredentialVerifier } from "./control-credential.js";
 import {
-  assertDirectInterfaceErrorMappingRegistryExtension,
+  assertInterfaceErrorMappingRegistryDescendant,
   runtimeInterfaceErrorMappings,
   toProblemDetails,
   type InterfaceErrorMappingRegistry,
@@ -119,6 +119,7 @@ const captureRouteDefinition = (input: RouteDefinition): RouteDefinition => {
 interface CompiledRoute extends RouteDefinition {
   readonly requestClass: string;
   readonly acceptsBody: boolean;
+  readonly errorMappings: InterfaceErrorMappingRegistry;
   readonly responseLimitBytes: number;
   readonly segments: readonly RouteSegment[];
 }
@@ -236,6 +237,7 @@ const compile = (
   definition: RouteDefinition,
   requestPolicies: RequestPolicyRegistry,
   resources: readonly ResourcePathDefinition[],
+  errorMappings: InterfaceErrorMappingRegistry,
 ): CompiledRoute => {
   const captured = captureRouteDefinition(definition);
   const segments = parseRouteSegments(captured.pathPattern);
@@ -253,6 +255,7 @@ const compile = (
     ...captured,
     requestClass,
     acceptsBody,
+    errorMappings,
     responseLimitBytes: requestPolicy.responseLimitBytes,
     segments,
   });
@@ -380,12 +383,14 @@ export class RuntimeRouteRegistry {
     if (routeDefinitions.length === 0) throw new TypeError("Route registry extension is empty.");
     const state = routeRegistryState(this);
     const mappings = errorMappings ?? state.errorMappings;
-    if (mappings !== state.errorMappings) {
-      assertDirectInterfaceErrorMappingRegistryExtension(state.errorMappings, mappings);
-    }
+    assertInterfaceErrorMappingRegistryDescendant(
+      runtimeInterfaceErrorMappings,
+      mappings,
+    );
     const routes = Object.freeze([
       ...state.routes,
-      ...routeDefinitions.map((route) => compile(route, state.requestPolicies, state.resources)),
+      ...routeDefinitions.map((route) =>
+        compile(route, state.requestPolicies, state.resources, mappings)),
     ]);
     assertUnambiguousRoutes(routes);
     return createRegistry({
@@ -552,7 +557,10 @@ export class RuntimeRouteRegistry {
     }
     return Object.freeze({
       ok: false,
-      problem: toProblemDetails(captured["failure"] as unknown as ApplicationFailure, state.errorMappings),
+      problem: toProblemDetails(
+        captured["failure"] as unknown as ApplicationFailure,
+        route.errorMappings,
+      ),
     });
   }
 }
@@ -560,23 +568,30 @@ export class RuntimeRouteRegistry {
 export const createRuntimeRouteRegistry = (input: {
   readonly controlVerifier: ControlCredentialVerifier;
   readonly errorMappings?: InterfaceErrorMappingRegistry;
-}): RuntimeRouteRegistry => createRegistry({
-  routes: Object.freeze([]),
-  requestPolicies: createInitialRequestPolicyRegistry(input.controlVerifier),
-  resources: Object.freeze([
-    Object.freeze({
-      kind: "prefix",
-      pathPrefix: localControlApiPathPrefix,
-      requestClass: localControlRequestClass,
-    }),
-    Object.freeze({
-      kind: "prefix",
-      pathPrefix: publicApiPathPrefix,
-      requestClass: publicReadRequestClass,
-    }),
-  ]),
-  errorMappings: input.errorMappings ?? runtimeInterfaceErrorMappings,
-});
+}): RuntimeRouteRegistry => {
+  const errorMappings = input.errorMappings ?? runtimeInterfaceErrorMappings;
+  assertInterfaceErrorMappingRegistryDescendant(
+    runtimeInterfaceErrorMappings,
+    errorMappings,
+  );
+  return createRegistry({
+    routes: Object.freeze([]),
+    requestPolicies: createInitialRequestPolicyRegistry(input.controlVerifier),
+    resources: Object.freeze([
+      Object.freeze({
+        kind: "prefix",
+        pathPrefix: localControlApiPathPrefix,
+        requestClass: localControlRequestClass,
+      }),
+      Object.freeze({
+        kind: "prefix",
+        pathPrefix: publicApiPathPrefix,
+        requestClass: publicReadRequestClass,
+      }),
+    ]),
+    errorMappings,
+  });
+};
 
 export const assertRuntimeRouteRegistryDescendant = (
   ancestor: RuntimeRouteRegistry,

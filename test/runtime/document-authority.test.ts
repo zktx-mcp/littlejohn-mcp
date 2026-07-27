@@ -36,6 +36,7 @@ const currentTableNames = [
 
 type DuplicateMachineState =
   | "database-schema-version"
+  | "interface-cardinality"
   | "product-chain-reference"
   | "runtime-protocol-version"
   | "sqlite-table-count"
@@ -60,6 +61,12 @@ const duplicateMachineState = (document: string): readonly DuplicateMachineState
     .map((value) => value.trim())
     .filter((value) => value.length > 0);
   for (const statement of statements) {
+    const copiedInterfaceCardinality =
+      /\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty(?:-[a-z]+)?|[0-9]+)\s+(?:(?:semantic|read|public|implemented|loopback|http|mcp|interface|management|operation|wallet|token|market)[ -]+){0,4}(?:capabilit(?:y|ies)|http resources?|loopback resources?|mcp tools?|tool groups?)\b/u;
+    if (copiedInterfaceCardinality.test(statement)) {
+      violations.add("interface-cardinality");
+    }
+
     const isRuntimeProtocolContext =
       /\bruntimeprotocolversion\b/u.test(statement) ||
       /\bruntime protocol\b/u.test(statement) ||
@@ -114,12 +121,15 @@ describe("binding document authority", () => {
       "sqlite-table-name:local_profile",
       "sqlite-table-name:runtime_owner",
     ]);
+    expect(duplicateMachineState(
+      "The runtime exposes twenty-four MCP tools in six tool groups.",
+    )).toEqual(["interface-cardinality"]);
   });
 
   it("keeps exact machine current state in its code and Product Policy owners", async () => {
     expect(productChainId).toBe("eip155:4663");
-    expect(runtimeProtocolVersion).toBe(10);
-    expect(databaseSchemaVersion).toBe(9);
+    expect(runtimeProtocolVersion).toBe(11);
+    expect(databaseSchemaVersion).toBe(10);
     expect(currentSqliteTableNames).toEqual(currentTableNames);
     expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(23_690);
     expect(createHash("sha256").update(currentSqliteSchemaSql, "utf8").digest("hex")).toBe(
@@ -127,9 +137,9 @@ describe("binding document authority", () => {
     );
 
     const productPolicy = await readFile(productPolicyPath, "utf8");
-    expect(Buffer.byteLength(productPolicy, "utf8")).toBe(7_723);
+    expect(Buffer.byteLength(productPolicy, "utf8")).toBe(8_487);
     expect(createHash("sha256").update(productPolicy, "utf8").digest("hex")).toBe(
-      "6016e97e67c98fe6b303f4de2156ab05f4c83223185d6b308a43013ad6c3524c",
+      "3ac9ccb9996feb0531c0458bbf901d4006979255468ecfbd86fbf786eaf793f6",
     );
   });
 

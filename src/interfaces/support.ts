@@ -8,7 +8,7 @@ import {
   type CapabilityCatalog,
   type CapabilityAvailabilityInput,
   type InterfaceRuntimeSupportManifest,
-  type ReferenceMarketRuntimeSupportManifest,
+  type ProtocolRuntimeSupportManifest,
 } from "../runtime/support-manifest.js";
 import {
   interfaceReadCapabilityRegistry,
@@ -92,7 +92,7 @@ const referenceMarketBindingAvailability = (
 });
 
 export const extendInterfaceSupportManifest = (
-  parent: ReferenceMarketRuntimeSupportManifest,
+  parent: ProtocolRuntimeSupportManifest,
 ): InterfaceRuntimeSupportManifest => extendInterfaceRuntimeSupportManifest(parent, {
   registrations: [],
   changes: Object.freeze([

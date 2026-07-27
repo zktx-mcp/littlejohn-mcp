@@ -5,18 +5,24 @@ import {
   capabilityIdSchema,
   compareCodePointSequences,
   coreContractVersion,
+  deepFreezeValue,
   evmChainIdSchema,
   extendCapabilitySchemaProjection,
   fixedIdentifierSchema,
   generalSingleLineTextSchema,
   getCapabilityDefinitionSnapshot,
+  officialIdentityEvidenceSchema,
   parseEvmChainId,
   projectCapabilities,
   readCapabilityRegistry,
+  supportLevelDefinitions,
+  supportLevelSchema,
   walletConnectionCapability,
   type CapabilityRegistry,
   type CapabilitySchemaProjection,
   type CanonicalJson,
+  type OfficialIdentityEvidence,
+  type SupportLevel,
 } from "../core/index.js";
 import {
   readRuntimeChainConfiguration,
@@ -33,14 +39,6 @@ const directAvailabilityDefinitions = Object.freeze([
 const unavailableAvailability = availabilityDefinitions[0];
 const internalAvailability = availabilityDefinitions[1];
 const availableAvailability = availabilityDefinitions[2];
-
-const supportLevelDefinitions = Object.freeze([
-  "L0_discovered",
-  "L1_analyzed",
-  "L2_reviewed",
-  "L3_executable",
-  "L4_receipt_verified",
-] as const);
 
 const initialReadCapabilityIds = Object.freeze(readCapabilityRegistry.values().map((definition) =>
   getCapabilityDefinitionSnapshot(definition).capabilityId));
@@ -93,9 +91,28 @@ const createSupportSchemaSet = () => {
       unsupportedConclusions: z.array(generalSingleLineTextSchema),
     }).strict(),
   }).strict();
-  const supportLevel = z.enum(supportLevelDefinitions);
-  const protocolSupport = z.object({ protocolId: fixedIdentifierSchema, supportLevel }).strict();
-  const transactionActionSupport = z.object({ actionId: fixedIdentifierSchema, supportLevel }).strict();
+  const protocolSupport = z.object({
+    protocolId: fixedIdentifierSchema,
+    supportLevel: supportLevelSchema,
+    identityEvidence: officialIdentityEvidenceSchema,
+  }).strict();
+  const protocolExtension = z.object({
+    protocols: z.array(protocolSupport),
+    registrations: z.array(capabilityManifestEntry),
+    changes: z.array(capabilityManifestEntry),
+  }).strict().superRefine((value, context) => {
+    if (
+      value.protocols.length === 0 &&
+      value.registrations.length === 0 &&
+      value.changes.length === 0
+    ) {
+      context.addIssue({ code: "custom", message: "A protocol support extension cannot be empty." });
+    }
+  });
+  const transactionActionSupport = z.object({
+    actionId: fixedIdentifierSchema,
+    supportLevel: supportLevelSchema,
+  }).strict();
   const manifest = z.object({
     contractVersion: z.literal(coreContractVersion),
     chains: z.array(chainSupport).length(1),
@@ -127,6 +144,7 @@ const createSupportSchemaSet = () => {
     availability,
     capabilityAvailability,
     capabilityExtension,
+    protocolExtension,
     manifest,
   });
 };
@@ -143,6 +161,15 @@ export interface RuntimeSupportManifestExtensionInput {
   readonly registrations: readonly CapabilitySupportEntryInput[];
   readonly changes: readonly CapabilitySupportEntryInput[];
 }
+export interface ProtocolSupportEntryInput {
+  readonly protocolId: string;
+  readonly supportLevel: SupportLevel;
+  readonly identityEvidence: OfficialIdentityEvidence;
+}
+export interface RuntimeProtocolSupportManifestExtensionInput
+  extends RuntimeSupportManifestExtensionInput {
+  readonly protocols: readonly ProtocolSupportEntryInput[];
+}
 export const runtimeSupportManifestSchema = guardRuntimeJsonSchema(publicSchemas.manifest);
 export type RuntimeSupportManifestSnapshot = z.infer<typeof runtimeSupportManifestSchema>;
 
@@ -153,6 +180,7 @@ type ManifestScope =
   | "token_catalog"
   | "account_assets"
   | "reference_market"
+  | "protocols"
   | "interfaces";
 declare const runtimeSupportManifestType: unique symbol;
 
@@ -163,6 +191,7 @@ export interface RuntimeSupportManifest<Scope extends ManifestScope = ManifestSc
 export type InitialRuntimeSupportManifest = RuntimeSupportManifest<"initial">;
 export type WalletRuntimeSupportManifest = RuntimeSupportManifest<"wallet">;
 export type ChainRuntimeSupportManifest = RuntimeSupportManifest<"chain">;
+export type ProtocolRuntimeSupportManifest = RuntimeSupportManifest<"protocols">;
 export type TokenCatalogRuntimeSupportManifest = RuntimeSupportManifest<"token_catalog">;
 export type AccountAssetRuntimeSupportManifest = RuntimeSupportManifest<"account_assets">;
 export type ReferenceMarketRuntimeSupportManifest = RuntimeSupportManifest<"reference_market">;
@@ -193,7 +222,7 @@ const freezeSnapshot = (input: unknown): RuntimeSupportManifestSnapshot => {
     Object.freeze(entry.availability);
     Object.freeze(entry);
   }
-  for (const entry of parsed.protocols) Object.freeze(entry);
+  for (const entry of parsed.protocols) deepFreezeValue(entry);
   for (const entry of parsed.transactionActions) Object.freeze(entry);
   Object.freeze(parsed.chains);
   Object.freeze(parsed.protocols);
@@ -307,6 +336,25 @@ const applyCapabilityExtension = (
     }))) as unknown as RuntimeSupportManifestSnapshot["capabilities"];
 };
 
+const applyProtocolExtension = (
+  snapshot: RuntimeSupportManifestSnapshot,
+  input: RuntimeProtocolSupportManifestExtensionInput,
+): RuntimeSupportManifestSnapshot["protocols"] => {
+  const extension = parseRuntimeAuthority(authoritySchemas.protocolExtension, input);
+  const protocolIds = extension.protocols.map((entry) => entry.protocolId);
+  assertOrderedUnique(protocolIds);
+  const existing = new Map(snapshot.protocols.map((entry) => [entry.protocolId, entry]));
+  for (const entry of extension.protocols) {
+    if (existing.has(entry.protocolId)) {
+      throw new TypeError("Protocol support identity is already registered.");
+    }
+    existing.set(entry.protocolId, entry);
+  }
+  return Object.freeze([...existing.values()]
+    .sort((left, right) => compareCodePointSequences(left.protocolId, right.protocolId))
+    .map((entry) => deepFreezeValue({ ...entry }))) as RuntimeSupportManifestSnapshot["protocols"];
+};
+
 const assertScopedChild = (
   parent: RuntimeSupportManifest,
   parentScope: ManifestScope,
@@ -331,10 +379,15 @@ export const assertChainRuntimeSupportManifestExtension = (
   extension: ChainRuntimeSupportManifest,
 ): void => assertScopedChild(parent, "wallet", extension, "chain");
 
-export const assertInterfaceRuntimeSupportManifestExtension = (
+export const assertProtocolRuntimeSupportManifestExtension = (
   parent: ReferenceMarketRuntimeSupportManifest,
+  extension: ProtocolRuntimeSupportManifest,
+): void => assertScopedChild(parent, "reference_market", extension, "protocols");
+
+export const assertInterfaceRuntimeSupportManifestExtension = (
+  parent: ProtocolRuntimeSupportManifest,
   extension: InterfaceRuntimeSupportManifest,
-): void => assertScopedChild(parent, "reference_market", extension, "interfaces");
+): void => assertScopedChild(parent, "protocols", extension, "interfaces");
 
 export const assertReferenceMarketRuntimeSupportManifestExtension = (
   parent: AccountAssetRuntimeSupportManifest,
@@ -379,13 +432,33 @@ export const extendChainRuntimeSupportManifest = (
   return extension;
 };
 
-export const extendInterfaceRuntimeSupportManifest = (
+export const extendProtocolRuntimeSupportManifest = (
   parent: ReferenceMarketRuntimeSupportManifest,
+  extensionInput: RuntimeProtocolSupportManifestExtensionInput,
+): ProtocolRuntimeSupportManifest => {
+  const parentState = manifestState(parent);
+  if (parentState.scope !== "reference_market") {
+    throw new TypeError("Protocol support requires the completed application manifest.");
+  }
+  const extension = createManifest("protocols", {
+    ...parentState.snapshot,
+    protocols: applyProtocolExtension(parentState.snapshot, extensionInput),
+    capabilities: applyCapabilityExtension(parentState.snapshot, {
+      registrations: extensionInput.registrations,
+      changes: extensionInput.changes,
+    }),
+  }, parent) as ProtocolRuntimeSupportManifest;
+  assertProtocolRuntimeSupportManifestExtension(parent, extension);
+  return extension;
+};
+
+export const extendInterfaceRuntimeSupportManifest = (
+  parent: ProtocolRuntimeSupportManifest,
   extensionInput: RuntimeSupportManifestExtensionInput,
 ): InterfaceRuntimeSupportManifest => {
   const parentState = manifestState(parent);
-  if (parentState.scope !== "reference_market") {
-    throw new TypeError("Interface support requires the reference market manifest.");
+  if (parentState.scope !== "protocols") {
+    throw new TypeError("Interface support requires the protocol support manifest.");
   }
   const extension = createManifest(
     "interfaces",
@@ -417,7 +490,9 @@ export const extendTokenCatalogRuntimeSupportManifest = (
   extensionInput: RuntimeSupportManifestExtensionInput,
 ): TokenCatalogRuntimeSupportManifest => {
   const parentState = manifestState(parent);
-  if (parentState.scope !== "chain") throw new TypeError("Token catalog support requires the chain manifest.");
+  if (parentState.scope !== "chain") {
+    throw new TypeError("Token catalog support requires the chain manifest.");
+  }
   const extension = createManifest("token_catalog", {
     ...parentState.snapshot,
     capabilities: applyCapabilityExtension(parentState.snapshot, extensionInput),
@@ -465,7 +540,22 @@ export const renderCurrentSupportSection = (manifest: RuntimeSupportManifest): s
     .filter((entry) => entry.availability.overall === availableAvailability)
     .map((entry) => `\`${entry.capabilityId}\` (${exposedBindingLabels(entry.availability).join(", ")})`);
   const displayLevel = (level: string): string => level.replace("_", " ");
-  const protocols = snapshot.protocols.map((entry) => `\`${entry.protocolId}\` (${displayLevel(entry.supportLevel)})`);
+  const protocols = snapshot.protocols.flatMap((entry) => {
+    const evidence = entry.identityEvidence;
+    const identifiers = (values: readonly string[]): string =>
+      values.map((value) => `\`${value}\``).join(", ");
+    const revision = evidence.sourceRevision === undefined
+      ? ""
+      : ` Revision: \`${evidence.sourceRevision}\`.`;
+    return [
+      `- Implemented protocol support: \`${entry.protocolId}\` (${displayLevel(entry.supportLevel)}).`,
+      `  Official identity source: [${evidence.sourceOwner}](${evidence.reference.uri}) (\`${evidence.sourceClass}\`).${revision}`,
+      `  Coverage: \`${evidence.coverage}\`.`,
+      `  Supported conclusions: ${identifiers(evidence.supportedConclusions)}.`,
+      `  Unsupported conclusions: ${identifiers(evidence.unsupportedConclusions)}.`,
+      `  Exclusions: ${identifiers(evidence.exclusions)}.`,
+    ];
+  });
   const transactionActions = snapshot.transactionActions.map((entry) => `\`${entry.actionId}\` (${displayLevel(entry.supportLevel)})`);
   return [
     "## Current Support",
@@ -479,7 +569,7 @@ export const renderCurrentSupportSection = (manifest: RuntimeSupportManifest): s
     `  Little John's canonical chain ID for that network is \`${chain.chainId}\`.`,
     `  Source owner: ${chain.evidence.sourceOwner}. Coverage: ${chain.evidence.coverage}`,
     `  Unsupported conclusions: ${chain.evidence.unsupportedConclusions.join(" ")}`,
-    protocols.length === 0 ? "- Implemented protocol support: none." : `- Implemented protocol support: ${protocols.join(", ")}.`,
+    ...(protocols.length === 0 ? ["- Implemented protocol support: none."] : protocols),
     walletSupport.length === 0
       ? "- Implemented wallet support: none."
       : `- Implemented wallet support: ${walletSupport.join("; ")}.`,

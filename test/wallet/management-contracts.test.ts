@@ -103,9 +103,9 @@ const canonicalManagementProjection = (): string => independentCanonicalJson(
 describe("wallet management contract authority", () => {
   it("preserves the complete wallet management projection", () => {
     const canonical = canonicalManagementProjection();
-    expect(Buffer.byteLength(canonical, "utf8")).toBe(124_357);
+    expect(Buffer.byteLength(canonical, "utf8")).toBe(124_363);
     expect(createHash("sha256").update(canonical, "utf8").digest("hex")).toBe(
-      "1b6a7846bba9a829efe6cad4dc54d313515cb25f6391946c413bec3a530a362e",
+      "77c77c5dd9db23323ca8564db6ce7a76aaad4bb9d7fbec9aeffca98fdbe26cdd",
     );
   });
 

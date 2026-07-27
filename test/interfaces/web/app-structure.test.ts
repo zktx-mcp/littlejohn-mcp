@@ -20,6 +20,8 @@ describe("root browser application structure", () => {
     expect(app.match(/<ContractInspectionView\b/gu)).toHaveLength(1);
     expect(app).toContain('import { ReferenceMarketView } from "./reference-market-view.js"');
     expect(app.match(/<ReferenceMarketView\b/gu)).toHaveLength(1);
+    expect(app).toContain('import { UniswapV2QuoteView } from "./uniswap-v2-quote-view.js"');
+    expect(app.match(/<UniswapV2QuoteView\b/gu)).toHaveLength(1);
     expect(app).not.toContain("browserPagePaths.tokens");
     expect(app).not.toContain("<TokenCatalogPage");
     expect(app).not.toContain("location.pathname");

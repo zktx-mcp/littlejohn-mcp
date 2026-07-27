@@ -225,6 +225,30 @@ unavailability observations are evidence. They are not a safety score,
 malicious-contract classification, honeypot decision, transaction approval, or
 investment recommendation.
 
+## Uniswap V2 Quote Evidence
+
+The `uniswap_v2` package owns two immutable official-source records: the
+Uniswap deployment record for the admitted Robinhood Chain V2 factory and pair
+init-code hash, and the Robinhood route-asset record for WETH and USDG. These
+records establish only the identities stated by their exact source revisions.
+They do not establish current code, pair existence, liquidity, quote quality,
+execution, or safety.
+
+Each quote separately binds the configured chain, canonical block, admitted
+factory runtime code and contract analysis, token-decimals reads, and every
+pair fact actually read for each candidate. A candidate stops at its first
+terminal hop; an unperformed later hop has no fabricated observation. Pair
+address, runtime code, token order, reserves, and decimals are checked by
+evidence replay. The canonical V2 result validator independently checks the
+declared paths, hop order, arithmetic outputs, prices, and SDK comparison.
+Public result validation rejects a substitution in either class.
+
+The Uniswap SDK result is not source authority. It is an untrusted calculation
+checked against the package's independent integer arithmetic. A quote reports
+only the declared candidates at the observed block. It is not a best-route
+recommendation, transaction result, universal sellability conclusion, honeypot
+decision, or safety conclusion.
+
 ## Public Claims
 
 - Public documentation cites source-owner official pages only.

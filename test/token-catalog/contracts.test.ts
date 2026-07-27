@@ -137,8 +137,8 @@ describe("token catalog contracts", () => {
       ],
       [
         tokenInspectionSuccessSchema,
-        19_744,
-        "84983c62b497a4d2528309293717edc0fe8bb050922a4166146b54906eb321d3",
+        19_745,
+        "4c456db567adf0c37dd52bfda64812b7e61f36e66a0364fc8f5614b9ada91135",
       ],
     ] as const) {
       const canonical = canonicalOutputSchema(schema);
@@ -147,9 +147,9 @@ describe("token catalog contracts", () => {
     }
   });
 
-  it("owns exactly the seven selection capability identifiers at contract version 9", () => {
-    expect(coreContractVersion).toBe("9");
-    expect(getCapabilityDefinitionSnapshot(tokenInspectCapability).contractVersion).toBe("9");
+  it("owns exactly the seven selection capability identifiers at contract version 10", () => {
+    expect(coreContractVersion).toBe("10");
+    expect(getCapabilityDefinitionSnapshot(tokenInspectCapability).contractVersion).toBe("10");
     expect(tokenCatalogCapabilityIds).toEqual([
       "token.cancel_operation",
       "token.inspect",
@@ -159,7 +159,7 @@ describe("token catalog contracts", () => {
       "token.start_addition",
       "token.start_removal",
     ]);
-    expect(tokenCatalogContractProjection.contractVersion).toBe("9");
+    expect(tokenCatalogContractProjection.contractVersion).toBe("10");
     expect(tokenCatalogContractProjectionDigest).toMatch(/^0x[0-9a-f]{64}$/u);
     expect(Object.isFrozen(tokenCatalogContractProjection)).toBe(true);
     expect(tokenCatalogErrorDefinitions).toContainEqual({

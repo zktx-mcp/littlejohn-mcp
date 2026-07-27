@@ -103,18 +103,12 @@ const controlText = (
   return readable(value.status);
 };
 
-export const ContractAnalysisDetails = ({
+export const ContractAnalysisSummary = ({
   analysis,
-  sources,
   coverage,
-  warnings,
-  limitations,
 }: {
   readonly analysis: ContractAnalysis;
-  readonly sources: readonly EvidenceSource[];
   readonly coverage: Coverage;
-  readonly warnings: readonly Warning[];
-  readonly limitations: readonly StaticScopeExclusion[];
 }) => (
   <div className="contract-analysis">
     <div className="warning">
@@ -166,6 +160,24 @@ export const ContractAnalysisDetails = ({
         <p>Unavailable ({readable(analysis.declaredFunctions.reason)})</p>
       )}
     </section>
+  </div>
+);
+
+export const ContractAnalysisDetails = ({
+  analysis,
+  sources,
+  coverage,
+  warnings,
+  limitations,
+}: {
+  readonly analysis: ContractAnalysis;
+  readonly sources: readonly EvidenceSource[];
+  readonly coverage: Coverage;
+  readonly warnings: readonly Warning[];
+  readonly limitations: readonly StaticScopeExclusion[];
+}) => (
+  <div className="contract-analysis-details">
+    <ContractAnalysisSummary analysis={analysis} coverage={coverage} />
     <section className="analysis-section">
       <h2>Evidence sources</h2>
       <ul className="analysis-list">

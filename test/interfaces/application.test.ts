@@ -51,6 +51,10 @@ import { bindForHarness, createCapabilityHarness } from "../core/capability-harn
 import { referenceMarketInterfaceHarnessPort } from "../market-portfolio/interface-harness.js";
 import { tokenCatalogInterfaceHarnessPorts } from "../token-catalog/interface-harness.js";
 import { accountAssetInterfaceHarnessPort } from "../account-assets/interface-harness.js";
+import {
+  extendUniswapV2ProtocolHarnessManifest,
+  uniswapV2QuoteHarnessBinding,
+} from "../protocols/interface-harness.js";
 
 const directories: string[] = [];
 const operationId = Buffer.alloc(32, 41).toString("base64url");
@@ -133,9 +137,11 @@ describe("interface owner application", () => {
       createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
     );
     const chainManifest = extendChainSupportManifest(walletManifest);
-    const tokenCatalogManifest = extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(
-      extendTokenCatalogSupportManifest(chainManifest),
-    ));
+    const tokenCatalogManifest = extendUniswapV2ProtocolHarnessManifest(
+      extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(
+        extendTokenCatalogSupportManifest(chainManifest),
+      )),
+    );
     const ports = capabilityPorts();
     let closes = 0;
     const createCredentials = (): BrowserRequestCredentialAuthority => {
@@ -163,6 +169,7 @@ describe("interface owner application", () => {
       walletConnection: ports.wallet,
       walletOperations: walletOperations(),
       chainReads: ports.chain,
+      uniswapV2Quote: uniswapV2QuoteHarnessBinding(),
     });
 
     for (const [method, path] of [
@@ -175,6 +182,7 @@ describe("interface owner application", () => {
       ["POST", "/api/v1/account-assets/eip155:4663/0x1111111111111111111111111111111111111111"],
       ["POST", "/api/v1/account-assets/official-candidate-queries"],
       ["POST", "/api/v1/token-inspections"],
+      ["POST", "/api/v1/uniswap-v2-exact-input-quotes"],
       ["POST", "/api/v1/internal/control/token-catalog/inspections"],
       ["POST", "/api/v1/internal/control/token-catalog/selection-queries"],
       ["GET", "/api/v1/internal/control/token-catalog/selections/eip155:4663/0x1111111111111111111111111111111111111111"],

@@ -277,10 +277,15 @@ const successFailureOrDeliverySchema = (
 
 const capabilityOutputSchema = (
   capabilityId: CapabilityId,
+  errorRegistry: ApplicationErrorRegistry,
 ): NonNullable<Tool["outputSchema"]> => {
   const projection = projectedCapabilities.get(capabilityId);
   if (projection === undefined) throw new TypeError("Capability output schema is unavailable.");
-  return successOrFailureSchema(projection.success.schema, projection.failureCodes);
+  return successOrFailureSchema(
+    projection.success.schema,
+    projection.failureCodes,
+    errorRegistry,
+  );
 };
 
 type InterfaceApplicationContract =
@@ -345,7 +350,10 @@ const readTool = (
     name: parseMcpToolName(identity.mcp.name),
     description: identity.mcp.description,
     inputSchema: capabilityInputSchema(identity.capabilityId),
-    outputSchema: capabilityOutputSchema(identity.capabilityId),
+    outputSchema: capabilityOutputSchema(
+      identity.capabilityId,
+      identity.responseAuthority.applicationErrors,
+    ),
     failureCodes: projection.failureCodes,
     annotations: annotations(identity.mcp.annotations),
     parseInput: (value: unknown) => parseCapabilityInput(identity.definition, value),

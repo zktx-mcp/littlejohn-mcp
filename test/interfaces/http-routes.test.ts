@@ -48,6 +48,10 @@ import {
   type ChainHandlerHarness,
 } from "../chain/handler-harness.js";
 import { tokenCatalogInterfaceHarnessPorts } from "../token-catalog/interface-harness.js";
+import {
+  extendUniswapV2ProtocolHarnessManifest,
+  uniswapV2QuoteHarnessBinding,
+} from "../protocols/interface-harness.js";
 
 const directories: string[] = [];
 const blockHash = `0x${"88".repeat(32)}`;
@@ -95,11 +99,13 @@ const baseRoutes = async (): Promise<RuntimeRouteRegistry> => {
   });
 };
 
-const interfaceManifest = () => extendInterfaceSupportManifest(extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(
-  extendTokenCatalogSupportManifest(extendChainSupportManifest(
+const interfaceManifest = () => extendInterfaceSupportManifest(extendUniswapV2ProtocolHarnessManifest(
+  extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(
+    extendTokenCatalogSupportManifest(extendChainSupportManifest(
     extendWalletSupportManifest(createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain)),
+    )),
   )),
-)));
+));
 
 const createRoutes = async (walletData?: unknown): Promise<{
   readonly routes: RuntimeRouteRegistry;
@@ -129,6 +135,7 @@ const createRoutes = async (walletData?: unknown): Promise<{
       chainReads: chain.service.chainReads,
       walletConnection: walletConnection(walletData),
       tokenInspection: tokenCatalogInterfaceHarnessPorts().tokenInspection,
+      uniswapV2Quote: uniswapV2QuoteHarnessBinding(),
       supportManifest: manifest,
     }),
   });
@@ -160,6 +167,7 @@ describe("public read HTTP routes", () => {
       ["POST", publicInterfaceRoutes.contractInspections],
       ["POST", publicInterfaceRoutes.tokenInspections],
       ["POST", publicInterfaceRoutes.transactionInspections],
+      ["POST", publicInterfaceRoutes.uniswapV2ExactInputQuotes],
       ["GET", publicInterfaceRoutes.walletConnection],
     ] as const;
     for (const [method, path] of expected) {

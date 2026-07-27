@@ -142,6 +142,11 @@ export interface ContractAnalysisEvidenceFragment {
   readonly conclusions: ContractAnalysisEvidenceConclusions;
 }
 
+export type ContractAnalysisEvidenceTargets = Pick<
+  ContractAnalysisEvidenceFragment,
+  "targets"
+>;
+
 export const createContractAnalysisEvidenceFragment = (
   definition: EvidenceReplayDefinition,
   conclusions: ContractAnalysisEvidenceConclusions,
@@ -261,6 +266,56 @@ export const createContractAnalysisEvidenceDeclaration = (
   fragment: ContractAnalysisEvidenceFragment,
   binder: EvidenceReplayBinder,
 ): EvidenceReplayDeclaration => {
+  const details = contractAnalysisEvidenceFacts(analysis, fragment, binder);
+  const sourceConclusion = contractAnalysisConclusion(
+    fragment.conclusions.sourceChecked,
+    details.sourceConclusionFact,
+    "contract_source_at_chain_anchor",
+  );
+  return Object.freeze({
+    ...details.declaration,
+    expectedConclusions: Object.freeze([
+      fragment.conclusions.deploymentObserved,
+      fragment.conclusions.sourceChecked,
+      ...(details.controlsObserved
+        ? [fragment.conclusions.controlsObserved]
+        : []),
+    ]),
+    conclusionDrafts: Object.freeze([
+      contractAnalysisConclusion(
+        fragment.conclusions.deploymentObserved,
+        fragment.facts.deployment,
+        "chain_anchor_exact",
+      ),
+      sourceConclusion,
+      ...(details.controlsObserved
+        ? [contractAnalysisConclusion(
+            fragment.conclusions.controlsObserved,
+            fragment.facts.controls,
+            "chain_anchor_exact",
+          )]
+        : []),
+    ]),
+  });
+};
+
+export type ContractAnalysisEvidenceFactsDeclaration = Pick<
+  EvidenceReplayDeclaration,
+  | "observationExpectations"
+  | "observationReferences"
+  | "factRequirements"
+  | "warningRequirements"
+>;
+
+const contractAnalysisEvidenceFacts = (
+  analysis: ContractAnalysis,
+  fragment: ContractAnalysisEvidenceFragment,
+  binder: EvidenceReplayBinder,
+): Readonly<{
+  readonly declaration: ContractAnalysisEvidenceFactsDeclaration;
+  readonly sourceConclusionFact: FactRequirement["fact"];
+  readonly controlsObserved: boolean;
+}> => {
   const deployment = binder.bind(fragment.targets.deployment);
   const controls = binder.bind(fragment.targets.controls);
   const targetSource = binder.bind(fragment.targets.targetSource);
@@ -290,11 +345,6 @@ export const createContractAnalysisEvidenceDeclaration = (
   const sourceConclusionFact = effectiveSource.role === "target"
     ? fragment.facts.targetSource
     : fragment.facts.implementationSource;
-  const sourceConclusion = contractAnalysisConclusion(
-    fragment.conclusions.sourceChecked,
-    sourceConclusionFact,
-    "contract_source_at_chain_anchor",
-  );
   const observationExpectations: ObservationExpectation[] = [
     {
       slot: deployment.slot,
@@ -365,40 +415,27 @@ export const createContractAnalysisEvidenceDeclaration = (
           controls.slot,
         ),
   ];
-  const expectedConclusions = [
-    fragment.conclusions.deploymentObserved,
-    fragment.conclusions.sourceChecked,
-    ...(chainClaims.controlResults === undefined
-      ? []
-      : [fragment.conclusions.controlsObserved]),
-  ];
-  const conclusionDrafts = [
-    contractAnalysisConclusion(
-      fragment.conclusions.deploymentObserved,
-      fragment.facts.deployment,
-      "chain_anchor_exact",
-    ),
-    sourceConclusion,
-    ...(chainClaims.controlResults === undefined
-      ? []
-      : [contractAnalysisConclusion(
-          fragment.conclusions.controlsObserved,
-          fragment.facts.controls,
-          "chain_anchor_exact",
-        )]),
-  ];
   const warningRequirements: WarningRequirement[] = partialFacts.length === 0
     ? []
     : [{ code: "partial_result", facts: Object.freeze([...new Set(partialFacts)]) }];
   return Object.freeze({
-    observationExpectations: Object.freeze(observationExpectations),
-    observationReferences: Object.freeze([]),
-    factRequirements: Object.freeze(factRequirements),
-    expectedConclusions: Object.freeze(expectedConclusions),
-    conclusionDrafts: Object.freeze(conclusionDrafts),
-    warningRequirements: Object.freeze(warningRequirements),
+    declaration: Object.freeze({
+      observationExpectations: Object.freeze(observationExpectations),
+      observationReferences: Object.freeze([]),
+      factRequirements: Object.freeze(factRequirements),
+      warningRequirements: Object.freeze(warningRequirements),
+    }),
+    sourceConclusionFact,
+    controlsObserved: chainClaims.controlResults !== undefined,
   });
 };
+
+export const createContractAnalysisEvidenceFactsDeclaration = (
+  analysis: ContractAnalysis,
+  fragment: ContractAnalysisEvidenceFragment,
+  binder: EvidenceReplayBinder,
+): ContractAnalysisEvidenceFactsDeclaration =>
+  contractAnalysisEvidenceFacts(analysis, fragment, binder).declaration;
 
 const chainStatusLatestBlockConclusion = exactConclusion("latest_block_observed");
 const chainStatusChainConclusion = exactConclusion("rpc_chain_id_matches_scope");

@@ -115,13 +115,13 @@ export const formatAmount = (
 };
 
 // Preserve the numeric maximum in emitted JSON Schema instead of enforcing it only at runtime.
-export const canonicalUnsignedDecimalMaximumPattern = (maximum: number): string => {
-  if (!Number.isSafeInteger(maximum) || maximum < 0) {
-    throw new TypeError("The unsigned-decimal maximum must be a non-negative safe integer.");
+export const canonicalUnsignedBigIntMaximumPattern = (maximum: bigint): string => {
+  if (maximum < 0n) {
+    throw new TypeError("The unsigned-decimal maximum must be non-negative.");
   }
-  if (maximum === 0) return "^(?:0)$";
+  if (maximum === 0n) return "^(?:0)$";
 
-  const maximumDigits = String(maximum);
+  const maximumDigits = maximum.toString(10);
   const alternatives: string[] = [];
   for (let length = 1; length < maximumDigits.length; length += 1) {
     const remaining = length - 1;
@@ -149,6 +149,13 @@ export const canonicalUnsignedDecimalMaximumPattern = (maximum: number): string 
     prefix += maximumDigits[index];
   }
   return `^(?:${alternatives.join("|")})$`;
+};
+
+export const canonicalUnsignedDecimalMaximumPattern = (maximum: number): string => {
+  if (!Number.isSafeInteger(maximum) || maximum < 0) {
+    throw new TypeError("The unsigned-decimal maximum must be a non-negative safe integer.");
+  }
+  return canonicalUnsignedBigIntMaximumPattern(BigInt(maximum));
 };
 
 export const createAmountSchemaSet = () => {

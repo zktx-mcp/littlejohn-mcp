@@ -76,6 +76,8 @@ export interface PackageManifest {
 export const runtimePackageSourceRoots = Object.freeze({
   "@modelcontextprotocol/sdk": ["src/interfaces"],
   "@noble/hashes": ["src/core"],
+  "@uniswap/sdk-core": ["src/protocols/uniswap-v2"],
+  "@uniswap/v2-sdk": ["src/protocols/uniswap-v2"],
   "@walletconnect/sign-client": ["src/wallet"],
   "better-sqlite3": ["src/runtime"],
   "lucide-react": ["src/interfaces"],
@@ -818,5 +820,19 @@ export const directCodeExecutionViolations = (
   repositoryRoot = resolve("."),
 ): readonly string[] => {
   const name = relative(repositoryRoot, file).split(sep).join("/");
-  return references.map((reference) => `${name}:direct_code_execution:${reference.kind}`);
+  const exactOwner = name === "src/protocols/uniswap-v2/sdk.ts"
+    ? new Set<DirectCodeExecutionKind>(["node_module", "create_require"])
+    : undefined;
+  const violations = references
+    .filter((reference) => exactOwner?.has(reference.kind) !== true)
+    .map((reference) => `${name}:direct_code_execution:${reference.kind}`);
+  if (exactOwner !== undefined) {
+    const actual = new Set(references.map((reference) => reference.kind));
+    for (const kind of exactOwner) {
+      if (!actual.has(kind)) {
+        violations.push(`${name}:missing_direct_code_execution:${kind}`);
+      }
+    }
+  }
+  return violations;
 };

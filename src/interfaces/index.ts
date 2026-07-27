@@ -63,6 +63,7 @@ export {
   walletInterfaceBindingList,
   walletInterfaceBindings,
   walletConnectionInterface,
+  uniswapV2QuoteInterface,
 } from "./identities.js";
 export type {
   AccountAssetInterfaceBinding,
@@ -100,6 +101,7 @@ export type {
 export {
   referenceMarketBrowserMutationPaths,
   referenceMarketPublicRoutes,
+  uniswapV2PublicRoutes,
 } from "./browser-contract.js";
 export { referenceMarketLocalMutationPaths } from "./identities.js";
 export type {

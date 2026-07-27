@@ -7,6 +7,9 @@ import {
   stockFactoryProxyAddress,
   stockFactoryProxyCodeFixture,
 } from "./stock-factory-fixture.mjs";
+import {
+  uniswapV2FactoryRuntimeCodeFixture,
+} from "./uniswap-v2-factory-fixture.mjs";
 
 const blockHash = `0x${"88".repeat(32)}`;
 const blockTimestamp = "0x65a00000";
@@ -88,6 +91,11 @@ const officialTokens = Object.freeze([
   },
 ]);
 const customTokenAddress = `0x${"28".repeat(20)}`;
+const uniswapV2FactoryAddress = "0x8bceaa40b9acdfaedf85adf4ff01f5ad6517937f";
+const uniswapV2PairAddress = "0x590fa5a18e1086b3a0f0b8a6a29e07c4e1c88856";
+const uniswapV2PairRuntimeCode = "0x6002600055";
+const uniswapV2Reserve0 = "2000000000000000000000";
+const uniswapV2Reserve1 = "1000000000000000000000";
 const inspectedContractAddress = `0x${"29".repeat(20)}`;
 const inspectedContractRuntimeCode = "0x600060005260206000f3";
 const inspectedContractCodeHash = "0x52262f711ffacf04147d1bc4b323c69df60a55163b5b86666f3c227f25a34008";
@@ -112,6 +120,12 @@ const eip1967StorageSlots = Object.freeze(new Set([
 ]));
 
 const uint256Result = (value) => `0x${BigInt(value).toString(16).padStart(64, "0")}`;
+const addressResult = (address) => `0x${address.slice(2).padStart(64, "0")}`;
+const uniswapV2ReservesResult = `0x${[
+  uniswapV2Reserve0,
+  uniswapV2Reserve1,
+  "0",
+].map((value) => BigInt(value).toString(16).padStart(64, "0")).join("")}`;
 
 const referenceRoundResult = (feed) => `0x${[
   referenceRoundId,
@@ -286,6 +300,24 @@ const factoryMappedAddress = (data) => {
   return token === undefined ? undefined : `0x${"0".repeat(24)}${token.address.slice(2)}`;
 };
 
+const uniswapV2PairFor = (data) => {
+  if (!/^0xe6a43905[0-9a-f]{128}$/u.test(data)) return undefined;
+  const tokenA = `0x${data.slice(34, 74)}`;
+  const tokenB = `0x${data.slice(98, 138)}`;
+  const direct =
+    (tokenA === customTokenAddress && tokenB === verifiedFakeOfficialCandidate.address) ||
+    (tokenB === customTokenAddress && tokenA === verifiedFakeOfficialCandidate.address);
+  return addressResult(direct ? uniswapV2PairAddress : `0x${"0".repeat(40)}`);
+};
+
+const uniswapV2PairCallResult = (data) => {
+  if (data === "0xc45a0155") return addressResult(uniswapV2FactoryAddress);
+  if (data === "0x0dfe1681") return addressResult(verifiedFakeOfficialCandidate.address);
+  if (data === "0xd21220a7") return addressResult(customTokenAddress);
+  if (data === "0x0902f1ac") return uniswapV2ReservesResult;
+  return undefined;
+};
+
 const readBody = async (request) => {
   const chunks = [];
   let length = 0;
@@ -367,6 +399,8 @@ const resultFor = (method, params) => {
       return stockFactoryImplementationCodeFixture;
     }
     if (params[0] === inspectedContractAddress) return inspectedContractRuntimeCode;
+    if (params[0] === uniswapV2FactoryAddress) return uniswapV2FactoryRuntimeCodeFixture;
+    if (params[0] === uniswapV2PairAddress) return uniswapV2PairRuntimeCode;
     if (referenceFeed !== undefined) return referenceFeedRuntimeCode;
     if (token !== undefined) return token.runtimeCode;
   }
@@ -380,7 +414,11 @@ const resultFor = (method, params) => {
   if (
     method === "eth_getStorageAt" &&
     params.length === 3 &&
-    (params[0] === inspectedContractAddress || token !== undefined) &&
+    (
+      params[0] === inspectedContractAddress ||
+      params[0] === uniswapV2FactoryAddress ||
+      token !== undefined
+    ) &&
     eip1967StorageSlots.has(params[1]) &&
     exactBlockReference(params[2])
   ) return `0x${"0".repeat(64)}`;
@@ -404,11 +442,21 @@ const resultFor = (method, params) => {
     ((token !== undefined && callResult(token, params[0].data) !== undefined) ||
       (referenceFeed !== undefined && referenceCallResult(referenceFeed, params[0].data) !== undefined) ||
       (params[0].to === stockFactoryProxyAddress &&
-        factoryMappedAddress(params[0].data) !== undefined))
+        factoryMappedAddress(params[0].data) !== undefined) ||
+      (params[0].to === uniswapV2FactoryAddress &&
+        uniswapV2PairFor(params[0].data) !== undefined) ||
+      (params[0].to === uniswapV2PairAddress &&
+        uniswapV2PairCallResult(params[0].data) !== undefined))
   ) {
     if (token !== undefined) return callResult(token, params[0].data);
     if (referenceFeed !== undefined) return referenceCallResult(referenceFeed, params[0].data);
-    return factoryMappedAddress(params[0].data);
+    if (params[0].to === stockFactoryProxyAddress) {
+      return factoryMappedAddress(params[0].data);
+    }
+    if (params[0].to === uniswapV2FactoryAddress) {
+      return uniswapV2PairFor(params[0].data);
+    }
+    return uniswapV2PairCallResult(params[0].data);
   }
   throw new TypeError(`Unexpected automated RPC method: ${method}`);
 };
@@ -536,6 +584,14 @@ export const startFakeRpc = async () => {
         transferAmountRaw: fakeToken.accountBalanceRaw,
         transaction: inspectedTransaction,
         receipt: inspectedTransactionReceipt,
+      }),
+      uniswapV2: Object.freeze({
+        factory: uniswapV2FactoryAddress,
+        pair: uniswapV2PairAddress,
+        tokenIn: fakeToken,
+        tokenOut: verifiedFakeOfficialCandidate,
+        reserve0: uniswapV2Reserve0,
+        reserve1: uniswapV2Reserve1,
       }),
     }),
     calls,

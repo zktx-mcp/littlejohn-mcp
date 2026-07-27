@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 import { describe, expect, it } from "vitest";
+import { extendUniswapV2ProtocolHarnessManifest } from "../protocols/interface-harness.js";
 
 import {
   coreContractVersion,
@@ -42,6 +43,7 @@ import {
   verifyCurrentSupportDocument,
 } from "../../src/runtime/support-manifest.js";
 import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
+import { uniswapV2PackageDescriptor } from "../../src/protocols/uniswap-v2/browser.js";
 
 const initialRuntimeSupportManifest = createInitialRuntimeSupportManifest(
   readRuntimeConfiguration({}).chain,
@@ -122,18 +124,18 @@ describe("runtime support manifest authority", () => {
     for (const [schema, bytes, digest] of [
       [
         runtimeSupportManifestSchema,
-        2_616,
-        "e42ad46bd43be663feaf3c57c0e2e5d842e27aa34d9b5e6de613a169c0c1a1fc",
+        3_590,
+        "f9bd27af77fb6acb4d2f737e3a1e8d67a49a18e4c6336ab1c6ce13aacbeb5684",
       ],
       [
         interfaceCapabilityCatalogSchema,
-        3_328,
-        "94e76cb0c3ee5a8e35a21a61adb863c0206c5101fbaa614c8db5a1c3d4c679cc",
+        3_333,
+        "79bee172ac3d798375f348d5487dfa4bd93da65f25b90c92ea91db77c3845bb4",
       ],
       [
         ownerIdentitySchema,
         746,
-        "7052a70191526323cf58816d850423148f1d72d8a7fd7e3606ee5a322aa43a85",
+        "537ee3afc29b53d886981b8d9b042b5f902144bff2fff85a8ec75fb277105dcd",
       ],
     ] as const) {
       const projection = outputSchema(schema);
@@ -201,9 +203,25 @@ describe("runtime support manifest authority", () => {
       expect(readRuntimeSupportManifest(chain).capabilities
         .find((entry) => entry.capabilityId === capabilityId)?.availability).toEqual(internal);
     }
-    const accountAssets = extendAccountAssetSupportManifest(extendTokenCatalogSupportManifest(chain));
+    const accountAssets = extendAccountAssetSupportManifest(
+      extendTokenCatalogSupportManifest(chain),
+    );
     const referenceMarkets = extendReferenceMarketSupportManifest(accountAssets);
-    const interfaces = extendInterfaceRuntimeSupportManifest(referenceMarkets, {
+    const protocols = extendUniswapV2ProtocolHarnessManifest(referenceMarkets);
+    const protocolSnapshot = readRuntimeSupportManifest(protocols);
+    expect(protocolSnapshot.protocols).toEqual([{
+      protocolId: uniswapV2PackageDescriptor.protocolId,
+      supportLevel: uniswapV2PackageDescriptor.supportLevel,
+      identityEvidence: uniswapV2PackageDescriptor.identityEvidence,
+    }]);
+    expect(() => runtimeSupportManifestSchema.parse({
+      ...protocolSnapshot,
+      protocols: protocolSnapshot.protocols.map((entry) => {
+        const { identityEvidence: _identityEvidence, ...withoutIdentityEvidence } = entry;
+        return withoutIdentityEvidence;
+      }),
+    })).toThrow();
+    const interfaces = extendInterfaceRuntimeSupportManifest(protocols, {
       registrations: [],
       changes: [{
         capabilityId: "wallet.operation",
@@ -213,13 +231,19 @@ describe("runtime support manifest authority", () => {
     expect(readRuntimeSupportManifest(interfaces).capabilities
       .find((entry) => entry.capabilityId === "wallet.operation")?.availability.web).toBe("available");
     expect(() => assertChainRuntimeSupportManifestExtension(wallet, chain)).not.toThrow();
-    expect(() => assertInterfaceRuntimeSupportManifestExtension(referenceMarkets, interfaces)).not.toThrow();
+    expect(() => assertInterfaceRuntimeSupportManifestExtension(protocols, interfaces)).not.toThrow();
     expect(() => assertWalletRuntimeSupportManifestExtension(initialRuntimeSupportManifest, chain as never))
       .toThrow("scope lineage");
 
     const catalog = composeCapabilityCatalog(interfaceReadCapabilityRegistry, interfaces);
     expect(catalog.capabilities.map((entry) => entry.capabilityId)).toEqual([
-      "account.balance", "chain.status", "contract.inspect", "token.inspect", "transaction.inspect", "wallet.connection",
+      "account.balance",
+      "chain.status",
+      "contract.inspect",
+      "token.inspect",
+      "transaction.inspect",
+      "uniswap_v2.quote_exact_input",
+      "wallet.connection",
     ]);
   });
 
@@ -293,9 +317,12 @@ describe("runtime support manifest authority", () => {
   it("binds the capability catalog schema and projection to the exact supplied registry", () => {
     const wallet = extendWalletRuntimeSupportManifest(initialRuntimeSupportManifest, walletExtensionInput);
     const chain = extendChainRuntimeSupportManifest(wallet, chainExtensionInput);
-    const accountAssets = extendAccountAssetSupportManifest(extendTokenCatalogSupportManifest(chain));
+    const accountAssets = extendAccountAssetSupportManifest(
+      extendTokenCatalogSupportManifest(chain),
+    );
     const referenceMarkets = extendReferenceMarketSupportManifest(accountAssets);
-    const interfaces = extendInterfaceRuntimeSupportManifest(referenceMarkets, {
+    const protocols = extendUniswapV2ProtocolHarnessManifest(referenceMarkets);
+    const interfaces = extendInterfaceRuntimeSupportManifest(protocols, {
       registrations: [],
       changes: [{
         capabilityId: "token.inspect",

@@ -55,6 +55,7 @@ const sharedContractSources = new Set([
   "src/core/operation-id.ts",
   "src/core/product-identity.ts",
   "src/core/reference-market.ts",
+  "src/core/support-level.ts",
   "src/core/token-metadata.ts",
   "src/core/token-standards.ts",
   "src/core/wallet-connection.ts",
@@ -74,6 +75,12 @@ const sharedContractSources = new Set([
   "src/account-assets/view.ts",
   "src/registry/browser.ts",
   "src/registry/official-asset-contract.ts",
+  "src/protocols/contracts.ts",
+  "src/protocols/uniswap-v2/browser.ts",
+  "src/protocols/uniswap-v2/contracts.ts",
+  "src/protocols/uniswap-v2/deployment.ts",
+  "src/protocols/uniswap-v2/evidence.ts",
+  "src/protocols/uniswap-v2/quote.ts",
   "src/wallet/error-definitions.ts",
   "src/wallet/management-contracts.ts",
   "src/wallet/operation-contract.ts",
@@ -103,7 +110,8 @@ const allowedVirtualModules = new Set([
 ]);
 const codeSourceExtensions = new Set([".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"]);
 const allowedIntrinsicElements = new Set([
-  "a", "article", "button", "code", "dd", "details", "dialog", "div", "dl", "dt", "h1", "h2", "header",
+  "a", "article", "button", "code", "dd", "details", "dialog", "div", "dl", "dt",
+  "h1", "h2", "h3", "h4", "h5", "h6", "header",
   "footer", "input", "label", "li", "main", "nav", "option", "p", "polyline", "rect", "section", "select", "span", "strong", "summary", "svg", "ul",
 ]);
 const allowedIntrinsicAttributes = new Set([

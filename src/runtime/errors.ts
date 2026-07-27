@@ -166,6 +166,20 @@ export const assertDirectInterfaceErrorMappingRegistryExtension = (
   }
 };
 
+export const assertInterfaceErrorMappingRegistryDescendant = (
+  ancestor: InterfaceErrorMappingRegistry,
+  candidate: InterfaceErrorMappingRegistry,
+): void => {
+  mappingRegistryState(ancestor);
+  let current: InterfaceErrorMappingRegistry | undefined = candidate;
+  while (current !== undefined && current !== ancestor) {
+    current = mappingRegistryState(current).parent;
+  }
+  if (current !== ancestor) {
+    throw new TypeError("Interface error mapping registry ancestry is invalid.");
+  }
+};
+
 export const runtimeInterfaceErrorMappings = createMappingRegistry(
   runtimeErrorRegistry,
   runtimeInterfaceErrorMappingDefinitions,

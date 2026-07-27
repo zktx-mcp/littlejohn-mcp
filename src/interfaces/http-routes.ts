@@ -8,6 +8,10 @@ import {
 import { chainInterfaceErrorMappings } from "../chain/errors.js";
 import { tokenCatalogInterfaceErrorMappings } from "../token-catalog/index.js";
 import { walletInterfaceErrorMappings } from "../wallet/errors.js";
+import {
+  uniswapV2InterfaceErrorMappings,
+  type UniswapV2QuoteApplication,
+} from "../protocols/uniswap-v2/index.js";
 import type {
   ChainReadCapabilityPort,
   WalletConnectionReadCapabilityPort,
@@ -28,6 +32,7 @@ import {
   tokenInspectInterface,
   transactionInspectInterface,
   type ReadInterfaceIdentity,
+  uniswapV2QuoteInterface,
   walletConnectionInterface,
 } from "./identities.js";
 import { composeInterfaceCapabilityCatalog } from "./support.js";
@@ -39,6 +44,7 @@ export const publicInterfaceRoutes = Object.freeze({
   contractInspections: contractInspectInterface.http.path,
   tokenInspections: tokenInspectInterface.http.path,
   transactionInspections: transactionInspectInterface.http.path,
+  uniswapV2ExactInputQuotes: uniswapV2QuoteInterface.http.path,
   walletConnection: walletConnectionInterface.http.path,
 });
 
@@ -74,6 +80,7 @@ export const extendPublicInterfaceRoutes = (input: {
   readonly chainReads: ChainReadCapabilityPort;
   readonly walletConnection: WalletConnectionReadCapabilityPort;
   readonly tokenInspection: TokenCatalogInspectionPort;
+  readonly uniswapV2Quote: UniswapV2QuoteApplication["binding"];
   readonly supportManifest: InterfaceRuntimeSupportManifest;
 }): RuntimeRouteRegistry => {
   const bindings = new CapabilityBindingRegistry(interfaceReadCapabilityRegistry, [
@@ -82,6 +89,7 @@ export const extendPublicInterfaceRoutes = (input: {
     input.chainReads.contractInspect,
     input.tokenInspection,
     input.chainReads.transactionInspect,
+    input.uniswapV2Quote,
     input.walletConnection.connection,
   ]);
   const catalog = composeInterfaceCapabilityCatalog(input.supportManifest);
@@ -96,7 +104,7 @@ export const extendPublicInterfaceRoutes = (input: {
     contractInspectInterface,
     transactionInspectInterface,
   ]), chainInterfaceErrorMappings);
-  return chainRoutes.extend([
+  const tokenRoutes = chainRoutes.extend([
     ...readRoutes(bindings, [tokenInspectInterface]),
     {
       method: capabilityCatalogInterface.http.method,
@@ -107,4 +115,8 @@ export const extendPublicInterfaceRoutes = (input: {
       handler: async () => success(catalog as unknown as CanonicalJson),
     },
   ], tokenCatalogInterfaceErrorMappings);
+  return tokenRoutes.extend(
+    readRoutes(bindings, [uniswapV2QuoteInterface]),
+    uniswapV2InterfaceErrorMappings,
+  );
 };

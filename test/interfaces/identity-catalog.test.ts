@@ -33,25 +33,31 @@ import {
 } from "../../src/token-catalog/contracts.js";
 import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
 import { extendWalletSupportManifest } from "../../src/wallet/application.js";
+import { extendUniswapV2ProtocolHarnessManifest } from "../protocols/interface-harness.js";
 
 const tokenCatalogManifest = () => extendTokenCatalogSupportManifest(
-  extendChainSupportManifest(extendWalletSupportManifest(
-    createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
-  )),
+  extendChainSupportManifest(
+    extendWalletSupportManifest(
+      createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
+    ),
+  ),
 );
 
 const interfaceManifest = () => extendInterfaceSupportManifest(
-  extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(tokenCatalogManifest())),
+  extendUniswapV2ProtocolHarnessManifest(
+    extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(tokenCatalogManifest())),
+  ),
 );
 
 describe("interface binding identity authority", () => {
-  it("builds the six-read registry from the exact binding definition objects", () => {
+  it("builds the read registry from the exact binding definition objects", () => {
     expect(readInterfaceIdentities.map((identity) => identity.capabilityId)).toEqual([
       "account.balance",
       "chain.status",
       "contract.inspect",
       "token.inspect",
       "transaction.inspect",
+      "uniswap_v2.quote_exact_input",
       "wallet.connection",
     ]);
     expect(interfaceReadCapabilityRegistry.values()).toEqual(

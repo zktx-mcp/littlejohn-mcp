@@ -3,7 +3,7 @@
 ## Current State
 
 Little John has a Node.js `>=22.12.0` ESM TypeScript package, canonical core
-contracts, six semantic read-capability definitions, registry-derived JSON
+contracts, registry-derived read-capability definitions and JSON
 Schema and descriptor projections, owner-only POSIX
 application-data permissions, SQLite product state, local control credentials,
 source identifiers that do not expose credentials, a runtime support manifest,
@@ -68,6 +68,19 @@ current source-verification implementation behind the product-owned
 unsupported control forms remain explicit unavailable or unresolved results;
 they do not establish safety.
 
+The runtime constructs the `protocols` application after `chain`. It statically
+constructs the implemented protocol packages, validates their exact capability
+bindings, and returns one immutable support extension for final interface
+composition. Token catalog consumes the chain application directly and does not
+consume a protocol application or protocol support. Final interface composition
+applies the protocol support extension after the token-catalog, account-assets,
+and reference-market support stages are complete. The current package is
+`uniswap_v2`. Its exact-input quote
+reads the selected registered factory and only the direct and declared
+one-intermediary candidates needed for each result at one canonical block. It
+reports every candidate without selecting a preferred route and constructs no
+transaction.
+
 The browser-safe core token-metadata contract owns display-text admission,
 optional metadata outcomes, and their limits. One chain token-metadata process
 reads ERC-20 `name`, `symbol`, and `decimals` at one supplied EIP-1898 block
@@ -116,9 +129,9 @@ boundaries.
 The interactive CLI implements `wallet status`, `wallet connect`, `wallet
 disconnect`, `wallet operation`, and `wallet cancel`, plus
 `read assets`, `read chain-status`, `read contract`, `read transaction`,
-`read balance`, the seven declared `token` commands, and `market price`,
-`market history`, `market watchlist`, `market add-pair`, `market remove-pair`,
-and `market reorder-pairs` under
+`read balance`, `uniswap-v2 quote-exact-input`, the declared `token` commands,
+and `market price`, `market history`, `market watchlist`, `market add-pair`,
+`market remove-pair`, and `market reorder-pairs` under
 [`CLI Surface`](#cli-surface). Read
 commands expose the canonical result as human-readable text or exact JSON
 without recomputing domain meaning. Token addition and removal
@@ -128,14 +141,12 @@ to non-interactive callers.
 `littlejohn --help` projects the same command identities consumed by the CLI
 parsers and does not start the runtime.
 
-Public loopback resources expose the eight chain, token, and reference-market
-reads, the wallet
+Public loopback resources expose the registry-declared chain, token, protocol,
+and reference-market reads, the wallet
 connection projection, and the registry-derived capability catalog. A
 no-argument `littlejohn` process runs one stdio MCP connection while sharing or
-taking over the same fixed-port owner. Its twenty-four convention-validated
-tools expose the account-asset collection, four chain reads, the capability
-catalog, five wallet-management bindings, seven token-catalog bindings, and six
-reference-market bindings. MCP
+taking over the same fixed-port owner. Its convention-validated tools derive
+from the canonical interface-binding catalogs rather than a copied count. MCP
 start-operation tools return
 the applicable fixed local page URL. Exact operation-read and cancellation
 tools return the canonical operation without a display URL. No MCP tool
@@ -147,7 +158,11 @@ a page. The product identity remains at the left of the navigation bar and the
 wallet control remains at the right. A disconnected account sees the product
 description, connection action, and contract and token inspection. Those
 inspection views use the public contract and token inspection routes and apply
-the same complete public-result validation as the server. A connected account
+the same complete public-result validation as the server. The root also exposes
+the Uniswap V2 exact-input quote view with explicit factory selection, raw
+input, every declared candidate, observed hops, exact raw-unit and token-unit
+price displays under `docs/NUMERIC_POLICY.md`, evidence, and limitations. A
+connected account
 also sees one fresh bounded asset page with native balance, included-token
 balances, refresh, pagination, and contextual add and removal actions. Token
 addition review presents the same contract analysis and the server-produced
@@ -198,13 +213,13 @@ execution, connections, resources, frames, and forms. A monotonic request
 authority prevents an older poll or duplicate control action from replacing a
 newer wallet dialog view.
 
-The wallet, token-catalog, account-assets, and market-portfolio modules own their canonical application contracts,
+The wallet, protocols, token-catalog, account-assets, and market-portfolio modules own their canonical application contracts,
 including each identifier, version, input schema, success schema, failure-code
 set, and state meaning. One canonical interface-binding catalog maps those
 contracts to MCP, loopback HTTP, CLI, and web bindings. Transport adapters and
 the runtime support manifest derive from these sources rather than maintaining
 parallel tool, schema, route, or availability lists. The interface layer
-projects the completed wallet, chain, token-catalog, account-assets, and reference-market ports
+projects the completed wallet, chain, protocols, token-catalog, account-assets, and reference-market ports
 into HTTP, MCP, CLI, and the React application.
 Read-result consumers revalidate the normalized request, result chain scope,
 and evidence-anchor chain scope through the same definition-owned checks used
@@ -221,8 +236,7 @@ framing; transports do not reclassify an oversized semantic result.
 The runtime support manifest remains the machine authority for binding
 availability, and its public projection is
 `docs/PRODUCT_POLICY.md#current-support`. No signature request, transaction
-construction, broadcast, receipt verification, or protocol adapter is
-implemented.
+construction, broadcast, or receipt verification is implemented.
 
 This document is the sole authority for repository ownership, module
 dependencies, local processes, persistence, browser and CLI surfaces,
@@ -352,6 +366,7 @@ The current external integration classification is:
 | WalletConnect | Binding product transport | `docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture | `wallet` owns SDK adaptation, project-ID validation, required namespace settings, metadata, SDK options, lifecycle, and provider defaults | The wallet application factory constructs one `WalletConnectClientPort` from opaque configuration received through runtime composition; other modules receive wallet product ports |
 | Robinhood official-asset source | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority; the registry product contract owns normalized observations, failures, evidence, and storage ports | `src/registry/official-assets.ts` owns Robinhood request and response admission implementation, endpoint consumption, transport behavior, deadlines, and operational limits | Runtime composition constructs one source client; registry synchronization consumes the product-owned client and store ports |
 | Sourcify API v2 | Replaceable implementation provider | `intelligence` owns `ContractSourceVerificationPort`, its normalized results and failures, evidence requirements, and lifecycle | `src/intelligence/sourcify.ts` owns the origin, path, request and response admission, deadline, response-size and concurrency limits, cleanup, and provider identity | Runtime composition constructs one Sourcify adapter and passes only `ContractSourceVerificationPort` to the shared contract-analysis process |
+| Uniswap V2 | Binding protocol identity | `docs/PROTOCOL_ADAPTERS.md` and `src/protocols/uniswap-v2` own the exact V2 package, deployment, capability, arithmetic, and evidence meaning | `src/protocols/uniswap-v2/sdk.ts` owns the pinned Uniswap SDK loading and admission boundary; the package owns immutable deployment and route-asset records | Runtime composition constructs the statically registered V2 package once and passes only its canonical quote binding to interfaces |
 
 This table contains implemented external integrations only. The implementation
 task that adds or removes an integration updates the table after the runtime

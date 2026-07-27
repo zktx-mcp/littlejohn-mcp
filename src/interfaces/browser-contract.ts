@@ -45,6 +45,10 @@ export const publicInspectionPaths = Object.freeze({
   tokenQueries: "/api/v1/token-inspections",
 } as const);
 
+export const uniswapV2PublicRoutes = Object.freeze({
+  exactInputQuotes: "/api/v1/uniswap-v2-exact-input-quotes",
+} as const);
+
 export const referenceMarketBrowserMutationPaths = Object.freeze({
   add: "/api/v1/reference-market-watchlist/entry-additions",
   remove: "/api/v1/reference-market-watchlist/entry-removals",

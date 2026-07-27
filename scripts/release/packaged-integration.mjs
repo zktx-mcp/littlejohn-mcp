@@ -38,6 +38,7 @@ const expectedCapabilityIds = Object.freeze([
   "contract.inspect",
   "token.inspect",
   "transaction.inspect",
+  "uniswap_v2.quote_exact_input",
   "wallet.connection",
 ]);
 const expectedSemanticReadToolNames = Object.freeze([
@@ -49,6 +50,7 @@ const expectedSemanticReadToolNames = Object.freeze([
   "read_inspect_contract",
   "read_inspect_transaction",
   "token_inspect_contract",
+  "uniswap_v2_quote_exact_input",
   "wallet_get_connection",
 ]);
 const expectedToolNames = Object.freeze([
@@ -71,6 +73,7 @@ const expectedToolNames = Object.freeze([
   "token_list_selections",
   "token_start_addition",
   "token_start_removal",
+  "uniswap_v2_quote_exact_input",
   "wallet_cancel_operation",
   "wallet_get_connection",
   "wallet_get_operation",
@@ -498,7 +501,7 @@ const readPackagedRuntimeIdentity = async () => {
     Array.isArray(identity) ||
     JSON.stringify(Object.keys(identity).sort()) !== JSON.stringify(expectedFields) ||
     identity.challenge !== challenge ||
-    identity.runtimeProtocolVersion !== 10 ||
+    identity.runtimeProtocolVersion !== 11 ||
     typeof identity.profileId !== "string" ||
     !/^[A-Za-z0-9_-]{22}$/u.test(identity.profileId) ||
     typeof identity.ownerInstanceId !== "string" ||
@@ -509,7 +512,7 @@ const readPackagedRuntimeIdentity = async () => {
     !/^[A-Za-z0-9_-]{43}$/u.test(identity.proof) ||
     typeof identity.ownerRevision !== "string" ||
     !/^(?:0|[1-9][0-9]*)$/u.test(identity.ownerRevision)
-  ) throw new TypeError("Packaged runtime identity is not the exact protocol-10 contract.");
+  ) throw new TypeError("Packaged runtime identity is not the exact protocol-11 contract.");
   return identity;
 };
 
@@ -617,6 +620,54 @@ const assertTokenInspection = (inspection, fakeRpc) => {
   assertPackagedClaimsDigests(inspection, "Packaged token inspection");
 };
 
+const uniswapV2QuoteInput = (fakeRpc) => Object.freeze({
+  tokenIn: Object.freeze({
+    kind: "erc20",
+    chainId: fakeRpc.semanticReads.uniswapV2.tokenIn.chainId,
+    address: fakeRpc.semanticReads.uniswapV2.tokenIn.address,
+  }),
+  tokenOut: Object.freeze({
+    kind: "erc20",
+    chainId: fakeRpc.semanticReads.uniswapV2.tokenOut.chainId,
+    address: fakeRpc.semanticReads.uniswapV2.tokenOut.address,
+  }),
+  factory: fakeRpc.semanticReads.uniswapV2.factory,
+  amountIn: "1000000000000000000",
+  block: Object.freeze({ kind: "latest" }),
+});
+
+const assertUniswapV2Quote = (value, fakeRpc, label) => {
+  const direct = value?.data?.candidates?.[0];
+  const remaining = value?.data?.candidates?.slice(1);
+  if (
+    value?.data?.protocol?.protocolId !== "uniswap_v2" ||
+    value.data.deployment?.factory !== fakeRpc.semanticReads.uniswapV2.factory ||
+    value.data.deployment?.runtimeCode?.byteLength !== "13859" ||
+    value.data.deployment?.runtimeCode?.codeHash !==
+      "0xbab145d02e7005f0d84c6c1639d39b799b0ea16df99ebbdaf5a14d9da820b4e0" ||
+    value.data.deployment?.analysis?.target !== fakeRpc.semanticReads.uniswapV2.factory ||
+    value.data.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
+    value.data.input?.amountIn !== "1000000000000000000" ||
+    value.data.input?.tokenIn?.address !== fakeRpc.semanticReads.uniswapV2.tokenIn.address ||
+    value.data.input?.tokenOut?.address !== fakeRpc.semanticReads.uniswapV2.tokenOut.address ||
+    direct?.status !== "quoted" ||
+    direct.amountOut !== "1992013962079806432" ||
+    direct.sdkCheck?.status !== "matched" ||
+    direct.evaluatedHops?.length !== 1 ||
+    direct.evaluatedHops[0]?.pair?.pairAddress !== fakeRpc.semanticReads.uniswapV2.pair ||
+    direct.evaluatedHops[0]?.pair?.reserve0 !== fakeRpc.semanticReads.uniswapV2.reserve0 ||
+    direct.evaluatedHops[0]?.pair?.reserve1 !== fakeRpc.semanticReads.uniswapV2.reserve1 ||
+    !Array.isArray(remaining) ||
+    remaining.length !== 2 ||
+    remaining.some((candidate) =>
+      candidate?.status !== "pair_absent" ||
+      candidate.evaluatedHops?.length !== 1 ||
+      candidate.evaluatedHops[0]?.status !== "pair_absent")
+  ) throw new TypeError(`${label} is invalid.`);
+  assertPackagedClaimsDigests(value, label);
+  return value;
+};
+
 /**
  * @param {unknown} value
  * @param {Awaited<ReturnType<typeof startFakeRpc>>["token"]} token
@@ -698,10 +749,18 @@ const assertBrowserAssets = async (shell) => {
     .map((match) => match[1])
     .filter((value) => value !== undefined);
   if (assets.length === 0) throw new TypeError("Packaged browser shell has no compiled assets.");
+  let javascript = "";
   for (const path of assets) {
     const asset = await fetch(`${fixedOrigin}${path}`, { redirect: "error" });
     if (asset.status !== 200) throw new TypeError(`Packaged browser asset failed: ${path}`);
-    await asset.arrayBuffer();
+    if (path.endsWith(".js")) javascript += await asset.text();
+    else await asset.arrayBuffer();
+  }
+  if (
+    !javascript.includes("Uniswap V2 exact-input quote") ||
+    !javascript.includes("/api/v1/uniswap-v2-exact-input-quotes")
+  ) {
+    throw new TypeError("Packaged browser bundle omits the Uniswap V2 quote interface.");
   }
 };
 
@@ -1012,7 +1071,7 @@ const assertPackagedPersistence = (inspection, runtimeIdentity) => {
     Array.isArray(owner) ||
     owner.profileId !== runtimeIdentity.profileId ||
     owner.configurationMac !== runtimeIdentity.configurationMac ||
-    owner.protocolVersion !== 10
+    owner.protocolVersion !== 11
   ) throw new TypeError("Packaged SQLite owner configuration identity is invalid.");
   const connection = inspection.connection;
   if (
@@ -1145,7 +1204,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     }
     const capabilityIds = catalogEntries.map((entry) => entry?.capabilityId);
     if (
-      catalog.structuredContent?.contractVersion !== "9" ||
+      catalog.structuredContent?.contractVersion !== "10" ||
       JSON.stringify(capabilityIds) !== JSON.stringify(expectedCapabilityIds) ||
       catalogEntries.some((entry) =>
         entry?.maximumSuccessUtf8Bytes !== 8_388_607 ||
@@ -1286,6 +1345,66 @@ export const verifyPackagedIntegration = async (prepared) => {
       transactionBytes < 8_000_000 ||
       transactionBytes > 8_388_607
     ) throw new TypeError("Packaged MCP transaction inspection is invalid.");
+
+    const quoteInput = uniswapV2QuoteInput(fakeRpc);
+    const mcpUniswapV2Quote = await callSemanticRead(
+      firstMcp,
+      "uniswap_v2_quote_exact_input",
+      quoteInput,
+    );
+    assertUniswapV2Quote(
+      canonicalSemanticToolContent(
+        mcpUniswapV2Quote,
+        "Packaged MCP Uniswap V2 quote",
+      ),
+      fakeRpc,
+      "Packaged MCP Uniswap V2 quote",
+    );
+
+    const httpUniswapV2Quote = assertUniswapV2Quote(
+      await jsonResponse(await fetch(
+        `${fixedOrigin}/api/v1/uniswap-v2-exact-input-quotes`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(quoteInput),
+          redirect: "error",
+        },
+      )),
+      fakeRpc,
+      "Packaged HTTP Uniswap V2 quote",
+    );
+    if (
+      JSON.stringify(httpUniswapV2Quote.data) !==
+      JSON.stringify(mcpUniswapV2Quote.structuredContent.data)
+    ) {
+      throw new TypeError("Packaged MCP and HTTP Uniswap V2 quote data differ.");
+    }
+
+    const cliUniswapV2Quote = await runCommand(process.execPath, [
+      resolve(prepared.installedPackageRoot, "dist/cli.js"),
+      "uniswap-v2",
+      "quote-exact-input",
+      "--factory",
+      quoteInput.factory,
+      "--token-in",
+      quoteInput.tokenIn.address,
+      "--token-out",
+      quoteInput.tokenOut.address,
+      "--amount-in",
+      quoteInput.amountIn,
+      "--block",
+      "latest",
+      "--json",
+    ], { cwd: prepared.installRoot, env: environment, output: "capture" });
+    const cliUniswapV2Content = assertUniswapV2Quote(
+      JSON.parse(cliUniswapV2Quote.stdout.toString("utf8")),
+      fakeRpc,
+      "Packaged CLI Uniswap V2 quote",
+    );
+    if (JSON.stringify(cliUniswapV2Content.data) !== JSON.stringify(httpUniswapV2Quote.data)) {
+      throw new TypeError("Packaged CLI and HTTP Uniswap V2 quote data differ.");
+    }
 
     const httpChainStatus = await jsonResponse(await fetch(`${fixedOrigin}/api/v1/chain-status`));
     if (

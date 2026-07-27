@@ -4,13 +4,20 @@ import { resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { maximumSuccessUtf8Bytes } from "../../src/core/index.js";
+import {
+  createApplicationFailure,
+  maximumSuccessUtf8Bytes,
+} from "../../src/core/index.js";
 import { publicReadResponseLimitBytes } from "../../src/runtime/http-boundary.js";
 
 import {
   createControlCredentialVerifier,
   loadOrCreateControlCredential,
 } from "../../src/runtime/control-credential.js";
+import {
+  runtimeErrorRegistry,
+  runtimeInterfaceErrorMappings,
+} from "../../src/runtime/errors.js";
 import {
   createRuntimeRouteRegistry,
   type RouteDefinition,
@@ -117,6 +124,68 @@ describe("HTTP request-class and route authority", () => {
         [field]: value,
       } as unknown as RouteDefinition])).toThrow("values");
     }
+  });
+
+  it("keeps sibling product error mappings with the routes that own them", async () => {
+    const { verifier } = await credentialFixture();
+    const leftErrors = runtimeErrorRegistry.extend([{
+      code: "left_product_failure",
+      category: "domain",
+      message: "The left product failed.",
+      retryable: false,
+    }]);
+    const leftMappings = runtimeInterfaceErrorMappings.extend(leftErrors, [{
+      code: "left_product_failure",
+      httpStatus: 409,
+      problemTitle: "Left product failure",
+      cliExitCode: 5,
+    }]);
+    const rightErrors = runtimeErrorRegistry.extend([{
+      code: "right_product_failure",
+      category: "domain",
+      message: "The right product failed.",
+      retryable: false,
+    }]);
+    const rightMappings = runtimeInterfaceErrorMappings.extend(rightErrors, [{
+      code: "right_product_failure",
+      httpStatus: 422,
+      problemTitle: "Right product failure",
+      cliExitCode: 3,
+    }]);
+    const routes = createRuntimeRouteRegistry({ controlVerifier: verifier })
+      .extend([{
+        method: "GET",
+        mutation: "none",
+        pathPattern: "/api/v1/left-product",
+        response: "canonical_json",
+        successStatus: 200,
+        handler: success,
+      }], leftMappings)
+      .extend([{
+        method: "GET",
+        mutation: "none",
+        pathPattern: "/api/v1/right-product",
+        response: "canonical_json",
+        successStatus: 200,
+        handler: success,
+      }], rightMappings);
+    const left = routes.match("GET", "/api/v1/left-product");
+    const right = routes.match("GET", "/api/v1/right-product");
+    if (left.status !== "matched" || right.status !== "matched") {
+      throw new TypeError("Expected both sibling product routes.");
+    }
+    expect(routes.normalizeResult(left.route, {
+      ok: false,
+      failure: createApplicationFailure(leftErrors, "left_product_failure"),
+    })).toMatchObject({ ok: false, problem: { status: 409, code: "left_product_failure" } });
+    expect(routes.normalizeResult(right.route, {
+      ok: false,
+      failure: createApplicationFailure(rightErrors, "right_product_failure"),
+    })).toMatchObject({ ok: false, problem: { status: 422, code: "right_product_failure" } });
+    expect(() => routes.normalizeResult(left.route, {
+      ok: false,
+      failure: createApplicationFailure(rightErrors, "right_product_failure"),
+    })).toThrow("Unknown application error code.");
   });
 
   it("enforces the complete initial Host, Origin, authentication, and body policy", async () => {

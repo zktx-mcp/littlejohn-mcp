@@ -977,6 +977,7 @@ describe("chain owner application", () => {
       "close",
       "invocations",
       "officialAssetReads",
+      "protocolReads",
       "referenceMarketReads",
       "routes",
       "supportManifest",

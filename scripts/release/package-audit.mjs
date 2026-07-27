@@ -24,6 +24,22 @@ import {
 } from "./release-support.mjs";
 
 const reownNotice = "Portions © 2025 Reown, Inc. All Rights Reserved";
+const uniswapSdkNotice = "Uniswap SDK Core and Uniswap V2 SDK";
+const uniswapSdkLicenseDigest =
+  "610ab47634715eb91e1ac6fe4b69fce3952ee978f294270e5cee367dd88b6b71";
+const uniswapSdkDirectDependencies = Object.freeze({
+  "@uniswap/sdk-core": "7.19.0",
+  "@uniswap/v2-sdk": "4.21.1",
+});
+const automaticallyPermittedLicenses = new Set([
+  "0BSD",
+  "MIT",
+  "ISC",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "Apache-2.0",
+  "BlueOak-1.0.0",
+]);
 const fixedDistributionArtifacts = Object.freeze([
   Object.freeze({ path: "package.json" }),
   Object.freeze({ path: "LICENSE" }),
@@ -41,6 +57,192 @@ const fixedDistributionArtifacts = Object.freeze([
 ]);
 const fixedDistributionPaths = Object.freeze(fixedDistributionArtifacts.map(({ path }) => path));
 const fixedDistributionPathSet = new Set(fixedDistributionPaths);
+
+const requiredObjectProperty = (input, key, label) => {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new TypeError(`${label} is invalid.`);
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(input, key);
+  if (descriptor === undefined || !("value" in descriptor)) {
+    throw new TypeError(`${label} is invalid.`);
+  }
+  return descriptor.value;
+};
+
+const lockDependencyPath = (packages, importerPath, packageName) => {
+  let parent = importerPath;
+  for (;;) {
+    const candidate = canonicalRelativePath(
+      `${parent.length === 0 ? "" : `${parent}/`}node_modules/${packageName}`,
+    );
+    if (Object.hasOwn(packages, candidate)) return candidate;
+    const nestedBoundary = parent.lastIndexOf("/node_modules/");
+    if (nestedBoundary < 0) break;
+    parent = parent.slice(0, nestedBoundary);
+  }
+  const rootCandidate = canonicalRelativePath(`node_modules/${packageName}`);
+  if (Object.hasOwn(packages, rootCandidate)) return rootCandidate;
+  throw new TypeError(`SDK dependency is absent from the lockfile: ${packageName}`);
+};
+
+const uniswapSdkLockClosure = (lockfile, manifest) => {
+  const packages =
+    typeof lockfile === "object" &&
+    lockfile !== null &&
+    !Array.isArray(lockfile) &&
+    typeof lockfile.packages === "object" &&
+    lockfile.packages !== null &&
+    !Array.isArray(lockfile.packages)
+      ? lockfile.packages
+      : undefined;
+  const dependencies =
+    typeof manifest === "object" &&
+    manifest !== null &&
+    !Array.isArray(manifest) &&
+    typeof manifest.dependencies === "object" &&
+    manifest.dependencies !== null &&
+    !Array.isArray(manifest.dependencies)
+      ? manifest.dependencies
+      : undefined;
+  if (packages === undefined || dependencies === undefined) {
+    throw new TypeError("Release dependency authority is invalid.");
+  }
+  const pending = [];
+  for (const [name, version] of Object.entries(uniswapSdkDirectDependencies)) {
+    if (Object.getOwnPropertyDescriptor(dependencies, name)?.value !== version) {
+      throw new TypeError(`Direct SDK dependency is not exact: ${name}`);
+    }
+    pending.push(lockDependencyPath(packages, "", name));
+  }
+  const closure = new Map();
+  while (pending.length !== 0) {
+    const packagePath = pending.pop();
+    if (packagePath === undefined || closure.has(packagePath)) continue;
+    const entry = Object.getOwnPropertyDescriptor(packages, packagePath)?.value;
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new TypeError(`SDK lockfile entry is invalid: ${packagePath}`);
+    }
+    if (
+      typeof entry.version !== "string" ||
+      typeof entry.license !== "string" ||
+      !automaticallyPermittedLicenses.has(entry.license) ||
+      entry.optional === true ||
+      entry.os !== undefined ||
+      entry.cpu !== undefined
+    ) {
+      throw new TypeError(`SDK dependency admission is invalid: ${packagePath}`);
+    }
+    closure.set(packagePath, Object.freeze({
+      version: entry.version,
+      license: entry.license,
+    }));
+    const childDependencies = {
+      ...(typeof entry.dependencies === "object" && entry.dependencies !== null
+        ? entry.dependencies
+        : {}),
+      ...(typeof entry.optionalDependencies === "object" &&
+        entry.optionalDependencies !== null
+        ? entry.optionalDependencies
+        : {}),
+    };
+    for (const name of Object.keys(childDependencies)) {
+      pending.push(lockDependencyPath(packages, packagePath, name));
+    }
+  }
+  return Object.freeze([...closure.entries()]
+    .sort(([left], [right]) => left.localeCompare(right)));
+};
+
+const assertInstalledUniswapSdkClosure = async (
+  sourceRoot,
+  dependencyRoot,
+  sourceManifest,
+) => {
+  const lockfile = await readJsonFile(resolve(sourceRoot, "package-lock.json"));
+  const closure = uniswapSdkLockClosure(lockfile, sourceManifest);
+  for (const [packagePath, expected] of closure) {
+    const installedManifest = await readJsonFile(resolve(dependencyRoot, packagePath, "package.json"));
+    const installedVersion = requiredObjectProperty(
+      installedManifest,
+      "version",
+      `Installed SDK dependency version for ${packagePath}`,
+    );
+    const installedLicense = requiredObjectProperty(
+      installedManifest,
+      "license",
+      `Installed SDK dependency license for ${packagePath}`,
+    );
+    const expectedVersion = requiredObjectProperty(
+      expected,
+      "version",
+      `Lockfile SDK dependency version for ${packagePath}`,
+    );
+    const expectedLicense = requiredObjectProperty(
+      expected,
+      "license",
+      `Lockfile SDK dependency license for ${packagePath}`,
+    );
+    if (
+      typeof installedVersion !== "string" ||
+      typeof installedLicense !== "string" ||
+      typeof expectedVersion !== "string" ||
+      typeof expectedLicense !== "string" ||
+      installedVersion !== expectedVersion ||
+      installedLicense !== expectedLicense
+    ) {
+      throw new TypeError(`Installed SDK dependency differs from the lockfile: ${packagePath}`);
+    }
+  }
+  for (const [name, version] of Object.entries(uniswapSdkDirectDependencies)) {
+    const packagePath = lockDependencyPath(
+      Object.fromEntries(closure.map(([path, value]) => [path, value])),
+      "",
+      name,
+    );
+    const packageRoot = resolve(dependencyRoot, packagePath);
+    const manifest = await readJsonFile(resolve(packageRoot, "package.json"));
+    const manifestName = requiredObjectProperty(
+      manifest,
+      "name",
+      `Installed SDK package name for ${name}`,
+    );
+    const manifestVersion = requiredObjectProperty(
+      manifest,
+      "version",
+      `Installed SDK package version for ${name}`,
+    );
+    const exportsValue = requiredObjectProperty(
+      manifest,
+      "exports",
+      `Installed SDK package exports for ${name}`,
+    );
+    const rootExport = requiredObjectProperty(
+      exportsValue,
+      ".",
+      `Installed SDK root export for ${name}`,
+    );
+    const requireEntry = requiredObjectProperty(
+      rootExport,
+      "require",
+      `Installed SDK CommonJS export for ${name}`,
+    );
+    if (
+      manifestName !== name ||
+      manifestVersion !== version ||
+      requireEntry !== "./dist/cjs/src/index.js"
+    ) {
+      throw new TypeError(`Installed SDK package identity is invalid: ${name}`);
+    }
+    const entryDetails = await lstat(resolve(packageRoot, requireEntry));
+    if (!entryDetails.isFile() || entryDetails.isSymbolicLink()) {
+      throw new TypeError(`Installed SDK CommonJS entry is invalid: ${name}`);
+    }
+    const license = await readFile(resolve(packageRoot, "LICENSE"));
+    if (sha256(license) !== uniswapSdkLicenseDigest) {
+      throw new TypeError(`Installed SDK license is invalid: ${name}`);
+    }
+  }
+};
 
 /** @type {typeof import("./package-audit.d.mts").parseReleasePackageIdentity} */
 export const parseReleasePackageIdentity = (value) => {
@@ -162,6 +364,9 @@ const assertDistributionArtifacts = async (sourceRoot, packageRoot) => {
   if (notice.split(reownNotice).length !== 2) {
     throw new TypeError("Packaged Reown notice must occur exactly once.");
   }
+  if (notice.split(uniswapSdkNotice).length !== 2) {
+    throw new TypeError("Packaged Uniswap SDK notice must occur exactly once.");
+  }
 };
 
 const assertInstalledBinary = async (installRoot, packageRoot) => {
@@ -216,6 +421,7 @@ export const prepareReleasePackage = async (repositoryRoot) => {
     if (!lockBefore.equals(lockAfter)) {
       throw new TypeError("npm ci changed the repository dependency lock.");
     }
+    await assertInstalledUniswapSdkClosure(sourceRoot, sourceRoot, sourceManifest);
     await runCommand(process.execPath, [
       resolve(sourceRoot, "node_modules/typescript/bin/tsc"),
       "-p",
@@ -261,6 +467,7 @@ export const prepareReleasePackage = async (repositoryRoot) => {
       "--save-exact",
       tarballPath,
     ], { cwd: installRoot, env: environment });
+    await assertInstalledUniswapSdkClosure(sourceRoot, installRoot, sourceManifest);
     const installedPackageRoot = resolve(installRoot, packageIdentity.installRelativePath);
     const installedPaths = await collectRegularFiles(installedPackageRoot);
     assertExactPaths(installedPaths, expectedPaths, "installed package");

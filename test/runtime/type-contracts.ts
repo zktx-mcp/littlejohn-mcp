@@ -97,7 +97,7 @@ type _ChainActiveWallet = Assert<Equal<
 type _InterfaceContextKeys = Assert<Equal<
   keyof InterfaceOwnerApplicationContext<TestWalletOperations>,
   "routes" | "signal" | "startupResources" | "supportManifest" | "walletConnection" | "walletOperations" |
-  "chainReads" | "tokenInspection" | "tokenCatalogQueries" | "tokenCatalogWebStart" |
+  "chainReads" | "uniswapV2Quote" | "tokenInspection" | "tokenCatalogQueries" | "tokenCatalogWebStart" |
   "tokenCatalogBrowserOperations" | "tokenCatalogInteractiveCli" | "tokenCatalogNonInteractiveOperations" |
   "accountAssets" | "referenceMarkets"
 >>;
@@ -149,7 +149,7 @@ type _WalletHandoffActiveWallet = Assert<Equal<
 type _ChainHandoffKeys = Assert<Equal<
   keyof ChainOwnerHandoff,
   "supportManifest" | "invocations" | "chainReads" | "tokenInspection" | "tokenAdditionReads" |
-  "officialAssetReads" | "accountAssetReads" | "referenceMarketReads"
+  "officialAssetReads" | "accountAssetReads" | "referenceMarketReads" | "protocolReads"
 >>;
 type _RuntimeHandleKeys = Assert<Equal<
   keyof LocalRuntime,

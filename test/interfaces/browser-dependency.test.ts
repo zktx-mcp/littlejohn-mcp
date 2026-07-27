@@ -214,6 +214,11 @@ describe("browser runtime dependency boundary", () => {
       resolve(webSourceRoot, "inert-text.ts"),
     )).toEqual([]);
     expect(auditBrowserSourceModule(
+      `const headings = <section><h1>1</h1><h2>2</h2><h3>3</h3>` +
+      `<h4>4</h4><h5>5</h5><h6>6</h6></section>;`,
+      resolve(webSourceRoot, "semantic-headings.tsx"),
+    )).toEqual([]);
+    expect(auditBrowserSourceModule(
       await readFile(walletClientSource, "utf8"),
       walletClientSource,
     )).toEqual([]);

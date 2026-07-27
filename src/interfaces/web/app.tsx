@@ -57,6 +57,7 @@ import {
 import type { NotificationNotice } from "./notification.js";
 import { createBrowserRequestAuthority, type BrowserRequest } from "./request-authority.js";
 import { ReferenceMarketView } from "./reference-market-view.js";
+import { UniswapV2QuoteView } from "./uniswap-v2-quote-view.js";
 import {
   cancelTokenOperation,
   confirmTokenOperation,
@@ -1098,6 +1099,7 @@ export const App = () => {
           {walletNavigationLabel(currentWallet)}
         </button>
       </nav>
+      <UniswapV2QuoteView />
       <ContractInspectionView />
       <ReferenceMarketView walletConnected={currentAccount !== undefined} csrfToken={csrfToken} />
       {state.status === "loading" ? (

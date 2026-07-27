@@ -90,6 +90,12 @@ export {
   createReferenceMarketChainReadPort,
 } from "./reference-market.js";
 export type {
+  PinnedEvmCallResult,
+  PinnedEvmReadFailureCode,
+  PinnedEvmReadPort,
+} from "./protocol-reads.js";
+export { normalizePinnedEvmReadFailure } from "./protocol-reads.js";
+export type {
   ReferenceHistoryTraversal,
   ReferenceMarketCallEncoder,
   ReferenceMarketChainReadPort,

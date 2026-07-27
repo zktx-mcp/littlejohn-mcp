@@ -217,21 +217,52 @@ export const createEvidenceSchemaSet = () => {
   const warningCode = z.enum(warningCodes);
   const fieldIssueCode = z.enum(fieldIssueCodes);
 
+  const publicSourceReference = jsonObject({
+    kind: z.literal(sourceReferenceKinds[0]),
+    sourceId: primitive.fixedIdentifier,
+    uri: z.url().refine((value) => {
+      const url = new URL(value);
+      return (
+        url.protocol === "https:" &&
+        url.username === "" &&
+        url.password === "" &&
+        url.href === value
+      );
+    }, "Public references must be canonical HTTPS URLs without user information."),
+  }).strict();
+  const officialIdentityStatementList = z.array(primitive.generalSingleLineText)
+    .min(1)
+    .superRefine((values, context) => {
+      if (new Set(values).size !== values.length) {
+        context.addIssue({
+          code: "custom",
+          message: "Official identity evidence statements must be unique.",
+        });
+      }
+    });
+  const officialIdentityEvidence = jsonObject({
+    sourceOwner: primitive.generalSingleLineText,
+    sourceClass: z.literal("official_document"),
+    reference: publicSourceReference,
+    sourceRevision: primitive.generalSingleLineText.optional(),
+    coverage: primitive.generalSingleLineText,
+    exclusions: officialIdentityStatementList,
+    supportedConclusions: officialIdentityStatementList,
+    unsupportedConclusions: officialIdentityStatementList,
+  }).strict().superRefine((value, context) => {
+    const conclusions = [
+      ...value.supportedConclusions,
+      ...value.unsupportedConclusions,
+    ];
+    if (new Set(conclusions).size !== conclusions.length) {
+      context.addIssue({
+        code: "custom",
+        message: "Supported and unsupported identity conclusions must not overlap.",
+      });
+    }
+  });
   const sourceReference = z.discriminatedUnion("kind", [
-    jsonObject({
-        kind: z.literal(sourceReferenceKinds[0]),
-        sourceId: primitive.fixedIdentifier,
-        uri: z.url().refine((value) => {
-          const url = new URL(value);
-          return (
-            url.protocol === "https:" &&
-            url.username === "" &&
-            url.password === "" &&
-            url.href === value
-          );
-        }, "Public references must be canonical HTTPS URLs without user information."),
-      })
-      .strict(),
+    publicSourceReference,
     jsonObject({
         kind: z.literal(sourceReferenceKinds[1]),
         sourceId: prefixedCanonicalBase64UrlSchema("rpc:", 32),
@@ -406,6 +437,7 @@ export const createEvidenceSchemaSet = () => {
     freshnessRuleId,
     warningCode,
     fieldIssueCode,
+    officialIdentityEvidence,
     sourceReference,
     evidenceSourceRecord,
     evidenceSource,
@@ -443,6 +475,10 @@ export type FactOutcome = z.infer<typeof factOutcomeSchema>;
 
 export const freshnessRuleIdSchema = publicSchemas.freshnessRuleId;
 export const warningCodeSchema = publicSchemas.warningCode;
+export const officialIdentityEvidenceSchema = guardJsonSchema(
+  publicSchemas.officialIdentityEvidence,
+);
+export type OfficialIdentityEvidence = z.infer<typeof officialIdentityEvidenceSchema>;
 export const sourceReferenceSchema = guardJsonSchema(publicSchemas.sourceReference);
 export type SourceReference = z.infer<typeof sourceReferenceSchema>;
 

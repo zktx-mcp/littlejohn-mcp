@@ -40,6 +40,7 @@ import type { BrowserAssetBundle } from "../../src/interfaces/browser-assets.js"
 import { createBrowserRequestCredentialAuthority } from "../../src/interfaces/browser-credentials.js";
 import { extendBrowserInterfaceRoutes } from "../../src/interfaces/browser-routes.js";
 import type { BrowserFetch } from "../../src/interfaces/web/browser-client.js";
+import { quoteUniswapV2ExactInput } from "../../src/interfaces/web/uniswap-v2-client.js";
 import { inspectTokenContract } from "../../src/interfaces/web/token-catalog-client.js";
 import { extendPublicInterfaceRoutes } from "../../src/interfaces/http-routes.js";
 import { dispatchCanonical, type RuntimeDispatchPort } from "../../src/interfaces/http-client.js";
@@ -52,6 +53,7 @@ import {
   tokenCatalogInterfaceBindings,
   tokenInspectInterface,
   transactionInspectInterface,
+  uniswapV2QuoteInterface,
   walletConnectionInterface,
   type ReadInterfaceIdentity,
 } from "../../src/interfaces/identities.js";
@@ -67,6 +69,15 @@ import { parseTokenCliCommand, runTokenCliCommand } from "../../src/interfaces/c
 import { openTestOwnerSession } from "./owner-session-harness.js";
 import { accountAssetInterfaceHarnessPort } from "../account-assets/interface-harness.js";
 import { referenceMarketInterfaceHarnessPort } from "../market-portfolio/interface-harness.js";
+import {
+  createUniswapV2DirectQuoteSuccess,
+  extendUniswapV2ProtocolHarnessManifest,
+  uniswapV2QuoteHarnessBinding,
+} from "../protocols/interface-harness.js";
+import {
+  uniswapV2FactoryAddress,
+  uniswapV2QuoteInputSchema,
+} from "../../src/protocols/uniswap-v2/index.js";
 import {
   createControlCredentialVerifier,
   loadOrCreateControlCredential,
@@ -683,11 +694,16 @@ const createTokenParityContext = async () => {
     encoder: erc20Encoder,
     wallet: disconnectedWallet(),
   });
-  const manifest = extendInterfaceSupportManifest(extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(
-    extendTokenCatalogSupportManifest(extendChainSupportManifest(
-      extendWalletSupportManifest(createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain)),
-    )),
-  )));
+  const chainSupport = extendChainSupportManifest(
+    extendWalletSupportManifest(
+      createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
+    ),
+  );
+  const tokenSupport = extendTokenCatalogSupportManifest(chainSupport);
+  const accountSupport = extendAccountAssetSupportManifest(tokenSupport);
+  const referenceSupport = extendReferenceMarketSupportManifest(accountSupport);
+  const protocolSupport = extendUniswapV2ProtocolHarnessManifest(referenceSupport);
+  const manifest = extendInterfaceSupportManifest(protocolSupport);
   let routes = extendPublicInterfaceRoutes({
     routes: createRuntimeRouteRegistry({
       controlVerifier: createControlCredentialVerifier(authority),
@@ -695,6 +711,7 @@ const createTokenParityContext = async () => {
     chainReads: chain.service.chainReads,
     walletConnection: walletConnectionPort(),
     tokenInspection: ports.inspection,
+    uniswapV2Quote: uniswapV2QuoteHarnessBinding(),
     supportManifest: manifest,
   });
   routes = extendTokenCatalogControlRouteRegistry({
@@ -781,6 +798,106 @@ describe("interface parity", () => {
         expect(human.output.join("")).toBe(entry.humanOutput);
         expect(human.output.join("")).not.toContain("9,007,199");
       }
+    } finally {
+      await mcp.close();
+    }
+  });
+
+  it("preserves one V2 quote through HTTP, MCP, CLI JSON, and browser replay", async () => {
+    const input = uniswapV2QuoteInputSchema.parse({
+      tokenIn: {
+        kind: "erc20",
+        chainId: "eip155:4663",
+        address: `0x${"28".repeat(20)}`,
+      },
+      tokenOut: {
+        kind: "erc20",
+        chainId: "eip155:4663",
+        address: "0x2700f8aaecf0c1e1e0d8d9f8a2bb5a6eb4fc2f42",
+      },
+      factory: uniswapV2FactoryAddress,
+      amountIn: "1000000000000000000",
+      block: { kind: "latest" },
+    });
+    const direct = captureCanonicalJson(
+      await createUniswapV2DirectQuoteSuccess(input),
+    );
+    const runtime = new CanonicalRuntime([{
+      method: uniswapV2QuoteInterface.http.method,
+      path: uniswapV2QuoteInterface.http.path,
+      body: captureCanonicalJson(input),
+      response: Object.freeze({ status: 200, body: direct }),
+    }], operation());
+    const mcp = await connectMcp(runtime);
+    try {
+      const request = {
+        requestClass: "public_read" as const,
+        method: uniswapV2QuoteInterface.http.method,
+        path: uniswapV2QuoteInterface.http.path,
+        body: captureCanonicalJson(input),
+      };
+      const http = await dispatchCanonical(
+        runtime,
+        request,
+        200,
+        uniswapV2QuoteInterface.responseAuthority,
+      );
+      expect(http).toEqual({ ok: true, value: direct });
+
+      const mcpResult = await mcp.client.callTool({
+        name: uniswapV2QuoteInterface.mcp.name,
+        arguments: input,
+      });
+      expect(mcpResult.isError).not.toBe(true);
+      expect(mcpResult.structuredContent).toEqual(direct);
+      expect(JSON.parse(mcpText(mcpResult))).toEqual(direct);
+
+      const cli = outputPort();
+      expect(await runReadCliCommand(
+        runtime,
+        new LocalOperationClient({
+          ownerSessions: runtime,
+          createOperationId: () => operationId,
+        }),
+        parseReadCliCommand([
+          "uniswap-v2",
+          "quote-exact-input",
+          "--factory",
+          input.factory,
+          "--token-in",
+          input.tokenIn.address,
+          "--token-out",
+          input.tokenOut.address,
+          "--amount-in",
+          input.amountIn,
+          "--block",
+          "latest",
+          "--json",
+        ]),
+        cli.port,
+      )).toBe(0);
+      expect(cli.error).toEqual([]);
+      expect(JSON.parse(cli.output.join(""))).toEqual(direct);
+
+      const browserRequest: BrowserFetch = async (path, init) => {
+        expect(path).toBe(uniswapV2QuoteInterface.http.path);
+        const response = await runtime.dispatchRuntimeRequest({
+          requestClass: "public_read",
+          method: init.method,
+          path,
+          ...(init.body === undefined
+            ? {}
+            : { body: JSON.parse(init.body) as CanonicalJson }),
+          ...(init.signal === undefined ? {} : { signal: init.signal }),
+        });
+        return {
+          ok: response.status === 200,
+          status: response.status,
+          json: async () => response.body,
+        };
+      };
+      await expect(quoteUniswapV2ExactInput(input, { request: browserRequest }))
+        .resolves.toEqual(direct);
     } finally {
       await mcp.close();
     }
@@ -1127,13 +1244,16 @@ describe("interface parity", () => {
   });
 
   it("projects one canonical capability catalog through HTTP and MCP without changing core scope or support", async () => {
-    const manifest = extendInterfaceSupportManifest(extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(
-      extendTokenCatalogSupportManifest(extendChainSupportManifest(
-        extendWalletSupportManifest(
-          createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
-        ),
-      )),
-    )));
+    const chainSupport = extendChainSupportManifest(
+      extendWalletSupportManifest(
+        createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
+      ),
+    );
+    const tokenSupport = extendTokenCatalogSupportManifest(chainSupport);
+    const accountSupport = extendAccountAssetSupportManifest(tokenSupport);
+    const referenceSupport = extendReferenceMarketSupportManifest(accountSupport);
+    const protocolSupport = extendUniswapV2ProtocolHarnessManifest(referenceSupport);
+    const manifest = extendInterfaceSupportManifest(protocolSupport);
     const catalog = composeInterfaceCapabilityCatalog(manifest);
     const runtime = new CanonicalRuntime([Object.freeze({
       method: capabilityCatalogInterface.http.method,

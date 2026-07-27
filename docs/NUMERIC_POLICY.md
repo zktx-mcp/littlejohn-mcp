@@ -170,6 +170,30 @@ present and bound to the same asset and observation identity.
 - Wallet net flow is not market volume, P&L, or cost basis.
 - A quote is not a candle, fill, guaranteed price, or execution result.
 
+### Uniswap V2 Exact-Input Values
+
+- The quote input and every candidate output are raw unsigned token integers.
+- One V2 hop calculates
+  `floor(amountIn * 997 * reserveOut / (reserveIn * 1000 + amountIn * 997))`.
+  The package uses arbitrary-precision integer arithmetic, preserves the
+  downward rounding required by integer division, and reports
+  `arithmetic_overflow` for a candidate when a checked EVM `uint256` operation
+  would overflow.
+- V2 reserves are admitted as `uint112` values. Pair direction follows the
+  admitted token order; reserves are never paired by symbol or display order.
+- Mid price, execution price, and price impact are reduced nonnegative rational
+  values. Zero price impact is exactly `0/1`.
+- Token decimals label raw units and the SDK comparison. They do not enter the
+  independent raw-unit output calculation. Endpoint decimal failure makes the
+  quote unavailable; an unavailable intermediary decimal leaves the independent
+  quote reportable and makes only the SDK comparison unavailable.
+- Human CLI and browser views label the canonical raw-unit price separately.
+  They derive the exact token-unit price as
+  `rawPrice * 10^inputDecimals / 10^outputDecimals`, reduce the resulting
+  rational, and display it without converting any component to a JavaScript
+  `number`. This display value is not written back into the canonical quote.
+- SDK comparison never supplies, rounds, or replaces a canonical quote value.
+
 ### Reference Market Values
 
 - A reference-market value is a positive reduced rational with base-10 string

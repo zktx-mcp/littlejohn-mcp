@@ -52,11 +52,15 @@ export {
   utf8ByteLength,
 } from "./canonical-json.js";
 export {
+  createEvidenceDeclarationScope,
   createEvidenceFactIdentityDeclaration,
+  createEvidenceFactIdentityForConclusion,
   createEvidenceObservationTargetDeclaration,
   createEvidenceReplayBinder,
   createEvidenceReplayDefinition,
   createEvidenceReplayLayout,
+  createEvmAddressConclusionIdentity,
+  createEvmAddressConclusionIdentityDeclaration,
   createExactConclusionIdentityDeclaration,
   replayPublicEvidence,
 } from "./evidence-replay.js";
@@ -77,11 +81,17 @@ export {
   createConfiguredChainEvidenceFragment,
   createContractAnalysisEvidenceConclusions,
   createContractAnalysisEvidenceDeclaration,
+  createContractAnalysisEvidenceFactsDeclaration,
   createContractAnalysisEvidenceFragment,
+} from "./capability-evidence.js";
+export type {
+  ContractAnalysisEvidenceFactsDeclaration,
+  ContractAnalysisEvidenceTargets,
 } from "./capability-evidence.js";
 export {
   assertContractAnalysisForTarget,
   contractAnalysisSchema,
+  contractRuntimeCodeIdentitySchema,
 } from "./contract-analysis.js";
 export type {
   ContractAnalysis,
@@ -91,6 +101,12 @@ export type {
   ContractSourceVerificationStatus,
 } from "./contract-analysis.js";
 export { coreContractVersion } from "./contract.js";
+export {
+  supportLevelDefinitions,
+  supportLevelSchema,
+} from "./support-level.js";
+export type { SupportLevel } from "./support-level.js";
+export { keccak256FromHex } from "./keccak256.js";
 export {
   canonicalUsdgAddress,
   compareExactRationals,
@@ -184,9 +200,12 @@ export type {
 export { deepFreezeValue } from "./immutability.js";
 export {
   calculateScaledUiAmount,
+  canonicalUnsignedBigIntMaximumPattern,
+  canonicalUnsignedDecimalMaximumPattern,
   canonicalAmountSchema,
   erc20AssetIdentitySchema,
   formatAmount,
+  maximumTokenDecimals,
   scaledUiAmountSchema,
   scaledUiAmountScale,
   uint256DecimalSchema,
@@ -243,10 +262,15 @@ export {
   fieldIssueSchema,
   invocationIdSchema,
   observationIdSchema,
+  officialIdentityEvidenceSchema,
   sourceClassSchema,
   sourceReferenceSchema,
 } from "./evidence.js";
-export type { FieldIssue, SourceReference } from "./evidence.js";
+export type {
+  FieldIssue,
+  OfficialIdentityEvidence,
+  SourceReference,
+} from "./evidence.js";
 export {
   evmAccountIdentitySchema,
   evmAddressSchema,

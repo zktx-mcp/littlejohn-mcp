@@ -5,6 +5,7 @@ import {
   getCapabilityDefinitionSnapshot,
   parseCapabilityInput,
   parseCapabilitySuccess,
+  productChainId,
   transactionInspectCapability,
   chainStatusCapability,
   type AccountBalanceData,
@@ -16,7 +17,6 @@ import {
   type ContractInspectData,
   type TransactionInspectData,
 } from "../core/index.js";
-import { chainInterfaceErrorMappings } from "../chain/errors.js";
 import {
   accountAssetApplicationContracts,
   accountAssetCollectionRequestBody,
@@ -41,9 +41,16 @@ import {
   contractInspectInterface,
   transactionInspectInterface,
   type ReadInterfaceIdentity,
+  uniswapV2QuoteInterface,
 } from "./identities.js";
 import { LocalOperationClient } from "./operation-client.js";
 import { deliveryUnknownCliExitCode } from "./delivery-exit.js";
+import {
+  formatUniswapV2TokenUnitPrice,
+  uniswapV2QuoteCapability,
+  type UniswapV2QuoteData,
+  type UniswapV2QuoteInput,
+} from "../protocols/uniswap-v2/index.js";
 
 type ReadCommandBase = { readonly json: boolean };
 export type ReadCliCommand =
@@ -54,7 +61,8 @@ export type ReadCliCommand =
   | (ReadCommandBase & { readonly kind: "chain_status" })
   | (ReadCommandBase & { readonly kind: "contract"; readonly input: ReturnType<typeof contractInput> })
   | (ReadCommandBase & { readonly kind: "transaction"; readonly input: ReturnType<typeof transactionInput> })
-  | (ReadCommandBase & { readonly kind: "balance"; readonly input: AccountBalanceInput });
+  | (ReadCommandBase & { readonly kind: "balance"; readonly input: AccountBalanceInput })
+  | (ReadCommandBase & { readonly kind: "uniswap_v2_quote"; readonly input: UniswapV2QuoteInput });
 
 export interface ReadCliOutputPort {
   writeOutput(value: string): void;
@@ -200,6 +208,38 @@ const parseAssets = (tokens: readonly string[]): ReadCliCommand => {
   } catch { return invalidInput(); }
 };
 
+const parseUniswapV2Quote = (tokens: readonly string[]): ReadCliCommand => {
+  const parsed = parseTokens(tokens);
+  assertAllowedFlags(
+    parsed,
+    new Set(["--factory", "--token-in", "--token-out", "--amount-in", "--block"]),
+  );
+  if (parsed.positionals.length !== 0) return invalidInput();
+  try {
+    return Object.freeze({
+      kind: "uniswap_v2_quote",
+      json: parsed.json,
+      input: parseCapabilityInput(uniswapV2QuoteCapability, {
+        tokenIn: {
+          kind: "erc20",
+          chainId: productChainId,
+          address: exactFlag(parsed, "--token-in"),
+        },
+        tokenOut: {
+          kind: "erc20",
+          chainId: productChainId,
+          address: exactFlag(parsed, "--token-out"),
+        },
+        factory: exactFlag(parsed, "--factory"),
+        amountIn: exactFlag(parsed, "--amount-in"),
+        block: parseBlockSelector(exactFlag(parsed, "--block")),
+      }),
+    });
+  } catch {
+    return invalidInput();
+  }
+};
+
 export const parseReadCliCommand = (argumentsInput: readonly string[]): ReadCliCommand => {
   const [domain, command, ...tokens] = argumentsInput;
   if (command === undefined) return invalidInput();
@@ -219,6 +259,12 @@ export const parseReadCliCommand = (argumentsInput: readonly string[]): ReadCliC
   }
   if (domain === accountBalanceInterface.cli.domain && command === accountBalanceInterface.cli.command) {
     return parseBalance(tokens);
+  }
+  if (
+    domain === uniswapV2QuoteInterface.cli.domain &&
+    command === uniswapV2QuoteInterface.cli.command
+  ) {
+    return parseUniswapV2Quote(tokens);
   }
   return invalidInput();
 };
@@ -319,6 +365,131 @@ const assetsHuman = (result: AccountAssetCollectionSuccess): string => {
   ].join("\n");
 };
 
+type UniswapV2QuoteSuccess = CapabilitySuccess<UniswapV2QuoteData>;
+
+const uniswapV2SourceReference = (
+  source: UniswapV2QuoteSuccess["evidence"]["sources"][number],
+): string => {
+  switch (source.reference.kind) {
+    case "public": return source.reference.uri;
+    case "configured_rpc": return source.reference.publicOrigin;
+    case "wallet_session": return source.reference.sourceId;
+    case "wallet_sdk": return source.reference.sourceId;
+    case "validated_input": return source.reference.sourceId;
+  }
+};
+
+const uniswapV2QuoteHuman = (success: UniswapV2QuoteSuccess): string => {
+  const data = success.data;
+  return [
+    `Protocol: ${data.protocol.protocolId}`,
+    `Factory: ${data.deployment.factory}`,
+    `Factory code: ${data.deployment.runtimeCode.byteLength} bytes ${data.deployment.runtimeCode.codeHash}`,
+    `Pair init-code hash: ${data.deployment.pairInitCodeHash}`,
+    `Block: ${data.block.blockNumber} ${data.block.blockHash}`,
+    `Block timestamp: ${data.block.blockTimestamp}`,
+    `Evaluated at: ${success.meta.evaluatedAt}`,
+    `Input: ${data.input.amountIn} raw ${data.input.tokenIn.address}`,
+    `Input decimals: ${data.input.tokenInDecimals}`,
+    `Output token: ${data.input.tokenOut.address}`,
+    `Output decimals: ${data.input.tokenOutDecimals}`,
+    `Coverage: ${data.coverage.basis}`,
+    `Route assets: ${data.coverage.routeAssets.join(", ")}`,
+    `Deployment source owner: ${data.deployment.source.sourceOwner}`,
+    `Deployment source class: ${data.deployment.source.sourceClass}`,
+    `Deployment source URI: ${data.deployment.source.sourceUri}`,
+    `Deployment source revision: ${data.deployment.source.sourceRevision}`,
+    `Deployment source coverage: ${data.deployment.source.coverage}`,
+    `Deployment source exclusions: ${data.deployment.source.exclusions.join(", ")}`,
+    `Deployment source supported conclusions: ${data.deployment.source.supportedConclusions.join(", ")}`,
+    `Deployment source unsupported conclusions: ${data.deployment.source.unsupportedConclusions.join(", ")}`,
+    `Route-asset source owner: ${data.coverage.source.sourceOwner}`,
+    `Route-asset source class: ${data.coverage.source.sourceClass}`,
+    `Route-asset source URI: ${data.coverage.source.sourceUri}`,
+    `Route-asset source observed at: ${data.coverage.source.sourceObservedAt}`,
+    `Route-asset source freshness: ${data.coverage.source.freshnessStatus} (${data.coverage.source.freshnessRule})`,
+    `Route-asset source coverage: ${data.coverage.source.coverage}`,
+    `Route-asset source exclusions: ${data.coverage.source.exclusions.join(", ")}`,
+    `Route-asset source supported conclusions: ${data.coverage.source.supportedConclusions.join(", ")}`,
+    `Route-asset source unsupported conclusions: ${data.coverage.source.unsupportedConclusions.join(", ")}`,
+    ...data.candidates.map((candidate, index) => [
+    `Candidate ${index + 1}: ${candidate.path.map((asset) => asset.address).join(" -> ")}`,
+    `  Status: ${candidate.status}`,
+    ...candidate.evaluatedHops.flatMap((hop, hopIndex) => [
+      `  Hop ${hopIndex + 1}: ${hop.tokenIn.asset.address} -> ${hop.tokenOut.asset.address}`,
+      `    Status: ${hop.status}`,
+      `    Raw input: ${hop.amountIn}`,
+      `    Factory result: ${hop.factoryResult}`,
+      `    Input decimals: ${hop.tokenIn.decimals.status === "observed"
+        ? hop.tokenIn.decimals.value
+        : hop.tokenIn.decimals.status}`,
+      `    Output decimals: ${hop.tokenOut.decimals.status === "observed"
+        ? hop.tokenOut.decimals.value
+        : hop.tokenOut.decimals.status}`,
+      ...(hop.status === "pair_absent"
+        ? []
+        : [
+            `    Pair: ${hop.pair.pairAddress}`,
+            `    Pair code: ${hop.pair.runtimeCode.byteLength} bytes ${hop.pair.runtimeCode.codeHash}`,
+            `    Reported factory: ${hop.pair.factory}`,
+            `    Token 0: ${hop.pair.token0}`,
+            `    Token 1: ${hop.pair.token1}`,
+            `    Reserve 0: ${hop.pair.reserve0}`,
+            `    Reserve 1: ${hop.pair.reserve1}`,
+            `    Fee rate: ${hop.feeRate.numerator}/${hop.feeRate.denominator}`,
+          ]),
+      ...(hop.status === "completed" || hop.status === "amount_too_small"
+        ? [`    Raw output: ${hop.amountOut}`]
+        : []),
+    ]),
+    ...(candidate.status === "quoted"
+      ? [
+          `  Output: ${candidate.amountOut}`,
+          `  Mid price (raw output units per raw input unit): ${candidate.midPrice.numerator}/${candidate.midPrice.denominator}`,
+          `  Mid price (output tokens per input token): ${formatUniswapV2TokenUnitPrice(
+            candidate.midPrice,
+            data.input.tokenInDecimals,
+            data.input.tokenOutDecimals,
+          )}`,
+          `  Execution price (raw output units per raw input unit): ${candidate.executionPrice.numerator}/${candidate.executionPrice.denominator}`,
+          `  Execution price (output tokens per input token): ${formatUniswapV2TokenUnitPrice(
+            candidate.executionPrice,
+            data.input.tokenInDecimals,
+            data.input.tokenOutDecimals,
+          )}`,
+          `  Price impact: ${candidate.priceImpact.numerator}/${candidate.priceImpact.denominator}`,
+          `  SDK check: ${candidate.sdkCheck.status}${
+            candidate.sdkCheck.status === "not_available"
+              ? ` (${candidate.sdkCheck.reason})`
+              : ""
+          }`,
+        ]
+      : []),
+    ].join("\n")),
+    ...success.evidence.sources.map((source) => [
+      `Evidence source: ${source.observationId}`,
+      `  Purpose: ${source.purpose}`,
+      `  Owner and class: ${source.owner} / ${source.sourceClass}`,
+      `  Reference: ${uniswapV2SourceReference(source)}`,
+      `  Observed at: ${source.observedAt}`,
+      `  Record digest: ${source.recordDigest}`,
+      ...(source.chainAnchor === undefined
+        ? []
+        : [`  Chain anchor: ${source.chainAnchor.blockNumber} ${source.chainAnchor.blockHash}`]),
+    ].join("\n")),
+    ...success.evidence.conclusions.map((conclusion) =>
+      `Evidence conclusion: ${conclusion.id} ${conclusion.status} ${conclusion.reason}`),
+    `Evidence coverage: ${success.evidence.coverage.status}`,
+    `Established facts: ${success.evidence.coverage.established.join(", ") || "none"}`,
+    `Unavailable facts: ${success.evidence.coverage.unavailable.join(", ") || "none"}`,
+    `Not applicable facts: ${success.evidence.coverage.notApplicable.join(", ") || "none"}`,
+    ...success.warnings.map((warning) =>
+      `Warning: ${warning.code} ${warning.message}`),
+    ...getCapabilityDefinitionSnapshot(uniswapV2QuoteCapability).staticScopeExclusions
+      .map((exclusion) => `Limitation: ${exclusion.message}`),
+  ].join("\n");
+};
+
 type DirectReadCliCommand = Exclude<ReadCliCommand, { readonly kind: "assets" }>;
 
 const interfaceForCommand = (command: DirectReadCliCommand): ReadInterfaceIdentity => {
@@ -327,6 +498,7 @@ const interfaceForCommand = (command: DirectReadCliCommand): ReadInterfaceIdenti
     case "contract": return contractInspectInterface;
     case "transaction": return transactionInspectInterface;
     case "balance": return accountBalanceInterface;
+    case "uniswap_v2_quote": return uniswapV2QuoteInterface;
   }
 };
 
@@ -357,6 +529,9 @@ const humanSuccess = (command: DirectReadCliCommand, success: CapabilitySuccess<
     case "contract": return contractHuman(success.data as ContractInspectData);
     case "transaction": return transactionHuman(success.data as TransactionInspectData);
     case "balance": return balanceHuman(success.data as AccountBalanceData);
+    case "uniswap_v2_quote": return uniswapV2QuoteHuman(
+      success as CapabilitySuccess<UniswapV2QuoteData>,
+    );
   }
 };
 
@@ -395,7 +570,8 @@ export const runReadCliCommand = async (
       output.writeOutput(`${canonicalJsonStringify(result.failure as unknown as CanonicalJson)}\n`);
     }
     else output.writeError(`${result.failure.error.code}: ${result.failure.error.message}\n`);
-    return chainInterfaceErrorMappings.get(result.failure.error.code).cliExitCode;
+    return identity.responseAuthority.interfaceMappings
+      .get(result.failure.error.code).cliExitCode;
   }
   try {
     const parsed = parseSuccess(identity, command, result.value);
@@ -407,6 +583,6 @@ export const runReadCliCommand = async (
     const failure = createInterfaceFailure("internal_error");
     if (command.json) output.writeOutput(`${canonicalJsonStringify(failure as unknown as CanonicalJson)}\n`);
     else output.writeError(`${failure.error.code}: ${failure.error.message}\n`);
-    return chainInterfaceErrorMappings.get("internal_error").cliExitCode;
+    return identity.responseAuthority.interfaceMappings.get("internal_error").cliExitCode;
   }
 };

@@ -45,6 +45,7 @@ const semanticEvidenceAuthoringModules = new Set([
 const semanticEvidenceAuthoringOwners = new Set([
   resolve("src/core/capability-evidence.ts"),
   resolve("src/token-catalog/contract-schema.ts"),
+  resolve("src/protocols/uniswap-v2/evidence.ts"),
 ]);
 const semanticEvidenceAuthoringReexporter = resolve("src/core/browser.ts");
 const evidenceReplayFacadeModules = new Set([
@@ -528,7 +529,7 @@ describe("core dependency boundary", () => {
     )).toEqual(["chain/unauthorized-capability.ts:import_equals"]);
   });
 
-  it("limits semantic evidence identity authoring to the two definition owners", async () => {
+  it("limits semantic evidence identity authoring to canonical and registered protocol owners", async () => {
     const violations: string[] = [];
     for (const file of await collectSourceFiles(sourceDirectory)) {
       violations.push(...semanticEvidenceAuthoringViolations(
@@ -567,6 +568,13 @@ describe("core dependency boundary", () => {
       'import replay = require("../core/evidence-replay.js");',
       outsideOwner,
     )).toEqual(["chain/unauthorized-evidence.ts:import_equals"]);
+
+    const unregisteredProtocolOwner =
+      resolve("src/protocols/unregistered-v3/evidence.ts");
+    expect(semanticEvidenceAuthoringViolations(
+      'import { createEvidenceReplayDefinition } from "../../core/browser.js";',
+      unregisteredProtocolOwner,
+    )).toEqual(["protocols/unregistered-v3/evidence.ts:named_import"]);
   });
 
   it("rejects raw semantic slot and role literals at production recording sites", async () => {

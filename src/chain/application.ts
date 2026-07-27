@@ -27,6 +27,10 @@ import {
 } from "./invocation-lifecycle.js";
 import { createOfficialAssetChainReadPort } from "./official-assets.js";
 import {
+  createPinnedEvmReadPort,
+  type PinnedEvmReadPort,
+} from "./protocol-reads.js";
+import {
   createReferenceMarketCallEncoder,
   createReferenceMarketChainReadPort,
 } from "./reference-market.js";
@@ -54,6 +58,7 @@ export interface ChainOwnerApplication extends HttpOwnerApplication {
   readonly officialAssetReads: ReturnType<typeof createOfficialAssetChainReadPort>;
   readonly accountAssetReads: ReturnType<typeof createAccountAssetChainReadPort>;
   readonly referenceMarketReads: ReturnType<typeof createReferenceMarketChainReadPort>;
+  readonly protocolReads: PinnedEvmReadPort;
 }
 
 export type ChainOwnerApplicationFactory<ActiveWallet extends object> = (
@@ -102,6 +107,7 @@ export const createChainOwnerApplicationFactory = (
     let tokenInspection: ReturnType<typeof createTokenInspectionService>;
     let accountAssetReads: ReturnType<typeof createAccountAssetChainReadPort>;
     let referenceMarketReads: ReturnType<typeof createReferenceMarketChainReadPort>;
+    let protocolReads: PinnedEvmReadPort;
     try {
       service = createChainReadService({ context, rpc, encoder, lifecycle });
       officialAssetReads = createOfficialAssetChainReadPort({
@@ -130,6 +136,14 @@ export const createChainOwnerApplicationFactory = (
         clock: context.chain.capabilityAuthority.clock,
         observationAuthority: context.chain.sourceAuthority.observationAuthority,
       });
+      protocolReads = createPinnedEvmReadPort({
+        rpc,
+        chainId: context.chain.configuration.chain.chainId,
+        lifecycle,
+        erc20Encoder: encoder,
+        contractSourceVerification: context.chain.contractSourceVerification,
+        observationAuthority: context.chain.sourceAuthority.observationAuthority,
+      });
     } catch (error) {
       await lifecycle.close();
       throw error;
@@ -144,6 +158,7 @@ export const createChainOwnerApplicationFactory = (
       officialAssetReads,
       accountAssetReads,
       referenceMarketReads,
+      protocolReads,
       close: () => lifecycle.close(),
     });
   };

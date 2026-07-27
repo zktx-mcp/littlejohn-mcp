@@ -84,6 +84,10 @@ describe("module import audit", () => {
     expect(Object.keys(runtimePackageSourceRoots).sort()).toEqual(Object.keys(manifest.dependencies).sort());
     expect(policy.runtimePackageOwners.get("zod")).toEqual(new Set([resolve("src")]));
     expect(policy.runtimePackageOwners.get("@noble/hashes")).toEqual(new Set([resolve("src/core")]));
+    expect(policy.runtimePackageOwners.get("@uniswap/sdk-core"))
+      .toEqual(new Set([resolve("src/protocols/uniswap-v2")]));
+    expect(policy.runtimePackageOwners.get("@uniswap/v2-sdk"))
+      .toEqual(new Set([resolve("src/protocols/uniswap-v2")]));
     expect(policy.runtimePackageOwners.get("better-sqlite3")).toEqual(new Set([resolve("src/runtime")]));
     expect(policy.runtimePackageOwners.get("@walletconnect/sign-client"))
       .toEqual(new Set([resolve("src/wallet")]));
@@ -321,6 +325,28 @@ describe("direct code execution audit", () => {
     )).toEqual([]);
     expect(directCodeExecutionViolations(file, audit.directCodeExecutions, resolve("src")))
       .toEqual(["runtime/example.ts:direct_code_execution:global_function"]);
+  });
+
+  it("admits only the exact V2 SDK CommonJS loading boundary", () => {
+    const root = resolve(".");
+    const sdkFile = resolve("src/protocols/uniswap-v2/sdk.ts");
+    const walletFile = resolve("src/wallet/execution.ts");
+    const references = [
+      { kind: "node_module" as const },
+      { kind: "create_require" as const },
+    ];
+    expect(directCodeExecutionViolations(sdkFile, references, root)).toEqual([]);
+    expect(directCodeExecutionViolations(walletFile, references, root)).toEqual([
+      "src/wallet/execution.ts:direct_code_execution:node_module",
+      "src/wallet/execution.ts:direct_code_execution:create_require",
+    ]);
+    expect(directCodeExecutionViolations(
+      sdkFile,
+      [...references, { kind: "global_eval" }],
+      root,
+    )).toEqual([
+      "src/protocols/uniswap-v2/sdk.ts:direct_code_execution:global_eval",
+    ]);
   });
 
   it("uses bound symbols to distinguish global eval and Function from local shadows", () => {

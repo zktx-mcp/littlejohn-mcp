@@ -47,12 +47,18 @@ One protocol integration package descriptor contains:
 
 - contract version;
 - protocol identifier and display metadata;
+- the current exact protocol support level;
 - package and SDK identity and versions;
 - supported chain IDs;
 - required deployment record identifiers;
-- commercial capability evidence when the package supports a revenue mechanism;
-- read capability descriptors; and
-- action adapter descriptors.
+- commercial capability evidence identity when the package supports a revenue
+  mechanism; and
+- the exact capability identifiers owned by the package.
+
+One static package registration binds that descriptor to its canonical read
+capability definitions, action adapter definitions, and application factories.
+Executable schemas, behavior, and runtime dependencies remain in those narrow
+owners; they are not stored as values in the package descriptor.
 
 Each implemented package descriptor is recorded with its current external
 integration classification under
@@ -60,6 +66,45 @@ integration classification under
 
 The top-level package descriptor is not a single large adapter implementation.
 Each read capability and action adapter implements a narrow contract.
+
+## Protocol Version Identity
+
+- Each materially different onchain protocol version is an independent package
+  with one stable protocol identifier. Its deployment discovery, arithmetic,
+  failures, and evidence rules form one complete correctness model.
+- A protocol family identifier and display name group version packages only for
+  presentation. They never select, dispatch, replace, rank, or provide a
+  fallback for a version package.
+- Every public capability identifier names the exact protocol version. Requests
+  and saved records never use a family identifier in place of a version
+  identifier.
+- Identifiers and configuration contain no `latest` alias. Runtime never
+  selects the newest version or chooses a version by comparing quote results.
+- Adding a version adds a new package directory and one static registration. It
+  does not edit, wrap, migrate, deactivate, or replace an existing version
+  package.
+- A task that corrects or extends an existing version names that version
+  explicitly. Adding another version is not authority to change it.
+- Removal or deactivation is a separate product decision with an exact
+  protocol and deployment identity. A security or availability problem does not
+  make removal implicit in another version's registration.
+- Protocol version, protocol-family display identity, package contract version,
+  capability contract identity, deployment identity, SDK package version, and
+  repository runtime protocol version are separate values with separate
+  owners.
+- A deployment identity is the exact tuple of protocol identifier, chain ID,
+  contract role, and full contract address. Multiple admitted deployments remain
+  independently selectable; no mutable default deployment exists.
+- An SDK update does not rename a protocol. An added deployment does not
+  overwrite an admitted deployment record.
+- Every version package owns its exact SDK dependency names and resolved
+  versions. A later package cannot update an earlier package's imports. When
+  incompatible SDK releases must coexist, the new version uses npm's standard
+  dependency alias only after its accepted task proves independent resolution
+  and package behavior.
+- Static registration is additive. Adding or omitting another package preserves
+  every existing descriptor, deployment, capability, interface binding, and
+  distributed package entry.
 
 ## Capability And Action Units
 
@@ -157,7 +202,7 @@ needed to distinguish materially different operations. A broad display term
 such as `swap` never hides distinctions such as exact-input and exact-output
 behavior.
 
-The package descriptor declares for each capability:
+The package registration binds each capability to:
 
 - stable capability ID and contract version;
 - supported chain, protocol, deployment, and action identity;
@@ -166,8 +211,12 @@ The package descriptor declares for each capability:
 - required evidence and chain reads;
 - conclusions and static scope exclusions;
 - expected effects and simulation requirements; and
-- applicable chain, protocol, and action support level plus exact capability
-  availability.
+- its applicable chain, protocol, and action support meaning.
+
+The package descriptor owns the current exact protocol support level. Action
+adapters own any distinct action support level. The runtime support manifest
+derives capability availability from the completed interface bindings; package
+code cannot declare an unavailable binding available.
 
 Intent resolution targets a semantic capability. When the request is ambiguous
 between capabilities or protocols, Little John asks for the missing choice and
@@ -213,6 +262,20 @@ follows `docs/TRANSACTION_POLICY.md`.
 - Venue authorization follows `docs/TRANSACTION_POLICY.md`. Adapter registration
   and quote enumeration never select or rank a venue.
 - Missing, incompatible, duplicate, or invalid package descriptors fail startup.
+
+## Implemented Packages
+
+The runtime statically registers `uniswap_v2` on Robinhood Chain
+`eip155:4663`. The package exposes only
+`uniswap_v2.quote_exact_input`. Each request selects the registered factory by
+its full address. The capability evaluates the direct candidate and the
+declared WETH or USDG one-intermediary candidates in deterministic order,
+stopping each candidate at its first terminal hop.
+
+The V2 package does not select a best route, inspect routes outside that
+coverage, calculate minimum output or slippage tolerance, estimate gas,
+construct a transaction, establish transfer success, or establish token or
+transaction safety. No other Uniswap version is implemented.
 
 ## Contract Verification
 

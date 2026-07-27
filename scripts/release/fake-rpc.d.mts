@@ -47,6 +47,20 @@ export interface FakeRpcHandle {
       readonly byteLength: string;
       readonly codeHash: string;
     }>;
+    readonly uniswapV2: Readonly<{
+      readonly factory: string;
+      readonly pair: string;
+      readonly reserve0: string;
+      readonly reserve1: string;
+      readonly tokenIn: Readonly<{
+        readonly chainId: string;
+        readonly address: string;
+      }>;
+      readonly tokenOut: Readonly<{
+        readonly chainId: string;
+        readonly address: string;
+      }>;
+    }>;
     readonly transaction: Readonly<{
       readonly transactionHash: string;
       readonly from: string;

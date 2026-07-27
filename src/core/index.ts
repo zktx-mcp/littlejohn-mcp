@@ -4,6 +4,8 @@ export {
   decimalsStateSchema,
   erc20AssetIdentitySchema,
   calculateScaledUiAmount,
+  canonicalUnsignedBigIntMaximumPattern,
+  canonicalUnsignedDecimalMaximumPattern,
   formatAmount,
   gasUnitsSchema,
   nativeAssetIdentitySchema,
@@ -75,6 +77,7 @@ export {
   contractInspectEvidence,
   createContractAnalysisEvidenceConclusions,
   createContractAnalysisEvidenceDeclaration,
+  createContractAnalysisEvidenceFactsDeclaration,
   createContractAnalysisEvidenceFragment,
   receiptLogAmountRole,
   transactionEventDecimalsExclusion,
@@ -85,7 +88,9 @@ export {
 export type {
   AccountTokenEvidenceIdentity,
   ContractAnalysisEvidenceConclusions,
+  ContractAnalysisEvidenceFactsDeclaration,
   ContractAnalysisEvidenceFragment,
+  ContractAnalysisEvidenceTargets,
   ConfiguredChainEvidenceFragment,
   ValidatedInputEvidenceFragment,
 } from "./capability-evidence.js";
@@ -102,6 +107,11 @@ export {
 } from "./canonical-json.js";
 export type { CanonicalJson } from "./canonical-json.js";
 export { coreContractVersion } from "./contract.js";
+export {
+  supportLevelDefinitions,
+  supportLevelSchema,
+} from "./support-level.js";
+export type { SupportLevel } from "./support-level.js";
 export {
   captureReferenceRoundObservation,
   canonicalUsdgAddress,
@@ -354,6 +364,7 @@ export {
   freshnessSchema,
   invocationIdSchema,
   observationIdSchema,
+  officialIdentityEvidenceSchema,
   parseSourceReference,
   sourceClassSchema,
   sourceReferenceSchema,
@@ -372,6 +383,7 @@ export type {
   Freshness,
   InvocationId,
   ObservationId,
+  OfficialIdentityEvidence,
   SourceClass,
   SourceReference,
   StaticScopeExclusion,

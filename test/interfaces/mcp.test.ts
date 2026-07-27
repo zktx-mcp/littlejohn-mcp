@@ -79,6 +79,7 @@ import {
 } from "../../src/wallet/errors.js";
 import { walletControlRoutes } from "../../src/wallet/routes.js";
 import { openTestOwnerSession } from "./owner-session-harness.js";
+import { extendUniswapV2ProtocolHarnessManifest } from "../protocols/interface-harness.js";
 
 const operationId = Buffer.alloc(walletOperationIdByteLength, 31).toString("base64url");
 const connected = Object.freeze({
@@ -90,11 +91,15 @@ const connected = Object.freeze({
   expiresAt: "2026-07-15T06:00:00.000Z",
 });
 const catalog = composeInterfaceCapabilityCatalog(extendInterfaceSupportManifest(
-  extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(extendTokenCatalogSupportManifest(
-    extendChainSupportManifest(extendWalletSupportManifest(
-      createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
-    )),
-  ))),
+  extendUniswapV2ProtocolHarnessManifest(
+    extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(extendTokenCatalogSupportManifest(
+      extendChainSupportManifest(
+      extendWalletSupportManifest(
+        createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
+      ),
+      ),
+    ))),
+  ),
 ));
 const operation = (): WalletManagementOperation => parseWalletManagementOperation({
   operationId,

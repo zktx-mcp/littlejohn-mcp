@@ -564,7 +564,7 @@ export const recordContractAnalysisEvidence = (input: {
   readonly target: ContractAnalysisTarget;
   readonly sourceVerification: ContractSourceVerificationPort;
   readonly execution: ContractAnalysisExecution;
-  readonly fragment: ContractAnalysisEvidenceFragment;
+  readonly fragment: Pick<ContractAnalysisEvidenceFragment, "targets">;
   readonly observations: ObservationWriter;
   readonly chainAuthority: ObservationAuthority;
 }): ContractAnalysis => {

@@ -26,12 +26,17 @@ import {
   type CliTerminalPort,
 } from "../../src/cli.js";
 import {
+  uniswapV2FactoryAddress,
+  uniswapV2QuoteInputSchema,
+} from "../../src/protocols/uniswap-v2/index.js";
+import {
   ScriptedRpc,
   createChainHandlerHarness,
   disconnectedWallet,
   rpcValue,
   type ChainHandlerHarness,
 } from "../chain/handler-harness.js";
+import { createUniswapV2DirectQuoteSuccess } from "../protocols/interface-harness.js";
 import { openTestOwnerSession } from "./owner-session-harness.js";
 
 const address = `0x${"11".repeat(20)}`;
@@ -163,6 +168,31 @@ describe("read CLI", () => {
     ])).toMatchObject({
       input: { account: { kind: "address", address }, includeNative: true, tokens: [] },
     });
+    expect(parseReadCliCommand([
+      "uniswap-v2",
+      "quote-exact-input",
+      "--factory",
+      uniswapV2FactoryAddress,
+      "--token-in",
+      tokenA,
+      "--token-out",
+      tokenB,
+      "--amount-in",
+      "1000",
+      "--block",
+      "latest",
+      "--json",
+    ])).toEqual({
+      kind: "uniswap_v2_quote",
+      json: true,
+      input: {
+        tokenIn: { kind: "erc20", chainId: "eip155:4663", address: tokenA },
+        tokenOut: { kind: "erc20", chainId: "eip155:4663", address: tokenB },
+        factory: uniswapV2FactoryAddress,
+        amountIn: "1000",
+        block: { kind: "latest" },
+      },
+    });
 
     const invalid = [
       ["read", "chain-status", "extra"],
@@ -172,6 +202,25 @@ describe("read CLI", () => {
       ["read", "balance", "--active", "--native", "false", "--block", "latest"],
       ["read", "balance", "--active", "--native", "true", "--block", "latest", "--token", tokenA, "--token", tokenA],
       ["read", "contract", address, "--block", "01"],
+      [
+        "uniswap-v2", "quote-exact-input", "--factory", uniswapV2FactoryAddress,
+        "--token-in", tokenA, "--token-out", tokenB, "--block", "latest",
+      ],
+      [
+        "uniswap-v2", "quote-exact-input", "--factory", uniswapV2FactoryAddress,
+        "--token-in", tokenA, "--token-out", tokenB, "--amount-in", "1000",
+        "--amount-in", "1001", "--block", "latest",
+      ],
+      [
+        "uniswap-v2", "quote-exact-input", "--factory", `0x${"99".repeat(20)}`,
+        "--token-in", tokenA, "--token-out", tokenB, "--amount-in", "1000",
+        "--block", "latest",
+      ],
+      [
+        "uniswap-v2", "quote-exact-input", "--factory", uniswapV2FactoryAddress,
+        "--token-in", tokenA, "--token-out", tokenA, "--amount-in", "1000",
+        "--block", "latest",
+      ],
     ];
     for (const command of invalid) expect(() => parseReadCliCommand(command)).toThrow();
   });
@@ -244,6 +293,75 @@ describe("read CLI", () => {
     expect(output.output.join("")).toContain("Latest block: 9007199254740993");
     expect(output.output.join("")).toContain(`Block hash: ${blockHash}`);
     expect(output.output.join("")).not.toContain("9,007,199");
+  });
+
+  it("reports the complete V2 candidate observations, evidence, and limitations", async () => {
+    const input = uniswapV2QuoteInputSchema.parse({
+      tokenIn: { kind: "erc20", chainId: "eip155:4663", address: tokenA },
+      tokenOut: { kind: "erc20", chainId: "eip155:4663", address: tokenB },
+      factory: uniswapV2FactoryAddress,
+      amountIn: "1000",
+      block: { kind: "latest" },
+    });
+    const success = await createUniswapV2DirectQuoteSuccess(input);
+    const direct = success.data.candidates[0];
+    if (direct?.status !== "quoted") throw new TypeError("Expected a direct V2 quote.");
+    const hop = direct.evaluatedHops[0];
+    if (hop?.status !== "completed") throw new TypeError("Expected a completed V2 hop.");
+    const output = outputPort();
+    expect(await runReadCliCommand(
+      new FakeRuntime(Object.freeze({ status: 200, body: captureCanonicalJson(success) })),
+      parseReadCliCommand([
+        "uniswap-v2",
+        "quote-exact-input",
+        "--factory",
+        uniswapV2FactoryAddress,
+        "--token-in",
+        tokenA,
+        "--token-out",
+        tokenB,
+        "--amount-in",
+        "1000",
+        "--block",
+        "latest",
+      ]),
+      output,
+    )).toBe(0);
+    const text = output.output.join("");
+    expect(text).toContain(`Pair: ${hop.pair.pairAddress}`);
+    expect(text).toContain(`Reserve 0: ${hop.pair.reserve0}`);
+    expect(text).toContain(`Output: ${direct.amountOut}`);
+    expect(text).toContain(
+      `Deployment source revision: ${success.data.deployment.source.sourceRevision}`,
+    );
+    expect(text).toContain(
+      `Deployment source coverage: ${success.data.deployment.source.coverage}`,
+    );
+    expect(text).toContain(
+      `Route-asset source observed at: ${success.data.coverage.source.sourceObservedAt}`,
+    );
+    expect(text).toContain(
+      `Route-asset source coverage: ${success.data.coverage.source.coverage}`,
+    );
+    for (const exclusion of success.data.deployment.source.exclusions) {
+      expect(text).toContain(exclusion);
+    }
+    for (const conclusion of success.data.coverage.source.unsupportedConclusions) {
+      expect(text).toContain(conclusion);
+    }
+    expect(text).toContain("Mid price (raw output units per raw input unit):");
+    expect(text).toContain("Mid price (output tokens per input token):");
+    expect(text).toContain("Execution price (raw output units per raw input unit):");
+    expect(text).toContain("Execution price (output tokens per input token):");
+    for (const source of success.evidence.sources) {
+      expect(text).toContain(source.observationId);
+      expect(text).toContain(source.recordDigest);
+    }
+    for (const conclusion of success.evidence.conclusions) {
+      expect(text).toContain(conclusion.id);
+    }
+    expect(text).toContain("Limitation: This capability does not select a best route or venue.");
+    expect(text).not.toContain("Best route:");
   });
 
   it("normalizes canonical errors to the shared CLI exit mapping", async () => {
