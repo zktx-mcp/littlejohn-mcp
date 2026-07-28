@@ -1484,6 +1484,13 @@ describe("runtime architecture boundary", () => {
           "Runtime constructs one requester and passes chain-read ports to features",
         ],
         [
+          "Model Context Protocol",
+          "Binding product transport",
+          "The official MCP specification owns JSON-RPC transport meaning; this document's interface contract model and the canonical binding owners own Little John tool meaning",
+          "`src/interfaces/mcp.ts` owns official SDK server and stdio transport adaptation; role registries own their exact tool bindings",
+          "Interface composition constructs one MCP server from canonical bindings; replacing SDK details preserves the complete MCP identity and tool contracts",
+        ],
+        [
           "WalletConnect",
           "Binding product transport",
           "`docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture",

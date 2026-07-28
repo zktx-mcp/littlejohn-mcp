@@ -1,7 +1,6 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 import { browserBuildPolicyPlugin } from "./scripts/browser-build-policy.js";
@@ -12,7 +11,7 @@ export default defineConfig({
   root: resolve(repositoryRoot, "src/interfaces/web"),
   base: "/",
   publicDir: false,
-  plugins: [react(), browserBuildPolicyPlugin()],
+  plugins: [browserBuildPolicyPlugin()],
   build: {
     outDir: resolve(repositoryRoot, "dist/web"),
     emptyOutDir: true,

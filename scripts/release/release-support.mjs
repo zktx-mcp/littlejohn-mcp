@@ -105,17 +105,20 @@ export const runCommand = (
 });
 
 /** @type {typeof import("./release-support.d.mts").assertSupportedNode} */
-export const assertSupportedNode = () => {
-  const [majorText, minorText] = process.versions.node.split(".");
-  const major = Number(majorText);
-  const minor = Number(minorText);
+export const assertSupportedNode = (version = process.versions.node) => {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.exec(version);
+  const major = Number(match?.[1]);
+  const minor = Number(match?.[2]);
   if (
+    match === null ||
     !Number.isSafeInteger(major) ||
     !Number.isSafeInteger(minor) ||
-    major < 22 ||
-    (major === 22 && minor < 12)
+    (major === 22 ? minor < 13 : major < 24)
   ) {
-    throw new TypeError("Release verification requires Node.js 22.12.0 or newer.");
+    throw new TypeError(
+      "Release verification requires Node.js 22.13.0 or newer within Node 22, " +
+      "or Node.js 24.0.0 or newer.",
+    );
   }
 };
 

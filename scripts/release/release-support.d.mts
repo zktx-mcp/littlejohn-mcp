@@ -23,7 +23,7 @@ export function runCommand(
   arguments_: readonly string[],
   options?: RunCommandOptions,
 ): Promise<CommandResult>;
-export function assertSupportedNode(): void;
+export function assertSupportedNode(version?: string): void;
 export function copyRepositorySource(
   repositoryRoot: string,
   destinationRoot: string,

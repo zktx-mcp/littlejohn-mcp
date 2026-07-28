@@ -14,6 +14,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  assertSupportedNode,
   assertExactFileBytes,
   assertExactPaths,
   canonicalRelativePath,
@@ -45,6 +46,28 @@ afterEach(async () => {
 });
 
 describe("release verification support", () => {
+  it("enforces the development-tool Node range independently from runtime consumers", () => {
+    for (const version of [
+      "22.13.0",
+      "22.99.0",
+      "24.0.0",
+      "25.0.0",
+    ]) expect(() => assertSupportedNode(version)).not.toThrow();
+    for (const version of [
+      "20.19.0",
+      "22.12.99",
+      "23.0.0",
+      "23.99.99",
+      "v22.13.0",
+      "22.13",
+      "22.13.0-pre",
+      "22.013.0",
+      "",
+    ]) expect(() => assertSupportedNode(version)).toThrow(
+      "Release verification requires Node.js 22.13.0",
+    );
+  });
+
   it("links every release-tool export to its single declaration authority", async () => {
     for (const moduleName of typeLinkedReleaseModules) {
       const [implementation, declaration] = await Promise.all([
