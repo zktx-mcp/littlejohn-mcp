@@ -15,11 +15,15 @@ export default defineConfig({
   build: {
     outDir: resolve(repositoryRoot, "dist/web"),
     emptyOutDir: true,
+    manifest: true,
     assetsDir: "assets",
     assetsInlineLimit: 0,
     sourcemap: false,
     rollupOptions: {
       input: resolve(repositoryRoot, "src/interfaces/web/index.html"),
+      output: {
+        chunkFileNames: "assets/chunk-[hash].js",
+      },
     },
   },
 });

@@ -38,6 +38,9 @@ const browserInterfaceErrorMappingDefinitions = Object.freeze([
 
 export type BrowserErrorCode = typeof browserErrorDefinitions[number]["code"];
 type BrowserErrorDefinition = typeof browserErrorDefinitions[number];
+export const browserErrorCodes = Object.freeze(
+  browserErrorDefinitions.map((definition) => definition.code),
+) as readonly BrowserErrorCode[];
 
 export interface BrowserProblemDetails {
   readonly type: "about:blank";
@@ -55,6 +58,11 @@ const definitionByCode: ReadonlyMap<string, BrowserErrorDefinition> = new Map<st
 const mappingByCode: ReadonlyMap<string, typeof browserInterfaceErrorMappingDefinitions[number]> = new Map(
   browserInterfaceErrorMappingDefinitions.map((mapping) => [mapping.code, mapping] as const),
 );
+
+export const isBrowserErrorCode = (
+  value: unknown,
+): value is BrowserErrorCode =>
+  typeof value === "string" && definitionByCode.has(value);
 
 if (
   definitionByCode.size !== browserErrorDefinitions.length ||

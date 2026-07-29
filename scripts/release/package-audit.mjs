@@ -31,6 +31,13 @@ const uniswapSdkDirectDependencies = Object.freeze({
   "@uniswap/sdk-core": "7.19.0",
   "@uniswap/v2-sdk": "4.21.1",
 });
+const lightweightChartsNotice =
+  "TradingView Lightweight Charts™\n" +
+  "Copyright (с) 2025 TradingView, Inc. https://www.tradingview.com/";
+const lightweightChartsLicenseDigest =
+  "70c9d5382506dd184465425c08a99ad9bd6d9ac1313c252968ba0b585e5ef823";
+const fancyCanvasLicenseDigest =
+  "52d2ba0c8f8f4532bd524358d679693ff3dd9e40c56fe0c0c63061ed0733aa18";
 const automaticallyPermittedLicenses = new Set([
   "0BSD",
   "MIT",
@@ -53,6 +60,16 @@ const fixedDistributionArtifacts = Object.freeze([
     path: "LICENSES/LUCIDE-LICENSE.txt",
     licenseName: "Lucide",
     digest: "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57",
+  }),
+  Object.freeze({
+    path: "LICENSES/LIGHTWEIGHT-CHARTS-LICENSE.txt",
+    licenseName: "Lightweight Charts",
+    digest: lightweightChartsLicenseDigest,
+  }),
+  Object.freeze({
+    path: "LICENSES/FANCY-CANVAS-LICENSE.txt",
+    licenseName: "fancy-canvas",
+    digest: fancyCanvasLicenseDigest,
   }),
 ]);
 const fixedDistributionPaths = Object.freeze(fixedDistributionArtifacts.map(({ path }) => path));
@@ -244,6 +261,147 @@ const assertInstalledUniswapSdkClosure = async (
   }
 };
 
+const assertInstalledLightweightChartsClosure = async (
+  sourceRoot,
+  dependencyRoot,
+  sourceManifest,
+) => {
+  const dependencies = requiredObjectProperty(
+    sourceManifest,
+    "dependencies",
+    "Release dependency authority",
+  );
+  if (requiredObjectProperty(
+    dependencies,
+    "lightweight-charts",
+    "Lightweight Charts direct dependency",
+  ) !== "5.2.0") {
+    throw new TypeError("Lightweight Charts direct dependency is not exact.");
+  }
+  const lockfile = await readJsonFile(resolve(sourceRoot, "package-lock.json"));
+  const packages = requiredObjectProperty(
+    lockfile,
+    "packages",
+    "Release lockfile package graph",
+  );
+  const expected = Object.freeze([
+    Object.freeze({
+      path: "node_modules/lightweight-charts",
+      name: "lightweight-charts",
+      version: "5.2.0",
+      license: "Apache-2.0",
+      integrity:
+        "sha512-ey3Vas8UhV06ni+LT9TA1nEe4y8So4Mi6CL/oarNHFMyTktz/xy8e8+" +
+        "oh04Q//eO3t6etvFXgayz2fClyFQb5w==",
+      entry: "dist/lightweight-charts.production.mjs",
+      dependencyName: "fancy-canvas",
+      dependencyVersion: "2.1.0",
+    }),
+    Object.freeze({
+      path: "node_modules/fancy-canvas",
+      name: "fancy-canvas",
+      version: "2.1.0",
+      license: "MIT",
+      integrity:
+        "sha512-nifxXJ95JNLFR2NgRV4/MxVP45G9909wJTEKz5fg/TZS20JJZA6hfgRVh/" +
+        "bC9bwl2zBtBNcYPjiBE4njQHVBwQ==",
+      entry: "index.mjs",
+      dependencyName: undefined,
+      dependencyVersion: undefined,
+    }),
+  ]);
+  for (const identity of expected) {
+    const locked = requiredObjectProperty(
+      packages,
+      identity.path,
+      `Browser dependency lock entry for ${identity.name}`,
+    );
+    const installedRoot = resolve(dependencyRoot, identity.path);
+    const installed = await readJsonFile(resolve(installedRoot, "package.json"));
+    if (requiredObjectProperty(
+      installed,
+      "name",
+      `Installed browser dependency name for ${identity.name}`,
+    ) !== identity.name) {
+      throw new TypeError(`Browser dependency identity is invalid: ${identity.name}`);
+    }
+    for (const field of ["version", "license"]) {
+      const expectedValue = identity[field];
+      if (
+        requiredObjectProperty(
+          locked,
+          field,
+          `Browser dependency lock ${field} for ${identity.name}`,
+        ) !== expectedValue ||
+        requiredObjectProperty(
+          installed,
+          field,
+          `Installed browser dependency ${field} for ${identity.name}`,
+        ) !== expectedValue
+      ) {
+        throw new TypeError(`Browser dependency identity is invalid: ${identity.name}`);
+      }
+    }
+    if (requiredObjectProperty(
+      locked,
+      "integrity",
+      `Browser dependency lock integrity for ${identity.name}`,
+    ) !== identity.integrity) {
+      throw new TypeError(`Browser dependency integrity is invalid: ${identity.name}`);
+    }
+    for (const field of ["optional", "os", "cpu", "optionalDependencies"]) {
+      if (
+        Object.getOwnPropertyDescriptor(locked, field)?.value !== undefined ||
+        Object.getOwnPropertyDescriptor(installed, field)?.value !== undefined
+      ) {
+        throw new TypeError(`Browser dependency boundary is invalid: ${identity.name}`);
+      }
+    }
+    const lockedDependencies =
+      Object.getOwnPropertyDescriptor(locked, "dependencies")?.value;
+    const installedDependencies =
+      Object.getOwnPropertyDescriptor(installed, "dependencies")?.value;
+    if (identity.dependencyName === undefined) {
+      if (lockedDependencies !== undefined || installedDependencies !== undefined) {
+        throw new TypeError(`Browser dependency closure is invalid: ${identity.name}`);
+      }
+    } else {
+      if (
+        typeof lockedDependencies !== "object" ||
+        lockedDependencies === null ||
+        Array.isArray(lockedDependencies) ||
+        typeof installedDependencies !== "object" ||
+        installedDependencies === null ||
+        Array.isArray(installedDependencies) ||
+        Object.keys(lockedDependencies).length !== 1 ||
+        Object.keys(installedDependencies).length !== 1 ||
+        requiredObjectProperty(
+          lockedDependencies,
+          identity.dependencyName,
+          `Browser dependency lock child for ${identity.name}`,
+        ) !== identity.dependencyVersion ||
+        requiredObjectProperty(
+          installedDependencies,
+          identity.dependencyName,
+          `Installed browser dependency child for ${identity.name}`,
+        ) !== identity.dependencyVersion
+      ) {
+        throw new TypeError(`Browser dependency closure is invalid: ${identity.name}`);
+      }
+    }
+    const entry = await lstat(resolve(installedRoot, identity.entry));
+    if (!entry.isFile() || entry.isSymbolicLink()) {
+      throw new TypeError(`Browser dependency entry is invalid: ${identity.name}`);
+    }
+  }
+  const installedLicense = await readFile(
+    resolve(dependencyRoot, "node_modules/lightweight-charts/LICENSE"),
+  );
+  if (sha256(installedLicense) !== lightweightChartsLicenseDigest) {
+    throw new TypeError("Installed Lightweight Charts license is invalid.");
+  }
+};
+
 /** @type {typeof import("./package-audit.d.mts").parseReleasePackageIdentity} */
 export const parseReleasePackageIdentity = (value) => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -367,6 +525,13 @@ const assertDistributionArtifacts = async (sourceRoot, packageRoot) => {
   if (notice.split(uniswapSdkNotice).length !== 2) {
     throw new TypeError("Packaged Uniswap SDK notice must occur exactly once.");
   }
+  if (
+    notice.split(lightweightChartsNotice).length !== 2 ||
+    !notice.includes("LICENSES/LIGHTWEIGHT-CHARTS-LICENSE.txt") ||
+    !notice.includes("LICENSES/FANCY-CANVAS-LICENSE.txt")
+  ) {
+    throw new TypeError("Packaged Lightweight Charts notice is invalid.");
+  }
 };
 
 const assertInstalledBinary = async (installRoot, packageRoot) => {
@@ -422,11 +587,13 @@ export const prepareReleasePackage = async (repositoryRoot) => {
       throw new TypeError("npm ci changed the repository dependency lock.");
     }
     await assertInstalledUniswapSdkClosure(sourceRoot, sourceRoot, sourceManifest);
+    await assertInstalledLightweightChartsClosure(sourceRoot, sourceRoot, sourceManifest);
     await runCommand(process.execPath, [
       resolve(sourceRoot, "node_modules/typescript/bin/tsc"),
       "-p",
       "scripts/release/tsconfig.json",
     ], { cwd: sourceRoot, env: environment });
+    await runCommand("npm", ["run", "lint"], { cwd: sourceRoot, env: environment });
     await runCommand("npm", ["run", "typecheck"], { cwd: sourceRoot, env: environment });
     await runCommand("npm", ["test"], { cwd: sourceRoot, env: environment });
     await runCommand("npm", ["run", "build"], { cwd: sourceRoot, env: environment });

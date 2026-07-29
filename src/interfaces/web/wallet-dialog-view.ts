@@ -13,6 +13,10 @@ import {
   type WalletOperationKind,
 } from "../../wallet/operation-state.js";
 import type { NotificationNotice } from "./notification.js";
+import {
+  humanFailureText,
+  presentHumanFailure,
+} from "./human-failures.js";
 
 export type WalletConnectionAction = Extract<WalletOperationKind, "connect" | "disconnect">;
 export type WalletOperationAction = "confirm" | "cancel";
@@ -25,20 +29,24 @@ export interface WalletDialogCopy {
 export interface WalletDialogField {
   readonly label: string;
   readonly value: string;
+  readonly valueKind: "identifier" | "text";
 }
 
 const walletApprovalMessage =
-  "Scan this QR code with Robinhood Wallet and approve the Robinhood Chain session. This does not sign or send a transaction.";
+  "Scan with Robinhood Wallet.";
 
 const canStartConnection = (connection: WalletConnectionData): boolean =>
   connection.status === "disconnected" && connection.reason !== "unusable_store";
 
 export const walletNavigationLabel = (
   state: WalletCurrentOperationProjection | undefined,
-): "Connect wallet" | "Wallet" =>
-  state?.status === "absent" && canStartConnection(state.connection)
-    ? "Connect wallet"
+): "Connect wallet" | "Disconnect wallet" | "Wallet" => {
+  if (state?.status !== "absent") return "Wallet";
+  if (canStartConnection(state.connection)) return "Connect wallet";
+  return state.connection.status === "connected"
+    ? "Disconnect wallet"
     : "Wallet";
+};
 
 export const walletConnectionActions = (
   state: WalletCurrentOperationProjection,
@@ -123,8 +131,16 @@ export const walletConnectionFields = (
 ): readonly WalletDialogField[] =>
   connection.status === "connected"
     ? Object.freeze([
-        Object.freeze({ label: "Address", value: connection.address }),
-        Object.freeze({ label: "Network", value: "Robinhood Chain" }),
+        Object.freeze({
+          label: "Address",
+          value: connection.address,
+          valueKind: "identifier",
+        }),
+        Object.freeze({
+          label: "Network",
+          value: "Robinhood Chain",
+          valueKind: "text",
+        }),
       ])
     : Object.freeze([]);
 
@@ -195,7 +211,12 @@ export const walletOperationCopy = (
         heading: operation.kind === "disconnect"
           ? "Wallet disconnection failed"
           : "Wallet connection failed",
-        message: operation.failure.error.message,
+        message: humanFailureText(presentHumanFailure(
+          operation.kind === "disconnect"
+            ? "wallet_disconnection"
+            : "wallet_connection",
+          operation.failure,
+        )),
       });
     case "expired":
       return Object.freeze({

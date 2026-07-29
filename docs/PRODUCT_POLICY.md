@@ -26,7 +26,7 @@ support values. `Current Support` is its deterministic public projection.
 - The current wallet transport contract is WalletConnect.
 - Users access one local runtime through MCP text interaction, a host-controlled
   local web interface, or an interactive CLI.
-- Repository and public-dataset ownership are defined in
+- Repository ownership is defined in
   `docs/ARCHITECTURE.md#repository-ownership`.
 
 ## Product Philosophy

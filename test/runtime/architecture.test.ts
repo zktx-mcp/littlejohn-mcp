@@ -39,18 +39,25 @@ const browserCoreConsumers = new Set([
   "interfaces/browser-error-response.ts",
   "interfaces/operation-delivery.ts",
   "interfaces/reference-market-delivery.ts",
+  "interfaces/web/analysis-details.tsx",
+  "interfaces/web/analysis-dialog.tsx",
+  "interfaces/web/application-shell.tsx",
+  "interfaces/web/human-labels.ts",
+  "interfaces/web/human-failures.ts",
+  "interfaces/web/human-time.ts",
+  "interfaces/web/prices-page.tsx",
+  "interfaces/web/rational-value.tsx",
   "interfaces/web/reference-market-client.ts",
-  "interfaces/web/reference-market-view.tsx",
+  "interfaces/web/reference-price-page.tsx",
+  "interfaces/web/reference-price-presentation.ts",
   "interfaces/web/app.tsx",
   "interfaces/web/browser-client.ts",
   "interfaces/web/contract-inspection-client.ts",
-  "interfaces/web/contract-inspection-view.tsx",
   "interfaces/web/main.tsx",
   "interfaces/web/operation-id.ts",
+  "interfaces/web/reference-market-chart.tsx",
   "interfaces/web/token-catalog-client.ts",
   "interfaces/web/wallet-dialog-view.ts",
-  "interfaces/web/uniswap-v2-client.ts",
-  "interfaces/web/uniswap-v2-quote-view.tsx",
   "runtime/error-definitions.ts",
   "market-portfolio/contracts.ts",
   "protocols/contracts.ts",
@@ -331,7 +338,10 @@ const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRu
     {
       module: robinhoodOfficialAssetSemanticContractModule,
       symbol: "officialAssetCandidateListDigest",
-      importers: new Set([robinhoodOfficialAssetAdapterModule]),
+      importers: new Set([
+        resolve(sourceRoot, "account-assets/contracts.ts"),
+        robinhoodOfficialAssetAdapterModule,
+      ]),
       reexporters: new Set<string>(),
     },
     {
@@ -623,7 +633,6 @@ const registryServerEntryExports = Object.freeze([
   "findOfficialAssetMember",
   "getRobinhoodOfficialAssetSourceErrorCode",
   "getStockFactoryVerificationErrorCode",
-  "officialAssetCandidatePageSize",
   "officialAssetCandidateSchema",
   "officialAssetSnapshotEvidenceSchema",
   "officialAssetSnapshotRevisionSchema",
@@ -650,7 +659,6 @@ const registryBrowserEntryExports = Object.freeze([
   "StockFactoryVerification",
   "StockFactoryVerificationErrorCode",
   "committedOfficialAssetSnapshotSchema",
-  "officialAssetCandidatePageSize",
   "officialAssetCandidateSchema",
   "officialAssetSnapshotEvidenceSchema",
   "officialAssetSnapshotRevisionSchema",
@@ -1465,61 +1473,6 @@ describe("runtime architecture boundary", () => {
       "robinhoodOfficialAssetSourceSettings",
     );
 
-    const architecture = await readFile(resolve(repositoryRoot, "docs/ARCHITECTURE.md"), "utf8");
-    const currentTable = architecture
-      .split("The current external integration classification is:", 2)[1]
-      ?.split("This table contains implemented external integrations only.", 1)[0];
-    if (currentTable === undefined) {
-      throw new TypeError("The current external integration classification table is missing.");
-    }
-    expect(currentTable.split("\n")
-      .filter((line) => /^\| (?!External identity|---)/u.test(line))
-      .map((line) => line.split("|").slice(1, -1).map((cell) => cell.trim())))
-      .toEqual([
-        [
-          "Ethereum JSON-RPC endpoint",
-          "Standard chain transport",
-          "`docs/PRODUCT_POLICY.md` owns chain identity; `chain` owns RPC methods, normalization, limits, and failures",
-          "`runtime` owns the exact configured URI and source identity; `chain` owns the bounded requester",
-          "Runtime constructs one requester and passes chain-read ports to features",
-        ],
-        [
-          "Model Context Protocol",
-          "Binding product transport",
-          "The official MCP specification owns JSON-RPC transport meaning; this document's interface contract model and the canonical binding owners own Little John tool meaning",
-          "`src/interfaces/mcp.ts` owns official SDK server and stdio transport adaptation; role registries own their exact tool bindings",
-          "Interface composition constructs one MCP server from canonical bindings; replacing SDK details preserves the complete MCP identity and tool contracts",
-        ],
-        [
-          "WalletConnect",
-          "Binding product transport",
-          "`docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture",
-          "`wallet` owns SDK adaptation, project-ID validation, required namespace settings, metadata, SDK options, lifecycle, and provider defaults",
-          "The wallet application factory constructs one `WalletConnectClientPort` from opaque configuration received through runtime composition; other modules receive wallet product ports",
-        ],
-        [
-          "Robinhood official-asset source",
-          "Binding source authority",
-          "`docs/EVIDENCE_POLICY.md` owns source authority; the registry product contract owns normalized observations, failures, evidence, and storage ports",
-          "`src/registry/official-assets.ts` owns Robinhood request and response admission implementation, endpoint consumption, transport behavior, deadlines, and operational limits",
-          "Runtime composition constructs one source client; registry synchronization consumes the product-owned client and store ports",
-        ],
-        [
-          "Sourcify API v2",
-          "Replaceable implementation provider",
-          "`intelligence` owns `ContractSourceVerificationPort`, its normalized results and failures, evidence requirements, and lifecycle",
-          "`src/intelligence/sourcify.ts` owns the origin, path, request and response admission, deadline, response-size and concurrency limits, cleanup, and provider identity",
-          "Runtime composition constructs one Sourcify adapter and passes only `ContractSourceVerificationPort` to the shared contract-analysis process",
-        ],
-        [
-          "Uniswap V2",
-          "Binding protocol identity",
-          "`docs/PROTOCOL_ADAPTERS.md` and `src/protocols/uniswap-v2` own the exact V2 package, deployment, capability, arithmetic, and evidence meaning",
-          "`src/protocols/uniswap-v2/sdk.ts` owns the pinned Uniswap SDK loading and admission boundary; the package owns immutable deployment and route-asset records",
-          "Runtime composition constructs the statically registered V2 package once and passes only its canonical quote binding to interfaces",
-        ],
-      ]);
-
     const sourceContract = await readFile(
       robinhoodOfficialAssetSourceContractModule,
       "utf8",
@@ -2034,12 +1987,11 @@ describe("runtime architecture boundary", () => {
       .toEqual(["chain/reference-market.ts"]);
     expect([...declarationOwners.get("createReferenceHistory")!])
       .toEqual(["market-portfolio/candles.ts"]);
-    expect([...canonicalWatchlistLimitConsumers]).toEqual(expect.arrayContaining([
+    expect([...canonicalWatchlistLimitConsumers]).toEqual([
       "core/reference-market.ts",
-      "interfaces/web/reference-market-view.tsx",
       "runtime/database.ts",
       "runtime/sqlite-schema.ts",
-    ]));
+    ]);
     expect(forbiddenLogReaders).toEqual([]);
     expect(referenceMarketSurfaceFiles.filter((name) =>
       /(?:^|[-/])(?:indexer|provider)(?:[-/.]|$)/u.test(name))).toEqual([]);

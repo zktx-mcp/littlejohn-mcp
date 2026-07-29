@@ -5,17 +5,14 @@ import type {
   AccountAssetClassification,
   AccountAssetCollectionSuccess,
   AccountAssetExactSuccess,
+  AccountAssetOverviewSuccess,
   AccountAssetViewRevision,
   ContractAccountAsset,
 } from "./contracts.js";
 
-export interface AccountAssetEvidenceField {
-  readonly label: string;
-  readonly value: string;
-}
-
 export interface AccountAssetQuantityView {
   readonly raw: string;
+  readonly decimals: string | null;
   readonly formattedRaw: string | null;
   readonly adjustedRaw: string | null;
   readonly formattedAdjusted: string | null;
@@ -42,6 +39,7 @@ const rowView = (entry: ContractAccountAsset): AccountAssetRowView => Object.fre
   classification: entry.classification,
   quantity: Object.freeze({
     raw: entry.amount.raw,
+    decimals: entry.amount.decimals,
     formattedRaw: entry.amount.formattedRaw,
     adjustedRaw: entry.amount.uiAdjusted?.status === "available"
       ? entry.amount.uiAdjusted.adjustedRaw
@@ -64,7 +62,7 @@ export const classificationLabel = (classification: AccountAssetClassification):
   }
 };
 
-const classificationUnavailableReason: Readonly<
+const classificationUnavailableReasons: Readonly<
   Record<StockFactoryClassificationUnavailableReason, string>
 > = Object.freeze({
   factory_identity_mismatch: "The StockFactory deployment identity did not match the accepted proxy and implementation.",
@@ -74,46 +72,9 @@ const classificationUnavailableReason: Readonly<
   token_identity_mismatch: "The token address did not match the StockFactory mapping for its UID.",
 });
 
-export const classificationEvidenceFields = (
-  classification: AccountAssetClassification,
-): readonly AccountAssetEvidenceField[] => {
-  switch (classification.kind) {
-    case "robinhood_stock_token":
-      return Object.freeze([
-        Object.freeze({ label: "Source", value: classification.snapshot.sourceUri }),
-        Object.freeze({ label: "Observed at", value: classification.snapshot.sourceObservedAt }),
-        Object.freeze({ label: "Snapshot revision", value: classification.snapshot.revision }),
-        Object.freeze({ label: "Asset UID", value: classification.member.assetUid }),
-        Object.freeze({ label: "Verified implementation", value: classification.verification.implementationAddress }),
-        Object.freeze({ label: "Implementation code hash", value: classification.verification.implementationCodeHash }),
-        Object.freeze({ label: "Token code hash", value: classification.verification.tokenCodeHash }),
-        Object.freeze({ label: "Verified at block", value: classification.verification.block.blockNumber }),
-      ]);
-    case "custom_erc20":
-      return Object.freeze([
-        Object.freeze({ label: "Source", value: classification.snapshot.sourceUri }),
-        Object.freeze({ label: "Observed at", value: classification.snapshot.sourceObservedAt }),
-        Object.freeze({ label: "Snapshot revision", value: classification.snapshot.revision }),
-        Object.freeze({ label: "Basis", value: "Proven absent from the current official asset set." }),
-      ]);
-    case "classification_unavailable":
-      return Object.freeze([
-        Object.freeze({ label: "Reason", value: classificationUnavailableReason[classification.reason] }),
-        ...(classification.snapshot === null ? [] : [
-          Object.freeze({ label: "Source", value: classification.snapshot.sourceUri }),
-          Object.freeze({ label: "Observed at", value: classification.snapshot.sourceObservedAt }),
-        ]),
-      ]);
-  }
-};
-
-export const accountAssetAnchorFields = (
-  block: AccountAssetCollectionSuccess["block"],
-): readonly AccountAssetEvidenceField[] => Object.freeze([
-  Object.freeze({ label: "Block", value: block.blockNumber }),
-  Object.freeze({ label: "Block time", value: block.blockTimestamp }),
-  Object.freeze({ label: "Block hash", value: block.blockHash }),
-]);
+export const classificationUnavailableReasonLabel = (
+  reason: StockFactoryClassificationUnavailableReason,
+): string => classificationUnavailableReasons[reason];
 
 export const officialSnapshotFresh = (revision: AccountAssetViewRevision): boolean =>
   revision.officialSnapshotStatus === "current";
@@ -121,16 +82,25 @@ export const officialSnapshotFresh = (revision: AccountAssetViewRevision): boole
 export const officialSnapshotStatusText = (revision: AccountAssetViewRevision): string =>
   officialSnapshotFresh(revision) ? "Official data current" : "Official data unavailable";
 
-const textIssue: Readonly<Record<TokenOptionalTextUnavailableReason, string>> = Object.freeze({
+const tokenOptionalTextUnavailableReasonText =
+  Object.freeze({
   call_failed: "read call failed",
   malformed: "returned malformed data",
   unsafe_text: "contained unsafe text and was withheld",
-});
+  } satisfies Readonly<Record<TokenOptionalTextUnavailableReason, string>>);
+
+export const tokenOptionalTextUnavailableReasonLabel = (
+  reason: TokenOptionalTextUnavailableReason,
+): string => tokenOptionalTextUnavailableReasonText[reason];
 
 export const assetIdentityWarnings = (row: AccountAssetRowView): readonly string[] =>
   Object.freeze([
-    ...(row.nameIssue === null ? [] : [`Token name ${textIssue[row.nameIssue]}.`]),
-    ...(row.symbolIssue === null ? [] : [`Token symbol ${textIssue[row.symbolIssue]}.`]),
+    ...(row.nameIssue === null
+      ? []
+      : [`Token name ${tokenOptionalTextUnavailableReasonLabel(row.nameIssue)}.`]),
+    ...(row.symbolIssue === null
+      ? []
+      : [`Token symbol ${tokenOptionalTextUnavailableReasonLabel(row.symbolIssue)}.`]),
   ]);
 
 export const projectAccountAssetCollectionView = (result: AccountAssetCollectionSuccess) =>
@@ -140,6 +110,7 @@ export const projectAccountAssetCollectionView = (result: AccountAssetCollection
     viewRevision: result.viewRevision,
     native: Object.freeze({
       raw: result.native.rawBalance,
+      decimals: null,
       formattedRaw: null,
       adjustedRaw: null,
       formattedAdjusted: null,
@@ -147,6 +118,31 @@ export const projectAccountAssetCollectionView = (result: AccountAssetCollection
     }),
     assets: Object.freeze(result.assets.map(rowView)),
     nextCursor: result.nextCursor,
+  });
+
+export const projectAccountAssetOverviewView = (result: AccountAssetOverviewSuccess) =>
+  Object.freeze({
+    account: result.account,
+    block: result.block,
+    viewRevision: result.viewRevision,
+    native: Object.freeze({
+      raw: result.native.rawBalance,
+      decimals: null,
+      formattedRaw: null,
+      adjustedRaw: null,
+      formattedAdjusted: null,
+      adjustmentStatus: "not_supported" as const,
+    }),
+    stockTokens: result.stockTokens.status === "current"
+      ? Object.freeze({
+          status: "current" as const,
+          candidateListDigest: result.stockTokens.candidateListDigest,
+          assets: Object.freeze(result.stockTokens.members.flatMap((member) =>
+            member.status === "selected" ? [rowView(member.asset)] : [])),
+          candidates: Object.freeze(result.stockTokens.members.flatMap((member) =>
+            member.status === "available_to_add" ? [member.candidate] : [])),
+        })
+      : result.stockTokens,
   });
 
 export const projectAccountAssetExactView = (result: AccountAssetExactSuccess): AccountAssetRowView =>

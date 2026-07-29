@@ -21,14 +21,13 @@ const operationFor = async (kind: TokenCatalogOperationKind, state: TokenCatalog
 };
 
 describe("token catalog browser presentation", () => {
-  it("projects immutable inspection evidence and uses the token address as selection identity", async () => {
+  it("projects human token facts and uses the token address as selection identity", async () => {
     const inspection = await createInspectionSuccess();
     const selection = createTokenSelection(inspection);
     expect(tokenSelectionLabel(selection)).toBe(selection.asset.address);
     expect(tokenInspectionFields(inspection)).toEqual([
       { label: "Name", value: "Example Token" },
       { label: "Symbol", value: "EXT" },
-      { label: "Raw total supply", value: "1000000" },
       { label: "Decimals", value: "18" },
     ]);
   });

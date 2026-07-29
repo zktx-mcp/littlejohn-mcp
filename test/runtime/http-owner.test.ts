@@ -1151,6 +1151,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       routes: routes.extend([
         {
           method: "GET",
+          query: "none" as const,
           pathPattern: "/api/v1/internal/control/example",
           mutation: "none" as const,
           response: "canonical_json" as const,
@@ -1162,6 +1163,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         },
         {
           method: "GET",
+          query: "none" as const,
           pathPattern: "/api/v1/dispatch-example",
           mutation: "none" as const,
           response: "canonical_json" as const,
@@ -1230,6 +1232,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         routes: routes.extend([
           {
             method: "GET",
+            query: "none" as const,
             pathPattern: "/api/v1/internal/control/session-fast",
             mutation: "none" as const,
             response: "canonical_json" as const,
@@ -1241,6 +1244,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
           },
           {
             method: "GET",
+            query: "none" as const,
             pathPattern: "/api/v1/internal/control/session-abort",
             mutation: "none" as const,
             response: "canonical_json" as const,
@@ -1253,6 +1257,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
           },
           {
             method: "GET",
+            query: "none" as const,
             pathPattern: "/api/v1/internal/control/session-timeout",
             mutation: "none" as const,
             response: "canonical_json" as const,
@@ -1341,6 +1346,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       routes: routes.extend([
         {
           method: "GET",
+          query: "none" as const,
           pathPattern: "/api/v1/public-read-at-limit",
           mutation: "none" as const,
           response: "canonical_json" as const,
@@ -1349,6 +1355,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         },
         {
           method: "GET",
+          query: "none" as const,
           pathPattern: "/api/v1/public-read-over-limit",
           mutation: "none" as const,
           response: "canonical_json" as const,
@@ -1385,6 +1392,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     const shell = "<!doctype html><html><head></head><body><div id=\"root\"></div></body></html>";
     const cookie =
       "example_session=token; Path=/api/v1/examples/example; Max-Age=60; HttpOnly; SameSite=Strict";
+    let observedQuery: string | undefined;
     const owner = new FixedHttpOwner({
       ...fixedOwnerOptions(test),
       applicationFactory: ({ routes }) => {
@@ -1408,16 +1416,20 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         return {
           routes: browserRoutes.extend([{
             method: "GET",
+            query: "browser_location",
             pathPattern: "/examples/{operationId}",
             mutation: "none",
             response: "browser_content",
             successStatus: 200,
-            handler: async () => ({
-              ok: true,
-              body: shell,
-              contentType: "text/html; charset=utf-8",
-              setCookie: cookie,
-            }),
+            handler: async ({ query }) => {
+              observedQuery = query;
+              return {
+                ok: true,
+                body: shell,
+                contentType: "text/html; charset=utf-8",
+                setCookie: cookie,
+              };
+            },
           }]),
           close: () => undefined,
         };
@@ -1426,8 +1438,9 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     owners.push(owner);
     expect(await owner.start()).toBe("owner");
 
-    const response = await requestText("/examples/example");
+    const response = await requestText("/examples/example?window=30d");
     expect(response.status).toBe(200);
+    expect(observedQuery).toBe("?window=30d");
     expect(response.body).toBe(shell);
     expect(response.headers["content-type"]).toBe("text/html; charset=utf-8");
     expect(response.headers["content-length"]).toBe(String(Buffer.byteLength(shell)));
@@ -1469,7 +1482,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         }]);
         return {
           routes: securedRoutes.extend([{
-            method: "GET", mutation: "none",
+            method: "GET", mutation: "none", query: "none",
             pathPattern: "/api/v1/examples/{resourceId}",
             response: "canonical_json", successStatus: 200,
             handler: async () => {
@@ -2288,6 +2301,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       applicationFactory: ({ routes }) => ({
         routes: routes.extend([{
           method: "GET",
+          query: "none" as const,
           pathPattern: "/api/v1/internal/control/example",
           mutation: "none" as const,
           response: "canonical_json" as const, successStatus: 200,
@@ -2345,6 +2359,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       applicationFactory: ({ routes }) => ({
         routes: routes.extend([{
           method: "POST",
+          query: "none" as const,
           pathPattern: "/api/v1/internal/control/examples",
           mutation: "declared_control" as const,
           response: "canonical_json" as const, successStatus: 201,
@@ -2386,6 +2401,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       applicationFactory: ({ routes }) => ({
         routes: routes.extend([{
           method: "GET",
+          query: "none" as const,
           pathPattern: "/api/v1/internal/control/example",
           mutation: "none" as const,
           response: "canonical_json" as const, successStatus: 200,
@@ -2402,8 +2418,16 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       "/api/v1/internal/control/example", "POST", { Host: "localhost:46630" },
     );
     expect(invalidHost).toMatchObject({ status: 400, body: { code: "invalid_host" } });
-    const invalidQuery = await requestJson("/api/v1/internal/control/example?x=1", "POST");
+    const invalidQuery = await requestJson("/api/v1/internal/control/example?x=1", "GET");
     expect(invalidQuery).toMatchObject({ status: 400, body: { code: "query_not_supported" } });
+    const invalidMethodQuery = await requestJson(
+      "/api/v1/internal/control/example?x=1",
+      "POST",
+    );
+    expect(invalidMethodQuery).toMatchObject({
+      status: 400,
+      body: { code: "query_not_supported" },
+    });
     const invalidOrigin = await requestJson(
       "/api/v1/internal/control/example", "POST", { Origin: "http://127.0.0.1:46630" },
     );
@@ -2424,7 +2448,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     expect(method.headers["allow"]).toBe("GET");
 
     const unknownQuery = await requestJson("/api/v1/internal/control/unknown?x=1");
-    expect(unknownQuery).toMatchObject({ status: 400, body: { code: "query_not_supported" } });
+    expect(unknownQuery).toMatchObject({ status: 404, body: { code: "route_not_found" } });
     const unknown = await requestJson("/api/v1/internal/control/unknown");
     expect(unknown).toMatchObject({ status: 404, body: { code: "route_not_found" } });
   });
@@ -2437,6 +2461,7 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       applicationFactory: ({ routes }) => ({
         routes: routes.extend([{
           method: "POST",
+          query: "none" as const,
           pathPattern: "/api/v1/internal/control/examples",
           mutation: "declared_control" as const,
           response: "canonical_json" as const, successStatus: 201,

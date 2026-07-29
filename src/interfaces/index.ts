@@ -9,13 +9,28 @@ export {
   browserCsrfHeaderName,
   browserCsrfMetaName,
   browserCsrfTokenByteLength,
-  browserPagePaths,
+  browserBaseLocationForPath,
+  browserInformationPages,
+  browserLocationHref,
+  browserLocations,
+  browserPageMetadata,
+  browserPages,
+  browserPrimaryPages,
   browserOperationCancellationPath,
   browserOperationConfirmationPath,
   browserOperationPath,
   browserWalletApiRoot,
   browserWalletApiPaths,
+  parseBrowserLocation,
   parseBrowserCsrfToken,
+} from "./browser-contract.js";
+export type {
+  BrowserLocation,
+  BrowserPage,
+  BrowserPageId,
+  BrowserPageKind,
+  BrowserPageMetadata,
+  BrowserPrimaryPageId,
 } from "./browser-contract.js";
 export {
   browserSessionCookieName,
@@ -101,9 +116,11 @@ export type {
 export {
   referenceMarketBrowserMutationPaths,
   referenceMarketPublicRoutes,
-  uniswapV2PublicRoutes,
 } from "./browser-contract.js";
-export { referenceMarketLocalMutationPaths } from "./identities.js";
+export {
+  referenceMarketLocalMutationPaths,
+  uniswapV2PublicRoutes,
+} from "./identities.js";
 export type {
   DeliveryUnknown,
   OperationDeliveryAction,

@@ -153,6 +153,7 @@ const invoke = async (
   return registry.normalizeResult(match.route, await match.route.handler({
     params: match.params,
     body,
+    query: "",
     signal: new AbortController().signal,
   }));
 };

@@ -2,10 +2,8 @@ import {
   accountAssetApplicationContracts,
   accountAssetApplicationResult,
   accountAssetBrowserRoutes,
-  accountAssetCollectionRequestBody,
   accountAssetInterfaceErrorMappings,
-  accountAssetOfficialCandidateQueryContract,
-  accountAssetOfficialCandidateRequestBody,
+  accountAssetOverviewQueryContract,
   createAccountAssetFailure,
   parseAccountAssetExactPath,
   type AccountAssetApplicationPort,
@@ -58,8 +56,10 @@ import {
 import type { BrowserAssetBundle } from "./browser-assets.js";
 import {
   browserAssetPaths,
-  browserPagePaths,
+  browserInformationPages,
+  browserPages,
   browserWalletApiPaths,
+  parseBrowserLocation,
 } from "./browser-contract.js";
 import type { BrowserRequestCredentialAuthority } from "./browser-credentials.js";
 import {
@@ -110,33 +110,27 @@ const presentationForId = (id: string, value: unknown) => {
   });
 };
 
-const browserPageResources: readonly ResourcePathDefinition[] = Object.freeze([
-  Object.freeze({
+const browserPageResources: readonly ResourcePathDefinition[] = Object.freeze(
+  browserInformationPages.map((page) => Object.freeze({
     kind: "route",
     method: "GET",
-    pathPattern: browserPagePaths.root,
+    pathPattern: page.pathPattern,
     requestClass: "browser_bootstrap",
-  }),
-]);
+  })),
+);
 
 const browserApiResources: readonly ResourcePathDefinition[] = Object.freeze([
   ...referenceMarketBrowserControlResources,
   Object.freeze({
     kind: "route",
-    method: "POST",
-    pathPattern: accountAssetBrowserRoutes.queries,
-    requestClass: "browser_query",
+    method: "GET",
+    pathPattern: accountAssetBrowserRoutes.overview,
+    requestClass: "browser_read",
   }),
   Object.freeze({
     kind: "route",
     method: "POST",
     pathPattern: accountAssetBrowserRoutes.exactPattern,
-    requestClass: "browser_query",
-  }),
-  Object.freeze({
-    kind: "route",
-    method: "POST",
-    pathPattern: accountAssetBrowserRoutes.officialCandidateQueries,
     requestClass: "browser_query",
   }),
   Object.freeze({
@@ -254,31 +248,57 @@ export const extendBrowserInterfaceRoutes = (input: {
       return normalizeFailure(error);
     }
   };
+  const bootstrapReferencePrice = async (
+    context: RouteContext,
+  ): Promise<RouteResult> => {
+    const pairId = context.params["pairId"];
+    try {
+      if (pairId === undefined) throw new TypeError("Reference pair is missing.");
+      const location = parseBrowserLocation(
+        `/prices/${pairId}`,
+        context.query,
+        "",
+      );
+      if (location.page !== browserPages.referencePrice.id ||
+        location.pairId !== pairId) {
+        throw new TypeError("Reference price location does not match the route.");
+      }
+    } catch {
+      return failure(createWalletFailure("invalid_input"));
+    }
+    return bootstrap();
+  };
 
   const browserRoutes = securedRoutes.extend([
+    ...browserInformationPages.map((page) => ({
+      method: "GET",
+      mutation: "none",
+      pathPattern: page.pathPattern,
+      query: page.id === "reference_price"
+        ? "browser_location"
+        : "none",
+      response: "browser_content",
+      successStatus: 200,
+      handler: page.id === browserPages.referencePrice.id
+        ? bootstrapReferencePrice
+        : bootstrap,
+    } as const)),
     {
       method: "GET",
       mutation: "none",
-      pathPattern: browserPagePaths.root,
-      response: "browser_content",
-      successStatus: 200,
-      handler: bootstrap,
-    },
-    {
-      method: "POST",
-      mutation: "none",
-      pathPattern: accountAssetBrowserRoutes.queries,
+      pathPattern: accountAssetBrowserRoutes.overview,
+      query: "none",
       response: "canonical_json",
       successStatus: 200,
       handler: async (context) => {
-        const contract = accountAssetApplicationContracts.collection;
+        const contract = accountAssetOverviewQueryContract;
         let request;
-        try { request = contract.parseInput(context.body); }
+        try { request = contract.parseInput({}); }
         catch { return failure(createAccountAssetFailure("invalid_input")); }
         return accountAssetApplicationResult(
           contract,
           request,
-          await input.accountAssets.list(accountAssetCollectionRequestBody(request), context.signal),
+          await input.accountAssets.getOverview(request, context.signal),
         );
       },
     },
@@ -286,6 +306,7 @@ export const extendBrowserInterfaceRoutes = (input: {
       method: "POST",
       mutation: "none",
       pathPattern: accountAssetBrowserRoutes.exactPattern,
+      query: "none",
       response: "canonical_json",
       successStatus: 200,
       handler: async (context) => {
@@ -302,29 +323,9 @@ export const extendBrowserInterfaceRoutes = (input: {
     },
     {
       method: "POST",
-      mutation: "none",
-      pathPattern: accountAssetBrowserRoutes.officialCandidateQueries,
-      response: "canonical_json",
-      successStatus: 200,
-      handler: async (context) => {
-        const contract = accountAssetOfficialCandidateQueryContract;
-        let request;
-        try { request = contract.parseInput(context.body); }
-        catch { return failure(createAccountAssetFailure("invalid_input")); }
-        return accountAssetApplicationResult(
-          contract,
-          request,
-          await input.accountAssets.listOfficialCandidates(
-            accountAssetOfficialCandidateRequestBody(request),
-            context.signal,
-          ),
-        );
-      },
-    },
-    {
-      method: "POST",
       mutation: "declared_control",
       pathPattern: browserWalletApiPaths.operations,
+      query: "none",
       response: "canonical_json",
       successStatus: 200,
       handler: async (context) => {
@@ -356,6 +357,7 @@ export const extendBrowserInterfaceRoutes = (input: {
       method: "GET",
       mutation: "none",
       pathPattern: browserWalletApiPaths.currentOperation,
+      query: "none",
       response: "canonical_json",
       successStatus: 200,
       handler: async () => {
@@ -371,6 +373,7 @@ export const extendBrowserInterfaceRoutes = (input: {
       method: "GET",
       mutation: "none",
       pathPattern: browserWalletApiPaths.operationPattern,
+      query: "none",
       response: "canonical_json",
       successStatus: 200,
       handler: async (context) => {
@@ -391,6 +394,7 @@ export const extendBrowserInterfaceRoutes = (input: {
       method: "POST",
       mutation: "declared_control",
       pathPattern: browserWalletApiPaths.confirmationPattern,
+      query: "none",
       response: "canonical_json",
       successStatus: 200,
       handler: async (context) => {
@@ -417,6 +421,7 @@ export const extendBrowserInterfaceRoutes = (input: {
       method: "POST",
       mutation: "declared_control",
       pathPattern: browserWalletApiPaths.cancellationPattern,
+      query: "none",
       response: "canonical_json",
       successStatus: 200,
       handler: async (context) => {
@@ -446,6 +451,7 @@ export const extendBrowserInterfaceRoutes = (input: {
       method: "POST",
       mutation: "declared_control",
       pathPattern: tokenCatalogBrowserRoutes.operations,
+      query: "none",
       response: "canonical_json",
       successStatus: 200,
       handler: async (context) => {
@@ -473,6 +479,7 @@ export const extendBrowserInterfaceRoutes = (input: {
       method: "GET",
       mutation: "none",
       pathPattern: tokenCatalogBrowserRoutes.currentOperation,
+      query: "none",
       response: "canonical_json",
       successStatus: 200,
       handler: async () => {
@@ -487,6 +494,7 @@ export const extendBrowserInterfaceRoutes = (input: {
       method: "GET",
       mutation: "none",
       pathPattern: tokenCatalogBrowserRoutes.operationPattern,
+      query: "none",
       response: "canonical_json",
       successStatus: 200,
       handler: async (context) => {
@@ -510,6 +518,7 @@ export const extendBrowserInterfaceRoutes = (input: {
       method: "POST",
       mutation: "declared_control",
       pathPattern: tokenCatalogBrowserRoutes.confirmationPattern,
+      query: "none",
       response: "canonical_json",
       successStatus: 200,
       handler: async (context) => {
@@ -533,6 +542,7 @@ export const extendBrowserInterfaceRoutes = (input: {
       method: "POST",
       mutation: "declared_control",
       pathPattern: tokenCatalogBrowserRoutes.cancellationPattern,
+      query: "none",
       response: "canonical_json",
       successStatus: 200,
       handler: async (context) => {
@@ -555,6 +565,7 @@ export const extendBrowserInterfaceRoutes = (input: {
       method: "GET",
       mutation: "none",
       pathPattern: browserAssetPaths.pattern,
+      query: "none",
       response: "browser_content",
       successStatus: 200,
       handler: async (context) => {

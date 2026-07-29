@@ -25,17 +25,16 @@ import {
   browserWalletApiPaths,
 } from "../browser-contract.js";
 import {
-  BrowserResponseError,
+  BrowserRequestError,
   controlBrowserActionJson,
   invalidBrowserResponse,
   readBrowserJson,
   type BrowserRequestOptions,
 } from "./browser-client.js";
-import { createBrowserOperationId } from "./operation-id.js";
 
 const parseCurrentProjection = (value: unknown): WalletCurrentOperationProjection => {
   try { return parseWalletCurrentOperationProjection(value); }
-  catch { throw invalidBrowserResponse("The wallet state response is invalid."); }
+  catch { throw invalidBrowserResponse(); }
 };
 
 const parseOperation = (
@@ -45,11 +44,11 @@ const parseOperation = (
   try {
     const operation = parseWalletManagementOperation(value);
     if (operation.operationId !== expectedOperationId) {
-      throw invalidBrowserResponse("The wallet operation response is invalid.");
+      throw invalidBrowserResponse();
     }
     return operation;
   } catch {
-    throw invalidBrowserResponse("The wallet operation response is invalid.");
+    throw invalidBrowserResponse();
   }
 };
 
@@ -72,23 +71,24 @@ export const loadWalletOperation = async (
       await readBrowserJson(browserOperationPath(id), options),
     );
     if (presentation.operation.operationId !== id) {
-      throw invalidBrowserResponse("The wallet operation response is invalid.");
+      throw invalidBrowserResponse();
     }
     return presentation;
   } catch (error) {
-    if (error instanceof BrowserResponseError) throw error;
-    throw invalidBrowserResponse("The wallet operation response is invalid.");
+    if (error instanceof BrowserRequestError) throw error;
+    throw invalidBrowserResponse();
   }
 };
 
 export const startWalletOperation = async (
+  operationIdInput: string,
   kind: WalletOperationKind,
   connectionRevision: string,
   csrfToken: unknown,
   options: BrowserRequestOptions = {},
 ): Promise<WalletOperationStartResult | DeliveryUnknown> => {
   const input = parseWalletWebOperationCreate({ kind, connectionRevision });
-  const operationId = createBrowserOperationId();
+  const operationId = parseWalletOperationId(operationIdInput);
   const delivery = await controlBrowserActionJson(
     "start",
     operationId,

@@ -499,6 +499,7 @@ describe("wallet owner application composition", () => {
     const routes = (await createRoutes()).extend([{
       method: "POST",
       mutation: "declared_control",
+      query: "none",
       pathPattern: walletControlRoutes.operations,
       response: "canonical_json",
       successStatus: 201,

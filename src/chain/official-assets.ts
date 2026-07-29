@@ -40,6 +40,8 @@ export type OfficialAssetVerificationResult =
       reason: StockFactoryClassificationUnavailableReason;
     }>;
 
+const officialAssetVerificationConcurrency = 5;
+
 export const createOfficialAssetChainReadPort = (input: Readonly<{
   rpc: RpcRequester;
   chainId: ChainAnchor["chainId"];
@@ -63,18 +65,32 @@ export const createOfficialAssetChainReadPort = (input: Readonly<{
         stateReference: block.stateReference,
         signal: context.signal,
       });
-      const settled = await Promise.allSettled(members.map((member) => verifier.verify(member)));
-      return Object.freeze(settled.map((result): OfficialAssetVerificationResult => {
-        if (result.status === "fulfilled") {
-          return Object.freeze({ status: "verified", verification: result.value });
+      const results: OfficialAssetVerificationResult[] = [];
+      for (
+        let start = 0;
+        start < members.length;
+        start += officialAssetVerificationConcurrency
+      ) {
+        input.lifecycle.assertActiveContext(context);
+        const batch = members.slice(start, start + officialAssetVerificationConcurrency);
+        const settled = await Promise.allSettled(batch.map((member) => verifier.verify(member)));
+        for (const result of settled) {
+          if (result.status === "fulfilled") {
+            results.push(Object.freeze({
+              status: "verified",
+              verification: result.value,
+            }));
+            continue;
+          }
+          const reason = getStockFactoryVerificationErrorCode(result.reason);
+          if (reason === "request_aborted") throw result.reason;
+          results.push(Object.freeze({
+            status: "unavailable",
+            reason: reason ?? "source_inconsistent",
+          }));
         }
-        const reason = getStockFactoryVerificationErrorCode(result.reason);
-        if (reason === "request_aborted") throw result.reason;
-        return Object.freeze({
-          status: "unavailable",
-          reason: reason ?? "source_inconsistent",
-        });
-      }));
+      }
+      return Object.freeze(results);
     } catch (error) {
       const stopReason = getChainInvocationStopReason(error);
       if (stopReason !== undefined) throw new ChainOperationError(

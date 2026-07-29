@@ -35,7 +35,6 @@ export {
   assertRobinhoodOfficialAssetSourceObservation,
   getRobinhoodOfficialAssetSourceErrorCode,
 } from "./official-asset-source-contract.js";
-export { officialAssetCandidatePageSize } from "./browser.js";
 export {
   defaultStockTokenManifest,
   defaultStockTokenRank,

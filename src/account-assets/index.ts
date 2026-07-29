@@ -4,9 +4,9 @@ export {
   accountAssetCapabilityIds,
   accountAssetClassificationSchema,
   accountAssetCursorSchema,
+  filterAccountAssetOfficialCandidates,
   accountAssetLimits,
-  accountAssetOfficialCandidateCursorSchema,
-  accountAssetOfficialCandidateQueryContract,
+  accountAssetOverviewQueryContract,
   accountAssetViewRevisionSchema,
   contractAccountAssetSchema,
   createAccountAssetAmount,
@@ -23,10 +23,9 @@ export type {
   AccountAssetCursor,
   AccountAssetExactInput,
   AccountAssetExactSuccess,
-  AccountAssetOfficialCandidateCursor,
-  AccountAssetOfficialCandidateInput,
-  AccountAssetOfficialCandidateRequest,
-  AccountAssetOfficialCandidateSuccess,
+  AccountAssetOverviewInput,
+  AccountAssetOverviewStockTokenMember,
+  AccountAssetOverviewSuccess,
   AccountAssetRequestContract,
   AccountAssetViewRevision,
   ContractAccountAsset,
@@ -51,7 +50,6 @@ export {
   accountAssetBrowserRoutes,
   accountAssetCollectionRequestBody,
   accountAssetExactRequestBody,
-  accountAssetOfficialCandidateRequestBody,
   accountAssetControlRoutes,
   extendAccountAssetControlRouteRegistry,
   parseAccountAssetExactPath,
@@ -65,6 +63,7 @@ export type {
 } from "./ports.js";
 export {
   projectAccountAssetCollectionView,
+  projectAccountAssetOverviewView,
   projectAccountAssetExactView,
 } from "./view.js";
 export type {

@@ -12,7 +12,7 @@ import {
   defaultStockTokenManifest,
   defaultStockTokenRank,
   findOfficialAssetMember,
-  officialAssetCandidatePageSize,
+  officialAssetSourceDefinition,
   officialAssetSnapshotEvidenceSchema,
   type CommittedOfficialAssetSnapshot,
   type OfficialAssetSourceMember,
@@ -30,7 +30,7 @@ import {
 import {
   accountAssetApplicationContracts,
   accountAssetLimits,
-  accountAssetOfficialCandidateQueryContract,
+  accountAssetOverviewQueryContract,
   createAccountAssetAmount,
   type AccountAssetRequestContract,
   type AccountAssetClassification,
@@ -39,9 +39,8 @@ import {
   type AccountAssetCursor,
   type AccountAssetExactInput,
   type AccountAssetExactSuccess,
-  type AccountAssetOfficialCandidateCursor,
-  type AccountAssetOfficialCandidateRequest,
-  type AccountAssetOfficialCandidateSuccess,
+  type AccountAssetOverviewInput,
+  type AccountAssetOverviewSuccess,
   type AccountAssetViewRevision,
   type ContractAccountAsset,
 } from "./contracts.js";
@@ -456,66 +455,28 @@ const contractAsset = (
   requiredStandards: read.requiredStandards,
 });
 
-const officialCandidatePage = (
+const selectedOfficialDetails = (
   dependencies: AccountAssetReadProcessDependencies,
-  wallet: CapturedWallet,
-  request: AccountAssetOfficialCandidateRequest,
-): AccountAssetOfficialCandidateSuccess => {
-  const official = readOfficialView(dependencies, request.viewRevision);
-  if (official.status !== "current" || official.snapshot === null ||
-    request.viewRevision.selectionSetRevision === null) {
-    throw new AccountAssetOperationError("source_unavailable");
-  }
-  const state = dependencies.selections.getState(wallet.account);
-  if (state?.revision !== request.viewRevision.selectionSetRevision) {
-    throw new AccountAssetOperationError("state_conflict");
-  }
-  let start = 0;
-  if (request.cursor !== null) {
-    const index = official.snapshot.members.findIndex((member) =>
-      member.assetUid === request.cursor!.assetUid &&
-      member.contractAddress === request.cursor!.contractAddress);
-    if (index < 0) throw new AccountAssetOperationError("invalid_input");
-    start = index + 1;
-  }
-  const candidates: AccountAssetOfficialCandidateSuccess["candidates"][number][] = [];
-  for (let index = start; index < official.snapshot.members.length; index += 1) {
-    const member = official.snapshot.members[index]!;
-    const selection = dependencies.selections.getForAccount({
-      account: wallet.account,
+  account: EvmAccountIdentity,
+  official: OfficialView,
+): readonly TokenSelectionDetail[] => {
+  if (official.snapshot === null) throw new AccountAssetOperationError("source_unavailable");
+  const selected: TokenSelectionDetail[] = [];
+  for (const member of official.snapshot.members) {
+    const detail = dependencies.selections.getForAccount({
+      account,
       asset: {
         kind: "erc20",
-        chainId: wallet.account.chainId,
+        chainId: account.chainId,
         address: member.contractAddress,
       },
     });
-    if (selection?.selection.included === true) continue;
-    candidates.push(Object.freeze({
-      assetUid: member.assetUid,
-      contractAddress: member.contractAddress,
-      sourceName: member.sourceName ?? null,
-      sourceSymbol: member.sourceSymbol ?? null,
-    }));
-    if (candidates.length > officialAssetCandidatePageSize) break;
+    if (detail?.selection.included === true) selected.push(detail);
   }
-  const hasMore = candidates.length > officialAssetCandidatePageSize;
-  const entries = candidates.slice(0, officialAssetCandidatePageSize);
-  const last = entries.at(-1);
-  const nextCursor: AccountAssetOfficialCandidateCursor | null = !hasMore || last === undefined
-    ? null
-    : Object.freeze({
-        assetUid: last.assetUid,
-        contractAddress: last.contractAddress,
-        officialSnapshotRevision: official.snapshot.revision,
-        selectionSetRevision: state.revision,
-      });
-  assertViewContinuity(dependencies, wallet, request.viewRevision);
-  return Object.freeze({
-    account: wallet.account,
-    viewRevision: request.viewRevision,
-    candidates: entries,
-    nextCursor,
-  });
+  if (selected.length > officialAssetSourceDefinition.memberLimit) {
+    throw new AccountAssetOperationError("internal_error");
+  }
+  return Object.freeze(selected);
 };
 
 export const createAccountAssetApplication = (
@@ -623,6 +584,101 @@ export const createAccountAssetApplication = (
       );
     },
 
+    getOverview(inputValue, callerSignal) {
+      return run(
+        accountAssetOverviewQueryContract,
+        inputValue,
+        callerSignal,
+        async (_request: AccountAssetOverviewInput, signal): Promise<AccountAssetOverviewSuccess> => {
+          const wallet = captureWallet(dependencies);
+          const official = await synchronizeOfficialView(dependencies, signal);
+          return dependencies.chainInvocations.run(signal, async (context) => {
+            const block = await dependencies.chainReads.resolveCurrentBlock(context);
+            const retained = await initializeDefaults(
+              dependencies,
+              wallet,
+              official,
+              block,
+              accountAssetLimits.maximumPageSize,
+              context,
+            );
+            const revision = viewRevision(
+              official,
+              dependencies.selections.getState(wallet.account),
+            );
+            const entries = official.status === "current"
+              ? selectedOfficialDetails(dependencies, wallet.account, official)
+              : [];
+            const verification = await verifyVisibleMembers(
+              dependencies,
+              official,
+              entries,
+              block,
+              context,
+              retained,
+            );
+            const chain = await dependencies.chainReads.readCollectionAtBlock({
+              account: wallet.account,
+              assets: entries.map((entry) => entry.selection.asset),
+              block,
+            }, context);
+            if (chain.tokens.length !== entries.length) {
+              throw new AccountAssetOperationError("internal_error");
+            }
+            const selectedByAddress = new Map(
+              entries.map((entry, index) => [
+                entry.selection.asset.address,
+                contractAsset(
+                  entry,
+                  chain.tokens[index]!,
+                  official,
+                  verification.get(entry.selection.asset.address),
+                ),
+              ]),
+            );
+            assertViewContinuity(dependencies, wallet, revision);
+            return Object.freeze({
+              account: wallet.account,
+              block: block.anchor,
+              viewRevision: revision,
+              native: {
+                kind: "native",
+                asset: { kind: "native", chainId: wallet.account.chainId },
+                rawBalance: chain.nativeRawBalance,
+                classification: "native",
+              },
+              stockTokens: official.status === "current"
+                ? {
+                    status: "current" as const,
+                    candidateListDigest: official.snapshot!.candidateListDigest,
+                    members: official.snapshot!.members.map((member) => {
+                      const asset = selectedByAddress.get(member.contractAddress);
+                      return asset === undefined
+                        ? Object.freeze({
+                            status: "available_to_add" as const,
+                            candidate: Object.freeze({
+                              assetUid: member.assetUid,
+                              contractAddress: member.contractAddress,
+                              sourceName: member.sourceName ?? null,
+                              sourceSymbol: member.sourceSymbol ?? null,
+                            }),
+                          })
+                        : Object.freeze({
+                            status: "selected" as const,
+                            asset,
+                          });
+                    }),
+                  }
+                : {
+                    status: "unavailable" as const,
+                    reason: official.failureReason ?? "source_unavailable",
+                  },
+            });
+          });
+        },
+      );
+    },
+
     get(inputValue, callerSignal) {
       return run(
         accountAssetApplicationContracts.exact,
@@ -676,16 +732,6 @@ export const createAccountAssetApplication = (
             });
           });
         },
-      );
-    },
-
-    listOfficialCandidates(inputValue, callerSignal) {
-      return run(
-        accountAssetOfficialCandidateQueryContract,
-        inputValue,
-        callerSignal,
-        async (request: AccountAssetOfficialCandidateRequest) =>
-          officialCandidatePage(dependencies, captureWallet(dependencies), request),
       );
     },
   };

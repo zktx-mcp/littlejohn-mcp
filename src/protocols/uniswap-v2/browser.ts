@@ -1,6 +1,5 @@
 export {
   assertUniswapV2QuoteData,
-  formatUniswapV2TokenUnitPrice,
   uniswapV2AssetSchema,
   uniswapV2CandidateSchema,
   uniswapV2EvaluatedHopSchema,

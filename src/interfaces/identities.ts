@@ -89,8 +89,11 @@ import type { RouteMethod } from "../runtime/http-routing.js";
 import {
   publicInspectionPaths,
   referenceMarketPublicRoutes,
-  uniswapV2PublicRoutes,
 } from "./browser-contract.js";
+
+export const uniswapV2PublicRoutes = Object.freeze({
+  exactInputQuotes: "/api/v1/uniswap-v2-exact-input-quotes",
+} as const);
 
 export const referenceMarketLocalMutationPaths = Object.freeze({
   add: "/api/v1/internal/control/reference-market-watchlist/entry-additions",

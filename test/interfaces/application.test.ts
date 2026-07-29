@@ -5,12 +5,16 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { extendChainSupportManifest } from "../../src/chain/application.js";
+import {
+  extendAccountAssetControlRouteRegistry,
+} from "../../src/account-assets/routes.js";
 import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
 import { extendReferenceMarketSupportManifest } from "../../src/market-portfolio/support.js";
 import {
   accountBalanceCapability,
   chainStatusCapability,
   contractInspectCapability,
+  referenceMarketManifest,
   transactionInspectCapability,
   walletConnectionCapability,
 } from "../../src/core/index.js";
@@ -130,8 +134,12 @@ describe("interface owner application", () => {
     directories.push(directory);
     const paths = runtimePaths(directory);
     const controlCredential = await loadOrCreateControlCredential(directory, paths.controlCredential);
-    const routes = createRuntimeRouteRegistry({
-      controlVerifier: createControlCredentialVerifier(controlCredential),
+    const accountAssets = accountAssetInterfaceHarnessPort();
+    const routes = extendAccountAssetControlRouteRegistry({
+      routes: createRuntimeRouteRegistry({
+        controlVerifier: createControlCredentialVerifier(controlCredential),
+      }),
+      accountAssets,
     });
     const walletManifest = extendWalletSupportManifest(
       createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
@@ -160,7 +168,7 @@ describe("interface owner application", () => {
       createCredentials,
     })({
       ...tokenCatalogInterfaceHarnessPorts(),
-      accountAssets: accountAssetInterfaceHarnessPort(),
+      accountAssets,
       referenceMarkets: referenceMarketInterfaceHarnessPort(),
       routes,
       signal: new AbortController().signal,
@@ -177,10 +185,12 @@ describe("interface owner application", () => {
       ["GET", "/api/v1/wallet/connection"],
       ["GET", "/api/v1/capabilities"],
       ["GET", "/"],
+      ["GET", "/prices"],
+      ["GET", `/prices/${referenceMarketManifest.pairs[0]!.pairId}`],
       ["POST", "/api/v1/contract-inspections"],
-      ["POST", "/api/v1/account-assets/queries"],
+      ["POST", "/api/v1/internal/control/account-assets/queries"],
+      ["GET", "/api/v1/account-assets/overview"],
       ["POST", "/api/v1/account-assets/eip155:4663/0x1111111111111111111111111111111111111111"],
-      ["POST", "/api/v1/account-assets/official-candidate-queries"],
       ["POST", "/api/v1/token-inspections"],
       ["POST", "/api/v1/uniswap-v2-exact-input-quotes"],
       ["POST", "/api/v1/internal/control/token-catalog/inspections"],
@@ -200,7 +210,12 @@ describe("interface owner application", () => {
       ["GET", `/api/v1/wallet/operations/${operationId}`],
       ["POST", `/api/v1/wallet/operations/${operationId}/confirmation`],
       ["POST", `/api/v1/wallet/operations/${operationId}/cancellation`],
-    ] as const) expect(application.routes.match(method, path).status).toBe("matched");
+    ] as const) {
+      expect(
+        application.routes.match(method, path).status,
+        `${method} ${path} must be installed by the composed interface owner`,
+      ).toBe("matched");
+    }
     expect(application.routes.match("POST", "/api/v1/token-catalog/inspections").status)
       .toBe("not_found");
     expect(application.routes.match("GET", "/wallet").status)
@@ -213,6 +228,7 @@ describe("interface owner application", () => {
     const bootstrapped = application.routes.normalizeResult(root.route, await root.route.handler({
       params: root.params,
       body: {},
+      query: "",
       signal: new AbortController().signal,
     }));
     if (!bootstrapped.ok || bootstrapped.response !== "browser_content" ||

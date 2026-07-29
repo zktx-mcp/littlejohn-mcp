@@ -1,28 +1,58 @@
 import { describe, expect, it } from "vitest";
 
+import { referenceMarketManifest } from "../../src/core/index.js";
 import {
   browserAssetPaths,
   browserApiRoot,
+  browserBaseLocationForPath,
   browserCsrfHeaderName,
   browserCsrfMetaName,
   browserCsrfTokenByteLength,
+  browserInformationPages,
+  browserLocationHref,
+  browserLocations,
   browserOperationCancellationPath,
   browserOperationConfirmationPath,
   browserOperationPath,
-  browserPagePaths,
+  browserPageMetadata,
+  browserPages,
+  browserPrimaryNavigation,
+  browserPrimaryPages,
   browserWalletApiRoot,
   browserWalletApiPaths,
+  parseBrowserLocation,
   parseBrowserCsrfToken,
-  parseBrowserPagePath,
 } from "../../src/interfaces/browser-contract.js";
 
 const operationId = Buffer.alloc(32, 18).toString("base64url");
 
 describe("browser interface contract", () => {
-  it("separates the root page, wallet API resources, and immutable assets", () => {
+  it("owns the complete page, location, metadata, and navigation contract", () => {
     expect(browserCsrfHeaderName).toBe("Littlejohn-CSRF-Token");
     expect(browserCsrfMetaName).toBe("littlejohn-csrf-token");
-    expect(browserPagePaths).toEqual({ root: "/" });
+    expect(browserPages).toEqual({
+      assets: {
+        id: "assets",
+        kind: "information",
+        label: "Assets",
+        pathPattern: "/",
+        primaryNavigation: true,
+      },
+      referencePrices: {
+        id: "reference_prices",
+        kind: "information",
+        label: "Prices",
+        pathPattern: "/prices",
+        primaryNavigation: true,
+      },
+      referencePrice: {
+        id: "reference_price",
+        kind: "information",
+        label: "Prices",
+        pathPattern: "/prices/{pairId}",
+        primaryNavigation: false,
+      },
+    });
     expect(browserApiRoot).toBe("/api/v1");
     expect(browserWalletApiRoot).toBe("/api/v1/wallet");
     expect(browserWalletApiPaths).toEqual({
@@ -34,14 +64,86 @@ describe("browser interface contract", () => {
     });
     expect(browserAssetPaths).toEqual({ pattern: "/assets/{assetName}" });
 
-    expect(Object.values(browserPagePaths)).toEqual(["/"]);
-    expect(parseBrowserPagePath("/")).toBe("/");
-    for (const invalid of ["/tokens", "/tokens/", "/wallet", "/?x=1", undefined]) {
-      expect(() => parseBrowserPagePath(invalid)).toThrow();
-    }
-    expect(JSON.stringify(browserPagePaths)).not.toContain("operationId");
+    expect(browserInformationPages).toEqual(Object.values(browserPages));
+    expect(browserPrimaryPages).toEqual([
+      browserPages.assets,
+      browserPages.referencePrices,
+    ]);
+    expect(browserPrimaryNavigation.map((item) => item.page)).toEqual([
+      browserPages.referencePrices,
+    ]);
     expect(JSON.stringify(browserWalletApiPaths)).not.toContain("mcp");
     expect(JSON.stringify(browserWalletApiPaths)).not.toContain("cli");
+  });
+
+  it("round-trips every canonical location and derives exact page metadata", () => {
+    const pair = referenceMarketManifest.pairs[0]!;
+    const locations = [
+      browserLocations.assets(),
+      browserLocations.referencePrices(),
+      browserLocations.referencePrice(pair.pairId),
+      browserLocations.referencePrice(pair.pairId, "30d"),
+    ] as const;
+    for (const location of locations) {
+      const href = browserLocationHref(location);
+      const [pathname, search = ""] = href.split("?");
+      expect(parseBrowserLocation(
+        pathname,
+        search.length === 0 ? "" : `?${search}`,
+        "",
+      )).toEqual(location);
+    }
+
+    expect(browserPageMetadata(browserLocations.assets())).toEqual({
+      page: browserPages.assets,
+      title: "Assets — Little John",
+      activePrimaryPageId: "assets",
+    });
+    expect(browserPageMetadata(browserLocations.referencePrice(pair.pairId))).toEqual({
+      page: browserPages.referencePrice,
+      title: `${pair.label} — Little John`,
+      activePrimaryPageId: "reference_prices",
+    });
+  });
+
+  it("admits the selected-price window and rejects malformed, duplicate, or obsolete locations", () => {
+    const pair = referenceMarketManifest.pairs[0]!;
+    const addressA = "0x1111111111111111111111111111111111111111";
+    expect(parseBrowserLocation(
+      `/prices/${pair.pairId}`,
+      "",
+      "",
+    )).toEqual(browserLocations.referencePrice(pair.pairId, "1d"));
+
+    for (const [pathname, search, fragment] of [
+      ["/inspections", "", ""],
+      ["/reference-markets", "", ""],
+      ["/uniswap-v2-quotes", "", ""],
+      ["/prices/unsupported", "", ""],
+      ["/prices", "?window=1d", ""],
+      [`/prices/${pair.pairId}`, "?window=1d&window=30d", ""],
+      [`/prices/${pair.pairId}`, "?unknown=1d", ""],
+      ["/quotes/uniswap-v2", "", ""],
+      ["/analysis", "", ""],
+      ["/analysis", `?kind=contract`, ""],
+      ["/analysis", `?address=${addressA}`, ""],
+      ["/analysis", `?kind=contract&address=${addressA}&block-number=01`, ""],
+      ["/analysis", `?kind=contract&address=${addressA}&expected-block-hash=0x${"33".repeat(32)}`, ""],
+      ["/", "", "#fragment"],
+      ["/", "?", ""],
+    ] as const) {
+      expect(() => parseBrowserLocation(pathname, search, fragment)).toThrow();
+    }
+
+    expect(browserBaseLocationForPath("/prices/bad")).toEqual(
+      browserLocations.referencePrices(),
+    );
+    expect(browserBaseLocationForPath("/analysis")).toEqual(
+      browserLocations.assets(),
+    );
+    expect(browserBaseLocationForPath("/unknown")).toEqual(
+      browserLocations.assets(),
+    );
   });
 
   it("constructs the exact operation read and control resources from a canonical identifier", () => {

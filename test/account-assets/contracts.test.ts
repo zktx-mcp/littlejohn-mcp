@@ -6,7 +6,8 @@ import { z } from "zod";
 import {
   accountAssetApplicationContracts,
   accountAssetClassificationSchema,
-  accountAssetOfficialCandidateQueryContract,
+  filterAccountAssetOfficialCandidates,
+  accountAssetOverviewQueryContract,
   contractAccountAssetSchema,
   createAccountAssetAmount,
 } from "../../src/account-assets/contracts.js";
@@ -16,10 +17,14 @@ import {
   stockFactoryAdmissionManifest,
 } from "../../src/registry/browser.js";
 import {
+  officialAssetCandidateListDigest,
+} from "../../src/registry/official-asset-contract.js";
+import {
   calculateScaledUiAmount,
   canonicalJsonStringify,
   parseEvmAddressInput,
   parseEvmChainId,
+  parseHash32,
   parseUtcTimestamp,
   requiredErc8056ObservationSchema,
   tokenStandardObservationResultSchema,
@@ -79,6 +84,82 @@ const contractAsset = Object.freeze({
   requiredStandards,
 });
 
+const currentSnapshotRevision = Buffer.alloc(16, 3).toString("base64url");
+const selectedCandidate = Object.freeze({
+  assetUid: parseHash32(`0x${"03".repeat(32)}`),
+  contractAddress: tokenAddress,
+  sourceName: "Example",
+  sourceSymbol: "EXT",
+});
+const availableCandidate = Object.freeze({
+  assetUid: parseHash32(`0x${"04".repeat(32)}`),
+  contractAddress: parseEvmAddressInput(`0x${"13".repeat(20)}`),
+  sourceName: "Available",
+  sourceSymbol: "AVL",
+});
+const currentViewRevision = Object.freeze({
+  officialSnapshotStatus: "current" as const,
+  officialSnapshotRevision: currentSnapshotRevision,
+  selectionSetRevision: setRevision,
+});
+const currentContractAsset = Object.freeze({
+  ...contractAsset,
+  classification: {
+    kind: "robinhood_stock_token" as const,
+    snapshot: {
+      sourceUri: officialAssetSourceDefinition.sourceUri,
+      sourceObservedAt: at,
+      rawResponseDigest: `0x${"01".repeat(32)}`,
+      memberSetDigest: `0x${"02".repeat(32)}`,
+      revision: currentSnapshotRevision,
+    },
+    member: selectedCandidate,
+    verification: {
+      assetUid: selectedCandidate.assetUid,
+      contractAddress: selectedCandidate.contractAddress,
+      block,
+      proxyAddress: stockFactoryAdmissionManifest.proxyAddress,
+      proxyCodeHash: stockFactoryAdmissionManifest.proxyCodeHash,
+      implementationAddress: stockFactoryAdmissionManifest.implementationAddress,
+      implementationCodeHash: stockFactoryAdmissionManifest.implementationCodeHash,
+      tokenCodeHash: `0x${"04".repeat(32)}`,
+    },
+  },
+});
+const partitionDigest = officialAssetCandidateListDigest([
+  {
+    assetUid: selectedCandidate.assetUid,
+    contractAddress: selectedCandidate.contractAddress,
+    sourceName: selectedCandidate.sourceName,
+    sourceSymbol: selectedCandidate.sourceSymbol,
+  },
+  {
+    assetUid: availableCandidate.assetUid,
+    contractAddress: availableCandidate.contractAddress,
+    sourceName: availableCandidate.sourceName,
+    sourceSymbol: availableCandidate.sourceSymbol,
+  },
+]);
+const currentOverview = Object.freeze({
+  account: selection.account,
+  block,
+  viewRevision: currentViewRevision,
+  native: {
+    kind: "native" as const,
+    asset: { kind: "native" as const, chainId },
+    rawBalance: "7",
+    classification: "native" as const,
+  },
+  stockTokens: {
+    status: "current" as const,
+    candidateListDigest: partitionDigest,
+    members: [
+      { status: "selected" as const, asset: currentContractAsset },
+      { status: "available_to_add" as const, candidate: availableCandidate },
+    ],
+  },
+});
+
 const canonicalOutputSchema = (schema: z.ZodType): string =>
   canonicalJsonStringify(JSON.parse(JSON.stringify(z.toJSONSchema(schema, {
     target: "draft-2020-12",
@@ -118,9 +199,9 @@ describe("account asset contracts", () => {
         "02641a7b914a895e9db0ce6c1c0577f5c1f8ea4581e969edd86a9da1db6c334f",
       ],
       [
-        accountAssetOfficialCandidateQueryContract.successSchema,
-        1_776,
-        "a7e26066c6962027eae831f07631613487e07deec8dbdc7f6e28bce596e56730",
+        accountAssetOverviewQueryContract.successSchema,
+        14_718,
+        "73cceff450ebe10c46a49491b6ab83178b6d2cca9e757f07b02d59f6e462a90d",
       ],
     ] as const) {
       const canonical = canonicalOutputSchema(schema);
@@ -257,27 +338,70 @@ describe("account asset contracts", () => {
     )).toThrow();
   });
 
-  it("rejects candidate cursors that do not belong to the exact view", () => {
-    expect(() => accountAssetOfficialCandidateQueryContract.parseInput({
-      viewRevision,
+  it("bounds, normalizes, and locally filters the admitted complete candidate set", () => {
+    const candidates = [{
+      assetUid: parseHash32(`0x${"11".repeat(32)}`),
+      contractAddress: tokenAddress,
+      sourceName: "Tesla Stock",
+      sourceSymbol: "TSLA",
+    }, {
+      assetUid: parseHash32(`0x${"12".repeat(32)}`),
+      contractAddress: parseEvmAddressInput(`0x${"13".repeat(20)}`),
+      sourceName: "Apple Stock",
+      sourceSymbol: "AAPL",
+    }];
+    expect(filterAccountAssetOfficialCandidates(
+      candidates,
+      "  Ｔｅｓｌａ\u00a0 ",
+    )).toEqual([candidates[0]]);
+    expect(filterAccountAssetOfficialCandidates(candidates, "0x12")).toEqual([]);
+    expect(filterAccountAssetOfficialCandidates(candidates, " ")).toEqual(candidates);
+    const atInputLimit = "🧪".repeat(128);
+    expect(filterAccountAssetOfficialCandidates(candidates, atInputLimit)).toEqual([]);
+    for (const search of [
+      `${atInputLimit}a`,
+      "a".repeat(129),
+      "\uFB03".repeat(43),
+      "line\nbreak",
+    ]) {
+      expect(() => filterAccountAssetOfficialCandidates(candidates, search)).toThrow();
+    }
+  });
+
+  it("admits one exhaustive digest-bound official partition", () => {
+    const result = accountAssetOverviewQueryContract.parsePublicSuccess(
+      {},
+      currentOverview,
+    );
+    expect(result.stockTokens).toEqual(currentOverview.stockTokens);
+    if (result.stockTokens.status !== "current") {
+      throw new TypeError("Expected current Stock Tokens.");
+    }
+    expect(() => accountAssetOverviewQueryContract.parsePublicSuccess({}, {
+      ...currentOverview,
+      stockTokens: {
+        ...currentOverview.stockTokens,
+        members: currentOverview.stockTokens.members.slice(0, 1),
+      },
     })).toThrow();
-    const currentRevision = Buffer.alloc(16, 3).toString("base64url");
-    const currentView = {
-      officialSnapshotStatus: "current",
-      officialSnapshotRevision: currentRevision,
-      selectionSetRevision: setRevision,
-    } as const;
-    expect(accountAssetOfficialCandidateQueryContract.parseInput({ viewRevision: currentView })).toEqual({
-      viewRevision: currentView,
-      cursor: null,
-    });
-    expect(() => accountAssetOfficialCandidateQueryContract.parseInput({
-      viewRevision: currentView,
-      cursor: {
-        assetUid: `0x${"11".repeat(32)}`,
-        contractAddress: tokenAddress,
-        officialSnapshotRevision: Buffer.alloc(16, 4).toString("base64url"),
-        selectionSetRevision: setRevision,
+    expect(() => accountAssetOverviewQueryContract.parsePublicSuccess({}, {
+      ...currentOverview,
+      stockTokens: {
+        ...currentOverview.stockTokens,
+        members: [...currentOverview.stockTokens.members].reverse(),
+      },
+    })).toThrow();
+    expect(() => accountAssetOverviewQueryContract.parsePublicSuccess({}, {
+      ...currentOverview,
+      stockTokens: {
+        ...currentOverview.stockTokens,
+        members: [
+          currentOverview.stockTokens.members[0],
+          {
+            status: "available_to_add",
+            candidate: { ...availableCandidate, sourceName: "Changed" },
+          },
+        ],
       },
     })).toThrow();
   });

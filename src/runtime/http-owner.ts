@@ -1200,6 +1200,7 @@ export class FixedHttpOwner {
       csrfToken: headerValues(request, browserCsrfHeaderKey),
       contentType: headerValues(request, "content-type"),
       query: target.query,
+      queryMode: "none",
       bodyLength: readBodySize(request),
       acceptsBody: false,
     });
@@ -1242,7 +1243,6 @@ export class FixedHttpOwner {
     const bodyLength = readBodySize(request);
     const envelopeSecurity = validateRequestEnvelopeSecurity({
       host: headerValues(request, "host"),
-      query: target.query,
       bodyLength,
     });
     if (!envelopeSecurity.ok) return writeFailure(response, envelopeSecurity.code, this.#routes);
@@ -1250,6 +1250,9 @@ export class FixedHttpOwner {
     const match = this.#routes.match(request.method, target.pathname);
     if (match.status === "not_found") return writeFailure(response, "route_not_found", this.#routes);
     if (match.status === "method_not_allowed") {
+      if (target.query !== "") {
+        return writeFailure(response, "query_not_supported", this.#routes);
+      }
       const classSecurity = this.#routes.validateMethodRejection(match, {
         origin: headerValues(request, "origin"),
         authorization: headerValues(request, "authorization"),
@@ -1288,7 +1291,12 @@ export class FixedHttpOwner {
     try {
       result = this.#routes.normalizeResult(
         match.route,
-        await match.route.handler({ params: match.params, body, signal }),
+        await match.route.handler({
+          params: match.params,
+          query: target.query,
+          body,
+          signal,
+        }),
       );
     }
     catch { return writeFailure(response, signal.aborted ? "request_aborted" : "internal_error", this.#routes); }

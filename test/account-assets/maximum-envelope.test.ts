@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   accountAssetApplicationContracts,
   accountAssetLimits,
+  accountAssetOverviewQueryContract,
   createAccountAssetAmount,
 } from "../../src/account-assets/contracts.js";
 import {
@@ -11,13 +12,20 @@ import {
   maximumEvmBalanceRaw,
   parseEvmAddressInput,
   parseEvmChainId,
+  parseHash32,
   parseUtcTimestamp,
 } from "../../src/core/index.js";
 import {
   officialAssetSourceDefinition,
   stockFactoryAdmissionManifest,
 } from "../../src/registry/browser.js";
-import { internalResponseLimitBytes } from "../../src/runtime/http-boundary.js";
+import {
+  officialAssetCandidateListDigest,
+} from "../../src/registry/official-asset-contract.js";
+import {
+  internalResponseLimitBytes,
+  publicReadResponseLimitBytes,
+} from "../../src/runtime/http-boundary.js";
 
 const chainId = parseEvmChainId("eip155:4663");
 const accountAddress = parseEvmAddressInput(`0x${"34".repeat(20)}`);
@@ -32,9 +40,10 @@ const snapshotRevision = Buffer.alloc(16, 1).toString("base64url");
 const selectionSetRevision = Buffer.alloc(16, 2).toString("base64url");
 const maximumText = "🧪".repeat(128);
 
-export const verifyMaximumAccountAssetEnvelope = (): number => {
-  const assets = Array.from({ length: accountAssetLimits.maximumPageSize }, (_, index) => {
-    const address = parseEvmAddressInput(`0x${(index + 1).toString(16).padStart(2, "0").repeat(20)}`);
+const maximumAssets = (count: number) =>
+  Array.from({ length: count }, (_, index) => {
+    const identity = (index + 1).toString(16);
+    const address = parseEvmAddressInput(`0x${identity.padStart(40, "0")}`);
     const asset = { kind: "erc20" as const, chainId, address };
     const currentMultiplier = maximumEvmBalanceRaw;
     return {
@@ -59,13 +68,13 @@ export const verifyMaximumAccountAssetEnvelope = (): number => {
           revision: snapshotRevision,
         },
         member: {
-          assetUid: `0x${(index + 1).toString(16).padStart(2, "0").repeat(32)}`,
+          assetUid: parseHash32(`0x${identity.padStart(64, "0")}`),
           contractAddress: address,
           sourceName: maximumText,
           sourceSymbol: maximumText,
         },
         verification: {
-          assetUid: `0x${(index + 1).toString(16).padStart(2, "0").repeat(32)}`,
+          assetUid: parseHash32(`0x${identity.padStart(64, "0")}`),
           contractAddress: address,
           block,
           proxyAddress: stockFactoryAdmissionManifest.proxyAddress,
@@ -90,6 +99,9 @@ export const verifyMaximumAccountAssetEnvelope = (): number => {
       },
     };
   });
+
+export const verifyMaximumAccountAssetEnvelope = (): number => {
+  const assets = maximumAssets(accountAssetLimits.maximumPageSize);
   const result = accountAssetApplicationContracts.collection.parsePublicSuccess(
     { limit: 5, cursor: null },
     {
@@ -113,10 +125,49 @@ export const verifyMaximumAccountAssetEnvelope = (): number => {
   return Buffer.byteLength(canonicalJsonStringify(captureCanonicalJson(result)), "utf8");
 };
 
+const maximumOverviewEnvelopeBytes = (): number => {
+  const assets = maximumAssets(officialAssetSourceDefinition.memberLimit);
+  const candidateListDigest = officialAssetCandidateListDigest(
+    assets.map((entry) => ({
+      assetUid: entry.classification.member.assetUid,
+      contractAddress: entry.classification.member.contractAddress,
+      sourceName: entry.classification.member.sourceName,
+      sourceSymbol: entry.classification.member.sourceSymbol,
+    })),
+  );
+  const result = accountAssetOverviewQueryContract.parsePublicSuccess({}, {
+    account: { chainId, address: accountAddress },
+    block,
+    viewRevision: {
+      officialSnapshotStatus: "current",
+      officialSnapshotRevision: snapshotRevision,
+      selectionSetRevision,
+    },
+    native: {
+      kind: "native",
+      asset: { kind: "native", chainId },
+      rawBalance: maximumEvmBalanceRaw,
+      classification: "native",
+    },
+    stockTokens: {
+      status: "current",
+      candidateListDigest,
+      members: assets.map((asset) => ({ status: "selected", asset })),
+    },
+  });
+  return Buffer.byteLength(canonicalJsonStringify(captureCanonicalJson(result)), "utf8");
+};
+
 describe("maximum account asset envelope", () => {
   it("keeps the actual maximum five-card public result within the HTTP boundary", () => {
     const bytes = verifyMaximumAccountAssetEnvelope();
     expect(bytes).toBeGreaterThan(10_000);
     expect(bytes).toBeLessThanOrEqual(internalResponseLimitBytes);
+  });
+
+  it("keeps the complete official partition within the public read boundary", () => {
+    const overviewBytes = maximumOverviewEnvelopeBytes();
+    expect(overviewBytes).toBeGreaterThan(internalResponseLimitBytes);
+    expect(overviewBytes).toBeLessThanOrEqual(publicReadResponseLimitBytes);
   });
 });

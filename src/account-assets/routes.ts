@@ -24,7 +24,6 @@ export {
   accountAssetBrowserRoutes,
   accountAssetCollectionRequestBody,
   accountAssetExactRequestBody,
-  accountAssetOfficialCandidateRequestBody,
   accountAssetControlRoutes,
 } from "./http-contract.js";
 
@@ -59,6 +58,7 @@ export const extendAccountAssetControlRouteRegistry = (input: Readonly<{
 }>): RuntimeRouteRegistry => input.routes.extend([{
   method: "POST",
   mutation: "none",
+  query: "none",
   pathPattern: accountAssetControlRoutes.queries,
   response: "canonical_json",
   successStatus: 200,

@@ -12,10 +12,26 @@ const nodeModulesRoot = resolve(repositoryRoot, "node_modules");
 const webSourceRoot = resolve(repositoryRoot, "src/interfaces/web");
 const webEntrySource = resolve(webSourceRoot, "main.tsx");
 const webApplicationSource = resolve(webSourceRoot, "app.tsx");
+const walletProcessSource = resolve(webSourceRoot, "wallet-process.tsx");
+const walletObservationSource = resolve(webSourceRoot, "wallet-observation.ts");
 const walletClientSource = resolve(webSourceRoot, "wallet-client.ts");
 const browserClientSource = resolve(webSourceRoot, "browser-client.ts");
 const browserOperationIdSource = resolve(webSourceRoot, "operation-id.ts");
-const referenceMarketViewSource = resolve(webSourceRoot, "reference-market-view.tsx");
+const accountAssetsControllerSource =
+  resolve(webSourceRoot, "account-assets-controller.tsx");
+const stockTokenProcessSource = resolve(webSourceRoot, "stock-token-process.tsx");
+const analysisDialogSource = resolve(webSourceRoot, "analysis-dialog.tsx");
+const humanFailuresSource = resolve(webSourceRoot, "human-failures.ts");
+const pricesPageSource = resolve(webSourceRoot, "prices-page.tsx");
+const referencePricePresentationSource =
+  resolve(webSourceRoot, "reference-price-presentation.ts");
+const humanTimeSource = resolve(webSourceRoot, "human-time.ts");
+const referenceChartSource = resolve(webSourceRoot, "reference-chart.tsx");
+const referenceMarketChartSource =
+  resolve(webSourceRoot, "reference-market-chart.tsx");
+const lightweightChartsAdapterSource =
+  resolve(webSourceRoot, "lightweight-charts-adapter.tsx");
+const copyableIdentifierSource = resolve(webSourceRoot, "copyable-identifier.tsx");
 const canonicalJsonSource = resolve(repositoryRoot, "src/core/canonical-json.ts");
 const evidenceSource = resolve(repositoryRoot, "src/core/evidence.ts");
 const keccak256Source = resolve(repositoryRoot, "src/core/keccak256.ts");
@@ -37,6 +53,7 @@ const sharedContractSources = new Set([
   "src/core/capability-evidence.ts",
   "src/core/contract-analysis.ts",
   "src/core/amounts.ts",
+  "src/core/numeric-display.ts",
   "src/core/browser.ts",
   "src/core/contract.ts",
   "src/core/digests.ts",
@@ -76,54 +93,88 @@ const sharedContractSources = new Set([
   "src/registry/browser.ts",
   "src/registry/official-asset-contract.ts",
   "src/protocols/contracts.ts",
-  "src/protocols/uniswap-v2/browser.ts",
-  "src/protocols/uniswap-v2/contracts.ts",
-  "src/protocols/uniswap-v2/deployment.ts",
-  "src/protocols/uniswap-v2/evidence.ts",
-  "src/protocols/uniswap-v2/quote.ts",
   "src/wallet/error-definitions.ts",
   "src/wallet/management-contracts.ts",
   "src/wallet/operation-contract.ts",
   "src/wallet/operation-state.ts",
 ].map((path) => resolve(repositoryRoot, path)));
 
-const allowedRuntimePackages = new Set(["@noble/hashes", "lucide-react", "react", "react-dom", "scheduler", "zod"]);
+const allowedRuntimePackages = new Set([
+  "@noble/hashes",
+  "fancy-canvas",
+  "lightweight-charts",
+  "lucide-react",
+  "react",
+  "react-dom",
+  "scheduler",
+  "zod",
+]);
 const allowedWebPackageImports = new Map([
-  ["react", new Set(["ReactNode", "StrictMode", "useCallback", "useEffect", "useRef", "useState"])],
+  ["react", new Set([
+    "FormEvent", "KeyboardEvent", "MouseEvent",
+    "ReactNode",
+    "StrictMode",
+    "useCallback",
+    "useEffect",
+    "useMemo",
+    "useRef",
+    "useState",
+  ])],
   ["react-dom/client", new Set(["createRoot"])],
   ["lucide-react", new Set([
-    "ChevronLeft", "ChevronRight", "EllipsisVertical", "Plus", "RefreshCw", "Trash2",
+    "ChevronDown", "ChevronRight", "Copy", "EllipsisVertical", "LogOut",
+    "Plus", "RefreshCw", "Search", "Wallet", "X",
   ])],
 ]);
 const allowedWebConstructorsBySource = new Map([
   [webEntrySource, new Set(["Error"])],
   [webApplicationSource, new Set(["Error", "Set"])],
-  [browserClientSource, new Set(["AbortController", "BrowserResponseError", "Promise", "TypeError"])],
+  [walletProcessSource, new Set(["Error"])],
+  [walletObservationSource, new Set(["TypeError"])],
+  [browserClientSource, new Set(["AbortController", "BrowserRequestError", "Promise", "TypeError"])],
   [browserOperationIdSource, new Set(["Uint8Array"])],
-  [referenceMarketViewSource, new Set(["AbortController", "Map", "Set"])],
+  [accountAssetsControllerSource, new Set(["Error"])],
+  [stockTokenProcessSource, new Set(["Error"])],
+  [analysisDialogSource, new Set(["TypeError"])],
+  [humanFailuresSource, new Set(["Map", "TypeError"])],
+  [pricesPageSource, new Set(["Map", "Set"])],
+  [referencePricePresentationSource, new Set(["TypeError"])],
+  [humanTimeSource, new Set(["Date", "TypeError"])],
+  [referenceChartSource, new Set(["TypeError"])],
+  [referenceMarketChartSource, new Set(["Date"])],
+  [lightweightChartsAdapterSource, new Set(["Set", "TypeError"])],
   [resolve(webSourceRoot, "request-authority.ts"), new Set(["AbortController"])],
 ]);
 const allowedVirtualModules = new Set([
   "\0commonjsHelpers.js",
   "\0rolldown/runtime.js",
   "\0vite/modulepreload-polyfill.js",
+  "\0vite/preload-helper.js",
 ]);
 const codeSourceExtensions = new Set([".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"]);
 const allowedIntrinsicElements = new Set([
-  "a", "article", "button", "code", "dd", "details", "dialog", "div", "dl", "dt",
+  "a", "article", "button", "code", "dd", "dialog", "div", "dl", "dt",
   "h1", "h2", "h3", "h4", "h5", "h6", "header",
-  "footer", "input", "label", "li", "main", "nav", "option", "p", "polyline", "rect", "section", "select", "span", "strong", "summary", "svg", "ul",
+  "caption", "fieldset", "footer", "form", "input", "label", "legend", "li", "main",
+  "nav", "ol", "option", "p",
+  "rect", "section", "select", "span", "strong", "sup", "svg", "table", "tbody",
+  "td", "th", "thead", "time", "tr", "ul",
 ]);
 const allowedIntrinsicAttributes = new Set([
-  "aria-current", "aria-expanded", "aria-hidden", "aria-label", "aria-labelledby", "aria-modal", "autoComplete", "className", "disabled",
-  "fill", "height", "href", "key", "onBlur", "onCancel", "onChange", "onClick", "onFocus", "onKeyDown", "points",
-  "onMouseDown", "onMouseEnter", "onMouseLeave", "ref", "role",
-  "id", "shapeRendering", "spellCheck", "stroke", "strokeWidth", "tabIndex", "title", "type", "value", "vectorEffect", "viewBox", "width", "x", "y",
+  "aria-controls", "aria-current", "aria-describedby", "aria-disabled",
+  "aria-expanded", "aria-hidden", "aria-invalid", "aria-label", "aria-pressed",
+  "aria-keyshortcuts", "aria-labelledby", "aria-live", "aria-modal",
+  "autoComplete", "className", "data-label", "disabled",
+  "fill", "height", "href", "htmlFor", "key", "onBlur", "onCancel", "onChange", "onClick", "onFocus", "onKeyDown",
+  "onMouseDown", "onMouseEnter", "onMouseLeave", "onSelect", "onSubmit",
+  "ref", "rel", "role", "scope",
+  "id", "shapeRendering", "spellCheck", "tabIndex", "title", "type", "value", "viewBox", "width", "x", "y",
+  "inputMode", "maxLength", "name", "target",
 ]);
 const forbiddenGlobalIdentifiers = new Set([
   "Audio", "BroadcastChannel", "DOMParser", "EventSource", "Function", "Image", "SharedWorker",
   "WebSocket", "Worker", "XMLHttpRequest", "clearInterval", "clearTimeout", "eval", "fetch", "frames",
-  "history", "indexedDB", "localStorage", "location", "navigator", "open", "parent", "postMessage",
+  "history", "indexedDB", "localStorage", "location", "open", "parent", "postMessage",
   "self", "sessionStorage", "setInterval", "setTimeout", "top",
 ]);
 const browserGlobalRoots = new Set(["document", "globalThis", "navigator", "Object", "Reflect", "window"]);
@@ -136,7 +187,9 @@ const allowedGlobalMembers = new Set([
   "globalThis.clearTimeout",
   "globalThis.crypto.getRandomValues",
   "globalThis.fetch",
+  "globalThis.getComputedStyle",
   "globalThis.setTimeout",
+  "navigator.clipboard.writeText",
   "Object.create",
   "Object.freeze",
   "Object.getOwnPropertyDescriptors",
@@ -149,8 +202,13 @@ const allowedGlobalMembers = new Set([
   "Reflect.getPrototypeOf",
   "Reflect.ownKeys",
   "window.clearTimeout",
+  "window.addEventListener",
+  "window.history.pushState",
+  "window.location.hash",
   "window.location.reload",
   "window.location.pathname",
+  "window.location.search",
+  "window.removeEventListener",
   "window.sessionStorage.getItem",
   "window.sessionStorage.removeItem",
   "window.sessionStorage.setItem",
@@ -164,7 +222,9 @@ const callableGlobalMembers = new Set([
   "globalThis.clearTimeout",
   "globalThis.crypto.getRandomValues",
   "globalThis.fetch",
+  "globalThis.getComputedStyle",
   "globalThis.setTimeout",
+  "navigator.clipboard.writeText",
   "Object.create",
   "Object.freeze",
   "Object.getOwnPropertyDescriptors",
@@ -176,7 +236,10 @@ const callableGlobalMembers = new Set([
   "Reflect.getPrototypeOf",
   "Reflect.ownKeys",
   "window.clearTimeout",
+  "window.addEventListener",
+  "window.history.pushState",
   "window.location.reload",
+  "window.removeEventListener",
   "window.sessionStorage.getItem",
   "window.sessionStorage.removeItem",
   "window.sessionStorage.setItem",
@@ -184,6 +247,7 @@ const callableGlobalMembers = new Set([
 ]);
 const sensitiveGlobalMemberSources = new Map([
   ["globalThis.crypto.getRandomValues", new Set([browserOperationIdSource])],
+  ["globalThis.getComputedStyle", new Set([lightweightChartsAdapterSource])],
   ["Object.getOwnPropertyDescriptors", new Set([
     canonicalJsonValueSource,
     jsonObjectSource,
@@ -191,13 +255,29 @@ const sensitiveGlobalMemberSources = new Map([
   ])],
   ["Reflect.getPrototypeOf", new Set([canonicalJsonValueSource])],
   ["Reflect.ownKeys", new Set([canonicalJsonValueSource, jsonObjectSource])],
-  ["window.location.reload", new Set([webApplicationSource])],
-  ["window.location.pathname", new Set([webApplicationSource])],
-  ["window.sessionStorage.getItem", new Set([webApplicationSource])],
-  ["window.sessionStorage.removeItem", new Set([webApplicationSource])],
-  ["window.sessionStorage.setItem", new Set([webApplicationSource])],
+  ["document.title", new Set([webEntrySource])],
+  ["navigator.clipboard.writeText", new Set([copyableIdentifierSource])],
+  ["window.addEventListener", new Set([webEntrySource])],
+  ["window.history.pushState", new Set([webEntrySource])],
+  ["window.location.hash", new Set([webEntrySource])],
+  ["window.location.reload", new Set([walletProcessSource])],
+  ["window.location.pathname", new Set([webEntrySource])],
+  ["window.location.search", new Set([webEntrySource])],
+  ["window.removeEventListener", new Set([webEntrySource])],
+  ["window.sessionStorage.getItem", new Set([
+    stockTokenProcessSource,
+    walletProcessSource,
+  ])],
+  ["window.sessionStorage.removeItem", new Set([
+    stockTokenProcessSource,
+    walletProcessSource,
+  ])],
+  ["window.sessionStorage.setItem", new Set([
+    stockTokenProcessSource,
+    walletProcessSource,
+  ])],
 ]);
-const allowedDomRuntimeIdentifiers = new Set(["AbortController", "document", "window"]);
+const allowedDomRuntimeIdentifiers = new Set(["AbortController", "document", "navigator", "window"]);
 const protectedRuntimeBindings = new Set([
   "AbortController", "Array", "Date", "Error", "globalThis", "JSON", "Map", "Math", "Number",
   "Object", "Promise", "Reflect", "RegExp", "Set", "String", "Symbol", "TypeError", "WeakSet",
@@ -428,14 +508,17 @@ const approvedConstructorBinding = (
   if (expression.text === "Promise") {
     return symbolIsDeclaredIn(checker, expression, "lib.es2015.promise.d.ts");
   }
+  if (expression.text === "Date") {
+    return symbolIsDeclaredIn(checker, expression, "lib.es5.d.ts");
+  }
   if (expression.text === "Map" || expression.text === "Set") {
     return symbolIsDeclaredIn(checker, expression, "lib.es2015.collection.d.ts");
   }
   if (expression.text === "AbortController") return symbolIsDeclaredIn(checker, expression, "lib.dom.d.ts");
-  if (expression.text !== "BrowserResponseError") return false;
+  if (expression.text !== "BrowserRequestError") return false;
   return checker.getSymbolAtLocation(expression)?.declarations?.some((declaration) =>
     ts.isClassDeclaration(declaration) && declaration.getSourceFile() === sourceFile &&
-    declaration.name?.text === "BrowserResponseError") === true;
+    declaration.name?.text === "BrowserRequestError") === true;
 };
 
 const sourceLocation = (sourceFile: ts.SourceFile, node: ts.Node): string => {
@@ -496,6 +579,13 @@ const approvedSelectorCall = (node: ts.CallExpression, sourceFile: ts.SourceFile
   if (key === "document.getElementById") {
     const declaration = node.parent;
     const argument = node.arguments[0];
+    if (
+      path === webApplicationSource &&
+      node.arguments.length === 1 &&
+      argument !== undefined &&
+      ts.isStringLiteral(argument) &&
+      argument.text === "page-content"
+    ) return true;
     return path === webEntrySource && node.arguments.length === 1 &&
       argument !== undefined && ts.isStringLiteral(argument) && argument.text === "root" &&
       ts.isVariableDeclaration(declaration) && declaration.initializer === node &&
@@ -556,20 +646,61 @@ const approvedNavigationHref = (
   attribute: ts.JsxAttribute,
   sourceFile: ts.SourceFile,
 ): boolean => {
+  if (
+    resolve(sourceFile.fileName) === referenceMarketChartSource &&
+    attribute.initializer !== undefined &&
+    ts.isStringLiteral(attribute.initializer) &&
+    attribute.initializer.text === "https://www.tradingview.com/"
+  ) return true;
   if (resolve(sourceFile.fileName) !== webApplicationSource ||
-    attribute.name.getText(sourceFile) !== "href" ||
-    attribute.initializer === undefined || !ts.isJsxExpression(attribute.initializer) ||
-    attribute.initializer.expression === undefined) return false;
+    attribute.name.getText(sourceFile) !== "href") {
+    if (
+      attribute.name.getText(sourceFile) !== "href" ||
+      attribute.initializer === undefined ||
+      !ts.isJsxExpression(attribute.initializer) ||
+      attribute.initializer.expression === undefined
+    ) return false;
+    const expression = unwrap(attribute.initializer.expression);
+    if (
+      !ts.isCallExpression(expression) ||
+      expression.arguments.length !== 1 ||
+      !ts.isIdentifier(expression.expression) ||
+      expression.expression.text !== "browserLocationHref"
+    ) return false;
+    const declaration = checker.getSymbolAtLocation(expression.expression)
+      ?.declarations?.find(ts.isImportSpecifier);
+    if (
+      declaration === undefined ||
+      declaration.name.text !== "browserLocationHref" ||
+      declaration.propertyName !== undefined
+    ) return false;
+    const imported = declaration.parent.parent.parent;
+    return ts.isImportDeclaration(imported) &&
+      ts.isStringLiteral(imported.moduleSpecifier) &&
+      imported.moduleSpecifier.text === "../browser-contract.js";
+  }
+  if (
+    attribute.initializer === undefined ||
+    !ts.isJsxExpression(attribute.initializer) ||
+    attribute.initializer.expression === undefined
+  ) return false;
   const expression = unwrap(attribute.initializer.expression);
-  if (!ts.isPropertyAccessExpression(expression) ||
+  if (
+    !ts.isCallExpression(expression) ||
+    expression.arguments.length !== 1 ||
     !ts.isIdentifier(expression.expression) ||
-    expression.expression.text !== "browserPagePaths" ||
-    (expression.name.text !== "root" && expression.name.text !== "tokens")) return false;
-  const declaration = checker.getSymbolAtLocation(expression.expression)?.declarations?.find(ts.isImportSpecifier);
-  if (declaration === undefined || declaration.name.text !== "browserPagePaths" ||
-    declaration.propertyName !== undefined) return false;
+    expression.expression.text !== "browserLocationHref"
+  ) return false;
+  const declaration = checker.getSymbolAtLocation(expression.expression)
+    ?.declarations?.find(ts.isImportSpecifier);
+  if (
+    declaration === undefined ||
+    declaration.name.text !== "browserLocationHref" ||
+    declaration.propertyName !== undefined
+  ) return false;
   const imported = declaration.parent.parent.parent;
-  return ts.isImportDeclaration(imported) && ts.isStringLiteral(imported.moduleSpecifier) &&
+  return ts.isImportDeclaration(imported) &&
+    ts.isStringLiteral(imported.moduleSpecifier) &&
     imported.moduleSpecifier.text === "../browser-contract.js";
 };
 
@@ -578,18 +709,50 @@ const approvedObservationStorageCall = (
   node: ts.CallExpression,
   sourceFile: ts.SourceFile,
 ): boolean => {
-  if (resolve(sourceFile.fileName) !== webApplicationSource) return false;
+  const sourcePath = resolve(sourceFile.fileName);
+  const owner = sourcePath === walletProcessSource
+    ? Object.freeze({
+        key: "walletObservationStorageKey",
+        property: "write",
+        value: "value",
+        importModule: "./wallet-observation.js",
+      })
+    : sourcePath === stockTokenProcessSource
+      ? Object.freeze({
+          key: "stockTokenTerminalNotificationStorageKey",
+          property: "save",
+          value: "operationId",
+          importModule: undefined,
+        })
+      : undefined;
+  if (owner === undefined) return false;
   const path = memberPath(node.expression)?.parts.join(".");
   const key = node.arguments[0];
   if (key === undefined || ts.isSpreadElement(key)) return false;
   const canonicalKey = unwrap(key);
-  if (!ts.isIdentifier(canonicalKey) || canonicalKey.text !== "walletObservationStorageKey") return false;
-  const keyDeclaration = checker.getSymbolAtLocation(canonicalKey)?.declarations?.find(ts.isImportSpecifier);
-  if (keyDeclaration === undefined || keyDeclaration.name.text !== "walletObservationStorageKey" ||
-    keyDeclaration.propertyName !== undefined) return false;
-  const keyImport = keyDeclaration.parent.parent.parent;
-  if (!ts.isImportDeclaration(keyImport) || !ts.isStringLiteral(keyImport.moduleSpecifier) ||
-    keyImport.moduleSpecifier.text !== "./wallet-observation.js") return false;
+  if (!ts.isIdentifier(canonicalKey) || canonicalKey.text !== owner.key) return false;
+  const keyDeclarations =
+    checker.getSymbolAtLocation(canonicalKey)?.declarations ?? [];
+  const keyOwned = owner.importModule === undefined
+    ? keyDeclarations.some((declaration) =>
+        ts.isVariableDeclaration(declaration) &&
+        ts.isIdentifier(declaration.name) &&
+        declaration.name.text === owner.key &&
+        resolve(declaration.getSourceFile().fileName) === sourcePath)
+    : keyDeclarations.some((declaration) => {
+        if (
+          !ts.isImportSpecifier(declaration) ||
+          declaration.name.text !== owner.key ||
+          declaration.propertyName !== undefined
+        ) {
+          return false;
+        }
+        const keyImport = declaration.parent.parent.parent;
+        return ts.isImportDeclaration(keyImport) &&
+          ts.isStringLiteral(keyImport.moduleSpecifier) &&
+          keyImport.moduleSpecifier.text === owner.importModule;
+      });
+  if (!keyOwned) return false;
   if (path === "window.sessionStorage.getItem" || path === "window.sessionStorage.removeItem") {
     return node.arguments.length === 1;
   }
@@ -597,14 +760,32 @@ const approvedObservationStorageCall = (
   const operationId = node.arguments[1];
   if (operationId === undefined || ts.isSpreadElement(operationId)) return false;
   const canonicalOperationId = unwrap(operationId);
-  if (!ts.isIdentifier(canonicalOperationId) || canonicalOperationId.text !== "operationId") return false;
+  if (
+    !ts.isIdentifier(canonicalOperationId) ||
+    canonicalOperationId.text !== owner.value
+  ) {
+    return false;
+  }
   return checker.getSymbolAtLocation(canonicalOperationId)?.declarations?.some((declaration) => {
     if (!ts.isParameter(declaration) || !ts.isIdentifier(declaration.name) ||
-      declaration.name.text !== "operationId" || !ts.isArrowFunction(declaration.parent)) return false;
+      declaration.name.text !== owner.value || !ts.isArrowFunction(declaration.parent)) return false;
     const property = declaration.parent.parent;
     return ts.isPropertyAssignment(property) && property.initializer === declaration.parent &&
-      property.name.getText(sourceFile) === "write";
+      property.name.getText(sourceFile) === owner.property;
   }) === true;
+};
+
+const approvedDynamicImport = (
+  node: ts.CallExpression,
+  sourceFile: ts.SourceFile,
+): boolean => {
+  if (
+    resolve(sourceFile.fileName) !== lightweightChartsAdapterSource ||
+    node.arguments.length !== 1
+  ) return false;
+  const specifier = node.arguments[0];
+  return specifier !== undefined && !ts.isSpreadElement(specifier) &&
+    ts.isStringLiteral(specifier) && specifier.text === "lightweight-charts";
 };
 
 export const auditBrowserSourceModule = (source: string, pathInput: string): readonly string[] => {
@@ -624,7 +805,10 @@ export const auditBrowserSourceModule = (source: string, pathInput: string): rea
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
       const expression = unwrap(node.expression);
-      if (expression.kind === ts.SyntaxKind.ImportKeyword) reject(node, "dynamic import");
+      if (
+        expression.kind === ts.SyntaxKind.ImportKeyword &&
+        !approvedDynamicImport(node, sourceFile)
+      ) reject(node, "dynamic import");
       const pathValue = memberPath(expression);
       const key = pathValue?.parts.join(".");
       const suffix = memberSuffix(expression);
@@ -718,7 +902,11 @@ export const auditBrowserSourceModule = (source: string, pathInput: string): rea
         }
         if (node.text === "root" && resolve(sourceFile.fileName) === webEntrySource &&
           !approvedApplicationRootUse(node, sourceFile)) reject(node, "unapproved application root use");
-        if (forbiddenGlobalIdentifiers.has(node.text)) reject(node, `forbidden browser global ${node.text}`);
+        const jsxAttributeName =
+          ts.isJsxAttribute(node.parent) && node.parent.name === node;
+        if (forbiddenGlobalIdentifiers.has(node.text) && !jsxAttributeName) {
+          reject(node, `forbidden browser global ${node.text}`);
+        }
         if (browserGlobalRoots.has(node.text) && !isMemberExpression(node.parent)) {
           reject(node, `unapproved browser global ${node.text}`);
         }

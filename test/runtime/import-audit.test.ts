@@ -88,6 +88,10 @@ describe("module import audit", () => {
       .toEqual(new Set([resolve("src/protocols/uniswap-v2")]));
     expect(policy.runtimePackageOwners.get("@uniswap/v2-sdk"))
       .toEqual(new Set([resolve("src/protocols/uniswap-v2")]));
+    expect(policy.runtimePackageOwners.get("lightweight-charts"))
+      .toEqual(new Set([
+        resolve("src/interfaces/web/lightweight-charts-adapter.tsx"),
+      ]));
     expect(policy.runtimePackageOwners.get("better-sqlite3")).toEqual(new Set([resolve("src/runtime")]));
     expect(policy.runtimePackageOwners.get("@walletconnect/sign-client"))
       .toEqual(new Set([resolve("src/wallet")]));
@@ -178,6 +182,19 @@ describe("module import audit", () => {
       resolve("src/intelligence/source-adapter.ts"),
       policy,
     )).toEqual([]);
+    expect(moduleViolations(
+      `void import("lightweight-charts");`,
+      resolve("src/interfaces/web/lightweight-charts-adapter.tsx"),
+      policy,
+    )).toEqual([]);
+    expect(moduleViolations(
+      `void import("lightweight-charts");`,
+      resolve("src/interfaces/web/reference-market-chart.tsx"),
+      policy,
+    )).toEqual([
+      "src/interfaces/web/reference-market-chart.tsx:lightweight-charts:" +
+      "src/interfaces/web/lightweight-charts-adapter.tsx",
+    ]);
     expect(moduleViolations(`
       import SignClient from "@walletconnect/sign-client";
       import QRCode from "qrcode";

@@ -86,18 +86,54 @@ present and bound to the same asset and observation identity.
 ## Display Conversion
 
 - Display input uses an exact decimal parser.
+- An exact human-input parser accepts one unsigned plain decimal with no leading integer zeroes,
+  except for zero itself. A decimal point requires at least one following digit.
+  Signs, whitespace, grouping separators, and exponent notation are rejected.
 - Fractional precision beyond the verified token decimals is rejected.
 - Parsing never rounds, truncates, accepts exponent notation, or substitutes an
   approximate amount.
+- The parsed integer must fit the EVM `uint256` range. A surface that accepts
+  human amount input bounds its input before parsing.
 - Display formatting derives only from the canonical raw integer and verified
   decimals.
 - The account-asset human view removes leading integer zeroes, inserts the
   decimal point implied by verified decimals, and removes trailing fractional
   zeroes. Zero is `0`; no exponent notation, locale separator, rounding, or
-  `number` conversion is used. The raw integer remains visible and canonical.
+  `number` conversion is used. The raw integer remains canonical and remains
+  available to exact machine projections. Browser presentation follows
+  `docs/USER_INTERFACE_POLICY.md` and does not display the raw integer merely
+  because the canonical result contains it.
 - A formatted value round-trips to the identical raw integer.
 - A display value never becomes quoting, accounting, simulation, or transaction
   input without a new exact parse and unit binding.
+- Zero may be paired with the exact asset symbol in human presentation without
+  an admitted decimals value because every decimal scale represents zero as
+  zero. A nonzero raw quantity without admitted decimals is not formatted or
+  labelled as a human asset amount. The browser may present its human amount as
+  unavailable while exact machine projections retain the canonical raw value.
+
+### Rational Display
+
+- One browser-safe core owner formats a nonnegative reduced rational for human
+  display with at most eight significant base-10 digits.
+- It uses round-half-to-even once, removes trailing fractional zeroes, and
+  reports whether the display is exact or approximate.
+- Plain notation is used when the normalized base-10 exponent is from `-6`
+  through `15`, inclusive. Other values use a coefficient and signed exponent.
+- Rounding that changes a coefficient from `9.9999999` to `10` increments the
+  exponent before notation is selected.
+- Zero is exact `0`. Every positive rational remains visibly positive and is
+  never collapsed into a shared threshold label.
+- Exponent selection, rounding, and notation use integer cross-products and
+  `BigInt` only. No logarithm, floating-point value, or intermediate formatted
+  decimal participates.
+- The exact fraction remains the authority. Approximate text is a display
+  projection and never becomes an input, comparison value, chart source,
+  persisted value, or evidence value.
+- A raw-output-units-per-raw-input-unit price is converted to an exact reduced
+  output-token-units-per-input-token rational by applying both admitted decimal
+  scales once. Browser and CLI consumers use that object and do not parse a
+  fraction string to recover it.
 
 ## Arithmetic And Rounding
 
@@ -187,8 +223,8 @@ present and bound to the same asset and observation identity.
   independent raw-unit output calculation. Endpoint decimal failure makes the
   quote unavailable; an unavailable intermediary decimal leaves the independent
   quote reportable and makes only the SDK comparison unavailable.
-- Human CLI and browser views label the canonical raw-unit price separately.
-  They derive the exact token-unit price as
+- The human CLI view labels the canonical raw-unit price separately. It derives
+  the exact token-unit price as
   `rawPrice * 10^inputDecimals / 10^outputDecimals`, reduce the resulting
   rational, and display it without converting any component to a JavaScript
   `number`. This display value is not written back into the canonical quote.

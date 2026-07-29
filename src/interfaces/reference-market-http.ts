@@ -98,6 +98,7 @@ const readRoute = <Input, Success>(input: Readonly<{
   method: "POST",
   mutation: "none",
   pathPattern: input.path,
+  query: "none",
   response: "canonical_json",
   successStatus: 200,
   handler: async (context: RouteContext) => {

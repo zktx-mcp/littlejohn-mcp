@@ -55,6 +55,7 @@ const base: RequestSecurityInput = {
   params: Object.freeze({}),
   contentType: [],
   query: "",
+  queryMode: "none",
   bodyLength: 0,
   acceptsBody: false,
 };
@@ -74,6 +75,7 @@ describe("HTTP request-class and route authority", () => {
       {
         method: "GET",
         mutation: "none",
+        query: "none",
         pathPattern: "/api/v1/example",
         response: "canonical_json",
         successStatus: 200,
@@ -82,6 +84,7 @@ describe("HTTP request-class and route authority", () => {
       {
         method: "POST",
         mutation: "declared_control",
+        query: "none",
         pathPattern: "/api/v1/internal/control/example-creations",
         response: "canonical_json",
         successStatus: 201,
@@ -90,6 +93,7 @@ describe("HTTP request-class and route authority", () => {
       {
         method: "DELETE",
         mutation: "declared_control",
+        query: "none",
         pathPattern: "/api/v1/internal/control/example-deletions",
         response: "canonical_json",
         successStatus: 200,
@@ -98,6 +102,7 @@ describe("HTTP request-class and route authority", () => {
       {
         method: "GET",
         mutation: "none",
+        query: "browser_location",
         pathPattern: "/api/v1/browser-example",
         response: "browser_content",
         successStatus: 200,
@@ -108,6 +113,7 @@ describe("HTTP request-class and route authority", () => {
     const valid = {
       method: "GET",
       mutation: "none",
+      query: "none",
       pathPattern: "/api/v1/example",
       response: "canonical_json",
       successStatus: 200,
@@ -116,6 +122,7 @@ describe("HTTP request-class and route authority", () => {
     for (const [field, value] of [
       ["method", "PATCH"],
       ["mutation", "implicit"],
+      ["query", "arbitrary"],
       ["response", "arbitrary"],
       ["successStatus", 204],
     ] as const) {
@@ -156,6 +163,7 @@ describe("HTTP request-class and route authority", () => {
       .extend([{
         method: "GET",
         mutation: "none",
+        query: "none",
         pathPattern: "/api/v1/left-product",
         response: "canonical_json",
         successStatus: 200,
@@ -164,6 +172,7 @@ describe("HTTP request-class and route authority", () => {
       .extend([{
         method: "GET",
         mutation: "none",
+        query: "none",
         pathPattern: "/api/v1/right-product",
         response: "canonical_json",
         successStatus: 200,
@@ -233,19 +242,26 @@ describe("HTTP request-class and route authority", () => {
     })).toEqual({ ok: false, code: "content_type_unsupported" });
   });
 
-  it("enforces the Host, query, and maximum byte envelope independently of route selection", () => {
+  it("enforces the Host and maximum byte envelope independently of route selection", () => {
     expect(validateRequestEnvelopeSecurity({
-      host: ["127.0.0.1:46630"], query: "", bodyLength: 65_536,
+      host: ["127.0.0.1:46630"], bodyLength: 65_536,
     })).toEqual({ ok: true });
     expect(validateRequestEnvelopeSecurity({
-      host: ["localhost:46630"], query: "", bodyLength: 0,
+      host: ["localhost:46630"], bodyLength: 0,
     })).toEqual({ ok: false, code: "invalid_host" });
     expect(validateRequestEnvelopeSecurity({
-      host: ["127.0.0.1:46630"], query: "?x=1", bodyLength: 0,
-    })).toEqual({ ok: false, code: "query_not_supported" });
-    expect(validateRequestEnvelopeSecurity({
-      host: ["127.0.0.1:46630"], query: "", bodyLength: 65_537,
+      host: ["127.0.0.1:46630"], bodyLength: 65_537,
     })).toEqual({ ok: false, code: "payload_too_large" });
+  });
+
+  it("binds query permission to the matched route instead of the request envelope", () => {
+    expect(validateRequestSecurity({ ...base, query: "?window=30d" }))
+      .toEqual({ ok: false, code: "query_not_supported" });
+    expect(validateRequestSecurity({
+      ...base,
+      query: "?window=30d",
+      queryMode: "browser_location",
+    })).toEqual({ ok: true });
   });
 
   it("derives initial request policy and explicit success status from owned resources", async () => {
@@ -253,6 +269,7 @@ describe("HTTP request-class and route authority", () => {
     const routes = createRuntimeRouteRegistry({ controlVerifier: verifier }).extend([
       {
         method: "GET",
+        query: "none",
         pathPattern: "/api/v1/internal/control/items/{itemId}",
         mutation: "none" as const,
         response: "canonical_json" as const, successStatus: 200,
@@ -260,6 +277,7 @@ describe("HTTP request-class and route authority", () => {
       },
       {
         method: "POST",
+        query: "none",
         pathPattern: "/api/v1/internal/control/examples",
         mutation: "declared_control" as const,
         response: "canonical_json" as const, successStatus: 201,
@@ -267,6 +285,7 @@ describe("HTTP request-class and route authority", () => {
       },
       {
         method: "POST",
+        query: "none",
         pathPattern: "/api/v1/contract-inspections",
         mutation: "none" as const,
         response: "canonical_json" as const, successStatus: 200,
@@ -300,6 +319,7 @@ describe("HTTP request-class and route authority", () => {
     const { verifier } = await credentialFixture();
     const routes = createRuntimeRouteRegistry({ controlVerifier: verifier }).extend([{
       method: "GET",
+      query: "none",
       pathPattern: "/api/v1/internal/control/items/{chainId}",
       mutation: "none" as const,
       response: "canonical_json" as const,
@@ -367,13 +387,14 @@ describe("HTTP request-class and route authority", () => {
     const withRoute = withPolicy.extend([
       {
         method: "POST",
+        query: "none",
         pathPattern: "/api/v1/examples/{operationId}/confirmations",
         mutation: "declared_control" as const,
         response: "canonical_json" as const, successStatus: 200,
         handler: success,
       },
       {
-        method: "GET", mutation: "none", pathPattern: "/assets/{assetName}",
+        method: "GET", mutation: "none", query: "none", pathPattern: "/assets/{assetName}",
         response: "canonical_json" as const, successStatus: 200, handler: success,
       },
     ]);
@@ -459,6 +480,7 @@ describe("HTTP request-class and route authority", () => {
       .toThrow("cannot be inspected safely");
     expect(() => withPolicy.extend([{
       method: "GET",
+      query: "none",
       pathPattern: "/api/v1/examples/{operationId}/confirmations",
       mutation: "none" as const,
       response: "canonical_json" as const, successStatus: 200,
@@ -481,7 +503,7 @@ describe("HTTP request-class and route authority", () => {
       }],
     }, [{ kind: "prefix", pathPrefix: "/api/v1/throwing/", requestClass: "throwing_read" }])
       .extend([{
-        method: "GET", mutation: "none", pathPattern: "/api/v1/throwing/example",
+        method: "GET", mutation: "none", query: "none", pathPattern: "/api/v1/throwing/example",
         response: "canonical_json" as const, successStatus: 200, handler: success,
       }]);
     const throwingMatch = throwingVerifier.match("GET", "/api/v1/throwing/example");
@@ -536,11 +558,11 @@ describe("HTTP request-class and route authority", () => {
       ])
       .extend([
         {
-          method: "DELETE", mutation: "declared_control", pathPattern: "/api/v1/examples/{operationId}",
+          method: "DELETE", mutation: "declared_control", query: "none", pathPattern: "/api/v1/examples/{operationId}",
           response: "canonical_json" as const, successStatus: 200, handler: success,
         },
         {
-          method: "GET", mutation: "none", pathPattern: "/api/v1/examples/{readOperationId}",
+          method: "GET", mutation: "none", query: "none", pathPattern: "/api/v1/examples/{readOperationId}",
           response: "canonical_json" as const, successStatus: 200, handler: success,
         },
       ]);
@@ -574,6 +596,7 @@ describe("HTTP request-class and route authority", () => {
     const baseRegistry = createRuntimeRouteRegistry({ controlVerifier: verifier });
     expect(() => baseRegistry.extend([{
       method: "GET",
+      query: "none",
       pathPattern: "/api/v1/internal/control/example",
       mutation: "none" as const,
       response: "canonical_json" as const, successStatus: 200,
@@ -581,13 +604,13 @@ describe("HTTP request-class and route authority", () => {
       requestClass: "public_read",
     } as unknown as RouteDefinition])).toThrow("fields");
     expect(() => baseRegistry.extend([{
-      method: "GET", mutation: "none", pathPattern: "/foreign/example", response: "canonical_json" as const, successStatus: 200, handler: success,
+      method: "GET", mutation: "none", query: "none", pathPattern: "/foreign/example", response: "canonical_json" as const, successStatus: 200, handler: success,
     }])).toThrow("owned request-class resource");
     expect(() => baseRegistry.extend([{
-      method: "GET", mutation: "none", pathPattern: "/__identity", response: "canonical_json" as const, successStatus: 200, handler: success,
+      method: "GET", mutation: "none", query: "none", pathPattern: "/__identity", response: "canonical_json" as const, successStatus: 200, handler: success,
     }])).toThrow();
     expect(() => baseRegistry.extend([{
-      method: "GET", mutation: "none", pathPattern: "/api/v1/internal/cli/example", response: "canonical_json" as const, successStatus: 200, handler: success,
+      method: "GET", mutation: "none", query: "none", pathPattern: "/api/v1/internal/cli/example", response: "canonical_json" as const, successStatus: 200, handler: success,
     }])).toThrow();
     expect(baseRegistry.match("POST", "/api/v1/wallet/connect").status).toBe("not_found");
     const hostileRoutes = new Proxy([], {
@@ -598,21 +621,21 @@ describe("HTTP request-class and route authority", () => {
     });
     expect(() => baseRegistry.extend(hostileRoutes)).toThrow("cannot be inspected safely");
     const hostile = Object.defineProperty({
-      method: "GET", mutation: "none", pathPattern: "/api/v1/internal/control/example", response: "canonical_json" as const, successStatus: 200,
+      method: "GET", mutation: "none", query: "none", pathPattern: "/api/v1/internal/control/example", response: "canonical_json" as const, successStatus: 200,
     }, "handler", {
       enumerable: true,
       get(): never { throw new Error("secret-handler-getter"); },
     });
     expect(() => baseRegistry.extend([hostile as RouteDefinition])).toThrow("data properties");
     expect(() => baseRegistry.extend([{
-      method: "GET", mutation: "none", pathPattern: "/api/v1/example", response: "canonical_json" as const, successStatus: 201, handler: success,
+      method: "GET", mutation: "none", query: "none", pathPattern: "/api/v1/example", response: "canonical_json" as const, successStatus: 201, handler: success,
     }])).toThrow("incompatible");
     expect(() => baseRegistry.extend([{
-      method: "POST", mutation: "declared_control", pathPattern: "/api/v1/contract-inspections",
+      method: "POST", mutation: "declared_control", query: "none", pathPattern: "/api/v1/contract-inspections",
       response: "canonical_json" as const, successStatus: 200, handler: success,
     }])).toThrow("incompatible");
     expect(() => baseRegistry.extend([{
-      method: "GET", mutation: "declared_control", pathPattern: "/api/v1/internal/control/example",
+      method: "GET", mutation: "declared_control", query: "none", pathPattern: "/api/v1/internal/control/example",
       response: "canonical_json" as const, successStatus: 200, handler: success,
     }])).toThrow("incompatible");
 
@@ -620,6 +643,7 @@ describe("HTTP request-class and route authority", () => {
       method: "GET" as const,
       pathPattern: "/api/v1/internal/control/items/fixed",
       mutation: "none" as const,
+      query: "none" as const,
       response: "canonical_json" as const, successStatus: 200 as const,
       handler: success,
     };
@@ -627,6 +651,7 @@ describe("HTTP request-class and route authority", () => {
       method: "GET" as const,
       pathPattern: "/api/v1/internal/control/items/{itemId}",
       mutation: "none" as const,
+      query: "none" as const,
       response: "canonical_json" as const, successStatus: 200 as const,
       handler: success,
     };
@@ -646,6 +671,7 @@ describe("HTTP request-class and route authority", () => {
     const { verifier } = await credentialFixture();
     const registry = createRuntimeRouteRegistry({ controlVerifier: verifier }).extend([{
       method: "GET",
+      query: "none",
       pathPattern: "/api/v1/internal/control/example",
       mutation: "none" as const,
       response: "canonical_json" as const, successStatus: 200,
@@ -690,6 +716,7 @@ describe("HTTP request-class and route authority", () => {
       }])
       .extend([{
         method: "GET",
+        query: "none",
         pathPattern: "/examples/{operationId}",
         mutation: "none",
         response: "browser_content",

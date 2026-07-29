@@ -6,6 +6,7 @@ import {
   parseCapabilityInput,
   parseCapabilitySuccess,
   productChainId,
+  scaleRawUnitPriceToTokenUnits,
   transactionInspectCapability,
   chainStatusCapability,
   type AccountBalanceData,
@@ -15,6 +16,7 @@ import {
   type CanonicalJson,
   type ChainStatusData,
   type ContractInspectData,
+  type ExactRational,
   type TransactionInspectData,
 } from "../core/index.js";
 import {
@@ -46,7 +48,6 @@ import {
 import { LocalOperationClient } from "./operation-client.js";
 import { deliveryUnknownCliExitCode } from "./delivery-exit.js";
 import {
-  formatUniswapV2TokenUnitPrice,
   uniswapV2QuoteCapability,
   type UniswapV2QuoteData,
   type UniswapV2QuoteInput,
@@ -70,6 +71,19 @@ export interface ReadCliOutputPort {
 }
 
 const invalidInput = (): never => { throw new TypeError("CLI read input is invalid."); };
+
+const tokenUnitPriceText = (
+  rawUnitPrice: ExactRational,
+  inputDecimals: string,
+  outputDecimals: string,
+): string => {
+  const price = scaleRawUnitPriceToTokenUnits(
+    rawUnitPrice,
+    inputDecimals,
+    outputDecimals,
+  );
+  return `${price.numerator}/${price.denominator}`;
+};
 
 const parseBlockSelector = (value: string | undefined) => {
   if (value === "latest") return Object.freeze({ kind: "latest" });
@@ -446,13 +460,13 @@ const uniswapV2QuoteHuman = (success: UniswapV2QuoteSuccess): string => {
       ? [
           `  Output: ${candidate.amountOut}`,
           `  Mid price (raw output units per raw input unit): ${candidate.midPrice.numerator}/${candidate.midPrice.denominator}`,
-          `  Mid price (output tokens per input token): ${formatUniswapV2TokenUnitPrice(
+          `  Mid price (output tokens per input token): ${tokenUnitPriceText(
             candidate.midPrice,
             data.input.tokenInDecimals,
             data.input.tokenOutDecimals,
           )}`,
           `  Execution price (raw output units per raw input unit): ${candidate.executionPrice.numerator}/${candidate.executionPrice.denominator}`,
-          `  Execution price (output tokens per input token): ${formatUniswapV2TokenUnitPrice(
+          `  Execution price (output tokens per input token): ${tokenUnitPriceText(
             candidate.executionPrice,
             data.input.tokenInDecimals,
             data.input.tokenOutDecimals,

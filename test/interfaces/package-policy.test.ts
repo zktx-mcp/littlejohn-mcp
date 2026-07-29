@@ -1,8 +1,29 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
 describe("browser bundle distribution notices", () => {
+  it("retains the exact Lightweight Charts closure licenses and official notice", async () => {
+    const [installed, retained, fancyCanvas, notice] = await Promise.all([
+      readFile("node_modules/lightweight-charts/LICENSE"),
+      readFile("LICENSES/LIGHTWEIGHT-CHARTS-LICENSE.txt"),
+      readFile("LICENSES/FANCY-CANVAS-LICENSE.txt"),
+      readFile("THIRD_PARTY_NOTICES.txt", "utf8"),
+    ]);
+    const officialNotice =
+      "TradingView Lightweight Charts™\n" +
+      "Copyright (с) 2025 TradingView, Inc. https://www.tradingview.com/";
+    expect(retained).toEqual(installed);
+    expect(createHash("sha256").update(retained).digest("hex"))
+      .toBe("70c9d5382506dd184465425c08a99ad9bd6d9ac1313c252968ba0b585e5ef823");
+    expect(createHash("sha256").update(fancyCanvas).digest("hex"))
+      .toBe("52d2ba0c8f8f4532bd524358d679693ff3dd9e40c56fe0c0c63061ed0733aa18");
+    expect(notice.split(officialNotice)).toHaveLength(2);
+    expect(notice).toContain("LICENSES/LIGHTWEIGHT-CHARTS-LICENSE.txt");
+    expect(notice).toContain("LICENSES/FANCY-CANVAS-LICENSE.txt");
+  });
+
   it("retains the exact pinned Lucide and Feather license artifact", async () => {
     const [installed, retained, notice] = await Promise.all([
       readFile("node_modules/lucide-react/LICENSE"),

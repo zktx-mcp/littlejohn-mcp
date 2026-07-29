@@ -25,8 +25,11 @@ import {
 } from "./invocation-lifecycle.js";
 import { normalizeRpcBytes, rpcQuantityToUnsignedDecimal } from "./normalization.js";
 import {
+  ChainRpcError,
   getChainRpcErrorCode,
   isRpcExecutionRevertedError,
+  type ChainRpcMethod,
+  type ChainRpcRequestMap,
   type RpcCanonicalBlockReference,
   type RpcRequester,
 } from "./rpc.js";
@@ -76,6 +79,66 @@ interface Dependencies {
   readonly chainId: ChainAnchor["chainId"];
   readonly lifecycle: ChainInvocationLifecycle;
 }
+
+const accountAssetTokenReadConcurrency = 5;
+const accountAssetRpcConcurrency = 8;
+
+interface QueuedRpcRequest {
+  cancelled: boolean;
+  readonly removeAbortListener: () => void;
+  readonly run: () => Promise<void>;
+}
+
+const createAccountAssetRpcRequester = (
+  upstream: RpcRequester,
+): RpcRequester => {
+  const queue: QueuedRpcRequest[] = [];
+  let active = 0;
+
+  const drain = (): void => {
+    while (active < accountAssetRpcConcurrency) {
+      const request = queue.shift();
+      if (request === undefined) return;
+      if (request.cancelled) continue;
+      request.removeAbortListener();
+      active += 1;
+      void request.run().finally(() => {
+        active -= 1;
+        drain();
+      });
+    }
+  };
+
+  return Object.freeze({
+    request<Method extends ChainRpcMethod>(
+      method: Method,
+      params: ChainRpcRequestMap[Method],
+      signal: AbortSignal,
+    ): Promise<unknown> {
+      if (!(signal instanceof AbortSignal)) {
+        return Promise.reject(new TypeError("RPC abort signal is invalid."));
+      }
+      if (signal.aborted) return Promise.reject(new ChainRpcError("request_aborted"));
+      return new Promise<unknown>((resolve, reject) => {
+        const onAbort = (): void => {
+          request.cancelled = true;
+          reject(new ChainRpcError("request_aborted"));
+        };
+        const request: QueuedRpcRequest = {
+          cancelled: false,
+          removeAbortListener: () => signal.removeEventListener("abort", onAbort),
+          run: async () => {
+            try { resolve(await upstream.request(method, params, signal)); }
+            catch (error) { reject(error); }
+          },
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        queue.push(request);
+        drain();
+      });
+    },
+  } satisfies RpcRequester);
+};
 
 const normalizeFailure = (error: unknown, callerSignal: AbortSignal): never => {
   const stopReason = getChainInvocationStopReason(error);
@@ -198,8 +261,23 @@ const readTokensInOrder = async (
   signal: AbortSignal,
 ): Promise<readonly CurrentAccountTokenRead[]> => {
   const tokens: CurrentAccountTokenRead[] = [];
-  for (const asset of assets) {
-    tokens.push(await readToken(dependencies, account, asset, block, reference, signal));
+  for (
+    let start = 0;
+    start < assets.length;
+    start += accountAssetTokenReadConcurrency
+  ) {
+    if (signal.aborted) throw new ChainOperationError("request_aborted");
+    const batch = assets.slice(start, start + accountAssetTokenReadConcurrency);
+    const settled = await Promise.allSettled(batch.map((asset) =>
+      readToken(dependencies, account, asset, block, reference, signal)));
+    const failure = settled.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (failure !== undefined) throw failure.reason;
+    for (const result of settled) {
+      if (result.status !== "fulfilled") throw new ChainOperationError("source_unavailable");
+      tokens.push(result.value);
+    }
   }
   return Object.freeze(tokens);
 };
@@ -235,14 +313,16 @@ export const createAccountAssetChainReadPort = (
       );
       const stop = new AbortController();
       const callSignal = AbortSignal.any([context.signal, stop.signal]);
+      const rpc = createAccountAssetRpcRequester(dependencies.rpc);
+      const readDependencies = Object.freeze({ ...dependencies, rpc });
       const calls = [
-        dependencies.rpc.request(
+        rpc.request(
           "eth_getBalance",
           [identities.account.address, identities.reference],
           callSignal,
         ).then(rpcQuantityToUnsignedDecimal),
         readTokensInOrder(
-          dependencies,
+          readDependencies,
           identities.account,
           identities.assets,
           identities.block,

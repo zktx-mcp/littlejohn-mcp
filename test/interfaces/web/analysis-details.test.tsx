@@ -1,5 +1,3 @@
-import { readFile } from "node:fs/promises";
-
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -11,7 +9,7 @@ import {
 import {
   ContractAnalysisDetails,
   TokenInspectionAnalysisDetails,
-} from "../../../src/interfaces/web/contract-inspection-view.js";
+} from "../../../src/interfaces/web/analysis-details.js";
 import { tokenInspectCapability } from "../../../src/token-catalog/browser.js";
 import {
   analysisAdmin,
@@ -40,32 +38,38 @@ beforeAll(async () => {
   exactInspection = await createInspectionSuccess(undefined, options);
 });
 
-describe("contract inspection browser presentation", () => {
-  it("presents the exact analysis, evidence, limitations, and ordered functions without per-function rows", () => {
+describe("analysis browser presentation", () => {
+  it("leads with the unavailable scam conclusion and keeps established control facts", () => {
     const markup = renderToStaticMarkup(createElement(ContractAnalysisDetails, {
       analysis: exactInspection.data.analysis,
-      sources: exactInspection.evidence.sources,
       coverage: exactInspection.evidence.coverage,
       warnings: exactInspection.warnings,
       limitations: getCapabilityDefinitionSnapshot(tokenInspectCapability).staticScopeExclusions,
     }));
 
-    expect(markup).toContain("Unresolved is not safe");
-    expect(markup).toContain(tokenAddress);
+    expect(markup).toContain("Scam status");
+    expect(markup).toContain("Not established");
+    expect(markup.indexOf("Scam status")).toBeLessThan(
+      markup.indexOf("Control summary"),
+    );
     expect(markup).toContain(analysisImplementation);
     expect(markup).toContain(analysisOwner);
     expect(markup).toContain(analysisAdmin);
-    expect(markup).toContain("eip1967 implementation");
-    expect(markup).toContain("Target code hash");
-    expect(markup).toContain("Implementation code hash");
+    expect(markup).toContain("EIP-1967 implementation");
     expect(markup).toContain("Source verification");
-    expect(markup).toContain("exact match");
-    expect(markup).toContain("Evidence sources");
-    expect(markup).toContain("Sourcify");
+    expect(markup).toContain("Exact source match");
+    expect(markup).toContain("What this analysis cannot establish");
     expect(markup).toContain("custom proxy");
-    expect(markup.match(/<code class="declared-functions">/gu)).toHaveLength(1);
-    expect(markup).toContain("owner()\npaused()");
-    expect(markup.match(/<li[^>]*>[^<]*owner\(\)/gu)).toBeNull();
+    expect(markup).not.toContain("Target code hash");
+    expect(markup).not.toContain("Implementation code hash");
+    expect(markup).not.toContain("Declared functions");
+    expect(markup).not.toContain("owner()\npaused()");
+    expect(markup).not.toContain(
+      exactInspection.data.analysis.targetRuntimeCode.codeHash,
+    );
+    for (const source of exactInspection.evidence.sources) {
+      expect(markup).not.toContain(source.recordDigest);
+    }
   });
 
   it("uses the same analysis presentation for token inspection", () => {
@@ -74,26 +78,14 @@ describe("contract inspection browser presentation", () => {
     }));
 
     expect(markup).toContain("Example Token");
-    expect(markup).toContain("Raw total supply");
-    expect(markup).toContain("Target");
-    expect(markup).toContain(tokenAddress);
-    expect(markup).toContain("Declared functions");
-    expect(markup).toContain("Unavailable or unresolved information is not evidence");
-  });
-
-  it("binds request cancellation and stale-response admission to the shared request authority", async () => {
-    const source = await readFile(
-      "src/interfaces/web/contract-inspection-view.tsx",
-      "utf8",
+    expect(markup).toContain("Decimals");
+    expect(markup).toContain("Scam status");
+    expect(markup).toContain("Not established");
+    expect(markup.indexOf("Scam status")).toBeLessThan(
+      markup.indexOf("Token facts"),
     );
-
-    expect(source).toContain("useState(createBrowserRequestAuthority)");
-    expect(source).toContain("const active = authority.beginRead()");
-    expect(source).toContain("signal: active.signal");
-    expect(source.match(/authority\.isCurrent\(active\)/gu)).toHaveLength(2);
-    expect(source).toContain("authority.invalidateRead()");
-    expect(source).toContain("authority.close()");
-    expect(source).not.toContain("tokenInspectionDigest");
-    expect(source).not.toContain("tokenReviewDigest");
+    expect(markup).not.toContain("Raw total supply");
+    expect(markup).not.toContain("Declared functions");
+    expect(markup).not.toContain(exactInspection.evidence.sources[0]!.recordDigest);
   });
 });

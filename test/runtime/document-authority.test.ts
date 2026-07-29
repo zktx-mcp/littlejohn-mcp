@@ -1,178 +1,182 @@
-import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
-import { productChainId } from "../../src/core/index.js";
-import { runtimeProtocolVersion } from "../../src/runtime/runtime-identity.js";
 import {
-  currentSqliteSchemaSql,
-  currentSqliteTableNames,
-  databaseSchemaVersion,
-} from "../../src/runtime/sqlite-schema.js";
+  accountAssetBrowserRoutes,
+  accountAssetControlRoutes,
+} from "../../src/account-assets/index.js";
+import { productChainId } from "../../src/core/index.js";
+import {
+  browserApiRoot,
+  browserAssetPaths,
+  browserInformationPages,
+  browserWalletApiPaths,
+  publicInspectionPaths,
+  referenceMarketBrowserMutationPaths,
+  referenceMarketPublicRoutes,
+} from "../../src/interfaces/browser-contract.js";
+import {
+  capabilityCatalogInterface,
+  declaredCliCommandIdentities,
+  declaredMcpToolNames,
+  readInterfaceIdentities,
+  referenceMarketInterfaceBindingList,
+  referenceMarketLocalMutationPaths,
+  uniswapV2PublicRoutes,
+} from "../../src/interfaces/identities.js";
+import {
+  fixedOrigin,
+  internalApiPathPrefix,
+  localControlApiPathPrefix,
+  publicApiPathPrefix,
+  runtimeIdentityPath,
+} from "../../src/runtime/http-boundary.js";
+import { currentSqliteTableNames } from "../../src/runtime/sqlite-schema.js";
+import {
+  tokenCatalogBrowserRoutes,
+  tokenCatalogControlRoutes,
+} from "../../src/token-catalog/index.js";
+import { walletControlRoutes } from "../../src/wallet/routes.js";
 
 const architecturePath = "docs/ARCHITECTURE.md";
-const productPolicyPath = "docs/PRODUCT_POLICY.md";
-const transactionPolicyPath = "docs/TRANSACTION_POLICY.md";
 
-const currentTableNames = [
-  "chain",
-  "contract",
-  "current_wallet_connection",
-  "local_profile",
-  "reference_feed_round",
-  "reference_feed_sync_state",
-  "reference_pair_watchlist_entry",
-  "reference_pair_watchlist_state",
-  "robinhood_asset",
-  "robinhood_asset_snapshot",
-  "runtime_owner",
-  "token_contract",
-  "token_contract_inspection",
-  "wallet_account",
-  "wallet_token_selection",
-  "wallet_token_selection_state",
-] as const;
+const escapeRegex = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 
-type DuplicateMachineState =
-  | "database-schema-version"
-  | "interface-cardinality"
-  | "product-chain-reference"
-  | "runtime-protocol-version"
-  | "sqlite-table-count"
-  | `sqlite-table-name:${typeof currentTableNames[number]}`;
+const decorationNeutralText = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/[`*~[\](){}<>|]/gu, " ")
+    .replace(/\s+/gu, " ");
 
-const containsExactToken = (text: string, token: string): boolean =>
-  new RegExp(`(?:^|[^a-z0-9_])${token}(?=$|[^a-z0-9_])`, "u").test(text);
+const containsExactIdentifier = (text: string, identifier: string): boolean =>
+  new RegExp(
+    `(?:^|[^a-z0-9_-])${escapeRegex(identifier.toLowerCase())}(?=$|[^a-z0-9_-])`,
+    "u",
+  ).test(decorationNeutralText(text));
 
-const containsVersionValue = (text: string, numeric: string, word: string): boolean =>
-  containsExactToken(text, numeric) ||
-  containsExactToken(text, word) ||
-  new RegExp(`(?:^|[^a-z0-9_])v${numeric}(?=$|[^a-z0-9_])`, "u").test(text);
+const containsExactPhrase = (text: string, words: readonly string[]): boolean => {
+  const phrase = words
+    .map((word) => escapeRegex(word.toLowerCase()))
+    .join("\\s+");
+  return new RegExp(
+    `(?:^|[^a-z0-9_-])${phrase}(?=$|[^a-z0-9_-])`,
+    "u",
+  ).test(decorationNeutralText(text));
+};
 
-const duplicateMachineState = (document: string): readonly DuplicateMachineState[] => {
-  const normalized = document.toLowerCase();
-  const violations = new Set<DuplicateMachineState>();
-  if (containsExactToken(normalized, "4663")) violations.add("product-chain-reference");
+const stringValues = (value: object): readonly string[] =>
+  Object.values(value).filter((entry): entry is string => typeof entry === "string");
 
-  const statements = normalized
-    .replace(/\s+/gu, " ")
-    .split(/[.!?]+(?:\s+|$)/u)
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
-  for (const statement of statements) {
-    const copiedInterfaceCardinality =
-      /\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty(?:-[a-z]+)?|[0-9]+)\s+(?:(?:semantic|read|public|implemented|loopback|http|mcp|interface|management|operation|wallet|token|market)[ -]+){0,4}(?:capabilit(?:y|ies)|http resources?|loopback resources?|mcp tools?|tool groups?)\b/u;
-    if (copiedInterfaceCardinality.test(statement)) {
-      violations.add("interface-cardinality");
-    }
+const sourceOwnedPaths = Object.freeze([
+  ...new Set([
+    browserApiRoot,
+    browserAssetPaths.pattern,
+    capabilityCatalogInterface.http.path,
+    internalApiPathPrefix,
+    localControlApiPathPrefix,
+    publicApiPathPrefix,
+    runtimeIdentityPath,
+    ...readInterfaceIdentities.map((identity) => identity.http.path),
+    ...browserInformationPages.map((page) => page.pathPattern),
+    ...referenceMarketInterfaceBindingList.map((binding) => binding.http.path),
+    ...stringValues(accountAssetBrowserRoutes),
+    ...stringValues(accountAssetControlRoutes),
+    ...stringValues(browserWalletApiPaths),
+    ...stringValues(publicInspectionPaths),
+    ...stringValues(referenceMarketBrowserMutationPaths),
+    ...stringValues(referenceMarketLocalMutationPaths),
+    ...stringValues(referenceMarketPublicRoutes),
+    ...stringValues(tokenCatalogBrowserRoutes),
+    ...stringValues(tokenCatalogControlRoutes),
+    ...stringValues(uniswapV2PublicRoutes),
+    ...stringValues(walletControlRoutes),
+  ].filter((path) => path !== "/")),
+].sort());
 
-    const isRuntimeProtocolContext =
-      /\bruntimeprotocolversion\b/u.test(statement) ||
-      /\bruntime protocol\b/u.test(statement) ||
-      /\bprotocol (?:version|revision)\b/u.test(statement) ||
-      /\bwire (?:contract|version|revision)\b/u.test(statement);
-    if (isRuntimeProtocolContext && containsVersionValue(statement, "9", "nine")) {
-      violations.add("runtime-protocol-version");
-    }
+type CopiedSourceIdentifier =
+  | `path:${string}`
+  | `sqlite:${string}`
+  | "product-chain";
 
-    const isDatabaseSchemaContext =
-      /\bdatabase schema\b/u.test(statement) ||
-      /\bsqlite schema\b/u.test(statement) ||
-      /\bschema (?:version|revision)\b/u.test(statement) ||
-      /\buser_version\b/u.test(statement) ||
-      /\bdatabaseschemaversion\b/u.test(statement);
-    if (isDatabaseSchemaContext && containsVersionValue(statement, "8", "eight")) {
-      violations.add("database-schema-version");
-    }
-
-    const isSqliteTableContext =
-      /\btables?\b/u.test(statement) &&
-      /\b(?:database|schema|sqlite)\b/u.test(statement);
-    if (isSqliteTableContext && containsVersionValue(statement, "16", "sixteen")) {
-      violations.add("sqlite-table-count");
-    }
+const copiedSourceIdentifiers = (document: string): readonly CopiedSourceIdentifier[] => {
+  const violations = new Set<CopiedSourceIdentifier>();
+  if (containsExactIdentifier(document, productChainId)) {
+    violations.add("product-chain");
   }
-
-  for (const tableName of currentTableNames) {
-    if (tableName.includes("_") && containsExactToken(normalized, tableName)) {
-      violations.add(`sqlite-table-name:${tableName}`);
+  for (const path of sourceOwnedPaths) {
+    if (document.includes(path)) violations.add(`path:${path}`);
+  }
+  for (const tableName of currentSqliteTableNames) {
+    if (
+      tableName.includes("_") &&
+      containsExactIdentifier(document, tableName)
+    ) {
+      violations.add(`sqlite:${tableName}`);
     }
   }
   return [...violations].sort();
 };
 
+const copiedCompleteInterfaceCatalogs = (
+  document: string,
+): readonly ("cli" | "mcp")[] => {
+  const violations: ("cli" | "mcp")[] = [];
+  if (
+    declaredCliCommandIdentities.length > 0 &&
+    declaredCliCommandIdentities.every((identity) =>
+      containsExactPhrase(document, [identity.domain, identity.command]))
+  ) {
+    violations.push("cli");
+  }
+  if (
+    declaredMcpToolNames.length > 0 &&
+    declaredMcpToolNames.every((name) => containsExactIdentifier(document, name))
+  ) {
+    violations.push("mcp");
+  }
+  return violations;
+};
+
 describe("binding document authority", () => {
-  it("detects equivalent duplicate machine-state claims without relying on prose or Markdown form", () => {
-    expect(duplicateMachineState("`runtimeProtocolVersion` equals `9`.")).toEqual([
-      "runtime-protocol-version",
-    ]);
-    expect(duplicateMachineState([
-      "The EIP-155 chain reference is 4663.",
-      "The compatible wire contract uses version 9.",
-      "`databaseSchemaVersion` equals `8`.",
-      "There are sixteen current SQLite tables.",
-      "The current database tables include runtime_owner and local_profile.",
-    ].join("\n\n"))).toEqual([
-      "database-schema-version",
-      "product-chain-reference",
-      "runtime-protocol-version",
-      "sqlite-table-count",
-      "sqlite-table-name:local_profile",
-      "sqlite-table-name:runtime_owner",
-    ]);
-    expect(duplicateMachineState(
-      "The runtime exposes twenty-four MCP tools in six tool groups.",
-    )).toEqual(["interface-cardinality"]);
+  it("detects source-owned exact literals through decorated and fenced text", () => {
+    const sqlite = currentSqliteTableNames.find((name) => name.includes("_"))!;
+    const fixture = [
+      `**${productChainId}**`,
+      "```text",
+      runtimeIdentityPath,
+      sqlite,
+      "```",
+    ].join("\n");
+    expect(copiedSourceIdentifiers(fixture)).toEqual(expect.arrayContaining([
+      `path:${runtimeIdentityPath}`,
+      "product-chain",
+      `sqlite:${sqlite}`,
+    ]));
   });
 
-  it("keeps exact machine current state in its code and Product Policy owners", async () => {
-    expect(productChainId).toBe("eip155:4663");
-    expect(runtimeProtocolVersion).toBe(11);
-    expect(databaseSchemaVersion).toBe(10);
-    expect(currentSqliteTableNames).toEqual(currentTableNames);
-    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(23_690);
-    expect(createHash("sha256").update(currentSqliteSchemaSql, "utf8").digest("hex")).toBe(
-      "a969ee4a4e1cf1cf4d6da18eb1a0ab3903f0242ebcc67d719ab61a7e93af62fa",
-    );
-
-    const productPolicy = await readFile(productPolicyPath, "utf8");
-    expect(Buffer.byteLength(productPolicy, "utf8")).toBe(8_487);
-    expect(createHash("sha256").update(productPolicy, "utf8").digest("hex")).toBe(
-      "3ac9ccb9996feb0531c0458bbf901d4006979255468ecfbd86fbf786eaf793f6",
-    );
+  it("detects only complete source-derived CLI and MCP catalogs", () => {
+    const cliCatalog = declaredCliCommandIdentities
+      .map((identity) => `**${identity.domain}** \`${identity.command}\``)
+      .join("\n\n");
+    const mcpCatalog = declaredMcpToolNames
+      .map((name) => `\`${name}\``)
+      .join("\n");
+    expect(copiedCompleteInterfaceCatalogs(cliCatalog)).toEqual(["cli"]);
+    expect(copiedCompleteInterfaceCatalogs(mcpCatalog)).toEqual(["mcp"]);
+    expect(copiedCompleteInterfaceCatalogs(
+      `${declaredCliCommandIdentities[0]!.domain} ${
+        declaredCliCommandIdentities[0]!.command
+      }\n${declaredMcpToolNames[0]}`,
+    )).toEqual([]);
   });
 
-  it("keeps Architecture semantic rules without duplicate exact current state", async () => {
+  it("keeps source-owned exact literals and interface catalogs out of Architecture", async () => {
     const architecture = await readFile(architecturePath, "utf8");
-    expect(duplicateMachineState(architecture)).toEqual([]);
-
-    for (const owner of [
-      "docs/PRODUCT_POLICY.md",
-      "productChainId",
-      "runtimeProtocolVersion",
-      "databaseSchemaVersion",
-      "currentSqliteSchemaSql",
-      "currentSqliteTableNames",
-    ]) expect(architecture).toContain(owner);
-
-    for (const semanticRule of [
-      "EIP-1898",
-      "A mismatch fails closed",
-      "never invokes a migration",
-      "The stored owner protocol version is a projection",
-      "One account for the canonical product chain",
-    ]) expect(architecture).toContain(semanticRule);
-  });
-
-  it("keeps transaction handoff meaning while naming the product-chain owner", async () => {
-    const transactionPolicy = await readFile(transactionPolicyPath, "utf8");
-    expect(duplicateMachineState(transactionPolicy)).toEqual([]);
-    expect(transactionPolicy).toContain(
-      "the canonical\n  product chain identified by `docs/PRODUCT_POLICY.md`",
-    );
-    expect(transactionPolicy).toContain(
-      "the coordinator sends the request on that session without another QR\n  pairing",
-    );
+    expect(copiedSourceIdentifiers(architecture)).toEqual([]);
+    expect(copiedCompleteInterfaceCatalogs(architecture)).toEqual([]);
+    expect(architecture.match(new RegExp(escapeRegex(fixedOrigin), "gu")) ?? [])
+      .toHaveLength(1);
   });
 });

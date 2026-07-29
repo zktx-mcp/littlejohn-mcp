@@ -1,33 +1,43 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  accountAssetApplicationContracts,
   accountAssetClassificationSchema,
   accountAssetViewRevisionSchema,
+  createAccountAssetAmount,
 } from "../../src/account-assets/contracts.js";
 import type { AccountAssetRowView } from "../../src/account-assets/view.js";
 import {
-  accountAssetAnchorFields,
   assetIdentityWarnings,
-  classificationEvidenceFields,
   classificationLabel,
+  classificationUnavailableReasonLabel,
   officialSnapshotFresh,
   officialSnapshotStatusText,
+  projectAccountAssetCollectionView,
 } from "../../src/account-assets/view.js";
 import {
   chainAnchorSchema,
   parseEvmAddressInput,
   parseEvmChainId,
   parseUtcTimestamp,
+  requiredErc8056ObservationSchema,
 } from "../../src/core/index.js";
 import { stockFactoryAdmissionManifest } from "../../src/registry/browser.js";
-import { tokenSelectionSetRevisionSchema } from "../../src/token-catalog/index.js";
+import {
+  tokenSelectionRevisionSchema,
+  tokenSelectionSetRevisionSchema,
+} from "../../src/token-catalog/index.js";
 
 const chainId = parseEvmChainId("eip155:4663");
 const at = parseUtcTimestamp("2026-07-21T00:00:00.000Z");
 const hash = `0x${"ab".repeat(32)}`;
 const address = parseEvmAddressInput(`0x${"12".repeat(20)}`);
+const accountAddress = parseEvmAddressInput(`0x${"34".repeat(20)}`);
 const revision = Buffer.alloc(16, 1).toString("base64url");
 const setRevision = tokenSelectionSetRevisionSchema.parse(Buffer.alloc(16, 2).toString("base64url"));
+const selectionRevision = tokenSelectionRevisionSchema.parse(
+  Buffer.alloc(16, 3).toString("base64url"),
+);
 const block = chainAnchorSchema.parse({
   chainId,
   blockNumber: "42",
@@ -66,51 +76,18 @@ const unavailable = accountAssetClassificationSchema.parse({
   reason: "token_code_missing",
 });
 
-const fieldValue = (
-  fields: readonly Readonly<{ label: string; value: string }>[],
-  label: string,
-): string | undefined => fields.find((field) => field.label === label)?.value;
-
-describe("account asset view evidence", () => {
+describe("account asset browser view", () => {
   it("labels each classification kind from one source", () => {
     expect(classificationLabel(stockToken)).toBe("Robinhood Stock Token");
     expect(classificationLabel(customErc20)).toBe("Custom ERC-20");
     expect(classificationLabel(unavailable)).toBe("Classification unavailable");
   });
 
-  it("exposes stock-token provenance and StockFactory verification identity", () => {
-    const fields = classificationEvidenceFields(stockToken);
-    expect(fieldValue(fields, "Source")).toBe("https://api.robinhood.com/rhj/assets");
-    expect(fieldValue(fields, "Observed at")).toBe(at);
-    expect(fieldValue(fields, "Snapshot revision")).toBe(revision);
-    expect(fieldValue(fields, "Verified implementation")).toBe(
-      "0xee351e53bce6aaf106428358838197c91e36ee0e",
-    );
-    expect(fieldValue(fields, "Implementation code hash")).toBe(
-      "0x3bfd5841605b9931c9dbb0f9f54a28b4038918ceb74d6d1081bc7f963fe528b4",
-    );
-    expect(fieldValue(fields, "Token code hash")).toBe(hash);
-    expect(fieldValue(fields, "Verified at block")).toBe("42");
-  });
-
-  it("states the absence basis for a custom ERC-20", () => {
-    const fields = classificationEvidenceFields(customErc20);
-    expect(fieldValue(fields, "Source")).toBe("https://api.robinhood.com/rhj/assets");
-    expect(fieldValue(fields, "Basis")).toContain("absent");
-  });
-
-  it("surfaces the reason when classification is unavailable", () => {
-    const fields = classificationEvidenceFields(unavailable);
-    expect(fields[0]?.label).toBe("Reason");
-    expect(fields[0]?.value).toContain("No contract code");
-    expect(fieldValue(fields, "Source")).toBeUndefined();
-  });
-
-  it("exposes the chain anchor including hash and time", () => {
-    const fields = accountAssetAnchorFields(block);
-    expect(fieldValue(fields, "Block")).toBe("42");
-    expect(fieldValue(fields, "Block time")).toBe(at);
-    expect(fieldValue(fields, "Block hash")).toBe(hash);
+  it("maps an unavailable classification reason to one human explanation", () => {
+    expect(classificationUnavailableReasonLabel("token_code_missing"))
+      .toContain("No contract code");
+    expect(classificationUnavailableReasonLabel("source_unavailable"))
+      .toContain("official asset source was unavailable");
   });
 
   it("derives official-snapshot freshness from the view revision", () => {
@@ -136,5 +113,63 @@ describe("account asset view evidence", () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("unsafe text");
     expect(assetIdentityWarnings({ nameIssue: null, symbolIssue: null } as AccountAssetRowView)).toHaveLength(0);
+  });
+
+  it("projects exact admitted decimals without reconstructing the amount", () => {
+    const asset = { kind: "erc20" as const, chainId, address };
+    const requiredStandards = requiredErc8056ObservationSchema.parse({
+      asset,
+      block,
+      erc165: { standardId: "erc165", status: "not_supported" },
+      erc8056: { standardId: "erc8056", status: "unknown" },
+      pendingMultiplier: { standardId: "erc8056_pending_multiplier", status: "unknown" },
+    });
+    const result = accountAssetApplicationContracts.collection.parsePublicSuccess(
+      { limit: 5, cursor: null },
+      {
+        account: { chainId, address: accountAddress },
+        block,
+        viewRevision: {
+          officialSnapshotStatus: "unavailable",
+          officialSnapshotRevision: null,
+          selectionSetRevision: setRevision,
+        },
+        native: {
+          kind: "native",
+          asset: { kind: "native", chainId },
+          rawBalance: "7",
+          classification: "native",
+        },
+        assets: [{
+          kind: "erc20",
+          selection: {
+            account: { chainId, address: accountAddress },
+            asset,
+            included: true,
+            revision: selectionRevision,
+            createdAt: at,
+            updatedAt: at,
+          },
+          name: { status: "available", value: "Example" },
+          symbol: { status: "available", value: "EXT" },
+          classification: unavailable,
+          amount: createAccountAssetAmount({
+            raw: "1234500",
+            decimals: "6",
+            multiplier: null,
+          }),
+          requiredStandards,
+        }],
+        nextCursor: null,
+      },
+    );
+
+    const view = projectAccountAssetCollectionView(result);
+    expect(view.native.decimals).toBeNull();
+    expect(view.assets[0]?.quantity).toMatchObject({
+      raw: "1234500",
+      decimals: "6",
+      formattedRaw: "1.2345",
+    });
   });
 });

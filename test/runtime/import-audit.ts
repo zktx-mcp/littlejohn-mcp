@@ -80,6 +80,7 @@ export const runtimePackageSourceRoots = Object.freeze({
   "@uniswap/v2-sdk": ["src/protocols/uniswap-v2"],
   "@walletconnect/sign-client": ["src/wallet"],
   "better-sqlite3": ["src/runtime"],
+  "lightweight-charts": ["src/interfaces/web/lightweight-charts-adapter.tsx"],
   "lucide-react": ["src/interfaces"],
   qrcode: ["src/wallet"],
   react: ["src/interfaces"],

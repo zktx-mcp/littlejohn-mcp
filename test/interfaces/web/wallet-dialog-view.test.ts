@@ -76,7 +76,7 @@ describe("wallet dialog view", () => {
     const unusableStore = absent({ status: "disconnected", reason: "unusable_store" });
 
     expect(walletNavigationLabel(undefined)).toBe("Wallet");
-    expect(walletNavigationLabel(live)).toBe("Wallet");
+    expect(walletNavigationLabel(live)).toBe("Disconnect wallet");
     expect(walletNavigationLabel(unusableStore)).toBe("Wallet");
     for (const reason of ["no_session", "expired", "deleted", "disconnected"] as const) {
       const disconnected = absent({ status: "disconnected", reason });
@@ -163,8 +163,8 @@ describe("wallet dialog view", () => {
       message: "The Robinhood Chain session is ready.",
     });
     expect(walletConnectionFields(connected)).toEqual([
-      { label: "Address", value: connectedAddress },
-      { label: "Network", value: "Robinhood Chain" },
+      { label: "Address", value: connectedAddress, valueKind: "identifier" },
+      { label: "Network", value: "Robinhood Chain", valueKind: "text" },
     ]);
     const serialized = JSON.stringify({
       copy: walletConnectionCopy(connected),
@@ -184,9 +184,7 @@ describe("wallet dialog view", () => {
     const cancelling = walletOperationCopy(operation("connect", "cancelling"));
 
     expect(connection.heading).toBe("Connect Robinhood Wallet");
-    expect(connection.message).toBe(
-      "Scan this QR code with Robinhood Wallet and approve the Robinhood Chain session. This does not sign or send a transaction.",
-    );
+    expect(connection.message).toBe("Scan with Robinhood Wallet.");
     expect(walletOperationCopy(operation("disconnect", "awaiting_confirmation")).heading)
       .toBe("Disconnect wallet");
     expect(cancelling).toEqual({
@@ -259,7 +257,8 @@ describe("wallet dialog view", () => {
     expect(walletOperationNotification(failedConnection)).toMatchObject({
       tone: "error",
       heading: "Wallet connection failed",
-      message: createWalletFailure("wallet_timeout").error.message,
+      message:
+        "Wallet connection did not complete because Robinhood Wallet did not respond in time. Try again after checking the wallet.",
     });
     expect(walletOperationNotification(operation("connect", "awaiting_wallet_approval")))
       .toBeUndefined();

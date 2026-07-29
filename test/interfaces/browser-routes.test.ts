@@ -16,10 +16,11 @@ import {
   browserAssetPaths,
   browserCsrfHeaderName,
   browserCsrfMetaName,
+  browserLocationHref,
+  browserLocations,
   browserOperationCancellationPath,
   browserOperationConfirmationPath,
   browserOperationPath,
-  browserPagePaths,
   referenceMarketBrowserMutationPaths,
   browserWalletApiPaths,
 } from "../../src/interfaces/browser-contract.js";
@@ -71,6 +72,13 @@ import {
 
 const directories: string[] = [];
 const operationId = Buffer.alloc(32, 13).toString("base64url");
+const browserPagePaths = Object.freeze({
+  assets: browserLocationHref(browserLocations.assets()),
+  prices: browserLocationHref(browserLocations.referencePrices()),
+  price: browserLocationHref(browserLocations.referencePrice(
+    referenceMarketManifest.pairs[0]!.pairId,
+  )),
+});
 const foreignOperationId = Buffer.alloc(32, 14).toString("base64url");
 const expiresAt = "2026-07-15T04:00:00.000Z";
 const now = Date.parse("2026-07-15T03:00:00.000Z");
@@ -242,6 +250,7 @@ const invoke = async (
   method: RouteMethod,
   path: string,
   body: unknown = {},
+  query = "",
 ): Promise<NormalizedRouteResult> => {
   const match = registry.match(method, path);
   expect(match.status).toBe("matched");
@@ -249,21 +258,23 @@ const invoke = async (
   return registry.normalizeResult(match.route, await match.route.handler({
     params: match.params,
     body,
+    query,
     signal: new AbortController().signal,
   }));
 };
 
 const bootstrap = async (
   registry: RuntimeRouteRegistry,
-  path: (typeof browserPagePaths)[keyof typeof browserPagePaths] = browserPagePaths.root,
+  path: (typeof browserPagePaths)[keyof typeof browserPagePaths] = browserPagePaths.assets,
+  query = "",
 ): Promise<{ readonly cookie: string; readonly csrfToken: string }> => {
-  const page = await invoke(registry, "GET", path);
+  const page = await invoke(registry, "GET", path, {}, query);
   if (!page.ok || page.response !== "browser_content" || page.setCookie === undefined) {
-    throw new Error("Expected a credentialed root shell.");
+    throw new Error("Expected a credentialed information-page shell.");
   }
   const cookie = page.setCookie.split(";", 1)[0] as string;
   const csrfToken = /content="([A-Za-z0-9_-]{43})"/.exec(page.body)?.[1];
-  if (csrfToken === undefined) throw new Error("Expected a CSRF token in the root shell.");
+  if (csrfToken === undefined) throw new Error("Expected a CSRF token in the page shell.");
   return Object.freeze({ cookie, csrfToken });
 };
 
@@ -282,26 +293,27 @@ describe("wallet browser routes", () => {
       walletOperations: wallet.port,
     });
     const expected = [
-      ["GET", "/", "browser_bootstrap", "browser_content", "none"],
-      ["POST", accountAssetBrowserRoutes.queries, "browser_query", "canonical_json", "none"],
+      ["GET", "/", "browser_bootstrap", "browser_content", "none", "none"],
+      ["GET", "/prices", "browser_bootstrap", "browser_content", "none", "none"],
+      ["GET", browserPagePaths.price, "browser_bootstrap", "browser_content", "none", "browser_location"],
+      ["GET", accountAssetBrowserRoutes.overview, "browser_read", "canonical_json", "none", "none"],
       ["POST", accountAssetBrowserRoutes.exact(
         "eip155:4663",
         parseEvmAddress("0x1111111111111111111111111111111111111111"),
-      ), "browser_query", "canonical_json", "none"],
-      ["POST", accountAssetBrowserRoutes.officialCandidateQueries, "browser_query", "canonical_json", "none"],
-      ["POST", browserWalletApiPaths.operations, "browser_control", "canonical_json", "declared_control"],
-      ["GET", browserWalletApiPaths.currentOperation, "browser_read", "canonical_json", "none"],
-      ["GET", browserOperationPath(operationId), "browser_read", "canonical_json", "none"],
-      ["POST", browserOperationConfirmationPath(operationId), "browser_control", "canonical_json", "declared_control"],
-      ["POST", browserOperationCancellationPath(operationId), "browser_control", "canonical_json", "declared_control"],
-      ["POST", tokenCatalogBrowserRoutes.operations, "browser_control", "canonical_json", "declared_control"],
-      ["GET", tokenCatalogBrowserRoutes.currentOperation, "browser_read", "canonical_json", "none"],
-      ["GET", tokenCatalogBrowserRoutes.operation(operationId), "browser_read", "canonical_json", "none"],
-      ["POST", tokenCatalogBrowserRoutes.confirmation(operationId), "browser_control", "canonical_json", "declared_control"],
-      ["POST", tokenCatalogBrowserRoutes.cancellation(operationId), "browser_control", "canonical_json", "declared_control"],
-      ["GET", "/assets/index-Abcdef12.js", "public_read", "browser_content", "none"],
+      ), "browser_query", "canonical_json", "none", "none"],
+      ["POST", browserWalletApiPaths.operations, "browser_control", "canonical_json", "declared_control", "none"],
+      ["GET", browserWalletApiPaths.currentOperation, "browser_read", "canonical_json", "none", "none"],
+      ["GET", browserOperationPath(operationId), "browser_read", "canonical_json", "none", "none"],
+      ["POST", browserOperationConfirmationPath(operationId), "browser_control", "canonical_json", "declared_control", "none"],
+      ["POST", browserOperationCancellationPath(operationId), "browser_control", "canonical_json", "declared_control", "none"],
+      ["POST", tokenCatalogBrowserRoutes.operations, "browser_control", "canonical_json", "declared_control", "none"],
+      ["GET", tokenCatalogBrowserRoutes.currentOperation, "browser_read", "canonical_json", "none", "none"],
+      ["GET", tokenCatalogBrowserRoutes.operation(operationId), "browser_read", "canonical_json", "none", "none"],
+      ["POST", tokenCatalogBrowserRoutes.confirmation(operationId), "browser_control", "canonical_json", "declared_control", "none"],
+      ["POST", tokenCatalogBrowserRoutes.cancellation(operationId), "browser_control", "canonical_json", "declared_control", "none"],
+      ["GET", "/assets/index-Abcdef12.js", "public_read", "browser_content", "none", "none"],
     ] as const;
-    for (const [method, path, requestClass, response, mutation] of expected) {
+    for (const [method, path, requestClass, response, mutation, query] of expected) {
       const match = registry.match(method, path);
       expect(match.status).toBe("matched");
       if (match.status === "matched") {
@@ -310,12 +322,17 @@ describe("wallet browser routes", () => {
           requestClass,
           response,
           mutation,
+          query,
           successStatus: 200,
         });
       }
     }
 
     expect(registry.match("GET", "/wallet").status).toBe("not_found");
+    expect(registry.match("GET", "/inspections").status).toBe("not_found");
+    expect(registry.match("GET", "/reference-markets").status).toBe("not_found");
+    expect(registry.match("GET", "/uniswap-v2-quotes").status).toBe("not_found");
+    expect(registry.match("GET", "/quotes/uniswap-v2").status).toBe("not_found");
     expect(registry.match(
       "GET",
       `/api/v1/wallet/operations/${operationId}/qr`,
@@ -325,13 +342,15 @@ describe("wallet browser routes", () => {
       `/api/v1/wallet/operations/${operationId}`,
     ).status).toBe("method_not_allowed");
 
-    const page = await invoke(registry, "GET", "/");
-    expect(page.ok).toBe(true);
-    if (!page.ok || page.response !== "browser_content") {
-      throw new Error("Expected the browser root shell.");
+    for (const path of Object.values(browserPagePaths)) {
+      const page = await invoke(registry, "GET", path);
+      expect(page.ok).toBe(true);
+      if (!page.ok || page.response !== "browser_content") {
+        throw new Error("Expected a browser information-page shell.");
+      }
+      expect(page.setCookie?.startsWith(`${browserSessionCookieName}=`)).toBe(true);
+      expect(page.body).toContain(`name="${browserCsrfMetaName}"`);
     }
-    expect(page.setCookie?.startsWith(`${browserSessionCookieName}=`)).toBe(true);
-    expect(page.body).toContain(`name="${browserCsrfMetaName}"`);
     expect(wallet.calls).toEqual({
       starts: [],
       currentReads: [],
@@ -339,6 +358,57 @@ describe("wallet browser routes", () => {
       confirmations: [],
       cancellations: [],
     });
+    credentials.close();
+  });
+
+  it("admits only the selected-price location query before issuing page authority", async () => {
+    const credentials = createBrowserRequestCredentialAuthority({
+      now: () => now,
+      randomBytes: (size) => Buffer.alloc(size, 16),
+    });
+    const registry = extendBrowserInterfaceRoutes({
+      ...interfacePorts(),
+      routes: await baseRoutes(),
+      credentials,
+      assets,
+      walletOperations: walletOperations().port,
+    });
+
+    for (const query of ["?window=7d", "?window=30d"]) {
+      const page = await invoke(registry, "GET", browserPagePaths.price, {}, query);
+      expect(page.ok).toBe(true);
+      if (!page.ok || page.response !== "browser_content") {
+        throw new Error("Expected a selected-price browser page.");
+      }
+      expect(page.setCookie?.startsWith(`${browserSessionCookieName}=`)).toBe(true);
+    }
+
+    for (const query of [
+      "?window=2d",
+      "?window=1d&window=30d",
+      "?unknown=1d",
+      "?",
+    ]) {
+      const page = await invoke(registry, "GET", browserPagePaths.price, {}, query);
+      expect(page.ok).toBe(false);
+      expect("setCookie" in page).toBe(false);
+      if (!page.ok) expect(page.problem.code).toBe("invalid_input");
+    }
+
+    for (const path of [browserPagePaths.assets, browserPagePaths.prices]) {
+      const match = registry.match("GET", path);
+      if (match.status !== "matched") throw new Error("Expected a browser page route.");
+      expect(registry.validateSecurity(match, {
+        host: [fixedHostHeader],
+        origin: [],
+        authorization: [],
+        cookie: [],
+        csrfToken: [],
+        contentType: [],
+        query: "?window=1d",
+        bodyLength: 0,
+      })).toEqual({ ok: false, code: "query_not_supported" });
+    }
     credentials.close();
   });
 
@@ -382,7 +452,7 @@ describe("wallet browser routes", () => {
     credentials.close();
   });
 
-  it("issues session authority only at the root and enforces Host, Origin, cookie, and CSRF", async () => {
+  it("issues session authority only at information pages and enforces Host, Origin, cookie, and CSRF", async () => {
     let entropy = 20;
     const credentials = createBrowserRequestCredentialAuthority({
       now: () => now,
@@ -396,8 +466,8 @@ describe("wallet browser routes", () => {
       assets,
       walletOperations: wallet.port,
     });
-    const rootMatch = registry.match("GET", browserPagePaths.root);
-    if (rootMatch.status !== "matched") throw new Error("Expected the root bootstrap route.");
+    const pageMatch = registry.match("GET", browserPagePaths.assets);
+    if (pageMatch.status !== "matched") throw new Error("Expected the account bootstrap route.");
     const noAuthority = {
       host: [fixedHostHeader],
       origin: [],
@@ -408,8 +478,8 @@ describe("wallet browser routes", () => {
       query: "",
       bodyLength: 0,
     } as const;
-    expect(registry.validateSecurity(rootMatch, noAuthority)).toEqual({ ok: true });
-    expect(registry.validateSecurity(rootMatch, {
+    expect(registry.validateSecurity(pageMatch, noAuthority)).toEqual({ ok: true });
+    expect(registry.validateSecurity(pageMatch, {
       ...noAuthority,
       origin: [fixedOrigin],
     })).toEqual({ ok: false, code: "invalid_origin" });
@@ -419,10 +489,12 @@ describe("wallet browser routes", () => {
     const currentMatch = registry.match("GET", browserWalletApiPaths.currentOperation);
     const startMatch = registry.match("POST", browserWalletApiPaths.operations);
     const tokenControlMatch = registry.match("POST", tokenCatalogBrowserRoutes.operations);
+    const overviewMatch = registry.match("GET", accountAssetBrowserRoutes.overview);
     if (
       currentMatch.status !== "matched" ||
       startMatch.status !== "matched" ||
-      tokenControlMatch.status !== "matched"
+      tokenControlMatch.status !== "matched" ||
+      overviewMatch.status !== "matched"
     ) {
       throw new Error("Expected wallet browser API routes.");
     }
@@ -448,6 +520,11 @@ describe("wallet browser routes", () => {
       host: ["localhost:46630"],
     })).toEqual({ ok: false, code: "invalid_host" });
     expect(registry.validateSecurity(currentMatch, {
+      ...readInput,
+      cookie: [],
+    })).toEqual({ ok: false, code: "unauthorized" });
+    expect(registry.validateSecurity(overviewMatch, readInput)).toEqual({ ok: true });
+    expect(registry.validateSecurity(overviewMatch, {
       ...readInput,
       cookie: [],
     })).toEqual({ ok: false, code: "unauthorized" });
@@ -890,7 +967,11 @@ describe("wallet browser routes", () => {
   });
 
   it("keeps page, API, and asset registries resource-oriented and caller-neutral", () => {
-    expect(browserPagePaths).toEqual({ root: "/" });
+    expect(browserPagePaths).toEqual({
+      assets: "/",
+      prices: "/prices",
+      price: browserPagePaths.price,
+    });
     expect(JSON.stringify(browserWalletApiPaths)).not.toContain("mcp");
     expect(JSON.stringify(browserWalletApiPaths)).not.toContain("cli");
     expect(JSON.stringify(browserAssetPaths)).not.toContain("wallet");

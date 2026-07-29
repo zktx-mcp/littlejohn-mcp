@@ -501,7 +501,8 @@ const readPackagedRuntimeIdentity = async () => {
     Array.isArray(identity) ||
     JSON.stringify(Object.keys(identity).sort()) !== JSON.stringify(expectedFields) ||
     identity.challenge !== challenge ||
-    identity.runtimeProtocolVersion !== 11 ||
+    !Number.isSafeInteger(identity.runtimeProtocolVersion) ||
+    identity.runtimeProtocolVersion <= 0 ||
     typeof identity.profileId !== "string" ||
     !/^[A-Za-z0-9_-]{22}$/u.test(identity.profileId) ||
     typeof identity.ownerInstanceId !== "string" ||
@@ -512,7 +513,7 @@ const readPackagedRuntimeIdentity = async () => {
     !/^[A-Za-z0-9_-]{43}$/u.test(identity.proof) ||
     typeof identity.ownerRevision !== "string" ||
     !/^(?:0|[1-9][0-9]*)$/u.test(identity.ownerRevision)
-  ) throw new TypeError("Packaged runtime identity is not the exact protocol-11 contract.");
+  ) throw new TypeError("Packaged runtime identity is invalid.");
   return identity;
 };
 
@@ -757,10 +758,17 @@ const assertBrowserAssets = async (shell) => {
     else await asset.arrayBuffer();
   }
   if (
-    !javascript.includes("Uniswap V2 exact-input quote") ||
-    !javascript.includes("/api/v1/uniswap-v2-exact-input-quotes")
+    javascript.includes("Candidate comparison") ||
+    javascript.includes("/api/v1/uniswap-v2-exact-input-quotes")
   ) {
-    throw new TypeError("Packaged browser bundle omits the Uniswap V2 quote interface.");
+    throw new TypeError("Packaged browser bundle retains the removed Quote interface.");
+  }
+  if (
+    !javascript.includes("/api/v1/contract-inspections") ||
+    !javascript.includes("/api/v1/token-inspections") ||
+    !javascript.includes("Analysis")
+  ) {
+    throw new TypeError("Packaged browser bundle omits contextual Analysis.");
   }
 };
 
@@ -886,14 +894,11 @@ const obsoleteBrowserTokenRegistrations = (browser) => fetch(
 );
 
 const browserAccountAssets = (browser) => fetch(
-  `${fixedOrigin}/api/v1/account-assets/queries`,
+  `${fixedOrigin}/api/v1/account-assets/overview`,
   {
-    method: "POST",
     headers: {
       Cookie: browser.cookie,
-      "Content-Type": "application/json",
     },
-    body: "{}",
     redirect: "error",
   },
 );
@@ -984,6 +989,75 @@ const assertAccountAssetCollection = (value, fakeRpc, expectedTokens) => {
   return value;
 };
 
+const assertAccountAssetOverview = (value, fakeRpc, expectedSelectedTokens) => {
+  const officialTokens = [...fakeRpc.defaultTokens, fakeRpc.officialCandidate]
+    .sort((left, right) =>
+      left.assetUid < right.assetUid
+        ? -1
+        : left.assetUid > right.assetUid
+          ? 1
+          : left.address < right.address
+            ? -1
+            : left.address > right.address
+              ? 1
+              : 0);
+  const selectedAddresses = new Set(expectedSelectedTokens.map((token) => token.address));
+  if (
+    selectedAddresses.size !== expectedSelectedTokens.length ||
+    expectedSelectedTokens.some((token) =>
+      !officialTokens.some((official) => official.address === token.address)) ||
+    value?.account?.chainId !== fakeRpc.token.chainId ||
+    value.account.address !== expectedWalletAddress ||
+    value.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
+    value.native?.rawBalance !== fakeRpc.nativeBalanceRaw ||
+    value.viewRevision?.officialSnapshotStatus !== "current" ||
+    typeof value.viewRevision.officialSnapshotRevision !== "string" ||
+    typeof value.viewRevision.selectionSetRevision !== "string" ||
+    value.stockTokens?.status !== "current" ||
+    !/^0x[0-9a-f]{64}$/u.test(value.stockTokens.candidateListDigest) ||
+    !Array.isArray(value.stockTokens.members) ||
+    value.stockTokens.members.length !== officialTokens.length ||
+    officialTokens.some((token, index) => {
+      const member = value.stockTokens.members[index];
+      if (selectedAddresses.has(token.address)) {
+        const asset = member?.status === "selected" ? member.asset : undefined;
+        return asset?.selection?.asset?.address !== token.address ||
+          asset.selection.account?.address !== expectedWalletAddress ||
+          asset.selection.included !== true ||
+          asset.amount?.raw !== token.accountBalanceRaw ||
+          asset.requiredStandards?.block?.blockHash !==
+            fakeRpc.canonicalBlockReference.blockHash;
+      }
+      const candidate = member?.status === "available_to_add"
+        ? member.candidate
+        : undefined;
+      return candidate?.assetUid !== token.assetUid ||
+        candidate.contractAddress !== token.address ||
+        candidate.sourceName !== token.name ||
+        candidate.sourceSymbol !== token.symbol;
+    })
+  ) throw new TypeError("Packaged account asset overview is invalid.");
+  return value;
+};
+
+const assertUnavailableAccountAssetOverview = (
+  value,
+  fakeRpc,
+  retainedSnapshotRevision,
+) => {
+  if (
+    value?.account?.chainId !== fakeRpc.token.chainId ||
+    value.account.address !== expectedWalletAddress ||
+    value.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
+    value.native?.rawBalance !== fakeRpc.nativeBalanceRaw ||
+    value.viewRevision?.officialSnapshotStatus !== "unavailable" ||
+    value.viewRevision.officialSnapshotRevision !== retainedSnapshotRevision ||
+    value.stockTokens?.status !== "unavailable" ||
+    value.stockTokens.reason !== "source_unavailable"
+  ) throw new TypeError("Packaged unavailable account asset overview is invalid.");
+  return value;
+};
+
 const assertExactAccountAsset = (value, fakeRpc, token) => {
   if (
     value?.account?.chainId !== token.chainId ||
@@ -1071,7 +1145,7 @@ const assertPackagedPersistence = (inspection, runtimeIdentity) => {
     Array.isArray(owner) ||
     owner.profileId !== runtimeIdentity.profileId ||
     owner.configurationMac !== runtimeIdentity.configurationMac ||
-    owner.protocolVersion !== 11
+    owner.protocolVersion !== runtimeIdentity.runtimeProtocolVersion
   ) throw new TypeError("Packaged SQLite owner configuration identity is invalid.");
   const connection = inspection.connection;
   if (
@@ -1612,6 +1686,31 @@ export const verifyPackagedIntegration = async (prepared) => {
 
     const referencePair = fakeRpc.referenceMarkets.pairs[0];
     if (referencePair === undefined) throw new TypeError("Release reference pair is unavailable.");
+    const selectedPricePage = await fetch(
+      `${fixedOrigin}/prices/${referencePair.pairId}?window=30d`,
+      { redirect: "error" },
+    );
+    if (
+      selectedPricePage.status !== 200 ||
+      selectedPricePage.headers.get("set-cookie") === null
+    ) {
+      throw new TypeError("Packaged selected Price location did not load with its admitted window.");
+    }
+    await selectedPricePage.arrayBuffer();
+    const invalidSelectedPriceQuery = await fetch(
+      `${fixedOrigin}/prices/${referencePair.pairId}?window=1d&window=30d`,
+      { redirect: "error" },
+    );
+    const invalidSelectedPriceProblem = await invalidSelectedPriceQuery.json();
+    if (
+      invalidSelectedPriceQuery.status !== 400 ||
+      invalidSelectedPriceQuery.headers.get("set-cookie") !== null ||
+      problemCode(invalidSelectedPriceProblem) !== "invalid_input"
+    ) {
+      throw new TypeError(
+        "Packaged selected Price location accepted a duplicate window or issued credentials.",
+      );
+    }
     const referencePrice = await callSemanticRead(firstMcp, "market_get_reference_price", {
       pairId: referencePair.pairId,
     });
@@ -1765,7 +1864,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     if (initialAssets.nextCursor !== null) {
       throw new TypeError("Default initialization created unexpected account selections.");
     }
-    const browserAssets = assertAccountAssetCollection(
+    const browserAssets = assertAccountAssetOverview(
       await jsonResponse(await browserAccountAssets(browser)),
       fakeRpc,
       fakeRpc.defaultTokens,
@@ -1827,6 +1926,11 @@ export const verifyPackagedIntegration = async (prepared) => {
       fakeRpc.officialCandidate,
       true,
     );
+    assertAccountAssetOverview(
+      await jsonResponse(await browserAccountAssets(browser)),
+      fakeRpc,
+      [...fakeRpc.defaultTokens, fakeRpc.officialCandidate],
+    );
 
     const firstSelection = await firstMcp.callTool("token_get_selection", {
       asset: officialCandidateAsset,
@@ -1877,7 +1981,7 @@ export const verifyPackagedIntegration = async (prepared) => {
       fakeRpc.officialCandidate,
       false,
     );
-    assertAccountAssetCollection(
+    assertAccountAssetOverview(
       await jsonResponse(await browserAccountAssets(browser)),
       fakeRpc,
       fakeRpc.defaultTokens,
@@ -1922,7 +2026,7 @@ export const verifyPackagedIntegration = async (prepared) => {
       fakeRpc.token,
       true,
     );
-    const customAssetView = assertAccountAssetCollection(
+    const customAssetView = assertAccountAssetOverview(
       await jsonResponse(await browserAccountAssets(browser)),
       fakeRpc,
       fakeRpc.defaultTokens,
@@ -2017,17 +2121,13 @@ export const verifyPackagedIntegration = async (prepared) => {
     ) throw new TypeError("Packaged selection transitions reused obsolete revisions.");
 
     fakeRpc.setAssetSourceUnavailable(true);
-    const unavailableSourceAssets = assertAccountAssetCollection(
+    const unavailableSourceAssets = assertUnavailableAccountAssetOverview(
       await jsonResponse(await browserAccountAssets(browser)),
       fakeRpc,
-      fakeRpc.defaultTokens,
+      customAssetView.viewRevision.officialSnapshotRevision,
     );
     fakeRpc.setAssetSourceUnavailable(false);
-    if (
-      unavailableSourceAssets.viewRevision?.officialSnapshotStatus !== "unavailable" ||
-      unavailableSourceAssets.viewRevision.officialSnapshotRevision !==
-        customAssetView.viewRevision.officialSnapshotRevision
-    ) {
+    if (unavailableSourceAssets.viewRevision.selectionSetRevision === null) {
       throw new TypeError("Packaged source failure did not preserve the committed snapshot revision.");
     }
 
@@ -2223,7 +2323,7 @@ export const verifyPackagedIntegration = async (prepared) => {
       throw new TypeError("Browser bootstrap did not recover after owner takeover.");
     }
     const renewedAssets = await jsonResponse(await browserAccountAssets(renewedBrowser));
-    assertAccountAssetCollection(renewedAssets, fakeRpc, fakeRpc.defaultTokens);
+    assertAccountAssetOverview(renewedAssets, fakeRpc, fakeRpc.defaultTokens);
     const takeoverMcp = await startNpxMcp(prepared, environment);
     mcpClients.push(takeoverMcp);
     const takeoverAssets = await takeoverMcp.callTool("account_list_assets");

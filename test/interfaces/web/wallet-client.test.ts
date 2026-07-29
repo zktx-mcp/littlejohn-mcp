@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fieldIssueSchema } from "../../../src/core/browser.js";
 import {
-  BrowserResponseError,
-  browserActionFailureMessage,
+  BrowserRequestError,
+  browserRequestFailure,
   browserSessionRequiresReload,
   type BrowserFetch,
 } from "../../../src/interfaces/web/browser-client.js";
@@ -124,6 +124,7 @@ describe("wallet browser client", () => {
         method: "GET",
         credentials: "same-origin",
         cache: "no-store",
+        signal: expect.any(AbortSignal),
       },
     }]);
     expect(transport.remaining()).toBe(0);
@@ -149,6 +150,7 @@ describe("wallet browser client", () => {
         method: "GET",
         credentials: "same-origin",
         cache: "no-store",
+        signal: expect.any(AbortSignal),
       },
     }]);
 
@@ -163,26 +165,57 @@ describe("wallet browser client", () => {
       operationId,
       { request: foreign.request },
     )).rejects.toMatchObject({
-      name: "BrowserResponseError",
-      code: "internal_error",
+      name: "BrowserRequestError",
+      failure: {
+        kind: "local_failure",
+        code: "invalid_response",
+      },
     });
   });
 
   it("preserves an exact retained operation miss for current-state reconciliation", async () => {
-    const transport = queuedFetch([jsonResponse(409, problem({
+    const responseProblem = problem({
       code: "state_conflict",
       detail: "Local state changed before the request completed.",
       status: 409,
       title: "State conflict",
-    }))]);
+      issues: [{
+        path: "/operationId",
+        code: "invalid_value",
+        message: "The field value is invalid.",
+      }],
+    });
+    const transport = queuedFetch([jsonResponse(409, responseProblem)]);
 
-    await expect(loadWalletOperation(
+    const error = await loadWalletOperation(
       operationId,
       { request: transport.request },
-    )).rejects.toMatchObject({
-      name: "BrowserResponseError",
-      code: "state_conflict",
-      message: "Local state changed before the request completed.",
+    ).then(
+      () => undefined,
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(BrowserRequestError);
+    if (!(error instanceof BrowserRequestError)) {
+      throw new TypeError("Expected BrowserRequestError.");
+    }
+    expect(error.failure).toEqual({
+      kind: "response_problem",
+      problem: parseBrowserProblemDetails(responseProblem, 409),
+    });
+    expect(error.failure).toMatchObject({
+      kind: "response_problem",
+      problem: {
+        code: "state_conflict",
+        detail: "Local state changed before the request completed.",
+        status: 409,
+        title: "State conflict",
+        retryable: false,
+        issues: [{
+          path: "/operationId",
+          code: "invalid_value",
+          message: "The field value is invalid.",
+        }],
+      },
     });
     expect(transport.requests.map(({ path }) => path)).toEqual([
       browserOperationPath(operationId),
@@ -199,9 +232,15 @@ describe("wallet browser client", () => {
     }))]);
 
     await expect(loadWalletProjection({ request: transport.request })).rejects.toMatchObject({
-      name: "BrowserResponseError",
-      code: "source_unavailable",
-      message: "A required data source is unavailable.",
+      name: "BrowserRequestError",
+      failure: {
+        kind: "response_problem",
+        problem: {
+          code: "source_unavailable",
+          detail: "A required data source is unavailable.",
+          retryable: true,
+        },
+      },
     });
   });
 
@@ -214,9 +253,14 @@ describe("wallet browser client", () => {
     }))]);
 
     await expect(loadWalletProjection({ request: transport.request })).rejects.toMatchObject({
-      name: "BrowserResponseError",
-      code: "token_selection_already_included",
-      message: "The token is already included for the current account.",
+      name: "BrowserRequestError",
+      failure: {
+        kind: "response_problem",
+        problem: {
+          code: "token_selection_already_included",
+          detail: "The token is already included for the current account.",
+        },
+      },
     });
   });
 
@@ -245,6 +289,7 @@ describe("wallet browser client", () => {
     const transport = queuedFetch([jsonResponse(200, result)]);
 
     await expect(startWalletOperation(
+      operationId,
       "connect",
       operation.connectionRevision,
       csrfToken,
@@ -272,6 +317,61 @@ describe("wallet browser client", () => {
     }]);
   });
 
+  it("preserves an admitted send-once problem after the action receives a response", async () => {
+    const responseProblem = problem({
+      code: "state_conflict",
+      detail: "Local state changed before the request completed.",
+      status: 409,
+      title: "State conflict",
+    });
+    const transport = queuedFetch([jsonResponse(409, responseProblem)]);
+
+    const error = await startWalletOperation(
+      operationId,
+      "connect",
+      operation.connectionRevision,
+      csrfToken,
+      { request: transport.request },
+    ).then(
+      () => undefined,
+      (reason: unknown) => reason,
+    );
+
+    expect(error).toBeInstanceOf(BrowserRequestError);
+    if (!(error instanceof BrowserRequestError)) {
+      throw new TypeError("Expected BrowserRequestError.");
+    }
+    expect(error.failure).toEqual({
+      kind: "response_problem",
+      problem: parseBrowserProblemDetails(responseProblem, 409),
+    });
+  });
+
+  it("keeps send-once delivery unknown when an error response is indeterminate", async () => {
+    const transport = queuedFetch([jsonResponse(409, {
+      ...problem({
+        code: "state_conflict",
+        detail: "Local state changed before the request completed.",
+        status: 409,
+        title: "State conflict",
+      }),
+      detail: "Forged response detail.",
+    })]);
+
+    await expect(startWalletOperation(
+      operationId,
+      "connect",
+      operation.connectionRevision,
+      csrfToken,
+      { request: transport.request },
+    )).resolves.toEqual({
+      status: "delivery_unknown",
+      action: "start",
+      operationId,
+      resendAllowed: false,
+    });
+  });
+
   it("does not trust a response body that imitates local delivery uncertainty", async () => {
     const transport = queuedFetch([jsonResponse(200, {
       status: "delivery_unknown",
@@ -282,6 +382,7 @@ describe("wallet browser client", () => {
     })]);
 
     await expect(startWalletOperation(
+      operationId,
       "connect",
       operation.connectionRevision,
       csrfToken,
@@ -304,6 +405,7 @@ describe("wallet browser client", () => {
     const transport = queuedFetch([jsonResponse(200, result)]);
 
     await expect(startWalletOperation(
+      operationId,
       "disconnect",
       disconnecting.connectionRevision,
       csrfToken,
@@ -378,9 +480,11 @@ describe("wallet browser client", () => {
       jsonResponse(200, { ...current, extra: true }),
     ]);
     await expect(loadWalletProjection({ request: malformed.request })).rejects.toMatchObject({
-      name: "BrowserResponseError",
-      code: "internal_error",
-      message: "The wallet state response is invalid.",
+      name: "BrowserRequestError",
+      failure: {
+        kind: "local_failure",
+        code: "invalid_response",
+      },
     });
 
     const legacyConnection = queuedFetch([jsonResponse(200, {
@@ -397,9 +501,11 @@ describe("wallet browser client", () => {
       },
     })]);
     await expect(loadWalletProjection({ request: legacyConnection.request })).rejects.toMatchObject({
-      name: "BrowserResponseError",
-      code: "internal_error",
-      message: "The wallet state response is invalid.",
+      name: "BrowserRequestError",
+      failure: {
+        kind: "local_failure",
+        code: "invalid_response",
+      },
     });
 
     const forged = queuedFetch([
@@ -417,16 +523,19 @@ describe("wallet browser client", () => {
       () => undefined,
       (reason: unknown) => reason,
     );
-    expect(error).toBeInstanceOf(BrowserResponseError);
+    expect(error).toBeInstanceOf(BrowserRequestError);
     expect(error).toMatchObject({
-      code: "internal_error",
-      message: "The request could not be completed.",
+      failure: {
+        kind: "local_failure",
+        code: "invalid_response",
+      },
     });
   });
 
   it("rejects malformed CSRF input before issuing a state-changing request", async () => {
     const transport = queuedFetch([]);
     await expect(startWalletOperation(
+      operationId,
       "connect",
       operation.connectionRevision,
       "not-a-token",
@@ -444,22 +553,48 @@ describe("wallet browser client", () => {
       (reason: unknown) => reason,
     );
 
-    expect(error).toBeInstanceOf(BrowserResponseError);
+    expect(error).toBeInstanceOf(BrowserRequestError);
     expect(error).toMatchObject({
-      code: "runtime_state_unavailable",
-      message: "Local runtime state is unavailable.",
+      failure: {
+        kind: "local_failure",
+        code: "runtime_state_unavailable",
+        detail: "Local runtime state is unavailable.",
+        retryable: false,
+        issues: [],
+      },
     });
-    expect(browserActionFailureMessage(error)).toBe("Local runtime state is unavailable.");
-    expect(browserActionFailureMessage(new Error("private detail")))
-      .toBe("The action could not be completed.");
+    expect(browserRequestFailure(new Error("private detail"))).toEqual({
+      kind: "local_failure",
+      code: "internal_error",
+      detail: "The action could not be completed.",
+      retryable: false,
+      issues: [],
+    });
   });
 
   it("classifies only authenticated-session loss as a root reload", () => {
     expect(browserSessionRequiresReload(
-      new BrowserResponseError("The request is not authorized.", "unauthorized"),
+      new BrowserRequestError({
+        kind: "response_problem",
+        problem: {
+          type: "about:blank",
+          title: "Unauthorized",
+          status: 401,
+          code: "unauthorized",
+          detail: "The request is not authorized.",
+          retryable: false,
+          issues: [],
+        },
+      }),
     )).toBe(true);
     expect(browserSessionRequiresReload(
-      new BrowserResponseError("Local runtime state is unavailable.", "runtime_state_unavailable"),
+      new BrowserRequestError({
+        kind: "local_failure",
+        code: "runtime_state_unavailable",
+        detail: "Local runtime state is unavailable.",
+        retryable: false,
+        issues: [],
+      }),
     )).toBe(false);
   });
 });

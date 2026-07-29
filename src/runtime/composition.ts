@@ -741,9 +741,9 @@ export const composeOwnerApplicationStages = async <
           if (context.signal.aborted) throw new RuntimeOperationError("request_aborted");
           const accountAssets = Object.freeze({
             list: (...args: Parameters<AccountAssetApplicationPort["list"]>) => application.list(...args),
+            getOverview: (...args: Parameters<AccountAssetApplicationPort["getOverview"]>) =>
+              application.getOverview(...args),
             get: (...args: Parameters<AccountAssetApplicationPort["get"]>) => application.get(...args),
-            listOfficialCandidates: (...args: Parameters<AccountAssetApplicationPort["listOfficialCandidates"]>) =>
-              application.listOfficialCandidates(...args),
           }) satisfies AccountAssetApplicationPort;
           return Object.freeze({
             application,

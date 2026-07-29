@@ -15,8 +15,8 @@ import type {
   AccountAssetCollectionSuccess,
   AccountAssetExactInput,
   AccountAssetExactSuccess,
-  AccountAssetOfficialCandidateInput,
-  AccountAssetOfficialCandidateSuccess,
+  AccountAssetOverviewInput,
+  AccountAssetOverviewSuccess,
 } from "./contracts.js";
 
 export interface AccountAssetApplicationPort {
@@ -24,14 +24,14 @@ export interface AccountAssetApplicationPort {
     input: AccountAssetCollectionInput,
     signal?: AbortSignal,
   ): Promise<AccountAssetCollectionSuccess | ApplicationFailure>;
+  getOverview(
+    input: AccountAssetOverviewInput,
+    signal?: AbortSignal,
+  ): Promise<AccountAssetOverviewSuccess | ApplicationFailure>;
   get(
     input: AccountAssetExactInput,
     signal?: AbortSignal,
   ): Promise<AccountAssetExactSuccess | ApplicationFailure>;
-  listOfficialCandidates(
-    input: AccountAssetOfficialCandidateInput,
-    signal?: AbortSignal,
-  ): Promise<AccountAssetOfficialCandidateSuccess | ApplicationFailure>;
 }
 
 export interface AccountAssetReadProcessDependencies {
@@ -46,5 +46,5 @@ export interface AccountAssetReadProcessDependencies {
 }
 
 export const accountAssetConsumerPortContract = Object.freeze({
-  methods: Object.freeze(["get", "list", "listOfficialCandidates"] as const),
+  methods: Object.freeze(["get", "getOverview", "list"] as const),
 });

@@ -6,13 +6,14 @@ import {
 import {
   parseBrowserProblemDetails,
   type BrowserErrorCode,
+  type BrowserProblemDetails,
 } from "../browser-error-response.js";
 import {
   createDeliveryUnknown,
   type DeliveryUnknown,
   type OperationDeliveryAction,
 } from "../operation-delivery.js";
-import type { OperationId } from "../../core/browser.js";
+import type { FieldIssue, OperationId } from "../../core/browser.js";
 import {
   createReferenceMarketDeliveryUnknown,
   type ReferenceMarketDeliveryAction,
@@ -49,63 +50,168 @@ export type BrowserActionDeliveryResult =
   | Readonly<{ status: "response_received"; value: unknown }>
   | Readonly<{ status: "delivery_unknown"; delivery: DeliveryUnknown }>;
 
-export class BrowserResponseError extends Error {
-  readonly code: BrowserErrorCode;
+export type BrowserLocalFailureCode =
+  | "internal_error"
+  | "invalid_response"
+  | "request_aborted"
+  | "response_timeout"
+  | "runtime_state_unavailable";
 
-  constructor(message: string, code: BrowserErrorCode = "internal_error") {
-    super(message);
-    this.name = "BrowserResponseError";
-    this.code = code;
+export const browserLocalFailureCodes = Object.freeze([
+  "internal_error",
+  "invalid_response",
+  "request_aborted",
+  "response_timeout",
+  "runtime_state_unavailable",
+] as const satisfies readonly BrowserLocalFailureCode[]);
+
+export type BrowserRequestFailure =
+  | Readonly<{
+      kind: "response_problem";
+      problem: BrowserProblemDetails;
+    }>
+  | Readonly<{
+      kind: "local_failure";
+      code: BrowserLocalFailureCode;
+      detail: string;
+      retryable: boolean;
+      issues: readonly FieldIssue[];
+    }>;
+
+const localFailureDefinition = (
+  code: BrowserLocalFailureCode,
+): Readonly<{ detail: string; retryable: boolean }> => {
+  switch (code) {
+    case "internal_error":
+      return Object.freeze({
+        detail: "The action could not be completed.",
+        retryable: false,
+      });
+    case "invalid_response":
+      return Object.freeze({
+        detail: "The local response is invalid.",
+        retryable: false,
+      });
+    case "request_aborted":
+      return Object.freeze({
+        detail: "The request ended before completion.",
+        retryable: true,
+      });
+    case "response_timeout":
+      return Object.freeze({
+        detail: "The local response was not completed before the deadline.",
+        retryable: true,
+      });
+    case "runtime_state_unavailable":
+      return Object.freeze({
+        detail: "Local runtime state is unavailable.",
+        retryable: false,
+      });
+  }
+};
+
+const localFailure = (
+  code: BrowserLocalFailureCode,
+): BrowserRequestFailure => {
+  const definition = localFailureDefinition(code);
+  return Object.freeze({
+    kind: "local_failure",
+    code,
+    detail: definition.detail,
+    retryable: definition.retryable,
+    issues: Object.freeze([]),
+  });
+};
+
+const responseProblemFailure = (
+  problem: BrowserProblemDetails,
+): BrowserRequestFailure => Object.freeze({
+  kind: "response_problem",
+  problem,
+});
+
+const failureDetail = (failure: BrowserRequestFailure): string =>
+  failure.kind === "response_problem"
+    ? failure.problem.detail
+    : failure.detail;
+
+export class BrowserRequestError extends Error {
+  readonly failure: BrowserRequestFailure;
+
+  constructor(failure: BrowserRequestFailure) {
+    super(failureDetail(failure));
+    this.name = "BrowserRequestError";
+    this.failure = failure;
     Object.freeze(this);
   }
 }
 
-export const invalidBrowserResponse = (message: string): BrowserResponseError =>
-  new BrowserResponseError(message);
+export const invalidBrowserResponse = (): BrowserRequestError =>
+  new BrowserRequestError(localFailure("invalid_response"));
+
+export const browserRequestFailure = (
+  error: unknown,
+): BrowserRequestFailure => error instanceof BrowserRequestError
+  ? error.failure
+  : localFailure("internal_error");
 
 export const readBrowserResponseJson = async (
   response: BrowserFetchResponse,
 ): Promise<unknown> => {
   let value: unknown;
   try { value = await response.json(); }
-  catch { throw new BrowserResponseError("The local response is invalid."); }
+  catch { throw invalidBrowserResponse(); }
   if (response.ok) return value;
 
+  let problem: BrowserProblemDetails;
   try {
-    const problem = parseBrowserProblemDetails(value, response.status);
-    throw new BrowserResponseError(problem.detail, problem.code);
-  } catch (error) {
-    if (error instanceof BrowserResponseError) throw error;
-    throw new BrowserResponseError("The request could not be completed.");
+    problem = parseBrowserProblemDetails(value, response.status);
+  } catch {
+    throw invalidBrowserResponse();
   }
+  throw new BrowserRequestError(responseProblemFailure(problem));
 };
 
-export const isBrowserResponseCode = (
+export const isBrowserRequestFailureCode = (
   error: unknown,
   code: BrowserErrorCode,
-): boolean => error instanceof BrowserResponseError && error.code === code;
+): boolean => error instanceof BrowserRequestError &&
+  error.failure.kind === "response_problem" &&
+  error.failure.problem.code === code;
 
 export const browserSessionRequiresReload = (error: unknown): boolean =>
-  isBrowserResponseCode(error, "unauthorized");
-
-export const browserActionFailureMessage = (error: unknown): string =>
-  error instanceof BrowserResponseError
-    ? error.message
-    : "The action could not be completed.";
+  isBrowserRequestFailureCode(error, "unauthorized");
 
 const defaultBrowserFetch: BrowserFetch = (input, init) => globalThis.fetch(input, init);
 
+const browserReadResponseDeadlineMilliseconds = 120_000;
 const browserActionResponseDeadlineMilliseconds = 5 * 60 * 1_000;
+const browserReadStopped = Symbol("browser-read-stopped");
 const browserActionResponseUnavailable = Symbol("browser-action-response-unavailable");
 
 const requestFor = (options: BrowserRequestOptions): BrowserFetch =>
   options.request ?? defaultBrowserFetch;
 
-const normalizeBrowserTransportFailure = (error: unknown): BrowserResponseError => {
-  if (error instanceof BrowserResponseError) return error;
+const normalizeBrowserTransportFailure = (error: unknown): BrowserRequestError => {
+  if (error instanceof BrowserRequestError) return error;
   return error instanceof Error && error.name === "AbortError"
-    ? new BrowserResponseError("The request ended before completion.", "request_aborted")
-    : new BrowserResponseError("Local runtime state is unavailable.", "runtime_state_unavailable");
+    ? new BrowserRequestError(localFailure("request_aborted"))
+    : new BrowserRequestError(localFailure("runtime_state_unavailable"));
+};
+
+type BrowserReadStopReason = "caller_aborted" | "deadline_reached";
+
+const stoppedBrowserReadFailure = (
+  reason: BrowserReadStopReason | undefined,
+): BrowserRequestError => {
+  switch (reason) {
+    case "caller_aborted":
+      return new BrowserRequestError(localFailure("request_aborted"));
+    case "deadline_reached":
+      return new BrowserRequestError(localFailure("response_timeout"));
+    case undefined:
+      throw new TypeError("The browser read stopped without a reason.");
+  }
 };
 
 const issueBrowserRequest = async (
@@ -113,10 +219,54 @@ const issueBrowserRequest = async (
   path: string,
   init: BrowserFetchInit,
 ): Promise<unknown> => {
+  if (options.signal?.aborted === true) {
+    throw new BrowserRequestError(localFailure("request_aborted"));
+  }
+  const controller = new AbortController();
+  let stopReason: BrowserReadStopReason | undefined;
+  let markStopped!: () => void;
+  const stopped = new Promise<typeof browserReadStopped>((resolve) => {
+    markStopped = () => { resolve(browserReadStopped); };
+  });
+  const stop = (reason: BrowserReadStopReason): void => {
+    if (stopReason !== undefined) return;
+    stopReason = reason;
+    controller.abort();
+    markStopped();
+  };
+  const callerAbort = (): void => { stop("caller_aborted"); };
+  options.signal?.addEventListener("abort", callerAbort, { once: true });
+  const deadline = globalThis.setTimeout(
+    () => { stop("deadline_reached"); },
+    browserReadResponseDeadlineMilliseconds,
+  );
   try {
-    return await readBrowserResponseJson(await requestFor(options)(path, init));
+    const response = await Promise.race([
+      requestFor(options)(path, {
+        ...init,
+        signal: controller.signal,
+      }),
+      stopped,
+    ]);
+    if (response === browserReadStopped) {
+      throw stoppedBrowserReadFailure(stopReason);
+    }
+    const value = await Promise.race([
+      readBrowserResponseJson(response),
+      stopped,
+    ]);
+    if (value === browserReadStopped) {
+      throw stoppedBrowserReadFailure(stopReason);
+    }
+    return value;
   } catch (error) {
+    if (stopReason !== undefined) {
+      throw stoppedBrowserReadFailure(stopReason);
+    }
     throw normalizeBrowserTransportFailure(error);
+  } finally {
+    globalThis.clearTimeout(deadline);
+    options.signal?.removeEventListener("abort", callerAbort);
   }
 };
 
@@ -187,10 +337,7 @@ const controlBrowserSendOnceJson = async <Unknown>(
   delivery: Unknown;
 }>> => {
   if (options.signal?.aborted === true) {
-    throw new BrowserResponseError(
-      "The request ended before completion.",
-      "request_aborted",
-    );
+    throw new BrowserRequestError(localFailure("request_aborted"));
   }
   const csrfToken = parseBrowserCsrfToken(csrfTokenInput);
   const controller = new AbortController();
@@ -250,16 +397,16 @@ const controlBrowserSendOnceJson = async <Unknown>(
     }
     if (response.ok) return Object.freeze({ status: "response_received", value });
 
+    let problem: BrowserProblemDetails;
     try {
-      const problem = parseBrowserProblemDetails(value, response.status);
-      throw new BrowserResponseError(problem.detail, problem.code);
-    } catch (error) {
-      if (error instanceof BrowserResponseError) throw error;
+      problem = parseBrowserProblemDetails(value, response.status);
+    } catch {
       return Object.freeze({
         status: "delivery_unknown",
         delivery: deliveryUnknown(),
       });
     }
+    throw new BrowserRequestError(responseProblemFailure(problem));
   } finally {
     globalThis.clearTimeout(deadline);
     options.signal?.removeEventListener("abort", abort);

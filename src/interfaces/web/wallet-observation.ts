@@ -10,7 +10,7 @@ import {
 
 interface WalletObservationStorage {
   read(): string | null;
-  write(operationId: string | undefined): void;
+  write(value: string | undefined): void;
 }
 
 export interface WalletObservationState {
@@ -28,11 +28,61 @@ export const walletObservationStorageKey = "littlejohn.wallet-operation-observat
 
 export const createWalletObservationState = (
   trackedOperationId?: string,
+  notifiedTerminalOperationId?: string,
 ): WalletObservationState => Object.freeze(
-  trackedOperationId === undefined
-    ? {}
-    : { trackedOperationId: parseWalletOperationId(trackedOperationId) },
+  {
+    ...(trackedOperationId === undefined
+      ? {}
+      : { trackedOperationId: parseWalletOperationId(trackedOperationId) }),
+    ...(notifiedTerminalOperationId === undefined
+      ? {}
+      : {
+          notifiedTerminalOperationId: parseWalletOperationId(
+            notifiedTerminalOperationId,
+          ),
+        }),
+  },
 );
+
+const storedWalletObservationKeys = Object.freeze([
+  "trackedOperationId",
+  "notifiedTerminalOperationId",
+]);
+
+const parseStoredWalletObservation = (
+  value: string,
+): WalletObservationState => {
+  const parsed: unknown = JSON.parse(value);
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    Array.isArray(parsed) ||
+    Object.keys(parsed).some((key) =>
+      !storedWalletObservationKeys.includes(key))
+  ) {
+    throw new TypeError("Wallet observation state is invalid.");
+  }
+  const record = parsed as Readonly<{
+    trackedOperationId?: unknown;
+    notifiedTerminalOperationId?: unknown;
+  }>;
+  return createWalletObservationState(
+    record.trackedOperationId as string | undefined,
+    record.notifiedTerminalOperationId as string | undefined,
+  );
+};
+
+const serializeWalletObservation = (
+  state: WalletObservationState,
+): string | undefined => {
+  const admitted = createWalletObservationState(
+    state.trackedOperationId,
+    state.notifiedTerminalOperationId,
+  );
+  return Object.keys(admitted).length === 0
+    ? undefined
+    : JSON.stringify(admitted);
+};
 
 export const createWalletObservationStore = (
   storage: WalletObservationStorage | undefined,
@@ -42,7 +92,7 @@ export const createWalletObservationStore = (
     try {
       const value = storage.read();
       if (value === null) return createWalletObservationState();
-      return createWalletObservationState(value);
+      return parseStoredWalletObservation(value);
     } catch {
       try { storage.write(undefined); } catch { /* unavailable storage */ }
       return createWalletObservationState();
@@ -51,9 +101,7 @@ export const createWalletObservationStore = (
   save: (state: WalletObservationState): void => {
     if (storage === undefined) return;
     try {
-      storage.write(state.trackedOperationId === undefined
-        ? undefined
-        : parseWalletOperationId(state.trackedOperationId));
+      storage.write(serializeWalletObservation(state));
     } catch {
       try { storage.write(undefined); } catch { /* unavailable storage */ }
     }

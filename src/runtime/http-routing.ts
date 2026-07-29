@@ -46,9 +46,16 @@ export type { RouteMethod };
 
 export interface RouteContext {
   readonly params: Readonly<Record<string, string>>;
+  readonly query: string;
   readonly body: unknown;
   readonly signal: AbortSignal;
 }
+
+export const routeQueryModes = Object.freeze([
+  "none",
+  "browser_location",
+] as const);
+export type RouteQueryMode = typeof routeQueryModes[number];
 
 export type RouteResult =
   | { readonly ok: true; readonly body: CanonicalJson }
@@ -64,6 +71,7 @@ export interface RouteDefinition {
   readonly method: RouteMethod;
   readonly mutation: RouteMutation;
   readonly pathPattern: string;
+  readonly query: RouteQueryMode;
   readonly response: RouteResponseKind;
   readonly successStatus: RouteSuccessStatus;
   readonly handler: (context: RouteContext) => Promise<RouteResult>;
@@ -87,7 +95,7 @@ const captureRouteDefinition = (input: RouteDefinition): RouteDefinition => {
   const keys = Reflect.ownKeys(descriptors);
   if (keys.some((key) => typeof key === "symbol") ||
     keys.filter((key): key is string => typeof key === "string").sort(compareCodePointSequences).join("\0") !==
-      ["handler", "method", "mutation", "pathPattern", "response", "successStatus"].join("\0")) {
+      ["handler", "method", "mutation", "pathPattern", "query", "response", "successStatus"].join("\0")) {
     throw new TypeError("Route definition fields are invalid.");
   }
   const values: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
@@ -101,6 +109,7 @@ const captureRouteDefinition = (input: RouteDefinition): RouteDefinition => {
   if (!routeMethods.includes(values["method"] as RouteMethod) ||
     !routeMutationClasses.includes(values["mutation"] as RouteMutation) ||
     typeof values["pathPattern"] !== "string" ||
+    !routeQueryModes.includes(values["query"] as RouteQueryMode) ||
     !routeResponseKinds.includes(values["response"] as RouteResponseKind) ||
     !routeSuccessStatuses.includes(values["successStatus"] as RouteSuccessStatus) ||
     typeof values["handler"] !== "function") {
@@ -110,6 +119,7 @@ const captureRouteDefinition = (input: RouteDefinition): RouteDefinition => {
     method: values["method"] as RouteMethod,
     mutation: values["mutation"] as RouteMutation,
     pathPattern: values["pathPattern"],
+    query: values["query"] as RouteQueryMode,
     response: values["response"] as RouteResponseKind,
     successStatus: values["successStatus"] as RouteSuccessStatus,
     handler: values["handler"] as RouteDefinition["handler"],
@@ -482,7 +492,10 @@ export class RuntimeRouteRegistry {
 
   validateSecurity(
     match: Extract<RouteMatch, { readonly status: "matched" }>,
-    input: Omit<RequestSecurityInput, "requestClass" | "acceptsBody" | "params">,
+    input: Omit<
+      RequestSecurityInput,
+      "requestClass" | "acceptsBody" | "params" | "queryMode"
+    >,
   ): RequestSecurityResult {
     const state = routeRegistryState(this);
     if (routeMatchRegistries.get(match) !== this || !state.routes.includes(match.route)) {
@@ -493,6 +506,7 @@ export class RuntimeRouteRegistry {
       params: match.params,
       requestClass: match.route.requestClass,
       acceptsBody: match.route.acceptsBody,
+      queryMode: match.route.query,
     });
   }
 

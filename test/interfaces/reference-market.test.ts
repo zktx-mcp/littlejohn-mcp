@@ -175,6 +175,7 @@ describe("reference-market interface boundary", () => {
       await match.route.handler({
         params: {},
         body: requests[action],
+        query: "",
         signal: new AbortController().signal,
       });
     }
@@ -188,6 +189,7 @@ describe("reference-market interface boundary", () => {
     const malformedResult = registry.normalizeResult(malformed.route, await malformed.route.handler({
       params: {},
       body: { pairId: referenceMarketManifest.pairs[0]!.pairId, extra: true },
+      query: "",
       signal: new AbortController().signal,
     }));
     expect(malformedResult).toMatchObject({ ok: false, problem: { code: "invalid_input" } });
@@ -195,7 +197,7 @@ describe("reference-market interface boundary", () => {
     const watchlist = registry.match("POST", referenceMarketPublicRoutes.watchlistQueries);
     if (watchlist.status !== "matched") throw new Error("Reference watchlist route is unavailable.");
     const disconnected = registry.normalizeResult(watchlist.route, await watchlist.route.handler({
-      params: {}, body: {}, signal: new AbortController().signal,
+      params: {}, body: {}, query: "", signal: new AbortController().signal,
     }));
     expect(disconnected).toMatchObject({ ok: false, problem: { code: "wallet_not_connected" } });
   });

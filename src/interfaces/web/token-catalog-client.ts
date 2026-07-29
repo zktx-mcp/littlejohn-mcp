@@ -19,7 +19,7 @@ import {
 } from "../../token-catalog/browser.js";
 import { publicInspectionPaths } from "../browser-contract.js";
 import {
-  BrowserResponseError,
+  BrowserRequestError,
   controlBrowserActionJson,
   invalidBrowserResponse,
   queryPublicBrowserJson,
@@ -32,11 +32,11 @@ import {
 } from "../operation-delivery.js";
 import { createBrowserOperationId } from "./operation-id.js";
 
-const invalidCatalogResponse = (): BrowserResponseError =>
-  invalidBrowserResponse("The account token response is invalid.");
+const invalidCatalogResponse = (): BrowserRequestError =>
+  invalidBrowserResponse();
 
-const invalidInspectionResponse = (): BrowserResponseError =>
-  invalidBrowserResponse("The token inspection response is invalid.");
+const invalidInspectionResponse = (): BrowserRequestError =>
+  invalidBrowserResponse();
 
 type TokenChainId = TokenSelection["asset"]["chainId"];
 type TokenAddress = TokenSelection["asset"]["address"];
@@ -66,7 +66,7 @@ export const inspectTokenContract = async (
       ),
     );
   } catch (error) {
-    if (error instanceof BrowserResponseError) throw error;
+    if (error instanceof BrowserRequestError) throw error;
     throw invalidInspectionResponse();
   }
 };
@@ -133,7 +133,7 @@ export const loadCurrentTokenOperation = async (
       await readBrowserJson(tokenCatalogBrowserRoutes.currentOperation, options),
     ).operation;
   } catch (error) {
-    if (error instanceof BrowserResponseError) throw error;
+    if (error instanceof BrowserRequestError) throw error;
     throw invalidCatalogResponse();
   }
 };
@@ -150,7 +150,7 @@ export const loadTokenOperation = async (
       await readBrowserJson(tokenCatalogBrowserRoutes.operation(request.operationId), options),
     );
   } catch (error) {
-    if (error instanceof BrowserResponseError) throw error;
+    if (error instanceof BrowserRequestError) throw error;
     throw invalidCatalogResponse();
   }
 };
@@ -182,7 +182,7 @@ export const confirmTokenOperation = async (
       value,
     );
   } catch (error) {
-    if (error instanceof BrowserResponseError) throw error;
+    if (error instanceof BrowserRequestError) throw error;
     return createDeliveryUnknown("confirm", operationId);
   }
 };
@@ -214,7 +214,7 @@ export const cancelTokenOperation = async (
     }
     return result;
   } catch (error) {
-    if (error instanceof BrowserResponseError) throw error;
+    if (error instanceof BrowserRequestError) throw error;
     return createDeliveryUnknown("cancel", request.operationId);
   }
 };

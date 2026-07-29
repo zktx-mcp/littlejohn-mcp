@@ -20,7 +20,6 @@ import {
   uint256DecimalSchema,
   type ContractAnalysis,
   type Erc20AssetIdentity,
-  type ExactRational,
 } from "../../core/browser.js";
 import {
   uniswapV2DeploymentIdentity,
@@ -109,30 +108,6 @@ export const uniswapV2TokenDecimalsSchema = z.discriminatedUnion("status", [
   notObservedDecimalsSchema,
 ]);
 export type UniswapV2TokenDecimals = z.infer<typeof uniswapV2TokenDecimalsSchema>;
-
-const greatestCommonDivisor = (left: bigint, right: bigint): bigint => {
-  while (right !== 0n) [left, right] = [right, left % right];
-  return left;
-};
-
-export const formatUniswapV2TokenUnitPrice = (
-  rawUnitPrice: ExactRational,
-  inputDecimals: string,
-  outputDecimals: string,
-): string => {
-  const price = exactRationalSchema.parse(rawUnitPrice);
-  const inputScale = BigInt(tokenDecimalsSchema.parse(inputDecimals));
-  const outputScale = BigInt(tokenDecimalsSchema.parse(outputDecimals));
-  let numerator = BigInt(price.numerator);
-  let denominator = BigInt(price.denominator);
-  if (inputScale > outputScale) {
-    numerator *= 10n ** (inputScale - outputScale);
-  } else if (outputScale > inputScale) {
-    denominator *= 10n ** (outputScale - inputScale);
-  }
-  const divisor = greatestCommonDivisor(numerator, denominator);
-  return `${numerator / divisor}/${denominator / divisor}`;
-};
 
 const evaluatedTokenSchema = jsonObject({
   asset: uniswapV2AssetSchema,

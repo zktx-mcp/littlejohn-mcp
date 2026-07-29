@@ -26,7 +26,7 @@ import {
   walletQrMatrixSizeLimits,
   type WalletQrMatrix,
 } from "./contracts.js";
-import walletExternalModulesValue from "./external-modules.cjs";
+import * as walletExternalModulesNamespace from "./external-modules.cjs";
 
 type WalletConnectConfigurationState =
   ReturnType<typeof readWalletConnectConfiguration>;
@@ -35,7 +35,11 @@ export type WalletExternalModuleLoader = (
   key: "signClient" | "qrCode",
 ) => Promise<unknown>;
 
-const walletExternalModules = walletExternalModulesValue as unknown as Readonly<{
+const walletExternalModules = (
+  walletExternalModulesNamespace as unknown as Readonly<{
+    default: unknown;
+  }>
+).default as Readonly<{
   loadSignClientModule(): Promise<unknown>;
   loadQrCodeModule(): Promise<unknown>;
 }>;

@@ -35,7 +35,6 @@ import type {
 import {
   assertUniswapV2QuoteData,
   createUniswapV2QuoteApplication,
-  formatUniswapV2TokenUnitPrice,
   uniswapV2ErrorRegistry,
   uniswapV2QuoteCapability,
   uniswapV2QuoteDataSchema,
@@ -480,34 +479,6 @@ describe("Uniswap V2 exact-input quote owner", () => {
       midPrice: { numerator: "1", denominator: "1" },
       priceImpact: { numerator: "0", denominator: "1" },
     });
-  });
-
-  it("formats raw-unit prices as exact token-unit prices without floating point", () => {
-    expect(formatUniswapV2TokenUnitPrice(
-      exactRationalSchema.parse({ numerator: "1", denominator: "2" }),
-      "18",
-      "6",
-    )).toBe("500000000000/1");
-    expect(formatUniswapV2TokenUnitPrice(
-      exactRationalSchema.parse({ numerator: "1", denominator: "2" }),
-      "6",
-      "18",
-    )).toBe("1/2000000000000");
-    expect(formatUniswapV2TokenUnitPrice(
-      exactRationalSchema.parse({ numerator: "3", denominator: "4" }),
-      "18",
-      "18",
-    )).toBe("3/4");
-    expect(() => formatUniswapV2TokenUnitPrice(
-      { numerator: "2", denominator: "4" } as never,
-      "18",
-      "18",
-    )).toThrow();
-    expect(() => formatUniswapV2TokenUnitPrice(
-      exactRationalSchema.parse({ numerator: "1", denominator: "2" }),
-      "256",
-      "18",
-    )).toThrow();
   });
 
   it("constructs only direct and distinct one-intermediary candidates", () => {

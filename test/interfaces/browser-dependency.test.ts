@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
@@ -37,13 +37,24 @@ const nodeModulesRoot = resolve(repositoryRoot, "node_modules");
 const webSourceRoot = resolve(repositoryRoot, "src/interfaces/web");
 const browserContractSource = resolve(repositoryRoot, "src/interfaces/browser-contract.ts");
 const webApplicationSource = resolve(webSourceRoot, "app.tsx");
+const walletProcessSource = resolve(webSourceRoot, "wallet-process.tsx");
+const stockTokenProcessSource = resolve(webSourceRoot, "stock-token-process.tsx");
+const copyableIdentifierSource = resolve(webSourceRoot, "copyable-identifier.tsx");
+const referenceChartSource = resolve(webSourceRoot, "reference-chart.tsx");
+const referenceMarketChartSource = resolve(webSourceRoot, "reference-market-chart.tsx");
+const lightweightChartsAdapterSource =
+  resolve(webSourceRoot, "lightweight-charts-adapter.tsx");
 const walletClientSource = resolve(webSourceRoot, "wallet-client.ts");
 const browserClientSource = resolve(webSourceRoot, "browser-client.ts");
 const contractInspectionClientSource = resolve(webSourceRoot, "contract-inspection-client.ts");
-const contractInspectionViewSource = resolve(webSourceRoot, "contract-inspection-view.tsx");
+const analysisDetailsSource = resolve(webSourceRoot, "analysis-details.tsx");
+const analysisDialogSource = resolve(webSourceRoot, "analysis-dialog.tsx");
+const pricesPageSource = resolve(webSourceRoot, "prices-page.tsx");
+const referencePricePageSource = resolve(webSourceRoot, "reference-price-page.tsx");
 const tokenCatalogClientSource = resolve(webSourceRoot, "token-catalog-client.ts");
 const accountAssetsClientSource = resolve(webSourceRoot, "account-assets-client.ts");
 const accountAssetsPageSource = resolve(webSourceRoot, "account-assets-page.tsx");
+const iconSource = resolve(webSourceRoot, "icons.tsx");
 const operationStateSource = resolve(repositoryRoot, "src/wallet/operation-state.ts");
 const chainErrorDefinitionsSource = resolve(repositoryRoot, "src/chain/error-definitions.ts");
 const tokenCatalogBrowserSource = resolve(repositoryRoot, "src/token-catalog/browser.ts");
@@ -76,6 +87,7 @@ const allowedVirtualModules = new Set([
   "\0commonjsHelpers.js",
   "\0rolldown/runtime.js",
   "\0vite/modulepreload-polyfill.js",
+  "\0vite/preload-helper.js",
 ]);
 
 const parseBuildOutputs = (value: unknown): readonly BuildOutput[] => {
@@ -96,7 +108,10 @@ describe("browser runtime dependency boundary", () => {
     const allowed = [
       resolve(webSourceRoot, "main.tsx"),
       contractInspectionClientSource,
-      contractInspectionViewSource,
+      analysisDetailsSource,
+      analysisDialogSource,
+      pricesPageSource,
+      referencePricePageSource,
       operationStateSource,
       resolve(repositoryRoot, "src/wallet/operation-contract.ts"),
       resolve(repositoryRoot, "src/core/wallet-connection.ts"),
@@ -123,6 +138,8 @@ describe("browser runtime dependency boundary", () => {
       resolve(nodeModulesRoot, "react-dom/client.js"),
       resolve(nodeModulesRoot, "scheduler/index.js"),
       resolve(nodeModulesRoot, "zod/index.js"),
+      resolve(nodeModulesRoot, "lightweight-charts/dist/lightweight-charts.production.mjs"),
+      resolve(nodeModulesRoot, "fancy-canvas/index.mjs"),
       ...allowedVirtualModules,
     ];
     expect(allowed.map(browserModulePolicyViolation)).toEqual(allowed.map(() => undefined));
@@ -148,6 +165,23 @@ describe("browser runtime dependency boundary", () => {
       resolve(nodeModulesRoot, "evil/node_modules/react/index.js"),
     ];
     expect(forbidden.map(browserModulePolicyViolation)).toEqual(forbidden);
+  });
+
+  it("audits every browser-owned source before bundling", async () => {
+    const violations: string[] = [];
+    for (const entry of await readdir(webSourceRoot, { withFileTypes: true })) {
+      if (
+        !entry.isFile() ||
+        !entry.name.endsWith(".ts") &&
+          !entry.name.endsWith(".tsx") &&
+          !entry.name.endsWith(".css")
+      ) continue;
+      const path = resolve(webSourceRoot, entry.name);
+      violations.push(
+        ...auditBrowserSourceModule(await readFile(path, "utf8"), path),
+      );
+    }
+    expect(violations).toEqual([]);
   });
 
   it("rejects semantic loading and navigation sinks while permitting inert URI text", async () => {
@@ -238,23 +272,86 @@ describe("browser runtime dependency boundary", () => {
       await readFile(webApplicationSource, "utf8"),
       webApplicationSource,
     )).toEqual([]);
-    const webApplication = await readFile(webApplicationSource, "utf8");
-    const shadowedObservationKey = webApplication.replace(
-      "read: (): string | null => window.sessionStorage.getItem(walletObservationStorageKey),",
+    expect(auditBrowserSourceModule(
+      await readFile(iconSource, "utf8"),
+      iconSource,
+    )).toEqual([]);
+    for (const source of [
+      "const chart = <polyline />;",
+      "const chart = <svg points=\"0,0\" />;",
+      "const chart = <svg stroke=\"black\" />;",
+      "const chart = <svg strokeWidth=\"1\" />;",
+      "const chart = <svg vectorEffect=\"non-scaling-stroke\" />;",
+    ]) {
+      expect(
+        auditBrowserSourceModule(source, resolve(webSourceRoot, "obsolete-chart.tsx")),
+        source,
+      ).not.toEqual([]);
+    }
+    expect(auditBrowserSourceModule(
+      `const browserInformationPages = [{ path: "/outside" }];\n` +
+      `const links = browserInformationPages.map((informationPage) => ` +
+      `<a href={informationPage.path}>outside</a>);`,
+      webApplicationSource,
+    )).not.toEqual([]);
+    expect(auditBrowserSourceModule(
+      await readFile(copyableIdentifierSource, "utf8"),
+      copyableIdentifierSource,
+    )).toEqual([]);
+    expect(auditBrowserSourceModule(
+      await readFile(lightweightChartsAdapterSource, "utf8"),
+      lightweightChartsAdapterSource,
+    )).toEqual([]);
+    for (const [name, source] of [
+      ["forged-dynamic-import.ts", 'void import("lightweight-charts");'],
+      ["forged-dynamic-expression.ts", "void import(packageName);"],
+      ["forged-foreign-dynamic.ts", 'void import("react");'],
+    ] as const) {
+      expect(
+        auditBrowserSourceModule(source, resolve(webSourceRoot, name)),
+        source,
+      ).not.toEqual([]);
+    }
+    for (const [name, source] of [
+      ["forged-clipboard.ts", "navigator.clipboard.writeText(\"outside\");"],
+      ["forged-title.ts", "document.title = \"outside\";"],
+      ["forged-history.ts", "window.history.pushState(null, \"\", \"/outside\");"],
+      ["forged-popstate.ts", "window.addEventListener(\"popstate\", () => undefined);"],
+    ] as const) {
+      expect(
+        auditBrowserSourceModule(source, resolve(webSourceRoot, name)),
+        source,
+      ).not.toEqual([]);
+    }
+    const walletProcess = await readFile(walletProcessSource, "utf8");
+    const shadowedObservationKey = walletProcess.replace(
+      "read: (): string | null =>\n      window.sessionStorage.getItem(walletObservationStorageKey),",
       "read: (): string | null => {\n" +
       "    const walletObservationStorageKey = \"outside\";\n" +
       "    return window.sessionStorage.getItem(walletObservationStorageKey);\n" +
       "  },",
     );
-    expect(shadowedObservationKey).not.toBe(webApplication);
-    expect(auditBrowserSourceModule(shadowedObservationKey, webApplicationSource)).not.toEqual([]);
-    const shadowedObservationValue = webApplication.replace(
-      "window.sessionStorage.setItem(walletObservationStorageKey, operationId);",
-      "{ const operationId = \"outside\"; " +
-      "window.sessionStorage.setItem(walletObservationStorageKey, operationId); }",
+    expect(shadowedObservationKey).not.toBe(walletProcess);
+    expect(auditBrowserSourceModule(shadowedObservationKey, walletProcessSource)).not.toEqual([]);
+    const shadowedObservationValue = walletProcess.replace(
+      "window.sessionStorage.setItem(\n          walletObservationStorageKey,\n          value,\n        );",
+      "{ const value = \"outside\"; " +
+      "window.sessionStorage.setItem(walletObservationStorageKey, value); }",
     );
-    expect(shadowedObservationValue).not.toBe(webApplication);
-    expect(auditBrowserSourceModule(shadowedObservationValue, webApplicationSource)).not.toEqual([]);
+    expect(shadowedObservationValue).not.toBe(walletProcess);
+    expect(auditBrowserSourceModule(shadowedObservationValue, walletProcessSource)).not.toEqual([]);
+    const stockTokenProcess = await readFile(stockTokenProcessSource, "utf8");
+    const shadowedStockTokenNotificationValue = stockTokenProcess.replace(
+      "window.sessionStorage.setItem(\n          stockTokenTerminalNotificationStorageKey,\n          operationId,\n        );",
+      "{ const operationId = \"outside\"; " +
+      "window.sessionStorage.setItem(" +
+      "stockTokenTerminalNotificationStorageKey, operationId); }",
+    );
+    expect(shadowedStockTokenNotificationValue).not.toBe(stockTokenProcess);
+    expect(auditBrowserSourceModule(
+      shadowedStockTokenNotificationValue,
+      stockTokenProcessSource,
+    )).not.toEqual([]);
     const browserClient = await readFile(browserClientSource, "utf8");
     const substitutedFetchInputs = browserClient.replace(
       "const defaultBrowserFetch: BrowserFetch = (input, init) => globalThis.fetch(input, init);",
@@ -342,15 +439,33 @@ describe("browser runtime dependency boundary", () => {
       }
 
       const moduleIds = chunks.flatMap((chunk) => Object.keys(chunk.modules)).sort();
+      const bundledModuleIds = new Set(moduleIds.map((moduleId) =>
+        moduleId.split("?", 1)[0] ?? moduleId));
+      const browserProductSources = (await readdir(webSourceRoot, {
+        withFileTypes: true,
+      }))
+        .filter((entry) =>
+          entry.isFile() &&
+          (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx")))
+        .map((entry) => resolve(webSourceRoot, entry.name))
+        .sort();
+      expect(browserProductSources.filter((source) =>
+        !bundledModuleIds.has(source))).toEqual([]);
       expect(moduleIds).toContain(browserContractSource);
       expect(moduleIds).toContain(browserClientSource);
       expect(moduleIds).toContain(contractInspectionClientSource);
-      expect(moduleIds).toContain(contractInspectionViewSource);
+      expect(moduleIds).toContain(analysisDetailsSource);
+      expect(moduleIds).toContain(analysisDialogSource);
+      expect(moduleIds).toContain(pricesPageSource);
+      expect(moduleIds).toContain(referencePricePageSource);
       expect(moduleIds).toContain(walletClientSource);
       expect(moduleIds).toContain(tokenCatalogClientSource);
       expect(moduleIds).toContain(accountAssetsClientSource);
       expect(moduleIds).toContain(accountAssetsPageSource);
       expect(moduleIds).toContain(webApplicationSource);
+      expect(moduleIds).toContain(referenceChartSource);
+      expect(moduleIds).toContain(referenceMarketChartSource);
+      expect(moduleIds).toContain(lightweightChartsAdapterSource);
       expect(moduleIds).toContain(resolve(webSourceRoot, "wallet-dialog-view.ts"));
       expect(moduleIds).toContain(operationStateSource);
       expect(moduleIds).toContain(resolve(repositoryRoot, "src/wallet/operation-contract.ts"));
@@ -373,6 +488,22 @@ describe("browser runtime dependency boundary", () => {
       const zodRoot = resolve(nodeModulesRoot, "zod");
       expect(moduleIds.some((moduleId) =>
         moduleId === zodRoot || moduleId.startsWith(`${zodRoot}${sep}`))).toBe(true);
+      const lightweightChartsRoot = resolve(nodeModulesRoot, "lightweight-charts");
+      const fancyCanvasRoot = resolve(nodeModulesRoot, "fancy-canvas");
+      expect(moduleIds.some((moduleId) =>
+        moduleId.startsWith(`${lightweightChartsRoot}${sep}`))).toBe(true);
+      expect(moduleIds.some((moduleId) =>
+        moduleId.startsWith(`${fancyCanvasRoot}${sep}`))).toBe(true);
+      const chartChunks = chunks.filter((chunk) =>
+        Object.keys(chunk.modules).some((moduleId) =>
+          moduleId.startsWith(`${lightweightChartsRoot}${sep}`) ||
+          moduleId.startsWith(`${fancyCanvasRoot}${sep}`)));
+      expect(chartChunks).toHaveLength(1);
+      expect(chartChunks[0]?.fileName).toMatch(/^assets\/chunk-[A-Za-z0-9_-]{8,}\.js$/u);
+      expect(chunks.filter((chunk) => chunk !== chartChunks[0]).some((chunk) =>
+        Object.keys(chunk.modules).some((moduleId) =>
+          moduleId.startsWith(`${lightweightChartsRoot}${sep}`) ||
+          moduleId.startsWith(`${fancyCanvasRoot}${sep}`)))).toBe(false);
       expect(moduleIds.flatMap((moduleId) => {
         const violation = browserModulePolicyViolation(moduleId);
         return violation === undefined ? [] : [violation];

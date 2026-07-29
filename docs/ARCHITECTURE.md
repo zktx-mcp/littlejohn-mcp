@@ -2,241 +2,59 @@
 
 ## Current State
 
-Little John has a Node.js `>=22.13.0` ESM TypeScript package, canonical core
-contracts, registry-derived read-capability definitions and JSON
-Schema and descriptor projections, owner-only POSIX
-application-data permissions, SQLite product state, local control credentials,
-source identifiers that do not expose credentials, a runtime support manifest,
-and one authenticated fixed-port HTTP owner with compatible peer deferral and
-demand-driven takeover.
-The owner identity resource is `GET /api/v1/runtime-identity`; authenticated
-process control is confined to `/api/v1/internal/control/*`. SQLite row adapters
-alias SQL snake-case names to lower-camel TypeScript fields. Immutable
-request-policy, resource-path, route, support-manifest, and interface-mapping
-registries accept only complete declared extensions. Route responses are
-either canonical JSON or bounded browser text with fixed CSP, content-type,
-opener, referrer, and no-store headers; no route can supply arbitrary response
-headers. Canonical JSON rejects ill-formed Unicode in both string values and
-object keys before UTF-8 encoding.
+Little John is a Node.js `>=22.13.0` ESM TypeScript modular monolith. One
+runtime composition root opens the owner-only SQLite product store, the
+WalletConnect SDK store, one bounded Robinhood Chain RPC reader, the implemented
+feature applications, and the final interface support manifest. Runtime creation
+returns a cleanup-capable handle before it starts or defers to the fixed
+loopback HTTP owner. The owner, compatible peer, takeover, and shutdown behavior
+follows [Runtime Lifecycle](#runtime-lifecycle).
 
-Runtime creation returns a cleanup-capable handle after opening SQLite and
-before constructing or starting the fixed-port owner. The implemented owner,
-application composition, and CLI shutdown behavior follows
-[`Runtime Lifecycle`](#runtime-lifecycle).
+The current runtime composes wallet connection and operation ownership, pinned
+chain reads, contract analysis with the current source-verification provider,
+official-asset synchronization and StockFactory admission, account token
+selection, account assets, reference prices and local reference history,
+account-scoped reference-pair state, and the statically registered protocol
+packages. Each feature owns its canonical application contracts and persistence
+ports. This document records the current external-integration classification in
+[External Integration Model](#external-integration-model); exact support,
+evidence, numeric, and protocol meanings remain in their owning sources.
 
-The `littlejohn` package binary composes the wallet and chain modules into the
-fixed-port owner. The owner opens one WalletConnect Sign Client on the
-owner-only SDK private store, reconciles SDK sessions into the SQLite
-wallet-connection projection, and serves authenticated internal wallet
-connection and operation resources. One coordinator enforces the single-session
-and serialized wallet operation contracts defined below.
+One authenticated fixed-port HTTP owner serves the owner-identity handshake,
+compatible-process controls, public reads, browser-session resources, and
+browser content under the request classes in [HTTP Boundary](#http-boundary).
+Public wallet reads, browser wallet controls, and compatible-process wallet
+controls remain separate route registries and authority classes. They share
+canonical wallet contracts without treating their methods, credentials, or
+mutation authority as interchangeable.
 
-The owner also opens one bounded RPC reader for the configured Robinhood Chain
-endpoint. `chain.status`, `contract.inspect`, `transaction.inspect`, and
-`account.balance` are complete internal direct capabilities. Every contiguous
-chain-dependent phase enters one chain lifecycle that owns caller abort,
-application close, one 90-second whole-invocation deadline, listener cleanup,
-and drain. A nested binding may join only the exact active invocation signal;
-it does not create another deadline or active-call record. Configured-chain
-validation and selector-based canonical-block resolution are separate
-single-owner procedures used only by capabilities that need them. Resolution
-issues an opaque block object whose private state binds the active invocation,
-configured-chain proof, public anchor, and exact state reference. Dependent
-state readers require that exact object and context; a plain anchor, clone,
-foreign block, or settled context fails before RPC. Every applicable invocation
-checks the canonical product chain owned by `docs/PRODUCT_POLICY.md` and
-`productChainId`; pins dependent state reads to one
-observed canonical block hash using
-[EIP-1898](https://eips.ethereum.org/EIPS/eip-1898); preserves
-integers as base-10 strings; validates transaction, receipt, log, and block
-identity; preserves the signed access-list sequence and multiplicity; and
-records source-scoped evidence. The chain boundary uses viem for EVM Keccak and
-ERC-20 ABI encoding and decoding, then applies exact word, topic, padding,
-length, and range checks. Core independently verifies code hashes with
-`@noble/hashes` and reconstructs claimed ERC-20 event words instead of reusing
-the chain decoder. Explicit account reads do not consume wallet state. Only
-`account.balance` with `active_wallet` captures the current validated
-WalletConnect account.
+A no-argument package process exposes one stdio MCP connection while sharing or
+taking over that HTTP owner. The interactive CLI and React application consume
+the same runtime-owned applications and state. Canonical binding catalogs and
+their role registries own exact MCP names, HTTP paths, CLI commands, browser
+locations, parsing, and availability. Help text, route coverage, capability
+catalogs, and the generated public support projection derive from those owners;
+this document does not maintain a second interface catalog.
 
-Contract and token inspection use one ordered contract-analysis process at the
-same canonical block as the inspection. It records target runtime-code
-identity, supported proxy observations, exact source-verification status,
-declared functions when an exact source record is available, and the supported
-owner, pause, and default-administrator observations. Sourcify API v2 is the
-current source-verification implementation behind the product-owned
-`ContractSourceVerificationPort`. Missing or non-exact source information and
-unsupported control forms remain explicit unavailable or unresolved results;
-they do not establish safety.
+The React application currently uses one persistent shell for Assets, Prices,
+and a selected reference-price detail, plus one shared modal host for explicit
+wallet, token-selection, token-information, and contract-analysis tasks. The
+browser location registry owns the exact paths and admitted query values.
+Opening an information page performs no wallet mutation or transaction action.
 
-The runtime constructs the `protocols` application after `chain`. It statically
-constructs the implemented protocol packages, validates their exact capability
-bindings, and returns one immutable support extension for final interface
-composition. Token catalog consumes the chain application directly and does not
-consume a protocol application or protocol support. Final interface composition
-applies the protocol support extension after the token-catalog, account-assets,
-and reference-market support stages are complete. The current package is
-`uniswap_v2`. Its exact-input quote
-reads the selected registered factory and only the direct and declared
-one-intermediary candidates needed for each result at one canonical block. It
-reports every candidate without selecting a preferred route and constructs no
-transaction.
+Owner-only application-data permissions separate the SQLite product store,
+WalletConnect private store, and local control credential. Browser request
+credentials, compatible-process credentials, and WalletConnect session state
+remain distinct. The current runtime exposes no transaction confirmation
+authority. Route responses use the declared canonical-JSON or bounded
+browser-content policies, and canonical JSON rejects ill-formed Unicode before
+UTF-8 encoding.
 
-The browser-safe core token-metadata contract owns display-text admission,
-optional metadata outcomes, and their limits. One chain token-metadata process
-reads ERC-20 `name`, `symbol`, and `decimals` at one supplied EIP-1898 block
-reference for both token inspection and account assets. The standardized
-`eth_call` execution-reverted response makes an optional method unavailable;
-malformed, mismatched, transport, and source failures retain their own failure
-meaning. The internal `token-catalog` module owns canonical token inspection,
-account-specific token selection, operation, error, and downstream port
-contracts. Its chain adapter composes the shared metadata process with deployed
-code and ERC-20 `totalSupply`. A fatal inspection call aborts and drains its
-sibling calls before the inspection returns or the owner closes.
-The catalog runtime persists an inspection only when a confirmed addition
-commits. The query application receives only exact-selection and bounded-list
-storage methods. Exact get returns the selection and any historical inspection;
-list returns selection rows without duplicating inspection evidence. One
-owner-memory coordinator alone receives the mutation store, serializes additions
-and removals, binds confirmation to the captured live wallet session and
-connection revision through the canonical confirmation contract, and commits
-each change through one SQLite transaction. The interface layer exposes token
-inspection and the account-specific selection set through their declared HTTP,
-MCP, and CLI bindings. The web surface starts and reviews changes through
-operation resources and consumes account-assets for display. The browser-safe
-registry official-asset contract owns the validated official-source definition,
-normalized source evidence schemas, StockFactory admission manifest, fixed
-verification identity, canonical digests, and member lookup. A server-only
-registry source contract owns the Robinhood client and snapshot-store ports,
-normalized failures, and admitted-observation provenance. The Robinhood adapter
-owns only the source request, provider response admission, deployment matching,
-operational limits, and construction. Official Stock Token classification is
-established only by a complete admitted registry source observation and
-same-block StockFactory verification; no surface establishes safety, price,
-valuation, or transaction support.
-
-The `market-portfolio` module owns one closed reference-market application for
-the fixed ETH/USD and USDG/USD Chainlink feeds and the derived ETH/USDG pair.
-Each current result uses one canonical Robinhood Chain block. Direct prices bind
-one validated round; the cross binds fresh rounds from both feeds at that same
-block. Bounded history synchronization stores validated round evidence and
-builds exact observed-point UTC candles without trade volume. History results
-are always non-exhaustive: a result with candles is `partial`, and one without
-candles is `unavailable`. One account-scoped watchlist stores only pairs
-admitted by the fixed manifest and uses revisioned local mutations. Feed
-synchronization and watchlist mutation have separate state and failure
-boundaries.
-
-The interactive CLI implements `wallet status`, `wallet connect`, `wallet
-disconnect`, `wallet operation`, and `wallet cancel`, plus
-`read assets`, `read chain-status`, `read contract`, `read transaction`,
-`read balance`, `uniswap-v2 quote-exact-input`, the declared `token` commands,
-and `market price`, `market history`, `market watchlist`, `market add-pair`,
-`market remove-pair`, and `market reorder-pairs` under
-[`CLI Surface`](#cli-surface). Read
-commands expose the canonical result as human-readable text or exact JSON
-without recomputing domain meaning. Token addition and removal
-commands require an interactive terminal and one exact confirmation response.
-Exact operation cancellation is confirmation-independent and remains available
-to non-interactive callers.
-`littlejohn --help` projects the same command identities consumed by the CLI
-parsers and does not start the runtime.
-
-Public loopback resources expose the registry-declared chain, token, protocol,
-and reference-market reads, the wallet
-connection projection, and the registry-derived capability catalog. A
-no-argument `littlejohn` process runs one stdio MCP connection while sharing or
-taking over the same fixed-port owner. Its convention-validated tools derive
-from the canonical interface-binding catalogs rather than a copied count. MCP
-start-operation tools return
-the applicable fixed local page URL. Exact operation-read and cancellation
-tools return the canonical operation without a display URL. No MCP tool
-confirms an operation or receives QR, pairing, topic, browser request cookie,
-CSRF token, local control credential, signing, or transaction material.
-
-The fixed-origin React surface serves one application at `/`; `/tokens` is not
-a page. The product identity remains at the left of the navigation bar and the
-wallet control remains at the right. A disconnected account sees the product
-description, connection action, and contract and token inspection. Those
-inspection views use the public contract and token inspection routes and apply
-the same complete public-result validation as the server. The root also exposes
-the Uniswap V2 exact-input quote view with explicit factory selection, raw
-input, every declared candidate, observed hops, exact raw-unit and token-unit
-price displays under `docs/NUMERIC_POLICY.md`, evidence, and limitations. A
-connected account
-also sees one fresh bounded asset page with native balance, included-token
-balances, refresh, pagination, and contextual add and removal actions. Token
-addition review presents the same contract analysis and the server-produced
-inspection and review digests without recalculating them. The same root includes
-reference-market starter or saved cards, one selected exact-price history
-chart, and the current account's supported-pair watchlist controls. One modal
-host derives priority across wallet operations, token operations, and the add
-form. A CLI-created catalog operation is read-only in the browser. The modal
-acts only after a direct user action, renders canonical states without
-inventing a second lifecycle, and replaces a first terminal observation with
-one transient non-modal notification.
-
-The root bootstrap issues an `HttpOnly`, `SameSite=Strict` browser-session
-cookie scoped to `/api/v1` and an independent CSRF token.
-Neither credential contains an operation identifier or enters a URL. Neither
-credential enters browser local storage or session storage; the browser request
-credential is held only by the `HttpOnly` cookie store. Host, Origin,
-credential, CSRF, operation identity, connection
-revision or review digest, and expiry checks precede browser control. The
-browser uses the declared wallet resources under `/api/v1/wallet` and catalog
-resources under `/api/v1/token-catalog`. Reference-market price, history, and
-watchlist queries are public reads. Browser watchlist changes use browser
-credentials and CSRF; compatible-process watchlist changes use local-control
-authentication. Both mutation paths send once and report an unproved response
-as `delivery_unknown` without retrying. Public reads and compatible-process
-control resources reject the browser credential instead of treating its wider
-cookie path as authority. The wallet-operation resources are:
-
-- `POST /api/v1/wallet/operations`;
-- `GET /api/v1/wallet/current-operation`;
-- `GET /api/v1/wallet/operations/{operationId}`;
-- `POST /api/v1/wallet/operations/{operationId}/confirmation`; and
-- `POST /api/v1/wallet/operations/{operationId}/cancellation`.
-
-The catalog browser resources are inspection, operation creation,
-current-operation and exact operation reads, and exact confirmation and
-cancellation action resources. Selection and balance reads belong to
-account-assets; the browser does not retain parallel catalog query resources. These resources
-do not expose a second contract, error map, or operation state machine.
-
-There is no human wallet-path namespace, separate QR resource, or browser
-`DELETE` cancellation route. The compiled content-hashed
-assets contain no inline executable or style content. The browser build accepts
-only its closed first-party contract set and pinned browser runtime packages;
-its first-party source uses a closed set of browser globals and intrinsic
-elements. The fixed CSP remains the runtime boundary for dynamic code
-execution, connections, resources, frames, and forms. A monotonic request
-authority prevents an older poll or duplicate control action from replacing a
-newer wallet dialog view.
-
-The wallet, protocols, token-catalog, account-assets, and market-portfolio modules own their canonical application contracts,
-including each identifier, version, input schema, success schema, failure-code
-set, and state meaning. One canonical interface-binding catalog maps those
-contracts to MCP, loopback HTTP, CLI, and web bindings. Transport adapters and
-the runtime support manifest derive from these sources rather than maintaining
-parallel tool, schema, route, or availability lists. The interface layer
-projects the completed wallet, chain, protocols, token-catalog, account-assets, and reference-market ports
-into HTTP, MCP, CLI, and the React application.
-Read-result consumers revalidate the normalized request, result chain scope,
-and evidence-anchor chain scope through the same definition-owned checks used
-by the local producer. The producer and public validation use one canonical
-claim projection. Every public evidence source carries the digest of its
-canonical claims, and public validation rejects a result when the claims
-derived from the request and result do not match that digest. The meaning and
-limits of this digest are owned by `docs/EVIDENCE_POLICY.md#evidence-record`.
-The semantic-read result owner accepts a complete canonical success only when
-its UTF-8 JSON representation is at most 8,388,607 bytes. Every generated read
-projection exposes that aggregate limit and the `result_too_large` failure. The
-HTTP public-read body limit is the canonical result limit plus its one-byte line
-framing; transports do not reclassify an oversized semantic result.
-The runtime support manifest remains the machine authority for binding
-availability, and its public projection is
-`docs/PRODUCT_POLICY.md#current-support`. No signature request, transaction
-construction, broadcast, or receipt verification is implemented.
+The runtime support manifest is the sole machine authority for implemented
+binding availability. Its deterministic public projection is
+`docs/PRODUCT_POLICY.md#current-support`. Exact chain, protocol, evidence,
+numeric, transaction, and presentation meaning remains in each owning binding
+document rather than being restated in this Current State section.
 
 This document is the sole authority for repository ownership, module
 dependencies, local processes, persistence, browser and CLI surfaces,
@@ -298,7 +116,6 @@ package verification does not replace manual host and wallet gates.
 | --- | --- |
 | `core` | Schemas, exact numeric types, evidence, commitments, and errors |
 | `chain` | RPC, pinned reads, simulation, broadcast, and receipt ports |
-| `data` | Dataset schema and release verification |
 | `registry` | Official-asset source admission, StockFactory identity, and ordered default Stock Tokens |
 | `intelligence` | ABI, source, contract, calldata, signature, and transaction analysis |
 | `security` | Deterministic policy, simulation coverage, warnings, blocks, and state deltas |
@@ -365,9 +182,12 @@ The current external integration classification is:
 | Ethereum JSON-RPC endpoint | Standard chain transport | `docs/PRODUCT_POLICY.md` owns chain identity; `chain` owns RPC methods, normalization, limits, and failures | `runtime` owns the exact configured URI and source identity; `chain` owns the bounded requester | Runtime constructs one requester and passes chain-read ports to features |
 | Model Context Protocol | Binding product transport | The official MCP specification owns JSON-RPC transport meaning; this document's interface contract model and the canonical binding owners own Little John tool meaning | `src/interfaces/mcp.ts` owns official SDK server and stdio transport adaptation; role registries own their exact tool bindings | Interface composition constructs one MCP server from canonical bindings; replacing SDK details preserves the complete MCP identity and tool contracts |
 | WalletConnect | Binding product transport | `docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture | `wallet` owns SDK adaptation, project-ID validation, required namespace settings, metadata, SDK options, lifecycle, and provider defaults | The wallet application factory constructs one `WalletConnectClientPort` from opaque configuration received through runtime composition; other modules receive wallet product ports |
-| Robinhood official-asset source | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority; the registry product contract owns normalized observations, failures, evidence, and storage ports | `src/registry/official-assets.ts` owns Robinhood request and response admission implementation, endpoint consumption, transport behavior, deadlines, and operational limits | Runtime composition constructs one source client; registry synchronization consumes the product-owned client and store ports |
+| Robinhood official-asset API | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority; `officialAssetSourceDefinition` and the registry source contract own the exact source identity, normalized observations, failures, evidence, and storage ports | `src/registry/official-assets.ts` owns request and response admission, endpoint consumption, transport behavior, deadlines, and operational limits | Runtime composition constructs one source client; registry synchronization consumes the product-owned client and store ports; replacing the membership source changes the binding evidence authority |
+| Robinhood StockFactory | Binding source authority | `docs/EVIDENCE_POLICY.md` owns the independent UID-to-token-address proof meaning; `stockFactoryAdmissionManifest` and the registry verification contract own the admitted deployment identity and exact verification result | `src/registry/stock-factory.ts` owns StockFactory call and identity verification behind the pinned-block `OfficialAssetChainReadPort` in `src/chain/official-assets.ts`; common RPC configuration remains with the chain transport | The chain application constructs the port for account-asset and token-inspection composition; changing verification internals preserves the admitted identity, while changing the deployment or source owner changes the manifest and evidence authority |
+| Chainlink Data Feeds | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority and evidence meaning; `referenceMarketManifest` owns the admitted directory identity and exact feed mappings; `docs/NUMERIC_POLICY.md` owns reference-price, cross-price, and candle meaning; `market-portfolio` and the canonical reference-market application contracts own admitted price and history result lifecycles | `src/chain/reference-market.ts` owns Data Feed call encoding, round admission, response validation, and batch fallback behind `ReferenceMarketChainReadPort`; common RPC configuration remains with the chain transport | The chain application constructs the port and runtime composition passes it to `market-portfolio`; changing a mapping changes the manifest, and replacing Chainlink with another source owner requires an accepted evidence or product-policy change |
 | Sourcify API v2 | Replaceable implementation provider | `intelligence` owns `ContractSourceVerificationPort`, its normalized results and failures, evidence requirements, and lifecycle | `src/intelligence/sourcify.ts` owns the origin, path, request and response admission, deadline, response-size and concurrency limits, cleanup, and provider identity | Runtime composition constructs one Sourcify adapter and passes only `ContractSourceVerificationPort` to the shared contract-analysis process |
-| Uniswap V2 | Binding protocol identity | `docs/PROTOCOL_ADAPTERS.md` and `src/protocols/uniswap-v2` own the exact V2 package, deployment, capability, arithmetic, and evidence meaning | `src/protocols/uniswap-v2/sdk.ts` owns the pinned Uniswap SDK loading and admission boundary; the package owns immutable deployment and route-asset records | Runtime composition constructs the statically registered V2 package once and passes only its canonical quote binding to interfaces |
+| Uniswap V2 | Binding protocol identity | `docs/PROTOCOL_ADAPTERS.md` and `src/protocols/uniswap-v2` own the exact V2 package, deployment records, native mapping, and capability registration; `docs/NUMERIC_POLICY.md` owns numeric meaning and `docs/EVIDENCE_POLICY.md` owns evidence meaning | `src/protocols/uniswap-v2/sdk.ts` owns the pinned Uniswap SDK loading and admission boundary; the package owns immutable deployment and route-asset records | Runtime composition constructs the statically registered V2 package once and passes only its canonical quote binding to interfaces |
+| Lightweight Charts | Replaceable implementation provider | The browser interface owns `ReferenceChartPort`; admitted reference history and `docs/NUMERIC_POLICY.md` own the exact values and permitted ephemeral chart projection | `src/interfaces/web/lightweight-charts-adapter.tsx` owns package loading, chart options, event admission, failure normalization, subscriptions, and destruction | `src/interfaces/web/main.tsx` constructs one adapter; only a selected Prices pair detail requests the dynamic package chunk and receives `ReferenceChartPort` |
 
 This table contains implemented external integrations only. The implementation
 task that adds or removes an integration updates the table after the runtime
@@ -395,11 +215,12 @@ them:
 - no aggregate runtime configuration module restates provider defaults,
   provider schemas, SDK options, or provider limits.
 
-WalletConnect is the current binding wallet transport. Robinhood is the binding
-official-asset source owner. A supported DeFi protocol is a binding protocol
-identity. Replacing any of those with a different external owner changes its
-owning product, evidence, or protocol contract; adapter isolation does not
-pretend otherwise.
+WalletConnect is the current binding wallet transport. The Robinhood
+official-asset API, Robinhood StockFactory, and Chainlink Data Feeds are
+separate binding source identities with separate admission and replacement
+boundaries. A supported DeFi protocol is a binding protocol identity. Replacing
+any of those with a different external owner changes its owning product,
+evidence, or protocol contract; adapter isolation does not pretend otherwise.
 
 An externally operated service or vendor SDK enters the runtime through one
 product-role port owned by the module that needs the role. The role is named for
@@ -457,11 +278,14 @@ Features consume the chain RPC port and never provider-specific endpoint
 behavior. Protocol packages follow `docs/PROTOCOL_ADAPTERS.md` in addition to
 this model.
 
-Architecture verification checks the complete current classification and exact
-module export and import graph. Provider-specific imports and literals remain
-in the adapter owner, only the declared composition boundary constructs the
-adapter, consumers use product-owned ports, and independent tests do not derive
-their oracle from the provider implementation.
+Architecture verification checks the integration-table structure and exact
+module export and import graph without copying the complete classification into
+a test. Integrated review traces current source identities, adapters, SDK
+imports, protocol registration, browser providers, and runtime composition to
+the table and traces every table row back to implementation. Provider-specific
+imports and literals remain in the adapter owner, only the declared composition
+boundary constructs the adapter, consumers use product-owned ports, and
+independent tests do not derive their oracle from the provider implementation.
 
 ### Contract Analysis Boundary
 
@@ -526,12 +350,12 @@ weaker result parser.
 
 - Codex and Claude may each start a local Little John stdio MCP process through
   `npx`.
-- Every process uses the same local SQLite database and the fixed origin
-  `http://127.0.0.1:46630`.
+- Every process uses the same local SQLite database and the fixed origin defined
+  in [HTTP Boundary](#http-boundary).
 - Exactly one compatible process owns the HTTP listener.
 - A later compatible process verifies the current owner and defers HTTP
   ownership while continuing its stdio MCP connection.
-- A compatible deferred process acquires port `46630` only through the
+- A compatible deferred process acquires the fixed port only through the
   demand-driven fixed-bind race after an owner operation fails.
 - No process selects, increments, or falls back to another port.
 - A foreign or incompatible port owner causes a clear startup failure and is
@@ -606,7 +430,8 @@ to contain a malicious process already running with the same user authority.
   replaces that value. Profile ID and owner instance ID each
   contain 128 random bits encoded as unpadded base64url. Owner revision is an
   unsigned base-10 integer string.
-- A process first attempts to bind `127.0.0.1:46630`.
+- A process first attempts to bind the fixed listener address defined in
+  [HTTP Boundary](#http-boundary).
 - Runtime configuration contains one canonical chain identity, the exact RPC
   URI bytes, and the WalletConnect project ID. Each process derives a keyed
   HMAC-SHA-256 configuration identifier from those values and the local control
@@ -624,8 +449,8 @@ to contain a malicious process already running with the same user authority.
   owner phase. A chain-insertion failure closes the listener; the published row
   remains a projection and never proves liveness.
 - On `EADDRINUSE`, a peer sends a fresh 256-bit base64url challenge in the
-  `Littlejohn-Identity-Challenge` header of
-  `GET /api/v1/runtime-identity`.
+  `Littlejohn-Identity-Challenge` header of the owner-identity resource declared
+  by the runtime route registry.
 - The owner returns the strict fields `profileId`, `ownerInstanceId`,
   `runtimeProtocolVersion`, `configurationMac`, echoed `challenge`,
   `ownerRevision`, and `proof`. The proof is HMAC-SHA-256 over the
@@ -669,7 +494,7 @@ to contain a malicious process already running with the same user authority.
   reconciles authoritative stores before serving the triggering operation.
 - Identity responses, challenges, and proofs contain no local control
   credential, WalletConnect secret, or transaction authority.
-- The identity route validates Host `127.0.0.1:46630`, accepts no Origin or
+- The identity route validates the exact fixed Host, accepts no Origin or
   authorization credential, performs no durable mutation, and returns
   `Cache-Control: no-store`.
 
@@ -679,7 +504,7 @@ to contain a malicious process already running with the same user authority.
 - Browser cookies, local storage, and session storage are host-local UI state.
 - Browser storage never contains wallet secrets, signing material, transaction
   authority, or the authoritative cross-host state.
-- The root browser tab retains only the validated identifier of the operation it
+- The browser tab retains only the validated identifier of the operation it
   is observing in session storage. This non-authorizing cursor survives browser
   credential reload, selects the exact retained operation resource, and is
   removed when terminal observation or canonical retention expiry completes.
@@ -813,10 +638,15 @@ and the native balance through the exact block authority, then rereads the
 selection-set revision and recaptures the wallet. It accepts the result only
 when the account, connection revision, stable session-source identity, official
 snapshot revision, and selection-set revision remain unchanged. SQLite stores
-no balance page, token standard observation, or read error. Exact reads and
-official-candidate pages consume the same view revisions instead of
-reconstructing the join in an interface. A failed official synchronization
-preserves the last committed snapshot and never changes account choices.
+no balance page, token standard observation, or read error. The separate
+browser overview initializes the same defaults and scans the complete admitted
+official snapshot. It partitions every member in snapshot order, reads selected
+members and native balance at one block, carries the snapshot's candidate-list
+commitment, and omits custom selections without changing the paged canonical
+collection. Exact reads consume the overview view revision instead of
+reconstructing the join in an interface. A failed official
+synchronization preserves the last committed snapshot and never changes
+account choices.
 
 The reference-market application is the sole owner of latest reference prices,
 bounded history synchronization, exact cross construction, candle aggregation,
@@ -905,24 +735,37 @@ application logs, exports, and diagnostic bundles.
   Little John never asks a host integration to launch a separate system browser.
 - Little John owns the local page state and URL. The desktop host owns browser
   display, focus, and navigation to that URL.
-- The fixed root is the only human page. Wallet connection state, account
-  assets, contextual token actions, reference prices, reference history, and
-  account watchlist controls use one application shell and one modal host.
-  Wallet connection, disconnection, and operation identifiers do not create
-  human page-path namespaces.
-- Opening the root or the wallet dialog does not connect, disconnect, or
-  confirm a wallet operation. A direct user action in the dialog may request one
-  permitted coordinator transition through browser-scoped authority.
+- Assets and Prices are the primary information pages. The product identity is
+  the sole Assets navigation control and Prices is the sole named primary
+  navigation control. One selected
+  reference pair is a child Prices resource. Analysis is contextual modal
+  content and has no information-page path. The information pages use one
+  persistent application shell, shared navigation, wallet connection state,
+  and one modal host. Only the selected information interface is mounted.
+  Wallet connection, disconnection, operation identifiers, and Analysis targets
+  do not create human page-path namespaces.
+- The browser exposes no Quote information page, Swap or Buy/Sell surface, or
+  transaction action. The canonical Uniswap V2 Quote capability remains
+  available through HTTP, MCP, and CLI.
+- Opening an information page does not connect, disconnect, or confirm a wallet
+  operation. A direct Connect or Disconnect action opens one fixed wallet task
+  and requests only the transition permitted for that task through
+  browser-scoped authority. No unrelated state change opens a wallet task.
 - Wallet connection and wallet-operation state are independent canonical
-  contracts. The root browser projection atomically composes their current
+  contracts. The browser application projection atomically composes their current
   values for presentation; it is not a third state and changes neither
   lifecycle.
-- The dialog consumes that root projection. It never derives lifecycle meaning
-  from page location and never creates a second nonterminal operation.
-- The wallet dialog is a native modal dialog. Opening it moves keyboard focus
-  into the dialog and makes the application behind it inert; closing it returns
-  focus to the Wallet navigation control. Escape may close a connection-state
-  view but never cancels or changes a wallet operation.
+- The wallet task consumes that application projection. It never derives
+  lifecycle meaning from page location and never creates a second nonterminal
+  operation.
+- Every browser task dialog is a native modal dialog. Opening it moves keyboard
+  focus into the dialog and makes the application behind it inert; closing it
+  returns focus to the initiating control. When an exact cancellation is
+  available, Escape, backdrop selection, and the cancellation control request
+  that cancellation and keep the dialog open until the canonical operation
+  changes. Applying work is not dismissible. Dismissing a delivery-uncertainty
+  presentation changes presentation only and preserves its exact reconciliation
+  subject.
 - The dialog offers Connect only while cleanly disconnected. A disconnected
   `unusable_store` state offers Disconnect so the coordinator can remove any
   remaining SDK session before another Connect. Connected and unresolved states
@@ -931,9 +774,10 @@ application logs, exports, and diagnostic bundles.
   `connect` or `disconnect` plus the connection revision displayed to the user;
   the coordinator rejects a stale revision, reads the actual current state, and
   applies that direct action atomically. An ordinary Connect request returns the
-  current valid connection when one exists. A direct browser Disconnect begins
-  disconnection without a second confirmation view. Changing wallets requires a
-  completed Disconnect followed by a new Connect action.
+  current valid connection when one exists. A direct browser Disconnect creates
+  the canonical awaiting-confirmation operation; the fixed Disconnect task
+  performs the exact confirmation. Changing wallets requires a completed
+  Disconnect followed by a new Connect action.
 - A successful browser control request returns after the coordinator commits
   the operation's first canonical state. WalletConnect acquisition, approval,
   cancellation, validation, and session deletion continue under coordinator
@@ -942,26 +786,29 @@ application logs, exports, and diagnostic bundles.
 - An MCP wallet-management tool returns the fixed root URL for browser display.
   The MCP operation identifier remains available to the agent for exact polling
   and cancellation but does not appear in the human page path.
-- The browser reads the one current operation through the current-operation
-  resource declared in Current State, then reads the exact retained operation
-  by identifier until terminal so the root dialog can present the result without
+- The browser reads the one current operation through the browser wallet route
+  registry, then reads the exact retained operation
+  by identifier until terminal so the shared dialog can present the result without
   inferring it from disappearance. Confirmation and cancellation carry that
   operation identifier in their action-resource paths for exact identity,
   revision, and stale-tab checks. The identifier is not navigation state or
   browser authority.
 - Browser actions allocate the same canonical operation identifier and send
   once, but do not use authenticated owner sessions. A missing or malformed
-  action response therefore becomes `delivery_unknown` without a recovery
-  read, retry, cancellation, reload, or owner inference. Wallet and token
-  presentation retain separate state lifecycles. Locally established delivery
-  uncertainty is carried separately from response JSON, so response data cannot
-  claim its action, operation identifier, or resend policy.
+  action response therefore becomes `delivery_unknown` without retry,
+  cancellation, reload, or owner inference. Wallet and token presentation
+  retain separate state lifecycles. Locally established delivery uncertainty
+  is carried separately from response JSON and is bound to the exact task,
+  revision, and operation identifier. The process continues exact canonical
+  observation until that operation becomes observable or retention proves it
+  absent; response data cannot claim its action, operation identifier, or resend
+  policy.
 - Exact-operation observation finishes before the browser adopts a successor
   operation. Canonical retention expiry clears the old observation without
   inventing a terminal result. Browser-session expiry or compatible-owner
-  replacement reloads the root once to obtain a new browser request credential
-  and CSRF token. A transport failure is not credential evidence and exposes no
-  browser-generated error text.
+  replacement reloads the current information page once to obtain a new
+  browser request credential and CSRF token. A transport failure is not
+  credential evidence and exposes no browser-generated error text.
 - When the exact retained operation first reaches a terminal state, the browser
   presents at most one transient non-modal notification for that operation
   identifier. The notification preserves the canonical kind, state, result, and
@@ -970,35 +817,78 @@ application logs, exports, and diagnostic bundles.
 - A background observation failure is not a wallet-operation result. Polling
   retries it without a notification. A failed direct browser control request
   produces an error notification without inventing a terminal operation.
-- The asset page accepts only an account-assets result produced for the current
+- The Assets page accepts only an account-assets result produced for the current
   connected account. Account or connection-revision change aborts older reads,
-  clears their presentation, and starts a new first-page read. A manual refresh
-  failure retains the last verified snapshot and marks it stale.
-- Contract and token inspection use only the public
-  `/api/v1/contract-inspections` and `/api/v1/token-inspections` routes and omit
+  clears their presentation, and starts a new complete browser-overview read.
+  The overview contains native balance and one digest-bound partition in which
+  every admitted official Stock Token is selected or available to add. It does
+  not expose the cursor or page boundaries of the separate canonical
+  account-asset collection. A manual refresh retains the last verified
+  overview until complete replacement; failure retains it and marks it stale.
+- Contextual Analysis uses only the public contract- and token-inspection
+  routes declared by the public interface registry and omits
   browser credentials. The browser applies the complete capability validator
   before presentation and performs no source lookup, chain read, evidence
   reconstruction, or digest calculation. A newer inspection or explicit
-  cancellation invalidates an older response.
-- The modal presents add, removal, information, and retained operation review as
-  independent canonical views. Add inspects before the operation is admitted.
-  Removal uses the current selection revision. The add view lists bounded
-  official candidates from the account-assets view and also accepts one custom
-  ERC-20 address; both routes enter the same addition operation.
-  A web-owned operation exposes its declared confirmation or cancellation
-  action; a CLI-owned operation is read-only in the browser. Closing a dialog
-  never confirms, cancels, or changes domain state.
-- The reference-market view reads current prices and selected history through
-  public-read routes. It displays exact OHLC values beside the non-authoritative
-  chart projection. Its semantic details preserve the canonical block, mapping
-  evidence, safe configured-RPC reference, round identity, update and read
-  times, partial or unavailable status, observed-round coverage basis, explicit
-  limitations, warnings, and any unavailable reason without
-  substituting display-derived facts. A disconnected user can read the two
-  starter pairs and all fixed-manifest prices but cannot read or change an
-  account watchlist. Add, remove, and reorder use one captured watchlist
-  revision and never retry an uncertain send. Pointer and keyboard ordering
-  submit the same canonical complete-order replacement.
+  cancellation invalidates an older response. One contextual action names one
+  admitted contract or token target; a multi-contract result renders a separate
+  named Analysis action for each target rather than an ambiguous aggregate
+  action. The shared modal cannot open without one of those targets. It
+  presents the strongest admitted control and source conclusions, states that
+  maliciousness and safety are not established by those observations, and does
+  not expose runtime-code hashes, signatures, source records, or digests as a
+  substitute for that conclusion.
+- The modal host presents exactly one explicit add, removal, information,
+  Analysis, wallet-connect, wallet-disconnect, or retained-operation task. A
+  task never changes its title or purpose as state changes or preempts an
+  active task. The only sequential handoff is an explicit `Remove`
+  action: information closes before the exact removal confirmation opens. The
+  two tasks never coexist. Add inspects before the operation is admitted.
+  Removal uses the current selection revision. The add view consumes the
+  available members of the mounted complete official partition, filters them
+  locally by normalized name or symbol, and exposes no cursor, pagination
+  control, Custom ERC-20 input, or separate candidate-read lifecycle. Search
+  remains fixed while only the candidate list scrolls. One exact candidate Add
+  action is the
+  complete user decision; canonical inspection, operation publication, exact
+  review-digest confirmation, and terminal reconciliation remain internal and
+  fail-closed. An awaiting-confirmation add operation discovered without the
+  transient consent is never auto-confirmed. Information contains token facts,
+  the exact contract target, and the current control summary without repeating
+  the full contextual Analysis projection; it also owns the separated removal
+  handoff. The row has no direct Analysis or removal action. A web-owned removal
+  operation exposes its
+  declared confirmation or cancellation action; a CLI-owned operation is
+  read-only in the browser. Closing information changes presentation only. A
+  loading or applying operation keeps its dialog open.
+- The Prices list reads every supported current reference value through public
+  read routes and keeps pair selection separate from pair evidence and history.
+  Every user sees every manifest pair in manifest order. The browser exposes no
+  add, remove, reorder, or saved-pair watchlist presentation. The canonical
+  account watchlist remains available to its HTTP, MCP, CLI, storage, and
+  machine consumers.
+- A selected Prices pair detail reads one current price and one exact fixed
+  history window through public-read routes. When at least two candles exist,
+  it renders a
+  non-authoritative candlestick projection from the admitted history and
+  exposes pointer and keyboard selection of admitted candles and canonical
+  empty intervals. Exact observed high and low,
+  represented and observed interval counts, and the selected candle OHLC or
+  empty-interval meaning do not depend on the chart provider. A result with
+  fewer than two candles does not mount a trend chart. Its semantic details
+  present partial or unavailable status, the concise coverage meaning,
+  interpretation-changing limitations and warnings, and any unavailable
+  reason. The browser renders no separate history table, list, timeline,
+  navigation toolbar, coverage card, or raw-evidence view. The admitted result
+  retains its complete candle and empty-bucket history, canonical block,
+  mapping evidence, configured-RPC reference, and round identity for machine
+  consumers without rendering them as the user answer or substituting
+  display-derived facts.
+- Only a selected Prices pair admits the optional history-window query declared
+  by the browser location registry. Duplicate, unknown, malformed, or
+  query-bearing non-pair locations fail before a browser credential or page
+  shell is issued. Back, Forward, reload, and direct navigation preserve the
+  admitted pair and window.
 - Catalog operation confirmation carries the exact operation identifier and
   review digest. The browser does not derive either value from the page URL or
   recompute the digest.
@@ -1070,23 +960,25 @@ application logs, exports, and diagnostic bundles.
   review digest and never asks the user to transcribe it. Before confirmation
   is sent, decline, interruption, or presentation failure cancels the exact
   admitted operation before exit. Once an action send begins, an unproved
-  response is reported as `delivery_unknown` with exit code `8`; the CLI names
+  response is reported as `delivery_unknown` through the canonical delivery
+  exit mapping; the CLI names
   the exact operation and does not repeat or compensate for that action.
-- `read assets` consumes the account-assets application and exposes its exact
+- The account-asset collection command consumes the account-assets application
+  and exposes its exact
   canonical collection or the shared human view, including raw balances,
   verified official classification, required token standards, and adjusted
   Stock Token amounts when the current multiplier is available. Both successful wallet-connect
   outcomes perform the same first-page read before return or owner wait. A read
   failure does not relabel or roll back connection success.
-- `market price` and `market history` consume the public reference-market read
-  contracts. Their human output preserves the canonical block, mapping
+- The reference-market price and history commands consume the public
+  reference-market read contracts. Their human output preserves the canonical block, mapping
   evidence, source references, round identity and times, status, coverage,
   warnings, and unavailable reason; exact JSON remains the canonical result.
-  `market watchlist` reads the connected account's exact ordered state.
-  `market add-pair`, `market remove-pair`, and `market reorder-pairs` require an
-  explicit expected revision and use the same send-once mutation owner as MCP.
-  An uncertain response exits with code `8` and instructs the caller to read
-  the watchlist before deciding whether to act again.
+  The watchlist read command returns the connected account's exact ordered
+  state. Its mutation commands require an explicit expected revision and use
+  the same send-once mutation owner as MCP. An uncertain response uses the
+  canonical delivery exit mapping and instructs the caller to read the
+  watchlist before deciding whether to act again.
 - The wallet owner converts a WalletConnect pairing URI to a QR matrix and
   discards the URI. The CLI renders only that matrix and never receives or
   prints the raw URI.
@@ -1247,7 +1139,8 @@ cookie. WalletConnect secrets remain only in the SDK-owned store.
 
 ## HTTP Boundary
 
-- The server binds only to `127.0.0.1:46630`.
+- The fixed local origin is `http://127.0.0.1:46630`; the server binds only to
+  that origin's host and port.
 - Host and Origin are validated but are not authentication.
 - Compatible-process and CLI state changes require a valid local control
   credential. The credential authenticates the caller but does not prove user

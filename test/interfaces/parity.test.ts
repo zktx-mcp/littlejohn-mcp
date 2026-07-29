@@ -40,7 +40,6 @@ import type { BrowserAssetBundle } from "../../src/interfaces/browser-assets.js"
 import { createBrowserRequestCredentialAuthority } from "../../src/interfaces/browser-credentials.js";
 import { extendBrowserInterfaceRoutes } from "../../src/interfaces/browser-routes.js";
 import type { BrowserFetch } from "../../src/interfaces/web/browser-client.js";
-import { quoteUniswapV2ExactInput } from "../../src/interfaces/web/uniswap-v2-client.js";
 import { inspectTokenContract } from "../../src/interfaces/web/token-catalog-client.js";
 import { extendPublicInterfaceRoutes } from "../../src/interfaces/http-routes.js";
 import { dispatchCanonical, type RuntimeDispatchPort } from "../../src/interfaces/http-client.js";
@@ -239,6 +238,7 @@ class RouteRegistryRuntime implements RuntimeDispatchPort, CliRuntimePort {
     const result = this.routes.normalizeResult(match.route, await match.route.handler({
       params: match.params,
       body: request.body ?? {},
+      query: "",
       signal: request.signal ?? new AbortController().signal,
     }));
     if (!result.ok) {
@@ -263,6 +263,7 @@ const invokeRoute = async (
   return routes.normalizeResult(match.route, await match.route.handler({
     params: match.params,
     body,
+    query: "",
     signal: new AbortController().signal,
   }));
 };
@@ -803,7 +804,7 @@ describe("interface parity", () => {
     }
   });
 
-  it("preserves one V2 quote through HTTP, MCP, CLI JSON, and browser replay", async () => {
+  it("preserves one V2 quote through public HTTP, MCP, and CLI JSON", async () => {
     const input = uniswapV2QuoteInputSchema.parse({
       tokenIn: {
         kind: "erc20",
@@ -879,25 +880,6 @@ describe("interface parity", () => {
       expect(cli.error).toEqual([]);
       expect(JSON.parse(cli.output.join(""))).toEqual(direct);
 
-      const browserRequest: BrowserFetch = async (path, init) => {
-        expect(path).toBe(uniswapV2QuoteInterface.http.path);
-        const response = await runtime.dispatchRuntimeRequest({
-          requestClass: "public_read",
-          method: init.method,
-          path,
-          ...(init.body === undefined
-            ? {}
-            : { body: JSON.parse(init.body) as CanonicalJson }),
-          ...(init.signal === undefined ? {} : { signal: init.signal }),
-        });
-        return {
-          ok: response.status === 200,
-          status: response.status,
-          json: async () => response.body,
-        };
-      };
-      await expect(quoteUniswapV2ExactInput(input, { request: browserRequest }))
-        .resolves.toEqual(direct);
     } finally {
       await mcp.close();
     }
@@ -1433,6 +1415,7 @@ describe("interface parity", () => {
         const response = routes.normalizeResult(match.route, await match.route.handler({
           params: match.params,
           body: {},
+          query: "",
           signal: new AbortController().signal,
         }));
         expect(response).toEqual({
@@ -1467,6 +1450,7 @@ describe("interface parity", () => {
           await exactMatch.route.handler({
             params: exactMatch.params,
             body: {},
+            query: "",
             signal: new AbortController().signal,
           }),
         );

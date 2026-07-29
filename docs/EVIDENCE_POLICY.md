@@ -257,10 +257,3 @@ decision, or safety conclusion.
   behavior from evidence signals.
 - Do not create a universal safety or rug score.
 - A Stock Token is not described as ownership of its legal underlying share.
-
-## Data Boundary
-
-Repository and dataset ownership are defined only in
-`docs/ARCHITECTURE.md#repository-ownership`. Evidence records never weaken that
-privacy boundary. Live quotes, wallet-specific data, review material, and
-signable transaction material are not public dataset content.

@@ -6,3 +6,16 @@ export interface NotificationNotice {
   readonly heading: string;
   readonly message: string;
 }
+
+export const notificationClassName = (
+  notice: NotificationNotice,
+  exiting: boolean,
+): string =>
+  `notification notification-${notice.tone}${
+    exiting ? " notification-exiting" : ""
+  }`;
+
+export const notificationRole = (
+  notice: NotificationNotice,
+): "alert" | "status" =>
+  notice.tone === "error" ? "alert" : "status";

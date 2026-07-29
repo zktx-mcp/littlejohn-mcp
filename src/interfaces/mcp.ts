@@ -44,7 +44,10 @@ import type {
   WalletOperationResponse,
   WalletOperationStartResponse,
 } from "../wallet/contracts.js";
-import { browserPagePaths } from "./browser-contract.js";
+import {
+  browserLocationHref,
+  browserLocations,
+} from "./browser-contract.js";
 import {
   createInterfaceFailure,
   constrainInterfaceFailure,
@@ -305,8 +308,11 @@ const contractOutputSchema = (
 ): NonNullable<Tool["outputSchema"]> =>
   successOrFailureSchema(zodSchema(contract.successSchema, "output"), contract.failureCodes, errorRegistry);
 
-const walletDisplayUrl = `${fixedOrigin}${browserPagePaths.root}`;
-const tokenCatalogDisplayUrl = `${fixedOrigin}${browserPagePaths.root}`;
+const assetsDisplayUrl = `${fixedOrigin}${
+  browserLocationHref(browserLocations.assets())
+}`;
+const walletDisplayUrl = assetsDisplayUrl;
+const tokenCatalogDisplayUrl = assetsDisplayUrl;
 
 const startOutputSchema = (
   contract: InterfaceApplicationContract,

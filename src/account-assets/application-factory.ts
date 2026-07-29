@@ -7,7 +7,7 @@ import { createAccountAssetApplication } from "./application.js";
 import type {
   AccountAssetCollectionInput,
   AccountAssetExactInput,
-  AccountAssetOfficialCandidateInput,
+  AccountAssetOverviewInput,
 } from "./contracts.js";
 import { AccountAssetOperationError } from "./errors.js";
 import { extendAccountAssetControlRouteRegistry } from "./routes.js";
@@ -58,13 +58,13 @@ export const createAccountAssetApplicationFactory = async (
         assertOpen();
         return application!.list(request, signal);
       },
+      getOverview(request: AccountAssetOverviewInput, signal?: AbortSignal) {
+        assertOpen();
+        return application!.getOverview(request, signal);
+      },
       get(request: AccountAssetExactInput, signal?: AbortSignal) {
         assertOpen();
         return application!.get(request, signal);
-      },
-      listOfficialCandidates(request: AccountAssetOfficialCandidateInput, signal?: AbortSignal) {
-        assertOpen();
-        return application!.listOfficialCandidates(request, signal);
       },
       close,
     });

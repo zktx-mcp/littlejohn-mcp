@@ -135,7 +135,7 @@ describe("runtime support manifest authority", () => {
       [
         ownerIdentitySchema,
         746,
-        "537ee3afc29b53d886981b8d9b042b5f902144bff2fff85a8ec75fb277105dcd",
+        "32fe128b6386264912bd029c54370c78ccae9ac1d215b4d44395bd1ff97eec7b",
       ],
     ] as const) {
       const projection = outputSchema(schema);

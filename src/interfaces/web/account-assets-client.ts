@@ -1,45 +1,39 @@
 import {
   accountAssetApplicationContracts,
   accountAssetBrowserRoutes,
-  accountAssetCollectionRequestBody,
   accountAssetExactRequestBody,
-  accountAssetOfficialCandidateQueryContract,
-  accountAssetOfficialCandidateRequestBody,
-  type AccountAssetCollectionInput,
-  type AccountAssetCollectionSuccess,
+  accountAssetOverviewQueryContract,
   type AccountAssetExactSuccess,
-  type AccountAssetOfficialCandidateInput,
-  type AccountAssetOfficialCandidateSuccess,
+  type AccountAssetOverviewSuccess,
   type AccountAssetViewRevision,
 } from "../../account-assets/browser.js";
 import type { TokenSelection } from "../../token-catalog/browser.js";
 import {
-  BrowserResponseError,
+  BrowserRequestError,
   invalidBrowserResponse,
   queryBrowserJson,
+  readBrowserJson,
   type BrowserRequestOptions,
 } from "./browser-client.js";
 
-const invalidAccountAssetResponse = (): BrowserResponseError =>
-  invalidBrowserResponse("The account asset response is invalid.");
+const invalidAccountAssetResponse = (): BrowserRequestError =>
+  invalidBrowserResponse();
 
-export const loadAccountAssets = async (
-  input: AccountAssetCollectionInput = {},
+export const loadAccountAssetsOverview = async (
   options: BrowserRequestOptions = {},
-): Promise<AccountAssetCollectionSuccess> => {
-  const contract = accountAssetApplicationContracts.collection;
-  const request = contract.parseInput(input);
+): Promise<AccountAssetOverviewSuccess> => {
+  const contract = accountAssetOverviewQueryContract;
+  const request = contract.parseInput({});
   try {
     return contract.parsePublicSuccess(
       request,
-      await queryBrowserJson(
-        accountAssetBrowserRoutes.queries,
-        accountAssetCollectionRequestBody(request),
+      await readBrowserJson(
+        accountAssetBrowserRoutes.overview,
         options,
       ),
     );
   } catch (error) {
-    if (error instanceof BrowserResponseError) throw error;
+    if (error instanceof BrowserRequestError) throw error;
     throw invalidAccountAssetResponse();
   }
 };
@@ -61,28 +55,7 @@ export const loadExactAccountAsset = async (
       ),
     );
   } catch (error) {
-    if (error instanceof BrowserResponseError) throw error;
-    throw invalidAccountAssetResponse();
-  }
-};
-
-export const loadOfficialAssetCandidates = async (
-  input: AccountAssetOfficialCandidateInput,
-  options: BrowserRequestOptions = {},
-): Promise<AccountAssetOfficialCandidateSuccess> => {
-  const contract = accountAssetOfficialCandidateQueryContract;
-  const request = contract.parseInput(input);
-  try {
-    return contract.parsePublicSuccess(
-      request,
-      await queryBrowserJson(
-        accountAssetBrowserRoutes.officialCandidateQueries,
-        accountAssetOfficialCandidateRequestBody(request),
-        options,
-      ),
-    );
-  } catch (error) {
-    if (error instanceof BrowserResponseError) throw error;
+    if (error instanceof BrowserRequestError) throw error;
     throw invalidAccountAssetResponse();
   }
 };

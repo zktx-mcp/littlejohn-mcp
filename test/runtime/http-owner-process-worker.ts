@@ -124,6 +124,7 @@ const applicationFactory = ({ routes }: RuntimeApplicationContext) => {
   return Object.freeze({
     routes: routes.extend([{
       method: "GET",
+      query: "none" as const,
       pathPattern: "/api/v1/internal/control/process-owner",
       mutation: "none" as const,
       response: "canonical_json" as const, successStatus: 200,

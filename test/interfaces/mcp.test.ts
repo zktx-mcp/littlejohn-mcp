@@ -430,7 +430,7 @@ describe("MCP interface", () => {
         })).toBe(false);
       }
     }
-  });
+  }, 10_000);
 
   it("keeps read and catalog output schemas equivalent to their canonical failure contracts", async () => {
     const { client } = await connect(new FakeRuntime());

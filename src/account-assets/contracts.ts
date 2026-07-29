@@ -17,6 +17,7 @@ import {
   optionalTokenTextSchema,
   requiredErc8056ObservationSchema,
   scaledUiAmountSchema,
+  tokenDisplayTextSchema,
   tokenStandardObservationResultSchema,
   unsignedDecimalSchema,
   type ApplicationContract,
@@ -29,13 +30,16 @@ import {
   tokenSelectionSetRevisionSchema,
 } from "../token-catalog/browser.js";
 import {
-  officialAssetCandidatePageSize,
   officialAssetCandidateSchema,
+  officialAssetSourceDefinition,
   officialAssetSnapshotEvidenceSchema,
   officialAssetSnapshotRevisionSchema,
   stockFactoryClassificationUnavailableReasonSchema,
   stockFactoryVerificationSchema,
+  type OfficialAssetCandidate,
+  type OfficialAssetSourceMember,
 } from "../registry/browser.js";
+import { officialAssetCandidateListDigest } from "../registry/official-asset-contract.js";
 import { accountAssetErrorRegistry } from "./error-registry.js";
 
 export const accountAssetLimits = Object.freeze({
@@ -165,43 +169,39 @@ const collectionRequestSchema = jsonObject({
   cursor: accountAssetCursorSchema.nullable(),
 }).strict();
 
+const overviewInputSchema = jsonObject({}).strict();
+
 const exactInputSchema = jsonObject({
   asset: erc20AssetIdentitySchema,
   viewRevision: accountAssetViewRevisionSchema,
 }).strict();
 
-export const accountAssetOfficialCandidateCursorSchema = jsonObject({
-  assetUid: hash32Schema,
-  contractAddress: evmAddressSchema,
-  officialSnapshotRevision: officialAssetSnapshotRevisionSchema,
-  selectionSetRevision: tokenSelectionSetRevisionSchema,
-}).strict();
-export type AccountAssetOfficialCandidateCursor = z.infer<
-  typeof accountAssetOfficialCandidateCursorSchema
->;
+export const normalizeAccountAssetOfficialCandidateSearch = (
+  value: string,
+): string | null => {
+  const normalized = value
+    .normalize("NFKC")
+    .trim()
+    .replace(/\s+/gu, " ")
+    .toLowerCase();
+  return normalized === "" ? null : normalized;
+};
 
-const officialCandidateInputSchema = jsonObject({
-  viewRevision: accountAssetViewRevisionSchema,
-  cursor: accountAssetOfficialCandidateCursorSchema.optional(),
-}).strict().superRefine((value, context) => {
-  if (
-    value.viewRevision.officialSnapshotStatus !== "current" ||
-    value.viewRevision.officialSnapshotRevision === null ||
-    value.viewRevision.selectionSetRevision === null ||
-    (value.cursor !== undefined && (
-      value.cursor.officialSnapshotRevision !== value.viewRevision.officialSnapshotRevision ||
-      value.cursor.selectionSetRevision !== value.viewRevision.selectionSetRevision
-    ))
-  ) context.addIssue({ code: "custom", message: "Official candidate revisions are invalid." });
-}).transform((value) => ({
-  viewRevision: value.viewRevision,
-  cursor: value.cursor ?? null,
-}));
+const normalizedOfficialCandidateSearchSchema = tokenDisplayTextSchema
+  .refine((value) => value.length > 0, "Official candidate search cannot be empty.")
+  .refine(
+    (value) => normalizeAccountAssetOfficialCandidateSearch(value) === value,
+    "Official candidate search is not normalized.",
+  );
 
-const officialCandidateRequestSchema = jsonObject({
-  viewRevision: accountAssetViewRevisionSchema,
-  cursor: accountAssetOfficialCandidateCursorSchema.nullable(),
-}).strict();
+const officialCandidateSearchInputSchema = tokenDisplayTextSchema
+  .nullable()
+  .optional()
+  .transform((value) =>
+    value === undefined || value === null
+      ? null
+      : normalizeAccountAssetOfficialCandidateSearch(value))
+  .pipe(normalizedOfficialCandidateSearchSchema.nullable());
 
 const sameBlock = (
   left: z.output<typeof chainAnchorSchema>,
@@ -256,6 +256,111 @@ const collectionSuccessSchema = jsonObject({
   ) context.addIssue({ code: "custom", message: "Account asset collection identities differ." });
 });
 
+const officialOverviewAssetSchema = contractAccountAssetSchema.superRefine((value, context) => {
+  const member = value.classification.kind === "robinhood_stock_token"
+    ? value.classification.member
+    : value.classification.kind === "classification_unavailable"
+      ? value.classification.member
+      : null;
+  if (
+    value.classification.kind === "custom_erc20" ||
+    member === null ||
+    member.contractAddress !== value.selection.asset.address
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "The Stock Token overview contains a non-official asset.",
+    });
+  }
+});
+
+const accountAssetOverviewStockTokenMemberSchema = z.discriminatedUnion("status", [
+  jsonObject({
+    status: z.literal("selected"),
+    asset: officialOverviewAssetSchema,
+  }).strict(),
+  jsonObject({
+    status: z.literal("available_to_add"),
+    candidate: officialAssetCandidateSchema,
+  }).strict(),
+]);
+
+const accountAssetOverviewStockTokensSchema = z.discriminatedUnion("status", [
+  jsonObject({
+    status: z.literal("current"),
+    candidateListDigest: hash32Schema,
+    members: z.array(accountAssetOverviewStockTokenMemberSchema)
+      .min(1)
+      .max(officialAssetSourceDefinition.memberLimit),
+  }).strict(),
+  jsonObject({
+    status: z.literal("unavailable"),
+    reason: z.enum(["source_inconsistent", "source_unavailable"]),
+  }).strict(),
+]);
+
+const overviewSuccessSchema = jsonObject({
+  account: evmAccountIdentitySchema,
+  block: chainAnchorSchema,
+  viewRevision: accountAssetViewRevisionSchema,
+  native: nativeAccountAssetSchema,
+  stockTokens: accountAssetOverviewStockTokensSchema,
+}).strict().superRefine((value, context) => {
+  if (
+    value.block.chainId !== value.account.chainId ||
+    value.native.asset.chainId !== value.account.chainId ||
+    (value.stockTokens.status === "current") !==
+      (value.viewRevision.officialSnapshotStatus === "current")
+  ) {
+    context.addIssue({ code: "custom", message: "Account asset overview state differs." });
+    return;
+  }
+  if (value.stockTokens.status !== "current") return;
+  const digestMembers: OfficialAssetSourceMember[] = [];
+  for (const entry of value.stockTokens.members) {
+    const asset = entry.status === "selected" ? entry.asset : null;
+    const classification = asset?.classification;
+    const member = entry.status === "available_to_add"
+      ? entry.candidate
+      : classification?.kind === "robinhood_stock_token"
+        ? classification.member
+        : classification?.kind === "classification_unavailable"
+          ? classification.member
+          : null;
+    if (
+      member === null ||
+      (asset !== null && (
+        asset.selection.account.chainId !== value.account.chainId ||
+        asset.selection.account.address !== value.account.address ||
+        !sameBlock(asset.requiredStandards.block, value.block) ||
+        !classificationMatchesView(asset.classification, value.viewRevision, value.block)
+      ))
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Account asset overview member identity differs.",
+      });
+      return;
+    }
+    digestMembers.push(Object.freeze({
+      assetUid: member.assetUid,
+      contractAddress: member.contractAddress,
+      ...(member.sourceName === null ? {} : { sourceName: member.sourceName }),
+      ...(member.sourceSymbol === null ? {} : { sourceSymbol: member.sourceSymbol }),
+    }));
+  }
+  if (
+    value.viewRevision.selectionSetRevision === null ||
+    officialAssetCandidateListDigest(digestMembers) !==
+      value.stockTokens.candidateListDigest
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Account asset overview official member commitment differs.",
+    });
+  }
+});
+
 const exactSuccessSchema = jsonObject({
   account: evmAccountIdentitySchema,
   block: chainAnchorSchema,
@@ -296,42 +401,32 @@ const exactSuccessSchema = jsonObject({
   ) context.addIssue({ code: "custom", message: "Exact account asset identities differ." });
 });
 
-const officialCandidateSuccessSchema = jsonObject({
-  account: evmAccountIdentitySchema,
-  viewRevision: accountAssetViewRevisionSchema,
-  candidates: z.array(officialAssetCandidateSchema)
-    .max(officialAssetCandidatePageSize),
-  nextCursor: accountAssetOfficialCandidateCursorSchema.nullable(),
-}).strict().superRefine((value, context) => {
-  for (let index = 1; index < value.candidates.length; index += 1) {
-    const previous = value.candidates[index - 1]!;
-    const current = value.candidates[index]!;
-    if (
-      current.assetUid < previous.assetUid ||
-      current.assetUid === previous.assetUid && current.contractAddress <= previous.contractAddress
-    ) context.addIssue({ code: "custom", message: "Official candidates are not in canonical order." });
-  }
-  if (
-    value.viewRevision.officialSnapshotStatus !== "current" ||
-    value.viewRevision.officialSnapshotRevision === null ||
-    value.viewRevision.selectionSetRevision === null ||
-    (value.nextCursor !== null && (
-      value.nextCursor.officialSnapshotRevision !== value.viewRevision.officialSnapshotRevision ||
-      value.nextCursor.selectionSetRevision !== value.viewRevision.selectionSetRevision ||
-      value.nextCursor.assetUid !== value.candidates.at(-1)?.assetUid ||
-      value.nextCursor.contractAddress !== value.candidates.at(-1)?.contractAddress
-    ))
-  ) context.addIssue({ code: "custom", message: "Official candidate result revisions differ." });
-});
-
 export type AccountAssetCollectionInput = z.input<typeof collectionInputSchema>;
 export type AccountAssetCollectionRequest = z.output<typeof collectionInputSchema>;
 export type AccountAssetCollectionSuccess = z.output<typeof collectionSuccessSchema>;
+export type AccountAssetOverviewInput = z.output<typeof overviewInputSchema>;
+export type AccountAssetOverviewSuccess = z.output<typeof overviewSuccessSchema>;
+export type AccountAssetOverviewStockTokenMember =
+  z.output<typeof accountAssetOverviewStockTokenMemberSchema>;
 export type AccountAssetExactInput = z.output<typeof exactInputSchema>;
 export type AccountAssetExactSuccess = z.output<typeof exactSuccessSchema>;
-export type AccountAssetOfficialCandidateInput = z.input<typeof officialCandidateInputSchema>;
-export type AccountAssetOfficialCandidateRequest = z.output<typeof officialCandidateInputSchema>;
-export type AccountAssetOfficialCandidateSuccess = z.output<typeof officialCandidateSuccessSchema>;
+
+export const filterAccountAssetOfficialCandidates = (
+  candidates: readonly OfficialAssetCandidate[],
+  searchInput: unknown,
+): readonly OfficialAssetCandidate[] => {
+  const search = officialCandidateSearchInputSchema.parse(searchInput);
+  if (search === null) return candidates;
+  return candidates.filter((candidate) => {
+    const name = candidate.sourceName === null
+      ? null
+      : normalizeAccountAssetOfficialCandidateSearch(candidate.sourceName);
+    const symbol = candidate.sourceSymbol === null
+      ? null
+      : normalizeAccountAssetOfficialCandidateSearch(candidate.sourceSymbol);
+    return name?.includes(search) === true || symbol?.includes(search) === true;
+  });
+};
 
 export const createAccountAssetAmount = (input: Readonly<{
   raw: string;
@@ -367,34 +462,30 @@ const wholeRequestFailureCodes = Object.freeze([
   "wallet_session_unusable",
 ]);
 
-const officialCandidateApplicationContract = defineApplicationContract({
-  inputSchema: officialCandidateInputSchema,
-  correlationInputSchema: officialCandidateRequestSchema,
-  successSchema: officialCandidateSuccessSchema,
+const overviewApplicationContract = defineApplicationContract({
+  inputSchema: overviewInputSchema,
+  successSchema: overviewSuccessSchema,
   internalContextSchema: jsonObject({}).strict(),
   errorRegistry: accountAssetErrorRegistry,
   failureCodes: wholeRequestFailureCodes,
-  validatePublicSuccess: (input, success) => {
+  validatePublicSuccess: (_input, success) => {
     if (
-      input.viewRevision.officialSnapshotStatus !== success.viewRevision.officialSnapshotStatus ||
-      input.viewRevision.officialSnapshotRevision !== success.viewRevision.officialSnapshotRevision ||
-      input.viewRevision.selectionSetRevision !== success.viewRevision.selectionSetRevision ||
-      (input.cursor !== null && success.candidates.some((candidate) =>
-        candidate.assetUid < input.cursor!.assetUid ||
-        candidate.assetUid === input.cursor!.assetUid &&
-        candidate.contractAddress <= input.cursor!.contractAddress))
-    ) throw new TypeError("Official candidate result does not match its request.");
+      (success.viewRevision.officialSnapshotStatus === "current" &&
+        success.stockTokens.status !== "current") ||
+      (success.viewRevision.officialSnapshotStatus === "unavailable" &&
+        success.stockTokens.status !== "unavailable")
+    ) throw new TypeError("Account asset overview does not match its revision.");
   },
 });
 
-export const accountAssetOfficialCandidateQueryContract = Object.freeze({
-  inputSchema: officialCandidateInputSchema,
-  successSchema: officialCandidateSuccessSchema,
-  failureCodes: officialCandidateApplicationContract.failureCodes,
-  parseInput: officialCandidateApplicationContract.parseInput,
-  parsePublicSuccess: officialCandidateApplicationContract.parsePublicSuccess,
-  parseFailure: officialCandidateApplicationContract.parseFailure,
-  normalizeFailure: officialCandidateApplicationContract.normalizeFailure,
+export const accountAssetOverviewQueryContract = Object.freeze({
+  inputSchema: overviewInputSchema,
+  successSchema: overviewSuccessSchema,
+  failureCodes: overviewApplicationContract.failureCodes,
+  parseInput: overviewApplicationContract.parseInput,
+  parsePublicSuccess: overviewApplicationContract.parsePublicSuccess,
+  parseFailure: overviewApplicationContract.parseFailure,
+  normalizeFailure: overviewApplicationContract.normalizeFailure,
 });
 
 export interface AccountAssetRequestContract<Input, Success> {

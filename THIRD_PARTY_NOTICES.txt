@@ -96,6 +96,21 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+Lightweight Charts
+
+TradingView Lightweight Charts™
+Copyright (с) 2025 TradingView, Inc. https://www.tradingview.com/
+
+The complete Apache License 2.0 text distributed with Lightweight Charts 5.2.0
+is in LICENSES/LIGHTWEIGHT-CHARTS-LICENSE.txt.
+
+fancy-canvas
+
+Copyright (c) 2019 TradingView, Inc
+
+The complete MIT license text from the official fancy-canvas 2.1.0 source tag
+is in LICENSES/FANCY-CANVAS-LICENSE.txt.
+
 Say Ur Intent favicon
 
 MIT License

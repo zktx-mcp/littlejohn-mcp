@@ -1,4 +1,3 @@
-export const officialAssetCandidatePageSize = 25;
 export {
   committedOfficialAssetSnapshotSchema,
   officialAssetCandidateSchema,

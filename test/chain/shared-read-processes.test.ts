@@ -4,6 +4,7 @@ import {
   chainStatusEvidence,
   createCanonicalClock,
   createObservationAuthority,
+  erc20AssetIdentitySchema,
   evmAccountIdentitySchema,
   observationIdSchema,
   parseEvmChainId,
@@ -48,6 +49,41 @@ class RecordingRpc implements RpcRequester {
   ): Promise<unknown> {
     this.calls.push({ method, params });
     return this.respond(method);
+  }
+}
+
+class OverlappingRpc implements RpcRequester {
+  active = 0;
+  maximumActive = 0;
+  readonly calls: Array<Readonly<{ method: ChainRpcMethod; params: readonly unknown[] }>> = [];
+
+  async request<Method extends ChainRpcMethod>(
+    method: Method,
+    params: ChainRpcRequestMap[Method],
+    _signal: AbortSignal,
+  ): Promise<unknown> {
+    this.calls.push({ method, params });
+    this.active += 1;
+    this.maximumActive = Math.max(this.maximumActive, this.active);
+    try {
+      const callData = method === "eth_call" &&
+          typeof params[0] === "object" && params[0] !== null &&
+          "data" in params[0] && typeof params[0].data === "string"
+        ? params[0].data
+        : undefined;
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, callData?.startsWith("0x01ffc9a7") === true ? 0 : 20));
+      if (method === "eth_getBalance") return "0x0";
+      if (callData?.startsWith("0x01ffc9a7") === true) {
+        return callData.includes("ffffffff")
+          ? `0x${"00".repeat(32)}`
+          : `0x${"00".repeat(31)}01`;
+      }
+      if (method === "eth_call") return `0x${"00".repeat(32)}`;
+      throw new TypeError(`Unexpected test RPC method: ${method}`);
+    } finally {
+      this.active -= 1;
+    }
   }
 }
 
@@ -288,6 +324,53 @@ describe("shared chain read processes", () => {
       )).rejects.toThrow(TypeError);
     });
     expect(stateRpc.calls).toEqual([]);
+    await lifecycle.close();
+  });
+
+  it("bounds nested account-asset RPC work below the process-wide requester limit", async () => {
+    const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
+    const issuanceRpc = new RecordingRpc((method) => method === "eth_chainId"
+      ? "0x1237"
+      : { number: "0x2c", hash: blockHash, timestamp: "0x687787a4" });
+    const stateRpc = new OverlappingRpc();
+    const accountPort = createAccountAssetChainReadPort({
+      rpc: stateRpc,
+      encoder: await createErc20CallEncoder(),
+      chainId,
+      lifecycle,
+    });
+    const account = evmAccountIdentitySchema.parse({
+      chainId,
+      address: `0x${"12".repeat(20)}`,
+    });
+    const assets = Array.from({ length: 5 }, (_, index) =>
+      erc20AssetIdentitySchema.parse({
+        kind: "erc20",
+        chainId,
+        address: `0x${(index + 1).toString(16).padStart(40, "0")}`,
+      }));
+
+    await lifecycle.run(new AbortController().signal, async (context) => {
+      const block = await resolveConfiguredCanonicalBlock({
+        rpc: issuanceRpc,
+        chainId,
+        selector: { kind: "number", blockNumber: parseUnsignedDecimal("44") },
+        context,
+      });
+      const result = await accountPort.readCollectionAtBlock({
+        account,
+        assets,
+        block,
+      }, context);
+      expect(result.tokens.map((token) => token.asset)).toEqual(assets);
+      expect(result.tokens.every((token) =>
+        token.requiredStandards.block.blockHash === blockHash)).toBe(true);
+      expect(result.tokens.every((token) =>
+        token.requiredStandards.erc8056.status === "supported")).toBe(true);
+    });
+
+    expect(stateRpc.maximumActive).toBe(8);
+    expect(stateRpc.active).toBe(0);
     await lifecycle.close();
   });
 });

@@ -205,8 +205,8 @@ const createTestTokenCatalogStage = <ActiveWallet extends object>(
 const accountAssetFailure = new AccountAssetOperationError("internal_error").failure;
 const testAccountAssets: AccountAssetApplicationPort = Object.freeze({
   list: async () => accountAssetFailure,
+  getOverview: async () => accountAssetFailure,
   get: async () => accountAssetFailure,
-  listOfficialCandidates: async () => accountAssetFailure,
 });
 
 const createTestAccountAssetStage = <ActiveWallet extends object>(
@@ -215,8 +215,8 @@ const createTestAccountAssetStage = <ActiveWallet extends object>(
   routes,
   supportManifest: extendAccountAssetSupportManifest(catalog.supportManifest),
   list: testAccountAssets.list,
+  getOverview: testAccountAssets.getOverview,
   get: testAccountAssets.get,
-  listOfficialCandidates: testAccountAssets.listOfficialCandidates,
   close: async () => { close(); },
 });
 
@@ -274,6 +274,7 @@ const baseRoutes = async () => {
 
 const route = (pathPattern: string) => ({
   method: "GET" as const,
+  query: "none" as const,
   pathPattern,
   mutation: "none" as const,
   response: "canonical_json" as const, successStatus: 200 as const,
@@ -502,8 +503,8 @@ describe("owner application composition", () => {
         routes: accountAssetRoutes,
         supportManifest: extendAccountAssetSupportManifest(catalog.supportManifest),
         list: testAccountAssets.list,
+        getOverview: testAccountAssets.getOverview,
         get: testAccountAssets.get,
-        listOfficialCandidates: testAccountAssets.listOfficialCandidates,
         close: async () => { events.push("account-assets:close"); },
       }),
       ({ routes: marketRoutes }, _wallet, _chain, supportManifest) => ({
@@ -555,7 +556,7 @@ describe("owner application composition", () => {
         expect(operations).toBe(walletOperations);
         expect(operations.readOperation()).toBe("test-operation");
         expect(Reflect.ownKeys(accountAssets.accountAssets).sort())
-          .toEqual(["get", "list", "listOfficialCandidates"]);
+          .toEqual(["get", "getOverview", "list"]);
         expect(Reflect.ownKeys(referenceMarkets.referenceMarkets).sort())
           .toEqual(["addPair", "history", "price", "removePair", "reorderPairs", "watchlist"]);
         return {

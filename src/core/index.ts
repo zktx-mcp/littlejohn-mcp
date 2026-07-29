@@ -26,6 +26,15 @@ export type {
   Uint256Decimal,
 } from "./amounts.js";
 export {
+  formatRationalForDisplay,
+  scaleRawUnitPriceToTokenUnits,
+} from "./numeric-display.js";
+export type {
+  ExactTokenUnitPrice,
+  NonnegativeRational,
+  RationalDisplay,
+} from "./numeric-display.js";
+export {
   requiredErc8056ObservationSchema,
   supportedErc8056ValuesSchema,
   tokenStandardDefinitions,

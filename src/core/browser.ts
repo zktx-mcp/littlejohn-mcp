@@ -32,6 +32,7 @@ export {
   getCapabilityDefinitionSnapshot,
   parseCapabilityInput,
   parseCapabilitySuccess,
+  safeParseCapabilityInput,
 } from "./capability.js";
 export type {
   AnyReadCapabilityDefinition,
@@ -210,6 +211,13 @@ export {
   scaledUiAmountScale,
   uint256DecimalSchema,
 } from "./amounts.js";
+export {
+  formatRationalForDisplay,
+} from "./numeric-display.js";
+export type {
+  NonnegativeRational,
+  RationalDisplay,
+} from "./numeric-display.js";
 export type {
   CanonicalAmount,
   Erc20AssetIdentity,
@@ -298,6 +306,7 @@ export {
   unsignedDecimalSchema,
   utcTimestampSchema,
 } from "./primitives.js";
+export type { UtcTimestamp } from "./primitives.js";
 export {
   walletConnectionDataSchema,
 } from "./wallet-connection.js";
@@ -330,6 +339,7 @@ export type {
   Conclusion,
   Coverage,
   EvidenceSource,
+  Freshness,
   StaticScopeExclusion,
   Warning,
 } from "./evidence.js";

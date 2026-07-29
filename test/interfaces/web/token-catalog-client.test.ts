@@ -87,7 +87,7 @@ describe("token catalog browser client", () => {
         cache: "no-store",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
-        signal,
+        signal: expect.any(AbortSignal),
       }),
     }]);
 
@@ -110,7 +110,11 @@ describe("token catalog browser client", () => {
     const invalid = queuedFetch([jsonResponse(200, changedClaim)]);
     await expect(inspectTokenContract(input, { request: invalid.request }))
       .rejects.toMatchObject({
-        message: "The token inspection response is invalid.",
+        name: "BrowserRequestError",
+        failure: {
+          kind: "local_failure",
+          code: "invalid_response",
+        },
       });
   });
 
@@ -213,7 +217,7 @@ describe("token catalog browser client", () => {
     )).resolves.toMatchObject({ status: "delivery_unknown", action: "confirm", resendAllowed: false });
   });
 
-  it("passes one caller signal through read requests and rejects malformed read responses", async () => {
+  it("bounds caller-controlled read requests and rejects malformed read responses", async () => {
     const fixture = await fixtures();
     const controller = new AbortController();
     const transport = queuedFetch([
@@ -224,8 +228,15 @@ describe("token catalog browser client", () => {
 
     await expect(loadCurrentTokenOperation(options)).resolves.toEqual(fixture.add);
     await expect(loadTokenOperation(fixture.add.operationId, options)).rejects.toMatchObject({
-      message: "The account token response is invalid.",
+      name: "BrowserRequestError",
+      failure: {
+        kind: "local_failure",
+        code: "invalid_response",
+      },
     });
-    expect(transport.requests.every(({ init }) => init.signal === controller.signal)).toBe(true);
+    expect(transport.requests.every(({ init }) =>
+      init.signal instanceof AbortSignal &&
+      init.signal !== controller.signal,
+    )).toBe(true);
   });
 });

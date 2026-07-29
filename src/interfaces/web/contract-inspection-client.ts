@@ -8,14 +8,14 @@ import {
 } from "../../core/browser.js";
 import { publicInspectionPaths } from "../browser-contract.js";
 import {
-  BrowserResponseError,
+  BrowserRequestError,
   invalidBrowserResponse,
   queryPublicBrowserJson,
   type BrowserRequestOptions,
 } from "./browser-client.js";
 
-const invalidInspectionResponse = (): BrowserResponseError =>
-  invalidBrowserResponse("The contract inspection response is invalid.");
+const invalidInspectionResponse = (): BrowserRequestError =>
+  invalidBrowserResponse();
 
 export const inspectContract = async (
   input: unknown,
@@ -33,7 +33,7 @@ export const inspectContract = async (
       ),
     );
   } catch (error) {
-    if (error instanceof BrowserResponseError) throw error;
+    if (error instanceof BrowserRequestError) throw error;
     throw invalidInspectionResponse();
   }
 };

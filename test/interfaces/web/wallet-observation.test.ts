@@ -59,9 +59,9 @@ const memoryStorage = () => {
     values,
     storage: Object.freeze({
       read: (): string | null => values.get("littlejohn.wallet-operation-observation") ?? null,
-      write: (operationId: string | undefined): void => {
-        if (operationId === undefined) values.delete("littlejohn.wallet-operation-observation");
-        else values.set("littlejohn.wallet-operation-observation", operationId);
+      write: (value: string | undefined): void => {
+        if (value === undefined) values.delete("littlejohn.wallet-operation-observation");
+        else values.set("littlejohn.wallet-operation-observation", value);
       },
     }),
   });
@@ -75,7 +75,10 @@ describe("wallet browser observation", () => {
     if (first.kind !== "accepted") throw new Error("Expected the first current observation.");
     firstStore.save(first.state);
     expect([...memory.values.entries()]).toEqual([
-      ["littlejohn.wallet-operation-observation", operationA],
+      [
+        "littlejohn.wallet-operation-observation",
+        JSON.stringify({ trackedOperationId: operationA }),
+      ],
     ]);
 
     const afterReload = createWalletObservationStore(memory.storage).load();
@@ -92,8 +95,18 @@ describe("wallet browser observation", () => {
     finalStore.save(completed.state);
 
     expect(completed.terminal).toMatchObject({ operationId: operationA, state: "cancelled" });
-    expect(finalStore.load()).toEqual({});
-    expect(memory.values.size).toBe(0);
+    expect(finalStore.load()).toEqual({
+      notifiedTerminalOperationId: operationA,
+    });
+    expect(memory.values.get("littlejohn.wallet-operation-observation"))
+      .toBe(JSON.stringify({ notifiedTerminalOperationId: operationA }));
+
+    const repeated = observeWalletCurrent(finalStore.load(), absent());
+    expect(repeated).toEqual({
+      kind: "accepted",
+      state: { notifiedTerminalOperationId: operationA },
+      wallet: absent(),
+    });
   });
 
   it("treats malformed or unavailable tab storage as empty UI state", () => {
@@ -113,7 +126,10 @@ describe("wallet browser observation", () => {
     expect(() => { store.save({ trackedOperationId: operationA }); }).not.toThrow();
 
     const memory = memoryStorage();
-    memory.values.set("littlejohn.wallet-operation-observation", operationA);
+    memory.values.set(
+      "littlejohn.wallet-operation-observation",
+      JSON.stringify({ trackedOperationId: operationA }),
+    );
     createWalletObservationStore(memory.storage).save({ trackedOperationId: "not-an-operation-id" });
     expect(memory.values.size).toBe(0);
   });

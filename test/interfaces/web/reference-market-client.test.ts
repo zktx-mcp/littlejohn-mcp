@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  captureCanonicalJson,
   createExactRational,
   referenceMarketManifest,
   referenceMarketMappingEvidence,
@@ -10,18 +9,12 @@ import {
   referenceRoundObservationSchema,
 } from "../../../src/core/browser.js";
 import {
-  browserCsrfHeaderName,
-  referenceMarketBrowserMutationPaths,
   referenceMarketPublicRoutes,
 } from "../../../src/interfaces/browser-contract.js";
 import {
-  addReferenceWatchlistPair,
   readReferencePrice,
-  removeReferenceWatchlistPair,
-  reorderReferenceWatchlistPairs,
 } from "../../../src/interfaces/web/reference-market-client.js";
 import {
-  controlBrowserReferenceMarketMutationJson,
   type BrowserFetch,
   type BrowserFetchInit,
 } from "../../../src/interfaces/web/browser-client.js";
@@ -92,60 +85,4 @@ describe("reference-market browser client", () => {
     });
   });
 
-  it("derives each mutation path, sends once, and preserves a lost-response commitment", async () => {
-    const calls: Array<{ path: string; init: BrowserFetchInit }> = [];
-    const request: BrowserFetch = async (path, init) => {
-      calls.push({ path, init });
-      throw new TypeError("response lost after send began");
-    };
-    const csrfToken = Buffer.alloc(32, 7).toString("base64url");
-    expect(() => controlBrowserReferenceMarketMutationJson({
-      action: "add",
-      request: captureCanonicalJson({
-        pairIds: [pair.pairId],
-        expectedRevision: "AAAAAAAAAAAAAAAAAAAAAA",
-      }),
-      csrfToken,
-      options: { request },
-    })).toThrow();
-    expect(calls).toHaveLength(0);
-
-    const result = await addReferenceWatchlistPair({
-      pairId: pair.pairId,
-      expectedRevision: "AAAAAAAAAAAAAAAAAAAAAA",
-    }, csrfToken, { request });
-    const removed = await removeReferenceWatchlistPair({
-      pairId: pair.pairId,
-      expectedRevision: "AAAAAAAAAAAAAAAAAAAAAA",
-    }, csrfToken, { request });
-    const reordered = await reorderReferenceWatchlistPairs({
-      pairIds: referenceMarketManifest.pairs.slice(0, 2).map((entry) => entry.pairId),
-      expectedRevision: "AAAAAAAAAAAAAAAAAAAAAA",
-    }, csrfToken, { request });
-    expect(result).toMatchObject({
-      status: "delivery_unknown",
-      delivery: {
-        action: "add",
-        requestDigest: "26ba5ebfd2ed004b2e15c2bc669d6dd9edfc4764085ad0f212f4e621af1f774d",
-        expectedRevision: "AAAAAAAAAAAAAAAAAAAAAA",
-        resendAllowed: false,
-        verificationCapability: "market.watchlist",
-      },
-    });
-    expect(removed).toMatchObject({ status: "delivery_unknown", delivery: { action: "remove" } });
-    expect(reordered).toMatchObject({ status: "delivery_unknown", delivery: { action: "reorder" } });
-    expect(calls.map((call) => call.path)).toEqual([
-      referenceMarketBrowserMutationPaths.add,
-      referenceMarketBrowserMutationPaths.remove,
-      referenceMarketBrowserMutationPaths.reorder,
-    ]);
-    expect(calls[0]?.init).toMatchObject({
-      method: "POST",
-      credentials: "same-origin",
-      headers: {
-        [browserCsrfHeaderName]: csrfToken,
-        "Content-Type": "application/json",
-      },
-    });
-  });
 });

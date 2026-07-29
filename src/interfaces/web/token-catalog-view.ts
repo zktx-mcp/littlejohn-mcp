@@ -5,6 +5,13 @@ import {
   type TokenSelection,
 } from "../../token-catalog/browser.js";
 import type { NotificationNotice } from "./notification.js";
+import {
+  humanFailureText,
+  presentHumanFailure,
+} from "./human-failures.js";
+import {
+  tokenOptionalTextUnavailableReasonLabel,
+} from "./human-labels.js";
 
 export interface TokenOperationCopy {
   readonly heading: string;
@@ -18,12 +25,11 @@ const optionalMetadata = (
   value: TokenInspectionSuccess["data"]["metadata"]["name"],
 ): string => value.status === "available"
   ? value.value
-  : `Unavailable (${value.reason.replace("_", " ")})`;
+  : `Unavailable (${tokenOptionalTextUnavailableReasonLabel(value.reason)})`;
 
 export const tokenInspectionFields = (inspection: TokenInspectionSuccess) => Object.freeze([
   Object.freeze({ label: "Name", value: optionalMetadata(inspection.data.metadata.name) }),
   Object.freeze({ label: "Symbol", value: optionalMetadata(inspection.data.metadata.symbol) }),
-  Object.freeze({ label: "Raw total supply", value: inspection.data.totalSupply.raw }),
   Object.freeze({
     label: "Decimals",
     value: inspection.data.totalSupply.decimals.status === "available"
@@ -70,7 +76,12 @@ export const tokenOperationCopy = (
     case "failed":
       return Object.freeze({
         heading: "Token selection change failed",
-        message: operation.failure.error.message,
+        message: humanFailureText(presentHumanFailure(
+          operation.kind === "add"
+            ? "stock_token_add"
+            : "stock_token_remove",
+          operation.failure,
+        )),
       });
   }
 };

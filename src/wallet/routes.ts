@@ -97,6 +97,7 @@ export const extendWalletControlRouteRegistry = (input: {
     {
       method: "POST",
       mutation: "declared_control",
+      query: "none",
       pathPattern: walletControlRoutes.operations,
       response: "canonical_json",
       successStatus: 200,
@@ -131,6 +132,7 @@ export const extendWalletControlRouteRegistry = (input: {
     {
       method: "GET",
       mutation: "none",
+      query: "none",
       pathPattern: walletControlRoutes.operationPattern,
       response: "canonical_json",
       successStatus: 200,
@@ -155,6 +157,7 @@ export const extendWalletControlRouteRegistry = (input: {
     {
       method: "POST",
       mutation: "declared_control",
+      query: "none",
       pathPattern: walletControlRoutes.confirmationPattern,
       response: "canonical_json",
       successStatus: 200,
@@ -187,6 +190,7 @@ export const extendWalletControlRouteRegistry = (input: {
     {
       method: "DELETE",
       mutation: "declared_control",
+      query: "none",
       pathPattern: walletControlRoutes.operationPattern,
       response: "canonical_json",
       successStatus: 200,
@@ -211,6 +215,7 @@ export const extendWalletControlRouteRegistry = (input: {
     {
       method: "GET",
       mutation: "none",
+      query: "none",
       pathPattern: walletControlRoutes.connection,
       response: "canonical_json",
       successStatus: 200,

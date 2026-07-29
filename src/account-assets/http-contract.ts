@@ -2,7 +2,6 @@ import { erc20AssetIdentitySchema, type EvmAddress } from "../core/browser.js";
 import {
   accountAssetApplicationContracts,
   type AccountAssetCollectionRequest,
-  type AccountAssetOfficialCandidateRequest,
   type AccountAssetViewRevision,
 } from "./contracts.js";
 
@@ -17,8 +16,7 @@ export const accountAssetCollectionRequestBody = (
 });
 
 export const accountAssetBrowserRoutes = Object.freeze({
-  queries: `${browserRoot}/queries`,
-  officialCandidateQueries: `${browserRoot}/official-candidate-queries`,
+  overview: `${browserRoot}/overview`,
   exactPattern: `${browserRoot}/{chainId}/{tokenAddress}`,
   exact(chainId: string, tokenAddress: EvmAddress): string {
     const asset = erc20AssetIdentitySchema.parse({
@@ -30,13 +28,6 @@ export const accountAssetBrowserRoutes = Object.freeze({
 
 export const accountAssetExactRequestBody = (viewRevision: AccountAssetViewRevision) =>
   Object.freeze({ viewRevision });
-
-export const accountAssetOfficialCandidateRequestBody = (
-  request: AccountAssetOfficialCandidateRequest,
-) => Object.freeze({
-  viewRevision: request.viewRevision,
-  ...(request.cursor === null ? {} : { cursor: request.cursor }),
-});
 
 export const accountAssetControlRoutes = Object.freeze({
   queries: `${controlRoot}/queries`,

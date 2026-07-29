@@ -15,8 +15,9 @@ mapping, activation, commercial behavior, and adapter verification policy.
   support level, activates an adapter, ranks an executable quote, selects a
   venue, changes a security conclusion, or weakens a repository-wide
   requirement.
-- Direct DEX protocols, same-chain aggregators, and managed vaults remain
-  distinct integration classes. Commercial similarity never collapses their
+- Protocol domains and execution classes remain distinct. Direct DEX
+  protocols, same-chain aggregators, and managed vaults are examples of
+  non-equivalent classes; commercial similarity never collapses their
   execution semantics or responsibilities.
 - A revenue-bearing integration declares the provider terms identity, fee
   mechanism, payer, recipient, fee token rules, exact rate scale, rounding,
@@ -26,12 +27,14 @@ mapping, activation, commercial behavior, and adapter verification policy.
 
 ## Package Boundary
 
-- Each supported DEX integration is an independent protocol integration package
+- Each supported protocol integration is an independent package
   included in the published `littlejohn-mcp` package.
-- The running `npx` service does not discover, download, install, or load DEX
+- The running `npx` service does not discover, download, install, or load protocol
   code dynamically.
-- A package contains its pinned official SDK integration and keeps every SDK
-  type inside the package boundary.
+- When a package uses an SDK, it contains the pinned official SDK integration
+  and keeps every SDK type inside the package boundary. An SDK is not required
+  when the protocol's supported contract can be implemented and independently
+  verified without one.
 - A package exports one registration entry point.
 - Importing the registration entry point performs no network reads, creates no
   SDK client, mutates no state, and starts no background work.
@@ -48,7 +51,8 @@ One protocol integration package descriptor contains:
 - contract version;
 - protocol identifier and display metadata;
 - the current exact protocol support level;
-- package and SDK identity and versions;
+- package identity and version, plus SDK identity and version when an SDK is
+  used;
 - supported chain IDs;
 - required deployment record identifiers;
 - commercial capability evidence identity when the package supports a revenue
@@ -70,8 +74,9 @@ Each read capability and action adapter implements a narrow contract.
 ## Protocol Version Identity
 
 - Each materially different onchain protocol version is an independent package
-  with one stable protocol identifier. Its deployment discovery, arithmetic,
-  failures, and evidence rules form one complete correctness model.
+  with one stable protocol identifier. Its deployment discovery, failures, and
+  its implementation of the numeric and evidence owners form one complete
+  correctness model.
 - A protocol family identifier and display name group version packages only for
   presentation. They never select, dispatch, replace, rank, or provide a
   fallback for a version package.
@@ -97,16 +102,16 @@ Each read capability and action adapter implements a narrow contract.
   independently selectable; no mutable default deployment exists.
 - An SDK update does not rename a protocol. An added deployment does not
   overwrite an admitted deployment record.
-- Every version package owns its exact SDK dependency names and resolved
-  versions. A later package cannot update an earlier package's imports. When
-  incompatible SDK releases must coexist, the new version uses npm's standard
-  dependency alias only after its accepted task proves independent resolution
-  and package behavior.
+- Every version package that uses an SDK owns its exact SDK dependency names and
+  resolved versions. A later package cannot update an earlier package's imports.
+  When incompatible SDK releases must coexist, the new version uses npm's
+  standard dependency alias only after its accepted task proves independent
+  resolution and package behavior.
 - Static registration is additive. Adding or omitting another package preserves
   every existing descriptor, deployment, capability, interface binding, and
   distributed package entry.
 
-## Capability And Action Units
+## Capability And Action Contracts
 
 Support is tracked by exact `chain × protocol × action × capability` identity.
 Package presence does not imply that every protocol action is available.
@@ -114,31 +119,45 @@ Package presence does not imply that every protocol action is available.
 A read capability declares its input, output, source requirements, conclusions,
 freshness policies, and static scope exclusions.
 
-An executable action adapter exposes:
+The module responsible for a user action owns that action's canonical,
+versioned contract. The contract defines the action identity, applicable
+inputs, results, state transitions, ordered responsibilities, expected effects,
+failure meanings, recovery, and the construction, simulation, handoff, and
+receipt requirements that apply to that action.
 
-```text
-resolveDeployments
-quote
-build
-decode
-expectedEffects
-simulationRequirements
-verifyReceipt
-```
+A protocol package registers one protocol-specific implementation against one
+exact action-contract version. The implementation maps the admitted domain
+input to the protocol-native operation and implements only the stages required
+by that action contract. There is no universal executable-action pipeline. A
+quote is required only when the canonical action contract requires an
+execution-price or rate proposal. An action that has no quote does not expose a
+placeholder quote, and a read-only quote does not become an executable action.
+
+Every transaction-producing action still provides the exact construction,
+decode, expected-effect, simulation, and receipt behavior required by
+`docs/TRANSACTION_POLICY.md`. The action contract fixes how those
+responsibilities compose and which product module owns their lifecycle. A
+protocol package cannot reorder, bypass, or redefine that lifecycle.
+
+Two actions share a process only when their responsibilities, invariants,
+durable or externally visible effects, terminal outcomes, failure behavior,
+recovery, and cleanup are equivalent. Repeated SDK calls or similar parameter
+names do not justify a common process.
 
 Read support, quote support, review support, transaction building, wallet
 handoff, and receipt verification activate independently through explicit
-feature gates.
+feature gates admitted by the applicable capability or action contract.
 
 ## Names And Semantics
 
 Little John does not use SDK method names or contract function names as the
 cross-protocol abstraction.
 
-Each action adapter keeps two explicit descriptions:
+Each executable integration keeps two explicit descriptions:
 
-- the Little John action contract, defined by user meaning, exact inputs, units,
-  constraints, expected effects, and verification requirements; and
+- the canonical action contract owned by the module responsible for the user
+  action, defined by user meaning, exact inputs, units, constraints, expected
+  effects, lifecycle, and verification requirements; and
 - the protocol-native operation, defined by the official SDK method, contract
   function, ABI signature, protocol terms, and native parameter names.
 
@@ -161,15 +180,16 @@ Mapping follows these rules:
 
 ## Parameter Contracts
 
-Every action adapter defines a discriminated, versioned Little John input schema
-and a separate protocol-native parameter mapping. The Little John input contains:
+Every canonical action contract defines a discriminated, versioned input schema.
+The protocol implementation defines a separate native parameter mapping. The
+canonical input contains:
 
 - a common envelope for chain, sender, recipient, token identities, exact raw
   amounts, limits, expiry, and user selections when those concepts apply; and
-- an action-specific payload for the exact protocol-independent semantics.
+- an action-specific payload for the exact canonical semantics.
 
-The protocol-native mapping remains inside the adapter package and translates
-the validated Little John input into exact SDK and calldata parameters.
+The protocol-native mapping remains inside the protocol package and translates
+the validated canonical input into exact SDK and calldata parameters.
 
 The common envelope contains no meaningless placeholder fields. An action that
 does not use a common concept omits it through a different action schema rather
@@ -206,11 +226,12 @@ The package registration binds each capability to:
 
 - stable capability ID and contract version;
 - supported chain, protocol, deployment, and action identity;
-- input and output schemas;
+- its canonical read or action contract and exact version;
 - native operation identity;
 - required evidence and chain reads;
 - conclusions and static scope exclusions;
-- expected effects and simulation requirements; and
+- expected effects and simulation requirements when the canonical action
+  contract requires them; and
 - its applicable chain, protocol, and action support meaning.
 
 The package descriptor owns the current exact protocol support level. Action
@@ -224,14 +245,15 @@ does not infer it from similar names.
 
 ## Mapping Output
 
-Adapters return both:
+Each protocol implementation returns:
 
-- canonical action evidence consumed by review, security, wallet, receipt, MCP,
-  and React read models; and
+- canonical capability or action evidence for only the consumers admitted by
+  the owning contract; and
 - protocol-native evidence containing exact official names, arguments, decoded
   calls, SDK and contract versions, and source references.
 
-Canonical evidence never discards a protocol distinction that can change
+Canonical action evidence is admitted by the owning action contract and never
+discards a protocol distinction that can change
 calldata, authorization, asset flow, price limit, fees, expiry, expected effects,
 or receipt interpretation.
 
@@ -283,6 +305,8 @@ Protocol support is unavailable unless shared contract verification establishes:
 
 - descriptor schema and contract version;
 - unique package, capability, and action identifiers;
+- the exact canonical read-capability or action-contract owner and version;
+- for an action, only the stages and lifecycle admitted by its contract;
 - chain and deployment declarations;
 - absence of SDK types across package boundaries;
 - exact numeric and token-unit behavior;

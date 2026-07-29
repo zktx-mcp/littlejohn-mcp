@@ -125,9 +125,15 @@ localized values, unordered fields, or approximate numeric values.
 
 - The review binds one account, one transaction request, and one transaction
   commitment.
-- The review UI shows target, recipient, spender, calldata meaning, asset
-  identities, raw and display amounts, fees, limits, approvals, control facts,
-  simulation coverage, expected deltas, warnings, blocks, and raw audit details.
+- The canonical review owns the decoded action meaning and every applicable
+  transaction fact required to authorize it, including target, recipient,
+  spender, asset identities, exact outflows and expected inflows, fees, limits,
+  approvals or eligibility, control facts, simulation coverage, expected
+  deltas, warnings, and blocks. It omits a fact that does not apply and records
+  an unestablished required fact as unavailable; it never substitutes raw
+  calldata, hashes, digests, or source records for a missing conclusion.
+- Browser information priority and presentation of the admitted canonical
+  review are owned only by `docs/USER_INTERFACE_POLICY.md`.
 - Simulation uses the exact transaction commitment shown in review.
 - Simulation success is evidence only for its exact state, block, provider, and
   requested coverage.

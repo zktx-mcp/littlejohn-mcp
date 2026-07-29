@@ -245,6 +245,7 @@ export const extendTokenCatalogControlRouteRegistry = (input: {
     {
       method: "POST",
       mutation: "none",
+      query: "none",
       pathPattern: tokenCatalogControlRoutes.inspections,
       response: "canonical_json",
       successStatus: 200,
@@ -262,6 +263,7 @@ export const extendTokenCatalogControlRouteRegistry = (input: {
     {
       method: "POST",
       mutation: "none",
+      query: "none",
       pathPattern: tokenCatalogControlRoutes.selectionQueries,
       response: "canonical_json",
       successStatus: 200,
@@ -283,6 +285,7 @@ export const extendTokenCatalogControlRouteRegistry = (input: {
     {
       method: "GET",
       mutation: "none",
+      query: "none",
       pathPattern: tokenCatalogControlRoutes.selectionPattern,
       response: "canonical_json",
       successStatus: 200,
@@ -304,6 +307,7 @@ export const extendTokenCatalogControlRouteRegistry = (input: {
     {
       method: "POST",
       mutation: "declared_control",
+      query: "none",
       pathPattern: tokenCatalogControlRoutes.operations,
       response: "canonical_json",
       successStatus: 200,
@@ -331,6 +335,7 @@ export const extendTokenCatalogControlRouteRegistry = (input: {
     {
       method: "GET",
       mutation: "none",
+      query: "none",
       pathPattern: tokenCatalogControlRoutes.operationPattern,
       response: "canonical_json",
       successStatus: 200,
@@ -352,6 +357,7 @@ export const extendTokenCatalogControlRouteRegistry = (input: {
     {
       method: "POST",
       mutation: "declared_control",
+      query: "none",
       pathPattern: tokenCatalogControlRoutes.confirmationPattern,
       response: "canonical_json",
       successStatus: 200,
@@ -372,6 +378,7 @@ export const extendTokenCatalogControlRouteRegistry = (input: {
     {
       method: "DELETE",
       mutation: "declared_control",
+      query: "none",
       pathPattern: tokenCatalogControlRoutes.operationPattern,
       response: "canonical_json",
       successStatus: 200,

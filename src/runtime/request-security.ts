@@ -34,7 +34,6 @@ export interface RequestAuthenticationInput {
 
 export interface RequestEnvelopeSecurityInput {
   readonly host: readonly string[];
-  readonly query: string;
   readonly bodyLength: number;
 }
 
@@ -46,6 +45,8 @@ export interface RequestClassSecurityInput extends RequestAuthenticationInput {
 export interface RequestSecurityInput extends RequestClassSecurityInput, RequestEnvelopeSecurityInput {
   readonly contentType: readonly string[];
   readonly acceptsBody: boolean;
+  readonly query: string;
+  readonly queryMode: "none" | "browser_location";
 }
 
 export type RequestSecurityResult = { readonly ok: true } | { readonly ok: false; readonly code: SecurityFailureCode };
@@ -275,6 +276,9 @@ export class RequestPolicyRegistry {
   validate(input: RequestSecurityInput): RequestSecurityResult {
     const envelope = validateRequestEnvelopeSecurity(input);
     if (!envelope.ok) return envelope;
+    if (input.queryMode === "none" && input.query !== "") {
+      return { ok: false, code: "query_not_supported" };
+    }
     const policy = this.get(input.requestClass);
     if (!input.acceptsBody && input.bodyLength !== 0) return { ok: false, code: "payload_too_large" };
     if (!input.acceptsBody && input.contentType.length !== 0) {
@@ -324,17 +328,15 @@ export const assertRequestPolicyRegistryDescendant = (
 
 export const validateRequestTargetSecurity = (
   host: readonly string[],
-  query: string,
 ): RequestSecurityResult => {
   if (!exactOne(host, fixedHostHeader)) return { ok: false, code: "invalid_host" };
-  if (query !== "") return { ok: false, code: "query_not_supported" };
   return { ok: true };
 };
 
 export const validateRequestEnvelopeSecurity = (
   input: RequestEnvelopeSecurityInput,
 ): RequestSecurityResult => {
-  const target = validateRequestTargetSecurity(input.host, input.query);
+  const target = validateRequestTargetSecurity(input.host);
   if (!target.ok) return target;
   if (!Number.isSafeInteger(input.bodyLength) || input.bodyLength < 0 || input.bodyLength > requestBodyLimitBytes) {
     return { ok: false, code: "payload_too_large" };

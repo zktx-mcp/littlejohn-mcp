@@ -84,7 +84,7 @@ describe("contract inspection browser client", () => {
         cache: "no-store",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
-        signal,
+        signal: expect.any(AbortSignal),
       },
     }]);
   });
@@ -112,7 +112,15 @@ describe("contract inspection browser client", () => {
       { address, block: { kind: "latest" } },
       { request },
     )).rejects.toMatchObject({
-      message: "The contract inspection response is invalid.",
+      name: "BrowserRequestError",
+      message: "The local response is invalid.",
+      failure: {
+        kind: "local_failure",
+        code: "invalid_response",
+        detail: "The local response is invalid.",
+        retryable: false,
+        issues: [],
+      },
     });
   });
 });

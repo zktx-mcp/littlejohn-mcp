@@ -24,13 +24,19 @@ import {
   type OfficialAssetChainReadPort,
 } from "../../src/chain/index.js";
 import {
+  assertCommittedOfficialAssetSnapshot,
   committedOfficialAssetSnapshotSchema,
   defaultStockTokenManifest,
   officialAssetSourceDefinition,
   officialAssetSnapshotRevisionSchema,
   stockFactoryAdmissionManifest,
   type CommittedOfficialAssetSnapshot,
+  type OfficialAssetSourceMember,
 } from "../../src/registry/index.js";
+import {
+  officialAssetCandidateListDigest,
+  officialAssetMemberSetDigest,
+} from "../../src/registry/official-asset-contract.js";
 import {
   tokenSelectionDetailSchema,
   tokenSelectionSetRevisionSchema,
@@ -112,10 +118,24 @@ const snapshot = committedOfficialAssetSnapshotSchema.parse({
   sourceUri: officialAssetSourceDefinition.sourceUri,
   sourceObservedAt: at,
   rawResponseDigest: parseHash32(`0x${"33".repeat(32)}`),
-  memberSetDigest: parseHash32(`0x${"44".repeat(32)}`),
-  candidateListDigest: parseHash32(`0x${"55".repeat(32)}`),
+  memberSetDigest: officialAssetMemberSetDigest([defaultMember, unselectedMember]),
+  candidateListDigest: officialAssetCandidateListDigest([defaultMember, unselectedMember]),
   chainId,
   members: [defaultMember, unselectedMember],
+  revision: snapshotRevision,
+  updatedAt: at,
+});
+
+const officialSnapshotWithMembers = (
+  members: readonly OfficialAssetSourceMember[],
+): CommittedOfficialAssetSnapshot => assertCommittedOfficialAssetSnapshot({
+  sourceUri: officialAssetSourceDefinition.sourceUri,
+  sourceObservedAt: at,
+  rawResponseDigest: parseHash32(`0x${"33".repeat(32)}`),
+  memberSetDigest: officialAssetMemberSetDigest(members),
+  candidateListDigest: officialAssetCandidateListDigest(members),
+  chainId,
+  members: [...members],
   revision: snapshotRevision,
   updatedAt: at,
 });
@@ -163,13 +183,16 @@ const fullObservation = (
 
 const fixture = (options: Readonly<{
   sourceAvailable?: boolean;
+  selectionEntries?: readonly TokenSelectionDetail[];
   blocks?: readonly [typeof block, ...(typeof block)[]];
   afterVerification?: (signal: AbortSignal) => void | Promise<void>;
   beforeCollectionReturn?: (signal: AbortSignal) => void | Promise<void>;
   beforeExactReturn?: (signal: AbortSignal) => void | Promise<void>;
 }> = {}) => {
   const sourceAvailable = options.sourceAvailable ?? true;
-  const entries = [detail(defaultMember.contractAddress, 1), detail(customAddress, 2)];
+  const entries = options.selectionEntries === undefined
+    ? [detail(defaultMember.contractAddress, 1), detail(customAddress, 2)]
+    : [...options.selectionEntries];
   let state: TokenSelectionState = {
     account,
     revision: selectionSetRevision,
@@ -386,9 +409,154 @@ describe("account asset read process", () => {
     expect(result.native.rawBalance).toBe("7");
     expect(test.initializationCalls).toBe(0);
 
-    const candidates = await test.application.listOfficialCandidates({ viewRevision: result.viewRevision });
-    if ("ok" in candidates) throw new TypeError(candidates.error.code);
-    expect(candidates.candidates.map((entry) => entry.contractAddress)).toEqual([candidateAddress]);
+    await test.close();
+  });
+
+  it("admits one complete official-only overview at one block", async () => {
+    const test = fixture();
+    const result = await test.application.getOverview({});
+    if ("ok" in result) throw new TypeError(result.error.code);
+    expect(result.account).toEqual(account);
+    expect(result.block).toEqual(block);
+    expect(result.native.rawBalance).toBe("7");
+    expect(result.stockTokens.status).toBe("current");
+    if (result.stockTokens.status !== "current") throw new TypeError("Expected current Stock Tokens.");
+    expect(result.stockTokens.members.map((entry) =>
+      entry.status === "selected"
+        ? entry.asset.selection.asset.address
+        : entry.candidate.contractAddress)).toEqual([
+      defaultMember.contractAddress,
+      candidateAddress,
+    ]);
+    expect(result.stockTokens.members[0]).toMatchObject({
+      status: "selected",
+      asset: { classification: { kind: "robinhood_stock_token" } },
+    });
+    expect(result.stockTokens.members.some(
+      (entry) => entry.status === "selected" &&
+        entry.asset.selection.asset.address === customAddress,
+    )).toBe(false);
+    await test.close();
+  });
+
+  it("returns the complete unselected official snapshot in canonical order", async () => {
+    const test = fixture();
+    const generated = Array.from({ length: 53 }, (_, index) => {
+      const identityByte = (0x20 + index).toString(16).padStart(2, "0");
+      const matching = index >= 26;
+      return Object.freeze({
+        assetUid: parseHash32(`0x${identityByte.repeat(32)}`),
+        contractAddress: parseEvmAddressInput(`0x${identityByte.repeat(20)}`),
+        sourceName: matching
+          ? `${index % 2 === 0 ? "Ｔａｒｇｅｔ" : "Target"} Stock ${index}`
+          : `Other Stock ${index}`,
+        sourceSymbol: matching ? `TaRgEt${index}` : `OTHER${index}`,
+      });
+    });
+    const selectedMatchingMember = Object.freeze({
+      ...defaultMember,
+      sourceName: "Target selected member",
+      sourceSymbol: "TARGET",
+    });
+    test.setOfficialSnapshot(officialSnapshotWithMembers([
+      selectedMatchingMember,
+      ...generated,
+    ]));
+    const first = await test.application.getOverview({});
+    if ("ok" in first) throw new TypeError(first.error.code);
+    if (first.stockTokens.status !== "current") {
+      throw new TypeError("Expected current Stock Tokens.");
+    }
+    expect(first.stockTokens.members[0]).toMatchObject({
+      status: "selected",
+      asset: {
+        selection: { asset: { address: selectedMatchingMember.contractAddress } },
+      },
+    });
+    expect(first.stockTokens.members.slice(1).map((entry) =>
+      entry.status === "available_to_add" ? entry.candidate : null,
+    )).toEqual(generated.map((entry) => ({
+      assetUid: entry.assetUid,
+      contractAddress: entry.contractAddress,
+      sourceName: entry.sourceName,
+      sourceSymbol: entry.sourceSymbol,
+    })));
+    expect(first.stockTokens.members).toHaveLength(54);
+    await test.close();
+  });
+
+  it("partitions the maximum admitted official set without truncating selected members", async () => {
+    const members = Array.from(
+      { length: officialAssetSourceDefinition.memberLimit },
+      (_, index) => {
+        const identity = (index + 1).toString(16);
+        return Object.freeze({
+          assetUid: parseHash32(`0x${identity.padStart(64, "0")}`),
+          contractAddress: parseEvmAddressInput(
+            `0x${identity.padStart(40, "0")}`,
+          ),
+          sourceName: `Stock ${index + 1}`,
+          sourceSymbol: `S${index + 1}`,
+        });
+      },
+    );
+    const selections = members.map((entry, index) =>
+      detail(entry.contractAddress, (index % 250) + 1));
+    const test = fixture({ selectionEntries: selections });
+    test.setOfficialSnapshot(officialSnapshotWithMembers(members));
+
+    const result = await test.application.getOverview({});
+    if ("ok" in result) throw new TypeError(result.error.code);
+    if (result.stockTokens.status !== "current") {
+      throw new TypeError("Expected current Stock Tokens.");
+    }
+    expect(result.stockTokens.members).toHaveLength(
+      officialAssetSourceDefinition.memberLimit,
+    );
+    expect(result.stockTokens.members.every((entry) =>
+      entry.status === "selected")).toBe(true);
+    expect(result.stockTokens.members.map((entry) =>
+      entry.status === "selected"
+        ? entry.asset.selection.asset.address
+        : null)).toEqual(members.map((entry) => entry.contractAddress));
+    await test.close();
+  });
+
+  it("cancels an overview before publishing a partial partition", async () => {
+    const started = deferred();
+    const test = fixture({
+      afterVerification: (signal) => {
+        started.resolve();
+        return pendingUntilAbort(signal);
+      },
+    });
+    const caller = new AbortController();
+    const pending = test.application.getOverview({}, caller.signal);
+    await started.promise;
+    caller.abort();
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: { code: "request_aborted" },
+    });
+    await test.close();
+  });
+
+  it("rejects an overview when its selection set changes before publication", async () => {
+    let test: ReturnType<typeof fixture>;
+    test = fixture({
+      beforeCollectionReturn: () => {
+        test.setState({
+          ...test.state,
+          revision: tokenSelectionSetRevisionSchema.parse(
+            Buffer.alloc(16, 10).toString("base64url"),
+          ),
+        });
+      },
+    });
+    await expect(test.application.getOverview({})).resolves.toMatchObject({
+      ok: false,
+      error: { code: "state_conflict" },
+    });
     await test.close();
   });
 
@@ -427,6 +595,13 @@ describe("account asset read process", () => {
       officialSnapshotStatus: "unavailable",
       officialSnapshotRevision: snapshotRevision,
       selectionSetRevision,
+    });
+    const overview = await test.application.getOverview({});
+    if ("ok" in overview) throw new TypeError(overview.error.code);
+    expect(overview.native.rawBalance).toBe("7");
+    expect(overview.stockTokens).toEqual({
+      status: "unavailable",
+      reason: "source_unavailable",
     });
     await test.close();
   });
