@@ -76,8 +76,8 @@ export interface PackageManifest {
 export const runtimePackageSourceRoots = Object.freeze({
   "@modelcontextprotocol/sdk": ["src/interfaces"],
   "@noble/hashes": ["src/core"],
-  "@uniswap/sdk-core": ["src/protocols/uniswap-v2"],
-  "@uniswap/v2-sdk": ["src/protocols/uniswap-v2"],
+  "@uniswap/sdk-core": ["src/protocols/uniswap-v2/sdk.ts"],
+  "@uniswap/v2-sdk": ["src/protocols/uniswap-v2/sdk.ts"],
   "@walletconnect/sign-client": ["src/wallet"],
   "better-sqlite3": ["src/runtime"],
   "lightweight-charts": ["src/interfaces/web/lightweight-charts-adapter.tsx"],
@@ -94,6 +94,23 @@ interface SourceContext {
   readonly commonJsSource: boolean;
   readonly declarationFile: boolean;
   readonly sourceFile: ts.SourceFile;
+}
+
+type ModuleOccurrenceForm =
+  | "dynamic_import"
+  | "import_equals"
+  | "import_type"
+  | "require"
+  | "static_export"
+  | "static_import";
+
+interface ModuleOccurrence {
+  readonly form: ModuleOccurrenceForm;
+  readonly kind: Exclude<ModuleImportReferenceKind, "parse_error">;
+  readonly namespace: boolean;
+  readonly node: ts.Node;
+  readonly runtime: boolean;
+  readonly specifierExpression: ts.Expression | undefined;
 }
 
 const scriptKind = (path: string): ts.ScriptKind => {
@@ -380,7 +397,13 @@ const isAmbientDeclaration = (node: ts.Node): boolean => {
 
 const declarationCreatesRuntimeBinding = (declaration: ts.Declaration): boolean => {
   if (isAmbientDeclaration(declaration)) return false;
+  if (ts.isImportEqualsDeclaration(declaration)) return !declaration.isTypeOnly;
   if (ts.isImportSpecifier(declaration) && declaration.isTypeOnly) return false;
+  if (
+    ts.isInterfaceDeclaration(declaration) ||
+    ts.isTypeAliasDeclaration(declaration) ||
+    ts.isTypeParameterDeclaration(declaration)
+  ) return false;
   for (let current: ts.Node | undefined = declaration; current !== undefined; current = current.parent) {
     if (ts.isImportDeclaration(current)) return current.importClause?.isTypeOnly !== true;
     if (ts.isSourceFile(current)) break;
@@ -399,16 +422,21 @@ const sourceDeclaresTopLevelValue = (sourceFile: ts.SourceFile, name: string): b
       (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) ||
         ts.isEnumDeclaration(statement)) &&
       statement.name?.text === name
-    ) return true;
-    if (ts.isImportEqualsDeclaration(statement)) return statement.name.text === name;
+    ) return declarationCreatesRuntimeBinding(statement);
+    if (ts.isImportEqualsDeclaration(statement)) {
+      return statement.name.text === name && declarationCreatesRuntimeBinding(statement);
+    }
     if (!ts.isImportDeclaration(statement)) return false;
     const clause = statement.importClause;
-    if (clause?.isTypeOnly === true) return false;
-    if (clause?.name?.text === name) return true;
+    if (clause === undefined) return false;
+    if (clause.name?.text === name) return declarationCreatesRuntimeBinding(clause);
     const bindings = clause?.namedBindings;
     if (bindings === undefined) return false;
-    if (ts.isNamespaceImport(bindings)) return bindings.name.text === name;
-    return bindings.elements.some((element) => !element.isTypeOnly && element.name.text === name);
+    if (ts.isNamespaceImport(bindings)) {
+      return bindings.name.text === name && declarationCreatesRuntimeBinding(bindings);
+    }
+    return bindings.elements.some((element) =>
+      element.name.text === name && declarationCreatesRuntimeBinding(element));
   });
 
 const isUnshadowedIdentifier = (
@@ -452,21 +480,89 @@ const exportDeclarationLoadsRuntime = (node: ts.ExportDeclaration): boolean => {
     node.exportClause.elements.some((element) => !element.isTypeOnly);
 };
 
+const classifyModuleOccurrence = (
+  node: ts.Node,
+  context: SourceContext,
+): ModuleOccurrence | undefined => {
+  const admittedRuntime = (runtime: boolean): boolean => runtime && !context.declarationFile;
+  if (ts.isImportDeclaration(node)) {
+    return {
+      form: "static_import",
+      kind: "module",
+      namespace: node.importClause?.namedBindings !== undefined &&
+        ts.isNamespaceImport(node.importClause.namedBindings),
+      node,
+      runtime: admittedRuntime(importDeclarationLoadsRuntime(node)),
+      specifierExpression: node.moduleSpecifier,
+    };
+  }
+  if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) {
+    return {
+      form: "static_export",
+      kind: "module",
+      namespace: node.exportClause !== undefined && ts.isNamespaceExport(node.exportClause),
+      node,
+      runtime: admittedRuntime(exportDeclarationLoadsRuntime(node)),
+      specifierExpression: node.moduleSpecifier,
+    };
+  }
+  if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+    return {
+      form: "import_equals",
+      kind: "import_equals",
+      namespace: false,
+      node,
+      runtime: admittedRuntime(!node.isTypeOnly),
+      specifierExpression: node.moduleReference.expression,
+    };
+  }
+  if (ts.isImportTypeNode(node)) {
+    return {
+      form: "import_type",
+      kind: "import_type",
+      namespace: false,
+      node,
+      runtime: false,
+      specifierExpression: importTypeSpecifier(node),
+    };
+  }
+  if (!ts.isCallExpression(node)) return undefined;
+  if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+    return {
+      form: "dynamic_import",
+      kind: "dynamic_import",
+      namespace: false,
+      node,
+      runtime: admittedRuntime(true),
+      specifierExpression: node.arguments[0],
+    };
+  }
+  if (!isDirectRequireCall(node, context)) return undefined;
+  return {
+    form: "require",
+    kind: "require",
+    namespace: false,
+    node,
+    runtime: admittedRuntime(true),
+    specifierExpression: node.arguments[0],
+  };
+};
+
 const moduleImportReferences = (context: SourceContext): readonly ModuleImportReference[] => {
   const references: ModuleImportReference[] = [];
   const record = (
     kind: ModuleImportReferenceKind,
     expression: ts.Expression | undefined,
-    runtime = true,
+    runtime: boolean,
   ): void => {
     const specifier = literalString(expression);
     if (specifier === undefined) {
-      references.push({ kind, runtime: runtime && !context.declarationFile });
+      references.push({ kind, runtime });
       return;
     }
     const specifierClass = classifyModuleSpecifier(specifier);
     const root = specifierClass === "package" ? packageRoot(specifier) : undefined;
-    const base = { kind, runtime: runtime && !context.declarationFile, specifier, specifierClass } as const;
+    const base = { kind, runtime, specifier, specifierClass } as const;
     references.push(root === undefined ? base : { ...base, packageRoot: root });
   };
 
@@ -478,20 +574,13 @@ const moduleImportReferences = (context: SourceContext): readonly ModuleImportRe
   }
 
   const visit = (node: ts.Node): void => {
-    if (ts.isImportDeclaration(node)) {
-      record("module", node.moduleSpecifier, importDeclarationLoadsRuntime(node));
-    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) {
-      record("module", node.moduleSpecifier, exportDeclarationLoadsRuntime(node));
-    } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
-      record("import_equals", node.moduleReference.expression, !node.isTypeOnly);
-    } else if (ts.isImportTypeNode(node)) {
-      record("import_type", importTypeSpecifier(node), false);
-    } else if (ts.isCallExpression(node)) {
-      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-        record("dynamic_import", node.arguments[0]);
-      } else if (isDirectRequireCall(node, context)) {
-        record("require", node.arguments[0]);
-      }
+    const occurrence = classifyModuleOccurrence(node, context);
+    if (occurrence !== undefined) {
+      record(
+        occurrence.kind,
+        occurrence.specifierExpression,
+        occurrence.runtime,
+      );
     }
     ts.forEachChild(node, visit);
   };
@@ -502,15 +591,23 @@ const moduleImportReferences = (context: SourceContext): readonly ModuleImportRe
 const isNodeModuleSpecifier = (specifier: string | undefined): boolean =>
   specifier === "node:module" || specifier?.startsWith("node:module/") === true;
 
-const importsCreateRequire = (node: ts.ImportDeclaration): boolean => {
-  if (!isNodeModuleSpecifier(literalString(node.moduleSpecifier)) || !importDeclarationLoadsRuntime(node)) return false;
+const importsCreateRequire = (node: ts.ImportDeclaration, context: SourceContext): boolean => {
+  const occurrence = classifyModuleOccurrence(node, context);
+  if (
+    occurrence?.runtime !== true ||
+    !isNodeModuleSpecifier(literalString(occurrence.specifierExpression))
+  ) return false;
   const bindings = node.importClause?.namedBindings;
   return bindings !== undefined && ts.isNamedImports(bindings) && bindings.elements.some((element) =>
     !element.isTypeOnly && (element.propertyName?.text ?? element.name.text) === "createRequire");
 };
 
-const exportsCreateRequire = (node: ts.ExportDeclaration): boolean => {
-  if (!isNodeModuleSpecifier(literalString(node.moduleSpecifier)) || !exportDeclarationLoadsRuntime(node)) return false;
+const exportsCreateRequire = (node: ts.ExportDeclaration, context: SourceContext): boolean => {
+  const occurrence = classifyModuleOccurrence(node, context);
+  if (
+    occurrence?.runtime !== true ||
+    !isNodeModuleSpecifier(literalString(occurrence.specifierExpression))
+  ) return false;
   return node.exportClause !== undefined && ts.isNamedExports(node.exportClause) &&
     node.exportClause.elements.some((element) =>
       !element.isTypeOnly && (element.propertyName?.text ?? element.name.text) === "createRequire");
@@ -598,8 +695,8 @@ const directCodeExecutionReferences = (
   };
 
   const visit = (node: ts.Node, ownsArguments: boolean): void => {
-    if (ts.isImportDeclaration(node) && importsCreateRequire(node)) kinds.add("create_require");
-    if (ts.isExportDeclaration(node) && exportsCreateRequire(node)) kinds.add("create_require");
+    if (ts.isImportDeclaration(node) && importsCreateRequire(node, context)) kinds.add("create_require");
+    if (ts.isExportDeclaration(node) && exportsCreateRequire(node, context)) kinds.add("create_require");
 
     if (ts.isIdentifier(node) && isRuntimeIdentifierReference(node)) {
       if (isUnshadowedIdentifier(node, "eval", context)) kinds.add("global_eval");
@@ -697,6 +794,400 @@ export const collectProductSourceFiles = async (
     }
   }
   return [...new Set(files)].sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
+};
+
+export const collectProductCodeSourceFiles = async (
+  directory = resolve("src"),
+): Promise<readonly string[]> => Object.freeze(
+  (await collectSourceFiles(directory)).filter((file) => codeSourceExtensions.has(extname(file))),
+);
+
+export const resolveProgramSymbol = (
+  checker: ts.TypeChecker,
+  symbol: ts.Symbol | undefined,
+): ts.Symbol | undefined => {
+  let current = symbol;
+  const seen = new Set<ts.Symbol>();
+  while (current !== undefined && (current.flags & ts.SymbolFlags.Alias) !== 0) {
+    if (seen.has(current)) return undefined;
+    seen.add(current);
+    current = checker.getAliasedSymbol(current);
+  }
+  return current;
+};
+
+export const programModuleExportSymbol = (
+  program: ts.Program,
+  checker: ts.TypeChecker,
+  file: string,
+  name: string,
+): ts.Symbol | undefined => {
+  const sourceFile = program.getSourceFile(resolve(file));
+  const moduleSymbol = sourceFile === undefined ? undefined : checker.getSymbolAtLocation(sourceFile);
+  return moduleSymbol === undefined
+    ? undefined
+    : resolveProgramSymbol(
+        checker,
+        checker.getExportsOfModule(moduleSymbol).find((entry) => entry.name === name),
+      );
+};
+
+export const protectedModuleAccessViolations = (
+  program: ts.Program,
+  protectedSymbols: ReadonlySet<ts.Symbol>,
+  sourceRoot = resolve("src"),
+): readonly string[] => {
+  const checker = program.getTypeChecker();
+  const protectedModules = new Set<string>();
+  for (const sourceFile of program.getSourceFiles()) {
+    const fromSource = relative(sourceRoot, sourceFile.fileName);
+    if (
+      sourceFile.isDeclarationFile || fromSource === "" || isAbsolute(fromSource) ||
+      fromSource === ".." || fromSource.startsWith(`..${sep}`)
+    ) continue;
+    const moduleSymbol = checker.getSymbolAtLocation(sourceFile);
+    if (moduleSymbol !== undefined && checker.getExportsOfModule(moduleSymbol).some((entry) => {
+      const resolved = resolveProgramSymbol(checker, entry);
+      return resolved !== undefined && protectedSymbols.has(resolved);
+    })) protectedModules.add(resolve(sourceFile.fileName));
+  }
+
+  const resolvedTarget = (sourceFile: ts.SourceFile, specifier: string): string | undefined => {
+    if (classifyModuleSpecifier(specifier) !== "relative") return undefined;
+    const resolution = ts.resolveModuleName(
+      specifier,
+      sourceFile.fileName,
+      program.getCompilerOptions(),
+      ts.sys,
+    ).resolvedModule;
+    return resolution === undefined ? undefined : resolve(resolution.resolvedFileName);
+  };
+  const violations: string[] = [];
+  const report = (sourceFile: ts.SourceFile, node: ts.Node, kind: string): void => {
+    const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+    violations.push(
+      `${relative(sourceRoot, sourceFile.fileName).split(sep).join("/")}:${line}:${kind}`,
+    );
+  };
+  const inspectRuntimeLoad = (
+    sourceFile: ts.SourceFile,
+    node: ts.Node,
+    specifier: string | undefined,
+    kind: string,
+  ): void => {
+    if (specifier === undefined) {
+      report(sourceFile, node, "unresolved_runtime_module_load");
+      return;
+    }
+    const target = resolvedTarget(sourceFile, specifier);
+    if (target !== undefined && protectedModules.has(target)) {
+      report(sourceFile, node, kind);
+    }
+  };
+
+  for (const sourceFile of program.getSourceFiles()) {
+    const fromSource = relative(sourceRoot, sourceFile.fileName);
+    if (
+      sourceFile.isDeclarationFile || fromSource === "" || isAbsolute(fromSource) ||
+      fromSource === ".." || fromSource.startsWith(`..${sep}`)
+    ) continue;
+    const context: SourceContext = {
+      checker,
+      commonJsSource: commonJsSourceExtensions.has(extname(sourceFile.fileName)),
+      declarationFile: sourceFile.isDeclarationFile,
+      sourceFile,
+    };
+    const visit = (node: ts.Node): void => {
+      const occurrence = classifyModuleOccurrence(node, context);
+      if (occurrence?.runtime === true) {
+        const violationKind = occurrence.form === "dynamic_import"
+          ? "protected_module_dynamic_import"
+          : occurrence.form === "require"
+            ? "protected_module_require"
+            : occurrence.form === "import_equals"
+              ? "protected_module_import_equals"
+              : occurrence.form === "static_import" && occurrence.namespace
+                ? "protected_module_namespace_import"
+                : occurrence.form === "static_export" && occurrence.namespace
+                  ? "protected_module_namespace_export"
+                  : undefined;
+        if (violationKind !== undefined) {
+          inspectRuntimeLoad(
+            sourceFile,
+            occurrence.node,
+            literalString(occurrence.specifierExpression),
+            violationKind,
+          );
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
+  return violations.sort();
+};
+
+const directImportMetaUrl = (expression: ts.Expression): boolean =>
+  ts.isPropertyAccessExpression(expression) &&
+  expression.name.text === "url" &&
+  ts.isMetaProperty(expression.expression) &&
+  expression.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
+  expression.expression.name.text === "meta";
+
+const topLevelConstInitializer = (
+  call: ts.CallExpression,
+): ts.VariableDeclaration | undefined => {
+  const declaration = call.parent;
+  if (
+    !ts.isVariableDeclaration(declaration) ||
+    declaration.initializer !== call ||
+    !ts.isIdentifier(declaration.name)
+  ) return undefined;
+  const declarationList = declaration.parent;
+  const statement = declarationList.parent;
+  return ts.isVariableDeclarationList(declarationList) &&
+    (declarationList.flags & ts.NodeFlags.Const) !== 0 &&
+    ts.isVariableStatement(statement) &&
+    ts.isSourceFile(statement.parent) &&
+    ts.getModifiers(statement)?.some((modifier) =>
+      modifier.kind === ts.SyntaxKind.ExportKeyword ||
+      modifier.kind === ts.SyntaxKind.DefaultKeyword) !== true
+    ? declaration
+    : undefined;
+};
+
+export const uniswapV2SdkLoadBoundaryViolations = (
+  program: ts.Program,
+  policy: PackageImportPolicy,
+): readonly string[] => {
+  const sdkFile = resolve(policy.repositoryRoot, "src/protocols/uniswap-v2/sdk.ts");
+  const sdkName = relative(policy.repositoryRoot, sdkFile).split(sep).join("/");
+  const violations: string[] = [];
+  const report = (node: ts.Node | undefined, kind: string): void => {
+    if (node === undefined) {
+      violations.push(`${sdkName}:${kind}`);
+      return;
+    }
+    const sourceFile = node.getSourceFile();
+    const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+    violations.push(`${sdkName}:${line}:${kind}`);
+  };
+
+  const expectedPackages = [...policy.runtimePackageOwners]
+    .filter(([, owners]) => owners.size === 1 && owners.has(sdkFile))
+    .map(([packageName]) => packageName)
+    .sort();
+  if (expectedPackages.length !== 2) {
+    report(undefined, "invalid_exact_package_owner_count");
+  }
+  const expectedPackageSet = new Set(expectedPackages);
+
+  const sourceFile = program.getSourceFile(sdkFile);
+  if (sourceFile === undefined) {
+    report(undefined, "missing_sdk_source");
+    return violations.sort();
+  }
+  const checker = program.getTypeChecker();
+  const context: SourceContext = {
+    checker,
+    commonJsSource: false,
+    declarationFile: sourceFile.isDeclarationFile,
+    sourceFile,
+  };
+  const runtimeReferenceSymbol = (node: ts.Identifier): ts.Symbol | undefined =>
+    ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node
+      ? checker.getShorthandAssignmentValueSymbol(node.parent) ??
+        checker.getSymbolAtLocation(node)
+      : checker.getSymbolAtLocation(node);
+  const runtimeLocalExportReference = (node: ts.Identifier): boolean => {
+    const specifier = node.parent;
+    if (!ts.isExportSpecifier(specifier) || specifier.isTypeOnly) return false;
+    const declaration = specifier.parent.parent;
+    return ts.isExportDeclaration(declaration) &&
+      !declaration.isTypeOnly &&
+      declaration.moduleSpecifier === undefined &&
+      (specifier.propertyName ?? specifier.name) === node;
+  };
+  const referencesSymbol = (node: ts.Identifier, symbol: ts.Symbol): boolean => {
+    const reference = runtimeReferenceSymbol(node);
+    if (reference === symbol) return true;
+    return runtimeLocalExportReference(node) &&
+      resolveProgramSymbol(checker, reference) === resolveProgramSymbol(checker, symbol);
+  };
+
+  const exactFactoryImports: ts.ImportSpecifier[] = [];
+  const visitRuntimeModuleOccurrences = (node: ts.Node): void => {
+    const occurrence = classifyModuleOccurrence(node, context);
+    const specifier = occurrence?.runtime === true
+      ? literalString(occurrence.specifierExpression)
+      : undefined;
+    if (occurrence?.runtime === true && specifier !== undefined &&
+      classifyModuleSpecifier(specifier) === "node_builtin") {
+      const declaration = ts.isImportDeclaration(node) ? node : undefined;
+      const clause = declaration?.importClause;
+      const bindings = clause?.namedBindings;
+      const elements = bindings !== undefined && ts.isNamedImports(bindings)
+        ? bindings.elements
+        : undefined;
+      const factoryImport =
+        specifier === "node:module" &&
+        clause?.name === undefined &&
+        elements?.length === 1 &&
+        elements[0]?.isTypeOnly === false &&
+        elements[0]?.propertyName === undefined &&
+        elements[0]?.name.text === "createRequire"
+          ? elements[0]
+          : undefined;
+      if (factoryImport === undefined) report(occurrence.node, "unexpected_node_builtin_access");
+      else exactFactoryImports.push(factoryImport);
+    }
+    if (
+      occurrence?.runtime === true &&
+      specifier !== undefined &&
+      expectedPackageSet.has(packageRoot(specifier) ?? "")
+    ) report(occurrence.node, "alternate_sdk_package_load");
+    ts.forEachChild(node, visitRuntimeModuleOccurrences);
+  };
+  visitRuntimeModuleOccurrences(sourceFile);
+
+  if (exactFactoryImports.length === 0) report(undefined, "missing_create_require_import");
+  if (exactFactoryImports.length > 1) report(undefined, "duplicate_create_require_import");
+  const factoryImport = exactFactoryImports.length === 1 ? exactFactoryImports[0] : undefined;
+  const factorySymbol = factoryImport === undefined
+    ? undefined
+    : checker.getSymbolAtLocation(factoryImport.name);
+  if (factoryImport !== undefined && factorySymbol === undefined) {
+    report(factoryImport, "unbound_create_require_import");
+  }
+
+  const loaderDeclarations: ts.VariableDeclaration[] = [];
+  if (factorySymbol !== undefined) {
+    const visitFactoryReferences = (node: ts.Node): void => {
+      if (
+        ts.isIdentifier(node) &&
+        (isRuntimeIdentifierReference(node) || runtimeLocalExportReference(node)) &&
+        referencesSymbol(node, factorySymbol)
+      ) {
+        const call = ts.isCallExpression(node.parent) && node.parent.expression === node
+          ? node.parent
+          : undefined;
+        const declaration = call === undefined ? undefined : topLevelConstInitializer(call);
+        if (
+          call?.questionDotToken === undefined &&
+          call?.arguments.length === 1 &&
+          directImportMetaUrl(call.arguments[0] as ts.Expression) &&
+          declaration !== undefined
+        ) {
+          loaderDeclarations.push(declaration);
+        } else {
+          report(node, "create_require_factory_escape");
+        }
+      }
+      ts.forEachChild(node, visitFactoryReferences);
+    };
+    visitFactoryReferences(sourceFile);
+  }
+
+  if (loaderDeclarations.length === 0) report(undefined, "missing_loader_construction");
+  if (loaderDeclarations.length > 1) report(undefined, "duplicate_loader_construction");
+  const loaderDeclaration = loaderDeclarations.length === 1 ? loaderDeclarations[0] : undefined;
+  const loaderSymbol = loaderDeclaration === undefined || !ts.isIdentifier(loaderDeclaration.name)
+    ? undefined
+    : checker.getSymbolAtLocation(loaderDeclaration.name);
+  if (loaderDeclaration !== undefined && loaderSymbol === undefined) {
+    report(loaderDeclaration, "unbound_loader");
+  }
+
+  const packageCalls = new Map<string, ts.CallExpression[]>();
+  if (loaderSymbol !== undefined) {
+    const visitLoaderReferences = (node: ts.Node): void => {
+      if (
+        ts.isIdentifier(node) &&
+        (isRuntimeIdentifierReference(node) || runtimeLocalExportReference(node)) &&
+        referencesSymbol(node, loaderSymbol)
+      ) {
+        const call = ts.isCallExpression(node.parent) && node.parent.expression === node
+          ? node.parent
+          : undefined;
+        if (call?.questionDotToken !== undefined || call?.arguments.length !== 1) {
+          report(node, "loader_escape");
+        } else {
+          const argument = call.arguments[0];
+          if (argument === undefined || !ts.isStringLiteralLike(argument)) {
+            report(call, "nonliteral_package_load");
+          } else if (!expectedPackageSet.has(argument.text)) {
+            report(call, "unexpected_package_load");
+          } else {
+            const calls = packageCalls.get(argument.text) ?? [];
+            calls.push(call);
+            packageCalls.set(argument.text, calls);
+          }
+        }
+      }
+      ts.forEachChild(node, visitLoaderReferences);
+    };
+    visitLoaderReferences(sourceFile);
+  }
+
+  for (const packageName of expectedPackages) {
+    const calls = packageCalls.get(packageName) ?? [];
+    if (calls.length === 0) report(undefined, `missing_package_load:${packageName}`);
+    for (const duplicate of calls.slice(1)) {
+      report(duplicate, `duplicate_package_load:${packageName}`);
+    }
+  }
+  return violations.sort();
+};
+
+export const createProductSourceProgram = (
+  sourceFiles: readonly string[],
+  overrides: ReadonlyMap<string, string> = new Map(),
+  oldProgram?: ts.Program,
+): ts.Program => {
+  const configPath = resolve("tsconfig.json");
+  const config = ts.readConfigFile(configPath, ts.sys.readFile);
+  if (config.error !== undefined) {
+    throw new TypeError(ts.flattenDiagnosticMessageText(config.error.messageText, "\n"));
+  }
+  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, resolve("."), undefined, configPath);
+  const options: ts.CompilerOptions = {
+    ...parsed.options,
+    allowJs: true,
+    checkJs: true,
+    jsx: ts.JsxEmit.Preserve,
+    noEmit: true,
+  };
+  const normalizedSources = sourceFiles.map((file) => resolve(file));
+  const normalizedOverrides = new Map(
+    [...overrides].map(([path, source]) => [resolve(path), source] as const),
+  );
+  for (const path of [...normalizedSources, ...normalizedOverrides.keys()]) {
+    if (!codeSourceExtensions.has(extname(path))) {
+      throw new TypeError(`Product TypeScript program received an unsupported source: ${path}`);
+    }
+  }
+  const rootNames = [...new Set([
+    ...normalizedSources,
+    ...normalizedOverrides.keys(),
+  ])].sort();
+  const defaultHost = ts.createCompilerHost(options, true);
+  const host: ts.CompilerHost = {
+    ...defaultHost,
+    fileExists: (path) => normalizedOverrides.has(resolve(path)) || defaultHost.fileExists(path),
+    getSourceFile: (path, languageVersion, onError, shouldCreateNewSourceFile) => {
+      const source = normalizedOverrides.get(resolve(path));
+      return source === undefined
+        ? defaultHost.getSourceFile(path, languageVersion, onError, shouldCreateNewSourceFile)
+        : ts.createSourceFile(path, source, languageVersion, true, scriptKind(path));
+    },
+    readFile: (path) => normalizedOverrides.get(resolve(path)) ?? defaultHost.readFile(path),
+  };
+  return ts.createProgram({
+    host,
+    options,
+    rootNames,
+    ...(oldProgram === undefined ? {} : { oldProgram }),
+  });
 };
 
 export const inspectSourceFile = async (path: string): Promise<SourceAudit> =>

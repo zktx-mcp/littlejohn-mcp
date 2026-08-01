@@ -14,6 +14,7 @@ import {
   walletOperationConfirmationContract,
   type AnyWalletManagementContract,
 } from "../../src/wallet/management-contracts.js";
+import { walletErrorRegistry } from "../../src/wallet/error-registry.js";
 import {
   parseWalletManagementOperation,
   walletOperationIdByteLength,
@@ -101,11 +102,21 @@ const canonicalManagementProjection = (): string => independentCanonicalJson(
 );
 
 describe("wallet management contract authority", () => {
+  it("uses the one canonical wallet error registry by exact reference", () => {
+    for (const contract of Object.values(walletManagementContracts)) {
+      expect(contract.applicationContract.errorRegistry).toBe(walletErrorRegistry);
+      expect(contract.contractVersion).toBe(contract.applicationContract.contractVersion);
+      expect(contract.contractVersion).toBe("1");
+    }
+    expect(walletOperationConfirmationContract.errorRegistry).toBe(walletErrorRegistry);
+    expect(walletOperationConfirmationContract.contractVersion).toBe("1");
+  });
+
   it("preserves the complete wallet management projection", () => {
     const canonical = canonicalManagementProjection();
-    expect(Buffer.byteLength(canonical, "utf8")).toBe(124_363);
+    expect(Buffer.byteLength(canonical, "utf8")).toBe(124_357);
     expect(createHash("sha256").update(canonical, "utf8").digest("hex")).toBe(
-      "77c77c5dd9db23323ca8564db6ce7a76aaad4bb9d7fbec9aeffca98fdbe26cdd",
+      "3b5ca36d0695308965e6c3eead3d8478e90659c306e36744efd4300327121ef6",
     );
   });
 

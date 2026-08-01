@@ -16,7 +16,6 @@ import {
   captureCanonicalJson,
   type CanonicalJson,
 } from "./canonical-json.js";
-import { coreContractVersion } from "./contract.js";
 import {
   createEvidenceSchemaSet,
   createFieldIssue,
@@ -597,7 +596,7 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
       ok: true as const,
       meta: {
         capabilityId: definition.capabilityId,
-        contractVersion: coreContractVersion,
+        contractVersion: definition.contractVersion,
         chainId: context.chainScope,
         evaluatedAt,
       },

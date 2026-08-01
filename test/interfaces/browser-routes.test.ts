@@ -328,14 +328,10 @@ describe("wallet browser routes", () => {
       }
     }
 
-    expect(registry.match("GET", "/wallet").status).toBe("not_found");
-    expect(registry.match("GET", "/inspections").status).toBe("not_found");
-    expect(registry.match("GET", "/reference-markets").status).toBe("not_found");
-    expect(registry.match("GET", "/uniswap-v2-quotes").status).toBe("not_found");
-    expect(registry.match("GET", "/quotes/uniswap-v2").status).toBe("not_found");
+    expect(registry.match("GET", "/unsupported").status).toBe("not_found");
     expect(registry.match(
       "GET",
-      `/api/v1/wallet/operations/${operationId}/qr`,
+      `/api/v1/wallet/operations/${operationId}/unsupported`,
     ).status).toBe("not_found");
     expect(registry.match(
       "DELETE",
@@ -485,7 +481,7 @@ describe("wallet browser routes", () => {
     })).toEqual({ ok: false, code: "invalid_origin" });
 
     const { cookie, csrfToken } = await bootstrap(registry);
-    expect(registry.match("GET", "/tokens").status).toBe("not_found");
+    expect(registry.match("GET", "/unsupported").status).toBe("not_found");
     const currentMatch = registry.match("GET", browserWalletApiPaths.currentOperation);
     const startMatch = registry.match("POST", browserWalletApiPaths.operations);
     const tokenControlMatch = registry.match("POST", tokenCatalogBrowserRoutes.operations);

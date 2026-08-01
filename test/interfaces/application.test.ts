@@ -218,9 +218,7 @@ describe("interface owner application", () => {
     }
     expect(application.routes.match("POST", "/api/v1/token-catalog/inspections").status)
       .toBe("not_found");
-    expect(application.routes.match("GET", "/wallet").status)
-      .toBe("not_found");
-    expect(application.routes.match("GET", "/tokens").status)
+    expect(application.routes.match("GET", "/unsupported").status)
       .toBe("not_found");
 
     const root = application.routes.match("GET", "/");

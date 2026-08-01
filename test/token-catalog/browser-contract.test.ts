@@ -18,6 +18,7 @@ import {
   tokenInspectCapability,
   tokenInspectionSuccessSchema as serverInspectionSuccessSchema,
 } from "../../src/token-catalog/contracts.js";
+import { tokenCatalogErrorRegistry } from "../../src/token-catalog/error-registry.js";
 import { createInspectionSuccess } from "./harness.js";
 
 const independentCanonicalJson = (value: unknown): string => {
@@ -40,8 +41,14 @@ describe("token catalog browser contract", () => {
     expect(browserContracts.tokenCatalogApplicationContracts).toBe(serverApplicationContracts);
     expect(browserContracts.tokenCatalogOperationConfirmationContract).toBe(serverConfirmationContract);
     expect(browserContracts.tokenInspectionSuccessSchema).toBe(serverInspectionSuccessSchema);
+    for (const contract of Object.values(serverApplicationContracts)) {
+      expect(contract.applicationContract.errorRegistry).toBe(tokenCatalogErrorRegistry);
+      expect(contract.contractVersion).toBe(contract.applicationContract.contractVersion);
+    }
+    expect(serverConfirmationContract.applicationContract.errorRegistry)
+      .toBe(tokenCatalogErrorRegistry);
     const fixedDigest =
-      "0xc63c54b7304a7d6c98b76478b853d6fbbd1f89623efc4cfd6dbedaa3e6b07ebc";
+      "0x5252c91e8ffbe242f22332b9ef446e39ec2324586e187eee9bd7ea8d1346a48b";
     expect(`0x${createHash("sha256")
       .update(independentCanonicalJson(tokenCatalogContractProjection), "utf8")
       .digest("hex")}`).toBe(fixedDigest);

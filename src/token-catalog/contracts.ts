@@ -5,7 +5,6 @@ import {
   canonicalJsonStringify,
   compareCodePointSequences,
   captureCanonicalJson,
-  coreContractVersion,
   deepFreezeValue,
   getCapabilityDefinitionSnapshot,
   type CanonicalJson,
@@ -68,7 +67,7 @@ const projectSchema = (schema: z.ZodType, io: "input" | "output"): CanonicalJson
   })))));
 
 export const tokenCatalogContractProjection = deepFreezeValue({
-  contractVersion: coreContractVersion,
+  contractVersion: "1" as const,
   inspection: getCapabilityDefinitionSnapshot(tokenInspectCapability),
   applications: tokenCatalogApplicationContractList.map((contract) => ({
     capabilityId: contract.capabilityId,

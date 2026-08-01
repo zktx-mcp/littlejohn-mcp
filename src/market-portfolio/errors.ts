@@ -7,13 +7,15 @@ import {
 import { getRuntimeOperationFailure } from "../runtime/errors.js";
 import { getTokenCatalogOperationFailure } from "../token-catalog/operation-error.js";
 import { tokenCatalogInterfaceErrorMappings } from "../token-catalog/errors.js";
-import { referenceMarketErrorRegistry } from "./error-registry.js";
+import { referenceMarketErrorRegistry } from "./contracts.js";
 import { referenceMarketInterfaceErrorMappingDefinitions } from "./error-definitions.js";
 
 export const referenceMarketInterfaceErrorMappings = tokenCatalogInterfaceErrorMappings.extend(
   referenceMarketErrorRegistry,
   referenceMarketInterfaceErrorMappingDefinitions,
 );
+
+export { referenceMarketErrorRegistry } from "./contracts.js";
 
 export const createReferenceMarketFailure = (code: string): ApplicationFailure =>
   createApplicationFailure(referenceMarketErrorRegistry, code);

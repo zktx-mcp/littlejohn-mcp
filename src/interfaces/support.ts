@@ -24,13 +24,20 @@ import {
   type AccountAssetInterfaceBinding,
 } from "./identities.js";
 
+const interfaceCapabilityCatalogContractVersion = "1" as const;
+
 export const interfaceCapabilityCatalogSchema = createCapabilityCatalogSchema(
   interfaceReadCapabilityRegistry,
+  interfaceCapabilityCatalogContractVersion,
 );
 
 export const composeInterfaceCapabilityCatalog = (
   manifest: InterfaceRuntimeSupportManifest,
-): CapabilityCatalog => composeCapabilityCatalog(interfaceReadCapabilityRegistry, manifest);
+): CapabilityCatalog => composeCapabilityCatalog(
+  interfaceReadCapabilityRegistry,
+  manifest,
+  interfaceCapabilityCatalogContractVersion,
+);
 
 const readBindingAvailability = (
   identity: ReadInterfaceIdentity,

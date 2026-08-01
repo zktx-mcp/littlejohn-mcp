@@ -4,17 +4,17 @@ import {
 } from "../core/index.js";
 import {
   getRuntimeOperationFailure,
-  runtimeErrorRegistry,
   runtimeInterfaceErrorMappings,
 } from "../runtime/errors.js";
 import {
   walletErrorDefinitions,
   walletInterfaceErrorMappingDefinitions,
 } from "./error-definitions.js";
+import { walletErrorRegistry } from "./error-registry.js";
 
 export type WalletErrorCode = typeof walletErrorDefinitions[number]["code"];
 
-export const walletErrorRegistry = runtimeErrorRegistry.extend(walletErrorDefinitions);
+export { walletErrorRegistry } from "./error-registry.js";
 
 export const walletInterfaceErrorMappings = runtimeInterfaceErrorMappings.extend(
   walletErrorRegistry,

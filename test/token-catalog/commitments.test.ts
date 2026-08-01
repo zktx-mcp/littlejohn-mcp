@@ -191,7 +191,7 @@ const inspection = {
   ok: true,
   meta: {
     capabilityId: "token.inspect",
-    contractVersion: "10",
+    contractVersion: "1",
     chainId,
     evaluatedAt,
   },
@@ -371,19 +371,18 @@ describe("token commitment independent vectors", () => {
     });
     const preimage = {
       digestKind: "token_inspection",
-      digestVersion: "5",
+      digestVersion: "1",
       result: inspection,
     } as const;
-    const expected = "0x35278e39bb083bee6d0df23c608842afa746c6f8e0a8fd05538b0cf246cb06af";
+    const expected = "0xd2f0f057d3f20b194d337b22e8ed71f9ce4ef75ae60a5aae09213b13e6c61b0d";
     expect(independentSha256(preimage)).toBe(expected);
     expect(tokenInspectionDigest(inspection)).toBe(expected);
   });
 
-  it("fixes the official-addition null branches and complete anchor", () => {
+  it("fixes the exact official-addition preimage without a global contract version", () => {
     const preimage = {
       digestKind: "token_catalog_review",
-      digestVersion: "6",
-      coreContractVersion: "10",
+      digestVersion: "1",
       operationId: additionReview.operationId,
       operationKind: additionReview.kind,
       account,
@@ -397,16 +396,15 @@ describe("token commitment independent vectors", () => {
       interactionInterface: additionReview.interactionInterface,
       expiresAt: additionReview.expiresAt,
     } as const;
-    const expected = "0xfe2be0db8baffa50558cab4a8b53448e7954494ce35288a5e71aab3610ab435c";
+    const expected = "0x806a4c1980e0cb935dad4345756f3f53e674d4cfee4db7a0b2b60ef466554031";
     expect(independentSha256(preimage)).toBe(expected);
     expect(tokenCatalogReviewDigest(additionReview)).toBe(expected);
   });
 
-  it("fixes the removal non-null selection branches", () => {
+  it("fixes the exact removal preimage without a global contract version", () => {
     const preimage = {
       digestKind: "token_catalog_review",
-      digestVersion: "6",
-      coreContractVersion: "10",
+      digestVersion: "1",
       operationId: removalReview.operationId,
       operationKind: removalReview.kind,
       account,
@@ -420,7 +418,7 @@ describe("token commitment independent vectors", () => {
       interactionInterface: removalReview.interactionInterface,
       expiresAt: removalReview.expiresAt,
     } as const;
-    const expected = "0x5a15ba86c9ebadd355dceab6dd6550ffe3e325efd8bc29c7603918a242e34e83";
+    const expected = "0xbd3c4afc7c6006d2e844b59a52fa7bc1af908f31fc9a7e24e6774fc9d958bea0";
     expect(independentSha256(preimage)).toBe(expected);
     expect(tokenCatalogReviewDigest(removalReview)).toBe(expected);
   });

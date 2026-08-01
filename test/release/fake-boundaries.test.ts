@@ -6,7 +6,10 @@ import { describe, expect, it } from "vitest";
 import { inspectModuleImports } from "../runtime/import-audit.js";
 import { startFakeRpc } from "../../scripts/release/fake-rpc.mjs";
 import { parseReleasePackageIdentity } from "../../scripts/release/package-audit.mjs";
-import { assertPackagedMcpServerIdentity } from "../../scripts/release/packaged-integration.mjs";
+import {
+  assertPackagedMcpServerIdentity,
+  packagedToolSchemaBundleSha256,
+} from "../../scripts/release/packaged-integration.mjs";
 import { renderPackagedOwnerWorkerSource } from "../../scripts/release/packaged-owner-worker-source.mjs";
 
 const rpcRequest = (
@@ -38,6 +41,76 @@ const rpcRequest = (
 });
 
 describe("release fake boundaries", () => {
+  it("digests complete tool schemas independently of object-key insertion order", () => {
+    const schemaBundle = [{
+      name: "read_control",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: { value: { type: "string", minLength: 1 } },
+        required: ["value"],
+      },
+      outputSchema: {
+        oneOf: [
+          { type: "null", const: null },
+          { type: "array", items: { type: "integer", minimum: 0 } },
+        ],
+      },
+    }];
+    const reordered = [{
+      outputSchema: {
+        oneOf: [
+          { const: null, type: "null" },
+          { items: { minimum: 0, type: "integer" }, type: "array" },
+        ],
+      },
+      inputSchema: {
+        required: ["value"],
+        properties: { value: { minLength: 1, type: "string" } },
+        additionalProperties: false,
+        type: "object",
+      },
+      name: "read_control",
+    }];
+    const baseline = packagedToolSchemaBundleSha256(schemaBundle);
+    expect(packagedToolSchemaBundleSha256(reordered)).toBe(baseline);
+
+    const schema = schemaBundle[0]!;
+    const firstOutputVariant = schema.outputSchema.oneOf[0]!;
+    const mutations: Parameters<typeof packagedToolSchemaBundleSha256>[0][] = [
+      [{ ...schema, inputSchema: {
+        ...schema.inputSchema,
+        additionalProperties: true,
+      } }],
+      [{ ...schema, inputSchema: {
+        ...schema.inputSchema,
+        required: [],
+      } }],
+      [{ ...schema, inputSchema: {
+        ...schema.inputSchema,
+        properties: {
+          ...schema.inputSchema.properties,
+          extra: { type: "boolean" },
+        },
+      } }],
+      [{ ...schema, outputSchema: {
+        oneOf: [
+          ...schema.outputSchema.oneOf,
+          { type: "boolean" },
+        ],
+      } }],
+      [{ ...schema, outputSchema: {
+        oneOf: [
+          firstOutputVariant,
+          { type: "array", items: { type: "number", minimum: 0 } },
+        ],
+      } }],
+    ];
+    for (const mutation of mutations) {
+      expect(packagedToolSchemaBundleSha256(mutation)).not.toBe(baseline);
+    }
+  });
+
   it("binds the MCP handshake to the package manifest identity", () => {
     const identity = parseReleasePackageIdentity(
       JSON.parse(readFileSync("package.json", "utf8")),

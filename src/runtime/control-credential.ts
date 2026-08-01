@@ -266,7 +266,7 @@ export const deriveRuntimeConfigurationMac = (
   const chain = readRuntimeChainConfiguration(configuration.chain);
   const rpc = readConfiguredRpcEndpoint(configuration.rpc.endpoint);
   const wallet = readWalletConnectConfigurationIdentity(configuration.wallet, chain);
-  const key = deriveControlCredentialKey(credential, "littlejohn/runtime-configuration/v2");
+  const key = deriveControlCredentialKey(credential, "littlejohn/runtime-configuration/v1");
   const payload = encodeLengthPrefixedFields([
     Buffer.from(chain.chainId, "utf8"),
     rpc.exactUtf8,

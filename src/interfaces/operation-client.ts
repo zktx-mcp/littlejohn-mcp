@@ -47,7 +47,6 @@ const sameOwner = (
   right: RuntimeOwnerSessionIdentity,
 ): boolean => left.profileId === right.profileId &&
   left.ownerInstanceId === right.ownerInstanceId &&
-  left.runtimeProtocolVersion === right.runtimeProtocolVersion &&
   left.configurationMac === right.configurationMac &&
   left.ownerRevision === right.ownerRevision;
 

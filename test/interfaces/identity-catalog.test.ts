@@ -15,12 +15,18 @@ import {
   accountAssetInterfaceBindingList,
   contractInspectInterface,
   readInterfaceIdentities,
+  referenceMarketInterfaceBindingList,
   tokenCatalogInterfaceBindingList,
   tokenInspectInterface,
 } from "../../src/interfaces/identities.js";
 import { publicInspectionPaths } from "../../src/interfaces/browser-contract.js";
 import { extendInterfaceSupportManifest } from "../../src/interfaces/support.js";
 import { extendReferenceMarketSupportManifest } from "../../src/market-portfolio/support.js";
+import {
+  referenceMarketApplicationContracts,
+  referenceMarketErrorRegistry,
+} from "../../src/market-portfolio/contracts.js";
+import { referenceMarketInterfaceErrorMappings } from "../../src/market-portfolio/errors.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import {
   createInitialRuntimeSupportManifest,
@@ -31,6 +37,10 @@ import {
   tokenCatalogOperationConfirmationContract,
   tokenInspectCapability,
 } from "../../src/token-catalog/contracts.js";
+import {
+  tokenCatalogErrorRegistry,
+  tokenCatalogInterfaceErrorMappings,
+} from "../../src/token-catalog/errors.js";
 import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
 import { extendWalletSupportManifest } from "../../src/wallet/application.js";
 import { extendUniswapV2ProtocolHarnessManifest } from "../protocols/interface-harness.js";
@@ -82,10 +92,12 @@ describe("interface binding identity authority", () => {
   });
 
   it("maps each token application contract to one canonical interface binding", () => {
-    expect(tokenCatalogInterfaceBindingList.map((binding) => binding.contract)).toEqual(
-      [...tokenCatalogApplicationContractList]
-        .sort((left, right) => compareCodePointSequences(left.capabilityId, right.capabilityId)),
-    );
+    const canonicalContracts = [...tokenCatalogApplicationContractList]
+      .sort((left, right) => compareCodePointSequences(left.capabilityId, right.capabilityId));
+    expect(tokenCatalogInterfaceBindingList).toHaveLength(canonicalContracts.length);
+    for (const [index, binding] of tokenCatalogInterfaceBindingList.entries()) {
+      expect(binding.contract).toBe(canonicalContracts[index]);
+    }
     expect(tokenCatalogInterfaceBindingList.map((binding) => binding.contract.capabilityId)).toEqual([
       "token.cancel_operation",
       "token.operation",
@@ -118,11 +130,27 @@ describe("interface binding identity authority", () => {
       .toBe(tokenCatalogApplicationContractList.length);
   });
 
+  it("binds account assets and reference markets to their exact response authorities", () => {
+    for (const binding of accountAssetInterfaceBindingList) {
+      expect(binding.responseAuthority.applicationErrors).toBe(tokenCatalogErrorRegistry);
+      expect(binding.responseAuthority.interfaceMappings).toBe(tokenCatalogInterfaceErrorMappings);
+    }
+    const canonicalContracts = Object.values(referenceMarketApplicationContracts)
+      .sort((left, right) => compareCodePointSequences(left.capabilityId, right.capabilityId));
+    expect(referenceMarketInterfaceBindingList).toHaveLength(canonicalContracts.length);
+    for (const [index, binding] of referenceMarketInterfaceBindingList.entries()) {
+      expect(binding.contract).toBe(canonicalContracts[index]);
+      expect(binding.responseAuthority.applicationErrors).toBe(referenceMarketErrorRegistry);
+      expect(binding.responseAuthority.interfaceMappings).toBe(referenceMarketInterfaceErrorMappings);
+    }
+  });
+
   it("derives CLI, MCP, and final support availability from the binding catalogs", () => {
-    expect(accountAssetInterfaceBindingList.map((binding) => binding.contract)).toEqual([
-      accountAssetApplicationContracts.collection,
-      accountAssetApplicationContracts.exact,
-    ]);
+    expect(accountAssetInterfaceBindingList).toHaveLength(2);
+    expect(accountAssetInterfaceBindingList[0]?.contract)
+      .toBe(accountAssetApplicationContracts.collection);
+    expect(accountAssetInterfaceBindingList[1]?.contract)
+      .toBe(accountAssetApplicationContracts.exact);
     for (const binding of tokenCatalogInterfaceBindingList) {
       expect(declaredMcpToolNames).toContain(binding.mcp.name);
       expect(declaredCliCommandIdentities).toContain(binding.cli);

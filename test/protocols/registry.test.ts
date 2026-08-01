@@ -107,6 +107,21 @@ describe("protocol registration contracts", () => {
     )).toBe(true);
   });
 
+  it("admits only the current protocol package contract structure", () => {
+    const descriptor = packageDescriptor(
+      "example_v1",
+      "example",
+      `0x${"11".repeat(20)}`,
+    );
+    expect(descriptor.packageContractVersion).toBe("1");
+    for (const packageContractVersion of ["0", "2", "10"]) {
+      expect(() => protocolPackageDescriptorSchema.parse({
+        ...descriptor,
+        packageContractVersion,
+      }), packageContractVersion).toThrow();
+    }
+  });
+
   it("admits future protocol identities without a shared current-version enum", () => {
     const descriptor = packageDescriptor(
       "future_protocol_v7",

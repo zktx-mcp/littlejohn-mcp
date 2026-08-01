@@ -21,7 +21,6 @@ import {
   utf8ByteLength,
   type CanonicalJson,
 } from "./canonical-json.js";
-import { coreContractVersion } from "./contract.js";
 import {
   createEvidenceSchemaSet,
   type StaticScopeExclusion,
@@ -87,7 +86,7 @@ export type CapabilityData<Definition> = Definition extends ReadCapabilityDefini
 
 interface InternalReadCapabilityDefinition<Input, Data> {
   readonly capabilityId: CapabilityId;
-  readonly contractVersion: typeof coreContractVersion;
+  readonly contractVersion: "1";
   readonly failureCodes: readonly SnakeCaseCode[];
   readonly conclusionIds: readonly string[];
   readonly replayDefinition: EvidenceReplayDefinition;
@@ -142,7 +141,7 @@ const canonicalUnique = (values: readonly string[]): readonly string[] => Object
 
 export interface CapabilityDefinitionSnapshot {
   readonly capabilityId: CapabilityId;
-  readonly contractVersion: typeof coreContractVersion;
+  readonly contractVersion: "1";
   readonly maximumSuccessUtf8Bytes: typeof maximumSuccessUtf8Bytes;
   readonly failureCodes: readonly SnakeCaseCode[];
   readonly inputSchema: CanonicalJson;
@@ -162,6 +161,7 @@ interface InternalDefinitionRecord<Input, Data> extends InternalReadCapabilityDe
 
 export interface CapabilityExecutionDefinition<Input, Data> {
   readonly capabilityId: CapabilityId;
+  readonly contractVersion: "1";
   readonly failureCodes: readonly SnakeCaseCode[];
   readonly replayDefinition: EvidenceReplayDefinition;
   observationTargets(input: Input): readonly EvidenceObservationTargetDeclaration[];
@@ -364,6 +364,7 @@ export const parseCapabilityDataAt = <Definition extends AnyReadCapabilityDefini
 
 export const defineReadCapability = <Input, Data>(options: {
   readonly capabilityId: string;
+  readonly contractVersion: "1";
   readonly inputSchema: ZodType<Input>;
   readonly dataSchema: ZodType<Data>;
   readonly normalizeInput?: (input: Input) => Input;
@@ -406,7 +407,11 @@ export const defineReadCapability = <Input, Data>(options: {
       }
     },
   });
-  const successSchema = createCapabilitySuccessSchema(capabilityId, options.dataSchema);
+  const successSchema = createCapabilitySuccessSchema(
+    capabilityId,
+    options.contractVersion,
+    options.dataSchema,
+  );
   const inputSchemaSnapshot = structuralSchemaSnapshot(options.inputSchema, "input");
   const dataSchemaSnapshot = structuralSchemaSnapshot(options.dataSchema, "output");
   const successSchemaSnapshot = structuralSchemaSnapshot(successSchema, "output");
@@ -452,7 +457,7 @@ export const defineReadCapability = <Input, Data>(options: {
   };
   const snapshot = deepFreezeValue({
     capabilityId,
-    contractVersion: coreContractVersion,
+    contractVersion: options.contractVersion,
     maximumSuccessUtf8Bytes,
     failureCodes,
     inputSchema: inputSchemaSnapshot,
@@ -464,7 +469,7 @@ export const defineReadCapability = <Input, Data>(options: {
   });
   const internal: InternalDefinitionRecord<Input, Data> = Object.freeze({
     capabilityId,
-    contractVersion: coreContractVersion,
+    contractVersion: options.contractVersion,
     failureCodes,
     conclusionIds,
     replayDefinition,

@@ -1,7 +1,6 @@
 import type { ZodType } from "zod";
 
 import { captureCanonicalJson } from "./canonical-json.js";
-import { coreContractVersion } from "./contract.js";
 import {
   ApplicationErrorRegistry,
   applicationFailureSchemaFor,
@@ -19,7 +18,7 @@ export interface ApplicationContract<PublicInput, InternalContext, Success> {
     readonly internalContext: InternalContext;
     readonly success: Success;
   };
-  readonly contractVersion: typeof coreContractVersion;
+  readonly contractVersion: "1";
   readonly errorRegistry: ApplicationErrorRegistry;
   readonly inputSchema: ZodType<PublicInput>;
   readonly successSchema: ZodType<Success>;
@@ -39,6 +38,7 @@ export type ApplicationContractSuccess<Contract> =
   Contract extends ApplicationContract<unknown, unknown, infer Success> ? Success : never;
 
 export const defineApplicationContract = <PublicInput, InternalContext, Success>(options: Readonly<{
+  contractVersion: "1";
   inputSchema: ZodType<PublicInput>;
   correlationInputSchema?: ZodType<PublicInput>;
   successSchema: ZodType<Success>;
@@ -77,7 +77,7 @@ export const defineApplicationContract = <PublicInput, InternalContext, Success>
   };
 
   return Object.freeze({
-    contractVersion: coreContractVersion,
+    contractVersion: options.contractVersion,
     errorRegistry: options.errorRegistry,
     inputSchema: options.inputSchema,
     successSchema: options.successSchema,

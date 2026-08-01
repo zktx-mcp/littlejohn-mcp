@@ -78,8 +78,12 @@ export type {
 } from "./http-owner.js";
 export {
   ownerIdentitySchema,
-  runtimeProtocolVersion,
 } from "./runtime-identity.js";
+export {
+  getRuntimeStateResetRequiredError,
+  runtimeStateResetRequiredCode,
+  runtimeStateResetRequiredMessage,
+} from "./sqlite-schema.js";
 export type {
   OwnerIdentity,
   OwnerInstanceId,
@@ -87,6 +91,7 @@ export type {
   RuntimeIdentityChallenge,
   RuntimeRevision,
 } from "./runtime-identity.js";
+export type { RuntimeStateResetRequiredError } from "./sqlite-schema.js";
 export type {
   RouteContext,
   RouteDefinition,

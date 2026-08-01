@@ -528,6 +528,7 @@ describe("capability semantic and evidence authority", () => {
     });
     const definition = defineReadCapability({
       capabilityId: "test.anchors",
+      contractVersion: "1",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],

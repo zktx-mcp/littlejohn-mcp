@@ -243,11 +243,11 @@ describe("read CLI", () => {
     }]);
   });
 
-  it("rejects the removed parallel chain identity instead of printing legacy JSON", async () => {
+  it("rejects an extra field in a canonical success before printing it", async () => {
     const success = JSON.parse(JSON.stringify(await chainStatusSuccess())) as {
       data: Record<string, unknown>;
     };
-    success.data["caip2"] = "eip155:4663";
+    success.data["unexpected"] = true;
     const output = outputPort();
     expect(await runReadCliCommand(
       new FakeRuntime(Object.freeze({ status: 200, body: captureCanonicalJson(success) })),
@@ -259,7 +259,6 @@ describe("read CLI", () => {
       ok: false,
       error: { code: "internal_error" },
     });
-    expect(output.output.join("")).not.toContain("caip2");
   });
 
   it("rejects a structurally valid success from a different chain scope", async () => {

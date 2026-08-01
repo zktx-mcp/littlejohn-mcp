@@ -15,6 +15,7 @@ export type { ApplicationFailure } from "./errors.js";
 export {
   ApplicationErrorRegistry,
   applicationFailureSchemaFor,
+  assertDirectApplicationErrorRegistryExtension,
   coreErrorRegistry,
   createApplicationFailure,
 } from "./errors.js";
@@ -101,7 +102,6 @@ export type {
   ContractRuntimeCodeIdentity,
   ContractSourceVerificationStatus,
 } from "./contract-analysis.js";
-export { coreContractVersion } from "./contract.js";
 export {
   supportLevelDefinitions,
   supportLevelSchema,

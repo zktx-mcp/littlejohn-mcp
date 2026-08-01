@@ -4,8 +4,6 @@ import {
   capabilityIdSchema,
   compareCodePointSequences,
   coreErrorDefinitions,
-  coreErrorRegistry,
-  coreContractVersion,
   defineApplicationContract,
   operationIdSchema,
   type ApplicationContract,
@@ -13,6 +11,7 @@ import {
 } from "../core/browser.js";
 import { runtimeErrorDefinitions } from "../runtime/error-definitions.js";
 import { walletErrorDefinitions } from "./error-definitions.js";
+import { walletErrorRegistry } from "./error-registry.js";
 import {
   walletCurrentOperationProjectionSchema,
   walletCurrentConnectionStartResultSchema,
@@ -56,7 +55,7 @@ if (
 
 export interface WalletManagementContractDefinition<Input, Success> {
   readonly capabilityId: CapabilityId;
-  readonly contractVersion: typeof coreContractVersion;
+  readonly contractVersion: "1";
   readonly inputSchema: ZodType<Input>;
   readonly successSchema: ZodType<Success>;
   readonly failureCodes: readonly string[];
@@ -68,10 +67,6 @@ export interface WalletManagementContractDefinition<Input, Success> {
   normalizeFailure(value: unknown): import("../core/browser.js").ApplicationFailure;
 }
 
-const walletManagementErrorRegistry = coreErrorRegistry
-  .extend(runtimeErrorDefinitions)
-  .extend(walletErrorDefinitions);
-
 export const walletManagementInternalContextSchema = z.object({
   operationId: operationIdSchema.optional(),
   interactionInterface: walletInteractionInterfaceSchema.optional(),
@@ -80,6 +75,7 @@ export type WalletManagementInternalContext = z.infer<typeof walletManagementInt
 
 const defineWalletManagementContract = <Input, Success>(input: {
   readonly capabilityId: string;
+  readonly contractVersion: "1";
   readonly inputSchema: ZodType<Input>;
   readonly successSchema: ZodType<Success>;
   readonly validatePublicSuccess?: (input: Input, success: Success) => void;
@@ -91,10 +87,11 @@ const defineWalletManagementContract = <Input, Success>(input: {
 }): WalletManagementContractDefinition<Input, Success> => {
   const capabilityId = capabilityIdSchema.parse(input.capabilityId);
   const applicationContract = defineApplicationContract({
+    contractVersion: input.contractVersion,
     inputSchema: input.inputSchema,
     successSchema: input.successSchema,
     internalContextSchema: walletManagementInternalContextSchema,
-    errorRegistry: walletManagementErrorRegistry,
+    errorRegistry: walletErrorRegistry,
     failureCodes: walletManagementFailureCodes,
     ...(input.validatePublicSuccess === undefined ? {} : {
       validatePublicSuccess: input.validatePublicSuccess,
@@ -105,7 +102,7 @@ const defineWalletManagementContract = <Input, Success>(input: {
   });
   return Object.freeze({
     capabilityId,
-    contractVersion: coreContractVersion,
+    contractVersion: applicationContract.contractVersion,
     inputSchema: input.inputSchema,
     successSchema: input.successSchema,
     failureCodes: walletManagementFailureCodes,
@@ -165,12 +162,14 @@ const validateOperationIdentity = (
 export const walletManagementContracts = Object.freeze({
   cancelOperation: defineWalletManagementContract({
     capabilityId: "wallet.cancel_operation",
+    contractVersion: "1",
     inputSchema: operationInputSchema,
     successSchema: walletManagementOperationSchema,
     validatePublicSuccess: validateOperationIdentity,
   }),
   connect: defineWalletManagementContract({
     capabilityId: "wallet.connect",
+    contractVersion: "1",
     inputSchema: emptyInputSchema,
     successSchema: startResultSchemaFor("connect", true),
     validateBoundSuccess: (_input, context, success) => {
@@ -182,11 +181,13 @@ export const walletManagementContracts = Object.freeze({
   }),
   currentOperation: defineWalletManagementContract({
     capabilityId: "wallet.current_operation",
+    contractVersion: "1",
     inputSchema: emptyInputSchema,
     successSchema: walletCurrentOperationProjectionSchema,
   }),
   disconnect: defineWalletManagementContract({
     capabilityId: "wallet.disconnect",
+    contractVersion: "1",
     inputSchema: emptyInputSchema,
     successSchema: startResultSchemaFor("disconnect", false),
     validateBoundSuccess: (_input, context, success) => {
@@ -199,6 +200,7 @@ export const walletManagementContracts = Object.freeze({
   }),
   operation: defineWalletManagementContract({
     capabilityId: "wallet.operation",
+    contractVersion: "1",
     inputSchema: operationInputSchema,
     successSchema: walletManagementOperationSchema,
     validatePublicSuccess: validateOperationIdentity,
@@ -206,10 +208,11 @@ export const walletManagementContracts = Object.freeze({
 });
 
 export const walletOperationConfirmationContract = defineApplicationContract({
+  contractVersion: "1",
   inputSchema: confirmationInputSchema,
   successSchema: walletConfirmedOperationSchema,
   internalContextSchema: walletManagementInternalContextSchema,
-  errorRegistry: walletManagementErrorRegistry,
+  errorRegistry: walletErrorRegistry,
   failureCodes: walletManagementFailureCodes,
   validatePublicSuccess: (input, operation) => {
     if (

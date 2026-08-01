@@ -4,7 +4,6 @@ import {
   canonicalJsonStringify,
   capabilityIdSchema,
   compareCodePointSequences,
-  coreContractVersion,
   deepFreezeValue,
   evmChainIdSchema,
   extendCapabilitySchemaProjection,
@@ -29,6 +28,8 @@ import {
   type RuntimeChainConfiguration,
 } from "./configuration.js";
 import { guardRuntimeJsonSchema, parseRuntimeAuthority } from "./schema-authority.js";
+
+const runtimeSupportManifestContractVersion = "1" as const;
 
 const availabilityDefinitions = Object.freeze(["unavailable", "internal", "available"] as const);
 export type Availability = typeof availabilityDefinitions[number];
@@ -114,7 +115,7 @@ const createSupportSchemaSet = () => {
     supportLevel: supportLevelSchema,
   }).strict();
   const manifest = z.object({
-    contractVersion: z.literal(coreContractVersion),
+    contractVersion: z.literal(runtimeSupportManifestContractVersion),
     chains: z.array(chainSupport).length(1),
     protocols: z.array(protocolSupport).max(128),
     transactionActions: z.array(transactionActionSupport).max(256),
@@ -258,7 +259,7 @@ export const createInitialRuntimeSupportManifest = (
 ): InitialRuntimeSupportManifest => {
   const chainId = parseEvmChainId(readRuntimeChainConfiguration(chain).chainId);
   return createManifest("initial", {
-    contractVersion: coreContractVersion,
+    contractVersion: runtimeSupportManifestContractVersion,
     chains: [{
       chainId,
       supportLevel: supportLevelDefinitions[0],
@@ -617,7 +618,7 @@ export type CapabilityCatalogEntry = CapabilitySchemaProjection & Readonly<{
 }>;
 
 export interface CapabilityCatalog {
-  readonly contractVersion: typeof coreContractVersion;
+  readonly contractVersion: "1";
   readonly capabilities: readonly CapabilityCatalogEntry[];
 }
 
@@ -625,14 +626,17 @@ const capabilityRegistryProjections = (
   registry: CapabilityRegistry,
 ): readonly CapabilitySchemaProjection[] => projectCapabilities(registry);
 
-const createCapabilityCatalogSchemaSet = (registry: CapabilityRegistry) => {
+const createCapabilityCatalogSchemaSet = (
+  registry: CapabilityRegistry,
+  contractVersion: "1",
+) => {
   const expectedProjections = capabilityRegistryProjections(registry);
   const expectedProjectionJson = expectedProjections.map((projection) =>
     canonicalJsonStringify(projection as unknown as CanonicalJson));
   const createSchema = (availability: typeof publicSchemas.capabilityAvailability) => {
     const entry = extendCapabilitySchemaProjection({ availability });
     return z.object({
-      contractVersion: z.literal(coreContractVersion),
+      contractVersion: z.literal(contractVersion),
       capabilities: z.array(entry).length(expectedProjections.length),
     }).strict().superRefine((value, context) => {
       for (let index = 0; index < expectedProjections.length; index += 1) {
@@ -670,15 +674,17 @@ const createCapabilityCatalogSchemaSet = (registry: CapabilityRegistry) => {
 
 export const createCapabilityCatalogSchema = (
   registry: CapabilityRegistry,
+  contractVersion: "1",
 ): z.ZodType<CapabilityCatalog> => guardRuntimeJsonSchema(
-  createCapabilityCatalogSchemaSet(registry).publicSchema,
+  createCapabilityCatalogSchemaSet(registry, contractVersion).publicSchema,
 ) as z.ZodType<CapabilityCatalog>;
 
 export const composeCapabilityCatalog = (
   registry: CapabilityRegistry,
   manifest: RuntimeSupportManifest,
+  contractVersion: "1",
 ): CapabilityCatalog => {
-  const catalogSchemas = createCapabilityCatalogSchemaSet(registry);
+  const catalogSchemas = createCapabilityCatalogSchemaSet(registry, contractVersion);
   const snapshot = readRuntimeSupportManifest(manifest);
   const availability = new Map<string, RuntimeSupportManifestSnapshot["capabilities"][number]["availability"]>(
     snapshot.capabilities.map((entry) => [entry.capabilityId, entry.availability]),
@@ -689,7 +695,7 @@ export const composeCapabilityCatalog = (
     return { ...projection, availability: state };
   });
   const catalog = parseRuntimeAuthority(catalogSchemas.authoritySchema, {
-    contractVersion: coreContractVersion,
+    contractVersion,
     capabilities,
   });
   canonicalJsonStringify(catalog as unknown as CanonicalJson);

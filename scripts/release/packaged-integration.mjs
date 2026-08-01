@@ -1,5 +1,5 @@
 import { fork, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import {
   mkdir,
@@ -80,6 +80,12 @@ const expectedToolNames = Object.freeze([
   "wallet_start_connection",
   "wallet_start_disconnection",
 ]);
+const exactPackagedToolSchemaNames = Object.freeze([
+  "read_get_chain_status",
+  "wallet_get_connection",
+]);
+const expectedExactPackagedToolSchemaBundleSha256 =
+  "1fd494117bb1f3de3004d5a8caf4369bf575eb9824c01f881a7b38bf1fadb03d";
 
 /** @type {typeof import("./packaged-integration.d.mts").assertPackagedMcpServerIdentity} */
 export const assertPackagedMcpServerIdentity = (result, expected) => {
@@ -155,6 +161,14 @@ class WorkerPeer {
       }
       this.pending.clear();
     });
+  }
+
+  get processId() {
+    const processId = this.child.pid;
+    if (!Number.isSafeInteger(processId) || processId <= 0) {
+      throw new TypeError("Release worker process identity is unavailable.");
+    }
+    return processId;
   }
 
   request(command, input = {}) {
@@ -423,49 +437,152 @@ const jsonResponse = async (response, expectedStatus = 200) => {
   return body;
 };
 
-const jsonSchemaPropertyNames = (schema) => {
-  const names = new Set();
-  const pending = [schema];
-  const visited = new WeakSet();
-  while (pending.length !== 0) {
-    const value = pending.pop();
-    if (typeof value !== "object" || value === null || visited.has(value)) continue;
-    visited.add(value);
-    const descriptors = Object.getOwnPropertyDescriptors(value);
-    const properties = descriptors["properties"]?.value;
-    if (typeof properties === "object" && properties !== null && !Array.isArray(properties)) {
-      for (const name of Object.keys(properties)) names.add(name);
-    }
-    for (const descriptor of Object.values(descriptors)) {
-      if ("value" in descriptor) pending.push(descriptor.value);
-    }
+const isRecord = (value) =>
+  typeof value === "object" &&
+  value !== null &&
+  !Array.isArray(value);
+
+const hasExactStringSet = (values, expected) =>
+  Array.isArray(values) &&
+  values.every((value) => typeof value === "string") &&
+  JSON.stringify([...values].sort()) === JSON.stringify([...expected].sort());
+
+const hasExactObjectKeys = (value, expectedNames) =>
+  isRecord(value) && hasExactStringSet(Object.keys(value), expectedNames);
+
+const compareCodePointSequences = (left, right) => {
+  const leftCodePoints = Array.from(left, (character) => character.codePointAt(0));
+  const rightCodePoints = Array.from(right, (character) => character.codePointAt(0));
+  const sharedLength = Math.min(leftCodePoints.length, rightCodePoints.length);
+  for (let index = 0; index < sharedLength; index += 1) {
+    const difference = leftCodePoints[index] - rightCodePoints[index];
+    if (difference !== 0) return difference;
   }
-  return names;
+  return leftCodePoints.length - rightCodePoints.length;
 };
 
-const jsonSchemaRequiresProperty = (schema, propertyName) => {
-  const pending = [schema];
-  const visited = new WeakSet();
-  while (pending.length !== 0) {
-    const value = pending.pop();
-    if (typeof value !== "object" || value === null || visited.has(value)) continue;
-    visited.add(value);
+const independentCanonicalJson = (value, ancestors = new Set()) => {
+  if (value === null || typeof value === "boolean" || typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new TypeError("Schema JSON contains a non-finite number.");
+    return JSON.stringify(value);
+  }
+  if (typeof value !== "object") {
+    throw new TypeError("Schema JSON contains a non-JSON value.");
+  }
+  if (ancestors.has(value)) throw new TypeError("Schema JSON contains a cycle.");
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (Object.keys(value).length !== value.length) {
+        throw new TypeError("Schema JSON contains a sparse or extended array.");
+      }
+      return `[${value.map((item) => independentCanonicalJson(item, ancestors)).join(",")}]`;
+    }
+    const ownKeys = Reflect.ownKeys(value);
+    if (ownKeys.some((key) => typeof key !== "string")) {
+      throw new TypeError("Schema JSON contains a symbol key.");
+    }
     const descriptors = Object.getOwnPropertyDescriptors(value);
-    const properties = descriptors["properties"]?.value;
-    const required = descriptors["required"]?.value;
-    if (
-      typeof properties === "object" &&
-      properties !== null &&
-      !Array.isArray(properties) &&
-      Object.hasOwn(properties, propertyName) &&
-      Array.isArray(required) &&
-      required.includes(propertyName)
-    ) return true;
-    for (const descriptor of Object.values(descriptors)) {
-      if ("value" in descriptor) pending.push(descriptor.value);
+    const keys = Object.keys(value).sort(compareCodePointSequences);
+    if (keys.length !== ownKeys.length) {
+      throw new TypeError("Schema JSON contains a non-enumerable property.");
+    }
+    const members = keys.map((key) => {
+      const descriptor = descriptors[key];
+      if (descriptor === undefined || !("value" in descriptor) || !descriptor.enumerable) {
+        throw new TypeError("Schema JSON contains a non-data or non-enumerable property.");
+      }
+      return `${JSON.stringify(key)}:${independentCanonicalJson(descriptor.value, ancestors)}`;
+    });
+    return `{${members.join(",")}}`;
+  } finally {
+    ancestors.delete(value);
+  }
+};
+
+/** @type {typeof import("./packaged-integration.d.mts").packagedToolSchemaBundleSha256} */
+export const packagedToolSchemaBundleSha256 = (tools) => {
+  if (!Array.isArray(tools) || tools.length === 0) {
+    throw new TypeError("Packaged tool schema bundle is empty.");
+  }
+  const names = new Set();
+  const bundle = tools.map((tool) => {
+    if (!isRecord(tool) || typeof tool.name !== "string" ||
+      !isRecord(tool.inputSchema) || !isRecord(tool.outputSchema) ||
+      names.has(tool.name)) {
+      throw new TypeError("Packaged tool schema bundle is invalid.");
+    }
+    names.add(tool.name);
+    return Object.freeze({
+      name: tool.name,
+      inputSchema: tool.inputSchema,
+      outputSchema: tool.outputSchema,
+    });
+  }).sort((left, right) => compareCodePointSequences(left.name, right.name));
+  return createHash("sha256")
+    .update(independentCanonicalJson(bundle), "utf8")
+    .digest("hex");
+};
+
+const assertPackagedToolSchemaBundleDigestControls = () => {
+  const closed = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      value: { type: "string", minLength: 1 },
+    },
+    required: ["value"],
+  };
+  const base = [{
+    name: "control",
+    inputSchema: closed,
+    outputSchema: {
+      oneOf: [closed, { const: null, type: "null" }],
+    },
+  }];
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+  const baseline = packagedToolSchemaBundleSha256(base);
+  const reordered = [{
+    outputSchema: {
+      oneOf: [
+        {
+          required: ["value"],
+          properties: { value: { minLength: 1, type: "string" } },
+          additionalProperties: false,
+          type: "object",
+        },
+        { type: "null", const: null },
+      ],
+    },
+    inputSchema: {
+      required: ["value"],
+      properties: { value: { minLength: 1, type: "string" } },
+      additionalProperties: false,
+      type: "object",
+    },
+    name: "control",
+  }];
+  if (packagedToolSchemaBundleSha256(reordered) !== baseline) {
+    throw new TypeError("Packaged schema digest depends on object-key insertion order.");
+  }
+  const mutations = [
+    (candidate) => { delete candidate[0].inputSchema.properties.value.minLength; },
+    (candidate) => { candidate[0].inputSchema.additionalProperties = true; },
+    (candidate) => { candidate[0].inputSchema.required = []; },
+    (candidate) => { candidate[0].inputSchema.properties.extra = { type: "boolean" }; },
+    (candidate) => { candidate[0].outputSchema.oneOf.push({ type: "boolean" }); },
+    (candidate) => { candidate[0].outputSchema.oneOf[0].properties.value.type = "integer"; },
+  ];
+  for (const mutate of mutations) {
+    const candidate = clone(base);
+    mutate(candidate);
+    if (packagedToolSchemaBundleSha256(candidate) === baseline) {
+      throw new TypeError("Packaged schema digest ignores a nested schema change.");
     }
   }
-  return false;
 };
 
 const assertPackagedClaimsDigests = (content, label) => {
@@ -493,7 +610,6 @@ const readPackagedRuntimeIdentity = async () => {
     "ownerRevision",
     "profileId",
     "proof",
-    "runtimeProtocolVersion",
   ];
   if (
     typeof identity !== "object" ||
@@ -501,8 +617,6 @@ const readPackagedRuntimeIdentity = async () => {
     Array.isArray(identity) ||
     JSON.stringify(Object.keys(identity).sort()) !== JSON.stringify(expectedFields) ||
     identity.challenge !== challenge ||
-    !Number.isSafeInteger(identity.runtimeProtocolVersion) ||
-    identity.runtimeProtocolVersion <= 0 ||
     typeof identity.profileId !== "string" ||
     !/^[A-Za-z0-9_-]{22}$/u.test(identity.profileId) ||
     typeof identity.ownerInstanceId !== "string" ||
@@ -757,11 +871,8 @@ const assertBrowserAssets = async (shell) => {
     if (path.endsWith(".js")) javascript += await asset.text();
     else await asset.arrayBuffer();
   }
-  if (
-    javascript.includes("Candidate comparison") ||
-    javascript.includes("/api/v1/uniswap-v2-exact-input-quotes")
-  ) {
-    throw new TypeError("Packaged browser bundle retains the removed Quote interface.");
+  if (javascript.includes("/api/v1/uniswap-v2-exact-input-quotes")) {
+    throw new TypeError("Packaged browser bundle exposes a machine-only quote transport.");
   }
   if (
     !javascript.includes("/api/v1/contract-inspections") ||
@@ -788,10 +899,10 @@ const browserSession = async () => {
     shell.includes("__LITTLEJOHN_CSRF_TOKEN__")
   ) throw new TypeError("Packaged browser root security metadata is invalid.");
   await assertBrowserAssets(shell);
-  const tokenPage = await fetch(`${fixedOrigin}/tokens`, {
+  const unsupportedPage = await fetch(`${fixedOrigin}/unsupported`, {
     redirect: "error",
   });
-  if (tokenPage.status !== 404) throw new TypeError("Obsolete packaged token page remains available.");
+  if (unsupportedPage.status !== 404) throw new TypeError("Packaged unknown page is available.");
   return Object.freeze({ cookie, csrf, shell });
 };
 
@@ -880,8 +991,8 @@ const browserTokenCurrent = (browser) => fetch(
   { headers: { Cookie: browser.cookie }, redirect: "error" },
 );
 
-const obsoleteBrowserTokenRegistrations = (browser) => fetch(
-  `${fixedOrigin}/api/v1/token-catalog/registration-queries`,
+const unsupportedBrowserTokenResource = (browser) => fetch(
+  `${fixedOrigin}/api/v1/token-catalog/unsupported`,
   {
     method: "POST",
     headers: {
@@ -1132,20 +1243,35 @@ const assertFixedPortReleased = async () => {
   await closing;
 };
 
-const assertPackagedPersistence = (inspection, runtimeIdentity) => {
+const assertPackagedPersistence = (inspection, runtimeIdentity, expectedOwner) => {
   if (
     typeof inspection !== "object" ||
     inspection === null ||
     Array.isArray(inspection)
   ) throw new TypeError("Packaged SQLite reopen result is invalid.");
   const owner = inspection.owner;
+  const expectedOwnerFields = [
+    "acquiredAt",
+    "configurationMac",
+    "ownerInstanceId",
+    "ownerRevision",
+    "processId",
+    "profileId",
+  ];
   if (
     typeof owner !== "object" ||
     owner === null ||
     Array.isArray(owner) ||
+    JSON.stringify(Object.keys(owner).sort()) !== JSON.stringify(expectedOwnerFields) ||
     owner.profileId !== runtimeIdentity.profileId ||
     owner.configurationMac !== runtimeIdentity.configurationMac ||
-    owner.protocolVersion !== runtimeIdentity.runtimeProtocolVersion
+    owner.ownerInstanceId !== runtimeIdentity.ownerInstanceId ||
+    owner.ownerRevision !== runtimeIdentity.ownerRevision ||
+    owner.processId !== expectedOwner.processId ||
+    typeof owner.acquiredAt !== "string" ||
+    !Number.isFinite(Date.parse(owner.acquiredAt)) ||
+    new Date(owner.acquiredAt).toISOString() !== owner.acquiredAt ||
+    owner.acquiredAt !== expectedOwner.acquiredAt
   ) throw new TypeError("Packaged SQLite owner configuration identity is invalid.");
   const connection = inspection.connection;
   if (
@@ -1159,6 +1285,7 @@ const assertPackagedPersistence = (inspection, runtimeIdentity) => {
 
 /** @type {typeof import("./packaged-integration.d.mts").verifyPackagedIntegration} */
 export const verifyPackagedIntegration = async (prepared) => {
+  assertPackagedToolSchemaBundleDigestControls();
   const integrationRoot = resolve(prepared.workspace, "integration");
   const dataDirectory = resolve(integrationRoot, "state");
   const clockPath = resolve(integrationRoot, "clock.txt");
@@ -1251,25 +1378,13 @@ export const verifyPackagedIntegration = async (prepared) => {
       typeof tool?.outputSchema !== "object" ||
       tool.outputSchema === null
     )) throw new TypeError("Packaged MCP tools do not expose complete canonical schemas.");
-    const walletConnectionTool = tools.find((tool) => tool.name === "wallet_get_connection");
-    const walletConnectionProperties = jsonSchemaPropertyNames(walletConnectionTool?.outputSchema);
-    if (
-      !walletConnectionProperties.has("chainId") ||
-      !walletConnectionProperties.has("address") ||
-      !walletConnectionProperties.has("sessionCount") ||
-      walletConnectionProperties.has("account") ||
-      walletConnectionProperties.has("eligibleSessionCount")
-    ) throw new TypeError("Packaged wallet connection schema contains a stale identity contract.");
-    const chainStatusTool = tools.find((tool) => tool.name === "read_get_chain_status");
-    const chainStatusProperties = jsonSchemaPropertyNames(chainStatusTool?.outputSchema);
-    if (
-      !chainStatusProperties.has("chainId") ||
-      chainStatusProperties.has("caip2")
-    ) {
-      throw new TypeError("Packaged chain status schema contains a parallel chain identity.");
-    }
-    if (!jsonSchemaRequiresProperty(chainStatusTool?.outputSchema, "recordDigest")) {
-      throw new TypeError("Packaged chain status schema does not require source record digests.");
+    const exactSchemaTools = exactPackagedToolSchemaNames.map((name) =>
+      tools.find((tool) => tool.name === name));
+    const actualSchemaDigest = packagedToolSchemaBundleSha256(exactSchemaTools);
+    if (actualSchemaDigest !== expectedExactPackagedToolSchemaBundleSha256) {
+      throw new TypeError(
+        `Packaged exact tool schema bundle digest is ${actualSchemaDigest}.`,
+      );
     }
     const catalog = await firstMcp.callTool("read_list_capabilities");
     const catalogEntries = catalog.structuredContent?.capabilities;
@@ -1278,7 +1393,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     }
     const capabilityIds = catalogEntries.map((entry) => entry?.capabilityId);
     if (
-      catalog.structuredContent?.contractVersion !== "10" ||
+      catalog.structuredContent?.contractVersion !== "1" ||
       JSON.stringify(capabilityIds) !== JSON.stringify(expectedCapabilityIds) ||
       catalogEntries.some((entry) =>
         entry?.maximumSuccessUtf8Bytes !== 8_388_607 ||
@@ -1288,7 +1403,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     const chainStatus = await callSemanticRead(firstMcp, "read_get_chain_status");
     if (
       chainStatus.structuredContent?.data?.chainId !== expectedChainId ||
-      Object.hasOwn(chainStatus.structuredContent?.data ?? {}, "caip2")
+      !hasExactObjectKeys(chainStatus.structuredContent?.data, ["chainId", "latestBlock"])
     ) throw new TypeError("Packaged MCP chain status is invalid.");
     assertPackagedClaimsDigests(chainStatus.structuredContent, "Packaged MCP chain status");
 
@@ -1483,7 +1598,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     const httpChainStatus = await jsonResponse(await fetch(`${fixedOrigin}/api/v1/chain-status`));
     if (
       httpChainStatus.data?.chainId !== expectedChainId ||
-      Object.hasOwn(httpChainStatus.data ?? {}, "caip2") ||
+      !hasExactObjectKeys(httpChainStatus.data, ["chainId", "latestBlock"]) ||
       httpChainStatus.data?.latestBlock?.blockHash !== `0x${"88".repeat(32)}`
     ) throw new TypeError("Packaged HTTP chain status is invalid.");
     const browser = await browserSession();
@@ -1508,7 +1623,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     const cliStatus = JSON.parse(cli.stdout.toString("utf8"));
     if (
       cliStatus.data?.chainId !== expectedChainId ||
-      Object.hasOwn(cliStatus.data ?? {}, "caip2") ||
+      !hasExactObjectKeys(cliStatus.data, ["chainId", "latestBlock"]) ||
       cliStatus.data?.latestBlock?.blockHash !== `0x${"88".repeat(32)}`
     ) throw new TypeError("Packaged CLI chain status is invalid.");
 
@@ -1608,13 +1723,13 @@ export const verifyPackagedIntegration = async (prepared) => {
     for (const { method, path, status, headers } of [
       {
         method: "GET",
-        path: `${fixedOrigin}/wallet`,
+        path: `${fixedOrigin}/unsupported`,
         status: 404,
         headers: undefined,
       },
       {
         method: "GET",
-        path: `${fixedOrigin}/api/v1/wallet/operations/${operationId}/qr`,
+        path: `${fixedOrigin}/api/v1/wallet/operations/${operationId}/unsupported`,
         status: 404,
         headers: undefined,
       },
@@ -1659,7 +1774,14 @@ export const verifyPackagedIntegration = async (prepared) => {
       firstConnectionData?.status !== "connected" ||
       firstConnectionData.chainId !== expectedChainId ||
       firstConnectionData.address !== expectedWalletAddress ||
-      Object.hasOwn(firstConnectionData, "account")
+      !hasExactObjectKeys(firstConnectionData, [
+        "approvedEvents",
+        "approvedMethods",
+        "address",
+        "chainId",
+        "expiresAt",
+        "status",
+      ])
     ) {
       throw new TypeError("Packaged MCP wallet connection is not connected.");
     }
@@ -1673,7 +1795,14 @@ export const verifyPackagedIntegration = async (prepared) => {
       connectedBrowserState.connection?.status !== "connected" ||
       connectedBrowserState.connection.chainId !== expectedChainId ||
       connectedBrowserState.connection.address !== expectedWalletAddress ||
-      Object.hasOwn(connectedBrowserState.connection, "account")
+      !hasExactObjectKeys(connectedBrowserState.connection, [
+        "approvedEvents",
+        "approvedMethods",
+        "address",
+        "chainId",
+        "expiresAt",
+        "status",
+      ])
     ) throw new TypeError("Packaged browser did not settle to the connected global wallet state.");
 
     const secondMcp = await startNpxMcp(prepared, environment);
@@ -1946,11 +2075,11 @@ export const verifyPackagedIntegration = async (prepared) => {
       fakeRpc.officialCandidate,
       true,
     );
-    const obsoleteBrowserRegistrationPage = await obsoleteBrowserTokenRegistrations(browser);
+    const unsupportedTokenResource = await unsupportedBrowserTokenResource(browser);
     if (
-      obsoleteBrowserRegistrationPage.status !== 404 ||
-      problemCode(await obsoleteBrowserRegistrationPage.json()) !== "route_not_found"
-    ) throw new TypeError("Obsolete browser token registration query remains available.");
+      unsupportedTokenResource.status !== 404 ||
+      problemCode(await unsupportedTokenResource.json()) !== "route_not_found"
+    ) throw new TypeError("Packaged unknown token resource is available.");
 
     const tokenRemovalStart = await firstMcp.callTool("token_start_removal", {
       asset: officialCandidateAsset,
@@ -2118,7 +2247,7 @@ export const verifyPackagedIntegration = async (prepared) => {
       excludedOfficial.revision === officialSelection.revision ||
       restoredToken.revision === customSelection.revision ||
       restoredToken.revision === excludedCustom.revision
-    ) throw new TypeError("Packaged selection transitions reused obsolete revisions.");
+    ) throw new TypeError("Packaged selection transitions reused stale revisions.");
 
     fakeRpc.setAssetSourceUnavailable(true);
     const unavailableSourceAssets = assertUnavailableAccountAssetOverview(
@@ -2298,6 +2427,7 @@ export const verifyPackagedIntegration = async (prepared) => {
 
     await Promise.all(mcpClients.splice(0).map((client) => client.close()));
     await owner.stop();
+    const takeoverAcquiredAt = (await readFile(clockPath, "utf8")).trim();
     const restored = await publicWalletConnection(deferred);
     if (
       restored.ownerState !== "owner" ||
@@ -2364,7 +2494,10 @@ export const verifyPackagedIntegration = async (prepared) => {
     }
 
     const persistenceInspection = await deferred.stopAndInspectPersistence();
-    assertPackagedPersistence(persistenceInspection, restoredRuntimeIdentity);
+    assertPackagedPersistence(persistenceInspection, restoredRuntimeIdentity, {
+      processId: deferred.processId,
+      acquiredAt: takeoverAcquiredAt,
+    });
     fakeRpc.assertNoUnexpectedMethods();
     const methods = fakeRpc.calls.map((call) => call.method);
     if ([

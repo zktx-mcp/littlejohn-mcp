@@ -591,7 +591,7 @@ describe("HTTP request-class and route authority", () => {
     }
   });
 
-  it("rejects malformed definitions, undeclared legacy paths, and ambiguous routes", async () => {
+  it("rejects malformed definitions, undeclared paths, and ambiguous routes", async () => {
     const { verifier } = await credentialFixture();
     const baseRegistry = createRuntimeRouteRegistry({ controlVerifier: verifier });
     expect(() => baseRegistry.extend([{
@@ -612,7 +612,7 @@ describe("HTTP request-class and route authority", () => {
     expect(() => baseRegistry.extend([{
       method: "GET", mutation: "none", query: "none", pathPattern: "/api/v1/internal/cli/example", response: "canonical_json" as const, successStatus: 200, handler: success,
     }])).toThrow();
-    expect(baseRegistry.match("POST", "/api/v1/wallet/connect").status).toBe("not_found");
+    expect(baseRegistry.match("POST", "/api/v1/wallet/unsupported").status).toBe("not_found");
     const hostileRoutes = new Proxy([], {
       get(target, property, receiver): unknown {
         if (property === Symbol.iterator) throw new Error("secret-route-iterator");

@@ -1,3 +1,5 @@
+import Database from "better-sqlite3";
+
 import {
   productChainId,
   referenceFeedIntegrityStatuses,
@@ -18,7 +20,37 @@ import { walletConnectionFieldPresenceCheckSql } from "./wallet-connection-stora
 const sqlIdentifierPattern = /^[a-z][a-z0-9_]*$/u;
 const base64UrlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-export const databaseSchemaVersion = 10 as const;
+export const runtimeStateResetRequiredCode = "runtime_state_reset_required" as const;
+export const runtimeStateResetRequiredMessage =
+  "Local development state must be reset. Stop Little John, move the entire data directory aside or " +
+  "replace it with a new empty directory, and start again.";
+
+export interface RuntimeStateResetRequiredError extends Error {
+  readonly code: typeof runtimeStateResetRequiredCode;
+}
+
+const runtimeStateResetRequiredErrors = new WeakSet<object>();
+
+class RuntimeStateResetRequiredSourceError extends Error implements RuntimeStateResetRequiredError {
+  readonly code = runtimeStateResetRequiredCode;
+
+  constructor() {
+    super(runtimeStateResetRequiredMessage);
+    this.name = "RuntimeStateResetRequiredError";
+    runtimeStateResetRequiredErrors.add(this);
+    Object.freeze(this);
+  }
+}
+
+export const createRuntimeStateResetRequiredError = (): RuntimeStateResetRequiredError =>
+  new RuntimeStateResetRequiredSourceError();
+
+export const getRuntimeStateResetRequiredError = (
+  error: unknown,
+): RuntimeStateResetRequiredError | undefined =>
+  typeof error === "object" && error !== null && runtimeStateResetRequiredErrors.has(error)
+    ? error as RuntimeStateResetRequiredError
+    : undefined;
 
 const sqlColumn = (column: string): string => {
   if (!sqlIdentifierPattern.test(column)) throw new TypeError("SQLite column identifier is invalid.");
@@ -109,25 +141,6 @@ const referenceFeedIdentitySqlCheck = `manifest_version = ${referenceMarketManif
   `chain_id = ${sqlString(productChainId)} AND (` + referenceMarketManifest.feeds.map((feed) =>
     `(feed_id = ${sqlString(feed.feedId)} AND proxy_address = ${sqlString(feed.standardProxy)})`).join(" OR ") + `)`;
 
-export const currentSqliteTableNames = Object.freeze([
-  "chain",
-  "contract",
-  "current_wallet_connection",
-  "local_profile",
-  "reference_feed_round",
-  "reference_feed_sync_state",
-  "reference_pair_watchlist_entry",
-  "reference_pair_watchlist_state",
-  "robinhood_asset",
-  "robinhood_asset_snapshot",
-  "runtime_owner",
-  "token_contract",
-  "token_contract_inspection",
-  "wallet_account",
-  "wallet_token_selection",
-  "wallet_token_selection_state",
-] as const);
-
 export const currentSqliteSchemaSql = `CREATE TABLE local_profile (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   profile_id TEXT NOT NULL UNIQUE CHECK (${canonicalRuntimeIdentifierSqlCheck("profile_id")}),
@@ -138,7 +151,6 @@ CREATE TABLE runtime_owner (
   profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),
   owner_instance_id TEXT NOT NULL CHECK (${canonicalRuntimeIdentifierSqlCheck("owner_instance_id")}),
   configuration_mac TEXT NOT NULL CHECK (${canonicalRuntimeConfigurationMacSqlCheck("configuration_mac")}),
-  protocol_version INTEGER NOT NULL CHECK (protocol_version BETWEEN 1 AND ${Number.MAX_SAFE_INTEGER}),
   process_id INTEGER NOT NULL CHECK (process_id > 0),
   owner_revision TEXT NOT NULL CHECK (${canonicalUnsignedDecimalSqlCheck("owner_revision")}),
   acquired_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("acquired_at")}),
@@ -342,3 +354,174 @@ CREATE TABLE current_wallet_connection (
     ON UPDATE RESTRICT ON DELETE RESTRICT,
   ${walletConnectionFieldPresenceCheckSql}
 ) STRICT;`;
+
+interface SqliteSchemaTuple {
+  readonly type: Buffer;
+  readonly name: Buffer;
+  readonly tableName: Buffer;
+  readonly sql: Buffer | null;
+}
+
+interface SqliteSchemaReference {
+  readonly tuples: readonly SqliteSchemaTuple[];
+  readonly rowCount: number;
+  readonly maximumTypeBytes: number;
+  readonly maximumNameBytes: number;
+  readonly maximumTableNameBytes: number;
+  readonly maximumSqlBytes: number;
+  readonly totalTupleBytes: number;
+}
+
+interface ReferenceSchemaRow {
+  readonly type: unknown;
+  readonly name: unknown;
+  readonly tableName: unknown;
+  readonly sql: unknown;
+}
+
+interface CandidateSchemaRow {
+  readonly typeStorage: unknown;
+  readonly typeBytes: unknown;
+  readonly nameStorage: unknown;
+  readonly nameBytes: unknown;
+  readonly tableNameStorage: unknown;
+  readonly tableNameBytes: unknown;
+  readonly sqlStorage: unknown;
+  readonly sqlBytes: unknown;
+}
+
+const tupleByteLength = (tuple: SqliteSchemaTuple): number =>
+  tuple.type.length + tuple.name.length + tuple.tableName.length + 1 + (tuple.sql?.length ?? 0);
+
+const compareBytes = (left: Buffer, right: Buffer): number => Buffer.compare(left, right);
+
+const compareSchemaTuples = (left: SqliteSchemaTuple, right: SqliteSchemaTuple): number => {
+  const type = compareBytes(left.type, right.type);
+  if (type !== 0) return type;
+  const name = compareBytes(left.name, right.name);
+  if (name !== 0) return name;
+  const tableName = compareBytes(left.tableName, right.tableName);
+  if (tableName !== 0) return tableName;
+  if (left.sql === null || right.sql === null) {
+    if (left.sql === right.sql) return 0;
+    return left.sql === null ? -1 : 1;
+  }
+  return compareBytes(left.sql, right.sql);
+};
+
+const sameSchemaTuple = (left: SqliteSchemaTuple, right: SqliteSchemaTuple): boolean =>
+  compareSchemaTuples(left, right) === 0;
+
+const referenceText = (value: unknown): Buffer => {
+  if (typeof value !== "string") throw new TypeError("Current SQLite reference schema is invalid.");
+  return Buffer.from(value, "utf8");
+};
+
+const buildCurrentSqliteSchemaReference = (): SqliteSchemaReference => {
+  const database = new Database(":memory:");
+  try {
+    database.exec(currentSqliteSchemaSql);
+    const rows = database.prepare(`SELECT type, name, tbl_name AS tableName, sql
+      FROM sqlite_schema`).all() as ReferenceSchemaRow[];
+    if (rows.length === 0) throw new TypeError("Current SQLite reference schema is empty.");
+    const tuples = rows.map((row): SqliteSchemaTuple => Object.freeze({
+      type: referenceText(row.type),
+      name: referenceText(row.name),
+      tableName: referenceText(row.tableName),
+      sql: row.sql === null ? null : referenceText(row.sql),
+    })).sort(compareSchemaTuples);
+    let maximumTypeBytes = 0;
+    let maximumNameBytes = 0;
+    let maximumTableNameBytes = 0;
+    let maximumSqlBytes = 0;
+    let totalTupleBytes = 0;
+    for (const tuple of tuples) {
+      maximumTypeBytes = Math.max(maximumTypeBytes, tuple.type.length);
+      maximumNameBytes = Math.max(maximumNameBytes, tuple.name.length);
+      maximumTableNameBytes = Math.max(maximumTableNameBytes, tuple.tableName.length);
+      maximumSqlBytes = Math.max(maximumSqlBytes, tuple.sql?.length ?? 0);
+      totalTupleBytes += tupleByteLength(tuple);
+    }
+    return Object.freeze({
+      tuples: Object.freeze(tuples),
+      rowCount: tuples.length,
+      maximumTypeBytes,
+      maximumNameBytes,
+      maximumTableNameBytes,
+      maximumSqlBytes,
+      totalTupleBytes,
+    });
+  } finally {
+    database.close();
+  }
+};
+
+let currentSqliteSchemaReference: SqliteSchemaReference | undefined;
+
+const getCurrentSqliteSchemaReference = (): SqliteSchemaReference => {
+  currentSqliteSchemaReference ??= buildCurrentSqliteSchemaReference();
+  return currentSqliteSchemaReference;
+};
+
+const candidateTextBytes = (value: unknown): Buffer => {
+  if (!Buffer.isBuffer(value)) throw new TypeError("SQLite schema byte projection is invalid.");
+  return value;
+};
+
+const readCandidateSqliteSchema = (
+  database: Database.Database,
+  reference: SqliteSchemaReference,
+): readonly SqliteSchemaTuple[] | undefined => {
+  const rows = database.prepare(`SELECT
+      typeof(type) AS typeStorage,
+      substr(CAST(type AS BLOB), 1, ?) AS typeBytes,
+      typeof(name) AS nameStorage,
+      substr(CAST(name AS BLOB), 1, ?) AS nameBytes,
+      typeof(tbl_name) AS tableNameStorage,
+      substr(CAST(tbl_name AS BLOB), 1, ?) AS tableNameBytes,
+      typeof(sql) AS sqlStorage,
+      CASE WHEN sql IS NULL THEN NULL ELSE substr(CAST(sql AS BLOB), 1, ?) END AS sqlBytes
+    FROM sqlite_schema
+    LIMIT ?`).iterate(
+      reference.maximumTypeBytes + 1,
+      reference.maximumNameBytes + 1,
+      reference.maximumTableNameBytes + 1,
+      reference.maximumSqlBytes + 1,
+      reference.rowCount + 1,
+    ) as IterableIterator<CandidateSchemaRow>;
+  const tuples: SqliteSchemaTuple[] = [];
+  let totalTupleBytes = 0;
+  for (const row of rows) {
+    if (tuples.length === reference.rowCount) return undefined;
+    if (
+      row.typeStorage !== "text" || row.nameStorage !== "text" ||
+      row.tableNameStorage !== "text" ||
+      (row.sqlStorage !== "null" && row.sqlStorage !== "text")
+    ) return undefined;
+    const type = candidateTextBytes(row.typeBytes);
+    const name = candidateTextBytes(row.nameBytes);
+    const tableName = candidateTextBytes(row.tableNameBytes);
+    const sql = row.sqlStorage === "null" ? null : candidateTextBytes(row.sqlBytes);
+    if (
+      type.length > reference.maximumTypeBytes ||
+      name.length > reference.maximumNameBytes ||
+      tableName.length > reference.maximumTableNameBytes ||
+      (sql?.length ?? 0) > reference.maximumSqlBytes
+    ) return undefined;
+    const tuple = Object.freeze({ type, name, tableName, sql });
+    totalTupleBytes += tupleByteLength(tuple);
+    if (totalTupleBytes > reference.totalTupleBytes) return undefined;
+    tuples.push(tuple);
+  }
+  if (tuples.length !== reference.rowCount) return undefined;
+  return Object.freeze(tuples.sort(compareSchemaTuples));
+};
+
+export const hasExactCurrentSqliteStructure = (database: Database.Database): boolean => {
+  const reference = getCurrentSqliteSchemaReference();
+  const candidate = readCandidateSqliteSchema(database, reference);
+  return candidate !== undefined && candidate.every((tuple, index) => {
+    const expected = reference.tuples[index];
+    return expected !== undefined && sameSchemaTuple(tuple, expected);
+  });
+};

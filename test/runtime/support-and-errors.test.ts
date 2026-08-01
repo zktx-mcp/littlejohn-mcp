@@ -5,14 +5,29 @@ import { describe, expect, it } from "vitest";
 import { extendUniswapV2ProtocolHarnessManifest } from "../protocols/interface-harness.js";
 
 import {
-  coreContractVersion,
+  assertDirectApplicationErrorRegistryExtension,
+  coreErrorRegistry,
   createApplicationFailure,
   readCapabilityRegistry,
   type CanonicalJson,
 } from "../../src/core/index.js";
+import { accountAssetInterfaceErrorMappings } from "../../src/account-assets/errors.js";
+import {
+  chainErrorRegistry,
+  chainInterfaceErrorMappings,
+} from "../../src/chain/errors.js";
 import { interfaceReadCapabilityRegistry } from "../../src/interfaces/identities.js";
+import {
+  browserErrorCodes,
+  isBrowserErrorCode,
+} from "../../src/interfaces/browser-error-response.js";
+import { presentHumanFailure } from "../../src/interfaces/web/human-failures.js";
 import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
 import { extendReferenceMarketSupportManifest } from "../../src/market-portfolio/support.js";
+import {
+  referenceMarketErrorRegistry,
+  referenceMarketInterfaceErrorMappings,
+} from "../../src/market-portfolio/errors.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import { ownerIdentitySchema } from "../../src/runtime/runtime-identity.js";
 import {
@@ -25,6 +40,12 @@ import {
   runtimeInterfaceErrorMappings,
   toProblemDetails,
 } from "../../src/runtime/errors.js";
+import {
+  createRuntimeStateResetRequiredError,
+  getRuntimeStateResetRequiredError,
+  runtimeStateResetRequiredCode,
+  runtimeStateResetRequiredMessage,
+} from "../../src/runtime/sqlite-schema.js";
 import {
   assertChainRuntimeSupportManifestExtension,
   assertInterfaceRuntimeSupportManifestExtension,
@@ -43,13 +64,32 @@ import {
   verifyCurrentSupportDocument,
 } from "../../src/runtime/support-manifest.js";
 import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
+import {
+  tokenCatalogErrorRegistry,
+  tokenCatalogInterfaceErrorMappings,
+} from "../../src/token-catalog/errors.js";
 import { uniswapV2PackageDescriptor } from "../../src/protocols/uniswap-v2/browser.js";
+import {
+  uniswapV2ErrorRegistry,
+  uniswapV2InterfaceErrorMappings,
+} from "../../src/protocols/uniswap-v2/errors.js";
+import {
+  walletErrorRegistry,
+  walletInterfaceErrorMappings,
+} from "../../src/wallet/errors.js";
 
 const initialRuntimeSupportManifest = createInitialRuntimeSupportManifest(
   readRuntimeConfiguration({}).chain,
 );
-const interfaceCapabilityCatalogSchema = createCapabilityCatalogSchema(interfaceReadCapabilityRegistry);
-const initialCapabilityCatalogSchema = createCapabilityCatalogSchema(readCapabilityRegistry);
+const suppliedCapabilityCatalogContractVersion = "1" as const;
+const interfaceCapabilityCatalogSchema = createCapabilityCatalogSchema(
+  interfaceReadCapabilityRegistry,
+  suppliedCapabilityCatalogContractVersion,
+);
+const initialCapabilityCatalogSchema = createCapabilityCatalogSchema(
+  readCapabilityRegistry,
+  suppliedCapabilityCatalogContractVersion,
+);
 
 const independentCanonicalJson = (value: unknown): string => {
   if (value === null || typeof value === "string" || typeof value === "boolean") {
@@ -124,18 +164,18 @@ describe("runtime support manifest authority", () => {
     for (const [schema, bytes, digest] of [
       [
         runtimeSupportManifestSchema,
-        3_590,
-        "f9bd27af77fb6acb4d2f737e3a1e8d67a49a18e4c6336ab1c6ce13aacbeb5684",
+        3_589,
+        "f92d285bc7aec151198f08a29e0904c8f5cfabad9895c84725cb53f27407c6f3",
       ],
       [
         interfaceCapabilityCatalogSchema,
-        3_333,
-        "79bee172ac3d798375f348d5487dfa4bd93da65f25b90c92ea91db77c3845bb4",
+        3_328,
+        "08c67de0a3d371d95cc73d2a18def4d3b499f52ab7f940d85f77b96d33d83d1d",
       ],
       [
         ownerIdentitySchema,
-        746,
-        "32fe128b6386264912bd029c54370c78ccae9ac1d215b4d44395bd1ff97eec7b",
+        667,
+        "d590eeb7bc6f195875fbd67608741a9eadd8bae16b2e51319450138117c3bc96",
       ],
     ] as const) {
       const projection = outputSchema(schema);
@@ -146,7 +186,7 @@ describe("runtime support manifest authority", () => {
 
   it("starts with only the five canonical read identities and official L0 evidence", () => {
     const snapshot = readRuntimeSupportManifest(initialRuntimeSupportManifest);
-    expect(snapshot.contractVersion).toBe(coreContractVersion);
+    expect(snapshot.contractVersion).toBe("1");
     expect(snapshot.chains).toEqual([{
       chainId: "eip155:4663",
       supportLevel: "L0_discovered",
@@ -235,7 +275,12 @@ describe("runtime support manifest authority", () => {
     expect(() => assertWalletRuntimeSupportManifestExtension(initialRuntimeSupportManifest, chain as never))
       .toThrow("scope lineage");
 
-    const catalog = composeCapabilityCatalog(interfaceReadCapabilityRegistry, interfaces);
+    const catalog = composeCapabilityCatalog(
+      interfaceReadCapabilityRegistry,
+      interfaces,
+      suppliedCapabilityCatalogContractVersion,
+    );
+    expect(catalog.contractVersion).toBe(suppliedCapabilityCatalogContractVersion);
     expect(catalog.capabilities.map((entry) => entry.capabilityId)).toEqual([
       "account.balance",
       "chain.status",
@@ -306,8 +351,11 @@ describe("runtime support manifest authority", () => {
       manifestRuntime.run = () => ({ value: { forged: true }, issues: [] });
       catalogRuntime.run = () => ({ value: { forged: true }, issues: [] });
       expect(readRuntimeSupportManifest(initialRuntimeSupportManifest).chains[0]?.chainId).toBe("eip155:4663");
-      expect(composeCapabilityCatalog(readCapabilityRegistry, initialRuntimeSupportManifest).contractVersion)
-        .toBe(coreContractVersion);
+      expect(composeCapabilityCatalog(
+        readCapabilityRegistry,
+        initialRuntimeSupportManifest,
+        suppliedCapabilityCatalogContractVersion,
+      ).contractVersion).toBe(suppliedCapabilityCatalogContractVersion);
     } finally {
       manifestRuntime.run = manifestRun;
       catalogRuntime.run = catalogRun;
@@ -336,7 +384,11 @@ describe("runtime support manifest authority", () => {
         },
       }],
     });
-    const catalog = composeCapabilityCatalog(interfaceReadCapabilityRegistry, interfaces);
+    const catalog = composeCapabilityCatalog(
+      interfaceReadCapabilityRegistry,
+      interfaces,
+      suppliedCapabilityCatalogContractVersion,
+    );
     expect(interfaceCapabilityCatalogSchema.parse(catalog)).toEqual(catalog);
     expect(() => initialCapabilityCatalogSchema.parse(catalog)).toThrow();
     expect(() => interfaceCapabilityCatalogSchema.parse({
@@ -381,6 +433,31 @@ describe("runtime support manifest authority", () => {
 });
 
 describe("interface error authority", () => {
+  it("uses one exact application and mapping lineage with two declared branches", () => {
+    for (const [parentErrors, childErrors, parentMappings, childMappings] of [
+      [runtimeErrorRegistry, walletErrorRegistry, runtimeInterfaceErrorMappings, walletInterfaceErrorMappings],
+      [walletErrorRegistry, chainErrorRegistry, walletInterfaceErrorMappings, chainInterfaceErrorMappings],
+      [chainErrorRegistry, tokenCatalogErrorRegistry, chainInterfaceErrorMappings, tokenCatalogInterfaceErrorMappings],
+      [
+        tokenCatalogErrorRegistry,
+        referenceMarketErrorRegistry,
+        tokenCatalogInterfaceErrorMappings,
+        referenceMarketInterfaceErrorMappings,
+      ],
+      [
+        chainErrorRegistry,
+        uniswapV2ErrorRegistry,
+        chainInterfaceErrorMappings,
+        uniswapV2InterfaceErrorMappings,
+      ],
+    ] as const) {
+      expect(() => assertDirectApplicationErrorRegistryExtension(parentErrors, childErrors))
+        .not.toThrow();
+      expect(() => assertDirectInterfaceErrorMappingRegistryExtension(parentMappings, childMappings))
+        .not.toThrow();
+    }
+  });
+
   it("matches the complete WU2 error projection fixed by the accepted plan", () => {
     expect(runtimeInterfaceErrorMappings.values()).toEqual([
       { code: "invalid_input", httpStatus: 400, problemTitle: "Invalid request", cliExitCode: 2 },
@@ -401,6 +478,53 @@ describe("interface error authority", () => {
       { code: "request_aborted", httpStatus: 408, problemTitle: "Request aborted", cliExitCode: 4 },
       { code: "result_too_large", httpStatus: 422, problemTitle: "Result too large", cliExitCode: 3 },
     ]);
+  });
+
+  it("keeps the provenance-admitted reset source outside every live failure projection", () => {
+    const source = createRuntimeStateResetRequiredError();
+    expect(getRuntimeStateResetRequiredError(source)).toBe(source);
+    expect(source).toMatchObject({
+      code: runtimeStateResetRequiredCode,
+      message: runtimeStateResetRequiredMessage,
+    });
+    expect(getRuntimeStateResetRequiredError(Object.freeze({
+      name: source.name,
+      code: source.code,
+      message: source.message,
+    }))).toBeUndefined();
+    for (const registry of [
+      coreErrorRegistry,
+      runtimeErrorRegistry,
+      walletErrorRegistry,
+      chainErrorRegistry,
+      tokenCatalogErrorRegistry,
+      referenceMarketErrorRegistry,
+      uniswapV2ErrorRegistry,
+    ]) {
+      expect(registry.values().some(({ code }) => code === runtimeStateResetRequiredCode as string)).toBe(false);
+    }
+    for (const mappings of [
+      runtimeInterfaceErrorMappings,
+      walletInterfaceErrorMappings,
+      chainInterfaceErrorMappings,
+      tokenCatalogInterfaceErrorMappings,
+      accountAssetInterfaceErrorMappings,
+      referenceMarketInterfaceErrorMappings,
+      uniswapV2InterfaceErrorMappings,
+    ]) {
+      expect(mappings.values().some(({ code }) => code === runtimeStateResetRequiredCode as string)).toBe(false);
+    }
+    expect(browserErrorCodes).not.toContain(runtimeStateResetRequiredCode);
+    expect(isBrowserErrorCode(runtimeStateResetRequiredCode)).toBe(false);
+    expect(() => presentHumanFailure("wallet_status", {
+      ok: false,
+      error: {
+        code: runtimeStateResetRequiredCode,
+        retryable: false,
+        issues: [],
+      },
+    })).toThrow("outside browser authority");
+    expect(normalizeRuntimeError(source).failure.error.code).toBe("internal_error");
   });
 
   it("projects one canonical application failure without trusting the public schema", () => {

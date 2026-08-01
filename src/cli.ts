@@ -52,6 +52,9 @@ import {
 import {
   LocalRuntime,
   createOperationId as createRuntimeOperationId,
+  getRuntimeStateResetRequiredError,
+  runtimeStateResetRequiredCode,
+  type RuntimeStateResetRequiredError,
   type RuntimeDispatchRequest,
   type RuntimeDispatchResponse,
   type RuntimeOwnerSession,
@@ -832,10 +835,16 @@ export const runCli = async (
   let tokenExitCode: number | undefined;
   let marketExitCode: number | undefined;
   let runtimeStopped = false;
+  let startupFailure: RuntimeStateResetRequiredError | undefined;
   let failure: ApplicationFailure | undefined;
   let deliveryUnknown: DeliveryUnknown | undefined;
   let runtimeCleanupFailed = false;
   const retainFailure = (error: unknown): void => {
+    const resetRequired = getRuntimeStateResetRequiredError(error);
+    if (resetRequired !== undefined) {
+      startupFailure ??= resetRequired;
+      return;
+    }
     if (error instanceof CliDeliveryUnknown) {
       deliveryUnknown ??= error.delivery;
       return;
@@ -944,6 +953,12 @@ export const runCli = async (
     }
     try { dependencies.terminal.dispose(); }
     catch (error) { retainFailure(error); }
+  }
+  if (startupFailure !== undefined) {
+    dependencies.terminal.writeError(
+      `${runtimeStateResetRequiredCode}: ${startupFailure.message}\n`,
+    );
+    return 7;
   }
   if (deliveryUnknown !== undefined) {
     const json = tokenCommand?.json ?? command?.json ?? false;

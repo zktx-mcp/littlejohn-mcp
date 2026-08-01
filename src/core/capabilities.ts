@@ -359,6 +359,7 @@ const chainStatusCapabilityEvidence: ReadCapabilityEvidence<
 
 export const chainStatusCapability = defineReadCapability<ChainStatusInput, ChainStatusData>({
   capabilityId: "chain.status",
+  contractVersion: "1",
   inputSchema: chainStatusInputSchema,
   dataSchema: chainStatusDataSchema,
   failureCodes: rpcReadFailureCodes,
@@ -432,6 +433,7 @@ const contractInspectCapabilityEvidence: ReadCapabilityEvidence<
 
 export const contractInspectCapability = defineReadCapability<ContractInspectInput, ContractInspectData>({
   capabilityId: "contract.inspect",
+  contractVersion: "1",
   inputSchema: contractInspectInputSchema,
   dataSchema: contractInspectDataSchema,
   failureCodes: transactionReadFailureCodes,
@@ -942,6 +944,7 @@ const transactionInspectCapabilityEvidence: ReadCapabilityEvidence<
 
 export const transactionInspectCapability = defineReadCapability<TransactionInspectInput, TransactionInspectData>({
   capabilityId: "transaction.inspect",
+  contractVersion: "1",
   inputSchema: transactionInspectInputSchema,
   dataSchema: transactionInspectDataSchema,
   failureCodes: transactionReadFailureCodes,
@@ -1197,6 +1200,7 @@ const accountBalanceCapabilityEvidence: ReadCapabilityEvidence<
 
 export const accountBalanceCapability = defineReadCapability<AccountBalanceInput, AccountBalanceData>({
   capabilityId: "account.balance",
+  contractVersion: "1",
   inputSchema: accountBalanceInputSchema,
   dataSchema: accountBalanceDataSchema,
   failureCodes: accountReadFailureCodes,
@@ -1264,6 +1268,7 @@ const walletConnectionCapabilityEvidence: ReadCapabilityEvidence<
 
 export const walletConnectionCapability = defineReadCapability<WalletConnectionInput, WalletConnectionData>({
   capabilityId: "wallet.connection",
+  contractVersion: "1",
   inputSchema: walletConnectionInputSchema,
   dataSchema: walletConnectionDataSchema,
   failureCodes: semanticReadFailureCodes,

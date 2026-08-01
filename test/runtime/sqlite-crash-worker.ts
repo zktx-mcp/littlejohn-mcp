@@ -11,14 +11,24 @@ import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.
 const dataDirectory = process.argv[2];
 if (dataDirectory === undefined) throw new TypeError("SQLite crash-worker data directory is required.");
 const mode = process.argv[3];
-if (mode !== "committed" && mode !== "interrupted" && mode !== "catalog-interrupted") {
+if (
+  mode !== "committed" && mode !== "interrupted" &&
+  mode !== "catalog-interrupted" && mode !== "structural-mismatch"
+) {
   throw new TypeError("SQLite crash-worker mode is invalid.");
 }
 
 const observedAt = parseUtcTimestamp("2026-07-12T10:16:02.000Z");
 await ensureOwnerOnlyDirectory(dataDirectory);
 const databasePath = runtimePaths(dataDirectory).database;
-if (mode === "interrupted" || mode === "catalog-interrupted") {
+if (mode === "structural-mismatch") {
+  const database = new Database(databasePath);
+  database.pragma("journal_mode = WAL");
+  database.pragma("wal_autocheckpoint = 0");
+  database.exec("CREATE TABLE crash_only_state(value TEXT)");
+  process.send?.({ ready: true });
+  setInterval(() => undefined, 60_000);
+} else if (mode === "interrupted" || mode === "catalog-interrupted") {
   const database = new Database(databasePath);
   database.pragma("foreign_keys = ON");
   database.exec("BEGIN EXCLUSIVE");

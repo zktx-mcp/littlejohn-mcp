@@ -11,7 +11,6 @@ import {
   officialIdentityEvidenceSchema,
   snakeCaseCodeSchema,
   supportLevelSchema,
-  unsignedDecimalSchema,
 } from "../core/browser.js";
 
 const protocolIdentifierSchema = snakeCaseCodeSchema.refine(
@@ -25,10 +24,8 @@ export type ProtocolFamilyId = z.infer<typeof protocolFamilyIdSchema>;
 export const protocolIdSchema = protocolIdentifierSchema.brand("ProtocolId");
 export type ProtocolId = z.infer<typeof protocolIdSchema>;
 
-export const protocolPackageContractVersionSchema = unsignedDecimalSchema.refine(
-  (value) => value !== "0",
-  "Protocol package contract versions must be positive.",
-).brand("ProtocolPackageContractVersion");
+export const protocolPackageContractVersionSchema = z.literal("1")
+  .brand("ProtocolPackageContractVersion");
 export type ProtocolPackageContractVersion = z.infer<
   typeof protocolPackageContractVersionSchema
 >;

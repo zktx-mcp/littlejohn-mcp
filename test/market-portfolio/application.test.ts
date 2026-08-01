@@ -12,6 +12,7 @@ import type {
 } from "../../src/chain/rpc.js";
 import {
   chainAnchorSchema,
+  assertDirectApplicationErrorRegistryExtension,
   createCanonicalClock,
   createExactRational,
   evmAccountIdentitySchema,
@@ -30,12 +31,17 @@ import {
 } from "../../src/core/index.js";
 import { ReferenceMarketApplication } from "../../src/market-portfolio/application.js";
 import { createReferenceHistory } from "../../src/market-portfolio/candles.js";
+import {
+  referenceMarketApplicationContracts,
+  referenceMarketErrorRegistry,
+} from "../../src/market-portfolio/contracts.js";
 import type {
   ReferenceFeedCacheCommit,
   ReferenceFeedCacheSnapshot,
   ReferenceMarketStore,
 } from "../../src/runtime/reference-market-storage.js";
 import { parseRuntimeRevision } from "../../src/runtime/runtime-identity.js";
+import { tokenCatalogErrorRegistry } from "../../src/token-catalog/error-registry.js";
 
 const block = chainAnchorSchema.parse({
   chainId: "eip155:4663",
@@ -56,6 +62,20 @@ const walletConnection = parseCapabilityDataAt(walletConnectionCapability, {
   approvedEvents: ["accountsChanged", "chainChanged"],
   expiresAt: "2026-07-23T00:07:00.000Z",
 }, parseUtcTimestamp("2026-07-22T00:07:00.000Z"));
+
+describe("reference market contract authority", () => {
+  it("uses one token-catalog-parented registry and one contract graph", () => {
+    expect(() => assertDirectApplicationErrorRegistryExtension(
+      tokenCatalogErrorRegistry,
+      referenceMarketErrorRegistry,
+    )).not.toThrow();
+    for (const contract of Object.values(referenceMarketApplicationContracts)) {
+      expect(contract.applicationContract.errorRegistry).toBe(referenceMarketErrorRegistry);
+      expect(contract.contractVersion).toBe(contract.applicationContract.contractVersion);
+      expect(contract.contractVersion).toBe("1");
+    }
+  });
+});
 
 const observation = (input: Readonly<{
   feedId: ReferenceFeedId;

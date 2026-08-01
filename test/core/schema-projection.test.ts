@@ -2,17 +2,24 @@ import { createHash } from "node:crypto";
 
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
+import { z, type ZodType } from "zod";
 
 import {
+  CapabilityRegistry,
   canonicalSha256,
   capabilitySchemaProjectionSchema,
-  coreContractVersion,
+  defineReadCapability,
   getCapabilityDefinitionSnapshot,
   projectCapabilities,
   readCapabilityRegistry,
   safeParseCapabilityData,
   safeParseCapabilityInput,
 } from "../../src/core/index.js";
+import { createValidatedInputEvidenceFragment } from "../../src/core/capability-evidence.js";
+import {
+  createEvidenceReplayDefinition,
+  createExactConclusionIdentityDeclaration,
+} from "../../src/core/evidence-replay.js";
 
 const independentCanonicalJson = (value: unknown): string => {
   if (value === null || typeof value === "string" || typeof value === "boolean") {
@@ -32,32 +39,84 @@ const independentCanonicalJson = (value: unknown): string => {
 const independentSha256 = (value: unknown): string =>
   createHash("sha256").update(independentCanonicalJson(value), "utf8").digest("hex");
 
+const defineProjectionTestCapability = <Data extends { readonly value: string }>(
+  dataSchema: ZodType<Data>,
+) => {
+  const conclusion = createExactConclusionIdentityDeclaration("projection_input_validated");
+  const replay = createEvidenceReplayDefinition({
+    capabilityId: "test.projection",
+    conclusions: [conclusion],
+    warningCodes: [],
+  });
+  const inputEvidence = createValidatedInputEvidenceFragment(replay);
+  return defineReadCapability<{ value: string }, Data>({
+    capabilityId: "test.projection",
+    contractVersion: "1",
+    inputSchema: z.object({ value: z.string() }).strict(),
+    dataSchema,
+    failureCodes: ["internal_error", "invalid_input", "result_too_large"],
+    evidence: {
+      definition: replay,
+      observationTargets: () => [inputEvidence.target],
+      declaration: (input, _data, binder) => {
+        const target = binder.bind(inputEvidence.target);
+        return {
+          observationExpectations: [{
+            slot: target.slot,
+            claims: [{ role: target.roles.input, value: input as never }],
+          }],
+          observationReferences: [],
+          factRequirements: [{
+            fact: inputEvidence.fact,
+            observationSlots: [target.slot],
+            requiredObservationSlots: [target.slot],
+            minimumObservationCount: 1,
+            outcome: inputEvidence.outcome,
+          }],
+          expectedConclusions: [conclusion],
+          conclusionDrafts: [{
+            conclusion,
+            outcomeFact: inputEvidence.fact,
+            evidenceFacts: [inputEvidence.fact],
+            freshnessRuleId: inputEvidence.freshnessRuleId,
+          }],
+          warningRequirements: [],
+        };
+      },
+      staticScopeExclusions: [],
+    },
+    validateRequest: (input, data) => {
+      if (input.value !== data.value) throw new TypeError("Test projection input mismatch.");
+    },
+  });
+};
+
 describe("generated capability projections", () => {
   const golden = {
     "account.balance": [
-      "5c7160307cff8cde10871d0c6d76c49151b5c59b1e826b8d187a71d8671a0f3c",
-      "3233104ba5343b0f85206551a58b745cac3f99bd30193832f06758e4e9b05227",
-      "30e921131201e2c960629c80039cd792cb712334c965735bd010dbe275c41f09",
+      "9bc55be852eea73f596c30b47c57e56ccbf63736a7693a85d1f5bf094f54670e",
+      "2dcb72396d6c6c26a00f716040137cb53e5888d3a6a6224ff6126121a784f072",
+      "3b7ce2e8225ab4a530c2b21755b6b937e85b53bfef563d4845748715ab5b7a24",
     ],
     "chain.status": [
-      "35e22052500c8de1cf265404b9379636026ef5047a60cbd8ff1fbe93a8c5afbf",
-      "5d15e2bab3033a1732a49ffb2d146ffef50210b01ff4ebdbeab0de33c47de8d1",
-      "c7af5dd70d61ecebdff3a2cd776439f2181b359131bf01e5a08e6395407debe4",
+      "e26cb5e8480ef708cd739ac63103c97908c1c9469d32ca96bfa7a51184490bcd",
+      "6fb26fe20929c508a38ba2678e667715f7496d213047466779f9656f36908175",
+      "42288c45ba463dfe7c4f272431edba4c90fd8dfc572a2856ad33297501358d9b",
     ],
     "contract.inspect": [
-      "a8a13e7b8a75865ce2b2974d43d7090f17116949b016a7c712ab3cbda7d15286",
-      "d093fccf847225f1529b29c359197a1fedcb0c6a51aedee8de3365fd31eac99d",
-      "0eb45a530cd8749c13a9d2fc283484f1c3e0bd3bd70fd669aacbc2a2b7488e3b",
+      "5839724d847eafb35975597756e5b2443d3745160d33128356bd763653669566",
+      "04e1a03acba90917efd53a71e2b9a3fe22455868524029e110f437a0cbcb82bf",
+      "e2e967639eeef57ec225e54b0cf45aff09f5c4a132815d43399b81d0a799a327",
     ],
     "transaction.inspect": [
-      "c0759a1dd8a92e8af9405c9c3f3ed0c4073175d33de7a3fce8a6792f7d729405",
-      "9b0445fe2877638905090f7b514e476605537c6a7c83f1004a478c42243f6469",
-      "559364cdc5c94d7c5ba377be8fdad0e306ca65ddd99235c1c7489f03341d1237",
+      "c229b4dfb207cbec37d109faa9fbdb95084fd4f43a9dba7ea2c1c9c8b80936f7",
+      "48723ff69ba8bcaac0e0023a5169ef59ad659d691f13e5afdfa6e09f4d796d2f",
+      "d660614aa6d850bce76e00eb3de7be05f10993a3cf68296efad3d6120a09594f",
     ],
     "wallet.connection": [
-      "d32942fd4ba200c8e346aab55d136d34edb078f8efec3b1cc5f53835ee2a5bec",
-      "f4377a0e4e3acb0c60e288adf062e43f1994b4b57b1d7008db0d13515f911171",
-      "0a798c58c15590be875e54f68061daa2aa68f4615b89cc892cc9ff63e93370a0",
+      "3c5e10f6236f85d6270dcca3742df813ab1d9a9e7fc575f025dc5f0a96679d4e",
+      "6b7cd0d32d5ce40896d42d48c6abae3b22fcc798d1d6513b5a95335bd7de6266",
+      "38f141282ddf372d2ba62fe5bd30cb390280751bc89fb75aac27dd894e5c8c84",
     ],
   } as const;
 
@@ -72,15 +131,17 @@ describe("generated capability projections", () => {
     for (const projection of projections) {
       const definition = readCapabilityRegistry.get(projection.capabilityId);
       expect(projection.input.schemaId).toBe(
-        `urn:littlejohn:capability:${projection.capabilityId}:input:v${coreContractVersion}`,
+        `urn:littlejohn:capability:${projection.capabilityId}:input:v${projection.contractVersion}`,
       );
       expect(projection.data.schemaId).toBe(
-        `urn:littlejohn:capability:${projection.capabilityId}:data:v${coreContractVersion}`,
+        `urn:littlejohn:capability:${projection.capabilityId}:data:v${projection.contractVersion}`,
       );
       expect(projection.success.schemaId).toBe(
-        `urn:littlejohn:capability:${projection.capabilityId}:success:v${coreContractVersion}`,
+        `urn:littlejohn:capability:${projection.capabilityId}:success:v${projection.contractVersion}`,
       );
-      expect(projection.contractVersion).toBe(coreContractVersion);
+      expect(projection.contractVersion).toBe(
+        getCapabilityDefinitionSnapshot(definition).contractVersion,
+      );
       expect(projection.maximumSuccessUtf8Bytes).toBe(8_388_607);
       expect(canonicalSha256(projection.input.schema)).toBe(projection.input.digest);
       expect(canonicalSha256(projection.data.schema)).toBe(projection.data.digest);
@@ -110,6 +171,42 @@ describe("generated capability projections", () => {
       expect([projection.input.digest, projection.data.digest, projection.success.digest])
         .toEqual(expected);
     }
+  });
+
+  it("keeps unrelated projections stable when one explicit owner changes its schema", () => {
+    const unchangedDefinition = readCapabilityRegistry.get("chain.status");
+    const beforeDefinition = defineProjectionTestCapability(
+      z.object({ value: z.string() }).strict(),
+    );
+    const afterDefinition = defineProjectionTestCapability(
+      z.object({ value: z.string(), detail: z.string() }).strict(),
+    );
+    const before = Object.fromEntries(projectCapabilities(new CapabilityRegistry([
+      unchangedDefinition,
+      beforeDefinition,
+    ])).map((projection) => [projection.capabilityId, projection]));
+    const after = Object.fromEntries(projectCapabilities(new CapabilityRegistry([
+      unchangedDefinition,
+      afterDefinition,
+    ])).map((projection) => [projection.capabilityId, projection]));
+    const unchangedBefore = before["chain.status"];
+    const unchangedAfter = after["chain.status"];
+    const changedBefore = before["test.projection"];
+    const changedAfter = after["test.projection"];
+    expect(unchangedBefore).toBeDefined();
+    expect(unchangedAfter).toEqual(unchangedBefore);
+    expect(independentSha256(unchangedAfter)).toBe(independentSha256(unchangedBefore));
+    expect(changedBefore).toBeDefined();
+    expect(changedAfter).toBeDefined();
+    expect(changedAfter?.capabilityId).toBe(changedBefore?.capabilityId);
+    expect(changedAfter?.contractVersion).toBe(changedBefore?.contractVersion);
+    expect(changedAfter?.input.schemaId).toBe(changedBefore?.input.schemaId);
+    expect(changedAfter?.input.digest).toBe(changedBefore?.input.digest);
+    expect(changedAfter?.data.schemaId).toBe(changedBefore?.data.schemaId);
+    expect(changedAfter?.success.schemaId).toBe(changedBefore?.success.schemaId);
+    expect(changedAfter?.data.digest).not.toBe(changedBefore?.data.digest);
+    expect(changedAfter?.success.digest).not.toBe(changedBefore?.success.digest);
+    expect(independentSha256(changedAfter)).not.toBe(independentSha256(changedBefore));
   });
 
   it("makes the aggregate success budget part of every canonical projection", () => {
@@ -200,19 +297,20 @@ describe("generated capability projections", () => {
     };
     expect(validate(connected)).toBe(true);
     expect(safeParseCapabilityData(readCapabilityRegistry.get("wallet.connection"), connected).success).toBe(true);
-    expect(validate({ ...connected, account: `${connected.chainId}:${connected.address}` })).toBe(false);
+    expect(validate({ ...connected, unexpected: true })).toBe(false);
     expect(validate({ ...connected, address: `0x${"A".repeat(40)}` })).toBe(false);
     const missingMethod = { ...connected, approvedMethods: [] };
     expect(validate(missingMethod)).toBe(true);
     expect(safeParseCapabilityData(readCapabilityRegistry.get("wallet.connection"), missingMethod).success).toBe(true);
     expect(validate({ status: "unresolved", sessionCount: "2" })).toBe(true);
     expect(validate({ status: "unresolved", sessionCount: "1" })).toBe(false);
-    expect(validate({ status: "unresolved", eligibleSessionCount: "2" })).toBe(false);
+    expect(validate({ status: "unresolved" })).toBe(false);
   });
 
   it("contains only the current schema identity", () => {
-    const versions = JSON.stringify(projectCapabilities(readCapabilityRegistry))
-      .match(/:v[0-9]+/gu) ?? [];
-    expect(new Set(versions)).toEqual(new Set([`:v${coreContractVersion}`]));
+    for (const projection of projectCapabilities(readCapabilityRegistry)) {
+      const versions = JSON.stringify(projection).match(/:v[0-9]+/gu) ?? [];
+      expect(new Set(versions)).toEqual(new Set([`:v${projection.contractVersion}`]));
+    }
   });
 });

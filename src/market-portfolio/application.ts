@@ -22,8 +22,8 @@ import {
 import { createReferenceHistory } from "./candles.js";
 import {
   referenceMarketApplicationContracts,
-} from "./application-contracts.js";
-import type { ReferenceMarketApplicationContract } from "./contracts.js";
+  type ReferenceMarketApplicationContract,
+} from "./contracts.js";
 import {
   ReferenceMarketOperationError,
   normalizeReferenceMarketError,

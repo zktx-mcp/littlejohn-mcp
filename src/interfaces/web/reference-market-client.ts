@@ -4,7 +4,7 @@ import {
   type ReferencePriceInput,
   type ReferencePriceSuccess,
 } from "../../core/browser.js";
-import { referenceMarketBrowserApplicationContracts as referenceMarketApplicationContracts } from "../../market-portfolio/contracts.js";
+import { referenceMarketApplicationContracts } from "../../market-portfolio/contracts.js";
 import { referenceMarketPublicRoutes } from "../browser-contract.js";
 import {
   queryPublicBrowserJson,

@@ -40,7 +40,6 @@ export type {
 } from "./application-factory.js";
 export {
   accountAssetInterfaceErrorMappings,
-  accountAssetErrorRegistry,
   createAccountAssetFailure,
   normalizeAccountAssetError,
   AccountAssetOperationError,

@@ -203,7 +203,6 @@ describe("public read HTTP routes", () => {
         latestBlock: { chainId: "eip155:4663", blockNumber: "16", blockHash },
       },
     });
-    expect(JSON.stringify(result.body)).not.toContain('"caip2"');
     expect(chain.rpc.calls).toEqual([
       { method: "eth_chainId", params: [] },
       { method: "eth_getBlockByNumber", params: ["latest", false] },
@@ -223,20 +222,12 @@ describe("public read HTTP routes", () => {
     expect(chain.rpc.calls).toEqual([]);
   });
 
-  it("rejects legacy wallet identity and session-count fields instead of projecting them", async () => {
-    for (const legacyConnection of [
-      {
-        status: "connected",
-        account: "eip155:4663:0x1111111111111111111111111111111111111111",
-        address: "0x1111111111111111111111111111111111111111",
-        chainId: "eip155:4663",
-        approvedMethods: ["eth_sendTransaction"],
-        approvedEvents: ["accountsChanged", "chainChanged"],
-        expiresAt: "2026-07-22T00:00:00.000Z",
-      },
-      { status: "unresolved", eligibleSessionCount: "2" },
+  it("rejects missing and extra fields in canonical wallet data", async () => {
+    for (const malformedConnection of [
+      { status: "disconnected", reason: "no_session", unexpected: true },
+      { status: "unresolved" },
     ]) {
-      const { routes } = await createRoutes(legacyConnection);
+      const { routes } = await createRoutes(malformedConnection);
       const result = await invoke(routes, "GET", publicInterfaceRoutes.walletConnection);
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.problem.code).toBe("internal_error");

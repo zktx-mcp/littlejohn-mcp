@@ -3,14 +3,15 @@ import {
   type ApplicationFailure,
 } from "../core/index.js";
 import { normalizeTokenCatalogError } from "../token-catalog/index.js";
-import { tokenCatalogInterfaceErrorMappings } from "../token-catalog/errors.js";
-import { accountAssetErrorRegistry } from "./error-registry.js";
-export { accountAssetErrorRegistry } from "./error-registry.js";
+import {
+  tokenCatalogErrorRegistry,
+  tokenCatalogInterfaceErrorMappings,
+} from "../token-catalog/errors.js";
 
 export const accountAssetInterfaceErrorMappings = tokenCatalogInterfaceErrorMappings;
 
 export const createAccountAssetFailure = (code: string): ApplicationFailure =>
-  createApplicationFailure(accountAssetErrorRegistry, code);
+  createApplicationFailure(tokenCatalogErrorRegistry, code);
 
 const operationFailures = new WeakMap<object, ApplicationFailure>();
 

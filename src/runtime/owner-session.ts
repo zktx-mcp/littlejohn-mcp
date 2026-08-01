@@ -5,13 +5,11 @@ import type {
   ProfileId,
   RuntimeConfigurationMac,
   RuntimeRevision,
-  runtimeProtocolVersion,
 } from "./runtime-identity.js";
 
 export interface RuntimeOwnerSessionIdentity {
   readonly profileId: ProfileId;
   readonly ownerInstanceId: OwnerInstanceId;
-  readonly runtimeProtocolVersion: typeof runtimeProtocolVersion;
   readonly configurationMac: RuntimeConfigurationMac;
   readonly ownerRevision: RuntimeRevision;
 }

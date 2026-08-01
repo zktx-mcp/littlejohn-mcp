@@ -14,8 +14,6 @@ import {
   chainAnchorSchema,
   compareCodePointSequences,
   contractAnalysisSchema,
-  coreContractVersion,
-  coreErrorRegistry,
   createCapabilitySuccessSchema,
   createConfiguredChainEvidenceFragment,
   createContractAnalysisEvidenceConclusions,
@@ -35,6 +33,7 @@ import {
   evmAddressSchema,
   jsonObject,
   hash32Schema,
+  getCapabilityDefinitionSnapshot,
   parseHash32,
   observationIdSchema,
   operationIdByteLength,
@@ -64,10 +63,7 @@ import {
   type ObservationReference,
   type WarningRequirement,
 } from "../core/browser.js";
-import { chainErrorDefinitions } from "../chain/error-definitions.js";
-import { runtimeErrorDefinitions } from "../runtime/error-definitions.js";
-import { walletErrorDefinitions } from "../wallet/error-definitions.js";
-import { tokenCatalogErrorDefinitions } from "./error-definitions.js";
+import { tokenCatalogErrorRegistry } from "./error-registry.js";
 import {
   tokenCatalogInteractionInterfaces,
   tokenCatalogOperationKinds,
@@ -86,8 +82,8 @@ export const tokenCatalogContractLimits = Object.freeze({
 });
 
 export const tokenCatalogDigestVersions = Object.freeze({
-  inspection: "5",
-  review: "6",
+  inspection: "1",
+  review: "1",
 } as const);
 
 export const tokenSelectionRevisionSchema = canonicalBase64UrlSchema(
@@ -483,6 +479,7 @@ export const tokenInspectionCapabilityEvidence = Object.freeze({
 export const tokenInspectCapability =
   defineReadCapability<TokenInspectionInput, TokenInspectionData>({
     capabilityId: tokenInspectCapabilityId,
+    contractVersion: "1",
     inputSchema: tokenInspectionInputSchema,
     dataSchema: tokenInspectionDataSchema,
     failureCodes: inspectionFailureCodes,
@@ -516,6 +513,7 @@ export const tokenInspectCapability =
 
 const canonicalTokenInspectionSuccessSchema = createCapabilitySuccessSchema(
   tokenInspectCapabilityId,
+  getCapabilityDefinitionSnapshot(tokenInspectCapability).contractVersion,
   tokenInspectionDataSchema,
 );
 
@@ -613,7 +611,6 @@ export const tokenCatalogReviewDigest = (inputValue: unknown) => {
   return parseHash32(`0x${canonicalSha256({
     digestKind: "token_catalog_review",
     digestVersion: tokenCatalogDigestVersions.review,
-    coreContractVersion,
     operationId: input.operationId,
     operationKind: input.kind,
     account: input.account as unknown as CanonicalJson,
@@ -680,12 +677,6 @@ export const tokenSelectionDetailSchema = z.object({
 });
 export type TokenSelectionDetail = z.infer<typeof tokenSelectionDetailSchema>;
 
-const tokenCatalogApplicationErrorRegistry = coreErrorRegistry
-  .extend(runtimeErrorDefinitions)
-  .extend(walletErrorDefinitions)
-  .extend(chainErrorDefinitions)
-  .extend(tokenCatalogErrorDefinitions);
-
 const operationFailureCodes = Object.freeze([
   "internal_error",
   "runtime_state_unavailable",
@@ -695,7 +686,7 @@ const operationFailureCodes = Object.freeze([
   "wallet_session_unusable",
 ]);
 const tokenOperationFailureSchema = applicationFailureSchemaFor(
-  tokenCatalogApplicationErrorRegistry,
+  tokenCatalogErrorRegistry,
   operationFailureCodes,
 );
 
@@ -1007,7 +998,7 @@ const confirmationFailureCodes = Object.freeze([
 
 export interface TokenCatalogApplicationContract<Input, Success> {
   readonly capabilityId: CapabilityId;
-  readonly contractVersion: typeof coreContractVersion;
+  readonly contractVersion: "1";
   readonly inputSchema: ZodType<Input>;
   readonly successSchema: ZodType<Success>;
   readonly failureCodes: readonly string[];
@@ -1027,6 +1018,7 @@ export type TokenCatalogInternalContext = z.infer<typeof tokenCatalogInternalCon
 
 const defineApplicationContract = <Input, Success>(options: {
   readonly capabilityId: string;
+  readonly contractVersion: "1";
   readonly inputSchema: ZodType<Input>;
   readonly requestSchema?: ZodType<Input>;
   readonly successSchema: ZodType<Success>;
@@ -1040,11 +1032,12 @@ const defineApplicationContract = <Input, Success>(options: {
 }): TokenCatalogApplicationContract<Input, Success> => {
   const capabilityId = capabilityIdSchema.parse(options.capabilityId);
   const applicationContract = defineCanonicalApplicationContract({
+    contractVersion: options.contractVersion,
     inputSchema: options.inputSchema,
     ...(options.requestSchema === undefined ? {} : { correlationInputSchema: options.requestSchema }),
     successSchema: options.successSchema,
     internalContextSchema: tokenCatalogInternalContextSchema,
-    errorRegistry: tokenCatalogApplicationErrorRegistry,
+    errorRegistry: tokenCatalogErrorRegistry,
     failureCodes: options.failureCodes,
     ...(options.validatePublicSuccess === undefined ? {} : {
       validatePublicSuccess: options.validatePublicSuccess,
@@ -1055,7 +1048,7 @@ const defineApplicationContract = <Input, Success>(options: {
   });
   return Object.freeze({
     capabilityId,
-    contractVersion: coreContractVersion,
+    contractVersion: applicationContract.contractVersion,
     inputSchema: options.inputSchema,
     successSchema: options.successSchema,
     failureCodes: applicationContract.failureCodes,
@@ -1069,7 +1062,7 @@ const defineApplicationContract = <Input, Success>(options: {
 };
 
 export interface TokenCatalogOperationConfirmationContract {
-  readonly contractVersion: typeof coreContractVersion;
+  readonly contractVersion: "1";
   readonly inputSchema: typeof tokenCatalogOperationConfirmationInputSchema;
   readonly successSchema: typeof tokenCatalogConfirmedOperationSchema;
   readonly failureCodes: readonly string[];
@@ -1089,10 +1082,11 @@ export interface TokenCatalogOperationConfirmationContract {
 }
 
 const confirmationApplicationContract = defineCanonicalApplicationContract({
+  contractVersion: "1",
   inputSchema: tokenCatalogOperationConfirmationInputSchema,
   successSchema: tokenCatalogConfirmedOperationSchema,
   internalContextSchema: tokenCatalogInternalContextSchema,
-  errorRegistry: tokenCatalogApplicationErrorRegistry,
+  errorRegistry: tokenCatalogErrorRegistry,
   failureCodes: confirmationFailureCodes,
   validatePublicSuccess: (input, success) => {
     if (
@@ -1110,7 +1104,7 @@ const confirmationApplicationContract = defineCanonicalApplicationContract({
 
 export const tokenCatalogOperationConfirmationContract: TokenCatalogOperationConfirmationContract =
   Object.freeze({
-    contractVersion: coreContractVersion,
+    contractVersion: confirmationApplicationContract.contractVersion,
     inputSchema: tokenCatalogOperationConfirmationInputSchema,
     successSchema: tokenCatalogConfirmedOperationSchema,
     failureCodes: confirmationApplicationContract.failureCodes,
@@ -1149,6 +1143,7 @@ const validateStartCommon = <Kind extends TokenCatalogOperationKind>(
 export const tokenCatalogApplicationContracts = Object.freeze({
   selection: defineApplicationContract({
     capabilityId: "token.selection",
+    contractVersion: "1",
     inputSchema: selectionInputSchema,
     successSchema: tokenSelectionDetailSchema,
     failureCodes: contractFailureCodes.selection,
@@ -1160,6 +1155,7 @@ export const tokenCatalogApplicationContracts = Object.freeze({
   }),
   selections: defineApplicationContract({
     capabilityId: "token.selections",
+    contractVersion: "1",
     inputSchema: selectionsInputSchema,
     requestSchema: selectionsRequestSchema,
     successSchema: selectionListResultSchema,
@@ -1176,6 +1172,7 @@ export const tokenCatalogApplicationContracts = Object.freeze({
   }),
   startAddition: defineApplicationContract({
     capabilityId: "token.start_addition",
+    contractVersion: "1",
     inputSchema: startAdditionInputSchema,
     successSchema: selectionOperationStartResultSchema,
     failureCodes: contractFailureCodes.startAddition,
@@ -1194,6 +1191,7 @@ export const tokenCatalogApplicationContracts = Object.freeze({
   }),
   startRemoval: defineApplicationContract({
     capabilityId: "token.start_removal",
+    contractVersion: "1",
     inputSchema: startRemovalInputSchema,
     successSchema: removalOperationStartResultSchema,
     failureCodes: contractFailureCodes.startRemoval,
@@ -1212,6 +1210,7 @@ export const tokenCatalogApplicationContracts = Object.freeze({
   }),
   operation: defineApplicationContract({
     capabilityId: "token.operation",
+    contractVersion: "1",
     inputSchema: operationInputSchema,
     successSchema: operationResultSchema,
     failureCodes: contractFailureCodes.operation,
@@ -1219,6 +1218,7 @@ export const tokenCatalogApplicationContracts = Object.freeze({
   }),
   cancelOperation: defineApplicationContract({
     capabilityId: "token.cancel_operation",
+    contractVersion: "1",
     inputSchema: operationInputSchema,
     successSchema: operationCancellationResultSchema,
     failureCodes: contractFailureCodes.cancelOperation,

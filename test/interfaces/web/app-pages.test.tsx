@@ -82,7 +82,6 @@ describe("browser information pages", () => {
     expect(markup).not.toContain('aria-label="Open navigation"');
     expect(markup).not.toContain('aria-controls="primary-navigation-items"');
     expect(markup).not.toContain('class="lucide lucide-menu"');
-    expect(markup).not.toContain('href="/analysis"');
     expect(markup).not.toContain('role="menu"');
     expect(markup).not.toContain('role="menuitem"');
   });

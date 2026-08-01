@@ -40,7 +40,7 @@ import {
   type OfficialAssetSourceMember,
 } from "../registry/browser.js";
 import { officialAssetCandidateListDigest } from "../registry/official-asset-contract.js";
-import { accountAssetErrorRegistry } from "./error-registry.js";
+import { tokenCatalogErrorRegistry } from "../token-catalog/error-registry.js";
 
 export const accountAssetLimits = Object.freeze({
   defaultPageSize: 5,
@@ -463,10 +463,11 @@ const wholeRequestFailureCodes = Object.freeze([
 ]);
 
 const overviewApplicationContract = defineApplicationContract({
+  contractVersion: "1",
   inputSchema: overviewInputSchema,
   successSchema: overviewSuccessSchema,
   internalContextSchema: jsonObject({}).strict(),
-  errorRegistry: accountAssetErrorRegistry,
+  errorRegistry: tokenCatalogErrorRegistry,
   failureCodes: wholeRequestFailureCodes,
   validatePublicSuccess: (_input, success) => {
     if (
@@ -479,6 +480,7 @@ const overviewApplicationContract = defineApplicationContract({
 });
 
 export const accountAssetOverviewQueryContract = Object.freeze({
+  contractVersion: overviewApplicationContract.contractVersion,
   inputSchema: overviewInputSchema,
   successSchema: overviewSuccessSchema,
   failureCodes: overviewApplicationContract.failureCodes,
@@ -489,6 +491,7 @@ export const accountAssetOverviewQueryContract = Object.freeze({
 });
 
 export interface AccountAssetRequestContract<Input, Success> {
+  readonly contractVersion: "1";
   readonly inputSchema: ZodType<Input>;
   readonly successSchema: ZodType<Success>;
   readonly failureCodes: readonly string[];
@@ -506,6 +509,7 @@ export interface AccountAssetApplicationContract<Input, Success>
 
 const defineAccountAssetContract = <Input, Success>(options: Readonly<{
   capabilityId: "account.assets" | "account.asset";
+  contractVersion: "1";
   inputSchema: ZodType<Input>;
   correlationInputSchema?: ZodType<Input>;
   successSchema: ZodType<Success>;
@@ -514,18 +518,20 @@ const defineAccountAssetContract = <Input, Success>(options: Readonly<{
 }>): AccountAssetApplicationContract<Input, Success> => {
   const capabilityId = capabilityIdSchema.parse(options.capabilityId);
   const applicationContract = defineApplicationContract({
+    contractVersion: options.contractVersion,
     inputSchema: options.inputSchema,
     ...(options.correlationInputSchema === undefined
       ? {}
       : { correlationInputSchema: options.correlationInputSchema }),
     successSchema: options.successSchema,
     internalContextSchema: jsonObject({}).strict(),
-    errorRegistry: accountAssetErrorRegistry,
+    errorRegistry: tokenCatalogErrorRegistry,
     failureCodes: options.failureCodes,
     validatePublicSuccess: options.validatePublicSuccess,
   });
   return Object.freeze({
     capabilityId,
+    contractVersion: applicationContract.contractVersion,
     applicationContract,
     inputSchema: options.inputSchema,
     successSchema: options.successSchema,
@@ -540,6 +546,7 @@ const defineAccountAssetContract = <Input, Success>(options: Readonly<{
 export const accountAssetApplicationContracts = Object.freeze({
   collection: defineAccountAssetContract({
     capabilityId: "account.assets",
+    contractVersion: "1",
     inputSchema: collectionInputSchema,
     correlationInputSchema: collectionRequestSchema,
     successSchema: collectionSuccessSchema,
@@ -556,6 +563,7 @@ export const accountAssetApplicationContracts = Object.freeze({
   }),
   exact: defineAccountAssetContract({
     capabilityId: "account.asset",
+    contractVersion: "1",
     inputSchema: exactInputSchema,
     successSchema: exactSuccessSchema,
     failureCodes: [...wholeRequestFailureCodes, "token_selection_not_found"],

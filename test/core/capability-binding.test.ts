@@ -526,6 +526,7 @@ describe("capability binding authority", () => {
     });
     const definition = defineReadCapability<{}, z.infer<typeof dataSchema>>({
       capabilityId: "test.public_record_digest",
+      contractVersion: "1",
       inputSchema: z.object({}).strict(),
       dataSchema,
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
@@ -882,6 +883,7 @@ describe("capability binding authority", () => {
     const inputEvidence = createValidatedInputEvidenceFragment(inputReplay);
     const definition = defineReadCapability<{ values: string[] }, { values: string[] }>({
       capabilityId: "test.portlifecycle",
+      contractVersion: "1",
       inputSchema: z.object({ values: z.array(z.string()).min(1) }).strict(),
       dataSchema: z.object({ values: z.array(z.string()).min(1) }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
@@ -968,6 +970,7 @@ describe("capability binding authority", () => {
     );
     const duplicateDefinition = defineReadCapability<{}, { value: string }>({
       capabilityId: "test.duplicateportlayout",
+      contractVersion: "1",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
@@ -1935,6 +1938,7 @@ describe("capability binding authority", () => {
     const inputEvidence = createValidatedInputEvidenceFragment(replay);
     const definition = defineReadCapability<{ value: string }, { value: string }>({
       capabilityId: "test.validated",
+      contractVersion: "1",
       inputSchema: z.object({ value: z.string() }).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
@@ -2004,6 +2008,7 @@ describe("capability binding authority", () => {
     const inputEvidence = createValidatedInputEvidenceFragment(replay);
     const definition = defineReadCapability<{ address: string }, { address: string }>({
       capabilityId: "test.dynamicconclusion",
+      contractVersion: "1",
       inputSchema: z.object({ address: z.string().regex(/^0x[0-9a-f]{40}$/) }).strict(),
       dataSchema: z.object({ address: z.string().regex(/^0x[0-9a-f]{40}$/) }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
@@ -2062,6 +2067,7 @@ describe("capability binding authority", () => {
     const inputEvidence = createValidatedInputEvidenceFragment(replay);
     const definition = defineReadCapability<{}, { value: string }>({
       capabilityId: "test.scopeexclusion",
+      contractVersion: "1",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
@@ -2107,6 +2113,7 @@ describe("capability binding authority", () => {
     });
     const definition = defineReadCapability<{}, { value: string }>({
       capabilityId: "test.slotownership",
+      contractVersion: "1",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
@@ -2186,6 +2193,7 @@ describe("capability binding authority", () => {
     });
     const definition = defineReadCapability<{}, z.infer<typeof dataSchema>>({
       capabilityId: "test.reference_role",
+      contractVersion: "1",
       inputSchema: z.object({}).strict(),
       dataSchema,
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
@@ -2259,6 +2267,7 @@ describe("capability binding authority", () => {
     });
     const definition = defineReadCapability<{}, { value: string }>({
       capabilityId: "test.factauthority",
+      contractVersion: "1",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
@@ -2320,6 +2329,7 @@ describe("capability binding authority", () => {
     });
     const definition = defineReadCapability<{}, { value: string }>({
       capabilityId: "test.emptyevidence",
+      contractVersion: "1",
       inputSchema: z.object({}).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],

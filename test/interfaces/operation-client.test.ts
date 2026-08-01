@@ -20,7 +20,6 @@ import {
   type RuntimeOwnerSessionIdentity,
   type RuntimeOwnerSessionPort,
   type RuntimeOwnerSessionRequest,
-  runtimeProtocolVersion,
 } from "../../src/runtime/index.js";
 import {
   parseOwnerInstanceId,
@@ -38,7 +37,6 @@ const ownerIdentity = (overrides: Partial<RuntimeOwnerSessionIdentity> = {}): Ru
   Object.freeze({
     profileId: parseProfileId(Buffer.alloc(16, 1).toString("base64url")),
     ownerInstanceId: parseOwnerInstanceId(Buffer.alloc(16, 2).toString("base64url")),
-    runtimeProtocolVersion,
     configurationMac: parseRuntimeConfigurationMac(Buffer.alloc(32, 3).toString("base64url")),
     ownerRevision: parseRuntimeRevision("1"),
     ...overrides,
@@ -214,7 +212,6 @@ describe("authenticated local operation client", () => {
     const replacements: RuntimeOwnerSessionIdentity[] = [
       ownerIdentity({ profileId: parseProfileId(Buffer.alloc(16, 4).toString("base64url")) }),
       ownerIdentity({ ownerInstanceId: parseOwnerInstanceId(Buffer.alloc(16, 5).toString("base64url")) }),
-      ownerIdentity({ runtimeProtocolVersion: runtimeProtocolVersion + 1 } as unknown as Partial<RuntimeOwnerSessionIdentity>),
       ownerIdentity({
         configurationMac: parseRuntimeConfigurationMac(Buffer.alloc(32, 6).toString("base64url")),
       }),

@@ -24,7 +24,6 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   ObservationAuthorityRegistry,
-  canonicalJsonStringify,
   createCanonicalClock,
   parseEvmChainId,
   parseCapabilityDataAt,
@@ -41,7 +40,6 @@ import {
 import {
   decodeWalletAccountRecordKey,
   ProductDatabase,
-  type ProductDatabaseStateFileAuthority,
 } from "../../src/runtime/database.js";
 import { createWalletPrivateStoreDirectoryPort } from "../../src/runtime/composition.js";
 import { RuntimeOperationError } from "../../src/runtime/errors.js";
@@ -59,7 +57,7 @@ import {
   ensureOwnerOnlyDirectory,
   resolveApplicationDataDirectory,
   runtimePaths,
-  type OwnerOnlyStateFileLeaseFactory,
+  sameOwnerOnlyStateFileIdentity,
 } from "../../src/runtime/paths.js";
 import {
   createOwnerInstanceId,
@@ -67,7 +65,6 @@ import {
   parseOwnerInstanceId,
   parseProfileId,
   parseRuntimeRevision,
-  runtimeProtocolVersion,
 } from "../../src/runtime/runtime-identity.js";
 import {
   canonicalSelectionRevisionSqlCheck,
@@ -75,8 +72,10 @@ import {
   canonicalRuntimeIdentifierSqlCheck,
   canonicalSqlTextCheck,
   currentSqliteSchemaSql,
-  currentSqliteTableNames,
-  databaseSchemaVersion,
+  getRuntimeStateResetRequiredError,
+  hasExactCurrentSqliteStructure,
+  runtimeStateResetRequiredCode,
+  runtimeStateResetRequiredMessage,
 } from "../../src/runtime/sqlite-schema.js";
 import {
   createWalletConnectConfiguration,
@@ -99,6 +98,26 @@ const publicationStagingPath = (
   suffix: "" | "-wal" | "-shm" = "",
 ): string => `${databasePath}.pending-2147483646-${Buffer.alloc(16, tokenByte).toString("base64url")}${suffix}`;
 
+interface ExactFileIdentity {
+  readonly device: bigint;
+  readonly inode: bigint;
+}
+
+const exactFileIdentity = async (path: string): Promise<ExactFileIdentity> => {
+  const details = await lstat(path, { bigint: true });
+  return Object.freeze({ device: details.dev, inode: details.ino });
+};
+
+const optionalExactFileIdentity = async (
+  path: string,
+): Promise<ExactFileIdentity | undefined> => {
+  try { return await exactFileIdentity(path); }
+  catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+    throw error;
+  }
+};
+
 afterEach(async () => {
   for (const child of childProcesses.splice(0)) {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
@@ -106,12 +125,264 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-const expectRuntimeCode = async (operation: Promise<unknown>, code: string): Promise<void> => {
+const expectRuntimeCode = async (
+  operation: Promise<unknown>,
+  code: string,
+  label?: string,
+): Promise<void> => {
   let failure: unknown;
   try { await operation; }
   catch (error) { failure = error; }
-  expect(failure).toBeInstanceOf(RuntimeOperationError);
-  expect((failure as RuntimeOperationError).failure.error.code).toBe(code);
+  expect(failure, label).toBeInstanceOf(RuntimeOperationError);
+  expect((failure as RuntimeOperationError).failure.error.code, label).toBe(code);
+};
+
+const expectResetRequired = async (operation: Promise<unknown>): Promise<void> => {
+  let failure: unknown;
+  try { await operation; }
+  catch (error) { failure = error; }
+  const admitted = getRuntimeStateResetRequiredError(failure);
+  expect(admitted).toBe(failure);
+  expect(admitted).toMatchObject({
+    name: "RuntimeStateResetRequiredError",
+    code: runtimeStateResetRequiredCode,
+    message: runtimeStateResetRequiredMessage,
+  });
+};
+
+interface IndependentSqliteSchemaRow {
+  readonly type: string;
+  readonly name: string;
+  readonly tableName: string;
+  readonly sql: string | null;
+}
+
+interface ProjectedSqliteSchemaRow {
+  readonly typeStorage: "text";
+  readonly typeBytes: Buffer;
+  readonly nameStorage: "text";
+  readonly nameBytes: Buffer;
+  readonly tableNameStorage: "text";
+  readonly tableNameBytes: Buffer;
+  readonly sqlStorage: "null" | "text";
+  readonly sqlBytes: Buffer | null;
+}
+
+interface ObservedSqliteSchemaRead {
+  readonly preparedSql: string[];
+  readonly iterateParameters: (readonly unknown[])[];
+  yieldedRows: number;
+}
+
+const expectedBoundedSqliteSchemaSelect = `SELECT
+  typeof(type) AS typeStorage,
+  substr(CAST(type AS BLOB), 1, ?) AS typeBytes,
+  typeof(name) AS nameStorage,
+  substr(CAST(name AS BLOB), 1, ?) AS nameBytes,
+  typeof(tbl_name) AS tableNameStorage,
+  substr(CAST(tbl_name AS BLOB), 1, ?) AS tableNameBytes,
+  typeof(sql) AS sqlStorage,
+  CASE WHEN sql IS NULL THEN NULL ELSE substr(CAST(sql AS BLOB), 1, ?) END AS sqlBytes
+FROM sqlite_schema
+LIMIT ?`;
+
+const normalizeBoundedSqliteSchemaSelect = (sql: string): string =>
+  sql.replace(/[\u0009-\u000d\u0020]+/gu, " ").trim();
+
+const isExpectedBoundedSqliteSchemaSelect = (sql: string): boolean =>
+  normalizeBoundedSqliteSchemaSelect(sql) ===
+    normalizeBoundedSqliteSchemaSelect(expectedBoundedSqliteSchemaSelect);
+
+const replaceExactSqlFragment = (
+  sql: string,
+  original: string,
+  replacement: string,
+): string => {
+  const start = sql.indexOf(original);
+  if (start === -1 || sql.indexOf(original, start + original.length) !== -1) {
+    throw new TypeError("The test-owned SQL mutation target must occur exactly once.");
+  }
+  return `${sql.slice(0, start)}${replacement}${sql.slice(start + original.length)}`;
+};
+
+const rowLimitExpansionSql = replaceExactSqlFragment(
+  expectedBoundedSqliteSchemaSelect,
+  "LIMIT ?",
+  "LIMIT ? + 1000",
+);
+const unreachableTypePrefixSql = replaceExactSqlFragment(
+  expectedBoundedSqliteSchemaSelect,
+  "substr(CAST(type AS BLOB), 1, ?) AS typeBytes",
+  `CASE WHEN length(type) >= 0 THEN CAST(type AS BLOB)
+    ELSE substr(CAST(type AS BLOB), 1, ?) END AS typeBytes`,
+);
+const boundedSqliteSchemaSelectMutants = Object.freeze([
+  Object.freeze({ name: "expanded row limit", sql: rowLimitExpansionSql }),
+  Object.freeze({ name: "unreachable type prefix", sql: unreachableTypePrefixSql }),
+  Object.freeze({
+    name: "row-hiding filter",
+    sql: replaceExactSqlFragment(
+      expectedBoundedSqliteSchemaSelect,
+      "FROM sqlite_schema\nLIMIT ?",
+      "FROM sqlite_schema\nWHERE name <> 'local_profile'\nLIMIT ?",
+    ),
+  }),
+  Object.freeze({
+    name: "unbounded ordering",
+    sql: replaceExactSqlFragment(
+      expectedBoundedSqliteSchemaSelect,
+      "FROM sqlite_schema\nLIMIT ?",
+      "FROM sqlite_schema\nORDER BY name\nLIMIT ?",
+    ),
+  }),
+  Object.freeze({
+    name: "changed storage-class probe",
+    sql: replaceExactSqlFragment(
+      expectedBoundedSqliteSchemaSelect,
+      "typeof(type) AS typeStorage",
+      "typeof(name) AS typeStorage",
+    ),
+  }),
+  Object.freeze({
+    name: "lost null preservation",
+    sql: replaceExactSqlFragment(
+      expectedBoundedSqliteSchemaSelect,
+      "CASE WHEN sql IS NULL THEN NULL ELSE substr(CAST(sql AS BLOB), 1, ?) END AS sqlBytes",
+      "COALESCE(substr(CAST(sql AS BLOB), 1, ?), X'') AS sqlBytes",
+    ),
+  }),
+  Object.freeze({
+    name: "changed result alias",
+    sql: replaceExactSqlFragment(
+      expectedBoundedSqliteSchemaSelect,
+      "AS tableNameBytes",
+      "AS otherTableNameBytes",
+    ),
+  }),
+]);
+
+const projectIndependentSqliteSchemaRow = (
+  row: IndependentSqliteSchemaRow,
+): ProjectedSqliteSchemaRow => ({
+  typeStorage: "text",
+  typeBytes: Buffer.from(row.type, "utf8"),
+  nameStorage: "text",
+  nameBytes: Buffer.from(row.name, "utf8"),
+  tableNameStorage: "text",
+  tableNameBytes: Buffer.from(row.tableName, "utf8"),
+  sqlStorage: row.sql === null ? "null" : "text",
+  sqlBytes: row.sql === null ? null : Buffer.from(row.sql, "utf8"),
+});
+
+const independentSqliteSchemaTupleBytes = (row: IndependentSqliteSchemaRow): number =>
+  Buffer.byteLength(row.type, "utf8") +
+  Buffer.byteLength(row.name, "utf8") +
+  Buffer.byteLength(row.tableName, "utf8") +
+  1 +
+  (row.sql === null ? 0 : Buffer.byteLength(row.sql, "utf8"));
+
+const createObservedSqliteSchemaDatabase = (
+  rows: readonly (ProjectedSqliteSchemaRow | (() => never))[],
+): Readonly<{
+  database: Database.Database;
+  observation: ObservedSqliteSchemaRead;
+}> => {
+  const observation: ObservedSqliteSchemaRead = {
+    preparedSql: [],
+    iterateParameters: [],
+    yieldedRows: 0,
+  };
+  const statement = {
+    all: (): never => {
+      throw new Error("The bounded SQLite verifier must not materialize schema rows.");
+    },
+    iterate: (...parameters: readonly unknown[]): IterableIterator<ProjectedSqliteSchemaRow> => {
+      observation.iterateParameters.push(Object.freeze([...parameters]));
+      let index = 0;
+      return {
+        [Symbol.iterator]() { return this; },
+        next(): IteratorResult<ProjectedSqliteSchemaRow> {
+          const row = rows[index];
+          index += 1;
+          if (row === undefined) return { done: true, value: undefined };
+          observation.yieldedRows += 1;
+          return {
+            done: false,
+            value: typeof row === "function" ? row() : row,
+          };
+        },
+      };
+    },
+  };
+  const database = {
+    prepare: (sql: string) => {
+      observation.preparedSql.push(sql);
+      return statement;
+    },
+  } as unknown as Database.Database;
+  return Object.freeze({ database, observation });
+};
+
+const compareIndependentSchemaRows = (
+  left: IndependentSqliteSchemaRow,
+  right: IndependentSqliteSchemaRow,
+): number => {
+  for (const [leftValue, rightValue] of [
+    [left.type, right.type],
+    [left.name, right.name],
+    [left.tableName, right.tableName],
+  ] as const) {
+    const comparison = Buffer.compare(Buffer.from(leftValue, "utf8"), Buffer.from(rightValue, "utf8"));
+    if (comparison !== 0) return comparison;
+  }
+  if (left.sql === null || right.sql === null) {
+    if (left.sql === right.sql) return 0;
+    return left.sql === null ? -1 : 1;
+  }
+  return Buffer.compare(Buffer.from(left.sql, "utf8"), Buffer.from(right.sql, "utf8"));
+};
+
+const readIndependentSqliteSchema = (
+  database: Database.Database,
+): readonly IndependentSqliteSchemaRow[] =>
+  Object.freeze((database.prepare(`SELECT type, name, tbl_name AS tableName, sql
+    FROM sqlite_schema`).all() as IndependentSqliteSchemaRow[]).sort(compareIndependentSchemaRows));
+
+const deriveIndependentCurrentSqliteSchema = (): readonly IndependentSqliteSchemaRow[] => {
+  const database = new Database(":memory:");
+  try {
+    database.exec(currentSqliteSchemaSql);
+    return readIndependentSqliteSchema(database);
+  } finally {
+    database.close();
+  }
+};
+
+const maximumIndependentSqliteSchemaFieldBytes = (
+  rows: readonly IndependentSqliteSchemaRow[],
+  field: keyof IndependentSqliteSchemaRow,
+): number => Math.max(...rows.map((row) => {
+  const value = row[field];
+  return value === null ? 0 : Buffer.byteLength(value, "utf8");
+}));
+
+const deriveIndependentSqliteSchemaReadParameters = (
+  rows: readonly IndependentSqliteSchemaRow[],
+): readonly [number, number, number, number, number] => Object.freeze([
+  maximumIndependentSqliteSchemaFieldBytes(rows, "type") + 1,
+  maximumIndependentSqliteSchemaFieldBytes(rows, "name") + 1,
+  maximumIndependentSqliteSchemaFieldBytes(rows, "tableName") + 1,
+  maximumIndependentSqliteSchemaFieldBytes(rows, "sql") + 1,
+  rows.length + 1,
+]);
+
+const expectSingleObservedSqliteSchemaRead = (
+  observation: ObservedSqliteSchemaRead,
+  expectedParameters: readonly [number, number, number, number, number],
+  label?: string,
+): void => {
+  expect(observation.preparedSql, label).toHaveLength(1);
+  expect(observation.iterateParameters, label).toEqual([expectedParameters]);
 };
 
 const sqliteArtifactSnapshot = async (path: string): Promise<readonly {
@@ -141,7 +412,7 @@ const sqliteDurableArtifactSnapshot = async (path: string) =>
 
 const launchSqliteCrashWorker = async (
   directory: string,
-  mode: "committed" | "interrupted" | "catalog-interrupted" = "committed",
+  mode: "committed" | "interrupted" | "catalog-interrupted" | "structural-mismatch" = "committed",
 ): Promise<ChildProcess> => {
   const workerPath = fileURLToPath(new URL("./sqlite-crash-worker.ts", import.meta.url));
   const child = fork(workerPath, [directory, mode], {
@@ -180,37 +451,6 @@ const killSqliteCrashWorker = async (child: ChildProcess): Promise<void> => {
   if (process.platform !== "win32" && result.signal !== "SIGKILL") {
     throw new Error(`SQLite crash worker did not exit by SIGKILL (${String(result.code)}/${String(result.signal)}).`);
   }
-};
-
-const replacingStateFileAuthority = (
-  replaceOnAssertion: number,
-): { readonly authority: ProductDatabaseStateFileAuthority; readonly replacements: () => number } => {
-  let replacements = 0;
-  const acquireMainLease: OwnerOnlyStateFileLeaseFactory = (path, size) => {
-    const lease = acquireOwnerOnlyStateFileLease(path, size);
-    let assertions = 0;
-    return Object.freeze({
-      assertCurrent: (): void => {
-        assertions += 1;
-        if (assertions === replaceOnAssertion) {
-          const replacement = `${path}.replacement`;
-          copyFileSync(path, replacement);
-          if (process.platform !== "win32") chmodSync(replacement, 0o600);
-          renameSync(replacement, path);
-          replacements += 1;
-        }
-        lease.assertCurrent();
-      },
-      stat: () => lease.stat(),
-      read: (buffer: Buffer, offset: number, length: number, position: number) =>
-        lease.read(buffer, offset, length, position),
-      close: () => lease.close(),
-    });
-  };
-  return Object.freeze({
-    authority: Object.freeze({ acquireMainLease }),
-    replacements: () => replacements,
-  });
 };
 
 const connectedInput = (expiresAt = "2026-07-18T17:39:16.000Z") => ({
@@ -305,13 +545,13 @@ describe("application data and local credential", () => {
     const paths = runtimePaths(directory);
     await ensureOwnerOnlyDirectory(directory);
     await writeFile(paths.controlCredential, "invalid\n", { encoding: "utf8", mode: 0o600 });
-    const before = await lstat(paths.controlCredential);
+    const before = await exactFileIdentity(paths.controlCredential);
     await expectRuntimeCode(
       loadOrCreateControlCredential(directory, paths.controlCredential),
       "runtime_state_unavailable",
     );
     expect(await readFile(paths.controlCredential, "utf8")).toBe("invalid\n");
-    expect((await lstat(paths.controlCredential)).ino).toBe(before.ino);
+    expect(await exactFileIdentity(paths.controlCredential)).toEqual(before);
 
     if (process.platform !== "win32") {
       const weakDirectory = await temporaryDirectory();
@@ -369,6 +609,19 @@ describe("application data and local credential", () => {
     }
   });
 
+  it("compares the complete bigint file identity without a safe-integer projection", () => {
+    const baseline = Object.freeze({ device: 7n, inode: 9_007_199_254_740_992n });
+    expect(sameOwnerOnlyStateFileIdentity(baseline, baseline)).toBe(true);
+    expect(sameOwnerOnlyStateFileIdentity(
+      baseline,
+      Object.freeze({ device: 7n, inode: 9_007_199_254_740_993n }),
+    )).toBe(false);
+    expect(sameOwnerOnlyStateFileIdentity(
+      baseline,
+      Object.freeze({ device: 8n, inode: baseline.inode }),
+    )).toBe(false);
+  });
+
   it("binds WalletConnect private-directory preparation to the owner lifecycle", async () => {
     const directory = await temporaryDirectory();
     const activeController = new AbortController();
@@ -392,15 +645,271 @@ describe("application data and local credential", () => {
 
 describe("SQLite product state", () => {
   it("preserves the independent canonical SQLite schema bytes", () => {
-    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(23_690);
+    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(23_597);
     expect(createHash("sha256").update(currentSqliteSchemaSql, "utf8").digest("hex")).toBe(
-      "a969ee4a4e1cf1cf4d6da18eb1a0ab3903f0242ebcc67d719ab61a7e93af62fa",
+      "44a16c225e8c07a2cf295ddb82faa3d4fc039614d3ef0cf1ac940669a14a8f7e",
     );
-    const tableNames = canonicalJsonStringify([...currentSqliteTableNames]);
-    expect(Buffer.byteLength(tableNames, "utf8")).toBe(360);
-    expect(createHash("sha256").update(tableNames, "utf8").digest("hex")).toBe(
-      "6928ddec8173cd56866b1e7ac785932dbfeb86f3e288f15887c3cece3917b5de",
+    const structure = JSON.stringify(deriveIndependentCurrentSqliteSchema());
+    expect(createHash("sha256").update(structure, "utf8").digest("hex")).toBe(
+      "e2fbb617492266df0a3206cad945ff5a0368369241a340a61be921bf82dcf979",
     );
+  });
+
+  it("compares the complete current SQLite structure within reference-derived bounds", () => {
+    const openCurrent = (): Database.Database => {
+      const database = new Database(":memory:");
+      database.exec(currentSqliteSchemaSql);
+      return database;
+    };
+    const currentRows = deriveIndependentCurrentSqliteSchema();
+    const maximumBytes = (field: keyof IndependentSqliteSchemaRow): number => Math.max(
+      ...currentRows.map((row) => {
+        const value = row[field];
+        return value === null ? 0 : Buffer.byteLength(value, "utf8");
+      }),
+    );
+
+    const exact = openCurrent();
+    expect(hasExactCurrentSqliteStructure(exact)).toBe(true);
+    exact.unsafeMode(true);
+    exact.exec("PRAGMA writable_schema = ON");
+    exact.prepare("UPDATE sqlite_schema SET rootpage = rootpage + 1000 WHERE rootpage > 0").run();
+    expect(hasExactCurrentSqliteStructure(exact)).toBe(true);
+    exact.close();
+
+    for (const statement of [
+      "CREATE TABLE additional_table(value TEXT)",
+      "CREATE VIEW additional_view AS SELECT 1 AS value",
+      "CREATE TRIGGER additional_trigger AFTER UPDATE ON local_profile BEGIN SELECT 1; END",
+      "CREATE INDEX additional_index ON local_profile(created_at)",
+      "DROP INDEX reference_feed_round_time",
+      "DROP INDEX wallet_token_selection_token_fk; CREATE INDEX wallet_token_selection_token_fk ON wallet_token_selection(token_address)",
+    ]) {
+      const candidate = openCurrent();
+      candidate.exec(statement);
+      expect(hasExactCurrentSqliteStructure(candidate), statement).toBe(false);
+      candidate.close();
+    }
+
+    const generated = openCurrent();
+    const generatedRow = currentRows.find((row) => row.type === "index" && row.sql === null);
+    if (generatedRow === undefined) throw new TypeError("Current SQLite schema has no generated index row.");
+    generated.unsafeMode(true);
+    generated.exec("PRAGMA writable_schema = ON");
+    generated.prepare("UPDATE sqlite_schema SET name = name || 'x' WHERE type = 'index' AND name = ?")
+      .run(generatedRow.name);
+    expect(hasExactCurrentSqliteStructure(generated)).toBe(false);
+    generated.close();
+
+    for (const [field, column, condition] of [
+      ["type", "type", "1 = 1"],
+      ["name", "name", "1 = 1"],
+      ["tableName", "tbl_name", "1 = 1"],
+      ["sql", "sql", "sql IS NOT NULL"],
+    ] as const) {
+      const candidate = openCurrent();
+      candidate.unsafeMode(true);
+      candidate.exec("PRAGMA writable_schema = ON");
+      candidate.prepare(`UPDATE sqlite_schema SET ${column} = ?
+        WHERE rowid = (SELECT rowid FROM sqlite_schema WHERE ${condition} LIMIT 1)`)
+        .run("x".repeat(maximumBytes(field) + 1));
+      expect(hasExactCurrentSqliteStructure(candidate), field).toBe(false);
+      candidate.close();
+    }
+
+    const cumulative = openCurrent();
+    cumulative.unsafeMode(true);
+    cumulative.exec("PRAGMA writable_schema = ON");
+    cumulative.prepare(`UPDATE sqlite_schema SET
+      type = ?, name = ?, tbl_name = ?,
+      sql = CASE WHEN sql IS NULL THEN NULL ELSE ? END`).run(
+      "x".repeat(maximumBytes("type")),
+      "x".repeat(maximumBytes("name")),
+      "x".repeat(maximumBytes("tableName")),
+      "x".repeat(maximumBytes("sql")),
+    );
+    expect(hasExactCurrentSqliteStructure(cumulative)).toBe(false);
+    cumulative.close();
+  });
+
+  it("uses one complete bounded schema statement with independently derived binds", () => {
+    const currentRows = deriveIndependentCurrentSqliteSchema();
+    const projectedRows = currentRows.map(projectIndependentSqliteSchemaRow);
+    const expectedParameters = deriveIndependentSqliteSchemaReadParameters(currentRows);
+
+    const exact = createObservedSqliteSchemaDatabase(projectedRows);
+    expect(hasExactCurrentSqliteStructure(exact.database)).toBe(true);
+    expectSingleObservedSqliteSchemaRead(exact.observation, expectedParameters);
+    const [capturedSql] = exact.observation.preparedSql;
+    if (capturedSql === undefined) throw new TypeError("The SQLite schema statement was not observed.");
+    expect(isExpectedBoundedSqliteSchemaSelect(capturedSql)).toBe(true);
+    expect(exact.observation.yieldedRows).toBe(currentRows.length);
+
+    for (const mutant of boundedSqliteSchemaSelectMutants) {
+      expect(isExpectedBoundedSqliteSchemaSelect(mutant.sql), mutant.name).toBe(false);
+    }
+  });
+
+  it("bounds schema rows and field bytes inside SQLite before admission", () => {
+    const currentRows = deriveIndependentCurrentSqliteSchema();
+    const expectedParameters = deriveIndependentSqliteSchemaReadParameters(currentRows);
+    const observed = createObservedSqliteSchemaDatabase(
+      currentRows.map(projectIndependentSqliteSchemaRow),
+    );
+    expect(hasExactCurrentSqliteStructure(observed.database)).toBe(true);
+    expectSingleObservedSqliteSchemaRead(observed.observation, expectedParameters);
+    const [capturedSql] = observed.observation.preparedSql;
+    if (capturedSql === undefined || !isExpectedBoundedSqliteSchemaSelect(capturedSql)) {
+      throw new TypeError("The exact bounded SQLite schema statement was not observed.");
+    }
+
+    const rowFixture = new Database(":memory:");
+    try {
+      rowFixture.exec(currentSqliteSchemaSql);
+      for (let index = 0; index < expectedParameters[4] + 4; index += 1) {
+        rowFixture.exec(`CREATE TABLE extra_schema_row_${index}(value TEXT)`);
+      }
+      const raw = rowFixture.prepare(
+        "SELECT count(*) AS rowCount FROM sqlite_schema",
+      ).get() as { readonly rowCount: number };
+      expect(raw.rowCount).toBeGreaterThan(expectedParameters[4]);
+      expect(rowFixture.prepare(capturedSql).all(...expectedParameters))
+        .toHaveLength(expectedParameters[4]);
+      expect(rowFixture.prepare(rowLimitExpansionSql).all(...expectedParameters))
+        .toHaveLength(raw.rowCount);
+    } finally {
+      rowFixture.close();
+    }
+
+    for (const [field, column, bytesField, condition] of [
+      ["type", "type", "typeBytes", "1 = 1"],
+      ["name", "name", "nameBytes", "1 = 1"],
+      ["tableName", "tbl_name", "tableNameBytes", "1 = 1"],
+      ["sql", "sql", "sqlBytes", "sql IS NOT NULL"],
+    ] as const) {
+      const fieldFixture = new Database(":memory:");
+      try {
+        fieldFixture.exec(currentSqliteSchemaSql);
+        fieldFixture.unsafeMode(true);
+        fieldFixture.exec("PRAGMA writable_schema = ON");
+        const referenceMaximum = maximumIndependentSqliteSchemaFieldBytes(currentRows, field);
+        const oversizedByteLength = Math.max(64 * 1024, referenceMaximum + 2);
+        fieldFixture.prepare(`UPDATE sqlite_schema SET ${column} = ?
+          WHERE rowid = (SELECT rowid FROM sqlite_schema WHERE ${condition} LIMIT 1)`)
+          .run("x".repeat(oversizedByteLength));
+        const raw = fieldFixture.prepare(`SELECT CAST(${column} AS BLOB) AS bytes
+          FROM sqlite_schema WHERE ${condition} LIMIT 1`).get() as { readonly bytes: Buffer };
+        expect(Buffer.isBuffer(raw.bytes), field).toBe(true);
+        expect(raw.bytes.length, field).toBe(oversizedByteLength);
+
+        const boundedRows = fieldFixture.prepare(capturedSql)
+          .all(...expectedParameters) as ProjectedSqliteSchemaRow[];
+        expect(boundedRows, field).toHaveLength(currentRows.length);
+        const largestReturnedField = boundedRows.reduce((largest, row) => {
+          const bytes = row[bytesField];
+          return Math.max(largest, bytes?.length ?? 0);
+        }, 0);
+        expect(largestReturnedField, field).toBe(referenceMaximum + 1);
+
+        if (field === "type") {
+          const unboundedRows = fieldFixture.prepare(unreachableTypePrefixSql)
+            .all(...expectedParameters) as ProjectedSqliteSchemaRow[];
+          expect(unboundedRows.reduce(
+            (largest, row) => Math.max(largest, row.typeBytes.length),
+            0,
+          )).toBe(oversizedByteLength);
+        }
+      } finally {
+        fieldFixture.close();
+      }
+    }
+  });
+
+  it("stops schema consumption immediately after every decisive rejection", () => {
+    const currentRows = deriveIndependentCurrentSqliteSchema();
+    const projectedRows = currentRows.map(projectIndependentSqliteSchemaRow);
+    const expectedParameters = deriveIndependentSqliteSchemaReadParameters(currentRows);
+    const maximumBytes = (field: keyof IndependentSqliteSchemaRow): number =>
+      maximumIndependentSqliteSchemaFieldBytes(currentRows, field);
+    const neverConsume = (): never => {
+      throw new Error("The bounded SQLite verifier consumed rows after its result was known.");
+    };
+
+    const exact = createObservedSqliteSchemaDatabase(projectedRows);
+    expect(hasExactCurrentSqliteStructure(exact.database)).toBe(true);
+    expectSingleObservedSqliteSchemaRead(exact.observation, expectedParameters);
+    expect(exact.observation.yieldedRows).toBe(currentRows.length);
+
+    const rowOverflow = createObservedSqliteSchemaDatabase([
+      ...projectedRows,
+      projectedRows[0] as ProjectedSqliteSchemaRow,
+      neverConsume,
+    ]);
+    expect(hasExactCurrentSqliteStructure(rowOverflow.database)).toBe(false);
+    expectSingleObservedSqliteSchemaRead(rowOverflow.observation, expectedParameters, "row count");
+    expect(rowOverflow.observation.yieldedRows).toBe(currentRows.length + 1);
+
+    for (const [field, bytesField] of [
+      ["type", "typeBytes"],
+      ["name", "nameBytes"],
+      ["tableName", "tableNameBytes"],
+      ["sql", "sqlBytes"],
+    ] as const) {
+      const first = projectedRows[0];
+      if (first === undefined) throw new TypeError("Current SQLite schema is empty.");
+      const invalid = {
+        ...first,
+        [bytesField]: Buffer.alloc(maximumBytes(field) + 1, 0x78),
+        ...(field === "sql" ? { sqlStorage: "text" as const } : {}),
+      } as ProjectedSqliteSchemaRow;
+      const fieldOverflow = createObservedSqliteSchemaDatabase([invalid, neverConsume]);
+      expect(hasExactCurrentSqliteStructure(fieldOverflow.database), field).toBe(false);
+      expectSingleObservedSqliteSchemaRead(fieldOverflow.observation, expectedParameters, field);
+      expect(fieldOverflow.observation.yieldedRows, field).toBe(1);
+    }
+
+    const totalReferenceBytes = currentRows.reduce(
+      (total, row) => total + independentSqliteSchemaTupleBytes(row),
+      0,
+    );
+    const expandable = currentRows.flatMap((row, index) => ([
+      ["type", "typeBytes"],
+      ["name", "nameBytes"],
+      ["tableName", "tableNameBytes"],
+      ["sql", "sqlBytes"],
+    ] as const).flatMap(([field, bytesField]) => {
+      const value = row[field];
+      return value !== null && Buffer.byteLength(value, "utf8") < maximumBytes(field)
+        ? [{ index, bytesField }]
+        : [];
+    }))[0];
+    if (expandable === undefined) {
+      throw new TypeError("Current SQLite schema has no independently expandable bounded field.");
+    }
+    const aggregateRows = projectedRows.map((row, index) => index === expandable.index
+      ? {
+          ...row,
+          [expandable.bytesField]: Buffer.concat([
+            row[expandable.bytesField] as Buffer,
+            Buffer.from("x"),
+          ]),
+        }
+      : row);
+    const aggregateBytes = aggregateRows.reduce((total, row) =>
+      total + row.typeBytes.length + row.nameBytes.length + row.tableNameBytes.length + 1 +
+      (row.sqlBytes?.length ?? 0), 0);
+    expect(aggregateBytes).toBe(totalReferenceBytes + 1);
+    const aggregateOverflow = createObservedSqliteSchemaDatabase([
+      ...aggregateRows,
+      neverConsume,
+    ]);
+    expect(hasExactCurrentSqliteStructure(aggregateOverflow.database)).toBe(false);
+    expectSingleObservedSqliteSchemaRead(
+      aggregateOverflow.observation,
+      expectedParameters,
+      "aggregate bytes",
+    );
+    expect(aggregateOverflow.observation.yieldedRows).toBe(currentRows.length);
   });
 
   it("exposes catalog queries through a runtime object without mutation methods", async () => {
@@ -429,7 +938,6 @@ describe("SQLite product state", () => {
     expect(parseProfileId(profileId)).toBe(profileId);
     expect(parseOwnerInstanceId(ownerInstanceId)).toBe(ownerInstanceId);
     expect(parseRuntimeRevision("0")).toBe("0");
-    expect(runtimeProtocolVersion).toBe(16);
     const noncanonicalTail = `${"A".repeat(21)}B`;
     expect(() => parseProfileId(noncanonicalTail)).toThrow();
     expect(() => parseOwnerInstanceId(noncanonicalTail)).toThrow();
@@ -443,40 +951,9 @@ describe("SQLite product state", () => {
       profileId: database.ownerStore().readProfile().profileId,
       ownerInstanceId,
       configurationMac,
-      protocolVersion: runtimeProtocolVersion,
       ownerRevision: "1",
     });
     database.close();
-  });
-
-  it("keeps the database schema independent from a stale owner protocol projection", async () => {
-    const directory = await temporaryDirectory();
-    await ensureOwnerOnlyDirectory(directory);
-    const path = runtimePaths(directory).database;
-    const initial = await ProductDatabase.open(path, observedAt);
-    initial.ownerStore().publishOwner(createOwnerInstanceId(), configurationMac, observedAt);
-    initial.close();
-
-    const stale = new Database(path);
-    expect(() => stale.prepare("UPDATE runtime_owner SET protocol_version = 0 WHERE singleton = 1").run())
-      .toThrow();
-    expect(() => stale.prepare("UPDATE runtime_owner SET protocol_version = ? WHERE singleton = 1")
-      .run(Number.MAX_SAFE_INTEGER + 1)).toThrow();
-    stale.prepare("UPDATE runtime_owner SET protocol_version = ? WHERE singleton = 1")
-      .run(runtimeProtocolVersion - 1);
-    expect(stale.pragma("user_version", { simple: true })).toBe(databaseSchemaVersion);
-    stale.close();
-
-    const reopened = await ProductDatabase.open(path, observedAt);
-    expect(reopened.ownerStore().readOwner()?.protocolVersion).toBe(runtimeProtocolVersion - 1);
-    const current = reopened.ownerStore().publishOwner(
-      createOwnerInstanceId(),
-      configurationMac,
-      observedAt,
-    );
-    expect(current.protocolVersion).toBe(runtimeProtocolVersion);
-    expect(current.ownerRevision).toBe("2");
-    reopened.close();
   });
 
   it("publishes one complete current-schema database and preserves one profile", async () => {
@@ -495,26 +972,8 @@ describe("SQLite product state", () => {
       database.close();
     }
     const inspection = new Database(path, { readonly: true });
-    expect(inspection.pragma("user_version", { simple: true })).toBe(databaseSchemaVersion);
-    expect(inspection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all())
-      .toEqual([
-        { name: "chain" },
-        { name: "contract" },
-        { name: "current_wallet_connection" },
-        { name: "local_profile" },
-        { name: "reference_feed_round" },
-        { name: "reference_feed_sync_state" },
-        { name: "reference_pair_watchlist_entry" },
-        { name: "reference_pair_watchlist_state" },
-        { name: "robinhood_asset" },
-        { name: "robinhood_asset_snapshot" },
-        { name: "runtime_owner" },
-        { name: "token_contract" },
-        { name: "token_contract_inspection" },
-        { name: "wallet_account" },
-        { name: "wallet_token_selection" },
-        { name: "wallet_token_selection_state" },
-      ]);
+    expect(inspection.pragma("user_version", { simple: true })).toBe(1);
+    expect(readIndependentSqliteSchema(inspection)).toEqual(deriveIndependentCurrentSqliteSchema());
     const referenceSyncColumns = inspection.pragma("table_xinfo(reference_feed_sync_state)") as
       Array<{ name: string }>;
     expect(referenceSyncColumns.map((column) => column.name)).toEqual([
@@ -540,6 +999,45 @@ describe("SQLite product state", () => {
     if (process.platform !== "win32") {
       expect((await stat(path)).mode & 0o777).toBe(0o600);
     }
+  });
+
+  it("admits an exact-current main-only database before any product access", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const created = await ProductDatabase.open(path, observedAt);
+    const expectedProfile = created.ownerStore().readProfile();
+    created.close();
+
+    const before = await sqliteArtifactSnapshot(path);
+    expect(before).toEqual([
+      expect.objectContaining({
+        suffix: "",
+        type: "file",
+        mode: process.platform === "win32" ? expect.any(Number) : 0o600,
+      }),
+      { suffix: "-wal" },
+      { suffix: "-shm" },
+    ]);
+    const mainBefore = await exactFileIdentity(path);
+    const mainBytesBefore = await readFile(path);
+
+    const reopened = await ProductDatabase.open(path, observedAt);
+    expect(reopened.ownerStore().readProfile()).toEqual(expectedProfile);
+    expect(await exactFileIdentity(path)).toEqual(mainBefore);
+    expect((await readFile(path)).equals(mainBytesBefore)).toBe(true);
+    const wal = await lstat(`${path}-wal`);
+    const sharedMemory = await lstat(`${path}-shm`);
+    expect(wal.isFile()).toBe(true);
+    expect(wal.size).toBe(0);
+    expect(sharedMemory.isFile()).toBe(true);
+    if (process.platform !== "win32") {
+      expect(wal.mode & 0o777).toBe(0o600);
+      expect(sharedMemory.mode & 0o777).toBe(0o600);
+      expect(wal.uid).toBe(process.getuid?.());
+      expect(sharedMemory.uid).toBe(process.getuid?.());
+    }
+    reopened.close();
   });
 
   it("uses the exact current relational options and declared foreign-key deletion behavior", async () => {
@@ -702,12 +1200,12 @@ describe("SQLite product state", () => {
     expect(() => raw.prepare("INSERT INTO chain(chain_id) VALUES (?)")
       .run(`${configuredChainId}\0suffix`)).toThrow();
     expect(() => raw.prepare(`INSERT INTO runtime_owner(singleton, profile_id, owner_instance_id,
-      configuration_mac, protocol_version, process_id, owner_revision, acquired_at)
-      VALUES (1, ?, ?, ?, ${runtimeProtocolVersion}, 1, '0', ?)`)
+      configuration_mac, process_id, owner_revision, acquired_at)
+      VALUES (1, ?, ?, ?, 1, '0', ?)`)
       .run(profileId, `${createOwnerInstanceId()}\0suffix`, configurationMac, observedAt)).toThrow();
     expect(() => raw.prepare(`INSERT INTO runtime_owner(singleton, profile_id, owner_instance_id,
-      configuration_mac, protocol_version, process_id, owner_revision, acquired_at)
-      VALUES (1, ?, ?, ?, ${runtimeProtocolVersion}, 1, '0', ?)`)
+      configuration_mac, process_id, owner_revision, acquired_at)
+      VALUES (1, ?, ?, ?, 1, '0', ?)`)
       .run(profileId, createOwnerInstanceId(), `${configurationMac}\0suffix`, observedAt)).toThrow();
     expect(() => raw.prepare("UPDATE current_wallet_connection SET revision = ? WHERE singleton = 1")
       .run("1\0suffix")).toThrow();
@@ -729,26 +1227,91 @@ describe("SQLite product state", () => {
     raw.close();
   });
 
-  it("opens only the exact current schema and never repairs incompatible state", async () => {
-    for (const mutation of [
-      (database: Database.Database) => { database.pragma("user_version = 0"); },
-      (database: Database.Database) => { database.exec("CREATE TABLE obsolete_state(value TEXT)"); },
-    ]) {
-      const directory = await temporaryDirectory();
-      await ensureOwnerOnlyDirectory(directory);
-      const path = runtimePaths(directory).database;
-      const initialized = await ProductDatabase.open(path, observedAt);
-      initialized.close();
+  it("does not treat user_version as current-structure authority", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const initialized = await ProductDatabase.open(path, observedAt);
+    initialized.close();
 
-      const incompatible = new Database(path);
-      mutation(incompatible);
-      incompatible.close();
-      if (process.platform !== "win32") await chmod(path, 0o600);
-      const before = await sqliteDurableArtifactSnapshot(path);
+    const raw = new Database(path);
+    raw.pragma("user_version = 73");
+    raw.close();
+    if (process.platform !== "win32") await chmod(path, 0o600);
 
-      await expectRuntimeCode(ProductDatabase.open(path, observedAt), "runtime_state_unavailable");
-      expect(await sqliteDurableArtifactSnapshot(path)).toEqual(before);
-    }
+    const reopened = await ProductDatabase.open(path, observedAt);
+    reopened.close();
+    const inspection = new Database(path, { readonly: true });
+    expect(inspection.pragma("user_version", { simple: true })).toBe(73);
+    expect(readIndependentSqliteSchema(inspection)).toEqual(deriveIndependentCurrentSqliteSchema());
+    inspection.close();
+  });
+
+  it("rejects a clean structural mismatch without repairing product state", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const initialized = await ProductDatabase.open(path, observedAt);
+    initialized.close();
+
+    const incompatible = new Database(path);
+    incompatible.exec("CREATE TABLE unexpected_structure(value TEXT)");
+    incompatible.close();
+    if (process.platform !== "win32") await chmod(path, 0o600);
+    const beforeMain = await exactFileIdentity(path);
+    const beforeBytes = await readFile(path);
+    await expect(lstat(`${path}-wal`)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(`${path}-shm`)).rejects.toMatchObject({ code: "ENOENT" });
+
+    await expectResetRequired(ProductDatabase.open(path, observedAt));
+    expect(await exactFileIdentity(path)).toEqual(beforeMain);
+    expect((await readFile(path)).equals(beforeBytes)).toBe(true);
+    const firstArtifacts = await sqliteArtifactSnapshot(path);
+    expect(firstArtifacts).toEqual([
+      expect.objectContaining({ suffix: "", type: "file", mode: process.platform === "win32" ? expect.any(Number) : 0o600 }),
+      expect.objectContaining({ suffix: "-wal", type: "file", bytes: "", mode: process.platform === "win32" ? expect.any(Number) : 0o600 }),
+      expect.objectContaining({ suffix: "-shm", type: "file", mode: process.platform === "win32" ? expect.any(Number) : 0o600 }),
+    ]);
+    const firstDurableArtifacts = await sqliteDurableArtifactSnapshot(path);
+
+    await expectResetRequired(ProductDatabase.open(path, observedAt));
+    expect(await exactFileIdentity(path)).toEqual(beforeMain);
+    expect((await readFile(path)).equals(beforeBytes)).toBe(true);
+    expect(await sqliteDurableArtifactSnapshot(path)).toEqual(firstDurableArtifacts);
+  });
+
+  it("resets only by replacing the complete isolated data directory", async () => {
+    const root = await temporaryDirectory();
+    const activeDirectory = resolve(root, "active");
+    const preservedDirectory = resolve(root, "preserved");
+    await ensureOwnerOnlyDirectory(activeDirectory);
+    const activePath = runtimePaths(activeDirectory).database;
+    const initialized = await ProductDatabase.open(activePath, observedAt);
+    initialized.close();
+    const incompatible = new Database(activePath);
+    incompatible.exec("CREATE TABLE unexpected_structure(value TEXT)");
+    incompatible.close();
+    if (process.platform !== "win32") await chmod(activePath, 0o600);
+    const retainedMarker = Buffer.from("independent retained material\n", "utf8");
+    await writeFile(resolve(activeDirectory, "retained.bin"), retainedMarker, { mode: 0o600 });
+
+    await expectResetRequired(ProductDatabase.open(activePath, observedAt));
+    const rejectedArtifacts = await sqliteArtifactSnapshot(activePath);
+    const rejectedMarker = await readFile(resolve(activeDirectory, "retained.bin"));
+
+    renameSync(activeDirectory, preservedDirectory);
+    await ensureOwnerOnlyDirectory(activeDirectory);
+    const freshPath = runtimePaths(activeDirectory).database;
+    const fresh = await ProductDatabase.open(freshPath, observedAt);
+    fresh.close();
+
+    const inspection = new Database(freshPath, { readonly: true });
+    expect(readIndependentSqliteSchema(inspection)).toEqual(deriveIndependentCurrentSqliteSchema());
+    expect(inspection.pragma("user_version", { simple: true })).toBe(1);
+    inspection.close();
+    expect(await sqliteArtifactSnapshot(runtimePaths(preservedDirectory).database))
+      .toEqual(rejectedArtifacts);
+    expect((await readFile(resolve(preservedDirectory, "retained.bin"))).equals(rejectedMarker)).toBe(true);
   });
 
   it("fails closed when canonical time or array bytes are written outside the row adapter", async () => {
@@ -815,23 +1378,23 @@ describe("SQLite product state", () => {
     if (process.platform !== "win32") chmodSync(separateDatabase, 0o600);
     await writeFile(`${separateDatabase}-wal`, "stale WAL", { mode: 0o600 });
     await writeFile(`${separateDatabase}-shm`, "stale SHM", { mode: 0o600 });
-    const finalInode = (await lstat(path)).ino;
+    const finalIdentity = await exactFileIdentity(path);
 
     const afterSeparateStaging = await ProductDatabase.open(path, observedAt);
     expect(afterSeparateStaging.ownerStore().readProfile()).toEqual(profile);
     afterSeparateStaging.close();
-    expect((await lstat(path)).ino).toBe(finalInode);
+    expect(await exactFileIdentity(path)).toEqual(finalIdentity);
     for (const suffix of ["", "-wal", "-shm"] as const) {
       await expect(lstat(`${separateDatabase}${suffix}`)).rejects.toMatchObject({ code: "ENOENT" });
     }
 
     const publishedHardlink = publicationStagingPath(path, 3);
     await link(path, publishedHardlink);
-    expect((await lstat(publishedHardlink)).ino).toBe(finalInode);
+    expect(await exactFileIdentity(publishedHardlink)).toEqual(finalIdentity);
     const afterPublishedStaging = await ProductDatabase.open(path, observedAt);
     expect(afterPublishedStaging.ownerStore().readProfile()).toEqual(profile);
     afterPublishedStaging.close();
-    expect((await lstat(path)).ino).toBe(finalInode);
+    expect(await exactFileIdentity(path)).toEqual(finalIdentity);
     await expect(lstat(publishedHardlink)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -1129,18 +1692,71 @@ describe("SQLite product state", () => {
     reopened.close();
   });
 
+  it("rejects a crash-persisted structural mismatch without changing main or WAL bytes", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const initialized = await ProductDatabase.open(path, observedAt);
+    initialized.close();
+    const exactMainBeforeCrash = await readFile(path);
+
+    const child = await launchSqliteCrashWorker(directory, "structural-mismatch");
+    expect((await lstat(`${path}-wal`)).isFile()).toBe(true);
+    expect((await stat(`${path}-wal`)).size).toBeGreaterThan(0);
+    await killSqliteCrashWorker(child);
+
+    const mainBefore = await exactFileIdentity(path);
+    const walBefore = await exactFileIdentity(`${path}-wal`);
+    const mainBytesBefore = await readFile(path);
+    const walBytesBefore = await readFile(`${path}-wal`);
+    expect(mainBytesBefore.equals(exactMainBeforeCrash)).toBe(true);
+
+    await expectResetRequired(ProductDatabase.open(path, observedAt));
+    const mainAfter = await exactFileIdentity(path);
+    const walAfter = await exactFileIdentity(`${path}-wal`);
+    expect(mainAfter).toEqual(mainBefore);
+    expect(walAfter).toEqual(walBefore);
+    expect((await readFile(path)).equals(mainBytesBefore)).toBe(true);
+    expect((await readFile(`${path}-wal`)).equals(walBytesBefore)).toBe(true);
+
+    const recoverable = new Database(path, { fileMustExist: true });
+    expect(recoverable.prepare(`SELECT type, name, tbl_name AS tableName, sql
+      FROM sqlite_schema WHERE name = 'crash_only_state'`).get()).toMatchObject({
+      type: "table",
+      name: "crash_only_state",
+      tableName: "crash_only_state",
+    });
+    recoverable.close();
+  });
+
   it("never initializes over an existing SQLite artifact set", async () => {
     const cases: readonly {
       readonly name: string;
       readonly prepare: (path: string) => Promise<void>;
+      readonly outcome: "reset" | "unavailable";
     }[] = [
       {
         name: "zero-byte main",
         prepare: async (path) => { await createOwnerOnlyStateFile(path); },
+        outcome: "reset",
       },
       {
         name: "orphan WAL",
         prepare: async (path) => { await writeFile(`${path}-wal`, "orphan", { mode: 0o600 }); },
+        outcome: "unavailable",
+      },
+      {
+        name: "orphan SHM",
+        prepare: async (path) => { await writeFile(`${path}-shm`, "orphan", { mode: 0o600 }); },
+        outcome: "unavailable",
+      },
+      {
+        name: "orphan WAL and SHM",
+        prepare: async (path) => {
+          await writeFile(`${path}-wal`, "orphan WAL", { mode: 0o600 });
+          await writeFile(`${path}-shm`, "orphan SHM", { mode: 0o600 });
+        },
+        outcome: "unavailable",
       },
       {
         name: "DELETE-mode main",
@@ -1150,6 +1766,7 @@ describe("SQLite product state", () => {
           database.close();
           if (process.platform !== "win32") await chmod(path, 0o600);
         },
+        outcome: "reset",
       },
       {
         name: "partial final artifact set",
@@ -1162,6 +1779,7 @@ describe("SQLite product state", () => {
           if (process.platform !== "win32") await chmod(path, 0o600);
           await writeFile(`${path}-wal`, "partial", { mode: 0o600 });
         },
+        outcome: "reset",
       },
     ];
     for (const testCase of cases) {
@@ -1169,27 +1787,25 @@ describe("SQLite product state", () => {
       await ensureOwnerOnlyDirectory(directory);
       const path = runtimePaths(directory).database;
       await testCase.prepare(path);
-      const beforeMainInode = await lstat(path).then(
-        (details) => details.ino,
-        (error: unknown) => {
-          if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
-          throw error;
-        },
-      );
-      await expectRuntimeCode(ProductDatabase.open(path, observedAt), "runtime_state_unavailable");
-      const afterMainInode = await lstat(path).then(
-        (details) => details.ino,
-        (error: unknown) => {
-          if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
-          throw error;
-        },
-      );
-      expect(afterMainInode, testCase.name).toBe(beforeMainInode);
-      expect((await readdir(directory)).every((name) => [
-        "littlejohn.sqlite3",
-        "littlejohn.sqlite3-wal",
-        "littlejohn.sqlite3-shm",
-      ].includes(name)), testCase.name).toBe(true);
+      const beforeArtifacts = await sqliteArtifactSnapshot(path);
+      const beforeDurableArtifacts = await sqliteDurableArtifactSnapshot(path);
+      const beforeMainIdentity = await optionalExactFileIdentity(path);
+      if (testCase.outcome === "reset") {
+        await expectResetRequired(ProductDatabase.open(path, observedAt));
+      } else {
+        await expectRuntimeCode(
+          ProductDatabase.open(path, observedAt),
+          "runtime_state_unavailable",
+          testCase.name,
+        );
+      }
+      const afterMainIdentity = await optionalExactFileIdentity(path);
+      expect(afterMainIdentity, testCase.name).toEqual(beforeMainIdentity);
+      if (testCase.outcome === "unavailable") {
+        expect(await sqliteArtifactSnapshot(path), testCase.name).toEqual(beforeArtifacts);
+      } else if (beforeArtifacts.some((artifact) => artifact.suffix === "-wal" && artifact.type === "file")) {
+        expect(await sqliteDurableArtifactSnapshot(path), testCase.name).toEqual(beforeDurableArtifacts);
+      }
     }
   });
 
@@ -1274,26 +1890,23 @@ describe("SQLite product state", () => {
     reopened.close();
   });
 
-  it("rejects main-file replacement across current-state opening", async () => {
-    for (const replaceOnAssertion of [1, 4]) {
-      const directory = await temporaryDirectory();
-      await ensureOwnerOnlyDirectory(directory);
-      const path = runtimePaths(directory).database;
-      const initialized = await ProductDatabase.open(path, observedAt);
-      initialized.close();
-      const originalInode = (await lstat(path)).ino;
-      const replacement = replacingStateFileAuthority(replaceOnAssertion);
+  it("rejects main-file replacement through the actual owner-only lease", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    await createOwnerOnlyStateFile(path);
+    await writeFile(path, "current", { mode: 0o600 });
+    const lease = acquireOwnerOnlyStateFileLease(path);
+    const originalIdentity = await exactFileIdentity(path);
+    expect(lease.observe()).toMatchObject(originalIdentity);
+    const replacement = `${path}.replacement`;
+    copyFileSync(path, replacement);
+    if (process.platform !== "win32") chmodSync(replacement, 0o600);
+    renameSync(replacement, path);
 
-      await expectRuntimeCode(
-        ProductDatabase.open(path, observedAt, replacement.authority),
-        "runtime_state_unavailable",
-      );
-      expect(replacement.replacements()).toBe(1);
-      expect((await lstat(path)).ino).not.toBe(originalInode);
-      expect((await readdir(directory)).some((name) => name.endsWith(".replacement"))).toBe(false);
-      const reopened = await ProductDatabase.open(path, observedAt);
-      reopened.close();
-    }
+    expect(() => lease.assertCurrent()).toThrow("Owner-only state file type is invalid.");
+    expect(await exactFileIdentity(path)).not.toEqual(originalIdentity);
+    lease.close();
   });
 
   it("keeps main-file identity bound for the complete product-database lifetime", async () => {
@@ -1358,30 +1971,107 @@ describe("SQLite product state", () => {
     }
   });
 
-  it("rejects weak or linked SQLite sidecars before opening and never repairs them", async () => {
+  it("rejects weak or non-regular SQLite artifacts before opening and never repairs them", async () => {
     if (process.platform === "win32") return;
 
-    const weakDirectory = await temporaryDirectory();
-    await ensureOwnerOnlyDirectory(weakDirectory);
-    const weakPath = runtimePaths(weakDirectory).database;
-    const active = await ProductDatabase.open(weakPath, observedAt);
-    const sharedMemoryPath = `${weakPath}-shm`;
-    await chmod(sharedMemoryPath, 0o644);
-    await expectRuntimeCode(ProductDatabase.open(weakPath, observedAt), "runtime_state_unavailable");
-    expect((await stat(sharedMemoryPath)).mode & 0o777).toBe(0o644);
-    active.close();
+    for (const suffix of ["", "-wal", "-shm"] as const) {
+      const directory = await temporaryDirectory();
+      await ensureOwnerOnlyDirectory(directory);
+      const path = runtimePaths(directory).database;
+      const initialized = await ProductDatabase.open(path, observedAt);
+      initialized.close();
+      const artifact = `${path}${suffix}`;
+      if (suffix !== "") await writeFile(artifact, `weak ${suffix}`, { mode: 0o600 });
+      await chmod(artifact, 0o644);
+      const before = await sqliteArtifactSnapshot(path);
+      await expectRuntimeCode(
+        ProductDatabase.open(path, observedAt),
+        "runtime_state_unavailable",
+        `weak ${suffix || "main"}`,
+      );
+      expect(await sqliteArtifactSnapshot(path)).toEqual(before);
+    }
 
-    const linkDirectory = await temporaryDirectory();
-    await ensureOwnerOnlyDirectory(linkDirectory);
-    const linkPath = runtimePaths(linkDirectory).database;
-    const initialized = await ProductDatabase.open(linkPath, observedAt);
+    for (const suffix of ["", "-wal", "-shm"] as const) {
+      const directory = await temporaryDirectory();
+      await ensureOwnerOnlyDirectory(directory);
+      const path = runtimePaths(directory).database;
+      const initialized = await ProductDatabase.open(path, observedAt);
+      initialized.close();
+      const artifact = `${path}${suffix}`;
+      const target = resolve(directory, `linked-${suffix || "main"}-target`);
+      if (suffix === "") renameSync(path, target);
+      else await writeFile(target, `linked ${suffix}`, { mode: 0o600 });
+      const targetBytes = await readFile(target);
+      await symlink(target, artifact);
+      const before = await sqliteArtifactSnapshot(path);
+      await expectRuntimeCode(
+        ProductDatabase.open(path, observedAt),
+        "runtime_state_unavailable",
+        `linked ${suffix || "main"}`,
+      );
+      expect(await sqliteArtifactSnapshot(path)).toEqual(before);
+      expect((await readFile(target)).equals(targetBytes)).toBe(true);
+      expect((await lstat(artifact)).isSymbolicLink()).toBe(true);
+    }
+  });
+
+  it("preserves non-reset failure precedence when exact structure admission cannot complete", async () => {
+    const contentionDirectory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(contentionDirectory);
+    const contentionPath = runtimePaths(contentionDirectory).database;
+    const initialized = await ProductDatabase.open(contentionPath, observedAt);
     initialized.close();
-    const target = resolve(linkDirectory, "foreign-wal-target");
-    await writeFile(target, "unchanged", { mode: 0o600 });
-    await symlink(target, `${linkPath}-wal`);
-    await expectRuntimeCode(ProductDatabase.open(linkPath, observedAt), "runtime_state_unavailable");
-    expect(await readFile(target, "utf8")).toBe("unchanged");
-    expect((await lstat(`${linkPath}-wal`)).isSymbolicLink()).toBe(true);
+    const blocker = new Database(contentionPath);
+    blocker.pragma("locking_mode = EXCLUSIVE");
+    blocker.exec("BEGIN EXCLUSIVE");
+    try {
+      await expectRuntimeCode(ProductDatabase.open(contentionPath, observedAt), "runtime_busy");
+    } finally {
+      blocker.exec("ROLLBACK");
+      blocker.close();
+    }
+    const afterContention = await ProductDatabase.open(contentionPath, observedAt);
+    afterContention.close();
+
+    if (process.platform !== "win32") {
+      const permissionDirectory = await temporaryDirectory();
+      await ensureOwnerOnlyDirectory(permissionDirectory);
+      const permissionPath = runtimePaths(permissionDirectory).database;
+      const permitted = await ProductDatabase.open(permissionPath, observedAt);
+      permitted.close();
+      await chmod(permissionDirectory, 0o600);
+      try {
+        await expectRuntimeCode(ProductDatabase.open(permissionPath, observedAt), "runtime_state_unavailable");
+      } finally {
+        await chmod(permissionDirectory, 0o700);
+      }
+      const afterPermissionFailure = await ProductDatabase.open(permissionPath, observedAt);
+      afterPermissionFailure.close();
+    }
+
+    const ioDirectory = await temporaryDirectory();
+    const nonDirectory = resolve(ioDirectory, "not-a-directory");
+    const retained = Buffer.from("retained I/O boundary\n", "utf8");
+    await writeFile(nonDirectory, retained, { mode: 0o600 });
+    await expectRuntimeCode(
+      ProductDatabase.open(resolve(nonDirectory, "littlejohn.sqlite3"), observedAt),
+      "runtime_state_unavailable",
+    );
+    expect((await readFile(nonDirectory)).equals(retained)).toBe(true);
+  }, 15_000);
+
+  it("does not classify unreadable SQLite content as a structure mismatch", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const bytes = Buffer.from("not a SQLite database", "utf8");
+    await writeFile(path, bytes, { mode: 0o600 });
+    const before = await exactFileIdentity(path);
+
+    await expectRuntimeCode(ProductDatabase.open(path, observedAt), "runtime_state_unavailable");
+    expect(await exactFileIdentity(path)).toEqual(before);
+    expect((await readFile(path)).equals(bytes)).toBe(true);
   });
 });
 
@@ -1417,10 +2107,10 @@ describe("configuration and source authority", () => {
       "sha256",
       Buffer.alloc(32, 1),
       Buffer.alloc(0),
-      Buffer.from("littlejohn/runtime-configuration/v2", "utf8"),
+      Buffer.from("littlejohn/runtime-configuration/v1", "utf8"),
       32,
     ))).update(payload).digest("base64url");
-    const expectedConfigurationMac = "2ZFsgqN-qp0KI0FGQcHNB1saV3YG7AQlZP3iW0NmcBk";
+    const expectedConfigurationMac = "FIidE1Dj6RcKlQxqhlA9OidO39xk72JZHIVrFIWCXyQ";
     expect(payload.toString("hex")).toBe(
       "0000000b6569703135353a343636330000002768747470733a2f2f7270632e6d61696e6e65742e636861696e2e726f62696e686f6f642e636f6d000000206364333364366465616139303162336339363138356439636231663332306566",
     );

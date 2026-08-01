@@ -106,9 +106,8 @@ describe("browser interface contract", () => {
     });
   });
 
-  it("admits the selected-price window and rejects malformed, duplicate, or obsolete locations", () => {
+  it("admits the selected-price window and rejects malformed, duplicate, or unsupported locations", () => {
     const pair = referenceMarketManifest.pairs[0]!;
-    const addressA = "0x1111111111111111111111111111111111111111";
     expect(parseBrowserLocation(
       `/prices/${pair.pairId}`,
       "",
@@ -116,19 +115,11 @@ describe("browser interface contract", () => {
     )).toEqual(browserLocations.referencePrice(pair.pairId, "1d"));
 
     for (const [pathname, search, fragment] of [
-      ["/inspections", "", ""],
-      ["/reference-markets", "", ""],
-      ["/uniswap-v2-quotes", "", ""],
+      ["/unsupported", "", ""],
       ["/prices/unsupported", "", ""],
       ["/prices", "?window=1d", ""],
       [`/prices/${pair.pairId}`, "?window=1d&window=30d", ""],
       [`/prices/${pair.pairId}`, "?unknown=1d", ""],
-      ["/quotes/uniswap-v2", "", ""],
-      ["/analysis", "", ""],
-      ["/analysis", `?kind=contract`, ""],
-      ["/analysis", `?address=${addressA}`, ""],
-      ["/analysis", `?kind=contract&address=${addressA}&block-number=01`, ""],
-      ["/analysis", `?kind=contract&address=${addressA}&expected-block-hash=0x${"33".repeat(32)}`, ""],
       ["/", "", "#fragment"],
       ["/", "?", ""],
     ] as const) {
@@ -137,9 +128,6 @@ describe("browser interface contract", () => {
 
     expect(browserBaseLocationForPath("/prices/bad")).toEqual(
       browserLocations.referencePrices(),
-    );
-    expect(browserBaseLocationForPath("/analysis")).toEqual(
-      browserLocations.assets(),
     );
     expect(browserBaseLocationForPath("/unknown")).toEqual(
       browserLocations.assets(),

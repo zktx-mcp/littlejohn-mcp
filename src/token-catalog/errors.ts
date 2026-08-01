@@ -2,10 +2,11 @@ import {
   createApplicationFailure,
   type ApplicationFailure,
 } from "../core/index.js";
-import { chainErrorRegistry, chainInterfaceErrorMappings } from "../chain/errors.js";
-import { tokenCatalogErrorDefinitions, tokenCatalogInterfaceErrorMappingDefinitions } from "./error-definitions.js";
+import { chainInterfaceErrorMappings } from "../chain/errors.js";
+import { tokenCatalogInterfaceErrorMappingDefinitions } from "./error-definitions.js";
+import { tokenCatalogErrorRegistry } from "./error-registry.js";
 
-export const tokenCatalogErrorRegistry = chainErrorRegistry.extend(tokenCatalogErrorDefinitions);
+export { tokenCatalogErrorRegistry } from "./error-registry.js";
 
 export const tokenCatalogInterfaceErrorMappings = chainInterfaceErrorMappings.extend(
   tokenCatalogErrorRegistry,

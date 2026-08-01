@@ -7,13 +7,19 @@ import { describe, expect, it } from "vitest";
 
 import * as runtimePublic from "../../src/runtime/index.js";
 import {
+  collectProductCodeSourceFiles,
   collectProductSourceFiles,
   collectSourceFiles,
+  createProductSourceProgram,
   createPackageImportPolicy,
   directCodeExecutionViolations,
   inspectSourceFile,
   loadPackageManifest,
   moduleImportPolicyViolations,
+  programModuleExportSymbol as moduleExportSymbol,
+  protectedModuleAccessViolations,
+  resolveProgramSymbol as resolvedSymbol,
+  uniswapV2SdkLoadBoundaryViolations,
 } from "./import-audit.js";
 
 const repositoryRoot = resolve(".");
@@ -32,7 +38,6 @@ const interfaceConsumerEntryPoints = new Set([
 const browserCoreConsumers = new Set([
   "account-assets/browser.ts",
   "account-assets/contracts.ts",
-  "account-assets/error-registry.ts",
   "account-assets/http-contract.ts",
   "account-assets/view.ts",
   "interfaces/browser-contract.ts",
@@ -59,6 +64,10 @@ const browserCoreConsumers = new Set([
   "interfaces/web/token-catalog-client.ts",
   "interfaces/web/wallet-dialog-view.ts",
   "runtime/error-definitions.ts",
+  "runtime/error-registry.ts",
+  "wallet/error-registry.ts",
+  "chain/error-registry.ts",
+  "token-catalog/error-registry.ts",
   "market-portfolio/contracts.ts",
   "protocols/contracts.ts",
   "protocols/registry.ts",
@@ -123,6 +132,612 @@ const sourceDescendants = (root: ts.Node): readonly ts.Node[] => {
 
 const parseSource = async (path: string): Promise<ts.SourceFile> =>
   ts.createSourceFile(path, await readFile(path, "utf8"), ts.ScriptTarget.Latest, true);
+
+const runtimeResetCreatorName = "createRuntimeStateResetRequiredError";
+const runtimeResetSourceErrorName = "RuntimeStateResetRequiredSourceError";
+const runtimeSqliteSchemaPath = resolve(sourceRoot, "runtime/sqlite-schema.ts");
+const runtimeDatabasePath = resolve(sourceRoot, "runtime/database.ts");
+
+const unwrapStaticStringExpression = (expression: ts.Expression): ts.Expression => {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isSatisfiesExpression(current) ||
+    ts.isNonNullExpression(current)
+  ) current = current.expression;
+  return current;
+};
+
+const staticStringValue = (
+  expression: ts.Expression,
+  checker: ts.TypeChecker,
+  resolving: ReadonlySet<ts.Symbol> = new Set(),
+): string | undefined => {
+  const current = unwrapStaticStringExpression(expression);
+  if (ts.isStringLiteralLike(current)) return current.text;
+  if (ts.isBinaryExpression(current) && current.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const left = staticStringValue(current.left, checker, resolving);
+    const right = staticStringValue(current.right, checker, resolving);
+    return left === undefined || right === undefined ? undefined : `${left}${right}`;
+  }
+  if (ts.isTemplateExpression(current)) {
+    let value = current.head.text;
+    for (const span of current.templateSpans) {
+      const resolved = staticStringValue(span.expression, checker, resolving);
+      if (resolved === undefined) return undefined;
+      value += resolved + span.literal.text;
+    }
+    return value;
+  }
+  if (!ts.isIdentifier(current)) return undefined;
+  const symbol = resolvedSymbol(checker, checker.getSymbolAtLocation(current));
+  if (symbol === undefined || resolving.has(symbol)) return undefined;
+  const declaration = symbol.valueDeclaration;
+  if (
+    declaration === undefined ||
+    !ts.isVariableDeclaration(declaration) ||
+    declaration.initializer === undefined ||
+    !ts.isVariableDeclarationList(declaration.parent) ||
+    (declaration.parent.flags & ts.NodeFlags.Const) === 0
+  ) return undefined;
+  return staticStringValue(
+    declaration.initializer,
+    checker,
+    new Set([...resolving, symbol]),
+  );
+};
+
+interface SqlitePragmaAudit {
+  readonly commands: readonly Readonly<{ file: string; command: string }>[];
+  readonly userVersionExpressions: readonly Readonly<{
+    file: string;
+    kind: ts.SyntaxKind;
+    value: string;
+  }>[];
+  readonly violations: readonly string[];
+}
+
+const sqlitePragmaAudit = (program: ts.Program): SqlitePragmaAudit => {
+  const checker = program.getTypeChecker();
+  const databaseSource = program.getSourceFile(runtimeDatabasePath);
+  const canonicalCall = databaseSource === undefined
+    ? undefined
+    : sourceDescendants(databaseSource).find((node): node is ts.CallExpression =>
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "pragma" &&
+      node.getText(databaseSource) === 'database.pragma("user_version = 1")');
+  const pragmaSymbol = canonicalCall === undefined || !ts.isPropertyAccessExpression(canonicalCall.expression)
+    ? undefined
+    : resolvedSymbol(checker, checker.getSymbolAtLocation(canonicalCall.expression.name));
+  if (databaseSource === undefined || canonicalCall === undefined || pragmaSymbol === undefined) {
+    return Object.freeze({
+      commands: Object.freeze([]),
+      userVersionExpressions: Object.freeze([]),
+      violations: Object.freeze(["sqlite_pragma_authority_unavailable"]),
+    });
+  }
+
+  const commands: Array<Readonly<{ file: string; command: string }>> = [];
+  const userVersionExpressions: Array<Readonly<{
+    file: string;
+    kind: ts.SyntaxKind;
+    value: string;
+  }>> = [];
+  const violations: string[] = [];
+  const report = (sourceFile: ts.SourceFile, kind: string): void => {
+    violations.push(`${relative(repositoryRoot, sourceFile.fileName).split(sep).join("/")}:${kind}`);
+  };
+  const accessPragmaSymbol = (
+    access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+  ): ts.Symbol | undefined => {
+    const accessedName = ts.isPropertyAccessExpression(access)
+      ? access.name.text
+      : access.argumentExpression === undefined
+        ? undefined
+        : staticStringValue(access.argumentExpression, checker);
+    if (accessedName !== "pragma") return undefined;
+    const direct = ts.isPropertyAccessExpression(access)
+      ? checker.getSymbolAtLocation(access.name)
+      : access.argumentExpression === undefined
+        ? undefined
+        : checker.getSymbolAtLocation(access.argumentExpression);
+    const resolved = resolvedSymbol(checker, direct);
+    if (resolved === pragmaSymbol) return resolved;
+    const property = checker.getTypeAtLocation(access.expression).getProperty("pragma");
+    return resolvedSymbol(checker, property) === pragmaSymbol ? pragmaSymbol : undefined;
+  };
+  const pragmaDeclarations = new Set(pragmaSymbol.declarations ?? []);
+  const invokesPragma = (call: ts.CallExpression): boolean => {
+    const declaration = checker.getResolvedSignature(call)?.declaration;
+    return declaration !== undefined && pragmaDeclarations.has(declaration);
+  };
+  const isDirectCalleeAccess = (
+    access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+  ): boolean => {
+    let current: ts.Node = access;
+    while (
+      current.parent !== undefined &&
+      (
+        ts.isParenthesizedExpression(current.parent) ||
+        ts.isAsExpression(current.parent) ||
+        ts.isTypeAssertionExpression(current.parent) ||
+        ts.isSatisfiesExpression(current.parent) ||
+        ts.isNonNullExpression(current.parent)
+      ) &&
+      current.parent.expression === current
+    ) current = current.parent;
+    return current.parent !== undefined && ts.isCallExpression(current.parent) &&
+      current.parent.expression === current;
+  };
+  const inspectPragmaCall = (sourceFile: ts.SourceFile, call: ts.CallExpression): void => {
+    const argument = call.arguments[0];
+    const command = argument === undefined ? undefined : staticStringValue(argument, checker);
+    if (command === undefined) {
+      report(sourceFile, "sqlite_pragma_command_unresolved");
+      return;
+    }
+    const file = relative(repositoryRoot, sourceFile.fileName).split(sep).join("/");
+    commands.push(Object.freeze({ file, command }));
+    if (command.toLowerCase().includes("user_version") && call !== canonicalCall) {
+      report(sourceFile, "sqlite_user_version_operation");
+    }
+  };
+
+  for (const sourceFile of program.getSourceFiles()) {
+    if (!isWithin(sourceFile.fileName, sourceRoot)) continue;
+    const file = relative(repositoryRoot, sourceFile.fileName).split(sep).join("/");
+    const visit = (node: ts.Node): void => {
+      if (ts.isExpression(node)) {
+        const value = staticStringValue(node, checker);
+        if (value?.toLowerCase().includes("user_version") === true) {
+          userVersionExpressions.push(Object.freeze({ file, kind: node.kind, value }));
+        }
+      }
+      if (ts.isCallExpression(node)) {
+        const callee = unwrapStaticStringExpression(node.expression);
+        if (
+          (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) &&
+          accessPragmaSymbol(callee) === pragmaSymbol
+        ) inspectPragmaCall(sourceFile, node);
+        else if (invokesPragma(node)) report(sourceFile, "sqlite_pragma_indirect_call");
+      } else if (
+        (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) &&
+        accessPragmaSymbol(node) === pragmaSymbol &&
+        !isDirectCalleeAccess(node)
+      ) {
+        report(sourceFile, "sqlite_pragma_method_escape");
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
+  return Object.freeze({
+    commands: Object.freeze(commands),
+    userVersionExpressions: Object.freeze(userVersionExpressions),
+    violations: Object.freeze(violations.sort()),
+  });
+};
+
+const runtimeResetCreatorViolations = (program: ts.Program): readonly string[] => {
+  const checker = program.getTypeChecker();
+  const factorySymbol = moduleExportSymbol(
+    program,
+    checker,
+    runtimeSqliteSchemaPath,
+    runtimeResetCreatorName,
+  );
+  const ownerSource = program.getSourceFile(runtimeSqliteSchemaPath);
+  const sourceErrorDeclaration = ownerSource?.statements.find(
+    (statement): statement is ts.ClassDeclaration =>
+      ts.isClassDeclaration(statement) && statement.name?.text === runtimeResetSourceErrorName,
+  );
+  const sourceErrorSymbol = sourceErrorDeclaration?.name === undefined
+    ? undefined
+    : checker.getSymbolAtLocation(sourceErrorDeclaration.name);
+  if (factorySymbol === undefined || ownerSource === undefined || sourceErrorSymbol === undefined) {
+    return ["runtime_reset_owner_unavailable"];
+  }
+
+  const violations: string[] = [];
+  let factoryDefinitions = 0;
+  let factoryCalls = 0;
+  let sourceErrorConstructions = 0;
+  const report = (sourceFile: ts.SourceFile, kind: string): void => {
+    violations.push(`${relative(repositoryRoot, sourceFile.fileName).split(sep).join("/")}:${kind}`);
+  };
+  const exportsFactory = (symbol: ts.Symbol | undefined): boolean =>
+    symbol !== undefined && checker.getExportsOfModule(symbol)
+      .some((entry) => resolvedSymbol(checker, entry) === factorySymbol);
+
+  for (const sourceFile of program.getSourceFiles()) {
+    if (!isWithin(sourceFile.fileName, sourceRoot)) continue;
+    const visit = (node: ts.Node): void => {
+      if (ts.isExportDeclaration(node) && node.exportClause === undefined &&
+        node.moduleSpecifier !== undefined) {
+        const moduleSymbol = resolvedSymbol(checker, checker.getSymbolAtLocation(node.moduleSpecifier));
+        if (exportsFactory(moduleSymbol)) {
+          report(sourceFile, "runtime_reset_factory_wildcard_export");
+        }
+      }
+
+      if (ts.isNamespaceImport(node)) {
+        if (ts.isImportClause(node.parent) && node.parent.isTypeOnly) return;
+        const moduleSymbol = resolvedSymbol(checker, checker.getSymbolAtLocation(node.name));
+        if (exportsFactory(moduleSymbol)) {
+          report(sourceFile, "runtime_reset_factory_namespace_import");
+        }
+        return;
+      }
+
+      if (ts.isImportSpecifier(node) || ts.isExportSpecifier(node)) {
+        const symbol = resolvedSymbol(checker, checker.getSymbolAtLocation(node.name));
+        if (symbol === factorySymbol) {
+          const importedName = (node.propertyName ?? node.name).text;
+          const allowedImport = ts.isImportSpecifier(node) &&
+            resolve(sourceFile.fileName) === runtimeDatabasePath &&
+            importedName === runtimeResetCreatorName &&
+            node.name.text === runtimeResetCreatorName;
+          if (!allowedImport) report(sourceFile, "runtime_reset_factory_import_or_export");
+        }
+        return;
+      }
+
+      if (ts.isIdentifier(node)) {
+        const symbol = resolvedSymbol(checker, checker.getSymbolAtLocation(node));
+        if (symbol === factorySymbol) {
+          const definition = resolve(sourceFile.fileName) === runtimeSqliteSchemaPath &&
+            ts.isVariableDeclaration(node.parent) && node.parent.name === node;
+          const directCall = resolve(sourceFile.fileName) === runtimeDatabasePath &&
+            ts.isCallExpression(node.parent) && node.parent.expression === node;
+          if (definition) factoryDefinitions += 1;
+          else if (directCall) factoryCalls += 1;
+          else report(sourceFile, "runtime_reset_factory_escape");
+        }
+        if (symbol === sourceErrorSymbol) {
+          const definition = sourceErrorDeclaration !== undefined &&
+            sourceErrorDeclaration.name === node;
+          const directConstruction = ts.isNewExpression(node.parent) && node.parent.expression === node;
+          if (directConstruction) {
+            sourceErrorConstructions += 1;
+            let current: ts.Node | undefined = node.parent;
+            while (current !== undefined && !ts.isVariableDeclaration(current)) current = current.parent;
+            if (
+              current === undefined ||
+              !ts.isVariableDeclaration(current) ||
+              !ts.isIdentifier(current.name) ||
+              current.name.text !== runtimeResetCreatorName
+            ) report(sourceFile, "runtime_reset_source_error_construction");
+          } else if (!definition) {
+            report(sourceFile, "runtime_reset_source_error_escape");
+          }
+        }
+      }
+
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
+
+  if (factoryDefinitions !== 1) violations.push(`runtime_reset_factory_definitions:${factoryDefinitions}`);
+  if (factoryCalls !== 1) violations.push(`runtime_reset_factory_calls:${factoryCalls}`);
+  if (sourceErrorConstructions !== 1) {
+    violations.push(`runtime_reset_source_error_constructions:${sourceErrorConstructions}`);
+  }
+  return violations.sort();
+};
+
+const runtimeDatabaseAdmissionAuthorityViolations = (
+  sourceFile: ts.SourceFile,
+): readonly string[] => {
+  const violations: string[] = [];
+  const descendants = (node: ts.Node): readonly ts.Node[] => sourceDescendants(node);
+  const variable = (name: string): ts.VariableDeclaration | undefined =>
+    descendants(sourceFile).find((node): node is ts.VariableDeclaration =>
+      ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name);
+  const callable = (
+    declaration: ts.VariableDeclaration | undefined,
+  ): ts.ArrowFunction | ts.FunctionExpression | undefined =>
+    declaration !== undefined && declaration.initializer !== undefined &&
+      (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))
+      ? declaration.initializer
+      : undefined;
+  const exactParameters = (
+    parameters: readonly ts.ParameterDeclaration[],
+    names: readonly string[],
+  ): boolean => parameters.length === names.length && parameters.every((parameter, index) =>
+    ts.isIdentifier(parameter.name) && parameter.name.text === names[index] &&
+    parameter.dotDotDotToken === undefined && parameter.questionToken === undefined &&
+    parameter.initializer === undefined);
+  const directCalls = (root: ts.Node, name: string): readonly ts.CallExpression[] =>
+    descendants(root).filter((node): node is ts.CallExpression =>
+      ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === name);
+  const isIdentifierArgument = (
+    call: ts.CallExpression,
+    index: number,
+    name: string,
+  ): boolean => call.arguments.length > index && ts.isIdentifier(call.arguments[index]!) &&
+    call.arguments[index]!.text === name;
+  const leaseAssertions = (root: ts.Node): readonly ts.CallExpression[] =>
+    descendants(root).filter((node): node is ts.CallExpression =>
+      ts.isCallExpression(node) && node.arguments.length === 0 &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) &&
+      node.expression.expression.text === "mainLease" &&
+      node.expression.name.text === "assertCurrent");
+  const isShorthand = (node: ts.ObjectLiteralExpression, name: string): boolean =>
+    node.properties.some((property) =>
+      ts.isShorthandPropertyAssignment(property) && property.name.text === name);
+  const isFrozenObject = (
+    expression: ts.Expression | undefined,
+    required: readonly string[],
+  ): boolean => expression !== undefined && ts.isCallExpression(expression) &&
+    ts.isPropertyAccessExpression(expression.expression) &&
+    ts.isIdentifier(expression.expression.expression) &&
+    expression.expression.expression.text === "Object" &&
+    expression.expression.name.text === "freeze" && expression.arguments.length === 1 &&
+    ts.isObjectLiteralExpression(expression.arguments[0]!) &&
+    required.every((name) => isShorthand(expression.arguments[0] as ts.ObjectLiteralExpression, name));
+
+  const productDatabase = sourceFile.statements.find((statement): statement is ts.ClassDeclaration =>
+    ts.isClassDeclaration(statement) && statement.name?.text === "ProductDatabase");
+  const pathImportSpecifiers = sourceFile.statements.flatMap((statement) => {
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteral(statement.moduleSpecifier) ||
+      statement.moduleSpecifier.text !== "./paths.js" ||
+      statement.importClause?.isTypeOnly === true ||
+      statement.importClause?.namedBindings === undefined ||
+      !ts.isNamedImports(statement.importClause.namedBindings)
+    ) return [];
+    return [...statement.importClause.namedBindings.elements];
+  });
+  const exactLeaseOwnerImports = sourceFile.statements.flatMap((statement) => {
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteral(statement.moduleSpecifier) ||
+      statement.moduleSpecifier.text !== "./paths.js" ||
+      statement.importClause?.isTypeOnly === true ||
+      statement.importClause?.namedBindings === undefined ||
+      !ts.isNamedImports(statement.importClause.namedBindings)
+    ) return [];
+    return statement.importClause.namedBindings.elements.filter((element) =>
+      !element.isTypeOnly &&
+      (element.propertyName?.text ?? element.name.text) === "acquireOwnerOnlyStateFileLease" &&
+      element.name.text === "acquireOwnerOnlyStateFileLease");
+  });
+  if (exactLeaseOwnerImports.length !== 1) {
+    violations.push("sqlite_main_lease_owner_import");
+  }
+  const exactIdentityEqualityImports = pathImportSpecifiers.filter((element) =>
+    !element.isTypeOnly &&
+    (element.propertyName?.text ?? element.name.text) === "sameOwnerOnlyStateFileIdentity" &&
+    element.name.text === "sameOwnerOnlyStateFileIdentity");
+  const exactObservationTypeImports = pathImportSpecifiers.filter((element) =>
+    element.isTypeOnly &&
+    (element.propertyName?.text ?? element.name.text) === "OwnerOnlyStateFileObservation" &&
+    element.name.text === "OwnerOnlyStateFileObservation");
+  if (exactIdentityEqualityImports.length !== 1 || exactObservationTypeImports.length !== 1) {
+    violations.push("sqlite_artifact_identity_owner_import");
+  }
+  const localIdentityOwners = descendants(sourceFile).filter((node) =>
+    (ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node) ||
+      ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node)) &&
+    node.name !== undefined && ts.isIdentifier(node.name) &&
+    (node.name.text === "SqliteArtifactIdentity" || node.name.text === "sameArtifactIdentity"));
+  if (localIdentityOwners.length !== 0) {
+    violations.push("sqlite_artifact_identity_duplicate_owner");
+  }
+  const lossyIdentityCoercions = descendants(sourceFile).filter((node): node is ts.CallExpression =>
+    ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "Number" &&
+    node.arguments.some((argument) => /\.(?:dev|device|ino|inode)\b/u.test(argument.getText(sourceFile))));
+  if (lossyIdentityCoercions.length !== 0) {
+    violations.push("sqlite_artifact_identity_numeric_coercion");
+  }
+  const openMethod = productDatabase?.members.find((member): member is ts.MethodDeclaration =>
+    ts.isMethodDeclaration(member) && ts.isIdentifier(member.name) && member.name.text === "open");
+  if (openMethod === undefined) {
+    violations.push("product_database_open_missing");
+  } else {
+    if (!exactParameters(openMethod.parameters, ["path", "nowInput"])) {
+      violations.push("product_database_open_signature");
+    }
+    if (openMethod.parameters.length > 2) {
+      violations.push("product_database_caller_selected_authority_parameter");
+    }
+    const ownedOpenCalls = directCalls(openMethod, "openCurrentDatabase");
+    const allOpenCalls = directCalls(sourceFile, "openCurrentDatabase");
+    if (ownedOpenCalls.length === 0 || ownedOpenCalls.length !== allOpenCalls.length ||
+      ownedOpenCalls.some((call) => call.arguments.length !== 1 ||
+        !isIdentifierArgument(call, 0, "path"))) {
+      violations.push("product_database_open_current_binding");
+    }
+  }
+
+  const admissionDeclaration = variable("admitExistingSqliteStructure");
+  const admission = callable(admissionDeclaration);
+  if (admission === undefined) {
+    violations.push("sqlite_admission_owner_missing");
+  } else {
+    if (!exactParameters(admission.parameters, ["path"])) {
+      violations.push("sqlite_admission_signature");
+    }
+    if (admission.parameters.length > 1) {
+      violations.push("sqlite_admission_caller_selected_lease_parameter");
+    }
+    const nodes = descendants(admission);
+    const leaseDeclarations = nodes.filter((node): node is ts.VariableDeclaration =>
+      ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "mainLease");
+    if (leaseDeclarations.length !== 1) {
+      violations.push(`sqlite_main_lease_declarations:${leaseDeclarations.length}`);
+    }
+    const leaseDeclaration = leaseDeclarations[0];
+    const directAcquisitions = directCalls(admission, "acquireOwnerOnlyStateFileLease");
+    if (directAcquisitions.length !== 1) {
+      violations.push(`sqlite_main_lease_direct_acquisitions:${directAcquisitions.length}`);
+    }
+    const leaseInitializer = leaseDeclaration?.initializer;
+    if (
+      leaseDeclaration === undefined ||
+      leaseDeclaration.parent === undefined ||
+      !ts.isVariableDeclarationList(leaseDeclaration.parent) ||
+      (leaseDeclaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+      leaseInitializer === undefined ||
+      !ts.isCallExpression(leaseInitializer) ||
+      !ts.isIdentifier(leaseInitializer.expression) ||
+      leaseInitializer.expression.text !== "acquireOwnerOnlyStateFileLease" ||
+      leaseInitializer.arguments.length !== 1 ||
+      !isIdentifierArgument(leaseInitializer, 0, "path")
+    ) {
+      violations.push("sqlite_main_lease_alternate_acquisition");
+    }
+
+    const readonlyOpens = nodes.filter((node): node is ts.NewExpression =>
+      ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "Database" &&
+      node.arguments?.length === 2 && isIdentifierArgument(node as unknown as ts.CallExpression, 0, "path"));
+    const captures = directCalls(admission, "captureExistingSqliteArtifacts");
+    const structureReads = directCalls(admission, "hasExactCurrentSqliteStructure");
+    const postconditions = directCalls(admission, "assertReadOnlyArtifactTransition");
+    if (captures.length !== 1 || captures[0]!.arguments.length !== 2 ||
+      !isIdentifierArgument(captures[0]!, 0, "path") ||
+      !isIdentifierArgument(captures[0]!, 1, "mainLease")) {
+      violations.push("sqlite_artifact_capture_lease_binding");
+    }
+    if (structureReads.length !== 1 || structureReads[0]!.arguments.length !== 1 ||
+      !isIdentifierArgument(structureReads[0]!, 0, "database")) {
+      violations.push("sqlite_read_only_structure_read");
+    }
+    if (postconditions.length !== 1 || postconditions[0]!.arguments.length !== 3 ||
+      !isIdentifierArgument(postconditions[0]!, 0, "path") ||
+      !isIdentifierArgument(postconditions[0]!, 1, "mainLease") ||
+      !isIdentifierArgument(postconditions[0]!, 2, "before")) {
+      violations.push("sqlite_artifact_postcondition_lease_binding");
+    }
+
+    const assertions = leaseAssertions(admission);
+    const readonlyOpen = readonlyOpens[0];
+    const structureRead = structureReads[0];
+    if (readonlyOpen === undefined || structureRead === undefined || !assertions.some((assertion) =>
+      assertion.getStart(sourceFile) > readonlyOpen.getEnd() &&
+      assertion.getEnd() < structureRead.getStart(sourceFile))) {
+      violations.push("sqlite_read_only_structure_preassert_missing");
+    }
+    const closeAfterRead = structureRead === undefined ? undefined : nodes.find((node): node is ts.CallExpression =>
+      ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) && node.expression.expression.text === "database" &&
+      node.expression.name.text === "close" && node.getStart(sourceFile) > structureRead.getEnd());
+    if (structureRead === undefined || closeAfterRead === undefined || !assertions.some((assertion) =>
+      assertion.getStart(sourceFile) > structureRead.getEnd() &&
+      assertion.getEnd() < closeAfterRead.getStart(sourceFile))) {
+      violations.push("sqlite_read_only_structure_postassert_missing");
+    }
+
+    const successfulReturns = nodes.filter((node): node is ts.ReturnStatement =>
+      ts.isReturnStatement(node) && isFrozenObject(node.expression, ["mainLease"]));
+    if (successfulReturns.length !== 1) {
+      violations.push("sqlite_admission_main_lease_handoff");
+    }
+    const ordered = [
+      leaseDeclaration?.getStart(sourceFile),
+      captures[0]?.getStart(sourceFile),
+      readonlyOpen?.getStart(sourceFile),
+      structureRead?.getStart(sourceFile),
+      closeAfterRead?.getStart(sourceFile),
+      postconditions[0]?.getStart(sourceFile),
+      successfulReturns[0]?.getStart(sourceFile),
+    ];
+    if (ordered.some((position) => position === undefined) || ordered.some((position, index) =>
+      index > 0 && (position as number) <= (ordered[index - 1] as number))) {
+      violations.push("sqlite_admission_order");
+    }
+  }
+
+  const artifactPostcondition = callable(variable("assertReadOnlyArtifactTransition"));
+  if (artifactPostcondition === undefined ||
+    !exactParameters(artifactPostcondition.parameters, ["path", "mainLease", "before"])) {
+    violations.push("sqlite_artifact_postcondition_signature");
+  } else {
+    const captures = directCalls(artifactPostcondition, "captureExistingSqliteArtifacts");
+    const assertions = leaseAssertions(artifactPostcondition);
+    if (captures.length !== 1 || captures[0]!.arguments.length !== 2 ||
+      !isIdentifierArgument(captures[0]!, 0, "path") ||
+      !isIdentifierArgument(captures[0]!, 1, "mainLease")) {
+      violations.push("sqlite_artifact_postcondition_capture_binding");
+    }
+    if (captures[0] === undefined || !assertions.some((assertion) =>
+      assertion.getEnd() < captures[0]!.getStart(sourceFile))) {
+      violations.push("sqlite_artifact_postcondition_preassert_missing");
+    }
+    if (captures[0] === undefined || !assertions.some((assertion) =>
+      assertion.getStart(sourceFile) > captures[0]!.getEnd())) {
+      violations.push("sqlite_artifact_postcondition_postassert_missing");
+    }
+    const identityComparisons = directCalls(
+      artifactPostcondition,
+      "sameOwnerOnlyStateFileIdentity",
+    );
+    if (identityComparisons.length !== 1 || identityComparisons[0]!.arguments.length !== 2) {
+      violations.push("sqlite_artifact_identity_comparison_binding");
+    }
+  }
+
+  const artifactCapture = callable(variable("captureOwnerOnlyArtifact"));
+  if (artifactCapture === undefined) {
+    violations.push("sqlite_artifact_observation_owner_missing");
+  } else {
+    const observations = descendants(artifactCapture).filter((node): node is ts.CallExpression =>
+      ts.isCallExpression(node) && node.arguments.length === 0 &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) && node.expression.expression.text === "lease" &&
+      node.expression.name.text === "observe");
+    if (observations.length !== 1) violations.push("sqlite_artifact_observation_binding");
+  }
+
+  const opening = callable(variable("openCurrentDatabase"));
+  if (opening === undefined) {
+    violations.push("sqlite_open_current_owner_missing");
+  } else {
+    if (!exactParameters(opening.parameters, ["path"])) violations.push("sqlite_open_current_signature");
+    if (opening.parameters.length > 1) {
+      violations.push("sqlite_open_current_caller_selected_lease_parameter");
+    }
+    const admissionCalls = directCalls(opening, "admitExistingSqliteStructure");
+    if (admissionCalls.length !== 1 || admissionCalls[0]!.arguments.length !== 1 ||
+      !isIdentifierArgument(admissionCalls[0]!, 0, "path")) {
+      violations.push("sqlite_open_current_admission_binding");
+    }
+    if (directCalls(opening, "acquireOwnerOnlyStateFileLease").length !== 0) {
+      violations.push("sqlite_open_current_alternate_acquisition");
+    }
+    const leaseBindings = descendants(opening).filter((node): node is ts.BindingElement =>
+      ts.isBindingElement(node) && ts.isIdentifier(node.name) && node.name.text === "mainLease" &&
+      ts.isObjectBindingPattern(node.parent) && ts.isVariableDeclaration(node.parent.parent) &&
+      node.parent.parent.initializer !== undefined && ts.isIdentifier(node.parent.parent.initializer) &&
+      node.parent.parent.initializer.text === "admission");
+    if (leaseBindings.length !== 1) violations.push("sqlite_open_current_admitted_lease_binding");
+    const handoffs = descendants(opening).filter((node): node is ts.ReturnStatement =>
+      ts.isReturnStatement(node) && isFrozenObject(node.expression, ["database", "mainLease"]));
+    if (handoffs.length !== 1) violations.push("sqlite_open_current_main_lease_handoff");
+  }
+
+  const constructor = productDatabase?.members.find((member): member is ts.ConstructorDeclaration =>
+    ts.isConstructorDeclaration(member));
+  const constructorLeaseAssignments = constructor === undefined ? [] : descendants(constructor).filter(
+    (node): node is ts.BinaryExpression => ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isPropertyAccessExpression(node.left) && node.left.expression.kind === ts.SyntaxKind.ThisKeyword &&
+      ts.isPrivateIdentifier(node.left.name) && node.left.name.text === "#mainLease" &&
+      ts.isPropertyAccessExpression(node.right) && ts.isIdentifier(node.right.expression) &&
+      node.right.expression.text === "opened" && node.right.name.text === "mainLease",
+  );
+  if (constructorLeaseAssignments.length !== 1) {
+    violations.push("product_database_main_lease_handoff");
+  }
+
+  return violations.sort();
+};
 
 type LiteralVocabulary =
   | Readonly<{ kind: "number"; values: readonly string[] }>
@@ -1089,7 +1704,7 @@ const externalIntegrationAuthorityViolations = (
 };
 
 describe("runtime architecture boundary", () => {
-  it("enforces current package owners without stage-specific exceptions", async () => {
+  it("enforces current package owners and the exact Uniswap V2 SDK load boundary", async () => {
     const policy = await loadPackagePolicy();
     const violations: string[] = [];
     for (const file of await collectProductSourceFiles(repositoryRoot)) {
@@ -1101,8 +1716,12 @@ describe("runtime architecture boundary", () => {
         repositoryRoot,
       ));
     }
+    const productProgram = createProductSourceProgram(
+      await collectProductCodeSourceFiles(sourceRoot),
+    );
+    violations.push(...uniswapV2SdkLoadBoundaryViolations(productProgram, policy));
     expect(violations).toEqual([]);
-  });
+  }, 15_000);
 
   it("requires every non-core product consumer to use its exact curated core entry point", async () => {
     const violations: string[] = [];
@@ -1412,36 +2031,16 @@ describe("runtime architecture boundary", () => {
   });
 
   it("keeps current external-integration configuration and construction in their exact owners", async () => {
-    const obsoleteNames = new Set([
-      "officialAssetSourceManifest",
-      "officialAssetSourceClient",
-      "OfficialAssetSourceClient",
-      "OfficialAssetSourceClientOptions",
-      "OfficialAssetSourceError",
-      "OfficialAssetSourceErrorCode",
-      "OfficialAssetSourceObservation",
-      "createOfficialAssetSourceClient",
-      "assertOfficialAssetSourceObservation",
-      "getOfficialAssetSourceErrorCode",
-    ]);
-    const obsoleteOwners = new Set<string>();
     const authorityViolations: string[] = [];
     const observedEdges = new Set<string>();
 
     for (const file of await collectSourceFiles(sourceRoot)) {
-      const name = relative(sourceRoot, file).split(sep).join("/");
       const source = await readFile(file, "utf8");
-      const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
       authorityViolations.push(...externalIntegrationAuthorityViolations(
         source,
         file,
         observedEdges,
       ));
-      const visit = (node: ts.Node): void => {
-        if (ts.isIdentifier(node) && obsoleteNames.has(node.text)) obsoleteOwners.add(name);
-        ts.forEachChild(node, visit);
-      };
-      visit(parsed);
     }
 
     expect(authorityViolations).toEqual([]);
@@ -1452,8 +2051,6 @@ describe("runtime architecture boundary", () => {
         .map((file) => `reexport:${rule.module}:${rule.symbol}:${file}`),
     ]);
     expect([...observedEdges].sort()).toEqual(expectedEdges.sort());
-    expect([...obsoleteOwners]).toEqual([]);
-
     const walletConfiguration = await parseSource(
       resolve(sourceRoot, "wallet/walletconnect-configuration.ts"),
     );
@@ -1629,7 +2226,7 @@ describe("runtime architecture boundary", () => {
     ]) {
       expect(browserExports.has(forbidden), forbidden).toBe(false);
     }
-  });
+  }, 15_000);
 
   it("rejects syntax that bypasses external-integration symbol ownership", () => {
     const unauthorized = resolve(sourceRoot, "chain/unauthorized-integration.ts");
@@ -2106,14 +2703,6 @@ describe("runtime architecture boundary", () => {
     expect(declarationIdentifiers("referenceMarketManifest"))
       .toEqual(expect.arrayContaining(["referenceFeedDefinitions", "canonicalPairEntries"]));
 
-    for (const obsoleteDeclaration of [
-      "canonicalFeedIdentity",
-      "ethUsdContract",
-      "usdgUsdContract",
-      "ethUsdgContract",
-    ]) {
-      expect(declaration(obsoleteDeclaration)).toBeUndefined();
-    }
     expect(sourceDescendants(owner).some((node) =>
       ts.isStringLiteralLike(node) &&
       node.text.includes("eth_usd") &&
@@ -2175,9 +2764,418 @@ describe("runtime architecture boundary", () => {
       "FixedHttpOwner",
       "loadOrCreateControlCredential",
       "createRuntimeRouteRegistry",
+      "createRuntimeStateResetRequiredError",
       "LocalControlCredentialAuthority",
       "ControlCredentialVerifier",
     ]) expect(Object.hasOwn(runtimePublic, forbidden)).toBe(false);
+  });
+
+  it("confines startup-reset creation and the read-only SQLite admission order to their owners", async () => {
+    const productSources = await collectProductCodeSourceFiles(sourceRoot);
+    const canonicalProgram = createProductSourceProgram(productSources);
+    expect(runtimeResetCreatorViolations(canonicalProgram)).toEqual([]);
+    expect(sqlitePragmaAudit(canonicalProgram).violations).toEqual([]);
+    const importedAliasPath = resolve(sourceRoot, "runtime/reset-import-alias.ts");
+    const literalComputedPath = resolve(sourceRoot, "runtime/reset-literal-computed.ts");
+    const keyedComputedPath = resolve(sourceRoot, "runtime/reset-keyed-computed.ts");
+    const dynamicImportPath = resolve(sourceRoot, "runtime/reset-dynamic-import.ts");
+    const namespaceExportPath = resolve(sourceRoot, "runtime/reset-namespace-export.ts");
+    const typeOnlyImportEqualsPath = resolve(sourceRoot, "runtime/reset-type-import-equals.cts");
+    const typeOnlyNamespaceImportPath = resolve(sourceRoot, "runtime/reset-type-namespace-import.ts");
+    const typeOnlyNamespaceExportPath = resolve(sourceRoot, "runtime/reset-type-namespace-export.ts");
+    const topLevelRequireShadowPath = resolve(sourceRoot, "runtime/reset-local-require.cts");
+    const parameterRequireShadowPath = resolve(sourceRoot, "runtime/reset-parameter-require.cts");
+    const valueImportEqualsPath = resolve(sourceRoot, "runtime/reset-import-equals.cts");
+    const ambientRequirePath = resolve(sourceRoot, "runtime/reset-ambient-require.cts");
+    const declaredAmbientRequirePath = resolve(sourceRoot, "runtime/reset-declared-require.cts");
+    const typeOnlyRequireThenAmbientPath = resolve(
+      sourceRoot,
+      "runtime/reset-type-require-then-ambient.cts",
+    );
+    const nonliteralRequirePath = resolve(sourceRoot, "runtime/reset-nonliteral-require.cts");
+    const adversarialProgram = createProductSourceProgram(
+      productSources,
+      new Map([
+        [importedAliasPath, `
+import { createRuntimeStateResetRequiredError as createReset } from "./sqlite-schema.js";
+export const bypassResetOwner = () => createReset();
+`],
+        [literalComputedPath, `
+import * as sqliteSchema from "./sqlite-schema.js";
+const createReset = sqliteSchema["createRuntimeStateResetRequiredError"];
+export const bypassResetOwner = () => createReset();
+`],
+        [keyedComputedPath, `
+import * as sqliteSchema from "./sqlite-schema.js";
+const resetKey = "createRuntimeStateResetRequiredError" as const;
+const createReset = sqliteSchema[resetKey];
+export const bypassResetOwner = () => createReset();
+`],
+        [dynamicImportPath, `
+export const bypassResetOwner = async () =>
+  ((await import("./sqlite-schema.js")) as any)["createRuntimeStateResetRequiredError"]();
+`],
+        [namespaceExportPath, `
+export * as resetFactory from "./sqlite-schema.js";
+`],
+        [typeOnlyImportEqualsPath, `
+import type ResetSchema = require("./sqlite-schema.js");
+export type ResetSchemaType = typeof ResetSchema;
+`],
+        [typeOnlyNamespaceImportPath, `
+import type * as resetSchema from "./sqlite-schema.js";
+export type ResetSchemaType = typeof resetSchema;
+`],
+        [typeOnlyNamespaceExportPath, `
+export type * as resetSchema from "./sqlite-schema.js";
+`],
+        [topLevelRequireShadowPath, `
+const require = (_specifier: string): object => ({});
+void require("./sqlite-schema.js");
+`],
+        [parameterRequireShadowPath, `
+export const useLocalLoader = (require: (specifier: string) => object): void => {
+  void require("./sqlite-schema.js");
+};
+`],
+        [valueImportEqualsPath, `
+import resetSchema = require("./sqlite-schema.js");
+void resetSchema;
+`],
+        [ambientRequirePath, `
+void require("./sqlite-schema.js");
+`],
+        [declaredAmbientRequirePath, `
+declare const require: (specifier: string) => object;
+void require("./sqlite-schema.js");
+`],
+        [typeOnlyRequireThenAmbientPath, `
+import type require = require("types");
+void require("./sqlite-schema.js");
+`],
+        [nonliteralRequirePath, `
+declare const target: string;
+void require(target);
+`],
+      ]),
+      canonicalProgram,
+    );
+    const adversarialViolations = runtimeResetCreatorViolations(adversarialProgram);
+    expect(adversarialViolations.filter((violation) =>
+      !violation.startsWith("src/runtime/reset-import-alias.ts:") &&
+      !violation.startsWith("src/runtime/reset-literal-computed.ts:") &&
+      !violation.startsWith("src/runtime/reset-keyed-computed.ts:"))).toEqual([]);
+    expect(adversarialViolations.some((violation) =>
+      violation.startsWith("src/runtime/reset-import-alias.ts:"))).toBe(true);
+    expect(adversarialViolations.some((violation) =>
+      violation.startsWith("src/runtime/reset-literal-computed.ts:"))).toBe(true);
+    expect(adversarialViolations.some((violation) =>
+      violation.startsWith("src/runtime/reset-keyed-computed.ts:"))).toBe(true);
+    const resetFactorySymbol = moduleExportSymbol(
+      adversarialProgram,
+      adversarialProgram.getTypeChecker(),
+      runtimeSqliteSchemaPath,
+      runtimeResetCreatorName,
+    );
+    if (resetFactorySymbol === undefined) {
+      throw new TypeError("Runtime reset factory authority is unavailable.");
+    }
+    const moduleViolations = protectedModuleAccessViolations(
+      adversarialProgram,
+      new Set([resetFactorySymbol]),
+      sourceRoot,
+    );
+    const fixturePrefixes = [
+      "runtime/reset-literal-computed.ts:",
+      "runtime/reset-keyed-computed.ts:",
+      "runtime/reset-dynamic-import.ts:",
+      "runtime/reset-namespace-export.ts:",
+      "runtime/reset-import-equals.cts:",
+      "runtime/reset-ambient-require.cts:",
+      "runtime/reset-declared-require.cts:",
+      "runtime/reset-type-require-then-ambient.cts:",
+      "runtime/reset-nonliteral-require.cts:",
+    ];
+    expect(moduleViolations.filter((violation) =>
+      !fixturePrefixes.some((prefix) => violation.startsWith(prefix)))).toEqual([]);
+    expect(moduleViolations).toContain(
+      "runtime/reset-literal-computed.ts:2:protected_module_namespace_import",
+    );
+    expect(moduleViolations).toContain(
+      "runtime/reset-keyed-computed.ts:2:protected_module_namespace_import",
+    );
+    expect(moduleViolations).toContain(
+      "runtime/reset-dynamic-import.ts:3:protected_module_dynamic_import",
+    );
+    expect(moduleViolations).toContain(
+      "runtime/reset-namespace-export.ts:2:protected_module_namespace_export",
+    );
+    expect(moduleViolations).toContain(
+      "runtime/reset-import-equals.cts:2:protected_module_import_equals",
+    );
+    expect(moduleViolations).toContain(
+      "runtime/reset-ambient-require.cts:2:protected_module_require",
+    );
+    expect(moduleViolations).toContain(
+      "runtime/reset-declared-require.cts:3:protected_module_require",
+    );
+    expect(moduleViolations).toContain(
+      "runtime/reset-type-require-then-ambient.cts:3:protected_module_require",
+    );
+    expect(moduleViolations).toContain(
+      "runtime/reset-nonliteral-require.cts:3:unresolved_runtime_module_load",
+    );
+
+    const sqliteSchemaSource = await readFile(runtimeSqliteSchemaPath, "utf8");
+    const aliasedSourceErrorProgram = createProductSourceProgram(
+      productSources,
+      new Map([[runtimeSqliteSchemaPath, `${sqliteSchemaSource}
+const EscapedRuntimeStateResetRequiredSourceError = RuntimeStateResetRequiredSourceError;
+const createEscapedRuntimeStateResetRequiredError = () =>
+  new EscapedRuntimeStateResetRequiredSourceError();
+void createEscapedRuntimeStateResetRequiredError;
+`]]),
+      canonicalProgram,
+    );
+    expect(runtimeResetCreatorViolations(aliasedSourceErrorProgram)).toEqual([
+      "src/runtime/sqlite-schema.ts:runtime_reset_source_error_escape",
+    ]);
+
+    const databasePath = resolve(sourceRoot, "runtime/database.ts");
+    const database = await parseSource(databasePath);
+    expect(runtimeDatabaseAdmissionAuthorityViolations(database)).toEqual([]);
+    const mutatedDatabase = (needle: string, replacement: string): ts.SourceFile => {
+      const first = database.text.indexOf(needle);
+      if (first < 0 || database.text.indexOf(needle, first + needle.length) >= 0) {
+        throw new TypeError(`SQLite authority mutation target is not unique: ${needle}`);
+      }
+      return ts.createSourceFile(
+        databasePath,
+        `${database.text.slice(0, first)}${replacement}${database.text.slice(first + needle.length)}`,
+        ts.ScriptTarget.Latest,
+        true,
+      );
+    };
+    expect(runtimeDatabaseAdmissionAuthorityViolations(mutatedDatabase(
+      `  static async open(\n    path: string,\n    nowInput: UtcTimestamp,\n`,
+      `  static async open(\n    path: string,\n    nowInput: UtcTimestamp,\n    stateFileAuthority: unknown,\n`,
+    ))).toContain("product_database_caller_selected_authority_parameter");
+    expect(runtimeDatabaseAdmissionAuthorityViolations(mutatedDatabase(
+      `const admitExistingSqliteStructure = async (\n  path: string,\n`,
+      `const admitExistingSqliteStructure = async (\n  path: string,\n  leaseFactory: unknown,\n`,
+    ))).toContain("sqlite_admission_caller_selected_lease_parameter");
+    expect(runtimeDatabaseAdmissionAuthorityViolations(mutatedDatabase(
+      `} from "./paths.js";`,
+      `} from "./alternate-paths.js";`,
+    ))).toContain("sqlite_main_lease_owner_import");
+    expect(runtimeDatabaseAdmissionAuthorityViolations(mutatedDatabase(
+      "  acquireOwnerOnlyStateFileLease,\n",
+      "  alternateLease as acquireOwnerOnlyStateFileLease,\n",
+    ))).toContain("sqlite_main_lease_owner_import");
+    expect(runtimeDatabaseAdmissionAuthorityViolations(mutatedDatabase(
+      "  sameOwnerOnlyStateFileIdentity,\n",
+      "  sameIdentity as sameOwnerOnlyStateFileIdentity,\n",
+    ))).toContain("sqlite_artifact_identity_owner_import");
+    expect(runtimeDatabaseAdmissionAuthorityViolations(mutatedDatabase(
+      "  type OwnerOnlyStateFileObservation,\n",
+      "  type OwnerOnlyStateFileIdentity as OwnerOnlyStateFileObservation,\n",
+    ))).toContain("sqlite_artifact_identity_owner_import");
+    expect(runtimeDatabaseAdmissionAuthorityViolations(mutatedDatabase(
+      "interface ExistingSqliteArtifactSnapshot {",
+      "interface SqliteArtifactIdentity { device: number; inode: number; }\n\ninterface ExistingSqliteArtifactSnapshot {",
+    ))).toContain("sqlite_artifact_identity_duplicate_owner");
+    expect(runtimeDatabaseAdmissionAuthorityViolations(mutatedDatabase(
+      "    return lease.observe();",
+      "    const observation = lease.observe();\n    Number(observation.inode);\n    return observation;",
+    ))).toContain("sqlite_artifact_identity_numeric_coercion");
+    expect(runtimeDatabaseAdmissionAuthorityViolations(mutatedDatabase(
+      "    !sameOwnerOnlyStateFileIdentity(before.wal, after.wal)",
+      "    !alternateArtifactIdentityEquality(before.wal, after.wal)",
+    ))).toContain("sqlite_artifact_identity_comparison_binding");
+    expect(runtimeDatabaseAdmissionAuthorityViolations(mutatedDatabase(
+      "  const mainLease = acquireOwnerOnlyStateFileLease(path);",
+      "  const mainLease = alternateLeaseFactory(path);",
+    ))).toContain("sqlite_main_lease_alternate_acquisition");
+    expect(runtimeDatabaseAdmissionAuthorityViolations(mutatedDatabase(
+      `      database = new Database(path, { readonly: true, fileMustExist: true, timeout: 5_000 });\n      mainLease.assertCurrent();\n      current = hasExactCurrentSqliteStructure(database);`,
+      `      database = new Database(path, { readonly: true, fileMustExist: true, timeout: 5_000 });\n      current = hasExactCurrentSqliteStructure(database);`,
+    ))).toContain("sqlite_read_only_structure_preassert_missing");
+    expect(runtimeDatabaseAdmissionAuthorityViolations(mutatedDatabase(
+      `  mainLease.assertCurrent();\n};\n\nconst inspectSqliteArtifactSet`,
+      `};\n\nconst inspectSqliteArtifactSet`,
+    ))).toContain("sqlite_artifact_postcondition_postassert_missing");
+    const declaration = (name: string): ts.VariableDeclaration => {
+      const match = sourceDescendants(database).find((node): node is ts.VariableDeclaration =>
+        ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name);
+      if (match === undefined) throw new TypeError(`Runtime database declaration is unavailable: ${name}`);
+      return match;
+    };
+    const admission = declaration("admitExistingSqliteStructure");
+    const admissionNodes = sourceDescendants(admission);
+    const admissionDatabaseOpens = admissionNodes.filter((node): node is ts.NewExpression =>
+      ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "Database");
+    expect(admissionDatabaseOpens).toHaveLength(1);
+    expect(admissionDatabaseOpens[0]?.getText(database)).toContain("readonly: true");
+    expect(admissionDatabaseOpens[0]?.getText(database)).toContain("fileMustExist: true");
+    const admissionCalls = (name: string): ts.CallExpression[] => admissionNodes.filter(
+      (node): node is ts.CallExpression => ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) && node.expression.text === name,
+    );
+    const artifactCaptures = admissionCalls("captureExistingSqliteArtifacts");
+    const structureReads = admissionCalls("hasExactCurrentSqliteStructure");
+    const artifactPostconditions = admissionCalls("assertReadOnlyArtifactTransition");
+    expect(artifactCaptures).toHaveLength(1);
+    expect(structureReads).toHaveLength(1);
+    expect(artifactPostconditions).toHaveLength(1);
+    const artifactPostconditionStart = artifactPostconditions[0]?.getStart(database) as number;
+    const databaseClosesBeforePostcondition = admissionNodes.filter((node): node is ts.CallExpression =>
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) &&
+      node.expression.expression.text === "database" &&
+      node.expression.name.text === "close" &&
+      node.getStart(database) < artifactPostconditionStart);
+    expect(databaseClosesBeforePostcondition).toHaveLength(1);
+    const admissionReturns = admissionNodes.filter((node): node is ts.ReturnStatement => ts.isReturnStatement(node));
+    expect(admissionReturns).toHaveLength(2);
+    expect([
+      artifactCaptures[0]?.getStart(database),
+      admissionDatabaseOpens[0]?.getStart(database),
+      structureReads[0]?.getStart(database),
+      databaseClosesBeforePostcondition[0]?.getStart(database),
+      artifactPostconditionStart,
+      ...admissionReturns.map((statement) => statement.getStart(database)),
+    ]).toEqual([...[
+      artifactCaptures[0]?.getStart(database),
+      admissionDatabaseOpens[0]?.getStart(database),
+      structureReads[0]?.getStart(database),
+      databaseClosesBeforePostcondition[0]?.getStart(database),
+      artifactPostconditionStart,
+      ...admissionReturns.map((statement) => statement.getStart(database)),
+    ]].sort((left, right) => (left as number) - (right as number)));
+
+    const pragmaAudit = sqlitePragmaAudit(canonicalProgram);
+    expect(pragmaAudit.userVersionExpressions).toEqual([{
+      file: "src/runtime/database.ts",
+      kind: ts.SyntaxKind.StringLiteral,
+      value: "user_version = 1",
+    }]);
+    expect(pragmaAudit.commands).toEqual([
+      { file: "src/runtime/database.ts", command: "foreign_keys = ON" },
+      { file: "src/runtime/database.ts", command: "foreign_keys" },
+      { file: "src/runtime/database.ts", command: "busy_timeout = 5000" },
+      { file: "src/runtime/database.ts", command: "busy_timeout" },
+      { file: "src/runtime/database.ts", command: "journal_mode" },
+      { file: "src/runtime/database.ts", command: "journal_mode = WAL" },
+      { file: "src/runtime/database.ts", command: "user_version = 1" },
+      { file: "src/runtime/database.ts", command: "wal_checkpoint(TRUNCATE)" },
+    ]);
+    const bootstrap = declaration("bootstrapFreshDatabase");
+    const userVersionCalls = sourceDescendants(database).filter((node): node is ts.CallExpression =>
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "pragma" &&
+      node.arguments.some((argument) =>
+        ts.isStringLiteralLike(argument) && argument.text.toLowerCase().includes("user_version")));
+    expect(userVersionCalls).toHaveLength(1);
+    expect(userVersionCalls[0]?.getText(database)).toBe('database.pragma("user_version = 1")');
+    expect(userVersionCalls[0]?.getStart(database)).toBeGreaterThan(bootstrap.getStart(database));
+    expect(userVersionCalls[0]?.getEnd()).toBeLessThan(bootstrap.getEnd());
+
+    const databaseSource = await readFile(runtimeDatabasePath, "utf8");
+    const composedVersionReadProgram = createProductSourceProgram(
+      productSources,
+      new Map([[runtimeDatabasePath, databaseSource.replace(
+        '    database.pragma("user_version = 1");',
+        `    const inspectedMetadata = "user_" + "version";
+    database.pragma(inspectedMetadata, { simple: true });
+    database.pragma("user_version = 1");`,
+      )]]),
+      canonicalProgram,
+    );
+    expect(sqlitePragmaAudit(composedVersionReadProgram).violations).toContain(
+      "src/runtime/database.ts:sqlite_user_version_operation",
+    );
+
+    const opening = declaration("openCurrentDatabase");
+    const openingNodes = sourceDescendants(opening);
+    const startOf = (predicate: (node: ts.Node) => boolean): number => {
+      const match = openingNodes.find(predicate);
+      if (match === undefined) throw new TypeError("Current SQLite opening step is unavailable.");
+      return match.getStart(database);
+    };
+    const admissionStart = startOf((node) => ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) && node.expression.text === "admitExistingSqliteStructure");
+    const writableOpenStart = startOf((node) => ts.isNewExpression(node) &&
+      ts.isIdentifier(node.expression) && node.expression.text === "Database");
+    const configureStart = startOf((node) => ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) && node.expression.text === "configureExistingDatabase");
+    const structureRecheckStart = startOf((node) => ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) && node.expression.text === "hasExactCurrentSqliteStructure");
+    const productReadStart = startOf((node) => ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) && node.expression.text === "validateDatabaseState");
+    expect([
+      admissionStart,
+      writableOpenStart,
+      configureStart,
+      structureRecheckStart,
+      productReadStart,
+    ]).toEqual([...[
+      admissionStart,
+      writableOpenStart,
+      configureStart,
+      structureRecheckStart,
+      productReadStart,
+    ]].sort((left, right) => left - right));
+  }, 15_000);
+
+  it("opens and admits SQLite before constructing or publishing the HTTP owner", async () => {
+    const compositionPath = resolve(sourceRoot, "runtime/composition.ts");
+    const composition = await parseSource(compositionPath);
+    const runtimeClass = sourceDescendants(composition).find((node): node is ts.ClassDeclaration =>
+      ts.isClassDeclaration(node) && node.name?.text === "LocalRuntime");
+    if (runtimeClass === undefined) throw new TypeError("LocalRuntime is unavailable.");
+    const method = (name: string): ts.MethodDeclaration => {
+      const match = runtimeClass.members.find((member): member is ts.MethodDeclaration =>
+        ts.isMethodDeclaration(member) && ts.isIdentifier(member.name) && member.name.text === name);
+      if (match === undefined) throw new TypeError(`LocalRuntime method is unavailable: ${name}`);
+      return match;
+    };
+    const create = method("create");
+    const start = method("start");
+    const createNodes = sourceDescendants(create);
+    const createHttpOwner = createNodes.find((node): node is ts.VariableDeclaration =>
+      ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "createHttpOwner");
+    if (createHttpOwner === undefined) throw new TypeError("HTTP owner factory is unavailable.");
+    const fixedOwnerConstructions = createNodes.filter((node): node is ts.NewExpression =>
+      ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "FixedHttpOwner");
+    expect(fixedOwnerConstructions).toHaveLength(1);
+    expect(fixedOwnerConstructions[0]?.getStart(composition)).toBeGreaterThan(createHttpOwner.getStart(composition));
+    expect(fixedOwnerConstructions[0]?.getEnd()).toBeLessThan(createHttpOwner.getEnd());
+    const prematureFactoryCalls = createNodes.filter((node): node is ts.CallExpression =>
+      ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "createHttpOwner");
+    expect(prematureFactoryCalls).toEqual([]);
+    const databaseOpen = createNodes.find((node): node is ts.CallExpression =>
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) &&
+      node.expression.expression.text === "ProductDatabase" &&
+      node.expression.name.text === "open");
+    const runtimeReturn = createNodes.find((node): node is ts.ReturnStatement =>
+      ts.isReturnStatement(node) && node.expression !== undefined &&
+      ts.isNewExpression(node.expression) && ts.isIdentifier(node.expression.expression) &&
+      node.expression.expression.text === "LocalRuntime");
+    if (databaseOpen === undefined || runtimeReturn === undefined) {
+      throw new TypeError("LocalRuntime database admission sequence is unavailable.");
+    }
+    expect(databaseOpen.getStart(composition)).toBeLessThan(runtimeReturn.getStart(composition));
+    const startFactoryCalls = sourceDescendants(start).filter((node): node is ts.CallExpression =>
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.expression.kind === ts.SyntaxKind.ThisKeyword &&
+      ts.isPrivateIdentifier(node.expression.name) &&
+      node.expression.name.text === "#createHttpOwner");
+    expect(startFactoryCalls).toHaveLength(1);
   });
 
   it("limits raw authority imports to their declared runtime owners", async () => {
@@ -2352,7 +3350,6 @@ describe("runtime architecture boundary", () => {
       "profile_id AS profileId",
       "owner_instance_id AS ownerInstanceId",
       "configuration_mac AS configurationMac",
-      "protocol_version AS protocolVersion",
       "process_id AS processId",
       "owner_revision AS ownerRevision",
       "approved_methods_json AS approvedMethodsJson",

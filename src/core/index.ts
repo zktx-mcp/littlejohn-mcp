@@ -115,7 +115,6 @@ export {
   utf8ByteLength,
 } from "./canonical-json.js";
 export type { CanonicalJson } from "./canonical-json.js";
-export { coreContractVersion } from "./contract.js";
 export {
   supportLevelDefinitions,
   supportLevelSchema,

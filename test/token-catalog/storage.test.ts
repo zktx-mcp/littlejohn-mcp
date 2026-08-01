@@ -7,7 +7,6 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  canonicalJsonStringify,
   chainAnchorSchema,
   parseCapabilityDataAt,
   parseEvmAddressInput,
@@ -15,7 +14,6 @@ import {
   parseHash32,
   parseUtcTimestamp,
   walletConnectionCapability,
-  type CanonicalJson,
   type EvmAccountIdentity,
 } from "../../src/core/index.js";
 import {
@@ -35,7 +33,6 @@ import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.
 import {
   tokenCatalogOperationIdSchema,
   tokenCatalogOperationSchema,
-  tokenCatalogDigestVersions,
   tokenCatalogReviewDigest,
   tokenInspectionDigest,
   tokenSelectionRevisionSchema,
@@ -84,6 +81,13 @@ const independentCanonicalJson = (value: IndependentJson): string => {
       object[key] as IndependentJson,
     )}`).join(",")}}`;
 };
+
+const independentTokenInspectionDigest = (result: IndependentJson): string =>
+  `0x${createHash("sha256").update(independentCanonicalJson({
+    digestKind: "token_inspection",
+    digestVersion: "1",
+    result,
+  }), "utf8").digest("hex")}`;
 
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) =>
@@ -246,7 +250,7 @@ const failureCode = (effect: () => unknown): string | undefined => {
 };
 
 describe("token selection persistence", () => {
-  it("rejects a stored token inspection without the required source record digests", async () => {
+  it("rejects a current stored token inspection missing required source record digests", async () => {
     const { database, path } = await openDatabase();
     const inspection = await createInspectionSuccess({
       asset: {
@@ -258,16 +262,16 @@ describe("token selection persistence", () => {
     });
     database.close();
 
-    const oldResult = JSON.parse(canonicalJsonStringify(inspection as unknown as CanonicalJson)) as {
+    const malformedCurrentResult = JSON.parse(JSON.stringify(inspection)) as {
       evidence: { sources: Array<Record<string, unknown>> };
     };
-    for (const source of oldResult.evidence.sources) delete source["recordDigest"];
-    const resultJson = independentCanonicalJson(oldResult as unknown as IndependentJson);
-    const inspectionDigest = `0x${createHash("sha256").update(independentCanonicalJson({
-      digestKind: "token_inspection",
-      digestVersion: tokenCatalogDigestVersions.inspection,
-      result: oldResult as unknown as IndependentJson,
-    }), "utf8").digest("hex")}`;
+    expect(independentTokenInspectionDigest(malformedCurrentResult as unknown as IndependentJson))
+      .toBe(tokenInspectionDigest(inspection));
+    for (const source of malformedCurrentResult.evidence.sources) delete source["recordDigest"];
+    const resultJson = independentCanonicalJson(malformedCurrentResult as unknown as IndependentJson);
+    const inspectionDigest = independentTokenInspectionDigest(
+      malformedCurrentResult as unknown as IndependentJson,
+    );
 
     const raw = new Database(path);
     raw.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
@@ -286,7 +290,7 @@ describe("token selection persistence", () => {
     expect(getRuntimeOperationFailure(failure)?.error.code).toBe("runtime_state_unavailable");
   });
 
-  it("rejects a matching independently digested durable semantic corruption", async () => {
+  it("rejects a current independently digested durable semantic corruption", async () => {
     const { database, path } = await openDatabase();
     const address = parseEvmAddressInput(`0x${"86".repeat(20)}`);
     const analysisBlock = chainAnchorSchema.parse({
@@ -314,13 +318,13 @@ describe("token selection persistence", () => {
     const malformed = JSON.parse(JSON.stringify(inspection)) as {
       data: { analysis: unknown };
     };
+    expect(independentTokenInspectionDigest(malformed as unknown as IndependentJson))
+      .toBe(tokenInspectionDigest(inspection));
     malformed.data.analysis = changedOwner;
     const resultJson = independentCanonicalJson(malformed as unknown as IndependentJson);
-    const inspectionDigest = `0x${createHash("sha256").update(independentCanonicalJson({
-      digestKind: "token_inspection",
-      digestVersion: "5",
-      result: malformed as unknown as IndependentJson,
-    }), "utf8").digest("hex")}`;
+    const inspectionDigest = independentTokenInspectionDigest(
+      malformed as unknown as IndependentJson,
+    );
 
     const raw = new Database(path);
     raw.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")

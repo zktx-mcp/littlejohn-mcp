@@ -34,6 +34,10 @@ import type {
   WalletConnectConfiguration,
 } from "../../src/wallet/walletconnect-configuration.js";
 import type { LocalRuntime, WalletSessionSource } from "../../src/runtime/index.js";
+import {
+  acquireOwnerOnlyStateFileLease,
+  type OwnerOnlyStateFileSize,
+} from "../../src/runtime/paths.js";
 import { tokenCatalogConsumerPortContract } from "../../src/token-catalog/ports.js";
 import type {
   TokenCatalogApplicationDependencies,
@@ -133,6 +137,20 @@ type _ChainPortConfiguration = Assert<Equal<
 type _RuntimeConfigurationKeys = Assert<Equal<keyof RuntimeConfiguration, "chain" | "rpc" | "wallet">>;
 type _RuntimeChainConfigurationKeys = Assert<Equal<keyof RuntimeChainConfiguration, "chainId">>;
 type _RuntimeRpcConfigurationKeys = Assert<Equal<keyof RuntimeRpcConfiguration, "chain" | "endpoint">>;
+type _OwnerOnlyStateFileLeaseSizeInput = Assert<Equal<
+  NonNullable<Parameters<typeof acquireOwnerOnlyStateFileLease>[1]>,
+  OwnerOnlyStateFileSize
+>>;
+
+declare const ownerOnlyStateFilePath: string;
+const exerciseOwnerOnlyStateFileSizeType = (): void => {
+  acquireOwnerOnlyStateFileLease(ownerOnlyStateFilePath, { exact: 0, maximum: 1 });
+  // @ts-expect-error Misspelled size constraints must not be silently ignored.
+  acquireOwnerOnlyStateFileLease(ownerOnlyStateFilePath, { maxium: 1 });
+  // @ts-expect-error Known size constraints must retain their numeric type.
+  acquireOwnerOnlyStateFileLease(ownerOnlyStateFilePath, { exact: "0" });
+};
+void exerciseOwnerOnlyStateFileSizeType;
 type _WalletConnectionReadKeys = Assert<Equal<keyof WalletConnectionReadCapabilityPort, "connection">>;
 type _ChainReadKeys = Assert<Equal<
   keyof ChainReadCapabilityPort,
@@ -238,6 +256,7 @@ export type RuntimePortTypeContracts =
   | _RuntimeConfigurationKeys
   | _RuntimeChainConfigurationKeys
   | _RuntimeRpcConfigurationKeys
+  | _OwnerOnlyStateFileLeaseSizeInput
   | _WalletConnectionReadKeys
   | _ChainReadKeys
   | _WalletHandoffKeys

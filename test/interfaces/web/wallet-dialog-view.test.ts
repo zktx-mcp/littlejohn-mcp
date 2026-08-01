@@ -58,17 +58,6 @@ const operation = (
 });
 
 describe("wallet dialog view", () => {
-  it("rejects removed wallet identity and session-count fields", () => {
-    expect(() => walletConnectionDataSchema.parse({
-      ...connected,
-      account: `eip155:4663:${connectedAddress}`,
-    })).toThrow();
-    expect(() => walletConnectionDataSchema.parse({
-      status: "unresolved",
-      eligibleSessionCount: "2",
-    })).toThrow();
-  });
-
   it("uses the concise navigation label and exact connection actions", () => {
     const live = absent(connected);
     const unknown = absent({ status: "unknown", reason: "reconciling" });

@@ -1,5 +1,10 @@
 import { EventEmitter, getEventListeners } from "node:events";
+import { chmod, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { PassThrough } from "node:stream";
+
+import Database from "better-sqlite3";
 
 import { describe, expect, it } from "vitest";
 
@@ -22,6 +27,12 @@ import {
   type RuntimeDispatchRequest,
   type RuntimeDispatchResponse,
 } from "../../src/runtime/index.js";
+import { runtimePaths } from "../../src/runtime/paths.js";
+import {
+  createRuntimeStateResetRequiredError,
+  runtimeStateResetRequiredCode,
+  runtimeStateResetRequiredMessage,
+} from "../../src/runtime/sqlite-schema.js";
 import {
   createProcessTerminal,
   runCli,
@@ -754,6 +765,79 @@ describe("wallet CLI", () => {
     expect(terminal.disposed()).toBe(true);
     expect(terminal.output).toEqual([]);
     expect(terminal.errors).toEqual([]);
+  });
+
+  it("reports the exact startup-only reset failure identically before CLI or MCP publication", async () => {
+    for (const argumentsInput of [["wallet", "status"], []] as const) {
+      const terminal = fakeTerminal({
+        inputIsTTY: argumentsInput.length !== 0,
+        outputIsTTY: argumentsInput.length !== 0,
+      });
+      let mcpStarts = 0;
+      let forcedExits = 0;
+      expect(await runCli(argumentsInput, {
+        createOperationId: () => operationId,
+        createRuntime: async () => { throw createRuntimeStateResetRequiredError(); },
+        terminal: terminal.terminal,
+        waitForPoll: async () => undefined,
+        terminateProcess: () => { forcedExits += 1; },
+        startMcp: async () => {
+          mcpStarts += 1;
+          throw new Error("MCP must not be published after a startup reset failure.");
+        },
+      })).toBe(7);
+      expect(terminal.output).toEqual([]);
+      expect(terminal.errors).toEqual([
+        `${runtimeStateResetRequiredCode}: ${runtimeStateResetRequiredMessage}\n`,
+      ]);
+      expect(terminal.disposed()).toBe(true);
+      expect(mcpStarts).toBe(0);
+      expect(forcedExits).toBe(0);
+    }
+  });
+
+  it("carries an actual mismatching database through runtime creation to the shared startup reporter", async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), "littlejohn-cli-reset-"));
+    const path = runtimePaths(directory).database;
+    const database = new Database(path);
+    try {
+      database.exec("CREATE TABLE unexpected_structure(value TEXT) STRICT;");
+    } finally {
+      database.close();
+    }
+    if (process.platform !== "win32") await chmod(path, 0o600);
+
+    try {
+      for (const argumentsInput of [["wallet", "status"], []] as const) {
+        const terminal = fakeTerminal({
+          inputIsTTY: argumentsInput.length !== 0,
+          outputIsTTY: argumentsInput.length !== 0,
+        });
+        let mcpStarts = 0;
+        expect(await runCli(argumentsInput, {
+          createOperationId: () => operationId,
+          createRuntime: () => LocalRuntime.create({
+            environment: { LITTLEJOHN_DATA_DIR: directory },
+          }),
+          terminal: terminal.terminal,
+          waitForPoll: async () => undefined,
+          terminateProcess: () => { throw new Error("Startup reset must not force process termination."); },
+          startMcp: async () => {
+            mcpStarts += 1;
+            throw new Error("MCP must not be published after a startup reset failure.");
+          },
+        })).toBe(7);
+        expect(terminal.output).toEqual([]);
+        expect(terminal.errors).toEqual([
+          "runtime_state_reset_required: Local development state must be reset. Stop Little John, " +
+          "move the entire data directory aside or replace it with a new empty directory, and start again.\n",
+        ]);
+        expect(terminal.disposed()).toBe(true);
+        expect(mcpStarts).toBe(0);
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("parses canonical operation identifiers independently from exact CLI flags", async () => {

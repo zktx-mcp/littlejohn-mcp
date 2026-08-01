@@ -5,7 +5,7 @@ import {
   lstatSync,
   openSync,
   readSync,
-  type Stats,
+  type BigIntStats,
 } from "node:fs";
 import { lstat, mkdir, open, unlink, type FileHandle } from "node:fs/promises";
 import { homedir, platform } from "node:os";
@@ -38,17 +38,21 @@ export interface OwnerOnlyStateFileSize {
   readonly maximum?: number;
 }
 
+export interface OwnerOnlyStateFileIdentity {
+  readonly device: bigint;
+  readonly inode: bigint;
+}
+
+export interface OwnerOnlyStateFileObservation extends OwnerOnlyStateFileIdentity {
+  readonly size: bigint;
+}
+
 export interface OwnerOnlyStateFileLease {
   assertCurrent(): void;
-  stat(): Stats;
+  observe(): OwnerOnlyStateFileObservation;
   read(buffer: Buffer, offset: number, length: number, position: number): number;
   close(): void;
 }
-
-export type OwnerOnlyStateFileLeaseFactory = (
-  path: string,
-  size?: OwnerOnlyStateFileSize,
-) => OwnerOnlyStateFileLease;
 
 const assertSizeConstraint = (constraint: OwnerOnlyStateFileSize): void => {
   if (
@@ -59,30 +63,43 @@ const assertSizeConstraint = (constraint: OwnerOnlyStateFileSize): void => {
 };
 
 const assertOwnerOnlyStateFileDetails = (
-  details: Stats,
+  details: BigIntStats,
   size: OwnerOnlyStateFileSize,
 ): void => {
   assertSizeConstraint(size);
   if (!details.isFile() || details.isSymbolicLink()) throw new OwnerOnlyStateFileError("type");
   if (process.platform !== "win32") {
-    if (typeof process.getuid === "function" && details.uid !== process.getuid()) {
+    if (typeof process.getuid === "function" && details.uid !== BigInt(process.getuid())) {
       throw new OwnerOnlyStateFileError("owner");
     }
-    if ((details.mode & 0o777) !== 0o600) throw new OwnerOnlyStateFileError("permissions");
+    if ((details.mode & 0o777n) !== 0o600n) throw new OwnerOnlyStateFileError("permissions");
   }
-  if (size.exact !== undefined && details.size !== size.exact) {
+  if (size.exact !== undefined && details.size !== BigInt(size.exact)) {
     throw new OwnerOnlyStateFileError("size");
   }
-  if (size.maximum !== undefined && details.size > size.maximum) {
+  if (size.maximum !== undefined && details.size > BigInt(size.maximum)) {
     throw new OwnerOnlyStateFileError("size");
   }
 };
+
+const observeOwnerOnlyStateFile = (
+  details: BigIntStats,
+): OwnerOnlyStateFileObservation => Object.freeze({
+  device: details.dev,
+  inode: details.ino,
+  size: details.size,
+});
+
+export const sameOwnerOnlyStateFileIdentity = (
+  left: OwnerOnlyStateFileIdentity,
+  right: OwnerOnlyStateFileIdentity,
+): boolean => left.device === right.device && left.inode === right.inode;
 
 export const attestOwnerOnlyStateFile = async (
   path: string,
   size: OwnerOnlyStateFileSize = {},
 ): Promise<void> => {
-  assertOwnerOnlyStateFileDetails(await lstat(path), size);
+  assertOwnerOnlyStateFileDetails(await lstat(path, { bigint: true }), size);
 };
 
 export const openOwnerOnlyStateFileForRead = async (
@@ -101,7 +118,7 @@ export const openOwnerOnlyStateFileForRead = async (
     throw error;
   }
   try {
-    assertOwnerOnlyStateFileDetails(await handle.stat(), size);
+    assertOwnerOnlyStateFileDetails(await handle.stat({ bigint: true }), size);
     return handle;
   } catch (error) {
     await handle.close();
@@ -109,14 +126,11 @@ export const openOwnerOnlyStateFileForRead = async (
   }
 };
 
-const sameFileIdentity = (left: Stats, right: Stats): boolean =>
-  left.dev === right.dev && left.ino === right.ino;
-
-export const acquireOwnerOnlyStateFileLease: OwnerOnlyStateFileLeaseFactory = (
-  path,
-  size = {},
-) => {
-  assertOwnerOnlyStateFileDetails(lstatSync(path), size);
+export const acquireOwnerOnlyStateFileLease = (
+  path: string,
+  size: OwnerOnlyStateFileSize = {},
+): OwnerOnlyStateFileLease => {
+  assertOwnerOnlyStateFileDetails(lstatSync(path, { bigint: true }), size);
   const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
   let descriptor: number;
   try {
@@ -129,16 +143,19 @@ export const acquireOwnerOnlyStateFileLease: OwnerOnlyStateFileLeaseFactory = (
   }
 
   let closed = false;
-  const currentDescriptorDetails = (): Stats => {
+  const currentDescriptorObservation = (): OwnerOnlyStateFileObservation => {
     if (closed) throw new Error("Owner-only state file lease is closed.");
-    const details = fstatSync(descriptor);
+    const details = fstatSync(descriptor, { bigint: true });
     assertOwnerOnlyStateFileDetails(details, size);
-    return details;
+    return observeOwnerOnlyStateFile(details);
   };
   const assertCurrent = (): void => {
-    const pathDetails = lstatSync(path);
+    const pathDetails = lstatSync(path, { bigint: true });
     assertOwnerOnlyStateFileDetails(pathDetails, size);
-    if (!sameFileIdentity(currentDescriptorDetails(), pathDetails)) {
+    if (!sameOwnerOnlyStateFileIdentity(
+      currentDescriptorObservation(),
+      observeOwnerOnlyStateFile(pathDetails),
+    )) {
       throw new OwnerOnlyStateFileError("type");
     }
   };
@@ -152,9 +169,9 @@ export const acquireOwnerOnlyStateFileLease: OwnerOnlyStateFileLeaseFactory = (
 
   return Object.freeze({
     assertCurrent,
-    stat: currentDescriptorDetails,
+    observe: currentDescriptorObservation,
     read: (buffer: Buffer, offset: number, length: number, position: number): number => {
-      currentDescriptorDetails();
+      currentDescriptorObservation();
       return readSync(descriptor, buffer, offset, length, position);
     },
     close: (): void => {
@@ -173,7 +190,7 @@ export const createOwnerOnlyStateFileForWrite = async (path: string): Promise<Fi
   );
   try {
     if (process.platform !== "win32") await handle.chmod(0o600);
-    assertOwnerOnlyStateFileDetails(await handle.stat(), { exact: 0 });
+    assertOwnerOnlyStateFileDetails(await handle.stat({ bigint: true }), { exact: 0 });
     return handle;
   } catch (error) {
     try { await handle.close(); } catch { /* Preserve the creation failure. */ }

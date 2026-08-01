@@ -95,8 +95,7 @@ Each read capability and action adapter implements a narrow contract.
   make removal implicit in another version's registration.
 - Protocol version, protocol-family display identity, package contract version,
   capability contract identity, deployment identity, SDK package version, and
-  repository runtime protocol version are separate values with separate
-  owners.
+  package version are separate values with separate owners.
 - A deployment identity is the exact tuple of protocol identifier, chain ID,
   contract role, and full contract address. Multiple admitted deployments remain
   independently selectable; no mutable default deployment exists.

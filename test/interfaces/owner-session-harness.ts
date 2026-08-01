@@ -9,7 +9,6 @@ import {
   type RuntimeOwnerSession,
   type RuntimeOwnerSessionRequest,
   type RuntimeOwnerSendResult,
-  runtimeProtocolVersion,
 } from "../../src/runtime/index.js";
 import {
   parseOwnerInstanceId,
@@ -20,7 +19,6 @@ import {
 const identity = Object.freeze({
   profileId: parseProfileId(Buffer.alloc(16, 1).toString("base64url")),
   ownerInstanceId: parseOwnerInstanceId(Buffer.alloc(16, 2).toString("base64url")),
-  runtimeProtocolVersion,
   configurationMac: parseRuntimeConfigurationMac(Buffer.alloc(32, 3).toString("base64url")),
   ownerRevision: parseUnsignedDecimal("1"),
 });

@@ -1,6 +1,5 @@
 import { z, type ZodType } from "zod";
 
-import { coreContractVersion } from "./contract.js";
 import {
   createEvidenceSchemaSet,
   type Conclusion,
@@ -45,7 +44,7 @@ export interface CapabilitySuccess<Data> {
   readonly ok: true;
   readonly meta: {
     readonly capabilityId: CapabilityId;
-    readonly contractVersion: typeof coreContractVersion;
+    readonly contractVersion: "1";
     readonly chainId: EvmChainId;
     readonly evaluatedAt: UtcTimestamp;
   };
@@ -60,12 +59,13 @@ export interface CapabilitySuccess<Data> {
 
 export const createCapabilitySuccessSchema = <Data>(
   capabilityId: CapabilityId,
+  contractVersion: "1",
   dataSchema: ZodType<Data>,
 ) => jsonObject({
   ok: z.literal(true),
   meta: jsonObject({
     capabilityId: z.literal(capabilityId),
-    contractVersion: z.literal(coreContractVersion),
+    contractVersion: z.literal(contractVersion),
     chainId: evmChainIdSchema,
     evaluatedAt: contractPrimitives.utcTimestamp,
   }).strict(),

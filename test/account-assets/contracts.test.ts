@@ -34,6 +34,7 @@ import {
   tokenSelectionRevisionSchema,
   tokenSelectionSetRevisionSchema,
 } from "../../src/token-catalog/index.js";
+import { tokenCatalogErrorRegistry } from "../../src/token-catalog/error-registry.js";
 
 const chainId = parseEvmChainId("eip155:4663");
 const accountAddress = parseEvmAddressInput(`0x${"34".repeat(20)}`);
@@ -171,6 +172,15 @@ const sha256 = (value: string): string =>
   createHash("sha256").update(value, "utf8").digest("hex");
 
 describe("account asset contracts", () => {
+  it("uses the token-catalog error registry without an account-assets alias", () => {
+    expect(accountAssetOverviewQueryContract.contractVersion).toBe("1");
+    for (const contract of Object.values(accountAssetApplicationContracts)) {
+      expect(contract.applicationContract.errorRegistry).toBe(tokenCatalogErrorRegistry);
+      expect(contract.contractVersion).toBe(contract.applicationContract.contractVersion);
+      expect(contract.contractVersion).toBe("1");
+    }
+  });
+
   it("preserves every independent official and account schema projection", () => {
     for (const [schema, expectedBytes, expectedDigest] of [
       [

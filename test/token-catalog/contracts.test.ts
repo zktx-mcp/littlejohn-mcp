@@ -9,7 +9,6 @@ import {
   canonicalJsonStringify,
   captureCanonicalJson,
   chainAnchorSchema,
-  coreContractVersion,
   erc20AssetIdentitySchema,
   getCapabilityDefinitionSnapshot,
   parseCapabilitySuccess,
@@ -137,8 +136,8 @@ describe("token catalog contracts", () => {
       ],
       [
         tokenInspectionSuccessSchema,
-        19_745,
-        "4c456db567adf0c37dd52bfda64812b7e61f36e66a0364fc8f5614b9ada91135",
+        19_744,
+        "cc0fe87cc842dc220728132dc9a633dc8e5083862b7db6708b2ee864edc355e1",
       ],
     ] as const) {
       const canonical = canonicalOutputSchema(schema);
@@ -147,9 +146,18 @@ describe("token catalog contracts", () => {
     }
   });
 
-  it("owns exactly the seven selection capability identifiers at contract version 10", () => {
-    expect(coreContractVersion).toBe("10");
-    expect(getCapabilityDefinitionSnapshot(tokenInspectCapability).contractVersion).toBe("10");
+  it("projects each token contract's initial owner version without a global authority", () => {
+    const inspectionContract = getCapabilityDefinitionSnapshot(tokenInspectCapability);
+    const applicationVersions = Object.fromEntries(
+      Object.values(tokenCatalogApplicationContracts).map((contract) => [
+        contract.capabilityId,
+        contract.contractVersion,
+      ]),
+    );
+    expect(inspectionContract).toMatchObject({
+      capabilityId: "token.inspect",
+      contractVersion: "1",
+    });
     expect(tokenCatalogCapabilityIds).toEqual([
       "token.cancel_operation",
       "token.inspect",
@@ -159,7 +167,27 @@ describe("token catalog contracts", () => {
       "token.start_addition",
       "token.start_removal",
     ]);
-    expect(tokenCatalogContractProjection.contractVersion).toBe("10");
+    expect(applicationVersions).toEqual({
+      "token.cancel_operation": "1",
+      "token.operation": "1",
+      "token.selection": "1",
+      "token.selections": "1",
+      "token.start_addition": "1",
+      "token.start_removal": "1",
+    });
+    expect(tokenCatalogOperationConfirmationContract.contractVersion).toBe("1");
+    expect(tokenCatalogContractProjection.contractVersion).toBe("1");
+    expect(tokenCatalogContractProjection.inspection).toEqual(inspectionContract);
+    expect(Object.fromEntries(tokenCatalogContractProjection.applications.map((contract) => [
+      contract.capabilityId,
+      contract.contractVersion,
+    ]))).toEqual(applicationVersions);
+    expect(tokenCatalogContractProjection.operationConfirmation.contractVersion)
+      .toBe(tokenCatalogOperationConfirmationContract.contractVersion);
+    expect(tokenCatalogContractProjection.digestVersions).toEqual({
+      inspection: "1",
+      review: "1",
+    });
     expect(tokenCatalogContractProjectionDigest).toMatch(/^0x[0-9a-f]{64}$/u);
     expect(Object.isFrozen(tokenCatalogContractProjection)).toBe(true);
     expect(tokenCatalogErrorDefinitions).toContainEqual({

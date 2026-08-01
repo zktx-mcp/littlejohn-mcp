@@ -81,7 +81,6 @@ import {
   parseOwnerIdentity,
   parseRuntimeIdentityChallenge,
   parseUnsignedOwnerIdentity,
-  runtimeProtocolVersion,
   type RuntimeConfigurationMac,
 } from "./runtime-identity.js";
 import type {
@@ -433,11 +432,9 @@ const openAuthenticatedOwnerChannel = async (input: {
     if (
       identity.challenge !== challenge ||
       identity.profileId !== profile.profileId ||
-      identity.runtimeProtocolVersion !== runtimeProtocolVersion ||
       identity.configurationMac !== input.configurationMac ||
       recorded === undefined ||
       identity.ownerInstanceId !== recorded.ownerInstanceId ||
-      recorded.protocolVersion !== identity.runtimeProtocolVersion ||
       recorded.configurationMac !== input.configurationMac ||
       identity.ownerRevision !== recorded.ownerRevision
     ) throw new PeerIncompatibleError("Owner identity is incompatible.");
@@ -450,7 +447,6 @@ const openAuthenticatedOwnerChannel = async (input: {
       identity: Object.freeze({
         profileId: identity.profileId,
         ownerInstanceId: identity.ownerInstanceId,
-        runtimeProtocolVersion: identity.runtimeProtocolVersion,
         configurationMac: identity.configurationMac,
         ownerRevision: identity.ownerRevision,
       }),
@@ -1221,7 +1217,6 @@ export class FixedHttpOwner {
     const identityWithoutProof = {
       profileId: owner.profileId,
       ownerInstanceId: owner.ownerInstanceId,
-      runtimeProtocolVersion,
       configurationMac: owner.configurationMac,
       challenge,
       ownerRevision: owner.ownerRevision,

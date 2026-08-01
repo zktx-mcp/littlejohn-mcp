@@ -543,6 +543,7 @@ export const uniswapV2QuoteCapability = defineReadCapability<
   UniswapV2QuoteData
 >({
   capabilityId: uniswapV2QuoteCapabilityId,
+  contractVersion: "1",
   inputSchema: uniswapV2QuoteInputSchema,
   dataSchema: uniswapV2QuoteDataSchema,
   failureCodes: [

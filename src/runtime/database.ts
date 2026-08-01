@@ -92,8 +92,9 @@ import {
   attestOwnerOnlyStateFile,
   acquireOwnerOnlyStateFileLease,
   createOwnerOnlyStateFile,
+  sameOwnerOnlyStateFileIdentity,
   type OwnerOnlyStateFileLease,
-  type OwnerOnlyStateFileLeaseFactory,
+  type OwnerOnlyStateFileObservation,
 } from "./paths.js";
 import {
   createProfileId,
@@ -101,16 +102,16 @@ import {
   parseProfileId,
   parseRuntimeConfigurationMac,
   parseRuntimeRevision,
-  runtimeProtocolVersion,
   type OwnerInstanceId,
   type ProfileId,
   type RuntimeConfigurationMac,
   type RuntimeRevision,
 } from "./runtime-identity.js";
 import {
+  createRuntimeStateResetRequiredError,
   currentSqliteSchemaSql,
-  currentSqliteTableNames,
-  databaseSchemaVersion,
+  getRuntimeStateResetRequiredError,
+  hasExactCurrentSqliteStructure,
 } from "./sqlite-schema.js";
 import {
   decodeWalletConnectionStorage,
@@ -137,7 +138,6 @@ export interface RuntimeOwnerRecord {
   readonly profileId: ProfileId;
   readonly ownerInstanceId: OwnerInstanceId;
   readonly configurationMac: RuntimeConfigurationMac;
-  readonly protocolVersion: number;
   readonly processId: number;
   readonly ownerRevision: RuntimeRevision;
   readonly acquiredAt: UtcTimestamp;
@@ -163,7 +163,6 @@ interface OwnerRow {
   profileId: string;
   ownerInstanceId: string;
   configurationMac: string;
-  protocolVersion: number;
   processId: number;
   ownerRevision: string;
   acquiredAt: string;
@@ -365,7 +364,9 @@ const sqliteContentionCodes: ReadonlySet<string> = new Set([
   "SQLITE_LOCKED_VTAB",
 ]);
 
-const storageError = (error: unknown): RuntimeOperationError => {
+const storageError = (error: unknown): Error => {
+  const resetRequired = getRuntimeStateResetRequiredError(error);
+  if (resetRequired !== undefined) return resetRequired;
   if (error instanceof RuntimeOperationError) return error;
   if (error instanceof Error && "code" in error && sqliteContentionCodes.has(String(error.code))) {
     return new RuntimeOperationError("runtime_busy");
@@ -382,19 +383,6 @@ const exclusive = <Result>(database: Database.Database, operation: () => Result)
   } catch (error) {
     try { database.exec("ROLLBACK"); } catch { /* Preserve the original failure. */ }
     throw error;
-  }
-};
-
-const tableNames = (database: Database.Database): string[] =>
-  (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-    .all() as { name: string }[]).map((row) => row.name);
-
-const assertCurrentSchema = (database: Database.Database): void => {
-  if (database.pragma("user_version", { simple: true }) !== databaseSchemaVersion) {
-    throw new Error("SQLite schema version is incompatible.");
-  }
-  if (JSON.stringify(tableNames(database)) !== JSON.stringify(currentSqliteTableNames)) {
-    throw new Error("SQLite table set is incompatible.");
   }
 };
 
@@ -435,8 +423,6 @@ const ownerFromRow = (row: OwnerRow, profile: LocalProfile): RuntimeOwnerRecord 
   if (
     row.singleton !== 1 ||
     row.profileId !== profile.profileId ||
-    !Number.isSafeInteger(row.protocolVersion) ||
-    row.protocolVersion <= 0 ||
     !Number.isSafeInteger(row.processId) ||
     row.processId <= 0
   ) throw new Error("Runtime owner projection is invalid.");
@@ -444,7 +430,6 @@ const ownerFromRow = (row: OwnerRow, profile: LocalProfile): RuntimeOwnerRecord 
     profileId: profile.profileId,
     ownerInstanceId: parseOwnerInstanceId(row.ownerInstanceId),
     configurationMac: parseRuntimeConfigurationMac(row.configurationMac),
-    protocolVersion: row.protocolVersion,
     processId: row.processId,
     ownerRevision: parseRuntimeRevision(row.ownerRevision),
     acquiredAt: parseUtcTimestamp(row.acquiredAt),
@@ -477,7 +462,6 @@ const readProfileRaw = (database: Database.Database): LocalProfile => {
 const readOwnerRaw = (database: Database.Database): RuntimeOwnerRecord | undefined => {
   const rows = database.prepare(`SELECT singleton, profile_id AS profileId,
     owner_instance_id AS ownerInstanceId, configuration_mac AS configurationMac,
-    protocol_version AS protocolVersion,
     process_id AS processId, owner_revision AS ownerRevision, acquired_at AS acquiredAt
     FROM runtime_owner ORDER BY singleton`).all() as OwnerRow[];
   if (rows.length > 1) throw new Error("Runtime owner projection is invalid.");
@@ -778,7 +762,6 @@ const createReferenceRevision = (current: string | null): string => {
 };
 
 const validateDatabaseState = (database: Database.Database): void => {
-  assertCurrentSchema(database);
   readProfileRaw(database);
   readOwnerRaw(database);
   readChainRows(database);
@@ -795,9 +778,14 @@ const validateDatabaseState = (database: Database.Database): void => {
 
 const bootstrapFreshDatabase = (database: Database.Database, now: UtcTimestamp): void => {
   exclusive(database, () => {
-    if (tableNames(database).length !== 0) throw new Error("Fresh SQLite state is not empty.");
+    if (database.prepare("SELECT 1 FROM sqlite_schema LIMIT 1").get() !== undefined) {
+      throw new Error("Fresh SQLite state is not empty.");
+    }
     database.exec(currentSqliteSchemaSql);
-    database.pragma(`user_version = ${databaseSchemaVersion}`);
+    database.pragma("user_version = 1");
+    if (!hasExactCurrentSqliteStructure(database)) {
+      throw new Error("Fresh SQLite structure is unavailable.");
+    }
     database.prepare("INSERT INTO local_profile(singleton, profile_id, created_at) VALUES (1, ?, ?)")
       .run(createProfileId(), now);
     const initialWallet = encodeWalletConnectionStorage({ status: "unknown", reason: "reconciling" });
@@ -877,6 +865,11 @@ interface SqliteArtifactSet {
   readonly state: "fresh" | "existing";
 }
 
+interface ExistingSqliteArtifactSnapshot {
+  readonly wal: OwnerOnlyStateFileObservation | undefined;
+  readonly sharedMemory: OwnerOnlyStateFileObservation | undefined;
+}
+
 const artifactExists = async (path: string): Promise<boolean> => {
   try {
     await lstat(path);
@@ -885,6 +878,61 @@ const artifactExists = async (path: string): Promise<boolean> => {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
     throw error;
   }
+};
+
+const captureOwnerOnlyArtifact = (
+  path: string,
+  size: Readonly<{ exact?: number }> = {},
+): OwnerOnlyStateFileObservation => {
+  const lease = acquireOwnerOnlyStateFileLease(path, size);
+  try {
+    lease.assertCurrent();
+    return lease.observe();
+  } finally {
+    lease.close();
+  }
+};
+
+const captureOptionalOwnerOnlyArtifact = (
+  path: string,
+): OwnerOnlyStateFileObservation | undefined => {
+  try {
+    return captureOwnerOnlyArtifact(path);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+    throw error;
+  }
+};
+
+const captureExistingSqliteArtifacts = (
+  path: string,
+  mainLease: OwnerOnlyStateFileLease,
+): ExistingSqliteArtifactSnapshot => {
+  mainLease.assertCurrent();
+  const wal = captureOptionalOwnerOnlyArtifact(`${path}-wal`);
+  const sharedMemory = captureOptionalOwnerOnlyArtifact(`${path}-shm`);
+  mainLease.assertCurrent();
+  return Object.freeze({ wal, sharedMemory });
+};
+
+const assertReadOnlyArtifactTransition = (
+  path: string,
+  mainLease: OwnerOnlyStateFileLease,
+  before: ExistingSqliteArtifactSnapshot,
+): void => {
+  mainLease.assertCurrent();
+  const after = captureExistingSqliteArtifacts(path, mainLease);
+  if (before.wal === undefined) {
+    if (after.wal !== undefined && after.wal.size !== 0n) {
+      throw new Error("SQLite read-only admission created a non-empty WAL.");
+    }
+  } else if (
+    after.wal === undefined ||
+    !sameOwnerOnlyStateFileIdentity(before.wal, after.wal)
+  ) {
+    throw new Error("SQLite read-only admission changed the existing WAL artifact.");
+  }
+  mainLease.assertCurrent();
 };
 
 const inspectSqliteArtifactSet = async (path: string): Promise<SqliteArtifactSet> => {
@@ -916,18 +964,67 @@ interface OpenedDatabase {
   readonly mainLease: OwnerOnlyStateFileLease;
 }
 
-const openCurrentDatabase = async (
+type ReadOnlyStructureAdmission =
+  | Readonly<{ current: false }>
+  | Readonly<{ current: true; mainLease: OwnerOnlyStateFileLease }>;
+
+const admitExistingSqliteStructure = async (
   path: string,
-  leaseFactory: OwnerOnlyStateFileLeaseFactory,
-): Promise<OpenedDatabase> => {
+): Promise<ReadOnlyStructureAdmission> => {
   const inspection = await settleSqliteArtifactSet(path);
   if (inspection.state !== "existing") throw new Error("Existing SQLite state is unavailable.");
-  const mainLease = leaseFactory(path);
+  const mainLease = acquireOwnerOnlyStateFileLease(path);
+  let database: Database.Database | undefined;
+  let current: boolean | undefined;
+  let failure: unknown;
+  try {
+    mainLease.assertCurrent();
+    const before = captureExistingSqliteArtifacts(path, mainLease);
+    try {
+      database = new Database(path, { readonly: true, fileMustExist: true, timeout: 5_000 });
+      mainLease.assertCurrent();
+      current = hasExactCurrentSqliteStructure(database);
+      mainLease.assertCurrent();
+    } catch (error) {
+      failure = error;
+    } finally {
+      if (database !== undefined) {
+        try { database.close(); }
+        catch (error) { failure ??= error; }
+        database = undefined;
+      }
+    }
+    try { assertReadOnlyArtifactTransition(path, mainLease, before); }
+    catch (error) { failure ??= error; }
+    if (failure !== undefined) throw failure;
+    if (current === undefined) throw new Error("SQLite structure admission did not complete.");
+    if (!current) {
+      mainLease.close();
+      return Object.freeze({ current: false });
+    }
+    return Object.freeze({ current: true, mainLease });
+  } catch (error) {
+    try { database?.close(); } catch { /* Preserve the original failure. */ }
+    try { mainLease.close(); } catch { /* Preserve the original failure. */ }
+    throw error;
+  }
+};
+
+const openCurrentDatabase = async (
+  path: string,
+): Promise<OpenedDatabase> => {
+  const admission = await admitExistingSqliteStructure(path);
+  if (!admission.current) throw createRuntimeStateResetRequiredError();
+  const { mainLease } = admission;
   let database: Database.Database | undefined;
   try {
     mainLease.assertCurrent();
     database = new Database(path, { fileMustExist: true, timeout: 5_000 });
     configureExistingDatabase(database);
+    mainLease.assertCurrent();
+    if (!hasExactCurrentSqliteStructure(database)) {
+      throw new Error("SQLite structure changed across the read-write transition.");
+    }
     mainLease.assertCurrent();
     validateDatabaseState(database);
     mainLease.assertCurrent();
@@ -972,14 +1069,6 @@ const createAndPublishFreshDatabase = async (path: string, now: UtcTimestamp): P
     if (removed) await syncDirectory(dirname(path));
   }
 };
-
-export interface ProductDatabaseStateFileAuthority {
-  readonly acquireMainLease: OwnerOnlyStateFileLeaseFactory;
-}
-
-export const localProductDatabaseStateFileAuthority = Object.freeze({
-  acquireMainLease: acquireOwnerOnlyStateFileLease,
-}) satisfies ProductDatabaseStateFileAuthority;
 
 export class ProductDatabase {
   readonly #database: Database.Database;
@@ -1045,7 +1134,6 @@ export class ProductDatabase {
   static async open(
     path: string,
     nowInput: UtcTimestamp,
-    stateFileAuthority: ProductDatabaseStateFileAuthority = localProductDatabaseStateFileAuthority,
   ): Promise<ProductDatabase> {
     try {
       const now = parseUtcTimestamp(nowInput);
@@ -1056,10 +1144,13 @@ export class ProductDatabase {
         catch (error) { publicationFailure = error; }
       }
       if (publicationFailure !== undefined) {
-        try { return new ProductDatabase(await openCurrentDatabase(path, stateFileAuthority.acquireMainLease)); }
-        catch { throw publicationFailure; }
+        try { return new ProductDatabase(await openCurrentDatabase(path)); }
+        catch (error) {
+          if (getRuntimeStateResetRequiredError(error) !== undefined) throw error;
+          throw publicationFailure;
+        }
       }
-      return new ProductDatabase(await openCurrentDatabase(path, stateFileAuthority.acquireMainLease));
+      return new ProductDatabase(await openCurrentDatabase(path));
     } catch (error) { throw storageError(error); }
   }
 
@@ -1134,14 +1225,13 @@ export class ProductDatabase {
         const current = readOwnerRaw(this.#database);
         const revision = (BigInt(current?.ownerRevision ?? "0") + 1n).toString(10);
         this.#database.prepare(`INSERT INTO runtime_owner(
-          singleton, profile_id, owner_instance_id, configuration_mac, protocol_version, process_id,
+          singleton, profile_id, owner_instance_id, configuration_mac, process_id,
           owner_revision, acquired_at
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (1, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(singleton) DO UPDATE SET
           profile_id = excluded.profile_id,
           owner_instance_id = excluded.owner_instance_id,
           configuration_mac = excluded.configuration_mac,
-          protocol_version = excluded.protocol_version,
           process_id = excluded.process_id,
           owner_revision = excluded.owner_revision,
           acquired_at = excluded.acquired_at`)
@@ -1149,7 +1239,6 @@ export class ProductDatabase {
             profile.profileId,
             parsedInstanceId,
             configurationMac,
-            runtimeProtocolVersion,
             process.pid,
             revision,
             acquiredAt,

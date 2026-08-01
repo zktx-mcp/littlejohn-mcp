@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 
+import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -32,7 +33,7 @@ import {
   publicApiPathPrefix,
   runtimeIdentityPath,
 } from "../../src/runtime/http-boundary.js";
-import { currentSqliteTableNames } from "../../src/runtime/sqlite-schema.js";
+import { currentSqliteSchemaSql } from "../../src/runtime/sqlite-schema.js";
 import {
   tokenCatalogBrowserRoutes,
   tokenCatalogControlRoutes,
@@ -40,6 +41,20 @@ import {
 import { walletControlRoutes } from "../../src/wallet/routes.js";
 
 const architecturePath = "docs/ARCHITECTURE.md";
+
+const deriveCurrentSqliteTableNames = (): readonly string[] => {
+  const database = new Database(":memory:");
+  try {
+    database.exec(currentSqliteSchemaSql);
+    return Object.freeze((database.prepare(`SELECT name FROM sqlite_schema
+      WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).all() as Array<{ name: string }>)
+      .map((row) => row.name));
+  } finally {
+    database.close();
+  }
+};
+
+const derivedSqliteTableNames = deriveCurrentSqliteTableNames();
 
 const escapeRegex = (value: string): string =>
   value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -108,7 +123,7 @@ const copiedSourceIdentifiers = (document: string): readonly CopiedSourceIdentif
   for (const path of sourceOwnedPaths) {
     if (document.includes(path)) violations.add(`path:${path}`);
   }
-  for (const tableName of currentSqliteTableNames) {
+  for (const tableName of derivedSqliteTableNames) {
     if (
       tableName.includes("_") &&
       containsExactIdentifier(document, tableName)
@@ -141,7 +156,7 @@ const copiedCompleteInterfaceCatalogs = (
 
 describe("binding document authority", () => {
   it("detects source-owned exact literals through decorated and fenced text", () => {
-    const sqlite = currentSqliteTableNames.find((name) => name.includes("_"))!;
+    const sqlite = derivedSqliteTableNames.find((name) => name.includes("_"))!;
     const fixture = [
       `**${productChainId}**`,
       "```text",

@@ -5,7 +5,6 @@ import {
   assertDirectApplicationErrorRegistryExtension,
   canonicalJsonStringify,
   captureCanonicalJson,
-  coreErrorRegistry,
   createApplicationFailure,
   fieldIssueSchema,
   generalSingleLineTextSchema,
@@ -15,12 +14,11 @@ import {
 } from "../core/index.js";
 import { guardRuntimeJsonSchema, parseRuntimeAuthority } from "./schema-authority.js";
 import {
-  runtimeErrorDefinitions,
   runtimeInterfaceErrorMappingDefinitions,
 } from "./error-definitions.js";
+import { runtimeErrorRegistry } from "./error-registry.js";
 
-export const runtimeErrorRegistry = coreErrorRegistry.extend(runtimeErrorDefinitions);
-assertDirectApplicationErrorRegistryExtension(coreErrorRegistry, runtimeErrorRegistry);
+export { runtimeErrorRegistry } from "./error-registry.js";
 
 export const createRuntimeFailure = (code: string): ApplicationFailure =>
   createApplicationFailure(runtimeErrorRegistry, code);

@@ -1,7 +1,6 @@
 import { z } from "zod";
 
 import { canonicalJsonStringify, canonicalSha256, type CanonicalJson } from "./canonical-json.js";
-import { coreContractVersion } from "./contract.js";
 import { maximumSuccessUtf8Bytes } from "./capability-contract.js";
 import { createSha256HexSchema } from "./digests.js";
 import {
@@ -20,9 +19,8 @@ const createCapabilityProjectionSchemaSet = () => {
   const primitive = createPrimitiveSchemaSet();
   const evidence = createEvidenceSchemaSet();
   const schemaDigest = createSha256HexSchema();
-  const schemaVersion = `v${coreContractVersion}`;
   const schemaId = z.string().regex(new RegExp(
-    "^urn:littlejohn:capability:" + capabilityIdPatternSource + ":(?:input|data|success):" + schemaVersion + "$",
+    "^urn:littlejohn:capability:" + capabilityIdPatternSource + ":(?:input|data|success):v1$",
   ));
   const projectedSchema = jsonObject({
       schemaId,
@@ -32,7 +30,7 @@ const createCapabilityProjectionSchemaSet = () => {
     .strict();
   const capabilitySchemaProjection = jsonObject({
       capabilityId: createCapabilityIdSchema(),
-      contractVersion: z.literal(coreContractVersion),
+      contractVersion: z.literal("1"),
       maximumSuccessUtf8Bytes: z.literal(maximumSuccessUtf8Bytes),
       input: projectedSchema,
       data: projectedSchema,
@@ -64,10 +62,10 @@ const projectSchema = (schema: CanonicalJson, schemaId: string) => {
 const projectCapability = (definition: AnyReadCapabilityDefinition): CapabilitySchemaProjection => {
   const snapshot = getCapabilityDefinitionSnapshot(definition);
   const base = "urn:littlejohn:capability:" + snapshot.capabilityId;
-  const schemaVersion = `v${coreContractVersion}`;
+  const schemaVersion = `v${snapshot.contractVersion}`;
   return authoritySchemas.capabilitySchemaProjection.parse({
     capabilityId: snapshot.capabilityId,
-    contractVersion: coreContractVersion,
+    contractVersion: snapshot.contractVersion,
     maximumSuccessUtf8Bytes: snapshot.maximumSuccessUtf8Bytes,
     input: projectSchema(snapshot.inputSchema, `${base}:input:${schemaVersion}`),
     data: projectSchema(snapshot.dataSchema, `${base}:data:${schemaVersion}`),

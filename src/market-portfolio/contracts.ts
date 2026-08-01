@@ -1,8 +1,8 @@
 import type { ZodType } from "zod";
 
 import {
+  assertDirectApplicationErrorRegistryExtension,
   capabilityIdSchema,
-  coreErrorRegistry,
   defineApplicationContract,
   jsonObject,
   referenceHistoryInputSchema,
@@ -24,18 +24,15 @@ import {
   type ReferenceWatchlistReorderInput,
   type ReferenceWatchlistSuccess,
 } from "../core/browser.js";
-import { chainErrorDefinitions } from "../chain/error-definitions.js";
-import { runtimeErrorDefinitions } from "../runtime/error-definitions.js";
-import { tokenCatalogErrorDefinitions } from "../token-catalog/error-definitions.js";
-import { walletErrorDefinitions } from "../wallet/error-definitions.js";
+import { tokenCatalogErrorRegistry } from "../token-catalog/error-registry.js";
 import { referenceMarketErrorDefinitions } from "./error-definitions.js";
 
-const referenceMarketBrowserErrorRegistry = coreErrorRegistry
-  .extend(runtimeErrorDefinitions)
-  .extend(walletErrorDefinitions)
-  .extend(chainErrorDefinitions)
-  .extend(tokenCatalogErrorDefinitions)
-  .extend(referenceMarketErrorDefinitions);
+export const referenceMarketErrorRegistry =
+  tokenCatalogErrorRegistry.extend(referenceMarketErrorDefinitions);
+assertDirectApplicationErrorRegistryExtension(
+  tokenCatalogErrorRegistry,
+  referenceMarketErrorRegistry,
+);
 
 export const referenceMarketCapabilities = Object.freeze({
   add: "market.add_watchlist_pair",
@@ -61,6 +58,7 @@ export interface ReferenceMarketApplicationContract<
   CapabilityId extends ReferenceMarketCapabilityId = ReferenceMarketCapabilityId,
 > {
   readonly capabilityId: CapabilityId;
+  readonly contractVersion: "1";
   readonly applicationContract: ApplicationContract<Input, Record<string, never>, Success>;
   readonly inputSchema: ZodType<Input>;
   readonly successSchema: ZodType<Success>;
@@ -73,17 +71,19 @@ export interface ReferenceMarketApplicationContract<
 
 const defineReferenceMarketContract = <Input, Success, CapabilityId extends ReferenceMarketCapabilityId>(options: Readonly<{
   capabilityId: CapabilityId;
+  contractVersion: "1";
   inputSchema: ZodType<Input>;
   successSchema: ZodType<Success>;
   failureCodes: readonly string[];
   validatePublicSuccess?: (input: Input, success: Success) => void;
-}>, errorRegistry: typeof referenceMarketBrowserErrorRegistry): ReferenceMarketApplicationContract<Input, Success, CapabilityId> => {
+}>): ReferenceMarketApplicationContract<Input, Success, CapabilityId> => {
   capabilityIdSchema.parse(options.capabilityId);
   const applicationContract = defineApplicationContract({
+    contractVersion: options.contractVersion,
     inputSchema: options.inputSchema,
     successSchema: options.successSchema,
     internalContextSchema: jsonObject({}).strict(),
-    errorRegistry,
+    errorRegistry: referenceMarketErrorRegistry,
     failureCodes: options.failureCodes,
     ...(options.validatePublicSuccess === undefined
       ? {}
@@ -91,6 +91,7 @@ const defineReferenceMarketContract = <Input, Success, CapabilityId extends Refe
   });
   return Object.freeze({
     capabilityId: options.capabilityId,
+    contractVersion: applicationContract.contractVersion,
     applicationContract,
     inputSchema: options.inputSchema,
     successSchema: options.successSchema,
@@ -105,15 +106,14 @@ const defineReferenceMarketContract = <Input, Success, CapabilityId extends Refe
 const watchlistContains = (watchlist: ReferenceWatchlistSuccess, pairId: string): boolean =>
   watchlist.entries.some((entry) => entry.pairId === pairId);
 
-export const createReferenceMarketApplicationContracts = (
-  errorRegistry: typeof referenceMarketBrowserErrorRegistry,
-) => Object.freeze({
+export const referenceMarketApplicationContracts = Object.freeze({
   price: defineReferenceMarketContract<
     ReferencePriceInput,
     ReferencePriceSuccess,
     typeof referenceMarketCapabilities.price
   >({
     capabilityId: referenceMarketCapabilities.price,
+    contractVersion: "1",
     inputSchema: referencePriceInputSchema,
     successSchema: referencePriceSuccessSchema,
     failureCodes: referenceMarketReadFailureCodes,
@@ -122,13 +122,14 @@ export const createReferenceMarketApplicationContracts = (
         throw new TypeError("Reference price result does not match its request.");
       }
     },
-  }, errorRegistry),
+  }),
   history: defineReferenceMarketContract<
     ReferenceHistoryInput,
     ReferenceHistorySuccess,
     typeof referenceMarketCapabilities.history
   >({
     capabilityId: referenceMarketCapabilities.history,
+    contractVersion: "1",
     inputSchema: referenceHistoryInputSchema,
     successSchema: referenceHistorySuccessSchema,
     failureCodes: referenceMarketReadFailureCodes,
@@ -137,23 +138,25 @@ export const createReferenceMarketApplicationContracts = (
         throw new TypeError("Reference history result does not match its request.");
       }
     },
-  }, errorRegistry),
+  }),
   watchlist: defineReferenceMarketContract<
     Record<string, never>,
     ReferenceWatchlistSuccess,
     typeof referenceMarketCapabilities.watchlist
   >({
     capabilityId: referenceMarketCapabilities.watchlist,
+    contractVersion: "1",
     inputSchema: referenceWatchlistInputSchema,
     successSchema: referenceWatchlistSuccessSchema,
     failureCodes: referenceWatchlistMutationCommonFailureCodes,
-  }, errorRegistry),
+  }),
   add: defineReferenceMarketContract<
     ReferenceWatchlistMutationInput,
     ReferenceWatchlistSuccess,
     typeof referenceMarketCapabilities.add
   >({
     capabilityId: referenceMarketCapabilities.add,
+    contractVersion: "1",
     inputSchema: referenceWatchlistMutationInputSchema,
     successSchema: referenceWatchlistSuccessSchema,
     failureCodes: [
@@ -166,13 +169,14 @@ export const createReferenceMarketApplicationContracts = (
         throw new TypeError("Added watchlist result does not match its request.");
       }
     },
-  }, errorRegistry),
+  }),
   remove: defineReferenceMarketContract<
     ReferenceWatchlistMutationInput,
     ReferenceWatchlistSuccess,
     typeof referenceMarketCapabilities.remove
   >({
     capabilityId: referenceMarketCapabilities.remove,
+    contractVersion: "1",
     inputSchema: referenceWatchlistMutationInputSchema,
     successSchema: referenceWatchlistSuccessSchema,
     failureCodes: [
@@ -184,13 +188,14 @@ export const createReferenceMarketApplicationContracts = (
         throw new TypeError("Removed watchlist result does not match its request.");
       }
     },
-  }, errorRegistry),
+  }),
   reorder: defineReferenceMarketContract<
     ReferenceWatchlistReorderInput,
     ReferenceWatchlistSuccess,
     typeof referenceMarketCapabilities.reorder
   >({
     capabilityId: referenceMarketCapabilities.reorder,
+    contractVersion: "1",
     inputSchema: referenceWatchlistReorderInputSchema,
     successSchema: referenceWatchlistSuccessSchema,
     failureCodes: [
@@ -202,8 +207,8 @@ export const createReferenceMarketApplicationContracts = (
         throw new TypeError("Reordered watchlist result does not match its request.");
       }
     },
-  }, errorRegistry),
+  }),
 });
 
-export const referenceMarketBrowserApplicationContracts =
-  createReferenceMarketApplicationContracts(referenceMarketBrowserErrorRegistry);
+export type AnyReferenceMarketApplicationContract =
+  (typeof referenceMarketApplicationContracts)[keyof typeof referenceMarketApplicationContracts];

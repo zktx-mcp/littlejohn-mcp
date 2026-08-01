@@ -448,7 +448,7 @@ describe("public evidence replay", () => {
     })).toThrow("Validated-input evidence identity");
   });
 
-  it("rejects obsolete placeholder strings before they become declarations", () => {
+  it("rejects undeclared placeholder strings before they become declarations", () => {
     expect(() => createExactConclusionIdentityDeclaration(
       "<address>|0x0000000000000000000000000000000000000000",
     )).toThrow("placeholder");

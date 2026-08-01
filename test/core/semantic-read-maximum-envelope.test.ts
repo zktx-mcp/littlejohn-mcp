@@ -42,7 +42,7 @@ import {
   internalResponseLimitBytes,
   publicReadResponseLimitBytes,
 } from "../../src/runtime/http-boundary.js";
-import { referenceMarketApplicationContracts } from "../../src/market-portfolio/application-contracts.js";
+import { referenceMarketApplicationContracts } from "../../src/market-portfolio/contracts.js";
 import { tokenInspectCapability } from "../../src/token-catalog/contracts.js";
 import { createSourcifyContractSourceVerification } from "../../src/intelligence/sourcify.js";
 import {

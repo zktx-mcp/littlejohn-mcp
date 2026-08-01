@@ -22,7 +22,6 @@ import {
   accountAssetApplicationContracts,
   accountAssetCollectionRequestBody,
   accountAssetControlRoutes,
-  accountAssetErrorRegistry,
   accountAssetInterfaceErrorMappings,
   type AnyAccountAssetApplicationContract,
   type AccountAssetCollectionSuccess,
@@ -170,7 +169,7 @@ const tokenResponseAuthority = Object.freeze({
   interfaceMappings: tokenCatalogInterfaceErrorMappings,
 });
 const accountAssetResponseAuthority = Object.freeze({
-  applicationErrors: accountAssetErrorRegistry,
+  applicationErrors: tokenCatalogErrorRegistry,
   interfaceMappings: accountAssetInterfaceErrorMappings,
 });
 const referenceMarketResponseAuthority = Object.freeze({

@@ -57,6 +57,13 @@ const accountAssetsPageSource = resolve(webSourceRoot, "account-assets-page.tsx"
 const iconSource = resolve(webSourceRoot, "icons.tsx");
 const operationStateSource = resolve(repositoryRoot, "src/wallet/operation-state.ts");
 const chainErrorDefinitionsSource = resolve(repositoryRoot, "src/chain/error-definitions.ts");
+const runtimeErrorRegistrySource = resolve(repositoryRoot, "src/runtime/error-registry.ts");
+const walletErrorRegistrySource = resolve(repositoryRoot, "src/wallet/error-registry.ts");
+const chainErrorRegistrySource = resolve(repositoryRoot, "src/chain/error-registry.ts");
+const tokenCatalogErrorRegistrySource = resolve(
+  repositoryRoot,
+  "src/token-catalog/error-registry.ts",
+);
 const tokenCatalogBrowserSource = resolve(repositoryRoot, "src/token-catalog/browser.ts");
 const tokenCatalogContractSchemaSource = resolve(
   repositoryRoot,
@@ -72,7 +79,6 @@ const tokenCatalogHttpContractSource = resolve(
 );
 const accountAssetsBrowserSource = resolve(repositoryRoot, "src/account-assets/browser.ts");
 const accountAssetsContractsSource = resolve(repositoryRoot, "src/account-assets/contracts.ts");
-const accountAssetsErrorRegistrySource = resolve(repositoryRoot, "src/account-assets/error-registry.ts");
 const accountAssetsHttpContractSource = resolve(repositoryRoot, "src/account-assets/http-contract.ts");
 const accountAssetsViewSource = resolve(repositoryRoot, "src/account-assets/view.ts");
 const referenceMarketContractsSource = resolve(repositoryRoot, "src/market-portfolio/contracts.ts");
@@ -116,13 +122,16 @@ describe("browser runtime dependency boundary", () => {
       resolve(repositoryRoot, "src/wallet/operation-contract.ts"),
       resolve(repositoryRoot, "src/core/wallet-connection.ts"),
       chainErrorDefinitionsSource,
+      runtimeErrorRegistrySource,
+      walletErrorRegistrySource,
+      chainErrorRegistrySource,
+      tokenCatalogErrorRegistrySource,
       tokenCatalogBrowserSource,
       tokenCatalogContractSchemaSource,
       tokenCatalogErrorDefinitionsSource,
       tokenCatalogHttpContractSource,
       accountAssetsBrowserSource,
       accountAssetsContractsSource,
-      accountAssetsErrorRegistrySource,
       accountAssetsHttpContractSource,
       accountAssetsViewSource,
       referenceMarketContractsSource,
@@ -284,7 +293,7 @@ describe("browser runtime dependency boundary", () => {
       "const chart = <svg vectorEffect=\"non-scaling-stroke\" />;",
     ]) {
       expect(
-        auditBrowserSourceModule(source, resolve(webSourceRoot, "obsolete-chart.tsx")),
+        auditBrowserSourceModule(source, resolve(webSourceRoot, "inline-chart.tsx")),
         source,
       ).not.toEqual([]);
     }
@@ -473,6 +482,10 @@ describe("browser runtime dependency boundary", () => {
       expect(moduleIds).toContain(resolve(repositoryRoot, "src/core/token-metadata.ts"));
       expect(moduleIds).toContain(resolve(repositoryRoot, "src/core/token-standards.ts"));
       expect(moduleIds).toContain(chainErrorDefinitionsSource);
+      expect(moduleIds).toContain(runtimeErrorRegistrySource);
+      expect(moduleIds).toContain(walletErrorRegistrySource);
+      expect(moduleIds).toContain(chainErrorRegistrySource);
+      expect(moduleIds).toContain(tokenCatalogErrorRegistrySource);
       expect(moduleIds).toContain(tokenCatalogBrowserSource);
       expect(moduleIds).toContain(tokenCatalogContractSchemaSource);
       expect(moduleIds).toContain(tokenCatalogErrorDefinitionsSource);
@@ -482,7 +495,6 @@ describe("browser runtime dependency boundary", () => {
       expect(moduleIds).toContain(erc20EventsSource);
       expect(moduleIds).toContain(accountAssetsBrowserSource);
       expect(moduleIds).toContain(accountAssetsContractsSource);
-      expect(moduleIds).toContain(accountAssetsErrorRegistrySource);
       expect(moduleIds).toContain(accountAssetsHttpContractSource);
       expect(moduleIds).toContain(accountAssetsViewSource);
       const zodRoot = resolve(nodeModulesRoot, "zod");

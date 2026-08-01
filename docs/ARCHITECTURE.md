@@ -424,12 +424,9 @@ separate that user from other users and unrelated listeners; they do not claim
 to contain a malicious process already running with the same user authority.
 
 - The local control credential contains 256 random bits, is encoded as
-  unpadded base64url, and remains stable across compatible owner takeover.
-- `runtimeProtocolVersion` in `src/runtime/runtime-identity.ts` owns the
-  compatible local-owner wire version; an incompatible wire-contract change
-  replaces that value. Profile ID and owner instance ID each
-  contain 128 random bits encoded as unpadded base64url. Owner revision is an
-  unsigned base-10 integer string.
+  unpadded base64url, and remains stable across owner takeover. Profile ID and
+  owner instance ID each contain 128 random bits encoded as unpadded base64url.
+  Owner revision is an unsigned base-10 integer string.
 - A process first attempts to bind the fixed listener address defined in
   [HTTP Boundary](#http-boundary).
 - Runtime configuration contains one canonical chain identity, the exact RPC
@@ -438,13 +435,13 @@ to contain a malicious process already running with the same user authority.
   credential. The identifier reveals none of its inputs.
 - The configuration key is the 32-byte HKDF-SHA-256 output derived from the
   decoded control credential with an empty salt and exact UTF-8 information
-  `littlejohn/runtime-configuration/v2`. The HMAC payload contains the
+  `littlejohn/runtime-configuration/v1`. The HMAC payload contains the
   canonical chain ID, exact RPC URI bytes, and WalletConnect project ID in that
   order, each preceded by its unsigned 32-bit big-endian byte length. The
   result is canonical unpadded base64url for 32 bytes.
 - After a successful bind, the process transactionally publishes its profile
-  ID, owner instance ID, runtime protocol version, configuration identifier,
-  process ID, and owner revision to SQLite. It then inserts its trusted
+  ID, owner instance ID, configuration identifier, process ID, owner revision,
+  and acquisition time to SQLite. It then inserts its trusted
   configured chain before application construction and before entering the
   owner phase. A chain-insertion failure closes the listener; the published row
   remains a projection and never proves liveness.
@@ -452,16 +449,16 @@ to contain a malicious process already running with the same user authority.
   `Littlejohn-Identity-Challenge` header of the owner-identity resource declared
   by the runtime route registry.
 - The owner returns the strict fields `profileId`, `ownerInstanceId`,
-  `runtimeProtocolVersion`, `configurationMac`, echoed `challenge`,
-  `ownerRevision`, and `proof`. The proof is HMAC-SHA-256 over the
+  `configurationMac`, echoed `challenge`, `ownerRevision`, and `proof`. The
+  proof is HMAC-SHA-256 over the
   length-prefixed UTF-8 encoding of those preceding fields in that order using
   the local control credential. Each length prefix is the unsigned 32-bit
   big-endian byte length of the following UTF-8 field.
-- The peer verifies the challenge, proof, profile ID, protocol version, and
-  configuration identifier before deferring ownership or sending any
-  authenticated control request. A process with a different exact RPC URI,
-  WalletConnect project ID, or chain configuration is incompatible and never
-  shares the active fixed-port server.
+- The peer verifies the challenge, proof, profile ID, configuration identifier,
+  and the persisted owner instance and revision before deferring ownership or
+  sending any authenticated control request. A process with a different exact
+  RPC URI, WalletConnect project ID, or chain configuration is incompatible and
+  never shares the active fixed-port server.
 - A credential-bearing owner operation is assigned only to the exact socket
   that completed identity verification. A replacement socket receives no
   credential until it completes a new identity verification.
@@ -475,9 +472,8 @@ to contain a malicious process already running with the same user authority.
   identity and operation input; the catalog alone owns the method, path, body,
   parser, error mapping, recovery, and outcome rules. After an uncertain send,
   it may read that exact operation once only while the authenticated profile,
-  owner instance, protocol version, configuration identifier, and owner
-  revision are unchanged. An unproved outcome is `delivery_unknown` and forbids
-  resend.
+  owner instance, configuration identifier, and owner revision are unchanged.
+  An unproved outcome is `delivery_unknown` and forbids resend.
 - After dispatch, the owning route and runtime lifecycle own operation
   completion and cancellation. Closing the client rejects new calls, aborts
   cancellable transport work, and waits for admitted calls to settle.
@@ -557,10 +553,11 @@ Required runtime persistence uses two stores with different authority:
 2. The WalletConnect SDK private store contains WalletConnect protocol state
    and secrets.
 
-The SQLite main database and WAL are the durable product-state authority. The
-SQLite shared-memory file is owner-only transient coordination state. SQLite
-may create or reconstruct it from the WAL after a crash; Little John never uses
-its presence or bytes as product-state evidence.
+SQLite alone interprets the main database and WAL. The main database and any WAL
+bytes are durable SQLite artifacts; a zero-length WAL contains no bytes from
+which Little John reconstructs product state. SHM is SQLite-owned
+reconstructible coordination state, even when its file remains after close, and
+its presence or bytes are never product-state evidence.
 
 Fresh-database publication staging is never product state or a recovery input.
 The runtime leases the final database and reads its required current rows before
@@ -569,23 +566,48 @@ staging namespace fails startup without changing the final database. Concurrent
 creators converge on the final database rather than choosing or repairing a
 staging database.
 
-SQLite has one current schema definition.
-`databaseSchemaVersion`, `currentSqliteSchemaSql`, and
-`currentSqliteTableNames` in `src/runtime/sqlite-schema.ts` own its exact
-version, SQL, and table-name set. Standard SQLite `user_version` equals
-`databaseSchemaVersion`, and every name in `currentSqliteTableNames` must be
-present. A mismatch fails closed and never invokes a migration, old-schema
-reader, conversion, repair, or automatic replacement. A development schema
-change requires deleting the isolated local data directory before starting the
-current runtime. The database schema version and runtime protocol version have
-separate owners and advance only when their respective contracts change.
+SQLite has one current schema definition. `currentSqliteSchemaSql` in
+`src/runtime/sqlite-schema.ts` is its sole SQL owner. Fresh creation applies
+that SQL and writes the literal SQLite `user_version=1`; opening existing state
+never reads, compares, branches on, or rewrites `user_version`.
 
-The stored owner protocol version is a projection of the process that last
-acquired the fixed port, not database schema identity. SQLite accepts a positive
-safe integer in that field. A new fixed-port owner replaces it with the current
-runtime protocol version before constructing the application. A deferred
-process accepts a live owner only when the stored projection, signed live-owner
-identity, and current runtime protocol version agree.
+Existing-state admission derives a complete reference from the same SQL through
+the pinned SQLite engine and compares the unfiltered `sqlite_schema` tuples
+`(type, name, tbl_name, sql)`, including SQLite-generated autoindex rows and
+excluding only `rootpage`. Candidate work is bounded by the reference row
+count, each reference-derived field maximum, and the reference aggregate byte
+total. There is no separate handwritten table-name or schema-shape authority.
+
+Only complete absence of the main database, WAL, and SHM admits fresh
+publication. An existing candidate requires an owner-only regular main file;
+sidecars without the main database are unavailable state. Under the retained
+main-file lease, Little John captures the current artifact set, opens the main
+database `readonly` and `fileMustExist`, compares its exact structure, closes
+that handle, and then checks the resulting artifact transition. The main
+database and every pre-existing WAL remain durable SQLite artifacts and are
+never deleted, truncated, repaired, copied, or rewritten by admission. For a
+safely attested main-only candidate, the pinned read-only path may create only
+an owner-only regular zero-length WAL. SHM is SQLite-owned reconstructible
+coordination state and its presence or bytes are never product-state evidence.
+
+Exact structure equality, successful closure of the read-only handle, the
+artifact-transition postcondition, and the retained main-file lease together
+authorize a write-capable open. That owner configures the connection, rechecks
+the exact structure and lease, validates current product rows, and reconciles
+publication staging before exposing product access. A completed exact
+inequality produces the startup-only `runtime_state_reset_required` result only
+after the same artifact postcondition passes. Incomplete projection, corruption,
+permission, I/O, and contention failures retain their separately owned
+meanings. Reset requires all Little John processes to stop and the complete
+isolated data directory to be moved aside or replaced with a new empty
+directory; no runtime migration, selective restoration, compatibility reader,
+or schema repair exists.
+
+The persisted owner projection contains only a fixed singleton identity plus
+the profile, owner instance, configuration identifier, process ID, owner
+revision, and acquisition time. The application record omits the singleton and
+carries the remaining six admitted values. No stored or live owner field acts
+as a runtime wire-version selector.
 
 The product schema persists local profile and runtime-owner identity, trusted
 chain configuration, admitted reference-feed history and synchronization

@@ -2,15 +2,16 @@ import {
   createApplicationFailure,
   type ApplicationFailure,
 } from "../core/index.js";
-import { walletErrorRegistry, walletInterfaceErrorMappings } from "../wallet/errors.js";
+import { walletInterfaceErrorMappings } from "../wallet/errors.js";
 import {
   chainErrorDefinitions,
   chainInterfaceErrorMappingDefinitions,
 } from "./error-definitions.js";
+import { chainErrorRegistry } from "./error-registry.js";
 
 export type ChainErrorCode = typeof chainErrorDefinitions[number]["code"];
 
-export const chainErrorRegistry = walletErrorRegistry.extend(chainErrorDefinitions);
+export { chainErrorRegistry } from "./error-registry.js";
 
 export const chainInterfaceErrorMappings = walletInterfaceErrorMappings.extend(
   chainErrorRegistry,
