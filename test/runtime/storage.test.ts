@@ -2161,6 +2161,19 @@ describe("configuration and source authority", () => {
     expect(readConfiguredRpcEndpoint(slashConfiguration.rpc.endpoint).exactUri)
       .toBe("https://rpc.mainnet.chain.robinhood.com/");
 
+    const emptyUserInfoAuthorities = [
+      "https://@rpc.mainnet.chain.robinhood.com/",
+      "https://:@rpc.mainnet.chain.robinhood.com/",
+    ].map((exactUri) => {
+      const configured = readRuntimeConfiguration({ LITTLEJOHN_RPC_URL: exactUri });
+      expect(configured.rpc.endpoint.sourceOwner).toBe("Robinhood");
+      return createRpcSourceAuthority({ credential, endpoint: configured.rpc.endpoint, clock });
+    });
+    expect(new Set([
+      rpc.configurationDigest,
+      ...emptyUserInfoAuthorities.map(({ configurationDigest }) => configurationDigest),
+    ]).size).toBe(3);
+
     const profileId = Buffer.alloc(16, 2).toString("base64url") as never;
     const wallet = createWalletSourceAuthority({ credential, profileId, clock });
     expect(wallet.sdkStoreSourceId).toBe(`wallet-sdk:${profileId}`);
@@ -2178,7 +2191,8 @@ describe("configuration and source authority", () => {
 
   it("rejects empty fragments and Unicode inputs that collide under replacement encoding", async () => {
     expect(() => readRuntimeConfiguration({ LITTLEJOHN_RPC_URL: "https://rpc.example/#" })).toThrow("without a fragment");
-    expect(() => readRuntimeConfiguration({ LITTLEJOHN_RPC_URL: "https://rpc.example/\uD800" })).toThrow("invalid Unicode");
+    expect(() => readRuntimeConfiguration({ LITTLEJOHN_RPC_URL: "https://rpc.example/\uD800" }))
+      .toThrow("valid absolute HTTPS URL");
 
     const directory = await temporaryDirectory();
     const paths = runtimePaths(directory);

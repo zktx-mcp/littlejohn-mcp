@@ -1299,14 +1299,13 @@ export const verifyPackagedIntegration = async (prepared) => {
   );
   const fakeRpc = await startFakeRpc();
   const walletConnectProjectId = "1".repeat(32);
-  const environment = Object.freeze({
+  const verifierEnvironment = Object.freeze({
     ...prepared.environment,
     LITTLEJOHN_DATA_DIR: dataDirectory,
     LITTLEJOHN_RELEASE_CLOCK: clockPath,
-    LITTLEJOHN_RELEASE_ASSET_SOURCE_URL: fakeRpc.assetSourceUrl,
-    LITTLEJOHN_RPC_URL: fakeRpc.url,
     LITTLEJOHN_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
   });
+  const environment = fakeRpc.createChildEnvironment(verifierEnvironment);
   const workers = [];
   const mcpClients = [];
   try {
@@ -1333,15 +1332,15 @@ export const verifyPackagedIntegration = async (prepared) => {
     await assertIncompatibleWorkerConfiguration(
       workerPath,
       prepared.installRoot,
-      Object.freeze({ ...environment, LITTLEJOHN_RPC_URL: changedRpcUrl }),
+      fakeRpc.createChildEnvironment(verifierEnvironment, changedRpcUrl),
       [changedRpcUrl, walletConnectProjectId],
     );
     const changedProjectId = "2".repeat(32);
     await assertIncompatibleWorkerConfiguration(
       workerPath,
       prepared.installRoot,
-      Object.freeze({
-        ...environment,
+      fakeRpc.createChildEnvironment({
+        ...verifierEnvironment,
         LITTLEJOHN_WALLETCONNECT_PROJECT_ID: changedProjectId,
       }),
       [fakeRpc.url, changedProjectId],

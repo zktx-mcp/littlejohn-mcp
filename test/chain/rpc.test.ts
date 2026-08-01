@@ -226,6 +226,16 @@ describe("bounded RPC requester", () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects an inadmissible target before request serialization or external work", () => {
+    const fetchFn = vi.fn(fetchOf(async (_input, init) => resultResponse(init, "0x1237")));
+
+    expect(() => createBoundedRpcRequester({
+      url: "http://user:plaintext-secret@rpc.example/private",
+      fetch: fetchFn,
+    })).toThrow("RPC URL is invalid.");
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
   it("rejects the seventeenth process-wide external request without starting it", async () => {
     const completions: Array<Readonly<{ init: RequestInit | undefined; resolve: (response: Response) => void }>> = [];
     const fetchFn = vi.fn(fetchOf(async (_input, init) =>
@@ -559,6 +569,22 @@ describe("bounded RPC requester", () => {
     );
     expect(fetchFn).toHaveBeenCalledTimes(1);
     expect(error.message).not.toContain(secret);
+  });
+
+  it("preserves the current safe mapping for a TLS trust rejection", async () => {
+    const tlsFailure = Object.assign(new Error("private trust-store detail"), {
+      code: "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+    });
+    const fetchFn = vi.fn(fetchOf(async () => { throw tlsFailure; }));
+    const requester = createBoundedRpcRequester({ url: "https://rpc.example", fetch: fetchFn });
+
+    const error = await expectCode(
+      requester.request("eth_chainId", [], new AbortController().signal),
+      "source_unavailable",
+    );
+    expect(error.message).toBe("source_unavailable");
+    expect(error).not.toHaveProperty("cause");
+    expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
   it("rejects unlisted methods and non-JSON parameters before external work", async () => {

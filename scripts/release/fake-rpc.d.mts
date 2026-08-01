@@ -1,6 +1,11 @@
 export interface FakeRpcHandle {
   readonly url: string;
   readonly assetSourceUrl: string;
+  readonly caCertificatePath: string;
+  createChildEnvironment(
+    base: Readonly<Record<string, string | undefined>>,
+    exactRpcUrl?: string,
+  ): Readonly<Record<string, string>>;
   readonly nativeBalanceRaw: string;
   readonly token: Readonly<{
     readonly chainId: string;

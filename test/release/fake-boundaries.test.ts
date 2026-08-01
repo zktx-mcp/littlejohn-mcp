@@ -1,5 +1,16 @@
-import { request } from "node:http";
-import { readFileSync } from "node:fs";
+import {
+  createPrivateKey,
+  createPublicKey,
+  X509Certificate,
+} from "node:crypto";
+import {
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
+import { request } from "node:https";
+import { isAbsolute, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -12,18 +23,21 @@ import {
 } from "../../scripts/release/packaged-integration.mjs";
 import { renderPackagedOwnerWorkerSource } from "../../scripts/release/packaged-owner-worker-source.mjs";
 
-const rpcRequest = (
+const rawRpcRequest = (
   url: string,
-  method: string,
-  params: readonly unknown[],
+  body: string,
+  ca: Buffer | Buffer[],
+  servername?: string,
 ): Promise<unknown> => new Promise((resolveRequest, rejectRequest) => {
-  const body = JSON.stringify({ jsonrpc: "2.0", id: "1", method, params });
   const target = new URL(url);
   const outgoing = request({
-    host: target.hostname,
+    hostname: target.hostname,
     port: Number(target.port),
     path: target.pathname,
     method: "POST",
+    ca,
+    rejectUnauthorized: true,
+    ...(servername === undefined ? {} : { servername }),
     headers: {
       "content-type": "application/json",
       "content-length": Buffer.byteLength(body),
@@ -39,6 +53,17 @@ const rpcRequest = (
   outgoing.once("error", rejectRequest);
   outgoing.end(body);
 });
+
+const rpcRequest = (
+  url: string,
+  caCertificatePath: string,
+  method: string,
+  params: readonly unknown[],
+): Promise<unknown> => rawRpcRequest(
+  url,
+  JSON.stringify({ jsonrpc: "2.0", id: "1", method, params }),
+  readFileSync(caCertificatePath),
+);
 
 describe("release fake boundaries", () => {
   it("digests complete tool schemas independently of object-key insertion order", () => {
@@ -132,23 +157,194 @@ describe("release fake boundaries", () => {
     )).toThrow("identity");
   });
 
+  it("retains one valid loopback certificate chain without the CA private key", () => {
+    const fixtureDirectory = resolve("scripts/release/fixtures");
+    const fixtureNames = [
+      "rpc-loopback-ca.pem",
+      "rpc-loopback-server-cert.pem",
+      "rpc-loopback-server-key.pem",
+    ];
+    expect(readdirSync(fixtureDirectory).sort()).toEqual(fixtureNames);
+    const caPath = resolve(fixtureDirectory, "rpc-loopback-ca.pem");
+    const serverCertificatePath = resolve(
+      fixtureDirectory,
+      "rpc-loopback-server-cert.pem",
+    );
+    const serverPrivateKeyPath = resolve(
+      fixtureDirectory,
+      "rpc-loopback-server-key.pem",
+    );
+    for (const path of [caPath, serverCertificatePath, serverPrivateKeyPath]) {
+      expect(statSync(path).isFile()).toBe(true);
+    }
+
+    const caPem = readFileSync(caPath, "utf8");
+    const serverCertificatePem = readFileSync(serverCertificatePath, "utf8");
+    const serverPrivateKeyPem = readFileSync(serverPrivateKeyPath, "utf8");
+    expect(caPem).toMatch(
+      /^-----BEGIN CERTIFICATE-----\n(?:[A-Za-z0-9+/=]+\n)+-----END CERTIFICATE-----\n$/u,
+    );
+    expect(serverCertificatePem).toMatch(
+      /^-----BEGIN CERTIFICATE-----\n(?:[A-Za-z0-9+/=]+\n)+-----END CERTIFICATE-----\n$/u,
+    );
+    expect(serverPrivateKeyPem).toMatch(
+      /^-----BEGIN PRIVATE KEY-----\n(?:[A-Za-z0-9+/=]+\n)+-----END PRIVATE KEY-----\n$/u,
+    );
+
+    const ca = new X509Certificate(caPem);
+    const server = new X509Certificate(serverCertificatePem);
+    expect(ca.ca).toBe(true);
+    expect(server.ca).toBe(false);
+    expect(ca.subject).toBe(ca.issuer);
+    expect(ca.verify(ca.publicKey)).toBe(true);
+    expect(server.checkIssued(ca)).toBe(true);
+    expect(server.verify(ca.publicKey)).toBe(true);
+    expect(server.keyUsage).toEqual(["1.3.6.1.5.5.7.3.1"]);
+    expect(server.subjectAltName).toBe("IP Address:127.0.0.1");
+    expect(server.checkIP("127.0.0.1")).toBe("127.0.0.1");
+    expect(server.checkHost("localhost")).toBeUndefined();
+
+    const now = Date.now();
+    const caFrom = Date.parse(ca.validFrom);
+    const caTo = Date.parse(ca.validTo);
+    const serverFrom = Date.parse(server.validFrom);
+    const serverTo = Date.parse(server.validTo);
+    expect(caFrom).toBeLessThanOrEqual(now);
+    expect(serverFrom).toBeLessThanOrEqual(now);
+    expect(caTo).toBeGreaterThan(now);
+    expect(serverTo).toBeGreaterThan(now);
+    expect(caFrom).toBeLessThanOrEqual(serverFrom);
+    expect(caTo).toBeGreaterThanOrEqual(serverTo);
+
+    const privatePublicKey = createPublicKey(
+      createPrivateKey(serverPrivateKeyPem),
+    ).export({ format: "der", type: "spki" });
+    const certificatePublicKey = server.publicKey.export({
+      format: "der",
+      type: "spki",
+    });
+    expect(Buffer.from(privatePublicKey).equals(certificatePublicKey)).toBe(true);
+    expect(Buffer.from(privatePublicKey).equals(
+      ca.publicKey.export({ format: "der", type: "spki" }),
+    )).toBe(false);
+  });
+
+  it("requires the retained CA and the exact IP identity for independent HTTPS requests", async () => {
+    const rpc = await startFakeRpc();
+    try {
+      const ca = readFileSync(rpc.caCertificatePath);
+      const body = JSON.stringify({
+        jsonrpc: "2.0",
+        id: "1",
+        method: "eth_chainId",
+        params: [],
+      });
+      expect(rpc.url).toMatch(/^https:\/\/127\.0\.0\.1:\d+$/u);
+      expect(rpc.assetSourceUrl).toBe(`${rpc.url}/rhj/assets`);
+      expect(isAbsolute(rpc.caCertificatePath)).toBe(true);
+      expect(realpathSync(rpc.caCertificatePath)).toBe(rpc.caCertificatePath);
+      expect(rpc.caCertificatePath).toBe(realpathSync(resolve(
+        "scripts/release/fixtures/rpc-loopback-ca.pem",
+      )));
+      expect(statSync(rpc.caCertificatePath).isFile()).toBe(true);
+      await expect(rawRpcRequest(rpc.url, body, ca)).resolves.toMatchObject({
+        result: "0x1237",
+      });
+      await expect(rawRpcRequest(rpc.url, body, [])).rejects.toThrow();
+      await expect(rawRpcRequest(rpc.url, body, ca, "localhost")).rejects.toThrow();
+    } finally {
+      await rpc.close();
+    }
+  });
+
+  it("projects one final TLS environment and removes inherited aliases", async () => {
+    const rpc = await startFakeRpc();
+    try {
+      const environment = rpc.createChildEnvironment(Object.freeze({
+        KEEP: "exact",
+        OMIT: undefined,
+        LITTLEJOHN_RELEASE_ASSET_SOURCE_URL: "http://inherited.invalid/assets",
+        littlejohn_release_asset_source_url: "http://alias.invalid/assets",
+        LITTLEJOHN_RPC_URL: "http://inherited.invalid",
+        LiTtLeJoHn_RpC_Url: "http://alias.invalid",
+        NODE_EXTRA_CA_CERTS: "/inherited/ca.pem",
+        node_extra_ca_certs: "/alias/ca.pem",
+        NODE_TLS_REJECT_UNAUTHORIZED: "0",
+        node_tls_reject_unauthorized: "0",
+      }));
+      expect(environment).toEqual({
+        KEEP: "exact",
+        LITTLEJOHN_RELEASE_ASSET_SOURCE_URL: rpc.assetSourceUrl,
+        LITTLEJOHN_RPC_URL: rpc.url,
+        NODE_EXTRA_CA_CERTS: rpc.caCertificatePath,
+      });
+      expect(Object.isFrozen(environment)).toBe(true);
+      expect(Object.keys(environment).filter((name) =>
+        name.toUpperCase() === "NODE_TLS_REJECT_UNAUTHORIZED"
+      )).toEqual([]);
+      for (const name of [
+        "LITTLEJOHN_RELEASE_ASSET_SOURCE_URL",
+        "LITTLEJOHN_RPC_URL",
+        "NODE_EXTRA_CA_CERTS",
+      ]) {
+        expect(Object.keys(environment).filter((candidate) =>
+          candidate.toUpperCase() === name
+        )).toEqual([name]);
+      }
+      expect(rpc.createChildEnvironment(
+        { KEEP: "exact" },
+        `${rpc.url}/`,
+      )).toMatchObject({ LITTLEJOHN_RPC_URL: `${rpc.url}/` });
+      expect(() => rpc.createChildEnvironment(
+        { KEEP: "exact" },
+        "https://example.invalid/",
+      )).toThrow("fake RPC root");
+    } finally {
+      await rpc.close();
+    }
+  });
+
+  it("preserves the exact fake request-size boundary over HTTPS", async () => {
+    const rpc = await startFakeRpc();
+    try {
+      const ca = readFileSync(rpc.caCertificatePath);
+      const request = JSON.stringify({
+        jsonrpc: "2.0",
+        id: "1",
+        method: "eth_chainId",
+        params: [],
+      });
+      const maximumBody = request.padEnd(32 * 1024, " ");
+      expect(Buffer.byteLength(maximumBody)).toBe(32 * 1024);
+      await expect(rawRpcRequest(rpc.url, maximumBody, ca)).resolves.toMatchObject({
+        result: "0x1237",
+      });
+      await expect(rawRpcRequest(rpc.url, `${maximumBody} `, ca)).resolves.toMatchObject({
+        error: { code: -32601, message: "Fake RPC request is too large." },
+      });
+      expect(rpc.failures.at(-1)?.message).toBe("Fake RPC request is too large.");
+    } finally {
+      await rpc.close();
+    }
+  });
+
   it("serves only the exact automated read RPC methods and records prohibited calls", async () => {
     const rpc = await startFakeRpc();
     try {
-      await expect(rpcRequest(rpc.url, "eth_chainId", [])).resolves.toMatchObject({
+      await expect(rpcRequest(rpc.url, rpc.caCertificatePath, "eth_chainId", [])).resolves.toMatchObject({
         result: "0x1237",
       });
-      await expect(rpcRequest(rpc.url, "eth_getCode", [
+      await expect(rpcRequest(rpc.url, rpc.caCertificatePath, "eth_getCode", [
         rpc.token.address,
         rpc.canonicalBlockReference,
       ])).resolves.toMatchObject({ result: rpc.token.runtimeCode });
-      await expect(rpcRequest(rpc.url, "eth_getBalance", [
+      await expect(rpcRequest(rpc.url, rpc.caCertificatePath, "eth_getBalance", [
         rpc.semanticReads.account.address,
         rpc.canonicalBlockReference,
       ])).resolves.toMatchObject({
         result: `0x${BigInt(rpc.semanticReads.account.nativeBalanceRaw).toString(16)}`,
       });
-      await expect(rpcRequest(rpc.url, "eth_getCode", [
+      await expect(rpcRequest(rpc.url, rpc.caCertificatePath, "eth_getCode", [
         rpc.semanticReads.contract.address,
         rpc.canonicalBlockReference,
       ])).resolves.toMatchObject({ result: rpc.semanticReads.contract.runtimeCode });
@@ -156,12 +352,12 @@ describe("release fake boundaries", () => {
         ["0x18160ddd", `0x${BigInt(rpc.token.totalSupplyRaw).toString(16).padStart(64, "0")}`],
         ["0x313ce567", `0x${BigInt(rpc.token.decimals).toString(16).padStart(64, "0")}`],
       ] as const) {
-        await expect(rpcRequest(rpc.url, "eth_call", [{
+        await expect(rpcRequest(rpc.url, rpc.caCertificatePath, "eth_call", [{
           to: rpc.token.address,
           data: selector,
         }, rpc.canonicalBlockReference])).resolves.toMatchObject({ result });
       }
-      await expect(rpcRequest(rpc.url, "eth_sendTransaction", [{}])).resolves.toMatchObject({
+      await expect(rpcRequest(rpc.url, rpc.caCertificatePath, "eth_sendTransaction", [{}])).resolves.toMatchObject({
         error: { code: -32601 },
       });
       expect(() => rpc.assertNoUnexpectedMethods()).toThrow("eth_sendTransaction");
@@ -173,12 +369,12 @@ describe("release fake boundaries", () => {
   it("serves one exact large included transaction and rejects adjacent identities", async () => {
     const rpc = await startFakeRpc();
     try {
-      const transaction = await rpcRequest(rpc.url, "eth_getTransactionByHash", [
+      const transaction = await rpcRequest(rpc.url, rpc.caCertificatePath, "eth_getTransactionByHash", [
         rpc.semanticReads.transaction.transactionHash,
       ]) as { result?: { input?: unknown } };
       expect(transaction.result?.input).toBe(rpc.semanticReads.transaction.input);
 
-      const receipt = await rpcRequest(rpc.url, "eth_getTransactionReceipt", [
+      const receipt = await rpcRequest(rpc.url, rpc.caCertificatePath, "eth_getTransactionReceipt", [
         rpc.semanticReads.transaction.transactionHash,
       ]) as { result?: { logs?: readonly { data?: unknown }[] } };
       expect(receipt.result?.logs?.[0]?.data).toBe(rpc.semanticReads.transaction.undecodedLogData);
@@ -191,7 +387,7 @@ describe("release fake boundaries", () => {
         ["eth_getTransactionReceipt", [`0x${"76".repeat(32)}`]],
         ["eth_getBlockByHash", [rpc.canonicalBlockReference.blockHash, true]],
       ] as const) {
-        await expect(rpcRequest(rpc.url, method, params)).resolves.toMatchObject({
+        await expect(rpcRequest(rpc.url, rpc.caCertificatePath, method, params)).resolves.toMatchObject({
           error: { code: -32601 },
         });
       }
@@ -209,7 +405,7 @@ describe("release fake boundaries", () => {
         [{ to: rpc.token.address, data: "0x70a08231" }, rpc.canonicalBlockReference],
         [{ to: rpc.token.address, data: "0x18160ddd" }, "latest"],
       ] as const) {
-        await expect(rpcRequest(rpc.url, "eth_call", params)).resolves.toMatchObject({
+        await expect(rpcRequest(rpc.url, rpc.caCertificatePath, "eth_call", params)).resolves.toMatchObject({
           error: { code: -32601 },
         });
       }

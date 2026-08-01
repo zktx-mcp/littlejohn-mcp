@@ -173,13 +173,13 @@ The classification determines ownership and replacement:
 | --- | --- | --- | --- | --- |
 | Binding product transport, source authority, or protocol identity | Its owning product, evidence, or protocol contract names the external identity and exact supported meaning | The owning adapter module owns endpoints, SDK settings, request and response admission, limits, and provider-specific defaults | Runtime composition receives one validated opaque configuration and one explicit identity-specific port | Changing implementation details inside the same external identity preserves the contract; changing the external owner requires an accepted product, evidence, or protocol change |
 | Replaceable implementation provider | The feature module owns a provider-neutral role port, normalized result, failures, evidence requirements, and lifecycle | Each provider adapter privately owns its endpoint, request and response schemas, authentication, transport behavior, limits, and provider identity | Runtime composition selects and constructs one adapter that returns the role port; consumers cannot observe provider configuration | A provider may be replaced only when the new adapter satisfies the complete unchanged role; otherwise it is a product-contract change |
-| Ethereum JSON-RPC endpoint | Product chain identity and chain RPC method and normalization contracts remain authoritative | Runtime configuration owns the exact validated URI and source identity; `chain` owns methods, deadlines, concurrency, byte limits, normalization, and failures | Features receive only the canonical RPC requester and pinned chain-read ports | A conforming endpoint changes through validated configuration without changing feature contracts |
+| Ethereum JSON-RPC endpoint | Product chain identity and chain RPC method and normalization contracts remain authoritative | Runtime configuration owns default selection, exact admitted URI bytes, and source identity; `chain` owns the single HTTPS target-admission rule, methods, deadlines, concurrency, byte limits, normalization, and failures | Runtime carries the admitted endpoint identity; `chain` projects a request URL without user information and optional Basic authorization; features receive only canonical RPC and pinned chain-read ports | A conforming HTTPS endpoint changes through admitted configuration without changing feature contracts |
 
 The current external integration classification is:
 
 | External identity | Class | Product role and semantic SoT | Required adapter and configuration owner | Composition boundary |
 | --- | --- | --- | --- | --- |
-| Ethereum JSON-RPC endpoint | Standard chain transport | `docs/PRODUCT_POLICY.md` owns chain identity; `chain` owns RPC methods, normalization, limits, and failures | `runtime` owns the exact configured URI and source identity; `chain` owns the bounded requester | Runtime constructs one requester and passes chain-read ports to features |
+| Ethereum JSON-RPC endpoint | Standard chain transport | `docs/PRODUCT_POLICY.md` owns chain identity; `chain` owns RPC methods, normalization, limits, and failures | `runtime` owns default selection, exact admitted URI bytes, and source identity; `src/chain/rpc-transport-target.ts` owns HTTPS target admission; `chain` owns the bounded requester | The chain application constructs the requester from the exact admitted URI and passes only chain-read ports to features |
 | Model Context Protocol | Binding product transport | The official MCP specification owns JSON-RPC transport meaning; this document's interface contract model and the canonical binding owners own Little John tool meaning | `src/interfaces/mcp.ts` owns official SDK server and stdio transport adaptation; role registries own their exact tool bindings | Interface composition constructs one MCP server from canonical bindings; replacing SDK details preserves the complete MCP identity and tool contracts |
 | WalletConnect | Binding product transport | `docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture | `wallet` owns SDK adaptation, project-ID validation, required namespace settings, metadata, SDK options, lifecycle, and provider defaults | The wallet application factory constructs one `WalletConnectClientPort` from opaque configuration received through runtime composition; other modules receive wallet product ports |
 | Robinhood official-asset API | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority; `officialAssetSourceDefinition` and the registry source contract own the exact source identity, normalized observations, failures, evidence, and storage ports | `src/registry/official-assets.ts` owns request and response admission, endpoint consumption, transport behavior, deadlines, and operational limits | Runtime composition constructs one source client; registry synchronization consumes the product-owned client and store ports; replacing the membership source changes the binding evidence authority |
@@ -271,10 +271,11 @@ plugin system. A role port exists only for an implemented product
 responsibility. Multiple providers, selection policy, fallback, failover, or
 aggregation require their own accepted product and evidence contracts.
 
-Ethereum JSON-RPC remains the standard chain-transport exception. The validated
-RPC URI and source identity are runtime configuration, while RPC methods,
-normalization, limits, failures, and transport behavior remain in `chain`.
-Features consume the chain RPC port and never provider-specific endpoint
+Ethereum JSON-RPC remains the standard chain-transport exception. Runtime owns
+default selection, exact admitted URI identity, and source identity. One
+side-effect-free `chain` owner admits HTTPS targets for both Runtime
+configuration and the bounded requester; the remaining RPC behavior stays in
+`chain`. Features consume chain RPC ports and never provider-specific endpoint
 behavior. Protocol packages follow `docs/PROTOCOL_ADAPTERS.md` in addition to
 this model.
 
@@ -363,6 +364,11 @@ weaker result parser.
 
 ## Runtime Lifecycle
 
+- Runtime admits RPC configuration before resolving the application-data path
+  or acquiring filesystem, database, requester, or network resources. The
+  private invalid-RPC-configuration failure is recognized only at Runtime
+  creation and uses the existing `invalid_input` process presentation before
+  MCP or HTTP publication; it is not an application or interface error.
 - Fixed-owner application initialization, composed application stages, and
   WalletConnect acquisition register each acquired long-lived resource with its
   current lifecycle owner before the next fallible initialization step.

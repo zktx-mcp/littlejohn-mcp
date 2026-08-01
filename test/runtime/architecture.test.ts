@@ -850,6 +850,8 @@ const resolvesInsideTokenCatalog = (file: string, specifier: string): string | u
 
 const walletConnectConfigurationModule =
   resolve(sourceRoot, "wallet/walletconnect-configuration.ts");
+const rpcTransportTargetModule =
+  resolve(sourceRoot, "chain/rpc-transport-target.ts");
 const walletConnectClientModule =
   resolve(sourceRoot, "wallet/walletconnect-client.ts");
 const walletApplicationModule =
@@ -887,6 +889,15 @@ interface ExternalIntegrationResultEdge {
 
 const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRule[] =
   Object.freeze([
+    {
+      module: rpcTransportTargetModule,
+      symbol: "admitRpcTransportTarget",
+      importers: new Set([
+        resolve(sourceRoot, "chain/rpc.ts"),
+        resolve(sourceRoot, "runtime/configuration.ts"),
+      ]),
+      reexporters: new Set<string>(),
+    },
     {
       module: walletConnectConfigurationModule,
       symbol: "createWalletConnectConfiguration",
@@ -2793,6 +2804,18 @@ describe("runtime architecture boundary", () => {
       "runtime/reset-type-require-then-ambient.cts",
     );
     const nonliteralRequirePath = resolve(sourceRoot, "runtime/reset-nonliteral-require.cts");
+    const sqliteSchemaSource = await readFile(runtimeSqliteSchemaPath, "utf8");
+    const databaseSource = await readFile(runtimeDatabasePath, "utf8");
+    const userVersionAssignment = '    database.pragma("user_version = 1");';
+    if (databaseSource.split(userVersionAssignment).length !== 2) {
+      throw new TypeError("SQLite user-version mutation target is not unique.");
+    }
+    const composedVersionReadSource = databaseSource.replace(
+      userVersionAssignment,
+      `    const inspectedMetadata = "user_" + "version";
+    database.pragma(inspectedMetadata, { simple: true });
+${userVersionAssignment}`,
+    );
     const adversarialProgram = createProductSourceProgram(
       productSources,
       new Map([
@@ -2857,20 +2880,33 @@ void require("./sqlite-schema.js");
 declare const target: string;
 void require(target);
 `],
+        [runtimeSqliteSchemaPath, `${sqliteSchemaSource}
+const EscapedRuntimeStateResetRequiredSourceError = RuntimeStateResetRequiredSourceError;
+const createEscapedRuntimeStateResetRequiredError = () =>
+  new EscapedRuntimeStateResetRequiredSourceError();
+void createEscapedRuntimeStateResetRequiredError;
+`],
+        [runtimeDatabasePath, composedVersionReadSource],
       ]),
       canonicalProgram,
     );
     const adversarialViolations = runtimeResetCreatorViolations(adversarialProgram);
+    const sourceErrorEscapeViolation =
+      "src/runtime/sqlite-schema.ts:runtime_reset_source_error_escape";
     expect(adversarialViolations.filter((violation) =>
       !violation.startsWith("src/runtime/reset-import-alias.ts:") &&
       !violation.startsWith("src/runtime/reset-literal-computed.ts:") &&
-      !violation.startsWith("src/runtime/reset-keyed-computed.ts:"))).toEqual([]);
+      !violation.startsWith("src/runtime/reset-keyed-computed.ts:") &&
+      violation !== sourceErrorEscapeViolation))
+      .toEqual([]);
     expect(adversarialViolations.some((violation) =>
       violation.startsWith("src/runtime/reset-import-alias.ts:"))).toBe(true);
     expect(adversarialViolations.some((violation) =>
       violation.startsWith("src/runtime/reset-literal-computed.ts:"))).toBe(true);
     expect(adversarialViolations.some((violation) =>
       violation.startsWith("src/runtime/reset-keyed-computed.ts:"))).toBe(true);
+    expect(adversarialViolations.filter((violation) =>
+      violation === sourceErrorEscapeViolation)).toEqual([sourceErrorEscapeViolation]);
     const resetFactorySymbol = moduleExportSymbol(
       adversarialProgram,
       adversarialProgram.getTypeChecker(),
@@ -2925,21 +2961,6 @@ void require(target);
     expect(moduleViolations).toContain(
       "runtime/reset-nonliteral-require.cts:3:unresolved_runtime_module_load",
     );
-
-    const sqliteSchemaSource = await readFile(runtimeSqliteSchemaPath, "utf8");
-    const aliasedSourceErrorProgram = createProductSourceProgram(
-      productSources,
-      new Map([[runtimeSqliteSchemaPath, `${sqliteSchemaSource}
-const EscapedRuntimeStateResetRequiredSourceError = RuntimeStateResetRequiredSourceError;
-const createEscapedRuntimeStateResetRequiredError = () =>
-  new EscapedRuntimeStateResetRequiredSourceError();
-void createEscapedRuntimeStateResetRequiredError;
-`]]),
-      canonicalProgram,
-    );
-    expect(runtimeResetCreatorViolations(aliasedSourceErrorProgram)).toEqual([
-      "src/runtime/sqlite-schema.ts:runtime_reset_source_error_escape",
-    ]);
 
     const databasePath = resolve(sourceRoot, "runtime/database.ts");
     const database = await parseSource(databasePath);
@@ -3082,18 +3103,7 @@ void createEscapedRuntimeStateResetRequiredError;
     expect(userVersionCalls[0]?.getStart(database)).toBeGreaterThan(bootstrap.getStart(database));
     expect(userVersionCalls[0]?.getEnd()).toBeLessThan(bootstrap.getEnd());
 
-    const databaseSource = await readFile(runtimeDatabasePath, "utf8");
-    const composedVersionReadProgram = createProductSourceProgram(
-      productSources,
-      new Map([[runtimeDatabasePath, databaseSource.replace(
-        '    database.pragma("user_version = 1");',
-        `    const inspectedMetadata = "user_" + "version";
-    database.pragma(inspectedMetadata, { simple: true });
-    database.pragma("user_version = 1");`,
-      )]]),
-      canonicalProgram,
-    );
-    expect(sqlitePragmaAudit(composedVersionReadProgram).violations).toContain(
+    expect(sqlitePragmaAudit(adversarialProgram).violations).toContain(
       "src/runtime/database.ts:sqlite_user_version_operation",
     );
 

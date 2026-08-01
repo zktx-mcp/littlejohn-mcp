@@ -32,7 +32,10 @@ export type {
   RuntimeOwnerSessionPort,
   RuntimeOwnerSessionRequest,
 } from "./owner-session.js";
-export { readConfiguredRpcEndpoint } from "./configuration.js";
+export {
+  getInvalidRpcConfigurationError,
+  readConfiguredRpcEndpoint,
+} from "./configuration.js";
 export type {
   ConfiguredRpcEndpoint,
   RuntimeChainConfiguration,

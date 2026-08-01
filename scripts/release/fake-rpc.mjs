@@ -1,4 +1,5 @@
-import { createServer } from "node:http";
+import { readFileSync, realpathSync } from "node:fs";
+import { createServer } from "node:https";
 
 import {
   stockFactoryImplementationAddress,
@@ -15,6 +16,27 @@ const blockHash = `0x${"88".repeat(32)}`;
 const blockTimestamp = "0x65a00000";
 const blockNumber = "0x20000000000001";
 const maximumRequestBytes = 32 * 1024;
+const caCertificatePath = realpathSync(
+  new URL("./fixtures/rpc-loopback-ca.pem", import.meta.url),
+);
+const serverCertificatePath = realpathSync(
+  new URL("./fixtures/rpc-loopback-server-cert.pem", import.meta.url),
+);
+const serverPrivateKeyPath = realpathSync(
+  new URL("./fixtures/rpc-loopback-server-key.pem", import.meta.url),
+);
+const serverTlsOptions = Object.freeze({
+  cert: readFileSync(serverCertificatePath),
+  key: readFileSync(serverPrivateKeyPath),
+});
+const childEnvironmentNames = new Set([
+  "LITTLEJOHN_RELEASE_ASSET_SOURCE_URL",
+  "LITTLEJOHN_RPC_URL",
+  "NODE_EXTRA_CA_CERTS",
+  "NODE_TLS_REJECT_UNAUTHORIZED",
+]);
+const asciiUpperCase = (value) =>
+  value.replace(/[a-z]/gu, (character) => character.toUpperCase());
 const walletAddress = "0x1111111111111111111111111111111111111111";
 const alternateWalletAddress = "0x3333333333333333333333333333333333333333";
 const walletAddresses = Object.freeze([walletAddress, alternateWalletAddress]);
@@ -468,7 +490,7 @@ export const startFakeRpc = async () => {
   const failures = [];
   let unavailable = false;
   let assetSourceUnavailable = false;
-  const server = createServer((request, response) => {
+  const server = createServer(serverTlsOptions, (request, response) => {
     void (async () => {
       if (request.method === "GET" && request.url === "/rhj/assets") {
         if (assetSourceUnavailable) {
@@ -534,9 +556,35 @@ export const startFakeRpc = async () => {
     server.close();
     throw new TypeError("Fake RPC did not bind a TCP address.");
   }
+  const url = `https://127.0.0.1:${address.port}`;
+  const assetSourceUrl = `${url}/rhj/assets`;
+  const createChildEnvironment = (base, exactRpcUrl = url) => {
+    let exactRpcTarget;
+    try { exactRpcTarget = new URL(exactRpcUrl); }
+    catch { throw new TypeError("Fake RPC child URL is invalid."); }
+    if (
+      exactRpcTarget.origin !== new URL(url).origin ||
+      exactRpcTarget.pathname !== "/" ||
+      exactRpcTarget.search !== "" ||
+      exactRpcTarget.hash !== "" ||
+      exactRpcTarget.username !== "" ||
+      exactRpcTarget.password !== ""
+    ) throw new TypeError("Fake RPC child URL must identify the fake RPC root.");
+    const entries = Object.entries(base).filter(([name, value]) =>
+      typeof value === "string" &&
+      !childEnvironmentNames.has(asciiUpperCase(name)));
+    entries.push(
+      ["LITTLEJOHN_RELEASE_ASSET_SOURCE_URL", assetSourceUrl],
+      ["LITTLEJOHN_RPC_URL", exactRpcUrl],
+      ["NODE_EXTRA_CA_CERTS", caCertificatePath],
+    );
+    return Object.freeze(Object.fromEntries(entries));
+  };
   return Object.freeze({
-    url: `http://127.0.0.1:${address.port}`,
-    assetSourceUrl: `http://127.0.0.1:${address.port}/rhj/assets`,
+    url,
+    assetSourceUrl,
+    caCertificatePath,
+    createChildEnvironment,
     nativeBalanceRaw,
     token: fakeToken,
     defaultTokens: fakeTokens.slice(0, 5),

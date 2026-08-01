@@ -7,6 +7,7 @@ import {
   unsignedDecimalToRpcQuantity,
 } from "./normalization.js";
 import { rpcResponseByteLimit } from "./limits.js";
+import { admitRpcTransportTarget } from "./rpc-transport-target.js";
 
 type RpcQuantity = `0x${string}`;
 
@@ -342,34 +343,6 @@ const parseBoundedInteger = (value: number | undefined, fallback: number, maximu
   return candidate;
 };
 
-const createFetchTarget = (value: string): Readonly<{ url: string; authorization?: string }> => {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new TypeError("RPC URL is invalid.");
-  }
-  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.hash !== "") {
-    throw new TypeError("RPC URL is invalid.");
-  }
-
-  if (url.username === "" && url.password === "") return Object.freeze({ url: url.href });
-
-  let username: string;
-  let password: string;
-  try {
-    username = decodeURIComponent(url.username);
-    password = decodeURIComponent(url.password);
-  } catch {
-    throw new TypeError("RPC URL is invalid.");
-  }
-  if (username.includes(":")) throw new TypeError("RPC URL is invalid.");
-  const authorization = `Basic ${Buffer.from(`${username}:${password}`, "utf8").toString("base64")}`;
-  url.username = "";
-  url.password = "";
-  return Object.freeze({ url: url.href, authorization });
-};
-
 const raceWithAbort = async <Value>(work: Promise<Value>, signal: AbortSignal): Promise<Value> => {
   if (signal.aborted) throw new RequestAbortedMarker();
   return await new Promise<Value>((resolve, reject) => {
@@ -559,7 +532,7 @@ const parseBatchResponse = (
 export const createBoundedRpcRequester = (
   options: BoundedRpcRequesterOptions,
 ): RpcRequester => {
-  const target = createFetchTarget(options.url);
+  const { fetchUrl, authorization } = admitRpcTransportTarget(options.url);
   const fetchFn = options.fetch ?? fetch;
   if (typeof fetchFn !== "function") throw new TypeError("RPC fetch implementation is unavailable.");
   const timeoutMs = parseBoundedInteger(options.timeoutMs, rpcRequestTimeoutMs, rpcRequestTimeoutMs, "RPC timeout");
@@ -585,9 +558,9 @@ export const createBoundedRpcRequester = (
           accept: "application/json",
           "content-type": "application/json",
         });
-        if (target.authorization !== undefined) headers.set("authorization", target.authorization);
+        if (authorization !== undefined) headers.set("authorization", authorization);
         const response = await raceWithAbort(
-          fetchFn(target.url, {
+          fetchFn(fetchUrl, {
             method: "POST",
             headers,
             body,

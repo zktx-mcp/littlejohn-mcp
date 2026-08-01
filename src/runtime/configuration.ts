@@ -3,12 +3,32 @@ import {
   productChainId,
   type EvmChainId,
 } from "../core/index.js";
+import { admitRpcTransportTarget } from "../chain/rpc-transport-target.js";
 import {
   createWalletConnectConfiguration,
   type WalletConnectConfiguration,
 } from "../wallet/walletconnect-configuration.js";
 
 export const defaultRpcUrl = "https://rpc.mainnet.chain.robinhood.com";
+const officialRpcFetchUrl = admitRpcTransportTarget(defaultRpcUrl).fetchUrl;
+const invalidRpcConfigurationMessage =
+  "LITTLEJOHN_RPC_URL must be a valid absolute HTTPS URL without a fragment.";
+
+const invalidRpcConfigurationErrors = new WeakSet<object>();
+
+class InvalidRpcConfigurationError extends Error {
+  constructor() {
+    super(invalidRpcConfigurationMessage);
+    this.name = "InvalidRpcConfigurationError";
+    invalidRpcConfigurationErrors.add(this);
+    Object.freeze(this);
+  }
+}
+
+export const getInvalidRpcConfigurationError = (error: unknown): Error | undefined =>
+  typeof error === "object" && error !== null && invalidRpcConfigurationErrors.has(error)
+    ? error as Error
+    : undefined;
 
 export interface ConfiguredRpcEndpoint {
   readonly publicOrigin: string;
@@ -57,40 +77,25 @@ export const readRuntimeChainConfiguration = (
   return chain;
 };
 
-const utf8Encoder = new TextEncoder();
-const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
-
-const exactUtf8 = (value: string): Uint8Array => {
-  const bytes = utf8Encoder.encode(value);
-  if (utf8Decoder.decode(bytes) !== value) throw new TypeError("RPC URL contains invalid Unicode.");
-  return bytes;
-};
-
-const parseConfiguredRpc = (value: string): ConfiguredRpcEndpoint => {
-  const bytes = exactUtf8(value);
-  if (bytes.length === 0 || bytes.length > 4_096 || value.includes("#") || /[\u0000-\u001f\u007f]/u.test(value)) {
-    throw new TypeError("LITTLEJOHN_RPC_URL must be an absolute HTTP or HTTPS URL without a fragment.");
+const parseConfiguredRpc = (value: unknown): ConfiguredRpcEndpoint => {
+  let target: ReturnType<typeof admitRpcTransportTarget>;
+  try {
+    target = admitRpcTransportTarget(value);
+  } catch {
+    throw new InvalidRpcConfigurationError();
   }
-  let url: URL;
-  try { url = new URL(value); }
-  catch { throw new TypeError("LITTLEJOHN_RPC_URL must be an absolute HTTP or HTTPS URL without a fragment."); }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new TypeError("LITTLEJOHN_RPC_URL must be an absolute HTTP or HTTPS URL without a fragment.");
-  }
-  const official = new URL(defaultRpcUrl);
   const sourceOwner =
-    url.href === official.href &&
-    url.username === "" &&
-    url.password === "" &&
-    url.pathname === "/" &&
-    url.search === ""
+    target.fetchUrl === officialRpcFetchUrl && target.authorization === undefined
       ? "Robinhood"
       : "user_configured";
   const endpoint = Object.freeze({
-    publicOrigin: url.origin,
+    publicOrigin: target.publicOrigin,
     sourceOwner,
   }) as ConfiguredRpcEndpoint;
-  configuredRpcStates.set(endpoint, Object.freeze({ exactUri: value, exactUtf8: new Uint8Array(bytes) }));
+  configuredRpcStates.set(endpoint, Object.freeze({
+    exactUri: target.exactUri,
+    exactUtf8: new Uint8Array(target.exactUtf8),
+  }));
   return endpoint;
 };
 
@@ -108,7 +113,8 @@ export const readRuntimeConfiguration = (
   environment: Readonly<Record<string, string | undefined>>,
 ): RuntimeConfiguration => {
   const chain = createRuntimeChainConfiguration(productChainId);
-  const endpoint = parseConfiguredRpc(environment["LITTLEJOHN_RPC_URL"] ?? defaultRpcUrl);
+  const configuredRpc = environment["LITTLEJOHN_RPC_URL"];
+  const endpoint = parseConfiguredRpc(configuredRpc === undefined ? defaultRpcUrl : configuredRpc);
   const rpc = Object.freeze({ chain, endpoint });
   const wallet = createWalletConnectConfiguration(
     environment["LITTLEJOHN_WALLETCONNECT_PROJECT_ID"],

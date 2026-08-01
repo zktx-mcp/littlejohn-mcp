@@ -52,7 +52,9 @@ import {
 import {
   LocalRuntime,
   createOperationId as createRuntimeOperationId,
+  getInvalidRpcConfigurationError,
   getRuntimeStateResetRequiredError,
+  runtimeInterfaceErrorMappings,
   runtimeStateResetRequiredCode,
   type RuntimeStateResetRequiredError,
   type RuntimeDispatchRequest,
@@ -835,6 +837,7 @@ export const runCli = async (
   let tokenExitCode: number | undefined;
   let marketExitCode: number | undefined;
   let runtimeStopped = false;
+  let invalidRpcConfigurationFailure: Error | undefined;
   let startupFailure: RuntimeStateResetRequiredError | undefined;
   let failure: ApplicationFailure | undefined;
   let deliveryUnknown: DeliveryUnknown | undefined;
@@ -876,56 +879,64 @@ export const runCli = async (
     if (command?.kind === "help") {
       dependencies.terminal.writeOutput(cliHelpText);
     } else if (!dependencies.terminal.interruptSignal.aborted) {
-      runtime = await dependencies.createRuntime();
-      const startResult = await startRuntimeForCommand(runtime, dependencies.terminal.interruptSignal);
-      runtimeStopped = startResult === "stopped";
-      if (startResult === "started" && !dependencies.terminal.interruptSignal.aborted) {
-        if (mcpMode) {
-          if (dependencies.startMcp === undefined) throw new WalletOperationError("internal_error");
-          mcp = await dependencies.startMcp(runtime);
-          const decision = await raceWithInterrupt(() => mcp?.closed ?? Promise.resolve(),
-            dependencies.terminal.interruptSignal);
-          if (decision.kind === "interrupted") await mcp.close();
-        } else if (readCommand !== undefined) {
-          operationClient = new LocalOperationClient({
-            ownerSessions: runtime,
-            createOperationId: dependencies.createOperationId,
-          });
-          readExitCode = await runReadCliCommand(
-            runtime,
-            operationClient,
-            readCommand,
-            dependencies.terminal,
-            dependencies.terminal.interruptSignal,
-          );
-        } else if (tokenCommand !== undefined) {
-          operationClient = new LocalOperationClient({
-            ownerSessions: runtime,
-            createOperationId: dependencies.createOperationId,
-          });
-          tokenExitCode = await runTokenCliCommand(runtime, operationClient, tokenCommand, Object.freeze({
-            inputIsTTY: dependencies.terminal.inputIsTTY,
-            outputIsTTY: dependencies.terminal.outputIsTTY,
-            interruptSignal: dependencies.terminal.interruptSignal,
-            writeOutput: (value: string) => { dependencies.terminal.writeOutput(value); },
-            writeError: (value: string) => { dependencies.terminal.writeError(value); },
-            readLine: (prompt: string) => dependencies.terminal.readLine(prompt),
-          }));
-        } else if (marketCommand !== undefined) {
-          mutationClient = new LocalMutationClient(runtime);
-          marketExitCode = await runReferenceMarketCliCommand(
-            runtime,
-            mutationClient,
-            marketCommand,
-            dependencies.terminal,
-            dependencies.terminal.interruptSignal,
-          );
-        } else if (command !== undefined) {
-          operationClient = new LocalOperationClient({
-            ownerSessions: runtime,
-            createOperationId: dependencies.createOperationId,
-          });
-          await runCommand(command, runtime, operationClient, dependencies);
+      try {
+        runtime = await dependencies.createRuntime();
+      } catch (error) {
+        const configurationFailure = getInvalidRpcConfigurationError(error);
+        if (configurationFailure === undefined) throw error;
+        invalidRpcConfigurationFailure = configurationFailure;
+      }
+      if (runtime !== undefined) {
+        const startResult = await startRuntimeForCommand(runtime, dependencies.terminal.interruptSignal);
+        runtimeStopped = startResult === "stopped";
+        if (startResult === "started" && !dependencies.terminal.interruptSignal.aborted) {
+          if (mcpMode) {
+            if (dependencies.startMcp === undefined) throw new WalletOperationError("internal_error");
+            mcp = await dependencies.startMcp(runtime);
+            const decision = await raceWithInterrupt(() => mcp?.closed ?? Promise.resolve(),
+              dependencies.terminal.interruptSignal);
+            if (decision.kind === "interrupted") await mcp.close();
+          } else if (readCommand !== undefined) {
+            operationClient = new LocalOperationClient({
+              ownerSessions: runtime,
+              createOperationId: dependencies.createOperationId,
+            });
+            readExitCode = await runReadCliCommand(
+              runtime,
+              operationClient,
+              readCommand,
+              dependencies.terminal,
+              dependencies.terminal.interruptSignal,
+            );
+          } else if (tokenCommand !== undefined) {
+            operationClient = new LocalOperationClient({
+              ownerSessions: runtime,
+              createOperationId: dependencies.createOperationId,
+            });
+            tokenExitCode = await runTokenCliCommand(runtime, operationClient, tokenCommand, Object.freeze({
+              inputIsTTY: dependencies.terminal.inputIsTTY,
+              outputIsTTY: dependencies.terminal.outputIsTTY,
+              interruptSignal: dependencies.terminal.interruptSignal,
+              writeOutput: (value: string) => { dependencies.terminal.writeOutput(value); },
+              writeError: (value: string) => { dependencies.terminal.writeError(value); },
+              readLine: (prompt: string) => dependencies.terminal.readLine(prompt),
+            }));
+          } else if (marketCommand !== undefined) {
+            mutationClient = new LocalMutationClient(runtime);
+            marketExitCode = await runReferenceMarketCliCommand(
+              runtime,
+              mutationClient,
+              marketCommand,
+              dependencies.terminal,
+              dependencies.terminal.interruptSignal,
+            );
+          } else if (command !== undefined) {
+            operationClient = new LocalOperationClient({
+              ownerSessions: runtime,
+              createOperationId: dependencies.createOperationId,
+            });
+            await runCommand(command, runtime, operationClient, dependencies);
+          }
         }
       }
     }
@@ -953,6 +964,13 @@ export const runCli = async (
     }
     try { dependencies.terminal.dispose(); }
     catch (error) { retainFailure(error); }
+  }
+  if (invalidRpcConfigurationFailure !== undefined) {
+    const mapping = runtimeInterfaceErrorMappings.get("invalid_input");
+    dependencies.terminal.writeError(
+      `${mapping.code}: ${invalidRpcConfigurationFailure.message}\n`,
+    );
+    return mapping.cliExitCode;
   }
   if (startupFailure !== undefined) {
     dependencies.terminal.writeError(

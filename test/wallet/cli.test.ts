@@ -1,5 +1,5 @@
 import { EventEmitter, getEventListeners } from "node:events";
-import { chmod, mkdtemp, rm } from "node:fs/promises";
+import { access, chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { PassThrough } from "node:stream";
@@ -794,6 +794,101 @@ describe("wallet CLI", () => {
       expect(mcpStarts).toBe(0);
       expect(forcedExits).toBe(0);
     }
+  });
+
+  it("reports invalid RPC startup configuration before filesystem or interface publication", async () => {
+    const parent = await mkdtemp(resolve(tmpdir(), "littlejohn-cli-rpc-config-"));
+    const dataDirectory = resolve(parent, "state");
+    const rpcUrl = "http://user:plaintext-secret@rpc.example/private?key=secret";
+    try {
+      for (const argumentsInput of [["wallet", "status"], []] as const) {
+        const terminal = fakeTerminal({
+          inputIsTTY: argumentsInput.length !== 0,
+          outputIsTTY: argumentsInput.length !== 0,
+        });
+        let mcpStarts = 0;
+        let forcedExits = 0;
+        expect(await runCli(argumentsInput, {
+          createOperationId: () => operationId,
+          createRuntime: () => LocalRuntime.create({
+            environment: {
+              LITTLEJOHN_DATA_DIR: dataDirectory,
+              LITTLEJOHN_RPC_URL: rpcUrl,
+            },
+          }),
+          terminal: terminal.terminal,
+          waitForPoll: async () => undefined,
+          terminateProcess: () => { forcedExits += 1; },
+          startMcp: async () => {
+            mcpStarts += 1;
+            throw new Error("MCP must not be published after invalid RPC configuration.");
+          },
+        })).toBe(2);
+        expect(terminal.output).toEqual([]);
+        expect(terminal.errors).toEqual([
+          "invalid_input: LITTLEJOHN_RPC_URL must be a valid absolute HTTPS URL without a fragment.\n",
+        ]);
+        expect(terminal.errors.join("")).not.toContain("plaintext-secret");
+        expect(terminal.errors.join("")).not.toContain("key=secret");
+        expect(terminal.disposed()).toBe(true);
+        expect(mcpStarts).toBe(0);
+        expect(forcedExits).toBe(0);
+        await expect(access(dataDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+      }
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("recognizes invalid RPC configuration only at the Runtime creation boundary", async () => {
+    let admittedFailure: Error | undefined;
+    try {
+      await LocalRuntime.create({
+        environment: { LITTLEJOHN_RPC_URL: "http://rpc.example/" },
+      });
+    } catch (error) {
+      if (error instanceof Error) admittedFailure = error;
+    }
+    if (admittedFailure === undefined) throw new Error("Expected invalid RPC configuration.");
+
+    const sameMessage = new Error(admittedFailure.message);
+    for (const createRuntime of [
+      async (): Promise<CliRuntimePort> => { throw sameMessage; },
+      async (): Promise<CliRuntimePort> => new FakeRuntime(
+        () => { throw new Error("command must not run"); },
+        "stopping",
+        undefined,
+        admittedFailure,
+      ),
+    ]) {
+      const terminal = fakeTerminal();
+      expect(await runCli(["wallet", "status"], {
+        createOperationId: () => operationId,
+        createRuntime,
+        terminal: terminal.terminal,
+        waitForPoll: async () => undefined,
+        terminateProcess: () => undefined,
+      })).toBe(1);
+      expect(terminal.errors).toEqual([
+        "internal_error: The request could not be completed.\n",
+      ]);
+    }
+  });
+
+  it("preserves invalid RPC configuration when terminal disposal also fails", async () => {
+    const terminal = fakeTerminal({ disposeError: new Error("terminal disposal failed") });
+    expect(await runCli(["wallet", "status"], {
+      createOperationId: () => operationId,
+      createRuntime: () => LocalRuntime.create({
+        environment: { LITTLEJOHN_RPC_URL: "http://rpc.example/" },
+      }),
+      terminal: terminal.terminal,
+      waitForPoll: async () => undefined,
+      terminateProcess: () => undefined,
+    })).toBe(2);
+    expect(terminal.errors).toEqual([
+      "invalid_input: LITTLEJOHN_RPC_URL must be a valid absolute HTTPS URL without a fragment.\n",
+    ]);
   });
 
   it("carries an actual mismatching database through runtime creation to the shared startup reporter", async () => {
