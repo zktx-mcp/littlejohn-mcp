@@ -57,7 +57,7 @@ const openConnected = async () => {
     approvedMethods: ["eth_sendTransaction"],
     approvedEvents: ["accountsChanged", "chainChanged"],
     expiresAt: "2026-07-23T15:07:34.000Z",
-  }, now), now);
+  }, now), false, now);
   return { database, directory };
 };
 
@@ -495,7 +495,7 @@ describe("reference-market storage", () => {
       approvedMethods: ["eth_sendTransaction"],
       approvedEvents: ["accountsChanged", "chainChanged"],
       expiresAt: "2026-07-23T15:07:34.000Z",
-    }, now), now);
+    }, now), false, now);
     expect(() => store.mutateWatchlist({
       account,
       expectedConnectionRevision: connectedRevision,

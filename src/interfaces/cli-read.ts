@@ -1,6 +1,7 @@
 import {
   accountBalanceCapability,
   canonicalJsonStringify,
+  captureCanonicalJson,
   contractInspectCapability,
   getCapabilityDefinitionSnapshot,
   parseCapabilityInput,
@@ -519,12 +520,22 @@ const interfaceForCommand = (command: DirectReadCliCommand): ReadInterfaceIdenti
 const requestForCommand = (
   command: DirectReadCliCommand,
   identity: ReadInterfaceIdentity,
-): RuntimeDispatchRequest => ({
-  requestClass: "public_read",
-  method: identity.http.method,
-  path: identity.http.path,
-  ...(command.kind === "chain_status" ? {} : { body: command.input }),
-});
+): RuntimeDispatchRequest => {
+  if (identity.http.method === "GET") return {
+      requestClass: "public_read",
+      method: "GET",
+      path: identity.http.path,
+    };
+  if (command.kind === "chain_status") {
+    throw new TypeError("Chain status must use its declared GET binding.");
+  }
+  return {
+      requestClass: "public_read",
+      method: "POST",
+      path: identity.http.path,
+      body: captureCanonicalJson(command.input),
+    };
+};
 
 const parseSuccess = (
   identity: ReadInterfaceIdentity,

@@ -108,7 +108,7 @@ const openDatabase = async () => {
     approvedMethods: ["eth_sendTransaction"],
     approvedEvents: ["accountsChanged", "chainChanged"],
     expiresAt: "2026-07-22T00:00:00.000Z",
-  }, now), now);
+  }, now), false, now);
   return { database, path, connection };
 };
 

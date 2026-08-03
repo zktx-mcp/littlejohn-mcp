@@ -16,7 +16,7 @@ import {
 
 const operationA = "A".repeat(43);
 const operationB = "E".repeat(43);
-const expiresAt = "2099-12-31T23:59:59.000Z";
+const actionExpiresAt = "2099-12-31T23:59:59.000Z";
 const disconnected = Object.freeze({ status: "disconnected" as const, reason: "no_session" as const });
 
 const operation = (
@@ -27,9 +27,11 @@ const operation = (
   kind: "connect",
   state,
   connectionRevision: "1",
-  expiresAt,
+  actionExpiresAt,
+  interactionInterface: "web",
   result: null,
   failure: null,
+  peerRefusalCode: null,
 });
 
 const presentation = (

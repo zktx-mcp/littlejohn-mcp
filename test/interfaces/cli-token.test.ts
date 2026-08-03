@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { runCli, type CliRuntimePort, type CliTerminalPort } from "../../src/cli.js";
+import { runCli as runCliResult, type CliRuntimePort, type CliTerminalPort } from "../../src/cli.js";
+import { runtimeReleased } from "../../src/runtime/shutdown.js";
+
+const runCli = async (...input: Parameters<typeof runCliResult>): Promise<number> =>
+  (await runCliResult(...input)).exitCode;
 import {
   captureCanonicalJson,
   chainAnchorSchema,
@@ -123,7 +127,7 @@ class FakeRuntime implements RuntimeDispatchPort, CliRuntimePort {
   openOwnerSession(signal?: AbortSignal) { return openTestOwnerSession(this, signal); }
 
   async start(): Promise<void> { this.startCount += 1; }
-  async stop(): Promise<void> { this.stopCount += 1; }
+  async stop() { this.stopCount += 1; return runtimeReleased; }
 }
 
 const operationClient = (runtime: FakeRuntime) => new LocalOperationClient({
@@ -489,7 +493,6 @@ describe("token CLI", () => {
       createRuntime: async () => runtime,
       terminal,
       waitForPoll: async () => undefined,
-      terminateProcess: () => undefined,
     })).toBe(0);
     expect(runtime.startCount).toBe(1);
     expect(runtime.stopCount).toBe(1);

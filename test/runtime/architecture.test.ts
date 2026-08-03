@@ -10,6 +10,7 @@ import {
   collectProductCodeSourceFiles,
   collectProductSourceFiles,
   collectSourceFiles,
+  createIsolatedProductSourceProgram,
   createProductSourceProgram,
   createPackageImportPolicy,
   directCodeExecutionViolations,
@@ -24,6 +25,7 @@ import {
 
 const repositoryRoot = resolve(".");
 const sourceRoot = resolve(repositoryRoot, "src");
+const uniswapV2SdkFile = resolve(sourceRoot, "protocols/uniswap-v2/sdk.ts");
 const testRoot = resolve(repositoryRoot, "test");
 const coreRoot = resolve("src/core");
 const tokenCatalogRoot = resolve(sourceRoot, "token-catalog");
@@ -1727,9 +1729,7 @@ describe("runtime architecture boundary", () => {
         repositoryRoot,
       ));
     }
-    const productProgram = createProductSourceProgram(
-      await collectProductCodeSourceFiles(sourceRoot),
-    );
+    const productProgram = createIsolatedProductSourceProgram(uniswapV2SdkFile);
     violations.push(...uniswapV2SdkLoadBoundaryViolations(productProgram, policy));
     expect(violations).toEqual([]);
   }, 15_000);
@@ -1799,11 +1799,15 @@ describe("runtime architecture boundary", () => {
       managementContracts,
       coordinator,
       identities,
+      walletRoutes,
+      mcp,
     ] = await Promise.all([
       parseSource(resolve(sourceRoot, "wallet/operation-contract.ts")),
       parseSource(resolve(sourceRoot, "wallet/management-contracts.ts")),
       parseSource(resolve(sourceRoot, "wallet/coordinator.ts")),
       parseSource(resolve(sourceRoot, "interfaces/identities.ts")),
+      parseSource(resolve(sourceRoot, "wallet/routes.ts")),
+      parseSource(resolve(sourceRoot, "interfaces/mcp.ts")),
     ]);
     const declaration = (source: ts.SourceFile, name: string): ts.VariableDeclaration => {
       const found = sourceDescendants(source).find((node): node is ts.VariableDeclaration =>
@@ -1836,7 +1840,7 @@ describe("runtime architecture boundary", () => {
     const complete = sourceDescendants(coordinator).find((node): node is ts.MethodDeclaration =>
       ts.isMethodDeclaration(node) && node.name.getText(coordinator) === "#complete");
     if (complete === undefined) throw new TypeError("Missing WalletCoordinator completion method.");
-    expect(complete.parameters[1]?.type?.getText(coordinator)).toBe("WalletOperationOutcome");
+    expect(complete.parameters[1]?.type?.getText(coordinator)).toBe("WalletOperationResult");
 
     const walletStart = declaration(identities, "walletStartLocalIdentity");
     expect(identifierNames(walletStart)).toContain("WalletInteractionInterface");
@@ -1845,7 +1849,27 @@ describe("runtime architecture boundary", () => {
     const walletBinding = sourceDescendants(identities).find((node): node is ts.InterfaceDeclaration =>
       ts.isInterfaceDeclaration(node) && node.name.text === "WalletInterfaceBinding");
     if (walletBinding === undefined) throw new TypeError("Missing WalletInterfaceBinding.");
-    expect(identifierNames(walletBinding)).toContain("RouteMethod");
+    expect(identifierNames(walletBinding)).not.toContain("RouteMethod");
+    expect(walletBinding.members.some((member) =>
+      ts.isPropertySignature(member) && member.name.getText(identities) === "control")).toBe(false);
+
+    for (const name of [
+      "walletStartLocalIdentity",
+      "walletOperationReadIdentity",
+      "walletPresentationReadIdentity",
+      "walletCancelLocalIdentity",
+      "walletConfirmationLocalIdentity",
+    ]) {
+      expect(identifierNames(declaration(identities, name))).toContain("walletControlResources");
+    }
+    expect(identifierNames(declaration(walletRoutes, "extendWalletControlRouteRegistry")))
+      .toContain("walletControlResources");
+
+    const walletTool = declaration(mcp, "walletTool");
+    expect(sourceDescendants(walletTool)
+      .filter((node): node is ts.StringLiteralLike => ts.isStringLiteralLike(node))
+      .map((node) => node.text)
+      .filter((value) => ["GET", "POST", "DELETE"].includes(value))).toEqual([]);
 
     for (const tokenDeclaration of [
       declaration(identities, "tokenStartLocalIdentity"),
@@ -2226,9 +2250,7 @@ describe("runtime architecture boundary", () => {
       }
     }
     expect(verificationSdkPackageImporters).toEqual([]);
-    expect(verificationExternalModuleConsumers).toEqual([
-      "wallet/walletconnect-natural-exit-worker.ts",
-    ]);
+    expect(verificationExternalModuleConsumers).toEqual([]);
 
     const browserExports = new Set<string>(registryBrowserEntryExports);
     for (const forbidden of [
@@ -2781,6 +2803,43 @@ describe("runtime architecture boundary", () => {
     ]) expect(Object.hasOwn(runtimePublic, forbidden)).toBe(false);
   });
 
+  it("keeps process termination in the direct CLI entry and host output behind its owner", async () => {
+    const exitCalls: string[] = [];
+    const directOutputWrites: string[] = [];
+    for (const file of await collectProductCodeSourceFiles(sourceRoot)) {
+      const name = relative(sourceRoot, file).split(sep).join("/");
+      const parsed = ts.createSourceFile(
+        file,
+        await readFile(file, "utf8"),
+        ts.ScriptTarget.Latest,
+        true,
+      );
+      const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+          const target = node.expression.expression.getText(parsed);
+          const member = node.expression.name.text;
+          if (member === "exit" && (target === "process" || target === "globalThis.process")) {
+            exitCalls.push(`${name}:${node.getStart(parsed)}`);
+          }
+          if (
+            member === "write" &&
+            ["process.stdout", "process.stderr", "globalThis.process.stdout", "globalThis.process.stderr"]
+              .includes(target)
+          ) directOutputWrites.push(`${name}:${node.getStart(parsed)}`);
+          if (
+            (target === "console" || target === "globalThis.console") &&
+            ["debug", "error", "info", "log", "warn"].includes(member)
+          ) directOutputWrites.push(`${name}:${node.getStart(parsed)}`);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(parsed);
+    }
+    expect(exitCalls).toHaveLength(1);
+    expect(exitCalls[0]?.startsWith("cli.ts:")).toBe(true);
+    expect(directOutputWrites).toEqual([]);
+  });
+
   it("confines startup-reset creation and the read-only SQLite admission order to their owners", async () => {
     const productSources = await collectProductCodeSourceFiles(sourceRoot);
     const canonicalProgram = createProductSourceProgram(productSources);
@@ -3081,7 +3140,11 @@ void createEscapedRuntimeStateResetRequiredError;
       kind: ts.SyntaxKind.StringLiteral,
       value: "user_version = 1",
     }]);
-    expect(pragmaAudit.commands).toEqual([
+    const comparePragmaCommand = (
+      left: { readonly file: string; readonly command: string },
+      right: { readonly file: string; readonly command: string },
+    ): number => left.file.localeCompare(right.file) || left.command.localeCompare(right.command);
+    const expectedPragmaCommands = [
       { file: "src/runtime/database.ts", command: "foreign_keys = ON" },
       { file: "src/runtime/database.ts", command: "foreign_keys" },
       { file: "src/runtime/database.ts", command: "busy_timeout = 5000" },
@@ -3090,7 +3153,21 @@ void createEscapedRuntimeStateResetRequiredError;
       { file: "src/runtime/database.ts", command: "journal_mode = WAL" },
       { file: "src/runtime/database.ts", command: "user_version = 1" },
       { file: "src/runtime/database.ts", command: "wal_checkpoint(TRUNCATE)" },
-    ]);
+      { file: "src/wallet/walletconnect-storage.ts", command: "busy_timeout = 5000" },
+      { file: "src/wallet/walletconnect-storage.ts", command: "busy_timeout" },
+      { file: "src/wallet/walletconnect-storage.ts", command: "locking_mode = EXCLUSIVE" },
+      { file: "src/wallet/walletconnect-storage.ts", command: "locking_mode" },
+      { file: "src/wallet/walletconnect-storage.ts", command: "synchronous = FULL" },
+      { file: "src/wallet/walletconnect-storage.ts", command: "synchronous" },
+      { file: "src/wallet/walletconnect-storage.ts", command: "fullfsync = ON" },
+      { file: "src/wallet/walletconnect-storage.ts", command: "fullfsync" },
+      { file: "src/wallet/walletconnect-storage.ts", command: "journal_mode = WAL" },
+      { file: "src/wallet/walletconnect-storage.ts", command: "journal_mode" },
+      { file: "src/wallet/walletconnect-storage.ts", command: "journal_mode" },
+    ];
+    expect([...pragmaAudit.commands].sort(comparePragmaCommand)).toEqual(
+      expectedPragmaCommands.sort(comparePragmaCommand),
+    );
     const bootstrap = declaration("bootstrapFreshDatabase");
     const userVersionCalls = sourceDescendants(database).filter((node): node is ts.CallExpression =>
       ts.isCallExpression(node) &&
@@ -3138,6 +3215,65 @@ void createEscapedRuntimeStateResetRequiredError;
       productReadStart,
     ]].sort((left, right) => left - right));
   }, 15_000);
+
+  it("keeps complete WalletConnect SQLite scopes inside the owner-only artifact boundary", async () => {
+    const storagePath = resolve(sourceRoot, "wallet/walletconnect-storage.ts");
+    const storage = await parseSource(storagePath);
+    const declaration = (
+      source: ts.SourceFile,
+      name: string,
+    ): ts.VariableDeclaration | undefined => sourceDescendants(source).find(
+      (node): node is ts.VariableDeclaration => ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) && node.name.text === name,
+    );
+    const directArtifactBoundary = (
+      owner: ts.VariableDeclaration | undefined,
+    ): ts.ArrowFunction | undefined => {
+      if (owner?.initializer === undefined || !ts.isArrowFunction(owner.initializer)) return undefined;
+      const body = owner.initializer.body;
+      if (
+        !ts.isCallExpression(body) || !ts.isIdentifier(body.expression) ||
+        body.expression.text !== "withOwnerOnlySqliteArtifacts"
+      ) return undefined;
+      const callback = body.arguments[0];
+      if (
+        callback === undefined || !ts.isArrowFunction(callback) ||
+        callback.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true
+      ) return undefined;
+      return callback;
+    };
+
+    const boundaries = [
+      directArtifactBoundary(declaration(storage, "inspectExistingWithoutMutation")),
+      directArtifactBoundary(declaration(storage, "openConfiguredDatabase")),
+    ];
+    expect(boundaries.every((boundary) => boundary !== undefined)).toBe(true);
+    const opens = sourceDescendants(storage).filter((node): node is ts.NewExpression =>
+      ts.isNewExpression(node) && ts.isIdentifier(node.expression) &&
+      node.expression.text === "Database");
+    expect(opens).toHaveLength(2);
+    for (const boundary of boundaries) {
+      if (boundary === undefined) throw new TypeError("WalletConnect SQLite boundary is unavailable.");
+      expect(sourceDescendants(boundary).filter((node): node is ts.NewExpression =>
+        ts.isNewExpression(node) && ts.isIdentifier(node.expression) &&
+        node.expression.text === "Database")).toHaveLength(1);
+    }
+
+    const escapedInspection = ts.createSourceFile(
+      "escaped-walletconnect-storage.ts",
+      `const inspectExistingWithoutMutation = (path: string): void => {
+  const database = withOwnerOnlySqliteArtifacts(() => new Database(path));
+  database.pragma("journal_mode", { simple: true });
+  inspectCurrentStructure(database);
+  database.close();
+};`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    expect(directArtifactBoundary(
+      declaration(escapedInspection, "inspectExistingWithoutMutation"),
+    )).toBeUndefined();
+  });
 
   it("opens and admits SQLite before constructing or publishing the HTTP owner", async () => {
     const compositionPath = resolve(sourceRoot, "runtime/composition.ts");

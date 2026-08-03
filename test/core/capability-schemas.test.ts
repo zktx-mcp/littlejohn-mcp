@@ -191,6 +191,24 @@ describe("capability schemas", () => {
       account: `eip155:4663:${address2}`,
     }).success).toBe(false);
     expect(safeParseCapabilityData(walletConnectionCapability, { ...connected, topic: "secret" }).success).toBe(false);
+    for (const reason of ["reconciling", "observation_unavailable"] as const) {
+      expect(safeParseCapabilityData(walletConnectionCapability, { status: "unknown", reason }).success).toBe(true);
+    }
+    for (const reason of ["no_session", "expired", "disconnected"] as const) {
+      expect(safeParseCapabilityData(walletConnectionCapability, { status: "disconnected", reason }).success).toBe(true);
+    }
+    for (const reason of ["owner_unavailable", "deleted", "unusable_store"] as const) {
+      expect(safeParseCapabilityData(walletConnectionCapability, { status: "disconnected", reason }).success).toBe(false);
+      expect(safeParseCapabilityData(walletConnectionCapability, { status: "unknown", reason }).success).toBe(false);
+    }
+    expect(safeParseCapabilityData(walletConnectionCapability, {
+      status: "unresolved",
+      sessionCount: "1",
+    }).success).toBe(true);
+    expect(safeParseCapabilityData(walletConnectionCapability, {
+      status: "unresolved",
+      sessionCount: "0",
+    }).success).toBe(false);
     expect(() => parseCapabilityDataAt(
       walletConnectionCapability,
       connected,

@@ -56,11 +56,9 @@ describe("token catalog connected wallet session", () => {
   it.each([
     [{ status: "disconnected", reason: "no_session" }, "wallet_not_connected"],
     [{ status: "disconnected", reason: "expired" }, "wallet_not_connected"],
-    [{ status: "disconnected", reason: "deleted" }, "wallet_not_connected"],
     [{ status: "disconnected", reason: "disconnected" }, "wallet_not_connected"],
-    [{ status: "disconnected", reason: "unusable_store" }, "wallet_session_unusable"],
     [{ status: "unknown", reason: "reconciling" }, "wallet_session_unusable"],
-    [{ status: "unknown", reason: "owner_unavailable" }, "wallet_session_unusable"],
+    [{ status: "unknown", reason: "observation_unavailable" }, "wallet_session_unusable"],
     [{ status: "unresolved", sessionCount: "2" }, "wallet_session_unusable"],
   ] as const)("maps %o to %s", (connection, expectedCode) => {
     expect(failureCode(() => captureConnectedWalletSession({

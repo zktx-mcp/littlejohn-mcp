@@ -1,5 +1,4 @@
-import type { CanonicalJson } from "../core/index.js";
-import type { RouteMethod } from "./http-routing.js";
+import type { RuntimeHttpRequest } from "./http-boundary.js";
 import type {
   OwnerInstanceId,
   ProfileId,
@@ -14,13 +13,10 @@ export interface RuntimeOwnerSessionIdentity {
   readonly ownerRevision: RuntimeRevision;
 }
 
-export interface RuntimeOwnerSessionRequest {
-  readonly method: RouteMethod;
-  readonly path: string;
-  readonly body?: CanonicalJson;
-  readonly maximumResponseBytes: number;
-  readonly responseDeadlineMilliseconds: number;
-}
+export type RuntimeOwnerSessionRequest = RuntimeHttpRequest & Readonly<{
+  maximumResponseBytes: number;
+  responseDeadlineMilliseconds: number;
+}>;
 
 export interface RuntimeOwnerResponsePacket {
   readonly statusCode: number;

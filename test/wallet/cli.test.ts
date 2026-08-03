@@ -1,8 +1,10 @@
 import { EventEmitter, getEventListeners } from "node:events";
+import { spawn } from "node:child_process";
 import { access, chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
+import { PassThrough, Writable } from "node:stream";
 
 import Database from "better-sqlite3";
 
@@ -35,12 +37,18 @@ import {
 } from "../../src/runtime/sqlite-schema.js";
 import {
   createProcessTerminal,
-  runCli,
+  createCliProcessOutputOwner,
+  runCli as runCliResult,
   type CliDependencies,
   type CliProcessPort,
   type CliRuntimePort,
   type CliTerminalPort,
 } from "../../src/cli.js";
+import {
+  runtimeProcessTerminal,
+  runtimeReleased,
+  type RuntimeShutdownOutcome,
+} from "../../src/runtime/shutdown.js";
 import {
   parseWalletManagementOperation,
   parseWalletQrMatrix,
@@ -51,7 +59,7 @@ import {
   createWalletFailure,
   walletInterfaceErrorMappings,
 } from "../../src/wallet/errors.js";
-import { walletControlRoutes } from "../../src/wallet/routes.js";
+import { walletControlResources } from "../../src/wallet/routes.js";
 import {
   createTerminalQrDisplay,
   renderTerminalQr,
@@ -65,6 +73,8 @@ import {
 import { openTestOwnerSession } from "../interfaces/owner-session-harness.js";
 
 const operationId = Buffer.alloc(32, 21).toString("base64url");
+const runCli = async (...input: Parameters<typeof runCliResult>): Promise<number> =>
+  (await runCliResult(...input)).exitCode;
 const hyphenLeadingOperationId = Buffer.concat([
   Buffer.from([0xfb, 0xe0]),
   Buffer.alloc(30),
@@ -140,9 +150,11 @@ const operation = (
   kind: "disconnect",
   state: "completed",
   connectionRevision: "4",
-  expiresAt: "2026-07-14T07:10:00.000Z",
+  actionExpiresAt: "2026-07-14T07:10:00.000Z",
+  interactionInterface: "cli",
   result: { outcome: "already_disconnected", connection: disconnected },
   failure: null,
+  peerRefusalCode: null,
   ...overrides,
 });
 
@@ -153,21 +165,24 @@ const successResponse = (status: 200, body: unknown): RuntimeDispatchResponse =>
 
 const operationStartResponse = (
   startedOperation: WalletManagementOperation,
-  matrix?: typeof qr,
 ): Readonly<Record<string, unknown>> => Object.freeze({
-  result: Object.freeze({
-    status: "operation_started",
-    operation: startedOperation,
-  }),
-  ...(matrix === undefined ? {} : { qr: matrix }),
+  status: "operation_started",
+  operation: startedOperation,
 });
 
 const currentConnectionStartResponse = (): Readonly<Record<string, unknown>> => Object.freeze({
-  result: Object.freeze({
-    status: "current_connection",
-    connectionRevision: "4",
-    connection: connected,
-  }),
+  status: "current_connection",
+  connectionRevision: "4",
+  connection: connected,
+});
+
+const operationPresentation = (
+  value: WalletManagementOperation,
+  matrix?: typeof qr,
+): Readonly<Record<string, unknown>> => Object.freeze({
+  operation: value,
+  access: "interactive",
+  ...(matrix === undefined ? {} : { qr: matrix }),
 });
 
 const failureResponse = (code: string): RuntimeDispatchResponse => {
@@ -205,6 +220,7 @@ class FakeRuntime implements CliRuntimePort {
   ownerState: CliRuntimePort["ownerState"];
   readonly requests: RuntimeDispatchRequest[] = [];
   stopCount = 0;
+  stopOutcome: RuntimeShutdownOutcome = runtimeReleased;
   startCount = 0;
   onOwnerSessionOpen: (() => void) | undefined;
   readonly #handle: (operation: RuntimeDispatchRequest, requestIndex: number) => RuntimeDispatchResponse | Promise<RuntimeDispatchResponse>;
@@ -242,9 +258,10 @@ class FakeRuntime implements CliRuntimePort {
     if (this.#startError !== undefined) throw this.#startError;
   }
 
-  async stop(): Promise<void> {
+  async stop(): Promise<RuntimeShutdownOutcome> {
     this.stopCount += 1;
     if (this.#stopError !== undefined) throw this.#stopError;
+    return this.stopOutcome;
   }
 }
 
@@ -380,19 +397,21 @@ const dependencies = (
   runtime: FakeRuntime,
   terminalResult = fakeTerminal(),
   onPoll?: () => void,
-  onTerminate?: (exitCode: number) => void,
 ): CliDependencies => Object.freeze({
   createOperationId: () => operationId,
   createRuntime: async () => runtime,
   terminal: terminalResult.terminal,
   waitForPoll: async () => { onPoll?.(); },
-  terminateProcess: (exitCode: number) => { onTerminate?.(exitCode); },
 });
 
 const requestWithoutSignal = ({
-  signal: _signal,
-  ...request
-}: RuntimeDispatchRequest): Omit<RuntimeDispatchRequest, "signal"> => request;
+  requestClass,
+  method,
+  path,
+  body,
+}: RuntimeDispatchRequest): RuntimeDispatchRequest => method === "POST"
+  ? { requestClass, method, path, body }
+  : { requestClass, method, path };
 
 const walletStartBody = (kind: "connect" | "disconnect") => ({
   control: { operationId, interactionInterface: "cli" as const },
@@ -400,6 +419,83 @@ const walletStartBody = (kind: "connect" | "disconnect") => ({
 });
 
 describe("wallet CLI", () => {
+  it("settles host output callbacks before process-terminal completion", async () => {
+    const chunks: Buffer[] = [];
+    const pending: Array<() => void> = [];
+    const stdout = new Writable({
+      write(chunk: Buffer, _encoding, callback): void {
+        chunks.push(Buffer.from(chunk));
+        pending.push(callback);
+      },
+    });
+    const owner = createCliProcessOutputOwner(stdout, new PassThrough());
+    owner.writeOutput("slow-output");
+    let settled = false;
+    const settling = owner.settle().then(() => { settled = true; });
+    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+    expect(settled).toBe(false);
+    expect(pending).toHaveLength(1);
+
+    pending.shift()?.();
+    await settling;
+    expect(Buffer.concat(chunks).toString("utf8")).toBe("slow-output");
+    expect(() => owner.writeOutput("late-output")).toThrow("Process output is sealed.");
+  });
+
+  it("fails settlement when a host stream rejects an admitted write", async () => {
+    const writeFailure = new Error("host stream failed");
+    const stdout = new Writable({
+      write(_chunk, _encoding, callback): void { callback(writeFailure); },
+    });
+    const owner = createCliProcessOutputOwner(stdout, new PassThrough());
+    owner.writeOutput("result");
+    await expect(owner.settle()).rejects.toBe(writeFailure);
+  });
+
+  it("serializes MCP and CLI stdout through the same output owner", async () => {
+    const stdout = new PassThrough();
+    const chunks: Buffer[] = [];
+    stdout.on("data", (chunk: Buffer) => { chunks.push(Buffer.from(chunk)); });
+    const owner = createCliProcessOutputOwner(stdout, new PassThrough());
+    owner.mcpOutput.write("mcp-frame\n");
+    owner.writeOutput("cli-result\n");
+    await owner.settle();
+    expect(Buffer.concat(chunks).toString("utf8")).toBe("mcp-frame\ncli-result\n");
+  });
+
+  it("preserves every byte when a child-process stdout reader is slow", async () => {
+    const workerPath = fileURLToPath(new URL("./cli-output-settlement-worker.ts", import.meta.url));
+    const child = spawn(process.execPath, ["--import", "tsx", workerPath], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const stdout: Buffer[] = [];
+    let stderr = "";
+    child.stdout.pause();
+    child.stdout.on("data", (chunk: Buffer) => { stdout.push(Buffer.from(chunk)); });
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
+    await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 100));
+    child.stdout.resume();
+    const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolveExit, rejectExit) => {
+        child.once("error", rejectExit);
+        child.once("exit", (code, signal) => resolveExit({ code, signal }));
+      },
+    );
+    const expected = "output-settlement-boundary\n".repeat(65_536);
+    expect(exit).toEqual({ code: 0, signal: null });
+    expect(stderr).toBe("");
+    expect(Buffer.concat(stdout).toString("utf8")).toBe(expected);
+  });
+
+  it("returns process-terminal authority without terminating inside runCli", async () => {
+    const runtime = new FakeRuntime(async () => successResponse(200, await disconnectedSuccess()));
+    runtime.stopOutcome = runtimeProcessTerminal;
+    const terminal = fakeTerminal();
+    const result = await runCliResult(["wallet", "status"], dependencies(runtime, terminal));
+    expect(result).toEqual({ exitCode: 0, shutdown: runtimeProcessTerminal });
+    expect(terminal.disposed()).toBe(true);
+  });
+
   it("returns raw terminal input so each command owns its confirmation grammar", async () => {
     const processHost = fakeProcessHost();
     const terminal = createProcessTerminal(processHost.host);
@@ -407,9 +503,10 @@ describe("wallet CLI", () => {
     processHost.writeInput("yes\n");
     await expect(answer).resolves.toBe("yes");
     terminal.dispose();
+    await terminal.outputOwner.settle();
   });
 
-  it("latches catchable process signals without taking normal QR restoration authority", () => {
+  it("latches catchable process signals without taking normal QR restoration authority", async () => {
     for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
       const processHost = fakeProcessHost();
       const terminal = createProcessTerminal(processHost.host);
@@ -419,15 +516,14 @@ describe("wallet CLI", () => {
       expect(processHost.listenerCount(signal)).toBe(1);
       processHost.emit(signal);
       expect(terminal.interruptSignal.aborted).toBe(true);
-      expect(processHost.output()).not.toContain("\u001b[?25h\u001b[?1049l");
 
       processHost.emit(signal);
-      expect(processHost.output()).not.toContain("\u001b[?25h\u001b[?1049l");
       expect(processHost.listenerCount(signal)).toBe(1);
 
       terminal.hideQr();
-      expect(processHost.output().match(/\u001b\[\?1049l/gu)).toHaveLength(1);
       terminal.dispose();
+      await terminal.outputOwner.settle();
+      expect(processHost.output().match(/\u001b\[\?1049l/gu)).toHaveLength(1);
       expect(processHost.listenerCount("SIGINT")).toBe(0);
       expect(processHost.listenerCount("SIGTERM")).toBe(0);
       expect(processHost.listenerCount("SIGHUP")).toBe(0);
@@ -445,10 +541,14 @@ describe("wallet CLI", () => {
       const cancelled = operation({ kind: "connect", state: "cancelled", result: null });
       const events: string[] = [];
       const runtime = new FakeRuntime((request) => {
-        events.push(request.method === "DELETE" ? "cancel" : "operation");
-        return request.method === "POST"
-          ? successResponse(200, operationStartResponse(awaiting, qr))
-          : successResponse(200, { operation: cancelled });
+        events.push(request.path === walletControlResources.cancellation.path(operationId) ? "cancel" : "operation");
+        if (request.path === walletControlResources.operations.path) {
+          return successResponse(200, operationStartResponse(awaiting));
+        }
+        if (request.path === walletControlResources.presentation.path(operationId)) {
+          return successResponse(200, operationPresentation(awaiting, qr));
+        }
+        return successResponse(200, request.path === walletControlResources.cancellation.path(operationId) ? cancelled : awaiting);
       });
       runtime.onOwnerSessionOpen = () => events.push("session-open");
       const processHost = fakeProcessHost();
@@ -467,8 +567,8 @@ describe("wallet CLI", () => {
         createOperationId: () => operationId,
         createRuntime: async () => runtime,
         terminal,
+        settleOutput: terminal.outputOwner.settle,
         waitForPoll: async () => undefined,
-        terminateProcess: () => undefined,
       })).toBe(0);
       expect(events.indexOf("cancel")).toBeGreaterThan(events.indexOf("operation"));
       expect(events.indexOf("restore")).toBeGreaterThan(events.lastIndexOf("session-open"));
@@ -489,8 +589,8 @@ describe("wallet CLI", () => {
         return runtimeResult.promise;
       },
       terminal,
+      settleOutput: terminal.outputOwner.settle,
       waitForPoll: async () => undefined,
-      terminateProcess: () => undefined,
     });
 
     await creationEntered.promise;
@@ -524,9 +624,10 @@ describe("wallet CLI", () => {
           throw new Error("operation must not run");
         },
         openOwnerSession(signal?: AbortSignal) { return openTestOwnerSession(this, signal); },
-        async stop(): Promise<void> {
+        async stop() {
           stopCount += 1;
           startResult.reject(new RuntimeOperationError("request_aborted"));
+          return runtimeReleased;
         },
       };
       const processHost = fakeProcessHost();
@@ -535,8 +636,8 @@ describe("wallet CLI", () => {
         createOperationId: () => operationId,
         createRuntime: async () => runtime,
         terminal,
+        settleOutput: terminal.outputOwner.settle,
         waitForPoll: async () => undefined,
-        terminateProcess: () => undefined,
       });
 
       await startEntered.promise;
@@ -567,10 +668,10 @@ describe("wallet CLI", () => {
         events.push("owner:operation");
         throw new Error("operation must not run");
       },
-      async closeApplication(): Promise<object> {
+      async closeApplication() {
         events.push("owner:close-application");
         startCompletion.reject(new RuntimeOperationError("request_aborted"));
-        return releasePermit;
+        return Object.freeze({ outcome: runtimeReleased, permit: releasePermit });
       },
       async releaseListener(permit: object): Promise<void> {
         expect(permit).toBe(releasePermit);
@@ -584,8 +685,8 @@ describe("wallet CLI", () => {
       createOperationId: () => operationId,
       createRuntime: async () => runtime,
       terminal,
+      settleOutput: terminal.outputOwner.settle,
       waitForPoll: async () => undefined,
-      terminateProcess: () => undefined,
     });
 
     await startEntered.promise;
@@ -631,26 +732,33 @@ describe("wallet CLI", () => {
         events.push("owner:start");
       },
       dispatchRuntimeRequest(request: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse> {
-        if (request.method === "POST") {
-          events.push("owner:post");
-          return Promise.resolve(successResponse(200, operationStartResponse(awaiting, qr)));
+        if (request.path === walletControlResources.operations.path) {
+          events.push("owner:start");
+          return Promise.resolve(successResponse(200, operationStartResponse(awaiting)));
         }
-        if (request.method === "GET") {
+        if (request.path === walletControlResources.presentation.path(operationId)) {
           events.push("owner:get");
           getEntered.resolve(undefined);
           return pendingGet.promise;
         }
-        events.push("owner:delete");
-        return Promise.resolve(successResponse(200, { operation: cancelled }));
+        if (request.path === walletControlResources.operation.path(operationId)) {
+          events.push("owner:get-operation");
+          return Promise.resolve(successResponse(200, awaiting));
+        }
+        if (request.path === walletControlResources.cancellation.path(operationId)) {
+          events.push("owner:cancel");
+          return Promise.resolve(successResponse(200, cancelled));
+        }
+        throw new Error("Unexpected Wallet control resource.");
       },
       openOwnerSession(signal?: AbortSignal) {
         return openTestOwnerSession(this, signal);
       },
-      async closeApplication(): Promise<object> {
+      async closeApplication() {
         events.push("owner:close-application");
         pendingGet.reject(new RuntimeOperationError("request_aborted"));
         await getSettled.promise;
-        return releasePermit;
+        return Object.freeze({ outcome: runtimeReleased, permit: releasePermit });
       },
       async releaseListener(permit: object): Promise<void> {
         expect(permit).toBe(releasePermit);
@@ -664,7 +772,6 @@ describe("wallet CLI", () => {
       createRuntime: async () => runtime,
       terminal: terminal.terminal,
       waitForPoll: async () => undefined,
-      terminateProcess: () => undefined,
     });
 
     await getEntered.promise;
@@ -673,9 +780,10 @@ describe("wallet CLI", () => {
     expect(await running).toBe(0);
     expect(events).toEqual([
       "owner:start",
-      "owner:post",
+      "owner:start",
       "owner:get",
-      "owner:delete",
+      "owner:get-operation",
+      "owner:cancel",
       "owner:close-application",
       "owner:get-settled",
       "database:close",
@@ -697,7 +805,6 @@ describe("wallet CLI", () => {
         },
         terminal: tty.terminal,
         waitForPoll: async () => undefined,
-        terminateProcess: () => undefined,
       });
       expect(exitCode).toBe(2);
       expect(starts).toBe(0);
@@ -729,7 +836,6 @@ describe("wallet CLI", () => {
           },
           terminal: tty.terminal,
           waitForPoll: async () => undefined,
-          terminateProcess: () => undefined,
         })).toBe(2);
       expect(starts).toBe(0);
       expect(tty.errors.join("")).toBe("invalid_input: The request input is invalid.\n");
@@ -747,7 +853,6 @@ describe("wallet CLI", () => {
       createRuntime: async () => runtime,
       terminal: terminal.terminal,
       waitForPoll: async () => undefined,
-      terminateProcess: () => undefined,
       startMcp: async (selectedRuntime) => {
         starts += 1;
         expect(selectedRuntime).toBe(runtime);
@@ -774,13 +879,11 @@ describe("wallet CLI", () => {
         outputIsTTY: argumentsInput.length !== 0,
       });
       let mcpStarts = 0;
-      let forcedExits = 0;
       expect(await runCli(argumentsInput, {
         createOperationId: () => operationId,
         createRuntime: async () => { throw createRuntimeStateResetRequiredError(); },
         terminal: terminal.terminal,
         waitForPoll: async () => undefined,
-        terminateProcess: () => { forcedExits += 1; },
         startMcp: async () => {
           mcpStarts += 1;
           throw new Error("MCP must not be published after a startup reset failure.");
@@ -792,7 +895,6 @@ describe("wallet CLI", () => {
       ]);
       expect(terminal.disposed()).toBe(true);
       expect(mcpStarts).toBe(0);
-      expect(forcedExits).toBe(0);
     }
   });
 
@@ -807,7 +909,6 @@ describe("wallet CLI", () => {
           outputIsTTY: argumentsInput.length !== 0,
         });
         let mcpStarts = 0;
-        let forcedExits = 0;
         expect(await runCli(argumentsInput, {
           createOperationId: () => operationId,
           createRuntime: () => LocalRuntime.create({
@@ -818,7 +919,6 @@ describe("wallet CLI", () => {
           }),
           terminal: terminal.terminal,
           waitForPoll: async () => undefined,
-          terminateProcess: () => { forcedExits += 1; },
           startMcp: async () => {
             mcpStarts += 1;
             throw new Error("MCP must not be published after invalid RPC configuration.");
@@ -832,7 +932,6 @@ describe("wallet CLI", () => {
         expect(terminal.errors.join("")).not.toContain("key=secret");
         expect(terminal.disposed()).toBe(true);
         expect(mcpStarts).toBe(0);
-        expect(forcedExits).toBe(0);
         await expect(access(dataDirectory)).rejects.toMatchObject({ code: "ENOENT" });
       }
     } finally {
@@ -867,7 +966,6 @@ describe("wallet CLI", () => {
         createRuntime,
         terminal: terminal.terminal,
         waitForPoll: async () => undefined,
-        terminateProcess: () => undefined,
       })).toBe(1);
       expect(terminal.errors).toEqual([
         "internal_error: The request could not be completed.\n",
@@ -884,7 +982,6 @@ describe("wallet CLI", () => {
       }),
       terminal: terminal.terminal,
       waitForPoll: async () => undefined,
-      terminateProcess: () => undefined,
     })).toBe(2);
     expect(terminal.errors).toEqual([
       "invalid_input: LITTLEJOHN_RPC_URL must be a valid absolute HTTPS URL without a fragment.\n",
@@ -916,7 +1013,6 @@ describe("wallet CLI", () => {
           }),
           terminal: terminal.terminal,
           waitForPoll: async () => undefined,
-          terminateProcess: () => { throw new Error("Startup reset must not force process termination."); },
           startMcp: async () => {
             mcpStarts += 1;
             throw new Error("MCP must not be published after a startup reset failure.");
@@ -944,7 +1040,7 @@ describe("wallet CLI", () => {
       state: "cancelled",
       result: null,
     });
-    const operationRuntime = new FakeRuntime(() => successResponse(200, { operation: retained }));
+    const operationRuntime = new FakeRuntime(() => successResponse(200, retained));
     const operationTerminal = fakeTerminal();
     expect(await runCli(
       ["wallet", "operation", hyphenLeadingOperationId, "--json"],
@@ -953,19 +1049,66 @@ describe("wallet CLI", () => {
     expect(operationRuntime.requests.map(requestWithoutSignal)).toEqual([{
       requestClass: "local_control",
       method: "GET",
-      path: walletControlRoutes.operation(hyphenLeadingOperationId),
+      path: walletControlResources.operation.path(hyphenLeadingOperationId),
     }]);
 
-    const cancelRuntime = new FakeRuntime(() => successResponse(200, { operation: cancelled }));
+    const cancelCandidate = operation({
+      operationId: hyphenLeadingOperationId,
+      kind: "connect",
+      state: "awaiting_wallet_approval",
+      result: null,
+    });
+    const cancelRuntime = new FakeRuntime((request) => successResponse(
+      200,
+      request.path === walletControlResources.cancellation.path(hyphenLeadingOperationId)
+        ? cancelled
+        : cancelCandidate,
+    ));
     expect(await runCli(
       ["wallet", "cancel", hyphenLeadingOperationId],
       dependencies(cancelRuntime),
     )).toBe(0);
-    expect(cancelRuntime.requests.map(requestWithoutSignal)).toEqual([{
-      requestClass: "local_control",
-      method: "DELETE",
-      path: walletControlRoutes.operation(hyphenLeadingOperationId),
-    }]);
+    expect(cancelRuntime.requests.map(requestWithoutSignal)).toEqual([
+      {
+        requestClass: "local_control",
+        method: "GET",
+        path: walletControlResources.operation.path(hyphenLeadingOperationId),
+      },
+      {
+        requestClass: "local_control",
+        method: "POST",
+        path: walletControlResources.cancellation.path(hyphenLeadingOperationId),
+        body: { connectionRevision: "4" },
+      },
+    ]);
+  });
+
+  it("resolves an explicit cancellation through the authoritative terminal race", async () => {
+    const awaiting = operation({
+      kind: "connect",
+      state: "awaiting_wallet_approval",
+      result: null,
+    });
+    const completed = operation({
+      kind: "connect",
+      state: "completed",
+      result: { outcome: "connected", connection: connected },
+    });
+    let operationReads = 0;
+    const runtime = new FakeRuntime((request) => {
+      if (request.path === walletControlResources.cancellation.path(operationId)) return failureResponse("state_conflict");
+      operationReads += 1;
+      return successResponse(200, operationReads === 1 ? awaiting : completed);
+    });
+    const terminal = fakeTerminal();
+
+    expect(await runCli(
+      ["wallet", "cancel", operationId],
+      dependencies(runtime, terminal),
+    )).toBe(0);
+    expect(runtime.requests.map(({ method }) => method)).toEqual(["GET", "POST", "GET"]);
+    expect(terminal.output.join("")).toContain(": completed");
+    expect(terminal.errors).toEqual([]);
   });
 
   it("projects canonical status and operation JSON without exposing QR material", async () => {
@@ -976,10 +1119,10 @@ describe("wallet CLI", () => {
       result: null,
     });
     const runtime = new FakeRuntime((request) => {
-      if (request.path === walletControlRoutes.connection) {
+      if (request.path === walletControlResources.connection.path) {
         return successResponse(200, connection);
       }
-      return successResponse(200, { operation: pending, qr });
+      return successResponse(200, pending);
     });
 
     const statusTerminal = fakeTerminal();
@@ -998,12 +1141,30 @@ describe("wallet CLI", () => {
     expect(operationTerminal.output.join("")).not.toContain(qr.rows[0] as string);
   });
 
+  it("describes every unresolved session count without inventing its cause", async () => {
+    for (const sessionCount of ["1", "2"] as const) {
+      const data = parseCapabilityData(walletConnectionCapability, {
+        status: "unresolved",
+        sessionCount,
+      });
+      const response = await walletConnectionSuccess(data);
+      const runtime = new FakeRuntime(() => successResponse(200, response));
+      const terminal = fakeTerminal();
+
+      expect(await runCli(["wallet", "status"], dependencies(runtime, terminal))).toBe(0);
+      expect(terminal.output.join("")).toBe(
+        `The current wallet state cannot be used.\nWallet sessions found: ${sessionCount}.\n`,
+      );
+      expect(terminal.errors).toEqual([]);
+    }
+  });
+
   it("returns the current valid connection without creating, confirming, or observing an operation", async () => {
     const runtime = new FakeRuntime((request) => {
       expect(requestWithoutSignal(request)).toEqual({
         requestClass: "local_control",
         method: "POST",
-        path: walletControlRoutes.operations,
+        path: walletControlResources.operations.path,
         body: walletStartBody("connect"),
       });
       return successResponse(200, currentConnectionStartResponse());
@@ -1019,7 +1180,7 @@ describe("wallet CLI", () => {
       {
         requestClass: "local_control",
         method: "POST",
-        path: walletControlRoutes.operations,
+        path: walletControlResources.operations.path,
         body: walletStartBody("connect"),
       },
       {
@@ -1046,8 +1207,8 @@ describe("wallet CLI", () => {
 
     expect(await runCli(["wallet", "disconnect"], dependencies(runtime, terminal))).toBe(8);
     expect(runtime.requests.map(({ method, path }) => ({ method, path }))).toEqual([
-      { method: "POST", path: walletControlRoutes.operations },
-      { method: "GET", path: walletControlRoutes.operation(operationId) },
+      { method: "POST", path: walletControlResources.operations.path },
+      { method: "GET", path: walletControlResources.operation.path(operationId) },
     ]);
     expect(terminal.prompts).toEqual([]);
     expect(terminal.events).not.toContain("qr_show");
@@ -1065,9 +1226,17 @@ describe("wallet CLI", () => {
       state: "completed",
       result: { outcome: "connected", connection: connected },
     });
-    const runtime = new FakeRuntime((request) => request.method === "POST"
-      ? successResponse(200, operationStartResponse(awaiting, qr))
-      : successResponse(200, { operation: completed }), "owner");
+    let presentationReads = 0;
+    const runtime = new FakeRuntime((request) => {
+      if (request.path === walletControlResources.operations.path) {
+        return successResponse(200, operationStartResponse(awaiting));
+      }
+      presentationReads += 1;
+      return successResponse(200, operationPresentation(
+        presentationReads === 1 ? awaiting : completed,
+        presentationReads === 1 ? qr : undefined,
+      ));
+    }, "owner");
     let tty!: FakeTerminalResult;
     tty = fakeTerminal({
       onOutput(value, result) {
@@ -1080,10 +1249,11 @@ describe("wallet CLI", () => {
       {
         requestClass: "local_control",
         method: "POST",
-        path: walletControlRoutes.operations,
+        path: walletControlResources.operations.path,
         body: walletStartBody("connect"),
       },
-      { requestClass: "local_control", method: "GET", path: walletControlRoutes.operation(operationId) },
+      { requestClass: "local_control", method: "GET", path: walletControlResources.presentation.path(operationId) },
+      { requestClass: "local_control", method: "GET", path: walletControlResources.presentation.path(operationId) },
       {
         requestClass: "local_control",
         method: "POST",
@@ -1110,9 +1280,17 @@ describe("wallet CLI", () => {
       state: "completed",
       result: { outcome: "connected", connection: connected },
     });
-    const runtime = new FakeRuntime((request) => request.method === "POST"
-      ? successResponse(200, operationStartResponse(awaiting, qr))
-      : successResponse(200, { operation: completed }), "owner");
+    let presentationReads = 0;
+    const runtime = new FakeRuntime((request) => {
+      if (request.path === walletControlResources.operations.path) {
+        return successResponse(200, operationStartResponse(awaiting));
+      }
+      presentationReads += 1;
+      return successResponse(200, operationPresentation(
+        presentationReads === 1 ? awaiting : completed,
+        presentationReads === 1 ? qr : undefined,
+      ));
+    }, "owner");
     const processHost = fakeProcessHost();
     const terminal = createProcessTerminal(processHost.host);
     let signalSent = false;
@@ -1127,11 +1305,11 @@ describe("wallet CLI", () => {
       createOperationId: () => operationId,
       createRuntime: async () => runtime,
       terminal,
+      settleOutput: terminal.outputOwner.settle,
       waitForPoll: async () => undefined,
-      terminateProcess: () => undefined,
     })).toBe(0);
     expect(signalSent).toBe(true);
-    expect(runtime.requests.map(({ method }) => method)).toEqual(["POST", "GET", "POST"]);
+    expect(runtime.requests.map(({ method }) => method)).toEqual(["POST", "GET", "GET", "POST"]);
     expect(runtime.stopCount).toBe(1);
   });
 
@@ -1154,13 +1332,14 @@ describe("wallet CLI", () => {
     const events: string[] = [];
     let reads = 0;
     const runtime = new FakeRuntime((request) => {
-      if (request.method === "POST") {
+      if (request.path === walletControlResources.operations.path) {
         events.push("create");
-        return successResponse(200, operationStartResponse(awaiting, qr));
+        return successResponse(200, operationStartResponse(awaiting));
       }
       reads += 1;
-      events.push(reads === 1 ? "read-validating" : "read-completed");
-      return successResponse(200, { operation: reads === 1 ? validating : completed });
+      const exact = reads === 1 ? awaiting : reads === 2 ? validating : completed;
+      events.push(reads === 1 ? "read-awaiting" : reads === 2 ? "read-validating" : "read-completed");
+      return successResponse(200, operationPresentation(exact, reads === 1 ? qr : undefined));
     });
     const tty = fakeTerminal({
       onOutput(value) {
@@ -1182,11 +1361,14 @@ describe("wallet CLI", () => {
     });
     const cancelled = operation({ kind: "disconnect", state: "cancelled", result: null });
     const runtime = new FakeRuntime((request) => {
-      if (request.method === "POST") return successResponse(200, operationStartResponse(awaiting));
-      if (request.path === walletControlRoutes.connection) {
+      if (request.path === walletControlResources.operations.path) return successResponse(200, operationStartResponse(awaiting));
+      if (request.path === walletControlResources.connection.path) {
         return successResponse(200, connection);
       }
-      if (request.method === "DELETE") return successResponse(200, { operation: cancelled });
+      if (request.path === walletControlResources.cancellation.path(operationId)) return successResponse(200, cancelled);
+      if (request.path === walletControlResources.operation.path(operationId)) {
+        return successResponse(200, awaiting);
+      }
       throw new Error("unexpected request");
     });
     const tty = fakeTerminal({ confirmation: false });
@@ -1197,8 +1379,9 @@ describe("wallet CLI", () => {
     expect(tty.prompts[0]).toContain("Every existing wallet session for this profile will be disconnected");
     expect(requestWithoutSignal(runtime.requests.at(-1)!)).toEqual({
       requestClass: "local_control",
-      method: "DELETE",
-      path: walletControlRoutes.operation(operationId),
+      method: "POST",
+      path: walletControlResources.cancellation.path(operationId),
+      body: { connectionRevision: "4" },
     });
     expect(tty.output.join("")).toContain(": cancelled");
   });
@@ -1218,13 +1401,13 @@ describe("wallet CLI", () => {
       result: { outcome: "disconnected", connection: disconnected },
     });
     const runtime = new FakeRuntime((request) => {
-      if (request.path === walletControlRoutes.operations) {
+      if (request.path === walletControlResources.operations.path) {
         return successResponse(200, operationStartResponse(awaiting));
       }
-      if (request.path === walletControlRoutes.connection) {
+      if (request.path === walletControlResources.connection.path) {
         return successResponse(200, connection);
       }
-      if (request.path.endsWith("/confirmation")) return successResponse(200, { operation: completed });
+      if (request.path.endsWith("/confirmation")) return successResponse(200, completed);
       throw new Error("unexpected request");
     });
     const tty = fakeTerminal({ confirmation: true });
@@ -1233,18 +1416,18 @@ describe("wallet CLI", () => {
     expect(requestWithoutSignal(runtime.requests[0]!)).toEqual({
       requestClass: "local_control",
       method: "POST",
-      path: walletControlRoutes.operations,
+      path: walletControlResources.operations.path,
       body: walletStartBody("disconnect"),
     });
     expect(requestWithoutSignal(runtime.requests.at(-1)!)).toEqual({
       requestClass: "local_control",
       method: "POST",
-      path: walletControlRoutes.confirmation(operationId),
+      path: walletControlResources.confirmation.path(operationId),
       body: { connectionRevision: "91" },
     });
   });
 
-  it("cancels its exact waiting operation when confirmation preparation fails", async () => {
+  it("preserves exact cancellation when confirmation preparation fails", async () => {
     const connection = await walletConnectionSuccess(unresolved);
     const awaiting = operation({
       kind: "disconnect",
@@ -1254,61 +1437,72 @@ describe("wallet CLI", () => {
     const cancelled = operation({ kind: "disconnect", state: "cancelled", result: null });
 
     const connectionFailure = new FakeRuntime((request) => {
-      if (request.path === walletControlRoutes.operations) {
+      if (request.path === walletControlResources.operations.path) {
         return successResponse(200, operationStartResponse(awaiting));
       }
-      if (request.path === walletControlRoutes.connection) {
+      if (request.path === walletControlResources.connection.path) {
         return failureResponse("runtime_state_unavailable");
       }
-      if (request.method === "DELETE") return successResponse(200, { operation: cancelled });
+      if (request.path === walletControlResources.cancellation.path(operationId)) return successResponse(200, cancelled);
+      if (request.path === walletControlResources.operation.path(operationId)) {
+        return successResponse(200, awaiting);
+      }
       throw new Error("unexpected request");
     });
     const connectionTerminal = fakeTerminal();
     expect(await runCli(
       ["wallet", "disconnect"],
       dependencies(connectionFailure, connectionTerminal),
-    )).toBe(7);
+    )).toBe(0);
     expect(connectionFailure.requests.map(({ method, path }) => ({ method, path }))).toEqual([
-      { method: "POST", path: walletControlRoutes.operations },
-      { method: "GET", path: walletControlRoutes.connection },
-      { method: "DELETE", path: walletControlRoutes.operation(operationId) },
+      { method: "POST", path: walletControlResources.operations.path },
+      { method: "GET", path: walletControlResources.connection.path },
+      { method: "GET", path: walletControlResources.operation.path(operationId) },
+      { method: "POST", path: walletControlResources.cancellation.path(operationId) },
     ]);
+    expect(connectionTerminal.output.join("")).toContain(": cancelled");
+    expect(connectionTerminal.errors).toEqual([]);
 
     const promptFailure = new FakeRuntime((request) => {
-      if (request.path === walletControlRoutes.operations) {
+      if (request.path === walletControlResources.operations.path) {
         return successResponse(200, operationStartResponse(awaiting));
       }
-      if (request.path === walletControlRoutes.connection) {
+      if (request.path === walletControlResources.connection.path) {
         return successResponse(200, connection);
       }
-      if (request.method === "DELETE") return successResponse(200, { operation: cancelled });
+      if (request.path === walletControlResources.cancellation.path(operationId)) return successResponse(200, cancelled);
+      if (request.path === walletControlResources.operation.path(operationId)) {
+        return successResponse(200, awaiting);
+      }
       throw new Error("unexpected request");
     });
     const promptTerminal = fakeTerminal({ confirmationError: new Error("secret terminal failure") });
     expect(await runCli(
       ["wallet", "disconnect"],
       dependencies(promptFailure, promptTerminal),
-    )).toBe(1);
+    )).toBe(0);
     expect(requestWithoutSignal(promptFailure.requests.at(-1)!)).toEqual({
       requestClass: "local_control",
-      method: "DELETE",
-      path: walletControlRoutes.operation(operationId),
+      method: "POST",
+      path: walletControlResources.cancellation.path(operationId),
+      body: { connectionRevision: "4" },
     });
-    expect(promptTerminal.errors.join("")).toBe(
-      "internal_error: The request could not be completed.\n",
-    );
+    expect(promptTerminal.output.join("")).toContain(": cancelled");
+    expect(promptTerminal.errors).toEqual([]);
 
     const expired = operation({ kind: "disconnect", state: "expired", result: null });
+    let cleanupReads = 0;
     const cleanupFailure = new FakeRuntime((request) => {
-      if (request.path === walletControlRoutes.operations) {
+      if (request.path === walletControlResources.operations.path) {
         return successResponse(200, operationStartResponse(awaiting));
       }
-      if (request.path === walletControlRoutes.connection) {
+      if (request.path === walletControlResources.connection.path) {
         return failureResponse("wallet_session_unusable");
       }
-      if (request.method === "DELETE") return failureResponse("state_conflict");
-      if (request.path === walletControlRoutes.operation(operationId)) {
-        return successResponse(200, { operation: expired });
+      if (request.path === walletControlResources.cancellation.path(operationId)) return failureResponse("state_conflict");
+      if (request.path === walletControlResources.operation.path(operationId)) {
+        cleanupReads += 1;
+        return successResponse(200, cleanupReads === 1 ? awaiting : expired);
       }
       throw new Error("unexpected request");
     });
@@ -1318,7 +1512,7 @@ describe("wallet CLI", () => {
       dependencies(cleanupFailure, cleanupTerminal),
     )).toBe(4);
     expect(cleanupTerminal.errors.join("")).toBe(
-      "wallet_timeout: The wallet request timed out.\n",
+      "wallet_timeout: The wallet action exceeded Little John's local action deadline.\n",
     );
   });
 
@@ -1332,19 +1526,23 @@ describe("wallet CLI", () => {
     const cancelled = operation({ kind: "disconnect", state: "cancelled", result: null });
     const terminal = fakeTerminal({ confirmation: true });
     const runtime = new FakeRuntime((request) => {
-      if (request.path === walletControlRoutes.operations) {
+      if (request.path === walletControlResources.operations.path) {
         terminal.resolveInterrupt();
         return successResponse(200, operationStartResponse(awaiting));
       }
-      if (request.path === walletControlRoutes.connection) return successResponse(200, connection);
-      if (request.method === "DELETE") return successResponse(200, { operation: cancelled });
+      if (request.path === walletControlResources.connection.path) return successResponse(200, connection);
+      if (request.path === walletControlResources.cancellation.path(operationId)) return successResponse(200, cancelled);
+      if (request.path === walletControlResources.operation.path(operationId)) {
+        return successResponse(200, awaiting);
+      }
       throw new Error("confirmation must not be dispatched");
     });
 
     expect(await runCli(["wallet", "disconnect"], dependencies(runtime, terminal))).toBe(0);
     expect(runtime.requests.map(({ method, path }) => ({ method, path }))).toEqual([
-      { method: "POST", path: walletControlRoutes.operations },
-      { method: "DELETE", path: walletControlRoutes.operation(operationId) },
+      { method: "POST", path: walletControlResources.operations.path },
+      { method: "GET", path: walletControlResources.operation.path(operationId) },
+      { method: "POST", path: walletControlResources.cancellation.path(operationId) },
     ]);
     expect(terminal.prompts).toEqual([]);
   });
@@ -1361,16 +1559,19 @@ describe("wallet CLI", () => {
     const cancellationEntered = deferred<void>();
     const terminal = fakeTerminal({ confirmation: true });
     const runtime = new FakeRuntime((request) => {
-      if (request.path === walletControlRoutes.operations) {
+      if (request.path === walletControlResources.operations.path) {
         return successResponse(200, operationStartResponse(awaiting));
       }
-      if (request.path === walletControlRoutes.connection) {
+      if (request.path === walletControlResources.connection.path) {
         connectionReadEntered.resolve(undefined);
         return connectionRead.promise;
       }
-      if (request.method === "DELETE") {
+      if (request.path === walletControlResources.cancellation.path(operationId)) {
         cancellationEntered.resolve(undefined);
-        return successResponse(200, { operation: cancelled });
+        return successResponse(200, cancelled);
+      }
+      if (request.path === walletControlResources.operation.path(operationId)) {
+        return successResponse(200, awaiting);
       }
       throw new Error("confirmation must not be dispatched");
     });
@@ -1383,9 +1584,10 @@ describe("wallet CLI", () => {
 
     expect(await running).toBe(0);
     expect(runtime.requests.map(({ method, path }) => ({ method, path }))).toEqual([
-      { method: "POST", path: walletControlRoutes.operations },
-      { method: "GET", path: walletControlRoutes.connection },
-      { method: "DELETE", path: walletControlRoutes.operation(operationId) },
+      { method: "POST", path: walletControlResources.operations.path },
+      { method: "GET", path: walletControlResources.connection.path },
+      { method: "GET", path: walletControlResources.operation.path(operationId) },
+      { method: "POST", path: walletControlResources.cancellation.path(operationId) },
     ]);
     expect(terminal.prompts).toEqual([]);
   });
@@ -1399,9 +1601,12 @@ describe("wallet CLI", () => {
     });
     const cancelled = operation({ kind: "disconnect", state: "cancelled", result: null });
     const runtime = new FakeRuntime((request) => {
-      if (request.path === walletControlRoutes.operations) return successResponse(200, operationStartResponse(awaiting));
-      if (request.path === walletControlRoutes.connection) return successResponse(200, connection);
-      if (request.method === "DELETE") return successResponse(200, { operation: cancelled });
+      if (request.path === walletControlResources.operations.path) return successResponse(200, operationStartResponse(awaiting));
+      if (request.path === walletControlResources.connection.path) return successResponse(200, connection);
+      if (request.path === walletControlResources.cancellation.path(operationId)) return successResponse(200, cancelled);
+      if (request.path === walletControlResources.operation.path(operationId)) {
+        return successResponse(200, awaiting);
+      }
       throw new Error("confirmation must not be dispatched");
     });
     const processHost = fakeProcessHost();
@@ -1418,13 +1623,14 @@ describe("wallet CLI", () => {
       createOperationId: () => operationId,
       createRuntime: async () => runtime,
       terminal,
+      settleOutput: terminal.outputOwner.settle,
       waitForPoll: async () => undefined,
-      terminateProcess: () => undefined,
     })).toBe(0);
     expect(runtime.requests.map(({ method, path }) => ({ method, path }))).toEqual([
-      { method: "POST", path: walletControlRoutes.operations },
-      { method: "GET", path: walletControlRoutes.connection },
-      { method: "DELETE", path: walletControlRoutes.operation(operationId) },
+      { method: "POST", path: walletControlResources.operations.path },
+      { method: "GET", path: walletControlResources.connection.path },
+      { method: "GET", path: walletControlResources.operation.path(operationId) },
+      { method: "POST", path: walletControlResources.cancellation.path(operationId) },
     ]);
   });
 
@@ -1440,13 +1646,16 @@ describe("wallet CLI", () => {
     const cancellationEntered = deferred<void>();
     const terminal = fakeTerminal();
     const runtime = new FakeRuntime((request) => {
-      if (request.method === "POST") {
+      if (request.path === walletControlResources.operations.path) {
         creationEntered.resolve(undefined);
         return creation.promise;
       }
-      if (request.method === "DELETE") {
+      if (request.path === walletControlResources.cancellation.path(operationId)) {
         cancellationEntered.resolve(undefined);
-        return successResponse(200, { operation: cancelled });
+        return successResponse(200, cancelled);
+      }
+      if (request.path === walletControlResources.operation.path(operationId)) {
+        return successResponse(200, awaiting);
       }
       throw new Error("operation observation must not run");
     });
@@ -1460,8 +1669,9 @@ describe("wallet CLI", () => {
 
     expect(await running).toBe(0);
     expect(runtime.requests.map(({ method, path }) => ({ method, path }))).toEqual([
-      { method: "POST", path: walletControlRoutes.operations },
-      { method: "DELETE", path: walletControlRoutes.operation(operationId) },
+      { method: "POST", path: walletControlResources.operations.path },
+      { method: "GET", path: walletControlResources.operation.path(operationId) },
+      { method: "POST", path: walletControlResources.cancellation.path(operationId) },
     ]);
   });
 
@@ -1473,10 +1683,10 @@ describe("wallet CLI", () => {
       result: null,
     });
     const runtime = new FakeRuntime((request) => {
-      if (request.path === walletControlRoutes.operations) {
+      if (request.path === walletControlResources.operations.path) {
         return successResponse(200, operationStartResponse(awaiting));
       }
-      if (request.path === walletControlRoutes.connection) {
+      if (request.path === walletControlResources.connection.path) {
         return successResponse(200, connection);
       }
       if (request.path.endsWith("/confirmation")) return failureResponse("state_conflict");
@@ -1488,11 +1698,11 @@ describe("wallet CLI", () => {
       ["wallet", "disconnect"],
       dependencies(runtime, terminal),
     )).toBe(5);
-    expect(runtime.requests.some(({ method }) => method === "DELETE")).toBe(false);
+    expect(runtime.requests.some(({ path }) => path === walletControlResources.cancellation.path(operationId))).toBe(false);
     expect(requestWithoutSignal(runtime.requests.at(-1)!)).toEqual({
       requestClass: "local_control",
       method: "POST",
-      path: walletControlRoutes.confirmation(operationId),
+      path: walletControlResources.confirmation.path(operationId),
       body: { connectionRevision: "4" },
     });
   });
@@ -1509,23 +1719,39 @@ describe("wallet CLI", () => {
     expect(disconnectRuntime.requests.map(requestWithoutSignal)).toEqual([{
       requestClass: "local_control",
       method: "POST",
-      path: walletControlRoutes.operations,
+      path: walletControlResources.operations.path,
       body: walletStartBody("disconnect"),
     }]);
     expect(disconnectTerminal.output.join("")).toContain("already_disconnected");
 
+    const awaitingCancellation = operation({
+      kind: "connect",
+      state: "awaiting_wallet_approval",
+      result: null,
+    });
     const cancelled = operation({ kind: "connect", state: "cancelled", result: null });
-    const cancelRuntime = new FakeRuntime(() => successResponse(200, { operation: cancelled }));
+    const cancelRuntime = new FakeRuntime((request) => successResponse(
+      200,
+      request.path === walletControlResources.cancellation.path(operationId) ? cancelled : awaitingCancellation,
+    ));
     const cancelTerminal = fakeTerminal();
     expect(await runCli(
       ["wallet", "cancel", operationId],
       dependencies(cancelRuntime, cancelTerminal),
     )).toBe(0);
-    expect(cancelRuntime.requests.map(requestWithoutSignal)).toEqual([{
-      requestClass: "local_control",
-      method: "DELETE",
-      path: walletControlRoutes.operation(operationId),
-    }]);
+    expect(cancelRuntime.requests.map(requestWithoutSignal)).toEqual([
+      {
+        requestClass: "local_control",
+        method: "GET",
+        path: walletControlResources.operation.path(operationId),
+      },
+      {
+        requestClass: "local_control",
+        method: "POST",
+        path: walletControlResources.cancellation.path(operationId),
+        body: { connectionRevision: "4" },
+      },
+    ]);
   });
 
   it("reports exact current and minimum dimensions and waits for explicit interruption", async () => {
@@ -1535,9 +1761,13 @@ describe("wallet CLI", () => {
       result: null,
     });
     const cancelled = operation({ kind: "connect", state: "cancelled", result: null });
-    const runtime = new FakeRuntime((request) => request.method === "POST"
-      ? successResponse(200, operationStartResponse(awaiting, qr))
-      : successResponse(200, { operation: cancelled }));
+    const runtime = new FakeRuntime((request) => {
+      if (request.path === walletControlResources.operations.path) return successResponse(200, operationStartResponse(awaiting));
+      if (request.path === walletControlResources.presentation.path(operationId)) {
+        return successResponse(200, operationPresentation(awaiting, qr));
+      }
+      return successResponse(200, request.path === walletControlResources.cancellation.path(operationId) ? cancelled : awaiting);
+    });
     const events: string[] = [];
     let tty!: FakeTerminalResult;
     tty = fakeTerminal({
@@ -1552,8 +1782,9 @@ describe("wallet CLI", () => {
     expect(await runCli(["wallet", "connect"], dependencies(runtime, tty))).toBe(0);
     expect(requestWithoutSignal(runtime.requests.at(-1)!)).toEqual({
       requestClass: "local_control",
-      method: "DELETE",
-      path: walletControlRoutes.operation(operationId),
+      method: "POST",
+      path: walletControlResources.cancellation.path(operationId),
+      body: { connectionRevision: "4" },
     });
     expect(events[0]).toBe("dimensions");
     expect(tty.output.join("")).toContain("Current terminal dimensions: 29 columns x 15 rows");
@@ -1576,9 +1807,12 @@ describe("wallet CLI", () => {
     });
     let reads = 0;
     const runtime = new FakeRuntime((request) => {
-      if (request.method === "POST") return successResponse(200, operationStartResponse(awaiting, qr));
+      if (request.path === walletControlResources.operations.path) return successResponse(200, operationStartResponse(awaiting));
       reads += 1;
-      return successResponse(200, { operation: reads === 1 ? awaiting : completed, ...(reads === 1 ? { qr } : {}) });
+      return successResponse(200, operationPresentation(
+        reads < 3 ? awaiting : completed,
+        reads < 3 ? qr : undefined,
+      ));
     });
     const tty = fakeTerminal({ columns: 29, rows: 15 });
     let polls = 0;
@@ -1587,8 +1821,10 @@ describe("wallet CLI", () => {
       polls += 1;
       if (polls === 1) tty.setDimensions(30, 15);
     }))).toBe(0);
-    expect(runtime.requests.map(({ method }) => method)).toEqual(["POST", "GET", "GET", "POST"]);
-    expect(runtime.requests.some(({ method }) => method === "DELETE")).toBe(false);
+    expect(runtime.requests.map(({ method }) => method)).toEqual([
+      "POST", "GET", "GET", "GET", "POST",
+    ]);
+    expect(runtime.requests.some(({ path }) => path === walletControlResources.cancellation.path(operationId))).toBe(false);
     expect(tty.output.filter((value) => value.includes("Current terminal dimensions"))).toHaveLength(1);
     expect(tty.output.some((value) => value.includes("\u001b[47m\u001b[30m"))).toBe(true);
     expect(tty.output.some((value) => value.includes("\u001b[?1049l"))).toBe(true);
@@ -1608,9 +1844,12 @@ describe("wallet CLI", () => {
     });
     let reads = 0;
     const runtime = new FakeRuntime((request) => {
-      if (request.method === "POST") return successResponse(200, operationStartResponse(awaiting, qr));
+      if (request.path === walletControlResources.operations.path) return successResponse(200, operationStartResponse(awaiting));
       reads += 1;
-      return successResponse(200, reads < 4 ? { operation: awaiting, qr } : { operation: completed });
+      return successResponse(200, operationPresentation(
+        reads < 5 ? awaiting : completed,
+        reads < 5 ? qr : undefined,
+      ));
     });
     const tty = fakeTerminal({ columns: 29, rows: 14 });
     let polls = 0;
@@ -1621,10 +1860,10 @@ describe("wallet CLI", () => {
       if (polls === 2) tty.setDimensions(29, 14);
     }))).toBe(0);
 
-    expect(runtime.requests.some(({ method }) => method === "DELETE")).toBe(false);
+    expect(runtime.requests.some(({ path }) => path === walletControlResources.cancellation.path(operationId))).toBe(false);
     expect(new Set(runtime.requests.map(({ path }) => path))).toEqual(new Set([
-      walletControlRoutes.operations,
-      walletControlRoutes.operation(operationId),
+      walletControlResources.operations.path,
+      walletControlResources.presentation.path(operationId),
       accountAssetControlRoutes.queries,
     ]));
     expect(tty.events.filter((event) => event === "qr_show")).toHaveLength(2);
@@ -1641,9 +1880,13 @@ describe("wallet CLI", () => {
       result: null,
     });
     const cancelled = operation({ kind: "connect", state: "cancelled", result: null });
-    const runtime = new FakeRuntime((request) => request.method === "POST"
-      ? successResponse(200, operationStartResponse(awaiting, qr))
-      : successResponse(200, { operation: cancelled }));
+    const runtime = new FakeRuntime((request) => {
+      if (request.path === walletControlResources.operations.path) return successResponse(200, operationStartResponse(awaiting));
+      if (request.path === walletControlResources.presentation.path(operationId)) {
+        return successResponse(200, operationPresentation(awaiting, qr));
+      }
+      return successResponse(200, request.path === walletControlResources.cancellation.path(operationId) ? cancelled : awaiting);
+    });
     let tty!: FakeTerminalResult;
     tty = fakeTerminal({
       columns: undefined,
@@ -1672,9 +1915,12 @@ describe("wallet CLI", () => {
     });
     let reads = 0;
     const runtime = new FakeRuntime((request) => {
-      if (request.method === "POST") return successResponse(200, operationStartResponse(awaiting, qr));
+      if (request.path === walletControlResources.operations.path) return successResponse(200, operationStartResponse(awaiting));
       reads += 1;
-      return successResponse(200, { operation: reads < 12 ? awaiting : completed, ...(reads < 12 ? { qr } : {}) });
+      return successResponse(200, operationPresentation(
+        reads < 12 ? awaiting : completed,
+        reads < 12 ? qr : undefined,
+      ));
     });
     const terminal = fakeTerminal();
     const listenerCounts: number[] = [];
@@ -1689,9 +1935,8 @@ describe("wallet CLI", () => {
           resolvePoll();
         });
       }),
-      terminateProcess: () => undefined,
     })).toBe(0);
-    expect(listenerCounts).toHaveLength(12);
+    expect(listenerCounts).toHaveLength(11);
     expect(new Set(listenerCounts)).toEqual(new Set([1]));
     expect(getEventListeners(terminal.terminal.interruptSignal, "abort")).toEqual([]);
   });
@@ -1705,9 +1950,11 @@ describe("wallet CLI", () => {
     const cancelled = operation({ kind: "connect", state: "cancelled", result: null });
     const terminal = fakeTerminal();
     const runtime = new FakeRuntime((request) => {
-      if (request.method === "POST") return successResponse(200, operationStartResponse(awaiting, qr));
-      if (request.method === "DELETE") return successResponse(200, { operation: cancelled });
-      throw new Error("operation observation must not be dispatched");
+      if (request.path === walletControlResources.operations.path) return successResponse(200, operationStartResponse(awaiting));
+      if (request.path === walletControlResources.presentation.path(operationId)) {
+        return successResponse(200, operationPresentation(awaiting, qr));
+      }
+      return successResponse(200, request.path === walletControlResources.cancellation.path(operationId) ? cancelled : awaiting);
     });
 
     expect(await runCli(["wallet", "connect"], {
@@ -1718,9 +1965,13 @@ describe("wallet CLI", () => {
         resolvePoll();
         queueMicrotask(() => { terminal.resolveInterrupt(); });
       }),
-      terminateProcess: () => undefined,
     })).toBe(0);
-    expect(runtime.requests.map(({ method }) => method)).toEqual(["POST", "DELETE"]);
+    expect(runtime.requests.map(({ method, path }) => ({ method, path }))).toEqual([
+      { method: "POST", path: walletControlResources.operations.path },
+      { method: "GET", path: walletControlResources.presentation.path(operationId) },
+      { method: "GET", path: walletControlResources.operation.path(operationId) },
+      { method: "POST", path: walletControlResources.cancellation.path(operationId) },
+    ]);
   });
 
   it("starts exact cancellation while an operation observation is still pending", async () => {
@@ -1735,14 +1986,15 @@ describe("wallet CLI", () => {
     const cancellationEntered = deferred<void>();
     const terminal = fakeTerminal();
     const runtime = new FakeRuntime((request) => {
-      if (request.method === "POST") return successResponse(200, operationStartResponse(awaiting, qr));
-      if (request.method === "GET") {
+      if (request.path === walletControlResources.operations.path) return successResponse(200, operationStartResponse(awaiting));
+      if (request.path === walletControlResources.presentation.path(operationId)) {
         observationEntered.resolve(undefined);
         return observation.promise;
       }
-      if (request.method === "DELETE") {
+      if (request.method === "GET") return successResponse(200, awaiting);
+      if (request.path === walletControlResources.cancellation.path(operationId)) {
         cancellationEntered.resolve(undefined);
-        return successResponse(200, { operation: cancelled });
+        return successResponse(200, cancelled);
       }
       throw new Error("unexpected operation request");
     });
@@ -1751,13 +2003,14 @@ describe("wallet CLI", () => {
     await observationEntered.promise;
     terminal.resolveInterrupt();
     await cancellationEntered.promise;
-    observation.resolve(successResponse(200, { operation: awaiting, qr }));
+    observation.resolve(successResponse(200, operationPresentation(awaiting, qr)));
 
     expect(await running).toBe(0);
     expect(runtime.requests.map(({ method, path }) => ({ method, path }))).toEqual([
-      { method: "POST", path: walletControlRoutes.operations },
-      { method: "GET", path: walletControlRoutes.operation(operationId) },
-      { method: "DELETE", path: walletControlRoutes.operation(operationId) },
+      { method: "POST", path: walletControlResources.operations.path },
+      { method: "GET", path: walletControlResources.presentation.path(operationId) },
+      { method: "GET", path: walletControlResources.operation.path(operationId) },
+      { method: "POST", path: walletControlResources.cancellation.path(operationId) },
     ]);
   });
 
@@ -1770,10 +2023,12 @@ describe("wallet CLI", () => {
     const cancelled = operation({ kind: "connect", state: "cancelled", result: null });
     const events: string[] = [];
     const runtime = new FakeRuntime((request) => {
-      events.push(request.method === "DELETE" ? "cancel" : request.method.toLowerCase());
-      return request.method === "POST"
-        ? successResponse(200, operationStartResponse(awaiting, qr))
-        : successResponse(200, { operation: cancelled });
+      events.push(request.path === walletControlResources.cancellation.path(operationId) ? "cancel" : request.method.toLowerCase());
+      if (request.path === walletControlResources.operations.path) return successResponse(200, operationStartResponse(awaiting));
+      if (request.path === walletControlResources.presentation.path(operationId)) {
+        return successResponse(200, operationPresentation(awaiting, qr));
+      }
+      return successResponse(200, request.path === walletControlResources.cancellation.path(operationId) ? cancelled : awaiting);
     });
     runtime.onOwnerSessionOpen = () => events.push("session-open");
     let tty!: FakeTerminalResult;
@@ -1787,8 +2042,8 @@ describe("wallet CLI", () => {
     expect(await runCli(["wallet", "connect"], dependencies(runtime, tty))).toBe(0);
     expect(events.lastIndexOf("session-open")).toBeGreaterThan(events.indexOf("output"));
     expect(events.indexOf("clear")).toBeGreaterThan(events.lastIndexOf("session-open"));
-    expect(runtime.requests.some((request) => request.method === "DELETE" &&
-      request.path === walletControlRoutes.operation(operationId))).toBe(true);
+    expect(runtime.requests.some((request) =>
+      request.path === walletControlResources.cancellation.path(operationId))).toBe(true);
   });
 
   it("settles exact cancellation even when the first terminal restoration write fails", async () => {
@@ -1797,9 +2052,14 @@ describe("wallet CLI", () => {
       state: "awaiting_wallet_approval",
       result: null,
     });
-    const runtime = new FakeRuntime((request) => request.method === "POST"
-      ? successResponse(200, operationStartResponse(awaiting, qr))
-      : failureResponse("runtime_state_unavailable"));
+    const runtime = new FakeRuntime((request) => {
+      if (request.path === walletControlResources.operations.path) return successResponse(200, operationStartResponse(awaiting));
+      if (request.path === walletControlResources.presentation.path(operationId)) {
+        return successResponse(200, operationPresentation(awaiting, qr));
+      }
+      if (request.method === "GET") return successResponse(200, awaiting);
+      return failureResponse("runtime_state_unavailable");
+    });
     let terminal!: FakeTerminalResult;
     terminal = fakeTerminal({
       hideQrFailures: 1,
@@ -1810,8 +2070,10 @@ describe("wallet CLI", () => {
 
     expect(await runCli(["wallet", "connect"], dependencies(runtime, terminal))).toBe(7);
     expect(runtime.requests.map(({ method, path }) => ({ method, path }))).toEqual([
-      { method: "POST", path: walletControlRoutes.operations },
-      { method: "DELETE", path: walletControlRoutes.operation(operationId) },
+      { method: "POST", path: walletControlResources.operations.path },
+      { method: "GET", path: walletControlResources.presentation.path(operationId) },
+      { method: "GET", path: walletControlResources.operation.path(operationId) },
+      { method: "POST", path: walletControlResources.cancellation.path(operationId) },
     ]);
     expect(terminal.events).toContain("qr_hide_failure");
     expect(terminal.events).toContain("qr_hide");
@@ -1831,13 +2093,19 @@ describe("wallet CLI", () => {
       state: "completed",
       result: { outcome: "connected", connection: connected },
     });
-    const runtime = new FakeRuntime((request) => request.method === "POST"
-      ? successResponse(200, operationStartResponse(awaiting, qr))
-      : successResponse(200, { operation: completed }));
+    let presentationReads = 0;
+    const runtime = new FakeRuntime((request) => {
+      if (request.path === walletControlResources.operations.path) return successResponse(200, operationStartResponse(awaiting));
+      presentationReads += 1;
+      return successResponse(200, operationPresentation(
+        presentationReads === 1 ? awaiting : completed,
+        presentationReads === 1 ? qr : undefined,
+      ));
+    });
     const terminal = fakeTerminal({ hideQrFailures: 1 });
 
     expect(await runCli(["wallet", "connect"], dependencies(runtime, terminal))).toBe(0);
-    expect(runtime.requests.map(({ method }) => method)).toEqual(["POST", "GET", "POST"]);
+    expect(runtime.requests.map(({ method }) => method)).toEqual(["POST", "GET", "GET", "POST"]);
     expect(terminal.events).toContain("qr_hide_failure");
     expect(terminal.events).toContain("qr_hide");
     expect(terminal.output.join("")).toContain(": completed");
@@ -1853,10 +2121,13 @@ describe("wallet CLI", () => {
       });
       const cancelled = operation({ kind: "connect", state: "cancelled", result: null });
       const runtime = new FakeRuntime((request) => {
-        if (request.method === "POST") return successResponse(200, operationStartResponse(awaiting, qr));
-        if (request.method === "DELETE") return successResponse(200, { operation: cancelled });
+        if (request.path === walletControlResources.operations.path) return successResponse(200, operationStartResponse(awaiting));
+        if (request.path === walletControlResources.cancellation.path(operationId)) return successResponse(200, cancelled);
+        if (request.path === walletControlResources.operation.path(operationId)) {
+          return successResponse(200, awaiting);
+        }
         if (failurePoint === "observation") return failureResponse("runtime_state_unavailable");
-        throw new Error("operation observation must not run");
+        return successResponse(200, operationPresentation(awaiting, qr));
       });
       const terminal = fakeTerminal({
         ...(failurePoint === "presentation" ? { showQrFailures: 1 } : {}),
@@ -1869,17 +2140,75 @@ describe("wallet CLI", () => {
         waitForPoll: failurePoint === "poll"
           ? async () => { throw new Error("secret polling failure"); }
           : async () => undefined,
-        terminateProcess: () => undefined,
       });
 
-      expect(exitCode).toBe(failurePoint === "observation" ? 7 : 1);
-      expect(runtime.requests.filter(({ method }) => method === "DELETE")
+      expect(exitCode).toBe(0);
+      expect(runtime.requests.filter(({ path }) => path === walletControlResources.cancellation.path(operationId))
         .map(requestWithoutSignal)).toEqual([{
         requestClass: "local_control",
-        method: "DELETE",
-        path: walletControlRoutes.operation(operationId),
+        method: "POST",
+        path: walletControlResources.cancellation.path(operationId),
+        body: { connectionRevision: "4" },
       }]);
+      expect(terminal.output.join("")).toContain(": cancelled");
+      expect(terminal.errors).toEqual([]);
     }
+  });
+
+  it("preserves cancellation delivery uncertainty after a presentation failure", async () => {
+    const awaiting = operation({
+      kind: "connect",
+      state: "awaiting_wallet_approval",
+      result: null,
+    });
+    let cancellationSent = false;
+    const runtime = new FakeRuntime((request) => {
+      if (request.path === walletControlResources.operations.path) return successResponse(200, operationStartResponse(awaiting));
+      if (request.path === walletControlResources.cancellation.path(operationId)) {
+        cancellationSent = true;
+        throw new Error("response lost after cancellation send");
+      }
+      if (request.path === walletControlResources.operation.path(operationId)) {
+        if (cancellationSent) throw new Error("recovery response unavailable");
+        return successResponse(200, awaiting);
+      }
+      return successResponse(200, operationPresentation(awaiting, qr));
+    });
+    const terminal = fakeTerminal({ showQrFailures: 1 });
+
+    expect(await runCli(["wallet", "connect"], dependencies(runtime, terminal))).toBe(8);
+    expect(terminal.errors.join("")).toContain(
+      `Delivery unknown for cancel operation ${operationId}.`,
+    );
+    expect(terminal.errors.join("")).toContain("Do not repeat it.");
+  });
+
+  it("preserves an exact failed terminal reached during cancellation cleanup", async () => {
+    const awaiting = operation({
+      kind: "connect",
+      state: "awaiting_wallet_approval",
+      result: null,
+    });
+    const failed = operation({
+      kind: "connect",
+      state: "failed",
+      result: null,
+      failure: createWalletFailure("walletconnect_unavailable"),
+    });
+    const runtime = new FakeRuntime((request) => {
+      if (request.path === walletControlResources.operations.path) return successResponse(200, operationStartResponse(awaiting));
+      if (request.path === walletControlResources.cancellation.path(operationId)) return successResponse(200, failed);
+      if (request.path === walletControlResources.operation.path(operationId)) {
+        return successResponse(200, awaiting);
+      }
+      return successResponse(200, operationPresentation(awaiting, qr));
+    });
+    const terminal = fakeTerminal({ showQrFailures: 1 });
+
+    expect(await runCli(["wallet", "connect"], dependencies(runtime, terminal))).toBe(4);
+    expect(terminal.errors).toEqual([
+      "walletconnect_unavailable: WalletConnect could not complete the wallet action.\n",
+    ]);
   });
 
   it("reports an authoritative completion when presentation cleanup loses the state race", async () => {
@@ -1894,14 +2223,17 @@ describe("wallet CLI", () => {
       result: { outcome: "connected", connection: connected },
     });
     const runtime = new FakeRuntime((request) => {
-      if (request.method === "POST") return successResponse(200, operationStartResponse(awaiting, qr));
-      if (request.method === "DELETE") return failureResponse("state_conflict");
-      return successResponse(200, { operation: completed });
+      if (request.path === walletControlResources.operations.path) return successResponse(200, operationStartResponse(awaiting));
+      if (request.path === walletControlResources.presentation.path(operationId)) {
+        return successResponse(200, operationPresentation(awaiting, qr));
+      }
+      if (request.path === walletControlResources.cancellation.path(operationId)) throw new Error("Terminal completion must not be cancelled.");
+      return successResponse(200, completed);
     });
     const terminal = fakeTerminal({ showQrFailures: 1 });
 
     expect(await runCli(["wallet", "connect"], dependencies(runtime, terminal))).toBe(0);
-    expect(runtime.requests.map(({ method }) => method)).toEqual(["POST", "DELETE", "GET", "POST"]);
+    expect(runtime.requests.map(({ method }) => method)).toEqual(["POST", "GET", "GET", "POST"]);
     expect(terminal.output.join("")).toContain(": completed");
     expect(terminal.errors).toEqual([]);
   });
@@ -1913,20 +2245,21 @@ describe("wallet CLI", () => {
       result: null,
     });
     const expired = operation({ kind: "connect", state: "expired", result: null });
-    let operationReads = 0;
     const runtime = new FakeRuntime((request) => {
-      if (request.method === "POST") return successResponse(200, operationStartResponse(awaiting, qr));
-      if (request.method === "DELETE") return failureResponse("state_conflict");
-      operationReads += 1;
-      return operationReads === 1
-        ? failureResponse("runtime_state_unavailable")
-        : successResponse(200, { operation: expired });
+      if (request.path === walletControlResources.operations.path) return successResponse(200, operationStartResponse(awaiting));
+      if (request.path === walletControlResources.presentation.path(operationId)) {
+        return failureResponse("runtime_state_unavailable");
+      }
+      if (request.path === walletControlResources.cancellation.path(operationId)) throw new Error("Terminal expiry must not be cancelled.");
+      return successResponse(200, expired);
     });
     const terminal = fakeTerminal();
 
     expect(await runCli(["wallet", "connect"], dependencies(runtime, terminal))).toBe(4);
-    expect(runtime.requests.map(({ method }) => method)).toEqual(["POST", "GET", "DELETE", "GET"]);
-    expect(terminal.errors.join("")).toBe("wallet_timeout: The wallet request timed out.\n");
+    expect(runtime.requests.map(({ method }) => method)).toEqual(["POST", "GET", "GET"]);
+    expect(terminal.errors.join("")).toBe(
+      "wallet_timeout: The wallet action exceeded Little John's local action deadline.\n",
+    );
   });
 
   it("derives a rejected connection command from the canonical terminal-state failure mapping", async () => {
@@ -1935,10 +2268,15 @@ describe("wallet CLI", () => {
       state: "awaiting_wallet_approval",
       result: null,
     });
-    const rejected = operation({ kind: "connect", state: "rejected", result: null });
-    const runtime = new FakeRuntime((request) => request.method === "POST"
-      ? successResponse(200, operationStartResponse(awaiting, qr))
-      : successResponse(200, { operation: rejected }));
+    const rejected = operation({
+      kind: "connect",
+      state: "rejected",
+      result: null,
+      peerRefusalCode: 5000,
+    });
+    const runtime = new FakeRuntime((request) => request.path === walletControlResources.operations.path
+      ? successResponse(200, operationStartResponse(awaiting))
+      : successResponse(200, operationPresentation(rejected)));
     const terminal = fakeTerminal();
 
     expect(await runCli(["wallet", "connect"], dependencies(runtime, terminal))).toBe(5);
@@ -1966,10 +2304,13 @@ describe("wallet CLI", () => {
     });
     let reads = 0;
     const runtime = new FakeRuntime((request) => {
-      if (request.method === "POST") return successResponse(200, operationStartResponse(awaiting, qr));
-      if (request.method === "DELETE") return failureResponse("state_conflict");
+      if (request.path === walletControlResources.operations.path) return successResponse(200, operationStartResponse(awaiting));
+      if (request.path === walletControlResources.presentation.path(operationId)) {
+        return successResponse(200, operationPresentation(awaiting, qr));
+      }
+      if (request.path === walletControlResources.cancellation.path(operationId)) return failureResponse("state_conflict");
       reads += 1;
-      return successResponse(200, { operation: reads === 1 ? validating : completed });
+      return successResponse(200, reads === 1 ? validating : completed);
     });
     let tty!: FakeTerminalResult;
     tty = fakeTerminal({
@@ -1979,7 +2320,9 @@ describe("wallet CLI", () => {
     });
 
     expect(await runCli(["wallet", "connect"], dependencies(runtime, tty))).toBe(0);
-    expect(runtime.requests.map(({ method }) => method)).toEqual(["POST", "DELETE", "GET", "GET"]);
+    expect(runtime.requests.map(({ method }) => method)).toEqual([
+      "POST", "GET", "GET", "POST", "GET",
+    ]);
     expect(tty.output.join("")).toContain(": completed");
     expect(runtime.stopCount).toBe(1);
   });
@@ -2008,15 +2351,13 @@ describe("wallet CLI", () => {
       new Error("secret runtime stop failure"),
     );
     const terminal = fakeTerminal({ writeErrorError: new Error("terminal report failed") });
-    const forcedExitCodes: number[] = [];
 
     expect(await runCli([
       "wallet", "status",
-    ], dependencies(runtime, terminal, undefined, (exitCode) => { forcedExitCodes.push(exitCode); }))).toBe(1);
+    ], dependencies(runtime, terminal))).toBe(1);
     expect(runtime.stopCount).toBe(1);
     expect(terminal.disposed()).toBe(true);
     expect(terminal.errors).toEqual([]);
-    expect(forcedExitCodes).toEqual([1]);
   });
 
   it("retains the runtime handle and stops it when owner startup fails", async () => {

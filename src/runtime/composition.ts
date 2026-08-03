@@ -97,7 +97,7 @@ import { ProductDatabase } from "./database.js";
 import {
   FixedHttpOwner,
   type HttpOwnerApplication,
-  type HttpOwnerReleasePermit,
+  type HttpOwnerRootApplication,
   type RuntimeDispatchRequest,
   type RuntimeDispatchResponse,
 } from "./http-owner.js";
@@ -111,6 +111,12 @@ import {
   type RuntimeRouteRegistry,
 } from "./http-routing.js";
 import { normalizeRuntimeError, RuntimeOperationError } from "./errors.js";
+import {
+  isProcessTerminalRequiredError,
+  requireProcessTermination,
+  runtimeReleased,
+  type RuntimeShutdownOutcome,
+} from "./shutdown.js";
 import type { RuntimeOwnerSession } from "./owner-session.js";
 import {
   ensureOwnerOnlyDirectory,
@@ -518,13 +524,18 @@ export const composeOwnerApplicationStages = async <
   context: RuntimeApplicationContext,
   initialSupportManifest: InitialRuntimeSupportManifest,
   stages: OwnerApplicationStages<ActiveWallet, WalletOperations>,
-): Promise<HttpOwnerApplication> => {
+): Promise<HttpOwnerRootApplication> => {
   const applications = createResourceOwnershipScope();
   const cleanupRegistration = context.startupResources.register(applications);
+  const walletApplications = createResourceOwnershipScope();
+  const dependentApplications = createResourceOwnershipScope();
+  applications.resources.register(walletApplications);
+  applications.resources.register(dependentApplications);
   let currentRoutes = context.routes;
+  let walletApplication: WalletOwnerApplication<ActiveWallet, WalletOperations> | undefined;
   try {
     const walletRoutes = currentRoutes;
-    const walletResult = await runApplicationStage(applications, (startupResources) => stages[0]({
+    const walletResult = await runApplicationStage(walletApplications, (startupResources) => stages[0]({
       routes: walletRoutes,
       signal: context.signal,
       startupResources,
@@ -555,6 +566,7 @@ export const composeOwnerApplicationStages = async <
       });
     });
     const wallet = walletResult.application;
+    walletApplication = wallet;
     const walletHandoff = walletResult.handoff;
     const walletOperations = walletResult.walletOperations;
     currentRoutes = wallet.routes;
@@ -565,7 +577,7 @@ export const composeOwnerApplicationStages = async <
     let chainHandoff: ChainOwnerHandoff | undefined;
     if (chainStage !== undefined) {
       const chainRoutes = currentRoutes;
-      const chainResult = await runApplicationStage(applications, (startupResources) => chainStage({
+      const chainResult = await runApplicationStage(dependentApplications, (startupResources) => chainStage({
         routes: chainRoutes,
         signal: context.signal,
         startupResources,
@@ -647,7 +659,7 @@ export const composeOwnerApplicationStages = async <
       }
       const protocolRoutes = currentRoutes;
       const protocolResult = await runApplicationStage(
-        applications,
+        dependentApplications,
         (startupResources) => protocolStage(
           { routes: protocolRoutes, signal: context.signal, startupResources },
           walletHandoff,
@@ -684,7 +696,7 @@ export const composeOwnerApplicationStages = async <
       }
       const tokenCatalogRoutes = currentRoutes;
       const tokenCatalogResult = await runApplicationStage(
-        applications,
+        dependentApplications,
         (startupResources) => tokenCatalogStage(
           { routes: tokenCatalogRoutes, signal: context.signal, startupResources },
           walletHandoff,
@@ -724,7 +736,7 @@ export const composeOwnerApplicationStages = async <
       ) throw new TypeError("Account asset dependencies are unavailable.");
       const accountAssetRoutes = currentRoutes;
       const accountAssetResult = await runApplicationStage(
-        applications,
+        dependentApplications,
         (startupResources) => accountAssetStage(
           { routes: accountAssetRoutes, signal: context.signal, startupResources },
           walletHandoff,
@@ -769,7 +781,7 @@ export const composeOwnerApplicationStages = async <
       ) throw new TypeError("Reference market dependencies are unavailable.");
       const referenceMarketRoutes = currentRoutes;
       const referenceMarketResult = await runApplicationStage(
-        applications,
+        dependentApplications,
         (startupResources) => referenceMarketStage(
           { routes: referenceMarketRoutes, signal: context.signal, startupResources },
           walletHandoff,
@@ -824,7 +836,7 @@ export const composeOwnerApplicationStages = async <
         readProtocolSupportExtension(protocolHandoff.supportExtension),
       );
       const interfaceApplication = await runApplicationStage(
-        applications,
+        dependentApplications,
         (startupResources) => interfaceStage(
           { routes: interfaceRoutes, signal: context.signal, startupResources },
           walletHandoff,
@@ -849,18 +861,65 @@ export const composeOwnerApplicationStages = async <
       currentRoutes = interfaceApplication.routes;
     }
     applications.seal();
+    let shutdownWork: Promise<RuntimeShutdownOutcome> | undefined;
+    const shutdown = (): Promise<RuntimeShutdownOutcome> => {
+      if (shutdownWork !== undefined) return shutdownWork;
+      shutdownWork = Promise.resolve().then(async () => {
+        let dependentFailure: unknown;
+        try { await dependentApplications.close(); }
+        catch (error) { dependentFailure = error; }
+        let outcome: RuntimeShutdownOutcome;
+        try { outcome = await wallet.shutdown(); }
+        catch (error) {
+          if (isProcessTerminalRequiredError(error)) {
+            throw requireProcessTermination(dependentFailure ?? error.primaryFailure ?? error);
+          }
+          throw error;
+        }
+        if (dependentFailure !== undefined) {
+          if (outcome.kind === "process_terminal") {
+            throw requireProcessTermination(dependentFailure);
+          }
+          throw dependentFailure;
+        }
+        if (outcome.kind === "released") {
+          await walletApplications.close();
+          await applications.close();
+          return runtimeReleased;
+        }
+        return outcome;
+      });
+      return shutdownWork;
+    };
     const application = Object.freeze({
       routes: currentRoutes,
-      close: () => applications.close(),
+      shutdown,
+      close: async (): Promise<void> => {
+        const outcome = await shutdown();
+        if (outcome.kind === "process_terminal") throw requireProcessTermination();
+      },
     });
     cleanupRegistration.transfer();
     return application;
   } catch (startupError) {
     applications.seal();
     try {
+      await dependentApplications.close();
+      if (walletApplication !== undefined) {
+        const outcome = await walletApplication.shutdown();
+        if (outcome.kind === "process_terminal") {
+          throw requireProcessTermination(startupError);
+        }
+      }
+      await walletApplications.close();
       await applications.close();
       cleanupRegistration.transfer();
     } catch (cleanupError) {
+      if (isProcessTerminalRequiredError(cleanupError)) {
+        throw cleanupError.primaryFailure === undefined
+          ? requireProcessTermination(startupError)
+          : cleanupError;
+      }
       throw new AggregateError(
         [startupError, cleanupError],
         "Application startup and cleanup failed.",
@@ -877,7 +936,7 @@ export class LocalRuntime {
   #databaseClosed = false;
   #stopRequested = false;
   #startPromise: Promise<void> | undefined;
-  #stopPromise: Promise<void> | undefined;
+  #stopPromise: Promise<RuntimeShutdownOutcome> | undefined;
 
   private constructor(
     database: ProductDatabase,
@@ -1176,20 +1235,20 @@ export class LocalRuntime {
       : owner.openOwnerSession(signal);
   }
 
-  stop(): Promise<void> {
+  stop(): Promise<RuntimeShutdownOutcome> {
     if (this.#stopPromise !== undefined) return this.#stopPromise;
-    let resolveTracked!: () => void;
+    let resolveTracked!: (outcome: RuntimeShutdownOutcome) => void;
     let rejectTracked!: (error: unknown) => void;
-    const tracked = new Promise<void>((resolve, reject) => {
+    const tracked = new Promise<RuntimeShutdownOutcome>((resolve, reject) => {
       resolveTracked = resolve;
       rejectTracked = reject;
     });
     this.#stopPromise = tracked;
     this.#stopRequested = true;
     void this.#stopInternal().then(
-      () => {
+      (outcome) => {
         if (this.#stopPromise === tracked) this.#stopPromise = undefined;
-        resolveTracked();
+        resolveTracked(outcome);
       },
       (error: unknown) => {
         if (this.#stopPromise === tracked) this.#stopPromise = undefined;
@@ -1199,18 +1258,25 @@ export class LocalRuntime {
     return tracked;
   }
 
-  async #stopInternal(): Promise<void> {
+  async #stopInternal(): Promise<RuntimeShutdownOutcome> {
     try {
       const owner = this.#httpOwner;
-      const permit: HttpOwnerReleasePermit | undefined = owner === undefined
+      const shutdown = owner === undefined
         ? undefined
         : await owner.closeApplication();
+      if (shutdown?.outcome.kind === "process_terminal") {
+        return shutdown.outcome;
+      }
       if (!this.#databaseClosed) {
         this.#database.close();
         this.#databaseClosed = true;
       }
-      if (owner !== undefined && permit !== undefined) await owner.releaseListener(permit);
+      if (owner !== undefined && shutdown !== undefined && "permit" in shutdown) {
+        await owner.releaseListener(shutdown.permit);
+      }
+      return runtimeReleased;
     } catch (error) {
+      if (isProcessTerminalRequiredError(error)) throw error;
       throw normalizeRuntimeError(error);
     }
   }

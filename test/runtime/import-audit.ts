@@ -79,7 +79,7 @@ export const runtimePackageSourceRoots = Object.freeze({
   "@uniswap/sdk-core": ["src/protocols/uniswap-v2/sdk.ts"],
   "@uniswap/v2-sdk": ["src/protocols/uniswap-v2/sdk.ts"],
   "@walletconnect/sign-client": ["src/wallet"],
-  "better-sqlite3": ["src/runtime"],
+  "better-sqlite3": ["src/runtime", "src/wallet/walletconnect-storage.ts"],
   "lightweight-charts": ["src/interfaces/web/lightweight-charts-adapter.tsx"],
   "lucide-react": ["src/interfaces"],
   qrcode: ["src/wallet"],
@@ -1139,10 +1139,11 @@ export const uniswapV2SdkLoadBoundaryViolations = (
   return violations.sort();
 };
 
-export const createProductSourceProgram = (
+const createProductSourceProgramWithResolution = (
   sourceFiles: readonly string[],
   overrides: ReadonlyMap<string, string> = new Map(),
   oldProgram?: ts.Program,
+  noResolve = false,
 ): ts.Program => {
   const configPath = resolve("tsconfig.json");
   const config = ts.readConfigFile(configPath, ts.sys.readFile);
@@ -1156,6 +1157,7 @@ export const createProductSourceProgram = (
     checkJs: true,
     jsx: ts.JsxEmit.Preserve,
     noEmit: true,
+    noResolve,
   };
   const normalizedSources = sourceFiles.map((file) => resolve(file));
   const normalizedOverrides = new Map(
@@ -1189,6 +1191,23 @@ export const createProductSourceProgram = (
     ...(oldProgram === undefined ? {} : { oldProgram }),
   });
 };
+
+export const createProductSourceProgram = (
+  sourceFiles: readonly string[],
+  overrides: ReadonlyMap<string, string> = new Map(),
+  oldProgram?: ts.Program,
+): ts.Program => createProductSourceProgramWithResolution(sourceFiles, overrides, oldProgram);
+
+export const createIsolatedProductSourceProgram = (
+  sourceFile: string,
+  source?: string,
+  oldProgram?: ts.Program,
+): ts.Program => createProductSourceProgramWithResolution(
+  [sourceFile],
+  source === undefined ? new Map() : new Map([[resolve(sourceFile), source]]),
+  oldProgram,
+  true,
+);
 
 export const inspectSourceFile = async (path: string): Promise<SourceAudit> =>
   inspectSource(await readFile(path, "utf8"), path);

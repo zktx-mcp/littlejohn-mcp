@@ -21,10 +21,14 @@ import {
   type RuntimeDispatchResponse,
 } from "../../src/runtime/index.js";
 import {
-  runCli,
+  runCli as runCliResult,
   type CliRuntimePort,
   type CliTerminalPort,
 } from "../../src/cli.js";
+import { runtimeReleased } from "../../src/runtime/shutdown.js";
+
+const runCli = async (...input: Parameters<typeof runCliResult>): Promise<number> =>
+  (await runCliResult(...input)).exitCode;
 import {
   uniswapV2FactoryAddress,
   uniswapV2QuoteInputSchema,
@@ -59,7 +63,7 @@ class FakeRuntime implements CliRuntimePort {
 
   constructor(response: RuntimeDispatchResponse) { this.#response = response; }
   async start(): Promise<void> { this.startCount += 1; }
-  async stop(): Promise<void> { this.stopCount += 1; }
+  async stop() { this.stopCount += 1; return runtimeReleased; }
   openOwnerSession(signal?: AbortSignal) { return openTestOwnerSession(this, signal); }
   async dispatchRuntimeRequest(request: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse> {
     this.requests.push(request);
@@ -422,7 +426,6 @@ describe("read CLI", () => {
       createRuntime: async () => runtime,
       terminal,
       waitForPoll: async () => undefined,
-      terminateProcess: () => undefined,
     })).toBe(0);
     expect(terminal.output).toEqual([`${canonicalJsonStringify(success)}\n`]);
     expect(terminal.errors).toEqual([]);

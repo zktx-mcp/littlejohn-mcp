@@ -42,10 +42,12 @@ const disconnected = Object.freeze({
 const operationBase = Object.freeze({
   operationId,
   connectionRevision,
-  expiresAt: "2099-12-31T23:59:59.000Z",
+  actionExpiresAt: "2099-12-31T23:59:59.000Z",
+  interactionInterface: "web",
   kind: "connect" as const,
   result: null,
   failure: null,
+  peerRefusalCode: null,
 });
 const awaitingApproval = parseWalletManagementOperation({
   ...operationBase,
@@ -161,7 +163,7 @@ afterEach(() => {
 });
 
 describe("wallet process owner", () => {
-  it("owns cancellation, terminal observation, notification, and cleanup", async () => {
+  it("preserves cancellation through notification presentation failure and cleanup", async () => {
     let currentReads = 0;
     const requests: string[] = [];
     const request = vi.fn<BrowserFetch>(async (path) => {
@@ -175,7 +177,9 @@ describe("wallet process owner", () => {
       }
       throw new Error(`Unexpected path: ${path}`);
     });
-    const onNotification = vi.fn<(notice: NotificationNotice) => void>();
+    const onNotification = vi.fn<(notice: NotificationNotice) => void>(() => {
+      throw new Error("notification presentation failed");
+    });
     const mounted = render(
       <Harness request={request} onNotification={onNotification} />,
     );

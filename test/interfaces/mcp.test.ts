@@ -77,7 +77,7 @@ import {
   walletErrorRegistry,
   walletInterfaceErrorMappings,
 } from "../../src/wallet/errors.js";
-import { walletControlRoutes } from "../../src/wallet/routes.js";
+import { walletControlResources } from "../../src/wallet/routes.js";
 import { openTestOwnerSession } from "./owner-session-harness.js";
 import { extendUniswapV2ProtocolHarnessManifest } from "../protocols/interface-harness.js";
 
@@ -106,9 +106,11 @@ const operation = (): WalletManagementOperation => parseWalletManagementOperatio
   kind: "connect",
   state: "awaiting_wallet_approval",
   connectionRevision: "5",
-  expiresAt: "2026-07-15T05:00:00.000Z",
+  actionExpiresAt: "2026-07-15T05:00:00.000Z",
+  interactionInterface: "web",
   result: null,
   failure: null,
+  peerRefusalCode: null,
 });
 
 const tokenOperationId = "A".repeat(43);
@@ -174,8 +176,8 @@ class FakeRuntime implements RuntimeDispatchPort {
   constructor(handler?: FakeRuntime["handler"]) {
     this.handler = handler ?? ((request) => Object.freeze({
       status: 200,
-      body: captureCanonicalJson(request.path === walletControlRoutes.operations
-        ? { result: { status: "operation_started", operation: operation() } }
+      body: captureCanonicalJson(request.path === walletControlResources.operations.path
+        ? { status: "operation_started", operation: operation() }
         : catalog),
     }));
   }
@@ -299,9 +301,13 @@ describe("MCP interface", () => {
     expect(cancel?.inputSchema).toMatchObject({
       type: "object",
       additionalProperties: false,
+      required: ["operationId", "connectionRevision"],
+    });
+    expect(getOperation?.inputSchema).toMatchObject({
+      type: "object",
+      additionalProperties: false,
       required: ["operationId"],
     });
-    expect(getOperation?.inputSchema).toEqual(cancel?.inputSchema);
     const connectTool = listed.tools.find((tool) => tool.name === "wallet_start_connection");
     const disconnectTool = listed.tools.find((tool) => tool.name === "wallet_start_disconnection");
     expect(connectTool?.inputSchema).toEqual(disconnectTool?.inputSchema);
@@ -512,7 +518,7 @@ describe("MCP interface", () => {
   it("uses one canonical operation identifier contract for reads and cancellations", async () => {
     const runtime = new FakeRuntime(() => ({
       status: 200,
-      body: captureCanonicalJson({ operation: operation() }),
+      body: captureCanonicalJson(operation()),
     }));
     const { client } = await connect(runtime);
 
@@ -522,7 +528,13 @@ describe("MCP interface", () => {
         Buffer.alloc(walletOperationIdByteLength + 1, 31).toString("base64url"),
         `${operationId}=`,
       ]) {
-        const result = await client.callTool({ name, arguments: { operationId: invalidOperationId } });
+        const result = await client.callTool({
+          name,
+          arguments: {
+            operationId: invalidOperationId,
+            ...(name === "wallet_cancel_operation" ? { connectionRevision: "5" } : {}),
+          },
+        });
         expect(result.isError).toBe(true);
       }
     }
@@ -534,7 +546,7 @@ describe("MCP interface", () => {
     });
     const cancelled = await client.callTool({
       name: "wallet_cancel_operation",
-      arguments: { operationId },
+      arguments: { operationId, connectionRevision: "5" },
     });
     expect(read.isError).not.toBe(true);
     expect(cancelled.isError).not.toBe(true);
@@ -542,13 +554,14 @@ describe("MCP interface", () => {
       {
         requestClass: "local_control",
         method: "GET",
-        path: walletControlRoutes.operation(operationId),
+        path: walletControlResources.operation.path(operationId),
         signal: expect.any(AbortSignal),
       },
       {
         requestClass: "local_control",
-        method: "DELETE",
-        path: walletControlRoutes.operation(operationId),
+        method: "POST",
+        path: walletControlResources.cancellation.path(operationId),
+        body: { connectionRevision: "5" },
         signal: expect.any(AbortSignal),
       },
     ]);
@@ -596,7 +609,7 @@ describe("MCP interface", () => {
     expect(runtime.requests).toEqual([expect.objectContaining({
       requestClass: "local_control",
       method: "POST",
-      path: walletControlRoutes.operations,
+      path: walletControlResources.operations.path,
       body: {
         control: { operationId, interactionInterface: "web" },
         request: { kind: "connect", connectionRevision: null },
@@ -611,12 +624,14 @@ describe("MCP interface", () => {
       kind: "disconnect",
       state: "awaiting_confirmation",
       connectionRevision: "6",
-      expiresAt: "2026-07-15T05:00:00.000Z",
+      actionExpiresAt: "2026-07-15T05:00:00.000Z",
+      interactionInterface: "web",
       result: null,
       failure: null,
+      peerRefusalCode: null,
     });
     const runtime = new FakeRuntime((request) => {
-      if (request.path !== walletControlRoutes.operations) throw new Error("Unexpected route.");
+      if (request.path !== walletControlResources.operations.path) throw new Error("Unexpected route.");
       const requestBody = typeof request.body === "object" && request.body !== null &&
         !Array.isArray(request.body) && typeof request.body["request"] === "object" &&
         request.body["request"] !== null && !Array.isArray(request.body["request"])
@@ -627,19 +642,15 @@ describe("MCP interface", () => {
         return {
           status: 200,
           body: captureCanonicalJson({
-            result: {
-              status: "current_connection",
-              connectionRevision: "6",
-              connection: connected,
-            },
+            status: "current_connection",
+            connectionRevision: "6",
+            connection: connected,
           }),
         };
       }
       return {
         status: 200,
-        body: captureCanonicalJson({
-          result: { status: "operation_started", operation: disconnection },
-        }),
+        body: captureCanonicalJson({ status: "operation_started", operation: disconnection }),
       };
     });
     const { client } = await connect(runtime);
@@ -676,7 +687,8 @@ describe("MCP interface", () => {
     const runtime = new FakeRuntime(() => ({
       status: 200,
       body: captureCanonicalJson({
-        result: { status: "operation_started", operation: operation() },
+        status: "operation_started",
+        operation: operation(),
         qr: { size: 21, rows: Array.from({ length: 21 }, () => secretRow) },
       }),
     }));
@@ -696,22 +708,18 @@ describe("MCP interface", () => {
     const otherOperationId = Buffer.alloc(walletOperationIdByteLength, 32).toString("base64url");
     const runtime = new FakeRuntime((request) => ({
       status: 200,
-      body: captureCanonicalJson(request.path === walletControlRoutes.operations
+      body: captureCanonicalJson(request.path === walletControlResources.operations.path
         ? {
-            result: {
-              status: "operation_started",
-              operation: {
-                ...operation(),
-                kind: "disconnect",
-                state: "awaiting_confirmation",
-              },
+            status: "operation_started",
+            operation: {
+              ...operation(),
+              kind: "disconnect",
+              state: "awaiting_confirmation",
             },
           }
         : {
-            operation: {
-              ...operation(),
-              operationId: otherOperationId,
-            },
+            ...operation(),
+            operationId: otherOperationId,
           }),
     }));
     const { client } = await connect(runtime);
@@ -721,7 +729,10 @@ describe("MCP interface", () => {
     expect(start.structuredContent).toMatchObject({ status: "delivery_unknown", action: "start" });
     const read = await client.callTool({ name: "wallet_get_operation", arguments: { operationId } });
     expect(read.structuredContent).toMatchObject({ ok: false, error: { code: "internal_error" } });
-    const cancel = await client.callTool({ name: "wallet_cancel_operation", arguments: { operationId } });
+    const cancel = await client.callTool({
+      name: "wallet_cancel_operation",
+      arguments: { operationId, connectionRevision: "5" },
+    });
     expect(cancel.isError).toBe(true);
     expect(cancel.structuredContent).toMatchObject({ status: "delivery_unknown", action: "cancel" });
   });
@@ -946,9 +957,9 @@ describe("MCP interface", () => {
       {
         name: walletInterfaceBindings.connect.mcp?.name,
         arguments: {},
-        operationPath: walletControlRoutes.operation(operationId),
-        startBody: { result: { status: "operation_started", operation: operation() } },
-        recoveryBody: { operation: operation() },
+        operationPath: walletControlResources.operation.path(operationId),
+        startBody: { status: "operation_started", operation: operation() },
+        recoveryBody: operation(),
       },
       {
         name: tokenCatalogInterfaceBindings.startAddition.mcp.name,
@@ -1007,9 +1018,9 @@ describe("MCP interface", () => {
       {
         name: "wallet_start_connection",
         arguments: {},
-        operationPath: walletControlRoutes.operation(operationId),
-        startBody: { result: { status: "operation_started", operation: operation() } },
-        recoveryBody: { operation: operation() },
+        operationPath: walletControlResources.operation.path(operationId),
+        startBody: { status: "operation_started", operation: operation() },
+        recoveryBody: operation(),
       },
       {
         name: tokenCatalogInterfaceBindings.startAddition.mcp.name,

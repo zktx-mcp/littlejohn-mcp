@@ -128,7 +128,7 @@ const createState = async (
     approvedMethods: ["eth_sendTransaction"],
     approvedEvents: ["accountsChanged", "chainChanged"],
     expiresAt: "2026-07-19T00:00:00.000Z",
-  }, parseUtcTimestamp(currentTime)), parseUtcTimestamp(currentTime));
+  }, parseUtcTimestamp(currentTime)), false, parseUtcTimestamp(currentTime));
   const clock = createCanonicalClock(() => currentTime);
   let sessionSource = createSessionSource(clock);
   let liveConnection = connection.connection;
@@ -202,17 +202,19 @@ const createState = async (
     replaceSessionSource: () => {
       sessionSource = createSessionSource(clock, `${"C".repeat(42)}A`);
     },
-    disconnectLive: () => { liveConnection = { status: "disconnected", reason: "deleted" }; },
+    disconnectLive: () => { liveConnection = { status: "disconnected", reason: "disconnected" }; },
     reconnectProjection: () => {
       const before = database.walletStore().read();
       const disconnected = database.walletStore().replace(
         before.revision,
         { status: "disconnected", reason: "disconnected" },
+        false,
         parseUtcTimestamp(currentTime),
       );
       const reconnected = database.walletStore().replace(
         disconnected.revision,
         connection.connection,
+        false,
         parseUtcTimestamp(currentTime),
       );
       liveConnection = reconnected.connection;

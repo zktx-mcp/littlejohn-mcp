@@ -15,6 +15,7 @@ import {
 } from "../../src/runtime/http-owner.js";
 import type { RuntimeApplicationContext } from "../../src/runtime/application-context.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
+import { runtimeReleased } from "../../src/runtime/shutdown.js";
 
 type WorkerCommand =
   | {
@@ -136,6 +137,7 @@ const applicationFactory = ({ routes }: RuntimeApplicationContext) => {
         };
       },
     }]),
+    shutdown: async () => runtimeReleased,
     close: () => undefined,
   });
 };

@@ -32,11 +32,13 @@ const disconnected = Object.freeze({
 const awaiting = parseWalletManagementOperation({
   operationId,
   connectionRevision,
-  expiresAt: "2099-12-31T23:59:59.000Z",
+  actionExpiresAt: "2099-12-31T23:59:59.000Z",
+  interactionInterface: "web",
   kind: "connect",
   state: "awaiting_wallet_approval",
   result: null,
   failure: null,
+  peerRefusalCode: null,
 });
 const cancelled = parseWalletManagementOperation({
   ...awaiting,

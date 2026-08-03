@@ -187,11 +187,14 @@ source coverage.
 - SDK constants do not override official deployment records or observed code.
 - Protocol SDK output is an untrusted proposal until the owning product boundary
   independently validates it.
-- A WalletConnect SDK-store observation establishes only the locally observed
-  session record, namespaces, accounts, methods, events, and expiry described by
-  the [official WalletConnect session model](https://docs.walletconnect.network/wallet-sdk/web/usage).
-  It does not establish address ownership, present connectivity, or approval of
-  a Little John wallet request.
+- A stable WalletConnect observation brackets public SDK proposal and session
+  reads with one unchanged healthy opaque-storage revision. It establishes only
+  those locally observed proposals and the session namespaces, accounts,
+  methods, events, and expiry described by the
+  [official WalletConnect session model](https://docs.walletconnect.network/wallet-sdk/web/usage).
+  It does not establish address ownership, present connectivity, approval of a
+  Little John wallet request, or absence when either storage bracket is
+  unavailable or changes.
 - Threat and reputation signals are advisory facts, not identity or safety
   decisions.
 - Absence from an allowlist, denylist, or threat registry is an observation, not

@@ -111,7 +111,7 @@ type _InterfaceWalletOperations = Assert<Equal<
 >>;
 type _WalletApplicationKeys = Assert<Equal<
   keyof WalletOwnerApplication<TestActiveWallet, TestWalletOperations>,
-  "routes" | "close" | "supportManifest" | "walletConnection" | "activeWallet" | "walletOperations"
+  "routes" | "close" | "shutdown" | "supportManifest" | "walletConnection" | "activeWallet" | "walletOperations"
 >>;
 type _WalletPortKeys = Assert<Equal<
   keyof WalletOwnerBootstrapPort,

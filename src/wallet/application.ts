@@ -4,6 +4,12 @@ import type {
 } from "../runtime/application-context.js";
 import type { HttpOwnerApplication } from "../runtime/http-owner.js";
 import {
+  isProcessTerminalRequiredError,
+  requireProcessTermination,
+  runtimeProcessTerminal,
+  type RuntimeShutdownOutcome,
+} from "../runtime/shutdown.js";
+import {
   extendWalletRuntimeSupportManifest,
   type WalletRuntimeSupportManifest,
   type InitialRuntimeSupportManifest,
@@ -26,13 +32,10 @@ import {
   createWalletConnectClient,
   createWalletConnectAcquisitionScope,
   type WalletConnectClientAcquisition,
-  type WalletConnectAcquisitionRegistry,
+  type WalletConnectAcquisitionRegistration,
   type WalletConnectClientConfiguration,
 } from "./walletconnect-client.js";
-import {
-  assertWalletConnectPrivateStore,
-  secureWalletConnectPrivateStore,
-} from "./private-store.js";
+import { openWalletConnectStorage } from "./walletconnect-storage.js";
 
 const walletInternalAvailability = Object.freeze({
   overall: "internal" as const,
@@ -58,7 +61,7 @@ export const extendWalletSupportManifest = (
 
 type WalletConnectClientFactory = (
   configuration: WalletConnectClientConfiguration,
-  acquisitionResources: WalletConnectAcquisitionRegistry,
+  storageRegistration: WalletConnectAcquisitionRegistration,
   signal: AbortSignal,
 ) => Promise<WalletConnectClientAcquisition>;
 
@@ -70,6 +73,7 @@ export interface WalletOwnerApplication<
   readonly walletConnection: WalletConnectionReadCapabilityPort;
   readonly activeWallet: ActiveWallet;
   readonly walletOperations: WalletOperations;
+  shutdown(): Promise<RuntimeShutdownOutcome>;
 }
 
 export type WalletOwnerApplicationFactory<
@@ -97,67 +101,37 @@ export const createWalletOwnerApplicationFactory = (
     WalletInterfaceOperations
   >> => {
     const privateStoreDirectory = await context.wallet.privateStoreDirectory.ensureDirectory();
-    await secureWalletConnectPrivateStore(privateStoreDirectory);
     const acquisitionScope = createWalletConnectAcquisitionScope();
     const startupRegistration = context.startupResources.register(acquisitionScope);
     try {
+      const storageOwner = await openWalletConnectStorage(privateStoreDirectory);
+      const storageRegistration = acquisitionScope.resources.register(storageOwner);
       const acquisition = await createClient(Object.freeze({
         wallet: context.wallet.configuration,
-        privateStoreDirectory,
-      }), acquisitionScope.resources, context.signal);
-      await assertWalletConnectPrivateStore(privateStoreDirectory);
+        storageOwner,
+        createSessionSource: (topic: string) =>
+          context.wallet.sourceAuthority.createSessionSource(topic),
+      }), storageRegistration, context.signal);
       const createdCoordinator: WalletCoordinatorPort = await createWalletCoordinator({
         client: acquisition.client,
         wallet: context.wallet,
       });
-      acquisition.replace(createdCoordinator);
       const walletOperations: WalletInterfaceOperations = Object.freeze({
         operation: createdCoordinator.operation,
         confirmation: createdCoordinator.webConfirmation,
         presentation: createdCoordinator.operationPresentation,
         currentProjection: createdCoordinator.currentOperationProjection,
       });
-      let coordinatorClosed = false;
-      let applicationClosed = false;
-      let activeClose: Promise<void> | undefined;
-      const closeApplication = (): Promise<void> => {
-        if (applicationClosed) return Promise.resolve();
-        if (activeClose !== undefined) return activeClose;
-        let resolveClose!: () => void;
-        let rejectClose!: (error: unknown) => void;
-        const tracked = new Promise<void>((resolve, reject) => {
-          resolveClose = resolve;
-          rejectClose = reject;
-        });
-        activeClose = tracked;
-        void (async () => {
-          let closeFailure: unknown;
-          if (!coordinatorClosed) {
-            try {
-              await createdCoordinator.close();
-              coordinatorClosed = true;
-            } catch (error) { closeFailure = error; }
-          }
-          try { await assertWalletConnectPrivateStore(privateStoreDirectory); }
-          catch (error) { closeFailure ??= error; }
-          if (closeFailure !== undefined) throw closeFailure;
-        })().then(
-          () => {
-            applicationClosed = true;
-            if (activeClose === tracked) activeClose = undefined;
-            resolveClose();
-          },
-          (error: unknown) => {
-            if (activeClose === tracked) activeClose = undefined;
-            rejectClose(error);
-          },
-        );
-        return tracked;
+      const shutdown = async (): Promise<RuntimeShutdownOutcome> => {
+        try { await createdCoordinator.close(); }
+        catch (error) { throw requireProcessTermination(error); }
+        return runtimeProcessTerminal;
       };
       const application = Object.freeze({
         routes: extendWalletControlRouteRegistry({
           routes: context.routes,
           operations: createdCoordinator,
+          presentation: createdCoordinator.operationPresentation,
           cliConfirmation: createdCoordinator.cliConfirmation,
           walletConnection: createdCoordinator.walletConnection,
         }),
@@ -165,7 +139,11 @@ export const createWalletOwnerApplicationFactory = (
         walletConnection: createdCoordinator.walletConnection,
         activeWallet: createdCoordinator.activeWallet,
         walletOperations,
-        close: closeApplication,
+        shutdown,
+        close: async (): Promise<void> => {
+          await shutdown();
+          throw requireProcessTermination();
+        },
       });
       acquisition.replace(application);
       startupRegistration.replace(acquisitionScope, application);
@@ -173,8 +151,14 @@ export const createWalletOwnerApplicationFactory = (
       startupRegistration.transfer();
       return application;
     } catch (error) {
+      if (isProcessTerminalRequiredError(error)) throw error;
       try { await acquisitionScope.close(); }
-      catch { /* The HTTP owner retains failed cleanup authority. */ }
+      catch (cleanupError) {
+        if (isProcessTerminalRequiredError(cleanupError)) {
+          throw requireProcessTermination(error);
+        }
+        /* The HTTP owner retains failed local cleanup authority. */
+      }
       throw error;
     }
   };

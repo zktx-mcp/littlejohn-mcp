@@ -31,11 +31,15 @@ import {
   createChainFailure,
 } from "../../src/chain/errors.js";
 import {
-  runCli,
+  runCli as runCliResult,
   type CliDependencies,
   type CliRuntimePort,
   type CliTerminalPort,
 } from "../../src/cli.js";
+import { runtimeReleased } from "../../src/runtime/shutdown.js";
+
+const runCli = async (...input: Parameters<typeof runCliResult>): Promise<number> =>
+  (await runCliResult(...input)).exitCode;
 import type { BrowserAssetBundle } from "../../src/interfaces/browser-assets.js";
 import { createBrowserRequestCredentialAuthority } from "../../src/interfaces/browser-credentials.js";
 import { extendBrowserInterfaceRoutes } from "../../src/interfaces/browser-routes.js";
@@ -90,6 +94,7 @@ import {
 import { runtimePaths } from "../../src/runtime/paths.js";
 import type {
   RuntimeDispatchRequest,
+  RuntimeHttpRequest,
   RuntimeDispatchResponse,
   WalletConnectionReadCapabilityPort,
 } from "../../src/runtime/index.js";
@@ -121,7 +126,7 @@ import {
   type WalletManagementOperation,
 } from "../../src/wallet/contracts.js";
 import { createWalletFailure } from "../../src/wallet/errors.js";
-import { walletControlRoutes } from "../../src/wallet/routes.js";
+import { walletControlResources } from "../../src/wallet/routes.js";
 import {
   bindForHarness,
   createCapabilityHarness,
@@ -171,12 +176,9 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
-interface CanonicalRoute {
-  readonly method: RuntimeDispatchRequest["method"];
-  readonly path: string;
-  readonly body?: CanonicalJson;
+type CanonicalRoute = RuntimeHttpRequest & Readonly<{
   readonly response: RuntimeDispatchResponse;
-}
+}>;
 
 class CanonicalRuntime implements RuntimeDispatchPort, CliRuntimePort {
   readonly ownerState = "deferred" as const;
@@ -189,16 +191,16 @@ class CanonicalRuntime implements RuntimeDispatchPort, CliRuntimePort {
 
   async start(): Promise<void> {}
 
-  async stop(): Promise<void> {}
+  async stop() { return runtimeReleased; }
 
   openOwnerSession(signal?: AbortSignal) { return openTestOwnerSession(this, signal); }
 
   async dispatchRuntimeRequest(request: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse> {
     this.requests.push(request);
-    if (request.method === "GET" && request.path === walletControlRoutes.operation(operationId)) {
+    if (request.method === "GET" && request.path === walletControlResources.operation.path(operationId)) {
       return Object.freeze({
         status: 200,
-        body: { operation: this.walletOperation } as unknown as CanonicalJson,
+        body: this.walletOperation as unknown as CanonicalJson,
       });
     }
     const route = this.routes.find((candidate) =>
@@ -223,7 +225,7 @@ class RouteRegistryRuntime implements RuntimeDispatchPort, CliRuntimePort {
 
   async start(): Promise<void> {}
 
-  async stop(): Promise<void> {}
+  async stop() { return runtimeReleased; }
 
   openOwnerSession(signal?: AbortSignal) { return openTestOwnerSession(this, signal); }
 
@@ -555,9 +557,11 @@ const operation = (): WalletManagementOperation => parseWalletManagementOperatio
   kind: "disconnect",
   state: "awaiting_confirmation",
   connectionRevision: "17",
-  expiresAt: "2026-07-16T00:00:00.000Z",
+  actionExpiresAt: "2026-07-16T00:00:00.000Z",
+  interactionInterface: "web",
   result: null,
   failure: null,
+  peerRefusalCode: null,
 });
 
 const browserAssets: BrowserAssetBundle = Object.freeze({
@@ -752,21 +756,34 @@ const createTokenParityContext = async () => {
 describe("interface parity", () => {
   it("preserves every canonical chain read through HTTP, MCP, CLI JSON, and human CLI output", async () => {
     const cases = await createReadParityCases();
-    const runtime = new CanonicalRuntime(cases.map((entry) => Object.freeze({
-      method: entry.identity.http.method,
-      path: entry.identity.http.path,
-      ...(entry.identity.http.method === "POST" ? { body: entry.input } : {}),
-      response: Object.freeze({ status: 200, body: entry.direct }),
-    })), operation());
+    const runtime = new CanonicalRuntime(cases.map((entry): CanonicalRoute =>
+      entry.identity.http.method === "POST"
+        ? Object.freeze({
+            method: "POST",
+            path: entry.identity.http.path,
+            body: entry.input,
+            response: Object.freeze({ status: 200, body: entry.direct }),
+          })
+        : Object.freeze({
+            method: "GET",
+            path: entry.identity.http.path,
+            response: Object.freeze({ status: 200, body: entry.direct }),
+          })), operation());
     const mcp = await connectMcp(runtime);
     try {
       for (const entry of cases) {
-        const request = {
-          requestClass: "public_read" as const,
-          method: entry.identity.http.method,
-          path: entry.identity.http.path,
-          ...(entry.identity.http.method === "POST" ? { body: entry.input } : {}),
-        };
+        const request: RuntimeDispatchRequest = entry.identity.http.method === "POST"
+          ? {
+              requestClass: "public_read",
+              method: "POST",
+              path: entry.identity.http.path,
+              body: entry.input,
+            }
+          : {
+              requestClass: "public_read",
+              method: "GET",
+              path: entry.identity.http.path,
+            };
         const http = await dispatchCanonical(runtime, request, 200, entry.identity.responseAuthority);
         expect(http).toEqual({ ok: true, value: entry.direct });
 
@@ -823,17 +840,20 @@ describe("interface parity", () => {
     const direct = captureCanonicalJson(
       await createUniswapV2DirectQuoteSuccess(input),
     );
+    if (uniswapV2QuoteInterface.http.method !== "POST") {
+      throw new TypeError("Uniswap V2 quote parity requires its declared POST binding.");
+    }
     const runtime = new CanonicalRuntime([{
-      method: uniswapV2QuoteInterface.http.method,
+      method: "POST",
       path: uniswapV2QuoteInterface.http.path,
       body: captureCanonicalJson(input),
       response: Object.freeze({ status: 200, body: direct }),
     }], operation());
     const mcp = await connectMcp(runtime);
     try {
-      const request = {
-        requestClass: "public_read" as const,
-        method: uniswapV2QuoteInterface.http.method,
+      const request: RuntimeDispatchRequest = {
+        requestClass: "public_read",
+        method: "POST",
         path: uniswapV2QuoteInterface.http.path,
         body: captureCanonicalJson(input),
       };
@@ -1166,24 +1186,27 @@ describe("interface parity", () => {
   });
 
   it("preserves the canonical wallet connection through HTTP, MCP, CLI JSON, and human CLI output", async () => {
+    if (walletConnectionInterface.http.method !== "GET") {
+      throw new TypeError("Wallet connection parity requires its declared GET binding.");
+    }
     const direct = await directWalletConnection();
     const response = Object.freeze({ status: 200 as const, body: direct });
     const runtime = new CanonicalRuntime([
       Object.freeze({
-        method: walletConnectionInterface.http.method,
+        method: "GET",
         path: walletConnectionInterface.http.path,
         response,
       }),
       Object.freeze({
         method: "GET" as const,
-        path: walletControlRoutes.connection,
+        path: walletControlResources.connection.path,
         response,
       }),
     ], operation());
 
     expect(await dispatchCanonical(runtime, {
       requestClass: "public_read",
-      method: walletConnectionInterface.http.method,
+      method: "GET",
       path: walletConnectionInterface.http.path,
     }, 200, walletConnectionInterface.responseAuthority)).toEqual({ ok: true, value: direct });
 
@@ -1207,7 +1230,6 @@ describe("interface parity", () => {
       createRuntime: async () => runtime,
       terminal: terminalPort(jsonOutput, jsonError),
       waitForPoll: async () => {},
-      terminateProcess: () => { throw new Error("The connection parity CLI cannot terminate the process."); },
     }))).toBe(0);
     expect(jsonError).toEqual([]);
     expect(JSON.parse(jsonOutput.join(""))).toEqual(direct);
@@ -1219,7 +1241,6 @@ describe("interface parity", () => {
       createRuntime: async () => runtime,
       terminal: terminalPort(humanOutput, humanError),
       waitForPoll: async () => {},
-      terminateProcess: () => { throw new Error("The connection parity CLI cannot terminate the process."); },
     }))).toBe(0);
     expect(humanError).toEqual([]);
     expect(humanOutput.join("")).toBe("Disconnected (no_session).\n");
@@ -1278,10 +1299,13 @@ describe("interface parity", () => {
   });
 
   it("preserves one canonical read failure through HTTP dispatch, MCP structured content, and CLI JSON", async () => {
+    if (chainStatusInterface.http.method !== "GET") {
+      throw new TypeError("Chain status failure parity requires its declared GET binding.");
+    }
     const failure = createChainFailure("source_unavailable");
     const problem = toProblemDetails(failure, chainInterfaceErrorMappings);
     const runtime = new CanonicalRuntime([Object.freeze({
-      method: chainStatusInterface.http.method,
+      method: "GET",
       path: chainStatusInterface.http.path,
       response: Object.freeze({
         status: problem.status,
@@ -1326,7 +1350,8 @@ describe("interface parity", () => {
         kind: "connect",
         state: "completed",
         connectionRevision: "18",
-        expiresAt: "2026-07-16T00:00:00.000Z",
+        actionExpiresAt: "2026-07-16T00:00:00.000Z",
+        interactionInterface: "web",
         result: {
           outcome: "connected",
           connection: {
@@ -1339,15 +1364,18 @@ describe("interface parity", () => {
           },
         },
         failure: null,
+        peerRefusalCode: null,
       }),
       parseWalletManagementOperation({
         operationId,
         kind: "disconnect",
         state: "failed",
         connectionRevision: "19",
-        expiresAt: "2026-07-16T00:00:00.000Z",
+        actionExpiresAt: "2026-07-16T00:00:00.000Z",
+        interactionInterface: "web",
         result: null,
         failure: createWalletFailure("wallet_timeout"),
+        peerRefusalCode: null,
       }),
     ];
 
@@ -1356,9 +1384,9 @@ describe("interface parity", () => {
       const internalHttp = await dispatchCanonical(runtime, {
         requestClass: "local_control",
         method: "GET",
-        path: walletControlRoutes.operation(operationId),
+        path: walletControlResources.operation.path(operationId),
       }, 200, walletConnectionInterface.responseAuthority);
-      expect(internalHttp).toEqual({ ok: true, value: { operation: direct } });
+      expect(internalHttp).toEqual({ ok: true, value: direct });
 
       const mcp = await connectMcp(runtime);
       try {
@@ -1380,7 +1408,6 @@ describe("interface parity", () => {
         createRuntime: async () => runtime,
         terminal: terminalPort(cliOutput, cliError),
         waitForPoll: async () => {},
-        terminateProcess: () => { throw new Error("The parity CLI cannot terminate the process."); },
       });
       expect(await runCli(["wallet", "operation", operationId, "--json"], dependencies)).toBe(0);
       expect(cliError).toEqual([]);

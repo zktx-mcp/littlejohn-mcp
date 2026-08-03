@@ -384,7 +384,7 @@ export const extendBrowserInterfaceRoutes = (input: {
           return invalidInput();
         }
         try {
-          return success(presentationForId(id, await presentation.get(id)));
+          return success(presentationForId(id, await presentation.get(id, "web")));
         } catch (error) {
           return normalizeFailure(error);
         }
@@ -438,8 +438,9 @@ export const extendBrowserInterfaceRoutes = (input: {
             id,
             await operations.cancel(id, request),
           );
-          return success(walletManagementContracts.cancelOperation.parsePublicSuccess(
-            { operationId: id },
+          return success(walletManagementContracts.cancelOperation.parseBoundSuccess(
+            { operationId: id, connectionRevision: request.connectionRevision },
+            { operationId: id, interactionInterface: "web" },
             operation,
           ));
         } catch (error) {

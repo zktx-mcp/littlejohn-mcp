@@ -38,7 +38,7 @@ import {
   tokenCatalogBrowserRoutes,
   tokenCatalogControlRoutes,
 } from "../../src/token-catalog/index.js";
-import { walletControlRoutes } from "../../src/wallet/routes.js";
+import { walletControlResources } from "../../src/wallet/routes.js";
 
 const architecturePath = "docs/ARCHITECTURE.md";
 
@@ -106,7 +106,7 @@ const sourceOwnedPaths = Object.freeze([
     ...stringValues(tokenCatalogBrowserRoutes),
     ...stringValues(tokenCatalogControlRoutes),
     ...stringValues(uniswapV2PublicRoutes),
-    ...stringValues(walletControlRoutes),
+    ...Object.values(walletControlResources).map((resource) => resource.pathPattern),
   ].filter((path) => path !== "/")),
 ].sort());
 

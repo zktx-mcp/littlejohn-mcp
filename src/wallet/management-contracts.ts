@@ -159,13 +159,36 @@ const validateOperationIdentity = (
   }
 };
 
+const validateOperationControl = (
+  input: Readonly<{ operationId: string; connectionRevision: string }>,
+  success: WalletManagementOperation,
+): void => {
+  validateOperationIdentity(input, success);
+  if (input.connectionRevision !== success.connectionRevision) {
+    throw new TypeError("Wallet operation result does not match the requested connection revision.");
+  }
+};
+
+const validateBoundOperation = (
+  context: WalletManagementInternalContext,
+  operation: WalletManagementOperation,
+): void => {
+  if (
+    context.operationId !== operation.operationId ||
+    context.interactionInterface !== operation.interactionInterface
+  ) {
+    throw new TypeError("Wallet operation result does not match its internal context.");
+  }
+};
+
 export const walletManagementContracts = Object.freeze({
   cancelOperation: defineWalletManagementContract({
     capabilityId: "wallet.cancel_operation",
     contractVersion: "1",
-    inputSchema: operationInputSchema,
+    inputSchema: confirmationInputSchema,
     successSchema: walletManagementOperationSchema,
-    validatePublicSuccess: validateOperationIdentity,
+    validatePublicSuccess: validateOperationControl,
+    validateBoundSuccess: (_input, context, success) => validateBoundOperation(context, success),
   }),
   connect: defineWalletManagementContract({
     capabilityId: "wallet.connect",
@@ -175,7 +198,7 @@ export const walletManagementContracts = Object.freeze({
     validateBoundSuccess: (_input, context, success) => {
       if (success.status === "operation_started" && (
         context.operationId !== success.operation.operationId ||
-        context.interactionInterface === undefined
+        context.interactionInterface !== success.operation.interactionInterface
       )) throw new TypeError("Wallet start result does not match its internal context.");
     },
   }),
@@ -194,7 +217,7 @@ export const walletManagementContracts = Object.freeze({
       if (
         success.status !== "operation_started" ||
         context.operationId !== success.operation.operationId ||
-        context.interactionInterface === undefined
+        context.interactionInterface !== success.operation.interactionInterface
       ) throw new TypeError("Wallet start result does not match its internal context.");
     },
   }),
@@ -221,10 +244,7 @@ export const walletOperationConfirmationContract = defineApplicationContract({
     ) throw new TypeError("Wallet confirmation result does not match its input.");
   },
   validateBoundSuccess: (_input, context, operation) => {
-    if (
-      context.operationId !== operation.operationId ||
-      context.interactionInterface === undefined
-    ) throw new TypeError("Wallet confirmation result does not match its internal context.");
+    validateBoundOperation(context, operation);
   },
 });
 

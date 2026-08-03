@@ -1,4 +1,7 @@
-import { maximumSuccessUtf8Bytes } from "../core/index.js";
+import {
+  maximumSuccessUtf8Bytes,
+  type CanonicalJson,
+} from "../core/index.js";
 
 export const fixedHost = "127.0.0.1";
 export const fixedPort = 46630;
@@ -25,6 +28,18 @@ export const browserSetCookieLimitBytes = 4_096;
 
 export const routeMethods = Object.freeze(["GET", "POST", "DELETE"] as const);
 export type RouteMethod = typeof routeMethods[number];
+
+export type RuntimeHttpRequest =
+  | Readonly<{
+      method: "POST";
+      path: string;
+      body: CanonicalJson;
+    }>
+  | Readonly<{
+      method: "GET" | "DELETE";
+      path: string;
+      body?: never;
+    }>;
 
 export const routeMutationClasses = Object.freeze(["none", "declared_control"] as const);
 export type RouteMutation = typeof routeMutationClasses[number];

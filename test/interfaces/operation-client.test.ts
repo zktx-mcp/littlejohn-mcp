@@ -31,7 +31,7 @@ import { parseWalletManagementOperation } from "../../src/wallet/contracts.js";
 
 const operationId = Buffer.alloc(32, 31).toString("base64url");
 const foreignOperationId = Buffer.alloc(32, 32).toString("base64url");
-const expiresAt = "2026-07-21T04:00:00.000Z";
+const actionExpiresAt = "2026-07-21T04:00:00.000Z";
 
 const ownerIdentity = (overrides: Partial<RuntimeOwnerSessionIdentity> = {}): RuntimeOwnerSessionIdentity =>
   Object.freeze({
@@ -50,9 +50,11 @@ const operation = (
   kind: "connect",
   state,
   connectionRevision: "4",
-  expiresAt,
+  actionExpiresAt,
+  interactionInterface: "cli",
   result: null,
   failure: null,
+  peerRefusalCode: null,
 });
 
 const responsePacket = (body: unknown): RuntimeOwnerResponsePacket => Object.freeze({
@@ -147,7 +149,7 @@ describe("authenticated local operation client", () => {
       async send(request, signal) {
         requests.push(request);
         recoverySignals.push(signal);
-        return received({ operation: operation("awaiting_wallet_approval") });
+        return received(operation("awaiting_wallet_approval"));
       },
     });
     const client = new LocalOperationClient({
@@ -158,7 +160,7 @@ describe("authenticated local operation client", () => {
     const result = await client.invoke(walletLocalOperationIdentities.cli.connect, {}, caller.signal);
     expect(result).toMatchObject({
       ok: true,
-      value: { result: { status: "operation_started", operation: { operationId } } },
+      value: { status: "operation_started", operation: { operationId } },
     });
     expect(requests.map(({ method, path }) => ({ method, path }))).toEqual([
       { method: "POST", path: "/api/v1/internal/control/wallet/operations" },
@@ -194,7 +196,7 @@ describe("authenticated local operation client", () => {
               }),
             });
           }
-          return received({ operation: operation("awaiting_wallet_approval") });
+          return received(operation("awaiting_wallet_approval"));
         },
       })),
       createOperationId: () => operationId,
@@ -202,7 +204,7 @@ describe("authenticated local operation client", () => {
 
     expect(await client.invoke(walletLocalOperationIdentities.cli.connect, {})).toMatchObject({
       ok: true,
-      value: { result: { status: "operation_started", operation: { operationId } } },
+      value: { status: "operation_started", operation: { operationId } },
     });
     expect(sends).toBe(2);
     await client.close();
@@ -232,7 +234,7 @@ describe("authenticated local operation client", () => {
             identity: replacementIdentity,
             async send() {
               recoverySends += 1;
-              return received({ operation: operation("awaiting_wallet_approval") });
+              return received(operation("awaiting_wallet_approval"));
             },
           }),
         ),
@@ -250,7 +252,7 @@ describe("authenticated local operation client", () => {
     }
   });
 
-  it("does not treat same-ID existence or a generic terminal state as action proof", async () => {
+  it("does not treat a foreign same-ID read as start proof", async () => {
     const expectUnproved = async <Input, Success>(
       identity: LocalOperationIdentity<Input, Success>,
       input: unknown,
@@ -278,13 +280,42 @@ describe("authenticated local operation client", () => {
     await expectUnproved(
       walletLocalOperationIdentities.cli.connect,
       {},
-      { operation: operation("awaiting_wallet_approval", foreignOperationId) },
+      operation("awaiting_wallet_approval", foreignOperationId),
     );
-    await expectUnproved(
-      walletLocalOperationIdentities.cli.cancel,
-      { operationId },
-      { operation: operation("expired") },
-    );
+  });
+
+  it("preserves the exact operation state recovered after a lost cancellation response", async () => {
+    for (const recovered of [operation("awaiting_wallet_approval"), operation("expired")]) {
+      let sends = 0;
+      const client = new LocalOperationClient({
+        ownerSessions: ownerSessions(session({
+          async send(request) {
+            sends += 1;
+            if (sends === 1) {
+              expect(request).toMatchObject({
+                method: "POST",
+                path: `/api/v1/internal/control/wallet/operations/${operationId}/cancellation`,
+              });
+              expect(request.body).toEqual({ connectionRevision: "4" });
+              return Object.freeze({ status: "response_unavailable_after_send_began" });
+            }
+            expect(request).toMatchObject({
+              method: "GET",
+              path: `/api/v1/internal/control/wallet/operations/${operationId}`,
+            });
+            return received(recovered);
+          },
+        })),
+        createOperationId: () => operationId,
+      });
+
+      await expect(client.invoke(walletLocalOperationIdentities.cli.cancel, {
+        operationId,
+        connectionRevision: "4",
+      })).resolves.toEqual({ ok: true, value: recovered });
+      expect(sends).toBe(2);
+      await client.close();
+    }
   });
 
   it("close aborts and drains active delivery before rejecting later calls", async () => {

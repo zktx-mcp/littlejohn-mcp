@@ -53,6 +53,11 @@ import {
   loadOrCreateControlCredential,
 } from "../../src/runtime/control-credential.js";
 import { RuntimeOperationError } from "../../src/runtime/errors.js";
+import {
+  runtimeProcessTerminal,
+  runtimeReleased,
+  type RuntimeShutdownOutcome,
+} from "../../src/runtime/shutdown.js";
 import { createResourceOwnershipScope } from "../../src/runtime/resource-ownership.js";
 import { createRuntimeRouteRegistry } from "../../src/runtime/http-routing.js";
 import { runtimePaths } from "../../src/runtime/paths.js";
@@ -350,6 +355,24 @@ const manifests = () => {
 };
 
 describe("owner application composition", () => {
+  it("retains the database and listener when shutdown is process-terminal", async () => {
+    const events: string[] = [];
+    const database = { close(): void { events.push("database:close"); } };
+    const owner = {
+      state: "owner" as const,
+      async start(): Promise<void> { events.push("owner:start"); },
+      async closeApplication() {
+        events.push("owner:contain");
+        return Object.freeze({ outcome: runtimeProcessTerminal });
+      },
+      async releaseListener(): Promise<void> { events.push("owner:release"); },
+    };
+    const runtime = Reflect.construct(LocalRuntime, [database, () => owner]) as LocalRuntime;
+    await runtime.start();
+    await expect(runtime.stop()).resolves.toBe(runtimeProcessTerminal);
+    expect(events).toEqual(["owner:start", "owner:contain"]);
+  });
+
   it("preserves shutdown dependencies and retries only resources not proven closed", async () => {
     for (const failingResource of ["application", "database", "server"] as const) {
       const events: string[] = [];
@@ -367,13 +390,13 @@ describe("owner application composition", () => {
       };
       const owner = {
         async start(): Promise<void> { events.push("owner:start"); },
-        async closeApplication(): Promise<object> {
+        async closeApplication() {
           events.push("owner:prepare");
           if (failingResource === "application" && failureAvailable) {
             failureAvailable = false;
             throw new Error(secret);
           }
-          return permit;
+          return Object.freeze({ outcome: runtimeReleased, permit });
         },
         async releaseListener(input: object): Promise<void> {
           expect(input).toBe(permit);
@@ -402,7 +425,7 @@ describe("owner application composition", () => {
       expect(JSON.stringify(failure)).not.toContain(secret);
 
       events.length = 0;
-      await expect(runtime.stop()).resolves.toBeUndefined();
+      await expect(runtime.stop()).resolves.toBe(runtimeReleased);
       expect(events).toEqual(failingResource === "server"
         ? ["owner:prepare", "owner:release"]
         : ["owner:prepare", "database:close", "owner:release"]);
@@ -412,7 +435,7 @@ describe("owner application composition", () => {
   it("installs one runtime stop authority before owner abort can reenter it", async () => {
     const events: string[] = [];
     let runtime!: LocalRuntime;
-    let reentered: Promise<void> | undefined;
+    let reentered: Promise<RuntimeShutdownOutcome> | undefined;
     const database = {
       close(): void { events.push("database:close"); },
     };
@@ -420,10 +443,10 @@ describe("owner application composition", () => {
     const owner = {
       state: "owner" as const,
       async start(): Promise<void> { events.push("owner:start"); },
-      async closeApplication(): Promise<object> {
+      async closeApplication() {
         events.push("owner:prepare");
         reentered = runtime.stop();
-        return permit;
+        return Object.freeze({ outcome: runtimeReleased, permit });
       },
       async releaseListener(input: object): Promise<void> {
         expect(input).toBe(permit);
@@ -477,6 +500,7 @@ describe("owner application composition", () => {
         walletConnection: ports.wallet,
         activeWallet,
         walletOperations,
+        shutdown: async () => runtimeReleased,
         close: () => { events.push("wallet:close"); },
       }),
       (_context, wallet) => {
@@ -587,6 +611,7 @@ describe("owner application composition", () => {
           walletConnection: ports.wallet,
           activeWallet: testActiveWallet(),
           walletOperations: testWalletOperations(),
+          shutdown: async () => runtimeReleased,
           close: () => { events.push("wallet:close"); },
         }),
         () => ({
@@ -637,14 +662,14 @@ describe("owner application composition", () => {
     }
   });
 
-  it("keeps stage dependencies alive when a dependent close must be retried", async () => {
+  it("keeps the first shutdown failure terminal instead of reviving dependent stages", async () => {
     const routes = await baseRoutes();
     const ports = capabilityPorts();
     const support = manifests();
     const events: string[] = [];
     const failure = new Error("interface close failed");
     let interfaceCloseCalls = 0;
-    let reentered: Promise<void> | undefined;
+    let reentered: Promise<RuntimeShutdownOutcome> | undefined;
     const application = await composeStages(
       ownerContext(routes, new AbortController().signal),
       [
@@ -654,6 +679,7 @@ describe("owner application composition", () => {
           walletConnection: ports.wallet,
           activeWallet: testActiveWallet(),
           walletOperations: testWalletOperations(),
+          shutdown: async () => runtimeReleased,
           close: () => { events.push("wallet:close"); },
         }),
         () => ({
@@ -688,25 +714,20 @@ describe("owner application composition", () => {
           close: () => {
             events.push("interfaces:close");
             interfaceCloseCalls += 1;
-            if (interfaceCloseCalls === 1) reentered = application.close() as Promise<void>;
+            if (interfaceCloseCalls === 1) reentered = application.shutdown();
             if (interfaceCloseCalls === 1) throw failure;
           },
         }),
       ],
     );
 
-    const first = application.close() as Promise<void>;
+    const first = application.shutdown();
     await expect(first).rejects.toBe(failure);
     expect(reentered).toBe(first);
     expect(events).toEqual(["interfaces:close"]);
     events.length = 0;
-    await application.close();
-    expect(events).toEqual([
-      "interfaces:close", "reference-markets:close", "account-assets:close", "catalog:close",
-      "protocols:close", "chain:close", "wallet:close",
-    ]);
-    events.length = 0;
-    await application.close();
+    expect(application.shutdown()).toBe(first);
+    await expect(application.shutdown()).rejects.toBe(failure);
     expect(events).toEqual([]);
   });
 
@@ -745,6 +766,7 @@ describe("owner application composition", () => {
         walletConnection: ports.wallet,
         activeWallet: testActiveWallet(),
         walletOperations: testWalletOperations(),
+        shutdown: async () => runtimeReleased,
         close: () => { events.push("wallet:close"); },
       }),
       () => ({
@@ -787,6 +809,7 @@ describe("owner application composition", () => {
         walletConnection: ports.wallet,
         activeWallet: testActiveWallet(),
         walletOperations: testWalletOperations(),
+        shutdown: async () => runtimeReleased,
         close: () => { events.push("wallet:close"); },
       }),
       ({ startupResources }) => {
@@ -836,6 +859,7 @@ describe("owner application composition", () => {
         walletConnection: ports.wallet,
         activeWallet: testActiveWallet(),
         walletOperations: testWalletOperations(),
+        shutdown: async () => runtimeReleased,
         close: () => { events.push("wallet:close"); },
       }),
       ({ startupResources }) => {
@@ -875,6 +899,7 @@ describe("owner application composition", () => {
         walletConnection: ports.wallet,
         activeWallet: testActiveWallet(),
         walletOperations: testWalletOperations(),
+        shutdown: async () => runtimeReleased,
         close: () => { events.push("wallet:close"); },
       }),
       ({ startupResources }) => {
@@ -928,6 +953,7 @@ describe("owner application composition", () => {
         walletConnection: ports.wallet,
         activeWallet: testActiveWallet(),
         walletOperations: testWalletOperations(),
+        shutdown: async () => runtimeReleased,
         close: () => { closed = true; },
       }),
     ])).rejects.toThrow("absent from its support manifest");
@@ -946,6 +972,7 @@ describe("owner application composition", () => {
         walletConnection: { connection: ports.chain.chainStatus as never },
         activeWallet: testActiveWallet(),
         walletOperations: testWalletOperations(),
+        shutdown: async () => runtimeReleased,
         close: () => { closed = true; },
       }),
     ])).rejects.toThrow("provenance");
@@ -969,6 +996,7 @@ describe("owner application composition", () => {
             walletConnection: ports.wallet,
             activeWallet: testActiveWallet(),
             walletOperations: testWalletOperations(),
+            shutdown: async () => runtimeReleased,
             close: () => { events.push("wallet:close"); },
           };
         },
@@ -1012,6 +1040,7 @@ describe("owner application composition", () => {
           walletConnection: ports.wallet,
           activeWallet: testActiveWallet(),
           walletOperations: invalid as never,
+          shutdown: async () => runtimeReleased,
           close: () => { events.push("wallet:close"); },
         }),
         () => {
@@ -1052,6 +1081,7 @@ describe("owner application composition", () => {
           walletConnection: ports.wallet,
           activeWallet: invalid as never,
           walletOperations: testWalletOperations(),
+          shutdown: async () => runtimeReleased,
           close: () => { events.push("wallet:close"); },
         }),
         () => {

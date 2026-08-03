@@ -41,9 +41,11 @@ const operation = (
   kind,
   state: kind === "disconnect" ? "awaiting_confirmation" : "awaiting_wallet_approval",
   connectionRevision: "7",
-  expiresAt: "2026-07-17T02:00:00.000Z",
+  actionExpiresAt: "2026-07-17T02:00:00.000Z",
+  interactionInterface: "web",
   result: null,
   failure: null,
+  peerRefusalCode: null,
 });
 
 const outputSchema = (schema: z.ZodType): Record<string, unknown> =>
@@ -114,9 +116,9 @@ describe("wallet management contract authority", () => {
 
   it("preserves the complete wallet management projection", () => {
     const canonical = canonicalManagementProjection();
-    expect(Buffer.byteLength(canonical, "utf8")).toBe(124_357);
+    expect(Buffer.byteLength(canonical, "utf8")).toBe(136_324);
     expect(createHash("sha256").update(canonical, "utf8").digest("hex")).toBe(
-      "3b5ca36d0695308965e6c3eead3d8478e90659c306e36744efd4300327121ef6",
+      "504e586534c1208d17f47454f6d6e5b9d16ccd859ff045dd8a587c5247be9a3c",
     );
   });
 
@@ -226,12 +228,15 @@ describe("wallet management contract authority", () => {
       walletManagementContracts.operation,
       walletManagementContracts.cancelOperation,
     ]) {
+      const input = contract === walletManagementContracts.cancelOperation
+        ? { operationId, connectionRevision: "7" }
+        : { operationId };
       expect(contract.parsePublicSuccess(
-        { operationId },
+        input,
         operation("connect"),
       )).toEqual(operation("connect"));
       expect(() => contract.parsePublicSuccess(
-        { operationId },
+        input,
         operation("connect", otherOperationId),
       )).toThrow("does not match");
     }

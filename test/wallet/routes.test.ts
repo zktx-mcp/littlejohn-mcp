@@ -25,34 +25,33 @@ import {
 import { runtimePaths } from "../../src/runtime/paths.js";
 import {
   parseWalletManagementOperation,
+  parseWalletOperationPresentation,
   parseWalletQrMatrix,
+  type WalletLocalControlOperationPort,
+  type WalletManagementOperation,
+  type WalletOperationCancellation,
   type WalletOperationConfirmation,
   type WalletOperationConfirmationPort,
   type WalletOperationCreate,
-  type WalletLocalControlOperationPort,
-  type WalletManagementOperation,
-  type WalletOperationResponse,
-  type WalletOperationStartResponse,
+  type WalletOperationPresentationPort,
+  type WalletOperationStartResult,
 } from "../../src/wallet/contracts.js";
 import { WalletOperationError } from "../../src/wallet/errors.js";
-import { extendWalletControlRouteRegistry } from "../../src/wallet/routes.js";
+import {
+  extendWalletControlRouteRegistry,
+  walletControlResources,
+} from "../../src/wallet/routes.js";
 import { bindForHarness, createCapabilityHarness } from "../core/capability-harness.js";
 
 const directories: string[] = [];
 
 afterEach(async () => {
-  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+  await Promise.all(directories.splice(0).map((directory) =>
+    rm(directory, { recursive: true, force: true })));
 });
 
 const operationId = Buffer.alloc(32, 11).toString("base64url");
-const createBody = (
-  kind: "connect" | "disconnect",
-  interactionInterface: "cli" | "web",
-  connectionRevision: string | null,
-) => ({
-  control: { operationId, interactionInterface },
-  request: { kind, connectionRevision },
-});
+const otherOperationId = Buffer.alloc(32, 12).toString("base64url");
 const disconnected = Object.freeze({ status: "disconnected" as const, reason: "no_session" as const });
 const connected = Object.freeze({
   status: "connected" as const,
@@ -62,6 +61,10 @@ const connected = Object.freeze({
   approvedEvents: ["accountsChanged", "chainChanged"],
   expiresAt: "2026-07-15T06:00:00.000Z",
 });
+const qr = parseWalletQrMatrix({
+  size: 21,
+  rows: Array.from({ length: 21 }, () => "0".repeat(21)),
+});
 
 const operation = (overrides: Readonly<Record<string, unknown>> = {}): WalletManagementOperation =>
   parseWalletManagementOperation({
@@ -69,71 +72,70 @@ const operation = (overrides: Readonly<Record<string, unknown>> = {}): WalletMan
     kind: "disconnect",
     state: "completed",
     connectionRevision: "4",
-    expiresAt: "2026-07-14T06:10:00.000Z",
+    actionExpiresAt: "2026-07-14T06:10:00.000Z",
+    interactionInterface: "cli",
     result: { outcome: "already_disconnected", connection: disconnected },
     failure: null,
+    peerRefusalCode: null,
     ...overrides,
   });
 
-const qr = parseWalletQrMatrix({
-  size: 21,
-  rows: Array.from({ length: 21 }, () => "0".repeat(21)),
-});
-
 interface OperationCalls {
-  creates: unknown[];
-  reads: string[];
-  cancellations: string[];
+  readonly starts: WalletOperationCreate[];
+  readonly reads: string[];
+  readonly cancellations: WalletOperationCancellation[];
+  readonly presentations: Readonly<{ operationId: string; interactionInterface: string }>[];
+  readonly confirmations: Readonly<{ operationId: string; input: WalletOperationConfirmation }>[];
 }
 
-interface ConfirmationCalls {
-  confirmations: unknown[];
-}
-
-const fakeOperations = (
-  response: () => WalletOperationResponse = () => ({ operation: operation() }),
-  startResponse: () => WalletOperationStartResponse = () => {
-    const value = response();
-    return {
-      result: { status: "operation_started", operation: value.operation },
-      ...(value.qr === undefined ? {} : { qr: value.qr }),
-    };
-  },
-): { readonly operations: WalletLocalControlOperationPort; readonly calls: OperationCalls } => {
-  const calls: OperationCalls = { creates: [], reads: [], cancellations: [] };
-  return {
+const fakePorts = (input: {
+  readonly start?: (value: WalletOperationCreate) => Promise<WalletOperationStartResult>;
+  readonly get?: (operationId: string) => Promise<WalletManagementOperation>;
+  readonly cancel?: (value: WalletOperationCancellation) => Promise<WalletManagementOperation>;
+  readonly presentation?: (operationId: string, interactionInterface: "cli" | "web") =>
+    Promise<ReturnType<typeof parseWalletOperationPresentation>>;
+  readonly confirm?: (operationId: string, value: WalletOperationConfirmation) =>
+    Promise<WalletManagementOperation>;
+} = {}): {
+  readonly operations: WalletLocalControlOperationPort;
+  readonly presentation: WalletOperationPresentationPort;
+  readonly confirmation: WalletOperationConfirmationPort<"cli">;
+  readonly calls: OperationCalls;
+} => {
+  const calls: OperationCalls = {
+    starts: [], reads: [], cancellations: [], presentations: [], confirmations: [],
+  };
+  return Object.freeze({
     calls,
     operations: Object.freeze({
-      async start(input: WalletOperationCreate) {
-        calls.creates.push(input);
-        return startResponse();
+      async start(value: WalletOperationCreate) {
+        calls.starts.push(value);
+        return input.start?.(value) ?? Object.freeze({
+          status: "operation_started" as const,
+          operation: operation(),
+        });
       },
       async get(id: string) {
         calls.reads.push(id);
-        return response();
+        return input.get?.(id) ?? operation();
       },
-      async cancel(id: string) {
-        calls.cancellations.push(id);
-        return response();
+      async cancel(value: WalletOperationCancellation) {
+        calls.cancellations.push(value);
+        return input.cancel?.(value) ?? operation();
       },
     }),
-  };
-};
-
-const fakeCliConfirmation = (
-  response: () => WalletOperationResponse = () => ({ operation: operation() }),
-): {
-  readonly confirmation: WalletOperationConfirmationPort<"cli">;
-  readonly calls: ConfirmationCalls;
-} => {
-  const calls: ConfirmationCalls = { confirmations: [] };
-  return Object.freeze({
-    calls,
+    presentation: Object.freeze({
+      async get(id: string, interactionInterface: "cli" | "web") {
+        calls.presentations.push({ operationId: id, interactionInterface });
+        return input.presentation?.(id, interactionInterface) ??
+          parseWalletOperationPresentation({ operation: operation(), access: "interactive" });
+      },
+    }),
     confirmation: Object.freeze({
       interactionInterface: "cli" as const,
-      async confirm(id: string, input: WalletOperationConfirmation) {
-        calls.confirmations.push({ id, input });
-        return response();
+      async confirm(id: string, value: WalletOperationConfirmation) {
+        calls.confirmations.push({ operationId: id, input: value });
+        return input.confirm?.(id, value) ?? operation();
       },
     }),
   });
@@ -168,13 +170,13 @@ const baseRoutes = async (): Promise<RuntimeRouteRegistry> => {
 };
 
 const routes = async (
-  operations: WalletLocalControlOperationPort,
+  ports = fakePorts(),
   connection: WalletConnectionReadCapabilityPort = walletConnection(),
-  cliConfirmation: WalletOperationConfirmationPort<"cli"> = fakeCliConfirmation().confirmation,
 ): Promise<RuntimeRouteRegistry> => extendWalletControlRouteRegistry({
   routes: await baseRoutes(),
-  operations,
-  cliConfirmation,
+  operations: ports.operations,
+  presentation: ports.presentation,
+  cliConfirmation: ports.confirmation,
   walletConnection: connection,
 });
 
@@ -196,316 +198,176 @@ const invoke = async (
 };
 
 describe("authenticated wallet control routes", () => {
-  it("registers only the exact resource identities, methods, mutation meanings, and statuses", async () => {
-    const { operations } = fakeOperations();
-    const registry = await routes(operations);
+  it("registers the exact local resources including separate presentation", async () => {
+    const registry = await routes();
     const expected = [
-      ["POST", "/api/v1/internal/control/wallet/operations", "declared_control", 200, true],
-      ["GET", `/api/v1/internal/control/wallet/operations/${operationId}`, "none", 200, false],
-      ["POST", `/api/v1/internal/control/wallet/operations/${operationId}/confirmation`, "declared_control", 200, true],
-      ["DELETE", `/api/v1/internal/control/wallet/operations/${operationId}`, "declared_control", 200, false],
-      ["GET", "/api/v1/internal/control/wallet/connection", "none", 200, false],
+      ["POST", walletControlResources.operations.path, "declared_control"],
+      ["GET", walletControlResources.operation.path(operationId), "none"],
+      ["GET", walletControlResources.presentation.path(operationId), "none"],
+      ["POST", walletControlResources.confirmation.path(operationId), "declared_control"],
+      ["POST", walletControlResources.cancellation.path(operationId), "declared_control"],
+      ["GET", walletControlResources.connection.path, "none"],
     ] as const;
-
-    for (const [method, path, mutation, successStatus, acceptsBody] of expected) {
+    for (const [method, path, mutation] of expected) {
       const match = registry.match(method, path);
       expect(match.status).toBe("matched");
-      if (match.status !== "matched") continue;
-      expect(match.route).toMatchObject({
-        method,
-        mutation,
-        requestClass: "local_control",
-        response: "canonical_json",
-        successStatus,
-        acceptsBody,
-      });
+      if (match.status === "matched") {
+        expect(match.route).toMatchObject({
+          method,
+          mutation,
+          requestClass: "local_control",
+          response: "canonical_json",
+          successStatus: 200,
+        });
+      }
     }
-
-    expect(registry.match("GET", "/api/v1/internal/control/wallet/operations").status)
+    expect(registry.match("GET", walletControlResources.operations.path).status).toBe("method_not_allowed");
+    expect(registry.match("POST", walletControlResources.connection.path).status).toBe("method_not_allowed");
+    expect(registry.match("DELETE", walletControlResources.operation.path(operationId)).status)
       .toBe("method_not_allowed");
-    expect(registry.match("POST", "/api/v1/internal/control/wallet/connection").status)
+    expect(registry.match("DELETE", walletControlResources.cancellation.path(operationId)).status)
       .toBe("method_not_allowed");
-    expect(registry.match("GET", "/api/v1/wallet/connection").status).toBe("not_found");
-
-    const connection = registry.match("GET", "/api/v1/internal/control/wallet/connection");
-    if (connection.status !== "matched") throw new Error("Expected connection route match.");
-    expect(registry.validateSecurity(connection, {
-      host: ["127.0.0.1:46630"],
-      origin: [],
-      authorization: [],
-      cookie: [],
-      csrfToken: [],
-      contentType: [],
-      query: "",
-      bodyLength: 0,
-    })).toEqual({ ok: false, code: "unauthorized" });
   });
 
-  it("strictly validates create and confirmation bodies before invoking the coordinator", async () => {
-    const { operations, calls } = fakeOperations();
-    const confirmations = fakeCliConfirmation();
-    const registry = await routes(operations, walletConnection(), confirmations.confirmation);
-
-    const created = await invoke(
-      registry,
-      "POST",
-      "/api/v1/internal/control/wallet/operations",
-      createBody("disconnect", "cli", null),
-    );
-    expect(created).toEqual({
-      ok: true,
-      response: "canonical_json",
-      body: { result: { status: "operation_started", operation: operation() } },
-    });
-    expect(calls.creates).toEqual([{
-      operationId,
-      kind: "disconnect",
-      interactionInterface: "cli",
-      connectionRevision: null,
-    }]);
-
-    const extraCreate = await invoke(registry, "POST", "/api/v1/internal/control/wallet/operations", {
-      ...createBody("connect", "cli", null),
-      extra: "forbidden",
-    });
-    expect(extraCreate.ok).toBe(false);
-    if (!extraCreate.ok) expect(extraCreate.problem.code).toBe("invalid_input");
-    expect(calls.creates).toHaveLength(1);
-
-    let accessorRead = false;
-    const hostileRequest = { kind: "connect", connectionRevision: null };
-    Object.defineProperty(hostileRequest, "kind", {
-      enumerable: true,
-      get() {
-        accessorRead = true;
-        throw new Error("secret");
-      },
-    });
-    const hostileCreate = {
+  it("strictly binds one start command and returns the direct QR-free canonical result", async () => {
+    const ports = fakePorts();
+    const registry = await routes(ports);
+    const result = await invoke(registry, "POST", walletControlResources.operations.path, {
       control: { operationId, interactionInterface: "cli" },
-      request: hostileRequest,
-    };
-    const hostile = await invoke(
-      registry,
-      "POST",
-      "/api/v1/internal/control/wallet/operations",
-      hostileCreate,
-    );
-    expect(hostile.ok).toBe(false);
-    if (!hostile.ok) expect(hostile.problem.code).toBe("invalid_input");
-    expect(accessorRead).toBe(false);
-
-    const confirmed = await invoke(
-      registry,
-      "POST",
-      `/api/v1/internal/control/wallet/operations/${operationId}/confirmation`,
-      { connectionRevision: "4" },
-    );
-    expect(confirmed.ok).toBe(true);
-    expect(confirmations.calls.confirmations).toEqual([
-      { id: operationId, input: { connectionRevision: "4" } },
-    ]);
-
-    const extraConfirmation = await invoke(
-      registry,
-      "POST",
-      `/api/v1/internal/control/wallet/operations/${operationId}/confirmation`,
-      { connectionRevision: "4", approved: true },
-    );
-    expect(extraConfirmation.ok).toBe(false);
-    if (!extraConfirmation.ok) expect(extraConfirmation.problem.code).toBe("invalid_input");
-    expect(confirmations.calls.confirmations).toHaveLength(1);
-  });
-
-  it("returns a canonical current connection without inventing an operation resource", async () => {
-    const subject = fakeOperations(
-      () => ({ operation: operation() }),
-      () => ({
-        result: {
-          status: "current_connection",
-          connectionRevision: "4" as never,
-          connection: connected as never,
-        },
-      }),
-    );
-    const registry = await routes(subject.operations);
-    const result = await invoke(
-      registry,
-      "POST",
-      "/api/v1/internal/control/wallet/operations",
-      createBody("connect", "web", "4"),
-    );
+      request: { kind: "disconnect", connectionRevision: null },
+    });
     expect(result).toEqual({
       ok: true,
       response: "canonical_json",
-      body: {
-        result: {
-          status: "current_connection",
-          connectionRevision: "4",
-          connection: connected,
-        },
-      },
+      body: { status: "operation_started", operation: operation() },
     });
+    expect(ports.calls.starts).toEqual([{
+      operationId,
+      interactionInterface: "cli",
+      kind: "disconnect",
+      connectionRevision: null,
+    }]);
+    expect(JSON.stringify(result)).not.toContain("qr");
+
+    const invalid = await invoke(registry, "POST", walletControlResources.operations.path, {
+      control: { operationId, interactionInterface: "cli" },
+      request: { kind: "disconnect", connectionRevision: null },
+      extra: true,
+    });
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) expect(invalid.problem.code).toBe("invalid_input");
+    expect(ports.calls.starts).toHaveLength(1);
   });
 
-  it("validates operation identifiers and never passes an invalid path identity to the coordinator", async () => {
-    const { operations, calls } = fakeOperations();
-    const registry = await routes(operations);
-
-    const invalidRead = await invoke(
-      registry,
-      "GET",
-      "/api/v1/internal/control/wallet/operations/not-a-canonical-operation-id",
-    );
-    expect(invalidRead.ok).toBe(false);
-    if (!invalidRead.ok) expect(invalidRead.problem.code).toBe("invalid_input");
-    expect(calls.reads).toEqual([]);
-
-    const invalidCancel = await invoke(
-      registry,
-      "DELETE",
-      "/api/v1/internal/control/wallet/operations/not-a-canonical-operation-id",
-    );
-    expect(invalidCancel.ok).toBe(false);
-    if (!invalidCancel.ok) expect(invalidCancel.problem.code).toBe("invalid_input");
-    expect(calls.cancellations).toEqual([]);
-
-    expect((await invoke(
-      registry,
-      "GET",
-      `/api/v1/internal/control/wallet/operations/${operationId}`,
-    )).ok).toBe(true);
-    expect((await invoke(
-      registry,
-      "DELETE",
-      `/api/v1/internal/control/wallet/operations/${operationId}`,
-    )).ok).toBe(true);
-    expect(calls.reads).toEqual([operationId]);
-    expect(calls.cancellations).toEqual([operationId]);
-  });
-
-  it("returns QR matrices only as the optional response field and rejects invalid QR exposure", async () => {
+  it("binds read, presentation, confirmation, and cancellation to one exact operation", async () => {
     const pending = operation({
       kind: "connect",
       state: "awaiting_wallet_approval",
       result: null,
     });
-    const withQr = fakeOperations(() => ({ operation: pending, qr }));
-    const cliRegistry = await routes(withQr.operations);
-    const cli = await invoke(
-      cliRegistry,
-      "POST",
-      "/api/v1/internal/control/wallet/operations",
-      createBody("connect", "cli", null),
-    );
-    expect(cli).toEqual({
-      ok: true,
-      response: "canonical_json",
-      body: {
-        result: { status: "operation_started", operation: pending },
+    const ports = fakePorts({
+      presentation: async () => parseWalletOperationPresentation({
+        operation: pending,
+        access: "interactive",
         qr,
+      }),
+    });
+    const registry = await routes(ports);
+
+    const read = await invoke(registry, "GET", walletControlResources.operation.path(operationId));
+    expect(read).toMatchObject({ ok: true, body: { operationId } });
+    const presentation = await invoke(registry, "GET", walletControlResources.presentation.path(operationId));
+    expect(presentation).toMatchObject({
+      ok: true,
+      body: { operation: { operationId, state: "awaiting_wallet_approval" }, access: "interactive", qr },
+    });
+    const confirmation = await invoke(
+      registry,
+      "POST",
+      walletControlResources.confirmation.path(operationId),
+      { connectionRevision: "4" },
+    );
+    expect(confirmation).toMatchObject({ ok: true, body: { operationId } });
+    const cancellation = await invoke(
+      registry,
+      "POST",
+      walletControlResources.cancellation.path(operationId),
+      { connectionRevision: "4" },
+    );
+    expect(cancellation).toMatchObject({ ok: true, body: { operationId } });
+
+    expect(ports.calls).toEqual({
+      starts: [],
+      reads: [operationId],
+      presentations: [{ operationId, interactionInterface: "cli" }],
+      confirmations: [{ operationId, input: { connectionRevision: "4" } }],
+      cancellations: [{ operationId, connectionRevision: "4" }],
+    });
+  });
+
+  it("rejects invalid path identities and mismatched canonical results", async () => {
+    const ports = fakePorts({
+      get: async () => operation({ operationId: otherOperationId }),
+      presentation: async () => parseWalletOperationPresentation({
+        operation: operation({ operationId: otherOperationId }),
+        access: "interactive",
+      }),
+    });
+    const registry = await routes(ports);
+    const invalid = await invoke(
+      registry,
+      "GET",
+      "/api/v1/internal/control/wallet/operations/not-an-operation-id",
+    );
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) expect(invalid.problem.code).toBe("invalid_input");
+    expect(ports.calls.reads).toEqual([]);
+
+    for (const path of [
+      walletControlResources.operation.path(operationId),
+      walletControlResources.presentation.path(operationId),
+    ]) {
+      const result = await invoke(registry, "GET", path);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.problem.code).toBe("internal_error");
+    }
+  });
+
+  it("preserves owned failures, redacts unknown failures, and projects wallet.connection unchanged", async () => {
+    const failing = fakePorts({
+      get: async () => { throw new WalletOperationError("wallet_timeout"); },
+      cancel: async () => { throw new RuntimeOperationError("state_conflict"); },
+      presentation: async () => { throw new Error("secret topic and relay payload"); },
+    });
+    const registry = await routes(failing);
+    const timeout = await invoke(registry, "GET", walletControlResources.operation.path(operationId));
+    expect(timeout.ok).toBe(false);
+    if (!timeout.ok) expect(timeout.problem.code).toBe("wallet_timeout");
+    const conflict = await invoke(
+      registry,
+      "POST",
+      walletControlResources.cancellation.path(operationId),
+      { connectionRevision: "4" },
+    );
+    expect(conflict.ok).toBe(false);
+    if (!conflict.ok) expect(conflict.problem.code).toBe("state_conflict");
+    const unknown = await invoke(registry, "GET", walletControlResources.presentation.path(operationId));
+    expect(unknown.ok).toBe(false);
+    if (!unknown.ok) {
+      expect(unknown.problem.code).toBe("internal_error");
+      expect(JSON.stringify(unknown.problem)).not.toContain("secret");
+      expect(JSON.stringify(unknown.problem)).not.toContain("relay");
+    }
+
+    const connection = await invoke(registry, "GET", walletControlResources.connection.path);
+    expect(connection).toMatchObject({
+      ok: true,
+      body: {
+        ok: true,
+        meta: { capabilityId: "wallet.connection", contractVersion: "1", chainId: "eip155:4663" },
+        data: disconnected,
+        warnings: [],
       },
     });
-    if (cli.ok && cli.response === "canonical_json") {
-      expect("qr" in (cli.body as Record<string, unknown>)).toBe(true);
-      expect("qr" in ((cli.body as {
-        result: { operation: Record<string, unknown> };
-      }).result.operation)).toBe(false);
-    }
-
-    const webRegistry = await routes(withQr.operations);
-    const web = await invoke(
-      webRegistry,
-      "POST",
-      "/api/v1/internal/control/wallet/operations",
-      createBody("connect", "web", null),
-    );
-    expect(web.ok).toBe(false);
-    if (!web.ok) expect(web.problem.code).toBe("internal_error");
-
-    const omitted = fakeOperations();
-    const omittedRegistry = await routes(omitted.operations);
-    const read = await invoke(
-      omittedRegistry,
-      "GET",
-      `/api/v1/internal/control/wallet/operations/${operationId}`,
-    );
-    expect(read.ok).toBe(true);
-    if (read.ok && read.response === "canonical_json") {
-      expect("qr" in (read.body as Record<string, unknown>)).toBe(false);
-    }
-
-    const invalid = fakeOperations(() => ({ operation: operation(), qr } as WalletOperationResponse));
-    const invalidRegistry = await routes(invalid.operations);
-    const rejected = await invoke(
-      invalidRegistry,
-      "GET",
-      `/api/v1/internal/control/wallet/operations/${operationId}`,
-    );
-    expect(rejected.ok).toBe(false);
-    if (!rejected.ok) expect(rejected.problem.code).toBe("internal_error");
-  });
-
-  it("preserves canonical operation errors and normalizes unknown exceptions without exposing their text", async () => {
-    const throwing = (error: Error): WalletLocalControlOperationPort => Object.freeze({
-      async start() { throw error; },
-      get() { throw error; },
-      async cancel() { throw error; },
-    });
-
-    const walletFailure = await invoke(
-      await routes(throwing(new WalletOperationError("wallet_timeout"))),
-      "GET",
-      `/api/v1/internal/control/wallet/operations/${operationId}`,
-    );
-    expect(walletFailure.ok).toBe(false);
-    if (!walletFailure.ok) expect(walletFailure.problem.code).toBe("wallet_timeout");
-
-    const runtimeFailure = await invoke(
-      await routes(throwing(new RuntimeOperationError("state_conflict"))),
-      "DELETE",
-      `/api/v1/internal/control/wallet/operations/${operationId}`,
-    );
-    expect(runtimeFailure.ok).toBe(false);
-    if (!runtimeFailure.ok) expect(runtimeFailure.problem.code).toBe("state_conflict");
-
-    const unknownFailure = await invoke(
-      await routes(throwing(new Error("secret topic and relay payload"))),
-      "GET",
-      `/api/v1/internal/control/wallet/operations/${operationId}`,
-    );
-    expect(unknownFailure.ok).toBe(false);
-    if (!unknownFailure.ok) {
-      expect(unknownFailure.problem.code).toBe("internal_error");
-      expect(JSON.stringify(unknownFailure.problem)).not.toContain("secret");
-      expect(JSON.stringify(unknownFailure.problem)).not.toContain("relay");
-    }
-  });
-
-  it("invokes the canonical wallet.connection binding without redefining its result", async () => {
-    const { operations } = fakeOperations();
-    const registry = await routes(operations);
-    const result = await invoke(registry, "GET", "/api/v1/internal/control/wallet/connection");
-    expect(result.ok).toBe(true);
-    if (!result.ok || result.response !== "canonical_json") return;
-    expect(result.body).toMatchObject({
-      ok: true,
-      meta: { capabilityId: "wallet.connection", contractVersion: "1", chainId: "eip155:4663" },
-      data: disconnected,
-      warnings: [],
-    });
-
-    const failedConnection = walletConnection(async () => ({
-      status: "failure",
-      code: "invalid_input",
-      issues: [],
-    }));
-    const failed = await invoke(
-      await routes(operations, failedConnection),
-      "GET",
-      "/api/v1/internal/control/wallet/connection",
-    );
-    expect(failed.ok).toBe(false);
-    if (!failed.ok) expect(failed.problem.code).toBe("invalid_input");
   });
 });

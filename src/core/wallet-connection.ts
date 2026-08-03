@@ -9,15 +9,15 @@ import {
 
 const primitives = createPrimitiveSchemaSet();
 export const walletConnectionStatusDefinitions = Object.freeze({
-  unknown: Object.freeze({ reasons: Object.freeze(["reconciling", "owner_unavailable"] as const) }),
+  unknown: Object.freeze({ reasons: Object.freeze(["reconciling", "observation_unavailable"] as const) }),
   disconnected: Object.freeze({
-    reasons: Object.freeze(["no_session", "expired", "deleted", "disconnected", "unusable_store"] as const),
+    reasons: Object.freeze(["no_session", "expired", "disconnected"] as const),
   }),
   unresolved: Object.freeze({ reasons: Object.freeze([] as const) }),
   connected: Object.freeze({ reasons: Object.freeze([] as const) }),
 });
 const sessionCountSchema = primitives.unsignedDecimal
-  .regex(/^(?:[2-9]|[1-9][0-9]+)$/, "Unresolved wallet state requires at least two sessions.");
+  .regex(/^[1-9][0-9]*$/, "Unresolved wallet state requires at least one session.");
 
 const walletConnectionShapeSchema = z.discriminatedUnion("status", [
   jsonObject({

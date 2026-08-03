@@ -46,9 +46,11 @@ const operation = Object.freeze({
   kind: "connect",
   state: "awaiting_wallet_approval",
   connectionRevision,
-  expiresAt: "2099-12-31T23:59:59.000Z",
+  actionExpiresAt: "2099-12-31T23:59:59.000Z",
+  interactionInterface: "web",
   result: null,
   failure: null,
+  peerRefusalCode: null,
 });
 
 const qr = Object.freeze({
@@ -473,6 +475,21 @@ describe("wallet browser client", () => {
         init: common,
       },
     ]);
+  });
+
+  it("preserves a definite terminal operation returned by cancellation", async () => {
+    const expired = Object.freeze({
+      ...operation,
+      state: "expired" as const,
+    });
+    const transport = queuedFetch([jsonResponse(200, expired)]);
+
+    await expect(cancelWalletOperation(
+      operationId,
+      connectionRevision,
+      csrfToken,
+      { request: transport.request },
+    )).resolves.toEqual(expired);
   });
 
   it("fails closed for malformed canonical success and forged problem responses", async () => {

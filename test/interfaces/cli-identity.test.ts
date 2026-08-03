@@ -5,9 +5,12 @@ import {
   declaredCliCommandIdentities,
 } from "../../src/interfaces/identities.js";
 import {
-  runCli,
+  runCli as runCliResult,
   type CliTerminalPort,
 } from "../../src/cli.js";
+
+const runCli = async (...input: Parameters<typeof runCliResult>): Promise<number> =>
+  (await runCliResult(...input)).exitCode;
 
 const helpTerminal = (): CliTerminalPort & {
   readonly output: string[];
@@ -141,7 +144,6 @@ describe("CLI interface identity", () => {
       },
       terminal,
       waitForPoll: async () => undefined,
-      terminateProcess: () => { throw new Error("Help must not terminate the process."); },
     })).toBe(0);
     expect(runtimeCreations).toBe(0);
     expect(terminal.output).toEqual([cliHelpText]);

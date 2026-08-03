@@ -404,22 +404,31 @@ weaker result parser.
   supplied application-stage owner before adopting either resource. Runtime
   composition supplies the stage owner and complete dependencies, consumes the
   complete application, and does not construct token-catalog internals.
-- Fixed-owner shutdown blocks new work, aborts and drains active work, closes
-  interface, reference-market, account-assets, token-catalog, chain, and wallet
-  applications in
-  that order, validates the
-  WalletConnect private store, closes SQLite, releases the database lease, and
-  then releases the fixed HTTP listener.
+- Fixed-owner shutdown blocks new work, aborts and drains active work, and
+  closes interface, reference-market, account-assets, token-catalog, and chain
+  applications in dependency-reverse order before containing wallet product
+  authority. Before WalletConnect SDK initialization begins, the runtime can
+  release wallet resources, close product SQLite, release the database lease,
+  and release the fixed HTTP listener in process. After SDK initialization
+  begins, shutdown is process-terminal: the runtime retains the SDK, its
+  injected storage, product SQLite and its lease, and the fixed listener until
+  operating-system teardown. It does not claim a final wallet observation,
+  seal or close injected storage, or issue a listener-release permit.
 - The listener release requires the exact permit bound to the sealed and empty
   startup scope after application cleanup completes. Another permit or scope
   cannot share or trigger that release.
-- A shutdown failure keeps the owner in `stopping` and preserves the fixed port
-  and every unresolved dependency. A later graceful attempt uses the same
-  retained resources and never reconstructs them from projections.
-- A direct CLI process that cannot complete graceful shutdown reports the safe
-  normalized failure and terminates. Operating-system process teardown is the
-  final resource boundary; it is not a wallet disconnect and does not revoke an
-  approved session.
+- A releasable shutdown failure keeps the owner in `stopping` and preserves the
+  fixed port and every unresolved dependency. A later release attempt uses the
+  same retained resources and never reconstructs them from projections. A
+  process-terminal outcome is sticky and is not retried as an in-process SDK
+  close.
+- The direct executable owns process termination. It first settles every
+  admitted CLI, terminal-restoration, QR, and MCP output write. A host-stream
+  failure produces a nonzero status; backpressure remains pending rather than
+  being reported as successful truncated output. After successful settlement,
+  a process-terminal result uses operating-system teardown as the final SDK
+  resource boundary. This is not a wallet disconnect and does not revoke an
+  approved session. A released result permits normal Node termination.
 
 ## HTTP Owner Authentication
 
@@ -475,11 +484,16 @@ to contain a malicious process already running with the same user authority.
 - The local operation client allocates a 256-bit operation identifier before a
   start, sends each start, cancellation, or confirmation once, and validates
   the response through the binding catalog. Callers supply an opaque catalog
-  identity and operation input; the catalog alone owns the method, path, body,
-  parser, error mapping, recovery, and outcome rules. After an uncertain send,
-  it may read that exact operation once only while the authenticated profile,
+  identity and operation input. Wallet control-resource descriptors own each
+  exact method and path; Wallet route registration and Wallet local-operation
+  identities consume those descriptors. The binding catalog owns the request
+  body, parser, error mapping, recovery, and outcome rules. After an uncertain
+  send, it may read that exact operation once only while the authenticated profile,
   owner instance, configuration identifier, and owner revision are unchanged.
-  An unproved outcome is `delivery_unknown` and forbids resend.
+  A Wallet cancellation recovery admits only the exact operation with its
+  captured connection revision; the operation state remains the sole statement
+  of the effect outcome. An unobserved outcome is `delivery_unknown` and
+  forbids resend.
 - After dispatch, the owning route and runtime lifecycle own operation
   completion and cancellation. Closing the client rejects new calls, aborts
   cancellable transport work, and waits for admitted calls to settle.
@@ -520,18 +534,21 @@ to contain a malicious process already running with the same user authority.
   evidence authority in one immutable observation. Consumers do not combine
   that observation with a later SQLite projection read or compare recreated
   source objects by reference.
-- One operation-entry procedure converges expired operations before every
-  public read or control action. A separate exact-session-revocation procedure
-  deactivates affected evidence, disconnects the exact topic, and proves that
-  topic absent from the SDK store before evidence can reactivate.
-- A local Little John profile has zero or one live WalletConnect session and zero
-  or one nonterminal wallet management operation. A pending pairing proposal is
-  operation state and is not a WalletConnect session.
+- One serial coordinator effect owns command admission, the immutable action
+  deadline, SDK settlement, a fresh stable postcondition, operation
+  publication, and cleanup. The operation and its interaction interface are
+  bound before the effect begins.
+- A local Little John profile admits zero or one valid WalletConnect session as
+  connected and zero or one nonterminal wallet management operation. A pending
+  pairing proposal is operation state, not a session. Multiple or invalid SDK
+  sessions remain visible as unresolved state; Little John does not choose one.
 - MCP, web, and CLI send commands to the coordinator and consume its connection
   and operation read models. They never copy session topics, keys, or signing
   authority into interface state.
 - The WalletConnect SDK's private storage is authoritative for pairings,
-  sessions, topics, namespaces, expiry, and session key material.
+  sessions, topics, namespaces, expiry, and session key material. Wallet injects
+  one opaque SQLite key-value owner through the SDK's public storage option;
+  product code never interprets its values as WalletConnect records.
 - A connected wallet projection contains one canonical EIP-155 chain identity
   and one canonical lowercase EVM address. The coordinator derives their
   CAIP-10 account reference only at WalletConnect protocol and internal session
@@ -572,7 +589,7 @@ staging namespace fails startup without changing the final database. Concurrent
 creators converge on the final database rather than choosing or repairing a
 staging database.
 
-SQLite has one current schema definition. `currentSqliteSchemaSql` in
+The product SQLite database has one current schema definition. `currentSqliteSchemaSql` in
 `src/runtime/sqlite-schema.ts` is its sole SQL owner. Fresh creation applies
 that SQL and writes the literal SQLite `user_version=1`; opening existing state
 never reads, compares, branches on, or rewrites `user_version`.
@@ -623,6 +640,12 @@ projection, account watchlists, and account token-selection state. The exact
 table names and their SQL relationships are read from the SQLite schema owner,
 not maintained as an independent documentation contract.
 
+The connection projection includes one secret-free `revalidation_required`
+boolean. It records only a contradiction or ambiguous product write that
+Little John itself admitted and that the SDK may not retain. It is not a session copy,
+event log, owner marker, generation, or source selector. A stable empty SDK
+observation clears it atomically with the disconnected projection.
+
 The connection projection is not the durable owner of account identity. A
 validated connected transition inserts or reuses its exact wallet-account row
 and replaces the projection in one transaction. A nonconnected transition
@@ -630,11 +653,11 @@ changes only the projection and never deletes a wallet-account row.
 
 The current wallet management operation is owner-memory coordination state. It
 contains its opaque identifier, kind, state, starting connection revision,
-expiry, and secret-free terminal result. It never enters SQLite or the
-WalletConnect SDK store. A nonterminal operation has a fixed user-action
-deadline. A terminal operation has a fixed bounded retention period and is then
-removed. Pairing URI and QR material remain separate owner-memory secret state
-and never enter the operation read model.
+immutable action deadline, interaction interface, and secret-free terminal
+result. It never enters SQLite or the WalletConnect SDK store. Terminal
+retention is private owner memory and does not alter the action deadline.
+Pairing URI and QR material remain separate exact-operation presentation state
+and never enter the canonical operation read model.
 
 The current token-catalog operation is also owner-memory coordination state. A
 profile has at most one nonterminal catalog operation. Addition inspects the
@@ -723,31 +746,78 @@ credential, raw WalletConnect session record, raw signature, or raw signed
 transaction into SQLite. SQLite does not implement, inspect, migrate, or repair
 the WalletConnect SDK's private schema.
 
-Only the HTTP-owner process opens the WalletConnect SDK private store. Other
-Little John processes consume the owner-provided connection read model and do
-not open or copy that store.
+Only the HTTP-owner process opens the WalletConnect private database. It
+registers the opened storage owner before the next fallible acquisition step,
+then transfers that same registration to the WalletConnect adapter. Other
+Little John processes consume owner-provided Wallet product ports and never
+open or copy the private database.
 
-SQLite connection state is a derived projection and never proves that a wallet
-is currently connected. On startup or ownership takeover, the coordinator:
+The private database has one current opaque key-value schema. It stores each
+admitted SDK key as its exact canonical UTF-8 bytes and stores bounded
+`node:v8` values without interpreting them. It commits each effective mutation
+and its monotonic revision in one SQLite transaction and admits only its exact
+owner-only main/WAL/SHM artifact set. It has no migration, compatibility reader,
+schema repair, or WalletConnect-record projection. A latched filesystem,
+SQLite, key, codec, limit, permission, or closed-state failure cannot become an
+empty observation.
 
-1. initializes the WalletConnect SDK against its private store;
-2. reads sessions through the SDK API;
-3. validates expiry, the configured canonical chain, approved account, required methods, and
-   current session usability;
-4. subscribes to session lifecycle events; and
-5. transactionally replaces the SQLite connection projection.
+SQLite connection state is a derived product projection and never proves that a
+wallet is currently connected. A stable public SDK observation is exactly:
 
-No valid session produces a disconnected projection. More than one live
-session violates the single-session invariant and produces an unresolved state;
-Little John never chooses one, exposes session selection as a normal operation,
-or silently revokes sessions. The user must explicitly confirm disconnection of
-every stored session before starting a new connection. Until reconciliation
-completes, the shared projection is unknown and cannot authorize a wallet
-request.
+1. read the private-storage revision;
+2. read the SDK's public proposal collection;
+3. read the SDK's public session collection; and
+4. reread the private-storage revision.
 
-A wallet-originated deletion, expiry, account removal, chain removal, or
-unusable SDK store invalidates the SQLite projection. Historical connection
-events are not retained merely as an activity log.
+The observation is available only when both revision reads are healthy and
+equal. It performs no SDK mutation. The adapter preserves optional namespace
+field absence and converts session topics only to secret-free session-source
+identities before returning the observation. Every returned session is
+addressable by one such source. If any SDK session entry cannot produce that
+source, the complete observation is unavailable rather than an unresolved set
+that cannot be reconciled.
+
+The coordinator projects one complete observation in this order: an active
+effect is unknown; an unavailable observation is unknown; proposal-only state
+is reconciling; any invalid session, multiple sessions, a session plus another
+proposal, or a nonempty observation blocked by revalidation is unresolved; one
+valid session is connected; and only a stable empty observation is
+disconnected. It validates canonical chain and account identities, the exact
+required methods and events, and expiry. It never selects a session from an
+unresolved set.
+
+WalletConnect callbacks are wake-up hints rather than connection or actor
+evidence. The adapter attaches SDK callbacks before handoff, retains admitted
+events in one bounded queue, and releases them only after the coordinator has
+registered the sole consumer and the adapter has attempted one stable initial
+observation. Events captured across that activation boundary use the same
+mapping as later events; an identity event that cannot be attributed closes
+current authority and schedules a stable observation instead of disappearing.
+A generic observation-change callback schedules a stable observation without
+writing a connection projection from the callback itself. Unknown callback
+types are ignored. A supported identity callback for the
+exact active session closes authority synchronously when its admitted content
+is malformed or contradictory, persists `revalidation_required`, and then
+requests a fresh observation. If a later nonempty unresolved observation still
+contains that exact source, the coordinator retains it only as an internal
+callback-attribution key; it exposes no active session and authorizes no wallet
+request. An observation that no longer contains that source clears the internal
+attribution. Deletion and expiry wording never become the cause of a public
+projection; only an exact owned effect plus its stable postcondition can supply
+an effect-specific disconnected reason. An unchanged stable empty observation
+preserves an already admitted disconnected reason; absence alone cannot replace
+that causal fact or advance the connection revision.
+
+Shutdown rejects new commands and contains the admitted effect before detaching
+product callbacks and closing in-memory wallet authority. Once WalletConnect
+SDK initialization has begun, the public SDK boundary cannot prove that relay,
+heartbeat, provider, expiry, or persistence work has stopped using injected
+storage. The runtime therefore makes process-terminal ownership sticky: it
+does not publish a final connection projection, seal or close injected storage,
+or claim an aggregate `SignClient` close. It retains the inseparable SDK and
+storage owner set until operating-system teardown. A successor process restores
+the SDK and obtains a new healthy stable observation before publishing wallet
+authority.
 
 Both stores live under the Little John application-data directory rather than
 the repository or browser storage. Little John restricts their filesystem
@@ -794,11 +864,11 @@ application logs, exports, and diagnostic bundles.
   changes. Applying work is not dismissible. Dismissing a delivery-uncertainty
   presentation changes presentation only and preserves its exact reconciliation
   subject.
-- The dialog offers Connect only while cleanly disconnected. A disconnected
-  `unusable_store` state offers Disconnect so the coordinator can remove any
-  remaining SDK session before another Connect. Connected and unresolved states
-  also offer Disconnect; unknown state permits no mutation, and unresolved
-  state never selects one session. The browser start request contains
+- The dialog offers Connect only while cleanly disconnected. Connected and
+  unresolved states offer Disconnect; unknown state permits no mutation, and
+  unresolved state never selects one session. A confirmed unresolved
+  disconnection applies to every exact public session source in the stable
+  observation rather than choosing one. The browser start request contains
   `connect` or `disconnect` plus the connection revision displayed to the user;
   the coordinator rejects a stale revision, reads the actual current state, and
   applies that direct action atomically. An ordinary Connect request returns the
@@ -1065,21 +1135,23 @@ application logs, exports, and diagnostic bundles.
   Disconnect uses nonterminal
   `awaiting_confirmation` and `disconnecting`, then terminal `completed`,
   `cancelled`, `failed`, or `expired`.
-- Each nonterminal state has one role. `starting_connection` acquires one exact
-  SDK Connect attempt; `awaiting_wallet_approval` observes that acquired
-  attempt; `cancelling` performs bounded cleanup of acquisition or that exact
-  attempt; and `validating_session` owns approved-topic validation, persistence,
-  and cleanup authority.
+- Each nonterminal state has one role. `starting_connection` owns SDK Connect
+  acquisition and every exact proposal or pairing it creates; after the SDK
+  supplies an approval handle, `awaiting_wallet_approval` observes that exact
+  attempt. `cancelling` contains acquisition or that exact attempt through its
+  actual settlement and cleanup; and `validating_session` owns approved-topic
+  validation, persistence, and cleanup authority.
   `awaiting_confirmation` waits for direct authorization of Disconnect, and
   `disconnecting` performs its bounded SDK session deletion.
-- A successful, cancelled, rejected, or expired terminal operation is published
-  only after its exact SDK postcondition and authoritative reconciliation are
-  known. An SDK failure or deadline may publish `failed` after invalidating
-  connection evidence and fencing the still-running effect; that effect cannot
-  authorize state, and any late success is cleaned up before evidence becomes
-  available again. An approved topic is placed under revocation authority
-  before validation or persistence, and every validation failure removes the
-  topic before terminal publication.
+- A completed or cancelled mutation is published only after its exact SDK
+  settlement and fresh stable postcondition are known. Peer rejection preserves
+  the admitted numeric WalletConnect refusal code. SDK, local deadline,
+  observation, and validation failures retain their owning public failure
+  class. Cleanup attempts every independently addressable proposal, pairing, or
+  session even when another cleanup attempt fails; the fresh stable
+  postcondition, not an individual SDK return, determines terminal success. A
+  late approval after local cancellation is cleaned through the exact attempt
+  owner and cannot republish QR or connection authority.
 - A connection instruction with no live session starts pairing. A connection
   instruction with one valid live session returns the current connection and
   creates no operation. A connection instruction while session state is
@@ -1107,6 +1179,9 @@ application logs, exports, and diagnostic bundles.
 - The coordinator derives accounts, chains, methods, and events from the
   approved session namespaces as defined by the
   [WalletConnect session model](https://docs.walletconnect.network/wallet-sdk/web/usage).
+- Connect sends these requirements as WalletConnect optional namespaces.
+  Little John, rather than the peer request label, owns mandatory chain, account,
+  method, event, and expiry admission after approval.
 - The selected account remains usable only while its session exists, is not
   expired, and still contains the canonical product chain, the account, and the
   required method. Product-chain identity and its official source evidence are
@@ -1120,11 +1195,10 @@ application logs, exports, and diagnostic bundles.
 - A new QR is required when no valid session or reusable pairing remains.
 - A new session approval is required when the required chain, account, or method
   is outside the current approved namespaces.
-- Session deletion, disconnect, expiry, unusable storage, or removal of the
-  selected account clears the active connection.
-- A wallet-originated `session_delete` invalidates the selected account and
-  shared connection read model, cancels use of that session, and
-  requires a new connection before another wallet request.
+- Storage or SDK observation failure makes connection evidence unavailable; it
+  never produces healthy absence. Session disappearance, expiry, or removal of
+  the selected account changes the public projection only after a new stable
+  observation. Callback names do not become public causes.
 
 ## Local Credential Taxonomy
 

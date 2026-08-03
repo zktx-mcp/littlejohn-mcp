@@ -9,7 +9,6 @@ export const renderPackagedOwnerWorkerSource = (packageInstallRelativePath) => {
   const packageModule = (path) =>
     JSON.stringify(`./${packageRoot}/dist/${canonicalRelativePath(path)}`);
   return String.raw`
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -22,6 +21,7 @@ import {
 } from ${packageModule("registry/index.js")};
 import { ProductDatabase } from ${packageModule("runtime/database.js")};
 import { LocalRuntime } from ${packageModule("runtime/index.js")};
+import { requireProcessTermination } from ${packageModule("runtime/shutdown.js")};
 import { createWalletOwnerApplicationFactory } from ${packageModule("wallet/application.js")};
 
 const dataDirectory = process.env.LITTLEJOHN_DATA_DIR;
@@ -37,7 +37,7 @@ if (
 
 const sessionTopic = "a".repeat(64);
 const sessionAccount = "eip155:4663:0x1111111111111111111111111111111111111111";
-const alternateSessionAccount = "eip155:4663:0x3333333333333333333333333333333333333333";
+const sessionStoreKey = "littlejohn.release.fixture.sessions";
 const now = () => readFileSync(clockPath, "utf8").trim();
 const sessionExpiry = () => Math.floor(Date.parse(now()) / 1000) + 7 * 24 * 60 * 60;
 
@@ -94,22 +94,21 @@ const qr = Object.freeze({
   )),
 });
 
-const readSessions = async (path) => {
-  try {
-    const value = JSON.parse(await readFile(path, "utf8"));
-    if (!Array.isArray(value)) throw new TypeError("Fake wallet store is invalid.");
-    return value;
-  } catch (error) {
-    if (error && typeof error === "object" && error.code === "ENOENT") return [];
-    throw error;
+const admitStoredSessions = (value) => {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 1) {
+    throw new TypeError("Release WalletConnect fixture storage is invalid.");
   }
-};
-
-const persistSessions = async (path, sessions) => {
-  const temporary = path + ".tmp-" + process.pid;
-  await writeFile(temporary, JSON.stringify(sessions) + "\n", { mode: 0o600 });
-  if (process.platform !== "win32") await chmod(temporary, 0o600);
-  await rename(temporary, path);
+  return value.map((stored) => {
+    const account = stored?.namespaces?.eip155?.accounts?.[0];
+    if (
+      typeof stored !== "object" || stored === null ||
+      stored.topic !== sessionTopic ||
+      !Number.isSafeInteger(stored.expiry) || stored.expiry <= 0 ||
+      typeof account !== "string"
+    ) throw new TypeError("Release WalletConnect fixture session is invalid.");
+    return session(stored.expiry, account);
+  });
 };
 
 const inspectPersistence = async () => {
@@ -128,20 +127,44 @@ const inspectPersistence = async () => {
 };
 
 class FakeWalletConnectClient {
-  constructor(storePath, sessions) {
-    this.storePath = storePath;
+  constructor(storageOwner, createSessionSource, sessions) {
+    this.storageOwner = storageOwner;
+    this.createSessionSource = createSessionSource;
     this.sessions = sessions;
     this.nextSessionAccount = sessions[0]?.namespaces?.eip155?.accounts?.[0] ?? sessionAccount;
     this.listener = undefined;
     this.pending = undefined;
+    this.contained = false;
   }
 
-  listSessions() {
-    return Object.freeze([...this.sessions]);
+  publicSession(value) {
+    return Object.freeze({
+      status: "valid",
+      source: this.createSessionSource(value.topic),
+      expiry: value.expiry,
+      namespaces: value.namespaces,
+    });
+  }
+
+  async persistSessions() {
+    if (this.contained) throw new Error("Release WalletConnect fixture is contained.");
+    await this.storageOwner.storage.setItem(sessionStoreKey, this.sessions);
+  }
+
+  observe() {
+    if (this.contained) throw new Error("Release WalletConnect fixture is contained.");
+    const r0 = this.storageOwner.checkpoint();
+    const sessions = Object.freeze(this.sessions.map((value) => this.publicSession(value)));
+    const proposalCount = this.pending === undefined || this.pending.closed ? 0 : 1;
+    const r1 = this.storageOwner.checkpoint();
+    if (r0 !== r1) throw new Error("Release WalletConnect fixture observation changed.");
+    return Object.freeze({ proposalCount, sessions, revision: r1 });
   }
 
   async startConnection() {
-    if (this.pending !== undefined) throw new Error("A fake connection attempt is already active.");
+    if (this.contained || this.pending !== undefined || this.sessions.length !== 0) {
+      throw new Error("A fake connection attempt cannot start.");
+    }
     let resolveOutcome;
     const outcome = new Promise((resolve) => { resolveOutcome = resolve; });
     const pending = {
@@ -168,83 +191,123 @@ class FakeWalletConnectClient {
     if (pending === undefined || pending.closed) throw new Error("No fake approval is pending.");
     const approved = session(sessionExpiry(), this.nextSessionAccount);
     this.sessions = [approved];
-    await persistSessions(this.storePath, this.sessions);
+    await this.persistSessions();
     pending.closed = true;
     this.pending = undefined;
-    pending.resolve(Object.freeze({ status: "approved", session: approved }));
+    pending.resolve(Object.freeze({ status: "approved", session: this.publicSession(approved) }));
     return approved;
   }
 
   async touchSession() {
     if (this.sessions.length !== 1) throw new Error("No exact fake session is available.");
-    const changed = session(this.sessions[0].expiry + 120);
-    this.sessions = [changed];
-    await persistSessions(this.storePath, this.sessions);
-    this.listener?.(Object.freeze({ kind: "session_changed", topic: sessionTopic }));
-    return changed;
-  }
-
-  async changeAccount() {
-    if (this.sessions.length !== 1) throw new Error("No exact fake session is available.");
     const current = this.sessions[0];
-    this.nextSessionAccount = this.nextSessionAccount === sessionAccount
-      ? alternateSessionAccount
-      : sessionAccount;
-    const changed = session(current.expiry + 120, this.nextSessionAccount);
+    const account = current.namespaces.eip155.accounts[0];
+    const changed = session(current.expiry + 120, account);
     this.sessions = [changed];
-    await persistSessions(this.storePath, this.sessions);
-    this.listener?.(Object.freeze({ kind: "session_changed", topic: sessionTopic }));
+    await this.persistSessions();
+    this.listener?.(Object.freeze({
+      kind: "observation_changed",
+      sessionSourceId: this.createSessionSource(sessionTopic).sourceId,
+    }));
     return changed;
   }
 
   async deleteSession() {
     const existed = this.sessions.some((value) => value.topic === sessionTopic);
     this.sessions = this.sessions.filter((value) => value.topic !== sessionTopic);
-    await persistSessions(this.storePath, this.sessions);
-    if (existed) this.listener?.(Object.freeze({ kind: "session_deleted", topic: sessionTopic }));
+    await this.persistSessions();
+    if (existed) this.listener?.(Object.freeze({
+      kind: "observation_changed",
+      sessionSourceId: this.createSessionSource(sessionTopic).sourceId,
+    }));
   }
 
-  async disconnectSession(topic) {
-    this.sessions = this.sessions.filter((value) => value.topic !== topic);
-    await persistSessions(this.storePath, this.sessions);
-    return Object.freeze([...this.sessions]);
+  async disconnectSession(sessionSourceId) {
+    const matched = this.sessions.find((value) =>
+      this.createSessionSource(value.topic).sourceId === sessionSourceId);
+    if (matched === undefined) throw new Error("No exact fake session is available.");
+    this.sessions = this.sessions.filter((value) => value !== matched);
+    await this.persistSessions();
+    this.listener?.(Object.freeze({ kind: "observation_changed", sessionSourceId }));
   }
 
-  subscribe(listener) {
-    if (this.listener !== undefined) throw new Error("Fake wallet listener is already registered.");
+  activate(listener) {
+    if (this.contained || this.listener !== undefined) {
+      throw new Error("Fake wallet listener cannot be registered.");
+    }
     this.listener = listener;
-    return () => {
-      if (this.listener === listener) this.listener = undefined;
-    };
+    let active = true;
+    return Object.freeze({
+      initialObservation: Object.freeze({
+        status: "available",
+        observation: this.observe(),
+      }),
+      releaseEvents: () => undefined,
+      unsubscribe: () => {
+        if (!active) return;
+        active = false;
+        if (this.listener === listener) this.listener = undefined;
+      },
+    });
   }
 
-  async close() {
+  async contain() {
+    if (this.contained) return;
+    this.contained = true;
     const pending = this.pending;
     if (pending !== undefined && !pending.closed) {
       pending.closed = true;
+      this.pending = undefined;
       pending.resolve(Object.freeze({ status: "cancelled" }));
     }
-    this.pending = undefined;
     this.listener = undefined;
+  }
+
+  async close() {
+    await this.contain();
+    throw requireProcessTermination();
   }
 }
 
 let client;
-const createFakeClient = async (configuration, acquisitionResources) => {
-  await mkdir(configuration.privateStoreDirectory, { recursive: true, mode: 0o700 });
-  if (process.platform !== "win32") await chmod(configuration.privateStoreDirectory, 0o700);
-  const storePath = resolve(configuration.privateStoreDirectory, "release-fake-sessions.json");
-  const created = new FakeWalletConnectClient(storePath, await readSessions(storePath));
-  const registration = acquisitionResources.register(created);
+const createFakeClient = async (configuration, registration, signal) => {
+  const stored = await configuration.storageOwner.storage.getItem(sessionStoreKey);
+  const created = new FakeWalletConnectClient(
+    configuration.storageOwner,
+    configuration.createSessionSource,
+    admitStoredSessions(stored),
+  );
+  registration.replace(configuration.storageOwner, created);
+  const abort = () => { void created.contain(); };
+  signal.addEventListener("abort", abort, { once: true });
   let ownedResource = created;
+  let adopted = false;
+  let controlled = true;
   client = created;
   return Object.freeze({
-    client: created,
+    client: Object.freeze({
+      observe: () => created.observe(),
+      startConnection: () => created.startConnection(),
+      disconnectSession: (sessionSourceId) => created.disconnectSession(sessionSourceId),
+      activate: (listener) => created.activate(listener),
+      contain: () => created.contain(),
+    }),
     replace: (resource) => {
+      if (!controlled) throw new Error("Release WalletConnect fixture ownership was transferred.");
       registration.replace(ownedResource, resource);
       ownedResource = resource;
+      if (!adopted) {
+        adopted = true;
+        signal.removeEventListener("abort", abort);
+      }
     },
-    transfer: () => registration.transfer(),
+    transfer: () => {
+      if (!adopted || !controlled) {
+        throw new Error("Release WalletConnect fixture ownership is unavailable.");
+      }
+      registration.transfer();
+      controlled = false;
+    },
   });
 };
 
@@ -271,6 +334,17 @@ const send = (value) => {
   if (process.send !== undefined && process.connected) process.send(value);
 };
 
+const sendSettled = (value) => new Promise((resolveSend, rejectSend) => {
+  if (process.send === undefined || !process.connected) {
+    rejectSend(new Error("Release worker IPC is unavailable."));
+    return;
+  }
+  process.send(value, (error) => {
+    if (error === null) resolveSend();
+    else rejectSend(error);
+  });
+});
+
 let tail = Promise.resolve();
 const handle = async (message) => {
   if (typeof message !== "object" || message === null || typeof message.requestId !== "string") {
@@ -296,11 +370,6 @@ const handle = async (message) => {
     send({ requestId, ok: true, result: await client.touchSession() });
     return;
   }
-  if (message.command === "change_account") {
-    if (client === undefined) throw new Error("Fake wallet owner is unavailable.");
-    send({ requestId, ok: true, result: await client.changeAccount() });
-    return;
-  }
   if (message.command === "delete_session") {
     if (client === undefined) throw new Error("Fake wallet owner is unavailable.");
     await client.deleteSession();
@@ -308,15 +377,21 @@ const handle = async (message) => {
     return;
   }
   if (message.command === "stop") {
-    await runtime.stop();
-    send({ requestId, ok: true, result: null });
-    setImmediate(() => process.exit(0));
+    const outcome = await runtime.stop();
+    if (outcome.kind !== "process_terminal") {
+      throw new Error("Release worker did not retain its WalletConnect process owner.");
+    }
+    await sendSettled({ requestId, ok: true, result: null });
+    process.exit(0);
     return;
   }
   if (message.command === "stop_and_inspect_persistence") {
-    await runtime.stop();
-    send({ requestId, ok: true, result: await inspectPersistence() });
-    setImmediate(() => process.exit(0));
+    const outcome = await runtime.stop();
+    if (outcome.kind !== "process_terminal") {
+      throw new Error("Release worker did not retain its WalletConnect process owner.");
+    }
+    await sendSettled({ requestId, ok: true, result: await inspectPersistence() });
+    process.exit(0);
     return;
   }
   throw new TypeError("Release worker command is unknown.");
@@ -337,7 +412,10 @@ process.on("message", (message) => {
 });
 
 process.on("disconnect", () => {
-  void runtime.stop().finally(() => process.exit(0));
+  void runtime.stop().then(
+    () => process.exit(0),
+    () => process.exit(1),
+  );
 });
 
 send({ ready: true, result: { ownerState: runtime.ownerState } });

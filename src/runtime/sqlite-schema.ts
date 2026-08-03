@@ -339,6 +339,7 @@ CREATE TABLE current_wallet_connection (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),
   revision TEXT NOT NULL CHECK (${canonicalUnsignedDecimalSqlCheck("revision")}),
+  revalidation_required INTEGER NOT NULL CHECK (revalidation_required IN (0, 1)),
   status TEXT NOT NULL CHECK (${canonicalSqlTextCheck("status")} AND status IN (${sqlStringList(walletStatuses)})),
   reason TEXT CHECK (reason IS NULL OR ${canonicalSqlTextCheck("reason")}),
   chain_id TEXT CHECK (chain_id IS NULL OR ${canonicalEvmChainIdSqlCheck("chain_id")}),
@@ -346,12 +347,13 @@ CREATE TABLE current_wallet_connection (
   approved_methods_json TEXT CHECK (approved_methods_json IS NULL OR ${canonicalSqlTextCheck("approved_methods_json")}),
   approved_events_json TEXT CHECK (approved_events_json IS NULL OR ${canonicalSqlTextCheck("approved_events_json")}),
   expires_at TEXT CHECK (expires_at IS NULL OR ${canonicalSqlTextCheck("expires_at")}),
-  session_count TEXT CHECK (session_count IS NULL OR (${canonicalUnsignedDecimalSqlCheck("session_count")} AND session_count NOT IN ('0', '1'))),
+  session_count TEXT CHECK (session_count IS NULL OR (${canonicalUnsignedDecimalSqlCheck("session_count")} AND session_count != '0')),
   updated_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("updated_at")}),
   FOREIGN KEY (profile_id) REFERENCES local_profile(profile_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   FOREIGN KEY (profile_id, chain_id, wallet_address)
     REFERENCES wallet_account(profile_id, chain_id, wallet_address)
     ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CHECK (status != 'connected' OR revalidation_required = 0),
   ${walletConnectionFieldPresenceCheckSql}
 ) STRICT;`;
 

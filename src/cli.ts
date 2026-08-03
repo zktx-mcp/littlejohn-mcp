@@ -2,8 +2,9 @@
 
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
-import process, { exit as exitProcess } from "node:process";
+import process from "node:process";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline/promises";
+import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -58,17 +59,24 @@ import {
   runtimeStateResetRequiredCode,
   type RuntimeStateResetRequiredError,
   type RuntimeDispatchRequest,
+  type RuntimeHttpRequest,
   type RuntimeDispatchResponse,
   type RuntimeOwnerSession,
 } from "./runtime/index.js";
+import {
+  isProcessTerminalRequiredError,
+  runtimeProcessTerminal,
+  runtimeReleased,
+  type RuntimeShutdownOutcome,
+} from "./runtime/shutdown.js";
 import { getRuntimeOperationFailure } from "./runtime/errors.js";
 import { createWalletOwnerApplication } from "./wallet/application.js";
 import {
   parseWalletOperationId,
   walletTerminalStateFailureCodes,
   type WalletManagementOperation,
-  type WalletOperationResponse,
-  type WalletOperationStartResponse,
+  type WalletOperationPresentation,
+  type WalletOperationStartResult,
 } from "./wallet/contracts.js";
 import {
   isWalletOperationConfirmableState,
@@ -83,7 +91,7 @@ import {
   walletErrorRegistry,
   walletInterfaceErrorMappings,
 } from "./wallet/errors.js";
-import { walletControlRoutes } from "./wallet/routes.js";
+import { walletControlResources } from "./wallet/routes.js";
 import {
   createTerminalQrDisplay,
   renderTerminalQr,
@@ -97,7 +105,7 @@ export interface CliRuntimePort {
   start(): Promise<void>;
   dispatchRuntimeRequest(request: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse>;
   openOwnerSession(signal?: AbortSignal): Promise<RuntimeOwnerSession>;
-  stop(): Promise<void>;
+  stop(): Promise<RuntimeShutdownOutcome>;
 }
 
 export interface CliTerminalPort {
@@ -119,8 +127,13 @@ export interface CliDependencies {
   readonly createOperationId: () => OperationId;
   readonly terminal: CliTerminalPort;
   readonly waitForPoll: () => Promise<void>;
-  readonly terminateProcess: (exitCode: number) => void;
   readonly startMcp?: (runtime: CliRuntimePort) => Promise<StdioMcpHandle>;
+  readonly settleOutput?: () => Promise<void>;
+}
+
+export interface CliRunResult {
+  readonly exitCode: number;
+  readonly shutdown: RuntimeShutdownOutcome;
 }
 
 type CliProcessEvent = "exit" | "SIGINT" | "SIGTERM" | "SIGHUP";
@@ -256,7 +269,7 @@ const canonicalFailureFromResponse = (
 const execute = async (
   runtime: CliRuntimePort,
   failureCodes: readonly string[],
-  request: Omit<RuntimeDispatchRequest, "requestClass">,
+  request: RuntimeHttpRequest,
 ): Promise<CanonicalJson> => {
   let response: RuntimeDispatchResponse;
   try {
@@ -280,21 +293,28 @@ const execute = async (
 const startOperation = async (
   client: LocalOperationClient,
   kind: WalletOperationKind,
-): Promise<WalletOperationStartResponse> => resolvedLocalOperation(
+): Promise<WalletOperationStartResult> => resolvedLocalOperation(
   await client.invoke(walletLocalOperationIdentities.cli[kind], {}),
 );
 
 const getOperation = async (
   client: LocalOperationClient,
   operationId: string,
-): Promise<WalletOperationResponse> => resolvedLocalOperation(
+): Promise<WalletManagementOperation> => resolvedLocalOperation(
   await client.invoke(walletLocalOperationIdentities.cli.operation, { operationId }),
+);
+
+const getOperationPresentation = async (
+  client: LocalOperationClient,
+  operationId: string,
+): Promise<WalletOperationPresentation> => resolvedLocalOperation(
+  await client.invoke(walletLocalOperationIdentities.cli.presentation, { operationId }),
 );
 
 const confirmOperation = async (
   client: LocalOperationClient,
   operation: WalletManagementOperation,
-): Promise<WalletOperationResponse> => resolvedLocalOperation(
+): Promise<WalletManagementOperation> => resolvedLocalOperation(
   await client.invoke(walletLocalOperationIdentities.cli.confirm, {
     operationId: operation.operationId,
     connectionRevision: operation.connectionRevision,
@@ -303,9 +323,12 @@ const confirmOperation = async (
 
 const cancelOperation = async (
   client: LocalOperationClient,
-  operationId: string,
-): Promise<WalletOperationResponse> => resolvedLocalOperation(
-  await client.invoke(walletLocalOperationIdentities.cli.cancel, { operationId }),
+  operation: WalletManagementOperation,
+): Promise<WalletManagementOperation> => resolvedLocalOperation(
+  await client.invoke(walletLocalOperationIdentities.cli.cancel, {
+    operationId: operation.operationId,
+    connectionRevision: operation.connectionRevision,
+  }),
 );
 
 const readConnection = async (runtime: CliRuntimePort): Promise<WalletConnectionSuccess> =>
@@ -313,8 +336,8 @@ const readConnection = async (runtime: CliRuntimePort): Promise<WalletConnection
     runtime,
     getCapabilityDefinitionSnapshot(walletConnectionInterface.definition).failureCodes,
     {
-      method: "GET",
-      path: walletControlRoutes.connection,
+      method: walletControlResources.connection.method,
+      path: walletControlResources.connection.path,
     },
   ));
 
@@ -327,7 +350,7 @@ const connectionSummary = (connection: WalletConnectionData): string => {
     case "connected":
       return `Connected address: ${connection.address}\nChain: ${connection.chainId}\nSession expiry: ${connection.expiresAt}`;
     case "unresolved":
-      return `Wallet state is unresolved because ${connection.sessionCount} sessions exist.`;
+      return `The current wallet state cannot be used.\nWallet sessions found: ${connection.sessionCount}.`;
     case "disconnected":
       return `Disconnected (${connection.reason}).`;
     case "unknown":
@@ -364,18 +387,15 @@ const confirmationPrompt = (
 
 const cancelledResponse = async (
   client: LocalOperationClient,
-  operationId: string,
+  operation: WalletManagementOperation,
   dependencies: CliDependencies,
-  initial?: WalletOperationResponse,
-): Promise<WalletOperationResponse> => {
-  let response = initial ?? await cancelOperation(client, operationId);
+  initial?: WalletManagementOperation,
+): Promise<WalletManagementOperation> => {
+  let current = initial ?? await cancelOperation(client, operation);
   for (;;) {
-    if (response.operation.state === "cancelled") return response;
-    if (isWalletOperationTerminalState(response.operation.state)) {
-      throw new WalletOperationError("runtime_state_unavailable");
-    }
+    if (isWalletOperationTerminalState(current.state)) return current;
     await dependencies.waitForPoll();
-    response = await getOperation(client, operationId);
+    current = await getOperation(client, operation.operationId);
   }
 };
 
@@ -422,15 +442,15 @@ const clearQr = (terminal: CliTerminalPort, presentation: QrPresentation | undef
 };
 
 const synchronizeQr = (
-  response: WalletOperationResponse,
+  operationPresentation: WalletOperationPresentation,
   terminal: CliTerminalPort,
   presentation: QrPresentation | undefined,
 ): QrPresentation | undefined => {
-  if (response.qr === undefined) {
+  if (operationPresentation.qr === undefined) {
     clearQr(terminal, presentation);
     return undefined;
   }
-  const rendering = presentation?.rendering ?? renderTerminalQr(response.qr);
+  const rendering = presentation?.rendering ?? renderTerminalQr(operationPresentation.qr);
   const columns = terminalDimension(terminal.columns);
   const rows = terminalDimension(terminal.rows);
   if (terminalHasSpace(rendering, columns, rows)) {
@@ -517,11 +537,6 @@ const waitDecision = async (dependencies: CliDependencies): Promise<WaitDecision
   return decision.kind === "interrupted" ? "interrupt" : "poll";
 };
 
-type ExactCancellationResolution = Readonly<{
-  kind: "cancelled" | "transition_committed";
-  operation: WalletManagementOperation;
-}>;
-
 const isStateConflict = (error: unknown): boolean =>
   (getWalletOperationFailure(error) ?? getCliApplicationFailure(error))?.error.code === "state_conflict";
 
@@ -530,11 +545,11 @@ const observeAuthoritativeTransition = async (
   operationId: string,
   dependencies: CliDependencies,
 ): Promise<WalletManagementOperation> => {
-  let response = await getOperation(client, operationId);
+  let operation = await getOperation(client, operationId);
   for (;;) {
-    if (isWalletOperationTerminalState(response.operation.state)) return response.operation;
+    if (isWalletOperationTerminalState(operation.state)) return operation;
     await dependencies.waitForPoll();
-    response = await getOperation(client, operationId);
+    operation = await getOperation(client, operationId);
   }
 };
 
@@ -543,33 +558,34 @@ const resolveExactCancellation = async (
   operationId: string,
   dependencies: CliDependencies,
   afterCancellationStarted?: () => void,
-): Promise<ExactCancellationResolution> => {
-  const cancellation = cancelOperation(client, operationId);
+): Promise<WalletManagementOperation> => {
+  const operation = await getOperation(client, operationId);
+  if (isWalletOperationTerminalState(operation.state)) {
+    return operation;
+  }
+  const cancellation = cancelOperation(client, operation);
   try { afterCancellationStarted?.(); }
   catch { /* Runtime settlement and final terminal restoration retain authority. */ }
   try {
-    const cancelled = await cancelledResponse(
+    const terminal = await cancelledResponse(
       client,
-      operationId,
+      operation,
       dependencies,
       await cancellation,
     );
-    return Object.freeze({ kind: "cancelled", operation: cancelled.operation });
+    return terminal;
   } catch (error) {
     if (!isStateConflict(error)) throw error;
-    return Object.freeze({
-      kind: "transition_committed",
-      operation: await observeAuthoritativeTransition(client, operationId, dependencies),
-    });
+    return await observeAuthoritativeTransition(client, operationId, dependencies);
   }
 };
 
 const waitForTerminalOperation = async (
   client: LocalOperationClient,
-  initial: WalletOperationResponse,
+  initial: WalletManagementOperation,
   dependencies: CliDependencies,
 ): Promise<WalletManagementOperation> => {
-  let response = initial;
+  let operation = initial;
   let presentation: QrPresentation | undefined;
   const clearPresentation = (): void => {
     try {
@@ -577,56 +593,59 @@ const waitForTerminalOperation = async (
       presentation = undefined;
     } catch { /* Final terminal disposal retains emergency restoration authority. */ }
   };
-  const cancelExactOperation = (): Promise<ExactCancellationResolution> =>
+  const cancelExactOperation = (): Promise<WalletManagementOperation> =>
     resolveExactCancellation(
       client,
-      response.operation.operationId,
+      operation.operationId,
       dependencies,
       clearPresentation,
     );
   try {
     for (;;) {
-      if (isWalletOperationTerminalState(response.operation.state)) {
+      if (isWalletOperationTerminalState(operation.state)) {
         clearPresentation();
-        return response.operation;
+        return operation;
       }
 
       let step:
-        | Readonly<{ kind: "observation"; response: WalletOperationResponse }>
+        | Readonly<{ kind: "poll" }>
         | Readonly<{ kind: "interrupt" }>
-        | Readonly<{ kind: "failure"; error: unknown }>;
+        | Readonly<{ kind: "failure" }>;
       try {
         if (dependencies.terminal.interruptSignal.aborted) {
           step = Object.freeze({ kind: "interrupt" });
         } else {
-          presentation = synchronizeQr(response, dependencies.terminal, presentation);
-          if (await waitDecision(dependencies) === "interrupt") {
+          const observation = await raceWithInterrupt(
+            () => getOperationPresentation(client, operation.operationId),
+            dependencies.terminal.interruptSignal,
+          );
+          if (observation.kind === "interrupted") {
             step = Object.freeze({ kind: "interrupt" });
           } else {
-            const observation = await raceWithInterrupt(
-              () => getOperation(client, response.operation.operationId),
-              dependencies.terminal.interruptSignal,
+            operation = observation.result.operation;
+            if (isWalletOperationTerminalState(operation.state)) continue;
+            presentation = synchronizeQr(
+              observation.result,
+              dependencies.terminal,
+              presentation,
             );
-            step = observation.kind === "interrupted"
-              ? Object.freeze({ kind: "interrupt" })
-              : Object.freeze({ kind: "observation", response: observation.result });
+            step = Object.freeze({ kind: await waitDecision(dependencies) });
           }
         }
-      } catch (error) {
+      } catch {
         step = dependencies.terminal.interruptSignal.aborted
           ? Object.freeze({ kind: "interrupt" })
-          : Object.freeze({ kind: "failure", error });
+          : Object.freeze({ kind: "failure" });
       }
 
-      if (step.kind === "interrupt") return (await cancelExactOperation()).operation;
+      if (step.kind === "interrupt") return await cancelExactOperation();
       if (step.kind === "failure") {
-        let resolution: ExactCancellationResolution;
-        try { resolution = await cancelExactOperation(); }
-        catch { throw new WalletOperationError("runtime_state_unavailable"); }
-        if (resolution.kind === "transition_committed") return resolution.operation;
-        throw step.error;
+        try { return await cancelExactOperation(); }
+        catch (error) {
+          if (error instanceof CliDeliveryUnknown) throw error;
+          throw new WalletOperationError("runtime_state_unavailable");
+        }
       }
-      response = step.response;
     }
   } finally {
     clearPresentation();
@@ -661,19 +680,16 @@ const runWalletTransition = async (
       dependencies.terminal.writeError("Retry with: littlejohn read assets\n");
     }
   };
-  const startResponse = await startOperation(client, kind);
-  if (startResponse.result.status === "current_connection") {
+  const startResult = await startOperation(client, kind);
+  if (startResult.status === "current_connection") {
     if (kind !== "connect") throw new WalletOperationError("runtime_state_unavailable");
-    writeConnectionHuman(dependencies.terminal, startResponse.result.connection);
+    writeConnectionHuman(dependencies.terminal, startResult.connection);
     await readConnectedAssets();
     return;
   }
-  let response: WalletOperationResponse = Object.freeze({
-    operation: startResponse.result.operation,
-    ...(startResponse.qr === undefined ? {} : { qr: startResponse.qr }),
-  });
+  let operation = startResult.operation;
   let resolvedOperation: WalletManagementOperation | undefined;
-  if (isWalletOperationConfirmableState(response.operation.state)) {
+  if (isWalletOperationConfirmableState(operation.state)) {
     let decision: "confirm" | "decline" | "interrupt" | undefined;
     try {
       if (dependencies.terminal.interruptSignal.aborted) {
@@ -688,7 +704,7 @@ const runWalletTransition = async (
         } else {
           const confirmation = await raceWithInterrupt(
             () => dependencies.terminal.readLine(
-              confirmationPrompt(response.operation, connection.result.data),
+              confirmationPrompt(operation, connection.result.data),
             ),
             dependencies.terminal.interruptSignal,
           );
@@ -699,50 +715,43 @@ const runWalletTransition = async (
               : "decline";
         }
       }
-    } catch (error) {
-      let resolution: ExactCancellationResolution;
+    } catch {
       try {
-        resolution = await resolveExactCancellation(
+        resolvedOperation = await resolveExactCancellation(
           client,
-          response.operation.operationId,
+          operation.operationId,
           dependencies,
         );
       } catch (error) {
         if (error instanceof CliDeliveryUnknown) throw error;
         throw new WalletOperationError("runtime_state_unavailable");
       }
-      if (resolution.kind === "transition_committed" ||
-        dependencies.terminal.interruptSignal.aborted) {
-        resolvedOperation = resolution.operation;
-      } else {
-        throw error;
-      }
     }
     if (resolvedOperation === undefined) {
       if (decision === "interrupt" || decision === "decline" ||
         decision === "confirm" && dependencies.terminal.interruptSignal.aborted) {
-        resolvedOperation = (await resolveExactCancellation(
+        resolvedOperation = await resolveExactCancellation(
           client,
-          response.operation.operationId,
+          operation.operationId,
           dependencies,
-        )).operation;
+        );
       } else if (decision === "confirm") {
-        response = await confirmOperation(client, response.operation);
+        operation = await confirmOperation(client, operation);
       }
     }
   }
-  const operation = resolvedOperation ??
-    (isWalletOperationTerminalState(response.operation.state)
-      ? response.operation
-      : await waitForTerminalOperation(client, response, dependencies));
-  const failure = operationFailure(operation);
+  const terminalOperation = resolvedOperation ??
+    (isWalletOperationTerminalState(operation.state)
+      ? operation
+      : await waitForTerminalOperation(client, operation, dependencies));
+  const failure = operationFailure(terminalOperation);
   if (failure !== undefined) throw new CliApplicationFailure(failure);
-  writeOperationHuman(dependencies.terminal, operation);
-  if (operation.result?.outcome === "connected") {
+  writeOperationHuman(dependencies.terminal, terminalOperation);
+  if (terminalOperation.result?.outcome === "connected") {
     await readConnectedAssets();
   }
   if (
-    operation.result?.outcome === "connected" &&
+    terminalOperation.result?.outcome === "connected" &&
     runtime.ownerState === "owner"
   ) {
     dependencies.terminal.writeOutput(
@@ -755,14 +764,18 @@ const runWalletTransition = async (
 const startRuntimeForCommand = async (
   runtime: CliRuntimePort,
   signal: AbortSignal,
-): Promise<"started" | "stopped"> => {
+): Promise<
+  | Readonly<{ readonly kind: "started" }>
+  | Readonly<{ readonly kind: "stopped"; readonly shutdown: RuntimeShutdownOutcome }>
+> => {
   if (signal.aborted) {
-    await runtime.stop();
-    return "stopped";
+    return Object.freeze({ kind: "stopped", shutdown: await runtime.stop() });
   }
   const starting = runtime.start();
   const decision = await raceWithInterrupt(() => starting, signal);
-  if (decision.kind === "completed" && !signal.aborted) return "started";
+  if (decision.kind === "completed" && !signal.aborted) {
+    return Object.freeze({ kind: "started" });
+  }
 
   const stopping = runtime.stop();
   const [startResult, stopResult] = await Promise.allSettled([starting, stopping]);
@@ -771,7 +784,7 @@ const startRuntimeForCommand = async (
     startResult.status === "rejected" &&
     getRuntimeOperationFailure(startResult.reason)?.error.code !== "request_aborted"
   ) throw startResult.reason;
-  return "stopped";
+  return Object.freeze({ kind: "stopped", shutdown: stopResult.value });
 };
 
 const reportFailure = (
@@ -804,14 +817,20 @@ const runCommand = async (
       return;
     }
     case "operation": {
-      const response = await getOperation(client, command.operationId);
-      if (command.json) writeCanonical(dependencies.terminal, response.operation);
-      else writeOperationHuman(dependencies.terminal, response.operation);
+      const operation = await getOperation(client, command.operationId);
+      if (command.json) writeCanonical(dependencies.terminal, operation);
+      else writeOperationHuman(dependencies.terminal, operation);
       return;
     }
     case "cancel": {
-      const response = await cancelledResponse(client, command.operationId, dependencies);
-      writeOperationHuman(dependencies.terminal, response.operation);
+      const terminalOperation = await resolveExactCancellation(
+        client,
+        command.operationId,
+        dependencies,
+      );
+      const failure = operationFailure(terminalOperation);
+      if (failure !== undefined) throw new CliApplicationFailure(failure);
+      writeOperationHuman(dependencies.terminal, terminalOperation);
       return;
     }
     case "connect":
@@ -823,7 +842,7 @@ const runCommand = async (
 export const runCli = async (
   argumentsInput: readonly string[],
   dependencies: CliDependencies,
-): Promise<number> => {
+): Promise<CliRunResult> => {
   let command: CliCommand | undefined;
   let readCommand: ReadCliCommand | undefined;
   let tokenCommand: TokenCliCommand | undefined;
@@ -837,12 +856,17 @@ export const runCli = async (
   let tokenExitCode: number | undefined;
   let marketExitCode: number | undefined;
   let runtimeStopped = false;
+  let shutdown: RuntimeShutdownOutcome = runtimeReleased;
   let invalidRpcConfigurationFailure: Error | undefined;
   let startupFailure: RuntimeStateResetRequiredError | undefined;
   let failure: ApplicationFailure | undefined;
   let deliveryUnknown: DeliveryUnknown | undefined;
-  let runtimeCleanupFailed = false;
   const retainFailure = (error: unknown): void => {
+    if (isProcessTerminalRequiredError(error)) {
+      shutdown = runtimeProcessTerminal;
+      if (error.primaryFailure !== undefined) retainFailure(error.primaryFailure);
+      return;
+    }
     const resetRequired = getRuntimeStateResetRequiredError(error);
     if (resetRequired !== undefined) {
       startupFailure ??= resetRequired;
@@ -888,8 +912,9 @@ export const runCli = async (
       }
       if (runtime !== undefined) {
         const startResult = await startRuntimeForCommand(runtime, dependencies.terminal.interruptSignal);
-        runtimeStopped = startResult === "stopped";
-        if (startResult === "started" && !dependencies.terminal.interruptSignal.aborted) {
+        runtimeStopped = startResult.kind === "stopped";
+        if (startResult.kind === "stopped") shutdown = startResult.shutdown;
+        if (startResult.kind === "started" && !dependencies.terminal.interruptSignal.aborted) {
           if (mcpMode) {
             if (dependencies.startMcp === undefined) throw new WalletOperationError("internal_error");
             mcp = await dependencies.startMcp(runtime);
@@ -956,29 +981,25 @@ export const runCli = async (
       catch (error) { retainFailure(error); }
     }
     if (runtime !== undefined && !runtimeStopped) {
-      try { await runtime.stop(); }
-      catch (error) {
-        runtimeCleanupFailed = true;
-        retainFailure(error);
-      }
+      try { shutdown = await runtime.stop(); }
+      catch (error) { retainFailure(error); }
     }
     try { dependencies.terminal.dispose(); }
     catch (error) { retainFailure(error); }
   }
+  let exitCode: number;
   if (invalidRpcConfigurationFailure !== undefined) {
     const mapping = runtimeInterfaceErrorMappings.get("invalid_input");
     dependencies.terminal.writeError(
       `${mapping.code}: ${invalidRpcConfigurationFailure.message}\n`,
     );
-    return mapping.cliExitCode;
-  }
-  if (startupFailure !== undefined) {
+    exitCode = mapping.cliExitCode;
+  } else if (startupFailure !== undefined) {
     dependencies.terminal.writeError(
       `${runtimeStateResetRequiredCode}: ${startupFailure.message}\n`,
     );
-    return 7;
-  }
-  if (deliveryUnknown !== undefined) {
+    exitCode = 7;
+  } else if (deliveryUnknown !== undefined) {
     const json = tokenCommand?.json ?? command?.json ?? false;
     if (json) writeCanonical(dependencies.terminal, deliveryUnknown);
     else dependencies.terminal.writeError([
@@ -987,30 +1008,126 @@ export const runCli = async (
       "Inspect that exact operation before another state change.",
       "",
     ].join("\n"));
-    return deliveryUnknownCliExitCode;
+    exitCode = deliveryUnknownCliExitCode;
+  } else if (failure === undefined) {
+    exitCode = marketExitCode ?? tokenExitCode ?? readExitCode ?? 0;
+  } else {
+    try {
+      exitCode = reportFailure(
+        failure,
+        marketCommand?.json ?? tokenCommand?.json ?? command?.json ?? false,
+        dependencies.terminal,
+      );
+    } catch {
+      exitCode = tokenCatalogInterfaceErrorMappings.get("internal_error").cliExitCode;
+    }
   }
-  if (failure === undefined) return marketExitCode ?? tokenExitCode ?? readExitCode ?? 0;
-  let exitCode: number;
-  try {
-    exitCode = reportFailure(
-      failure,
-      marketCommand?.json ?? tokenCommand?.json ?? command?.json ?? false,
-      dependencies.terminal,
-    );
-  } catch {
-    exitCode = tokenCatalogInterfaceErrorMappings.get("internal_error").cliExitCode;
+  if (dependencies.settleOutput !== undefined) {
+    try { await dependencies.settleOutput(); }
+    catch {
+      exitCode = tokenCatalogInterfaceErrorMappings.get("internal_error").cliExitCode;
+    }
   }
-  if (runtimeCleanupFailed) dependencies.terminateProcess(exitCode);
-  return exitCode;
+  return Object.freeze({ exitCode, shutdown });
 };
 
 const terminationSignals = Object.freeze(["SIGINT", "SIGTERM", "SIGHUP"] as const);
 
+export interface CliProcessOutputOwner {
+  readonly mcpOutput: Writable;
+  writeOutput(value: string): void;
+  writeError(value: string): void;
+  settle(): Promise<void>;
+}
+
+export const createCliProcessOutputOwner = (
+  stdout: NodeJS.WritableStream,
+  stderr: NodeJS.WritableStream,
+): CliProcessOutputOwner => {
+  let accepting = true;
+  let firstFailure: unknown;
+  let stdoutTail: Promise<void> = Promise.resolve();
+  let stderrTail: Promise<void> = Promise.resolve();
+  let settleWork: Promise<void> | undefined;
+
+  const retainStreamFailure = (error: unknown): void => { firstFailure ??= error; };
+  stdout.on("error", retainStreamFailure);
+  stderr.on("error", retainStreamFailure);
+
+  const admit = (
+    stream: NodeJS.WritableStream,
+    lane: "stdout" | "stderr",
+    value: string | Uint8Array,
+  ): Promise<void> => {
+    if (!accepting) throw new Error("Process output is sealed.");
+    const previous = lane === "stdout" ? stdoutTail : stderrTail;
+    const work = previous.catch(() => undefined).then(() => new Promise<void>((resolveWrite, rejectWrite) => {
+      try {
+        stream.write(value, (error?: Error | null) => {
+          if (error === undefined || error === null) resolveWrite();
+          else rejectWrite(error);
+        });
+      } catch (error) { rejectWrite(error); }
+    }));
+    void work.catch(retainStreamFailure);
+    if (lane === "stdout") stdoutTail = work;
+    else stderrTail = work;
+    return work;
+  };
+
+  const mcpOutput = new Writable({
+    write(chunk, encoding, callback): void {
+      let value: string | Uint8Array;
+      if (typeof chunk === "string") value = chunk;
+      else if (chunk instanceof Uint8Array) value = chunk;
+      else value = Buffer.from(chunk, encoding);
+      try { void admit(stdout, "stdout", value).then(() => callback(), callback); }
+      catch (error) { callback(error as Error); }
+    },
+  });
+  mcpOutput.on("error", (error) => { firstFailure ??= error; });
+
+  const settle = (): Promise<void> => {
+    if (settleWork !== undefined) return settleWork;
+    settleWork = Promise.resolve().then(async () => {
+      await new Promise<void>((resolveFinish) => {
+        if (mcpOutput.writableFinished || mcpOutput.destroyed) return resolveFinish();
+        const finish = (): void => {
+          mcpOutput.off("finish", finish);
+          mcpOutput.off("error", finish);
+          mcpOutput.off("close", finish);
+          resolveFinish();
+        };
+        mcpOutput.once("finish", finish);
+        mcpOutput.once("error", finish);
+        mcpOutput.once("close", finish);
+        mcpOutput.end();
+      });
+      accepting = false;
+      await Promise.allSettled([stdoutTail, stderrTail]);
+      if (firstFailure !== undefined) throw firstFailure;
+    });
+    return settleWork;
+  };
+
+  return Object.freeze({
+    mcpOutput,
+    writeOutput(value: string): void { void admit(stdout, "stdout", value); },
+    writeError(value: string): void { void admit(stderr, "stderr", value); },
+    settle,
+  });
+};
+
+export interface ProcessCliTerminalPort extends CliTerminalPort {
+  readonly outputOwner: CliProcessOutputOwner;
+}
+
 export const createProcessTerminal = (
   host: CliProcessPort = process,
-): CliTerminalPort => {
+  outputOwner: CliProcessOutputOwner = createCliProcessOutputOwner(host.stdout, host.stderr),
+): ProcessCliTerminalPort => {
   let readline: ReadlineInterface | undefined;
-  const qrDisplay = createTerminalQrDisplay((value) => { host.stdout.write(value); });
+  const qrDisplay = createTerminalQrDisplay((value) => { outputOwner.writeOutput(value); });
   const interruptController = new AbortController();
 
   const closeReadline = (): unknown | undefined => {
@@ -1048,27 +1165,26 @@ export const createProcessTerminal = (
     signalListeners.set(signal, listener);
     host.on(signal, listener);
   }
-  const onExit = (): void => { restoreTerminal(); };
-  host.on("exit", onExit);
-
   let disposed = false;
   return Object.freeze({
+    outputOwner,
     inputIsTTY: host.stdin.isTTY === true,
     outputIsTTY: host.stdout.isTTY === true,
     get columns(): number | undefined { return host.stdout.columns; },
     get rows(): number | undefined { return host.stdout.rows; },
     interruptSignal: interruptController.signal,
-    writeOutput(value: string): void { host.stdout.write(value); },
-    writeError(value: string): void { host.stderr.write(value); },
+    writeOutput(value: string): void { outputOwner.writeOutput(value); },
+    writeError(value: string): void { outputOwner.writeError(value); },
     showQr: (rendering: TerminalQrRendering) => qrDisplay.show(rendering),
     hideQr: () => qrDisplay.hide(),
     async readLine(prompt: string): Promise<string> {
       const previousReadlineError = closeReadline();
       if (previousReadlineError !== undefined) throw previousReadlineError;
-      const active = createInterface({ input: host.stdin, output: host.stdout, terminal: true });
+      outputOwner.writeOutput(prompt);
+      const active = createInterface({ input: host.stdin, terminal: false });
       readline = active;
       try {
-        return await active.question(prompt);
+        return await active.question("");
       } finally {
         active.close();
         if (readline === active) readline = undefined;
@@ -1082,7 +1198,6 @@ export const createProcessTerminal = (
         for (const [signal, listener] of signalListeners) {
           host.removeListener(signal, listener);
         }
-        host.removeListener("exit", onExit);
         disposed = true;
       }
       if (readlineError !== undefined) throw readlineError;
@@ -1091,18 +1206,25 @@ export const createProcessTerminal = (
   });
 };
 
-const createDefaultDependencies = (): CliDependencies => Object.freeze({
-  createRuntime: () => LocalRuntime.create({
-    walletApplicationFactory: createWalletOwnerApplication,
-    chainApplicationFactory: createChainOwnerApplication,
-    interfaceApplicationFactory: createInterfaceOwnerApplication,
-  }),
-  createOperationId: createRuntimeOperationId,
-  terminal: createProcessTerminal(),
-  waitForPoll: () => new Promise<void>((resolvePoll) => { setTimeout(resolvePoll, 100); }),
-  terminateProcess: (exitCode: number) => { exitProcess(exitCode); },
-  startMcp: (runtime: CliRuntimePort) => startStdioMcp(runtime),
-});
+const createDefaultDependencies = (): CliDependencies => {
+  const terminal = createProcessTerminal();
+  return Object.freeze({
+    createRuntime: () => LocalRuntime.create({
+      walletApplicationFactory: createWalletOwnerApplication,
+      chainApplicationFactory: createChainOwnerApplication,
+      interfaceApplicationFactory: createInterfaceOwnerApplication,
+    }),
+    createOperationId: createRuntimeOperationId,
+    terminal,
+    waitForPoll: () => new Promise<void>((resolvePoll) => { setTimeout(resolvePoll, 100); }),
+    startMcp: (runtime: CliRuntimePort) => startStdioMcp(
+      runtime,
+      process.stdin,
+      terminal.outputOwner.mcpOutput,
+    ),
+    settleOutput: () => terminal.outputOwner.settle(),
+  });
+};
 
 const isDirectExecution = (): boolean => {
   const executablePath = process.argv[1];
@@ -1113,7 +1235,8 @@ const isDirectExecution = (): boolean => {
 };
 
 if (isDirectExecution()) {
-  void runCli(process.argv.slice(2), createDefaultDependencies()).then((exitCode) => {
-    process.exitCode = exitCode;
+  void runCli(process.argv.slice(2), createDefaultDependencies()).then((result) => {
+    if (result.shutdown.kind === "process_terminal") process.exit(result.exitCode);
+    else process.exitCode = result.exitCode;
   });
 }

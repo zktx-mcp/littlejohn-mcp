@@ -9,6 +9,7 @@ import type {
 export interface WalletConnectionRecord {
   readonly revision: RuntimeRevision;
   readonly connection: WalletConnectionData;
+  readonly revalidationRequired: boolean;
   readonly updatedAt: UtcTimestamp;
 }
 
@@ -17,6 +18,7 @@ export interface WalletProjectionStore {
   replace(
     expectedRevision: string,
     connection: WalletConnectionData,
+    revalidationRequired: boolean,
     updatedAt: UtcTimestamp,
   ): WalletConnectionRecord;
 }

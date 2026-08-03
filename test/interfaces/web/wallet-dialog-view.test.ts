@@ -15,7 +15,6 @@ import { createWalletFailure } from "../../../src/wallet/errors.js";
 import {
   walletConnectionActions,
   walletConnectionCopy,
-  walletDisconnectActionLabel,
   walletConnectionFields,
   walletNavigationLabel,
   walletOperationActions,
@@ -27,7 +26,9 @@ import {
 const operationBase = Object.freeze({
   operationId: "A".repeat(43),
   connectionRevision: "1",
-  expiresAt: "2099-12-31T23:59:59.000Z",
+  actionExpiresAt: "2099-12-31T23:59:59.000Z",
+  interactionInterface: "web" as const,
+  peerRefusalCode: null,
 });
 
 const connectedAddress = "0x1111111111111111111111111111111111111111";
@@ -55,6 +56,7 @@ const operation = (
   state,
   result: null,
   failure: null,
+  peerRefusalCode: state === "rejected" ? 5000 : null,
 });
 
 describe("wallet dialog view", () => {
@@ -62,12 +64,10 @@ describe("wallet dialog view", () => {
     const live = absent(connected);
     const unknown = absent({ status: "unknown", reason: "reconciling" });
     const unresolved = absent({ status: "unresolved", sessionCount: "2" });
-    const unusableStore = absent({ status: "disconnected", reason: "unusable_store" });
 
     expect(walletNavigationLabel(undefined)).toBe("Wallet");
     expect(walletNavigationLabel(live)).toBe("Disconnect wallet");
-    expect(walletNavigationLabel(unusableStore)).toBe("Wallet");
-    for (const reason of ["no_session", "expired", "deleted", "disconnected"] as const) {
+    for (const reason of ["no_session", "expired", "disconnected"] as const) {
       const disconnected = absent({ status: "disconnected", reason });
       expect(walletNavigationLabel(disconnected), reason).toBe("Connect wallet");
       expect(walletConnectionActions(disconnected), reason).toEqual(["connect"]);
@@ -75,9 +75,6 @@ describe("wallet dialog view", () => {
     expect(walletConnectionActions(live)).toEqual(["disconnect"]);
     expect(walletConnectionActions(unknown)).toEqual([]);
     expect(walletConnectionActions(unresolved)).toEqual(["disconnect"]);
-    expect(walletConnectionActions(unusableStore)).toEqual(["disconnect"]);
-    expect(walletDisconnectActionLabel(live.connection)).toBe("Disconnect wallet");
-    expect(walletDisconnectActionLabel(unresolved.connection)).toBe("Disconnect all sessions");
   });
 
   it("suppresses connection mutations while one nonterminal operation is present", () => {
@@ -162,10 +159,19 @@ describe("wallet dialog view", () => {
     expect(serialized).not.toContain("connectionRevision");
     expect(serialized).not.toContain("expiresAt");
     expect(serialized).not.toContain("status");
-    expect(walletConnectionCopy({ status: "disconnected", reason: "unusable_store" })).toEqual({
-      heading: "Wallet connection needs attention",
-      message: "Disconnect the existing local wallet session before connecting again.",
-    });
+  });
+
+  it("describes every unresolved session count without inventing its cause", () => {
+    for (const sessionCount of ["1", "2"] as const) {
+      const unresolved = walletConnectionDataSchema.parse({
+        status: "unresolved",
+        sessionCount,
+      });
+      expect(walletConnectionCopy(unresolved)).toEqual({
+        heading: "Wallet connection needs attention",
+        message: `The current wallet state cannot be used. Wallet sessions found: ${sessionCount}.`,
+      });
+    }
   });
 
   it("uses distinct copy for connection and disconnection", () => {
@@ -174,8 +180,10 @@ describe("wallet dialog view", () => {
 
     expect(connection.heading).toBe("Connect Robinhood Wallet");
     expect(connection.message).toBe("Scan with Robinhood Wallet.");
-    expect(walletOperationCopy(operation("disconnect", "awaiting_confirmation")).heading)
-      .toBe("Disconnect wallet");
+    expect(walletOperationCopy(operation("disconnect", "awaiting_confirmation"))).toEqual({
+      heading: "Disconnect wallet",
+      message: "Confirm before removing every wallet session in this local profile.",
+    });
     expect(cancelling).toEqual({
       heading: "Cancelling wallet connection",
       message: "The pending wallet connection request is being cancelled.",
@@ -247,7 +255,7 @@ describe("wallet dialog view", () => {
       tone: "error",
       heading: "Wallet connection failed",
       message:
-        "Wallet connection did not complete because Robinhood Wallet did not respond in time. Try again after checking the wallet.",
+        "Wallet connection did not complete before Little John's local action deadline.",
     });
     expect(walletOperationNotification(operation("connect", "awaiting_wallet_approval")))
       .toBeUndefined();

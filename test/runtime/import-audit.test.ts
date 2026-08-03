@@ -7,6 +7,7 @@ import {
   classifyModuleSpecifier,
   collectProductCodeSourceFiles,
   collectProductSourceFiles,
+  createIsolatedProductSourceProgram,
   createProductSourceProgram,
   createPackageImportPolicy,
   directCodeExecutionViolations,
@@ -112,7 +113,10 @@ describe("module import audit", () => {
       .toEqual(new Set([
         resolve("src/interfaces/web/lightweight-charts-adapter.tsx"),
       ]));
-    expect(policy.runtimePackageOwners.get("better-sqlite3")).toEqual(new Set([resolve("src/runtime")]));
+    expect(policy.runtimePackageOwners.get("better-sqlite3")).toEqual(new Set([
+      resolve("src/runtime"),
+      resolve("src/wallet/walletconnect-storage.ts"),
+    ]));
     expect(policy.runtimePackageOwners.get("@walletconnect/sign-client"))
       .toEqual(new Set([resolve("src/wallet")]));
     expect(policy.runtimePackageOwners.get("qrcode")).toEqual(new Set([resolve("src/wallet")]));
@@ -541,7 +545,7 @@ describe("direct code execution audit", () => {
       root,
       sourceFiles,
     );
-    const canonicalProgram = createProductSourceProgram(sourceFiles);
+    const canonicalProgram = createIsolatedProductSourceProgram(sdkFile);
     expect(uniswapV2SdkLoadBoundaryViolations(canonicalProgram, policy)).toEqual([]);
 
     const afterLoader = (addition: string): string => replaceExact(
@@ -723,9 +727,9 @@ const dynamicPackage = require(packageName);`),
     ] as const;
 
     for (const mutation of mutationCases) {
-      const program = createProductSourceProgram(
-        [sdkFile],
-        new Map([[sdkFile, mutation.source]]),
+      const program = createIsolatedProductSourceProgram(
+        sdkFile,
+        mutation.source,
         canonicalProgram,
       );
       const kinds = uniswapSdkViolationKinds(
@@ -738,9 +742,9 @@ const dynamicPackage = require(packageName);`),
 const inertAuditText =
   'createRequire(import.meta.url); require("@uniswap/sdk-core"); require("node:fs");';
 void inertAuditText;`);
-    const inertProgram = createProductSourceProgram(
-      [sdkFile],
-      new Map([[sdkFile, inertSource]]),
+    const inertProgram = createIsolatedProductSourceProgram(
+      sdkFile,
+      inertSource,
       canonicalProgram,
     );
     expect(uniswapV2SdkLoadBoundaryViolations(inertProgram, policy)).toEqual([]);

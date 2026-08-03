@@ -90,9 +90,11 @@ const walletOperations = (): WalletInterfaceOperations => {
     kind: "disconnect",
     state: "awaiting_confirmation",
     connectionRevision: "1",
-    expiresAt: "2026-07-15T06:00:00.000Z",
+    actionExpiresAt: "2026-07-15T06:00:00.000Z",
+    interactionInterface: "web",
     result: null,
     failure: null,
+    peerRefusalCode: null,
   });
   return Object.freeze({
     operation: Object.freeze({

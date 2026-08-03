@@ -22,11 +22,7 @@ export const captureConnectedWalletSession = (
     case "unresolved":
       throw new TokenCatalogOperationError("wallet_session_unusable");
     case "disconnected":
-      throw new TokenCatalogOperationError(
-        snapshot.connection.reason === "unusable_store"
-          ? "wallet_session_unusable"
-          : "wallet_not_connected",
-      );
+      throw new TokenCatalogOperationError("wallet_not_connected");
     case "connected": {
       if (snapshot.sessionSource === undefined) {
         throw new TokenCatalogOperationError("wallet_session_unusable");

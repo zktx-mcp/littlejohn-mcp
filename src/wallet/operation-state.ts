@@ -61,7 +61,7 @@ export const walletOperationStateDefinitions = Object.freeze({
     terminal: true,
     confirmable: false,
     cancellable: false,
-    payload: "none",
+    payload: "peer_refusal",
     kinds: Object.freeze(["connect"] as const),
   }),
   failed: Object.freeze({

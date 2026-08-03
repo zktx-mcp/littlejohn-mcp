@@ -51,6 +51,7 @@ import {
   runtimeIdentityPath,
   type BrowserContentType,
   type RequestTarget,
+  type RuntimeHttpRequest,
 } from "./http-boundary.js";
 import {
   assertRuntimeRouteRegistryDescendant,
@@ -74,6 +75,12 @@ import {
   type OwnedResourceRegistry,
   type ResourceOwnershipScope,
 } from "./resource-ownership.js";
+import {
+  isProcessTerminalRequiredError,
+  runtimeProcessTerminal,
+  runtimeReleased,
+  type RuntimeShutdownOutcome,
+} from "./shutdown.js";
 import {
   createOwnerInstanceId,
   createRuntimeIdentityChallenge,
@@ -462,51 +469,72 @@ const openAuthenticatedOwnerChannel = async (input: {
 
 export type { RuntimeDispatchRequestClass };
 
-export interface RuntimeDispatchRequest {
-  readonly requestClass: RuntimeDispatchRequestClass;
-  readonly method: RouteMethod;
-  readonly path: string;
-  readonly body?: CanonicalJson;
-  readonly signal?: AbortSignal;
-}
+export type RuntimeDispatchRequest = RuntimeHttpRequest & Readonly<{
+  requestClass: RuntimeDispatchRequestClass;
+  signal?: AbortSignal;
+}>;
 
 export interface RuntimeDispatchResponse {
   readonly status: number;
   readonly body: CanonicalJson;
 }
 
-const validateRuntimeDispatchRequest = (request: RuntimeDispatchRequest): RuntimeDispatchRequest => {
-  const target = parseRequestTarget(request.path);
+const validateRuntimeDispatchRequest = (requestInput: unknown): RuntimeDispatchRequest => {
+  if (typeof requestInput !== "object" || requestInput === null) {
+    throw new TypeError("Runtime dispatch request is invalid.");
+  }
+  const request = requestInput as Readonly<{
+    requestClass?: unknown;
+    method?: unknown;
+    path?: unknown;
+    body?: unknown;
+    signal?: unknown;
+  }>;
+  const target = parseRequestTarget(typeof request.path === "string" ? request.path : undefined);
   if (target === undefined || target.query !== "") {
     throw new TypeError("Runtime dispatch path is invalid.");
   }
   if (!runtimeDispatchRequestClasses.includes(request.requestClass as RuntimeDispatchRequestClass)) {
     throw new TypeError("Runtime dispatch request class is invalid.");
   }
-  if (request.method === "POST" && request.body === undefined) {
+  const requestClass = request.requestClass as RuntimeDispatchRequestClass;
+  if (!routeMethods.includes(request.method as RouteMethod)) {
+    throw new TypeError("Runtime dispatch method is invalid.");
+  }
+  const method = request.method as RouteMethod;
+  if (method === "POST" && request.body === undefined) {
     throw new TypeError("POST runtime dispatch requests require a canonical JSON body.");
   }
-  if (request.method !== "POST" && request.body !== undefined) {
+  if (method !== "POST" && request.body !== undefined) {
     throw new TypeError("GET and DELETE runtime dispatch requests cannot contain a body.");
-  }
-  if (!routeMethods.includes(request.method)) {
-    throw new TypeError("Runtime dispatch method is invalid.");
   }
   if (request.signal !== undefined && !(request.signal instanceof AbortSignal)) {
     throw new TypeError("Runtime dispatch signal is invalid.");
   }
-  return Object.freeze({
-    requestClass: request.requestClass,
-    method: request.method,
+  const common = {
+    requestClass,
     path: target.pathname,
-    ...(request.body === undefined ? {} : { body: captureCanonicalJson(request.body) }),
     ...(request.signal === undefined ? {} : { signal: request.signal }),
-  });
+  } as const;
+  return method === "POST"
+    ? Object.freeze({
+        ...common,
+        method,
+        body: captureCanonicalJson(request.body),
+      })
+    : Object.freeze({
+        ...common,
+        method,
+      });
 };
 
 export interface HttpOwnerApplication {
   readonly routes: RuntimeRouteRegistry;
   close(): Promise<void> | void;
+}
+
+export interface HttpOwnerRootApplication extends HttpOwnerApplication {
+  shutdown(): Promise<RuntimeShutdownOutcome>;
 }
 
 export type HttpOwnerStartupResource = OwnedResource;
@@ -522,7 +550,7 @@ export interface HttpOwnerOptions {
   readonly onPortOwnershipAcquired: () => Promise<void> | void;
   readonly applicationFactory?: (
     context: RuntimeApplicationContext,
-  ) => Promise<HttpOwnerApplication> | HttpOwnerApplication;
+  ) => Promise<HttpOwnerRootApplication> | HttpOwnerRootApplication;
 }
 
 type OwnerPhase = "stopped" | "starting" | "owner" | "deferred" | "stopping";
@@ -533,6 +561,15 @@ export interface HttpOwnerReleasePermit {
   readonly generation: number;
   readonly [ownerReleasePermitBrand]: FixedHttpOwner;
 }
+
+export type HttpOwnerApplicationShutdown =
+  | Readonly<{
+      readonly outcome: Extract<RuntimeShutdownOutcome, { readonly kind: "released" }>;
+      readonly permit: HttpOwnerReleasePermit;
+    }>
+  | Readonly<{
+      readonly outcome: Extract<RuntimeShutdownOutcome, { readonly kind: "process_terminal" }>;
+    }>;
 
 interface LifecycleWork {
   readonly controller: AbortController;
@@ -569,15 +606,16 @@ export class FixedHttpOwner {
   #phase: OwnerPhase = "stopped";
   #generation = 0;
   #lifecycleController: AbortController | undefined;
-  #application: HttpOwnerApplication | undefined;
+  #application: HttpOwnerRootApplication | undefined;
   #startupResources: HttpOwnerStartupResourceScope | undefined;
   #routes: RuntimeRouteRegistry;
   #server: Server | undefined;
   #ownerRecord: RuntimeOwnerRecord | undefined;
   #tail: Promise<void> = Promise.resolve();
   #stopRequested = false;
-  #stopPromise: Promise<void> | undefined;
-  #closeApplicationPromise: Promise<HttpOwnerReleasePermit> | undefined;
+  #stopPromise: Promise<RuntimeShutdownOutcome> | undefined;
+  #closeApplicationPromise: Promise<HttpOwnerApplicationShutdown> | undefined;
+  #processTerminalRequired = false;
   #releaseListenerPromise: Promise<void> | undefined;
   #releaseListenerPermit: HttpOwnerReleasePermit | undefined;
   #releasePermit: HttpOwnerReleasePermit | undefined;
@@ -716,6 +754,10 @@ export class FixedHttpOwner {
       return "owner";
     } catch (error) {
       this.#beginStoppingLocked();
+      if (isProcessTerminalRequiredError(error)) {
+        this.#processTerminalRequired = true;
+        throw error.primaryFailure ?? error;
+      }
       try {
         await Promise.all([...this.#lifecycleWork].map((work) => work.completion));
         startupResources.seal();
@@ -723,6 +765,10 @@ export class FixedHttpOwner {
         await this.#closeServerResource();
         this.#resetStopped();
       } catch (cleanupError) {
+        if (isProcessTerminalRequiredError(cleanupError)) {
+          this.#processTerminalRequired = true;
+          throw error;
+        }
         throw new AggregateError(
           [error, cleanupError],
           "HTTP owner startup failed and acquired resources could not be released.",
@@ -943,20 +989,22 @@ export class FixedHttpOwner {
     }
   }
 
-  stop(): Promise<void> {
+  stop(): Promise<RuntimeShutdownOutcome> {
     if (this.#stopPromise !== undefined) return this.#stopPromise;
-    let resolveTracked!: () => void;
+    let resolveTracked!: (outcome: RuntimeShutdownOutcome) => void;
     let rejectTracked!: (error: unknown) => void;
-    const tracked = new Promise<void>((resolve, reject) => {
+    const tracked = new Promise<RuntimeShutdownOutcome>((resolve, reject) => {
       resolveTracked = resolve;
       rejectTracked = reject;
     });
     this.#stopPromise = tracked;
     void (async () => {
       try {
-        const permit = await this.closeApplication();
-        await this.releaseListener(permit);
-        resolveTracked();
+        const shutdown = await this.closeApplication();
+        if ("permit" in shutdown) {
+          await this.releaseListener(shutdown.permit);
+        }
+        resolveTracked(shutdown.outcome);
       } catch (error) {
         rejectTracked(error);
       } finally {
@@ -966,11 +1014,11 @@ export class FixedHttpOwner {
     return tracked;
   }
 
-  closeApplication(): Promise<HttpOwnerReleasePermit> {
+  closeApplication(): Promise<HttpOwnerApplicationShutdown> {
     if (this.#closeApplicationPromise !== undefined) return this.#closeApplicationPromise;
-    let resolveTracked!: (permit: HttpOwnerReleasePermit) => void;
+    let resolveTracked!: (shutdown: HttpOwnerApplicationShutdown) => void;
     let rejectTracked!: (error: unknown) => void;
-    const tracked = new Promise<HttpOwnerReleasePermit>((resolve, reject) => {
+    const tracked = new Promise<HttpOwnerApplicationShutdown>((resolve, reject) => {
       resolveTracked = resolve;
       rejectTracked = reject;
     });
@@ -978,10 +1026,13 @@ export class FixedHttpOwner {
     this.#stopRequested = true;
     this.#lifecycleController?.abort();
     for (const work of this.#lifecycleWork) work.controller.abort();
-    void this.#closeApplicationForRelease().then(
-      (permit) => {
-        if (this.#closeApplicationPromise === tracked) this.#closeApplicationPromise = undefined;
-        resolveTracked(permit);
+    void this.#shutdownApplication().then(
+      (shutdown) => {
+        if (
+          shutdown.outcome.kind === "released" &&
+          this.#closeApplicationPromise === tracked
+        ) this.#closeApplicationPromise = undefined;
+        resolveTracked(shutdown);
       },
       (error: unknown) => {
         if (this.#closeApplicationPromise === tracked) this.#closeApplicationPromise = undefined;
@@ -1021,7 +1072,7 @@ export class FixedHttpOwner {
     return tracked;
   }
 
-  async #closeApplicationForRelease(): Promise<HttpOwnerReleasePermit> {
+  async #shutdownApplication(): Promise<HttpOwnerApplicationShutdown> {
     const completions = await this.#serialize(async () => {
       if (this.#phase === "stopped") return undefined;
       this.#beginStoppingLocked();
@@ -1029,10 +1080,29 @@ export class FixedHttpOwner {
     });
     if (completions !== undefined) {
       await Promise.all(completions);
+      if (this.#processTerminalRequired) {
+        return Object.freeze({ outcome: runtimeProcessTerminal });
+      }
+      const application = this.#application;
+      if (application !== undefined) {
+        let outcome: RuntimeShutdownOutcome;
+        try { outcome = await application.shutdown(); }
+        catch (error) {
+          if (isProcessTerminalRequiredError(error)) {
+            this.#processTerminalRequired = true;
+          }
+          throw error;
+        }
+        if (outcome.kind === "process_terminal") {
+          this.#processTerminalRequired = true;
+          return Object.freeze({ outcome });
+        }
+        if (this.#application === application) this.#application = undefined;
+      }
       this.#startupResources?.seal();
-      await this.#closeApplicationResources();
+      await this.#closeStartupResources();
     }
-    return this.#serialize(async () => {
+    const permit = await this.#serialize(async () => {
       if (this.#phase === "stopped") return this.#issueReleasePermitLocked();
       if (
         this.#phase !== "stopping" ||
@@ -1043,6 +1113,7 @@ export class FixedHttpOwner {
       ) throw new RuntimeOperationError("state_conflict");
       return this.#issueReleasePermitLocked();
     });
+    return Object.freeze({ outcome: runtimeReleased, permit });
   }
 
   async #releaseListenerInternal(permit: HttpOwnerReleasePermit): Promise<void> {
@@ -1125,6 +1196,16 @@ export class FixedHttpOwner {
     if (failure !== undefined) throw failure;
   }
 
+  async #closeStartupResources(): Promise<void> {
+    let failure: unknown;
+    const startupResources = this.#startupResources;
+    if (startupResources !== undefined && !startupResources.empty) {
+      try { await startupResources.close(); }
+      catch (error) { failure ??= error; }
+    }
+    if (failure !== undefined) throw failure;
+  }
+
   async #closeServerResource(): Promise<void> {
     const server = this.#server;
     if (server === undefined) return;
@@ -1147,6 +1228,7 @@ export class FixedHttpOwner {
     this.#ownerRecord = undefined;
     this.#releasePermit = undefined;
     this.#releaseScope = undefined;
+    this.#processTerminalRequired = false;
     this.#stopRequested = false;
   }
 

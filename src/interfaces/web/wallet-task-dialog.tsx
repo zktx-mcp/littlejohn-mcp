@@ -242,7 +242,7 @@ export const WalletTaskDialog = ({
       title={title}
       description={operationKind === "connect"
         ? "Connect Robinhood Wallet to this local profile."
-        : "Remove the current wallet session from this local profile."}
+        : "Remove every wallet session from this local profile."}
       dismissible={dismissible}
       onClose={close}
       footer={(
@@ -277,7 +277,7 @@ export const WalletTaskDialog = ({
               disabled={matchingPending}
               onClick={() => { onAction("confirm"); }}
             >
-              Disconnect wallet
+              Disconnect
             </button>
           ) : null}
         </div>

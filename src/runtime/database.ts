@@ -171,6 +171,7 @@ interface WalletRow extends WalletConnectionStorageRow {
   singleton: number;
   profileId: string;
   revision: string;
+  revalidationRequired: number;
   updatedAt: string;
 }
 
@@ -437,7 +438,12 @@ const ownerFromRow = (row: OwnerRow, profile: LocalProfile): RuntimeOwnerRecord 
 };
 
 const walletFromRow = (row: WalletRow, profile: LocalProfile): WalletConnectionRecord => {
-  if (row.singleton !== 1 || row.profileId !== profile.profileId) {
+  if (
+    row.singleton !== 1 ||
+    row.profileId !== profile.profileId ||
+    (row.revalidationRequired !== 0 && row.revalidationRequired !== 1) ||
+    (row.status === "connected" && row.revalidationRequired !== 0)
+  ) {
     throw new Error("Wallet connection singleton is invalid.");
   }
   const updatedAt = parseUtcTimestamp(row.updatedAt);
@@ -448,6 +454,7 @@ const walletFromRow = (row: WalletRow, profile: LocalProfile): WalletConnectionR
       decodeWalletConnectionStorage(row),
       updatedAt,
     ),
+    revalidationRequired: row.revalidationRequired === 1,
     updatedAt,
   });
 };
@@ -469,7 +476,8 @@ const readOwnerRaw = (database: Database.Database): RuntimeOwnerRecord | undefin
 };
 
 const readWalletRaw = (database: Database.Database): WalletConnectionRecord => {
-  const rows = database.prepare(`SELECT singleton, profile_id AS profileId, revision, status, reason,
+  const rows = database.prepare(`SELECT singleton, profile_id AS profileId, revision,
+    revalidation_required AS revalidationRequired, status, reason,
     chain_id AS chainId, wallet_address AS walletAddress,
     approved_methods_json AS approvedMethodsJson,
     approved_events_json AS approvedEventsJson, expires_at AS expiresAt,
@@ -791,10 +799,10 @@ const bootstrapFreshDatabase = (database: Database.Database, now: UtcTimestamp):
     const initialWallet = encodeWalletConnectionStorage({ status: "unknown", reason: "reconciling" });
     const profile = readProfileRaw(database);
     database.prepare(`INSERT INTO current_wallet_connection(
-      singleton, profile_id, revision, status, reason, chain_id, wallet_address,
+      singleton, profile_id, revision, revalidation_required, status, reason, chain_id, wallet_address,
       approved_methods_json, approved_events_json, expires_at,
       session_count, updated_at
-    ) VALUES (1, ?, '0', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    ) VALUES (1, ?, '0', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         profile.profileId,
         initialWallet.status,
@@ -1098,8 +1106,17 @@ export class ProductDatabase {
     });
     this.#walletStore = Object.freeze({
       read: () => this.readWalletConnection(),
-      replace: (expectedRevision: string, connection: WalletConnectionData, updatedAt: UtcTimestamp) =>
-        this.replaceWalletConnection(expectedRevision, connection, updatedAt),
+      replace: (
+        expectedRevision: string,
+        connection: WalletConnectionData,
+        revalidationRequired: boolean,
+        updatedAt: UtcTimestamp,
+      ) => this.replaceWalletConnection(
+        expectedRevision,
+        connection,
+        revalidationRequired,
+        updatedAt,
+      ),
     });
     this.#officialAssetSnapshotStore = Object.freeze({
       readSnapshot: () => this.readOfficialAssetSnapshot(),
@@ -1271,12 +1288,19 @@ export class ProductDatabase {
   private replaceWalletConnection(
     expectedRevisionInput: string,
     connectionInput: WalletConnectionData,
+    revalidationRequiredInput: boolean,
     updatedAtInput: UtcTimestamp,
   ): WalletConnectionRecord {
     try {
       const expectedRevision = parseRuntimeRevision(expectedRevisionInput);
       const updatedAt = parseUtcTimestamp(updatedAtInput);
+      if (typeof revalidationRequiredInput !== "boolean") {
+        throw new TypeError("Wallet revalidation state is invalid.");
+      }
       const connection = parseCapabilityDataAt(walletConnectionCapability, connectionInput, updatedAt);
+      if (connection.status === "connected" && revalidationRequiredInput) {
+        throw new TypeError("A connected wallet cannot require revalidation.");
+      }
       return this.#writeWithIdentity(() => {
         const profile = readProfileRaw(this.#database);
         const current = readWalletRaw(this.#database);
@@ -1297,12 +1321,13 @@ export class ProductDatabase {
           decodeWalletAccountRecordKey(accountRows[0]);
         }
         const result = this.#database.prepare(`UPDATE current_wallet_connection SET
-          revision = ?, status = ?, reason = ?, chain_id = ?, wallet_address = ?,
+          revision = ?, revalidation_required = ?, status = ?, reason = ?, chain_id = ?, wallet_address = ?,
           approved_methods_json = ?, approved_events_json = ?, expires_at = ?,
           session_count = ?, updated_at = ?
           WHERE singleton = 1 AND revision = ?`)
           .run(
-            revision, values.status, values.reason, values.chainId, values.walletAddress,
+            revision, revalidationRequiredInput ? 1 : 0,
+            values.status, values.reason, values.chainId, values.walletAddress,
             values.approvedMethodsJson, values.approvedEventsJson, values.expiresAt,
             values.sessionCount, updatedAt, expectedRevision,
           );

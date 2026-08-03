@@ -6,6 +6,7 @@ import type { RuntimeDispatchPort } from "../../src/interfaces/http-client.js";
 import {
   jsonContentType,
   noStoreCacheControl,
+  type RuntimeDispatchRequest,
   type RuntimeOwnerSession,
   type RuntimeOwnerSessionRequest,
   type RuntimeOwnerSendResult,
@@ -56,13 +57,22 @@ export const openTestOwnerSession = async (
       const aborted = new Promise<"aborted">((resolve) => {
         signal.addEventListener("abort", () => resolve("aborted"), { once: true });
       });
-      const response = runtime.dispatchRuntimeRequest(Object.freeze({
-        requestClass: "local_control",
-        method: request.method,
-        path: request.path,
-        ...(request.body === undefined ? {} : { body: request.body }),
-        signal,
-      })).then((value) => ({ status: "response" as const, value }), () => ({ status: "failed" as const }));
+      const dispatchRequest: RuntimeDispatchRequest = request.method === "POST"
+        ? Object.freeze({
+            requestClass: "local_control",
+            method: "POST",
+            path: request.path,
+            body: request.body,
+            signal,
+          })
+        : Object.freeze({
+            requestClass: "local_control",
+            method: request.method,
+            path: request.path,
+            signal,
+          });
+      const response = runtime.dispatchRuntimeRequest(dispatchRequest)
+        .then((value) => ({ status: "response" as const, value }), () => ({ status: "failed" as const }));
       const result = await Promise.race([response, aborted]);
       if (result === "aborted" || result.status === "failed") {
         return Object.freeze({ status: "response_unavailable_after_send_began" as const });

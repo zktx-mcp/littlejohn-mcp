@@ -5,11 +5,10 @@ import {
 import type {
   WalletManagementOperation,
   WalletCurrentOperationProjection,
+  WalletOperationCancellation,
   WalletOperationConfirmation,
   WalletOperationCreate,
-  WalletOperationStartResponse,
   WalletOperationStartResult,
-  WalletOperationResponse,
   WalletOperationPresentation,
   WalletWebOperationCreate,
 } from "./operation-contract.js";
@@ -27,9 +26,9 @@ export type {
 } from "./management-contracts.js";
 
 export interface WalletLocalControlOperationPort {
-  start(input: WalletOperationCreate): Promise<WalletOperationStartResponse>;
-  get(operationId: string): Promise<WalletOperationResponse>;
-  cancel(operationId: string): Promise<WalletOperationResponse>;
+  start(input: WalletOperationCreate): Promise<WalletOperationStartResult>;
+  get(operationId: string): Promise<WalletManagementOperation>;
+  cancel(input: WalletOperationCancellation): Promise<WalletManagementOperation>;
 }
 
 export interface WalletWebOperationPort {
@@ -47,11 +46,14 @@ export interface WalletOperationConfirmationPort<
   confirm(
     operationId: string,
     input: WalletOperationConfirmation,
-  ): Promise<InteractionInterface extends "cli" ? WalletOperationResponse : WalletManagementOperation>;
+  ): Promise<WalletManagementOperation>;
 }
 
 export interface WalletOperationPresentationPort {
-  get(operationId: string): Promise<WalletOperationPresentation>;
+  get(
+    operationId: string,
+    interactionInterface: WalletInteractionInterface,
+  ): Promise<WalletOperationPresentation>;
 }
 
 export interface WalletCurrentOperationProjectionPort {

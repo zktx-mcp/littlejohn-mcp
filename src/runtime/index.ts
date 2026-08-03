@@ -71,7 +71,7 @@ export {
   publicReadResponseLimitBytes,
   requestBodyLimitBytes,
 } from "./http-boundary.js";
-export type { BrowserContentType } from "./http-boundary.js";
+export type { BrowserContentType, RuntimeHttpRequest } from "./http-boundary.js";
 export type {
   HttpOwnerStartupResourceRegistry,
   HttpOwnerReleasePermit,

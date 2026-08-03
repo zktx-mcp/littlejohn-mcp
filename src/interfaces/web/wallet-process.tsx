@@ -263,7 +263,10 @@ export const useWalletProcess = ({
         terminalOperationRef.current = resolved.terminal;
         setTerminalOperation(resolved.terminal);
         const notice = walletOperationNotification(resolved.terminal);
-        if (notice !== undefined) notificationRef.current(notice);
+        if (notice !== undefined) {
+          try { notificationRef.current(notice); }
+          catch { /* Notification presentation cannot replace the admitted terminal result. */ }
+        }
       }
       return true;
     } catch (error) {

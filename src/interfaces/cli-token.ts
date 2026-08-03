@@ -264,9 +264,10 @@ const configuredChainId = async (
   runtime: RuntimeDispatchPort,
   signal: AbortSignal,
 ): Promise<EvmChainId | ApplicationFailure> => {
+  if (chainStatusInterface.http.method !== "GET") return createInterfaceFailure("internal_error");
   const result = constrainInterfaceFailure(await dispatchCanonical(runtime, {
     requestClass: "public_read",
-    method: chainStatusInterface.http.method,
+    method: "GET",
     path: chainStatusInterface.http.path,
     signal,
   }, 200, chainStatusInterface.responseAuthority), getCapabilityDefinitionSnapshot(chainStatusInterface.definition).failureCodes);
@@ -573,9 +574,12 @@ export const runTokenCliCommand = async (
         tokenInspectInterface.definition,
         { asset: tokenAsset, block: command.block },
       );
+      if (tokenInspectInterface.http.method !== "POST") {
+        return reportFailure(output, createInterfaceFailure("internal_error"), command.json);
+      }
       const result = constrainInterfaceFailure(await dispatchCanonical(runtime, {
         requestClass: "public_read",
-        method: tokenInspectInterface.http.method,
+        method: "POST",
         path: tokenInspectInterface.http.path,
         body: captureCanonicalJson(input),
         signal: output.interruptSignal,

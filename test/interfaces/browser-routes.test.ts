@@ -80,7 +80,7 @@ const browserPagePaths = Object.freeze({
   )),
 });
 const foreignOperationId = Buffer.alloc(32, 14).toString("base64url");
-const expiresAt = "2026-07-15T04:00:00.000Z";
+const actionExpiresAt = "2026-07-15T04:00:00.000Z";
 const now = Date.parse("2026-07-15T03:00:00.000Z");
 const connectionRevision = "7";
 const disconnected = Object.freeze({
@@ -102,9 +102,11 @@ const operation = (
     kind: state === "awaiting_confirmation" || state === "disconnecting" ? "disconnect" : "connect",
     state,
     connectionRevision,
-    expiresAt,
+    actionExpiresAt,
+    interactionInterface: "web",
     result: null,
     failure: null,
+    peerRefusalCode: null,
   });
 
 const qr = parseWalletQrMatrix({

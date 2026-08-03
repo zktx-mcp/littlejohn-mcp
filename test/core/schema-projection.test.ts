@@ -115,8 +115,8 @@ describe("generated capability projections", () => {
     ],
     "wallet.connection": [
       "3c5e10f6236f85d6270dcca3742df813ab1d9a9e7fc575f025dc5f0a96679d4e",
-      "6b7cd0d32d5ce40896d42d48c6abae3b22fcc798d1d6513b5a95335bd7de6266",
-      "38f141282ddf372d2ba62fe5bd30cb390280751bc89fb75aac27dd894e5c8c84",
+      "ae6b6b4433a1c1373030aa2f828152f56241f4ddd87adb082cf295c9d48dbd7f",
+      "1c8aeaaf04ecee59fe656510a0735fdf2ad6a6996b1b6adb1850085a1b33c330",
     ],
   } as const;
 
@@ -303,7 +303,8 @@ describe("generated capability projections", () => {
     expect(validate(missingMethod)).toBe(true);
     expect(safeParseCapabilityData(readCapabilityRegistry.get("wallet.connection"), missingMethod).success).toBe(true);
     expect(validate({ status: "unresolved", sessionCount: "2" })).toBe(true);
-    expect(validate({ status: "unresolved", sessionCount: "1" })).toBe(false);
+    expect(validate({ status: "unresolved", sessionCount: "1" })).toBe(true);
+    expect(validate({ status: "unresolved", sessionCount: "0" })).toBe(false);
     expect(validate({ status: "unresolved" })).toBe(false);
   });
 

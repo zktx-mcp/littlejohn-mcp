@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import type { Readable, Writable } from "node:stream";
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -41,8 +42,8 @@ import {
 } from "../token-catalog/index.js";
 import type {
   AnyWalletManagementContract,
-  WalletOperationResponse,
-  WalletOperationStartResponse,
+  WalletManagementOperation,
+  WalletOperationStartResult,
 } from "../wallet/contracts.js";
 import {
   browserLocationHref,
@@ -338,13 +339,25 @@ const publicRead = (
   identity: Pick<ReadInterfaceIdentity, "http" | "responseAuthority">,
   signal: AbortSignal,
   body?: CanonicalJson,
-): Promise<InterfaceInvocationResult> => dispatchCanonical(runtime, {
-  requestClass: "public_read",
-  method: identity.http.method,
-  path: identity.http.path,
-  signal,
-  ...(body === undefined ? {} : { body }),
-}, 200, identity.responseAuthority);
+): Promise<InterfaceInvocationResult> => {
+  if (identity.http.method === "POST") {
+    if (body === undefined) throw new TypeError("POST public reads require a canonical JSON body.");
+    return dispatchCanonical(runtime, {
+      requestClass: "public_read",
+      method: "POST",
+      path: identity.http.path,
+      body,
+      signal,
+    }, 200, identity.responseAuthority);
+  }
+  if (body !== undefined) throw new TypeError("GET public reads cannot contain a body.");
+  return dispatchCanonical(runtime, {
+    requestClass: "public_read",
+    method: "GET",
+    path: identity.http.path,
+    signal,
+  }, 200, identity.responseAuthority);
+};
 
 const readTool = (
   runtime: RuntimeDispatchPort,
@@ -399,7 +412,7 @@ const walletTool = (
     parseInput: (value: unknown): unknown => validateLocalToolInput(binding.contract.parseInput, value),
   } as const;
   if (binding.action === "start") {
-    if (binding.operationKind === undefined || binding.control?.method !== "POST") {
+    if (binding.operationKind === undefined) {
       throw new TypeError("Wallet start binding is incomplete.");
     }
     const operationKind = binding.operationKind;
@@ -413,14 +426,14 @@ const walletTool = (
           signal,
         );
         if ("status" in result || !result.ok) return result;
-        const response = result.value as WalletOperationStartResponse;
-        return success({ result: response.result, displayUrl: walletDisplayUrl });
+        return success({
+          result: result.value as WalletOperationStartResult,
+          displayUrl: walletDisplayUrl,
+        });
       },
     });
   }
   if (binding.action === "get_operation" || binding.action === "cancel_operation") {
-    const method = binding.action === "get_operation" ? "GET" : "DELETE";
-    if (binding.control?.method !== method) throw new TypeError("Wallet operation binding is incomplete.");
     return Object.freeze({
       ...common,
       outputSchema: binding.action === "cancel_operation"
@@ -438,7 +451,7 @@ const walletTool = (
           signal,
         );
         if ("status" in result || !result.ok) return result;
-        return success((result.value as WalletOperationResponse).operation);
+        return success(result.value as WalletManagementOperation);
       },
     });
   }
@@ -732,14 +745,18 @@ export interface StdioMcpHandle {
   close(): Promise<void>;
 }
 
-export const startStdioMcp = async (runtime: McpRuntimePort): Promise<StdioMcpHandle> => {
+export const startStdioMcp = async (
+  runtime: McpRuntimePort,
+  input: Readable,
+  output: Writable,
+): Promise<StdioMcpHandle> => {
   const client = new LocalOperationClient({ ownerSessions: runtime, createOperationId });
   const mutationClient = new LocalMutationClient(runtime);
   const server = createMcpServer(runtime, client, mutationClient);
   let resolveClosed!: () => void;
   const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
   server.onclose = () => { void Promise.allSettled([client.close(), mutationClient.close()]).finally(resolveClosed); };
-  await server.connect(new StdioServerTransport());
+  await server.connect(new StdioServerTransport(input, output));
   return Object.freeze({
     closed,
     close: async (): Promise<void> => {

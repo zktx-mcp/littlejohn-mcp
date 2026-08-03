@@ -36,7 +36,7 @@ const walletApprovalMessage =
   "Scan with Robinhood Wallet.";
 
 const canStartConnection = (connection: WalletConnectionData): boolean =>
-  connection.status === "disconnected" && connection.reason !== "unusable_store";
+  connection.status === "disconnected";
 
 export const walletNavigationLabel = (
   state: WalletCurrentOperationProjection | undefined,
@@ -53,10 +53,6 @@ export const walletConnectionActions = (
 ): readonly WalletConnectionAction[] => {
   if (state.status === "present") return Object.freeze([]);
   if (canStartConnection(state.connection)) return Object.freeze(["connect"]);
-  if (
-    state.connection.status === "disconnected" &&
-    state.connection.reason === "unusable_store"
-  ) return Object.freeze(["disconnect"]);
   if (state.connection.status === "connected") {
     return Object.freeze(["disconnect"]);
   }
@@ -88,11 +84,6 @@ export const walletOperationNotice = (
     ? "This operation is controlled by the CLI. Continue there."
     : undefined;
 
-export const walletDisconnectActionLabel = (
-  connection: WalletConnectionData,
-): "Disconnect wallet" | "Disconnect all sessions" =>
-  connection.status === "unresolved" ? "Disconnect all sessions" : "Disconnect wallet";
-
 export const walletConnectionCopy = (
   connection: WalletConnectionData,
 ): WalletDialogCopy => {
@@ -103,12 +94,6 @@ export const walletConnectionCopy = (
         message: "The Robinhood Chain session is ready.",
       });
     case "disconnected":
-      if (connection.reason === "unusable_store") {
-        return Object.freeze({
-          heading: "Wallet connection needs attention",
-          message: "Disconnect the existing local wallet session before connecting again.",
-        });
-      }
       return Object.freeze({
         heading: "Wallet disconnected",
         message: "Connect Robinhood Wallet to use the selected address.",
@@ -121,7 +106,7 @@ export const walletConnectionCopy = (
     case "unresolved":
       return Object.freeze({
         heading: "Wallet connection needs attention",
-        message: `Little John found ${connection.sessionCount} wallet sessions and cannot select one automatically.`,
+        message: `The current wallet state cannot be used. Wallet sessions found: ${connection.sessionCount}.`,
       });
   }
 };
@@ -156,7 +141,7 @@ export const walletOperationCopy = (
     case "awaiting_confirmation":
       return Object.freeze({
         heading: "Disconnect wallet",
-        message: "Confirm before removing the current wallet session.",
+        message: "Confirm before removing every wallet session in this local profile.",
       });
     case "awaiting_wallet_approval":
       return Object.freeze({
@@ -166,7 +151,7 @@ export const walletOperationCopy = (
     case "disconnecting":
       return Object.freeze({
         heading: "Disconnecting wallet",
-        message: "The existing wallet session is being removed.",
+        message: "Wallet sessions in this local profile are being removed.",
       });
     case "cancelling":
       return Object.freeze({

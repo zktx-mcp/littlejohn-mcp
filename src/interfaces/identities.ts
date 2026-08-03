@@ -68,23 +68,24 @@ import {
   type AnyWalletManagementContract,
 } from "../wallet/management-contracts.js";
 import {
-  parseWalletOperationResponse,
-  parseWalletOperationStartResponse,
+  parseWalletManagementOperation,
+  parseWalletOperationPresentation,
+  parseWalletOperationStartResult,
   type WalletManagementOperation,
-  type WalletOperationResponse,
-  type WalletOperationStartResponse,
+  type WalletOperationPresentation,
+  type WalletOperationStartResult,
 } from "../wallet/contracts.js";
 import { walletErrorRegistry, walletInterfaceErrorMappings } from "../wallet/errors.js";
 import type {
   WalletInteractionInterface,
   WalletOperationKind,
 } from "../wallet/operation-state.js";
-import { walletControlRoutes } from "../wallet/routes.js";
+import { walletControlResources } from "../wallet/routes.js";
 import type { CanonicalDispatchAuthority } from "./http-client.js";
 import type { ReferenceMarketDeliveryAction } from "./reference-market-delivery.js";
 import type { OperationDeliveryAction } from "./operation-delivery.js";
 import type { InterfaceErrorMappingRegistry } from "../runtime/errors.js";
-import type { RouteMethod } from "../runtime/http-routing.js";
+import type { RuntimeHttpRequest } from "../runtime/http-boundary.js";
 import {
   publicInspectionPaths,
   referenceMarketPublicRoutes,
@@ -106,11 +107,7 @@ export interface LocalOperationIdentity<Input = unknown, Success = unknown> {
   readonly [localOperationIdentityType]: readonly [Input, Success];
 }
 
-interface LocalOperationHttpRequest {
-  readonly method: RouteMethod;
-  readonly path: string;
-  readonly body?: CanonicalJson;
-}
+type LocalOperationHttpRequest = RuntimeHttpRequest;
 
 interface LocalOperationContract<Input> {
   readonly errorRegistry: ApplicationErrorRegistry;
@@ -342,10 +339,6 @@ export const capabilityCatalogInterface = Object.freeze({
 export interface WalletInterfaceBinding {
   readonly action: "start" | "get_operation" | "cancel_operation" | "current_operation";
   readonly contract: AnyWalletManagementContract;
-  readonly control?: Readonly<{
-    readonly method: RouteMethod;
-    readonly path: string | ((operationId: string) => string);
-  }>;
   readonly mcp?: Readonly<{
     readonly name: string;
     readonly description: string;
@@ -361,7 +354,6 @@ const walletBinding = <const Binding extends WalletInterfaceBinding>(
 ): Readonly<Binding> => Object.freeze({
   ...input,
   contract: input.contract,
-  ...(input.control === undefined ? {} : { control: Object.freeze(input.control) }),
   ...(input.mcp === undefined ? {} : { mcp: Object.freeze(input.mcp) }),
   ...(input.cli === undefined ? {} : { cli: Object.freeze(input.cli) }),
 }) as Readonly<Binding>;
@@ -661,7 +653,6 @@ export const walletInterfaceBindings = Object.freeze({
   connect: walletBinding({
     action: "start",
     contract: walletManagementContracts.connect,
-    control: { method: "POST", path: walletControlRoutes.operations },
     mcp: {
       name: "wallet_start_connection",
       description: "Connect Robinhood Wallet or return the current valid connection.",
@@ -674,7 +665,6 @@ export const walletInterfaceBindings = Object.freeze({
   disconnect: walletBinding({
     action: "start",
     contract: walletManagementContracts.disconnect,
-    control: { method: "POST", path: walletControlRoutes.operations },
     mcp: {
       name: "wallet_start_disconnection",
       description: "Start a Robinhood Wallet disconnection operation for local browser confirmation.",
@@ -687,7 +677,6 @@ export const walletInterfaceBindings = Object.freeze({
   operation: walletBinding({
     action: "get_operation",
     contract: walletManagementContracts.operation,
-    control: { method: "GET", path: walletControlRoutes.operation },
     mcp: {
       name: "wallet_get_operation",
       description: "Read one retained wallet management operation.",
@@ -699,7 +688,6 @@ export const walletInterfaceBindings = Object.freeze({
   cancelOperation: walletBinding({
     action: "cancel_operation",
     contract: walletManagementContracts.cancelOperation,
-    control: { method: "DELETE", path: walletControlRoutes.operation },
     mcp: {
       name: "wallet_cancel_operation",
       description: "Cancel one cancellable wallet management operation.",
@@ -755,27 +743,20 @@ const walletStartLocalIdentity = (
   interactionInterface: WalletInteractionInterface,
 ): LocalOperationIdentity<
   ReturnType<typeof walletManagementContracts.connect.parseInput>,
-  WalletOperationStartResponse
+  WalletOperationStartResult
 > => {
   const contract = walletManagementContracts[kind];
   const parseResponse = (
     publicInput: ReturnType<typeof contract.parseInput>,
     operationId: OperationId | undefined,
     value: unknown,
-  ): WalletOperationStartResponse => {
+  ): WalletOperationStartResult => {
     const id = requiredOperationId(operationId);
-    const response = parseWalletOperationStartResponse(value);
-    if (interactionInterface !== "cli" && response.qr !== undefined) {
-      throw new TypeError("QR material is not available to this interaction interface.");
-    }
-    return Object.freeze({
-      ...response,
-      result: contract.parseBoundSuccess(
-        publicInput,
-        { operationId: id, interactionInterface },
-        response.result,
-      ),
-    });
+    return contract.parseBoundSuccess(
+      publicInput,
+      { operationId: id, interactionInterface },
+      parseWalletOperationStartResult(value),
+    );
   };
   return localOperationIdentity({
     action: "start",
@@ -783,8 +764,8 @@ const walletStartLocalIdentity = (
     errorMappings: walletInterfaceErrorMappings,
     operationId: (_input, allocated) => requiredOperationId(allocated),
     actionRequest: (_input, operationId) => ({
-      method: "POST",
-      path: walletControlRoutes.operations,
+      method: walletControlResources.operations.method,
+      path: walletControlResources.operations.path,
       body: captureCanonicalJson({
         control: {
           operationId: requiredOperationId(operationId),
@@ -795,14 +776,14 @@ const walletStartLocalIdentity = (
     }),
     parseActionResponse: parseResponse,
     recoveryRequest: (operationId) => ({
-      method: "GET",
-      path: walletControlRoutes.operation(operationId),
+      method: walletControlResources.operation.method,
+      path: walletControlResources.operation.path(operationId),
     }),
     parseRecoveryResponse: (publicInput, operationId, value) => {
-      const response = parseWalletOperationResponse(value);
+      const operation = parseWalletManagementOperation(value);
       return parseResponse(publicInput, operationId, {
-        result: { status: "operation_started", operation: response.operation },
-        ...(response.qr === undefined ? {} : { qr: response.qr }),
+        status: "operation_started",
+        operation,
       });
     },
   });
@@ -810,68 +791,76 @@ const walletStartLocalIdentity = (
 
 type WalletOperationInput = ReturnType<typeof walletManagementContracts.operation.parseInput>;
 
-const walletOperationReadIdentity = (
-  allowQr: boolean,
-): LocalOperationIdentity<WalletOperationInput, WalletOperationResponse> => {
-  const contract = walletManagementContracts.operation;
-  return localOperationIdentity({
-    action: "read",
-    contract: contract.applicationContract,
-    errorMappings: walletInterfaceErrorMappings,
-    operationId: (input) => operationInputId(input),
-    actionRequest: (_input, operationId) => ({
-      method: "GET",
-      path: walletControlRoutes.operation(requiredOperationId(operationId)),
-    }),
-    parseActionResponse: (input, _operationId, value) => {
-      const response = parseWalletOperationResponse(value);
-      if (!allowQr && response.qr !== undefined) {
-        throw new TypeError("QR material is not available to this interaction interface.");
-      }
-      return Object.freeze({
-        ...response,
-        operation: contract.parsePublicSuccess(input, response.operation),
-      });
-    },
-  });
-};
+const walletOperationReadIdentity = localOperationIdentity<
+  WalletOperationInput,
+  WalletManagementOperation
+>({
+  action: "read",
+  contract: walletManagementContracts.operation.applicationContract,
+  errorMappings: walletInterfaceErrorMappings,
+  operationId: (input) => operationInputId(input),
+  actionRequest: (_input, operationId) => ({
+    method: walletControlResources.operation.method,
+    path: walletControlResources.operation.path(requiredOperationId(operationId)),
+  }),
+  parseActionResponse: (input, _operationId, value) =>
+    walletManagementContracts.operation.parsePublicSuccess(
+      input,
+      parseWalletManagementOperation(value),
+    ),
+});
+
+const walletPresentationReadIdentity = localOperationIdentity<
+  WalletOperationInput,
+  WalletOperationPresentation
+>({
+  action: "read",
+  contract: walletManagementContracts.operation.applicationContract,
+  errorMappings: walletInterfaceErrorMappings,
+  operationId: (input) => operationInputId(input),
+  actionRequest: (_input, operationId) => ({
+    method: walletControlResources.presentation.method,
+    path: walletControlResources.presentation.path(requiredOperationId(operationId)),
+  }),
+  parseActionResponse: (input, _operationId, value) => {
+    const presentation = parseWalletOperationPresentation(value);
+    return Object.freeze({
+      ...presentation,
+      operation: walletManagementContracts.operation.parsePublicSuccess(
+        input,
+        presentation.operation,
+      ),
+    });
+  },
+});
 
 const walletCancelLocalIdentity = localOperationIdentity<
   ReturnType<typeof walletManagementContracts.cancelOperation.parseInput>,
-  WalletOperationResponse
+  WalletManagementOperation
 >({
   action: "cancel",
   contract: walletManagementContracts.cancelOperation.applicationContract,
   errorMappings: walletInterfaceErrorMappings,
   operationId: (input) => operationInputId(input),
-  actionRequest: (_input, operationId) => ({
-    method: "DELETE",
-    path: walletControlRoutes.operation(requiredOperationId(operationId)),
+  actionRequest: (input, operationId) => ({
+    method: walletControlResources.cancellation.method,
+    path: walletControlResources.cancellation.path(requiredOperationId(operationId)),
+    body: captureCanonicalJson({ connectionRevision: input.connectionRevision }),
   }),
-  parseActionResponse: (input, _operationId, value) => {
-    const response = parseWalletOperationResponse(value);
-    return Object.freeze({
-      ...response,
-      operation: walletManagementContracts.cancelOperation.parsePublicSuccess(
-        input,
-        response.operation,
-      ),
-    });
-  },
+  parseActionResponse: (input, _operationId, value) =>
+    walletManagementContracts.cancelOperation.parsePublicSuccess(
+      input,
+      parseWalletManagementOperation(value),
+    ),
   recoveryRequest: (operationId) => ({
-    method: "GET",
-    path: walletControlRoutes.operation(operationId),
+    method: walletControlResources.operation.method,
+    path: walletControlResources.operation.path(operationId),
   }),
   parseRecoveryResponse: (input, _operationId, value) => {
-    const response = parseWalletOperationResponse(value);
-    const operation = walletManagementContracts.cancelOperation.parsePublicSuccess(
+    return walletManagementContracts.cancelOperation.parsePublicSuccess(
       input,
-      response.operation,
+      parseWalletManagementOperation(value),
     );
-    if (operation.state !== "cancelled") {
-      throw new TypeError("The exact operation does not prove cancellation.");
-    }
-    return Object.freeze({ ...response, operation });
   },
 });
 
@@ -879,44 +868,36 @@ type WalletConfirmationInput = ReturnType<typeof walletOperationConfirmationCont
 
 const walletConfirmationLocalIdentity = localOperationIdentity<
   WalletConfirmationInput,
-  WalletOperationResponse
+  WalletManagementOperation
 >({
   action: "confirm",
   contract: walletOperationConfirmationContract,
   errorMappings: walletInterfaceErrorMappings,
   operationId: (input) => operationInputId(input),
   actionRequest: (input, operationId) => ({
-    method: "POST",
-    path: walletControlRoutes.confirmation(requiredOperationId(operationId)),
+    method: walletControlResources.confirmation.method,
+    path: walletControlResources.confirmation.path(requiredOperationId(operationId)),
     body: captureCanonicalJson({ connectionRevision: input.connectionRevision }),
   }),
   parseActionResponse: (input, operationId, value) => {
     const id = requiredOperationId(operationId);
-    const response = parseWalletOperationResponse(value);
-    return Object.freeze({
-      ...response,
-      operation: walletOperationConfirmationContract.parseBoundSuccess(
+    return walletOperationConfirmationContract.parseBoundSuccess(
         input,
         { operationId: id, interactionInterface: "cli" },
-        response.operation,
-      ),
-    });
+        parseWalletManagementOperation(value),
+      );
   },
   recoveryRequest: (operationId) => ({
-    method: "GET",
-    path: walletControlRoutes.operation(operationId),
+    method: walletControlResources.operation.method,
+    path: walletControlResources.operation.path(operationId),
   }),
   parseRecoveryResponse: (input, operationId, value) => {
     const id = requiredOperationId(operationId);
-    const response = parseWalletOperationResponse(value);
-    return Object.freeze({
-      ...response,
-      operation: walletOperationConfirmationContract.parseBoundSuccess(
+    return walletOperationConfirmationContract.parseBoundSuccess(
         input,
         { operationId: id, interactionInterface: "cli" },
-        response.operation,
-      ),
-    });
+        parseWalletManagementOperation(value),
+      );
   },
 });
 
@@ -1126,14 +1107,15 @@ export const walletLocalOperationIdentities = Object.freeze({
   cli: Object.freeze({
     connect: walletStartLocalIdentity("connect", "cli"),
     disconnect: walletStartLocalIdentity("disconnect", "cli"),
-    operation: walletOperationReadIdentity(true),
+    operation: walletOperationReadIdentity,
+    presentation: walletPresentationReadIdentity,
     cancel: walletCancelLocalIdentity,
     confirm: walletConfirmationLocalIdentity,
   }),
   mcp: Object.freeze({
     connect: walletStartLocalIdentity("connect", "web"),
     disconnect: walletStartLocalIdentity("disconnect", "web"),
-    operation: walletOperationReadIdentity(false),
+    operation: walletOperationReadIdentity,
     cancel: walletCancelLocalIdentity,
   }),
 });

@@ -105,6 +105,54 @@ describe("human browser failure projection", () => {
     expect(timeout.summary).not.toBe(aborted.summary);
   });
 
+  it("attributes wallet operation failures to their actual owner without inventing a retry", () => {
+    const deadline = presentHumanFailure(
+      "wallet_connection",
+      responseFailure("wallet_timeout", false),
+    );
+    const pairingCode = presentHumanFailure(
+      "wallet_connection",
+      responseFailure("wallet_pairing_code_unavailable", false),
+    );
+    const walletConnect = presentHumanFailure(
+      "wallet_disconnection",
+      responseFailure("walletconnect_unavailable", false),
+    );
+
+    expect(deadline).toEqual({
+      summary: "Wallet connection did not complete before Little John's local action deadline.",
+      retryable: false,
+      fields: [],
+      code: "wallet_timeout",
+    });
+    expect(pairingCode).toEqual({
+      summary: "Little John could not create the wallet pairing code.",
+      retryable: false,
+      fields: [],
+      code: "wallet_pairing_code_unavailable",
+    });
+    expect(walletConnect).toEqual({
+      summary: "WalletConnect could not complete wallet disconnection.",
+      retryable: false,
+      fields: [],
+      code: "walletconnect_unavailable",
+    });
+    expect(humanFailureText(deadline)).not.toContain("Robinhood Wallet");
+  });
+
+  it("describes unusable wallet recovery as the profile-wide disconnect effect", () => {
+    expect(presentHumanFailure(
+      "wallet_connection",
+      responseFailure("wallet_session_unusable", false),
+    )).toEqual({
+      summary: "The current Robinhood Wallet state cannot complete this request.",
+      recovery: "Disconnect every wallet session in this local profile, then connect the wallet again.",
+      retryable: false,
+      fields: [],
+      code: "wallet_session_unusable",
+    });
+  });
+
   it("maps admitted field paths to controls without copying issue messages", () => {
     const presentation = presentHumanFailure(
       "analysis",

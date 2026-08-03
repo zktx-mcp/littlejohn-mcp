@@ -85,7 +85,7 @@ if (mode === "structural-mismatch") {
     approvedMethods: ["eth_sendTransaction", "personal_sign"],
     approvedEvents: ["accountsChanged", "chainChanged"],
     expiresAt: "2026-07-18T17:39:16.000Z",
-  }, observedAt), observedAt);
+  }, observedAt), false, observedAt);
 
   process.send?.({ ready: true });
   setInterval(() => undefined, 60_000);

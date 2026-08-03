@@ -136,13 +136,11 @@ const controlWalletOperation = async (
           { operationId: id, interactionInterface: "web" },
           parsed,
         )
-      : walletManagementContracts.cancelOperation.parsePublicSuccess(
-          { operationId: id },
+      : walletManagementContracts.cancelOperation.parseBoundSuccess(
+          { operationId: id, connectionRevision: input.connectionRevision },
+          { operationId: id, interactionInterface: "web" },
           parsed,
         );
-    if (action === "cancel" && operation.state !== "cancelled") {
-      return createDeliveryUnknown("cancel", id);
-    }
     return operation;
   } catch {
     return createDeliveryUnknown(action as OperationDeliveryAction, id);

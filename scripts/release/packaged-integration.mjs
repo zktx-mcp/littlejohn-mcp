@@ -85,7 +85,7 @@ const exactPackagedToolSchemaNames = Object.freeze([
   "wallet_get_connection",
 ]);
 const expectedExactPackagedToolSchemaBundleSha256 =
-  "1fd494117bb1f3de3004d5a8caf4369bf575eb9824c01f881a7b38bf1fadb03d";
+  "cffa0580f7cbc5b0b7ae1c42bf4bba14e918ab0b127afbb74f24941dbdb96982";
 
 /** @type {typeof import("./packaged-integration.d.mts").assertPackagedMcpServerIdentity} */
 export const assertPackagedMcpServerIdentity = (result, expected) => {
@@ -201,7 +201,7 @@ class WorkerPeer {
     await waitForPromise(
       this.ownership.termination,
       requestTimeoutMs,
-      "Release worker graceful shutdown",
+      "Release worker process-terminal shutdown",
     );
   }
 
@@ -213,7 +213,7 @@ class WorkerPeer {
     await waitForPromise(
       this.ownership.termination,
       requestTimeoutMs,
-      "Release worker persistence inspection shutdown",
+      "Release worker process-terminal persistence inspection",
     );
     return result;
   }
@@ -1279,7 +1279,7 @@ const assertPackagedPersistence = (inspection, runtimeIdentity, expectedOwner) =
     connection === null ||
     Array.isArray(connection) ||
     connection.connection?.status !== "disconnected" ||
-    connection.connection.reason !== "deleted"
+    connection.connection.reason !== "no_session"
   ) throw new TypeError("Packaged SQLite current connection did not reopen exactly.");
 };
 
@@ -2332,8 +2332,20 @@ export const verifyPackagedIntegration = async (prepared) => {
     if (
       disconnectStart.status !== "operation_started" ||
       disconnectStart.operation?.kind !== "disconnect" ||
+      disconnectStart.operation?.state !== "awaiting_confirmation" ||
       typeof disconnectStart.operation?.operationId !== "string"
     ) throw new TypeError("Direct browser disconnection did not start exactly once.");
+    const confirmedDisconnection = await jsonResponse(await browserConfirm(
+      disconnectStart.operation.operationId,
+      disconnectStart.operation.connectionRevision,
+      browser,
+    ));
+    if (
+      confirmedDisconnection.operationId !== disconnectStart.operation.operationId ||
+      confirmedDisconnection.connectionRevision !== disconnectStart.operation.connectionRevision ||
+      confirmedDisconnection.kind !== "disconnect" ||
+      confirmedDisconnection.state !== "disconnecting"
+    ) throw new TypeError("Direct browser disconnection did not retain exact confirmation authority.");
     const completedDisconnection = await waitFor(
       async () => jsonResponse(await browserOperation(
         disconnectStart.operation.operationId,
@@ -2374,17 +2386,24 @@ export const verifyPackagedIntegration = async (prepared) => {
       expiringPresentation.presentation?.operation?.operationId !== expiringOperation.operationId ||
       expiringPresentation.presentation?.qr === undefined
     ) throw new TypeError("Browser pairing expiry scenario did not expose one atomic QR snapshot.");
-    const currentTime = (await readFile(clockPath, "utf8")).trim();
-    const currentTimeMs = Date.parse(currentTime);
-    if (!Number.isFinite(currentTimeMs)) {
-      throw new TypeError("Packaged integration clock is invalid.");
+    const actionExpiresAtMs = Date.parse(expiringOperation.actionExpiresAt);
+    if (!Number.isFinite(actionExpiresAtMs)) {
+      throw new TypeError("Packaged wallet operation deadline is invalid.");
     }
-    const clock = new Date(currentTimeMs + 6 * 60 * 1_000);
+    const clock = new Date(actionExpiresAtMs + 1);
     await writeFile(clockPath, `${clock.toISOString()}\n`, { mode: 0o600 });
-    const expired = await internalOperation(owner, expiringOperation.operationId);
-    if (expired.response?.body?.operation?.state !== "expired") {
-      throw new TypeError("Packaged wallet operation did not expire at its canonical deadline.");
+    const expiryStarted = await internalOperation(owner, expiringOperation.operationId);
+    if (
+      expiryStarted.response?.body?.state !== "cancelling" ||
+      JSON.stringify(expiryStarted.response?.body).includes("\"qr\"")
+    ) {
+      throw new TypeError("Packaged wallet operation did not withdraw approval authority at its deadline.");
     }
+    await waitFor(
+      () => internalOperation(owner, expiringOperation.operationId),
+      (value) => value.response?.body?.state === "expired",
+      "Packaged wallet operation expiry",
+    );
     const expiredBrowserOperation = await jsonResponse(await browserOperation(
       expiringOperation.operationId,
       browser,
@@ -2485,7 +2504,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     const deleted = await waitFor(
       () => publicWalletConnection(deferred),
       (result) => result.response?.body?.data?.status === "disconnected" &&
-        result.response?.body?.data?.reason === "deleted",
+        result.response?.body?.data?.reason === "no_session",
       "Wallet-side deletion projection",
     );
     if (deleted.ownerState !== "owner") {

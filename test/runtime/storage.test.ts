@@ -24,11 +24,14 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   ObservationAuthorityRegistry,
+  canonicalJsonStringify,
   createCanonicalClock,
   parseEvmChainId,
   parseCapabilityDataAt,
+  parseUnsignedDecimal,
   parseUtcTimestamp,
   referenceMarketLimits,
+  referenceMarketManifest,
   walletConnectionCapability,
 } from "../../src/core/index.js";
 import {
@@ -645,13 +648,13 @@ describe("application data and local credential", () => {
 
 describe("SQLite product state", () => {
   it("preserves the independent canonical SQLite schema bytes", () => {
-    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(23_597);
+    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(23_707);
     expect(createHash("sha256").update(currentSqliteSchemaSql, "utf8").digest("hex")).toBe(
-      "44a16c225e8c07a2cf295ddb82faa3d4fc039614d3ef0cf1ac940669a14a8f7e",
+      "1eaafd2b0d0743999a9d1668457f2cb632169b9ccb4188401955b141ada414f0",
     );
     const structure = JSON.stringify(deriveIndependentCurrentSqliteSchema());
     expect(createHash("sha256").update(structure, "utf8").digest("hex")).toBe(
-      "e2fbb617492266df0a3206cad945ff5a0368369241a340a61be921bf82dcf979",
+      "e73b4cb750831cf8de0f09ce138e413ac14a623b2aefde5184e9449ceeac47b6",
     );
   });
 
@@ -967,6 +970,7 @@ describe("SQLite product state", () => {
       expect(database.walletStore().read()).toEqual({
         revision: "0",
         connection: { status: "unknown", reason: "reconciling" },
+        revalidationRequired: false,
         updatedAt: observedAt,
       });
       database.close();
@@ -987,6 +991,23 @@ describe("SQLite product state", () => {
       "retention_cutoff_round_id",
       "integrity_status",
       "backfill_status",
+      "updated_at",
+    ]);
+    const walletColumns = inspection.pragma("table_xinfo(current_wallet_connection)") as
+      Array<{ name: string }>;
+    expect(walletColumns.map((column) => column.name)).toEqual([
+      "singleton",
+      "profile_id",
+      "revision",
+      "revalidation_required",
+      "status",
+      "reason",
+      "chain_id",
+      "wallet_address",
+      "approved_methods_json",
+      "approved_events_json",
+      "expires_at",
+      "session_count",
       "updated_at",
     ]);
     const watchlistEntryDefinition = inspection.prepare(
@@ -1216,8 +1237,14 @@ describe("SQLite product state", () => {
     expect(() => raw.prepare("UPDATE current_wallet_connection SET reason = 'no_session' WHERE singleton = 1")
       .run()).toThrow();
     expect(() => raw.prepare(`UPDATE current_wallet_connection SET status = 'unresolved', reason = NULL,
-      session_count = '1', chain_id = NULL, wallet_address = NULL, approved_methods_json = NULL,
+      session_count = '0', chain_id = NULL, wallet_address = NULL, approved_methods_json = NULL,
       approved_events_json = NULL, expires_at = NULL WHERE singleton = 1`).run()).toThrow();
+    expect(() => raw.prepare(
+      "UPDATE current_wallet_connection SET revalidation_required = 2 WHERE singleton = 1",
+    ).run()).toThrow();
+    expect(() => raw.prepare(
+      "UPDATE current_wallet_connection SET revalidation_required = NULL WHERE singleton = 1",
+    ).run()).toThrow();
     expect(() => raw.prepare(`INSERT INTO wallet_account(profile_id, chain_id, wallet_address)
       VALUES (?, ?, ?)`)
       .run(profileId, configuredChainId, "0x1111111111111111111111111111111111111111\0suffix")).toThrow();
@@ -1328,7 +1355,7 @@ describe("SQLite product state", () => {
       const path = runtimePaths(directory).database;
       const database = await ProductDatabase.open(path, observedAt);
       database.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
-      database.walletStore().replace("0", connected(), observedAt);
+      database.walletStore().replace("0", connected(), false, observedAt);
       database.close();
       const raw = new Database(path);
       mutate(raw);
@@ -1436,15 +1463,20 @@ describe("SQLite product state", () => {
     database.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
     const wallet = database.walletStore();
     const value = connected();
-    const first = wallet.replace("0", value, observedAt);
+    const first = wallet.replace("0", value, false, observedAt);
     expect(first.revision).toBe("1");
     await expectRuntimeCode(
-      Promise.resolve().then(() => wallet.replace("0", { status: "disconnected", reason: "no_session" }, observedAt)),
+      Promise.resolve().then(() => wallet.replace(
+        "0",
+        { status: "disconnected", reason: "no_session" },
+        true,
+        observedAt,
+      )),
       "state_conflict",
     );
     const beforeInvalid = wallet.read();
     await expectRuntimeCode(
-      Promise.resolve().then(() => wallet.replace("1", connectedInput(observedAt) as never, observedAt)),
+      Promise.resolve().then(() => wallet.replace("1", connectedInput(observedAt) as never, false, observedAt)),
       "runtime_state_unavailable",
     );
     expect(wallet.read()).toEqual(beforeInvalid);
@@ -1468,6 +1500,96 @@ describe("SQLite product state", () => {
     reopened.close();
   });
 
+  it("rejects a persisted connected projection that requires revalidation", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const database = await ProductDatabase.open(path, observedAt);
+    database.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
+    const wallet = database.walletStore();
+    wallet.replace("0", connected(), false, observedAt);
+
+    const raw = new Database(path);
+    raw.pragma("ignore_check_constraints = ON");
+    raw.prepare(`UPDATE current_wallet_connection SET revalidation_required = 1
+      WHERE singleton = 1`).run();
+    raw.close();
+
+    await expectRuntimeCode(
+      Promise.resolve().then(() => wallet.read()),
+      "runtime_state_unavailable",
+    );
+    database.close();
+  });
+
+  it("atomically compares and replaces connection and durable revalidation state", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const database = await ProductDatabase.open(path, observedAt);
+    const wallet = database.walletStore();
+
+    const blocked = wallet.replace(
+      "0",
+      { status: "unresolved", sessionCount: parseUnsignedDecimal("1") },
+      true,
+      observedAt,
+    );
+    expect(blocked).toEqual({
+      revision: "1",
+      connection: { status: "unresolved", sessionCount: "1" },
+      revalidationRequired: true,
+      updatedAt: observedAt,
+    });
+    await expectRuntimeCode(
+      Promise.resolve().then(() => wallet.replace(
+        "0",
+        { status: "disconnected", reason: "no_session" },
+        false,
+        observedAt,
+      )),
+      "state_conflict",
+    );
+    expect(wallet.read()).toEqual(blocked);
+
+    const cleared = wallet.replace(
+      "1",
+      { status: "disconnected", reason: "no_session" },
+      false,
+      observedAt,
+    );
+    expect(cleared).toEqual({
+      revision: "2",
+      connection: { status: "disconnected", reason: "no_session" },
+      revalidationRequired: false,
+      updatedAt: observedAt,
+    });
+    await expectRuntimeCode(
+      Promise.resolve().then(() => wallet.replace(
+        "2",
+        { status: "unknown", reason: "observation_unavailable" },
+        1 as never,
+        observedAt,
+      )),
+      "runtime_state_unavailable",
+    );
+    expect(wallet.read()).toEqual(cleared);
+    database.close();
+
+    const raw = new Database(path, { readonly: true });
+    expect(raw.prepare(`SELECT revision, revalidation_required AS revalidationRequired,
+      status, reason FROM current_wallet_connection WHERE singleton = 1`).get()).toEqual({
+      revision: "2",
+      revalidationRequired: 0,
+      status: "disconnected",
+      reason: "no_session",
+    });
+    raw.close();
+    const reopened = await ProductDatabase.open(path, observedAt);
+    expect(reopened.walletStore().read()).toEqual(cleared);
+    reopened.close();
+  });
+
   it("preserves chain-scoped wallet accounts across disconnect, address switch, and chain switch", async () => {
     const directory = await temporaryDirectory();
     await ensureOwnerOnlyDirectory(directory);
@@ -1481,13 +1603,13 @@ describe("SQLite product state", () => {
     const addressA = "0x1111111111111111111111111111111111111111";
     const addressB = "0x2222222222222222222222222222222222222222";
 
-    wallet.replace("0", connectedFor(configuredChainId, addressA), observedAt);
-    wallet.replace("1", { status: "disconnected", reason: "disconnected" }, observedAt);
-    wallet.replace("2", connectedFor(configuredChainId, addressB), observedAt);
-    wallet.replace("3", { status: "disconnected", reason: "no_session" }, observedAt);
-    wallet.replace("4", connectedFor("eip155:1", addressA), observedAt);
-    wallet.replace("5", { status: "disconnected", reason: "deleted" }, observedAt);
-    wallet.replace("6", connectedFor(configuredChainId, addressA), observedAt);
+    wallet.replace("0", connectedFor(configuredChainId, addressA), false, observedAt);
+    wallet.replace("1", { status: "disconnected", reason: "disconnected" }, false, observedAt);
+    wallet.replace("2", connectedFor(configuredChainId, addressB), false, observedAt);
+    wallet.replace("3", { status: "disconnected", reason: "no_session" }, false, observedAt);
+    wallet.replace("4", connectedFor("eip155:1", addressA), false, observedAt);
+    wallet.replace("5", { status: "disconnected", reason: "expired" }, false, observedAt);
+    wallet.replace("6", connectedFor(configuredChainId, addressA), false, observedAt);
 
     const raw = new Database(path, { readonly: true });
     const rows = raw.prepare(`SELECT profile_id AS profileId, chain_id AS chainId,
@@ -1524,6 +1646,101 @@ describe("SQLite product state", () => {
     database.close();
   });
 
+  it("changes only the projection when a durable account becomes nonconnected", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const address = "0x1111111111111111111111111111111111111111";
+    const tokenAddress = "0x2222222222222222222222222222222222222222";
+    const selectionSetRevision = Buffer.alloc(16, 7).toString("base64url");
+    const selectionRevision = Buffer.alloc(16, 8).toString("base64url");
+    const watchlistRevision = Buffer.alloc(16, 9).toString("base64url");
+    const watchlistPair = referenceMarketManifest.pairs[0]!;
+
+    const initialized = await ProductDatabase.open(path, observedAt);
+    initialized.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
+    initialized.walletStore().replace(
+      "0",
+      connectedFor(configuredChainId, address),
+      false,
+      observedAt,
+    );
+    initialized.close();
+
+    const fixture = new Database(path);
+    fixture.pragma("foreign_keys = ON");
+    fixture.prepare("INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(configuredChainId, tokenAddress);
+    fixture.prepare("INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)")
+      .run(configuredChainId, tokenAddress);
+    fixture.prepare(`INSERT INTO wallet_token_selection_state(
+      profile_id, chain_id, wallet_address, revision, defaults_initialized, created_at, updated_at
+    ) SELECT profile_id, ?, ?, ?, 1, ?, ? FROM local_profile WHERE singleton = 1`)
+      .run(configuredChainId, address, selectionSetRevision, observedAt, observedAt);
+    fixture.prepare(`INSERT INTO wallet_token_selection(
+      profile_id, chain_id, wallet_address, token_address, included, revision, created_at, updated_at
+    ) SELECT profile_id, ?, ?, ?, 1, ?, ?, ? FROM local_profile WHERE singleton = 1`)
+      .run(
+        configuredChainId,
+        address,
+        tokenAddress,
+        selectionRevision,
+        observedAt,
+        observedAt,
+      );
+    fixture.prepare(`INSERT INTO reference_pair_watchlist_state(
+      profile_id, chain_id, wallet_address, revision, created_at, updated_at
+    ) SELECT profile_id, ?, ?, ?, ?, ? FROM local_profile WHERE singleton = 1`)
+      .run(configuredChainId, address, watchlistRevision, observedAt, observedAt);
+    fixture.prepare(`INSERT INTO reference_pair_watchlist_entry(
+      profile_id, chain_id, wallet_address, pair_id, pair_json, position
+    ) SELECT profile_id, ?, ?, ?, ?, 0 FROM local_profile WHERE singleton = 1`)
+      .run(
+        configuredChainId,
+        address,
+        watchlistPair.pairId,
+        canonicalJsonStringify(watchlistPair),
+      );
+    fixture.close();
+    if (process.platform !== "win32") await chmod(path, 0o600);
+
+    const database = await ProductDatabase.open(path, observedAt);
+    const disconnected = database.walletStore().replace(
+      "1",
+      { status: "disconnected", reason: "disconnected" },
+      false,
+      observedAt,
+    );
+    expect(disconnected).toMatchObject({
+      revision: "2",
+      connection: { status: "disconnected", reason: "disconnected" },
+      revalidationRequired: false,
+    });
+    database.close();
+
+    const inspection = new Database(path, { readonly: true });
+    expect(inspection.prepare("SELECT COUNT(*) AS count FROM wallet_account").get()).toEqual({ count: 1 });
+    expect(inspection.prepare(`SELECT revision, defaults_initialized AS defaultsInitialized
+      FROM wallet_token_selection_state`).get()).toEqual({
+      revision: selectionSetRevision,
+      defaultsInitialized: 1,
+    });
+    expect(inspection.prepare("SELECT revision, included FROM wallet_token_selection").get()).toEqual({
+      revision: selectionRevision,
+      included: 1,
+    });
+    expect(inspection.prepare("SELECT revision FROM reference_pair_watchlist_state").get()).toEqual({
+      revision: watchlistRevision,
+    });
+    expect(inspection.prepare(`SELECT pair_id AS pairId, position
+      FROM reference_pair_watchlist_entry`).get()).toEqual({
+      pairId: watchlistPair.pairId,
+      position: 0,
+    });
+    expect(inspection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    inspection.close();
+  });
+
   it("rolls back account creation when the connection revision or chain parent is invalid", async () => {
     const directory = await temporaryDirectory();
     await ensureOwnerOnlyDirectory(directory);
@@ -1533,13 +1750,23 @@ describe("SQLite product state", () => {
     const wallet = database.walletStore();
     const addressA = "0x1111111111111111111111111111111111111111";
     const addressB = "0x2222222222222222222222222222222222222222";
-    wallet.replace("0", connectedFor(configuredChainId, addressA), observedAt);
+    wallet.replace("0", connectedFor(configuredChainId, addressA), false, observedAt);
     await expectRuntimeCode(
-      Promise.resolve().then(() => wallet.replace("0", connectedFor(configuredChainId, addressB), observedAt)),
+      Promise.resolve().then(() => wallet.replace(
+        "0",
+        connectedFor(configuredChainId, addressB),
+        false,
+        observedAt,
+      )),
       "state_conflict",
     );
     await expectRuntimeCode(
-      Promise.resolve().then(() => wallet.replace("1", connectedFor("eip155:10", addressB), observedAt)),
+      Promise.resolve().then(() => wallet.replace(
+        "1",
+        connectedFor("eip155:10", addressB),
+        false,
+        observedAt,
+      )),
       "runtime_state_unavailable",
     );
     expect(wallet.read()).toMatchObject({
@@ -1568,11 +1795,13 @@ describe("SQLite product state", () => {
       Promise.resolve().then(() => wallet.replace(
         "0",
         connectedFor(configuredChainId, addressA),
+        false,
         observedAt,
       )),
       Promise.resolve().then(() => wallet.replace(
         "0",
         connectedFor(configuredChainId, addressB),
+        false,
         observedAt,
       )),
     ]);
@@ -1617,6 +1846,7 @@ describe("SQLite product state", () => {
           configuredChainId,
           "0x1111111111111111111111111111111111111111",
         ),
+        true,
         observedAt,
       )),
       "runtime_state_unavailable",
@@ -1624,6 +1854,7 @@ describe("SQLite product state", () => {
     expect(database.walletStore().read()).toMatchObject({
       revision: "0",
       connection: { status: "unknown", reason: "reconciling" },
+      revalidationRequired: false,
     });
     const inspection = new Database(path, { readonly: true });
     expect(inspection.prepare("SELECT COUNT(*) AS count FROM wallet_account").get())
@@ -1667,6 +1898,7 @@ describe("SQLite product state", () => {
     initialized.walletStore().replace(
       "0",
       connectedFor(configuredChainId, "0x1111111111111111111111111111111111111111"),
+      false,
       observedAt,
     );
     initialized.close();
@@ -1815,7 +2047,7 @@ describe("SQLite product state", () => {
     const path = runtimePaths(directory).database;
     const first = await ProductDatabase.open(path, observedAt);
     first.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
-    const expected = first.walletStore().replace("0", connected(), observedAt);
+    const expected = first.walletStore().replace("0", connected(), false, observedAt);
     expect((await lstat(`${path}-wal`)).isFile()).toBe(true);
     expect((await lstat(`${path}-shm`)).isFile()).toBe(true);
 

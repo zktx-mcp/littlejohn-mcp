@@ -231,8 +231,7 @@ const copyForCode = (
       });
     case "wallet_timeout":
       return Object.freeze({
-        summary: `${task.subject} did not complete because Robinhood Wallet did not respond in time.`,
-        recovery: "Try again after checking the wallet.",
+        summary: `${task.subject} did not complete before Little John's local action deadline.`,
       });
     case "runtime_state_unavailable":
       return Object.freeze({
@@ -287,8 +286,16 @@ const copyForCode = (
       });
     case "wallet_session_unusable":
       return Object.freeze({
-        summary: "The current Robinhood Wallet session cannot complete this request.",
-        recovery: "Disconnect the session and connect the wallet again.",
+        summary: "The current Robinhood Wallet state cannot complete this request.",
+        recovery: "Disconnect every wallet session in this local profile, then connect the wallet again.",
+      });
+    case "wallet_pairing_code_unavailable":
+      return Object.freeze({
+        summary: "Little John could not create the wallet pairing code.",
+      });
+    case "walletconnect_unavailable":
+      return Object.freeze({
+        summary: `WalletConnect could not complete ${task.request}.`,
       });
     case "wallet_user_rejected":
       return Object.freeze({
