@@ -38,8 +38,10 @@ import {
   referenceMarketInterfaceBindings,
   tokenCatalogInterfaceBindings,
   tokenCatalogInterfaceBindingList,
+  tokenMcpLocalOperationCatalog,
   walletInterfaceBindings,
   walletInterfaceBindingList,
+  walletMcpLocalOperationCatalog,
 } from "../../src/interfaces/identities.js";
 import {
   composeInterfaceCapabilityCatalog,
@@ -205,8 +207,9 @@ afterEach(async () => {
 const connect = async (
   runtime: Parameters<typeof createMcpServer>[0],
   createOperationId: () => string = () => operationId,
+  operationClient?: LocalOperationClient,
 ): Promise<ConnectedMcp> => {
-  const server = createMcpServer(runtime, new LocalOperationClient({
+  const server = createMcpServer(runtime, operationClient ?? new LocalOperationClient({
     ownerSessions: runtime,
     createOperationId,
   }));
@@ -234,6 +237,23 @@ const textResult = (result: unknown): string => {
   }
   return content.text;
 };
+
+const deliveryRecoveryProjection = (
+  action: "start" | "cancel",
+  exactOperationId: string,
+  tool: "wallet_get_operation" | "token_get_operation",
+) => ({
+  delivery: {
+    status: "delivery_unknown" as const,
+    action,
+    operationId: exactOperationId,
+    resendAllowed: false as const,
+  },
+  recovery: {
+    tool,
+    arguments: { operationId: exactOperationId },
+  },
+});
 
 describe("MCP interface", () => {
   it("dispatches reference-market reads through the credential-free public-read boundary", async () => {
@@ -333,6 +353,170 @@ describe("MCP interface", () => {
       },
       displayUrl: "http://127.0.0.1:46630/",
     })).toBe(false);
+  });
+
+  it("projects each declared operation source to its exact same-domain observation tool", async () => {
+    const cases = [
+      {
+        name: "wallet_start_connection",
+        arguments: {},
+        identity: walletMcpLocalOperationCatalog.connect.identity,
+        action: "start",
+        operationId,
+        tool: "wallet_get_operation",
+      },
+      {
+        name: "wallet_start_disconnection",
+        arguments: {},
+        identity: walletMcpLocalOperationCatalog.disconnect.identity,
+        action: "start",
+        operationId,
+        tool: "wallet_get_operation",
+      },
+      {
+        name: "wallet_cancel_operation",
+        arguments: { operationId, connectionRevision: "5" },
+        identity: walletMcpLocalOperationCatalog.cancelOperation.identity,
+        action: "cancel",
+        operationId,
+        tool: "wallet_get_operation",
+      },
+      {
+        name: "token_start_addition",
+        arguments: { asset: tokenAsset },
+        identity: tokenMcpLocalOperationCatalog.startAddition.identity,
+        action: "start",
+        operationId: tokenOperationId,
+        tool: "token_get_operation",
+      },
+      {
+        name: "token_start_removal",
+        arguments: { asset: tokenAsset, expectedRevision: Buffer.alloc(16, 3).toString("base64url") },
+        identity: tokenMcpLocalOperationCatalog.startRemoval.identity,
+        action: "start",
+        operationId: tokenOperationId,
+        tool: "token_get_operation",
+      },
+      {
+        name: "token_cancel_operation",
+        arguments: { operationId: tokenOperationId },
+        identity: tokenMcpLocalOperationCatalog.cancelOperation.identity,
+        action: "cancel",
+        operationId: tokenOperationId,
+        tool: "token_get_operation",
+      },
+    ] as const;
+    const foreignId = Buffer.alloc(walletOperationIdByteLength, 32).toString("base64url");
+    let currentDelivery: ReturnType<typeof deliveryRecoveryProjection>["delivery"] | undefined;
+    const identities: unknown[] = [];
+    const operationClient = Object.freeze({
+      async invoke(identity: unknown): Promise<unknown> {
+        identities.push(identity);
+        if (currentDelivery === undefined) throw new TypeError("Test delivery is unavailable.");
+        return currentDelivery;
+      },
+      async close(): Promise<void> {},
+    }) as unknown as LocalOperationClient;
+    const runtime = new FakeRuntime();
+    const { client } = await connect(runtime, () => operationId, operationClient);
+    const registry = createMcpToolRegistry(runtime, operationClient);
+    const ajv = new Ajv2020({ strict: true, formats: { uri: true, "date-time": true } });
+    const listed = await client.listTools();
+
+    for (const testCase of cases) {
+      const expected = deliveryRecoveryProjection(
+        testCase.action,
+        testCase.operationId,
+        testCase.tool,
+      );
+      currentDelivery = expected.delivery;
+      const result = await client.callTool({ name: testCase.name, arguments: testCase.arguments });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toEqual(expected);
+      expect(textResult(result)).toBe(canonicalJsonStringify(expected));
+      expect(identities.at(-1)).toBe(testCase.identity);
+      expect(runtime.requests).toEqual([]);
+
+      const tool = listed.tools.find((candidate) => candidate.name === testCase.name);
+      if (tool?.outputSchema === undefined) throw new TypeError("Recovery output schema is unavailable.");
+      const validate = ajv.compile(tool.outputSchema);
+      expect(validate(expected)).toBe(true);
+      expect(validate(expected.delivery)).toBe(false);
+      expect(validate({
+        ...expected,
+        delivery: {
+          ...expected.delivery,
+          action: testCase.action === "start" ? "cancel" : "start",
+        },
+      })).toBe(false);
+      expect(validate({
+        ...expected,
+        recovery: {
+          ...expected.recovery,
+          tool: testCase.tool === "wallet_get_operation"
+            ? "token_get_operation"
+            : "wallet_get_operation",
+        },
+      })).toBe(false);
+      const definition = registry.get(testCase.name);
+      expect(definition.deliveryRecovery?.schema.safeParse({
+        ...expected,
+        recovery: { ...expected.recovery, arguments: { operationId: foreignId } },
+      }).success).toBe(false);
+      expect(validate({
+        ...expected,
+        recovery: { ...expected.recovery, arguments: { operationId: testCase.operationId, extra: true } },
+      })).toBe(false);
+    }
+  });
+
+  it("maps missing or mismatched recovery projection state to one private internal failure", async () => {
+    let outcome: unknown = {
+      status: "delivery_unknown",
+      action: "cancel",
+      operationId,
+      resendAllowed: false,
+    };
+    const operationClient = Object.freeze({
+      async invoke(): Promise<unknown> { return outcome; },
+      async close(): Promise<void> {},
+    }) as unknown as LocalOperationClient;
+    const runtime = new FakeRuntime();
+    const { client } = await connect(runtime, () => operationId, operationClient);
+
+    const actionMismatch = await client.callTool({ name: "wallet_start_connection", arguments: {} });
+    expect(actionMismatch.isError).toBe(true);
+    expect(actionMismatch.structuredContent).toMatchObject({
+      ok: false,
+      error: { code: "internal_error" },
+    });
+
+    outcome = {
+      status: "delivery_unknown",
+      action: "start",
+      operationId,
+      resendAllowed: false,
+    };
+    const missingDescriptor = await client.callTool({
+      name: "wallet_get_operation",
+      arguments: { operationId },
+    });
+    expect(missingDescriptor.isError).toBe(true);
+    expect(missingDescriptor.structuredContent).toEqual(actionMismatch.structuredContent);
+    expect(textResult(missingDescriptor)).toBe(
+      canonicalJsonStringify(missingDescriptor.structuredContent as never),
+    );
+
+    outcome = {
+      status: "delivery_unknown",
+      action: "start",
+      operationId: "not-an-operation-id",
+      resendAllowed: false,
+    };
+    const malformedDelivery = await client.callTool({ name: "wallet_start_connection", arguments: {} });
+    expect(malformedDelivery.structuredContent).toEqual(actionMismatch.structuredContent);
+    expect(JSON.stringify([actionMismatch, missingDescriptor, malformedDelivery])).not.toContain(operationId);
+    expect(runtime.requests).toEqual([]);
   });
 
   it("keeps actual wallet tool output schemas equivalent to canonical management failures", async () => {
@@ -695,12 +879,9 @@ describe("MCP interface", () => {
     const { client } = await connect(runtime);
     const result = await client.callTool({ name: "wallet_start_connection", arguments: {} });
     expect(result.isError).toBe(true);
-    expect(result.structuredContent).toEqual({
-      status: "delivery_unknown",
-      action: "start",
-      operationId,
-      resendAllowed: false,
-    });
+    expect(result.structuredContent).toEqual(
+      deliveryRecoveryProjection("start", operationId, "wallet_get_operation"),
+    );
     expect(JSON.stringify(result)).not.toContain(secretRow);
   });
 
@@ -726,7 +907,9 @@ describe("MCP interface", () => {
 
     const start = await client.callTool({ name: "wallet_start_connection", arguments: {} });
     expect(start.isError).toBe(true);
-    expect(start.structuredContent).toMatchObject({ status: "delivery_unknown", action: "start" });
+    expect(start.structuredContent).toEqual(
+      deliveryRecoveryProjection("start", operationId, "wallet_get_operation"),
+    );
     const read = await client.callTool({ name: "wallet_get_operation", arguments: { operationId } });
     expect(read.structuredContent).toMatchObject({ ok: false, error: { code: "internal_error" } });
     const cancel = await client.callTool({
@@ -734,7 +917,9 @@ describe("MCP interface", () => {
       arguments: { operationId, connectionRevision: "5" },
     });
     expect(cancel.isError).toBe(true);
-    expect(cancel.structuredContent).toMatchObject({ status: "delivery_unknown", action: "cancel" });
+    expect(cancel.structuredContent).toEqual(
+      deliveryRecoveryProjection("cancel", operationId, "wallet_get_operation"),
+    );
   });
 
   it("normalizes dispatcher exceptions without exposing their text", async () => {
@@ -889,12 +1074,16 @@ describe("MCP interface", () => {
       name: tokenCatalogInterfaceBindings.cancelOperation.mcp.name,
       arguments: { operationId: tokenOperationId },
     });
-    expect(cancel.structuredContent).toMatchObject({ status: "delivery_unknown", action: "cancel" });
+    expect(cancel.structuredContent).toEqual(
+      deliveryRecoveryProjection("cancel", tokenOperationId, "token_get_operation"),
+    );
     const start = await client.callTool({
       name: tokenCatalogInterfaceBindings.startAddition.mcp.name,
       arguments: { asset: tokenAsset },
     });
-    expect(start.structuredContent).toMatchObject({ status: "delivery_unknown", action: "start" });
+    expect(start.structuredContent).toEqual(
+      deliveryRecoveryProjection("start", tokenOperationId, "token_get_operation"),
+    );
   });
 
   it("derives every remaining token catalog request from its canonical MCP input", async () => {
@@ -921,7 +1110,7 @@ describe("MCP interface", () => {
       expect(result.isError).toBe(true);
       expect(result.structuredContent).toMatchObject(index < 2
         ? { ok: false, error: { code: "runtime_state_unavailable" } }
-        : { status: "delivery_unknown", action: "start", resendAllowed: false });
+        : deliveryRecoveryProjection("start", tokenOperationId, "token_get_operation"));
     }
 
     const actionRequests = runtime.requests.filter((request) =>

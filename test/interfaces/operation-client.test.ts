@@ -284,6 +284,128 @@ describe("authenticated local operation client", () => {
     );
   });
 
+  it("preserves source uncertainty across incomplete transport, provenance, and target observations", async () => {
+    const incompleteObservations: readonly RuntimeOwnerSendResult[] = [
+      Object.freeze({ status: "request_not_sent", reason: "owner_unavailable" }),
+      Object.freeze({ status: "response_unavailable_after_send_began" }),
+      Object.freeze({
+        status: "response_received",
+        response: Object.freeze({
+          statusCode: 409,
+          contentType: jsonContentType,
+          cacheControl: noStoreCacheControl,
+          bytes: new TextEncoder().encode("{}"),
+        }),
+      }),
+      Object.freeze({
+        status: "response_received",
+        response: Object.freeze({
+          statusCode: 200,
+          contentType: undefined,
+          cacheControl: noStoreCacheControl,
+          bytes: responsePacket(operation("awaiting_wallet_approval")).bytes,
+        }),
+      }),
+      Object.freeze({
+        status: "response_received",
+        response: Object.freeze({
+          statusCode: 200,
+          contentType: jsonContentType,
+          cacheControl: noStoreCacheControl,
+          bytes: new TextEncoder().encode("{"),
+        }),
+      }),
+      received(operation("awaiting_wallet_approval", foreignOperationId)),
+    ];
+
+    for (const incomplete of incompleteObservations) {
+      let sends = 0;
+      const client = new LocalOperationClient({
+        ownerSessions: ownerSessions(session({
+          async send() {
+            sends += 1;
+            return sends === 1
+              ? Object.freeze({ status: "response_unavailable_after_send_began" })
+              : incomplete;
+          },
+        })),
+        createOperationId: () => operationId,
+      });
+
+      await expect(client.invoke(walletLocalOperationIdentities.cli.connect, {})).resolves.toEqual({
+        status: "delivery_unknown",
+        action: "start",
+        operationId,
+        resendAllowed: false,
+      });
+      expect(sends).toBe(2);
+      await client.close();
+    }
+  });
+
+  it("preserves source uncertainty when an admitted target result fails source admission", async () => {
+    let sends = 0;
+    const client = new LocalOperationClient({
+      ownerSessions: ownerSessions(session({
+        async send() {
+          sends += 1;
+          return sends === 1
+            ? Object.freeze({ status: "response_unavailable_after_send_began" })
+            : received({ ...operation("cancelled"), connectionRevision: "5" });
+        },
+      })),
+      createOperationId: () => operationId,
+    });
+
+    await expect(client.invoke(walletLocalOperationIdentities.cli.cancel, {
+      operationId,
+      connectionRevision: "4",
+    })).resolves.toEqual({
+      status: "delivery_unknown",
+      action: "cancel",
+      operationId,
+      resendAllowed: false,
+    });
+    expect(sends).toBe(2);
+    await client.close();
+  });
+
+  it("preserves source uncertainty when client close aborts the recovery observation", async () => {
+    let finishRecovery!: (result: RuntimeOwnerSendResult) => void;
+    let markRecoveryStarted!: () => void;
+    const recoveryStarted = new Promise<void>((resolve) => { markRecoveryStarted = resolve; });
+    const pendingRecovery = new Promise<RuntimeOwnerSendResult>((resolve) => { finishRecovery = resolve; });
+    let sends = 0;
+    const client = new LocalOperationClient({
+      ownerSessions: ownerSessions(session({
+        async send() {
+          sends += 1;
+          if (sends === 1) {
+            return Object.freeze({ status: "response_unavailable_after_send_began" });
+          }
+          markRecoveryStarted();
+          return pendingRecovery;
+        },
+        close() {
+          finishRecovery(Object.freeze({ status: "request_not_sent", reason: "request_aborted" }));
+        },
+      })),
+      createOperationId: () => operationId,
+    });
+
+    const active = client.invoke(walletLocalOperationIdentities.cli.connect, {});
+    await recoveryStarted;
+    const closing = client.close();
+    await expect(active).resolves.toEqual({
+      status: "delivery_unknown",
+      action: "start",
+      operationId,
+      resendAllowed: false,
+    });
+    await closing;
+    expect(sends).toBe(2);
+  });
+
   it("preserves the exact operation state recovered after a lost cancellation response", async () => {
     for (const recovered of [operation("awaiting_wallet_approval"), operation("expired")]) {
       let sends = 0;

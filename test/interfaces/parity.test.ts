@@ -58,8 +58,10 @@ import {
   transactionInspectInterface,
   uniswapV2QuoteInterface,
   walletConnectionInterface,
+  walletMcpLocalOperationCatalog,
   type ReadInterfaceIdentity,
 } from "../../src/interfaces/identities.js";
+import { deliveryUnknownCliExitCode } from "../../src/interfaces/delivery-exit.js";
 import { createMcpServer } from "../../src/interfaces/mcp.js";
 import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
 import {
@@ -250,6 +252,20 @@ class RouteRegistryRuntime implements RuntimeDispatchPort, CliRuntimePort {
       throw new Error("The token parity runtime returned browser content to a native interface.");
     }
     return Object.freeze({ status: match.route.successStatus, body: result.body });
+  }
+}
+
+class DeliveryUnknownRuntime implements RuntimeDispatchPort, CliRuntimePort {
+  readonly ownerState = "deferred" as const;
+
+  async start(): Promise<void> {}
+
+  async stop() { return runtimeReleased; }
+
+  openOwnerSession(signal?: AbortSignal) { return openTestOwnerSession(this, signal); }
+
+  async dispatchRuntimeRequest(): Promise<RuntimeDispatchResponse> {
+    throw new Error("The parity owner response became unavailable after sending began.");
   }
 }
 
@@ -1183,6 +1199,87 @@ describe("interface parity", () => {
       await mcp.close();
       await context.close();
     }
+  });
+
+  it("preserves canonical uncertain delivery while MCP adds only binding-owned recovery", async () => {
+    const walletRuntime = new DeliveryUnknownRuntime();
+    const walletDirectClient = new LocalOperationClient({
+      ownerSessions: walletRuntime,
+      createOperationId: () => operationId,
+    });
+    const walletDirect = await walletDirectClient.invoke(
+      walletMcpLocalOperationCatalog.connect.identity,
+      {},
+    );
+    expect(walletDirect).toEqual({
+      status: "delivery_unknown",
+      action: "start",
+      operationId,
+      resendAllowed: false,
+    });
+    await walletDirectClient.close();
+
+    const walletMcp = await connectMcp(new DeliveryUnknownRuntime());
+    try {
+      const result = await walletMcp.client.callTool({
+        name: "wallet_start_connection",
+        arguments: {},
+      });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toEqual({
+        delivery: walletDirect,
+        recovery: {
+          tool: "wallet_get_operation",
+          arguments: { operationId },
+        },
+      });
+      expect((result.structuredContent as { delivery: unknown }).delivery).toEqual(walletDirect);
+    } finally {
+      await walletMcp.close();
+    }
+
+    const tokenRuntime = new DeliveryUnknownRuntime();
+    const tokenCliClient = new LocalOperationClient({
+      ownerSessions: tokenRuntime,
+      createOperationId: () => tokenOperationId,
+    });
+    const tokenOutput: string[] = [];
+    const tokenError: string[] = [];
+    expect(await runTokenCliCommand(
+      tokenRuntime,
+      tokenCliClient,
+      parseTokenCliCommand(["token", "cancel", tokenOperationId, "--json"]),
+      terminalPort(tokenOutput, tokenError),
+    )).toBe(deliveryUnknownCliExitCode);
+    expect(tokenError).toEqual([]);
+    const tokenCliDelivery = JSON.parse(tokenOutput.join(""));
+    expect(tokenCliDelivery).toEqual({
+      status: "delivery_unknown",
+      action: "cancel",
+      operationId: tokenOperationId,
+      resendAllowed: false,
+    });
+    await tokenCliClient.close();
+
+    const tokenMcp = await connectMcp(new DeliveryUnknownRuntime());
+    try {
+      const result = await tokenMcp.client.callTool({
+        name: "token_cancel_operation",
+        arguments: { operationId: tokenOperationId },
+      });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toEqual({
+        delivery: tokenCliDelivery,
+        recovery: {
+          tool: "token_get_operation",
+          arguments: { operationId: tokenOperationId },
+        },
+      });
+      expect((result.structuredContent as { delivery: unknown }).delivery).toEqual(tokenCliDelivery);
+    } finally {
+      await tokenMcp.close();
+    }
+
   });
 
   it("preserves the canonical wallet connection through HTTP, MCP, CLI JSON, and human CLI output", async () => {

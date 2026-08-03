@@ -339,6 +339,14 @@ weaker result parser.
   contracts while consuming that catalog. Tool-name sets, route coverage, CLI
   help, and support projections derive from the catalog and their owning
   registries rather than parallel lists.
+- Domain-complete Wallet and token catalog admission binds each MCP-exposed
+  local mutation identity to its exact same-domain operation-read binding and
+  local read identity. MCP operation factories consume those admitted entries
+  without a parallel action or operation-kind selector. When a local mutation
+  result is uncertain, the MCP projection preserves that admitted result and
+  adds only the binding-derived read tool and its admitted operation input; it
+  does not perform that read. [HTTP Owner Authentication](#http-owner-authentication)
+  owns the underlying send and bounded observation process.
 - Page paths are owned separately from browser API and compatible-process
   control paths. A page path identifies human navigation; an API path identifies
   a backend resource; an MCP tool name identifies an agent operation.
@@ -480,20 +488,33 @@ to contain a malicious process already running with the same user authority.
 - Connection, identity verification, and exact-socket request dispatch have a
   finite transport deadline. An authenticated owner session reports whether a
   request was not sent, received one complete response, or lost its response
-  after sending began. Response observation has a separate five-minute bound.
+  after sending began. Complete first-response observation has an independent
+  private 300,000 ms bound. Changing that bound requires review of owner-session
+  response lifecycle, ambiguous delivery, long-running operations, close, and
+  failure meaning; equality with another duration does not create shared
+  ownership.
 - The local operation client allocates a 256-bit operation identifier before a
   start, sends each start, cancellation, or confirmation once, and validates
   the response through the binding catalog. Callers supply an opaque catalog
   identity and operation input. Wallet control-resource descriptors own each
   exact method and path; Wallet route registration and Wallet local-operation
   identities consume those descriptors. The binding catalog owns the request
-  body, parser, error mapping, recovery, and outcome rules. After an uncertain
-  send, it may read that exact operation once only while the authenticated profile,
-  owner instance, configuration identifier, and owner revision are unchanged.
-  A Wallet cancellation recovery admits only the exact operation with its
-  captured connection revision; the operation state remains the sole statement
-  of the effect outcome. An unobserved outcome is `delivery_unknown` and
-  forbids resend.
+  body, parser, error mapping, recovery, and outcome rules. A recoverable
+  non-read identity names the exact same-domain operation-read identity rather
+  than owning another method, path, or response parser. After an uncertain
+  send, the client constructs and admits exact `{operationId}`, proves that the
+  target read selects the same operation, and performs that read once with an
+  independent private 2,000 ms bound while the authenticated profile, owner
+  instance, configuration identifier, and owner revision are unchanged. Only
+  a complete provenance-valid target success may establish the source result;
+  every incomplete transport, non-success response, invalid provenance, target
+  parse failure, or source conversion failure preserves `delivery_unknown` and
+  forbids resend. A Wallet cancellation recovery admits only the exact
+  operation with its captured connection revision; the operation state remains
+  the sole statement of the effect outcome. Changing the recovery bound
+  requires review of send-once behavior, owner continuity, observation
+  availability, operation retention, failure interpretation, and permanent
+  no-resend.
 - After dispatch, the owning route and runtime lifecycle own operation
   completion and cancellation. Closing the client rejects new calls, aborts
   cancellable transport work, and waits for admitted calls to settle.

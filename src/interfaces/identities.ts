@@ -108,11 +108,17 @@ export interface LocalOperationIdentity<Input = unknown, Success = unknown> {
 }
 
 type LocalOperationHttpRequest = RuntimeHttpRequest;
+type LocalOperationReadInput = Readonly<{ operationId: OperationId }>;
 
 interface LocalOperationContract<Input> {
   readonly errorRegistry: ApplicationErrorRegistry;
   parseInput(value: unknown): Input;
   normalizeFailure(value: unknown): ApplicationFailure;
+}
+
+export interface LocalOperationRecoveryObservation<Input = unknown, Success = unknown> {
+  readonly target: LocalOperationIdentity<LocalOperationReadInput, unknown>;
+  admitObservedResult(input: Input, operationId: OperationId, value: unknown): Success;
 }
 
 export interface LocalOperationBinding<Input = unknown, Success = unknown> {
@@ -122,8 +128,11 @@ export interface LocalOperationBinding<Input = unknown, Success = unknown> {
   operationId(input: Input, allocated: OperationId | undefined): OperationId | undefined;
   actionRequest(input: Input, operationId: OperationId | undefined): LocalOperationHttpRequest;
   parseActionResponse(input: Input, operationId: OperationId | undefined, value: unknown): Success;
-  readonly recoveryRequest?: (operationId: OperationId) => LocalOperationHttpRequest;
-  readonly parseRecoveryResponse?: (input: Input, operationId: OperationId, value: unknown) => Success;
+  readonly recoveryObservation?: LocalOperationRecoveryObservation<Input, Success>;
+}
+
+interface InterfaceToolDeliveryRecovery {
+  readonly targetBinding: "operation";
 }
 
 export interface InterfaceToolAnnotations {
@@ -343,9 +352,9 @@ export interface WalletInterfaceBinding {
     readonly name: string;
     readonly description: string;
     readonly annotations: InterfaceToolAnnotations;
+    readonly deliveryRecovery?: InterfaceToolDeliveryRecovery;
   }>;
   readonly cli?: Readonly<CliInterfaceIdentity>;
-  readonly operationKind?: WalletOperationKind;
   readonly web?: "start" | "current" | "operation" | "cancel";
 }
 
@@ -365,6 +374,8 @@ const startAnnotations = (openWorldHint: boolean): InterfaceToolAnnotations => O
   openWorldHint,
 });
 
+const operationDeliveryRecovery = Object.freeze({ targetBinding: "operation" } as const);
+
 export interface TokenCatalogInterfaceBinding {
   readonly action: "get" | "list" | "start" | "get_operation" | "cancel_operation";
   readonly contract: AnyTokenCatalogApplicationContract;
@@ -372,9 +383,9 @@ export interface TokenCatalogInterfaceBinding {
     readonly name: string;
     readonly description: string;
     readonly annotations: InterfaceToolAnnotations;
+    readonly deliveryRecovery?: InterfaceToolDeliveryRecovery;
   }>;
   readonly cli: Readonly<CliInterfaceIdentity>;
-  readonly operationKind?: TokenCatalogOperationKind;
   readonly web: true;
 }
 
@@ -556,7 +567,7 @@ const tokenCatalogBinding = <const Binding extends TokenCatalogInterfaceBinding>
   cli: Object.freeze(input.cli),
 }) as Readonly<Binding>;
 
-export const tokenCatalogInterfaceBindings = Object.freeze({
+const tokenCatalogInterfaceBindingDefinitions = Object.freeze({
   selection: tokenCatalogBinding({
     action: "get",
     contract: tokenCatalogApplicationContracts.selection,
@@ -590,13 +601,13 @@ export const tokenCatalogInterfaceBindings = Object.freeze({
       name: "token_start_addition",
       description: "Start adding one token to the current wallet account.",
       annotations: startAnnotations(true),
+      deliveryRecovery: operationDeliveryRecovery,
     },
     cli: {
       domain: "token",
       command: "add",
       argumentSyntax: "<token-address>",
     },
-    operationKind: "add",
     web: true,
   }),
   startRemoval: tokenCatalogBinding({
@@ -606,13 +617,13 @@ export const tokenCatalogInterfaceBindings = Object.freeze({
       name: "token_start_removal",
       description: "Start removing one token from the current wallet account.",
       annotations: startAnnotations(false),
+      deliveryRecovery: operationDeliveryRecovery,
     },
     cli: {
       domain: "token",
       command: "remove",
       argumentSyntax: "<token-address> --revision <revision>",
     },
-    operationKind: "remove",
     web: true,
   }),
   operation: tokenCatalogBinding({
@@ -638,18 +649,14 @@ export const tokenCatalogInterfaceBindings = Object.freeze({
         idempotentHint: true,
         openWorldHint: false,
       }),
+      deliveryRecovery: operationDeliveryRecovery,
     },
     cli: { domain: "token", command: "cancel", argumentSyntax: "<operation-id> [--json]" },
     web: true,
   }),
 });
 
-export const tokenCatalogInterfaceBindingList: readonly TokenCatalogInterfaceBinding[] = Object.freeze(
-  Object.values(tokenCatalogInterfaceBindings)
-    .sort((left, right) => compareCodePointSequences(left.contract.capabilityId, right.contract.capabilityId)),
-);
-
-export const walletInterfaceBindings = Object.freeze({
+const walletInterfaceBindingDefinitions = Object.freeze({
   connect: walletBinding({
     action: "start",
     contract: walletManagementContracts.connect,
@@ -657,9 +664,9 @@ export const walletInterfaceBindings = Object.freeze({
       name: "wallet_start_connection",
       description: "Connect Robinhood Wallet or return the current valid connection.",
       annotations: startAnnotations(true),
+      deliveryRecovery: operationDeliveryRecovery,
     },
     cli: { domain: "wallet", command: "connect", argumentSyntax: "" },
-    operationKind: "connect",
     web: "start",
   }),
   disconnect: walletBinding({
@@ -669,9 +676,9 @@ export const walletInterfaceBindings = Object.freeze({
       name: "wallet_start_disconnection",
       description: "Start a Robinhood Wallet disconnection operation for local browser confirmation.",
       annotations: startAnnotations(false),
+      deliveryRecovery: operationDeliveryRecovery,
     },
     cli: { domain: "wallet", command: "disconnect", argumentSyntax: "" },
-    operationKind: "disconnect",
     web: "start",
   }),
   operation: walletBinding({
@@ -697,6 +704,7 @@ export const walletInterfaceBindings = Object.freeze({
         idempotentHint: true,
         openWorldHint: true,
       }),
+      deliveryRecovery: operationDeliveryRecovery,
     },
     cli: { domain: "wallet", command: "cancel", argumentSyntax: "<operation-id>" },
     web: "cancel",
@@ -708,10 +716,6 @@ export const walletInterfaceBindings = Object.freeze({
   }),
 });
 
-export const walletInterfaceBindingList: readonly WalletInterfaceBinding[] = Object.freeze(
-  Object.values(walletInterfaceBindings),
-);
-
 const localOperationBindings = new WeakMap<object, object>();
 
 const localOperationIdentity = <Input, Success>(
@@ -722,12 +726,38 @@ const localOperationIdentity = <Input, Success>(
   return identity;
 };
 
+const localOperationRecoveryObservation = <Input, Success, Observed>(
+  target: LocalOperationIdentity<LocalOperationReadInput, Observed>,
+  admitObservedResult: (input: Input, operationId: OperationId, value: Observed) => Success,
+): LocalOperationRecoveryObservation<Input, Success> => Object.freeze({
+  target: target as LocalOperationIdentity<LocalOperationReadInput, unknown>,
+  admitObservedResult: (input: Input, operationId: OperationId, value: unknown) =>
+    admitObservedResult(input, operationId, value as Observed),
+});
+
 export const resolveLocalOperationIdentity = <Input, Success>(
   identity: LocalOperationIdentity<Input, Success>,
 ): LocalOperationBinding<Input, Success> => {
   const binding = localOperationBindings.get(identity as object);
   if (binding === undefined) throw new TypeError("Local operation identity is invalid.");
   return binding as LocalOperationBinding<Input, Success>;
+};
+
+const unexpectedLocalOperationAction = (action: never): never => {
+  throw new TypeError(`Local operation action is invalid: ${String(action)}.`);
+};
+
+export const readLocalOperationDeliveryAction = (
+  identity: LocalOperationIdentity,
+): OperationDeliveryAction => {
+  const action = resolveLocalOperationIdentity(identity).action;
+  switch (action) {
+    case "start":
+    case "cancel": return action;
+    case "read": throw new TypeError("A read identity has no delivery action.");
+    case "confirm": throw new TypeError("A confirmation identity has no MCP delivery action.");
+    default: return unexpectedLocalOperationAction(action);
+  }
 };
 
 const requiredOperationId = (operationId: OperationId | undefined): OperationId => {
@@ -775,17 +805,13 @@ const walletStartLocalIdentity = (
       }),
     }),
     parseActionResponse: parseResponse,
-    recoveryRequest: (operationId) => ({
-      method: walletControlResources.operation.method,
-      path: walletControlResources.operation.path(operationId),
-    }),
-    parseRecoveryResponse: (publicInput, operationId, value) => {
-      const operation = parseWalletManagementOperation(value);
-      return parseResponse(publicInput, operationId, {
+    recoveryObservation: localOperationRecoveryObservation(
+      walletOperationReadIdentity,
+      (publicInput, operationId, operation) => parseResponse(publicInput, operationId, {
         status: "operation_started",
         operation,
-      });
-    },
+      }),
+    ),
   });
 };
 
@@ -852,16 +878,13 @@ const walletCancelLocalIdentity = localOperationIdentity<
       input,
       parseWalletManagementOperation(value),
     ),
-  recoveryRequest: (operationId) => ({
-    method: walletControlResources.operation.method,
-    path: walletControlResources.operation.path(operationId),
-  }),
-  parseRecoveryResponse: (input, _operationId, value) => {
-    return walletManagementContracts.cancelOperation.parsePublicSuccess(
+  recoveryObservation: localOperationRecoveryObservation(
+    walletOperationReadIdentity,
+    (input, _operationId, operation) => walletManagementContracts.cancelOperation.parsePublicSuccess(
       input,
-      parseWalletManagementOperation(value),
-    );
-  },
+      operation,
+    ),
+  ),
 });
 
 type WalletConfirmationInput = ReturnType<typeof walletOperationConfirmationContract.parseInput>;
@@ -882,23 +905,22 @@ const walletConfirmationLocalIdentity = localOperationIdentity<
   parseActionResponse: (input, operationId, value) => {
     const id = requiredOperationId(operationId);
     return walletOperationConfirmationContract.parseBoundSuccess(
+      input,
+      { operationId: id, interactionInterface: "cli" },
+      parseWalletManagementOperation(value),
+    );
+  },
+  recoveryObservation: localOperationRecoveryObservation(
+    walletOperationReadIdentity,
+    (input, operationId, operation) => {
+      const id = requiredOperationId(operationId);
+      return walletOperationConfirmationContract.parseBoundSuccess(
         input,
         { operationId: id, interactionInterface: "cli" },
-        parseWalletManagementOperation(value),
+        operation,
       );
-  },
-  recoveryRequest: (operationId) => ({
-    method: walletControlResources.operation.method,
-    path: walletControlResources.operation.path(operationId),
-  }),
-  parseRecoveryResponse: (input, operationId, value) => {
-    const id = requiredOperationId(operationId);
-    return walletOperationConfirmationContract.parseBoundSuccess(
-        input,
-        { operationId: id, interactionInterface: "cli" },
-        parseWalletManagementOperation(value),
-      );
-  },
+    },
+  ),
 });
 
 const tokenOperationId = (input: Readonly<{ operationId: OperationId }>): OperationId =>
@@ -942,24 +964,17 @@ const tokenStartLocalIdentity = <Input>(input: Readonly<{
     },
     value,
   ) as TokenCatalogOperationStartResult,
-  recoveryRequest: (operationId) => ({
-    method: "GET",
-    path: tokenCatalogControlRoutes.operation(operationId),
-  }),
-  parseRecoveryResponse: (publicInput, operationId, value) => {
-    const operationResult = tokenCatalogApplicationContracts.operation.parsePublicSuccess(
-      { operationId: requiredOperationId(operationId) },
-      value,
-    );
-    return input.contract.parseBoundSuccess(
+  recoveryObservation: localOperationRecoveryObservation(
+    tokenOperationReadIdentity,
+    (publicInput, operationId, operationResult) => input.contract.parseBoundSuccess(
       publicInput,
       {
         operationId: requiredOperationId(operationId),
         interactionInterface: input.interactionInterface,
       },
       { operation: operationResult.operation },
-    ) as TokenCatalogOperationStartResult;
-  },
+    ) as TokenCatalogOperationStartResult,
+  ),
 });
 
 const tokenSelectionReadIdentity = localOperationIdentity<
@@ -1027,17 +1042,15 @@ const tokenCancelLocalIdentity = localOperationIdentity<
   }),
   parseActionResponse: (input, _operationId, value) =>
     tokenCatalogApplicationContracts.cancelOperation.parsePublicSuccess(input, value),
-  recoveryRequest: (operationId) => ({
-    method: "GET",
-    path: tokenCatalogControlRoutes.operation(operationId),
-  }),
-  parseRecoveryResponse: (input, _operationId, value) => {
-    const result = tokenCatalogApplicationContracts.operation.parsePublicSuccess(input, value);
-    if (result.operation.state !== "cancelled") {
-      throw new TypeError("The exact operation does not prove cancellation.");
-    }
-    return tokenCatalogApplicationContracts.cancelOperation.parsePublicSuccess(input, result);
-  },
+  recoveryObservation: localOperationRecoveryObservation(
+    tokenOperationReadIdentity,
+    (input, _operationId, result) => {
+      if (result.operation.state !== "cancelled") {
+        throw new TypeError("The exact operation does not prove cancellation.");
+      }
+      return tokenCatalogApplicationContracts.cancelOperation.parsePublicSuccess(input, result);
+    },
+  ),
 });
 
 const tokenConfirmationLocalIdentity = localOperationIdentity<
@@ -1059,18 +1072,14 @@ const tokenConfirmationLocalIdentity = localOperationIdentity<
       { operationId: requiredOperationId(operationId), interactionInterface: "cli" },
       value,
     ),
-  recoveryRequest: (operationId) => ({
-    method: "GET",
-    path: tokenCatalogControlRoutes.operation(operationId),
-  }),
-  parseRecoveryResponse: (input, operationId, value) => {
-    const result = tokenCatalogApplicationContracts.operation.parsePublicSuccess(input, value);
-    return tokenCatalogOperationConfirmationContract.parseBoundSuccess(
+  recoveryObservation: localOperationRecoveryObservation(
+    tokenOperationReadIdentity,
+    (input, operationId, result) => tokenCatalogOperationConfirmationContract.parseBoundSuccess(
       input,
       { operationId: requiredOperationId(operationId), interactionInterface: "cli" },
       result.operation,
-    );
-  },
+    ),
+  ),
 });
 
 const accountAssetCollectionReadIdentity = localOperationIdentity<
@@ -1133,6 +1142,275 @@ export const tokenLocalOperationIdentities = Object.freeze({
   }),
   mcp: tokenStartIdentities("web"),
 });
+
+type AnyLocalOperationIdentity = LocalOperationIdentity<unknown, unknown>;
+type OperationInterfaceBinding = WalletInterfaceBinding | TokenCatalogInterfaceBinding;
+
+export interface LocalOperationInterfaceCatalogEntry<
+  Binding extends OperationInterfaceBinding = OperationInterfaceBinding,
+> {
+  readonly binding: Binding;
+  readonly identity: AnyLocalOperationIdentity;
+  readonly deliveryRecovery?: Readonly<{
+    readonly target: LocalOperationInterfaceCatalogEntry<Binding>;
+  }>;
+}
+
+const walletBindingKeys = Object.freeze([
+  "connect",
+  "disconnect",
+  "operation",
+  "cancelOperation",
+  "currentOperation",
+] as const);
+const walletOperationBindingKeys = Object.freeze([
+  "connect",
+  "disconnect",
+  "operation",
+  "cancelOperation",
+] as const);
+type WalletOperationBindingKey = typeof walletOperationBindingKeys[number];
+
+const tokenBindingKeys = Object.freeze([
+  "selection",
+  "selections",
+  "startAddition",
+  "startRemoval",
+  "operation",
+  "cancelOperation",
+] as const);
+const tokenOperationBindingKeys = Object.freeze([
+  "startAddition",
+  "startRemoval",
+  "operation",
+  "cancelOperation",
+] as const);
+type TokenOperationBindingKey = typeof tokenOperationBindingKeys[number];
+
+type WalletBindingMap = Readonly<Record<typeof walletBindingKeys[number], WalletInterfaceBinding>>;
+type TokenBindingMap = Readonly<Record<typeof tokenBindingKeys[number], TokenCatalogInterfaceBinding>>;
+type WalletOperationIdentityMap = Readonly<Record<WalletOperationBindingKey, AnyLocalOperationIdentity>>;
+type TokenOperationIdentityMap = Readonly<Record<TokenOperationBindingKey, AnyLocalOperationIdentity>>;
+
+const assertExactRecordKeys = (
+  value: object,
+  expected: readonly string[],
+): void => {
+  const actual = Object.keys(value).sort(compareCodePointSequences);
+  const required = [...expected].sort(compareCodePointSequences);
+  if (actual.length !== required.length || actual.some((key, index) => key !== required[index])) {
+    throw new TypeError("Interface catalog keys are incomplete.");
+  }
+};
+
+type OperationInterfaceAction = "start" | "cancel_operation" | "get_operation";
+const localActionByInterfaceAction = Object.freeze({
+  start: "start",
+  cancel_operation: "cancel",
+  get_operation: "read",
+} as const satisfies Readonly<Record<OperationInterfaceAction, "start" | "cancel" | "read">>);
+
+const expectedLocalAction = (
+  action: OperationInterfaceBinding["action"],
+): "start" | "cancel" | "read" | undefined =>
+  Object.hasOwn(localActionByInterfaceAction, action)
+    ? localActionByInterfaceAction[action as OperationInterfaceAction]
+    : undefined;
+
+const assertExactRecordValues = (
+  actual: Readonly<Record<string, unknown>>,
+  expected: Readonly<Record<string, unknown>>,
+  message: string,
+): void => {
+  for (const key of Object.keys(expected)) {
+    if (actual[key] !== expected[key]) throw new TypeError(message);
+  }
+};
+
+const admitOperationInterfaceEntries = <Binding extends OperationInterfaceBinding>(
+  bindings: Readonly<Record<string, Binding>>,
+  identities: Readonly<Record<string, AnyLocalOperationIdentity>>,
+  exactOperationContract: Binding["contract"],
+): Readonly<Record<string, LocalOperationInterfaceCatalogEntry<Binding>>> => {
+  const targetBinding = bindings["operation"];
+  const targetIdentity = identities["operation"];
+  if (
+    targetBinding === undefined ||
+    targetIdentity === undefined ||
+    targetBinding.action !== "get_operation" ||
+    targetBinding.mcp === undefined ||
+    targetBinding.contract !== exactOperationContract ||
+    targetBinding.mcp.deliveryRecovery !== undefined
+  ) {
+    throw new TypeError("Operation-read binding is invalid.");
+  }
+  const targetLocalBinding = resolveLocalOperationIdentity(targetIdentity);
+  if (targetLocalBinding.action !== "read") {
+    throw new TypeError("Operation-read identity action is invalid.");
+  }
+  if (targetLocalBinding.contract !== exactOperationContract.applicationContract) {
+    throw new TypeError("Operation-read identity contract is invalid.");
+  }
+  if (targetLocalBinding.recoveryObservation !== undefined) {
+    throw new TypeError("Operation-read identity recovery is invalid.");
+  }
+  const target = Object.freeze({
+    binding: targetBinding,
+    identity: targetIdentity,
+  }) satisfies LocalOperationInterfaceCatalogEntry<Binding>;
+  const entries: Record<string, LocalOperationInterfaceCatalogEntry<Binding>> = { operation: target };
+
+  for (const [key, binding] of Object.entries(bindings)) {
+    const action = expectedLocalAction(binding.action);
+    const identity = identities[key];
+    const relation = binding.mcp?.deliveryRecovery;
+    if (action === undefined) {
+      if (identity !== undefined || relation !== undefined) {
+        throw new TypeError("Non-operation binding owns a recovery relationship.");
+      }
+      continue;
+    }
+    if (identity === undefined) throw new TypeError("Operation binding identity is missing.");
+    if (action === "read") {
+      if (key !== "operation" || identity !== targetIdentity || relation !== undefined) {
+        throw new TypeError("Operation-read relationship is invalid.");
+      }
+      continue;
+    }
+    if (binding.mcp === undefined || relation?.targetBinding !== "operation") {
+      throw new TypeError("Mutation binding recovery relationship is missing.");
+    }
+    assertExactRecordKeys(relation, ["targetBinding"]);
+    const localBinding = resolveLocalOperationIdentity(identity);
+    if (localBinding.action !== action) {
+      throw new TypeError("Mutation binding action is invalid.");
+    }
+    if (localBinding.contract !== binding.contract.applicationContract) {
+      throw new TypeError("Mutation binding contract is invalid.");
+    }
+    if (localBinding.recoveryObservation?.target !== targetIdentity) {
+      throw new TypeError("Mutation binding recovery target is invalid.");
+    }
+    entries[key] = Object.freeze({
+      binding,
+      identity,
+      deliveryRecovery: Object.freeze({ target }),
+    });
+  }
+  if (Object.keys(entries).length !== Object.keys(identities).length) {
+    throw new TypeError("Operation relationship catalog is incomplete.");
+  }
+  return Object.freeze(entries);
+};
+
+const expectedWalletOperationIdentities = Object.freeze({
+  connect: walletLocalOperationIdentities.mcp.connect,
+  disconnect: walletLocalOperationIdentities.mcp.disconnect,
+  operation: walletLocalOperationIdentities.mcp.operation,
+  cancelOperation: walletLocalOperationIdentities.mcp.cancel,
+}) satisfies WalletOperationIdentityMap;
+
+const expectedTokenOperationIdentities = Object.freeze({
+  startAddition: tokenLocalOperationIdentities.mcp.addition,
+  startRemoval: tokenLocalOperationIdentities.mcp.removal,
+  operation: tokenLocalOperationIdentities.shared.operation,
+  cancelOperation: tokenLocalOperationIdentities.shared.cancel,
+}) satisfies TokenOperationIdentityMap;
+
+export const admitWalletInterfaceCatalog = <const Bindings extends WalletBindingMap>(input: Readonly<{
+  bindings: Bindings;
+  identities: WalletOperationIdentityMap;
+}>): Readonly<{
+  bindings: Bindings;
+  bindingList: readonly WalletInterfaceBinding[];
+  localOperations: Readonly<Record<
+    WalletOperationBindingKey,
+    LocalOperationInterfaceCatalogEntry<WalletInterfaceBinding>
+  >>;
+}> => {
+  assertExactRecordKeys(input.bindings, walletBindingKeys);
+  assertExactRecordKeys(input.identities, walletOperationBindingKeys);
+  const bindings = Object.freeze({ ...input.bindings }) as Bindings;
+  const localOperations = admitOperationInterfaceEntries<WalletInterfaceBinding>(
+    bindings,
+    input.identities,
+    walletManagementContracts.operation,
+  ) as Readonly<Record<
+    WalletOperationBindingKey,
+    LocalOperationInterfaceCatalogEntry<WalletInterfaceBinding>
+  >>;
+  assertExactRecordValues(
+    bindings,
+    walletInterfaceBindingDefinitions,
+    "Wallet interface binding identity is invalid.",
+  );
+  assertExactRecordValues(
+    input.identities,
+    expectedWalletOperationIdentities,
+    "Wallet operation identity is invalid.",
+  );
+  return Object.freeze({
+    bindings,
+    bindingList: Object.freeze(Object.values(bindings)),
+    localOperations,
+  });
+};
+
+export const admitTokenCatalogInterfaceCatalog = <const Bindings extends TokenBindingMap>(input: Readonly<{
+  bindings: Bindings;
+  identities: TokenOperationIdentityMap;
+}>): Readonly<{
+  bindings: Bindings;
+  bindingList: readonly TokenCatalogInterfaceBinding[];
+  localOperations: Readonly<Record<
+    TokenOperationBindingKey,
+    LocalOperationInterfaceCatalogEntry<TokenCatalogInterfaceBinding>
+  >>;
+}> => {
+  assertExactRecordKeys(input.bindings, tokenBindingKeys);
+  assertExactRecordKeys(input.identities, tokenOperationBindingKeys);
+  const bindings = Object.freeze({ ...input.bindings }) as Bindings;
+  const localOperations = admitOperationInterfaceEntries<TokenCatalogInterfaceBinding>(
+    bindings,
+    input.identities,
+    tokenCatalogApplicationContracts.operation,
+  ) as Readonly<Record<
+    TokenOperationBindingKey,
+    LocalOperationInterfaceCatalogEntry<TokenCatalogInterfaceBinding>
+  >>;
+  assertExactRecordValues(
+    bindings,
+    tokenCatalogInterfaceBindingDefinitions,
+    "Token interface binding identity is invalid.",
+  );
+  assertExactRecordValues(
+    input.identities,
+    expectedTokenOperationIdentities,
+    "Token operation identity is invalid.",
+  );
+  return Object.freeze({
+    bindings,
+    bindingList: Object.freeze(Object.values(bindings)
+      .sort((left, right) => compareCodePointSequences(left.contract.capabilityId, right.contract.capabilityId))),
+    localOperations,
+  });
+};
+
+const walletInterfaceCatalog = admitWalletInterfaceCatalog({
+  bindings: walletInterfaceBindingDefinitions,
+  identities: expectedWalletOperationIdentities,
+});
+const tokenCatalogInterfaceCatalog = admitTokenCatalogInterfaceCatalog({
+  bindings: tokenCatalogInterfaceBindingDefinitions,
+  identities: expectedTokenOperationIdentities,
+});
+
+export const walletInterfaceBindings = walletInterfaceCatalog.bindings;
+export const walletInterfaceBindingList = walletInterfaceCatalog.bindingList;
+export const walletMcpLocalOperationCatalog = walletInterfaceCatalog.localOperations;
+export const tokenCatalogInterfaceBindings = tokenCatalogInterfaceCatalog.bindings;
+export const tokenCatalogInterfaceBindingList = tokenCatalogInterfaceCatalog.bindingList;
+export const tokenMcpLocalOperationCatalog = tokenCatalogInterfaceCatalog.localOperations;
 
 export const accountAssetLocalOperationIdentities = Object.freeze({
   collection: accountAssetCollectionReadIdentity,

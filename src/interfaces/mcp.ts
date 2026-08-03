@@ -42,8 +42,6 @@ import {
 } from "../token-catalog/index.js";
 import type {
   AnyWalletManagementContract,
-  WalletManagementOperation,
-  WalletOperationStartResult,
 } from "../wallet/contracts.js";
 import {
   browserLocationHref,
@@ -64,14 +62,14 @@ import {
   interfaceReadCapabilityRegistry,
   readInterfaceIdentities,
   referenceMarketInterfaceBindingList,
+  tokenMcpLocalOperationCatalog,
   tokenCatalogInterfaceBindings,
-  tokenCatalogInterfaceBindingList,
   tokenLocalOperationIdentities,
-  walletLocalOperationIdentities,
-  walletInterfaceBindings,
-  walletInterfaceBindingList,
+  walletMcpLocalOperationCatalog,
+  readLocalOperationDeliveryAction,
   type TokenCatalogInterfaceBinding,
   type AccountAssetInterfaceBinding,
+  type LocalOperationInterfaceCatalogEntry,
   type WalletInterfaceBinding,
   type InterfaceToolAnnotations,
   type ReadInterfaceIdentity,
@@ -80,6 +78,7 @@ import {
 import { LocalOperationClient } from "./operation-client.js";
 import {
   deliveryUnknownSchema,
+  isDeliveryUnknown,
   type DeliveryUnknown,
 } from "./operation-delivery.js";
 import { interfaceCapabilityCatalogSchema } from "./support.js";
@@ -139,11 +138,17 @@ interface McpToolDefinition {
   readonly outputSchema: NonNullable<Tool["outputSchema"]>;
   readonly failureCodes: readonly string[];
   readonly annotations: ToolAnnotations;
+  readonly deliveryRecovery?: McpDeliveryRecoveryDescriptor;
   readonly parseInput: (value: unknown) => unknown;
   readonly invoke: (input: unknown, signal: AbortSignal) => Promise<McpInvocationResult>;
 }
 
 type McpInvocationResult = InterfaceInvocationResult | DeliveryUnknown | ReferenceMarketDeliveryUnknown;
+
+interface McpDeliveryRecoveryDescriptor {
+  readonly schema: z.ZodType;
+  project(delivery: DeliveryUnknown): CanonicalJson;
+}
 
 export interface McpRuntimePort extends RuntimeDispatchPort, RuntimeOwnerSessionPort {}
 
@@ -318,11 +323,66 @@ const tokenCatalogDisplayUrl = assetsDisplayUrl;
 const startOutputSchema = (
   contract: InterfaceApplicationContract,
   displayUrl: string,
+  deliverySchema: z.ZodType = deliveryUnknownSchema,
 ): NonNullable<Tool["outputSchema"]> =>
   successFailureOrDeliverySchema(zodSchema(z.object({
     result: contract.successSchema,
     displayUrl: z.literal(displayUrl),
-  }).strict(), "output"), contract.failureCodes);
+  }).strict(), "output"), contract.failureCodes, tokenCatalogErrorRegistry, deliverySchema);
+
+const deliveryActionFor = (
+  source: LocalOperationInterfaceCatalogEntry,
+): DeliveryUnknown["action"] => readLocalOperationDeliveryAction(source.identity);
+
+const recoveryOperationId = (value: unknown): unknown =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Readonly<Record<string, unknown>>)["operationId"]
+    : undefined;
+
+const createMcpDeliveryRecoveryDescriptor = <Binding extends
+  WalletInterfaceBinding | TokenCatalogInterfaceBinding>(
+  source: LocalOperationInterfaceCatalogEntry<Binding>,
+): McpDeliveryRecoveryDescriptor | undefined => {
+  const relation = source.deliveryRecovery;
+  if (relation === undefined) return undefined;
+  const target = relation.target;
+  if (target.binding.action !== "get_operation" || target.binding.mcp === undefined) {
+    throw new TypeError("MCP delivery recovery target is invalid.");
+  }
+  const expectedAction = deliveryActionFor(source);
+  const targetTool = parseMcpToolName(target.binding.mcp.name);
+  const schema = z.object({
+    delivery: deliveryUnknownSchema.extend({ action: z.literal(expectedAction) }),
+    recovery: z.object({
+      tool: z.literal(targetTool),
+      arguments: target.binding.contract.inputSchema,
+    }).strict(),
+  }).strict().superRefine((value, context) => {
+    if (recoveryOperationId(value.recovery.arguments) !== value.delivery.operationId) {
+      context.addIssue({
+        code: "custom",
+        path: ["recovery", "arguments", "operationId"],
+        message: "Recovery operation ID does not match delivery.",
+      });
+    }
+  });
+  return Object.freeze({
+    schema,
+    project(delivery: DeliveryUnknown): CanonicalJson {
+      if (delivery.action !== deliveryActionFor(source)) {
+        throw new TypeError("MCP delivery action does not match its source identity.");
+      }
+      const targetInput = target.binding.contract.parseInput({ operationId: delivery.operationId });
+      return captureCanonicalJson(schema.parse({
+        delivery,
+        recovery: {
+          tool: targetTool,
+          arguments: targetInput,
+        },
+      }));
+    },
+  });
+};
 
 const annotations = (value: InterfaceToolAnnotations): ToolAnnotations => Object.freeze({ ...value });
 const success = (value: unknown): InterfaceInvocationResult => ({
@@ -400,9 +460,11 @@ const validateLocalToolInput = (
 
 const walletTool = (
   client: LocalOperationClient,
-  binding: WalletInterfaceBinding,
+  entry: LocalOperationInterfaceCatalogEntry<WalletInterfaceBinding>,
 ): McpToolDefinition => {
+  const binding = entry.binding;
   if (binding.mcp === undefined) throw new TypeError("Wallet MCP binding is unavailable.");
+  const deliveryRecovery = createMcpDeliveryRecoveryDescriptor(entry);
   const common = {
     name: parseMcpToolName(binding.mcp.name),
     description: binding.mcp.description,
@@ -412,53 +474,47 @@ const walletTool = (
     parseInput: (value: unknown): unknown => validateLocalToolInput(binding.contract.parseInput, value),
   } as const;
   if (binding.action === "start") {
-    if (binding.operationKind === undefined) {
-      throw new TypeError("Wallet start binding is incomplete.");
-    }
-    const operationKind = binding.operationKind;
+    if (deliveryRecovery === undefined) throw new TypeError("Wallet start recovery is unavailable.");
     return Object.freeze({
       ...common,
-      outputSchema: startOutputSchema(binding.contract, walletDisplayUrl),
+      deliveryRecovery,
+      outputSchema: startOutputSchema(binding.contract, walletDisplayUrl, deliveryRecovery.schema),
       invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
-        const result = await client.invoke(
-          walletLocalOperationIdentities.mcp[operationKind],
-          value,
-          signal,
-        );
+        const result = await client.invoke(entry.identity, value, signal);
         if ("status" in result || !result.ok) return result;
         return success({
-          result: result.value as WalletOperationStartResult,
+          result: result.value,
           displayUrl: walletDisplayUrl,
         });
       },
     });
   }
   if (binding.action === "get_operation" || binding.action === "cancel_operation") {
+    if (binding.action === "cancel_operation" && deliveryRecovery === undefined) {
+      throw new TypeError("Wallet cancellation recovery is unavailable.");
+    }
     return Object.freeze({
       ...common,
+      ...(deliveryRecovery === undefined ? {} : { deliveryRecovery }),
       outputSchema: binding.action === "cancel_operation"
         ? successFailureOrDeliverySchema(
           zodSchema(binding.contract.successSchema, "output"),
           binding.contract.failureCodes,
+          tokenCatalogErrorRegistry,
+          deliveryRecovery!.schema,
         )
         : contractOutputSchema(binding.contract),
       invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
-        const result = await client.invoke(
-          binding.action === "get_operation"
-            ? walletLocalOperationIdentities.mcp.operation
-            : walletLocalOperationIdentities.mcp.cancel,
-          value,
-          signal,
-        );
+        const result = await client.invoke(entry.identity, value, signal);
         if ("status" in result || !result.ok) return result;
-        return success(result.value as WalletManagementOperation);
+        return success(result.value);
       },
     });
   }
   throw new TypeError("Wallet MCP binding action is unsupported.");
 };
 
-const tokenCatalogTool = (
+const tokenCatalogReadTool = (
   client: LocalOperationClient,
   binding: TokenCatalogInterfaceBinding,
 ): McpToolDefinition => {
@@ -498,41 +554,65 @@ const tokenCatalogTool = (
       },
     });
   }
+  throw new TypeError("Token catalog read MCP binding action is unsupported.");
+};
+
+const tokenCatalogOperationTool = (
+  client: LocalOperationClient,
+  entry: LocalOperationInterfaceCatalogEntry<TokenCatalogInterfaceBinding>,
+): McpToolDefinition => {
+  const binding = entry.binding;
+  const deliveryRecovery = createMcpDeliveryRecoveryDescriptor(entry);
+  const common = {
+    name: parseMcpToolName(binding.mcp.name),
+    description: binding.mcp.description,
+    inputSchema: contractInputSchema(binding.contract),
+    failureCodes: binding.contract.failureCodes,
+    annotations: annotations(binding.mcp.annotations),
+    parseInput: (value: unknown): unknown => validateLocalToolInput(binding.contract.parseInput, value),
+  } as const;
   if (binding.action === "start") {
-    if (binding.operationKind === undefined) {
-      throw new TypeError("Token operation start binding is incomplete.");
-    }
-    const operationKind = binding.operationKind;
+    if (deliveryRecovery === undefined) throw new TypeError("Token start recovery is unavailable.");
     return Object.freeze({
       ...common,
-      outputSchema: startOutputSchema(binding.contract, tokenCatalogDisplayUrl),
+      deliveryRecovery,
+      outputSchema: startOutputSchema(
+        binding.contract,
+        tokenCatalogDisplayUrl,
+        deliveryRecovery.schema,
+      ),
       invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
-        const result = operationKind === "add"
-          ? await client.invoke(tokenLocalOperationIdentities.mcp.addition, value, signal)
-          : await client.invoke(tokenLocalOperationIdentities.mcp.removal, value, signal);
+        const result = await client.invoke(entry.identity, value, signal);
         if ("status" in result || !result.ok) return result;
-        return success({ result: result.value, displayUrl: tokenCatalogDisplayUrl });
+        return success({
+          result: result.value,
+          displayUrl: tokenCatalogDisplayUrl,
+        });
       },
     });
   }
   if (binding.action === "get_operation" || binding.action === "cancel_operation") {
+    if (binding.action === "cancel_operation" && deliveryRecovery === undefined) {
+      throw new TypeError("Token cancellation recovery is unavailable.");
+    }
     return Object.freeze({
       ...common,
+      ...(deliveryRecovery === undefined ? {} : { deliveryRecovery }),
       outputSchema: binding.action === "cancel_operation"
         ? successFailureOrDeliverySchema(
           zodSchema(binding.contract.successSchema, "output"),
           binding.contract.failureCodes,
+          tokenCatalogErrorRegistry,
+          deliveryRecovery!.schema,
         )
         : contractOutputSchema(binding.contract),
       invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
-        const result = binding.action === "get_operation"
-          ? await client.invoke(tokenLocalOperationIdentities.shared.operation, value, signal)
-          : await client.invoke(tokenLocalOperationIdentities.shared.cancel, value, signal);
+        const result = await client.invoke(entry.identity, value, signal);
         return "status" in result || !result.ok ? result : success(result.value);
       },
     });
   }
-  throw new TypeError("Token catalog MCP binding action is unsupported.");
+  throw new TypeError("Token catalog operation MCP binding action is unsupported.");
 };
 
 const accountAssetTool = (
@@ -623,10 +703,11 @@ const createToolDefinitions = (
       catch { return failure(); }
     },
   }),
-  ...walletInterfaceBindingList
-    .filter((binding) => binding.mcp !== undefined)
-    .map((binding) => walletTool(client, binding)),
-  ...tokenCatalogInterfaceBindingList.map((binding) => tokenCatalogTool(client, binding)),
+  ...Object.values(walletMcpLocalOperationCatalog).map((entry) => walletTool(client, entry)),
+  tokenCatalogReadTool(client, tokenCatalogInterfaceBindings.selection),
+  tokenCatalogReadTool(client, tokenCatalogInterfaceBindings.selections),
+  ...Object.values(tokenMcpLocalOperationCatalog)
+    .map((entry) => tokenCatalogOperationTool(client, entry)),
 ]);
 
 export class McpToolRegistry {
@@ -666,6 +747,12 @@ export const createMcpToolRegistry = (
   mutationClient = new LocalMutationClient(runtime),
 ): McpToolRegistry => new McpToolRegistry(createToolDefinitions(runtime, client, mutationClient));
 
+const canonicalToolResult = (value: CanonicalJson, isError: boolean): CallToolResult => ({
+  ...(isError ? { isError: true } : {}),
+  structuredContent: value as Record<string, unknown>,
+  content: [{ type: "text", text: canonicalJsonStringify(value) }],
+});
+
 const toolResult = (result: McpInvocationResult): CallToolResult => {
   const deliveryUnknown = "status" in result;
   const value = deliveryUnknown
@@ -673,19 +760,37 @@ const toolResult = (result: McpInvocationResult): CallToolResult => {
     : result.ok
       ? result.value
       : result.failure as unknown as CanonicalJson;
-  return {
-    ...(!deliveryUnknown && result.ok ? {} : { isError: true }),
-    structuredContent: value as Record<string, unknown>,
-    content: [{ type: "text", text: canonicalJsonStringify(value) }],
-  };
+  return canonicalToolResult(value, deliveryUnknown || !result.ok);
 };
+
+const internalToolResult = (definition: McpToolDefinition): CallToolResult => toolResult(
+  constrainInterfaceFailure({
+    ok: false,
+    failure: createInterfaceFailure("internal_error"),
+  }, definition.failureCodes),
+);
 
 const constrainedToolResult = (
   definition: McpToolDefinition,
   result: McpInvocationResult,
-): CallToolResult => toolResult(
-  "status" in result ? result : constrainInterfaceFailure(result, definition.failureCodes),
-);
+): CallToolResult => {
+  if (isDeliveryUnknown(result)) {
+    try {
+      const descriptor = definition.deliveryRecovery;
+      if (descriptor === undefined) throw new TypeError("MCP delivery recovery is unavailable.");
+      return canonicalToolResult(descriptor.project(result), true);
+    } catch {
+      return internalToolResult(definition);
+    }
+  }
+  if ("status" in result) {
+    if (!referenceMarketDeliveryUnknownSchema.safeParse(result).success) {
+      return internalToolResult(definition);
+    }
+    return toolResult(result);
+  }
+  return toolResult(constrainInterfaceFailure(result, definition.failureCodes));
+};
 
 export const createMcpServer = (
   runtime: McpRuntimePort,

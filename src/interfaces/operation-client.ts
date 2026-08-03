@@ -10,6 +10,7 @@ import {
   internalResponseLimitBytes,
   jsonContentType,
   noStoreCacheControl,
+  type RuntimeHttpRequest,
 } from "../runtime/http-boundary.js";
 import type {
   RuntimeOwnerSession,
@@ -174,7 +175,26 @@ export class LocalOperationClient {
     operationId: OperationId,
     originalSession: RuntimeOwnerSession,
   ): Promise<LocalOperationResult<Success>> {
-    if (binding.recoveryRequest === undefined || binding.parseRecoveryResponse === undefined) {
+    const observation = binding.recoveryObservation;
+    if (observation === undefined) {
+      return createDeliveryUnknown(binding.action as OperationDeliveryAction, operationId);
+    }
+    let targetBinding: LocalOperationBinding<Readonly<{ operationId: OperationId }>, unknown>;
+    let targetInput: Readonly<{ operationId: OperationId }>;
+    let targetOperationId: OperationId;
+    let targetRequest: RuntimeHttpRequest;
+    try {
+      targetBinding = resolveLocalOperationIdentity(observation.target);
+      if (targetBinding.action !== "read" || targetBinding.recoveryObservation !== undefined) {
+        throw new TypeError("Recovery target must be a terminal read.");
+      }
+      targetInput = targetBinding.contract.parseInput({ operationId });
+      targetOperationId = operationIdSchema.parse(targetBinding.operationId(targetInput, undefined));
+      if (targetOperationId !== operationId) {
+        throw new TypeError("Recovery target selected another operation.");
+      }
+      targetRequest = targetBinding.actionRequest(targetInput, targetOperationId);
+    } catch {
       return createDeliveryUnknown(binding.action as OperationDeliveryAction, operationId);
     }
     const identity = originalSession.identity;
@@ -193,7 +213,7 @@ export class LocalOperationClient {
     }
     try {
       const read = await session.send({
-        ...binding.recoveryRequest(operationId),
+        ...targetRequest,
         maximumResponseBytes: internalResponseLimitBytes,
         responseDeadlineMilliseconds: recoveryReadMilliseconds,
       }, this.#lifecycle.signal);
@@ -207,7 +227,8 @@ export class LocalOperationClient {
           read.response.cacheControl !== noStoreCacheControl
         ) throw new TypeError("Recovery response provenance is invalid.");
         const body = parseJsonBytes(read.response.bytes);
-        return { ok: true, value: binding.parseRecoveryResponse(input, operationId, body) };
+        const observed = targetBinding.parseActionResponse(targetInput, targetOperationId, body);
+        return { ok: true, value: observation.admitObservedResult(input, operationId, observed) };
       } catch {
         return createDeliveryUnknown(binding.action as OperationDeliveryAction, operationId);
       }
