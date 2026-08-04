@@ -1,5 +1,4 @@
 import { getChainOperationFailure } from "../chain/errors.js";
-import { getChainInvocationStopReason } from "../chain/invocation-lifecycle.js";
 import {
   createApplicationFailure,
   type ApplicationFailure,
@@ -25,8 +24,19 @@ const operationFailures = new WeakMap<object, ApplicationFailure>();
 export class ReferenceMarketOperationError extends Error {
   readonly failure: ApplicationFailure;
 
-  constructor(code: string) {
-    const failure = createReferenceMarketFailure(code);
+  constructor(codeOrFailure: string | ApplicationFailure) {
+    const failure = typeof codeOrFailure === "string"
+      ? createReferenceMarketFailure(codeOrFailure)
+      : codeOrFailure;
+    const definition = referenceMarketErrorRegistry.get(failure.error.code);
+    if (
+      failure.ok !== false ||
+      failure.error.category !== definition.category ||
+      failure.error.message !== definition.message ||
+      failure.error.retryable !== definition.retryable
+    ) {
+      throw new TypeError("Reference market application failure is not canonical.");
+    }
     super(failure.error.message);
     this.name = "ReferenceMarketOperationError";
     this.failure = failure;
@@ -40,14 +50,10 @@ export const getReferenceMarketOperationFailure = (error: unknown): ApplicationF
 
 export const normalizeReferenceMarketError = (error: unknown): ReferenceMarketOperationError => {
   if (getReferenceMarketOperationFailure(error) !== undefined) return error as ReferenceMarketOperationError;
-  const chainStop = getChainInvocationStopReason(error);
-  if (chainStop !== undefined) {
-    return new ReferenceMarketOperationError(
-      chainStop === "caller_aborted" ? "request_aborted" : "source_unavailable",
-    );
-  }
   const inherited = getChainOperationFailure(error) ??
     getRuntimeOperationFailure(error) ??
     getTokenCatalogOperationFailure(error);
-  return new ReferenceMarketOperationError(inherited?.error.code ?? "internal_error");
+  return new ReferenceMarketOperationError(
+    inherited ?? createReferenceMarketFailure("internal_error"),
+  );
 };

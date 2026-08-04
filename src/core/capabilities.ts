@@ -100,6 +100,7 @@ const semanticReadFailureCodes = canonicalFailureCodes([
 
 const rpcReadFailureCodes = canonicalFailureCodes([
   ...semanticReadFailureCodes,
+  "chain_response_unavailable",
   "rate_limited",
   "source_inconsistent",
   "source_unavailable",

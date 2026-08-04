@@ -15,15 +15,16 @@ import {
   normalizeRpcRuntimeCode,
 } from "../chain/normalization.js";
 import {
-  getChainRpcErrorCode,
   isRpcExecutionRevertedError,
   type RpcCanonicalBlockReference,
   type RpcRequester,
 } from "../chain/rpc.js";
+import { admitChainReadFailure } from "../chain/errors.js";
 import {
   assertOfficialAssetSourceMember,
   stockFactoryAdmissionManifest,
   stockFactoryVerificationSchema,
+  stockFactoryVerificationErrorCodeSchema,
   type OfficialAssetSourceMember,
   type StockFactoryVerification,
   type StockFactoryVerificationErrorCode,
@@ -63,14 +64,14 @@ export interface StockFactoryVerifierInput {
 const normalizeFailure = (error: unknown, signal: AbortSignal): StockFactoryVerificationError => {
   const existing = getStockFactoryVerificationErrorCode(error);
   if (existing !== undefined) return error as StockFactoryVerificationError;
-  if (signal.aborted || getChainRpcErrorCode(error) === "request_aborted") {
-    return new StockFactoryVerificationError("request_aborted");
-  }
-  const rpcCode = getChainRpcErrorCode(error);
-  if (rpcCode === "source_inconsistent" || isRpcExecutionRevertedError(error)) {
+  if (isRpcExecutionRevertedError(error)) {
     return new StockFactoryVerificationError("source_inconsistent");
   }
-  if (rpcCode !== undefined) return new StockFactoryVerificationError("source_unavailable");
+  const failure = admitChainReadFailure(error, signal);
+  if (failure !== undefined) {
+    const admitted = stockFactoryVerificationErrorCodeSchema.safeParse(failure.error.code);
+    if (admitted.success) return new StockFactoryVerificationError(admitted.data);
+  }
   return new StockFactoryVerificationError("source_inconsistent");
 };
 

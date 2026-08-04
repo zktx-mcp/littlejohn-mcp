@@ -35,7 +35,7 @@ describe("human browser failure projection", () => {
   it("covers every current browser code in every task context without copying canonical detail", () => {
     for (const context of humanFailureTaskContexts) {
       for (const code of browserErrorCodes) {
-        const retryable = code === "source_unavailable";
+        const retryable = code === "chain_response_unavailable" || code === "source_unavailable";
         const presentation = presentHumanFailure(
           context,
           responseFailure(code, retryable),

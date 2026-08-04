@@ -205,6 +205,11 @@ const copyForCode = (
         summary: `${task.subject} could not be loaded because a required data source is unavailable.`,
         recovery: "Try again.",
       });
+    case "chain_response_unavailable":
+      return Object.freeze({
+        summary: `${task.subject} could not be loaded because a complete chain response was not obtained.`,
+        recovery: "Try again.",
+      });
     case "source_inconsistent":
       return Object.freeze({
         summary: `Little John could not verify the data required for ${task.request}, so no result was accepted.`,

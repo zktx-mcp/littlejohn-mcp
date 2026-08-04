@@ -302,8 +302,11 @@ export type OfficialAssetSnapshotEvidence = z.infer<
 >;
 
 export const stockFactoryVerificationFailureDefinitions = deepFreezeValue([
+  { code: "chain_response_unavailable", classificationReason: true },
   { code: "factory_identity_mismatch", classificationReason: true },
+  { code: "rate_limited", classificationReason: true },
   { code: "request_aborted", classificationReason: false },
+  { code: "runtime_busy", classificationReason: true },
   { code: "source_inconsistent", classificationReason: true },
   { code: "source_unavailable", classificationReason: true },
   { code: "token_code_missing", classificationReason: true },

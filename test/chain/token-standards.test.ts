@@ -247,9 +247,12 @@ describe("token standard observation", () => {
     ])));
     expect(malformedSource.erc165.status).toBe("unknown");
 
-    await expect(observeRequiredErc8056(requiredInput(new ExactCallRpc([
-      { data: calls.erc165, gas: erc165DetectionGas, error: new ChainRpcError("request_aborted") },
-    ])))).rejects.toMatchObject({ code: "request_aborted" });
+    await expect(observeRequiredErc8056({
+      ...requiredInput(new ExactCallRpc([
+        { data: calls.erc165, gas: erc165DetectionGas, error: new ChainRpcError("request_aborted") },
+      ])),
+      signal: AbortSignal.abort(),
+    })).rejects.toMatchObject({ failure: { error: { code: "request_aborted" } } });
 
     const malformedValues = await observeRequiredErc8056(requiredInput(new ExactCallRpc([
       ...successfulRequiredSteps().slice(0, 4),

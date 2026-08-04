@@ -3,9 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   chainInvocationDeadlineMs,
   createChainInvocationLifecycle,
-  getChainInvocationStopReason,
   type ChainInvocationContext,
 } from "../../src/chain/invocation-lifecycle.js";
+import {
+  getChainInvocationStopReason,
+  getChainOperationFailure,
+} from "../../src/chain/errors.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -30,6 +33,7 @@ describe("chain invocation lifecycle", () => {
     catch (error) { failure = error; }
     expect(invoked).toBe(false);
     expect(getChainInvocationStopReason(failure)).toBe("caller_aborted");
+    expect(getChainOperationFailure(failure)?.error.code).toBe("request_aborted");
     await lifecycle.close();
   });
 
@@ -43,6 +47,7 @@ describe("chain invocation lifecycle", () => {
     try { await invocation; }
     catch (error) { failure = error; }
     expect(getChainInvocationStopReason(failure)).toBe("application_closed");
+    expect(getChainOperationFailure(failure)?.error.code).toBe("runtime_state_unavailable");
     await expect(closing).resolves.toBeUndefined();
     await expect(lifecycle.close()).resolves.toBeUndefined();
   });
@@ -115,6 +120,26 @@ describe("chain invocation lifecycle", () => {
     try { await invocation; }
     catch (error) { failure = error; }
     expect(getChainInvocationStopReason(failure)).toBe("deadline_reached");
+    expect(getChainOperationFailure(failure)?.error.code).toBe("chain_response_unavailable");
     await lifecycle.close();
+  });
+
+  it("keeps application close ahead of an already-reached invocation deadline", async () => {
+    vi.useFakeTimers();
+    const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
+    let release!: () => void;
+    const invocation = lifecycle.run(new AbortController().signal, async () =>
+      new Promise<void>((resolve) => { release = resolve; }));
+
+    await vi.advanceTimersByTimeAsync(chainInvocationDeadlineMs);
+    const closing = lifecycle.close();
+    release();
+
+    let failure: unknown;
+    try { await invocation; }
+    catch (error) { failure = error; }
+    expect(getChainInvocationStopReason(failure)).toBe("application_closed");
+    expect(getChainOperationFailure(failure)?.error.code).toBe("runtime_state_unavailable");
+    await closing;
   });
 });

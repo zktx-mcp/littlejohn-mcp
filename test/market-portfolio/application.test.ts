@@ -584,7 +584,7 @@ describe("reference-market application", () => {
     await vi.advanceTimersByTimeAsync(90_000);
     await expect(pendingPrice).resolves.toMatchObject({
       ok: false,
-      error: { code: "source_unavailable" },
+      error: { code: "chain_response_unavailable" },
     });
     expect(vi.getTimerCount()).toBe(0);
 
@@ -622,7 +622,7 @@ describe("reference-market application", () => {
     await vi.advanceTimersByTimeAsync(30_000);
     await expect(pendingHistory).resolves.toMatchObject({
       ok: false,
-      error: { code: "source_unavailable" },
+      error: { code: "chain_response_unavailable" },
     });
     expect(historySignal).toBe(latestSignal);
     expect(latestSignal?.aborted).toBe(true);

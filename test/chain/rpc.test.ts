@@ -218,7 +218,7 @@ describe("bounded RPC requester", () => {
 
     const error = await expectCode(
       requester.request("eth_chainId", [], new AbortController().signal),
-      "source_unavailable",
+      "chain_response_unavailable",
     );
     expect(error.message).not.toContain(secret);
     expect(error.message).not.toContain("query-secret");
@@ -293,7 +293,7 @@ describe("bounded RPC requester", () => {
     expect(error.message).not.toContain("provider cancellation detail");
   });
 
-  it("maps the request deadline to a safe unavailable error and forwards abort", async () => {
+  it("maps the request deadline to an incomplete-response error and forwards abort", async () => {
     let fetchSignal: AbortSignal | undefined;
     const fetchFn = vi.fn(fetchOf(async (_input, init) => {
       fetchSignal = init?.signal ?? undefined;
@@ -313,7 +313,7 @@ describe("bounded RPC requester", () => {
 
     const error = await expectCode(
       requester.request("eth_chainId", [], new AbortController().signal),
-      "source_unavailable",
+      "chain_response_unavailable",
     );
     expect(fetchSignal?.aborted).toBe(true);
     expect(error.message).not.toContain("secret provider timeout text");
@@ -565,13 +565,13 @@ describe("bounded RPC requester", () => {
 
     const error = await expectCode(
       requester.request("eth_chainId", [], new AbortController().signal),
-      "source_unavailable",
+      "chain_response_unavailable",
     );
     expect(fetchFn).toHaveBeenCalledTimes(1);
     expect(error.message).not.toContain(secret);
   });
 
-  it("preserves the current safe mapping for a TLS trust rejection", async () => {
+  it("maps a TLS trust rejection only to absence of a complete response", async () => {
     const tlsFailure = Object.assign(new Error("private trust-store detail"), {
       code: "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
     });
@@ -580,9 +580,9 @@ describe("bounded RPC requester", () => {
 
     const error = await expectCode(
       requester.request("eth_chainId", [], new AbortController().signal),
-      "source_unavailable",
+      "chain_response_unavailable",
     );
-    expect(error.message).toBe("source_unavailable");
+    expect(error.message).toBe("chain_response_unavailable");
     expect(error).not.toHaveProperty("cause");
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
@@ -670,15 +670,15 @@ describe("RPC error normalization", () => {
     expect(aborted).toMatchObject({
       code: "request_aborted",
     });
-    const unavailable = normalizeChainRpcError(new Error("provider secret"));
-    expect(unavailable).toMatchObject({
-      code: "source_unavailable",
+    const incomplete = normalizeChainRpcError(new Error("provider secret"));
+    expect(incomplete).toMatchObject({
+      code: "chain_response_unavailable",
     });
     expect(aborted.message).toBe(aborted.code);
-    expect(unavailable.message).toBe(unavailable.code);
+    expect(incomplete.message).toBe(incomplete.code);
     expect(aborted).not.toHaveProperty("retryable");
-    expect(unavailable).not.toHaveProperty("retryable");
-    expect(unavailable).not.toHaveProperty("cause");
+    expect(incomplete).not.toHaveProperty("retryable");
+    expect(incomplete).not.toHaveProperty("cause");
   });
 
   it("does not trust a forged prototype or inspect a proxied RPC error", () => {
@@ -699,8 +699,8 @@ describe("RPC error normalization", () => {
       },
     });
 
-    expect(normalizeChainRpcError(forged).code).toBe("source_unavailable");
-    expect(normalizeChainRpcError(proxied).code).toBe("source_unavailable");
+    expect(normalizeChainRpcError(forged).code).toBe("chain_response_unavailable");
+    expect(normalizeChainRpcError(proxied).code).toBe("chain_response_unavailable");
     expect(proxyReads).toBe(0);
   });
 });

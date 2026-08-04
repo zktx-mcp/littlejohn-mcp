@@ -3405,6 +3405,28 @@ void createEscapedRuntimeStateResetRequiredError;
     }
     expect(lifecycleViolations).toEqual([]);
 
+    const privateFailureInspectorOwners = new Map([
+      ["getChainInvocationStopReason", new Set([
+        resolve(sourceRoot, "chain/errors.ts"),
+      ])],
+      ["getChainRpcErrorCode", new Set([
+        resolve(sourceRoot, "chain/errors.ts"),
+        resolve(sourceRoot, "chain/rpc.ts"),
+      ])],
+    ] as const);
+    const failureInspectorViolations: string[] = [];
+    for (const file of await collectSourceFiles(sourceRoot)) {
+      const source = await readFile(file, "utf8");
+      for (const [name, owners] of privateFailureInspectorOwners) {
+        if (source.includes(name) && !owners.has(file)) {
+          failureInspectorViolations.push(
+            `${relative(sourceRoot, file).split(sep).join("/")}:${name}`,
+          );
+        }
+      }
+    }
+    expect(failureInspectorViolations).toEqual([]);
+
     const atBlockPorts = [
       [resolve(sourceRoot, "chain/account-assets.ts"), "AccountAssetChainReadPort"],
       [resolve(sourceRoot, "chain/official-assets.ts"), "OfficialAssetChainReadPort"],

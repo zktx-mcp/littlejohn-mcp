@@ -35,14 +35,13 @@ import {
 } from "./evm-standard.js";
 import { normalizeRpcBytes } from "./normalization.js";
 import {
-  getChainRpcErrorCode,
   isRpcExecutionRevertedError,
   type RpcCanonicalBlockReference,
   type RpcRequester,
 } from "./rpc.js";
 import {
+  admitChainReadFailure,
   ChainOperationError,
-  getChainOperationFailure,
 } from "./errors.js";
 import {
   createTokenCatalogFailure,
@@ -55,7 +54,6 @@ import {
 } from "./canonical-block.js";
 import { recordConfiguredChainProof } from "./configured-chain.js";
 import {
-  getChainInvocationStopReason,
   type ChainInvocationContext,
   type ChainInvocationLifecycle,
 } from "./invocation-lifecycle.js";
@@ -95,21 +93,9 @@ const inspectionFailureCode = (
   error: unknown,
   callerSignal: AbortSignal,
 ): string | undefined => {
-  const stopReason = getChainInvocationStopReason(error);
-  if (stopReason !== undefined) {
-    return stopReason === "caller_aborted" ? "request_aborted" : "source_unavailable";
-  }
   if (isContractAnalysisTargetNotFoundError(error)) return "not_found";
   if (isRequiredTotalSupplyRevertedError(error)) return "token_total_supply_reverted";
-  const operationFailure = getChainOperationFailure(error);
-  if (operationFailure !== undefined) return operationFailure.error.code;
-  const rpcCode = getChainRpcErrorCode(error);
-  if (rpcCode !== undefined) {
-    return rpcCode === "request_aborted" && !callerSignal.aborted
-      ? "source_unavailable"
-      : rpcCode;
-  }
-  return undefined;
+  return admitChainReadFailure(error, callerSignal)?.error.code;
 };
 
 const normalizeSource = <Value>(operation: () => Value): Value => {

@@ -8,13 +8,16 @@ import {
   createStockFactoryVerifier,
   getStockFactoryVerificationErrorCode,
 } from "../registry/stock-factory.js";
-import {
-  getChainInvocationStopReason,
-  type ChainInvocationContext,
-  type ChainInvocationLifecycle,
+import type {
+  ChainInvocationContext,
+  ChainInvocationLifecycle,
 } from "./invocation-lifecycle.js";
 import type { RpcRequester } from "./rpc.js";
-import { ChainOperationError } from "./errors.js";
+import {
+  admitChainReadFailure,
+  ChainOperationError,
+  createChainFailure,
+} from "./errors.js";
 import {
   readConfiguredCanonicalBlock,
   type CanonicalBlock,
@@ -92,10 +95,8 @@ export const createOfficialAssetChainReadPort = (input: Readonly<{
       }
       return Object.freeze(results);
     } catch (error) {
-      const stopReason = getChainInvocationStopReason(error);
-      if (stopReason !== undefined) throw new ChainOperationError(
-        stopReason === "caller_aborted" ? "request_aborted" : "source_unavailable",
-      );
+      const failure = admitChainReadFailure(error, context.signal);
+      if (failure !== undefined) throw new ChainOperationError(failure);
       throw error;
     }
   };
@@ -107,8 +108,15 @@ export const createOfficialAssetChainReadPort = (input: Readonly<{
     ) => {
       const result = (await verifyManyAtBlock([member], block, context))[0];
       if (result?.status === "verified") return result.verification;
+      const reason = result?.reason;
       throw new ChainOperationError(
-        result?.reason === "source_unavailable" ? "source_unavailable" : "source_inconsistent",
+        reason === "chain_response_unavailable" ||
+        reason === "rate_limited" ||
+        reason === "runtime_busy" ||
+        reason === "source_unavailable" ||
+        reason === "source_inconsistent"
+          ? createChainFailure(reason)
+          : createChainFailure("source_inconsistent"),
       );
     },
     verifyManyAtBlock,

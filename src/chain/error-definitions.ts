@@ -12,6 +12,12 @@ export const chainErrorDefinitions = Object.freeze([
     retryable: true,
   },
   {
+    code: "chain_response_unavailable",
+    category: "transport",
+    message: "A complete chain response was not obtained.",
+    retryable: true,
+  },
+  {
     code: "source_inconsistent",
     category: "source",
     message: "Required source evidence is inconsistent.",
@@ -31,6 +37,12 @@ export const chainInterfaceErrorMappingDefinitions = Object.freeze([
     code: "source_unavailable",
     httpStatus: 503,
     problemTitle: "Source unavailable",
+    cliExitCode: 4,
+  },
+  {
+    code: "chain_response_unavailable",
+    httpStatus: 502,
+    problemTitle: "Chain response unavailable",
     cliExitCode: 4,
   },
   {

@@ -448,6 +448,7 @@ export const createAccountAssetAmount = (input: Readonly<{
 };
 
 const wholeRequestFailureCodes = Object.freeze([
+  "chain_response_unavailable",
   "internal_error",
   "invalid_input",
   "port_conflict",

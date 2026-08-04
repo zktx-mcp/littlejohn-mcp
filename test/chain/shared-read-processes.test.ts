@@ -8,6 +8,7 @@ import {
   evmAccountIdentitySchema,
   observationIdSchema,
   parseEvmChainId,
+  parseHash32,
   parseUnsignedDecimal,
   sourceReferenceSchema,
   type ObservationWriter,
@@ -33,7 +34,20 @@ import {
   createReferenceMarketCallEncoder,
   createReferenceMarketChainReadPort,
 } from "../../src/chain/reference-market.js";
-import type { ChainRpcMethod, ChainRpcRequestMap, RpcRequester } from "../../src/chain/rpc.js";
+import {
+  ChainRpcError,
+  type ChainRpcMethod,
+  type ChainRpcRequestMap,
+  type RpcRequester,
+} from "../../src/chain/rpc.js";
+import {
+  officialAssetSourceMemberSchema,
+  stockFactoryAdmissionManifest,
+} from "../../src/registry/index.js";
+import {
+  stockFactoryImplementationCodeFixture,
+  stockFactoryProxyCodeFixture,
+} from "../registry/stock-factory-fixture.js";
 
 const chainId = parseEvmChainId("eip155:4663");
 const blockHash = `0x${"ab".repeat(32)}` as const;
@@ -324,6 +338,54 @@ describe("shared chain read processes", () => {
       )).rejects.toThrow(TypeError);
     });
     expect(stateRpc.calls).toEqual([]);
+    await lifecycle.close();
+  });
+
+  it("preserves an incomplete StockFactory response as its canonical classification reason", async () => {
+    const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
+    const issuanceRpc = new RecordingRpc((method) => method === "eth_chainId"
+      ? "0x1237"
+      : { number: "0x2c", hash: blockHash, timestamp: "0x687787a4" });
+    let codeReads = 0;
+    const stateRpc: RpcRequester = {
+      async request(method) {
+        if (method === "eth_getCode") {
+          codeReads += 1;
+          return codeReads === 1
+            ? stockFactoryProxyCodeFixture
+            : stockFactoryImplementationCodeFixture;
+        }
+        if (method === "eth_getStorageAt") {
+          return `0x${"0".repeat(24)}${stockFactoryAdmissionManifest.implementationAddress.slice(2)}`;
+        }
+        if (method === "eth_call") {
+          throw new ChainRpcError("chain_response_unavailable");
+        }
+        throw new TypeError(`Unexpected StockFactory RPC method: ${method}.`);
+      },
+    };
+    const officialPort = createOfficialAssetChainReadPort({
+      rpc: stateRpc,
+      chainId,
+      lifecycle,
+    });
+    const member = officialAssetSourceMemberSchema.parse({
+      assetUid: parseHash32(`0x${"12".repeat(32)}`),
+      contractAddress: `0x${"34".repeat(20)}`,
+    });
+
+    await lifecycle.run(new AbortController().signal, async (context) => {
+      const block = await resolveConfiguredCanonicalBlock({
+        rpc: issuanceRpc,
+        chainId,
+        selector: { kind: "number", blockNumber: parseUnsignedDecimal("44") },
+        context,
+      });
+      await expect(officialPort.verifyManyAtBlock([member], block, context)).resolves.toEqual([{
+        status: "unavailable",
+        reason: "chain_response_unavailable",
+      }]);
+    });
     await lifecycle.close();
   });
 

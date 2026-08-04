@@ -1175,6 +1175,7 @@ export const referenceWatchlistReorderInputSchema = jsonObject({
 export type ReferenceWatchlistReorderInput = z.infer<typeof referenceWatchlistReorderInputSchema>;
 
 export const referenceMarketReadFailureCodes = Object.freeze([
+  "chain_response_unavailable",
   "internal_error",
   "invalid_input",
   "rate_limited",

@@ -23,10 +23,11 @@ import {
   createEvidenceReplayBinder,
   createEvidenceReplayLayout,
 } from "../../src/core/evidence-replay.js";
-import type {
-  ChainRpcMethod,
-  ChainRpcRequestMap,
-  RpcRequester,
+import {
+  ChainRpcError,
+  type ChainRpcMethod,
+  type ChainRpcRequestMap,
+  type RpcRequester,
 } from "../../src/chain/rpc.js";
 import {
   createChainInvocationLifecycle,
@@ -35,6 +36,7 @@ import {
 import { createErc20CallEncoder } from "../../src/chain/evm-standard.js";
 import {
   createPinnedEvmReadPort,
+  normalizePinnedEvmReadFailure,
 } from "../../src/chain/protocol-reads.js";
 import type { CanonicalBlock } from "../../src/chain/canonical-block.js";
 
@@ -184,6 +186,13 @@ const createContractAnalysisObservationWriter = () => {
 };
 
 describe("pinned EVM protocol reads", () => {
+  it("preserves the canonical incomplete-response failure at the protocol boundary", () => {
+    expect(normalizePinnedEvmReadFailure(
+      new ChainRpcError("chain_response_unavailable"),
+      new AbortController().signal,
+    )).toBe("chain_response_unavailable");
+  });
+
   it("uses one EIP-1898 block for code, calls, and token decimals", async () => {
     const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
     const rpc = new RecordingRpc();

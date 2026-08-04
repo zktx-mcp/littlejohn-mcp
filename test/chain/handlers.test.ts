@@ -628,7 +628,7 @@ describe("Robinhood Chain read handlers", () => {
     const service = createHarness([
       rpcValue("eth_chainId", "0x1237"),
       rpcValue("eth_getBlockByNumber", block()),
-      rpcFailure("eth_call", "source_unavailable"),
+      rpcFailure("eth_call", "chain_response_unavailable"),
     ], wallet);
 
     const result = await service.invoke(accountBalanceCapability, {
@@ -641,7 +641,7 @@ describe("Robinhood Chain read handlers", () => {
     expect(wallet.captures()).toBe(0);
     expect(result.data.tokens).toEqual([{
       asset: { kind: "erc20", chainId: configuredChainId, address: token },
-      result: { status: "unavailable", errorCode: "source_unavailable" },
+      result: { status: "unavailable", errorCode: "chain_response_unavailable" },
     }]);
     expect(result.evidence.coverage.status).toBe("partial");
     expect(result.warnings.map(({ code }) => code)).toContain("partial_result");

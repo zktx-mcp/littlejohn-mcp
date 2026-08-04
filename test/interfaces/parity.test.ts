@@ -1398,7 +1398,7 @@ describe("interface parity", () => {
     if (chainStatusInterface.http.method !== "GET") {
       throw new TypeError("Chain status failure parity requires its declared GET binding.");
     }
-    const failure = createChainFailure("source_unavailable");
+    const failure = createChainFailure("chain_response_unavailable");
     const problem = toProblemDetails(failure, chainInterfaceErrorMappings);
     const runtime = new CanonicalRuntime([Object.freeze({
       method: "GET",
@@ -1430,7 +1430,9 @@ describe("interface parity", () => {
         parseReadCliCommand(["read", "chain-status", "--json"]),
         cli.port,
       );
-      expect(exitCode).toBe(chainInterfaceErrorMappings.get("source_unavailable").cliExitCode);
+      expect(exitCode).toBe(
+        chainInterfaceErrorMappings.get("chain_response_unavailable").cliExitCode,
+      );
       expect(cli.error).toEqual([]);
       expect(JSON.parse(cli.output.join(""))).toEqual(failure);
     } finally {

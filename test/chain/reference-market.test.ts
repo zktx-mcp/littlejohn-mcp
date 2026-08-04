@@ -1001,7 +1001,7 @@ describe("reference market chain reads", () => {
 
     const unavailable = createPort({
       async request() {
-        throw new ChainRpcError("source_unavailable");
+        throw new ChainRpcError("chain_response_unavailable");
       },
     });
     const unavailableResult = await unavailable.readHistory({
@@ -1022,7 +1022,8 @@ describe("reference market chain reads", () => {
       phaseBoundaryObserved: false,
       malformedRoundObserved: false,
     });
-    expect(getChainOperationFailure(unavailableResult.failure)?.error.code).toBe("source_unavailable");
+    expect(getChainOperationFailure(unavailableResult.failure)?.error.code)
+      .toBe("chain_response_unavailable");
     await unavailable.lifecycle.close();
   });
 

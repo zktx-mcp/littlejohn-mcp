@@ -84,7 +84,7 @@ const rpcText = (value: string) => {
 };
 
 const createBoundedErc20Requester = (
-  overrideEthCall: (data: string, requestId: string) => Response | undefined,
+  overrideEthCall: (data: string, requestId: string) => Response | Error | undefined,
 ): RpcRequester => createBoundedRpcRequester({
   url: "https://rpc.example",
   fetch: (async (_input, init) => {
@@ -106,6 +106,7 @@ const createBoundedErc20Requester = (
     else if (request.method === "eth_call") {
       const data = (request.params[0] as { readonly data: string }).data;
       const override = overrideEthCall(data, request.id);
+      if (override instanceof Error) throw override;
       if (override !== undefined) return override;
       if (data === "0x18160ddd") result = rpcWord(7n);
       else if (data === "0x06fdde03") result = rpcText("Token");
@@ -487,9 +488,9 @@ describe("chain owner application", () => {
     await application.close();
   });
 
-  it("fails the inspection when an optional RPC read is generally unavailable", async () => {
+  it("publishes an incomplete optional RPC read without attributing it to the source", async () => {
     const requester = createBoundedErc20Requester((data) =>
-      data === "0x313ce567" ? new Response(null, { status: 503 }) : undefined);
+      data === "0x313ce567" ? new Error("PRIVATE_FETCH_CAUSE") : undefined);
     const state = await createContext();
     const application = await createChainOwnerApplicationFactory(
       () => requester,
@@ -505,7 +506,7 @@ describe("chain owner application", () => {
       block: { kind: "latest" },
     }, { signal: new AbortController().signal })).resolves.toMatchObject({
       ok: false,
-      error: { code: "source_unavailable" },
+      error: { code: "chain_response_unavailable" },
     });
     await application.close();
   });
@@ -1082,7 +1083,7 @@ describe("chain owner application", () => {
     await Promise.all([firstClose, secondClose]);
     await expect(invocation).resolves.toMatchObject({
       ok: false,
-      error: { code: "source_unavailable" },
+      error: { code: "runtime_state_unavailable" },
     });
     await expect(application.close()).resolves.toBeUndefined();
 
@@ -1090,7 +1091,7 @@ describe("chain owner application", () => {
       signal: new AbortController().signal,
     })).resolves.toMatchObject({
       ok: false,
-      error: { code: "source_unavailable" },
+      error: { code: "runtime_state_unavailable" },
     });
     expect(requester.calls).toHaveLength(1);
   });

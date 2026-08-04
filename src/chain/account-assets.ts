@@ -17,16 +17,14 @@ import {
   resolveConfiguredCanonicalBlock,
   type CanonicalBlock,
 } from "./canonical-block.js";
-import { ChainOperationError, getChainOperationFailure } from "./errors.js";
+import { admitChainReadFailure, ChainOperationError } from "./errors.js";
 import {
-  getChainInvocationStopReason,
   type ChainInvocationContext,
   type ChainInvocationLifecycle,
 } from "./invocation-lifecycle.js";
 import { normalizeRpcBytes, rpcQuantityToUnsignedDecimal } from "./normalization.js";
 import {
   ChainRpcError,
-  getChainRpcErrorCode,
   isRpcExecutionRevertedError,
   type ChainRpcMethod,
   type ChainRpcRequestMap,
@@ -141,18 +139,8 @@ const createAccountAssetRpcRequester = (
 };
 
 const normalizeFailure = (error: unknown, callerSignal: AbortSignal): never => {
-  const stopReason = getChainInvocationStopReason(error);
-  if (stopReason !== undefined) {
-    throw new ChainOperationError(stopReason === "caller_aborted" ? "request_aborted" : "source_unavailable");
-  }
-  const operationFailure = getChainOperationFailure(error);
-  if (operationFailure !== undefined) throw error;
-  const rpcCode = getChainRpcErrorCode(error);
-  if (rpcCode !== undefined) {
-    throw new ChainOperationError(
-      rpcCode === "request_aborted" && callerSignal.aborted ? "request_aborted" : rpcCode,
-    );
-  }
+  const failure = admitChainReadFailure(error, callerSignal);
+  if (failure !== undefined) throw new ChainOperationError(failure);
   throw error;
 };
 
@@ -275,8 +263,7 @@ const readTokensInOrder = async (
     );
     if (failure !== undefined) throw failure.reason;
     for (const result of settled) {
-      if (result.status !== "fulfilled") throw new ChainOperationError("source_unavailable");
-      tokens.push(result.value);
+      if (result.status === "fulfilled") tokens.push(result.value);
     }
   }
   return Object.freeze(tokens);

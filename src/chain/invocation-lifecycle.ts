@@ -1,21 +1,9 @@
-import { ChainOperationError } from "./errors.js";
+import {
+  createChainInvocationStoppedError,
+  type ChainInvocationStopReason,
+} from "./errors.js";
 
 export const chainInvocationDeadlineMs = 90_000;
-
-export type ChainInvocationStopReason = "caller_aborted" | "application_closed" | "deadline_reached";
-
-const stopReasons = new WeakMap<object, ChainInvocationStopReason>();
-
-const createChainInvocationStoppedError = (reason: ChainInvocationStopReason): ChainOperationError => {
-  const error = new ChainOperationError(
-    reason === "caller_aborted" ? "request_aborted" : "source_unavailable",
-  );
-  stopReasons.set(error, reason);
-  return error;
-};
-
-export const getChainInvocationStopReason = (error: unknown): ChainInvocationStopReason | undefined =>
-  typeof error === "object" && error !== null ? stopReasons.get(error) : undefined;
 
 const unrefTimer = (timer: ReturnType<typeof setTimeout>): void => {
   if (typeof timer === "object" && timer !== null && "unref" in timer && typeof timer.unref === "function") {

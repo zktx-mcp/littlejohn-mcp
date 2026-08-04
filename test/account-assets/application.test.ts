@@ -673,7 +673,7 @@ describe("account asset read process", () => {
     await vi.advanceTimersByTimeAsync(30_000);
     await expect(pendingList).resolves.toMatchObject({
       ok: false,
-      error: { code: "source_unavailable" },
+      error: { code: "chain_response_unavailable" },
     });
     expect(vi.getTimerCount()).toBe(0);
 
@@ -702,7 +702,7 @@ describe("account asset read process", () => {
     await vi.advanceTimersByTimeAsync(30_000);
     await expect(pendingGet).resolves.toMatchObject({
       ok: false,
-      error: { code: "source_unavailable" },
+      error: { code: "chain_response_unavailable" },
     });
     expect(vi.getTimerCount()).toBe(0);
     await test.close();

@@ -28,7 +28,10 @@ import {
   type CanonicalBlock,
 } from "./canonical-block.js";
 import { createContractAnalysisChainReadPort } from "./contract-analysis.js";
-import { ChainOperationError } from "./errors.js";
+import {
+  admitChainReadFailure,
+  ChainOperationError,
+} from "./errors.js";
 import {
   createContractAnalysisCallEncoder,
   type Erc20CallEncoder,
@@ -37,20 +40,15 @@ import {
   type ChainInvocationContext,
   type ChainInvocationLifecycle,
 } from "./invocation-lifecycle.js";
-import { getChainInvocationStopReason } from "./invocation-lifecycle.js";
 import {
   normalizeAbiDecimals,
   normalizeRpcBytes,
   normalizeRpcRuntimeCode,
 } from "./normalization.js";
 import {
-  getChainRpcErrorCode,
   isRpcExecutionRevertedError,
   type RpcRequester,
 } from "./rpc.js";
-import {
-  getChainOperationFailure,
-} from "./errors.js";
 import { recordConfiguredChainProof } from "./configured-chain.js";
 
 export type PinnedEvmCallResult<Value> =
@@ -99,10 +97,12 @@ export interface PinnedEvmReadPort {
 }
 
 export type PinnedEvmReadFailureCode =
+  | "chain_response_unavailable"
   | "not_found"
   | "rate_limited"
   | "request_aborted"
   | "runtime_busy"
+  | "runtime_state_unavailable"
   | "source_inconsistent"
   | "source_unavailable";
 
@@ -110,21 +110,8 @@ export const normalizePinnedEvmReadFailure = (
   error: unknown,
   callerSignal: AbortSignal,
 ): PinnedEvmReadFailureCode | undefined => {
-  const stopReason = getChainInvocationStopReason(error);
-  if (stopReason !== undefined) {
-    return stopReason === "caller_aborted"
-      ? "request_aborted"
-      : "source_unavailable";
-  }
-  const operationFailure = getChainOperationFailure(error);
-  if (operationFailure !== undefined) {
-    return operationFailure.error.code as PinnedEvmReadFailureCode;
-  }
-  const rpcCode = getChainRpcErrorCode(error);
-  if (rpcCode === undefined) return undefined;
-  return rpcCode === "request_aborted" && !callerSignal.aborted
-    ? "source_unavailable"
-    : rpcCode;
+  const failure = admitChainReadFailure(error, callerSignal);
+  return failure?.error.code as PinnedEvmReadFailureCode | undefined;
 };
 
 export const createPinnedEvmReadPort = (input: {

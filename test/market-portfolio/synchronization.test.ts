@@ -7,10 +7,10 @@ import type {
 import { resolveConfiguredCanonicalBlock } from "../../src/chain/canonical-block.js";
 import {
   createChainInvocationLifecycle,
-  getChainInvocationStopReason,
   type ChainInvocationContext,
   type ChainInvocationLifecycle,
 } from "../../src/chain/invocation-lifecycle.js";
+import { getChainOperationFailure } from "../../src/chain/errors.js";
 import {
   chainAnchorSchema,
   createCanonicalClock,
@@ -196,7 +196,7 @@ describe("reference feed synchronization ownership", () => {
     expect(starts).toHaveLength(1);
     cancelledController.abort();
     await expect(cancelled).rejects.toSatisfy((error: unknown) =>
-      getChainInvocationStopReason(error) === "caller_aborted");
+      getChainOperationFailure(error)?.error.code === "request_aborted");
     expect(starts).toHaveLength(1);
 
     pending[0]!.resolve(traversal());
@@ -249,7 +249,7 @@ describe("reference feed synchronization ownership", () => {
 
     controllers[7]!.abort();
     await expect(queued[7]).rejects.toSatisfy((error: unknown) =>
-      getChainInvocationStopReason(error) === "caller_aborted");
+      getChainOperationFailure(error)?.error.code === "request_aborted");
     const replacement = synchronize(lifecycle, owner, {
       feedId: "eth_usd",
       requestedStartUnixSeconds: 1n,
@@ -304,7 +304,7 @@ describe("reference feed synchronization ownership", () => {
     caller.abort();
     const closing = owner.close();
     await expect(active).rejects.toSatisfy((error: unknown) =>
-      getChainInvocationStopReason(error) === "caller_aborted");
+      getChainOperationFailure(error)?.error.code === "request_aborted");
     await closing;
     expect({ readAborted, committed }).toEqual({ readAborted: true, committed: true });
     await expect(synchronize(lifecycle, owner, {

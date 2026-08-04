@@ -33,15 +33,17 @@ import {
   resolveConfiguredCanonicalBlock,
   type CanonicalBlock,
 } from "./canonical-block.js";
-import { ChainOperationError, getChainOperationFailure } from "./errors.js";
 import {
-  getChainInvocationStopReason,
+  admitChainReadFailure,
+  ChainOperationError,
+  getChainOperationFailure,
+} from "./errors.js";
+import {
   type ChainInvocationContext,
   type ChainInvocationLifecycle,
 } from "./invocation-lifecycle.js";
 import { normalizeRpcBytes, normalizeRpcRuntimeCode } from "./normalization.js";
 import {
-  getChainRpcErrorCode,
   isRpcBatchRejectedError,
   isRpcExecutionRevertedError,
   rpcConcurrencyLimit,
@@ -147,17 +149,8 @@ interface Dependencies {
 }
 
 const normalizeFailure = (error: unknown, callerSignal: AbortSignal): never => {
-  const stopReason = getChainInvocationStopReason(error);
-  if (stopReason !== undefined) {
-    throw new ChainOperationError(stopReason === "caller_aborted" ? "request_aborted" : "source_unavailable");
-  }
-  if (getChainOperationFailure(error) !== undefined) throw error;
-  const rpcCode = getChainRpcErrorCode(error);
-  if (rpcCode !== undefined) {
-    throw new ChainOperationError(
-      rpcCode === "request_aborted" && callerSignal.aborted ? "request_aborted" : rpcCode,
-    );
-  }
+  const failure = admitChainReadFailure(error, callerSignal);
+  if (failure !== undefined) throw new ChainOperationError(failure);
   throw error;
 };
 

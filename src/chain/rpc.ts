@@ -31,6 +31,7 @@ export { rpcResponseByteLimit } from "./limits.js";
 export const rpcConcurrencyLimit = 16;
 
 export type ChainRpcErrorCode =
+  | "chain_response_unavailable"
   | "request_aborted"
   | "runtime_busy"
   | "rate_limited"
@@ -74,7 +75,7 @@ export const normalizeChainRpcError = (
 ): ChainRpcError => {
   if (getChainRpcErrorCode(error) !== undefined) return error as ChainRpcError;
   if (signal?.aborted === true) return new ChainRpcError("request_aborted");
-  return new ChainRpcError("source_unavailable");
+  return new ChainRpcError("chain_response_unavailable");
 };
 
 export interface ChainRpcRequestMap {
@@ -582,7 +583,7 @@ export const createBoundedRpcRequester = (
         return await readBoundedBody(response, controller.signal);
       } catch (error) {
         if (signal.aborted) throw new ChainRpcError("request_aborted");
-        if (timedOut) throw new ChainRpcError("source_unavailable");
+        if (timedOut) throw new ChainRpcError("chain_response_unavailable");
         throw normalizeChainRpcError(error);
       } finally {
         clearTimeout(timeout);

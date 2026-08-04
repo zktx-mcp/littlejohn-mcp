@@ -169,6 +169,7 @@ export type TokenInspectionSuccess = CapabilitySuccess<TokenInspectionData>;
 export const tokenInspectCapabilityId = capabilityIdSchema.parse("token.inspect");
 
 const inspectionFailureCodes = Object.freeze([
+  "chain_response_unavailable",
   "internal_error",
   "invalid_input",
   "not_found",
@@ -176,6 +177,7 @@ const inspectionFailureCodes = Object.freeze([
   "request_aborted",
   "result_too_large",
   "runtime_busy",
+  "runtime_state_unavailable",
   "source_inconsistent",
   "source_unavailable",
   "token_total_supply_reverted",
@@ -981,7 +983,7 @@ export type TokenCatalogCancellationResult = Readonly<{ operation: TokenCatalogT
 const contractFailureCodes = Object.freeze({
   selection: ["internal_error", "invalid_input", "runtime_state_unavailable", "token_selection_not_found", "wallet_not_connected", "wallet_session_unusable"],
   selections: ["internal_error", "invalid_input", "runtime_state_unavailable", "wallet_not_connected", "wallet_session_unusable"],
-  startAddition: ["internal_error", "invalid_input", "not_found", "rate_limited", "request_aborted", "runtime_busy", "runtime_state_unavailable", "source_inconsistent", "source_unavailable", "state_conflict", "token_operation_conflict", "token_selection_already_included", "token_selection_revision_changed", "token_total_supply_reverted", "wallet_not_connected", "wallet_session_unusable"],
+  startAddition: ["chain_response_unavailable", "internal_error", "invalid_input", "not_found", "rate_limited", "request_aborted", "runtime_busy", "runtime_state_unavailable", "source_inconsistent", "source_unavailable", "state_conflict", "token_operation_conflict", "token_selection_already_included", "token_selection_revision_changed", "token_total_supply_reverted", "wallet_not_connected", "wallet_session_unusable"],
   startRemoval: ["internal_error", "invalid_input", "runtime_busy", "runtime_state_unavailable", "state_conflict", "token_operation_conflict", "token_selection_not_found", "token_selection_not_included", "token_selection_revision_changed", "wallet_not_connected", "wallet_session_unusable"],
   operation: ["internal_error", "invalid_input", "runtime_state_unavailable", "token_operation_not_found"],
   cancelOperation: ["internal_error", "invalid_input", "runtime_state_unavailable", "state_conflict", "token_operation_not_found"],

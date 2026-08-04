@@ -17,6 +17,7 @@ import {
   transactionNativeDecimalsExclusion,
   type AccountBalanceData,
   type AccountBalanceInput,
+  type ApplicationFailure,
   type BoundEvidenceObservationTarget,
   type CanonicalAmount,
   type CanonicalJson,
@@ -50,9 +51,9 @@ import type {
 } from "../runtime/application-context.js";
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
 import {
+  admitChainReadFailure,
   chainErrorRegistry,
   ChainOperationError,
-  getChainOperationFailure,
 } from "./errors.js";
 import {
   createContractAnalysisCallEncoder,
@@ -73,7 +74,6 @@ import {
   type NormalizedRpcTransaction,
 } from "./normalization.js";
 import {
-  getChainRpcErrorCode,
   isRpcExecutionRevertedError,
   rpcConcurrencyLimit,
   type RpcCanonicalBlockReference,
@@ -88,7 +88,6 @@ import {
   validateConfiguredChain,
 } from "./configured-chain.js";
 import {
-  getChainInvocationStopReason,
   type ChainInvocationContext,
   type ChainInvocationLifecycle,
 } from "./invocation-lifecycle.js";
@@ -110,7 +109,13 @@ interface HandlerDependencies {
   readonly nativeAsset: Readonly<{ readonly kind: "native"; readonly chainId: EvmChainId }>;
 }
 
-const asFailure = (code: string) => ({ status: "failure" as const, code, issues: Object.freeze([]) });
+const asFailure = (failure: ApplicationFailure) => {
+  return {
+    status: "failure" as const,
+    code: failure.error.code,
+    issues: failure.error.issues,
+  };
+};
 
 const normalizeSourceValue = <Value>(operation: () => Value): Value => {
   try { return operation(); }
@@ -138,17 +143,8 @@ const runHandler = async (
   try {
     return await lifecycle.run(callerSignal, operation);
   } catch (error) {
-    const stopReason = getChainInvocationStopReason(error);
-    if (stopReason !== undefined) {
-      return asFailure(stopReason === "caller_aborted" ? "request_aborted" : "source_unavailable");
-    }
-    const operationFailure = getChainOperationFailure(error);
-    if (operationFailure !== undefined) return asFailure(operationFailure.error.code);
-    const rpcCode = getChainRpcErrorCode(error);
-    if (rpcCode !== undefined) {
-      if (rpcCode === "request_aborted" && !callerSignal.aborted) return asFailure("source_unavailable");
-      return asFailure(rpcCode);
-    }
+    const failure = admitChainReadFailure(error, callerSignal);
+    if (failure !== undefined) return asFailure(failure);
     throw error;
   }
 };
@@ -493,6 +489,11 @@ const receiptData = (
   })),
 });
 
+type PartialTokenFailureCode =
+  | "chain_response_unavailable"
+  | "source_unavailable"
+  | "source_inconsistent";
+
 interface TokenReadResult {
   readonly asset: {
     readonly kind: "erc20";
@@ -501,27 +502,24 @@ interface TokenReadResult {
   };
   readonly balance:
     | { readonly status: "available"; readonly raw: UnsignedDecimal }
-    | { readonly status: "unavailable"; readonly errorCode: "source_unavailable" | "source_inconsistent" };
+    | { readonly status: "unavailable"; readonly errorCode: PartialTokenFailureCode };
   readonly decimals:
     | { readonly status: "available"; readonly value: UnsignedDecimal }
     | { readonly status: "unavailable" };
 }
 
-const partialTokenError = (error: unknown): "source_unavailable" | "source_inconsistent" | undefined => {
+const isPartialTokenFailureCode = (code: string): code is PartialTokenFailureCode =>
+  code === "chain_response_unavailable" ||
+  code === "source_unavailable" ||
+  code === "source_inconsistent";
+
+const partialTokenError = (
+  error: unknown,
+  signal: AbortSignal,
+): PartialTokenFailureCode | undefined => {
   if (isRpcExecutionRevertedError(error)) return "source_unavailable";
-  const rpcCode = getChainRpcErrorCode(error);
-  if (rpcCode !== undefined) {
-    return rpcCode === "source_unavailable" || rpcCode === "source_inconsistent"
-      ? rpcCode
-      : undefined;
-  }
-  const operationFailure = getChainOperationFailure(error);
-  if (operationFailure !== undefined) {
-    const code = operationFailure.error.code;
-    if (code === "source_unavailable") return "source_unavailable";
-    if (code === "source_inconsistent") return "source_inconsistent";
-  }
-  return undefined;
+  const code = admitChainReadFailure(error, signal)?.error.code;
+  return code !== undefined && isPartialTokenFailureCode(code) ? code : undefined;
 };
 
 const readToken = async (
@@ -540,7 +538,7 @@ const readToken = async (
     }, block], signal);
     raw = normalizeSourceValue(() => normalizeAbiUint256(result));
   } catch (error) {
-    const errorCode = partialTokenError(error);
+    const errorCode = partialTokenError(error, signal);
     if (errorCode === undefined) throw error;
     return Object.freeze({
       asset,
@@ -560,7 +558,7 @@ const readToken = async (
       decimals: Object.freeze({ status: "available" as const, value: normalizeSourceValue(() => normalizeAbiDecimals(result)) }),
     });
   } catch (error) {
-    const errorCode = partialTokenError(error);
+    const errorCode = partialTokenError(error, signal);
     if (errorCode === undefined) throw error;
     return Object.freeze({
       asset,

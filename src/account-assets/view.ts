@@ -65,7 +65,10 @@ export const classificationLabel = (classification: AccountAssetClassification):
 const classificationUnavailableReasons: Readonly<
   Record<StockFactoryClassificationUnavailableReason, string>
 > = Object.freeze({
+  chain_response_unavailable: "A complete chain response was not obtained for StockFactory verification.",
   factory_identity_mismatch: "The StockFactory deployment identity did not match the accepted proxy and implementation.",
+  rate_limited: "The chain source rate-limited StockFactory verification.",
+  runtime_busy: "Little John was busy before StockFactory verification completed.",
   source_inconsistent: "The official asset source returned inconsistent evidence.",
   source_unavailable: "The official asset source was unavailable.",
   token_code_missing: "No contract code was found at the token address.",

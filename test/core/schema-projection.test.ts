@@ -95,8 +95,8 @@ describe("generated capability projections", () => {
   const golden = {
     "account.balance": [
       "9bc55be852eea73f596c30b47c57e56ccbf63736a7693a85d1f5bf094f54670e",
-      "2dcb72396d6c6c26a00f716040137cb53e5888d3a6a6224ff6126121a784f072",
-      "3b7ce2e8225ab4a530c2b21755b6b937e85b53bfef563d4845748715ab5b7a24",
+      "9f1202d070b5ec1e43c92abff41d79400c80e8485b3bf9668ea9f93cd8ebf1d8",
+      "dfa0919b74a027a54052c51772b07df5f99df6ed43132523f4fdb00048b0c668",
     ],
     "chain.status": [
       "e26cb5e8480ef708cd739ac63103c97908c1c9469d32ca96bfa7a51184490bcd",

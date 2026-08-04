@@ -1085,6 +1085,7 @@ describe("capability binding authority", () => {
     expect(snapshot.capabilityId).toBe("chain.status");
     expect(snapshot.maximumSuccessUtf8Bytes).toBe(8_388_607);
     expect(snapshot.failureCodes).toEqual([
+      "chain_response_unavailable",
       "internal_error",
       "invalid_input",
       "port_conflict",

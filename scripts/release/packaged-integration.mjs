@@ -85,7 +85,7 @@ const exactPackagedToolSchemaNames = Object.freeze([
   "wallet_get_connection",
 ]);
 const expectedExactPackagedToolSchemaBundleSha256 =
-  "cffa0580f7cbc5b0b7ae1c42bf4bba14e918ab0b127afbb74f24941dbdb96982";
+  "21ad6a6f65023f912c0f682b7cf02f76b53c0e78e153da6eb08f26e9d99796c3";
 
 /** @type {typeof import("./packaged-integration.d.mts").assertPackagedMcpServerIdentity} */
 export const assertPackagedMcpServerIdentity = (result, expected) => {

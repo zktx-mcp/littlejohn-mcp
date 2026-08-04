@@ -51,7 +51,11 @@ const tokenBalanceResultSchema = jsonObject({
     jsonObject({ status: z.literal("available"), amount: canonicalAmountSchema }).strict(),
     jsonObject({
       status: z.literal("unavailable"),
-      errorCode: z.enum(["source_unavailable", "source_inconsistent"]),
+      errorCode: z.enum([
+        "chain_response_unavailable",
+        "source_unavailable",
+        "source_inconsistent",
+      ]),
     }).strict(),
   ]),
 }).strict();

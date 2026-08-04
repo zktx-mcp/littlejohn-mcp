@@ -66,15 +66,21 @@ describe("official asset contract", () => {
 
   it("derives the full and classification failure languages from one ordered owner", () => {
     expect(stockFactoryVerificationFailureDefinitions.map(({ code }) => code)).toEqual([
+      "chain_response_unavailable",
       "factory_identity_mismatch",
+      "rate_limited",
       "request_aborted",
+      "runtime_busy",
       "source_inconsistent",
       "source_unavailable",
       "token_code_missing",
       "token_identity_mismatch",
     ]);
     expect(stockFactoryClassificationUnavailableReasons).toEqual([
+      "chain_response_unavailable",
       "factory_identity_mismatch",
+      "rate_limited",
+      "runtime_busy",
       "source_inconsistent",
       "source_unavailable",
       "token_code_missing",

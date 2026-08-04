@@ -27,11 +27,14 @@ import {
 } from "./evm-standard.js";
 import { normalizeRpcBytes } from "./normalization.js";
 import {
-  getChainRpcErrorCode,
   isRpcExecutionRevertedError,
   type RpcCanonicalBlockReference,
   type RpcRequester,
 } from "./rpc.js";
+import {
+  admitChainReadFailure,
+  ChainOperationError,
+} from "./errors.js";
 
 export type {
   RequiredErc8056Observation,
@@ -91,9 +94,11 @@ const readCall = async <Value>(
     }, input.stateReference], input.signal);
   } catch (error) {
     if (isRpcExecutionRevertedError(error)) return Object.freeze({ status: "reverted" });
-    const code = getChainRpcErrorCode(error);
-    if (code === "request_aborted") throw error;
-    if (code !== undefined) return Object.freeze({ status: "unavailable" });
+    const failure = admitChainReadFailure(error, input.signal);
+    if (failure?.error.code === "request_aborted") {
+      throw new ChainOperationError(failure);
+    }
+    if (failure !== undefined) return Object.freeze({ status: "unavailable" });
     throw error;
   }
   try {

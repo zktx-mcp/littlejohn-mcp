@@ -547,6 +547,7 @@ export const uniswapV2QuoteCapability = defineReadCapability<
   inputSchema: uniswapV2QuoteInputSchema,
   dataSchema: uniswapV2QuoteDataSchema,
   failureCodes: [
+    "chain_response_unavailable",
     "internal_error",
     "invalid_input",
     "not_found",
@@ -554,6 +555,7 @@ export const uniswapV2QuoteCapability = defineReadCapability<
     "request_aborted",
     "result_too_large",
     "runtime_busy",
+    "runtime_state_unavailable",
     "source_inconsistent",
     "source_unavailable",
     "token_decimals_unavailable",

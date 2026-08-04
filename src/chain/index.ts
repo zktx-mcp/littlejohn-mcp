@@ -32,13 +32,11 @@ export {
   assertActiveChainInvocationContext,
   chainInvocationDeadlineMs,
   createChainInvocationLifecycle,
-  getChainInvocationStopReason,
 } from "./invocation-lifecycle.js";
 export type {
   ChainInvocationContext,
   ChainInvocationLifecycle,
   ChainInvocationPort,
-  ChainInvocationStopReason,
 } from "./invocation-lifecycle.js";
 export {
   readConfiguredCanonicalBlock,
