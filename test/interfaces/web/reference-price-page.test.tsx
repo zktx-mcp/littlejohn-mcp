@@ -7,13 +7,17 @@ import {
   createExactRational,
   referenceHistorySuccessSchema,
   referenceHistoryWarnings,
+  referencePriceWarnings,
   referenceMarketManifest,
   referenceMarketMappingEvidence,
   referenceRoundObservationSchema,
 } from "../../../src/core/browser.js";
 import { browserLocations } from "../../../src/interfaces/browser-contract.js";
 import { ReferenceMarketChart } from "../../../src/interfaces/web/reference-market-chart.js";
-import { ReferencePricePage } from "../../../src/interfaces/web/reference-price-page.js";
+import {
+  ReferencePairInterpretation,
+  ReferencePricePage,
+} from "../../../src/interfaces/web/reference-price-page.js";
 import type { ReferenceChartPort } from "../../../src/interfaces/web/reference-chart.js";
 
 const unavailableChart: ReferenceChartPort = Object.freeze({
@@ -78,7 +82,13 @@ const history = referenceHistorySuccessSchema.parse({
     requestedStart,
     requestedEnd: block.blockTimestamp,
     emptyBucketStarts,
-    limitations: ["source_history_not_exhaustive", "phase_boundary"],
+    limitations: [
+      "source_history_not_exhaustive",
+      "traversal_incomplete",
+      "phase_boundary",
+      "malformed_round",
+      "retention_limited",
+    ],
   },
   candles: [{
     openedAt: new Date(finalBucket).toISOString(),
@@ -102,6 +112,19 @@ const history = referenceHistorySuccessSchema.parse({
 });
 
 describe("reference price browser presentation", () => {
+  it("renders every shared admitted warning once in one pair-level owner", () => {
+    const markup = renderToStaticMarkup(createElement(ReferencePairInterpretation, {
+      warnings: referencePriceWarnings,
+    }));
+    for (const text of [
+      "This reference price is not a trade or executable quote.",
+      "The source listing was not revalidated during this read.",
+      "Sequencer status is not available from the current sources.",
+    ]) {
+      expect(markup.split(text)).toHaveLength(2);
+    }
+  });
+
   it("keeps complete history and source diagnostics out of the human browser", () => {
     const markup = renderToStaticMarkup(createElement(ReferenceMarketChart, {
       chartPort: unavailableChart,
@@ -126,6 +149,15 @@ describe("reference price browser presentation", () => {
     expect(markup).not.toContain("2026-07-21 00:15:00 UTC");
     expect(markup).not.toContain("Source evidence");
     expect(markup).not.toContain("Source skew");
+    expect(markup).toContain("Trade volume is not available");
+    expect(markup).toContain("complete requested window");
+    expect(markup).toContain("source history is not exhaustive");
+    expect(markup).toContain("source traversal did not reach");
+    expect(markup).toContain("source phase boundary");
+    expect(markup).toContain("malformed source round");
+    expect(markup).toContain("Source retention limits");
+    expect(markup).not.toContain("not a trade or executable quote");
+    expect(markup).not.toContain("source listing was not revalidated");
     expect(markup).not.toContain(observation.fact.roundId);
     expect(markup).not.toContain(observation.readEvidence.sourceReference.sourceId);
     expect(markup).not.toContain(block.blockHash);

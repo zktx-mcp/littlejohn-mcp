@@ -17,8 +17,10 @@ import {
   referenceHistoryWindowDefinitions,
 } from "../../core/browser.js";
 import {
+  referenceHistoryLimitationLabel,
   referenceHistoryStatusLabel,
   referenceHistoryUnavailableReasonLabel,
+  referenceWarningLabel,
 } from "./human-labels.js";
 import {
   humanFailureText,
@@ -188,6 +190,45 @@ export interface ReferenceObservedRange {
   readonly low: ExactRational;
 }
 
+export interface ReferenceHistorySelectionPresentation {
+  readonly candle: ReferenceCandle | undefined;
+  readonly emptyInterval: Readonly<{
+    start: string;
+    end: string;
+  }> | undefined;
+  readonly representedIntervals: number;
+  readonly valueIntervals: number;
+}
+
+export const presentReferenceHistorySelection = (
+  result: ReferenceHistorySuccess,
+  selectedTime: number | undefined,
+): ReferenceHistorySelectionPresentation => {
+  const candle = result.candles.find((entry) =>
+    timestampSecond(entry.openedAt) === selectedTime) ??
+    (selectedTime === undefined ? result.candles.at(-1) : undefined);
+  const emptyStart = result.coverage.emptyBucketStarts.find(
+    (timestamp) => timestampSecond(timestamp) === selectedTime,
+  );
+  const emptyInterval = emptyStart === undefined
+    ? undefined
+    : Object.freeze({
+        start: emptyStart,
+        end: new Date(Math.min(
+          Date.parse(emptyStart) +
+            referenceHistoryWindowDefinitions[result.window].bucketMilliseconds,
+          Date.parse(result.coverage.requestedEnd),
+        )).toISOString(),
+      });
+  return Object.freeze({
+    candle,
+    emptyInterval,
+    representedIntervals:
+      result.candles.length + result.coverage.emptyBucketStarts.length,
+    valueIntervals: result.candles.length,
+  });
+};
+
 export const referenceObservedRange = (
   candles: readonly ReferenceCandle[],
 ): ReferenceObservedRange | undefined => {
@@ -326,19 +367,11 @@ export const ReferenceMarketChart = ({
 
   const availableHistory = historyState.status === "available" ? historyState.value : undefined;
   const quoteUnit = referencePairQuoteUnit(selectedPair);
-  const selectedCandle = availableHistory?.candles.find((candle) =>
-    timestampSecond(candle.openedAt) === selectedTime) ??
-    (selectedTime === undefined ? availableHistory?.candles.at(-1) : undefined);
-  const selectedEmptyBucket = availableHistory?.coverage.emptyBucketStarts.find(
-    (timestamp) => timestampSecond(timestamp) === selectedTime,
-  );
-  const selectedEmptyBucketEnd = selectedEmptyBucket === undefined ||
-      availableHistory === undefined
+  const historyPresentation = availableHistory === undefined
     ? undefined
-    : new Date(
-        Date.parse(selectedEmptyBucket) +
-          referenceHistoryWindowDefinitions[availableHistory.window].bucketMilliseconds,
-      ).toISOString();
+    : presentReferenceHistorySelection(availableHistory, selectedTime);
+  const selectedCandle = historyPresentation?.candle;
+  const selectedEmptyInterval = historyPresentation?.emptyInterval;
   const entryTimes = projection.status === "available" ? projection.entryTimes : [];
   const interactive = projection.status === "available" &&
     projection.entryTimes.length >= 2;
@@ -349,10 +382,6 @@ export const ReferenceMarketChart = ({
     : referenceObservedRange(availableHistory.candles);
   const observedRangeIsEqual = observedRange !== undefined &&
     compareExactRationals(observedRange.high, observedRange.low) === 0;
-  const representedBuckets = availableHistory === undefined
-    ? 0
-    : availableHistory.candles.length +
-      availableHistory.coverage.emptyBucketStarts.length;
   const historyLabel = availableHistory === undefined
     ? "Reference price history"
     : `${availableHistory.window} reference price history`;
@@ -465,8 +494,11 @@ export const ReferenceMarketChart = ({
               </>
             )}
             <p>
-              {availableHistory.candles.length} of {representedBuckets} chart{" "}
-              {representedBuckets === 1 ? "interval contains" : "intervals contain"}{" "}
+              {historyPresentation?.valueIntervals ?? 0} of{" "}
+              {historyPresentation?.representedIntervals ?? 0} chart{" "}
+              {historyPresentation?.representedIntervals === 1
+                ? "interval contains"
+                : "intervals contain"}{" "}
               reference values.
             </p>
           </div>
@@ -492,15 +524,15 @@ export const ReferenceMarketChart = ({
                 >Charting by TradingView</a>
               </p>
             </>
-          ) : availableHistory.candles.length < 2 ? (
+          ) : availableHistory.candles.length === 1 ? (
             <p className="notice">
               One reference value is available. A trend is not shown.
             </p>
-          ) : (
+          ) : availableHistory.candles.length >= 2 ? (
             <p className="notice">
               The visual chart is unavailable for this history.
             </p>
-          )}
+          ) : null}
           <div
             id="reference-chart-legend"
             className="chart-legend"
@@ -558,13 +590,12 @@ export const ReferenceMarketChart = ({
                 </p>
               ) : null}
               </>
-            ) : selectedEmptyBucket !== undefined &&
-              selectedEmptyBucketEnd !== undefined ? (
+            ) : selectedEmptyInterval !== undefined ? (
               <>
                 <h3>Selected interval</h3>
                 <p>
-                  {formatUtcTimestamp(selectedEmptyBucket)} to{" "}
-                  {formatUtcTimestamp(selectedEmptyBucketEnd)}
+                  {formatUtcTimestamp(selectedEmptyInterval.start)} to{" "}
+                  {formatUtcTimestamp(selectedEmptyInterval.end)}
                 </p>
                 <p>No reference value in this interval.</p>
               </>
@@ -576,6 +607,25 @@ export const ReferenceMarketChart = ({
               Use Home and End to inspect the first or last interval.
             </p>
           ) : null}
+          <section
+            className="history-interpretation"
+            aria-labelledby="history-interpretation-heading"
+          >
+            <h3 id="history-interpretation-heading">History limitations</h3>
+            <ul>
+              {availableHistory.warnings
+                .filter((warning) =>
+                  warning === "no_trade_volume" || warning === "partial_history")
+                .map((warning) => (
+                  <li key={warning}>{referenceWarningLabel(warning)}</li>
+                ))}
+              {availableHistory.coverage.limitations.map((limitation) => (
+                <li key={limitation}>
+                  {referenceHistoryLimitationLabel(limitation)}
+                </li>
+              ))}
+            </ul>
+          </section>
         </>
       ) : null}
     </section>

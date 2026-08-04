@@ -15,6 +15,7 @@ import {
 import {
   createReferenceChartMountController,
   projectReferenceHistoryChart,
+  presentReferenceHistorySelection,
   ReferenceMarketChart,
   referenceObservedRange,
   selectReferenceChartTime,
@@ -229,6 +230,56 @@ describe("reference history chart product state", () => {
     expect(range?.high).toBe(history.candles[0]?.high);
     expect(range?.low).toBe(history.candles[0]?.low);
     expect(referenceObservedRange([])).toBeUndefined();
+  });
+
+  it("presents empty admitted history without inventing a value or extending its end", () => {
+    const unavailableHistory = referenceHistorySuccessSchema.parse({
+      status: "unavailable",
+      reason: "no_valid_observation",
+      pair,
+      window: "1d",
+      block,
+      mappingEvidence: referenceMarketMappingEvidence,
+      coverage: {
+        basis: "observed_rounds",
+        requestedStart: "2026-07-21T00:07:00.000Z",
+        requestedEnd: block.blockTimestamp,
+        emptyBucketStarts: [
+          ...chronologicalEmptyBuckets,
+          new Date(finalBucket).toISOString(),
+        ],
+        limitations: ["source_history_not_exhaustive"],
+      },
+      candles: [],
+      sourceObservations: [],
+      warnings: referenceHistoryWarnings,
+    });
+    const selectedTime = finalBucket / 1_000;
+    const presentation = presentReferenceHistorySelection(
+      unavailableHistory,
+      selectedTime,
+    );
+    expect(presentation.emptyInterval).toEqual({
+      start: new Date(finalBucket).toISOString(),
+      end: block.blockTimestamp,
+    });
+    expect(presentation).toMatchObject({
+      representedIntervals: 96,
+      valueIntervals: 0,
+    });
+
+    const markup = renderToStaticMarkup(createElement(ReferenceMarketChart, {
+      chartPort: Object.freeze({
+        mount: async () => Object.freeze({ status: "unavailable" as const }),
+      }),
+      historyState: { status: "available", value: unavailableHistory },
+      selectedPair: pair,
+    }));
+    expect(markup).toContain("No valid source observation is available");
+    expect(markup).toContain("0 of 96 chart intervals contain reference values");
+    expect(markup).not.toContain("One reference value is available");
+    expect(markup).toContain("Trade volume is not available");
+    expect(markup).toContain("source history is not exhaustive");
   });
 
   it("destroys and ignores a superseded mount result and its callback", async () => {

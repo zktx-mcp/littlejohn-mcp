@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  evmChainIdSchema,
   parseEvmAddressInput,
 } from "../../../src/core/browser.js";
 import {
   presentStockTokenAddTask,
   presentStockTokenInformationTask,
+  presentStockTokenOperationTask,
   presentStockTokenRemoveTask,
   type StockTokenRemoveContext,
 } from "../../../src/interfaces/web/stock-token-task-presentation.js";
@@ -22,6 +24,17 @@ import {
   stockTokenOfficialRevision as officialRevision,
   stockTokenSelection as selection,
 } from "./stock-token-fixtures.js";
+
+const operationTask = (
+  operation: TokenCatalogOperation | null,
+  actionIntent: Parameters<typeof presentStockTokenOperationTask>[0]["actionIntent"] = undefined,
+) => presentStockTokenOperationTask({
+  operation,
+  account: addContext.form.account,
+  pending: actionIntent !== undefined,
+  actionIntent,
+  delivery: undefined,
+});
 
 const withOfficialEvidence = (
   operation: TokenCatalogOperation,
@@ -45,6 +58,91 @@ const withOfficialEvidence = (
 
 
 describe("Stock Token task presentation ownership", () => {
+  it("derives confirmation and cancellation from exact operation, account, and request state", async () => {
+    const awaiting = await createTokenOperation({
+      kind: "remove",
+      state: "awaiting_confirmation",
+    });
+    const expectedAccount = {
+      chainId: awaiting.account.chainId,
+      address: awaiting.account.address,
+      connectionRevision: awaiting.connectionRevision,
+    };
+    const observations = [
+      { account: undefined, status: "unobserved" },
+      {
+        account: { ...expectedAccount, chainId: evmChainIdSchema.parse("eip155:1") },
+        status: "different_chain",
+      },
+      {
+        account: {
+          ...expectedAccount,
+          address: parseEvmAddressInput(`0x${"98".repeat(20)}`),
+        },
+        status: "different_address",
+      },
+      {
+        account: { ...expectedAccount, connectionRevision: "different" },
+        status: "revision_changed",
+      },
+    ] as const;
+
+    const exact = presentStockTokenOperationTask({
+      operation: awaiting,
+      account: expectedAccount,
+      pending: false,
+      actionIntent: undefined,
+      delivery: undefined,
+    });
+    expect(exact).toMatchObject({
+      account: { status: "exact" },
+      request: { status: "idle" },
+      actions: ["confirm", "cancel"],
+      terminal: false,
+    });
+    for (const observation of observations) {
+      expect(presentStockTokenOperationTask({
+        operation: awaiting,
+        account: observation.account,
+        pending: false,
+        actionIntent: undefined,
+        delivery: undefined,
+      })).toMatchObject({
+        account: { status: observation.status },
+        actions: ["cancel"],
+      });
+    }
+
+    expect(presentStockTokenOperationTask({
+      operation: awaiting,
+      account: expectedAccount,
+      pending: true,
+      actionIntent: "confirming_remove",
+      delivery: undefined,
+    })).toMatchObject({
+      request: { status: "pending", action: "confirm" },
+      actions: [],
+    });
+    expect(presentStockTokenOperationTask({
+      operation: awaiting,
+      account: expectedAccount,
+      pending: false,
+      actionIntent: undefined,
+      delivery: {
+        task: "remove",
+        result: {
+          status: "delivery_unknown",
+          action: "cancel",
+          operationId: awaiting.operationId,
+          resendAllowed: false,
+        },
+      },
+    })).toMatchObject({
+      request: { status: "delivery_unknown" },
+      actions: [],
+    });
+  });
+
   it("keeps one candidate region while the owned addition advances", async () => {
     const awaiting = withOfficialEvidence(await createTokenOperation({
       kind: "add",
@@ -58,7 +156,7 @@ describe("Stock Token task presentation ownership", () => {
     expect(presentStockTokenAddTask({
       context: addContext,
       actionIntent: undefined,
-      operation: null,
+      operationTask: undefined,
       delivery: undefined,
     })).toMatchObject({
       claimsOperation: false,
@@ -71,7 +169,7 @@ describe("Stock Token task presentation ownership", () => {
     expect(presentStockTokenAddTask({
       context: addContext,
       actionIntent: "starting_add",
-      operation: null,
+      operationTask: undefined,
       delivery: undefined,
     })).toMatchObject({
       claimsOperation: false,
@@ -84,7 +182,7 @@ describe("Stock Token task presentation ownership", () => {
     expect(presentStockTokenAddTask({
       context: addContext,
       actionIntent: undefined,
-      operation: awaiting,
+      operationTask: operationTask(awaiting),
       delivery: undefined,
     })).toMatchObject({
       claimsOperation: true,
@@ -97,7 +195,7 @@ describe("Stock Token task presentation ownership", () => {
     expect(presentStockTokenAddTask({
       context: addContext,
       actionIntent: undefined,
-      operation: applying,
+      operationTask: operationTask(applying),
       delivery: undefined,
     })).toMatchObject({
       claimsOperation: true,
@@ -110,7 +208,7 @@ describe("Stock Token task presentation ownership", () => {
     expect(presentStockTokenAddTask({
       context: addContext,
       actionIntent: "closing_add",
-      operation: awaiting,
+      operationTask: operationTask(awaiting, "closing_add"),
       delivery: undefined,
     })).toMatchObject({
       claimsOperation: true,
@@ -131,7 +229,7 @@ describe("Stock Token task presentation ownership", () => {
     expect(presentStockTokenAddTask({
       context: undefined,
       actionIntent: undefined,
-      operation: remove,
+      operationTask: operationTask(remove),
       delivery: undefined,
     })).toEqual({
       presentation: undefined,
@@ -140,7 +238,7 @@ describe("Stock Token task presentation ownership", () => {
     expect(presentStockTokenAddTask({
       context: addContext,
       actionIntent: undefined,
-      operation: remove,
+      operationTask: operationTask(remove),
       delivery: undefined,
     })).toMatchObject({
       claimsOperation: false,
@@ -166,6 +264,8 @@ describe("Stock Token task presentation ownership", () => {
       presentation: { status: "available" },
     });
     const removeContext: StockTokenRemoveContext = Object.freeze({
+      taskId: 1,
+      account: addContext.form.account,
       subject: Object.freeze({
         selection,
         name: "Example Stock Token",
@@ -174,7 +274,7 @@ describe("Stock Token task presentation ownership", () => {
     expect(presentStockTokenRemoveTask({
       context: removeContext,
       actionIntent: "starting_remove",
-      operation: null,
+      operationTask: undefined,
       delivery: undefined,
     })).toMatchObject({
       claimsOperation: false,
@@ -186,7 +286,7 @@ describe("Stock Token task presentation ownership", () => {
     expect(presentStockTokenRemoveTask({
       context: removeContext,
       actionIntent: undefined,
-      operation: remove,
+      operationTask: operationTask(remove),
       delivery: undefined,
     })).toMatchObject({
       claimsOperation: true,
@@ -195,7 +295,7 @@ describe("Stock Token task presentation ownership", () => {
     expect(presentStockTokenRemoveTask({
       context: removeContext,
       actionIntent: "closing_remove",
-      operation: remove,
+      operationTask: operationTask(remove, "closing_remove"),
       delivery: undefined,
     })).toMatchObject({
       claimsOperation: true,
@@ -221,10 +321,12 @@ describe("Stock Token task presentation ownership", () => {
     });
     expect(presentStockTokenRemoveTask({
       context: {
+        taskId: 1,
+        account: addContext.form.account,
         subject: { selection: otherSelection, name: "Other Stock Token" },
       },
       actionIntent: undefined,
-      operation: remove,
+      operationTask: operationTask(remove),
       delivery: undefined,
     })).toEqual({
       presentation: {
@@ -236,5 +338,41 @@ describe("Stock Token task presentation ownership", () => {
       },
       claimsOperation: false,
     });
+  });
+
+  it("claims add and remove tasks only for their exact connected-account revision", async () => {
+    const addition = withOfficialEvidence(await createTokenOperation({
+      kind: "add",
+      state: "awaiting_confirmation",
+    }));
+    const removal = await createTokenOperation({
+      kind: "remove",
+      state: "awaiting_confirmation",
+    });
+    const changedAddition = tokenCatalogOperationSchema.parse({
+      ...addition,
+      connectionRevision: "2",
+    });
+    const changedRemoval = tokenCatalogOperationSchema.parse({
+      ...removal,
+      connectionRevision: "2",
+    });
+
+    expect(presentStockTokenAddTask({
+      context: addContext,
+      actionIntent: undefined,
+      operationTask: operationTask(changedAddition),
+      delivery: undefined,
+    }).claimsOperation).toBe(false);
+    expect(presentStockTokenRemoveTask({
+      context: {
+        taskId: 1,
+        account: addContext.form.account,
+        subject: { selection, name: "Example Stock Token" },
+      },
+      actionIntent: undefined,
+      operationTask: operationTask(changedRemoval),
+      delivery: undefined,
+    }).claimsOperation).toBe(false);
   });
 });

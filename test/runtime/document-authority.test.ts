@@ -14,7 +14,6 @@ import {
   browserInformationPages,
   browserWalletApiPaths,
   publicInspectionPaths,
-  referenceMarketBrowserMutationPaths,
   referenceMarketPublicRoutes,
 } from "../../src/interfaces/browser-contract.js";
 import {
@@ -100,7 +99,6 @@ const sourceOwnedPaths = Object.freeze([
     ...stringValues(accountAssetControlRoutes),
     ...stringValues(browserWalletApiPaths),
     ...stringValues(publicInspectionPaths),
-    ...stringValues(referenceMarketBrowserMutationPaths),
     ...stringValues(referenceMarketLocalMutationPaths),
     ...stringValues(referenceMarketPublicRoutes),
     ...stringValues(tokenCatalogBrowserRoutes),

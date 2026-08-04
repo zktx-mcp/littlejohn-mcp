@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
 
 import type {
-  WalletCurrentOperationProjection,
   WalletOperationPresentation,
   WalletQrMatrix,
 } from "../../wallet/operation-contract.js";
+import { browserCapabilityBindings } from "../browser-capability-bindings.js";
 import { CopyableIdentifier } from "./copyable-identifier.js";
 import { DialogShell } from "./dialog-shell.js";
 import type {
@@ -17,14 +17,15 @@ import {
 } from "./human-failures.js";
 import { LoadingIndicator } from "./loading-indicator.js";
 import {
-  walletConnectionFields,
   walletOperationActions,
   walletOperationConfirmationMessage,
   walletOperationCopy,
   walletOperationNotice,
 } from "./wallet-dialog-view.js";
 
-export type WalletModalTaskKind = "wallet_connect" | "wallet_disconnect";
+export type WalletModalTaskKind =
+  | typeof browserCapabilityBindings.walletConnect.surfaces[0]["taskKind"]
+  | typeof browserCapabilityBindings.walletDisconnect.surfaces[0]["taskKind"];
 
 const QrCode = ({ matrix }: { readonly matrix: WalletQrMatrix }) => (
   <svg
@@ -40,25 +41,6 @@ const QrCode = ({ matrix }: { readonly matrix: WalletQrMatrix }) => (
       : null))}
   </svg>
 );
-
-const WalletFields = ({
-  wallet,
-}: {
-  readonly wallet: WalletCurrentOperationProjection | undefined;
-}) => {
-  if (wallet === undefined) return null;
-  const fields = walletConnectionFields(wallet.connection);
-  return fields.length === 0 ? null : (
-    <dl>{fields.flatMap((field) => [
-      <dt key={`${field.label}:label`}>{field.label}</dt>,
-      <dd key={`${field.label}:value`}>
-        {field.valueKind === "identifier"
-          ? <CopyableIdentifier label={field.label} value={field.value} />
-          : field.value}
-      </dd>,
-    ])}</dl>
-  );
-};
 
 const OperationDetails = ({
   presentation,
@@ -91,7 +73,6 @@ export const WalletTaskDialog = ({
   task,
   connectionRevision,
   operationId,
-  wallet,
   operationPresentation,
   pending,
   pendingAction,
@@ -104,7 +85,6 @@ export const WalletTaskDialog = ({
   task: WalletModalTaskKind;
   connectionRevision: string;
   operationId: string;
-  wallet: WalletCurrentOperationProjection | undefined;
   operationPresentation: WalletOperationPresentation | undefined;
   pending: boolean;
   pendingAction: WalletProcessAction | undefined;
@@ -114,7 +94,10 @@ export const WalletTaskDialog = ({
   onClose: () => void;
   onAction: (action: WalletProcessAction) => void;
 }>) => {
-  const operationKind = task === "wallet_connect" ? "connect" : "disconnect";
+  const operationKind = task ===
+    browserCapabilityBindings.walletConnect.surfaces[0].taskKind
+    ? "connect"
+    : "disconnect";
   const title = operationKind === "connect" ? "Connect wallet" : "Disconnect wallet";
   const matchingPresentation =
     operationPresentation?.operation.kind === operationKind &&
@@ -151,16 +134,6 @@ export const WalletTaskDialog = ({
       ? actionFailure.failure
       : undefined;
   const matchingPending = pending && pendingOperationId === operationId;
-  const completedWithoutPresentation =
-    matchingPresentation === undefined &&
-    !pending &&
-    failure === undefined &&
-    (
-      operationKind === "connect"
-        ? wallet?.connection.status === "connected"
-        : wallet?.connection.status === "disconnected"
-    );
-
   let body: ReactNode;
   if (matchingDelivery !== undefined) {
     body = (
@@ -192,15 +165,6 @@ export const WalletTaskDialog = ({
         <OperationDetails presentation={matchingPresentation} />
       </>
     );
-  } else if (completedWithoutPresentation) {
-    body = (
-      <>
-        <p>{operationKind === "connect"
-          ? "The Robinhood Chain wallet session is ready."
-          : "No wallet session remains in this local profile."}</p>
-        <WalletFields wallet={wallet} />
-      </>
-    );
   } else {
     body = (
       <LoadingIndicator
@@ -215,7 +179,6 @@ export const WalletTaskDialog = ({
     matchingDelivery === undefined &&
     failure === undefined &&
     !terminal &&
-    !completedWithoutPresentation &&
     (
       matchingPending ||
       (pendingAction !== undefined && matchingPending) ||
@@ -226,7 +189,6 @@ export const WalletTaskDialog = ({
     matchingDelivery !== undefined ||
     failure !== undefined ||
     terminal ||
-    completedWithoutPresentation ||
     (!pending && cancelling);
   const close = (): void => {
     if (cancelling && !matchingPending) {

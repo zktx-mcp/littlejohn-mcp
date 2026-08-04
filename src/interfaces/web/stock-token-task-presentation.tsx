@@ -3,14 +3,17 @@ import {
   type AccountAssetExactSuccess,
   type AccountAssetViewRevision,
 } from "../../account-assets/browser.js";
-import type {
-  TokenCatalogOperation,
+import {
+  isTokenCatalogOperationTerminal,
+  type TokenCatalogOperation,
 } from "../../token-catalog/browser.js";
 import type { DeliveryUnknown } from "../operation-delivery.js";
 import type {
   AccountAssetExactReadState,
   ConnectedAccount,
+  ConnectedAccountObservation,
 } from "./account-assets-controller.js";
+import { observeConnectedAccount } from "./account-assets-controller.js";
 import type {
   OfficialStockTokenCandidate,
   StockTokenAddDialogPresentation,
@@ -23,12 +26,8 @@ import type {
   StockTokenRemoveDialogPresentation,
   StockTokenRemoveSubject,
 } from "./stock-token-remove-dialog.js";
-import { invalidBrowserResponse } from "./browser-client.js";
 import {
-  presentBrowserRequestFailure,
-  presentHumanFailure,
   type HumanFailurePresentation,
-  type HumanFailureTaskContext,
 } from "./human-failures.js";
 
 export type StockTokenActionIntent =
@@ -53,17 +52,6 @@ export type StockTokenTaskFailure = Readonly<{
   candidate?: OfficialStockTokenCandidate;
 }>;
 
-const terminalOperationFailure = (
-  operation: TokenCatalogOperation,
-  action: StockTokenFailedAction,
-  context: HumanFailureTaskContext,
-): StockTokenTaskFailure => Object.freeze({
-  action,
-  presentation: operation.state === "failed"
-    ? presentHumanFailure(context, operation.failure)
-    : presentBrowserRequestFailure(context, invalidBrowserResponse()),
-});
-
 export type StockTokenAddFormContext = Readonly<{
   account: ConnectedAccount;
   viewRevision: AccountAssetViewRevision;
@@ -78,6 +66,8 @@ export type StockTokenAddContext = Readonly<{
 }>;
 
 export type StockTokenRemoveContext = Readonly<{
+  taskId: number;
+  account: ConnectedAccount;
   subject: StockTokenRemoveSubject;
   failure?: StockTokenTaskFailure;
 }>;
@@ -87,18 +77,138 @@ export type StockTokenDelivery = Readonly<{
   result: DeliveryUnknown;
 }>;
 
-export const operationMatchesStockTokenCandidate = (
+export type StockTokenOperationAction = "confirm" | "cancel";
+
+export type StockTokenOperationRequestState =
+  | Readonly<{ status: "idle" }>
+  | Readonly<{ status: "pending"; action: StockTokenOperationAction }>
+  | Readonly<{ status: "delivery_unknown"; delivery: DeliveryUnknown }>;
+
+export type StockTokenOperationTaskPresentation = Readonly<{
+  operation: TokenCatalogOperation;
+  account: ConnectedAccountObservation;
+  request: StockTokenOperationRequestState;
+  actions: readonly StockTokenOperationAction[];
+  terminal: boolean;
+}>;
+
+export type StockTokenAccountObservationNotice = Readonly<{
+  heading: string;
+  message: string;
+}>;
+
+export const stockTokenAccountObservationNotice = (
+  observation: ConnectedAccountObservation,
+): StockTokenAccountObservationNotice | undefined => {
+  switch (observation.status) {
+    case "exact":
+      return undefined;
+    case "unobserved":
+      return Object.freeze({
+        heading: "No connected account",
+        message: "Confirmation is unavailable until the operation account is connected.",
+      });
+    case "different_chain":
+      return Object.freeze({
+        heading: "Different network",
+        message: "Confirmation is unavailable on the current wallet network.",
+      });
+    case "different_address":
+      return Object.freeze({
+        heading: "Different account",
+        message: "Confirmation is unavailable for the current wallet address.",
+      });
+    case "revision_changed":
+      return Object.freeze({
+        heading: "Wallet connection changed",
+        message: "Confirmation is unavailable because this operation belongs to an earlier wallet connection.",
+      });
+  }
+};
+
+const operationIntentAction = (
+  intent: StockTokenActionIntent | undefined,
+): StockTokenOperationAction | undefined => {
+  switch (intent) {
+    case "confirming_add":
+    case "confirming_remove":
+      return "confirm";
+    case "closing_add":
+    case "closing_remove":
+      return "cancel";
+    case "starting_add":
+    case "starting_remove":
+    case undefined:
+      return undefined;
+  }
+};
+
+export const presentStockTokenOperationTask = ({
+  operation,
+  account,
+  pending,
+  actionIntent,
+  delivery,
+}: Readonly<{
+  operation: TokenCatalogOperation | null;
+  account: ConnectedAccount | undefined;
+  pending: boolean;
+  actionIntent: StockTokenActionIntent | undefined;
+  delivery: StockTokenDelivery | undefined;
+}>): StockTokenOperationTaskPresentation | undefined => {
+  if (operation === null) return undefined;
+  const expected = Object.freeze({
+    chainId: operation.account.chainId,
+    address: operation.account.address,
+    connectionRevision: operation.connectionRevision,
+  });
+  const accountObservation = observeConnectedAccount(expected, account);
+  const correlatedDelivery = delivery?.result.operationId === operation.operationId
+    ? delivery.result
+    : undefined;
+  const pendingAction = pending ? operationIntentAction(actionIntent) : undefined;
+  const request: StockTokenOperationRequestState = correlatedDelivery !== undefined
+    ? Object.freeze({ status: "delivery_unknown", delivery: correlatedDelivery })
+    : pendingAction === undefined
+      ? Object.freeze({ status: "idle" })
+      : Object.freeze({ status: "pending", action: pendingAction });
+  const terminal = isTokenCatalogOperationTerminal(operation.state);
+  const actions: StockTokenOperationAction[] = [];
+  if (
+    request.status === "idle" &&
+    operation.interactionInterface === "web" &&
+    operation.state === "awaiting_confirmation"
+  ) {
+    if (accountObservation.status === "exact") actions.push("confirm");
+    actions.push("cancel");
+  }
+  return Object.freeze({
+    operation,
+    account: accountObservation,
+    request,
+    actions: Object.freeze(actions),
+    terminal,
+  });
+};
+
+export const operationMatchesStockTokenAddition = (
   operation: TokenCatalogOperation,
+  form: StockTokenAddFormContext,
   candidate: OfficialStockTokenCandidate,
-  officialSnapshotRevision: string | null,
 ): boolean =>
   operation.kind === "add" &&
   operation.asset.address === candidate.contractAddress &&
   operation.review.officialEvidence !== null &&
   operation.review.officialEvidence.assetUid === candidate.assetUid &&
-  operation.review.officialSnapshotRevision === officialSnapshotRevision &&
+  operation.review.officialSnapshotRevision ===
+    form.viewRevision.officialSnapshotRevision &&
   operation.review.officialEvidence.snapshotRevision ===
-    officialSnapshotRevision;
+    form.viewRevision.officialSnapshotRevision &&
+  operation.account.chainId === form.account.chainId &&
+  operation.account.address === form.account.address &&
+  operation.connectionRevision === form.account.connectionRevision &&
+  operation.review.selectionSetRevision ===
+    form.viewRevision.selectionSetRevision;
 
 export type StockTokenAddTaskPresentation = Readonly<{
   presentation: StockTokenAddDialogPresentation | undefined;
@@ -108,27 +218,30 @@ export type StockTokenAddTaskPresentation = Readonly<{
 export const presentStockTokenAddTask = ({
   context,
   actionIntent,
-  operation,
+  operationTask,
   delivery,
 }: Readonly<{
   context: StockTokenAddContext | undefined;
   actionIntent: StockTokenActionIntent | undefined;
-  operation: TokenCatalogOperation | null;
+  operationTask: StockTokenOperationTaskPresentation | undefined;
   delivery: StockTokenDelivery | undefined;
 }>): StockTokenAddTaskPresentation => {
   if (context === undefined) {
     return Object.freeze({ presentation: undefined, claimsOperation: false });
   }
-  const claimsOperation = context.candidate !== null &&
-    operation !== null &&
-    operationMatchesStockTokenCandidate(
-      operation,
+  const matchedTask = context.candidate !== null &&
+    operationTask?.operation.kind === "add" &&
+    operationMatchesStockTokenAddition(
+      operationTask.operation,
+      context.form,
       context.candidate,
-      context.form.viewRevision.officialSnapshotRevision,
-    );
-  const activeOperation = claimsOperation && operation?.kind === "add"
-    ? operation
-    : null;
+    )
+    ? Object.freeze({
+        candidate: context.candidate,
+        operation: operationTask.operation,
+      })
+    : undefined;
+  const claimsOperation = matchedTask !== undefined;
   let addStatus: StockTokenAddStatus;
   if (context.failure !== undefined) {
     addStatus = {
@@ -151,23 +264,26 @@ export const presentStockTokenAddTask = ({
     context.candidate !== null
   ) {
     addStatus = { status: "adding", candidate: context.candidate };
-  } else if (activeOperation !== null) {
-    addStatus =
-      activeOperation.state === "awaiting_confirmation" ||
-      activeOperation.state === "applying"
-      ? {
+  } else if (matchedTask !== undefined) {
+    switch (matchedTask.operation.state) {
+      case "applying":
+      case "awaiting_confirmation":
+        addStatus = {
           status: "adding",
-          candidate: context.candidate!,
-        }
-      : {
-          status: "error",
-          failure: terminalOperationFailure(
-            activeOperation,
-            "confirm_add",
-            "stock_token_add",
-          ),
-          candidate: context.candidate,
+          candidate: matchedTask.candidate,
         };
+        break;
+      case "cancelled":
+      case "completed":
+      case "expired":
+      case "failed":
+        addStatus = {
+          status: "terminal",
+          candidate: matchedTask.candidate,
+          operation: matchedTask.operation,
+        };
+        break;
+    }
   } else {
     addStatus = { status: "idle" };
   }
@@ -236,12 +352,20 @@ export const presentStockTokenInformationTask = (
   });
 };
 
-const operationMatchesRemoval = (
+export const operationMatchesStockTokenRemoval = (
   operation: TokenCatalogOperation | null,
   context: StockTokenRemoveContext,
-): operation is Extract<TokenCatalogOperation, { kind: "remove" }> =>
+): boolean =>
   operation?.kind === "remove" &&
+  operation.account.chainId === context.account.chainId &&
+  operation.account.address === context.account.address &&
+  operation.connectionRevision === context.account.connectionRevision &&
+  operation.asset.chainId === context.subject.selection.asset.chainId &&
   operation.asset.address === context.subject.selection.asset.address &&
+  operation.review.previousSelection?.account.chainId ===
+    context.subject.selection.account.chainId &&
+  operation.review.previousSelection.account.address ===
+    context.subject.selection.account.address &&
   operation.review.previousSelection?.revision ===
     context.subject.selection.revision;
 
@@ -253,18 +377,25 @@ export type StockTokenRemoveTaskPresentation = Readonly<{
 export const presentStockTokenRemoveTask = ({
   context,
   actionIntent,
-  operation,
+  operationTask,
   delivery,
 }: Readonly<{
   context: StockTokenRemoveContext | undefined;
   actionIntent: StockTokenActionIntent | undefined;
-  operation: TokenCatalogOperation | null;
+  operationTask: StockTokenOperationTaskPresentation | undefined;
   delivery: StockTokenDelivery | undefined;
 }>): StockTokenRemoveTaskPresentation => {
   if (context === undefined) {
     return Object.freeze({ presentation: undefined, claimsOperation: false });
   }
-  const claimsOperation = operationMatchesRemoval(operation, context);
+  const matchedTask = operationTask?.operation.kind === "remove" &&
+    operationMatchesStockTokenRemoval(operationTask.operation, context)
+    ? Object.freeze({
+        operation: operationTask.operation,
+        task: operationTask,
+      })
+    : undefined;
+  const claimsOperation = matchedTask !== undefined;
   let presentation: StockTokenRemoveDialogPresentation;
   if (context.failure !== undefined) {
     presentation = {
@@ -282,20 +413,30 @@ export const presentStockTokenRemoveTask = ({
     presentation = { status: "removing", subject: context.subject };
   } else if (actionIntent === "closing_remove") {
     presentation = { status: "closing", subject: context.subject };
-  } else if (claimsOperation) {
-    presentation = operation.state === "awaiting_confirmation"
-      ? { status: "ready", subject: context.subject, operation }
-      : operation.state === "applying"
-        ? { status: "removing", subject: context.subject }
-        : {
-            status: "error",
-            subject: context.subject,
-            failure: terminalOperationFailure(
-              operation,
-              "confirm_remove",
-              "stock_token_remove",
-            ),
-          };
+  } else if (matchedTask !== undefined) {
+    switch (matchedTask.operation.state) {
+      case "awaiting_confirmation":
+        presentation = {
+          status: "ready",
+          subject: context.subject,
+          operation: matchedTask.operation,
+          operationTask: matchedTask.task,
+        };
+        break;
+      case "applying":
+        presentation = { status: "removing", subject: context.subject };
+        break;
+      case "cancelled":
+      case "completed":
+      case "expired":
+      case "failed":
+        presentation = {
+          status: "terminal",
+          subject: context.subject,
+          operation: matchedTask.operation,
+        };
+        break;
+    }
   } else {
     presentation = { status: "preparing", subject: context.subject };
   }

@@ -13,6 +13,7 @@ import {
 } from "../../../src/wallet/operation-state.js";
 import { createWalletFailure } from "../../../src/wallet/errors.js";
 import {
+  availableWalletConnectionAction,
   walletConnectionActions,
   walletConnectionCopy,
   walletConnectionFields,
@@ -75,6 +76,12 @@ describe("wallet dialog view", () => {
     expect(walletConnectionActions(live)).toEqual(["disconnect"]);
     expect(walletConnectionActions(unknown)).toEqual([]);
     expect(walletConnectionActions(unresolved)).toEqual(["disconnect"]);
+    expect(availableWalletConnectionAction(live, false)).toBe("disconnect");
+    expect(availableWalletConnectionAction(absent({
+      status: "disconnected",
+      reason: "no_session",
+    }), false)).toBe("connect");
+    expect(availableWalletConnectionAction(live, true)).toBeUndefined();
   });
 
   it("suppresses connection mutations while one nonterminal operation is present", () => {

@@ -159,7 +159,6 @@ export interface ReadInterfaceIdentity {
   }>;
   readonly cli: Readonly<CliInterfaceIdentity>;
   readonly responseAuthority: CanonicalDispatchAuthority;
-  readonly web?: true;
 }
 
 const chainResponseAuthority = Object.freeze({
@@ -202,7 +201,6 @@ const identity = <Definition extends AnyReadCapabilityDefinition>(input: {
   };
   readonly cli: ReadInterfaceIdentity["cli"];
   readonly responseAuthority: CanonicalDispatchAuthority;
-  readonly web?: true;
 }): ReadInterfaceIdentity & { readonly definition: Definition } => Object.freeze({
   definition: input.definition,
   capabilityId: getCapabilityDefinitionSnapshot(input.definition).capabilityId,
@@ -214,7 +212,6 @@ const identity = <Definition extends AnyReadCapabilityDefinition>(input: {
   }),
   cli: Object.freeze(input.cli),
   responseAuthority: input.responseAuthority,
-  ...(input.web === undefined ? {} : { web: true as const }),
 });
 
 export const chainStatusInterface = identity({
@@ -243,7 +240,6 @@ export const contractInspectInterface = identity({
     argumentSyntax: "<address> --block <latest|block-number> [--json]",
   },
   responseAuthority: chainResponseAuthority,
-  web: true,
 });
 
 export const transactionInspectInterface = identity({
@@ -300,7 +296,6 @@ export const tokenInspectInterface = identity({
     argumentSyntax: "<token-address> --block <latest|block-number> [--json]",
   },
   responseAuthority: tokenResponseAuthority,
-  web: true,
 });
 
 export const uniswapV2QuoteInterface = identity({
@@ -317,7 +312,6 @@ export const uniswapV2QuoteInterface = identity({
     argumentSyntax: "--factory <factory-address> --token-in <token-address> --token-out <token-address> --amount-in <raw-uint256> --block <latest|block-number> [--json]",
   },
   responseAuthority: uniswapV2ResponseAuthority,
-  web: true,
 });
 
 export const readInterfaceIdentities = Object.freeze([
@@ -355,7 +349,6 @@ export interface WalletInterfaceBinding {
     readonly deliveryRecovery?: InterfaceToolDeliveryRecovery;
   }>;
   readonly cli?: Readonly<CliInterfaceIdentity>;
-  readonly web?: "start" | "current" | "operation" | "cancel";
 }
 
 const walletBinding = <const Binding extends WalletInterfaceBinding>(
@@ -386,7 +379,6 @@ export interface TokenCatalogInterfaceBinding {
     readonly deliveryRecovery?: InterfaceToolDeliveryRecovery;
   }>;
   readonly cli: Readonly<CliInterfaceIdentity>;
-  readonly web: true;
 }
 
 export interface AccountAssetInterfaceBinding {
@@ -400,7 +392,6 @@ export interface AccountAssetInterfaceBinding {
     readonly annotations: InterfaceToolAnnotations;
   }>;
   readonly cli?: Readonly<CliInterfaceIdentity>;
-  readonly web: true;
 }
 
 export interface ReferenceMarketInterfaceBinding {
@@ -414,7 +405,6 @@ export interface ReferenceMarketInterfaceBinding {
     readonly annotations: InterfaceToolAnnotations;
   }>;
   readonly cli: Readonly<CliInterfaceIdentity>;
-  readonly web: true;
 }
 
 const referenceMarketBinding = <const Binding extends ReferenceMarketInterfaceBinding>(
@@ -445,7 +435,6 @@ export const referenceMarketInterfaceBindings = Object.freeze({
       annotations: readAnnotations(true),
     },
     cli: { domain: "market", command: "price", argumentSyntax: "<pair-id> [--json]" },
-    web: true,
   }),
   history: referenceMarketBinding({
     action: "history",
@@ -458,7 +447,6 @@ export const referenceMarketInterfaceBindings = Object.freeze({
       annotations: readAnnotations(true),
     },
     cli: { domain: "market", command: "history", argumentSyntax: "<pair-id> --window <1d|7d|30d> [--json]" },
-    web: true,
   }),
   watchlist: referenceMarketBinding({
     action: "watchlist",
@@ -471,7 +459,6 @@ export const referenceMarketInterfaceBindings = Object.freeze({
       annotations: readAnnotations(false),
     },
     cli: { domain: "market", command: "watchlist", argumentSyntax: "[--json]" },
-    web: true,
   }),
   add: referenceMarketBinding({
     action: "add",
@@ -484,7 +471,6 @@ export const referenceMarketInterfaceBindings = Object.freeze({
       annotations: startAnnotations(false),
     },
     cli: { domain: "market", command: "add-pair", argumentSyntax: "<pair-id> --revision <revision> [--json]" },
-    web: true,
   }),
   remove: referenceMarketBinding({
     action: "remove",
@@ -502,7 +488,6 @@ export const referenceMarketInterfaceBindings = Object.freeze({
       }),
     },
     cli: { domain: "market", command: "remove-pair", argumentSyntax: "<pair-id> --revision <revision> [--json]" },
-    web: true,
   }),
   reorder: referenceMarketBinding({
     action: "reorder",
@@ -519,7 +504,6 @@ export const referenceMarketInterfaceBindings = Object.freeze({
       command: "reorder-pairs",
       argumentSyntax: "<pair-id>... --revision <revision> [--json]",
     },
-    web: true,
   }),
 });
 
@@ -544,13 +528,11 @@ export const accountAssetInterfaceBindings = Object.freeze({
       command: "assets",
       argumentSyntax: "[--limit <1..5>] [--cursor <token-address>] [--json]",
     }),
-    web: true,
   }),
   exact: Object.freeze({
     action: "get",
     contract: accountAssetApplicationContracts.exact,
     responseAuthority: accountAssetResponseAuthority,
-    web: true,
   }),
 });
 
@@ -577,7 +559,6 @@ const tokenCatalogInterfaceBindingDefinitions = Object.freeze({
       annotations: readAnnotations(false),
     },
     cli: { domain: "token", command: "get", argumentSyntax: "<token-address> [--json]" },
-    web: true,
   }),
   selections: tokenCatalogBinding({
     action: "list",
@@ -592,7 +573,6 @@ const tokenCatalogInterfaceBindingDefinitions = Object.freeze({
       command: "list",
       argumentSyntax: "[--limit <1..25>] [--cursor <token-address>] [--json]",
     },
-    web: true,
   }),
   startAddition: tokenCatalogBinding({
     action: "start",
@@ -608,7 +588,6 @@ const tokenCatalogInterfaceBindingDefinitions = Object.freeze({
       command: "add",
       argumentSyntax: "<token-address>",
     },
-    web: true,
   }),
   startRemoval: tokenCatalogBinding({
     action: "start",
@@ -624,7 +603,6 @@ const tokenCatalogInterfaceBindingDefinitions = Object.freeze({
       command: "remove",
       argumentSyntax: "<token-address> --revision <revision>",
     },
-    web: true,
   }),
   operation: tokenCatalogBinding({
     action: "get_operation",
@@ -635,7 +613,6 @@ const tokenCatalogInterfaceBindingDefinitions = Object.freeze({
       annotations: readAnnotations(false),
     },
     cli: { domain: "token", command: "operation", argumentSyntax: "<operation-id> [--json]" },
-    web: true,
   }),
   cancelOperation: tokenCatalogBinding({
     action: "cancel_operation",
@@ -652,7 +629,6 @@ const tokenCatalogInterfaceBindingDefinitions = Object.freeze({
       deliveryRecovery: operationDeliveryRecovery,
     },
     cli: { domain: "token", command: "cancel", argumentSyntax: "<operation-id> [--json]" },
-    web: true,
   }),
 });
 
@@ -667,7 +643,6 @@ const walletInterfaceBindingDefinitions = Object.freeze({
       deliveryRecovery: operationDeliveryRecovery,
     },
     cli: { domain: "wallet", command: "connect", argumentSyntax: "" },
-    web: "start",
   }),
   disconnect: walletBinding({
     action: "start",
@@ -679,7 +654,6 @@ const walletInterfaceBindingDefinitions = Object.freeze({
       deliveryRecovery: operationDeliveryRecovery,
     },
     cli: { domain: "wallet", command: "disconnect", argumentSyntax: "" },
-    web: "start",
   }),
   operation: walletBinding({
     action: "get_operation",
@@ -690,7 +664,6 @@ const walletInterfaceBindingDefinitions = Object.freeze({
       annotations: readAnnotations(false),
     },
     cli: { domain: "wallet", command: "operation", argumentSyntax: "<operation-id> [--json]" },
-    web: "operation",
   }),
   cancelOperation: walletBinding({
     action: "cancel_operation",
@@ -707,12 +680,10 @@ const walletInterfaceBindingDefinitions = Object.freeze({
       deliveryRecovery: operationDeliveryRecovery,
     },
     cli: { domain: "wallet", command: "cancel", argumentSyntax: "<operation-id>" },
-    web: "cancel",
   }),
   currentOperation: walletBinding({
     action: "current_operation",
     contract: walletManagementContracts.currentOperation,
-    web: "current",
   }),
 });
 

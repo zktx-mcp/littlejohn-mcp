@@ -39,10 +39,10 @@ const canonicalJsonValueSource = resolve(repositoryRoot, "src/core/canonical-jso
 const jsonObjectSource = resolve(repositoryRoot, "src/core/json-object.ts");
 const immutabilitySource = resolve(repositoryRoot, "src/core/immutability.ts");
 const sharedContractSources = new Set([
+  "src/interfaces/browser-capability-bindings.ts",
   "src/interfaces/browser-contract.ts",
   "src/interfaces/browser-error-response.ts",
   "src/interfaces/operation-delivery.ts",
-  "src/interfaces/reference-market-delivery.ts",
   "src/core/application-contract.ts",
   "src/core/account-balance-contract.ts",
   "src/core/canonical-json-value.ts",
@@ -130,7 +130,7 @@ const allowedWebPackageImports = new Map([
 ]);
 const allowedWebConstructorsBySource = new Map([
   [webEntrySource, new Set(["Error"])],
-  [webApplicationSource, new Set(["Error", "Set"])],
+  [webApplicationSource, new Set(["Error", "Set", "TypeError"])],
   [walletProcessSource, new Set(["Error"])],
   [walletObservationSource, new Set(["TypeError"])],
   [browserClientSource, new Set(["AbortController", "BrowserRequestError", "Promise", "TypeError"])],

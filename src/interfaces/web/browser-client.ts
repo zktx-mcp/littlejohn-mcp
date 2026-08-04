@@ -1,7 +1,6 @@
 import {
   browserCsrfHeaderName,
   parseBrowserCsrfToken,
-  referenceMarketBrowserMutationPath,
 } from "../browser-contract.js";
 import {
   parseBrowserProblemDetails,
@@ -14,12 +13,6 @@ import {
   type OperationDeliveryAction,
 } from "../operation-delivery.js";
 import type { FieldIssue, OperationId } from "../../core/browser.js";
-import {
-  createReferenceMarketDeliveryUnknown,
-  type ReferenceMarketDeliveryAction,
-  type ReferenceMarketDeliveryUnknown,
-} from "../reference-market-delivery.js";
-import type { CanonicalJson } from "../../core/browser.js";
 
 export interface BrowserFetchInit {
   readonly method: "GET" | "POST";
@@ -427,24 +420,3 @@ export const controlBrowserActionJson = (
   () => createDeliveryUnknown(action, operationId),
   options,
 );
-
-export const controlBrowserReferenceMarketMutationJson = (
-  input: Readonly<{
-    action: ReferenceMarketDeliveryAction;
-    request: CanonicalJson;
-    csrfToken: unknown;
-    options?: BrowserRequestOptions;
-  }>,
-): Promise<Readonly<{ status: "response_received"; value: unknown }> | Readonly<{
-  status: "delivery_unknown";
-  delivery: ReferenceMarketDeliveryUnknown;
-}>> => {
-  const deliveryUnknown = createReferenceMarketDeliveryUnknown(input);
-  return controlBrowserSendOnceJson(
-    referenceMarketBrowserMutationPath(deliveryUnknown.action),
-    input.request,
-    input.csrfToken,
-    () => deliveryUnknown,
-    input.options,
-  );
-};

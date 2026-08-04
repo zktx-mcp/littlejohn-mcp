@@ -4,7 +4,6 @@ import {
   parseEvmAddressInput,
 } from "../../core/browser.js";
 import {
-  tokenCatalogApplicationContracts,
   tokenCatalogBrowserRoutes,
   tokenCatalogCurrentOperationSchema,
   tokenCatalogOperationConfirmationContract,
@@ -17,6 +16,7 @@ import {
   type TokenInspectionSuccess,
   type TokenSelection,
 } from "../../token-catalog/browser.js";
+import { browserCapabilityBindings } from "../browser-capability-bindings.js";
 import { publicInspectionPaths } from "../browser-contract.js";
 import {
   BrowserRequestError,
@@ -77,7 +77,7 @@ export const startTokenSelection = async (
   csrfToken: unknown,
   options: BrowserRequestOptions = {},
 ): Promise<TokenCatalogOperationStartResult<"add"> | DeliveryUnknown> => {
-  const contract = tokenCatalogApplicationContracts.startAddition;
+  const contract = browserCapabilityBindings.tokenStartAddition.contract;
   const request = contract.parseInput({ asset: tokenAsset(chainId, addressInput) });
   const operationId = createBrowserOperationId();
   const delivery = await controlBrowserActionJson(
@@ -102,7 +102,7 @@ export const startTokenRemoval = async (
   csrfToken: unknown,
   options: BrowserRequestOptions = {},
 ): Promise<TokenCatalogOperationStartResult<"remove"> | DeliveryUnknown> => {
-  const contract = tokenCatalogApplicationContracts.startRemoval;
+  const contract = browserCapabilityBindings.tokenStartRemoval.contract;
   const request = contract.parseInput({
     asset: selection.asset,
     expectedRevision: selection.revision,
@@ -142,7 +142,7 @@ export const loadTokenOperation = async (
   operationId: TokenCatalogOperation["operationId"],
   options: BrowserRequestOptions = {},
 ): Promise<TokenCatalogOperationResult> => {
-  const contract = tokenCatalogApplicationContracts.operation;
+  const contract = browserCapabilityBindings.tokenOperation.contract;
   const request = contract.parseInput({ operationId });
   try {
     return contract.parsePublicSuccess(
@@ -192,7 +192,7 @@ export const cancelTokenOperation = async (
   csrfToken: unknown,
   options: BrowserRequestOptions = {},
 ): Promise<TokenCatalogCancellationResult | DeliveryUnknown> => {
-  const contract = tokenCatalogApplicationContracts.cancelOperation;
+  const contract = browserCapabilityBindings.tokenCancelOperation.contract;
   const request = contract.parseInput({ operationId });
   const delivery = await controlBrowserActionJson(
     "cancel",
@@ -205,14 +205,10 @@ export const cancelTokenOperation = async (
   if (delivery.status === "delivery_unknown") return delivery.delivery;
   const value = delivery.value;
   try {
-    const result = contract.parsePublicSuccess(
+    return contract.parsePublicSuccess(
       request,
       value,
     );
-    if (result.operation.state !== "cancelled") {
-      return createDeliveryUnknown("cancel", request.operationId);
-    }
-    return result;
   } catch (error) {
     if (error instanceof BrowserRequestError) throw error;
     return createDeliveryUnknown("cancel", request.operationId);

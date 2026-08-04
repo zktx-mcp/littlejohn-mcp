@@ -93,7 +93,6 @@ describe("browser application structure", () => {
     expect(dialog).toContain("element.showModal()");
     expect(dialog).toContain("className={`application-dialog");
     expect(app).toContain("useState<ActiveModalTask>()");
-    expect(app).toContain('kind: "analysis"');
     expect(app).toContain("<StockTokenAddDialog");
     expect(app).toContain("<StockTokenInformationDialog");
     expect(app).toContain("<StockTokenRemoveDialog");
@@ -137,17 +136,11 @@ describe("browser application structure", () => {
       "src/interfaces/web/stock-token-information-dialog.tsx",
     );
     const process = source("src/interfaces/web/stock-token-process.tsx");
-    const taskPresentation = source(
-      "src/interfaces/web/stock-token-task-presentation.tsx",
-    );
 
     expect(information).toContain("projectAccountAssetExactView(result)");
     expect(process).toContain("presentStockTokenAddTask({");
     expect(process).toContain("presentStockTokenInformationTask(exactRead)");
     expect(process).toContain("presentStockTokenRemoveTask({");
-    expect(taskPresentation).toContain(
-      "operationMatchesStockTokenCandidate(",
-    );
     expect(information).not.toContain("ContextualAnalysisAction");
     expect(information).toContain("onRemove");
     expect(information).toContain('title="Token information"');

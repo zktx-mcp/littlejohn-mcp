@@ -42,16 +42,11 @@ export const tokenSelectionListRequestBody = (
 });
 
 export const tokenCatalogBrowserRoutes = Object.freeze({
-  root: browserRoot,
-  selectionQueries: `${browserRoot}/selection-queries`,
-  selectionPattern: `${browserRoot}/selections/{chainId}/{tokenAddress}`,
   operations: browserOperationsRoot,
   currentOperation: `${browserRoot}/current-operation`,
   operationPattern: `${browserOperationsRoot}/{operationId}`,
   confirmationPattern: `${browserOperationsRoot}/{operationId}/confirmation`,
   cancellationPattern: `${browserOperationsRoot}/{operationId}/cancellation`,
-  selection: (chainId: EvmChainId, tokenAddress: EvmAddress): string =>
-    selectionPath(`${browserRoot}/selections`, chainId, tokenAddress),
   operation: (operationId: TokenCatalogOperation["operationId"]): string =>
     operationPath(browserOperationsRoot, operationId),
   confirmation: (operationId: TokenCatalogOperation["operationId"]): string =>

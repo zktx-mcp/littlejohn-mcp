@@ -37,9 +37,11 @@ import type {
   OfficialStockTokenCandidate,
 } from "./stock-token-add-dialog.js";
 import {
-  operationMatchesStockTokenCandidate,
+  operationMatchesStockTokenAddition,
+  operationMatchesStockTokenRemoval,
   presentStockTokenAddTask,
   presentStockTokenInformationTask,
+  presentStockTokenOperationTask,
   presentStockTokenRemoveTask,
   type StockTokenActionIntent,
   type StockTokenAddContext,
@@ -47,6 +49,7 @@ import {
   type StockTokenAddTaskPresentation,
   type StockTokenDelivery,
   type StockTokenInformationTaskPresentation,
+  type StockTokenOperationTaskPresentation,
   type StockTokenRemoveContext,
   type StockTokenRemoveTaskPresentation,
   type StockTokenTaskFailure,
@@ -117,6 +120,11 @@ type StockTokenAddConsent = Readonly<{
   candidate: OfficialStockTokenCandidate;
 }>;
 
+type DismissedRemovePresentation = Readonly<{
+  taskId: number;
+  operationId: string;
+}>;
+
 const sameCandidate = (
   left: OfficialStockTokenCandidate,
   right: OfficialStockTokenCandidate,
@@ -128,16 +136,11 @@ const operationMatchesAddConsent = (
   operation: TokenCatalogOperation,
   consent: StockTokenAddConsent,
 ): boolean =>
-  operationMatchesStockTokenCandidate(
+  operationMatchesStockTokenAddition(
     operation,
+    consent.form,
     consent.candidate,
-    consent.form.viewRevision.officialSnapshotRevision,
-  ) &&
-  operation.account.chainId === consent.form.account.chainId &&
-  operation.account.address === consent.form.account.address &&
-  operation.connectionRevision === consent.form.account.connectionRevision &&
-  operation.review.selectionSetRevision ===
-    consent.form.viewRevision.selectionSetRevision;
+  );
 
 export interface StockTokenProcess {
   readonly delivery: StockTokenDelivery | undefined;
@@ -145,6 +148,7 @@ export interface StockTokenProcess {
   readonly addContext: StockTokenAddContext | undefined;
   readonly removeContext: StockTokenRemoveContext | undefined;
   readonly operation: TokenCatalogOperation | null;
+  readonly operationTask: StockTokenOperationTaskPresentation | undefined;
   readonly actionIntent: StockTokenActionIntent | undefined;
   readonly addTask: StockTokenAddTaskPresentation;
   readonly informationTask: StockTokenInformationTaskPresentation;
@@ -159,6 +163,7 @@ export interface StockTokenProcess {
   readonly retryRemove: () => void;
   readonly confirmCurrentOperation: () => void;
   readonly cancelCurrentOperation: () => void;
+  readonly acknowledgeCurrentOperation: () => void;
   readonly dismissExternalOperation: () => void;
 }
 
@@ -195,6 +200,11 @@ export const useStockTokenProcess = ({
   const deliveryRef = useRef(delivery);
   deliveryRef.current = delivery;
   const [pending, setPending] = useState(false);
+  const [dismissedAddTaskId, setDismissedAddTaskId] = useState<number>();
+  const [dismissedRemovePresentation, setDismissedRemovePresentation] =
+    useState<DismissedRemovePresentation>();
+  const [dismissedExternalOperationId, setDismissedExternalOperationId] =
+    useState<string>();
   const [operationAuthority] = useState(createBrowserRequestAuthority);
   const accountRef = useRef(account);
   accountRef.current = account;
@@ -230,8 +240,15 @@ export const useStockTokenProcess = ({
   const handledTerminalOperationRef = useRef<string | undefined>(
     terminalNotificationStore.load(),
   );
-  const dismissedOperationRef = useRef<string | undefined>(undefined);
+  const notifiedTerminalOperationRef = useRef<string | undefined>(undefined);
+  const reconciledTerminalOperationRef = useRef<string | undefined>(undefined);
+  const dismissedRemovePresentationRef =
+    useRef<DismissedRemovePresentation | undefined>(undefined);
+  dismissedRemovePresentationRef.current = dismissedRemovePresentation;
+  const dismissedExternalOperationIdRef = useRef<string | undefined>(undefined);
+  dismissedExternalOperationIdRef.current = dismissedExternalOperationId;
   const addTaskSequenceRef = useRef(0);
+  const removeTaskSequenceRef = useRef(0);
   const addConsentRef = useRef<StockTokenAddConsent | undefined>(undefined);
   const confirmationStartedOperationIdRef =
     useRef<string | undefined>(undefined);
@@ -276,10 +293,39 @@ export const useStockTokenProcess = ({
     setDelivery(next);
   }, []);
 
+  const replaceDismissedAddTaskId = useCallback((
+    next: number | undefined,
+  ): void => {
+    setDismissedAddTaskId(next);
+  }, []);
+
+  const replaceDismissedRemovePresentation = useCallback((
+    next: DismissedRemovePresentation | undefined,
+  ): void => {
+    dismissedRemovePresentationRef.current = next;
+    setDismissedRemovePresentation(next);
+  }, []);
+
+  const replaceDismissedExternalOperationId = useCallback((
+    next: string | undefined,
+  ): void => {
+    dismissedExternalOperationIdRef.current = next;
+    setDismissedExternalOperationId(next);
+  }, []);
+
   const markTerminalHandled = useCallback((operationId: string): void => {
     handledTerminalOperationRef.current = operationId;
     terminalNotificationStore.save(operationId);
   }, [terminalNotificationStore]);
+
+  const publishTerminalNotification = useCallback((
+    operation: TokenCatalogOperation,
+  ): void => {
+    if (notifiedTerminalOperationRef.current === operation.operationId) return;
+    notifiedTerminalOperationRef.current = operation.operationId;
+    const notice = tokenOperationNotification(operation);
+    if (notice !== undefined) notificationRef.current(notice);
+  }, []);
 
   const requestOptions = useCallback((signal?: AbortSignal) =>
     Object.freeze({
@@ -317,8 +363,9 @@ export const useStockTokenProcess = ({
   const clearAddForm = useCallback((): void => {
     addConsentRef.current = undefined;
     confirmationStartedOperationIdRef.current = undefined;
+    replaceDismissedAddTaskId(undefined);
     replaceAddContext(undefined);
-  }, [replaceAddContext]);
+  }, [replaceAddContext, replaceDismissedAddTaskId]);
 
   const clearAddFailure = useCallback((context: StockTokenAddContext): void => {
     replaceAddContext(Object.freeze({
@@ -331,7 +378,11 @@ export const useStockTokenProcess = ({
   const clearRemoveFailure = useCallback((
     context: StockTokenRemoveContext,
   ): void => {
-    replaceRemoveContext(Object.freeze({ subject: context.subject }));
+    replaceRemoveContext(Object.freeze({
+      taskId: context.taskId,
+      account: context.account,
+      subject: context.subject,
+    }));
   }, [replaceRemoveContext]);
 
   const clearAdd = useCallback((): void => {
@@ -341,12 +392,16 @@ export const useStockTokenProcess = ({
 
   const clearRemove = useCallback((): void => {
     replaceOperation(null);
+    replaceDismissedRemovePresentation(undefined);
     replaceRemoveContext(undefined);
-  }, [replaceOperation, replaceRemoveContext]);
+  }, [
+    replaceDismissedRemovePresentation,
+    replaceOperation,
+    replaceRemoveContext,
+  ]);
 
   const acceptOperation = useCallback((
     nextOperation: TokenCatalogOperation,
-    intent: StockTokenActionIntent | undefined = actionIntentRef.current,
   ): void => {
     const currentDelivery = deliveryRef.current;
     const resolvesDelivery =
@@ -359,18 +414,12 @@ export const useStockTokenProcess = ({
         ) ||
         (
           currentDelivery.result.action === "cancel" &&
-          nextOperation.state === "cancelled"
+          isTokenCatalogOperationTerminal(nextOperation.state)
         )
       );
     if (resolvesDelivery) {
       replaceDelivery(undefined);
     }
-    const actual = accountRef.current;
-    const expected: ConnectedAccount = Object.freeze({
-      chainId: nextOperation.account.chainId,
-      address: nextOperation.account.address,
-      connectionRevision: nextOperation.connectionRevision,
-    });
     const currentAdd = addContextRef.current;
     const addConsent = addConsentRef.current;
     const addMatches = currentAdd?.candidate !== null &&
@@ -378,76 +427,72 @@ export const useStockTokenProcess = ({
       addConsent !== undefined &&
       currentAdd.taskId === addConsent.taskId &&
       sameCandidate(currentAdd.candidate, addConsent.candidate) &&
-      sameConnectedAccount(currentAdd.form.account, actual) &&
-      sameConnectedAccount(expected, actual) &&
       operationMatchesAddConsent(nextOperation, addConsent);
     const currentRemove = removeContextRef.current;
-    const removeMatches = nextOperation.kind === "remove" &&
-      currentRemove !== undefined &&
-      currentRemove.subject.selection.asset.address ===
-        nextOperation.asset.address &&
-      currentRemove.subject.selection.revision ===
-        nextOperation.review.previousSelection?.revision &&
-      sameConnectedAccount(expected, actual);
+    const removeMatches = currentRemove !== undefined &&
+      operationMatchesStockTokenRemoval(nextOperation, currentRemove);
 
     if (!isTokenCatalogOperationTerminal(nextOperation.state)) {
+      const dismissedRemove = dismissedRemovePresentationRef.current;
       if (
-        dismissedOperationRef.current !== nextOperation.operationId
+        resolvesDelivery === true &&
+        removeMatches &&
+        nextOperation.state === "awaiting_confirmation" &&
+        dismissedRemove?.taskId === currentRemove?.taskId &&
+        dismissedRemove.operationId === nextOperation.operationId
       ) {
-        replaceOperation(nextOperation);
+        replaceDismissedRemovePresentation(undefined);
       }
+      replaceOperation(nextOperation);
       return;
+    }
+    if (dismissedExternalOperationIdRef.current === nextOperation.operationId) {
+      replaceDismissedExternalOperationId(undefined);
+    }
+    if (
+      dismissedRemovePresentationRef.current?.operationId ===
+        nextOperation.operationId
+    ) {
+      replaceDismissedRemovePresentation(undefined);
     }
     if (
       handledTerminalOperationRef.current === nextOperation.operationId
     ) {
       return;
     }
-    markTerminalHandled(nextOperation.operationId);
-
     if (addMatches) {
-      if (nextOperation.state === "cancelled" && intent === "closing_add") {
-        clearAdd();
-        return;
-      }
-      if (nextOperation.state === "completed") {
-        clearAdd();
+      if (
+        nextOperation.state === "completed" &&
+        reconciledTerminalOperationRef.current !== nextOperation.operationId
+      ) {
+        reconciledTerminalOperationRef.current = nextOperation.operationId;
         reconcileAddedRef.current();
-        const notice = tokenOperationNotification(nextOperation);
-        if (notice !== undefined) notificationRef.current(notice);
-        return;
       }
       replaceOperation(nextOperation);
+      publishTerminalNotification(nextOperation);
       return;
     }
 
     if (removeMatches) {
       if (
-        nextOperation.state === "cancelled" &&
-        intent === "closing_remove"
+        nextOperation.state === "completed" &&
+        reconciledTerminalOperationRef.current !== nextOperation.operationId
       ) {
-        clearRemove();
-        return;
-      }
-      if (nextOperation.state === "completed") {
-        clearRemove();
+        reconciledTerminalOperationRef.current = nextOperation.operationId;
         reconcileRemovedRef.current(nextOperation.result.selection);
-        const notice = tokenOperationNotification(nextOperation);
-        if (notice !== undefined) notificationRef.current(notice);
-        return;
       }
       replaceOperation(nextOperation);
+      publishTerminalNotification(nextOperation);
       return;
     }
 
-    replaceOperation(null);
-    const notice = tokenOperationNotification(nextOperation);
-    if (notice !== undefined) notificationRef.current(notice);
+    replaceOperation(nextOperation);
+    publishTerminalNotification(nextOperation);
   }, [
-    clearAdd,
-    clearRemove,
-    markTerminalHandled,
+    publishTerminalNotification,
     replaceDelivery,
+    replaceDismissedExternalOperationId,
+    replaceDismissedRemovePresentation,
     replaceOperation,
   ]);
 
@@ -485,13 +530,9 @@ export const useStockTokenProcess = ({
           task: current.kind,
           result,
         }));
-        replaceOperation(null);
         return;
       }
-      acceptOperation(
-        "operation" in result ? result.operation : result,
-        intent,
-      );
+      acceptOperation("operation" in result ? result.operation : result);
     } catch (error) {
       if (
         !operationAuthority.isCurrent(activeRequest) ||
@@ -537,7 +578,6 @@ export const useStockTokenProcess = ({
     replaceAddContext,
     replaceActionIntent,
     replaceDelivery,
-    replaceOperation,
     replacePending,
     replaceRemoveContext,
     requestOptions,
@@ -553,13 +593,14 @@ export const useStockTokenProcess = ({
     }
     addTaskSequenceRef.current += 1;
     closeExactRef.current();
+    replaceDismissedAddTaskId(undefined);
     replaceAddContext(Object.freeze({
       taskId: addTaskSequenceRef.current,
       form,
       candidate: null,
     }));
     return true;
-  }, [replaceAddContext]);
+  }, [replaceAddContext, replaceDismissedAddTaskId]);
 
   const addCandidate = useCallback(async (
     candidate: OfficialStockTokenCandidate,
@@ -628,7 +669,7 @@ export const useStockTokenProcess = ({
         }));
         return;
       }
-      acceptOperation(started.operation, "starting_add");
+      acceptOperation(started.operation);
     } catch (error) {
       if (
         !operationAuthority.isCurrent(activeRequest) ||
@@ -693,10 +734,9 @@ export const useStockTokenProcess = ({
       if (!operationAuthority.isCurrent(activeRequest)) return;
       if (isDeliveryUnknown(result)) {
         replaceDelivery(Object.freeze({ task: "add", result }));
-        replaceOperation(null);
         return;
       }
-      acceptOperation(result, "confirming_add");
+      acceptOperation(result);
     } catch (error) {
       if (
         !operationAuthority.isCurrent(activeRequest) ||
@@ -725,18 +765,18 @@ export const useStockTokenProcess = ({
     replaceActionIntent,
     replaceAddContext,
     replaceDelivery,
-    replaceOperation,
     replacePending,
     requestOptions,
     taskFailure,
   ]);
 
   const prepareRemove = useCallback(async (
-    subject: StockTokenRemoveSubject,
+    context: StockTokenRemoveContext,
     activeRequest: NonNullable<ReturnType<
       typeof operationAuthority.beginControl
     >>,
   ): Promise<void> => {
+    const { subject } = context;
     replaceActionIntent("starting_remove");
     replacePending(true);
     try {
@@ -750,12 +790,7 @@ export const useStockTokenProcess = ({
         replaceDelivery(Object.freeze({ task: "remove", result: started }));
         return;
       }
-      if (
-        started.operation.kind !== "remove" ||
-        started.operation.asset.address !== subject.selection.asset.address ||
-        started.operation.review.previousSelection?.revision !==
-          subject.selection.revision
-      ) {
+      if (!operationMatchesStockTokenRemoval(started.operation, context)) {
         const cleanup = await cancelTokenOperation(
           started.operation.operationId,
           csrfTokenRef.current(),
@@ -777,7 +812,7 @@ export const useStockTokenProcess = ({
         }));
         return;
       }
-      acceptOperation(started.operation, "starting_remove");
+      acceptOperation(started.operation);
     } catch (error) {
       if (
         !operationAuthority.isCurrent(activeRequest) ||
@@ -786,6 +821,8 @@ export const useStockTokenProcess = ({
         return;
       }
       replaceRemoveContext(Object.freeze({
+        taskId: context.taskId,
+        account: context.account,
         subject,
         failure: taskFailure("start_remove", "stock_token_remove", error),
       }));
@@ -812,8 +849,11 @@ export const useStockTokenProcess = ({
   const openRemove = useCallback((
     subject: StockTokenRemoveSubject,
   ): boolean => {
+    const currentAccount = accountRef.current;
     if (
-      accountRef.current === undefined ||
+      currentAccount === undefined ||
+      currentAccount.chainId !== subject.selection.account.chainId ||
+      currentAccount.address !== subject.selection.account.address ||
       pendingRef.current ||
       delivery !== undefined ||
       operationRef.current !== null ||
@@ -824,13 +864,21 @@ export const useStockTokenProcess = ({
     }
     const activeRequest = operationAuthority.beginControl();
     if (activeRequest === undefined) return false;
-    replaceRemoveContext(Object.freeze({ subject }));
-    void prepareRemove(subject, activeRequest);
+    removeTaskSequenceRef.current += 1;
+    replaceDismissedRemovePresentation(undefined);
+    const context = Object.freeze({
+      taskId: removeTaskSequenceRef.current,
+      account: currentAccount,
+      subject,
+    });
+    replaceRemoveContext(context);
+    void prepareRemove(context, activeRequest);
     return true;
   }, [
     delivery,
     operationAuthority,
     prepareRemove,
+    replaceDismissedRemovePresentation,
     replaceRemoveContext,
   ]);
 
@@ -862,7 +910,7 @@ export const useStockTokenProcess = ({
     if (failure.action === "start_remove") {
       const activeRequest = operationAuthority.beginControl();
       if (activeRequest !== undefined) {
-        void prepareRemove(context.subject, activeRequest);
+        void prepareRemove(context, activeRequest);
       }
     } else if (failure.action === "confirm_remove") {
       void runOperation("confirm", "confirming_remove");
@@ -871,28 +919,84 @@ export const useStockTokenProcess = ({
     }
   }, [clearRemoveFailure, operationAuthority, prepareRemove, runOperation]);
 
-  const addTask = presentStockTokenAddTask({
+  const currentOperationTask = presentStockTokenOperationTask({
+    operation,
+    account,
+    pending,
+    actionIntent,
+    delivery,
+  });
+  const operationTask =
+    currentOperationTask !== undefined &&
+    dismissedExternalOperationId === currentOperationTask.operation.operationId &&
+    !currentOperationTask.terminal
+      ? undefined
+      : currentOperationTask;
+  const presentedAddTask = presentStockTokenAddTask({
     context: addContext,
     actionIntent,
-    operation,
+    operationTask: currentOperationTask,
     delivery,
   });
+  const addTask = addContext !== undefined &&
+    dismissedAddTaskId === addContext.taskId &&
+    (
+      presentedAddTask.presentation?.addStatus.status === "delivery_unknown" ||
+      presentedAddTask.presentation?.addStatus.status === "adding"
+    )
+    ? Object.freeze({
+        presentation: undefined,
+        claimsOperation: presentedAddTask.claimsOperation,
+      })
+    : presentedAddTask;
   const informationTask = presentStockTokenInformationTask(exactRead);
-  const removeTask = presentStockTokenRemoveTask({
+  const presentedRemoveTask = presentStockTokenRemoveTask({
     context: removeContext,
     actionIntent,
-    operation,
+    operationTask: currentOperationTask,
     delivery,
   });
+  const removeOperationId = delivery?.task === "remove"
+    ? delivery.result.operationId
+    : presentedRemoveTask.claimsOperation
+      ? currentOperationTask?.operation.operationId
+      : undefined;
+  const removeTask =
+    removeContext !== undefined &&
+    dismissedRemovePresentation?.taskId === removeContext.taskId &&
+    dismissedRemovePresentation.operationId === removeOperationId &&
+    (
+      presentedRemoveTask.presentation?.status === "delivery_unknown" ||
+      presentedRemoveTask.presentation?.status === "removing" ||
+      presentedRemoveTask.presentation?.status === "closing"
+    )
+      ? Object.freeze({
+          presentation: undefined,
+          claimsOperation: presentedRemoveTask.claimsOperation,
+        })
+      : presentedRemoveTask;
 
   const closeAdd = useCallback((): boolean => {
     const task = presentStockTokenAddTask({
       context: addContextRef.current,
       actionIntent: actionIntentRef.current,
-      operation: operationRef.current,
+      operationTask: presentStockTokenOperationTask({
+        operation: operationRef.current,
+        account: accountRef.current,
+        pending: pendingRef.current,
+        actionIntent: actionIntentRef.current,
+        delivery: deliveryRef.current,
+      }),
       delivery,
     });
     if (task.presentation?.addStatus.status === "delivery_unknown") {
+      const context = addContextRef.current;
+      if (context !== undefined) replaceDismissedAddTaskId(context.taskId);
+      return true;
+    }
+    if (task.presentation?.addStatus.status === "terminal") {
+      markTerminalHandled(task.presentation.addStatus.operation.operationId);
+      clearAdd();
       return true;
     }
     const current = operationRef.current;
@@ -905,16 +1009,40 @@ export const useStockTokenProcess = ({
     }
     clearAdd();
     return true;
-  }, [clearAdd, delivery, runOperation]);
+  }, [
+    clearAdd,
+    delivery,
+    markTerminalHandled,
+    replaceDismissedAddTaskId,
+    runOperation,
+  ]);
 
   const closeRemove = useCallback((): boolean => {
     const task = presentStockTokenRemoveTask({
       context: removeContextRef.current,
       actionIntent: actionIntentRef.current,
-      operation: operationRef.current,
+      operationTask: presentStockTokenOperationTask({
+        operation: operationRef.current,
+        account: accountRef.current,
+        pending: pendingRef.current,
+        actionIntent: actionIntentRef.current,
+        delivery: deliveryRef.current,
+      }),
       delivery,
     });
     if (task.presentation?.status === "delivery_unknown") {
+      const context = removeContextRef.current;
+      if (context !== undefined) {
+        replaceDismissedRemovePresentation(Object.freeze({
+          taskId: context.taskId,
+          operationId: task.presentation.delivery.operationId,
+        }));
+      }
+      return true;
+    }
+    if (task.presentation?.status === "terminal") {
+      markTerminalHandled(task.presentation.operation.operationId);
+      clearRemove();
       return true;
     }
     const current = operationRef.current;
@@ -927,14 +1055,39 @@ export const useStockTokenProcess = ({
     }
     clearRemove();
     return true;
-  }, [clearRemove, delivery, runOperation]);
+  }, [
+    clearRemove,
+    delivery,
+    markTerminalHandled,
+    replaceDismissedRemovePresentation,
+    runOperation,
+  ]);
+
+  const acknowledgeCurrentOperation = useCallback((): void => {
+    const current = operationRef.current;
+    if (current === null || !isTokenCatalogOperationTerminal(current.state)) return;
+    replaceDismissedExternalOperationId(undefined);
+    markTerminalHandled(current.operationId);
+    if (current.kind === "add" && addContextRef.current !== undefined) {
+      clearAdd();
+    } else if (current.kind === "remove" && removeContextRef.current !== undefined) {
+      clearRemove();
+    } else {
+      replaceOperation(null);
+    }
+  }, [
+    clearAdd,
+    clearRemove,
+    markTerminalHandled,
+    replaceDismissedExternalOperationId,
+    replaceOperation,
+  ]);
 
   const dismissExternalOperation = useCallback((): void => {
     const current = operationRef.current;
-    if (current === null) return;
-    dismissedOperationRef.current = current.operationId;
-    replaceOperation(null);
-  }, [replaceOperation]);
+    if (current === null || isTokenCatalogOperationTerminal(current.state)) return;
+    replaceDismissedExternalOperationId(current.operationId);
+  }, [replaceDismissedExternalOperationId]);
 
   useEffect(() => {
     operationAuthority.activate();
@@ -947,9 +1100,36 @@ export const useStockTokenProcess = ({
     ? undefined
     : `${account.connectionRevision}:${account.chainId}:${account.address}`;
   useEffect(() => {
-    clearAddForm();
-    clearRemove();
-  }, [accountKey, clearAddForm, clearRemove]);
+    if (
+      operationRef.current === null &&
+      deliveryRef.current === undefined &&
+      !pendingRef.current
+    ) {
+      clearAddForm();
+      replaceDismissedRemovePresentation(undefined);
+      replaceRemoveContext(undefined);
+    }
+  }, [
+    accountKey,
+    clearAddForm,
+    replaceDismissedRemovePresentation,
+    replaceRemoveContext,
+  ]);
+
+  useEffect(() => {
+    const current = operationRef.current;
+    const consent = addConsentRef.current;
+    if (
+      current === null ||
+      consent === undefined ||
+      current.kind !== "add" ||
+      current.state !== "awaiting_confirmation" ||
+      pending ||
+      delivery !== undefined ||
+      sameConnectedAccount(consent.form.account, account)
+    ) return;
+    void runOperation("cancel", "closing_add");
+  }, [account, delivery, pending, runOperation]);
 
   useEffect(() => {
     const consent = addConsentRef.current;
@@ -988,11 +1168,13 @@ export const useStockTokenProcess = ({
               requestOptions(activeRequest.signal),
             )).operation;
         if (!operationAuthority.isCurrent(activeRequest)) return;
-        if (next !== null && (
-          isTokenCatalogOperationTerminal(next.state)
-            ? handledTerminalOperationRef.current !== next.operationId
-            : next.operationId !== dismissedOperationRef.current
-        )) {
+        if (
+          next !== null &&
+          (
+            !isTokenCatalogOperationTerminal(next.state) ||
+            handledTerminalOperationRef.current !== next.operationId
+          )
+        ) {
           acceptOperation(next);
         }
       } catch (error) {
@@ -1044,6 +1226,7 @@ export const useStockTokenProcess = ({
     addContext,
     removeContext,
     operation,
+    operationTask,
     actionIntent,
     addTask,
     informationTask,
@@ -1074,9 +1257,11 @@ export const useStockTokenProcess = ({
         current?.kind === "remove" ? "closing_remove" : "closing_add",
       );
     },
+    acknowledgeCurrentOperation,
     dismissExternalOperation,
   }), [
     actionIntent,
+    acknowledgeCurrentOperation,
     addCandidate,
     addContext,
     addTask,
@@ -1088,6 +1273,7 @@ export const useStockTokenProcess = ({
     openAdd,
     openRemove,
     operation,
+    operationTask,
     pending,
     removeContext,
     removeTask,

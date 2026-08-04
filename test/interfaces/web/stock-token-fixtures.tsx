@@ -1,6 +1,10 @@
 import {
   accountAssetApplicationContracts,
+  accountAssetOverviewQueryContract,
 } from "../../../src/account-assets/browser.js";
+import {
+  officialAssetCandidateListDigest,
+} from "../../../src/registry/official-asset-contract.js";
 import {
   evmChainIdSchema,
   parseEvmAddressInput,
@@ -161,5 +165,31 @@ export const stockTokenExactResult =
           { standardId: "erc8056_balances", status: "unknown" },
         ],
       }),
+    },
+  );
+
+export const stockTokenOverviewResult =
+  accountAssetOverviewQueryContract.parsePublicSuccess(
+    {},
+    {
+      account: stockTokenAccount,
+      block: stockTokenBlock,
+      viewRevision: stockTokenViewRevision,
+      native: {
+        kind: "native",
+        asset: { kind: "native", chainId: stockTokenChainId },
+        rawBalance: "0",
+        classification: "native",
+      },
+      stockTokens: {
+        status: "current",
+        candidateListDigest: officialAssetCandidateListDigest([
+          stockTokenCandidate,
+        ]),
+        members: [{
+          status: "selected",
+          asset: stockTokenExactResult.asset,
+        }],
+      },
     },
   );

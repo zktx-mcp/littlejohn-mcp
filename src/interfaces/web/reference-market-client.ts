@@ -4,7 +4,7 @@ import {
   type ReferencePriceInput,
   type ReferencePriceSuccess,
 } from "../../core/browser.js";
-import { referenceMarketApplicationContracts } from "../../market-portfolio/contracts.js";
+import { browserCapabilityBindings } from "../browser-capability-bindings.js";
 import { referenceMarketPublicRoutes } from "../browser-contract.js";
 import {
   queryPublicBrowserJson,
@@ -15,8 +15,9 @@ export const readReferencePrice = async (
   input: ReferencePriceInput,
   options: BrowserRequestOptions = {},
 ): Promise<ReferencePriceSuccess> => {
-  const request = referenceMarketApplicationContracts.price.parseInput(input);
-  return referenceMarketApplicationContracts.price.parsePublicSuccess(
+  const contract = browserCapabilityBindings.referencePrice.contract;
+  const request = contract.parseInput(input);
+  return contract.parsePublicSuccess(
     request,
     await queryPublicBrowserJson(referenceMarketPublicRoutes.priceQueries, request, options),
   );
@@ -26,8 +27,9 @@ export const readReferenceHistory = async (
   input: ReferenceHistoryInput,
   options: BrowserRequestOptions = {},
 ): Promise<ReferenceHistorySuccess> => {
-  const request = referenceMarketApplicationContracts.history.parseInput(input);
-  return referenceMarketApplicationContracts.history.parsePublicSuccess(
+  const contract = browserCapabilityBindings.referenceHistory.contract;
+  const request = contract.parseInput(input);
+  return contract.parsePublicSuccess(
     request,
     await queryPublicBrowserJson(referenceMarketPublicRoutes.historyQueries, request, options),
   );

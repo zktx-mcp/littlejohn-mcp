@@ -96,7 +96,6 @@ export const createInterfaceOwnerApplicationFactory = (
       assets,
       walletOperations: context.walletOperations,
       accountAssets: context.accountAssets,
-      referenceMarkets: context.referenceMarkets,
       tokenCatalogWebStart: context.tokenCatalogWebStart,
       tokenCatalogBrowserOperations: context.tokenCatalogBrowserOperations,
     });

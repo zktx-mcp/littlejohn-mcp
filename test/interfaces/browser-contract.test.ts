@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import { referenceMarketManifest } from "../../src/core/index.js";
+import {
+  contractInspectCapability,
+  referenceMarketManifest,
+} from "../../src/core/index.js";
+import { referenceMarketApplicationContracts } from "../../src/market-portfolio/contracts.js";
+import { tokenCatalogApplicationContracts } from "../../src/token-catalog/browser.js";
+import { walletManagementContracts } from "../../src/wallet/management-contracts.js";
+import {
+  browserCapabilityBindingList,
+  browserCapabilityBindings,
+} from "../../src/interfaces/browser-capability-bindings.js";
 import {
   browserAssetPaths,
   browserApiRoot,
@@ -8,6 +18,7 @@ import {
   browserCsrfHeaderName,
   browserCsrfMetaName,
   browserCsrfTokenByteLength,
+  browserDialogSurfaces,
   browserInformationPages,
   browserLocationHref,
   browserLocations,
@@ -27,6 +38,70 @@ import {
 const operationId = Buffer.alloc(32, 18).toString("base64url");
 
 describe("browser interface contract", () => {
+  it("binds each exact canonical contract to a nonempty live surface once", () => {
+    expect(browserCapabilityBindings).toEqual({
+      contractInspect: {
+        contract: contractInspectCapability,
+        surfaces: [browserDialogSurfaces.analysis],
+      },
+      referencePrice: {
+        contract: referenceMarketApplicationContracts.price,
+        surfaces: [browserPages.referencePrice],
+      },
+      referenceHistory: {
+        contract: referenceMarketApplicationContracts.history,
+        surfaces: [browserPages.referencePrice],
+      },
+      tokenStartAddition: {
+        contract: tokenCatalogApplicationContracts.startAddition,
+        surfaces: [browserDialogSurfaces.stockTokenAdd],
+      },
+      tokenStartRemoval: {
+        contract: tokenCatalogApplicationContracts.startRemoval,
+        surfaces: [browserDialogSurfaces.stockTokenRemove],
+      },
+      tokenOperation: {
+        contract: tokenCatalogApplicationContracts.operation,
+        surfaces: [
+          browserDialogSurfaces.stockTokenAdd,
+          browserDialogSurfaces.stockTokenRemove,
+          browserDialogSurfaces.externalTokenOperation,
+        ],
+      },
+      tokenCancelOperation: {
+        contract: tokenCatalogApplicationContracts.cancelOperation,
+        surfaces: [
+          browserDialogSurfaces.stockTokenRemove,
+          browserDialogSurfaces.externalTokenOperation,
+        ],
+      },
+      walletConnect: {
+        contract: walletManagementContracts.connect,
+        surfaces: [browserDialogSurfaces.walletConnect],
+      },
+      walletDisconnect: {
+        contract: walletManagementContracts.disconnect,
+        surfaces: [browserDialogSurfaces.walletDisconnect],
+      },
+      walletOperation: {
+        contract: walletManagementContracts.operation,
+        surfaces: [
+          browserDialogSurfaces.walletConnect,
+          browserDialogSurfaces.walletDisconnect,
+        ],
+      },
+      walletCancelOperation: {
+        contract: walletManagementContracts.cancelOperation,
+        surfaces: [
+          browserDialogSurfaces.walletConnect,
+          browserDialogSurfaces.walletDisconnect,
+        ],
+      },
+    });
+    expect(browserCapabilityBindingList.flatMap((binding) => binding.surfaces))
+      .not.toContainEqual({ taskKind: "stock_token_information" });
+  });
+
   it("owns the complete page, location, metadata, and navigation contract", () => {
     expect(browserCsrfHeaderName).toBe("Littlejohn-CSRF-Token");
     expect(browserCsrfMetaName).toBe("littlejohn-csrf-token");

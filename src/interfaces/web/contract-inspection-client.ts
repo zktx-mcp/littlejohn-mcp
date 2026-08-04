@@ -1,11 +1,11 @@
 import {
-  contractInspectCapability,
   parseCapabilityInput,
   parseCapabilitySuccess,
   type CapabilitySuccess,
   type ContractInspectData,
   type ContractInspectInput,
 } from "../../core/browser.js";
+import { browserCapabilityBindings } from "../browser-capability-bindings.js";
 import { publicInspectionPaths } from "../browser-contract.js";
 import {
   BrowserRequestError,
@@ -21,10 +21,11 @@ export const inspectContract = async (
   input: unknown,
   options: BrowserRequestOptions = {},
 ): Promise<CapabilitySuccess<ContractInspectData>> => {
-  const request = parseCapabilityInput(contractInspectCapability, input);
+  const contract = browserCapabilityBindings.contractInspect.contract;
+  const request = parseCapabilityInput(contract, input);
   try {
     return parseCapabilitySuccess(
-      contractInspectCapability,
+      contract,
       request,
       await queryPublicBrowserJson(
         publicInspectionPaths.contractQueries,

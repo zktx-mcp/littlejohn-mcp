@@ -107,7 +107,7 @@ const candidateListDigest = officialAssetCandidateListDigest([{
 
 const collectionResult = (
   raw: "0" | "5",
-  options: Readonly<{ nativeRaw?: string }> = {},
+  options: Readonly<{ nativeRaw?: string; tokenDecimals?: string | null }> = {},
 ) => accountAssetOverviewQueryContract.parsePublicSuccess(
   {},
   {
@@ -133,8 +133,10 @@ const collectionResult = (
           classification,
           amount: {
             raw,
-            decimals: "0",
-            formattedRaw: raw,
+            decimals: options.tokenDecimals === undefined
+              ? "0"
+              : options.tokenDecimals,
+            formattedRaw: options.tokenDecimals === null ? null : raw,
             uiAdjusted: null,
             formattedUiAdjusted: null,
           },
@@ -192,6 +194,9 @@ describe("account asset human presentation", () => {
     expect(markup).toContain(">Native<");
     expect(markup).toContain(">Stock Tokens<");
     expect(markup).toContain(">Example<");
+    expect(markup).toContain(">Account<");
+    expect(markup).toContain(">Robinhood Chain<");
+    expect(markup).toContain(accountAddress);
     expect(markup).toContain(">5 EXT<");
     expect(markup).toContain('aria-label="Add Stock Token"');
     expect(markup.match(/>Example</gu)).toHaveLength(1);
@@ -208,7 +213,8 @@ describe("account asset human presentation", () => {
   it("keeps a selected zero-balance Stock Token visible without a warning panel", () => {
     const markup = renderCollection("0");
 
-    expect(markup).toContain(">0 ETH<");
+    expect(markup).toContain(">0<");
+    expect(markup).not.toContain("0 ETH");
     expect(markup).toContain(">0 EXT<");
     expect(markup).not.toContain("No included token");
     expect(markup).not.toContain("Tracked tokens with zero balance");
@@ -220,9 +226,35 @@ describe("account asset human presentation", () => {
   it("does not invent a native human amount when nonzero decimals are unavailable", () => {
     const markup = renderCollection("5", { nativeRaw: "7" });
 
-    expect(markup).toContain("ETH balance unavailable");
+    expect(markup).toContain("Human amount unavailable");
+    expect(markup).toContain(
+      "Native decimals are not provided by this overview.",
+    );
     expect(markup).not.toContain("7 ETH");
     expect(markup).not.toContain("7 raw");
+  });
+
+  it("uses scale-independent zero and distinguishes unavailable token decimals", () => {
+    const zero = renderToStaticMarkup(createElement(AccountAssetsPage, {
+      snapshot: { result: collectionResult("0", { tokenDecimals: null }) },
+      loading: false,
+      staleMessage: undefined,
+      mutationDisabled: false,
+      ...callbacks,
+    }));
+    const nonzero = renderToStaticMarkup(createElement(AccountAssetsPage, {
+      snapshot: { result: collectionResult("5", { tokenDecimals: null }) },
+      loading: false,
+      staleMessage: undefined,
+      mutationDisabled: false,
+      ...callbacks,
+    }));
+
+    expect(zero).toContain(">0 EXT<");
+    expect(zero).not.toContain("Human amount unavailable");
+    expect(nonzero).toContain("Human amount unavailable");
+    expect(nonzero).toContain("Token decimals are unavailable for this balance.");
+    expect(nonzero).not.toContain(">5<");
   });
 
   it("locks every visible asset action while a collection read is active", () => {

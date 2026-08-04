@@ -333,12 +333,12 @@ weaker result parser.
 - Compatible-process control resources are private owner IPC consumed by MCP and
   CLI adapters. They are not agent-facing URLs and do not redefine the MCP
   contract.
-- One canonical binding catalog maps each canonical contract to its declared
-  MCP, HTTP, CLI, and web bindings and availability. Role-specific registries
-  own their exact names, paths, security classes, parsing, and presentation
-  contracts while consuming that catalog. Tool-name sets, route coverage, CLI
-  help, and support projections derive from the catalog and their owning
-  registries rather than parallel lists.
+- Machine-interface identity catalogs bind canonical contracts to their MCP,
+  HTTP, and CLI identities. A separate browser-safe relation binds exact
+  canonical contract objects to nonempty tuples of the current page and dialog
+  surface objects. Browser clients, routes, application composition, and the
+  support projection consume those same objects; the relation does not copy
+  capability identifiers, paths, renderers, or workflow decisions.
 - Domain-complete Wallet and token catalog admission binds each MCP-exposed
   local mutation identity to its exact same-domain operation-read binding and
   local read identity. MCP operation factories consume those admitted entries
@@ -866,6 +866,10 @@ application logs, exports, and diagnostic bundles.
 - The browser exposes no Quote information page, Swap or Buy/Sell surface, or
   transaction action. The canonical Uniswap V2 Quote capability remains
   available through HTTP, MCP, and CLI.
+- Browser capability availability is derived from the exact canonical-contract
+  to page-or-dialog relation. The reduced Assets and Prices overviews and the
+  Stock Token information task do not establish capability availability for
+  contracts whose complete behavior they do not expose.
 - Opening an information page does not connect, disconnect, or confirm a wallet
   operation. A direct Connect or Disconnect action opens one fixed wallet task
   and requests only the transition permitted for that task through

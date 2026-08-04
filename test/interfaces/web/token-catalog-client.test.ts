@@ -217,6 +217,39 @@ describe("token catalog browser client", () => {
     )).resolves.toMatchObject({ status: "delivery_unknown", action: "confirm", resendAllowed: false });
   });
 
+  it("preserves every definite terminal cancellation result", async () => {
+    const states = ["completed", "failed", "expired", "cancelled"] as const;
+    for (const state of states) {
+      const operation = await createTokenOperation({
+        kind: "remove",
+        state,
+        operationId,
+      });
+      const transport = queuedFetch([
+        jsonResponse(200, { operation }),
+      ]);
+      await expect(cancelTokenOperation(
+        operationId,
+        csrfToken,
+        { request: transport.request },
+      )).resolves.toEqual({ operation });
+    }
+  });
+
+  it("uses delivery uncertainty only when cancellation success cannot be admitted", async () => {
+    const transport = queuedFetch([jsonResponse(200, {})]);
+    await expect(cancelTokenOperation(
+      operationId,
+      csrfToken,
+      { request: transport.request },
+    )).resolves.toEqual({
+      status: "delivery_unknown",
+      action: "cancel",
+      operationId,
+      resendAllowed: false,
+    });
+  });
+
   it("bounds caller-controlled read requests and rejects malformed read responses", async () => {
     const fixture = await fixtures();
     const controller = new AbortController();

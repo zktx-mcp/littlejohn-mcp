@@ -82,7 +82,6 @@ const accountAssetsContractsSource = resolve(repositoryRoot, "src/account-assets
 const accountAssetsHttpContractSource = resolve(repositoryRoot, "src/account-assets/http-contract.ts");
 const accountAssetsViewSource = resolve(repositoryRoot, "src/account-assets/view.ts");
 const referenceMarketContractsSource = resolve(repositoryRoot, "src/market-portfolio/contracts.ts");
-const referenceMarketDeliverySource = resolve(repositoryRoot, "src/interfaces/reference-market-delivery.ts");
 const referenceMarketCoreSource = resolve(repositoryRoot, "src/core/reference-market.ts");
 const capabilitySource = resolve(repositoryRoot, "src/core/capability.ts");
 const capabilitiesSource = resolve(repositoryRoot, "src/core/capabilities.ts");
@@ -136,7 +135,6 @@ describe("browser runtime dependency boundary", () => {
       accountAssetsViewSource,
       referenceMarketContractsSource,
       browserContractSource,
-      referenceMarketDeliverySource,
       referenceMarketCoreSource,
       capabilitySource,
       capabilitiesSource,

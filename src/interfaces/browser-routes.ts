@@ -27,11 +27,9 @@ import {
   startTokenCatalogOperation,
   tokenCatalogApplicationResult,
   tokenCatalogStartApplicationResult,
-  tokenCatalogApplicationContracts,
   tokenCatalogBrowserRoutes,
   tokenCatalogCurrentOperationSchema,
   tokenCatalogOperationConfirmationContract,
-  tokenCatalogStartContract,
   normalizeTokenCatalogError,
   TokenCatalogOperationError,
   type TokenCatalogBrowserOperationPort,
@@ -54,6 +52,7 @@ import {
   normalizeWalletError,
 } from "../wallet/errors.js";
 import type { BrowserAssetBundle } from "./browser-assets.js";
+import { browserCapabilityBindings } from "./browser-capability-bindings.js";
 import {
   browserAssetPaths,
   browserInformationPages,
@@ -62,11 +61,6 @@ import {
   parseBrowserLocation,
 } from "./browser-contract.js";
 import type { BrowserRequestCredentialAuthority } from "./browser-credentials.js";
-import {
-  extendReferenceMarketBrowserControlRoutes,
-  referenceMarketBrowserControlResources,
-} from "./reference-market-http.js";
-import type { ReferenceMarketApplicationPort } from "../market-portfolio/index.js";
 
 const success = (body: unknown): RouteResult => ({
   ok: true,
@@ -103,7 +97,7 @@ const presentationForId = (id: string, value: unknown) => {
   const presentation = parseWalletOperationPresentation(value);
   return Object.freeze({
     ...presentation,
-    operation: walletManagementContracts.operation.parsePublicSuccess(
+    operation: browserCapabilityBindings.walletOperation.contract.parsePublicSuccess(
       { operationId: id },
       presentation.operation,
     ),
@@ -120,7 +114,6 @@ const browserPageResources: readonly ResourcePathDefinition[] = Object.freeze(
 );
 
 const browserApiResources: readonly ResourcePathDefinition[] = Object.freeze([
-  ...referenceMarketBrowserControlResources,
   Object.freeze({
     kind: "route",
     method: "GET",
@@ -216,7 +209,6 @@ export const extendBrowserInterfaceRoutes = (input: {
   readonly assets: BrowserAssetBundle;
   readonly walletOperations: WalletInterfaceOperations;
   readonly accountAssets: AccountAssetApplicationPort;
-  readonly referenceMarkets: ReferenceMarketApplicationPort;
   readonly tokenCatalogWebStart: TokenCatalogWebStartPort;
   readonly tokenCatalogBrowserOperations: TokenCatalogBrowserOperationPort;
 }): RuntimeRouteRegistry => {
@@ -343,7 +335,10 @@ export const extendBrowserInterfaceRoutes = (input: {
             kind: request.kind,
             connectionRevision: request.connectionRevision,
           }, request.operationId));
-          return success(walletManagementContracts[request.kind].parseBoundSuccess(
+          const contract = request.kind === "connect"
+            ? browserCapabilityBindings.walletConnect.contract
+            : browserCapabilityBindings.walletDisconnect.contract;
+          return success(contract.parseBoundSuccess(
             {},
             { operationId: request.operationId, interactionInterface: "web" },
             result,
@@ -438,7 +433,7 @@ export const extendBrowserInterfaceRoutes = (input: {
             id,
             await operations.cancel(id, request),
           );
-          return success(walletManagementContracts.cancelOperation.parseBoundSuccess(
+          return success(browserCapabilityBindings.walletCancelOperation.contract.parseBoundSuccess(
             { operationId: id, connectionRevision: request.connectionRevision },
             { operationId: id, interactionInterface: "web" },
             operation,
@@ -462,7 +457,9 @@ export const extendBrowserInterfaceRoutes = (input: {
           if (create.interactionInterface !== "web") throw new TypeError("Browser operation interface is invalid.");
         }
         catch { return tokenInvalidInput(); }
-        const contract = tokenCatalogStartContract(create.request.kind);
+        const contract = create.request.kind === "add"
+          ? browserCapabilityBindings.tokenStartAddition.contract
+          : browserCapabilityBindings.tokenStartRemoval.contract;
         try {
           return tokenCatalogStartApplicationResult(
             contract,
@@ -499,7 +496,7 @@ export const extendBrowserInterfaceRoutes = (input: {
       response: "canonical_json",
       successStatus: 200,
       handler: async (context) => {
-        const contract = tokenCatalogApplicationContracts.operation;
+        const contract = browserCapabilityBindings.tokenOperation.contract;
         let request;
         try {
           request = contract.parseInput({
@@ -547,7 +544,7 @@ export const extendBrowserInterfaceRoutes = (input: {
       response: "canonical_json",
       successStatus: 200,
       handler: async (context) => {
-        const contract = tokenCatalogApplicationContracts.cancelOperation;
+        const contract = browserCapabilityBindings.tokenCancelOperation.contract;
         let request;
         try {
           parseTokenCatalogCancellationBody(context.body);
@@ -578,8 +575,5 @@ export const extendBrowserInterfaceRoutes = (input: {
       },
     },
   ]);
-  return extendReferenceMarketBrowserControlRoutes({
-    routes: browserRoutes,
-    referenceMarkets: input.referenceMarkets,
-  });
+  return browserRoutes;
 };

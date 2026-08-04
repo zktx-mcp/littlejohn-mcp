@@ -20,10 +20,7 @@ import {
   formatReferencePriceForCli,
   parseReferenceMarketCliCommand,
 } from "../../src/interfaces/reference-market-cli.js";
-import {
-  referenceMarketBrowserMutationPaths,
-  referenceMarketPublicRoutes,
-} from "../../src/interfaces/browser-contract.js";
+import { referenceMarketPublicRoutes } from "../../src/interfaces/browser-contract.js";
 import { referenceMarketLocalMutationPaths } from "../../src/interfaces/identities.js";
 import {
   extendReferenceMarketInterfaceRoutes,
@@ -141,9 +138,6 @@ describe("reference-market interface boundary", () => {
       }
       expect(registry.match("GET", path).status).toBe("method_not_allowed");
     }
-    expect(Object.values(referenceMarketBrowserMutationPaths)).not.toEqual(
-      expect.arrayContaining(Object.values(referenceMarketLocalMutationPaths)),
-    );
   });
 
   it("binds each local mutation path to the matching application effect", async () => {

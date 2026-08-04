@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -213,6 +214,8 @@ describe("application wallet task lifecycle", () => {
     expect(await screen.findByRole("button", {
       name: "Cancel connection",
     })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Connect wallet" })
+      .every((button) => button.hasAttribute("disabled"))).toBe(true);
 
     observationUnavailable = true;
     const readsBeforeFailure = walletReads;
@@ -234,6 +237,48 @@ describe("application wallet task lifecycle", () => {
       expect(walletReads).toBeGreaterThan(readsBeforeRecovery);
     });
     expect(screen.getByRole("dialog", { name: "Connect wallet" })).toBeTruthy();
+  });
+
+  it("blocks every connect entry while start is pending and delivery is unknown", async () => {
+    let resolveStart!: (response: Response) => void;
+    const startResponse = new Promise<Response>((resolve) => {
+      resolveStart = resolve;
+    });
+    const fetch = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+      const path = typeof input === "string" ? input : input.toString();
+      if (path === browserWalletApiPaths.currentOperation) return json(absent);
+      if (path === browserWalletApiPaths.operations) return await startResponse;
+      if (path === tokenCatalogBrowserRoutes.currentOperation) {
+        return json({ operation: null });
+      }
+      throw new Error(`Unexpected browser request: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    render(<App
+      referenceChart={unavailableChart}
+      locationState={{ status: "valid", location: browserLocations.assets() }}
+      navigationFocusVisible={false}
+      onNavigate={() => undefined}
+    />);
+
+    fireEvent.click(await screen.findByText("Connect wallet", {
+      selector: "button",
+    }));
+    expect(await screen.findByRole("dialog", { name: "Connect wallet" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Connect wallet" })
+      .every((button) => button.hasAttribute("disabled"))).toBe(true);
+
+    await act(async () => {
+      resolveStart(json({}));
+      await startResponse;
+    });
+    expect(await screen.findByText("Connection status unknown")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Connect wallet" })
+      .every((button) => button.hasAttribute("disabled"))).toBe(true);
+    expect(fetch.mock.calls.filter(([input]) =>
+      (typeof input === "string" ? input : input.toString()) ===
+        browserWalletApiPaths.operations)).toHaveLength(1);
   });
 
   it("binds the started operation and closes the exact task after cancellation", async () => {

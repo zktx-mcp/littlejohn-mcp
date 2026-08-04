@@ -753,7 +753,6 @@ const createTokenParityContext = async () => {
     assets: browserAssets,
     walletOperations: browserOperations(operation()),
     accountAssets: accountAssetInterfaceHarnessPort(),
-    referenceMarkets: referenceMarketInterfaceHarnessPort(),
     tokenCatalogWebStart: ports.webStart,
     tokenCatalogBrowserOperations: ports.browserOperations,
   });
@@ -1523,7 +1522,6 @@ describe("interface parity", () => {
       const routes = extendBrowserInterfaceRoutes({
         ...tokenCatalogInterfaceHarnessPorts(),
         accountAssets: accountAssetInterfaceHarnessPort(),
-        referenceMarkets: referenceMarketInterfaceHarnessPort(),
         routes: createRuntimeRouteRegistry({
           controlVerifier: createControlCredentialVerifier(authority),
           errorMappings: referenceMarketInterfaceErrorMappings,

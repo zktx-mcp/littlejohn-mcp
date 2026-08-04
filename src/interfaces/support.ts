@@ -3,13 +3,16 @@ import {
 } from "../core/index.js";
 import {
   composeCapabilityCatalog,
+  createCapabilityAvailability,
   createCapabilityCatalogSchema,
   extendInterfaceRuntimeSupportManifest,
+  readRuntimeSupportManifest,
   type CapabilityCatalog,
   type CapabilityAvailabilityInput,
   type InterfaceRuntimeSupportManifest,
   type ProtocolRuntimeSupportManifest,
 } from "../runtime/support-manifest.js";
+import { browserCapabilityBindingFor } from "./browser-capability-bindings.js";
 import {
   interfaceReadCapabilityRegistry,
   accountAssetInterfaceBindingList,
@@ -41,68 +44,77 @@ export const composeInterfaceCapabilityCatalog = (
 
 const readBindingAvailability = (
   identity: ReadInterfaceIdentity,
-): CapabilityAvailabilityInput => Object.freeze({
-  overall: "available",
+): CapabilityAvailabilityInput => createCapabilityAvailability({
   direct: "internal",
   http: "available",
   mcp: "available",
   cli: "available",
-  web: identity.web === true ? "available" : "unavailable",
+  web: browserAvailability(identity.definition),
 });
 
 const tokenCatalogBindingAvailability = (
-  _binding: TokenCatalogInterfaceBinding,
-): CapabilityAvailabilityInput => Object.freeze({
-  overall: "available",
+  binding: TokenCatalogInterfaceBinding,
+): CapabilityAvailabilityInput => createCapabilityAvailability({
   direct: "internal",
   http: "internal",
   mcp: "available",
   cli: "available",
-  web: "available",
+  web: browserAvailability(binding.contract),
 });
 
 const accountAssetBindingAvailability = (
   binding: AccountAssetInterfaceBinding,
-): CapabilityAvailabilityInput => Object.freeze({
-  overall: binding.mcp !== undefined || binding.cli !== undefined || binding.web ? "available" : "internal",
+): CapabilityAvailabilityInput => createCapabilityAvailability({
   direct: "internal",
   http: "internal",
   mcp: binding.mcp === undefined ? "unavailable" : "available",
   cli: binding.cli === undefined ? "unavailable" : "available",
-  web: binding.web ? "available" : "unavailable",
+  web: browserAvailability(binding.contract),
 });
 
 const walletBindingAvailability = (
   binding: WalletInterfaceBinding,
-): CapabilityAvailabilityInput => Object.freeze({
-  overall: binding.mcp !== undefined || binding.cli !== undefined || binding.web !== undefined
-    ? "available"
-    : "internal",
+): CapabilityAvailabilityInput => createCapabilityAvailability({
   direct: "internal",
   http: "internal",
   mcp: binding.mcp === undefined ? "unavailable" : "available",
   cli: binding.cli === undefined ? "unavailable" : "available",
-  web: binding.web === undefined ? "unavailable" : "available",
+  web: browserAvailability(binding.contract),
 });
 
 const referenceMarketBindingAvailability = (
   binding: ReferenceMarketInterfaceBinding,
-): CapabilityAvailabilityInput => Object.freeze({
-  overall: "available",
+): CapabilityAvailabilityInput => createCapabilityAvailability({
   direct: "internal",
   http: binding.action === "price" || binding.action === "history" || binding.action === "watchlist"
     ? "available"
     : "internal",
   mcp: "available",
   cli: "available",
-  web: "available",
+  web: browserAvailability(binding.contract),
 });
+
+type InterfaceAvailabilityAxes = Omit<CapabilityAvailabilityInput, "overall">;
+
+const browserAvailability = (contract: object): "available" | "unavailable" =>
+  browserCapabilityBindingFor(contract) === undefined ? "unavailable" : "available";
+
+export const sameInterfaceAvailabilityAxes = (
+  left: InterfaceAvailabilityAxes,
+  right: InterfaceAvailabilityAxes,
+): boolean => left.direct === right.direct &&
+  left.http === right.http &&
+  left.mcp === right.mcp &&
+  left.cli === right.cli &&
+  left.web === right.web;
 
 export const extendInterfaceSupportManifest = (
   parent: ProtocolRuntimeSupportManifest,
-): InterfaceRuntimeSupportManifest => extendInterfaceRuntimeSupportManifest(parent, {
-  registrations: [],
-  changes: Object.freeze([
+): InterfaceRuntimeSupportManifest => {
+  const parentCapabilities = new Map<string, CapabilityAvailabilityInput>(readRuntimeSupportManifest(parent).capabilities.map(
+    (entry) => [entry.capabilityId, entry.availability] as const,
+  ));
+  const candidates = [
     ...accountAssetInterfaceBindingList.map((binding) => ({
       capabilityId: binding.contract.capabilityId,
       availability: accountAssetBindingAvailability(binding),
@@ -124,5 +136,16 @@ export const extendInterfaceSupportManifest = (
       capabilityId: binding.contract.capabilityId,
       availability: walletBindingAvailability(binding),
     })),
-  ].sort((left, right) => compareCodePointSequences(left.capabilityId, right.capabilityId))),
-});
+  ].sort((left, right) => compareCodePointSequences(left.capabilityId, right.capabilityId));
+  const changes = candidates.filter((candidate) => {
+    const previous = parentCapabilities.get(candidate.capabilityId);
+    if (previous === undefined) {
+      throw new TypeError("Interface support requires a registered capability.");
+    }
+    return !sameInterfaceAvailabilityAxes(previous, candidate.availability);
+  });
+  return extendInterfaceRuntimeSupportManifest(parent, {
+    registrations: [],
+    changes: Object.freeze(changes),
+  });
+};

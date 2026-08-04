@@ -11,7 +11,6 @@ import {
   type ReferenceMarketApplicationPort,
 } from "../market-portfolio/index.js";
 import type {
-  ResourcePathDefinition,
   RouteContext,
   RouteDefinition,
   RouteResult,
@@ -23,10 +22,8 @@ import {
   type InterfaceInvocationResult,
   type RuntimeDispatchPort,
 } from "./http-client.js";
-import {
-  referenceMarketBrowserMutationPaths,
-  referenceMarketPublicRoutes,
-} from "./browser-contract.js";
+import { referenceMarketPublicRoutes } from "./browser-contract.js";
+import { browserCapabilityBindings } from "./browser-capability-bindings.js";
 import {
   referenceMarketLocalMutationPaths,
   type ReferenceMarketInterfaceBinding,
@@ -35,15 +32,6 @@ import {
   referenceMarketDeliveryActions,
   type ReferenceMarketDeliveryAction,
 } from "./reference-market-delivery.js";
-
-export const referenceMarketBrowserControlResources: readonly ResourcePathDefinition[] = Object.freeze([
-  ...Object.values(referenceMarketBrowserMutationPaths),
-].map((pathPattern) => Object.freeze({
-  kind: "route" as const,
-  method: "POST" as const,
-  pathPattern,
-  requestClass: "browser_control",
-})));
 
 const success = (body: unknown): RouteResult => ({ ok: true, body: captureCanonicalJson(body) });
 const failure = (value: ApplicationFailure): RouteResult => ({ ok: false, failure: value });
@@ -123,12 +111,12 @@ const publicReadDefinitions = (application: ReferenceMarketApplicationPort): rea
   Object.freeze([
     readRoute({
       path: referenceMarketPublicRoutes.priceQueries,
-      contract: referenceMarketApplicationContracts.price,
+      contract: browserCapabilityBindings.referencePrice.contract,
       invoke: (request, signal) => application.price(request, signal),
     }),
     readRoute({
       path: referenceMarketPublicRoutes.historyQueries,
-      contract: referenceMarketApplicationContracts.history,
+      contract: browserCapabilityBindings.referenceHistory.contract,
       invoke: (request, signal) => application.history(request, signal),
     }),
     readRoute({
@@ -178,11 +166,3 @@ export const extendReferenceMarketInterfaceRoutes = (input: Readonly<{
   ...publicReadDefinitions(input.referenceMarkets),
   ...controlDefinitions(input.referenceMarkets, referenceMarketLocalMutationPaths),
 ], referenceMarketInterfaceErrorMappings);
-
-export const extendReferenceMarketBrowserControlRoutes = (input: Readonly<{
-  routes: RuntimeRouteRegistry;
-  referenceMarkets: ReferenceMarketApplicationPort;
-}>): RuntimeRouteRegistry => input.routes.extend(
-  controlDefinitions(input.referenceMarkets, referenceMarketBrowserMutationPaths),
-  referenceMarketInterfaceErrorMappings,
-);

@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { StockTokenAddDialog } from "../../../src/interfaces/web/stock-token-add-dialog.js";
 import { StockTokenInformationDialog } from "../../../src/interfaces/web/stock-token-information-dialog.js";
 import { StockTokenRemoveDialog } from "../../../src/interfaces/web/stock-token-remove-dialog.js";
+import { presentStockTokenOperationTask } from "../../../src/interfaces/web/stock-token-task-presentation.js";
 import {
   stockTokenCandidate as candidate,
   stockTokenExactResult as exactResult,
@@ -118,11 +119,24 @@ describe("Stock Token dialogs", () => {
     if (operation.kind !== "remove") {
       throw new TypeError("Expected a removal operation.");
     }
+    const operationTask = presentStockTokenOperationTask({
+      operation,
+      account: {
+        chainId: operation.account.chainId,
+        address: operation.account.address,
+        connectionRevision: operation.connectionRevision,
+      },
+      pending: false,
+      actionIntent: undefined,
+      delivery: undefined,
+    });
+    if (operationTask === undefined) throw new TypeError("Expected operation task.");
     const markup = renderToStaticMarkup(createElement(StockTokenRemoveDialog, {
       presentation: {
         status: "ready",
         subject: { selection, name: "Example Stock Token" },
         operation,
+        operationTask,
       },
       onClose: vi.fn(),
       onConfirm: vi.fn(),
@@ -133,5 +147,66 @@ describe("Stock Token dialogs", () => {
     expect(markup).toContain(">Remove<");
     expect(markup).not.toMatch(/<button[^>]*>Keep Example Stock Token<\/button>/u);
     expect(markup).not.toMatch(/<button[^>]*>Remove Example Stock Token<\/button>/u);
+  });
+
+  it("explains a changed connection while preserving cancellation only", async () => {
+    const operation = await createTokenOperation({
+      kind: "remove",
+      state: "awaiting_confirmation",
+    });
+    if (operation.kind !== "remove") {
+      throw new TypeError("Expected a removal operation.");
+    }
+    const operationTask = presentStockTokenOperationTask({
+      operation,
+      account: {
+        chainId: operation.account.chainId,
+        address: operation.account.address,
+        connectionRevision: "different",
+      },
+      pending: false,
+      actionIntent: undefined,
+      delivery: undefined,
+    });
+    if (operationTask === undefined) throw new TypeError("Expected operation task.");
+    const markup = renderToStaticMarkup(createElement(StockTokenRemoveDialog, {
+      presentation: {
+        status: "ready",
+        subject: { selection, name: "Example Stock Token" },
+        operation,
+        operationTask,
+      },
+      onClose: vi.fn(),
+      onConfirm: vi.fn(),
+      onRetry: vi.fn(),
+    }));
+
+    expect(markup).toContain("Wallet connection changed");
+    expect(markup).toContain("earlier wallet connection");
+    expect(markup).toContain(">Cancel<");
+    expect(markup).not.toContain(">Remove<");
+  });
+
+  it("keeps removal delivery ambiguity visible and dismissible without retry", () => {
+    const markup = renderToStaticMarkup(createElement(StockTokenRemoveDialog, {
+      presentation: {
+        status: "delivery_unknown",
+        subject: { selection, name: "Example Stock Token" },
+        delivery: {
+          status: "delivery_unknown",
+          action: "cancel",
+          operationId: "A".repeat(43),
+          resendAllowed: false,
+        },
+      },
+      onClose: vi.fn(),
+      onConfirm: vi.fn(),
+      onRetry: vi.fn(),
+    }));
+
+    expect(markup).toContain("Removal status unknown");
+    expect(markup).toContain(">Close<");
+    expect(markup).toContain('aria-label="Close Remove Example Stock Token"');
+    expect(markup).not.toContain(">Retry<");
   });
 });

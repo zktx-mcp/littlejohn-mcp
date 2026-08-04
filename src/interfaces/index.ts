@@ -113,10 +113,7 @@ export type {
   ReferenceMarketDeliveryAction,
   ReferenceMarketDeliveryUnknown,
 } from "./reference-market-delivery.js";
-export {
-  referenceMarketBrowserMutationPaths,
-  referenceMarketPublicRoutes,
-} from "./browser-contract.js";
+export { referenceMarketPublicRoutes } from "./browser-contract.js";
 export {
   referenceMarketLocalMutationPaths,
   uniswapV2PublicRoutes,

@@ -8,6 +8,7 @@ import {
 } from "../../account-assets/browser.js";
 import type { OfficialAssetCandidate } from "../../registry/browser.js";
 import type { DeliveryUnknown } from "../operation-delivery.js";
+import type { TokenCatalogOperation } from "../../token-catalog/browser.js";
 import { CopyableIdentifier } from "./copyable-identifier.js";
 import { DialogShell } from "./dialog-shell.js";
 import { Icon } from "./icons.js";
@@ -15,6 +16,7 @@ import { LoadingIndicator } from "./loading-indicator.js";
 import type {
   StockTokenTaskFailure,
 } from "./stock-token-task-presentation.js";
+import { tokenOperationCopy } from "./token-catalog-view.js";
 
 export type OfficialStockTokenCandidate = OfficialAssetCandidate;
 
@@ -28,6 +30,11 @@ export type StockTokenAddStatus =
       status: "delivery_unknown";
       candidate: OfficialStockTokenCandidate;
       delivery: DeliveryUnknown;
+    }>
+  | Readonly<{
+      status: "terminal";
+      candidate: OfficialStockTokenCandidate;
+      operation: Extract<TokenCatalogOperation, { kind: "add" }>;
     }>
   | Readonly<{
       status: "error";
@@ -190,6 +197,15 @@ const AddStatus = ({
           label="operation ID"
           value={presentation.delivery.operationId}
         />
+      </div>
+    );
+  }
+  if (presentation.status === "terminal") {
+    const copy = tokenOperationCopy(presentation.operation);
+    return (
+      <div className="dialog-state" role="status">
+        <strong>{copy.heading}</strong>
+        <p>{copy.message}</p>
       </div>
     );
   }

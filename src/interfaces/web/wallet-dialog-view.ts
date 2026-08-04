@@ -62,6 +62,15 @@ export const walletConnectionActions = (
   return Object.freeze([]);
 };
 
+export const availableWalletConnectionAction = (
+  state: WalletCurrentOperationProjection | undefined,
+  blocked: boolean,
+): WalletConnectionAction | undefined => {
+  if (state === undefined || blocked) return undefined;
+  const [action] = walletConnectionActions(state);
+  return action;
+};
+
 export const walletOperationActions = (
   presentation: WalletOperationPresentation,
 ): readonly WalletOperationAction[] => {

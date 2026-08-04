@@ -41,6 +41,24 @@ const unavailableAvailability = availabilityDefinitions[0];
 const internalAvailability = availabilityDefinitions[1];
 const availableAvailability = availabilityDefinitions[2];
 
+type CapabilityAvailabilityAxes = Readonly<{
+  direct: typeof directAvailabilityDefinitions[number];
+  http: Availability;
+  mcp: Availability;
+  cli: Availability;
+  web: Availability;
+}>;
+
+const deriveOverallAvailability = (
+  axes: CapabilityAvailabilityAxes,
+): Availability =>
+  [axes.http, axes.mcp, axes.cli, axes.web].includes(availableAvailability)
+    ? availableAvailability
+    : [axes.direct, axes.http, axes.mcp, axes.cli, axes.web]
+        .includes(internalAvailability)
+      ? internalAvailability
+      : unavailableAvailability;
+
 const initialReadCapabilityIds = Object.freeze(readCapabilityRegistry.values().map((definition) =>
   getCapabilityDefinitionSnapshot(definition).capabilityId));
 const walletConnectionCapabilityId = getCapabilityDefinitionSnapshot(walletConnectionCapability).capabilityId;
@@ -59,12 +77,7 @@ const createSupportSchemaSet = () => {
       .some((state) => state !== unavailableAvailability)) {
       context.addIssue({ code: "custom", message: "Exposed bindings require an internal direct capability." });
     }
-    const userFacing = [value.http, value.mcp, value.cli, value.web].includes(availableAvailability);
-    const expectedOverall = userFacing
-      ? availableAvailability
-      : [value.direct, value.http, value.mcp, value.cli, value.web].includes(internalAvailability)
-        ? internalAvailability
-        : unavailableAvailability;
+    const expectedOverall = deriveOverallAvailability(value);
     if (value.overall !== expectedOverall) {
       context.addIssue({ code: "custom", message: "Overall availability must follow exposed bindings." });
     }
@@ -154,6 +167,20 @@ const publicSchemas = createSupportSchemaSet();
 const authoritySchemas = createSupportSchemaSet();
 
 export type CapabilityAvailabilityInput = Readonly<z.infer<typeof publicSchemas.capabilityAvailability>>;
+export type CapabilityAvailabilityAxesInput = Omit<
+  CapabilityAvailabilityInput,
+  "overall"
+>;
+export const createCapabilityAvailability = (
+  axes: CapabilityAvailabilityAxesInput,
+): CapabilityAvailabilityInput => Object.freeze({
+  direct: axes.direct,
+  http: axes.http,
+  mcp: axes.mcp,
+  cli: axes.cli,
+  web: axes.web,
+  overall: deriveOverallAvailability(axes),
+});
 export interface CapabilitySupportEntryInput {
   readonly capabilityId: string;
   readonly availability: CapabilityAvailabilityInput;

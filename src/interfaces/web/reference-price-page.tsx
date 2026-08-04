@@ -8,6 +8,7 @@ import {
   findReferenceFeed,
   findReferencePair,
   type ReferenceHistorySuccess,
+  type ReferenceMarketWarningCode,
   type ReferencePriceSuccess,
 } from "../../core/browser.js";
 import {
@@ -29,6 +30,7 @@ import { createBrowserRequestAuthority } from "./request-authority.js";
 import {
   referencePriceStatusLabel,
   referencePriceUnavailableReasonLabel,
+  referenceWarningLabel,
 } from "./human-labels.js";
 import { formatUnixSecondsAsUtc } from "./human-time.js";
 import {
@@ -81,6 +83,30 @@ export interface ReferencePricePageProps {
     trigger: HTMLButtonElement,
   ) => void;
 }
+
+export const ReferencePairInterpretation = ({
+  warnings,
+}: {
+  readonly warnings: readonly ReferenceMarketWarningCode[];
+}) => {
+  const shared = warnings.filter((warning) =>
+    warning === "reference_price_not_trade_price" ||
+    warning === "source_listing_not_revalidated" ||
+    warning === "sequencer_status_unavailable");
+  return shared.length === 0 ? null : (
+    <section
+      className="interpretation-note"
+      aria-labelledby="reference-interpretation-heading"
+    >
+      <h2 id="reference-interpretation-heading">How to interpret this reference</h2>
+      <ul>
+        {shared.map((warning) => (
+          <li key={warning}>{referenceWarningLabel(warning)}</li>
+        ))}
+      </ul>
+    </section>
+  );
+};
 
 export const ReferencePricePage = ({
   chartPort,
@@ -217,6 +243,11 @@ export const ReferencePricePage = ({
     historyRead.requestKey === historyRequestKey
       ? historyRead
       : Object.freeze({ status: "loading" });
+  const availableHistory = historyState.status === "available"
+    ? historyState.value
+    : undefined;
+  const interpretationWarnings =
+    availablePrice?.warnings ?? availableHistory?.warnings ?? [];
   return (
     <section className="reference-price-page" aria-labelledby="reference-price-heading">
       <PageHeader
@@ -284,9 +315,7 @@ export const ReferencePricePage = ({
           ))}
         </div>
       </section>
-      <p className="interpretation-note">
-        This reference value is not a trade price or executable quote.
-      </p>
+      <ReferencePairInterpretation warnings={interpretationWarnings} />
       <nav className="history-window-navigation" aria-label="History window">
         {historyWindows.map((historyWindow) => {
           const next = browserLocations.referencePrice(

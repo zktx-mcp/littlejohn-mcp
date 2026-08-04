@@ -100,9 +100,9 @@ Canonical source: `defaultStockTokenManifest` for `eip155:4663`.
   Supported conclusions: `factory_address_at_source_revision`, `pair_init_code_hash_at_source_revision`.
   Unsupported conclusions: `current_runtime_code`, `current_protocol_availability`, `pair_identity_or_liquidity`, `quote_or_execution_result`, `safety`.
   Exclusions: `all_other_deployments`, `runtime_code_and_state`, `pair_existence_and_liquidity`, `quote_and_execution_quality`, `safety`.
-- Implemented wallet support: `wallet.cancel_operation` (MCP, CLI, web); `wallet.connect` (MCP, CLI, web); `wallet.connection` (HTTP, MCP, CLI); `wallet.current_operation` (web); `wallet.disconnect` (MCP, CLI, web); `wallet.operation` (MCP, CLI, web).
+- Implemented wallet support: `wallet.cancel_operation` (MCP, CLI, web); `wallet.connect` (MCP, CLI, web); `wallet.connection` (HTTP, MCP, CLI); `wallet.disconnect` (MCP, CLI, web); `wallet.operation` (MCP, CLI, web).
 - Implemented transaction actions: none.
-- Available user-facing capabilities: `account.asset`, `account.assets`, `account.balance`, `chain.status`, `contract.inspect`, `market.add_watchlist_pair`, `market.reference_history`, `market.reference_price`, `market.remove_watchlist_pair`, `market.reorder_watchlist_pairs`, `market.watchlist`, `token.cancel_operation`, `token.inspect`, `token.operation`, `token.selection`, `token.selections`, `token.start_addition`, `token.start_removal`, `transaction.inspect`, `uniswap_v2.quote_exact_input`, `wallet.cancel_operation`, `wallet.connect`, `wallet.connection`, `wallet.current_operation`, `wallet.disconnect`, `wallet.operation`.
+- Available user-facing capabilities: `account.assets`, `account.balance`, `chain.status`, `contract.inspect`, `market.add_watchlist_pair`, `market.reference_history`, `market.reference_price`, `market.remove_watchlist_pair`, `market.reorder_watchlist_pairs`, `market.watchlist`, `token.cancel_operation`, `token.inspect`, `token.operation`, `token.selection`, `token.selections`, `token.start_addition`, `token.start_removal`, `transaction.inspect`, `uniswap_v2.quote_exact_input`, `wallet.cancel_operation`, `wallet.connect`, `wallet.connection`, `wallet.disconnect`, `wallet.operation`.
 - Experiments and collected research do not establish product support.
 
 ## Support Levels

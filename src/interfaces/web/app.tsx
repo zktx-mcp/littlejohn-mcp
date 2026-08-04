@@ -7,10 +7,6 @@ import {
 } from "react";
 
 import {
-  type TokenCatalogOperation,
-  isTokenCatalogOperationTerminal,
-} from "../../token-catalog/browser.js";
-import {
   projectAccountAssetExactView,
 } from "../../account-assets/browser.js";
 import {
@@ -22,14 +18,12 @@ import {
   parseBrowserCsrfToken,
   type BrowserLocation,
 } from "../browser-contract.js";
+import { browserCapabilityBindings } from "../browser-capability-bindings.js";
 import {
   AccountAssetsPage,
   type AccountAssetPageSnapshot,
 } from "./account-assets-page.js";
-import {
-  sameConnectedAccount,
-  useAccountAssetsController,
-} from "./account-assets-controller.js";
+import { useAccountAssetsController } from "./account-assets-controller.js";
 import { ApplicationShell } from "./application-shell.js";
 import { Icon } from "./icons.js";
 import { PageHeader } from "./page-header.js";
@@ -64,7 +58,11 @@ import {
 } from "./stock-token-remove-dialog.js";
 import { useStockTokenProcess } from "./stock-token-process.js";
 import {
-  walletConnectionActions,
+  stockTokenAccountObservationNotice,
+  type StockTokenOperationTaskPresentation,
+} from "./stock-token-task-presentation.js";
+import {
+  availableWalletConnectionAction,
   walletNavigationLabel,
 } from "./wallet-dialog-view.js";
 import {
@@ -84,7 +82,7 @@ type ActiveNotification = Readonly<{
 
 type ActiveModalTask =
   | Readonly<{
-      kind: "analysis";
+      kind: typeof browserCapabilityBindings.contractInspect.surfaces[0]["taskKind"];
       target: AnalysisTarget;
       originResourceKey: string;
       returnFocus: HTMLElement | undefined;
@@ -96,7 +94,7 @@ type ActiveModalTask =
       returnFocus: HTMLElement | undefined;
     }>
   | Readonly<{
-      kind: "stock_token_add";
+      kind: typeof browserCapabilityBindings.tokenStartAddition.surfaces[0]["taskKind"];
       accountKey: string;
       originResourceKey: string;
       returnFocus: HTMLElement | undefined;
@@ -108,15 +106,23 @@ type ActiveModalTask =
       returnFocus: HTMLElement | undefined;
     }>
   | Readonly<{
-      kind: "stock_token_remove";
+      kind: typeof browserCapabilityBindings.tokenStartRemoval.surfaces[0]["taskKind"];
       subject: StockTokenRemoveSubject;
       returnFocus: HTMLElement | undefined;
     }>
   | Readonly<{
-      kind: "external_token_operation";
+      kind: typeof browserCapabilityBindings.tokenOperation.surfaces[2]["taskKind"];
       operationId: string;
       returnFocus: HTMLElement | undefined;
     }>;
+
+const unexpectedActiveModalTask = (task: never): never => {
+  throw new TypeError(`Browser modal task is invalid: ${String(task)}.`);
+};
+
+const unexpectedBrowserPage = (page: never): never => {
+  throw new TypeError(`Browser page is invalid: ${String(page)}.`);
+};
 
 const standardToastMilliseconds = 5_000;
 const errorToastMilliseconds = 8_000;
@@ -174,55 +180,55 @@ const AnalysisTaskDialog = ({
 };
 
 const ExternalTokenOperationDialog = ({
-  operation,
-  accountMatches,
-  pending,
-  onClose,
+  task,
+  onAcknowledge,
+  onDismiss,
   onConfirm,
   onCancel,
 }: Readonly<{
-  operation: TokenCatalogOperation;
-  accountMatches: boolean;
-  pending: boolean;
-  onClose: () => void;
+  task: StockTokenOperationTaskPresentation;
+  onAcknowledge: () => void;
+  onDismiss: () => void;
   onConfirm: () => void;
   onCancel: () => void;
 }>) => {
+  const { operation } = task;
   const copy = tokenOperationCopy(operation);
   const title = operation.kind === "add"
     ? "Add Stock Token"
     : "Remove Stock Token";
-  const awaitingWebConfirmation =
-    operation.interactionInterface === "web" &&
-    operation.state === "awaiting_confirmation";
-  const dismissible = !pending && (
-    operation.interactionInterface === "cli" ||
-    isTokenCatalogOperationTerminal(operation.state) ||
-    awaitingWebConfirmation
-  );
+  const cancellable = task.actions.includes("cancel");
+  const confirmable = task.actions.includes("confirm");
+  const readOnly = operation.interactionInterface === "cli";
+  const deliveryUnknown = task.request.status === "delivery_unknown";
+  const dismissible = task.terminal || readOnly || deliveryUnknown || cancellable;
+  const close = task.terminal
+    ? onAcknowledge
+    : readOnly || deliveryUnknown
+      ? onDismiss
+      : onCancel;
+  const accountMessage = stockTokenAccountObservationNotice(task.account);
   return (
     <DialogShell
       titleId="retained-token-operation-title"
       title={title}
       description={copy.message}
       dismissible={dismissible}
-      onClose={awaitingWebConfirmation ? onCancel : onClose}
+      onClose={close}
       footer={(
         <div className="actions">
-          {operation.interactionInterface === "cli" ||
-          isTokenCatalogOperationTerminal(operation.state) ? (
-            <button type="button" className="secondary" disabled={pending} onClick={onClose}>Close</button>
+          {readOnly || deliveryUnknown || task.terminal ? (
+            <button type="button" className="secondary" onClick={close}>Close</button>
           ) : null}
-          {awaitingWebConfirmation ? (
-            <button type="button" className="secondary" disabled={pending} onClick={onCancel}>
+          {cancellable ? (
+            <button type="button" className="secondary" onClick={onCancel}>
               {operation.kind === "add" ? "Cancel addition" : "Keep token"}
             </button>
           ) : null}
-          {awaitingWebConfirmation && accountMatches ? (
+          {confirmable ? (
             <button
               type="button"
               className={operation.kind === "remove" ? "danger" : undefined}
-              disabled={pending}
               onClick={onConfirm}
             >
               {operation.kind === "add" ? "Add token" : "Remove token"}
@@ -241,12 +247,26 @@ const ExternalTokenOperationDialog = ({
           <p>Continue this token change in the CLI.</p>
         </div>
       ) : null}
-      {!accountMatches ? (
-        <div className="warning">
-          <strong>Different account</strong>
-          <p>Confirmation is unavailable because the connected account changed.</p>
+      {task.request.status === "delivery_unknown" ? (
+        <div className="warning" role="status">
+          <strong>Token action status unknown</strong>
+          <p>The request may have occurred. Do not repeat this action.</p>
+          <CopyableIdentifier
+            label="operation ID"
+            value={task.request.delivery.operationId}
+          />
         </div>
+      ) : task.request.status === "pending" ? (
+        <LoadingIndicator label={task.request.action === "confirm"
+          ? "Confirming token change"
+          : "Cancelling token change"} />
       ) : null}
+      {accountMessage === undefined || task.terminal ? null : (
+        <div className="warning">
+          <strong>{accountMessage.heading}</strong>
+          <p>{accountMessage.message}</p>
+        </div>
+      )}
     </DialogShell>
   );
 };
@@ -391,6 +411,7 @@ export const App = ({
   const tokenDelivery = stockTokenProcess.delivery;
   const tokenPending = stockTokenProcess.pending;
   const tokenOperation = stockTokenProcess.operation;
+  const tokenOperationTask = stockTokenProcess.operationTask;
   const addTask = stockTokenProcess.addTask;
   const informationTask = stockTokenProcess.informationTask;
   const removeTask = stockTokenProcess.removeTask;
@@ -412,8 +433,8 @@ export const App = ({
         const operation = walletOperationPresentation.operation;
         return Object.freeze({
           kind: operation.kind === "connect"
-            ? "wallet_connect" as const
-            : "wallet_disconnect" as const,
+            ? browserCapabilityBindings.walletConnect.surfaces[0].taskKind
+            : browserCapabilityBindings.walletDisconnect.surfaces[0].taskKind,
           connectionRevision: operation.connectionRevision,
           operationId: operation.operationId,
           returnFocus: walletNavigation.current ?? undefined,
@@ -421,11 +442,12 @@ export const App = ({
       }
       if (
         addTask.claimsOperation &&
+        addTask.presentation !== undefined &&
         stockTokenProcess.addContext !== undefined
       ) {
         const { account } = stockTokenProcess.addContext.form;
         return Object.freeze({
-          kind: "stock_token_add" as const,
+          kind: browserCapabilityBindings.tokenStartAddition.surfaces[0].taskKind,
           accountKey: [
             account.connectionRevision,
             account.chainId,
@@ -437,18 +459,19 @@ export const App = ({
       }
       if (
         removeTask.claimsOperation &&
+        removeTask.presentation !== undefined &&
         stockTokenProcess.removeContext !== undefined
       ) {
         return Object.freeze({
-          kind: "stock_token_remove" as const,
+          kind: browserCapabilityBindings.tokenStartRemoval.surfaces[0].taskKind,
           subject: stockTokenProcess.removeContext.subject,
           returnFocus: undefined,
         });
       }
-      if (tokenOperation !== null && !operationClaimedByTask) {
+      if (tokenOperationTask !== undefined && !operationClaimedByTask) {
         return Object.freeze({
-          kind: "external_token_operation" as const,
-          operationId: tokenOperation.operationId,
+          kind: browserCapabilityBindings.tokenOperation.surfaces[2].taskKind,
+          operationId: tokenOperationTask.operation.operationId,
           returnFocus: undefined,
         });
       }
@@ -456,11 +479,14 @@ export const App = ({
     });
   }, [
     addTask.claimsOperation,
+    addTask.presentation,
     operationClaimedByTask,
     removeTask.claimsOperation,
+    removeTask.presentation,
     stockTokenProcess.addContext,
     stockTokenProcess.removeContext,
     tokenOperation,
+    tokenOperationTask,
     walletOperationPresentation,
     activeResourceKey,
   ]);
@@ -470,11 +496,11 @@ export const App = ({
     const task = activeModalTask;
     const matchingTask =
       (
-        task?.kind === "wallet_connect" &&
+        task?.kind === browserCapabilityBindings.walletConnect.surfaces[0].taskKind &&
         walletTerminalOperation.kind === "connect"
       ) ||
       (
-        task?.kind === "wallet_disconnect" &&
+        task?.kind === browserCapabilityBindings.walletDisconnect.surfaces[0].taskKind &&
         walletTerminalOperation.kind === "disconnect"
       );
     const matchingIdentity = matchingTask &&
@@ -490,12 +516,12 @@ export const App = ({
 
   useEffect(() => {
     if (
-      activeModalTask?.kind === "stock_token_add" &&
+      activeModalTask?.kind === browserCapabilityBindings.tokenStartAddition.surfaces[0].taskKind &&
       stockTokenProcess.addContext === undefined
     ) {
       setActiveModalTask(undefined);
     } else if (
-      activeModalTask?.kind === "stock_token_remove" &&
+      activeModalTask?.kind === browserCapabilityBindings.tokenStartRemoval.surfaces[0].taskKind &&
       stockTokenProcess.removeContext === undefined
     ) {
       setActiveModalTask(undefined);
@@ -505,17 +531,19 @@ export const App = ({
     ) {
       setActiveModalTask(undefined);
     } else if (
-      activeModalTask?.kind === "external_token_operation" &&
-      tokenOperation?.operationId !== activeModalTask.operationId
+      activeModalTask?.kind === browserCapabilityBindings.tokenOperation.surfaces[2].taskKind &&
+      tokenOperationTask?.operation.operationId !== activeModalTask.operationId
     ) {
       setActiveModalTask(undefined);
     } else if (
       (
-        activeModalTask?.kind === "wallet_connect" ||
-        activeModalTask?.kind === "wallet_disconnect"
+        activeModalTask?.kind === browserCapabilityBindings.walletConnect.surfaces[0].taskKind ||
+        activeModalTask?.kind === browserCapabilityBindings.walletDisconnect.surfaces[0].taskKind
       ) &&
       walletOperationPresentation?.operation.operationId !==
-        activeModalTask.operationId
+        activeModalTask.operationId &&
+      (!walletPending || walletPendingOperationId !== activeModalTask.operationId) &&
+      walletDelivery?.result.operationId !== activeModalTask.operationId
     ) {
       setActiveModalTask(undefined);
     }
@@ -525,20 +553,24 @@ export const App = ({
     stockTokenProcess.addContext,
     stockTokenProcess.removeContext,
     tokenOperation,
+    tokenOperationTask,
+    walletDelivery,
     walletOperationPresentation,
+    walletPending,
+    walletPendingOperationId,
   ]);
 
   useEffect(() => {
     const task = activeModalTask;
     if (task === undefined || !("originResourceKey" in task)) return;
     if (task.originResourceKey === activeResourceKey) return;
-    if (task.kind === "analysis") {
+    if (task.kind === browserCapabilityBindings.contractInspect.surfaces[0].taskKind) {
       setActiveModalTask(undefined);
     } else if (task.kind === "stock_token_information") {
       accountAssets.closeExact();
       setActiveModalTask(undefined);
     } else if (
-      task.kind === "stock_token_add" &&
+      task.kind === browserCapabilityBindings.tokenStartAddition.surfaces[0].taskKind &&
       addPresentation?.inputsLocked !== true &&
       stockTokenProcess.closeAdd()
     ) {
@@ -583,45 +615,59 @@ export const App = ({
   const closeActiveTask = (): void => {
     const task = activeModalTask;
     if (task === undefined) return;
-    if (task.kind === "stock_token_add") {
-      if (stockTokenProcess.closeAdd()) setActiveModalTask(undefined);
-      return;
+    switch (task.kind) {
+      case browserCapabilityBindings.contractInspect.surfaces[0].taskKind:
+        setActiveModalTask(undefined);
+        return;
+      case browserCapabilityBindings.tokenStartAddition.surfaces[0].taskKind:
+        if (stockTokenProcess.closeAdd()) setActiveModalTask(undefined);
+        return;
+      case "stock_token_information":
+        accountAssets.closeExact();
+        setActiveModalTask(undefined);
+        return;
+      case browserCapabilityBindings.tokenStartRemoval.surfaces[0].taskKind:
+        if (stockTokenProcess.closeRemove()) setActiveModalTask(undefined);
+        return;
+      case browserCapabilityBindings.tokenOperation.surfaces[2].taskKind:
+        if (tokenOperationTask?.terminal === true) {
+          stockTokenProcess.acknowledgeCurrentOperation();
+          setActiveModalTask(undefined);
+        } else if (tokenOperationTask?.actions.includes("cancel") === true) {
+          stockTokenProcess.cancelCurrentOperation();
+        } else if (
+          tokenOperationTask?.request.status === "delivery_unknown" ||
+          tokenOperationTask?.operation.interactionInterface === "cli"
+        ) {
+          stockTokenProcess.dismissExternalOperation();
+          setActiveModalTask(undefined);
+        }
+        return;
+      case browserCapabilityBindings.walletConnect.surfaces[0].taskKind:
+      case browserCapabilityBindings.walletDisconnect.surfaces[0].taskKind:
+        walletProcess.dismissOperation();
+        setActiveModalTask(undefined);
+        return;
     }
-    if (task.kind === "stock_token_remove") {
-      if (stockTokenProcess.closeRemove()) setActiveModalTask(undefined);
-      return;
-    }
-    if (task.kind === "stock_token_information") {
-      accountAssets.closeExact();
-      setActiveModalTask(undefined);
-      return;
-    }
-    if (task.kind === "external_token_operation") {
-      stockTokenProcess.dismissExternalOperation();
-      setActiveModalTask(undefined);
-      return;
-    }
-    if (task.kind === "wallet_connect" || task.kind === "wallet_disconnect") {
-      walletProcess.dismissOperation();
-    }
-    setActiveModalTask(undefined);
+    return unexpectedActiveModalTask(task);
   };
 
-  const activateWalletNavigation = (): void => {
-    if (
-      activeModalTask !== undefined ||
-      currentWallet === undefined ||
+  const walletNavigationAction = availableWalletConnectionAction(
+    currentWallet,
+    activeModalTask !== undefined ||
       observationUnavailable ||
       walletPending ||
-      walletDelivery !== undefined
-    ) {
-      return;
-    }
-    const [action] = walletConnectionActions(currentWallet);
-    if (action === undefined) return;
+      walletDelivery !== undefined,
+  );
+
+  const activateWalletNavigation = (): void => {
+    const action = walletNavigationAction;
+    if (action === undefined || currentWallet === undefined) return;
     const operationId = createBrowserOperationId();
     setActiveModalTask(Object.freeze({
-      kind: action === "connect" ? "wallet_connect" : "wallet_disconnect",
+      kind: action === "connect"
+        ? browserCapabilityBindings.walletConnect.surfaces[0].taskKind
+        : browserCapabilityBindings.walletDisconnect.surfaces[0].taskKind,
       connectionRevision: currentWallet.connectionRevision,
       operationId,
       returnFocus: walletNavigation.current ?? undefined,
@@ -636,7 +682,7 @@ export const App = ({
   ): void => {
     if (activeModalTask !== undefined) return;
     setActiveModalTask(Object.freeze({
-      kind: "analysis",
+      kind: browserCapabilityBindings.contractInspect.surfaces[0].taskKind,
       target: Object.freeze({ ...target }),
       originResourceKey: activeResourceKey,
       returnFocus: trigger,
@@ -652,6 +698,240 @@ export const App = ({
       ? state.observationFailure
       : undefined;
   const walletLabel = walletNavigationLabel(currentWallet);
+  const assetsPage = (
+    <div className="account-page">
+      {state.status === "loading" ? (
+        <section className="assets-introduction" aria-labelledby="assets-loading-heading">
+          <PageHeader
+            headingId="assets-loading-heading"
+            title="Assets"
+            description={state.failure === undefined
+              ? "Checking the local wallet connection…"
+              : humanFailureText(state.failure)}
+          />
+          {state.failure?.retryable === true &&
+          activeModalTask === undefined ? (
+            <button type="button" className="secondary" onClick={retryWalletObservation}>Retry</button>
+          ) : null}
+          <PublicTasks onNavigate={onNavigate} />
+        </section>
+      ) : currentAccount === undefined ? (
+        <section className="assets-introduction" aria-labelledby="assets-disconnected-heading">
+          <PageHeader
+            headingId="assets-disconnected-heading"
+            title="Assets"
+            description="Connect a wallet to see your assets. Connecting does not sign or send a transaction."
+          />
+          {visibleWalletObservationFailure === undefined ? null : (
+            <p className="error">
+              {humanFailureText(visibleWalletObservationFailure)}
+            </p>
+          )}
+          {visibleWalletObservationFailure === undefined ? (
+            <button
+              type="button"
+              disabled={walletNavigationAction !== "connect"}
+              onClick={activateWalletNavigation}
+            >
+              Connect wallet
+            </button>
+          ) : visibleWalletObservationFailure.retryable ? (
+            <button type="button" className="secondary" onClick={retryWalletObservation}>Retry</button>
+          ) : null}
+          <PublicTasks onNavigate={onNavigate} />
+        </section>
+      ) : (
+        <>
+          {visibleWalletObservationFailure === undefined ? null : (
+            <div className="warning" role="status">
+              <strong>Wallet observation unavailable</strong>
+              <p>{humanFailureText(visibleWalletObservationFailure)}</p>
+              {visibleWalletObservationFailure.retryable ? (
+                <button type="button" className="secondary" onClick={retryWalletObservation}>Retry</button>
+              ) : null}
+            </div>
+          )}
+          <AccountAssetsPage
+            snapshot={snapshotForPage}
+            loading={accountAssets.overviewRead.status === "loading"}
+            staleMessage={accountAssets.overviewRead.status === "error"
+              ? humanFailureText(accountAssets.overviewRead.failure)
+              : undefined}
+            mutationDisabled={
+              walletPending ||
+              walletOperationPresentation !== undefined ||
+              tokenPending ||
+              tokenOperation !== null ||
+              observationUnavailable ||
+              tokenDelivery !== undefined
+            }
+            onRefresh={accountAssets.refresh}
+            onAddStockToken={(candidates, trigger) => {
+              if (
+                activeModalTask !== undefined ||
+                accountAssets.snapshot?.result.viewRevision.officialSnapshotStatus !==
+                "current"
+              ) {
+                return;
+              }
+              const opened = stockTokenProcess.openAdd(Object.freeze({
+                account: currentAccount,
+                viewRevision: accountAssets.snapshot.result.viewRevision,
+                candidates,
+              }));
+              if (!opened) return;
+              setActiveModalTask(Object.freeze({
+                kind: browserCapabilityBindings.tokenStartAddition.surfaces[0].taskKind,
+                accountKey: [
+                  currentAccount.connectionRevision,
+                  currentAccount.chainId,
+                  currentAccount.address,
+                ].join(":"),
+                originResourceKey: activeResourceKey,
+                returnFocus: trigger,
+              }));
+            }}
+            onInfo={(selection, trigger) => {
+              if (
+                activeModalTask !== undefined ||
+                accountAssets.snapshot === undefined
+              ) return;
+              if (!accountAssets.openExact(selection)) return;
+              setActiveModalTask(Object.freeze({
+                kind: "stock_token_information",
+                selectionAddress: selection.asset.address,
+                originResourceKey: activeResourceKey,
+                returnFocus: trigger,
+              }));
+            }}
+          />
+        </>
+      )}
+    </div>
+  );
+  const pageContent = (() => {
+    if (locationState.status === "invalid") {
+      return (
+        <section className="page-state page-state-unavailable">
+          <h1>Page unavailable</h1>
+          <p>The address does not identify a supported Little John page.</p>
+          <a
+            href={browserLocationHref(locationState.baseLocation)}
+            onClick={(event) => {
+              onNavigate(locationState.baseLocation, event);
+            }}
+          >
+            Return to the nearest page
+          </a>
+        </section>
+      );
+    }
+    const page = locationState.location.page;
+    switch (page) {
+      case browserPages.assets.id:
+        return assetsPage;
+      case browserPages.referencePrices.id:
+        return <PricesPage onNavigate={onNavigate} />;
+      case browserCapabilityBindings.referencePrice.surfaces[0].id:
+        return (
+          <ReferencePricePage
+            chartPort={referenceChart}
+            pageLocation={locationState.location}
+            onNavigate={onNavigate}
+            onAnalyze={activateAnalysis}
+          />
+        );
+    }
+    return unexpectedBrowserPage(page);
+  })();
+  const activeTaskDialog = (() => {
+    const task = activeModalTask;
+    if (task === undefined) return null;
+    switch (task.kind) {
+      case browserCapabilityBindings.contractInspect.surfaces[0].taskKind:
+        return (
+          <AnalysisTaskDialog
+            target={task.target}
+            onClose={closeActiveTask}
+            recoverSession={sessionRecovery}
+          />
+        );
+      case browserCapabilityBindings.walletConnect.surfaces[0].taskKind:
+      case browserCapabilityBindings.walletDisconnect.surfaces[0].taskKind:
+        return (
+          <WalletTaskDialog
+            task={task.kind}
+            connectionRevision={task.connectionRevision}
+            operationId={task.operationId}
+            operationPresentation={walletOperationPresentation}
+            pending={walletPending}
+            pendingAction={walletPendingAction}
+            pendingOperationId={walletPendingOperationId}
+            delivery={walletDelivery}
+            actionFailure={walletActionFailure}
+            onClose={closeActiveTask}
+            onAction={(action) => {
+              void walletProcess.runAction(action, task.operationId);
+            }}
+          />
+        );
+      case browserCapabilityBindings.tokenStartAddition.surfaces[0].taskKind:
+        return addPresentation === undefined ? null : (
+          <StockTokenAddDialog
+            presentation={addPresentation}
+            onClose={closeActiveTask}
+            onAdd={stockTokenProcess.addCandidate}
+            onRetry={stockTokenProcess.retryAdd}
+          />
+        );
+      case "stock_token_information":
+        return informationPresentation === undefined ? null : (
+          <StockTokenInformationDialog
+            presentation={informationPresentation}
+            onClose={closeActiveTask}
+            onRetry={accountAssets.retryExact}
+            recoverSession={sessionRecovery}
+            onRemove={() => {
+              if (informationPresentation.status !== "available") return;
+              const row = projectAccountAssetExactView(
+                informationPresentation.result,
+              );
+              const subject = Object.freeze({
+                selection: informationPresentation.result.asset.selection,
+                name: row.name ?? row.symbol ?? "Stock Token",
+              });
+              if (!stockTokenProcess.openRemove(subject)) return;
+              accountAssets.closeExact();
+              setActiveModalTask(Object.freeze({
+                kind: browserCapabilityBindings.tokenStartRemoval.surfaces[0].taskKind,
+                subject,
+                returnFocus: task.returnFocus,
+              }));
+            }}
+          />
+        );
+      case browserCapabilityBindings.tokenStartRemoval.surfaces[0].taskKind:
+        return removePresentation === undefined ? null : (
+          <StockTokenRemoveDialog
+            presentation={removePresentation}
+            onClose={closeActiveTask}
+            onConfirm={stockTokenProcess.confirmRemove}
+            onRetry={stockTokenProcess.retryRemove}
+          />
+        );
+      case browserCapabilityBindings.tokenOperation.surfaces[2].taskKind:
+        return tokenOperationTask?.operation.operationId !== task.operationId ? null : (
+          <ExternalTokenOperationDialog
+            task={tokenOperationTask}
+            onAcknowledge={closeActiveTask}
+            onDismiss={closeActiveTask}
+            onConfirm={stockTokenProcess.confirmCurrentOperation}
+            onCancel={stockTokenProcess.cancelCurrentOperation}
+          />
+        );
+    }
+    return unexpectedActiveModalTask(task);
+  })();
   return (
     <>
       <ApplicationShell
@@ -668,14 +948,11 @@ export const App = ({
           aria-label={walletLabel}
           title={walletLabel}
           aria-expanded={
-            activeModalTask?.kind === "wallet_connect" ||
-            activeModalTask?.kind === "wallet_disconnect"
+            activeModalTask?.kind === browserCapabilityBindings.walletConnect.surfaces[0].taskKind ||
+            activeModalTask?.kind === browserCapabilityBindings.walletDisconnect.surfaces[0].taskKind
           }
           disabled={
-            currentWallet === undefined ||
-            walletPending ||
-            walletDelivery !== undefined ||
-            observationUnavailable
+            walletNavigationAction === undefined
           }
           onClick={activateWalletNavigation}
         >
@@ -717,219 +994,9 @@ export const App = ({
           ),
         })}
       >
-      {locationState.status === "invalid" ? (
-        <section className="page-state page-state-unavailable">
-          <h1>Page unavailable</h1>
-          <p>The address does not identify a supported Little John page.</p>
-          <a
-            href={browserLocationHref(locationState.baseLocation)}
-            onClick={(event) => {
-              onNavigate(locationState.baseLocation, event);
-            }}
-          >
-            Return to the nearest page
-          </a>
-        </section>
-      ) : locationState.location.page === browserPages.referencePrices.id ? (
-        <PricesPage onNavigate={onNavigate} />
-      ) : locationState.location.page === browserPages.referencePrice.id ? (
-        <ReferencePricePage
-          chartPort={referenceChart}
-          pageLocation={locationState.location}
-          onNavigate={onNavigate}
-          onAnalyze={activateAnalysis}
-        />
-      ) : (
-        <div className="account-page">
-          {state.status === "loading" ? (
-            <section className="assets-introduction" aria-labelledby="assets-loading-heading">
-              <PageHeader
-                headingId="assets-loading-heading"
-                title="Assets"
-                description={state.failure === undefined
-                  ? "Checking the local wallet connection…"
-                  : humanFailureText(state.failure)}
-              />
-              {state.failure?.retryable === true &&
-              activeModalTask === undefined ? (
-                <button type="button" className="secondary" onClick={retryWalletObservation}>Retry</button>
-              ) : null}
-              <PublicTasks onNavigate={onNavigate} />
-            </section>
-          ) : currentAccount === undefined ? (
-            <section className="assets-introduction" aria-labelledby="assets-disconnected-heading">
-              <PageHeader
-                headingId="assets-disconnected-heading"
-                title="Assets"
-                description="Connect a wallet to see your assets. Connecting does not sign or send a transaction."
-              />
-              {visibleWalletObservationFailure === undefined ? null : (
-                <p className="error">
-                  {humanFailureText(visibleWalletObservationFailure)}
-                </p>
-              )}
-              {visibleWalletObservationFailure === undefined ? (
-                <button type="button" onClick={activateWalletNavigation}>Connect wallet</button>
-              ) : visibleWalletObservationFailure.retryable ? (
-                <button type="button" className="secondary" onClick={retryWalletObservation}>Retry</button>
-              ) : null}
-              <PublicTasks onNavigate={onNavigate} />
-            </section>
-          ) : (
-            <>
-              {visibleWalletObservationFailure === undefined ? null : (
-                <div className="warning" role="status">
-                  <strong>Wallet observation unavailable</strong>
-                  <p>{humanFailureText(visibleWalletObservationFailure)}</p>
-                  {visibleWalletObservationFailure.retryable ? (
-                    <button type="button" className="secondary" onClick={retryWalletObservation}>Retry</button>
-                  ) : null}
-                </div>
-              )}
-              <AccountAssetsPage
-                snapshot={snapshotForPage}
-                loading={accountAssets.overviewRead.status === "loading"}
-                staleMessage={accountAssets.overviewRead.status === "error"
-                  ? humanFailureText(accountAssets.overviewRead.failure)
-                  : undefined}
-                mutationDisabled={
-                  walletPending ||
-                  walletOperationPresentation !== undefined ||
-                  tokenPending ||
-                  tokenOperation !== null ||
-                  observationUnavailable ||
-                  tokenDelivery !== undefined
-                }
-                onRefresh={accountAssets.refresh}
-                onAddStockToken={(candidates, trigger) => {
-                  if (
-                    activeModalTask !== undefined ||
-                    accountAssets.snapshot?.result.viewRevision.officialSnapshotStatus !==
-                    "current"
-                  ) {
-                    return;
-                  }
-                  const opened = stockTokenProcess.openAdd(Object.freeze({
-                    account: currentAccount,
-                    viewRevision: accountAssets.snapshot.result.viewRevision,
-                    candidates,
-                  }));
-                  if (!opened) return;
-                  setActiveModalTask(Object.freeze({
-                    kind: "stock_token_add",
-                    accountKey: [
-                      currentAccount.connectionRevision,
-                      currentAccount.chainId,
-                      currentAccount.address,
-                    ].join(":"),
-                    originResourceKey: activeResourceKey,
-                    returnFocus: trigger,
-                  }));
-                }}
-                onInfo={(selection, trigger) => {
-                  if (
-                    activeModalTask !== undefined ||
-                    accountAssets.snapshot === undefined
-                  ) return;
-                  if (!accountAssets.openExact(selection)) return;
-                  setActiveModalTask(Object.freeze({
-                    kind: "stock_token_information",
-                    selectionAddress: selection.asset.address,
-                    originResourceKey: activeResourceKey,
-                    returnFocus: trigger,
-                  }));
-                }}
-              />
-            </>
-          )}
-        </div>
-      )}
+      {pageContent}
       </ApplicationShell>
-      {activeModalTask?.kind === "analysis" ? (
-        <AnalysisTaskDialog
-          target={activeModalTask.target}
-          onClose={closeActiveTask}
-          recoverSession={sessionRecovery}
-        />
-      ) : activeModalTask?.kind === "wallet_connect" ||
-        activeModalTask?.kind === "wallet_disconnect" ? (
-        <WalletTaskDialog
-          task={activeModalTask.kind}
-          connectionRevision={activeModalTask.connectionRevision}
-          operationId={activeModalTask.operationId}
-          wallet={currentWallet}
-          operationPresentation={walletOperationPresentation}
-          pending={walletPending}
-          pendingAction={walletPendingAction}
-          pendingOperationId={walletPendingOperationId}
-          delivery={walletDelivery}
-          actionFailure={walletActionFailure}
-          onClose={closeActiveTask}
-          onAction={(action) => {
-            void walletProcess.runAction(action, activeModalTask.operationId);
-          }}
-        />
-      ) : activeModalTask?.kind === "stock_token_add" &&
-        addPresentation !== undefined ? (
-        <StockTokenAddDialog
-          presentation={addPresentation}
-          onClose={closeActiveTask}
-          onAdd={stockTokenProcess.addCandidate}
-          onRetry={stockTokenProcess.retryAdd}
-        />
-      ) : activeModalTask?.kind === "stock_token_information" &&
-        informationPresentation !== undefined ? (
-        <StockTokenInformationDialog
-          presentation={informationPresentation}
-          onClose={closeActiveTask}
-          onRetry={accountAssets.retryExact}
-          recoverSession={sessionRecovery}
-          onRemove={() => {
-            if (
-              activeModalTask.kind !== "stock_token_information" ||
-              informationPresentation.status !== "available"
-            ) {
-              return;
-            }
-            const row = projectAccountAssetExactView(
-              informationPresentation.result,
-            );
-            const subject = Object.freeze({
-              selection: informationPresentation.result.asset.selection,
-              name: row.name ?? row.symbol ?? "Stock Token",
-            });
-            if (!stockTokenProcess.openRemove(subject)) return;
-            accountAssets.closeExact();
-            setActiveModalTask(Object.freeze({
-              kind: "stock_token_remove",
-              subject,
-              returnFocus: activeModalTask.returnFocus,
-            }));
-          }}
-        />
-      ) : activeModalTask?.kind === "stock_token_remove" &&
-        removePresentation !== undefined ? (
-        <StockTokenRemoveDialog
-          presentation={removePresentation}
-          onClose={closeActiveTask}
-          onConfirm={stockTokenProcess.confirmRemove}
-          onRetry={stockTokenProcess.retryRemove}
-        />
-      ) : activeModalTask?.kind === "external_token_operation" &&
-        tokenOperation?.operationId === activeModalTask.operationId ? (
-        <ExternalTokenOperationDialog
-          operation={tokenOperation}
-          accountMatches={sameConnectedAccount({
-            chainId: tokenOperation.account.chainId,
-            address: tokenOperation.account.address,
-            connectionRevision: tokenOperation.connectionRevision,
-          }, currentAccount)}
-          pending={tokenPending}
-          onClose={closeActiveTask}
-          onConfirm={stockTokenProcess.confirmCurrentOperation}
-          onCancel={stockTokenProcess.cancelCurrentOperation}
-        />
-      ) : null}
+      {activeTaskDialog}
       {activeNotification === undefined ? null : (
         <Notification notice={activeNotification.notice} exiting={activeNotification.phase === "exiting"} />
       )}

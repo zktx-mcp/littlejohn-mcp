@@ -21,7 +21,6 @@ import {
   browserOperationCancellationPath,
   browserOperationConfirmationPath,
   browserOperationPath,
-  referenceMarketBrowserMutationPaths,
   browserWalletApiPaths,
 } from "../../src/interfaces/browser-contract.js";
 import {
@@ -64,11 +63,6 @@ import { tokenCatalogBrowserRoutes } from "../../src/token-catalog/browser.js";
 import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
 import { tokenCatalogInterfaceHarnessPorts } from "../token-catalog/interface-harness.js";
 import { accountAssetInterfaceHarnessPort } from "../account-assets/interface-harness.js";
-import { referenceMarketInterfaceHarnessPort } from "../market-portfolio/interface-harness.js";
-import {
-  createReferenceMarketFailure,
-  type ReferenceMarketApplicationPort,
-} from "../../src/market-portfolio/index.js";
 
 const directories: string[] = [];
 const operationId = Buffer.alloc(32, 13).toString("base64url");
@@ -155,12 +149,9 @@ const assets: BrowserAssetBundle = Object.freeze({
   paths: () => Object.freeze(["/assets/index-Abcdef12.js"]),
 });
 
-const interfacePorts = (
-  referenceMarkets: ReferenceMarketApplicationPort = referenceMarketInterfaceHarnessPort(),
-) => Object.freeze({
+const interfacePorts = () => Object.freeze({
   ...tokenCatalogInterfaceHarnessPorts(),
   accountAssets: accountAssetInterfaceHarnessPort(),
-  referenceMarkets,
 });
 
 interface WalletCalls {
@@ -339,6 +330,13 @@ describe("wallet browser routes", () => {
       "DELETE",
       `/api/v1/wallet/operations/${operationId}`,
     ).status).toBe("method_not_allowed");
+    for (const [method, path] of [
+      ["POST", "/api/v1/reference-market-watchlist/entry-additions"],
+      ["POST", "/api/v1/token-catalog/selection-queries"],
+      ["GET", "/api/v1/token-catalog/selections/eip155:4663/0x1111111111111111111111111111111111111111"],
+    ] as const) {
+      expect(registry.match(method, path).status).toBe("not_found");
+    }
 
     for (const path of Object.values(browserPagePaths)) {
       const page = await invoke(registry, "GET", path);
@@ -407,46 +405,6 @@ describe("wallet browser routes", () => {
         bodyLength: 0,
       })).toEqual({ ok: false, code: "query_not_supported" });
     }
-    credentials.close();
-  });
-
-  it("binds each browser reference-market mutation path to the matching application effect", async () => {
-    const calls: string[] = [];
-    const base = referenceMarketInterfaceHarnessPort();
-    const record = (
-      action: "add" | "remove" | "reorder",
-    ) => async () => {
-      calls.push(action);
-      return createReferenceMarketFailure("wallet_not_connected");
-    };
-    const referenceMarkets: ReferenceMarketApplicationPort = Object.freeze({
-      ...base,
-      addPair: record("add"),
-      removePair: record("remove"),
-      reorderPairs: record("reorder"),
-    });
-    const credentials = createBrowserRequestCredentialAuthority({
-      now: () => now,
-      randomBytes: (size) => Buffer.alloc(size, 18),
-    });
-    const registry = extendBrowserInterfaceRoutes({
-      ...interfacePorts(referenceMarkets),
-      routes: await baseRoutes(),
-      credentials,
-      assets,
-      walletOperations: walletOperations().port,
-    });
-    const pairId = referenceMarketManifest.pairs[0]!.pairId;
-    const expectedRevision = "AAAAAAAAAAAAAAAAAAAAAA";
-    const requests = {
-      add: { pairId, expectedRevision },
-      remove: { pairId, expectedRevision },
-      reorder: { pairIds: [pairId], expectedRevision },
-    } as const;
-    for (const action of ["add", "remove", "reorder"] as const) {
-      await invoke(registry, "POST", referenceMarketBrowserMutationPaths[action], requests[action]);
-    }
-    expect(calls).toEqual(["add", "remove", "reorder"]);
     credentials.close();
   });
 

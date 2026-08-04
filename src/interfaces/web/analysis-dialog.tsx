@@ -6,7 +6,6 @@ import {
 } from "react";
 
 import {
-  contractInspectCapability,
   evmAddressSchema,
   getCapabilityDefinitionSnapshot,
   hash32Schema,
@@ -16,6 +15,7 @@ import {
   type ContractInspectData,
   type EvmAddress,
 } from "../../core/browser.js";
+import { browserCapabilityBindings } from "../browser-capability-bindings.js";
 import type {
   TokenInspectionSuccess,
 } from "../../token-catalog/browser.js";
@@ -99,7 +99,9 @@ type AnalysisState =
     }>;
 
 const contractLimitations =
-  getCapabilityDefinitionSnapshot(contractInspectCapability).staticScopeExclusions;
+  getCapabilityDefinitionSnapshot(
+    browserCapabilityBindings.contractInspect.contract,
+  ).staticScopeExclusions;
 
 const analysisBlock = (value: AnalysisResult) =>
   value.result.data.analysis.block;

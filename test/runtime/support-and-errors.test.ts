@@ -51,6 +51,7 @@ import {
   assertInterfaceRuntimeSupportManifestExtension,
   assertWalletRuntimeSupportManifestExtension,
   createCapabilityCatalogSchema,
+  createCapabilityAvailability,
   composeCapabilityCatalog,
   extendChainRuntimeSupportManifest,
   extendInterfaceRuntimeSupportManifest,
@@ -160,6 +161,35 @@ const chainExtensionInput = {
 };
 
 describe("runtime support manifest authority", () => {
+  it("owns overall availability derivation for every exposure class", () => {
+    expect(createCapabilityAvailability({
+      direct: "unavailable",
+      http: "unavailable",
+      mcp: "unavailable",
+      cli: "unavailable",
+      web: "unavailable",
+    })).toEqual(unavailable);
+    expect(createCapabilityAvailability({
+      direct: "internal",
+      http: "unavailable",
+      mcp: "unavailable",
+      cli: "unavailable",
+      web: "unavailable",
+    })).toEqual(internal);
+    const callerProjection = Object.freeze({
+      overall: "unavailable" as const,
+      direct: "internal",
+      http: "internal",
+      mcp: "unavailable",
+      cli: "available",
+      web: "unavailable",
+      unrelated: "caller-owned",
+    });
+    const exposed = createCapabilityAvailability(callerProjection);
+    expect(exposed).toEqual(cliAvailable);
+    expect(Object.isFrozen(exposed)).toBe(true);
+  });
+
   it("preserves the independent runtime and owner schema projections", () => {
     for (const [schema, bytes, digest] of [
       [

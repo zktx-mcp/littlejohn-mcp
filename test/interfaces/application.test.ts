@@ -278,16 +278,23 @@ describe("interface owner application", () => {
     expect(availability.get("wallet.connect")?.http).toBe("internal");
     expect(availability.get("wallet.connect")?.web).toBe("available");
     expect(availability.get("wallet.disconnect")?.web).toBe("available");
-    expect(availability.get("wallet.current_operation")?.web).toBe("available");
+    expect(availability.get("wallet.current_operation")).toEqual({
+      overall: "internal", direct: "internal", http: "internal",
+      mcp: "unavailable", cli: "unavailable", web: "unavailable",
+    });
     expect(availability.get("wallet.cancel_operation")?.web).toBe("available");
     expect(availability.get("wallet.operation")?.web).toBe("available");
     expect(availability.get("token.inspect")).toEqual({
       overall: "available", direct: "internal", http: "available",
-      mcp: "available", cli: "available", web: "available",
+      mcp: "available", cli: "available", web: "unavailable",
     });
+    for (const capabilityId of ["token.selection", "token.selections"]) {
+      expect(availability.get(capabilityId)).toEqual({
+        overall: "available", direct: "internal", http: "internal",
+        mcp: "available", cli: "available", web: "unavailable",
+      });
+    }
     for (const capabilityId of [
-      "token.selection",
-      "token.selections",
       "token.start_addition",
       "token.start_removal",
       "token.operation",
@@ -298,11 +305,11 @@ describe("interface owner application", () => {
     });
     expect(availability.get("account.assets")).toEqual({
       overall: "available", direct: "internal", http: "internal",
-      mcp: "available", cli: "available", web: "available",
+      mcp: "available", cli: "available", web: "unavailable",
     });
     expect(availability.get("account.asset")).toEqual({
-      overall: "available", direct: "internal", http: "internal",
-      mcp: "unavailable", cli: "unavailable", web: "available",
+      overall: "internal", direct: "internal", http: "internal",
+      mcp: "unavailable", cli: "unavailable", web: "unavailable",
     });
 
     await application.close();

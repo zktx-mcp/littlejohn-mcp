@@ -4,19 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { WalletTaskDialog } from "../../../src/interfaces/web/wallet-task-dialog.js";
 import {
-  parseWalletCurrentOperationProjection,
   parseWalletOperationPresentation,
 } from "../../../src/wallet/operation-contract.js";
 
 const operationId = "A".repeat(43);
-const disconnected = parseWalletCurrentOperationProjection({
-  status: "absent",
-  connectionRevision: "1",
-  connection: {
-    status: "disconnected",
-    reason: "no_session",
-  },
-});
 const deliveryUnknown = Object.freeze({
   status: "delivery_unknown" as const,
   action: "start" as const,
@@ -34,7 +25,6 @@ describe("wallet task dialog", () => {
       task: "wallet_connect",
       connectionRevision: "1",
       operationId,
-      wallet: disconnected,
       operationPresentation: undefined,
       pending: false,
       pendingAction: undefined,
@@ -59,7 +49,6 @@ describe("wallet task dialog", () => {
       task: "wallet_connect",
       connectionRevision: "1",
       operationId,
-      wallet: disconnected,
       operationPresentation: undefined,
       pending: false,
       pendingAction: undefined,
@@ -76,7 +65,6 @@ describe("wallet task dialog", () => {
       task: "wallet_connect",
       connectionRevision: "1",
       operationId,
-      wallet: disconnected,
       operationPresentation: undefined,
       pending: false,
       pendingAction: undefined,
@@ -111,17 +99,10 @@ describe("wallet task dialog", () => {
       },
       access: "interactive",
     });
-    const wallet = parseWalletCurrentOperationProjection({
-      status: "present",
-      connectionRevision: "1",
-      connection: { status: "unresolved", sessionCount: "1" },
-      presentation,
-    });
     const markup = renderToStaticMarkup(createElement(WalletTaskDialog, {
       task: "wallet_disconnect",
       connectionRevision: "1",
       operationId,
-      wallet,
       operationPresentation: presentation,
       pending: false,
       pendingAction: undefined,

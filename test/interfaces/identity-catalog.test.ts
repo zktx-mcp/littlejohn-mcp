@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import { extendChainSupportManifest } from "../../src/chain/application.js";
-import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
 import { accountAssetApplicationContracts } from "../../src/account-assets/contracts.js";
 import {
   compareCodePointSequences,
@@ -30,8 +29,6 @@ import {
   type LocalOperationIdentity,
 } from "../../src/interfaces/identities.js";
 import { publicInspectionPaths } from "../../src/interfaces/browser-contract.js";
-import { extendInterfaceSupportManifest } from "../../src/interfaces/support.js";
-import { extendReferenceMarketSupportManifest } from "../../src/market-portfolio/support.js";
 import {
   referenceMarketApplicationContracts,
   referenceMarketErrorRegistry,
@@ -53,19 +50,12 @@ import {
 } from "../../src/token-catalog/errors.js";
 import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
 import { extendWalletSupportManifest } from "../../src/wallet/application.js";
-import { extendUniswapV2ProtocolHarnessManifest } from "../protocols/interface-harness.js";
 
 const tokenCatalogManifest = () => extendTokenCatalogSupportManifest(
   extendChainSupportManifest(
     extendWalletSupportManifest(
       createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
     ),
-  ),
-);
-
-const interfaceManifest = () => extendInterfaceSupportManifest(
-  extendUniswapV2ProtocolHarnessManifest(
-    extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(tokenCatalogManifest())),
   ),
 );
 
@@ -302,8 +292,6 @@ describe("interface binding identity authority", () => {
       command: "inspect",
       argumentSyntax: "<token-address> --block <latest|block-number> [--json]",
     });
-    expect(tokenInspectInterface.web).toBe(true);
-    expect(contractInspectInterface.web).toBe(true);
     expect(contractInspectInterface.http.path).toBe(publicInspectionPaths.contractQueries);
     expect(tokenInspectInterface.http.path).toBe(publicInspectionPaths.tokenQueries);
     expect(readCapabilityRegistry.owns(tokenInspectCapability)).toBe(false);
@@ -368,7 +356,7 @@ describe("interface binding identity authority", () => {
     }
   });
 
-  it("derives CLI, MCP, and final support availability from the binding catalogs", () => {
+  it("derives CLI and MCP identities from the binding catalogs", () => {
     expect(accountAssetInterfaceBindingList).toHaveLength(2);
     expect(accountAssetInterfaceBindingList[0]?.contract)
       .toBe(accountAssetApplicationContracts.collection);
@@ -397,29 +385,5 @@ describe("interface binding identity authority", () => {
         });
     }
 
-    const snapshot = readRuntimeSupportManifest(interfaceManifest());
-    const availability = new Map<string, (typeof snapshot.capabilities)[number]["availability"]>(
-      snapshot.capabilities.map((entry): [string, (typeof snapshot.capabilities)[number]["availability"]] =>
-        [entry.capabilityId, entry.availability]),
-    );
-    expect(availability.get("token.inspect")).toEqual({
-      overall: "available",
-      direct: "internal",
-      http: "available",
-      mcp: "available",
-      cli: "available",
-      web: "available",
-    });
-    for (const binding of tokenCatalogInterfaceBindingList) {
-      expect(availability.get(binding.contract.capabilityId)).toEqual({
-        overall: "available",
-        direct: "internal",
-        http: "internal",
-        mcp: "available",
-        cli: "available",
-        web: "available",
-      });
-    }
-    expect(availability.get("account.balance")?.web).toBe("unavailable");
   });
 });

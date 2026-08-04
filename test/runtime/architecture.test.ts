@@ -42,6 +42,7 @@ const browserCoreConsumers = new Set([
   "account-assets/contracts.ts",
   "account-assets/http-contract.ts",
   "account-assets/view.ts",
+  "interfaces/browser-capability-bindings.ts",
   "interfaces/browser-contract.ts",
   "interfaces/browser-error-response.ts",
   "interfaces/operation-delivery.ts",
@@ -83,6 +84,7 @@ const browserCoreConsumers = new Set([
   "wallet/operation-contract.ts",
 ]);
 const browserTokenCatalogConsumers = new Set([
+  resolve(sourceRoot, "interfaces/browser-capability-bindings.ts"),
   resolve(sourceRoot, "interfaces/browser-error-response.ts"),
 ]);
 const runtimeEntryPoint = resolve(sourceRoot, "runtime/index.ts");

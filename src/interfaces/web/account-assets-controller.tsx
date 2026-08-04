@@ -45,6 +45,29 @@ export const sameConnectedAccount = (
   expected.address === actual.address &&
   expected.connectionRevision === actual.connectionRevision;
 
+export type ConnectedAccountObservation =
+  | Readonly<{ status: "unobserved" }>
+  | Readonly<{ status: "different_chain" }>
+  | Readonly<{ status: "different_address" }>
+  | Readonly<{ status: "revision_changed" }>
+  | Readonly<{ status: "exact" }>;
+
+export const observeConnectedAccount = (
+  expected: ConnectedAccount,
+  actual: ConnectedAccount | undefined,
+): ConnectedAccountObservation => {
+  if (actual === undefined) return Object.freeze({ status: "unobserved" });
+  if (actual.chainId !== expected.chainId) {
+    return Object.freeze({ status: "different_chain" });
+  }
+  if (actual.address !== expected.address) {
+    return Object.freeze({ status: "different_address" });
+  }
+  return actual.connectionRevision === expected.connectionRevision
+    ? Object.freeze({ status: "exact" })
+    : Object.freeze({ status: "revision_changed" });
+};
+
 type BoundOverviewSnapshot = Readonly<{
   accountKey: string;
   result: AccountAssetOverviewSuccess;

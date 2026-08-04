@@ -8,7 +8,6 @@ import {
   type ReferencePairId,
 } from "../core/browser.js";
 import { parseWalletOperationId } from "../wallet/operation-contract.js";
-import type { ReferenceMarketDeliveryAction } from "./reference-market-delivery.js";
 
 export const browserCsrfHeaderName = "Littlejohn-CSRF-Token";
 export const browserCsrfMetaName = "littlejohn-csrf-token";
@@ -42,6 +41,17 @@ export const browserPages = Object.freeze({
 export type BrowserPage = typeof browserPages[keyof typeof browserPages];
 export type BrowserPageId = BrowserPage["id"];
 export type BrowserPageKind = BrowserPage["kind"];
+
+export const browserDialogSurfaces = Object.freeze({
+  analysis: Object.freeze({ taskKind: "analysis" }),
+  walletConnect: Object.freeze({ taskKind: "wallet_connect" }),
+  walletDisconnect: Object.freeze({ taskKind: "wallet_disconnect" }),
+  stockTokenAdd: Object.freeze({ taskKind: "stock_token_add" }),
+  stockTokenRemove: Object.freeze({ taskKind: "stock_token_remove" }),
+  externalTokenOperation: Object.freeze({ taskKind: "external_token_operation" }),
+} as const);
+export type BrowserDialogSurface =
+  typeof browserDialogSurfaces[keyof typeof browserDialogSurfaces];
 
 export const browserInformationPages: readonly BrowserPage[] = Object.freeze(
   Object.values(browserPages),
@@ -249,22 +259,6 @@ export const publicInspectionPaths = Object.freeze({
   contractQueries: "/api/v1/contract-inspections",
   tokenQueries: "/api/v1/token-inspections",
 } as const);
-
-export const referenceMarketBrowserMutationPaths = Object.freeze({
-  add: "/api/v1/reference-market-watchlist/entry-additions",
-  remove: "/api/v1/reference-market-watchlist/entry-removals",
-  reorder: "/api/v1/reference-market-watchlist/order-replacements",
-} as const satisfies Readonly<Record<ReferenceMarketDeliveryAction, string>>);
-
-export const referenceMarketBrowserMutationPath = (
-  action: ReferenceMarketDeliveryAction,
-): string => {
-  switch (action) {
-    case "add": return referenceMarketBrowserMutationPaths.add;
-    case "remove": return referenceMarketBrowserMutationPaths.remove;
-    case "reorder": return referenceMarketBrowserMutationPaths.reorder;
-  }
-};
 
 export const parseBrowserCsrfToken = (input: unknown): string =>
   browserCsrfTokenSchema.parse(input);

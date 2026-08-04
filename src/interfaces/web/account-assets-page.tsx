@@ -14,6 +14,7 @@ import {
   presentNativeAssetAmount,
   stockTokenAmount,
 } from "./asset-amount.js";
+import { CopyableIdentifier } from "./copyable-identifier.js";
 import { Icon } from "./icons.js";
 import { LoadingIndicator } from "./loading-indicator.js";
 import { PageHeader } from "./page-header.js";
@@ -93,6 +94,14 @@ export const AccountAssetsPage = ({
         )
       ) : (
         <>
+          <section className="asset-account-subject" aria-labelledby="asset-account-heading">
+            <h2 id="asset-account-heading">Account</h2>
+            <p>Robinhood Chain</p>
+            <CopyableIdentifier
+              label="connected account address"
+              value={overview.account.address}
+            />
+          </section>
           {staleMessage === undefined ? null : (
             <p className="limitation" role="status">
               The latest refresh failed. Previous balances remain visible.
@@ -106,7 +115,7 @@ export const AccountAssetsPage = ({
                   <p className="type-label">Native</p>
                   <h3>ETH</h3>
                 </div>
-                <AssetAmount amount={presentNativeAssetAmount(overview.native.raw)} />
+                <AssetAmount amount={presentNativeAssetAmount(overview.native)} />
               </article>
             </div>
           </section>

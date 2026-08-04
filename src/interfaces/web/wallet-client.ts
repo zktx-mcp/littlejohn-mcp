@@ -11,7 +11,8 @@ import {
   type WalletOperationPresentation,
   type WalletOperationStartResult,
 } from "../../wallet/operation-contract.js";
-import { walletManagementContracts, walletOperationConfirmationContract } from "../../wallet/management-contracts.js";
+import { walletOperationConfirmationContract } from "../../wallet/management-contracts.js";
+import { browserCapabilityBindings } from "../browser-capability-bindings.js";
 import {
   createDeliveryUnknown,
   type DeliveryUnknown,
@@ -103,7 +104,10 @@ export const startWalletOperation = async (
   if (delivery.status === "delivery_unknown") return delivery.delivery;
   const value = delivery.value;
   try {
-    return walletManagementContracts[kind].parseBoundSuccess(
+    const contract = kind === "connect"
+      ? browserCapabilityBindings.walletConnect.contract
+      : browserCapabilityBindings.walletDisconnect.contract;
+    return contract.parseBoundSuccess(
       {},
       { operationId, interactionInterface: "web" },
       parseWalletOperationStartResult(value),
@@ -136,7 +140,7 @@ const controlWalletOperation = async (
           { operationId: id, interactionInterface: "web" },
           parsed,
         )
-      : walletManagementContracts.cancelOperation.parseBoundSuccess(
+      : browserCapabilityBindings.walletCancelOperation.contract.parseBoundSuccess(
           { operationId: id, connectionRevision: input.connectionRevision },
           { operationId: id, interactionInterface: "web" },
           parsed,

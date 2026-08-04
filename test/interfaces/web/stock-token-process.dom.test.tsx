@@ -167,13 +167,23 @@ describe("Stock Token process owner", () => {
     );
     await waitFor(() => {
       expect(onNotification).toHaveBeenCalledTimes(1);
+      expect(latest?.operation?.state).toBe("completed");
+    });
+    expect(window.sessionStorage.getItem(
+      stockTokenTerminalNotificationStorageKey,
+    )).toBeNull();
+    act(() => {
+      latest?.acknowledgeCurrentOperation();
     });
     expect(window.sessionStorage.getItem(
       stockTokenTerminalNotificationStorageKey,
     )).toBe(operationId);
+    expect((latest as StockTokenProcess | undefined)?.operation).toBeNull();
 
     first.unmount();
     latest = undefined;
+    const readsBeforeReload = request.mock.calls.filter(([path]) =>
+      path === tokenCatalogBrowserRoutes.currentOperation).length;
     render(
       <Harness
         request={request}
@@ -183,9 +193,11 @@ describe("Stock Token process owner", () => {
     );
     await waitFor(() => {
       expect(request.mock.calls.filter(([path]) =>
-        path === tokenCatalogBrowserRoutes.currentOperation)).toHaveLength(2);
+        path === tokenCatalogBrowserRoutes.currentOperation).length)
+        .toBeGreaterThan(readsBeforeReload);
     });
     expect(onNotification).toHaveBeenCalledTimes(1);
+    expect((latest as StockTokenProcess | undefined)?.operation).toBeNull();
   });
 
   it("owns one add consent through confirmation, terminal reconciliation, and notification", async () => {
@@ -230,8 +242,8 @@ describe("Stock Token process owner", () => {
       latest?.addCandidate(candidate);
     });
     await waitFor(() => {
-      expect(latest?.addContext).toBeUndefined();
-      expect(latest?.operation).toBeNull();
+      expect(latest?.addTask.presentation?.addStatus.status).toBe("terminal");
+      expect(latest?.operation?.state).toBe("completed");
       expect(reconcileAdded).toHaveBeenCalledTimes(1);
     });
     expect(onNotification).toHaveBeenCalledWith(expect.objectContaining({
@@ -243,6 +255,11 @@ describe("Stock Token process owner", () => {
     expect(request.mock.calls.filter(([path]) =>
       path === tokenCatalogBrowserRoutes.confirmation(operationId),
     )).toHaveLength(1);
+    act(() => {
+      expect(latest?.closeAdd()).toBe(true);
+    });
+    expect(latest?.addContext).toBeUndefined();
+    expect(latest?.operation).toBeNull();
   });
 
   it("cancels a started addition whose exact selection revision does not match the consent", async () => {
@@ -456,16 +473,22 @@ describe("Stock Token process owner", () => {
       expect(latest?.closeAdd()).toBe(true);
     });
     expect(latest?.addContext).toBeDefined();
+    expect(latest?.addTask.presentation).toBeUndefined();
     observable = true;
     await waitFor(() => {
       expect(latest?.delivery).toBeUndefined();
-      expect(latest?.addContext).toBeUndefined();
+      expect(latest?.addTask.presentation?.addStatus.status).toBe("terminal");
+      expect(latest?.operation?.state).toBe("completed");
     }, { timeout: 2_000 });
     expect(request.mock.calls.filter(([path]) =>
       path === tokenCatalogBrowserRoutes.operations)).toHaveLength(1);
     expect(request.mock.calls.filter(([path]) =>
       path === tokenCatalogBrowserRoutes.confirmation(operationId),
     )).toHaveLength(1);
+    act(() => {
+      expect(latest?.closeAdd()).toBe(true);
+    });
+    expect(latest?.addContext).toBeUndefined();
   });
 
   it("opens and reopens from the mounted candidate projection without another read", async () => {
@@ -509,6 +532,7 @@ describe("Stock Token process owner", () => {
       operationId,
     });
     const selection = awaiting.review.previousSelection!;
+    let observedOperation: TokenCatalogOperation = awaiting;
     const request = vi.fn<BrowserFetch>(async (path) => {
       if (path === tokenCatalogBrowserRoutes.currentOperation) {
         return response({ operation: null });
@@ -517,9 +541,10 @@ describe("Stock Token process owner", () => {
         return response({ operation: awaiting });
       }
       if (path === tokenCatalogBrowserRoutes.operation(operationId)) {
-        return response({ operation: awaiting });
+        return response({ operation: observedOperation });
       }
       if (path === tokenCatalogBrowserRoutes.cancellation(operationId)) {
+        observedOperation = cancelled;
         return response({ operation: cancelled });
       }
       throw new Error(`Unexpected path: ${path}`);
@@ -545,12 +570,229 @@ describe("Stock Token process owner", () => {
       expect(latest?.closeRemove()).toBe(false);
     });
     await waitFor(() => {
-      expect(latest?.removeContext).toBeUndefined();
-      expect(latest?.operation).toBeNull();
+      expect(latest?.removeTask.presentation?.status).toBe("terminal");
+      expect(latest?.operation?.state).toBe("cancelled");
     });
     expect(request.mock.calls.filter(([path]) =>
       path === tokenCatalogBrowserRoutes.cancellation(operationId),
     )).toHaveLength(1);
+    act(() => {
+      expect(latest?.closeRemove()).toBe(true);
+    });
+    expect(latest?.removeContext).toBeUndefined();
+    expect(latest?.operation).toBeNull();
+  });
+
+  it("dismisses removal delivery uncertainty without losing its exact reconciliation subject", async () => {
+    const awaiting = await createTokenOperation({
+      kind: "remove",
+      state: "awaiting_confirmation",
+      operationId,
+    });
+    const selection = awaiting.review.previousSelection!;
+    let observable = false;
+    const request = vi.fn<BrowserFetch>(async (path) => {
+      if (path === tokenCatalogBrowserRoutes.currentOperation) {
+        return response({ operation: null });
+      }
+      if (path === tokenCatalogBrowserRoutes.operations) {
+        return response({});
+      }
+      if (path === tokenCatalogBrowserRoutes.operation(operationId)) {
+        return observable
+          ? response({ operation: awaiting })
+          : response({
+              type: "about:blank",
+              title: "Token operation not found",
+              status: 404,
+              code: "token_operation_not_found",
+              detail: "The token operation was not found.",
+              retryable: false,
+              issues: [],
+            }, 404);
+      }
+      throw new Error(`Unexpected path: ${path}`);
+    });
+    render(
+      <Harness
+        request={request}
+        onNotification={vi.fn<(notice: NotificationNotice) => void>()}
+        reconcileAddedSelection={vi.fn()}
+      />,
+    );
+
+    act(() => {
+      expect(latest?.openRemove({
+        selection,
+        name: "Example Stock Token",
+      })).toBe(true);
+    });
+    await waitFor(() => {
+      expect(latest?.removeTask.presentation?.status).toBe("delivery_unknown");
+    });
+    const retainedTaskId = latest?.removeContext?.taskId;
+    act(() => {
+      expect(latest?.closeRemove()).toBe(true);
+    });
+    expect(latest?.removeContext?.taskId).toBe(retainedTaskId);
+    expect(latest?.delivery?.result.operationId).toBe(operationId);
+    expect(latest?.removeTask.presentation).toBeUndefined();
+
+    observable = true;
+    await waitFor(() => {
+      expect(latest?.removeTask.presentation?.status).toBe("ready");
+      expect(latest?.operation?.operationId).toBe(operationId);
+      expect(latest?.delivery).toBeUndefined();
+    }, { timeout: 2_000 });
+    expect(request.mock.calls.filter(([path]) =>
+      path === tokenCatalogBrowserRoutes.operations)).toHaveLength(1);
+  });
+
+  it("keeps cancellation uncertainty through exact nonterminal observations and resolves it only at terminal", async () => {
+    const awaiting = await createTokenOperation({
+      kind: "remove",
+      state: "awaiting_confirmation",
+      operationId,
+    });
+    const applying = await createTokenOperation({
+      kind: "remove",
+      state: "applying",
+      operationId,
+    });
+    const cancelled = await createTokenOperation({
+      kind: "remove",
+      state: "cancelled",
+      operationId,
+    });
+    const selection = awaiting.review.previousSelection!;
+    let observedOperation: TokenCatalogOperation = awaiting;
+    const request = vi.fn<BrowserFetch>(async (path) => {
+      if (path === tokenCatalogBrowserRoutes.currentOperation) {
+        return response({ operation: null });
+      }
+      if (path === tokenCatalogBrowserRoutes.operations) {
+        return response({ operation: awaiting });
+      }
+      if (path === tokenCatalogBrowserRoutes.cancellation(operationId)) {
+        return response({});
+      }
+      if (path === tokenCatalogBrowserRoutes.operation(operationId)) {
+        return response({ operation: observedOperation });
+      }
+      throw new Error(`Unexpected path: ${path}`);
+    });
+    render(
+      <Harness
+        request={request}
+        onNotification={vi.fn<(notice: NotificationNotice) => void>()}
+        reconcileAddedSelection={vi.fn()}
+      />,
+    );
+
+    act(() => {
+      expect(latest?.openRemove({
+        selection,
+        name: "Example Stock Token",
+      })).toBe(true);
+    });
+    await waitFor(() => {
+      expect(latest?.removeTask.presentation?.status).toBe("ready");
+    });
+    act(() => {
+      expect(latest?.closeRemove()).toBe(false);
+    });
+    await waitFor(() => {
+      expect(latest?.removeTask.presentation?.status).toBe("delivery_unknown");
+    });
+    act(() => {
+      expect(latest?.closeRemove()).toBe(true);
+    });
+    const exactReadsAfterDismissal = request.mock.calls.filter(([path]) =>
+      path === tokenCatalogBrowserRoutes.operation(operationId)).length;
+    await waitFor(() => {
+      expect(request.mock.calls.filter(([path]) =>
+        path === tokenCatalogBrowserRoutes.operation(operationId)).length)
+        .toBeGreaterThan(exactReadsAfterDismissal);
+      expect(latest?.operation?.state).toBe("awaiting_confirmation");
+    }, { timeout: 2_000 });
+    expect(latest?.delivery?.result.action).toBe("cancel");
+    expect(latest?.removeTask.presentation).toBeUndefined();
+
+    observedOperation = applying;
+    await waitFor(() => {
+      expect(latest?.operation?.state).toBe("applying");
+    }, { timeout: 2_000 });
+    expect(latest?.delivery?.result.action).toBe("cancel");
+    expect(latest?.removeTask.presentation).toBeUndefined();
+
+    observedOperation = cancelled;
+    await waitFor(() => {
+      expect(latest?.operation?.state).toBe("cancelled");
+      expect(latest?.removeTask.presentation?.status).toBe("terminal");
+      expect(latest?.delivery).toBeUndefined();
+    }, { timeout: 2_000 });
+    expect(request.mock.calls.filter(([path]) =>
+      path === tokenCatalogBrowserRoutes.cancellation(operationId)))
+      .toHaveLength(1);
+  });
+
+  it("dismisses external delivery uncertainty while exact-ID polling continues to terminal", async () => {
+    const awaiting = await createTokenOperation({
+      kind: "remove",
+      state: "awaiting_confirmation",
+      operationId,
+    });
+    const completed = await createTokenOperation({
+      kind: "remove",
+      state: "completed",
+      operationId,
+    });
+    let observedOperation: TokenCatalogOperation = awaiting;
+    const request = vi.fn<BrowserFetch>(async (path) => {
+      if (path === tokenCatalogBrowserRoutes.currentOperation) {
+        return response({ operation: awaiting });
+      }
+      if (path === tokenCatalogBrowserRoutes.confirmation(operationId)) {
+        return response({});
+      }
+      if (path === tokenCatalogBrowserRoutes.operation(operationId)) {
+        return response({ operation: observedOperation });
+      }
+      throw new Error(`Unexpected path: ${path}`);
+    });
+    render(
+      <Harness
+        request={request}
+        onNotification={vi.fn<(notice: NotificationNotice) => void>()}
+        reconcileAddedSelection={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(latest?.operationTask?.actions).toEqual(["confirm", "cancel"]);
+    });
+    act(() => {
+      latest?.confirmCurrentOperation();
+    });
+    await waitFor(() => {
+      expect(latest?.operationTask?.request.status).toBe("delivery_unknown");
+    });
+    act(() => {
+      latest?.dismissExternalOperation();
+    });
+    expect(latest?.operation?.operationId).toBe(operationId);
+    expect(latest?.operationTask).toBeUndefined();
+
+    observedOperation = completed;
+    await waitFor(() => {
+      expect(latest?.operationTask?.terminal).toBe(true);
+      expect(latest?.operation?.state).toBe("completed");
+    }, { timeout: 2_000 });
+    expect(request.mock.calls.filter(([path]) =>
+      path === tokenCatalogBrowserRoutes.confirmation(operationId)))
+      .toHaveLength(1);
+    expect(request.mock.calls.some(([path]) =>
+      path === tokenCatalogBrowserRoutes.operation(operationId))).toBe(true);
   });
 
   it("confirms removal and reconciles only the operation result selection", async () => {
@@ -566,6 +808,7 @@ describe("Stock Token process owner", () => {
     });
     const selection = awaiting.review.previousSelection!;
     const reconcileRemoved = vi.fn();
+    let observedOperation: TokenCatalogOperation = awaiting;
     const request = vi.fn<BrowserFetch>(async (path) => {
       if (path === tokenCatalogBrowserRoutes.currentOperation) {
         return response({ operation: null });
@@ -574,9 +817,10 @@ describe("Stock Token process owner", () => {
         return response({ operation: awaiting });
       }
       if (path === tokenCatalogBrowserRoutes.operation(operationId)) {
-        return response({ operation: awaiting });
+        return response({ operation: observedOperation });
       }
       if (path === tokenCatalogBrowserRoutes.confirmation(operationId)) {
+        observedOperation = completed;
         return response(completed);
       }
       throw new Error(`Unexpected path: ${path}`);
@@ -600,13 +844,17 @@ describe("Stock Token process owner", () => {
       latest?.confirmRemove();
     });
     await waitFor(() => {
-      expect(latest?.removeContext).toBeUndefined();
-      expect(latest?.operation).toBeNull();
+      expect(latest?.removeTask.presentation?.status).toBe("terminal");
+      expect(latest?.operation?.state).toBe("completed");
     });
     expect(reconcileRemoved).toHaveBeenCalledOnce();
     expect(reconcileRemoved).toHaveBeenCalledWith(
       completed.result?.selection,
     );
+    act(() => {
+      expect(latest?.closeRemove()).toBe(true);
+    });
+    expect(latest?.removeContext).toBeUndefined();
   });
 
   it("aborts polling and ignores a late operation after unmount", async () => {

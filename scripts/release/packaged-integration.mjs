@@ -1054,21 +1054,6 @@ const browserReferenceHistory = (pairId, window) => fetch(
   },
 );
 
-const browserReferenceWatchlistMutation = (path, body, browser) => fetch(
-  `${fixedOrigin}${path}`,
-  {
-    method: "POST",
-    headers: {
-      Cookie: browser.cookie,
-      Origin: fixedOrigin,
-      [csrfHeaderName]: browser.csrf,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-    redirect: "error",
-  },
-);
-
 const assertReferenceWatchlist = (value, expectedPairIds) => {
   if (
     value?.account?.chainId !== expectedChainId ||
@@ -1914,11 +1899,10 @@ export const verifyPackagedIntegration = async (prepared) => {
       [],
     );
     const addedReferenceWatchlist = assertReferenceWatchlist(
-      await jsonResponse(await browserReferenceWatchlistMutation(
-        "/api/v1/reference-market-watchlist/entry-additions",
-        { pairId: referencePair.pairId, expectedRevision: initialReferenceWatchlist.revision },
-        browser,
-      )),
+      (await firstMcp.callTool("market_add_watchlist_pair", {
+        pairId: referencePair.pairId,
+        expectedRevision: initialReferenceWatchlist.revision,
+      })).structuredContent,
       [referencePair.pairId],
     );
     const reorderedReferenceWatchlist = assertReferenceWatchlist(
