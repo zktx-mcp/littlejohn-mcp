@@ -51,7 +51,9 @@ import {
   createValidatedInputEvidenceFragment,
 } from "../../src/core/capability-evidence.js";
 import {
+  createEvidenceDeclarationScope,
   createEvidenceFactIdentityDeclaration,
+  createEvidenceFactIdentityForConclusion,
   createEvidenceObservationTargetDeclaration,
   createEvidenceReplayDefinition,
   createEvmAddressConclusionIdentity,
@@ -429,6 +431,128 @@ describe("capability binding authority", () => {
     }), "unavailable reason").toThrow();
   });
 
+  it("keeps every contract-control conclusion explicit with branch-owned support", async () => {
+    const address = evmAddressSchema.parse(`0x${"6".repeat(40)}`);
+    const invokeAnalysis = async (analysis: ContractAnalysis) => {
+      const harness = createCapabilityHarness();
+      const binding = bindForHarness(
+        contractInspectCapability,
+        harness,
+        async (_input, context, observations) => ({
+          status: "success",
+          data: recordContractAnalysisFixture(
+            context,
+            observations,
+            analysis,
+            "0x6000",
+            (sourceAddress) => harness.contractVerificationSource(sourceAddress),
+          ),
+        }),
+      );
+      const result = await invokeBinding(
+        contractInspectCapability,
+        binding,
+        { address, block: { kind: "latest" } },
+      );
+      if (!result.ok) throw new TypeError("Contract analysis evidence fixture failed.");
+      return result;
+    };
+    const directBase = {
+      chainId: configuredChainId,
+      target: address,
+      block,
+      targetRuntimeCode: {
+        byteLength: "2",
+        codeHash: keccak256FromHex("0x6000"),
+      },
+    } as const;
+    const exactAbsent = contractAnalysisSchema.parse({
+      ...directBase,
+      proxy: { status: "no_supported_proxy_observed" },
+      sources: [{ role: "target", address, status: "exact_match" }],
+      declaredFunctions: { status: "observed", signatures: [] },
+      controls: {
+        owner: { status: "not_declared" },
+        paused: { status: "not_declared" },
+        defaultAdmins: { status: "not_declared" },
+      },
+    });
+    const unavailableSource = contractAnalysisSchema.parse({
+      ...directBase,
+      proxy: { status: "no_supported_proxy_observed" },
+      sources: [{ role: "target", address, status: "no_record_observed" }],
+      declaredFunctions: { status: "unavailable", reason: "exact_abi_unavailable" },
+      controls: {
+        owner: { status: "unavailable", reason: "exact_abi_unavailable" },
+        paused: { status: "unavailable", reason: "exact_abi_unavailable" },
+        defaultAdmins: { status: "unavailable", reason: "exact_abi_unavailable" },
+      },
+    });
+    const unresolved = contractAnalysisSchema.parse({
+      ...directBase,
+      proxy: { status: "unresolved", reason: "implementation_runtime_code_empty" },
+      sources: [{ role: "target", address, status: "no_record_observed" }],
+      declaredFunctions: { status: "unavailable", reason: "deployment_unresolved" },
+      controls: {
+        owner: { status: "unavailable", reason: "deployment_unresolved" },
+        paused: { status: "unavailable", reason: "deployment_unresolved" },
+        defaultAdmins: { status: "unavailable", reason: "deployment_unresolved" },
+      },
+    });
+    for (const [analysis, expected] of [
+      [createExactResolvedAnalysis(address, block), {
+        status: "established",
+        reason: "observed",
+        supportPurpose: "contract_controls",
+        freshnessRuleId: "chain_anchor_exact",
+        coverage: "complete",
+        hasControlObservation: true,
+      }],
+      [exactAbsent, {
+        status: "not_applicable",
+        reason: "not_present",
+        supportPurpose: "contract_source_target",
+        freshnessRuleId: "contract_source_at_chain_anchor",
+        coverage: "complete",
+        hasControlObservation: false,
+      }],
+      [unavailableSource, {
+        status: "unavailable",
+        reason: "not_observed",
+        supportPurpose: "contract_source_target",
+        freshnessRuleId: "contract_source_at_chain_anchor",
+        coverage: "partial",
+        hasControlObservation: false,
+      }],
+      [unresolved, {
+        status: "unavailable",
+        reason: "not_observed",
+        supportPurpose: "contract_deployment",
+        freshnessRuleId: "chain_anchor_exact",
+        coverage: "partial",
+        hasControlObservation: false,
+      }],
+    ] as const) {
+      const result = await invokeAnalysis(analysis);
+      const controls = result.evidence.conclusions.find(
+        ({ id }) => id === "contract_controls_observed",
+      );
+      const support = result.evidence.sources.find(
+        ({ purpose }) => purpose === expected.supportPurpose,
+      );
+      expect(support).toBeDefined();
+      expect(controls).toMatchObject({
+        status: expected.status,
+        reason: expected.reason,
+        observationIds: support === undefined ? [] : [support.observationId],
+        freshness: { ruleId: expected.freshnessRuleId },
+      });
+      expect(result.evidence.coverage.status).toBe(expected.coverage);
+      expect(result.evidence.sources.some(({ purpose }) => purpose === "contract_controls"))
+        .toBe(expected.hasControlObservation);
+    }
+  });
+
   it("derives canonical conclusions, coverage, and deterministic observation identity", async () => {
     const harness = createCapabilityHarness();
     const binding = bindForHarness(chainStatusCapability, harness, async (_input, context, observations) =>
@@ -559,7 +683,6 @@ describe("capability binding authority", () => {
               minimumObservationCount: 1,
               outcome: "observed",
             }],
-            expectedConclusions: [conclusion],
             conclusionDrafts: [{
               conclusion,
               outcomeFact: fact,
@@ -910,7 +1033,6 @@ describe("capability binding authority", () => {
               minimumObservationCount: 1,
               outcome: "validated_input",
             }],
-            expectedConclusions: [inputConclusion],
             conclusionDrafts: [{
               conclusion: inputConclusion,
               outcomeFact: inputEvidence.fact,
@@ -1966,7 +2088,6 @@ describe("capability binding authority", () => {
               minimumObservationCount: 1,
               outcome: "validated_input",
             }],
-            expectedConclusions: [conclusion],
             conclusionDrafts: [{
               conclusion,
               outcomeFact: inputEvidence.fact,
@@ -2006,7 +2127,19 @@ describe("capability binding authority", () => {
       conclusions: [conclusionIdentity],
       warningCodes: [],
     });
-    const inputEvidence = createValidatedInputEvidenceFragment(replay);
+    const scope = createEvidenceDeclarationScope(replay);
+    const conclusion = createEvmAddressConclusionIdentity(conclusionIdentity, address);
+    const fact = createEvidenceFactIdentityForConclusion(replay, conclusion, scope);
+    const target = createEvidenceObservationTargetDeclaration(replay, {
+      slotId: "address_input",
+      fact,
+      kind: "validated_input",
+      owner: `${productDisplayName} validated input`,
+      sourceId: "input:test.dynamicconclusion",
+      purpose: "validated_input",
+      roles: { input: conclusion },
+    });
+    let omitDraft = false;
     const definition = defineReadCapability<{ address: string }, { address: string }>({
       capabilityId: "test.dynamicconclusion",
       contractVersion: "1",
@@ -2015,33 +2148,34 @@ describe("capability binding authority", () => {
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
       evidence: {
         definition: replay,
-        observationTargets: () => [inputEvidence.target],
+        observationTargets: (input) => {
+          if (input.address !== address) throw new TypeError("Address scope mismatch.");
+          return [target];
+        },
         declaration: (input, _data, binder) => {
-          const conclusion = createEvmAddressConclusionIdentity(
-            conclusionIdentity,
-            evmAddressSchema.parse(input.address),
-          );
-          const target = binder.bind(inputEvidence.target);
+          if (input.address !== address) throw new TypeError("Address scope mismatch.");
+          const boundTarget = binder.bind(target);
           return {
             observationExpectations: [{
-              slot: target.slot,
-              claims: [{ role: target.roles.input, value: input as never }],
+              slot: boundTarget.slot,
+              claims: [{ role: boundTarget.roles.input, value: input as never }],
             }],
             observationReferences: [],
             factRequirements: [{
-              fact: inputEvidence.fact,
-              observationSlots: [target.slot],
-              requiredObservationSlots: [target.slot],
+              fact,
+              observationSlots: [boundTarget.slot],
+              requiredObservationSlots: [boundTarget.slot],
               minimumObservationCount: 1,
               outcome: "validated_input",
             }],
-            expectedConclusions: [conclusion],
-            conclusionDrafts: [{
-              conclusion,
-              outcomeFact: inputEvidence.fact,
-              evidenceFacts: [inputEvidence.fact],
-              freshnessRuleId: "validated_input_current",
-            }],
+            conclusionDrafts: omitDraft
+              ? []
+              : [{
+                  conclusion,
+                  outcomeFact: fact,
+                  evidenceFacts: [fact],
+                  freshnessRuleId: "validated_input_current",
+                }],
             warningRequirements: [],
           };
         },
@@ -2055,7 +2189,12 @@ describe("capability binding authority", () => {
     const binding = bindForHarness(definition, harness, async (input) => ({ status: "success", data: input }));
     const result = await invokeBinding(definition, binding, { address });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.evidence.conclusions[0]?.id).toBe(`address_observed:${address}`);
+    if (result.ok) {
+      expect(result.evidence.conclusions[0]?.id).toBe(`address_observed:${address}`);
+    }
+    omitDraft = true;
+    const omitted = await invokeBinding(definition, binding, { address });
+    expect(omitted).toMatchObject({ ok: false, error: { code: "internal_error" } });
   });
 
   it("rejects data meaning that references an exclusion absent from its descriptor", () => {
@@ -2143,7 +2282,6 @@ describe("capability binding authority", () => {
               minimumObservationCount: 1,
               outcome: "observed",
             }],
-            expectedConclusions: [conclusion],
             conclusionDrafts: [{
               conclusion,
               outcomeFact: fact,
@@ -2220,7 +2358,6 @@ describe("capability binding authority", () => {
               minimumObservationCount: 1,
               outcome: "observed",
             }],
-            expectedConclusions: [conclusion],
             conclusionDrafts: [{
               conclusion,
               outcomeFact: fact,
@@ -2291,7 +2428,6 @@ describe("capability binding authority", () => {
               minimumObservationCount: 1,
               outcome: "validated_input",
             }],
-            expectedConclusions: [conclusion],
             conclusionDrafts: [{
               conclusion,
               outcomeFact: inputEvidence.fact,
@@ -2349,7 +2485,6 @@ describe("capability binding authority", () => {
               minimumObservationCount: 0,
               outcome: "not_present",
             }],
-            expectedConclusions: [conclusion],
             conclusionDrafts: [{
               conclusion,
               outcomeFact: fact,

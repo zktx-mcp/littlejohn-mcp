@@ -1442,6 +1442,7 @@ export const verifyPackagedIntegration = async (prepared) => {
       JSON.stringify(contractContent.evidence?.conclusions?.map(({ id }) => id)) !==
         JSON.stringify([
           "account_observed",
+          "contract_controls_observed",
           "contract_deployment_observed",
           "contract_source_checked",
         ]) ||

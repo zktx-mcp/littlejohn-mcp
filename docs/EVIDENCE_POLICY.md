@@ -90,6 +90,35 @@ An inference is labeled and remains separate from its source facts. Unknown,
 stale, incomplete, and conflicting evidence is preserved rather than converted
 into a positive conclusion.
 
+## Conclusion Completeness And Coverage
+
+An evidence definition owns every conclusion required for its capability. Its
+fixed conclusions apply to every invocation, and its declared dynamic families
+have only the exact members admitted by that invocation's validated scope. A
+producer supplies facts and conclusion drafts; it does not choose or repeat the
+required conclusion set. Every required conclusion remains explicit as
+established, not applicable, or unavailable.
+
+A not-applicable conclusion is a complete non-positive answer only when
+admitted supporting facts establish the validated exclusion, completed absence
+check, or unsupported boundary. A conclusion is unavailable when the required
+observation or proof of non-applicability is missing, failed, or inconsistent.
+In particular, `not_observed` is unavailable; `not_requested`, `not_present`,
+and `unsupported` are not applicable only within the exact scope established by
+their supporting facts.
+
+An outcome fact with no evidence authority has no observation of its own. Its
+public conclusion still cites separate admitted observations that support the
+outcome and satisfy one existing freshness rule. A conclusion without such
+support is not published as a successful evidence result, and no synthetic
+source or observation is created to make it publishable.
+
+Coverage is complete when every required conclusion is established or proved
+not applicable, partial when at least one but not all required conclusions are
+unavailable, and unavailable when all required conclusions are unavailable.
+Coverage derives only from these three conclusion-status partitions and never
+from capability identities or reason-specific exceptions.
+
 ## Robinhood Stock Token Classification
 
 Current Robinhood Stock Token membership is owned by a complete successful

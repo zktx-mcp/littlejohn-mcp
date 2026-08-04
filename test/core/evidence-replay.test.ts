@@ -22,6 +22,7 @@ import {
   readEvidenceReplayConclusionIds,
   readEvidenceReplaySlots,
   replayPublicEvidence,
+  type ConclusionIdentityDeclaration,
 } from "../../src/core/evidence-replay.js";
 import {
   evidenceSourceRecordSchema,
@@ -96,6 +97,58 @@ const createSource = (
   });
 };
 
+const createValidatedReplayFixture = (
+  localCapabilityId: string,
+  conclusions: readonly ConclusionIdentityDeclaration[],
+  value: CanonicalJson,
+) => {
+  const localDefinition = createEvidenceReplayDefinition({
+    capabilityId: localCapabilityId,
+    conclusions,
+    warningCodes: [],
+  });
+  const supportFact = createEvidenceFactIdentityDeclaration(localDefinition, "input");
+  const sourceId = `input:${localCapabilityId}`;
+  const supportTarget = createEvidenceObservationTargetDeclaration(localDefinition, {
+    slotId: "input",
+    fact: supportFact,
+    kind: "validated_input",
+    purpose: "validated_input",
+    owner: validatedInputOwner,
+    sourceId,
+    roles: { value: "validated_input" },
+  });
+  const layout = createEvidenceReplayLayout(localDefinition, [supportTarget]);
+  const bound = createEvidenceReplayBinder(localDefinition, layout).bind(supportTarget);
+  const claims = [{ role: bound.roles.value, value }];
+  const observationId = createEvidenceObservationId(localDefinition, layout, {
+    slot: bound.slot,
+    sourceId,
+    observedAt: evaluatedAt,
+    invocationId,
+  });
+  const sourceRecord = evidenceSourceRecordSchema.parse({
+    observationId,
+    invocationId,
+    sourceClass: "validated_input",
+    owner: validatedInputOwner,
+    purpose: "validated_input",
+    observedAt: evaluatedAt,
+    reference: { kind: "validated_input", sourceId },
+  });
+  const source = evidenceSourceSchema.parse({
+    ...sourceRecord,
+    recordDigest: createEvidenceSourceRecordDigest(
+      localDefinition,
+      layout,
+      bound.slot,
+      sourceRecord,
+      claims,
+    ),
+  });
+  return { localDefinition, supportFact, layout, bound, claims, observationId, source };
+};
+
 describe("public evidence replay", () => {
   it("keeps the observation ordinal private while matching an independent SHA-256 oracle", () => {
     const { layout, bound } = createLayout();
@@ -159,7 +212,6 @@ describe("public evidence replay", () => {
         minimumObservationCount: 1,
         outcome: "validated_input",
       }],
-      expectedConclusions: [conclusion],
       conclusionDrafts: [{
         conclusion,
         outcomeFact: fact,
@@ -190,6 +242,123 @@ describe("public evidence replay", () => {
       },
       warnings: [],
     });
+  });
+
+  it("rejects a producer that omits a definition-owned fixed conclusion", () => {
+    const firstConclusion = createExactConclusionIdentityDeclaration("first_observed");
+    const secondConclusion = createExactConclusionIdentityDeclaration("second_observed");
+    const { localDefinition, supportFact, layout, bound, claims, source } =
+      createValidatedReplayFixture(
+        "test.required_conclusions",
+        [firstConclusion, secondConclusion],
+        { value: "safe" },
+      );
+    expect(() => replayPublicEvidence({
+      definition: localDefinition,
+      layout,
+      observationExpectations: [{ slot: bound.slot, claims }],
+      observationReferences: [],
+      factRequirements: [{
+        fact: supportFact,
+        observationSlots: [bound.slot],
+        requiredObservationSlots: [bound.slot],
+        minimumObservationCount: 1,
+        outcome: "validated_input",
+      }],
+      conclusionDrafts: [{
+        conclusion: firstConclusion,
+        outcomeFact: supportFact,
+        evidenceFacts: [supportFact],
+        freshnessRuleId: "validated_input_current",
+      }],
+      warningRequirements: [],
+      evaluatedAt,
+      sources: [source],
+    })).toThrow("incomplete or undeclared");
+  });
+
+  it("requires separate admitted evidence for a slotless none-authority outcome", () => {
+    const localConclusion = createExactConclusionIdentityDeclaration("required_observation");
+    const {
+      localDefinition,
+      supportFact,
+      layout,
+      bound,
+      claims,
+      observationId,
+      source,
+    } = createValidatedReplayFixture(
+      "test.none_authority",
+      [localConclusion],
+      { requested: true },
+    );
+    const outcomeFact = createEvidenceFactIdentityDeclaration(localDefinition, "outcome");
+    const common = {
+      definition: localDefinition,
+      layout,
+      observationExpectations: [{ slot: bound.slot, claims }],
+      observationReferences: [],
+      warningRequirements: [],
+      evaluatedAt,
+      sources: [source],
+    } as const;
+    const outcomeRequirement = {
+      fact: outcomeFact,
+      observationSlots: [],
+      requiredObservationSlots: [],
+      minimumObservationCount: 0,
+      outcome: "not_observed" as const,
+    };
+    const supportRequirement = {
+      fact: supportFact,
+      observationSlots: [bound.slot],
+      requiredObservationSlots: [bound.slot],
+      minimumObservationCount: 1,
+      outcome: "validated_input" as const,
+    };
+    const factRequirements = [outcomeRequirement, supportRequirement];
+    const result = replayPublicEvidence({
+      ...common,
+      factRequirements,
+      conclusionDrafts: [{
+        conclusion: localConclusion,
+        outcomeFact,
+        evidenceFacts: [supportFact],
+        freshnessRuleId: "validated_input_current",
+      }],
+    });
+    expect(result.conclusions[0]).toMatchObject({
+      id: "required_observation",
+      status: "unavailable",
+      reason: "not_observed",
+      observationIds: [observationId],
+    });
+    expect(result.coverage.status).toBe("unavailable");
+    for (const outcome of ["source_failed", "validated_input"] as const) {
+      expect(() => replayPublicEvidence({
+        ...common,
+        factRequirements: [{
+          ...outcomeRequirement,
+          outcome,
+        }, supportRequirement],
+        conclusionDrafts: [{
+          conclusion: localConclusion,
+          outcomeFact,
+          evidenceFacts: [supportFact],
+          freshnessRuleId: "validated_input_current",
+        }],
+      })).toThrow("requires an observation slot");
+    }
+    expect(() => replayPublicEvidence({
+      ...common,
+      factRequirements,
+      conclusionDrafts: [{
+        conclusion: localConclusion,
+        outcomeFact,
+        evidenceFacts: [outcomeFact],
+        freshnessRuleId: "validated_input_current",
+      }],
+    })).toThrow("freshness requires evidence");
   });
 
   it("rejects forged, foreign-definition, and foreign-layout declarations", () => {
@@ -435,7 +604,6 @@ describe("public evidence replay", () => {
         minimumObservationCount: 1,
         outcome: "validated_input",
       }],
-      expectedConclusions: [conclusion],
       conclusionDrafts: [{
         conclusion,
         outcomeFact: fact,

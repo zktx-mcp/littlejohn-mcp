@@ -332,10 +332,6 @@ const chainStatusCapabilityEvidence: ReadCapabilityEvidence<
           [chain.slot],
         ),
       ],
-      expectedConclusions: [
-        chainStatusEvidence.conclusions.latestBlockObserved,
-        chainStatusEvidence.conclusions.rpcChainIdMatchesScope,
-      ],
       conclusionDrafts: [
         conclusionFromFact(
           chainStatusEvidence.conclusions.latestBlockObserved,
@@ -413,10 +409,6 @@ const contractInspectCapabilityEvidence: ReadCapabilityEvidence<
           [chain.slot],
         ),
         ...analysis.factRequirements,
-      ],
-      expectedConclusions: [
-        contractInspectEvidence.conclusions.accountObserved,
-        ...analysis.expectedConclusions,
       ],
       conclusionDrafts: [
         conclusionFromFact(
@@ -871,12 +863,6 @@ const transactionEvidenceDeclaration = (
         [transaction.slot],
       ),
     ],
-    expectedConclusions: [
-      transactionInspectEvidence.conclusions.inclusionObserved,
-      transactionInspectEvidence.conclusions.receiptObserved,
-      transactionInspectEvidence.conclusions.standardEventsDecoded,
-      transactionInspectEvidence.conclusions.transactionObserved,
-    ],
     conclusionDrafts: [
       conclusionFromFact(
         transactionInspectEvidence.conclusions.inclusionObserved,
@@ -977,6 +963,10 @@ export const transactionInspectCapability = defineReadCapability<TransactionInsp
   },
 });
 
+const requiresAdditionalAccountRequestEvidence = (
+  input: AccountBalanceInput,
+): boolean => input.account.kind === "active_wallet" && !input.includeNative;
+
 const accountObservationTargets = (input: AccountBalanceInput) => [
   accountBalanceEvidence.configuredChain.target,
   accountBalanceEvidence.targets.block,
@@ -988,6 +978,9 @@ const accountObservationTargets = (input: AccountBalanceInput) => [
     const identity = accountTokenEvidenceIdentity(input, address);
     return [identity.balanceTarget, identity.decimalsTarget];
   }),
+  ...(requiresAdditionalAccountRequestEvidence(input)
+    ? [accountBalanceEvidence.validatedInput.target]
+    : []),
 ];
 
 const accountObservationExpectations = (
@@ -1017,6 +1010,15 @@ const accountObservationExpectations = (
             data.account,
           )],
         )]),
+    ...(requiresAdditionalAccountRequestEvidence(input)
+      ? [expectation(
+          binder.bind(accountBalanceEvidence.validatedInput.target).slot,
+          [claim(
+            binder.bind(accountBalanceEvidence.validatedInput.target).roles.input,
+            asJson(input),
+          )],
+        )]
+      : []),
   ];
   if (data.native.status === "available") {
     const nativeBalance = binder.bind(accountBalanceEvidence.targets.nativeBalance);
@@ -1074,6 +1076,12 @@ const accountBalanceEvidenceDeclaration = (
   const account = input.account.kind === "address"
     ? binder.bind(accountBalanceEvidence.validatedInput.target)
     : binder.bind(accountBalanceEvidence.targets.walletAccount);
+  const accountFact = input.account.kind === "address"
+    ? accountBalanceEvidence.validatedInput.fact
+    : accountBalanceEvidence.facts.walletAccount;
+  const requestScope = input.account.kind === "address" || !input.includeNative
+    ? binder.bind(accountBalanceEvidence.validatedInput.target)
+    : undefined;
   const references: ObservationReference[] = [];
   if (data.native.status === "available") {
     const nativeBalance = binder.bind(accountBalanceEvidence.targets.nativeBalance);
@@ -1110,26 +1118,42 @@ const accountBalanceEvidenceDeclaration = (
       warningRequirements.push({ code: "decimals_unavailable", facts: [fact] });
     }
   }
+  const requestScopeRequirements: FactRequirement[] = [];
+  if (requiresAdditionalAccountRequestEvidence(input)) {
+    if (requestScope === undefined) {
+      throw new TypeError("Account request-scope evidence is absent.");
+    }
+    requestScopeRequirements.push(requirement(
+      accountBalanceEvidence.validatedInput.fact,
+      accountBalanceEvidence.validatedInput.outcome,
+      [requestScope.slot],
+    ));
+  }
 
   return {
     observationExpectations: accountObservationExpectations(input, data, binder),
     observationReferences: references,
     factRequirements: [
       requirement(
-        accountBalanceEvidence.validatedInput.fact,
+        accountFact,
         input.account.kind === "address"
           ? accountBalanceEvidence.validatedInput.outcome
           : "observed",
         [account.slot],
       ),
+      ...requestScopeRequirements,
       requirement(accountBalanceEvidence.facts.block, "observed", [block.slot]),
-      ...(input.includeNative
-        ? [requirement(
+      input.includeNative
+        ? requirement(
             accountBalanceEvidence.facts.nativeBalance,
             "observed",
             [binder.bind(accountBalanceEvidence.targets.nativeBalance).slot],
-          )]
-        : []),
+          )
+        : requirement(
+            accountBalanceEvidence.facts.nativeBalance,
+            "not_requested",
+            [],
+          ),
       requirement(
         accountBalanceEvidence.configuredChain.fact,
         accountBalanceEvidence.configuredChain.outcome,
@@ -1153,29 +1177,26 @@ const accountBalanceEvidenceDeclaration = (
         );
       }),
     ],
-    expectedConclusions: [
-      accountBalanceEvidence.conclusions.accountBound,
-      ...(input.includeNative
-        ? [accountBalanceEvidence.conclusions.nativeBalanceObserved]
-        : []),
-      ...input.tokens.map((address) =>
-        accountTokenEvidenceIdentity(input, address).conclusion),
-    ],
     conclusionDrafts: [
       conclusionFromFact(
         accountBalanceEvidence.conclusions.accountBound,
-        accountBalanceEvidence.validatedInput.fact,
+        accountFact,
         input.account.kind === "address"
           ? accountBalanceEvidence.validatedInput.freshnessRuleId
           : "wallet_session_current",
       ),
-      ...(input.includeNative
-        ? [conclusionFromFact(
+      input.includeNative
+        ? conclusionFromFact(
             accountBalanceEvidence.conclusions.nativeBalanceObserved,
             accountBalanceEvidence.facts.nativeBalance,
             "chain_anchor_exact",
-          )]
-        : []),
+          )
+        : conclusionFromFact(
+            accountBalanceEvidence.conclusions.nativeBalanceObserved,
+            accountBalanceEvidence.facts.nativeBalance,
+            accountBalanceEvidence.validatedInput.freshnessRuleId,
+            [accountBalanceEvidence.validatedInput.fact],
+          ),
       ...input.tokens.map((address) => {
         const identity = accountTokenEvidenceIdentity(input, address);
         return conclusionFromFact(
@@ -1253,7 +1274,6 @@ const walletConnectionCapabilityEvidence: ReadCapabilityEvidence<
         data.status === "connected" ? [sdk.slot, session.slot] : [sdk.slot],
         data.status === "connected" ? 2 : 1,
       )],
-      expectedConclusions: [walletConnectionEvidence.conclusions.connectionState],
       conclusionDrafts: [
         conclusionFromFact(
           walletConnectionEvidence.conclusions.connectionState,

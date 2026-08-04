@@ -439,13 +439,6 @@ const createTokenInspectionEvidenceDeclaration = (
       ),
       tokenFactRequirement(totalSupplyFact, "observed", totalSupply.slot),
     ],
-    expectedConclusions: [
-      decimalsConclusion,
-      nameConclusion,
-      symbolConclusion,
-      totalSupplyConclusion,
-      ...analysis.expectedConclusions,
-    ],
     conclusionDrafts: [
       tokenConclusion(decimalsConclusion, decimalsFact),
       tokenConclusion(nameConclusion, nameFact),

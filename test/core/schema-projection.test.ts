@@ -73,7 +73,6 @@ const defineProjectionTestCapability = <Data extends { readonly value: string }>
             minimumObservationCount: 1,
             outcome: inputEvidence.outcome,
           }],
-          expectedConclusions: [conclusion],
           conclusionDrafts: [{
             conclusion,
             outcomeFact: inputEvidence.fact,

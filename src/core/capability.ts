@@ -241,7 +241,6 @@ const captureCapabilityEvidenceDeclaration = <Input, Data>(
     observationExpectations: Object.freeze([...declaration.observationExpectations]),
     observationReferences: Object.freeze([...declaration.observationReferences]),
     factRequirements: Object.freeze([...declaration.factRequirements]),
-    expectedConclusions: Object.freeze([...declaration.expectedConclusions]),
     conclusionDrafts: Object.freeze([...declaration.conclusionDrafts]),
     warningRequirements: Object.freeze([...declaration.warningRequirements]),
   });

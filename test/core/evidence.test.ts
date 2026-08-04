@@ -11,7 +11,7 @@ import {
   warningSchema,
   sourceReferenceSchema,
 } from "../../src/core/index.js";
-import { createWarning } from "../../src/core/evidence.js";
+import { createWarning, deriveCoverage } from "../../src/core/evidence.js";
 
 const canonicalInvocationId = `inv:${Buffer.alloc(32, 2).toString("base64url")}`;
 
@@ -200,9 +200,77 @@ describe("evidence identity", () => {
       observationIds,
       freshness,
     }).success).toBe(false);
+    expect(conclusionSchema.safeParse({
+      id: "input_observed",
+      status: "unavailable",
+      reason: "not_observed",
+      observationIds,
+      freshness,
+    }).success).toBe(true);
+    expect(conclusionSchema.safeParse({
+      id: "input_observed",
+      status: "not_applicable",
+      reason: "not_observed",
+      observationIds,
+      freshness,
+    }).success).toBe(false);
+    for (const reason of ["not_requested", "not_present", "unsupported"] as const) {
+      expect(conclusionSchema.safeParse({
+        id: `input_${reason}`,
+        status: "not_applicable",
+        reason,
+        observationIds,
+        freshness,
+      }).success).toBe(true);
+    }
+    for (const reason of ["source_failed", "source_inconsistent"] as const) {
+      expect(conclusionSchema.safeParse({
+        id: `input_${reason}`,
+        status: "unavailable",
+        reason,
+        observationIds,
+        freshness,
+      }).success).toBe(true);
+    }
   });
 
   it("binds coverage status to the exact outcome partitions", () => {
+    const observationIds = [`obs:${"A".repeat(43)}`];
+    const freshness = freshnessSchema.parse({
+      status: "fresh",
+      ruleId: "validated_input_current",
+      evaluatedAt: "2026-07-12T10:16:02.000Z",
+      observationIds,
+    });
+    const established = conclusionSchema.parse({
+      id: "established",
+      status: "established",
+      reason: "validated_input",
+      observationIds,
+      freshness,
+    });
+    const notApplicable = conclusionSchema.parse({
+      id: "not_applicable",
+      status: "not_applicable",
+      reason: "not_requested",
+      observationIds,
+      freshness,
+    });
+    const unavailable = conclusionSchema.parse({
+      id: "unavailable",
+      status: "unavailable",
+      reason: "not_observed",
+      observationIds,
+      freshness,
+    });
+    expect(deriveCoverage([established, notApplicable])).toEqual({
+      status: "complete",
+      established: ["established"],
+      notApplicable: ["not_applicable"],
+      unavailable: [],
+    });
+    expect(deriveCoverage([established, unavailable]).status).toBe("partial");
+    expect(deriveCoverage([unavailable]).status).toBe("unavailable");
     expect(coverageSchema.safeParse({
       status: "complete",
       established: ["a"],

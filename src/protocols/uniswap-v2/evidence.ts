@@ -41,6 +41,7 @@ const definition = createEvidenceReplayDefinition({
   conclusions: [deploymentObserved, candidatesEvaluated, quoteObserved],
   warningCodes: ["partial_result"],
 });
+const quoteOutcomeFact = createEvidenceFactIdentityDeclaration(definition, "quote_outcome");
 const configuredChain = createConfiguredChainEvidenceFragment(definition);
 const analysis = createContractAnalysisEvidenceFragment(
   definition,
@@ -327,6 +328,15 @@ const declaration = (
     ));
   }
   const quoted = data.candidates.some((candidate) => candidate.status === "quoted");
+  if (!quoted) {
+    factRequirements.push(Object.freeze({
+      fact: quoteOutcomeFact,
+      outcome: "not_present",
+      observationSlots: [],
+      requiredObservationSlots: [],
+      minimumObservationCount: 0,
+    }));
+  }
   const deploymentFacts = [configuredChain.fact, analysis.facts.deployment];
   const conclusionDrafts: ConclusionDraft[] = [
     {
@@ -341,24 +351,17 @@ const declaration = (
       evidenceFacts: Object.freeze(observedCandidateFacts),
       freshnessRuleId: "chain_anchor_exact",
     },
-    ...(quoted
-      ? [{
-          conclusion: quoteObserved,
-          outcomeFact: configuredChain.fact,
-          evidenceFacts: Object.freeze(observedCandidateFacts),
-          freshnessRuleId: "chain_anchor_exact" as const,
-        }]
-      : []),
+    {
+      conclusion: quoteObserved,
+      outcomeFact: quoted ? configuredChain.fact : quoteOutcomeFact,
+      evidenceFacts: Object.freeze(observedCandidateFacts),
+      freshnessRuleId: "chain_anchor_exact" as const,
+    },
   ];
   return Object.freeze({
     observationExpectations: Object.freeze(observationExpectations),
     observationReferences: analysisFacts.observationReferences,
     factRequirements: Object.freeze(factRequirements),
-    expectedConclusions: Object.freeze([
-      deploymentObserved,
-      candidatesEvaluated,
-      ...(quoted ? [quoteObserved] : []),
-    ]),
     conclusionDrafts: Object.freeze(conclusionDrafts),
     warningRequirements: analysisFacts.warningRequirements,
   });

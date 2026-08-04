@@ -115,7 +115,7 @@ export const invocationSourceIdentity = (
   : `${owner}\u0000${reference.kind}\u0000${reference.sourceId}`;
 
 export const factOutcomeDefinitions = deepFreezeValue({
-  not_observed: { conclusionStatus: "not_applicable", evidenceAuthority: "none" },
+  not_observed: { conclusionStatus: "unavailable", evidenceAuthority: "none" },
   not_present: { conclusionStatus: "not_applicable", evidenceAuthority: "none" },
   not_requested: { conclusionStatus: "not_applicable", evidenceAuthority: "none" },
   observed: { conclusionStatus: "established", evidenceAuthority: "external" },
@@ -201,7 +201,7 @@ const coverageStatusForCounts = (
 ): CoverageStatus => {
   const total = established + notApplicable + unavailable;
   if (total > 0 && unavailable === total) return "unavailable";
-  if (notApplicable > 0 || unavailable > 0) return "partial";
+  if (unavailable > 0) return "partial";
   return "complete";
 };
 

@@ -9,6 +9,7 @@ import {
   canonicalJsonStringify,
   captureCanonicalJson,
   chainAnchorSchema,
+  contractAnalysisSchema,
   erc20AssetIdentitySchema,
   getCapabilityDefinitionSnapshot,
   parseCapabilitySuccess,
@@ -284,6 +285,31 @@ describe("token catalog contracts", () => {
     });
     const originalAnalysis = createExactResolvedAnalysis(asset.address, analysisBlock);
     const original = await createInspectionSuccess(input, { analysis: originalAnalysis });
+    const exactAbsentAnalysis = contractAnalysisSchema.parse({
+      chainId: asset.chainId,
+      target: asset.address,
+      block: analysisBlock,
+      targetRuntimeCode: originalAnalysis.targetRuntimeCode,
+      proxy: { status: "no_supported_proxy_observed" },
+      sources: [{ role: "target", address: asset.address, status: "exact_match" }],
+      declaredFunctions: { status: "observed", signatures: [] },
+      controls: {
+        owner: { status: "not_declared" },
+        paused: { status: "not_declared" },
+        defaultAdmins: { status: "not_declared" },
+      },
+    });
+    const exactAbsent = await createInspectionSuccess(input, { analysis: exactAbsentAnalysis });
+    const unavailableSource = await createInspectionSuccess(input);
+    for (const [inspection, expected] of [
+      [original, { status: "established", reason: "observed" }],
+      [exactAbsent, { status: "not_applicable", reason: "not_present" }],
+      [unavailableSource, { status: "unavailable", reason: "not_observed" }],
+    ] as const) {
+      expect(inspection.evidence.conclusions.find(
+        ({ id }) => id === "contract_controls_observed",
+      )).toMatchObject(expected);
+    }
     const target = {
       chainId: asset.chainId,
       address: asset.address,

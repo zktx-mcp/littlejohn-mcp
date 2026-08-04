@@ -557,7 +557,6 @@ describe("capability semantic and evidence authority", () => {
               minimumObservationCount: 2,
               outcome: "observed",
             }],
-            expectedConclusions: [conclusion],
             conclusionDrafts: [{
               conclusion,
               outcomeFact: fact,

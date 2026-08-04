@@ -16,6 +16,7 @@ import {
   createExactConclusionIdentityDeclaration,
   readEvidenceReplayCapabilityId,
   type EvidenceClaimRoleDeclaration,
+  type ConclusionDraft,
   type EvidenceFactIdentityDeclaration,
   type EvidenceObservationTargetDeclaration,
   type EvidenceReplayBinder,
@@ -225,12 +226,13 @@ const contractAnalysisFactRequirement = (
   minimumObservationCount: 1,
 });
 
-const contractAnalysisUnobservedFactRequirement = (
+const contractAnalysisNoneFactRequirement = (
   fact: FactRequirement["fact"],
+  outcome: "not_observed" | "not_present",
   slot: FactRequirement["observationSlots"][number],
 ): FactRequirement => ({
   fact,
-  outcome: "not_observed",
+  outcome,
   observationSlots: [slot],
   requiredObservationSlots: [],
   minimumObservationCount: 0,
@@ -240,6 +242,7 @@ const contractAnalysisConclusion = (
   conclusion: ExactConclusionIdentityDeclaration,
   fact: FactRequirement["fact"],
   freshnessRuleId: Freshness["ruleId"],
+  evidenceFacts: readonly FactRequirement["fact"][] = [fact],
 ): Readonly<{
   readonly conclusion: ExactConclusionIdentityDeclaration;
   readonly outcomeFact: FactRequirement["fact"];
@@ -248,7 +251,7 @@ const contractAnalysisConclusion = (
 }> => ({
   conclusion,
   outcomeFact: fact,
-  evidenceFacts: [fact],
+  evidenceFacts,
   freshnessRuleId,
 });
 
@@ -274,13 +277,6 @@ export const createContractAnalysisEvidenceDeclaration = (
   );
   return Object.freeze({
     ...details.declaration,
-    expectedConclusions: Object.freeze([
-      fragment.conclusions.deploymentObserved,
-      fragment.conclusions.sourceChecked,
-      ...(details.controlsObserved
-        ? [fragment.conclusions.controlsObserved]
-        : []),
-    ]),
     conclusionDrafts: Object.freeze([
       contractAnalysisConclusion(
         fragment.conclusions.deploymentObserved,
@@ -288,13 +284,7 @@ export const createContractAnalysisEvidenceDeclaration = (
         "chain_anchor_exact",
       ),
       sourceConclusion,
-      ...(details.controlsObserved
-        ? [contractAnalysisConclusion(
-            fragment.conclusions.controlsObserved,
-            fragment.facts.controls,
-            "chain_anchor_exact",
-          )]
-        : []),
+      details.controlsConclusion,
     ]),
   });
 };
@@ -314,7 +304,7 @@ const contractAnalysisEvidenceFacts = (
 ): Readonly<{
   readonly declaration: ContractAnalysisEvidenceFactsDeclaration;
   readonly sourceConclusionFact: FactRequirement["fact"];
-  readonly controlsObserved: boolean;
+  readonly controlsConclusion: ConclusionDraft;
 }> => {
   const deployment = binder.bind(fragment.targets.deployment);
   const controls = binder.bind(fragment.targets.controls);
@@ -345,6 +335,29 @@ const contractAnalysisEvidenceFacts = (
   const sourceConclusionFact = effectiveSource.role === "target"
     ? fragment.facts.targetSource
     : fragment.facts.implementationSource;
+  const absentControlsOutcome =
+    effectiveSource.status === "exact_match" && analysis.proxy.status !== "unresolved"
+      ? "not_present"
+      : "not_observed";
+  const controlsConclusion = chainClaims.controlResults !== undefined
+    ? contractAnalysisConclusion(
+        fragment.conclusions.controlsObserved,
+        fragment.facts.controls,
+        "chain_anchor_exact",
+      )
+    : analysis.proxy.status === "unresolved"
+      ? contractAnalysisConclusion(
+          fragment.conclusions.controlsObserved,
+          fragment.facts.controls,
+          "chain_anchor_exact",
+          [fragment.facts.deployment],
+        )
+      : contractAnalysisConclusion(
+          fragment.conclusions.controlsObserved,
+          fragment.facts.controls,
+          "contract_source_at_chain_anchor",
+          [sourceConclusionFact],
+        );
   const observationExpectations: ObservationExpectation[] = [
     {
       slot: deployment.slot,
@@ -395,8 +408,11 @@ const contractAnalysisEvidenceFacts = (
       targetSource.slot,
     ),
     implementation === undefined
-      ? contractAnalysisUnobservedFactRequirement(
+      ? contractAnalysisNoneFactRequirement(
           fragment.facts.implementationSource,
+          analysis.proxy.status === "no_supported_proxy_observed"
+            ? "not_present"
+            : "not_observed",
           implementationSource.slot,
         )
       : contractAnalysisFactRequirement(
@@ -405,8 +421,9 @@ const contractAnalysisEvidenceFacts = (
           implementationSource.slot,
         ),
     chainClaims.controlResults === undefined
-      ? contractAnalysisUnobservedFactRequirement(
+      ? contractAnalysisNoneFactRequirement(
           fragment.facts.controls,
+          absentControlsOutcome,
           controls.slot,
         )
       : contractAnalysisFactRequirement(
@@ -426,7 +443,7 @@ const contractAnalysisEvidenceFacts = (
       warningRequirements: Object.freeze(warningRequirements),
     }),
     sourceConclusionFact,
-    controlsObserved: chainClaims.controlResults !== undefined,
+    controlsConclusion,
   });
 };
 
@@ -701,6 +718,7 @@ const accountReplay = createEvidenceReplayDefinition({
 const accountConfiguredChain = createConfiguredChainEvidenceFragment(accountReplay);
 const accountValidatedInput = createValidatedInputEvidenceFragment(accountReplay);
 const accountBlockFact = createEvidenceFactIdentityDeclaration(accountReplay, "block");
+const accountWalletFact = createEvidenceFactIdentityDeclaration(accountReplay, "wallet_account");
 const accountNativeBalanceFact =
   createEvidenceFactIdentityDeclaration(accountReplay, "native_balance");
 const accountBlockTarget = createEvidenceObservationTargetDeclaration(accountReplay, {
@@ -712,8 +730,8 @@ const accountBlockTarget = createEvidenceObservationTargetDeclaration(accountRep
   roles: { block: "balance_block" },
 });
 const accountWalletTarget = createEvidenceObservationTargetDeclaration(accountReplay, {
-  slotId: "account",
-  fact: accountValidatedInput.fact,
+  slotId: "wallet_account",
+  fact: accountWalletFact,
   kind: "source",
   purpose: "active_wallet_account",
   sourceClass: "wallet_session",
@@ -772,12 +790,46 @@ const accountTokenEvidenceScope = (
   if (new Set(addresses).size !== addresses.length) {
     throw new TypeError("Account-token evidence addresses are duplicated.");
   }
+  const declarationScope = createEvidenceDeclarationScope(accountReplay);
+  const identities = new Map<EvmAddress, AccountTokenEvidenceIdentity>();
   const state = Object.freeze({
-    declarationScope: createEvidenceDeclarationScope(accountReplay),
+    declarationScope,
     addresses: new Set(addresses),
-    identities: new Map<EvmAddress, AccountTokenEvidenceIdentity>(),
+    identities,
   });
   accountTokenEvidenceScopes.set(input, state);
+  for (const address of addresses) {
+    const conclusion = createEvmAddressConclusionIdentity(
+      accountTokenBalanceConclusionFamily,
+      address,
+    );
+    const fact = createEvidenceFactIdentityForConclusion(
+      accountReplay,
+      conclusion,
+      declarationScope,
+    );
+    identities.set(address, Object.freeze({
+      address,
+      conclusion,
+      fact,
+      balanceTarget: createEvidenceObservationTargetDeclaration(accountReplay, {
+        slotId: `token:${address}:balance`,
+        fact,
+        kind: "source",
+        purpose: "token_balance",
+        sourceClass: "chain_rpc",
+        roles: { balance: conclusion },
+      }),
+      decimalsTarget: createEvidenceObservationTargetDeclaration(accountReplay, {
+        slotId: `token:${address}:decimals`,
+        fact,
+        kind: "source",
+        purpose: "token_decimals",
+        sourceClass: "chain_rpc",
+        roles: { decimals: `token_decimals:${address}` },
+      }),
+    }) satisfies AccountTokenEvidenceIdentity);
+  }
   return state;
 };
 
@@ -790,40 +842,11 @@ export const accountTokenEvidenceIdentity = (
   if (!scope.addresses.has(address)) {
     throw new TypeError("Account-token evidence address is outside its input scope.");
   }
-  const existing = scope.identities.get(address);
-  if (existing !== undefined) return existing;
-  const conclusion = createEvmAddressConclusionIdentity(
-    accountTokenBalanceConclusionFamily,
-    address,
-  );
-  const fact = createEvidenceFactIdentityForConclusion(
-    accountReplay,
-    conclusion,
-    scope.declarationScope,
-  );
-  const result = Object.freeze({
-    address,
-    conclusion,
-    fact,
-    balanceTarget: createEvidenceObservationTargetDeclaration(accountReplay, {
-      slotId: `token:${address}:balance`,
-      fact,
-      kind: "source",
-      purpose: "token_balance",
-      sourceClass: "chain_rpc",
-      roles: { balance: conclusion },
-    }),
-    decimalsTarget: createEvidenceObservationTargetDeclaration(accountReplay, {
-      slotId: `token:${address}:decimals`,
-      fact,
-      kind: "source",
-      purpose: "token_decimals",
-      sourceClass: "chain_rpc",
-      roles: { decimals: `token_decimals:${address}` },
-    }),
-  }) satisfies AccountTokenEvidenceIdentity;
-  scope.identities.set(address, result);
-  return result;
+  const identity = scope.identities.get(address);
+  if (identity === undefined) {
+    throw new TypeError("Account-token evidence identity is absent from its input scope.");
+  }
+  return identity;
 };
 
 export const accountBalanceEvidence = Object.freeze({
@@ -833,6 +856,7 @@ export const accountBalanceEvidence = Object.freeze({
   facts: Object.freeze({
     block: accountBlockFact,
     nativeBalance: accountNativeBalanceFact,
+    walletAccount: accountWalletFact,
   }),
   targets: Object.freeze({
     block: accountBlockTarget,

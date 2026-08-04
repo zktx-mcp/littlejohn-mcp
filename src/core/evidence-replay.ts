@@ -158,7 +158,6 @@ export interface EvidenceReplayDeclaration {
   readonly observationExpectations: readonly ObservationExpectation[];
   readonly observationReferences: readonly ObservationReference[];
   readonly factRequirements: readonly FactRequirement[];
-  readonly expectedConclusions: readonly ExactConclusionIdentityDeclaration[];
   readonly conclusionDrafts: readonly ConclusionDraft[];
   readonly warningRequirements: readonly WarningRequirement[];
 }
@@ -195,6 +194,7 @@ export interface ExactConclusionIdentityDeclaration {
 interface ExactConclusionIdentityDeclarationState {
   readonly identity: string;
   readonly family?: EvmAddressConclusionIdentityDeclaration;
+  readonly scope?: EvidenceDeclarationScope;
 }
 
 const exactConclusionIdentityDeclarationStates =
@@ -355,6 +355,7 @@ interface EvidenceReplayDefinitionState {
   readonly capabilityId: CapabilityId;
   readonly conclusionIds: readonly string[];
   readonly conclusionMatchers: readonly ConclusionMatcher[];
+  readonly fixedConclusions: readonly ExactConclusionIdentityDeclaration[];
   readonly warningCodes: readonly Warning["code"][];
   readonly factsById: Map<string, EvidenceFactIdentityDeclaration>;
   readonly slotsById: Map<string, EvidenceObservationSlotDeclaration[]>;
@@ -367,6 +368,7 @@ interface EvidenceDeclarationRegistry {
 
 interface EvidenceDeclarationScopeState extends EvidenceDeclarationRegistry {
   readonly definition: EvidenceReplayDefinition;
+  readonly conclusionsById: Map<string, ExactConclusionIdentityDeclaration>;
 }
 
 const definitionStates = new WeakMap<object, EvidenceReplayDefinitionState>();
@@ -426,6 +428,14 @@ export const createEvidenceReplayDefinition = (input: {
     }
   }
   const conclusionIds = Object.freeze(conclusionMatchers.map((matcher) => matcher.declaration));
+  const fixedConclusions = Object.freeze(conclusions
+    .flatMap((declaration) => exactConclusionIdentityDeclarationStates.has(declaration as object)
+      ? [declaration as ExactConclusionIdentityDeclaration]
+      : [])
+    .sort((left, right) => compareCodePointSequences(
+      exactConclusionIdentityDeclarationState(left).identity,
+      exactConclusionIdentityDeclarationState(right).identity,
+    )));
   const warningInput = input.warningCodes.map((value) => replayEvidence.warningCode.parse(value));
   const warningCodes = canonicalUnique(warningInput) as readonly Warning["code"][];
   if (warningCodes.length !== warningInput.length) throw new TypeError("Duplicate warning code.");
@@ -435,6 +445,7 @@ export const createEvidenceReplayDefinition = (input: {
     capabilityId,
     conclusionIds,
     conclusionMatchers,
+    fixedConclusions,
     warningCodes,
     factsById: new Map(),
     slotsById: new Map(),
@@ -453,6 +464,7 @@ export const createEvidenceDeclarationScope = (
   const scope = Object.freeze({}) as EvidenceDeclarationScope;
   declarationScopeStates.set(scope, {
     definition,
+    conclusionsById: new Map(),
     factsById: new Map(),
     slotsById: new Map(),
   });
@@ -522,14 +534,23 @@ export const createEvidenceFactIdentityForConclusion = (
   }
   const identity = readConclusionIdentity(definition, conclusion);
   if (definitionState(definition).factsById.has(identity) ||
-      registry.factsById.has(identity)) {
+      registry.factsById.has(identity) ||
+      registry.conclusionsById.has(identity)) {
     throw new TypeError("Duplicate evidence fact identity.");
   }
+  if (conclusionState.scope !== undefined && conclusionState.scope !== scope) {
+    throw new TypeError("Dynamic conclusion identity belongs to another declaration scope.");
+  }
+  exactConclusionIdentityDeclarationStates.set(conclusion as object, Object.freeze({
+    ...conclusionState,
+    scope,
+  }));
   const declaration = Object.freeze({}) as EvidenceFactIdentityDeclaration;
   factIdentityDeclarationStates.set(
     declaration,
     Object.freeze({ definition, identity, scope }),
   );
+  registry.conclusionsById.set(identity, conclusion);
   registry.factsById.set(identity, declaration);
   return declaration;
 };
@@ -671,10 +692,17 @@ export const createEvidenceObservationTargetDeclaration = <
       (input.kind === "validated_input" && roleEntries.length !== 1)) {
     throw new TypeError("Evidence observation target claim roles are invalid.");
   }
-  const roleIds = roleEntries.map(([, identity]) =>
-    typeof identity === "string"
-      ? replayPrimitives.fixedIdentifier.parse(identity)
-      : readConclusionIdentity(definition, identity));
+  const roleIds = roleEntries.map(([, identity]) => {
+    if (typeof identity === "string") {
+      return replayPrimitives.fixedIdentifier.parse(identity);
+    }
+    const conclusion = exactConclusionIdentityDeclarationState(identity);
+    if (conclusion.family !== undefined &&
+        (fact.scope === undefined || conclusion.scope !== fact.scope)) {
+      throw new TypeError("Dynamic conclusion role is outside its fact declaration scope.");
+    }
+    return readConclusionIdentity(definition, identity);
+  });
   if (canonicalUnique(roleIds).length !== roleIds.length) {
     throw new TypeError("Duplicate evidence claim role identity.");
   }
@@ -815,6 +843,7 @@ interface PreparedObservationTarget {
 
 interface EvidenceReplayLayoutState {
   readonly definition: EvidenceReplayDefinition;
+  readonly declarationScope?: EvidenceDeclarationScope;
   readonly targets: readonly PreparedObservationTarget[];
   readonly targetByDeclaration: ReadonlyMap<
     EvidenceObservationTargetDeclaration,
@@ -846,6 +875,42 @@ const layoutState = (
     throw new TypeError("Evidence replay layout provenance is invalid.");
   }
   return state;
+};
+
+const readLayoutConclusionIdentity = (
+  definition: EvidenceReplayDefinition,
+  layout: EvidenceReplayLayout,
+  declaration: ExactConclusionIdentityDeclaration,
+): string => {
+  const identity = readConclusionIdentity(definition, declaration);
+  const conclusion = exactConclusionIdentityDeclarationState(declaration);
+  if (conclusion.family !== undefined &&
+      conclusion.scope !== layoutState(definition, layout).declarationScope) {
+    throw new TypeError("Dynamic conclusion identity is outside the replay layout scope.");
+  }
+  return identity;
+};
+
+const requiredConclusionDeclarations = (
+  definition: EvidenceReplayDefinition,
+  layout: EvidenceReplayLayout,
+): readonly ExactConclusionIdentityDeclaration[] => {
+  const definitionValue = definitionState(definition);
+  const scope = layoutState(definition, layout).declarationScope;
+  const dynamic = scope === undefined
+    ? []
+    : [...declarationScopeState(definition, scope).conclusionsById.values()];
+  const declarations = parseBoundedArray(
+    [...definitionValue.fixedConclusions, ...dynamic],
+    1,
+    64,
+    "Required conclusion declarations are invalid.",
+  );
+  return Object.freeze([...declarations].sort((left, right) =>
+    compareCodePointSequences(
+      readLayoutConclusionIdentity(definition, layout, left),
+      readLayoutConclusionIdentity(definition, layout, right),
+    )));
 };
 
 const boundObservationSlotDeclarationState = (
@@ -898,6 +963,8 @@ export const createEvidenceReplayLayout = (
   if (declarationScopes.size > 1) {
     throw new TypeError("Evidence replay layout mixes declaration scopes.");
   }
+  const declarationScope = declarationScopes.values().next().value as
+    EvidenceDeclarationScope | undefined;
   if (new Set(targetsInput).size !== targetsInput.length ||
       canonicalUnique(targets.map((target) =>
         observationSlotDeclarationState(definition, target.slot).projection.slotId)).length !==
@@ -971,6 +1038,7 @@ export const createEvidenceReplayLayout = (
   }));
   layoutStates.set(layout, Object.freeze({
     definition,
+    ...(declarationScope === undefined ? {} : { declarationScope }),
     targets: prepared,
     targetByDeclaration,
     targetBySlotDeclaration,
@@ -1333,7 +1401,7 @@ const validateDefinitionStructure = (
     factIdentityDeclarationState(definition, requirement.fact);
     const slots = parseBoundedArray(
       requirement.observationSlots,
-      1,
+      0,
       128,
       "Fact observation slots are invalid.",
     );
@@ -1352,7 +1420,11 @@ const validateDefinitionStructure = (
       throw new TypeError("Fact observation cardinality is invalid.");
     }
     const outcome = replayEvidence.factOutcome.parse(requirement.outcome);
-    const authorityKind = factOutcomeDefinitions[outcome].evidenceAuthority === "validated_input"
+    const evidenceAuthority = factOutcomeDefinitions[outcome].evidenceAuthority;
+    if (slots.length === 0 && evidenceAuthority !== "none") {
+      throw new TypeError("Evidence-bearing fact requires an observation slot.");
+    }
+    const authorityKind = evidenceAuthority === "validated_input"
       ? "validated_input"
       : "source";
     for (const slot of slots) {
@@ -1638,19 +1710,14 @@ export const replayPublicEvidence = (input: EvidenceReplayDeclaration & {
     }));
   }
 
-  const expectedDeclarations = parseBoundedArray(
-    input.expectedConclusions,
-    1,
-    64,
-    "Expected conclusion declarations are invalid.",
-  );
-  if (new Set(expectedDeclarations).size !== expectedDeclarations.length) {
-    throw new TypeError("Expected conclusion identities are duplicated.");
+  const requiredDeclarations = requiredConclusionDeclarations(input.definition, input.layout);
+  if (new Set(requiredDeclarations).size !== requiredDeclarations.length) {
+    throw new TypeError("Required conclusion identities are duplicated.");
   }
-  const expectedConclusionIds = canonicalUnique(expectedDeclarations.map((declaration) =>
+  const requiredConclusionIds = canonicalUnique(requiredDeclarations.map((declaration) =>
     readConclusionIdentity(input.definition, declaration)));
-  if (expectedConclusionIds.length !== expectedDeclarations.length) {
-    throw new TypeError("Expected conclusion identities are duplicated.");
+  if (requiredConclusionIds.length !== requiredDeclarations.length) {
+    throw new TypeError("Required conclusion identities are duplicated.");
   }
 
   const drafts = parseBoundedArray(
@@ -1660,7 +1727,7 @@ export const replayPublicEvidence = (input: EvidenceReplayDeclaration & {
     "Conclusion drafts are invalid.",
   );
   const conclusions = drafts.map((draft): Conclusion => {
-    const id = readConclusionIdentity(input.definition, draft.conclusion);
+    const id = readLayoutConclusionIdentity(input.definition, input.layout, draft.conclusion);
     factIdentityDeclarationState(input.definition, draft.outcomeFact);
     const evidenceFacts = parseBoundedArray(
       draft.evidenceFacts,
@@ -1707,7 +1774,7 @@ export const replayPublicEvidence = (input: EvidenceReplayDeclaration & {
     throw new TypeError("Conclusion identities are not unique and ordered.");
   }
   if (conclusions.map((conclusion) => conclusion.id).join("\0") !==
-      expectedConclusionIds.join("\0")) {
+      requiredConclusionIds.join("\0")) {
     throw new TypeError("Capability conclusions are incomplete or undeclared.");
   }
 

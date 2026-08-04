@@ -644,6 +644,8 @@ describe("Robinhood Chain read handlers", () => {
       result: { status: "unavailable", errorCode: "chain_response_unavailable" },
     }]);
     expect(result.evidence.coverage.status).toBe("partial");
+    expect(result.evidence.coverage.notApplicable).toEqual(["native_balance_observed"]);
+    expect(result.evidence.coverage.unavailable).toEqual([`token_balance:${token}`]);
     expect(result.warnings.map(({ code }) => code)).toContain("partial_result");
     expect(result.evidence.sources.some(({ purpose }) => purpose === "token_decimals")).toBe(false);
     expect(service.rpc.calls).toEqual([
@@ -798,6 +800,16 @@ describe("Robinhood Chain read handlers", () => {
     expect(result.data.tokens.map(({ result: tokenResult }) =>
       tokenResult.status === "available" ? tokenResult.amount.raw : tokenResult.status
     )).toEqual(["1", "2"]);
+    expect(result.evidence.coverage).toEqual({
+      status: "complete",
+      established: [
+        "account_bound",
+        `token_balance:${token}`,
+        `token_balance:${secondToken}`,
+      ],
+      notApplicable: ["native_balance_observed"],
+      unavailable: [],
+    });
     const stateReferences = service.rpc.calls
       .filter(({ method }) => method === "eth_call")
       .map(({ params }) => (params as readonly unknown[])[1]);
@@ -837,6 +849,50 @@ describe("Robinhood Chain read handlers", () => {
         }),
       }),
     ]));
+
+    const noNativeWallet = connectedWallet(account);
+    const noNativeService = createHarness([
+      rpcValue("eth_chainId", "0x1237"),
+      rpcValue("eth_getBlockByNumber", block()),
+      rpcValue("eth_call", abiWord(1n)),
+      rpcValue("eth_call", abiWord(18n)),
+    ], noNativeWallet);
+    const noNative = await noNativeService.invoke(accountBalanceCapability, {
+      account: { kind: "active_wallet" },
+      includeNative: false,
+      tokens: [token],
+      block: { kind: "latest" },
+    });
+    expectSuccess(noNative);
+    expect(noNativeWallet.captures()).toBe(1);
+    expect(noNative.evidence.coverage).toEqual({
+      status: "complete",
+      established: ["account_bound", `token_balance:${token}`],
+      notApplicable: ["native_balance_observed"],
+      unavailable: [],
+    });
+    expect(noNative.evidence.conclusions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "native_balance_observed",
+        status: "not_applicable",
+        reason: "not_requested",
+      }),
+    ]));
+    expect(noNative.evidence.sources.map(({ sourceClass }) => sourceClass))
+      .toEqual(expect.arrayContaining(["validated_input", "wallet_session"]));
+    expect(noNative.warnings.map(({ code }) => code).includes("partial_result")).toBe(false);
+    expect(noNativeService.rpc.calls).toEqual([
+      { method: "eth_chainId", params: [] },
+      { method: "eth_getBlockByNumber", params: ["latest", false] },
+      {
+        method: "eth_call",
+        params: [{ to: token, data: encoder.balanceOf(account) }, blockReference],
+      },
+      {
+        method: "eth_call",
+        params: [{ to: token, data: encoder.decimals() }, blockReference],
+      },
+    ]);
 
     const disconnected = disconnectedWallet();
     const rejectedService = createHarness([], disconnected);

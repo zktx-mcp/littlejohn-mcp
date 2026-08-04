@@ -133,10 +133,11 @@ const conclusion = (
 const unavailableConclusion = (
   id: string,
   observationId: string,
+  reason: "not_observed" | "source_failed" = "source_failed",
 ) => ({
   id,
   status: "unavailable",
-  reason: "source_failed",
+  reason,
   observationIds: [observationId],
   freshness: {
     status: "fresh",
@@ -280,6 +281,11 @@ const inspection = {
       }]),
     ],
     conclusions: [
+      unavailableConclusion(
+        "contract_controls_observed",
+        observationIds.targetSource,
+        "not_observed",
+      ),
       conclusion("contract_deployment_observed", observationIds.deployment),
       unavailableConclusion("contract_source_checked", observationIds.targetSource),
       conclusion("decimals_observed", observationIds.decimals),
@@ -297,7 +303,7 @@ const inspection = {
         "total_supply_observed",
       ],
       notApplicable: [],
-      unavailable: ["contract_source_checked"],
+      unavailable: ["contract_controls_observed", "contract_source_checked"],
     },
   },
   warnings: [{
@@ -374,7 +380,7 @@ describe("token commitment independent vectors", () => {
       digestVersion: "1",
       result: inspection,
     } as const;
-    const expected = "0xd2f0f057d3f20b194d337b22e8ed71f9ce4ef75ae60a5aae09213b13e6c61b0d";
+    const expected = "0x4cac8de04dd9c7182019953f0e17aafcb710a15f11368e4b371221f7a663d46f";
     expect(independentSha256(preimage)).toBe(expected);
     expect(tokenInspectionDigest(inspection)).toBe(expected);
   });
@@ -396,7 +402,7 @@ describe("token commitment independent vectors", () => {
       interactionInterface: additionReview.interactionInterface,
       expiresAt: additionReview.expiresAt,
     } as const;
-    const expected = "0x806a4c1980e0cb935dad4345756f3f53e674d4cfee4db7a0b2b60ef466554031";
+    const expected = "0xeccef98bdfa82429b536bf41c06dc502558a899fe70fec30ebeb2d323353eef2";
     expect(independentSha256(preimage)).toBe(expected);
     expect(tokenCatalogReviewDigest(additionReview)).toBe(expected);
   });

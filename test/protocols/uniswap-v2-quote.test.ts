@@ -528,6 +528,21 @@ describe("Uniswap V2 exact-input quote owner", () => {
     });
     expect(getPairCalls).toHaveLength(3);
     if (!result.ok) throw new TypeError("Expected absent-pair candidate results.");
+    expect(result.evidence.conclusions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "uniswap_v2_quote_observed",
+        status: "not_applicable",
+        reason: "not_present",
+      }),
+    ]));
+    const quoteConclusion = result.evidence.conclusions.find(
+      ({ id }) => id === "uniswap_v2_quote_observed",
+    );
+    expect(quoteConclusion?.observationIds.length).toBeGreaterThan(0);
+    expect(result.evidence.coverage.status).toBe("complete");
+    expect(result.evidence.coverage.notApplicable).toContain("uniswap_v2_quote_observed");
+    expect(result.evidence.sources.some(({ purpose }) => purpose === "quote_outcome"))
+      .toBe(false);
     const changed = structuredClone(result.data);
     const intermediaryCandidate = changed.candidates[1];
     const terminalHop = intermediaryCandidate?.evaluatedHops[0];
@@ -811,6 +826,14 @@ describe("Uniswap V2 exact-input quote owner", () => {
       },
     });
     if (!result.ok) throw new TypeError("Expected a successful V2 quote result.");
+    expect(result.evidence.conclusions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "uniswap_v2_quote_observed",
+        status: "established",
+        reason: "observed",
+      }),
+    ]));
+    expect(result.evidence.coverage.status).toBe("complete");
     expect(result.evidence.sources.some((source) =>
       source.purpose === "token_decimals")).toBe(true);
     const reordered = structuredClone(result);
