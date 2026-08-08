@@ -77,7 +77,7 @@ describe("token metadata read process", () => {
     expect(result).toEqual({
       name: { status: "available", value: "Example" },
       symbol: { status: "available", value: "EXT" },
-      decimals: "18",
+      decimals: { status: "available", value: "18" },
     });
     expect(Object.isFrozen(result)).toBe(true);
     expect(calls.map((params) => (params[0] as { readonly data: string }).data)).toEqual([
@@ -117,7 +117,7 @@ describe("token metadata read process", () => {
     })).resolves.toEqual({
       name: { status: "unavailable", reason: "call_failed" },
       symbol: { status: "unavailable", reason: "malformed" },
-      decimals: null,
+      decimals: { status: "unavailable", reason: "malformed" },
     });
   });
 

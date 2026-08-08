@@ -48,7 +48,7 @@ describe("token catalog browser contract", () => {
     expect(serverConfirmationContract.applicationContract.errorRegistry)
       .toBe(tokenCatalogErrorRegistry);
     const fixedDigest =
-      "0x963b38b08891b1326e390fe213dfeb49d5bb3237b2fe7692f5a2c6713c6d1f21";
+      "0x40b778983f7526ce90e4c6c89546807454c492c5be0aba27172284691269b6f3";
     expect(`0x${createHash("sha256")
       .update(independentCanonicalJson(tokenCatalogContractProjection), "utf8")
       .digest("hex")}`).toBe(fixedDigest);

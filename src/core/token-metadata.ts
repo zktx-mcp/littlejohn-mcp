@@ -47,14 +47,36 @@ export const optionalTokenTextSchema = z.discriminatedUnion("status", [
   unavailableTokenTextSchema,
 ]);
 
+export const tokenMetadataDecimalsReadFailureReasons = Object.freeze([
+  "call_failed",
+  "malformed",
+] as const);
+
+export const tokenMetadataDecimalsReadFailureReasonSchema =
+  z.enum(tokenMetadataDecimalsReadFailureReasons);
+
+export const tokenMetadataDecimalsReadSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("available"),
+    value: unsignedDecimalSchema,
+  }).strict(),
+  z.object({
+    status: z.literal("unavailable"),
+    reason: tokenMetadataDecimalsReadFailureReasonSchema,
+  }).strict(),
+]);
+
 export const tokenMetadataReadSchema = z.object({
   name: optionalTokenTextSchema,
   symbol: optionalTokenTextSchema,
-  decimals: unsignedDecimalSchema.nullable(),
+  decimals: tokenMetadataDecimalsReadSchema,
 }).strict();
 
 export type TokenDisplayText = z.infer<typeof tokenDisplayTextSchema>;
 export type TokenOptionalTextUnavailableReason =
   z.infer<typeof tokenOptionalTextUnavailableReasonSchema>;
 export type OptionalTokenText = z.infer<typeof optionalTokenTextSchema>;
+export type TokenMetadataDecimalsReadFailureReason =
+  z.infer<typeof tokenMetadataDecimalsReadFailureReasonSchema>;
+export type TokenMetadataDecimalsRead = z.infer<typeof tokenMetadataDecimalsReadSchema>;
 export type TokenMetadataRead = z.infer<typeof tokenMetadataReadSchema>;

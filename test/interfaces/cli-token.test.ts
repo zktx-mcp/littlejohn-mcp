@@ -30,7 +30,11 @@ import {
   createCapabilityHarness,
   invokeBinding,
 } from "../core/capability-harness.js";
-import { createTokenOperation } from "../token-catalog/harness.js";
+import {
+  createInspectionSuccess,
+  createTokenOperation,
+} from "../token-catalog/harness.js";
+import { createTerminalityUnresolvedAnalysis } from "../core/contract-analysis-fixtures.js";
 import { openTestOwnerSession } from "./owner-session-harness.js";
 
 const tokenAddress = `0x${"12".repeat(20)}`;
@@ -469,6 +473,39 @@ describe("token CLI", () => {
         )).toHaveLength(1);
       }
     }
+  });
+
+  it("uses the shared contract-analysis projection for token inspection", async () => {
+    const status = await chainStatusSuccess();
+    const block = chainAnchorSchema.parse({
+      chainId: tokenAsset.chainId,
+      blockNumber: "42",
+      blockHash: `0x${"ab".repeat(32)}`,
+      blockTimestamp: "2026-07-18T00:00:00.000Z",
+    });
+    const inspection = await createInspectionSuccess(undefined, {
+      analysis: createTerminalityUnresolvedAnalysis(tokenAsset.address, block),
+    });
+    const runtime = new FakeRuntime((request) => {
+      if (request.path === "/api/v1/chain-status") return { status: 200, body: status };
+      if (request.path === "/api/v1/token-inspections") {
+        return { status: 200, body: captureCanonicalJson(inspection) };
+      }
+      throw new Error("Unexpected request.");
+    });
+    const output = outputPort();
+
+    expect(await runTokenCliCommand(
+      runtime,
+      operationClient(runtime),
+      parseTokenCliCommand(["token", "inspect", tokenAddress, "--block", "latest"]),
+      output.port,
+    )).toBe(0);
+    const text = output.output.join("");
+    expect(text).toContain("Proxy reason: implementation_terminality_unresolved");
+    expect(text).toContain("Observed first-hop proxy method: eip1967_implementation");
+    expect(text).toContain("Observed first-hop implementation admitted as effective: no");
+    expect(text).toContain("Candidate terminality: supported_proxy_marker_observed (erc1167)");
   });
 
   it("routes token commands through the CLI runtime lifecycle", async () => {

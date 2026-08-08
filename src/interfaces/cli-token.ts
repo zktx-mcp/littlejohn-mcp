@@ -46,6 +46,7 @@ import {
   tokenLocalOperationIdentities,
   tokenInspectInterface,
 } from "./identities.js";
+import { contractAnalysisHumanLines } from "./cli-contract-analysis.js";
 
 export type TokenCliCommand =
   | Readonly<{ kind: "inspect"; address: EvmAddress; block: BlockSelector; json: boolean }>
@@ -306,17 +307,7 @@ const inspectionHuman = (inspection: HistoricalInspection): string => {
     `Block number: ${data.analysis.block.blockNumber}`,
     `Block hash: ${data.analysis.block.blockHash}`,
     `Block timestamp: ${data.analysis.block.blockTimestamp}`,
-    `Runtime code bytes: ${data.analysis.targetRuntimeCode.byteLength}`,
-    `Runtime code hash: ${data.analysis.targetRuntimeCode.codeHash}`,
-    `Proxy: ${data.analysis.proxy.status}`,
-    ...data.analysis.sources.map((source) =>
-      `Source ${source.role}: ${source.status} (${source.address})`),
-    `Declared functions: ${data.analysis.declaredFunctions.status === "observed"
-      ? data.analysis.declaredFunctions.signatures.length
-      : `unavailable (${data.analysis.declaredFunctions.reason})`}`,
-    `Owner: ${data.analysis.controls.owner.status}`,
-    `Paused: ${data.analysis.controls.paused.status}`,
-    `Default administrators: ${data.analysis.controls.defaultAdmins.status}`,
+    ...contractAnalysisHumanLines(data.analysis),
     `Name: ${observationText(data.metadata.name)}`,
     `Symbol: ${observationText(data.metadata.symbol)}`,
     `Decimals: ${decimalsText(data.totalSupply.decimals)}`,

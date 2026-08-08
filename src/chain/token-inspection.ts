@@ -2,6 +2,7 @@ import {
   CapabilityBindingRegistry,
   CapabilityRegistry,
   bindCapability,
+  tokenStandardOrder,
   type BoundEvidenceObservationTarget,
   type CapabilityBinding,
   type CanonicalAmount,
@@ -23,6 +24,7 @@ import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
 import {
   tokenInspectCapability,
   tokenInspectionEvidence,
+  projectTokenInspectionStandardEvidence,
   type TokenInspectionData,
   type TokenInspectionInput,
 } from "../token-catalog/contracts.js";
@@ -193,6 +195,13 @@ const inspectionHandler = async (
   const decimalsTarget = observations.bind(tokenInspectionEvidence.targets.decimals);
   const nameTarget = observations.bind(tokenInspectionEvidence.targets.name);
   const symbolTarget = observations.bind(tokenInspectionEvidence.targets.symbol);
+  const standardTargets = tokenStandardOrder.map((standardId) => Object.freeze({
+    standardId,
+    target: observations.bind(tokenInspectionEvidence.targets.standards[standardId]),
+  }));
+  const requiredErc8056Target = observations.bind(
+    tokenInspectionEvidence.targets.requiredErc8056,
+  );
   const block = await resolveBlock(
     dependencies,
     request,
@@ -266,6 +275,7 @@ const inspectionHandler = async (
     chainAuthority: dependencies.rpcSource,
   });
   const { name, symbol, decimals } = metadata;
+  const standardEvidence = projectTokenInspectionStandardEvidence(standards);
   const totalSupplyRaw = normalizeSource(() =>
     decodeErc20TotalSupplyResult(normalizeRpcBytes(rawTotalSupply)));
 
@@ -282,7 +292,9 @@ const inspectionHandler = async (
     source: dependencies.rpcSource,
     claims: [{
       role: decimalsTarget.roles.value,
-      value: decimals ?? { status: "unavailable", reason: "missing" },
+      value: decimals.status === "available"
+        ? decimals.value
+        : { status: "unavailable", reason: decimals.reason },
       asset: request.asset,
       chainAnchor: block.anchor,
     }],
@@ -309,13 +321,37 @@ const inspectionHandler = async (
       chainAnchor: block.anchor,
     }],
   });
+  for (const entry of standardTargets) {
+    const projection = standardEvidence.standards[entry.standardId];
+    if (projection.observationValue === undefined) continue;
+    observations.record(entry.target.slot, {
+      source: dependencies.rpcSource,
+      claims: [{
+        role: entry.target.roles.value,
+        value: projection.observationValue,
+        asset: request.asset,
+        chainAnchor: block.anchor,
+      }],
+    });
+  }
+  if (standardEvidence.requiredErc8056.observationValue !== undefined) {
+    observations.record(requiredErc8056Target.slot, {
+      source: dependencies.rpcSource,
+      claims: [{
+        role: requiredErc8056Target.roles.value,
+        value: standardEvidence.requiredErc8056.observationValue,
+        asset: request.asset,
+        chainAnchor: block.anchor,
+      }],
+    });
+  }
 
   const totalSupply: CanonicalAmount = Object.freeze({
     asset: request.asset,
     raw: totalSupplyRaw,
-    decimals: decimals === null
+    decimals: decimals.status === "unavailable"
       ? Object.freeze({ status: "unavailable" as const, reason: "missing" as const, observationIds: [decimalsObservationId] })
-      : Object.freeze({ status: "available" as const, value: decimals, observationId: decimalsObservationId }),
+      : Object.freeze({ status: "available" as const, value: decimals.value, observationId: decimalsObservationId }),
     quantityObservationId: supplyObservationId,
   });
   const data: TokenInspectionData = Object.freeze({
@@ -325,6 +361,7 @@ const inspectionHandler = async (
     metadata: Object.freeze({
       name: Object.freeze({ ...name, observationId: nameObservationId }) as OptionalText,
       symbol: Object.freeze({ ...symbol, observationId: symbolObservationId }) as OptionalText,
+      decimalsReadFailure: decimals.status === "unavailable" ? decimals.reason : null,
     }),
     standards,
   });

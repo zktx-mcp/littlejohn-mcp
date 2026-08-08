@@ -9,6 +9,7 @@ import {
   parseEvmAddressInput,
   parseEvmChainId,
   sourceReferenceSchema,
+  tokenStandardOrder,
   tokenStandardObservationResultSchema,
   type ContractAnalysis,
   type SourceReference,
@@ -17,6 +18,7 @@ import {
   tokenInspectCapability,
   tokenInspectionEvidence,
   tokenInspectionDataSchema,
+  projectTokenInspectionStandardEvidence,
   type TokenInspectionData,
   type TokenInspectionInput,
   type TokenInspectionSuccess,
@@ -100,6 +102,13 @@ export const createInspectionBinding = (
     const decimalsTarget = observations.bind(tokenInspectionEvidence.targets.decimals);
     const nameTarget = observations.bind(tokenInspectionEvidence.targets.name);
     const symbolTarget = observations.bind(tokenInspectionEvidence.targets.symbol);
+    const standardTargets = tokenStandardOrder.map((standardId) => Object.freeze({
+      standardId,
+      target: observations.bind(tokenInspectionEvidence.targets.standards[standardId]),
+    }));
+    const requiredErc8056Target = observations.bind(
+      tokenInspectionEvidence.targets.requiredErc8056,
+    );
     observations.record(chain.slot, {
       source,
       claims: [{
@@ -208,6 +217,43 @@ export const createInspectionBinding = (
         chainAnchor: block,
       }],
     });
+    const standards = options.standards ?? tokenStandardObservationResultSchema.parse({
+      asset: input.asset,
+      block,
+      standards: [
+        { standardId: "erc20_read_surface", status: "observed" },
+        { standardId: "erc165", status: "not_supported" },
+        { standardId: "erc8056", status: "unknown" },
+        { standardId: "erc8056_pending_multiplier", status: "unknown" },
+        { standardId: "erc8056_conversion", status: "unknown" },
+        { standardId: "erc8056_balances", status: "unknown" },
+      ],
+    });
+    const standardEvidence = projectTokenInspectionStandardEvidence(standards);
+    for (const entry of standardTargets) {
+      const projection = standardEvidence.standards[entry.standardId];
+      if (projection.observationValue === undefined) continue;
+      observations.record(entry.target.slot, {
+        source,
+        claims: [{
+          role: entry.target.roles.value,
+          value: projection.observationValue,
+          asset: input.asset,
+          chainAnchor: block,
+        }],
+      });
+    }
+    if (standardEvidence.requiredErc8056.observationValue !== undefined) {
+      observations.record(requiredErc8056Target.slot, {
+        source,
+        claims: [{
+          role: requiredErc8056Target.roles.value,
+          value: standardEvidence.requiredErc8056.observationValue,
+          asset: input.asset,
+          chainAnchor: block,
+        }],
+      });
+    }
     const totalSupply = {
       asset: input.asset,
       raw: options.totalSupply ?? "1000000",
@@ -221,19 +267,9 @@ export const createInspectionBinding = (
       metadata: {
         name: { status: "available", value: options.name ?? "Example Token", observationId: nameObservationId },
         symbol: { status: "available", value: options.symbol ?? "EXT", observationId: symbolObservationId },
+        decimalsReadFailure: null,
       },
-      standards: options.standards ?? tokenStandardObservationResultSchema.parse({
-        asset: input.asset,
-        block,
-        standards: [
-          { standardId: "erc20_read_surface", status: "observed" },
-          { standardId: "erc165", status: "not_supported" },
-          { standardId: "erc8056", status: "unknown" },
-          { standardId: "erc8056_pending_multiplier", status: "unknown" },
-          { standardId: "erc8056_conversion", status: "unknown" },
-          { standardId: "erc8056_balances", status: "unknown" },
-        ],
-      }),
+      standards,
     });
     return { status: "success", data };
   }, tokenCatalogErrorRegistry);

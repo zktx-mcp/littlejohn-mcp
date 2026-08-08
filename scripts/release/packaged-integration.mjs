@@ -716,6 +716,22 @@ const tokenAsset = (fakeRpc) => Object.freeze({
 
 const assertTokenInspection = (inspection, fakeRpc) => {
   const asset = tokenAsset(fakeRpc);
+  const standardStatuses = inspection?.data?.standards?.standards
+    ?.map(({ standardId, status }) => [standardId, status]);
+  const conclusionIds = inspection?.evidence?.conclusions?.map(({ id }) => id);
+  const standardConclusionIds = [
+    "erc165_status_observed",
+    "erc20_read_surface_observed",
+    "erc8056_balances_status_observed",
+    "erc8056_conversion_status_observed",
+    "erc8056_pending_multiplier_status_observed",
+    "erc8056_required_values_observed",
+    "erc8056_status_observed",
+  ];
+  const standardSourcePurposes = inspection?.evidence?.sources
+    ?.map(({ purpose }) => purpose)
+    .filter((purpose) => purpose.startsWith("erc"))
+    .sort();
   if (
     typeof inspection !== "object" ||
     inspection === null ||
@@ -730,7 +746,51 @@ const assertTokenInspection = (inspection, fakeRpc) => {
     inspection.data?.metadata?.name?.status !== "available" ||
     inspection.data.metadata.name.value !== fakeRpc.token.name ||
     inspection.data?.metadata?.symbol?.status !== "available" ||
-    inspection.data.metadata.symbol.value !== fakeRpc.token.symbol
+    inspection.data.metadata.symbol.value !== fakeRpc.token.symbol ||
+    inspection.data.metadata.decimalsReadFailure !== null ||
+    JSON.stringify(standardStatuses) !== JSON.stringify([
+      ["erc20_read_surface", "observed"],
+      ["erc165", "supported"],
+      ["erc8056", "supported"],
+      ["erc8056_pending_multiplier", "supported"],
+      ["erc8056_conversion", "not_supported"],
+      ["erc8056_balances", "supported"],
+    ]) ||
+    inspection.data.standards.requiredErc8056?.currentMultiplier !==
+      fakeRpc.token.currentMultiplier ||
+    inspection.data.standards.requiredErc8056?.pendingMultiplier !==
+      fakeRpc.token.pendingMultiplier ||
+    inspection.data.standards.requiredErc8056?.pendingEffectiveAt !==
+      fakeRpc.token.pendingEffectiveAt ||
+    JSON.stringify(conclusionIds) !== JSON.stringify([
+      "contract_controls_observed",
+      "contract_deployment_observed",
+      "contract_source_checked",
+      "decimals_observed",
+      "erc165_status_observed",
+      "erc20_read_surface_observed",
+      "erc8056_balances_status_observed",
+      "erc8056_conversion_status_observed",
+      "erc8056_pending_multiplier_status_observed",
+      "erc8056_required_values_observed",
+      "erc8056_status_observed",
+      "name_observed",
+      "symbol_observed",
+      "total_supply_observed",
+    ]) ||
+    JSON.stringify(standardSourcePurposes) !== JSON.stringify([
+      "erc165_status",
+      "erc20_read_surface",
+      "erc8056_balances_status",
+      "erc8056_conversion_status",
+      "erc8056_pending_multiplier_status",
+      "erc8056_required_values",
+      "erc8056_status",
+    ]) ||
+    standardConclusionIds.some((id) => {
+      const conclusion = inspection.evidence.conclusions.find((entry) => entry.id === id);
+      return conclusion?.status !== "established" || conclusion.reason !== "observed";
+    })
   ) throw new TypeError("Packaged token inspection does not match the release fake authority.");
   assertPackagedClaimsDigests(inspection, "Packaged token inspection");
 };

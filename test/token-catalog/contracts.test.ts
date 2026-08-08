@@ -14,6 +14,7 @@ import {
   getCapabilityDefinitionSnapshot,
   parseCapabilitySuccess,
   parseUtcTimestamp,
+  tokenStandardObservationResultSchema,
   type ApplicationFailure,
   type CanonicalJson,
 } from "../../src/core/index.js";
@@ -132,13 +133,13 @@ describe("token catalog contracts", () => {
     for (const [schema, expectedBytes, expectedDigest] of [
       [
         tokenInspectionDataSchema,
-        15_038,
-        "d90c8bfb80c46d59cf5bc5aff3fb10e14b464452623cf89321c88815a7628284",
+        15_163,
+        "f562b1fc6173ca8bf9aba254bdcc26a49f3b4e3cff90d51b69a204d525e7bf0b",
       ],
       [
         tokenInspectionSuccessSchema,
-        21_767,
-        "78781d83b823702d0f9ca8ff1fcbe493a35bdfe50f552ba932386d5a19e34cc6",
+        21_892,
+        "dd594b6eea89239fca2b8961b0b6954c867a3ce688054f176a7c516672cae798",
       ],
     ] as const) {
       const canonical = canonicalOutputSchema(schema);
@@ -273,6 +274,135 @@ describe("token catalog contracts", () => {
         },
       })).toThrow();
     }
+  });
+
+  it("derives complete standard evidence from fixed members without synthetic sources", async () => {
+    const inspection = await createInspectionSuccess();
+    expect(inspection.evidence.conclusions.find(
+      ({ id }) => id === "erc20_read_surface_observed",
+    )).toMatchObject({
+      status: "established",
+      reason: "observed",
+    });
+    expect(inspection.evidence.conclusions.find(
+      ({ id }) => id === "erc165_status_observed",
+    )).toMatchObject({
+      status: "established",
+      reason: "observed",
+    });
+    for (const conclusionId of [
+      "erc8056_status_observed",
+      "erc8056_pending_multiplier_status_observed",
+      "erc8056_conversion_status_observed",
+      "erc8056_balances_status_observed",
+      "erc8056_required_values_observed",
+    ]) {
+      expect(inspection.evidence.conclusions.find(({ id }) => id === conclusionId)).toMatchObject({
+        status: "not_applicable",
+        reason: "unsupported",
+      });
+    }
+    expect(inspection.evidence.sources.filter((source) =>
+      source.purpose.endsWith("_status") || source.purpose === "erc8056_required_values",
+    ).map((source) => source.purpose)).toEqual(["erc165_status"]);
+  });
+
+  it("keeps unavailable standards explicit and rejects changed standard claims", async () => {
+    const base = await createInspectionSuccess();
+    const unavailableStandards = tokenStandardObservationResultSchema.parse({
+      asset,
+      block: base.data.analysis.block,
+      standards: [
+        { standardId: "erc20_read_surface", status: "observed" },
+        { standardId: "erc165", status: "inconsistent" },
+        { standardId: "erc8056", status: "unknown" },
+        { standardId: "erc8056_pending_multiplier", status: "unknown" },
+        { standardId: "erc8056_conversion", status: "unknown" },
+        { standardId: "erc8056_balances", status: "unknown" },
+      ],
+    });
+    const unavailable = await createInspectionSuccess(undefined, {
+      standards: unavailableStandards,
+    });
+    expect(unavailable.evidence.conclusions.find(
+      ({ id }) => id === "erc165_status_observed",
+    )).toMatchObject({
+      status: "unavailable",
+      reason: "source_inconsistent",
+    });
+    expect(unavailable.evidence.conclusions.find(
+      ({ id }) => id === "erc8056_status_observed",
+    )).toMatchObject({
+      status: "unavailable",
+      reason: "not_observed",
+    });
+    expect(unavailable.evidence.sources.some((source) =>
+      source.purpose === "erc8056_status")).toBe(false);
+
+    const supportedStandards = tokenStandardObservationResultSchema.parse({
+      asset,
+      block: base.data.analysis.block,
+      standards: [
+        { standardId: "erc20_read_surface", status: "observed" },
+        { standardId: "erc165", status: "supported" },
+        { standardId: "erc8056", status: "supported" },
+        { standardId: "erc8056_pending_multiplier", status: "supported" },
+        { standardId: "erc8056_conversion", status: "not_supported" },
+        { standardId: "erc8056_balances", status: "not_supported" },
+      ],
+      requiredErc8056: {
+        currentMultiplier: "2",
+        pendingMultiplier: "3",
+        pendingEffectiveAt: "4",
+      },
+    });
+    const supported = await createInspectionSuccess(undefined, { standards: supportedStandards });
+    expect(supported.evidence.conclusions.filter((entry) =>
+      entry.id.startsWith("erc") && entry.status === "established")).toHaveLength(7);
+
+    const changedStatus = structuredClone(supported);
+    changedStatus.data.standards.standards[4] = {
+      standardId: "erc8056_conversion",
+      status: "supported",
+    };
+    expect(() => parseCapabilitySuccess(
+      tokenInspectCapability,
+      { asset, block: { kind: "latest" } },
+      changedStatus,
+    )).toThrow();
+
+    const changedValue = structuredClone(supported);
+    if (changedValue.data.standards.requiredErc8056 === undefined) {
+      throw new TypeError("Expected required ERC-8056 values.");
+    }
+    changedValue.data.standards.requiredErc8056.currentMultiplier =
+      "5" as typeof changedValue.data.standards.requiredErc8056.currentMultiplier;
+    expect(() => parseCapabilitySuccess(
+      tokenInspectCapability,
+      { asset, block: { kind: "latest" } },
+      changedValue,
+    )).toThrow();
+  });
+
+  it("admits only the closed decimals read-failure and numeric-state relation", async () => {
+    const inspection = await createInspectionSuccess();
+    expect(() => tokenInspectionDataSchema.parse({
+      ...inspection.data,
+      metadata: { ...inspection.data.metadata, decimalsReadFailure: "call_failed" },
+    })).toThrow();
+    expect(() => tokenInspectionDataSchema.parse({
+      ...inspection.data,
+      totalSupply: {
+        ...inspection.data.totalSupply,
+        decimals: {
+          status: "unavailable",
+          reason: "missing",
+          observationIds: [inspection.data.totalSupply.decimals.status === "available"
+            ? inspection.data.totalSupply.decimals.observationId
+            : inspection.data.totalSupply.quantityObservationId],
+        },
+      },
+    })).toThrow();
   });
 
   it("rejects every token-analysis claim change while retaining the original evidence", async () => {

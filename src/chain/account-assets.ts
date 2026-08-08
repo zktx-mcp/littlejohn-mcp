@@ -6,8 +6,9 @@ import {
   type Erc20AssetIdentity,
   type EvmAccountIdentity,
   type RequiredErc8056Observation,
-  type TokenMetadataRead,
+  type OptionalTokenText,
   type TokenStandardObservationResult,
+  type TokenMetadataRead,
   type UnsignedDecimal,
 } from "../core/index.js";
 import type { Erc20CallEncoder } from "./evm-standard.js";
@@ -37,8 +38,11 @@ import {
 } from "./token-standards.js";
 import { readTokenMetadataAtBlock } from "./token-metadata.js";
 
-export interface CurrentAccountTokenRead extends TokenMetadataRead {
+export interface CurrentAccountTokenRead {
   readonly asset: Erc20AssetIdentity;
+  readonly name: OptionalTokenText;
+  readonly symbol: OptionalTokenText;
+  readonly decimals: UnsignedDecimal | null;
   readonly rawBalance: UnsignedDecimal;
   readonly requiredStandards: RequiredErc8056Observation;
 }
@@ -237,7 +241,14 @@ const readToken = async (
     throw error;
   }
   const [metadata, rawBalance, requiredStandards] = results;
-  return deepFreezeValue({ asset, ...metadata, rawBalance, requiredStandards });
+  return deepFreezeValue({
+    asset,
+    name: metadata.name,
+    symbol: metadata.symbol,
+    decimals: metadata.decimals.status === "available" ? metadata.decimals.value : null,
+    rawBalance,
+    requiredStandards,
+  });
 };
 
 const readTokensInOrder = async (

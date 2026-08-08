@@ -44,7 +44,9 @@ import {
   availableTokenTextSchema,
   tokenDisplayTextLimits,
   tokenDisplayTextSchema,
+  tokenMetadataDecimalsReadFailureReasonSchema,
   tokenStandardObservationResultSchema,
+  tokenStandardOrder,
   unavailableTokenTextSchema,
   unsignedDecimalSchema,
   utcTimestampSchema,
@@ -62,6 +64,10 @@ import {
   type ObservationExpectation,
   type ObservationReference,
   type WarningRequirement,
+  type TokenMetadataDecimalsReadFailureReason,
+  type TokenOptionalTextUnavailableReason,
+  type TokenStandardId,
+  type TokenStandardObservationStatus,
 } from "../core/browser.js";
 import { tokenCatalogErrorRegistry } from "./error-registry.js";
 import {
@@ -113,6 +119,7 @@ export const tokenInspectionDataSchema = z.object({
   metadata: z.object({
     name: optionalTextObservationSchema,
     symbol: optionalTextObservationSchema,
+    decimalsReadFailure: tokenMetadataDecimalsReadFailureReasonSchema.nullable(),
   }).strict(),
   standards: tokenStandardObservationResultSchema,
 }).strict().superRefine((data, context) => {
@@ -145,6 +152,19 @@ export const tokenInspectionDataSchema = z.object({
   if (data.totalSupply.decimals.status === "not_observed") {
     context.addIssue({ code: "custom", message: "Token inspection must attempt decimals observation." });
     return;
+  }
+  if (
+    (data.metadata.decimalsReadFailure === null) !==
+      (data.totalSupply.decimals.status === "available") ||
+    (data.metadata.decimalsReadFailure !== null && (
+      data.totalSupply.decimals.status !== "unavailable" ||
+      data.totalSupply.decimals.reason !== "missing"
+    ))
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Token inspection decimals state and read outcome differ.",
+    });
   }
   const observationIds = [
     data.totalSupply.quantityObservationId,
@@ -201,6 +221,60 @@ const nameConclusion = createExactConclusionIdentityDeclaration("name_observed")
 const symbolConclusion = createExactConclusionIdentityDeclaration("symbol_observed");
 const totalSupplyConclusion =
   createExactConclusionIdentityDeclaration("total_supply_observed");
+const tokenStandardEvidenceDefinitions = {
+  erc20_read_surface: {
+    conclusion: createExactConclusionIdentityDeclaration("erc20_read_surface_observed"),
+    factId: "erc20_read_surface",
+    slotId: "erc20_read_surface",
+    role: "erc20_read_surface",
+    prerequisite: null,
+  },
+  erc165: {
+    conclusion: createExactConclusionIdentityDeclaration("erc165_status_observed"),
+    factId: "erc165_status",
+    slotId: "erc165_status",
+    role: "erc165_status",
+    prerequisite: null,
+  },
+  erc8056: {
+    conclusion: createExactConclusionIdentityDeclaration("erc8056_status_observed"),
+    factId: "erc8056_status",
+    slotId: "erc8056_status",
+    role: "erc8056_status",
+    prerequisite: "erc165",
+  },
+  erc8056_pending_multiplier: {
+    conclusion: createExactConclusionIdentityDeclaration(
+      "erc8056_pending_multiplier_status_observed",
+    ),
+    factId: "erc8056_pending_multiplier_status",
+    slotId: "erc8056_pending_multiplier_status",
+    role: "erc8056_pending_multiplier_status",
+    prerequisite: "erc165",
+  },
+  erc8056_conversion: {
+    conclusion: createExactConclusionIdentityDeclaration("erc8056_conversion_status_observed"),
+    factId: "erc8056_conversion_status",
+    slotId: "erc8056_conversion_status",
+    role: "erc8056_conversion_status",
+    prerequisite: "erc165",
+  },
+  erc8056_balances: {
+    conclusion: createExactConclusionIdentityDeclaration("erc8056_balances_status_observed"),
+    factId: "erc8056_balances_status",
+    slotId: "erc8056_balances_status",
+    role: "erc8056_balances_status",
+    prerequisite: "erc165",
+  },
+} as const satisfies Record<TokenStandardId, Readonly<{
+  conclusion: ReturnType<typeof createExactConclusionIdentityDeclaration>;
+  factId: string;
+  slotId: string;
+  role: string;
+  prerequisite: TokenStandardId | null;
+}>>;
+const requiredErc8056ValuesConclusion =
+  createExactConclusionIdentityDeclaration("erc8056_required_values_observed");
 const tokenContractAnalysisConclusions = createContractAnalysisEvidenceConclusions();
 
 const tokenInspectionReplayDefinition = createEvidenceReplayDefinition({
@@ -210,6 +284,9 @@ const tokenInspectionReplayDefinition = createEvidenceReplayDefinition({
     nameConclusion,
     symbolConclusion,
     totalSupplyConclusion,
+    ...tokenStandardOrder.map((standardId) =>
+      tokenStandardEvidenceDefinitions[standardId].conclusion),
+    requiredErc8056ValuesConclusion,
     tokenContractAnalysisConclusions.deploymentObserved,
     tokenContractAnalysisConclusions.sourceChecked,
     tokenContractAnalysisConclusions.controlsObserved,
@@ -258,6 +335,123 @@ const totalSupplyTarget = tokenTarget(
   "token_total_supply",
 );
 
+const createTokenStandardEvidenceRelation = (standardId: TokenStandardId) => {
+  const definition = tokenStandardEvidenceDefinitions[standardId];
+  const fact = tokenFact(definition.factId);
+  return Object.freeze({
+    conclusion: definition.conclusion,
+    fact,
+    prerequisite: definition.prerequisite,
+    target: tokenTarget(
+      definition.slotId,
+      fact,
+      definition.role,
+      definition.role,
+    ),
+  });
+};
+
+const createTokenStandardRecord = <Value>(
+  project: (standardId: TokenStandardId) => Value,
+): Readonly<Record<TokenStandardId, Value>> => {
+  const record = {} as Record<TokenStandardId, Value>;
+  for (const standardId of tokenStandardOrder) record[standardId] = project(standardId);
+  return Object.freeze(record);
+};
+
+const tokenStandardEvidenceRelations = createTokenStandardRecord(
+  createTokenStandardEvidenceRelation,
+);
+
+const requiredErc8056ValuesFact = tokenFact("erc8056_required_values");
+const requiredErc8056ValuesTarget = tokenTarget(
+  "erc8056_required_values",
+  requiredErc8056ValuesFact,
+  "erc8056_required_values",
+  "erc8056_required_values",
+);
+
+type TokenStandardEvidenceProjectionEntry =
+  | Readonly<{
+      outcome: "observed" | "source_inconsistent";
+      observationValue: CanonicalJson;
+    }>
+  | Readonly<{
+      outcome: "unsupported" | "not_observed";
+      observationValue?: never;
+    }>;
+
+type RequiredErc8056EvidenceProjectionEntry =
+  | Readonly<{
+      outcome: "observed";
+      observationValue: CanonicalJson;
+    }>
+  | Readonly<{
+      outcome: "unsupported" | "not_observed";
+      observationValue?: never;
+    }>;
+
+const requiredErc8056PrerequisiteStandardIds = Object.freeze([
+  "erc165",
+  "erc8056",
+  "erc8056_pending_multiplier",
+] as const satisfies readonly TokenStandardId[]);
+
+const tokenStandardEvidenceClasses = {
+  observed: "observed",
+  supported: "observed",
+  not_supported: "observed",
+  inconsistent: "source_inconsistent",
+  unknown: "not_observed",
+} as const satisfies Record<
+  TokenStandardObservationStatus,
+  "observed" | "source_inconsistent" | "not_observed"
+>;
+
+export const projectTokenInspectionStandardEvidence = (
+  result: TokenInspectionData["standards"],
+): Readonly<{
+  standards: Readonly<Record<TokenStandardId, TokenStandardEvidenceProjectionEntry>>;
+  requiredErc8056: RequiredErc8056EvidenceProjectionEntry;
+}> => {
+  const standardsById = createTokenStandardRecord((standardId) => {
+    const entry = result.standards.find((candidate) => candidate.standardId === standardId);
+    if (entry === undefined) throw new TypeError("Token standard evidence projection is incomplete.");
+    return entry;
+  });
+  const erc165 = standardsById.erc165;
+  const standards = createTokenStandardRecord((standardId) => {
+    const entry = standardsById[standardId];
+    const evidenceClass = tokenStandardEvidenceClasses[entry.status];
+    const projection: TokenStandardEvidenceProjectionEntry =
+      evidenceClass === "observed"
+        ? Object.freeze({
+            outcome: "observed",
+            observationValue: captureCanonicalJson(entry),
+          })
+        : evidenceClass === "source_inconsistent"
+          ? Object.freeze({
+              outcome: "source_inconsistent",
+              observationValue: captureCanonicalJson(entry),
+            })
+          : standardId !== "erc165" && erc165.status === "not_supported"
+            ? Object.freeze({ outcome: "unsupported" })
+            : Object.freeze({ outcome: "not_observed" });
+    return projection;
+  });
+  const requiredErc8056: RequiredErc8056EvidenceProjectionEntry =
+    result.requiredErc8056 !== undefined
+      ? Object.freeze({
+          outcome: "observed",
+          observationValue: captureCanonicalJson(result.requiredErc8056),
+        })
+      : requiredErc8056PrerequisiteStandardIds.some((standardId) =>
+          standardsById[standardId].status === "not_supported")
+        ? Object.freeze({ outcome: "unsupported" })
+        : Object.freeze({ outcome: "not_observed" });
+  return Object.freeze({ standards, requiredErc8056 });
+};
+
 const tokenInspectionObservationTargets = Object.freeze([
   decimalsTarget,
   nameTarget,
@@ -265,6 +459,9 @@ const tokenInspectionObservationTargets = Object.freeze([
   ...Object.values(tokenContractAnalysis.targets),
   symbolTarget,
   totalSupplyTarget,
+  ...tokenStandardOrder.map((standardId) =>
+    tokenStandardEvidenceRelations[standardId].target),
+  requiredErc8056ValuesTarget,
 ]);
 
 export const tokenInspectionEvidence = Object.freeze({
@@ -276,18 +473,27 @@ export const tokenInspectionEvidence = Object.freeze({
     name: nameFact,
     symbol: symbolFact,
     totalSupply: totalSupplyFact,
+    standards: createTokenStandardRecord((standardId) =>
+      tokenStandardEvidenceRelations[standardId].fact),
+    requiredErc8056: requiredErc8056ValuesFact,
   }),
   targets: Object.freeze({
     decimals: decimalsTarget,
     name: nameTarget,
     symbol: symbolTarget,
     totalSupply: totalSupplyTarget,
+    standards: createTokenStandardRecord((standardId) =>
+      tokenStandardEvidenceRelations[standardId].target),
+    requiredErc8056: requiredErc8056ValuesTarget,
   }),
   conclusions: Object.freeze({
     decimalsObserved: decimalsConclusion,
     nameObserved: nameConclusion,
     symbolObserved: symbolConclusion,
     totalSupplyObserved: totalSupplyConclusion,
+    standards: createTokenStandardRecord((standardId) =>
+      tokenStandardEvidenceRelations[standardId].conclusion),
+    requiredErc8056Observed: requiredErc8056ValuesConclusion,
   }),
   warningCodes: Object.freeze([
     "decimals_unavailable",
@@ -308,13 +514,26 @@ const tokenFactRequirement = (
   minimumObservationCount: 1,
 });
 
+const tokenNoneFactRequirement = (
+  fact: FactRequirement["fact"],
+  outcome: "unsupported" | "not_observed",
+  slot: FactRequirement["observationSlots"][number],
+): FactRequirement => ({
+  fact,
+  outcome,
+  observationSlots: [slot],
+  requiredObservationSlots: [],
+  minimumObservationCount: 0,
+});
+
 const tokenConclusion = (
   conclusion: ConclusionDraft["conclusion"],
   fact: ConclusionDraft["outcomeFact"],
+  evidenceFacts: readonly ConclusionDraft["outcomeFact"][] = [fact],
 ): ConclusionDraft => ({
   conclusion,
   outcomeFact: fact,
-  evidenceFacts: [fact],
+  evidenceFacts,
   freshnessRuleId: "chain_anchor_exact",
 });
 
@@ -329,9 +548,34 @@ const tokenExpectation = (
   claims: ObservationExpectation["claims"],
 ): ObservationExpectation => ({ slot, claims });
 
+const optionalTokenTextFactOutcomes = {
+  call_failed: "source_failed",
+  malformed: "source_inconsistent",
+  unsafe_text: "observed",
+} as const satisfies Record<
+  TokenOptionalTextUnavailableReason,
+  FactRequirement["outcome"]
+>;
+
+const decimalsReadFailureFactOutcomes = {
+  call_failed: "source_failed",
+  malformed: "source_inconsistent",
+} as const satisfies Record<
+  TokenMetadataDecimalsReadFailureReason,
+  FactRequirement["outcome"]
+>;
+
 const optionalTokenFactOutcome = (
   observation: TokenInspectionData["metadata"]["name"],
-): FactRequirement["outcome"] => observation.status === "available" ? "observed" : "source_failed";
+): FactRequirement["outcome"] => observation.status === "available"
+  ? "observed"
+  : optionalTokenTextFactOutcomes[observation.reason];
+
+const decimalsFactOutcome = (
+  failure: TokenInspectionData["metadata"]["decimalsReadFailure"],
+): FactRequirement["outcome"] => failure === null
+  ? "observed"
+  : decimalsReadFailureFactOutcomes[failure];
 
 const createTokenInspectionEvidenceDeclaration = (
   data: TokenInspectionData,
@@ -350,19 +594,69 @@ const createTokenInspectionEvidenceDeclaration = (
   const chain = binder.bind(tokenConfiguredChain.target);
   const symbol = binder.bind(symbolTarget);
   const totalSupply = binder.bind(totalSupplyTarget);
+  const standardProjection = projectTokenInspectionStandardEvidence(data.standards);
+  const standardsById = createTokenStandardRecord((standardId) => {
+    const relation = tokenStandardEvidenceRelations[standardId];
+    return Object.freeze({
+      standardId,
+      relation,
+      target: binder.bind(relation.target),
+      projection: standardProjection.standards[standardId],
+    });
+  });
+  const standards = tokenStandardOrder.map((standardId) => standardsById[standardId]);
+  const requiredErc8056 = Object.freeze({
+    fact: requiredErc8056ValuesFact,
+    target: binder.bind(requiredErc8056ValuesTarget),
+    projection: standardProjection.requiredErc8056,
+  });
   const decimalsIds = data.totalSupply.decimals.status === "available"
     ? [data.totalSupply.decimals.observationId]
     : data.totalSupply.decimals.observationIds;
   const unavailableMetadataFacts = [
-    ...(data.metadata.name.status === "available" ? [] : ["name"]),
-    ...(data.metadata.symbol.status === "available" ? [] : ["symbol"]),
+    ...(data.metadata.decimalsReadFailure === null ? [] : [decimalsFact]),
+    ...(data.metadata.name.status !== "available" && data.metadata.name.reason !== "unsafe_text"
+      ? [nameFact]
+      : []),
+    ...(data.metadata.symbol.status !== "available" && data.metadata.symbol.reason !== "unsafe_text"
+      ? [symbolFact]
+      : []),
   ];
   const analysisPartialFacts = analysis.warningRequirements
     .filter((warning) => warning.code === "partial_result")
     .flatMap((warning) => warning.facts);
+  const observedStandardFact = (standardId: TokenStandardId) => {
+    const entry = standardsById[standardId];
+    return entry.projection.observationValue === undefined ? undefined : entry.relation.fact;
+  };
+  const standardSupportFacts = createTokenStandardRecord((standardId) => {
+    const entry = standardsById[standardId];
+    if (entry.projection.observationValue !== undefined) return [entry.relation.fact];
+    const prerequisite = entry.relation.prerequisite === null
+      ? undefined
+      : observedStandardFact(entry.relation.prerequisite);
+    return [prerequisite ?? tokenConfiguredChain.fact];
+  });
+  const observedRequiredSupportFacts = requiredErc8056PrerequisiteStandardIds
+    .flatMap((standardId) => observedStandardFact(standardId) ?? [])
+    .filter((fact, index, facts) => facts.indexOf(fact) === index);
+  const requiredSupportFacts = requiredErc8056.projection.observationValue !== undefined
+    ? [requiredErc8056.fact]
+    : observedRequiredSupportFacts.length === 0
+      ? [tokenConfiguredChain.fact]
+      : observedRequiredSupportFacts;
+  const unavailableStandardFacts = standards.flatMap((entry) =>
+    entry.projection.outcome === "source_inconsistent" ||
+      entry.projection.outcome === "not_observed"
+      ? standardSupportFacts[entry.standardId]
+      : []);
+  if (requiredErc8056.projection.outcome === "not_observed") {
+    unavailableStandardFacts.push(...requiredSupportFacts);
+  }
   const partialFacts = [
     ...analysisPartialFacts,
-    ...unavailableMetadataFacts.map((fact) => fact === "name" ? nameFact : symbolFact),
+    ...unavailableMetadataFacts,
+    ...unavailableStandardFacts,
   ];
   return deepFreezeValue({
     observationExpectations: [
@@ -370,7 +664,10 @@ const createTokenInspectionEvidenceDeclaration = (
         decimals.roles.value,
         data.totalSupply.decimals.status === "available"
           ? data.totalSupply.decimals.value
-          : { status: "unavailable", reason: "missing" },
+          : {
+              status: "unavailable",
+              reason: data.metadata.decimalsReadFailure,
+            },
         data,
       )]),
       tokenExpectation(name.slot, [tokenClaim(
@@ -396,6 +693,20 @@ const createTokenInspectionEvidenceDeclaration = (
       tokenExpectation(totalSupply.slot, [
         tokenClaim(totalSupply.roles.value, data.totalSupply.raw, data),
       ]),
+      ...standards.flatMap((entry) => entry.projection.observationValue === undefined
+        ? []
+        : [tokenExpectation(entry.target.slot, [tokenClaim(
+            entry.target.roles.value,
+            entry.projection.observationValue,
+            data,
+          )])]),
+      ...(requiredErc8056.projection.observationValue === undefined
+        ? []
+        : [tokenExpectation(requiredErc8056.target.slot, [tokenClaim(
+            requiredErc8056.target.roles.value,
+            requiredErc8056.projection.observationValue,
+            data,
+          )])]),
     ],
     observationReferences: [
       {
@@ -422,7 +733,7 @@ const createTokenInspectionEvidenceDeclaration = (
     factRequirements: [
       tokenFactRequirement(
         decimalsFact,
-        data.totalSupply.decimals.status === "available" ? "observed" : "source_failed",
+        decimalsFactOutcome(data.metadata.decimalsReadFailure),
         decimals.slot,
       ),
       tokenFactRequirement(nameFact, optionalTokenFactOutcome(data.metadata.name), name.slot),
@@ -438,6 +749,28 @@ const createTokenInspectionEvidenceDeclaration = (
         symbol.slot,
       ),
       tokenFactRequirement(totalSupplyFact, "observed", totalSupply.slot),
+      ...standards.map((entry) => entry.projection.observationValue === undefined
+        ? tokenNoneFactRequirement(
+            entry.relation.fact,
+            entry.projection.outcome,
+            entry.target.slot,
+          )
+        : tokenFactRequirement(
+            entry.relation.fact,
+            entry.projection.outcome,
+            entry.target.slot,
+          )),
+      ...(requiredErc8056.projection.observationValue === undefined
+        ? [tokenNoneFactRequirement(
+            requiredErc8056.fact,
+            requiredErc8056.projection.outcome,
+            requiredErc8056.target.slot,
+          )]
+        : [tokenFactRequirement(
+            requiredErc8056.fact,
+            requiredErc8056.projection.outcome,
+            requiredErc8056.target.slot,
+          )]),
     ],
     conclusionDrafts: [
       tokenConclusion(decimalsConclusion, decimalsFact),
@@ -445,6 +778,16 @@ const createTokenInspectionEvidenceDeclaration = (
       tokenConclusion(symbolConclusion, symbolFact),
       tokenConclusion(totalSupplyConclusion, totalSupplyFact),
       ...analysis.conclusionDrafts,
+      ...standards.map((entry) => tokenConclusion(
+        entry.relation.conclusion,
+        entry.relation.fact,
+        standardSupportFacts[entry.standardId],
+      )),
+      tokenConclusion(
+        requiredErc8056ValuesConclusion,
+        requiredErc8056.fact,
+        requiredSupportFacts,
+      ),
     ],
     warningRequirements: [
       ...(data.totalSupply.decimals.status === "available"

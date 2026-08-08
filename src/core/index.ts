@@ -58,6 +58,9 @@ export {
   optionalTokenTextSchema,
   tokenDisplayTextLimits,
   tokenDisplayTextSchema,
+  tokenMetadataDecimalsReadFailureReasons,
+  tokenMetadataDecimalsReadFailureReasonSchema,
+  tokenMetadataDecimalsReadSchema,
   tokenMetadataReadSchema,
   tokenOptionalTextUnavailableReasons,
   tokenOptionalTextUnavailableReasonSchema,
@@ -66,6 +69,8 @@ export {
 export type {
   OptionalTokenText,
   TokenDisplayText,
+  TokenMetadataDecimalsRead,
+  TokenMetadataDecimalsReadFailureReason,
   TokenMetadataRead,
   TokenOptionalTextUnavailableReason,
 } from "./token-metadata.js";

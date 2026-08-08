@@ -48,6 +48,7 @@ import {
 } from "./identities.js";
 import { LocalOperationClient } from "./operation-client.js";
 import { deliveryUnknownCliExitCode } from "./delivery-exit.js";
+import { contractAnalysisHumanLines } from "./cli-contract-analysis.js";
 import {
   uniswapV2QuoteCapability,
   type UniswapV2QuoteData,
@@ -304,42 +305,7 @@ const chainStatusHuman = (data: ChainStatusData): string => [
 const contractHuman = (data: ContractInspectData): string => [
   `Contract: ${data.analysis.target}`,
   `Block: ${data.analysis.block.blockNumber}`,
-  `Runtime code bytes: ${data.analysis.targetRuntimeCode.byteLength}`,
-  `Runtime code hash: ${data.analysis.targetRuntimeCode.codeHash}`,
-  `Proxy: ${data.analysis.proxy.status}`,
-  ...(data.analysis.proxy.status === "resolved"
-    ? [
-        `Proxy method: ${data.analysis.proxy.method}`,
-        `Implementation: ${data.analysis.proxy.implementation}`,
-      ]
-    : data.analysis.proxy.status === "unresolved"
-      ? [
-          `Proxy reason: ${data.analysis.proxy.reason}`,
-          ...(data.analysis.proxy.reason === "implementation_terminality_unresolved"
-            ? [
-                `Observed first-hop proxy method: ${data.analysis.proxy.firstHop.method}`,
-                `Observed first-hop implementation: ${data.analysis.proxy.firstHop.implementation}`,
-                "Observed first-hop implementation admitted as effective: no",
-                `Observed first-hop proxy administrator: ${
-                  data.analysis.proxy.firstHop.admin.status === "observed"
-                    ? data.analysis.proxy.firstHop.admin.address
-                    : data.analysis.proxy.firstHop.admin.status}`,
-                `Candidate terminality: ${data.analysis.proxy.terminality.status}${
-                  data.analysis.proxy.terminality.status === "supported_proxy_marker_observed"
-                    ? ` (${data.analysis.proxy.terminality.method})`
-                    : ""}`,
-              ]
-            : []),
-        ]
-      : []),
-  ...data.analysis.sources.map((source) =>
-    `Source ${source.role}: ${source.status} (${source.address})`),
-  `Declared functions: ${data.analysis.declaredFunctions.status === "observed"
-    ? data.analysis.declaredFunctions.signatures.length
-    : `unavailable (${data.analysis.declaredFunctions.reason})`}`,
-  `Owner: ${data.analysis.controls.owner.status}`,
-  `Paused: ${data.analysis.controls.paused.status}`,
-  `Default administrators: ${data.analysis.controls.defaultAdmins.status}`,
+  ...contractAnalysisHumanLines(data.analysis),
 ].join("\n");
 
 const transactionHuman = (data: TransactionInspectData): string => [

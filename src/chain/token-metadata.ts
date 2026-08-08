@@ -6,8 +6,8 @@ import {
   tokenMetadataReadSchema,
   type Erc20AssetIdentity,
   type OptionalTokenText,
+  type TokenMetadataDecimalsRead,
   type TokenMetadataRead,
-  type UnsignedDecimal,
 } from "../core/index.js";
 import {
   decodeErc20DecimalsResult,
@@ -70,7 +70,7 @@ const readOptionalDecimals = async (
   asset: Erc20AssetIdentity,
   reference: RpcCanonicalBlockReference,
   signal: AbortSignal,
-): Promise<UnsignedDecimal | null> => {
+): Promise<TokenMetadataDecimalsRead> => {
   let raw: unknown;
   try {
     raw = await dependencies.rpc.request("eth_call", [{
@@ -78,13 +78,18 @@ const readOptionalDecimals = async (
       data: dependencies.encoder.decimals(),
     }, reference], signal);
   } catch (error) {
-    if (isRpcExecutionRevertedError(error)) return null;
+    if (isRpcExecutionRevertedError(error)) {
+      return Object.freeze({ status: "unavailable", reason: "call_failed" });
+    }
     throw error;
   }
   try {
-    return decodeErc20DecimalsResult(normalizeRpcBytes(raw));
+    return Object.freeze({
+      status: "available",
+      value: decodeErc20DecimalsResult(normalizeRpcBytes(raw)),
+    });
   } catch {
-    return null;
+    return Object.freeze({ status: "unavailable", reason: "malformed" });
   }
 };
 

@@ -16,6 +16,7 @@ import {
   createObservationAuthority,
   createObservationAuthorityIssuer,
   getCapabilityDefinitionSnapshot,
+  parseCapabilitySuccess,
   parseCapabilityDataAt,
   parseEvmAddressInput,
   parseEvmChainId,
@@ -352,6 +353,7 @@ describe("chain owner application", () => {
         metadata: {
           name: { status: "available", value: "Example Token" },
           symbol: { status: "available", value: "EXT" },
+          decimalsReadFailure: null,
         },
       },
     });
@@ -421,10 +423,15 @@ describe("chain owner application", () => {
       new CapabilityRegistry([tokenInspectCapability]),
       [application.tokenInspection],
     );
-    const result = await bindings.invoke(tokenInspectCapability, {
+    const input = {
       asset: { kind: "erc20", chainId: configuredChainId, address: tokenAddress },
-      block: { kind: "latest" },
-    }, { signal: new AbortController().signal });
+      block: { kind: "latest" as const },
+    };
+    const result = await bindings.invoke(
+      tokenInspectCapability,
+      input,
+      { signal: new AbortController().signal },
+    );
 
     expect(result).toMatchObject({
       ok: true,
@@ -433,10 +440,17 @@ describe("chain owner application", () => {
         metadata: {
           name: { status: "unavailable", reason: "call_failed" },
           symbol: { status: "unavailable", reason: "malformed" },
+          decimalsReadFailure: "malformed",
         },
       },
     });
     if (result.ok) {
+      expect(result.evidence.conclusions.find(({ id }) => id === "decimals_observed"))
+        .toMatchObject({ status: "unavailable", reason: "source_inconsistent" });
+      expect(result.evidence.conclusions.find(({ id }) => id === "name_observed"))
+        .toMatchObject({ status: "unavailable", reason: "source_failed" });
+      expect(result.evidence.conclusions.find(({ id }) => id === "symbol_observed"))
+        .toMatchObject({ status: "unavailable", reason: "source_inconsistent" });
       expect(result.warnings.map((warning) => warning.code)).toEqual([
         "decimals_unavailable",
         "partial_result",
@@ -446,6 +460,28 @@ describe("chain owner application", () => {
         result.data.metadata.name.observationId,
         result.data.metadata.symbol.observationId,
       ]));
+      const changedAuthorship = {
+        ...result,
+        data: {
+          ...result.data,
+          metadata: {
+            ...result.data.metadata,
+            decimalsReadFailure: "call_failed" as const,
+          },
+        },
+        evidence: {
+          ...result.evidence,
+          conclusions: result.evidence.conclusions.map((conclusion) =>
+            conclusion.id === "decimals_observed"
+              ? { ...conclusion, reason: "source_failed" as const }
+              : conclusion),
+        },
+      };
+      expect(() => parseCapabilitySuccess(
+        tokenInspectCapability,
+        input,
+        changedAuthorship,
+      )).toThrow();
     }
     await application.close();
   });
@@ -535,10 +571,13 @@ describe("chain owner application", () => {
           raw: "7",
           decimals: { status: "unavailable", reason: "missing" },
         },
+        metadata: { decimalsReadFailure: "call_failed" },
       },
     });
     if (result.ok) {
       expect(result.warnings.map(({ code }) => code)).toContain("decimals_unavailable");
+      expect(result.evidence.conclusions.find(({ id }) => id === "decimals_observed"))
+        .toMatchObject({ status: "unavailable", reason: "source_failed" });
     }
     await application.close();
   });
@@ -643,10 +682,11 @@ describe("chain owner application", () => {
       [application.tokenInspection],
     );
 
-    await expect(bindings.invoke(tokenInspectCapability, {
+    const result = await bindings.invoke(tokenInspectCapability, {
       asset: { kind: "erc20", chainId: configuredChainId, address: tokenAddress },
       block: { kind: "latest" },
-    }, { signal: new AbortController().signal })).resolves.toMatchObject({
+    }, { signal: new AbortController().signal });
+    expect(result).toMatchObject({
       ok: true,
       data: {
         metadata: {
@@ -655,6 +695,15 @@ describe("chain owner application", () => {
         },
       },
     });
+    if (result.ok) {
+      expect(result.evidence.conclusions.find(({ id }) => id === "name_observed"))
+        .toMatchObject({ status: "established", reason: "observed" });
+      expect(result.evidence.conclusions.find(({ id }) => id === "symbol_observed"))
+        .toMatchObject({ status: "established", reason: "observed" });
+      const partial = result.warnings.find(({ code }) => code === "partial_result");
+      expect(partial?.observationIds).not.toContain(result.data.metadata.name.observationId);
+      expect(partial?.observationIds).not.toContain(result.data.metadata.symbol.observationId);
+    }
     await application.close();
   });
 

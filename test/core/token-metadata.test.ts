@@ -4,6 +4,7 @@ import {
   tokenDisplayTextLimits,
   tokenDisplayTextSchema,
   tokenMetadataReadSchema,
+  tokenMetadataDecimalsReadFailureReasons,
   tokenOptionalTextUnavailableReasons,
 } from "../../src/core/token-metadata.js";
 
@@ -17,6 +18,10 @@ describe("token display metadata contract", () => {
       "call_failed",
       "malformed",
       "unsafe_text",
+    ]);
+    expect(tokenMetadataDecimalsReadFailureReasons).toEqual([
+      "call_failed",
+      "malformed",
     ]);
     expect(Object.isFrozen(tokenDisplayTextLimits)).toBe(true);
     expect(Object.isFrozen(tokenOptionalTextUnavailableReasons)).toBe(true);
@@ -35,7 +40,7 @@ describe("token display metadata contract", () => {
     const result = {
       name: { status: "available", value: "Example" },
       symbol: { status: "unavailable", reason: "call_failed" },
-      decimals: "18",
+      decimals: { status: "available", value: "18" },
     } as const;
     expect(tokenMetadataReadSchema.parse(result)).toEqual(result);
     expect(() => tokenMetadataReadSchema.parse({
@@ -44,7 +49,11 @@ describe("token display metadata contract", () => {
     })).toThrow();
     expect(() => tokenMetadataReadSchema.parse({
       ...result,
-      decimals: "-1",
+      decimals: { status: "available", value: "-1" },
+    })).toThrow();
+    expect(() => tokenMetadataReadSchema.parse({
+      ...result,
+      decimals: { status: "unavailable", reason: "transport_failed" },
     })).toThrow();
     expect(() => tokenMetadataReadSchema.parse({
       ...result,

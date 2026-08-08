@@ -77,6 +77,8 @@ const sourceVerificationReference = {
 const observationIds = {
   decimals: "obs:KjVdvtRZIJy3zwHA7Otc5wCEv_RCinW1N7dbJRfdlhU",
   deployment: "obs:hWfkMakSUe8KgiSHDs3WKlLSL6W1awVPlEPIxSWwTlM",
+  erc165: "obs:R-ohg6-LjbuT3Yk8BbJ1D9VtbBVJsmnUSKzINsaXloM",
+  erc20ReadSurface: "obs:CF853c2caLAm--YtUsXNL7p2YCjyYHoV00yngnAGOfk",
   name: "obs:BNFneuqTJMHZ1m-uaj2idKCQDFvWtFcBPdCvvW-WK0E",
   rpcChainId: "obs:zHDbjtsuyiSFjUWZZPSi9CAHJlAwRMP3mKWiOtc7eeU",
   symbol: "obs:i02ZI2JnPdx5FzUropgVeHtNXLdlZ7t1aQN0yMpkFiQ",
@@ -142,6 +144,22 @@ const unavailableConclusion = (
   freshness: {
     status: "fresh",
     ruleId: "contract_source_at_chain_anchor",
+    evaluatedAt,
+    observationIds: [observationId],
+  },
+});
+
+const unsupportedConclusion = (
+  id: string,
+  observationId: string,
+) => ({
+  id,
+  status: "not_applicable",
+  reason: "unsupported",
+  observationIds: [observationId],
+  freshness: {
+    status: "fresh",
+    ruleId: "chain_anchor_exact",
     evaluatedAt,
     observationIds: [observationId],
   },
@@ -220,6 +238,7 @@ const inspection = {
         value: "EXT",
         observationId: observationIds.symbol,
       },
+      decimalsReadFailure: null,
     },
     standards: {
       asset,
@@ -242,6 +261,12 @@ const inspection = {
         role: "token_name",
         value: "Example Token",
       }]),
+      source(observationIds.erc20ReadSurface, "erc20_read_surface", [{
+        asset,
+        chainAnchor: block,
+        role: "erc20_read_surface",
+        value: { standardId: "erc20_read_surface", status: "observed" },
+      }]),
       source(observationIds.decimals, "token_decimals", [{
         asset,
         chainAnchor: block,
@@ -253,6 +278,12 @@ const inspection = {
         chainAnchor: block,
         role: "token_total_supply",
         value: "1000000",
+      }]),
+      source(observationIds.erc165, "erc165_status", [{
+        asset,
+        chainAnchor: block,
+        role: "erc165_status",
+        value: { standardId: "erc165", status: "not_supported" },
       }]),
       source(observationIds.targetSource, "contract_source_target", [{
         chainAnchor: block,
@@ -289,6 +320,13 @@ const inspection = {
       conclusion("contract_deployment_observed", observationIds.deployment),
       unavailableConclusion("contract_source_checked", observationIds.targetSource),
       conclusion("decimals_observed", observationIds.decimals),
+      conclusion("erc165_status_observed", observationIds.erc165),
+      conclusion("erc20_read_surface_observed", observationIds.erc20ReadSurface),
+      unsupportedConclusion("erc8056_balances_status_observed", observationIds.erc165),
+      unsupportedConclusion("erc8056_conversion_status_observed", observationIds.erc165),
+      unsupportedConclusion("erc8056_pending_multiplier_status_observed", observationIds.erc165),
+      unsupportedConclusion("erc8056_required_values_observed", observationIds.erc165),
+      unsupportedConclusion("erc8056_status_observed", observationIds.erc165),
       conclusion("name_observed", observationIds.name),
       conclusion("symbol_observed", observationIds.symbol),
       conclusion("total_supply_observed", observationIds.totalSupply),
@@ -298,11 +336,19 @@ const inspection = {
       established: [
         "contract_deployment_observed",
         "decimals_observed",
+        "erc165_status_observed",
+        "erc20_read_surface_observed",
         "name_observed",
         "symbol_observed",
         "total_supply_observed",
       ],
-      notApplicable: [],
+      notApplicable: [
+        "erc8056_balances_status_observed",
+        "erc8056_conversion_status_observed",
+        "erc8056_pending_multiplier_status_observed",
+        "erc8056_required_values_observed",
+        "erc8056_status_observed",
+      ],
       unavailable: ["contract_controls_observed", "contract_source_checked"],
     },
   },
@@ -361,6 +407,8 @@ describe("token commitment independent vectors", () => {
     expect(observationIds).toEqual({
       decimals: independentObservationId(sourceReference.sourceId, "token_decimals", "0"),
       deployment: independentObservationId(sourceReference.sourceId, "contract_deployment", "3"),
+      erc165: independentObservationId(sourceReference.sourceId, "erc165_status", "10"),
+      erc20ReadSurface: independentObservationId(sourceReference.sourceId, "erc20_read_surface", "9"),
       name: independentObservationId(sourceReference.sourceId, "token_name", "1"),
       rpcChainId: independentObservationId(sourceReference.sourceId, "chain_id", "2"),
       symbol: independentObservationId(sourceReference.sourceId, "token_symbol", "7"),
@@ -380,7 +428,7 @@ describe("token commitment independent vectors", () => {
       digestVersion: "1",
       result: inspection,
     } as const;
-    const expected = "0x4cac8de04dd9c7182019953f0e17aafcb710a15f11368e4b371221f7a663d46f";
+    const expected = "0x9148634cb0f5f2bc0d09dcf4ed056dab9c7fd5c763d18d712d55d15bb1b9f924";
     expect(independentSha256(preimage)).toBe(expected);
     expect(tokenInspectionDigest(inspection)).toBe(expected);
   });
@@ -402,7 +450,7 @@ describe("token commitment independent vectors", () => {
       interactionInterface: additionReview.interactionInterface,
       expiresAt: additionReview.expiresAt,
     } as const;
-    const expected = "0xeccef98bdfa82429b536bf41c06dc502558a899fe70fec30ebeb2d323353eef2";
+    const expected = "0x69edc5946a33ba1cda4f17dccea96361d0aceb4c737204944cb5df1fa11bf75d";
     expect(independentSha256(preimage)).toBe(expected);
     expect(tokenCatalogReviewDigest(additionReview)).toBe(expected);
   });
