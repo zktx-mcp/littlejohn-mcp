@@ -6,6 +6,7 @@ import {
   contractProxyAdminStatusLabel,
   contractProxyMethodLabel,
   contractProxyStatusLabel,
+  contractProxyTerminalityLabel,
   contractProxyUnresolvedReasonLabel,
   contractSourceVerificationLabel,
   contractSourceRoleLabel,
@@ -94,7 +95,17 @@ describe("browser human labels", () => {
       "beacon_implementation_reverted",
       "malformed_beacon_implementation",
       "implementation_runtime_code_empty",
-    ] as const).map(contractProxyUnresolvedReasonLabel)).toHaveLength(6);
+      "implementation_terminality_unresolved",
+    ] as const).map(contractProxyUnresolvedReasonLabel)).toHaveLength(7);
+    expect(contractProxyTerminalityLabel({
+      status: "supported_proxy_marker_observed",
+      method: "erc1167",
+    })).toBe("Another ERC-1167 minimal proxy marker was observed.");
+    expect(([
+      { status: "conflicting_supported_proxy_markers" },
+      { status: "malformed_eip1967_address_storage" },
+      { status: "admin_without_supported_implementation" },
+    ] as const).map(contractProxyTerminalityLabel)).toHaveLength(3);
     expect(([
       "exact_match",
       "non_exact_match",

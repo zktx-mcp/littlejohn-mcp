@@ -76,12 +76,41 @@ const resolvedExact = (): ContractAnalysis => contractAnalysisSchema.parse({
   },
 });
 
+const terminalityFirstHop = {
+  method: "eip1967_implementation",
+  implementation,
+  implementationRuntimeCode,
+  admin: { status: "not_present" },
+} as const;
+const supportedCandidateMarker = {
+  status: "supported_proxy_marker_observed",
+  method: "erc1167",
+} as const;
+
+const terminalityUnresolved = (): ContractAnalysis => contractAnalysisSchema.parse({
+  ...directUnavailable(),
+  proxy: {
+    status: "unresolved",
+    reason: "implementation_terminality_unresolved",
+    firstHop: terminalityFirstHop,
+    terminality: supportedCandidateMarker,
+  },
+  declaredFunctions: { status: "unavailable", reason: "deployment_unresolved" },
+  controls: {
+    owner: { status: "unavailable", reason: "deployment_unresolved" },
+    paused: { status: "unavailable", reason: "deployment_unresolved" },
+    defaultAdmins: { status: "unavailable", reason: "deployment_unresolved" },
+  },
+});
+
 describe("contract analysis relation validation", () => {
   it("admits complete direct and resolved results", () => {
     expect(assertContractAnalysisForTarget(context, directUnavailable()))
       .toEqual(directUnavailable());
     expect(assertContractAnalysisForTarget(context, resolvedExact()))
       .toEqual(resolvedExact());
+    expect(assertContractAnalysisForTarget(context, terminalityUnresolved()))
+      .toEqual(terminalityUnresolved());
     expect(assertContractAnalysisForTarget(context, {
       ...resolvedExact(),
       proxy: {
@@ -159,6 +188,33 @@ describe("contract analysis relation validation", () => {
           owner: { status: "not_declared" },
           paused: { status: "unavailable", reason: "deployment_unresolved" },
           defaultAdmins: { status: "unavailable", reason: "deployment_unresolved" },
+        },
+      },
+      {
+        ...terminalityUnresolved(),
+        proxy: {
+          status: "unresolved",
+          reason: "implementation_terminality_unresolved",
+        },
+      },
+      {
+        ...terminalityUnresolved(),
+        proxy: {
+          status: "unresolved",
+          reason: "implementation_runtime_code_empty",
+          firstHop: terminalityFirstHop,
+          terminality: supportedCandidateMarker,
+        },
+      },
+      {
+        ...terminalityUnresolved(),
+        proxy: {
+          ...terminalityUnresolved().proxy,
+          firstHop: {
+            ...terminalityFirstHop,
+            method: "erc1167",
+            admin: { status: "not_present" },
+          },
         },
       },
     ];

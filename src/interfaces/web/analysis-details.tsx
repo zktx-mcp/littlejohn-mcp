@@ -16,6 +16,7 @@ import {
   contractProxyAdminStatusLabel,
   contractProxyMethodLabel,
   contractProxyStatusLabel,
+  contractProxyTerminalityLabel,
   contractProxyUnresolvedReasonLabel,
   contractSourceRoleLabel,
   contractSourceVerificationLabel,
@@ -37,12 +38,21 @@ const proxyText = (analysis: ContractAnalysis): string => {
   return `${contractProxyMethodLabel(analysis.proxy.method)} to ${analysis.proxy.implementation}`;
 };
 
+const proxyAdminObservation = (analysis: ContractAnalysis) =>
+  analysis.proxy.status === "resolved"
+    ? analysis.proxy.admin
+    : analysis.proxy.status === "unresolved" &&
+        analysis.proxy.reason === "implementation_terminality_unresolved"
+      ? analysis.proxy.firstHop.admin
+      : undefined;
+
 const proxyAdminText = (analysis: ContractAnalysis): string => {
-  if (analysis.proxy.status !== "resolved") return "Not applicable";
-  if (analysis.proxy.admin.status === "observed") {
-    return analysis.proxy.admin.address;
+  const admin = proxyAdminObservation(analysis);
+  if (admin === undefined) return "Not applicable";
+  if (admin.status === "observed") {
+    return admin.address;
   }
-  return contractProxyAdminStatusLabel(analysis.proxy.admin.status);
+  return contractProxyAdminStatusLabel(admin.status);
 };
 
 const controlText = (
@@ -81,8 +91,9 @@ export const ContractControlSummary = ({
 }: {
   readonly analysis: ContractAnalysis;
   readonly coverage: Coverage;
-}) => (
-  <section
+}) => {
+  const proxyAdmin = proxyAdminObservation(analysis);
+  return <section
     className="analysis-control-summary"
     aria-labelledby="analysis-control-summary-heading"
   >
@@ -114,6 +125,23 @@ export const ContractControlSummary = ({
           </>
         ) : proxyText(analysis)}
       </dd>
+      {analysis.proxy.status === "unresolved" &&
+      analysis.proxy.reason === "implementation_terminality_unresolved" ? (
+        <>
+          <dt>Observed first-hop method</dt>
+          <dd>{contractProxyMethodLabel(analysis.proxy.firstHop.method)}</dd>
+          <dt>Observed first-hop implementation</dt>
+          <dd>
+            <CopyableIdentifier
+              label="observed first-hop implementation address"
+              value={analysis.proxy.firstHop.implementation}
+            />
+            {" — not admitted as the effective implementation"}
+          </dd>
+          <dt>Candidate terminality</dt>
+          <dd>{contractProxyTerminalityLabel(analysis.proxy.terminality)}</dd>
+        </>
+      ) : null}
       <dt>Source verification</dt>
       <dd>
         <ul className="analysis-inline-list">
@@ -127,13 +155,15 @@ export const ContractControlSummary = ({
       </dd>
       <dt>Owner</dt><dd>{controlText(analysis.controls.owner)}</dd>
       <dt>Paused</dt><dd>{controlText(analysis.controls.paused)}</dd>
-      <dt>Proxy administrator</dt>
+      <dt>{analysis.proxy.status === "unresolved" &&
+        analysis.proxy.reason === "implementation_terminality_unresolved"
+        ? "Observed first-hop proxy administrator"
+        : "Proxy administrator"}</dt>
       <dd>
-        {analysis.proxy.status === "resolved" &&
-        analysis.proxy.admin.status === "observed"
+        {proxyAdmin?.status === "observed"
           ? <CopyableIdentifier
               label="proxy administrator address"
-              value={analysis.proxy.admin.address}
+              value={proxyAdmin.address}
             />
           : proxyAdminText(analysis)}
       </dd>
@@ -142,8 +172,8 @@ export const ContractControlSummary = ({
         {controlText(analysis.controls.defaultAdmins)}
       </dd>
     </dl>
-  </section>
-);
+  </section>;
+};
 
 export const ContractAnalysisDetails = ({
   analysis,

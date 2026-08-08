@@ -292,8 +292,8 @@ describe("Uniswap V2 exact-input quote owner", () => {
     expect(projection).toBeDefined();
     const expected = [
       "77a959ae0f677324bcdfdd8ca1f88c8f90e73720795a15e1effa9fecd4406307",
-      "0b362c23445e362c3a3616ad1feb2d64b9ad1d5e4f4a8d52c10f8da779b0bdf0",
-      "3c5f95984712259b1c0853c30da0d25d27e162d04ff15c51b58f01e5febb5536",
+      "05fa850d2edb92cc1591af5de272ebe72907c8f0df1b224789e822222d176ce0",
+      "3777dc9371d4f909d7a6ea475835a8e583b325c0e51acc499d9f29da6e52062b",
     ];
     expect([
       independentSha256(projection!.input.schema),

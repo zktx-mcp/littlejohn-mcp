@@ -6,6 +6,7 @@ import {
   canonicalJsonStringify,
   captureCanonicalJson,
   chainStatusCapability,
+  contractInspectCapability,
   createApplicationFailure,
   type CanonicalJson,
 } from "../../src/core/index.js";
@@ -141,6 +142,41 @@ const chainStatusSuccess = async (): Promise<CanonicalJson> => {
   harnesses.push(harness);
   const result = await harness.invoke(chainStatusCapability, {});
   if (!result.ok) throw new Error("Expected a chain status success.");
+  return captureCanonicalJson(result);
+};
+
+const terminalityUnresolvedContractSuccess = async (): Promise<CanonicalJson> => {
+  const emptyStorageWord = `0x${"00".repeat(32)}`;
+  const implementationStorageWord = `0x${"00".repeat(12)}${tokenA.slice(2)}`;
+  const candidateBytecode =
+    `0x363d3d373d3d3d363d73${tokenB.slice(2)}5af43d82803e903d91602b57fd5bf3`;
+  const harness = createChainHandlerHarness({
+    rpc: new ScriptedRpc([
+      rpcValue("eth_chainId", "0x1237"),
+      rpcValue("eth_getBlockByNumber", {
+        number: "0x2a",
+        hash: blockHash,
+        timestamp: "0x65a00000",
+        transactions: [],
+      }),
+      rpcValue("eth_getCode", "0x6000"),
+      rpcValue("eth_getStorageAt", implementationStorageWord),
+      rpcValue("eth_getStorageAt", emptyStorageWord),
+      rpcValue("eth_getStorageAt", emptyStorageWord),
+      rpcValue("eth_getCode", candidateBytecode),
+      rpcValue("eth_getStorageAt", emptyStorageWord),
+      rpcValue("eth_getStorageAt", emptyStorageWord),
+      rpcValue("eth_getStorageAt", emptyStorageWord),
+    ]),
+    encoder,
+    wallet: disconnectedWallet(),
+  });
+  harnesses.push(harness);
+  const result = await harness.invoke(contractInspectCapability, {
+    address,
+    block: { kind: "latest" },
+  });
+  if (!result.ok) throw new Error("Expected a terminality-unresolved contract success.");
   return captureCanonicalJson(result);
 };
 
@@ -296,6 +332,22 @@ describe("read CLI", () => {
     expect(output.output.join("")).toContain("Latest block: 9007199254740993");
     expect(output.output.join("")).toContain(`Block hash: ${blockHash}`);
     expect(output.output.join("")).not.toContain("9,007,199");
+  });
+
+  it("distinguishes an observed first-hop implementation from an effective implementation", async () => {
+    const success = await terminalityUnresolvedContractSuccess();
+    const output = outputPort();
+    expect(await runReadCliCommand(
+      new FakeRuntime(Object.freeze({ status: 200, body: success })),
+      parseReadCliCommand(["read", "contract", address, "--block", "latest"]),
+      output,
+    )).toBe(0);
+    const text = output.output.join("");
+    expect(text).toContain("Proxy reason: implementation_terminality_unresolved");
+    expect(text).toContain("Observed first-hop proxy method: eip1967_implementation");
+    expect(text).toContain(`Observed first-hop implementation: ${tokenA}`);
+    expect(text).toContain("Observed first-hop implementation admitted as effective: no");
+    expect(text).toContain("Candidate terminality: supported_proxy_marker_observed (erc1167)");
   });
 
   it("reports the complete V2 candidate observations, evidence, and limitations", async () => {

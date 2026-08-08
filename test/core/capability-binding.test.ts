@@ -72,6 +72,7 @@ import {
 import {
   changeUnavailableOwnerReason,
   createExactResolvedAnalysis,
+  createTerminalityUnresolvedAnalysis,
   reversedDeclaredFunctions,
   validContractAnalysisClaimMutations,
 } from "./contract-analysis-fixtures.js";
@@ -488,17 +489,7 @@ describe("capability binding authority", () => {
         defaultAdmins: { status: "unavailable", reason: "exact_abi_unavailable" },
       },
     });
-    const unresolved = contractAnalysisSchema.parse({
-      ...directBase,
-      proxy: { status: "unresolved", reason: "implementation_runtime_code_empty" },
-      sources: [{ role: "target", address, status: "no_record_observed" }],
-      declaredFunctions: { status: "unavailable", reason: "deployment_unresolved" },
-      controls: {
-        owner: { status: "unavailable", reason: "deployment_unresolved" },
-        paused: { status: "unavailable", reason: "deployment_unresolved" },
-        defaultAdmins: { status: "unavailable", reason: "deployment_unresolved" },
-      },
-    });
+    const unresolved = createTerminalityUnresolvedAnalysis(address, block);
     for (const [analysis, expected] of [
       [createExactResolvedAnalysis(address, block), {
         status: "established",

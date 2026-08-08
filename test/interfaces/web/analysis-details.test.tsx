@@ -16,6 +16,7 @@ import {
   analysisImplementation,
   analysisOwner,
   createExactResolvedAnalysis,
+  createTerminalityUnresolvedAnalysis,
 } from "../../core/contract-analysis-fixtures.js";
 import {
   createInspectionSuccess,
@@ -87,5 +88,32 @@ describe("analysis browser presentation", () => {
     expect(markup).not.toContain("Raw total supply");
     expect(markup).not.toContain("Declared functions");
     expect(markup).not.toContain(exactInspection.evidence.sources[0]!.recordDigest);
+  });
+
+  it("presents retained first-hop evidence without calling it an effective implementation", () => {
+    const analysis = createTerminalityUnresolvedAnalysis(
+      exactInspection.data.analysis.target,
+      exactInspection.data.analysis.block,
+    );
+    if (
+      analysis.proxy.status !== "unresolved" ||
+      analysis.proxy.reason !== "implementation_terminality_unresolved"
+    ) {
+      throw new TypeError("Expected a terminality-unresolved analysis fixture.");
+    }
+    const markup = renderToStaticMarkup(createElement(ContractAnalysisDetails, {
+      analysis,
+      coverage: { ...exactInspection.evidence.coverage, status: "partial" },
+      warnings: [],
+      limitations: getCapabilityDefinitionSnapshot(tokenInspectCapability).staticScopeExclusions,
+    }));
+
+    expect(markup).toContain("The observed first-hop implementation is not terminal");
+    expect(markup).toContain("Observed first-hop implementation");
+    expect(markup).toContain(analysisImplementation);
+    expect(markup).toContain("not admitted as the effective implementation");
+    expect(markup).toContain("Another ERC-1167 minimal proxy marker was observed");
+    expect(markup).toContain("Observed first-hop proxy administrator");
+    expect(markup).not.toContain(analysis.proxy.firstHop.implementationRuntimeCode.codeHash);
   });
 });

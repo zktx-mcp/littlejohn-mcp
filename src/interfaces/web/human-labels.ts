@@ -36,6 +36,13 @@ type ContractProxyUnresolvedReason = Extract<
   ContractProxyResult,
   { readonly status: "unresolved" }
 >["reason"];
+type ContractProxyTerminality = Extract<
+  ContractProxyResult,
+  {
+    readonly status: "unresolved";
+    readonly reason: "implementation_terminality_unresolved";
+  }
+>["terminality"];
 type ContractSourceRole = ContractAnalysis["sources"][number]["role"];
 type ContractControlStatus =
   | ContractAnalysis["declaredFunctions"]["status"]
@@ -188,6 +195,23 @@ export const contractProxyUnresolvedReasonLabel = (
       return "The beacon returned a malformed implementation address.";
     case "implementation_runtime_code_empty":
       return "The resolved implementation has no runtime code.";
+    case "implementation_terminality_unresolved":
+      return "The observed first-hop implementation is not terminal within the supported proxy boundary.";
+  }
+};
+
+export const contractProxyTerminalityLabel = (
+  value: ContractProxyTerminality,
+): string => {
+  switch (value.status) {
+    case "supported_proxy_marker_observed":
+      return `Another ${contractProxyMethodLabel(value.method)} marker was observed.`;
+    case "conflicting_supported_proxy_markers":
+      return "Supported proxy markers conflict at the observed first-hop implementation.";
+    case "malformed_eip1967_address_storage":
+      return "EIP-1967 address storage is malformed at the observed first-hop implementation.";
+    case "admin_without_supported_implementation":
+      return "A proxy administrator was observed there without a supported implementation marker.";
   }
 };
 

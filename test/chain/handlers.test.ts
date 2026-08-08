@@ -300,6 +300,9 @@ describe("Robinhood Chain read handlers", () => {
       rpcValue("eth_getStorageAt", emptyStorageWord),
       rpcValue("eth_getStorageAt", emptyStorageWord),
       rpcValue("eth_getCode", implementationBytecode),
+      rpcValue("eth_getStorageAt", emptyStorageWord),
+      rpcValue("eth_getStorageAt", emptyStorageWord),
+      rpcValue("eth_getStorageAt", emptyStorageWord),
     ]);
 
     const input = {
@@ -332,6 +335,21 @@ describe("Robinhood Chain read handlers", () => {
       `https://sourcify.example/contract/${implementation}`,
     ]));
     expect(() => parseCapabilitySuccess(contractInspectCapability, input, result)).not.toThrow();
+    expect(service.rpc.calls.filter(({ method, params }) =>
+      method === "eth_getStorageAt" && params[0] === implementation)).toEqual([
+        {
+          method: "eth_getStorageAt",
+          params: [implementation, eip1967StorageSlots.implementation, blockReference],
+        },
+        {
+          method: "eth_getStorageAt",
+          params: [implementation, eip1967StorageSlots.beacon, blockReference],
+        },
+        {
+          method: "eth_getStorageAt",
+          params: [implementation, eip1967StorageSlots.admin, blockReference],
+        },
+      ]);
 
     const verificationUris = verificationSources.map((source) => {
       if (source.reference.kind !== "public") {
@@ -407,7 +425,7 @@ describe("Robinhood Chain read handlers", () => {
     expect(service.rpc.remainingSteps).toBe(0);
   });
 
-  it("records both evidence roles when a proxy implementation points to the target", async () => {
+  it("rejects a self-referential implementation after one candidate storage inspection", async () => {
     const bytecode = "0x6000" as const;
     const emptyStorageWord = `0x${"00".repeat(32)}`;
     const selfImplementationWord = `0x${"00".repeat(12)}${contract.slice(2)}`;
@@ -419,6 +437,9 @@ describe("Robinhood Chain read handlers", () => {
       rpcValue("eth_getStorageAt", emptyStorageWord),
       rpcValue("eth_getStorageAt", emptyStorageWord),
       rpcValue("eth_getCode", bytecode),
+      rpcValue("eth_getStorageAt", selfImplementationWord),
+      rpcValue("eth_getStorageAt", emptyStorageWord),
+      rpcValue("eth_getStorageAt", emptyStorageWord),
     ]);
     const input = {
       address: contract,
@@ -428,23 +449,27 @@ describe("Robinhood Chain read handlers", () => {
     expectSuccess(result);
     expect(result.data.analysis).toMatchObject({
       proxy: {
-        status: "resolved",
-        method: "eip1967_implementation",
-        implementation: contract,
-        implementationRuntimeCode: {
-          byteLength: "2",
-          codeHash: keccak256FromHex(bytecode),
+        status: "unresolved",
+        reason: "implementation_terminality_unresolved",
+        firstHop: {
+          method: "eip1967_implementation",
+          implementation: contract,
+          implementationRuntimeCode: {
+            byteLength: "2",
+            codeHash: keccak256FromHex(bytecode),
+          },
+        },
+        terminality: {
+          status: "supported_proxy_marker_observed",
+          method: "eip1967_implementation",
         },
       },
-      sources: [
-        { role: "target", address: contract, status: "no_record_observed" },
-        { role: "implementation", address: contract, status: "no_record_observed" },
-      ],
+      sources: [{ role: "target", address: contract, status: "no_record_observed" }],
     });
     const verificationSources = result.evidence.sources.filter(
       (source) => source.sourceClass === "contract_verification_service",
     );
-    expect(verificationSources).toHaveLength(2);
+    expect(verificationSources).toHaveLength(1);
     expect(new Set(verificationSources.map((source) =>
       source.reference.kind === "public" ? source.reference.uri : null))).toEqual(new Set([
       `https://sourcify.example/contract/${contract}`,

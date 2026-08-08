@@ -313,7 +313,24 @@ const contractHuman = (data: ContractInspectData): string => [
         `Implementation: ${data.analysis.proxy.implementation}`,
       ]
     : data.analysis.proxy.status === "unresolved"
-      ? [`Proxy reason: ${data.analysis.proxy.reason}`]
+      ? [
+          `Proxy reason: ${data.analysis.proxy.reason}`,
+          ...(data.analysis.proxy.reason === "implementation_terminality_unresolved"
+            ? [
+                `Observed first-hop proxy method: ${data.analysis.proxy.firstHop.method}`,
+                `Observed first-hop implementation: ${data.analysis.proxy.firstHop.implementation}`,
+                "Observed first-hop implementation admitted as effective: no",
+                `Observed first-hop proxy administrator: ${
+                  data.analysis.proxy.firstHop.admin.status === "observed"
+                    ? data.analysis.proxy.firstHop.admin.address
+                    : data.analysis.proxy.firstHop.admin.status}`,
+                `Candidate terminality: ${data.analysis.proxy.terminality.status}${
+                  data.analysis.proxy.terminality.status === "supported_proxy_marker_observed"
+                    ? ` (${data.analysis.proxy.terminality.method})`
+                    : ""}`,
+              ]
+            : []),
+        ]
       : []),
   ...data.analysis.sources.map((source) =>
     `Source ${source.role}: ${source.status} (${source.address})`),

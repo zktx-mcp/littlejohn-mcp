@@ -104,8 +104,8 @@ describe("generated capability projections", () => {
     ],
     "contract.inspect": [
       "5839724d847eafb35975597756e5b2443d3745160d33128356bd763653669566",
-      "04e1a03acba90917efd53a71e2b9a3fe22455868524029e110f437a0cbcb82bf",
-      "e2e967639eeef57ec225e54b0cf45aff09f5c4a132815d43399b81d0a799a327",
+      "1a47a7278a24ac59eeaaa53d298f31ebfd095596b36f98d857625e76c04beab0",
+      "2294d9f03a3c2d9dabfe6fed2f6e844bc03b3c33d254a62ececfc8e94d09436c",
     ],
     "transaction.inspect": [
       "c229b4dfb207cbec37d109faa9fbdb95084fd4f43a9dba7ea2c1c9c8b80936f7",

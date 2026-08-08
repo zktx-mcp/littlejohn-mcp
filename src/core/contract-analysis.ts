@@ -18,13 +18,18 @@ export const contractProxyMethods = Object.freeze([
   "erc1167",
 ] as const);
 
-export const contractProxyUnresolvedReasons = Object.freeze([
+const contractProxyPreTerminalUnresolvedReasons = Object.freeze([
   "conflicting_supported_proxy_markers",
   "admin_without_supported_implementation",
   "malformed_eip1967_address_storage",
   "beacon_implementation_reverted",
   "malformed_beacon_implementation",
   "implementation_runtime_code_empty",
+] as const);
+
+export const contractProxyUnresolvedReasons = Object.freeze([
+  ...contractProxyPreTerminalUnresolvedReasons,
+  "implementation_terminality_unresolved",
 ] as const);
 
 export const contractSourceVerificationStatuses = Object.freeze([
@@ -68,26 +73,52 @@ const proxyAdminSchema = z.discriminatedUnion("status", [
   jsonObject({ status: z.literal("not_applicable") }).strict(),
 ]);
 
-export const contractProxyResultSchema = z.discriminatedUnion("status", [
+const proxyHopObservationShape = {
+  method: z.enum(contractProxyMethods),
+  implementation: evmAddressSchema,
+  implementationRuntimeCode: contractRuntimeCodeIdentitySchema,
+  admin: proxyAdminSchema,
+} as const;
+
+const proxyTerminalitySchema = z.discriminatedUnion("status", [
+  jsonObject({
+    status: z.literal("supported_proxy_marker_observed"),
+    method: z.enum(contractProxyMethods),
+  }).strict(),
+  jsonObject({ status: z.literal("conflicting_supported_proxy_markers") }).strict(),
+  jsonObject({ status: z.literal("malformed_eip1967_address_storage") }).strict(),
+  jsonObject({ status: z.literal("admin_without_supported_implementation") }).strict(),
+]);
+
+export const contractProxyResultSchema = z.union([
   jsonObject({
     status: z.literal("resolved"),
-    method: z.enum(contractProxyMethods),
-    implementation: evmAddressSchema,
-    implementationRuntimeCode: contractRuntimeCodeIdentitySchema,
-    admin: proxyAdminSchema,
+    ...proxyHopObservationShape,
   }).strict(),
   jsonObject({
     status: z.literal("no_supported_proxy_observed"),
   }).strict(),
   jsonObject({
     status: z.literal("unresolved"),
-    reason: z.enum(contractProxyUnresolvedReasons),
+    reason: z.enum(contractProxyPreTerminalUnresolvedReasons),
+  }).strict(),
+  jsonObject({
+    status: z.literal("unresolved"),
+    reason: z.literal("implementation_terminality_unresolved"),
+    firstHop: jsonObject(proxyHopObservationShape).strict(),
+    terminality: proxyTerminalitySchema,
   }).strict(),
 ]).superRefine((value, context) => {
+  const hop = value.status === "resolved"
+    ? value
+    : value.status === "unresolved" &&
+        value.reason === "implementation_terminality_unresolved"
+      ? value.firstHop
+      : undefined;
   if (
-    value.status === "resolved" &&
-    value.method === "erc1167" &&
-    value.admin.status !== "not_applicable"
+    hop !== undefined &&
+    hop.method === "erc1167" &&
+    hop.admin.status !== "not_applicable"
   ) {
     context.addIssue({
       code: "custom",
@@ -95,9 +126,9 @@ export const contractProxyResultSchema = z.discriminatedUnion("status", [
     });
   }
   if (
-    value.status === "resolved" &&
-    value.method !== "erc1167" &&
-    value.admin.status === "not_applicable"
+    hop !== undefined &&
+    hop.method !== "erc1167" &&
+    hop.admin.status === "not_applicable"
   ) {
     context.addIssue({
       code: "custom",

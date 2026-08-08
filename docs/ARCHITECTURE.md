@@ -299,6 +299,15 @@ code, supported proxy, owner, pause, and default-administrator reads; it does
 not expose arbitrary RPC methods, calldata, storage slots, batching controls,
 or block selection.
 
+The `intelligence` process applies one supported-marker observer to the target
+and once to a candidate first-hop implementation. Candidate inspection reuses
+the aggregate EIP-1967 storage port call, whose Chain implementation owns the
+implementation, beacon, and administrator slot requests. A candidate with a
+supported or ambiguous marker remains unresolved with its first-hop and
+terminality observations retained. The process never follows that marker,
+calls a candidate beacon, or sends the candidate to source verification or
+ABI-dependent control reads as an effective implementation.
+
 `intelligence` owns the provider-neutral
 `ContractSourceVerificationPort`. A replaceable source-verification adapter
 privately owns its endpoint, request and response admission, provider limits,

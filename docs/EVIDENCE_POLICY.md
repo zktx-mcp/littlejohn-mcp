@@ -241,7 +241,14 @@ or runtime-bytecode mismatch establishes no ABI-dependent conclusion.
 
 Proxy analysis records only the supported standard form that the pinned chain
 reads establish. Absence of a supported proxy marker does not establish that a
-contract is direct. An unresolved implementation prevents ABI-dependent
+contract is direct. A supported one-hop result becomes resolved only after the
+observed first-hop implementation's runtime code and EIP-1967 storage show no
+supported, conflicting, malformed, or administrator-only proxy marker state at
+the same canonical block. The analysis does not follow a second marker. An
+unresolved terminality result retains the observed first-hop method, address,
+runtime-code identity, administrator observation, and exact terminality
+category, but none of those facts admits an effective implementation or an ABI
+for control analysis. Any unresolved implementation prevents ABI-dependent
 control conclusions.
 
 An admitted exact ABI may establish its complete declared function signatures

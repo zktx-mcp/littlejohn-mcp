@@ -67,6 +67,43 @@ export const createExactResolvedAnalysis = (
   },
 });
 
+export const createTerminalityUnresolvedAnalysis = (
+  target: EvmAddress,
+  block: ChainAnchor,
+): ContractAnalysis => contractAnalysisSchema.parse({
+  chainId: block.chainId,
+  target,
+  block,
+  targetRuntimeCode: {
+    byteLength: "2",
+    codeHash: keccak256FromHex("0x6000"),
+  },
+  proxy: {
+    status: "unresolved",
+    reason: "implementation_terminality_unresolved",
+    firstHop: {
+      method: "eip1967_implementation",
+      implementation: analysisImplementation,
+      implementationRuntimeCode: {
+        byteLength: "2",
+        codeHash: keccak256FromHex("0x6001"),
+      },
+      admin: { status: "not_present" },
+    },
+    terminality: {
+      status: "supported_proxy_marker_observed",
+      method: "erc1167",
+    },
+  },
+  sources: [{ role: "target", address: target, status: "no_record_observed" }],
+  declaredFunctions: { status: "unavailable", reason: "deployment_unresolved" },
+  controls: {
+    owner: { status: "unavailable", reason: "deployment_unresolved" },
+    paused: { status: "unavailable", reason: "deployment_unresolved" },
+    defaultAdmins: { status: "unavailable", reason: "deployment_unresolved" },
+  },
+});
+
 export const validContractAnalysisClaimMutations = (
   analysis: ContractAnalysis,
 ): readonly Readonly<{ readonly label: string; readonly analysis: ContractAnalysis }>[] => {

@@ -12,6 +12,7 @@ import {
   parseHexBytes,
   parseUnsignedDecimal,
   sourceReferenceSchema,
+  type EvmAddress,
   type ExactContractInterface,
 } from "../../src/core/index.js";
 import {
@@ -56,9 +57,10 @@ const runtimeCode = (bytecode: `0x${string}`): ContractRuntimeCode => ({
     codeHash: keccak256FromHex(bytecode),
   }),
 });
-const erc1167TargetCode = runtimeCode(
-  `0x363d3d373d3d3d363d73${implementation.slice(2)}5af43d82803e903d91602b57fd5bf3`,
+const erc1167Code = (address: EvmAddress): ContractRuntimeCode => runtimeCode(
+  `0x363d3d373d3d3d363d73${address.slice(2)}5af43d82803e903d91602b57fd5bf3`,
 );
+const erc1167TargetCode = erc1167Code(implementation);
 const exactInterface: ExactContractInterface = exactContractInterfaceSchema.parse({
   declaredFunctions: ["owner()", "paused()", "transferOwnership(address)"],
   owner: "erc173",
@@ -81,8 +83,19 @@ const enumerableAdminInterface: ExactContractInterface = exactContractInterfaceS
   defaultAdmins: "enumerable",
 });
 
+type ProxyStorage = Awaited<
+  ReturnType<ContractAnalysisChainReadPort["readEip1967ProxyStorage"]>
+>;
+
+const emptyProxyStorage: ProxyStorage = Object.freeze({
+  implementation: Object.freeze({ status: "not_present" }),
+  beacon: Object.freeze({ status: "not_present" }),
+  admin: Object.freeze({ status: "not_present" }),
+});
+
 const chain = (
-  storage: Awaited<ReturnType<ContractAnalysisChainReadPort["readEip1967ProxyStorage"]>>,
+  storage: ProxyStorage,
+  candidateStorage: ProxyStorage = emptyProxyStorage,
 ): ContractAnalysisChainReadPort => ({
   chainId,
   block,
@@ -91,8 +104,8 @@ const chain = (
     if (address === implementation) return implementationCode;
     return null;
   },
-  async readEip1967ProxyStorage() {
-    return storage;
+  async readEip1967ProxyStorage(address) {
+    return address === target ? storage : candidateStorage;
   },
   async readBeaconImplementation() {
     return { status: "observed", value: implementation };
@@ -118,6 +131,8 @@ const chain = (
 
 const verifiedPort = (
   verifiedInterface: ExactContractInterface = exactInterface,
+  inspectedAddresses?: EvmAddress[],
+  exactAddress: EvmAddress = implementation,
 ): ContractSourceVerificationPort => {
   const clock = createCanonicalClock(() => "2026-07-26T00:00:00.000Z");
   const issuer = createObservationAuthorityIssuer({
@@ -130,6 +145,7 @@ const verifiedPort = (
   return createContractSourceVerificationPort({
     observationAuthorityRegistration: issuer.registration,
     async inspect(request) {
+      inspectedAddresses?.push(request.address);
       const reference = sourceReferenceSchema.parse({
         kind: "public",
         sourceId: "sourcify-v2",
@@ -137,10 +153,10 @@ const verifiedPort = (
       });
       if (reference.kind !== "public") throw new TypeError("Expected a public reference.");
       return {
-        status: request.address === implementation ? "exact_match" : "no_record_observed",
+        status: request.address === exactAddress ? "exact_match" : "no_record_observed",
         reference,
         observationAuthority: issuer.issue(reference),
-        ...(request.address === implementation ? { exactInterface: verifiedInterface } : {}),
+        ...(request.address === exactAddress ? { exactInterface: verifiedInterface } : {}),
       };
     },
   });
@@ -252,7 +268,142 @@ describe("contract analysis process", () => {
     });
   });
 
-  it("preserves self-address and equal-runtime-code proxy observations", async () => {
+  it("applies one marker grammar to candidate terminality without following another hop", async () => {
+    const targetStorage: ProxyStorage = {
+      implementation: { status: "observed", address: implementation },
+      beacon: { status: "not_present" },
+      admin: { status: "not_present" },
+    };
+    const candidateErc1167Code = erc1167Code(owner);
+    const cases = [
+      {
+        label: "ERC-1167 marker",
+        candidateCode: candidateErc1167Code,
+        candidateStorage: emptyProxyStorage,
+        terminality: {
+          status: "supported_proxy_marker_observed",
+          method: "erc1167",
+        },
+      },
+      {
+        label: "EIP-1967 implementation marker",
+        candidateCode: implementationCode,
+        candidateStorage: {
+          implementation: { status: "observed" as const, address: owner },
+          beacon: { status: "not_present" as const },
+          admin: { status: "not_present" as const },
+        },
+        terminality: {
+          status: "supported_proxy_marker_observed",
+          method: "eip1967_implementation",
+        },
+      },
+      {
+        label: "EIP-1967 beacon marker",
+        candidateCode: implementationCode,
+        candidateStorage: {
+          implementation: { status: "not_present" as const },
+          beacon: { status: "observed" as const, address: owner },
+          admin: { status: "not_present" as const },
+        },
+        terminality: {
+          status: "supported_proxy_marker_observed",
+          method: "eip1967_beacon",
+        },
+      },
+      {
+        label: "conflicting markers",
+        candidateCode: candidateErc1167Code,
+        candidateStorage: {
+          implementation: { status: "observed" as const, address: owner },
+          beacon: { status: "not_present" as const },
+          admin: { status: "not_present" as const },
+        },
+        terminality: { status: "conflicting_supported_proxy_markers" },
+      },
+      {
+        label: "malformed marker storage",
+        candidateCode: implementationCode,
+        candidateStorage: {
+          implementation: { status: "malformed" as const },
+          beacon: { status: "not_present" as const },
+          admin: { status: "not_present" as const },
+        },
+        terminality: { status: "malformed_eip1967_address_storage" },
+      },
+      {
+        label: "administrator without implementation",
+        candidateCode: implementationCode,
+        candidateStorage: {
+          implementation: { status: "not_present" as const },
+          beacon: { status: "not_present" as const },
+          admin: { status: "observed" as const, address: owner },
+        },
+        terminality: { status: "admin_without_supported_implementation" },
+      },
+    ] as const;
+
+    for (const candidate of cases) {
+      const storageReads: EvmAddress[] = [];
+      const beaconReads: EvmAddress[] = [];
+      const sourceReads: EvmAddress[] = [];
+      let controlReads = 0;
+      const base = chain(targetStorage, candidate.candidateStorage);
+      const candidateChain = {
+        ...base,
+        async readRuntimeCode(address: EvmAddress) {
+          if (address === target) return targetCode;
+          if (address === implementation) return candidate.candidateCode;
+          return null;
+        },
+        async readEip1967ProxyStorage(address: EvmAddress) {
+          storageReads.push(address);
+          return base.readEip1967ProxyStorage(address);
+        },
+        async readBeaconImplementation(address: EvmAddress) {
+          beaconReads.push(address);
+          return { status: "observed" as const, value: owner };
+        },
+        async readOwner(address: EvmAddress) {
+          controlReads += 1;
+          return base.readOwner(address);
+        },
+        async readPaused(address: EvmAddress) {
+          controlReads += 1;
+          return base.readPaused(address);
+        },
+      } satisfies ContractAnalysisChainReadPort;
+
+      const execution = await analyzeContract({
+        target,
+        chain: candidateChain,
+        sourceVerification: verifiedPort(exactInterface, sourceReads, target),
+        signal: new AbortController().signal,
+      });
+      expect(execution.analysis.proxy, candidate.label).toEqual({
+        status: "unresolved",
+        reason: "implementation_terminality_unresolved",
+        firstHop: {
+          method: "eip1967_implementation",
+          implementation,
+          implementationRuntimeCode: candidate.candidateCode.identity,
+          admin: { status: "not_present" },
+        },
+        terminality: candidate.terminality,
+      });
+      expect(storageReads, candidate.label).toEqual([target, implementation]);
+      expect(beaconReads, candidate.label).toEqual([]);
+      expect(sourceReads, candidate.label).toEqual([target]);
+      expect(controlReads, candidate.label).toBe(0);
+      expect(execution.analysis.declaredFunctions, candidate.label).toEqual({
+        status: "unavailable",
+        reason: "deployment_unresolved",
+      });
+    }
+  });
+
+  it("rejects self-reference while preserving a terminal equal-runtime implementation", async () => {
+    const selfSourceAddresses: EvmAddress[] = [];
     const selfAddressExecution = await analyzeContract({
       target,
       chain: chain({
@@ -260,20 +411,27 @@ describe("contract analysis process", () => {
         beacon: { status: "not_present" },
         admin: { status: "not_present" },
       }),
-      sourceVerification: verifiedPort(),
+      sourceVerification: verifiedPort(exactInterface, selfSourceAddresses),
       signal: new AbortController().signal,
     });
     expect(selfAddressExecution.analysis.proxy).toEqual({
-      status: "resolved",
-      method: "eip1967_implementation",
-      implementation: target,
-      implementationRuntimeCode: targetCode.identity,
-      admin: { status: "not_present" },
+      status: "unresolved",
+      reason: "implementation_terminality_unresolved",
+      firstHop: {
+        method: "eip1967_implementation",
+        implementation: target,
+        implementationRuntimeCode: targetCode.identity,
+        admin: { status: "not_present" },
+      },
+      terminality: {
+        status: "supported_proxy_marker_observed",
+        method: "eip1967_implementation",
+      },
     });
     expect(selfAddressExecution.analysis.sources).toEqual([
       { role: "target", address: target, status: "no_record_observed" },
-      { role: "implementation", address: target, status: "no_record_observed" },
     ]);
+    expect(selfSourceAddresses).toEqual([target]);
 
     const equalRuntimeExecution = await analyzeContract({
       target,
@@ -298,6 +456,39 @@ describe("contract analysis process", () => {
       implementationRuntimeCode: targetCode.identity,
       admin: { status: "not_present" },
     });
+
+    const cycleStorageReads: EvmAddress[] = [];
+    const cycleBase = chain({
+      implementation: { status: "observed", address: implementation },
+      beacon: { status: "not_present" },
+      admin: { status: "not_present" },
+    }, {
+      implementation: { status: "observed", address: target },
+      beacon: { status: "not_present" },
+      admin: { status: "not_present" },
+    });
+    const cycleExecution = await analyzeContract({
+      target,
+      chain: {
+        ...cycleBase,
+        async readEip1967ProxyStorage(address) {
+          cycleStorageReads.push(address);
+          return cycleBase.readEip1967ProxyStorage(address);
+        },
+      },
+      sourceVerification: verifiedPort(),
+      signal: new AbortController().signal,
+    });
+    expect(cycleExecution.analysis.proxy).toMatchObject({
+      status: "unresolved",
+      reason: "implementation_terminality_unresolved",
+      firstHop: { implementation },
+      terminality: {
+        status: "supported_proxy_marker_observed",
+        method: "eip1967_implementation",
+      },
+    });
+    expect(cycleStorageReads).toEqual([target, implementation]);
   });
 
   it("keeps ambiguous and incomplete proxy observations unresolved", async () => {
@@ -398,6 +589,57 @@ describe("contract analysis process", () => {
         status: "unavailable",
         reason: "deployment_unresolved",
       });
+    }
+  });
+
+  it("propagates candidate read rejection without constructing proxy or source evidence", async () => {
+    const targetStorage: ProxyStorage = {
+      implementation: { status: "observed", address: implementation },
+      beacon: { status: "not_present" },
+      admin: { status: "not_present" },
+    };
+    const abortController = new AbortController();
+    abortController.abort(new Error("candidate runtime read aborted"));
+    const storageFailure = new Error("candidate storage unavailable");
+    const cases = [
+      {
+        label: "runtime abort",
+        error: abortController.signal.reason,
+        createChain() {
+          const base = chain(targetStorage);
+          return {
+            ...base,
+            async readRuntimeCode(address: EvmAddress) {
+              if (address === target) return targetCode;
+              throw abortController.signal.reason;
+            },
+          } satisfies ContractAnalysisChainReadPort;
+        },
+      },
+      {
+        label: "storage rejection",
+        error: storageFailure,
+        createChain() {
+          const base = chain(targetStorage);
+          return {
+            ...base,
+            async readEip1967ProxyStorage(address: EvmAddress) {
+              if (address === implementation) throw storageFailure;
+              return base.readEip1967ProxyStorage(address);
+            },
+          } satisfies ContractAnalysisChainReadPort;
+        },
+      },
+    ] as const;
+    for (const candidate of cases) {
+      const sourceReads: EvmAddress[] = [];
+      await expect(analyzeContract({
+        target,
+        chain: candidate.createChain(),
+        sourceVerification: verifiedPort(exactInterface, sourceReads),
+        signal: abortController.signal,
+      }), candidate.label).rejects.toBe(candidate.error);
+      expect(sourceReads, candidate.label).toEqual([]);
     }
   });
 

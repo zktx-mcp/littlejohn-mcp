@@ -132,13 +132,13 @@ describe("token catalog contracts", () => {
     for (const [schema, expectedBytes, expectedDigest] of [
       [
         tokenInspectionDataSchema,
-        13_015,
-        "e12e2f6330a05bc98e3feeb9acd2e6a71948bfb3cb561a45a6da34513baf762f",
+        15_038,
+        "d90c8bfb80c46d59cf5bc5aff3fb10e14b464452623cf89321c88815a7628284",
       ],
       [
         tokenInspectionSuccessSchema,
-        19_744,
-        "cc0fe87cc842dc220728132dc9a633dc8e5083862b7db6708b2ee864edc355e1",
+        21_767,
+        "78781d83b823702d0f9ca8ff1fcbe493a35bdfe50f552ba932386d5a19e34cc6",
       ],
     ] as const) {
       const canonical = canonicalOutputSchema(schema);

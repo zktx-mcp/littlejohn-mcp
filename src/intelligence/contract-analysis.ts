@@ -32,6 +32,7 @@ import type {
   ContractRuntimeCode,
   ContractSourceVerification,
   ContractSourceVerificationPort,
+  Eip1967ProxyStorage,
 } from "./ports.js";
 import { assertContractSourceVerificationAuthority } from "./ports.js";
 
@@ -253,17 +254,105 @@ interface ResolvedDeployment {
   readonly implementationRuntimeCode?: ContractRuntimeCode;
 }
 
+type ResolvedProxy = Extract<
+  ContractAnalysis["proxy"],
+  { readonly status: "resolved" }
+>;
+type TerminalityUnresolvedProxy = Extract<
+  ContractAnalysis["proxy"],
+  {
+    readonly status: "unresolved";
+    readonly reason: "implementation_terminality_unresolved";
+  }
+>;
+type ProxyMarkerObservation =
+  | Readonly<{ readonly status: "none" }>
+  | Readonly<{ readonly status: "conflicting_supported_proxy_markers" }>
+  | Readonly<{ readonly status: "malformed_eip1967_address_storage" }>
+  | Readonly<{ readonly status: "admin_without_supported_implementation" }>
+  | Readonly<{
+      readonly status: "supported";
+      readonly method: ResolvedProxy["method"];
+      readonly markerAddress: EvmAddress;
+      readonly admin: ResolvedProxy["admin"];
+    }>;
+
+const observeProxyMarker = (
+  runtimeCode: ContractRuntimeCode,
+  storage: Eip1967ProxyStorage,
+): ProxyMarkerObservation => {
+  if (
+    storage.implementation.status === "malformed" ||
+    storage.beacon.status === "malformed" ||
+    storage.admin.status === "malformed"
+  ) {
+    return Object.freeze({ status: "malformed_eip1967_address_storage" });
+  }
+
+  const minimalProxyImplementation = erc1167Implementation(runtimeCode.bytecode);
+  const implementation = storage.implementation.status === "observed"
+    ? storage.implementation.address
+    : undefined;
+  const beacon = storage.beacon.status === "observed"
+    ? storage.beacon.address
+    : undefined;
+  const markerCount = Number(implementation !== undefined) +
+    Number(beacon !== undefined) +
+    Number(minimalProxyImplementation !== null);
+  if (markerCount > 1) {
+    return Object.freeze({ status: "conflicting_supported_proxy_markers" });
+  }
+  if (markerCount === 0 && storage.admin.status === "observed") {
+    return Object.freeze({ status: "admin_without_supported_implementation" });
+  }
+  if (markerCount === 0) return Object.freeze({ status: "none" });
+
+  if (minimalProxyImplementation !== null) {
+    return Object.freeze({
+      status: "supported",
+      method: "erc1167",
+      markerAddress: minimalProxyImplementation,
+      admin: Object.freeze({ status: "not_applicable" }),
+    });
+  }
+  const admin = storage.admin.status === "observed"
+    ? Object.freeze({ status: "observed" as const, address: storage.admin.address })
+    : Object.freeze({ status: "not_present" as const });
+  if (implementation !== undefined) {
+    return Object.freeze({
+      status: "supported",
+      method: "eip1967_implementation",
+      markerAddress: implementation,
+      admin,
+    });
+  }
+  if (beacon === undefined) throw new TypeError("Proxy marker observation is incomplete.");
+  return Object.freeze({
+    status: "supported",
+    method: "eip1967_beacon",
+    markerAddress: beacon,
+    admin,
+  });
+};
+
+const terminalityFromMarker = (
+  observation: Exclude<ProxyMarkerObservation, { readonly status: "none" }>,
+): TerminalityUnresolvedProxy["terminality"] =>
+  observation.status === "supported"
+    ? Object.freeze({
+        status: "supported_proxy_marker_observed",
+        method: observation.method,
+      })
+    : Object.freeze({ status: observation.status });
+
 const resolveDeployment = async (
   chain: ContractAnalysisChainReadPort,
   target: EvmAddress,
   targetRuntimeCode: ContractRuntimeCode,
 ): Promise<ResolvedDeployment> => {
   const storage = await chain.readEip1967ProxyStorage(target);
-  if (
-    storage.implementation.status === "malformed" ||
-    storage.beacon.status === "malformed" ||
-    storage.admin.status === "malformed"
-  ) {
+  const targetMarker = observeProxyMarker(targetRuntimeCode, storage);
+  if (targetMarker.status === "malformed_eip1967_address_storage") {
     return Object.freeze({
       proxy: Object.freeze({
         status: "unresolved",
@@ -271,16 +360,7 @@ const resolveDeployment = async (
       }),
     });
   }
-
-  const minimalProxyImplementation = erc1167Implementation(targetRuntimeCode.bytecode);
-  const implementation = storage.implementation.status === "observed"
-    ? storage.implementation.address
-    : undefined;
-  const beacon = storage.beacon.status === "observed" ? storage.beacon.address : undefined;
-  const markerCount = Number(implementation !== undefined) +
-    Number(beacon !== undefined) +
-    Number(minimalProxyImplementation !== null);
-  if (markerCount > 1) {
+  if (targetMarker.status === "conflicting_supported_proxy_markers") {
     return Object.freeze({
       proxy: Object.freeze({
         status: "unresolved",
@@ -288,10 +368,7 @@ const resolveDeployment = async (
       }),
     });
   }
-  if (
-    markerCount === 0 &&
-    storage.admin.status === "observed"
-  ) {
+  if (targetMarker.status === "admin_without_supported_implementation") {
     return Object.freeze({
       proxy: Object.freeze({
         status: "unresolved",
@@ -299,23 +376,15 @@ const resolveDeployment = async (
       }),
     });
   }
-  if (markerCount === 0) {
+  if (targetMarker.status === "none") {
     return Object.freeze({
       proxy: Object.freeze({ status: "no_supported_proxy_observed" }),
     });
   }
 
-  let method: Extract<ContractAnalysis["proxy"], { readonly status: "resolved" }>["method"];
-  let resolvedAddress: EvmAddress;
-  if (minimalProxyImplementation !== null) {
-    method = "erc1167";
-    resolvedAddress = minimalProxyImplementation;
-  } else if (implementation !== undefined) {
-    method = "eip1967_implementation";
-    resolvedAddress = implementation;
-  } else {
-    if (beacon === undefined) throw new TypeError("Proxy marker resolution is incomplete.");
-    const beaconResult = await chain.readBeaconImplementation(beacon);
+  let resolvedAddress = targetMarker.markerAddress;
+  if (targetMarker.method === "eip1967_beacon") {
+    const beaconResult = await chain.readBeaconImplementation(targetMarker.markerAddress);
     if (beaconResult.status === "reverted") {
       return Object.freeze({
         proxy: Object.freeze({
@@ -332,7 +401,6 @@ const resolveDeployment = async (
         }),
       });
     }
-    method = "eip1967_beacon";
     resolvedAddress = beaconResult.value;
   }
 
@@ -346,18 +414,28 @@ const resolveDeployment = async (
     });
   }
   const implementationRuntimeCode = admittedRuntimeCode(implementationRuntimeCodeInput);
-  const admin = method === "erc1167"
-    ? Object.freeze({ status: "not_applicable" as const })
-    : storage.admin.status === "observed"
-      ? Object.freeze({ status: "observed" as const, address: storage.admin.address })
-      : Object.freeze({ status: "not_present" as const });
+  const firstHop: Omit<ResolvedProxy, "status"> = Object.freeze({
+    method: targetMarker.method,
+    implementation: resolvedAddress,
+    implementationRuntimeCode: implementationRuntimeCode.identity,
+    admin: targetMarker.admin,
+  });
+  const candidateStorage = await chain.readEip1967ProxyStorage(resolvedAddress);
+  const candidateMarker = observeProxyMarker(implementationRuntimeCode, candidateStorage);
+  if (candidateMarker.status !== "none") {
+    return Object.freeze({
+      proxy: Object.freeze({
+        status: "unresolved",
+        reason: "implementation_terminality_unresolved",
+        firstHop,
+        terminality: terminalityFromMarker(candidateMarker),
+      }),
+    });
+  }
   return Object.freeze({
     proxy: Object.freeze({
       status: "resolved",
-      method,
-      implementation: resolvedAddress,
-      implementationRuntimeCode: implementationRuntimeCode.identity,
-      admin,
+      ...firstHop,
     }),
     implementationRuntimeCode,
   });
