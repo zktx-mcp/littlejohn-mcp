@@ -183,20 +183,24 @@ const fullObservation = (
 
 const fixture = (options: Readonly<{
   sourceAvailable?: boolean;
+  sourceFailureCode?: "source_inconsistent" | "source_unavailable";
+  defaultsInitialized?: boolean;
+  defaultVerificationUnavailable?: boolean;
   selectionEntries?: readonly TokenSelectionDetail[];
   blocks?: readonly [typeof block, ...(typeof block)[]];
   afterVerification?: (signal: AbortSignal) => void | Promise<void>;
   beforeCollectionReturn?: (signal: AbortSignal) => void | Promise<void>;
   beforeExactReturn?: (signal: AbortSignal) => void | Promise<void>;
 }> = {}) => {
-  const sourceAvailable = options.sourceAvailable ?? true;
+  let sourceAvailable = options.sourceAvailable ?? true;
+  let sourceFailureCode = options.sourceFailureCode ?? "source_unavailable";
   const entries = options.selectionEntries === undefined
     ? [detail(defaultMember.contractAddress, 1), detail(customAddress, 2)]
     : [...options.selectionEntries];
   let state: TokenSelectionState = {
     account,
     revision: selectionSetRevision,
-    defaultsInitialized: true,
+    defaultsInitialized: options.defaultsInitialized ?? true,
     createdAt: at,
     updatedAt: at,
   };
@@ -280,10 +284,14 @@ const fixture = (options: Readonly<{
       context: Parameters<OfficialAssetChainReadPort["verifyManyAtBlock"]>[2],
     ) => {
       const verificationAnchor = readBlock(verificationBlock, context);
-      const results = Object.freeze(members.map((entry) => Object.freeze({
-        status: "verified" as const,
-        verification: verificationFor(entry.assetUid, entry.contractAddress, verificationAnchor),
-      })));
+      const results = Object.freeze(members.map((entry) =>
+        options.defaultVerificationUnavailable === true &&
+          entry.contractAddress === defaultMember.contractAddress
+          ? Object.freeze({ status: "unavailable" as const, reason: "source_unavailable" as const })
+          : Object.freeze({
+              status: "verified" as const,
+              verification: verificationFor(entry.assetUid, entry.contractAddress, verificationAnchor),
+            })));
       await afterVerification?.(context.signal);
       return results;
     },
@@ -353,10 +361,10 @@ const fixture = (options: Readonly<{
             status: "unavailable" as const,
             storedRevision: officialSnapshot.revision,
             failure: { ok: false as const, error: {
-              code: "source_unavailable" as never,
+              code: sourceFailureCode as never,
               category: "source" as const,
-              message: "Source unavailable.",
-              retryable: true,
+              message: "Official source synchronization failed.",
+              retryable: sourceFailureCode !== "source_inconsistent",
               issues: [],
             } },
           }),
@@ -379,6 +387,13 @@ const fixture = (options: Readonly<{
     setState(next: TokenSelectionState) { state = next; },
     get initializationCalls() { return initializationCalls; },
     setSessionSourceId(next: string) { sessionSourceId = next; },
+    setSourceAvailability(
+      available: boolean,
+      failureCode: "source_inconsistent" | "source_unavailable" = sourceFailureCode,
+    ) {
+      sourceAvailable = available;
+      sourceFailureCode = failureCode;
+    },
     setOfficialSnapshot(next: CommittedOfficialAssetSnapshot) { officialSnapshot = next; },
     setAfterVerification(next: typeof afterVerification) { afterVerification = next; },
     setBeforeCollectionReturn(next: typeof beforeCollectionReturn) { beforeCollectionReturn = next; },
@@ -409,6 +424,37 @@ describe("account asset read process", () => {
     expect(result.native.rawBalance).toBe("7");
     expect(test.initializationCalls).toBe(0);
 
+    await test.close();
+  });
+
+  it("returns the native account read when one missing default cannot be verified", async () => {
+    const test = fixture({
+      defaultsInitialized: false,
+      defaultVerificationUnavailable: true,
+      selectionEntries: [],
+    });
+
+    const result = await test.application.list({ limit: 5 });
+    if ("ok" in result) throw new TypeError(result.error.code);
+    expect(result.native.rawBalance).toBe("7");
+    expect(result.assets).toEqual([]);
+    expect(test.initializationCalls).toBe(0);
+    expect(test.state.defaultsInitialized).toBe(false);
+    await test.close();
+  });
+
+  it("attributes a current official member verification failure to StockFactory", async () => {
+    const test = fixture({ defaultVerificationUnavailable: true });
+    const result = await test.application.list({ limit: 5 });
+    if ("ok" in result) throw new TypeError(result.error.code);
+    expect(result.assets[0]?.classification).toMatchObject({
+      kind: "classification_unavailable",
+      cause: {
+        kind: "stock_factory_verification_unavailable",
+        reason: "source_unavailable",
+        member: { contractAddress: defaultMember.contractAddress },
+      },
+    });
     await test.close();
   });
 
@@ -583,27 +629,228 @@ describe("account asset read process", () => {
     await test.close();
   });
 
-  it("preserves selected assets while making official classification explicitly unavailable", async () => {
-    const test = fixture({ sourceAvailable: false });
-    const result = await test.application.list({});
+  it("preserves one official-source failure cause through page, cursor, exact, and overview reads", async () => {
+    const test = fixture({
+      sourceAvailable: false,
+      sourceFailureCode: "source_inconsistent",
+    });
+    const result = await test.application.list({ limit: 1 });
     if ("ok" in result) throw new TypeError(result.error.code);
-    expect(result.assets).toHaveLength(2);
+    expect(result.assets).toHaveLength(1);
     expect(result.assets.every((entry) =>
       entry.classification.kind === "classification_unavailable" &&
-      entry.classification.reason === "source_unavailable")).toBe(true);
+      entry.classification.cause.kind === "official_snapshot_unavailable" &&
+      entry.classification.cause.reason === "source_inconsistent")).toBe(true);
     expect(result.viewRevision).toMatchObject({
       officialSnapshotStatus: "unavailable",
       officialSnapshotRevision: snapshotRevision,
+      officialSnapshotUnavailableReason: "source_inconsistent",
       selectionSetRevision,
     });
+    if (
+      result.nextCursor === null ||
+      result.nextCursor.officialSnapshotStatus !== "unavailable" ||
+      result.viewRevision.officialSnapshotStatus !== "unavailable"
+    ) throw new TypeError("Unavailable page fixture lacks its exact correlation state.");
+    const next = await test.application.list({ limit: 1, cursor: result.nextCursor });
+    if ("ok" in next) throw new TypeError(next.error.code);
+    expect(next.assets[0]?.classification).toMatchObject({
+      kind: "classification_unavailable",
+      cause: { kind: "official_snapshot_unavailable", reason: "source_inconsistent" },
+    });
+    const exact = await test.application.get({
+      asset: result.assets[0]!.selection.asset,
+      viewRevision: result.viewRevision,
+    });
+    if ("ok" in exact) throw new TypeError(exact.error.code);
+    expect(exact.asset.classification).toMatchObject({
+      kind: "classification_unavailable",
+      cause: { kind: "official_snapshot_unavailable", reason: "source_inconsistent" },
+    });
+    await expect(test.application.list({
+      limit: 1,
+      cursor: {
+        ...result.nextCursor,
+        officialSnapshotUnavailableReason: "source_unavailable",
+      },
+    })).resolves.toMatchObject({ ok: false, error: { code: "state_conflict" } });
+    await expect(test.application.get({
+      asset: result.assets[0]!.selection.asset,
+      viewRevision: {
+        ...result.viewRevision,
+        officialSnapshotUnavailableReason: "source_unavailable",
+      },
+    })).resolves.toMatchObject({ ok: false, error: { code: "state_conflict" } });
+    await expect(test.application.get({
+      asset: result.assets[0]!.selection.asset,
+      viewRevision: {
+        officialSnapshotStatus: "current",
+        officialSnapshotRevision: snapshotRevision,
+        selectionSetRevision,
+      },
+    })).resolves.toMatchObject({ ok: false, error: { code: "state_conflict" } });
     const overview = await test.application.getOverview({});
     if ("ok" in overview) throw new TypeError(overview.error.code);
     expect(overview.native.rawBalance).toBe("7");
     expect(overview.stockTokens).toEqual({
       status: "unavailable",
-      reason: "source_unavailable",
+      reason: "source_inconsistent",
     });
     await test.close();
+  });
+
+  it("accepts overlapping first pages when the current official view remains equal", async () => {
+    const firstReadStarted = deferred();
+    const releaseFirstRead = deferred();
+    let collectionReads = 0;
+    const test = fixture({
+      sourceAvailable: false,
+      sourceFailureCode: "source_inconsistent",
+      beforeCollectionReturn: () => {
+        collectionReads += 1;
+        if (collectionReads !== 1) return;
+        firstReadStarted.resolve();
+        return releaseFirstRead.promise;
+      },
+    });
+
+    const firstPending = test.application.list({});
+    await firstReadStarted.promise;
+    const second = await test.application.list({});
+    if ("ok" in second) throw new TypeError(second.error.code);
+    releaseFirstRead.resolve();
+    const first = await firstPending;
+    if ("ok" in first) throw new TypeError(first.error.code);
+
+    expect(first.viewRevision).toEqual(second.viewRevision);
+    expect(first.viewRevision).toMatchObject({
+      officialSnapshotStatus: "unavailable",
+      officialSnapshotUnavailableReason: "source_inconsistent",
+    });
+    await test.close();
+  });
+
+  it("rejects an overlapping first page after the current official view changes", async () => {
+    const firstReadStarted = deferred();
+    const releaseFirstRead = deferred();
+    let collectionReads = 0;
+    const test = fixture({
+      sourceAvailable: false,
+      sourceFailureCode: "source_unavailable",
+      beforeCollectionReturn: () => {
+        collectionReads += 1;
+        if (collectionReads !== 1) return;
+        firstReadStarted.resolve();
+        return releaseFirstRead.promise;
+      },
+    });
+
+    const stalePending = test.application.list({});
+    await firstReadStarted.promise;
+    test.setSourceAvailability(false, "source_inconsistent");
+    const current = await test.application.list({});
+    if ("ok" in current) throw new TypeError(current.error.code);
+    expect(current.viewRevision).toMatchObject({
+      officialSnapshotStatus: "unavailable",
+      officialSnapshotUnavailableReason: "source_inconsistent",
+    });
+    releaseFirstRead.resolve();
+
+    await expect(stalePending).resolves.toMatchObject({
+      ok: false,
+      error: { code: "state_conflict" },
+    });
+    await test.close();
+  });
+
+  it("rejects an overlapping overview after the current official view changes", async () => {
+    const overviewReadStarted = deferred();
+    const releaseOverviewRead = deferred();
+    let collectionReads = 0;
+    const test = fixture({
+      sourceAvailable: false,
+      sourceFailureCode: "source_unavailable",
+      beforeCollectionReturn: () => {
+        collectionReads += 1;
+        if (collectionReads !== 1) return;
+        overviewReadStarted.resolve();
+        return releaseOverviewRead.promise;
+      },
+    });
+
+    const stalePending = test.application.getOverview({});
+    await overviewReadStarted.promise;
+    test.setSourceAvailability(false, "source_inconsistent");
+    const current = await test.application.list({});
+    if ("ok" in current) throw new TypeError(current.error.code);
+    releaseOverviewRead.resolve();
+
+    await expect(stalePending).resolves.toMatchObject({
+      ok: false,
+      error: { code: "state_conflict" },
+    });
+    await test.close();
+  });
+
+  it("rejects continuation and exact results after their official view is replaced", async () => {
+    const continuationTest = fixture({
+      sourceAvailable: false,
+      sourceFailureCode: "source_unavailable",
+    });
+    const firstPage = await continuationTest.application.list({ limit: 1 });
+    if ("ok" in firstPage || firstPage.nextCursor === null) {
+      throw new TypeError("Continuation fixture is invalid.");
+    }
+    const continuationStarted = deferred();
+    const releaseContinuation = deferred();
+    continuationTest.setBeforeCollectionReturn(() => {
+      continuationStarted.resolve();
+      return releaseContinuation.promise;
+    });
+    const continuationPending = continuationTest.application.list({
+      limit: 1,
+      cursor: firstPage.nextCursor,
+    });
+    await continuationStarted.promise;
+    continuationTest.setBeforeCollectionReturn(undefined);
+    continuationTest.setSourceAvailability(false, "source_inconsistent");
+    const replacementOverview = await continuationTest.application.getOverview({});
+    if ("ok" in replacementOverview) throw new TypeError(replacementOverview.error.code);
+    releaseContinuation.resolve();
+    await expect(continuationPending).resolves.toMatchObject({
+      ok: false,
+      error: { code: "state_conflict" },
+    });
+    await continuationTest.close();
+
+    const exactTest = fixture({
+      sourceAvailable: false,
+      sourceFailureCode: "source_unavailable",
+    });
+    const exactBaseline = await exactTest.application.list({});
+    if ("ok" in exactBaseline) throw new TypeError(exactBaseline.error.code);
+    const exactStarted = deferred();
+    const releaseExact = deferred();
+    exactTest.setBeforeExactReturn(() => {
+      exactStarted.resolve();
+      return releaseExact.promise;
+    });
+    const exactPending = exactTest.application.get({
+      asset: exactBaseline.assets[0]!.selection.asset,
+      viewRevision: exactBaseline.viewRevision,
+    });
+    await exactStarted.promise;
+    exactTest.setSourceAvailability(false, "source_inconsistent");
+    const exactReplacementOverview = await exactTest.application.getOverview({});
+    if ("ok" in exactReplacementOverview) {
+      throw new TypeError(exactReplacementOverview.error.code);
+    }
+    releaseExact.resolve();
+    await expect(exactPending).resolves.toMatchObject({
+      ok: false,
+      error: { code: "state_conflict" },
+    });
+    await exactTest.close();
   });
 
   it("rejects session-source and official-snapshot drift before returning a page", async () => {

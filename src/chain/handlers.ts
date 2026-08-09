@@ -54,6 +54,7 @@ import {
   admitChainReadFailure,
   chainErrorRegistry,
   ChainOperationError,
+  type ChainErrorCode,
 } from "./errors.js";
 import {
   createContractAnalysisCallEncoder,
@@ -489,10 +490,13 @@ const receiptData = (
   })),
 });
 
-type PartialTokenFailureCode =
-  | "chain_response_unavailable"
-  | "source_unavailable"
-  | "source_inconsistent";
+const partialTokenFailureCodes = Object.freeze([
+  "chain_response_unavailable",
+  "source_unavailable",
+  "source_inconsistent",
+] as const satisfies readonly ChainErrorCode[]);
+
+type PartialTokenFailureCode = typeof partialTokenFailureCodes[number];
 
 interface TokenReadResult {
   readonly asset: {
@@ -509,9 +513,7 @@ interface TokenReadResult {
 }
 
 const isPartialTokenFailureCode = (code: string): code is PartialTokenFailureCode =>
-  code === "chain_response_unavailable" ||
-  code === "source_unavailable" ||
-  code === "source_inconsistent";
+  partialTokenFailureCodes.some((candidate) => candidate === code);
 
 const partialTokenError = (
   error: unknown,

@@ -29,9 +29,6 @@ export type {
   NativeAccountAsset,
 } from "./contracts.js";
 export {
-  assetIdentityWarnings,
-  classificationLabel,
-  classificationUnavailableReasonLabel,
   officialSnapshotFresh,
   officialSnapshotStatusText,
   projectAccountAssetCollectionView,

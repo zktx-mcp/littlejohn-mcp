@@ -109,6 +109,7 @@ const emptyAccountAssets = accountAssetApplicationContracts.collection.parsePubl
     viewRevision: {
       officialSnapshotStatus: "unavailable",
       officialSnapshotRevision: null,
+      officialSnapshotUnavailableReason: "source_unavailable",
       selectionSetRevision: null,
     },
     native: {

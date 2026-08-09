@@ -1025,6 +1025,35 @@ describe("reference market chain reads", () => {
     expect(getChainOperationFailure(unavailableResult.failure)?.error.code)
       .toBe("chain_response_unavailable");
     await unavailable.lifecycle.close();
+
+    const stoppedMidSegment = createPort({
+      async request(_method, params) {
+        const data = (params[0] as { readonly data: string }).data;
+        const roundId = BigInt(`0x${data.slice(-64)}`);
+        if ((roundId & ((1n << 64n) - 1n)) === 2n) {
+          throw new ChainRpcError("chain_response_unavailable");
+        }
+        return encodedRound(roundId, 300_000_000_000n);
+      },
+    });
+    const stoppedMidSegmentResult = await stoppedMidSegment.readHistory({
+      feedId: "eth_usd",
+      latestRoundId: compositeRoundId(1n, 4n),
+      knownObservations: [],
+      backfillPhaseId: "1",
+      backfillNextRoundId: compositeRoundId(1n, 3n),
+      backfillStatus: null,
+      retentionCutoffRoundId: null,
+      stopAtOrBeforeUnixSeconds: "1",
+    });
+    expect(stoppedMidSegmentResult).toMatchObject({
+      observations: [],
+      backfillNextRoundId: compositeRoundId(1n, 3n),
+      backfillStatus: null,
+    });
+    expect(getChainOperationFailure(stoppedMidSegmentResult.failure)?.error.code)
+      .toBe("chain_response_unavailable");
+    await stoppedMidSegment.lifecycle.close();
   });
 
   it("keeps every decoded but inadmissible history candidate retryable while latest rejects it", async () => {

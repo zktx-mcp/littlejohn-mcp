@@ -59,6 +59,7 @@ const requiredStandards = requiredErc8056ObservationSchema.parse({
 const viewRevision = Object.freeze({
   officialSnapshotStatus: "unavailable" as const,
   officialSnapshotRevision: null,
+  officialSnapshotUnavailableReason: "source_unavailable" as const,
   selectionSetRevision: setRevision,
 });
 const selection = Object.freeze({
@@ -76,10 +77,11 @@ const contractAsset = Object.freeze({
   symbol: { status: "available" as const, value: "EXT" },
   classification: {
     kind: "classification_unavailable" as const,
-    storedRevision: null,
-    snapshot: null,
-    member: null,
-    reason: "source_unavailable" as const,
+    cause: {
+      kind: "official_snapshot_unavailable" as const,
+      storedRevision: null,
+      reason: "source_unavailable" as const,
+    },
   },
   amount: createAccountAssetAmount({ raw: "1234500", decimals: "6", multiplier: null }),
   requiredStandards,
@@ -190,28 +192,28 @@ describe("account asset contracts", () => {
       ],
       [
         accountAssetClassificationSchema,
-        5_297,
-        "15757b2d2d1e7498d5669d2c571b30df414a76e6f25b238cd1f073ab08ce3187",
+        5_660,
+        "e0e7ad20a4d8d34e6aac3f4b341b17a3c7dd9576e5035bd503b0be4bb1219d25",
       ],
       [
         contractAccountAssetSchema,
-        11_568,
-        "349ced8a8b70da4737ea43813fedc402187fe7d52753c67cbea13a98894d8c77",
+        11_931,
+        "67cc94af82104a1301826140df1fd1e8b2de87c4b6b8c1c003da7096f3e8cf87",
       ],
       [
         accountAssetApplicationContracts.collection.successSchema,
-        14_831,
-        "b73dc32a5ed02d35f27bac7192c692a3cc1dc3eb21f546b160eae5b69b038cbb",
+        17_095,
+        "abfb2edc4e3c663f8125fc38632fc0e642220eb9f9ad985cb79ba486da821309",
       ],
       [
         accountAssetApplicationContracts.exact.successSchema,
-        16_092,
-        "7868a3d19f07fe36d625d57757cc158df26bed87713f9b8d8ce000f7e2c6f04e",
+        16_999,
+        "9b658db7740577ad2051c7b47790f5b4fce7b44ef6a8b4898eb23468befd411d",
       ],
       [
         accountAssetOverviewQueryContract.successSchema,
-        14_777,
-        "a0e57916848c22b7da15825a297d06fbb32850047c9196d2ddced31ad323a703",
+        15_684,
+        "71841c7a03e43c83f754ed7b849ded033ce89dfb9fb77c9ad79ada71428d3df5",
       ],
     ] as const) {
       const canonical = canonicalOutputSchema(schema);
@@ -251,6 +253,16 @@ describe("account asset contracts", () => {
     expect(() => accountAssetApplicationContracts.collection.parsePublicSuccess(
       { limit: 5, cursor: null },
       { ...result, assets: [{ ...contractAsset, selection: { ...selection, included: false } }] },
+    )).toThrow();
+    expect(() => accountAssetApplicationContracts.collection.parsePublicSuccess(
+      { limit: 5, cursor: null },
+      {
+        ...result,
+        viewRevision: {
+          ...viewRevision,
+          officialSnapshotUnavailableReason: "source_inconsistent",
+        },
+      },
     )).toThrow();
   });
 
@@ -293,6 +305,63 @@ describe("account asset contracts", () => {
         ...official.verification,
         proxyAddress: parseEvmAddressInput(`0x${"05".repeat(20)}`),
       },
+    })).toThrow();
+  });
+
+  it("admits only complete unavailable-classification causes", () => {
+    const officialCause = {
+      kind: "classification_unavailable",
+      cause: {
+        kind: "official_snapshot_unavailable",
+        storedRevision: null,
+        reason: "source_unavailable",
+      },
+    } as const;
+    expect(accountAssetClassificationSchema.parse(officialCause)).toEqual(officialCause);
+    expect(() => accountAssetClassificationSchema.parse({
+      ...officialCause,
+      cause: { ...officialCause.cause, member: selectedCandidate },
+    })).toThrow();
+
+    const factoryCause = {
+      kind: "classification_unavailable",
+      cause: {
+        kind: "stock_factory_verification_unavailable",
+        snapshot: currentContractAsset.classification.snapshot,
+        member: selectedCandidate,
+        reason: "source_unavailable",
+      },
+    } as const;
+    expect(accountAssetClassificationSchema.parse(factoryCause)).toEqual(factoryCause);
+    expect(() => contractAccountAssetSchema.parse({
+      ...currentContractAsset,
+      classification: {
+        ...factoryCause,
+        cause: { ...factoryCause.cause, member: availableCandidate },
+      },
+    })).toThrow();
+    expect(() => contractAccountAssetSchema.parse({
+      ...currentContractAsset,
+      classification: {
+        ...currentContractAsset.classification,
+        member: availableCandidate,
+        verification: {
+          ...currentContractAsset.classification.verification,
+          assetUid: availableCandidate.assetUid,
+          contractAddress: availableCandidate.contractAddress,
+        },
+      },
+    })).toThrow();
+    expect(() => accountAssetClassificationSchema.parse({
+      ...factoryCause,
+      cause: { ...factoryCause.cause, member: undefined },
+    })).toThrow();
+    expect(() => accountAssetClassificationSchema.parse({
+      kind: "classification_unavailable",
+      storedRevision: null,
+      snapshot: null,
+      member: null,
+      reason: "source_unavailable",
     })).toThrow();
   });
 
@@ -346,6 +415,133 @@ describe("account asset contracts", () => {
       { asset, viewRevision },
       { ...result, asset: { ...exactAsset, amount: createAccountAssetAmount({ raw: "6", decimals: "0", multiplier: values.currentMultiplier }) } },
     )).toThrow();
+  });
+
+  it("admits an unknown ERC-8056 balance relation without discarding either independent fact", () => {
+    const maximum = ((1n << 256n) - 1n).toString(10);
+    const values = {
+      currentMultiplier: maximum,
+      pendingMultiplier: "1",
+      pendingEffectiveAt: "1800000000",
+    };
+    const supportedRequired = requiredErc8056ObservationSchema.parse({
+      asset,
+      block,
+      erc165: { standardId: "erc165", status: "supported" },
+      erc8056: { standardId: "erc8056", status: "supported" },
+      pendingMultiplier: { standardId: "erc8056_pending_multiplier", status: "supported" },
+      values,
+    });
+    const standards = tokenStandardObservationResultSchema.parse({
+      asset,
+      account: selection.account,
+      block,
+      standards: [
+        { standardId: "erc20_read_surface", status: "observed" },
+        { standardId: "erc165", status: "supported" },
+        { standardId: "erc8056", status: "supported" },
+        { standardId: "erc8056_pending_multiplier", status: "supported" },
+        { standardId: "erc8056_conversion", status: "not_supported" },
+        { standardId: "erc8056_balances", status: "unknown" },
+      ],
+      requiredErc8056: values,
+      balanceOfUi: maximum,
+      calculatedBalance: calculateScaledUiAmount(maximum, maximum),
+    });
+    const exactAsset = {
+      ...contractAsset,
+      amount: createAccountAssetAmount({
+        raw: maximum,
+        decimals: "0",
+        multiplier: maximum,
+      }),
+      requiredStandards: supportedRequired,
+    };
+
+    const result = accountAssetApplicationContracts.exact.parsePublicSuccess(
+      { asset, viewRevision },
+      {
+        account: selection.account,
+        block,
+        viewRevision,
+        asset: exactAsset,
+        totalSupply: "100",
+        standards,
+      },
+    );
+
+    expect(result.standards).toMatchObject({
+      balanceOfUi: maximum,
+      calculatedBalance: {
+        status: "unavailable",
+        reason: "result_out_of_range",
+      },
+    });
+  });
+
+  it("preserves an available ERC-8056 disagreement through the exact account result", () => {
+    const values = {
+      currentMultiplier: "2000000000000000000",
+      pendingMultiplier: "1",
+      pendingEffectiveAt: "1800000000",
+    };
+    const supportedRequired = requiredErc8056ObservationSchema.parse({
+      asset,
+      block,
+      erc165: { standardId: "erc165", status: "supported" },
+      erc8056: { standardId: "erc8056", status: "supported" },
+      pendingMultiplier: { standardId: "erc8056_pending_multiplier", status: "supported" },
+      values,
+    });
+    const standards = tokenStandardObservationResultSchema.parse({
+      asset,
+      account: selection.account,
+      block,
+      standards: [
+        { standardId: "erc20_read_surface", status: "observed" },
+        { standardId: "erc165", status: "supported" },
+        { standardId: "erc8056", status: "supported" },
+        { standardId: "erc8056_pending_multiplier", status: "supported" },
+        { standardId: "erc8056_conversion", status: "not_supported" },
+        { standardId: "erc8056_balances", status: "inconsistent" },
+      ],
+      requiredErc8056: values,
+      balanceOfUi: "11",
+      calculatedBalance: calculateScaledUiAmount("5", values.currentMultiplier),
+    });
+    const exactAsset = {
+      ...contractAsset,
+      amount: createAccountAssetAmount({
+        raw: "5",
+        decimals: "0",
+        multiplier: values.currentMultiplier,
+      }),
+      requiredStandards: supportedRequired,
+    };
+
+    const result = accountAssetApplicationContracts.exact.parsePublicSuccess(
+      { asset, viewRevision },
+      {
+        account: selection.account,
+        block,
+        viewRevision,
+        asset: exactAsset,
+        totalSupply: "100",
+        standards,
+      },
+    );
+
+    expect(result.asset.amount.uiAdjusted).toMatchObject({
+      status: "available",
+      adjustedRaw: "10",
+    });
+    expect(result.standards).toMatchObject({
+      balanceOfUi: "11",
+      calculatedBalance: {
+        status: "available",
+        adjustedRaw: "10",
+      },
+    });
   });
 
   it("bounds, normalizes, and locally filters the admitted complete candidate set", () => {

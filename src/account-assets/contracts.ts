@@ -47,35 +47,75 @@ export const accountAssetLimits = Object.freeze({
   maximumPageSize: 5,
 });
 
-export const accountAssetViewRevisionSchema = jsonObject({
-  officialSnapshotStatus: z.enum(["current", "unavailable"]),
-  officialSnapshotRevision: officialAssetSnapshotRevisionSchema.nullable(),
+const accountAssetOfficialSnapshotUnavailableReasons = Object.freeze([
+  "source_inconsistent",
+  "source_unavailable",
+] as const);
+const accountAssetOfficialSnapshotUnavailableReasonSchema = z.enum(
+  accountAssetOfficialSnapshotUnavailableReasons,
+);
+export type AccountAssetOfficialSnapshotUnavailableReason =
+  z.infer<typeof accountAssetOfficialSnapshotUnavailableReasonSchema>;
+
+const currentOfficialSnapshotRevisionShape = {
+  officialSnapshotStatus: z.literal("current"),
+  officialSnapshotRevision: officialAssetSnapshotRevisionSchema,
   selectionSetRevision: tokenSelectionSetRevisionSchema.nullable(),
-}).strict().superRefine((value, context) => {
-  if (value.officialSnapshotStatus === "current" && value.officialSnapshotRevision === null) {
-    context.addIssue({ code: "custom", message: "A current official snapshot requires a revision." });
-  }
-});
+};
+const unavailableOfficialSnapshotRevisionShape = {
+  officialSnapshotStatus: z.literal("unavailable"),
+  officialSnapshotRevision: officialAssetSnapshotRevisionSchema.nullable(),
+  officialSnapshotUnavailableReason: accountAssetOfficialSnapshotUnavailableReasonSchema,
+  selectionSetRevision: tokenSelectionSetRevisionSchema.nullable(),
+};
+export const accountAssetViewRevisionSchema = z.discriminatedUnion("officialSnapshotStatus", [
+  jsonObject(currentOfficialSnapshotRevisionShape).strict(),
+  jsonObject(unavailableOfficialSnapshotRevisionShape).strict(),
+]);
 export type AccountAssetViewRevision = z.infer<typeof accountAssetViewRevisionSchema>;
 
-const cursorCommon = {
-  officialSnapshotStatus: z.enum(["current", "unavailable"]),
-  officialSnapshotRevision: officialAssetSnapshotRevisionSchema.nullable(),
-  selectionSetRevision: tokenSelectionSetRevisionSchema.nullable(),
+const cursorIdentityShape = {
   address: evmAddressSchema,
 };
-export const accountAssetCursorSchema = z.discriminatedUnion("group", [
+export const accountAssetCursorSchema = z.union([
   jsonObject({
     group: z.literal("default"),
     rank: z.number().int().min(0).max(4),
-    ...cursorCommon,
+    ...currentOfficialSnapshotRevisionShape,
+    ...cursorIdentityShape,
+  }).strict(),
+  jsonObject({
+    group: z.literal("default"),
+    rank: z.number().int().min(0).max(4),
+    ...unavailableOfficialSnapshotRevisionShape,
+    ...cursorIdentityShape,
   }).strict(),
   jsonObject({
     group: z.literal("other"),
-    ...cursorCommon,
+    ...currentOfficialSnapshotRevisionShape,
+    ...cursorIdentityShape,
+  }).strict(),
+  jsonObject({
+    group: z.literal("other"),
+    ...unavailableOfficialSnapshotRevisionShape,
+    ...cursorIdentityShape,
   }).strict(),
 ]);
 export type AccountAssetCursor = z.infer<typeof accountAssetCursorSchema>;
+
+const accountAssetClassificationUnavailableCauseSchema = z.discriminatedUnion("kind", [
+  jsonObject({
+    kind: z.literal("official_snapshot_unavailable"),
+    storedRevision: officialAssetSnapshotRevisionSchema.nullable(),
+    reason: accountAssetOfficialSnapshotUnavailableReasonSchema,
+  }).strict(),
+  jsonObject({
+    kind: z.literal("stock_factory_verification_unavailable"),
+    snapshot: officialAssetSnapshotEvidenceSchema,
+    member: officialAssetCandidateSchema,
+    reason: stockFactoryClassificationUnavailableReasonSchema,
+  }).strict(),
+]);
 
 export const accountAssetClassificationSchema = z.discriminatedUnion("kind", [
   jsonObject({
@@ -95,18 +135,20 @@ export const accountAssetClassificationSchema = z.discriminatedUnion("kind", [
   }).strict(),
   jsonObject({
     kind: z.literal("classification_unavailable"),
-    storedRevision: officialAssetSnapshotRevisionSchema.nullable(),
-    snapshot: officialAssetSnapshotEvidenceSchema.nullable(),
-    member: officialAssetCandidateSchema.nullable(),
-    reason: stockFactoryClassificationUnavailableReasonSchema,
-  }).strict().superRefine((value, context) => {
-    if ((value.snapshot === null) !== (value.member === null) ||
-      (value.snapshot !== null && value.snapshot.revision !== value.storedRevision)) {
-      context.addIssue({ code: "custom", message: "Unavailable classification evidence is incomplete." });
-    }
-  }),
+    cause: accountAssetClassificationUnavailableCauseSchema,
+  }).strict(),
 ]);
 export type AccountAssetClassification = z.infer<typeof accountAssetClassificationSchema>;
+
+const officialMemberForClassification = (
+  classification: AccountAssetClassification,
+): OfficialAssetCandidate | null => {
+  if (classification.kind === "robinhood_stock_token") return classification.member;
+  if (classification.kind === "custom_erc20") return null;
+  return classification.cause.kind === "stock_factory_verification_unavailable"
+    ? classification.cause.member
+    : null;
+};
 
 export const accountAssetAmountSchema = jsonObject({
   raw: unsignedDecimalSchema,
@@ -142,9 +184,12 @@ export const contractAccountAssetSchema = jsonObject({
   amount: accountAssetAmountSchema,
   requiredStandards: requiredErc8056ObservationSchema,
 }).strict().superRefine((value, context) => {
+  const officialMember = officialMemberForClassification(value.classification);
   if (!value.selection.included ||
     value.selection.asset.address !== value.requiredStandards.asset.address ||
-    value.selection.asset.chainId !== value.requiredStandards.asset.chainId) {
+    value.selection.asset.chainId !== value.requiredStandards.asset.chainId ||
+    (officialMember !== null &&
+      officialMember.contractAddress !== value.selection.asset.address)) {
     context.addIssue({ code: "custom", message: "Account asset selection and observation differ." });
   }
   const multiplier = value.requiredStandards.values?.currentMultiplier;
@@ -211,6 +256,16 @@ const sameBlock = (
   left.blockNumber === right.blockNumber &&
   left.blockTimestamp === right.blockTimestamp;
 
+const sameViewRevision = (
+  left: AccountAssetViewRevision,
+  right: AccountAssetViewRevision,
+): boolean => left.officialSnapshotStatus === right.officialSnapshotStatus &&
+  left.officialSnapshotRevision === right.officialSnapshotRevision &&
+  left.selectionSetRevision === right.selectionSetRevision &&
+  (left.officialSnapshotStatus === "current" ||
+    (right.officialSnapshotStatus === "unavailable" &&
+      left.officialSnapshotUnavailableReason === right.officialSnapshotUnavailableReason));
+
 const classificationMatchesView = (
   classification: AccountAssetClassification,
   revision: AccountAssetViewRevision,
@@ -225,10 +280,12 @@ const classificationMatchesView = (
     return revision.officialSnapshotStatus === "current" &&
       classification.snapshot.revision === revision.officialSnapshotRevision;
   }
-  return classification.storedRevision === revision.officialSnapshotRevision &&
-    (revision.officialSnapshotStatus === "current"
-      ? classification.snapshot !== null
-      : classification.snapshot === null);
+  return classification.cause.kind === "official_snapshot_unavailable"
+    ? revision.officialSnapshotStatus === "unavailable" &&
+      classification.cause.storedRevision === revision.officialSnapshotRevision &&
+      classification.cause.reason === revision.officialSnapshotUnavailableReason
+    : revision.officialSnapshotStatus === "current" &&
+      classification.cause.snapshot.revision === revision.officialSnapshotRevision;
 };
 
 const collectionSuccessSchema = jsonObject({
@@ -248,24 +305,17 @@ const collectionSuccessSchema = jsonObject({
       !sameBlock(entry.requiredStandards.block, value.block) ||
       !classificationMatchesView(entry.classification, value.viewRevision, value.block)) ||
     (value.nextCursor !== null && (
-      value.nextCursor.officialSnapshotRevision !== value.viewRevision.officialSnapshotRevision ||
-      value.nextCursor.officialSnapshotStatus !== value.viewRevision.officialSnapshotStatus ||
-      value.nextCursor.selectionSetRevision !== value.viewRevision.selectionSetRevision ||
+      !sameViewRevision(value.nextCursor, value.viewRevision) ||
       value.nextCursor.address !== value.assets.at(-1)?.selection.asset.address
     ))
   ) context.addIssue({ code: "custom", message: "Account asset collection identities differ." });
 });
 
 const officialOverviewAssetSchema = contractAccountAssetSchema.superRefine((value, context) => {
-  const member = value.classification.kind === "robinhood_stock_token"
-    ? value.classification.member
-    : value.classification.kind === "classification_unavailable"
-      ? value.classification.member
-      : null;
+  const member = officialMemberForClassification(value.classification);
   if (
     value.classification.kind === "custom_erc20" ||
-    member === null ||
-    member.contractAddress !== value.selection.asset.address
+    member === null
   ) {
     context.addIssue({
       code: "custom",
@@ -295,7 +345,7 @@ const accountAssetOverviewStockTokensSchema = z.discriminatedUnion("status", [
   }).strict(),
   jsonObject({
     status: z.literal("unavailable"),
-    reason: z.enum(["source_inconsistent", "source_unavailable"]),
+    reason: accountAssetOfficialSnapshotUnavailableReasonSchema,
   }).strict(),
 ]);
 
@@ -315,18 +365,22 @@ const overviewSuccessSchema = jsonObject({
     context.addIssue({ code: "custom", message: "Account asset overview state differs." });
     return;
   }
-  if (value.stockTokens.status !== "current") return;
+  if (value.stockTokens.status !== "current") {
+    if (
+      value.viewRevision.officialSnapshotStatus !== "unavailable" ||
+      value.stockTokens.reason !== value.viewRevision.officialSnapshotUnavailableReason
+    ) context.addIssue({ code: "custom", message: "Account asset overview reason differs." });
+    return;
+  }
   const digestMembers: OfficialAssetSourceMember[] = [];
   for (const entry of value.stockTokens.members) {
     const asset = entry.status === "selected" ? entry.asset : null;
     const classification = asset?.classification;
     const member = entry.status === "available_to_add"
       ? entry.candidate
-      : classification?.kind === "robinhood_stock_token"
-        ? classification.member
-        : classification?.kind === "classification_unavailable"
-          ? classification.member
-          : null;
+      : classification === undefined
+        ? null
+        : officialMemberForClassification(classification);
     if (
       member === null ||
       (asset !== null && (
@@ -555,11 +609,9 @@ export const accountAssetApplicationContracts = Object.freeze({
     validatePublicSuccess: (input, success) => {
       if (success.assets.length > input.limit ||
         (success.nextCursor !== null && success.assets.length !== input.limit) ||
-        (input.cursor !== null && (
-          input.cursor.officialSnapshotRevision !== success.viewRevision.officialSnapshotRevision ||
-          input.cursor.officialSnapshotStatus !== success.viewRevision.officialSnapshotStatus ||
-          input.cursor.selectionSetRevision !== success.viewRevision.selectionSetRevision
-        ))) throw new TypeError("Account asset collection does not match its request.");
+        (input.cursor !== null && !sameViewRevision(input.cursor, success.viewRevision))) {
+        throw new TypeError("Account asset collection does not match its request.");
+      }
     },
   }),
   exact: defineAccountAssetContract({
@@ -572,9 +624,7 @@ export const accountAssetApplicationContracts = Object.freeze({
       if (
         input.asset.chainId !== success.asset.selection.asset.chainId ||
         input.asset.address !== success.asset.selection.asset.address ||
-        input.viewRevision.officialSnapshotRevision !== success.viewRevision.officialSnapshotRevision ||
-        input.viewRevision.officialSnapshotStatus !== success.viewRevision.officialSnapshotStatus ||
-        input.viewRevision.selectionSetRevision !== success.viewRevision.selectionSetRevision
+        !sameViewRevision(input.viewRevision, success.viewRevision)
       ) throw new TypeError("Exact account asset result does not match its request.");
     },
   }),

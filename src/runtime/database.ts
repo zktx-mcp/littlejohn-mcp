@@ -8,6 +8,7 @@ import Database from "better-sqlite3";
 import {
   canonicalJsonStringify,
   canonicalBase64UrlSchema,
+  compareCodePointSequences,
   createExactRational,
   decodeCanonicalBase64Url,
   deepFreezeValue,
@@ -1208,14 +1209,12 @@ export class ProductDatabase {
 
   #writeWithIdentity<Result>(operation: () => Result): Result {
     this.#mainLease.assertCurrent();
-    const result = exclusive(this.#database, () => {
+    return exclusive(this.#database, () => {
       this.#mainLease.assertCurrent();
       const value = operation();
       this.#mainLease.assertCurrent();
       return value;
     });
-    this.#mainLease.assertCurrent();
-    return result;
   }
 
   private readProfile(): LocalProfile {
@@ -1433,8 +1432,8 @@ export class ProductDatabase {
       .all(asset.chainId, asset.address) as TokenInspectionRow[];
     const inspections = rows.map(decodeInspectionRow).sort((left, right) =>
       left.meta.evaluatedAt === right.meta.evaluatedAt
-        ? tokenInspectionDigest(left).localeCompare(tokenInspectionDigest(right))
-        : left.meta.evaluatedAt.localeCompare(right.meta.evaluatedAt));
+        ? compareCodePointSequences(tokenInspectionDigest(left), tokenInspectionDigest(right))
+        : compareCodePointSequences(left.meta.evaluatedAt, right.meta.evaluatedAt));
     return inspections.at(-1) ?? null;
   }
 

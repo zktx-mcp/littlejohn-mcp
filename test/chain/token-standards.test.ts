@@ -305,28 +305,79 @@ describe("token standard observation", () => {
     ]);
   });
 
-  it("withholds an adjusted balance when a declared balances extension disagrees or is unavailable", async () => {
-    for (const balanceStep of [
+  it("preserves both exact operands when a declared balances extension disagrees", async () => {
+    const rpc = new ExactCallRpc([
+      ...successfulRequiredSteps(),
+      { data: calls.conversion, gas: erc165DetectionGas, result: bool(false) },
+      { data: calls.balances, gas: erc165DetectionGas, result: bool(true) },
       { data: calls.balanceOfUi, result: word(11n) },
+    ]);
+    const required = await observeRequiredErc8056(requiredInput(rpc));
+    const result = await completeTokenStandardObservation({
+      ...requiredInput(rpc),
+      erc20ReadSurfaceObserved: true,
+      accountBalance: { account, rawBalance: parseUnsignedDecimal("5") },
+    }, required);
+    expect(result).toMatchObject({
+      calculatedBalance: { status: "available", adjustedRaw: "10" },
+      balanceOfUi: "11",
+    });
+    expect(result.standards.at(-1)?.status).toBe("inconsistent");
+    expect(() => tokenStandardObservationResultSchema.parse({
+      ...result,
+      standards: result.standards.map((entry) => entry.standardId === "erc8056_balances"
+        ? { ...entry, status: "supported" }
+        : entry),
+    })).toThrow("cross-checked");
+    expect(() => tokenStandardObservationResultSchema.parse({
+      ...result,
+      balanceOfUi: result.calculatedBalance?.status === "available"
+        ? result.calculatedBalance.adjustedRaw
+        : undefined,
+    })).toThrow("cross-checked");
+  });
+
+  it("retains the independent calculation when a declared balances read is unavailable", async () => {
+    const rpc = new ExactCallRpc([
+      ...successfulRequiredSteps(),
+      { data: calls.conversion, gas: erc165DetectionGas, result: bool(false) },
+      { data: calls.balances, gas: erc165DetectionGas, result: bool(true) },
       { data: calls.balanceOfUi, error: new ChainRpcError("source_unavailable") },
-    ]) {
-      const rpc = new ExactCallRpc([
-        ...successfulRequiredSteps(),
-        { data: calls.conversion, gas: erc165DetectionGas, result: bool(false) },
-        { data: calls.balances, gas: erc165DetectionGas, result: bool(true) },
-        balanceStep,
-      ]);
+    ]);
+    const required = await observeRequiredErc8056(requiredInput(rpc));
+    const result = await completeTokenStandardObservation({
+      ...requiredInput(rpc),
+      erc20ReadSurfaceObserved: true,
+      accountBalance: { account, rawBalance: parseUnsignedDecimal("5") },
+    }, required);
+    expect(result.calculatedBalance).toMatchObject({ status: "available", adjustedRaw: "10" });
+    expect(result.balanceOfUi).toBeUndefined();
+    expect(result.standards.at(-1)?.status).toBe("unknown");
+  });
+
+  it("retains the independent calculation when a declared balances result is malformed or reverted", async () => {
+    const malformed = new ExactCallRpc([
+      ...successfulRequiredSteps(),
+      { data: calls.conversion, gas: erc165DetectionGas, result: bool(false) },
+      { data: calls.balances, gas: erc165DetectionGas, result: bool(true) },
+      { data: calls.balanceOfUi, result: parseHexBytes("0x01") },
+    ]);
+    const reverted = rpcWithProtocolResponses([
+      ...successfulRequiredSteps().map((step) => ({ result: step.result })),
+      { result: bool(false) },
+      { result: bool(true) },
+      { error: { code: 3, message: "execution reverted", data: "0x" } },
+    ]);
+    for (const rpc of [malformed, reverted]) {
       const required = await observeRequiredErc8056(requiredInput(rpc));
       const result = await completeTokenStandardObservation({
         ...requiredInput(rpc),
         erc20ReadSurfaceObserved: true,
         accountBalance: { account, rawBalance: parseUnsignedDecimal("5") },
       }, required);
-      expect(result.calculatedBalance).toBeUndefined();
+      expect(result.calculatedBalance).toMatchObject({ status: "available", adjustedRaw: "10" });
       expect(result.balanceOfUi).toBeUndefined();
-      expect(result.standards.at(-1)?.status).toBe(
-        "result" in balanceStep ? "inconsistent" : "unknown",
-      );
+      expect(result.standards.at(-1)?.status).toBe("inconsistent");
     }
   });
 
@@ -350,6 +401,34 @@ describe("token standard observation", () => {
       multiplier: maximum.toString(10),
       scale: "1000000000000000000",
     });
+  });
+
+  it("keeps both independent facts without claiming a relation when local calculation is out of range", async () => {
+    const maximum = (1n << 256n) - 1n;
+    const rpc = new ExactCallRpc([
+      ...successfulRequiredSteps(maximum),
+      { data: calls.conversion, gas: erc165DetectionGas, result: bool(false) },
+      { data: calls.balances, gas: erc165DetectionGas, result: bool(true) },
+      { data: calls.balanceOfUi, result: word(maximum) },
+    ]);
+    const required = await observeRequiredErc8056(requiredInput(rpc));
+    const result = await completeTokenStandardObservation({
+      ...requiredInput(rpc),
+      erc20ReadSurfaceObserved: true,
+      accountBalance: { account, rawBalance: parseUnsignedDecimal(maximum.toString(10)) },
+    }, required);
+    expect(result.calculatedBalance).toMatchObject({
+      status: "unavailable",
+      reason: "result_out_of_range",
+    });
+    expect(result.balanceOfUi).toBe(maximum.toString(10));
+    expect(result.standards.at(-1)?.status).toBe("unknown");
+    expect(() => tokenStandardObservationResultSchema.parse({
+      ...result,
+      standards: result.standards.map((entry) => entry.standardId === "erc8056_balances"
+        ? { ...entry, status: "inconsistent" }
+        : entry),
+    })).toThrow("cross-checked");
   });
 
   it("rejects fabricated, cross-block, and cross-token required results before further calls", async () => {

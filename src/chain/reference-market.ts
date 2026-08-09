@@ -550,17 +550,39 @@ export const createReferenceMarketChainReadPort = (dependencies: Dependencies): 
         nextRoundId: string | null;
         status: ReferenceFeedTraversalStatus;
         coverageSatisfied: boolean;
+        observations: readonly ReferenceRoundObservation[];
+        phaseBoundaryObserved: boolean;
+        malformedRoundObserved: boolean;
       }>> => {
         let nextRoundId: string | null = segment.firstRoundId;
         let status: ReferenceFeedTraversalStatus = null;
         let coverageSatisfied = false;
+        const segmentObservations: ReferenceRoundObservation[] = [];
+        let segmentPhaseBoundaryObserved = false;
+        let segmentMalformedRoundObserved = false;
+        const segmentResult = (): Readonly<{
+          nextRoundId: string | null;
+          status: ReferenceFeedTraversalStatus;
+          coverageSatisfied: boolean;
+          observations: readonly ReferenceRoundObservation[];
+          phaseBoundaryObserved: boolean;
+          malformedRoundObserved: boolean;
+        }> => Object.freeze({
+          nextRoundId,
+          status,
+          coverageSatisfied,
+          observations: Object.freeze(segmentObservations),
+          phaseBoundaryObserved: segmentPhaseBoundaryObserved,
+          malformedRoundObserved: segmentMalformedRoundObserved,
+        });
         while (
           nextRoundId !== null &&
           !(segment.kind === "continuation" && coverageSatisfied) &&
           probes < referenceMarketLimits.historyProbes
         ) {
           if (nextRoundId === segment.stopExclusiveRoundId) {
-            return Object.freeze({ nextRoundId: null, status, coverageSatisfied });
+            nextRoundId = null;
+            return segmentResult();
           }
           const batch = candidateBatch(
             nextRoundId,
@@ -569,11 +591,9 @@ export const createReferenceMarketChainReadPort = (dependencies: Dependencies): 
             retentionCutoffRoundId,
           );
           if (batch.length === 0) {
-            return Object.freeze({
-              nextRoundId: null,
-              status: segment.kind === "continuation" ? "retention_boundary" : null,
-              coverageSatisfied,
-            });
+            nextRoundId = null;
+            status = segment.kind === "continuation" ? "retention_boundary" : null;
+            return segmentResult();
           }
           const calls = roundCalls(dependencies, feedId, batch, block.reference);
           const settled = await settleRoundCalls(dependencies, calls, signal);
@@ -597,19 +617,17 @@ export const createReferenceMarketChainReadPort = (dependencies: Dependencies): 
               requestedRoundId,
             );
             if (candidate.status === "malformed") {
-              malformedRoundObserved = true;
-              return Object.freeze({
-                nextRoundId: requestedRoundId,
-                status: "malformed",
-                coverageSatisfied,
-              });
+              segmentMalformedRoundObserved = true;
+              nextRoundId = requestedRoundId;
+              status = "malformed";
+              return segmentResult();
             }
             if (
               retentionCutoffRoundId !== null &&
               BigInt(candidate.fact.roundId) <= BigInt(retentionCutoffRoundId)
             ) throw new ChainOperationError("source_inconsistent");
             const observation = captureObservation(dependencies, candidate.fact, block.block);
-            observations.push(observation);
+            segmentObservations.push(observation);
             lastAdmittedIndex = index;
             if (BigInt(observation.fact.updatedAtUnixSeconds) <= stopAtOrBeforeUnixSeconds) {
               coverageSatisfied = true;
@@ -617,32 +635,31 @@ export const createReferenceMarketChainReadPort = (dependencies: Dependencies): 
           }
           const lastRequested = batch.at(-1);
           if (lastRequested === undefined) throw new ChainOperationError("source_inconsistent");
-          if (roundParts(lastRequested).aggregator === 1n) phaseBoundaryObserved = true;
+          if (roundParts(lastRequested).aggregator === 1n) {
+            segmentPhaseBoundaryObserved = true;
+          }
           if (lastAdmittedIndex < 0) {
-            return Object.freeze({
-              nextRoundId: batch[0]!,
-              status,
-              coverageSatisfied,
-            });
+            nextRoundId = batch[0]!;
+            return segmentResult();
           }
           const firstTrailingUnresolved = batch[lastAdmittedIndex + 1];
           if (firstTrailingUnresolved !== undefined) {
-            return Object.freeze({
-              nextRoundId: firstTrailingUnresolved,
-              status,
-              coverageSatisfied,
-            });
+            nextRoundId = firstTrailingUnresolved;
+            return segmentResult();
           }
           nextRoundId = previousRoundId(batch[lastAdmittedIndex]!);
           if (nextRoundId === null) status = "phase_boundary";
         }
-        return Object.freeze({ nextRoundId, status, coverageSatisfied });
+        return segmentResult();
       };
 
       try {
         for (const segment of work.segments) {
           if (probes >= referenceMarketLimits.historyProbes) break;
           const result = await readSegment(segment);
+          observations.push(...result.observations);
+          phaseBoundaryObserved ||= result.phaseBoundaryObserved;
+          malformedRoundObserved ||= result.malformedRoundObserved;
           if (segment.kind !== "continuation") continue;
           nextBackfill = result.nextRoundId;
           backfillStatus = result.status;

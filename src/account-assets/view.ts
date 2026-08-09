@@ -5,6 +5,7 @@ import type {
   AccountAssetClassification,
   AccountAssetCollectionSuccess,
   AccountAssetExactSuccess,
+  AccountAssetOfficialSnapshotUnavailableReason,
   AccountAssetOverviewSuccess,
   AccountAssetViewRevision,
   ContractAccountAsset,
@@ -19,48 +20,43 @@ export interface AccountAssetQuantityView {
   readonly adjustmentStatus: "available" | "not_supported" | "result_out_of_range";
 }
 
+export interface AccountAssetHumanIdentityView {
+  readonly address: TokenSelection["asset"]["address"];
+  readonly label: string;
+  readonly name: string | null;
+  readonly symbol: string | null;
+  readonly warnings: readonly string[];
+}
+
+export type AccountAssetClassificationView =
+  | Readonly<{
+      kind: "robinhood_stock_token";
+      label: "Robinhood Stock Token";
+      limitation: null;
+    }>
+  | Readonly<{
+      kind: "custom_erc20";
+      label: "Custom ERC-20";
+      limitation: null;
+    }>
+  | Readonly<{
+      kind: "official_snapshot_unavailable";
+      label: "Classification unavailable";
+      limitation: string;
+    }>
+  | Readonly<{
+      kind: "stock_factory_verification_unavailable";
+      label: "Classification unavailable";
+      limitation: string;
+    }>;
+
 export interface AccountAssetRowView {
   readonly selection: TokenSelection;
-  readonly name: string | null;
-  readonly nameIssue: TokenOptionalTextUnavailableReason | null;
-  readonly symbol: string | null;
-  readonly symbolIssue: TokenOptionalTextUnavailableReason | null;
-  readonly classification: AccountAssetClassification;
+  readonly identity: AccountAssetHumanIdentityView;
+  readonly classification: AccountAssetClassificationView;
   readonly quantity: AccountAssetQuantityView;
   readonly requiredStandards: ContractAccountAsset["requiredStandards"];
 }
-
-const rowView = (entry: ContractAccountAsset): AccountAssetRowView => Object.freeze({
-  selection: entry.selection,
-  name: entry.name.status === "available" ? entry.name.value : null,
-  nameIssue: entry.name.status === "unavailable" ? entry.name.reason : null,
-  symbol: entry.symbol.status === "available" ? entry.symbol.value : null,
-  symbolIssue: entry.symbol.status === "unavailable" ? entry.symbol.reason : null,
-  classification: entry.classification,
-  quantity: Object.freeze({
-    raw: entry.amount.raw,
-    decimals: entry.amount.decimals,
-    formattedRaw: entry.amount.formattedRaw,
-    adjustedRaw: entry.amount.uiAdjusted?.status === "available"
-      ? entry.amount.uiAdjusted.adjustedRaw
-      : null,
-    formattedAdjusted: entry.amount.formattedUiAdjusted,
-    adjustmentStatus: entry.amount.uiAdjusted === null
-      ? "not_supported"
-      : entry.amount.uiAdjusted.status === "available"
-        ? "available"
-        : "result_out_of_range",
-  }),
-  requiredStandards: entry.requiredStandards,
-});
-
-export const classificationLabel = (classification: AccountAssetClassification): string => {
-  switch (classification.kind) {
-    case "robinhood_stock_token": return "Robinhood Stock Token";
-    case "custom_erc20": return "Custom ERC-20";
-    case "classification_unavailable": return "Classification unavailable";
-  }
-};
 
 const classificationUnavailableReasons: Readonly<
   Record<StockFactoryClassificationUnavailableReason, string>
@@ -69,15 +65,16 @@ const classificationUnavailableReasons: Readonly<
   factory_identity_mismatch: "The StockFactory deployment identity did not match the accepted proxy and implementation.",
   rate_limited: "The chain source rate-limited StockFactory verification.",
   runtime_busy: "Little John was busy before StockFactory verification completed.",
-  source_inconsistent: "The official asset source returned inconsistent evidence.",
-  source_unavailable: "The official asset source was unavailable.",
+  source_inconsistent: "Chain evidence used for StockFactory verification was inconsistent.",
+  source_unavailable: "Chain evidence required for StockFactory verification was unavailable.",
   token_code_missing: "No contract code was found at the token address.",
   token_identity_mismatch: "The token address did not match the StockFactory mapping for its UID.",
 });
 
-export const classificationUnavailableReasonLabel = (
-  reason: StockFactoryClassificationUnavailableReason,
-): string => classificationUnavailableReasons[reason];
+const officialSnapshotUnavailableReasons = Object.freeze({
+  source_inconsistent: "The current official Stock Token list contained inconsistent evidence.",
+  source_unavailable: "The current official Stock Token list was unavailable.",
+} satisfies Readonly<Record<AccountAssetOfficialSnapshotUnavailableReason, string>>);
 
 export const officialSnapshotFresh = (revision: AccountAssetViewRevision): boolean =>
   revision.officialSnapshotStatus === "current";
@@ -96,15 +93,81 @@ export const tokenOptionalTextUnavailableReasonLabel = (
   reason: TokenOptionalTextUnavailableReason,
 ): string => tokenOptionalTextUnavailableReasonText[reason];
 
-export const assetIdentityWarnings = (row: AccountAssetRowView): readonly string[] =>
+const assetIdentityWarnings = (input: Readonly<{
+  nameIssue: TokenOptionalTextUnavailableReason | null;
+  symbolIssue: TokenOptionalTextUnavailableReason | null;
+}>): readonly string[] =>
   Object.freeze([
-    ...(row.nameIssue === null
+    ...(input.nameIssue === null
       ? []
-      : [`Token name ${tokenOptionalTextUnavailableReasonLabel(row.nameIssue)}.`]),
-    ...(row.symbolIssue === null
+      : [`Token name ${tokenOptionalTextUnavailableReasonLabel(input.nameIssue)}.`]),
+    ...(input.symbolIssue === null
       ? []
-      : [`Token symbol ${tokenOptionalTextUnavailableReasonLabel(row.symbolIssue)}.`]),
+      : [`Token symbol ${tokenOptionalTextUnavailableReasonLabel(input.symbolIssue)}.`]),
   ]);
+
+const classificationView = (
+  classification: AccountAssetClassification,
+): AccountAssetClassificationView => {
+  if (classification.kind === "robinhood_stock_token") {
+    return Object.freeze({
+      kind: "robinhood_stock_token",
+      label: "Robinhood Stock Token",
+      limitation: null,
+    });
+  }
+  if (classification.kind === "custom_erc20") {
+    return Object.freeze({
+      kind: "custom_erc20",
+      label: "Custom ERC-20",
+      limitation: null,
+    });
+  }
+  return classification.cause.kind === "official_snapshot_unavailable"
+    ? Object.freeze({
+        kind: "official_snapshot_unavailable",
+        label: "Classification unavailable",
+        limitation: officialSnapshotUnavailableReasons[classification.cause.reason],
+      })
+    : Object.freeze({
+        kind: "stock_factory_verification_unavailable",
+        label: "Classification unavailable",
+        limitation: classificationUnavailableReasons[classification.cause.reason],
+      });
+};
+
+const rowView = (entry: ContractAccountAsset): AccountAssetRowView => {
+  const name = entry.name.status === "available" ? entry.name.value : null;
+  const nameIssue = entry.name.status === "unavailable" ? entry.name.reason : null;
+  const symbol = entry.symbol.status === "available" ? entry.symbol.value : null;
+  const symbolIssue = entry.symbol.status === "unavailable" ? entry.symbol.reason : null;
+  return Object.freeze({
+    selection: entry.selection,
+    identity: Object.freeze({
+      address: entry.selection.asset.address,
+      label: name ?? symbol ?? entry.selection.asset.address,
+      name,
+      symbol,
+      warnings: assetIdentityWarnings({ nameIssue, symbolIssue }),
+    }),
+    classification: classificationView(entry.classification),
+    quantity: Object.freeze({
+      raw: entry.amount.raw,
+      decimals: entry.amount.decimals,
+      formattedRaw: entry.amount.formattedRaw,
+      adjustedRaw: entry.amount.uiAdjusted?.status === "available"
+        ? entry.amount.uiAdjusted.adjustedRaw
+        : null,
+      formattedAdjusted: entry.amount.formattedUiAdjusted,
+      adjustmentStatus: entry.amount.uiAdjusted === null
+        ? "not_supported"
+        : entry.amount.uiAdjusted.status === "available"
+          ? "available"
+          : "result_out_of_range",
+    }),
+    requiredStandards: entry.requiredStandards,
+  });
+};
 
 export const projectAccountAssetCollectionView = (result: AccountAssetCollectionSuccess) =>
   Object.freeze({

@@ -2,12 +2,14 @@ import {
   captureCanonicalJson,
   compareCodePointSequences,
   contractControlInterfaceDefinitions,
+  contractDeclaredFunctionCountLimit,
   contractDeclaredFunctionUtf16CodeUnitLimit,
   createObservationAuthorityIssuer,
   deriveEip155Reference,
   exactContractInterfaceSchema,
-  parseEvmAddress,
-  parseHexBytes,
+  evmAddressSchema,
+  hexBytesSchema,
+  isWellFormedText,
   parseSourceReference,
   type CanonicalClock,
   type CanonicalJson,
@@ -27,7 +29,16 @@ import { createContractSourceVerificationPort } from "./ports.js";
 import * as sourcifyAbiFormatNamespace from "./sourcify-abi-format.cjs";
 
 type SourcifyAbiFormatModule = Readonly<{
-  formatAbiItem(item: Readonly<Record<string, unknown>>): string;
+  formatAbiItem(
+    item: Readonly<Record<string, unknown>>,
+    options?: Readonly<{ includeName?: boolean }>,
+  ): string;
+  formatAbiParams(
+    parameters: readonly Readonly<Record<string, unknown>>[],
+    options: Readonly<{ includeName: boolean }>,
+  ): string;
+  parseAbiItem(signature: string): Readonly<Record<string, unknown>>;
+  parseAbiParameter(signature: string): Readonly<Record<string, unknown>>;
 }>;
 
 const sourcifyAbiFormat = (
@@ -50,67 +61,401 @@ const isJsonObject = (value: CanonicalJson | undefined): value is JsonObject =>
 const readString = (value: CanonicalJson | undefined): string | undefined =>
   typeof value === "string" ? value : undefined;
 
-const assertAbiParameters = (
+const jsonTextIsWellFormed = (input: unknown): boolean => {
+  const pending: unknown[] = [input];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (typeof value === "string") {
+      if (!isWellFormedText(value)) return false;
+      continue;
+    }
+    if (typeof value !== "object" || value === null) continue;
+    if (Array.isArray(value)) {
+      for (const entry of value) pending.push(entry);
+      continue;
+    }
+    for (const [key, entry] of Object.entries(value)) {
+      if (!isWellFormedText(key)) return false;
+      pending.push(entry);
+    }
+  }
+  return true;
+};
+
+const abiKinds = [
+  "function",
+  "event",
+  "error",
+  "constructor",
+  "fallback",
+  "receive",
+] as const;
+
+type AbiKind = typeof abiKinds[number];
+const functionStateMutabilities = Object.freeze([
+  "pure",
+  "view",
+  "nonpayable",
+  "payable",
+] as const);
+const payableStateMutabilities = Object.freeze(["nonpayable", "payable"] as const);
+type FunctionStateMutability = typeof functionStateMutabilities[number];
+type PayableStateMutability = typeof payableStateMutabilities[number];
+
+const abiSemanticFields = Object.freeze([
+  "type",
+  "name",
+  "inputs",
+  "outputs",
+  "stateMutability",
+  "constant",
+  "payable",
+  "gas",
+  "anonymous",
+  "internalType",
+  "components",
+  "indexed",
+] as const);
+
+type AbiSemanticField = typeof abiSemanticFields[number];
+
+const abiSemanticFieldsByKind = {
+  function: [
+    "type",
+    "name",
+    "inputs",
+    "outputs",
+    "stateMutability",
+    "constant",
+    "payable",
+    "gas",
+  ],
+  event: ["type", "name", "inputs", "anonymous"],
+  error: ["type", "name", "inputs"],
+  constructor: ["type", "inputs", "stateMutability", "payable"],
+  fallback: ["type", "stateMutability", "payable"],
+  receive: ["type", "stateMutability"],
+} as const satisfies Record<AbiKind, readonly AbiSemanticField[]>;
+
+const abiParameterSemanticFields = [
+  "type",
+  "name",
+  "internalType",
+  "components",
+  "indexed",
+] as const satisfies readonly AbiSemanticField[];
+
+type CanonicalAbiParameter = Readonly<{
+  readonly type: string;
+  readonly name?: string;
+  readonly internalType?: string;
+  readonly components?: readonly CanonicalAbiParameter[];
+}>;
+type CanonicalAbiEventParameter = CanonicalAbiParameter & Readonly<{
+  readonly indexed: boolean;
+}>;
+type CanonicalAbiItem =
+  | Readonly<{
+      readonly type: "function";
+      readonly name: string;
+      readonly inputs: readonly CanonicalAbiParameter[];
+      readonly outputs: readonly CanonicalAbiParameter[];
+      readonly stateMutability: FunctionStateMutability;
+      readonly signature: string;
+    }>
+  | Readonly<{
+      readonly type: "event";
+      readonly name: string;
+      readonly inputs: readonly CanonicalAbiEventParameter[];
+      readonly anonymous: boolean;
+    }>
+  | Readonly<{
+      readonly type: "error";
+      readonly name: string;
+      readonly inputs: readonly CanonicalAbiParameter[];
+    }>
+  | Readonly<{
+      readonly type: "constructor";
+      readonly inputs: readonly CanonicalAbiParameter[];
+      readonly stateMutability: PayableStateMutability;
+    }>
+  | Readonly<{ readonly type: "fallback"; readonly stateMutability: PayableStateMutability }>
+  | Readonly<{ readonly type: "receive"; readonly stateMutability: "payable" }>;
+
+type AbiEntryAdmission =
+  | Readonly<{ readonly status: "admitted"; readonly item: CanonicalAbiItem }>
+  | Readonly<{ readonly status: "inconsistent" }>
+  | Readonly<{ readonly status: "unavailable" }>;
+
+type OptionalBoolean =
+  | Readonly<{ readonly status: "absent" }>
+  | Readonly<{ readonly status: "invalid" }>
+  | Readonly<{ readonly status: "present"; readonly value: boolean }>;
+
+const inconsistentAbiEntry = Object.freeze({ status: "inconsistent" as const });
+const unavailableAbiEntry = Object.freeze({ status: "unavailable" as const });
+
+const readOptionalBoolean = (entry: JsonObject, field: string): OptionalBoolean => {
+  if (!Object.hasOwn(entry, field)) return Object.freeze({ status: "absent" });
+  const value = entry[field];
+  return typeof value === "boolean"
+    ? Object.freeze({ status: "present", value })
+    : Object.freeze({ status: "invalid" });
+};
+
+const isAbiKind = (value: string | undefined): value is AbiKind =>
+  abiKinds.some((kind) => kind === value);
+
+const isFunctionStateMutability = (
+  value: string | undefined,
+): value is FunctionStateMutability =>
+  functionStateMutabilities.some((stateMutability) => stateMutability === value);
+
+const isPayableStateMutability = (
+  value: string | undefined,
+): value is PayableStateMutability =>
+  payableStateMutabilities.some((stateMutability) => stateMutability === value);
+
+const hasOnlyOwnedSemanticFields = (
+  entry: JsonObject,
+  owned: readonly AbiSemanticField[],
+): boolean => {
+  return abiSemanticFields.every((field) =>
+    !Object.hasOwn(entry, field) || owned.some((candidate) => candidate === field));
+};
+
+function canonicalParameter(
+  value: CanonicalJson,
+  eventInput: true,
+): CanonicalAbiEventParameter | null;
+function canonicalParameter(
+  value: CanonicalJson,
+  eventInput: false,
+): CanonicalAbiParameter | null;
+function canonicalParameter(
+  value: CanonicalJson,
+  eventInput: boolean,
+): CanonicalAbiParameter | CanonicalAbiEventParameter | null {
+  if (!isJsonObject(value)) return null;
+  if (!hasOnlyOwnedSemanticFields(value, abiParameterSemanticFields)) return null;
+  const type = readString(value["type"]);
+  if (type === undefined) return null;
+  const name = value["name"];
+  if (name !== undefined && typeof name !== "string") return null;
+  const internalType = value["internalType"];
+  if (internalType !== undefined && typeof internalType !== "string") return null;
+  const indexed = readOptionalBoolean(value, "indexed");
+  if (indexed.status === "invalid" || (!eventInput && indexed.status !== "absent")) return null;
+  const componentsInput = value["components"];
+  const tuple = type.startsWith("tuple");
+  if (tuple !== Array.isArray(componentsInput)) return null;
+  let components: readonly CanonicalAbiParameter[] | undefined;
+  if (Array.isArray(componentsInput)) {
+    const admitted: CanonicalAbiParameter[] = [];
+    for (const component of componentsInput) {
+      const normalized = canonicalParameter(component, false);
+      if (normalized === null) return null;
+      admitted.push(normalized);
+    }
+    components = Object.freeze(admitted);
+  }
+  return Object.freeze({
+    type,
+    ...(name === undefined ? {} : { name }),
+    ...(internalType === undefined ? {} : { internalType }),
+    ...(components === undefined ? {} : { components }),
+    ...(eventInput
+      ? { indexed: indexed.status === "present" ? indexed.value : false }
+      : {}),
+  });
+}
+
+function canonicalParameters(
+  value: CanonicalJson | undefined,
+  eventInputs: true,
+): readonly CanonicalAbiEventParameter[] | null;
+function canonicalParameters(
+  value: CanonicalJson | undefined,
+  eventInputs: false,
+): readonly CanonicalAbiParameter[] | null;
+function canonicalParameters(
   value: CanonicalJson | undefined,
   eventInputs: boolean,
-): void => {
-  if (!Array.isArray(value)) throw new TypeError("Sourcify ABI parameters are invalid.");
+): readonly (CanonicalAbiParameter | CanonicalAbiEventParameter)[] | null {
+  if (!Array.isArray(value)) return null;
+  const admitted: Array<CanonicalAbiParameter | CanonicalAbiEventParameter> = [];
   for (const parameter of value) {
-    if (!isJsonObject(parameter) || readString(parameter["type"]) === undefined) {
-      throw new TypeError("Sourcify ABI parameter is invalid.");
+    const normalized = eventInputs
+      ? canonicalParameter(parameter, true)
+      : canonicalParameter(parameter, false);
+    if (normalized === null) return null;
+    admitted.push(normalized);
+  }
+  try {
+    for (const parameter of admitted) {
+      const signature = sourcifyAbiFormat.formatAbiParams([parameter], {
+        includeName: true,
+      });
+      sourcifyAbiFormat.parseAbiParameter(signature);
     }
-    if (
-      eventInputs &&
-      parameter["indexed"] !== undefined &&
-      typeof parameter["indexed"] !== "boolean"
-    ) {
-      throw new TypeError("Sourcify ABI event parameter is invalid.");
-    }
-    const components = parameter["components"];
-    if (components !== undefined) assertAbiParameters(components, false);
+  } catch {
+    return null;
+  }
+  return Object.freeze(admitted);
+}
+
+const functionStateMutability = (entry: JsonObject): FunctionStateMutability | null => {
+  const explicitInput = readString(entry["stateMutability"]);
+  if (Object.hasOwn(entry, "stateMutability") &&
+    !isFunctionStateMutability(explicitInput)) return null;
+  const explicit = isFunctionStateMutability(explicitInput) ? explicitInput : undefined;
+  const constant = readOptionalBoolean(entry, "constant");
+  const payable = readOptionalBoolean(entry, "payable");
+  if (constant.status === "invalid" || payable.status === "invalid") return null;
+  const gas = entry["gas"];
+  if (
+    Object.hasOwn(entry, "gas") &&
+    (typeof gas !== "number" || !Number.isSafeInteger(gas) || gas < 0)
+  ) return null;
+  if (explicit === undefined) {
+    if (constant.status !== "present" || payable.status !== "present") return null;
+    if (constant.value && payable.value) return null;
+    if (constant.value) return "view";
+    return payable.value ? "payable" : "nonpayable";
+  }
+  const expectedConstant = explicit === "pure" || explicit === "view";
+  const expectedPayable = explicit === "payable";
+  if (
+    (constant.status === "present" && constant.value !== expectedConstant) ||
+    (payable.status === "present" && payable.value !== expectedPayable)
+  ) return null;
+  return explicit;
+};
+
+const payableStateMutability = (entry: JsonObject): PayableStateMutability | null => {
+  const explicitInput = readString(entry["stateMutability"]);
+  if (Object.hasOwn(entry, "stateMutability") &&
+    !isPayableStateMutability(explicitInput)) return null;
+  const explicit = isPayableStateMutability(explicitInput) ? explicitInput : undefined;
+  const payable = readOptionalBoolean(entry, "payable");
+  if (payable.status === "invalid") return null;
+  if (explicit === undefined) {
+    return payable.status === "present"
+      ? payable.value ? "payable" : "nonpayable"
+      : null;
+  }
+  if (payable.status === "present" && payable.value !== (explicit === "payable")) return null;
+  return explicit;
+};
+
+const parsedNamedAbiItem = (
+  entry: Readonly<Record<string, unknown>>,
+  type: "function" | "event" | "error",
+): Readonly<Record<string, unknown>> | null => {
+  try {
+    const signature = sourcifyAbiFormat.formatAbiItem(entry, { includeName: true });
+    const parsed = sourcifyAbiFormat.parseAbiItem(`${type} ${signature}`);
+    return parsed["type"] === type ? parsed : null;
+  } catch {
+    return null;
   }
 };
 
-const assertAbiEntry = (entry: JsonObject): void => {
+const admitAbiEntry = (entry: JsonObject): AbiEntryAdmission => {
   const type = readString(entry["type"]);
-  if (type === "function") {
-    if (
-      readString(entry["name"]) === undefined ||
-      !["pure", "view", "nonpayable", "payable"].includes(
-        readString(entry["stateMutability"]) ?? "",
-      )
-    ) throw new TypeError("Sourcify ABI function is invalid.");
-    assertAbiParameters(entry["inputs"], false);
-    assertAbiParameters(entry["outputs"], false);
-    return;
+  if (!isAbiKind(type) || !hasOnlyOwnedSemanticFields(entry, abiSemanticFieldsByKind[type])) {
+    return inconsistentAbiEntry;
   }
-  if (type === "event") {
-    if (
-      readString(entry["name"]) === undefined ||
-      (entry["anonymous"] !== undefined && typeof entry["anonymous"] !== "boolean")
-    ) throw new TypeError("Sourcify ABI event is invalid.");
-    assertAbiParameters(entry["inputs"], true);
-    return;
-  }
-  if (type === "error") {
-    if (readString(entry["name"]) === undefined) {
-      throw new TypeError("Sourcify ABI error is invalid.");
+  switch (type) {
+    case "function": {
+      const name = readString(entry["name"]);
+      const inputs = canonicalParameters(entry["inputs"], false);
+      const outputs = canonicalParameters(entry["outputs"], false);
+      const stateMutability = functionStateMutability(entry);
+      if (name === undefined || inputs === null || outputs === null || stateMutability === null) {
+        return inconsistentAbiEntry;
+      }
+      const item = Object.freeze({ type, name, inputs, outputs, stateMutability });
+      let signature: string;
+      try {
+        signature = sourcifyAbiFormat.formatAbiItem(item);
+      } catch {
+        return inconsistentAbiEntry;
+      }
+      if (
+        signature.length === 0 ||
+        !signature.includes("(") ||
+        !signature.endsWith(")")
+      ) return inconsistentAbiEntry;
+      if (signature.length > contractDeclaredFunctionUtf16CodeUnitLimit) {
+        return unavailableAbiEntry;
+      }
+      if (parsedNamedAbiItem(item, "function") === null) return inconsistentAbiEntry;
+      return Object.freeze({
+        status: "admitted",
+        item: Object.freeze({ ...item, signature }),
+      });
     }
-    assertAbiParameters(entry["inputs"], false);
-    return;
-  }
-  if (type === "constructor") {
-    if (!["nonpayable", "payable"].includes(readString(entry["stateMutability"]) ?? "")) {
-      throw new TypeError("Sourcify ABI constructor is invalid.");
+    case "event": {
+      const name = readString(entry["name"]);
+      const inputs = canonicalParameters(entry["inputs"], true);
+      const anonymous = readOptionalBoolean(entry, "anonymous");
+      if (name === undefined || inputs === null || anonymous.status === "invalid") {
+        return inconsistentAbiEntry;
+      }
+      const item = Object.freeze({
+        type,
+        name,
+        inputs,
+        anonymous: anonymous.status === "present" ? anonymous.value : false,
+      });
+      return parsedNamedAbiItem(item, "event") === null
+        ? inconsistentAbiEntry
+        : Object.freeze({ status: "admitted", item });
     }
-    assertAbiParameters(entry["inputs"], false);
-    return;
+    case "error": {
+      const name = readString(entry["name"]);
+      const inputs = canonicalParameters(entry["inputs"], false);
+      if (name === undefined || inputs === null) return inconsistentAbiEntry;
+      const item = Object.freeze({
+        type,
+        name,
+        inputs,
+      });
+      return parsedNamedAbiItem(item, "error") === null
+        ? inconsistentAbiEntry
+        : Object.freeze({ status: "admitted", item });
+    }
+    case "constructor": {
+      const inputs = canonicalParameters(entry["inputs"], false);
+      const stateMutability = payableStateMutability(entry);
+      if (inputs === null || stateMutability === null) return inconsistentAbiEntry;
+      return Object.freeze({
+        status: "admitted",
+        item: Object.freeze({
+          type,
+          inputs,
+          stateMutability,
+        }),
+      });
+    }
+    case "fallback": {
+      const stateMutability = payableStateMutability(entry);
+      return stateMutability === null
+        ? inconsistentAbiEntry
+        : Object.freeze({
+            status: "admitted",
+            item: Object.freeze({ type, stateMutability }),
+          });
+    }
+    case "receive":
+      return entry["stateMutability"] === "payable"
+        ? Object.freeze({
+            status: "admitted",
+            item: Object.freeze({ type, stateMutability: "payable" }),
+          })
+        : inconsistentAbiEntry;
   }
-  if (
-    (type === "fallback" || type === "receive") &&
-    ["nonpayable", "payable"].includes(readString(entry["stateMutability"]) ?? "")
-  ) return;
-  throw new TypeError("Sourcify ABI entry is invalid.");
 };
 
 const requestReference = (
@@ -207,88 +552,90 @@ const readResponseBody = async (
   }
   try {
     const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-    return Object.freeze({
-      status: "admitted",
-      value: captureCanonicalJson(JSON.parse(text)),
-    });
+    const parsed = JSON.parse(text) as unknown;
+    if (!jsonTextIsWellFormed(parsed)) return Object.freeze({ status: "inconsistent" });
+    try {
+      return Object.freeze({
+        status: "admitted",
+        value: captureCanonicalJson(parsed),
+      });
+    } catch {
+      return Object.freeze({ status: "unavailable" });
+    }
   } catch {
     return Object.freeze({ status: "inconsistent" });
   }
 };
 
-const sameInputs = (
-  inputs: CanonicalJson | undefined,
+const sameParameters = (
+  inputs: readonly CanonicalAbiParameter[],
   expected: readonly Readonly<{ readonly type: string; readonly indexed?: boolean }>[],
-  event: boolean,
 ): boolean => {
-  if (!Array.isArray(inputs) || inputs.length !== expected.length) return false;
+  if (inputs.length !== expected.length) return false;
   return inputs.every((input, index) => {
-    if (!isJsonObject(input)) return false;
     const expectedInput = expected[index];
-    if (expectedInput === undefined || readString(input["type"]) !== expectedInput.type) return false;
-    if (!event) return true;
-    return input["indexed"] === (expectedInput.indexed ?? false);
+    return expectedInput !== undefined && input.type === expectedInput.type;
   });
 };
 
-const sameOutputs = (
-  outputs: CanonicalJson | undefined,
-  expected: readonly Readonly<{ readonly type: string }>[],
-): boolean =>
-  Array.isArray(outputs) &&
-  outputs.length === expected.length &&
-  outputs.every((output, index) =>
-    isJsonObject(output) &&
-    readString(output["type"]) === expected[index]?.type);
+const sameEventParameters = (
+  inputs: readonly CanonicalAbiEventParameter[],
+  expected: readonly Readonly<{ readonly type: string; readonly indexed?: boolean }>[],
+): boolean => {
+  if (inputs.length !== expected.length) return false;
+  return inputs.every((input, index) => {
+    const expectedInput = expected[index];
+    return expectedInput !== undefined &&
+      input.type === expectedInput.type &&
+      input.indexed === (expectedInput.indexed ?? false);
+  });
+};
 
 const matchesFunction = (
-  entries: readonly JsonObject[],
+  entries: readonly CanonicalAbiItem[],
   expected: ContractControlFunctionDefinition,
 ): boolean => entries.some((entry) =>
-  entry["type"] === "function" &&
-  entry["name"] === expected.name &&
-  sameInputs(entry["inputs"], expected.inputs, false) &&
-  sameOutputs(entry["outputs"], expected.outputs) &&
-  expected.stateMutability.includes(readString(entry["stateMutability"]) as never));
+  entry.type === "function" &&
+  entry.name === expected.name &&
+  sameParameters(entry.inputs, expected.inputs) &&
+  sameParameters(entry.outputs, expected.outputs) &&
+  expected.stateMutability.some((stateMutability) => stateMutability === entry.stateMutability));
 
 const matchesEvent = (
-  entries: readonly JsonObject[],
+  entries: readonly CanonicalAbiItem[],
   expected: ContractControlEventDefinition,
 ): boolean => entries.some((entry) =>
-  entry["type"] === "event" &&
-  entry["name"] === expected.name &&
-  entry["anonymous"] !== true &&
-  sameInputs(entry["inputs"], expected.inputs, true));
+  entry.type === "event" &&
+  entry.name === expected.name &&
+  !entry.anonymous &&
+  sameEventParameters(entry.inputs, expected.inputs));
 
-const functionSignature = (entry: JsonObject): string => {
-  const signature = sourcifyAbiFormat.formatAbiItem(entry);
-  if (
-    signature.length === 0 ||
-    signature.length > contractDeclaredFunctionUtf16CodeUnitLimit ||
-    !signature.includes("(") ||
-    !signature.endsWith(")")
-  ) {
-    throw new TypeError("Sourcify ABI function format is invalid.");
-  }
-  return signature;
-};
+type ExactInterfaceAdmission =
+  | Readonly<{ readonly status: "admitted"; readonly value: ExactContractInterface }>
+  | Readonly<{ readonly status: "inconsistent" }>
+  | Readonly<{ readonly status: "unavailable" }>;
 
 const exactContractInterface = (
   abiInput: CanonicalJson | undefined,
-): ExactContractInterface => {
-  if (!Array.isArray(abiInput)) throw new TypeError("Sourcify ABI is invalid.");
-  const entries: JsonObject[] = abiInput.map((entry) => {
-    if (!isJsonObject(entry)) throw new TypeError("Sourcify ABI entry is invalid.");
-    assertAbiEntry(entry);
-    sourcifyAbiFormat.formatAbiItem(entry);
-    return entry;
-  });
-  const signatures = entries
-    .filter((entry) => entry["type"] === "function")
-    .map(functionSignature)
-    .sort(compareCodePointSequences);
+): ExactInterfaceAdmission => {
+  if (!Array.isArray(abiInput)) return Object.freeze({ status: "inconsistent" });
+  const entries: CanonicalAbiItem[] = [];
+  const signatures: string[] = [];
+  for (const entry of abiInput) {
+    if (!isJsonObject(entry)) return Object.freeze({ status: "inconsistent" });
+    const admission = admitAbiEntry(entry);
+    if (admission.status !== "admitted") return admission;
+    entries.push(admission.item);
+    if (admission.item.type === "function") {
+      signatures.push(admission.item.signature);
+    }
+  }
+  if (signatures.length > contractDeclaredFunctionCountLimit) {
+    return Object.freeze({ status: "unavailable" });
+  }
+  signatures.sort(compareCodePointSequences);
   if (new Set(signatures).size !== signatures.length) {
-    throw new TypeError("Sourcify ABI contains duplicate function signatures.");
+    return Object.freeze({ status: "inconsistent" });
   }
 
   const owner = contractControlInterfaceDefinitions.owner.functions.every((definition) =>
@@ -308,7 +655,7 @@ const exactContractInterface = (
     contractControlInterfaceDefinitions.defaultAdmins.enumerableFunctions.every((definition) =>
       matchesFunction(entries, definition));
 
-  return Object.freeze(exactContractInterfaceSchema.parse({
+  const admitted = exactContractInterfaceSchema.safeParse({
     declaredFunctions: Object.freeze(signatures),
     owner,
     paused,
@@ -317,7 +664,10 @@ const exactContractInterface = (
       : hasDefaultAdminEnumeration
         ? "enumerable"
         : "not_enumerable",
-  }));
+  });
+  return admitted.success
+    ? Object.freeze({ status: "admitted", value: Object.freeze(admitted.data) })
+    : Object.freeze({ status: "unavailable" });
 };
 
 const responseIdentityMatches = (
@@ -327,11 +677,8 @@ const responseIdentityMatches = (
   const chainId = readString(value["chainId"]);
   const address = readString(value["address"]);
   if (chainId !== deriveEip155Reference(request.chainId) || address === undefined) return false;
-  try {
-    return parseEvmAddress(address.toLowerCase()) === request.address;
-  } catch {
-    return false;
-  }
+  const parsedAddress = evmAddressSchema.safeParse(address.toLowerCase());
+  return parsedAddress.success && parsedAddress.data === request.address;
 };
 
 const classifyResponse = (
@@ -379,21 +726,27 @@ const classifyResponse = (
   if (!isJsonObject(runtimeBytecode)) {
     return Object.freeze({ status: "inconsistent", reference, observationAuthority });
   }
-  try {
-    const onchainBytecode = parseHexBytes(runtimeBytecode["onchainBytecode"]);
-    if (onchainBytecode !== request.runtimeBytecode) {
-      return Object.freeze({ status: "inconsistent", reference, observationAuthority });
-    }
-    const exactInterface = exactContractInterface(value["abi"]);
-    return Object.freeze({
-      status: "exact_match",
-      reference,
-      observationAuthority,
-      exactInterface,
-    });
-  } catch {
+  const onchainBytecode = hexBytesSchema.safeParse(runtimeBytecode["onchainBytecode"]);
+  if (!onchainBytecode.success) {
     return Object.freeze({ status: "inconsistent", reference, observationAuthority });
   }
+  if (onchainBytecode.data !== request.runtimeBytecode) {
+    return Object.freeze({ status: "inconsistent", reference, observationAuthority });
+  }
+  const exactInterface = exactContractInterface(value["abi"]);
+  if (exactInterface.status !== "admitted") {
+    return Object.freeze({
+      status: exactInterface.status,
+      reference,
+      observationAuthority,
+    });
+  }
+  return Object.freeze({
+    status: "exact_match",
+    reference,
+    observationAuthority,
+    exactInterface: exactInterface.value,
+  });
 };
 
 const abortError = (): Error => {

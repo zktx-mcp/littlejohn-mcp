@@ -107,7 +107,12 @@ const candidateListDigest = officialAssetCandidateListDigest([{
 
 const collectionResult = (
   raw: "0" | "5",
-  options: Readonly<{ nativeRaw?: string; tokenDecimals?: string | null }> = {},
+  options: Readonly<{
+    nativeRaw?: string;
+    tokenDecimals?: string | null;
+    classificationUnavailable?: boolean;
+    metadataUnavailable?: boolean;
+  }> = {},
 ) => accountAssetOverviewQueryContract.parsePublicSuccess(
   {},
   {
@@ -128,9 +133,23 @@ const collectionResult = (
         asset: {
           kind: "erc20",
           selection,
-          name: { status: "available", value: "Example" },
-          symbol: { status: "available", value: "EXT" },
-          classification,
+          name: options.metadataUnavailable === true
+            ? { status: "unavailable", reason: "call_failed" }
+            : { status: "available", value: "Example" },
+          symbol: options.metadataUnavailable === true
+            ? { status: "unavailable", reason: "malformed" }
+            : { status: "available", value: "EXT" },
+          classification: options.classificationUnavailable === true
+            ? {
+                kind: "classification_unavailable",
+                cause: {
+                  kind: "stock_factory_verification_unavailable",
+                  snapshot: classification.snapshot,
+                  member: classification.member,
+                  reason: "source_unavailable",
+                },
+              }
+            : classification,
           amount: {
             raw,
             decimals: options.tokenDecimals === undefined
@@ -221,6 +240,36 @@ describe("account asset human presentation", () => {
     expect(markup).not.toContain("Manage tracked tokens");
     expect(markup).not.toContain("Previous asset page");
     expect(markup).not.toContain("Next asset page");
+  });
+
+  it("does not label an unavailable classification as a Stock Token", () => {
+    const markup = renderToStaticMarkup(createElement(AccountAssetsPage, {
+      snapshot: { result: collectionResult("5", { classificationUnavailable: true }) },
+      loading: false,
+      staleMessage: undefined,
+      mutationDisabled: false,
+      ...callbacks,
+    }));
+
+    expect(markup).toContain(">Classification unavailable<");
+    expect(markup).toContain(
+      "Chain evidence required for StockFactory verification was unavailable.",
+    );
+    expect(markup).not.toContain('<p class="type-label">Stock Token</p>');
+  });
+
+  it("uses the exact address when selected-token identity text is unavailable", () => {
+    const markup = renderToStaticMarkup(createElement(AccountAssetsPage, {
+      snapshot: { result: collectionResult("5", { metadataUnavailable: true }) },
+      loading: false,
+      staleMessage: undefined,
+      mutationDisabled: false,
+      ...callbacks,
+    }));
+
+    expect(markup).toContain(`<h3>${tokenAddress}</h3>`);
+    expect(markup).toContain(`aria-label="Open ${tokenAddress} information"`);
+    expect(markup).not.toContain("Open Stock Token information");
   });
 
   it("does not invent a native human amount when nonzero decimals are unavailable", () => {

@@ -1,6 +1,5 @@
 import {
   projectAccountAssetExactView,
-  type AccountAssetExactSuccess,
   type AccountAssetViewRevision,
 } from "../../account-assets/browser.js";
 import {
@@ -301,15 +300,6 @@ export const presentStockTokenAddTask = ({
   });
 };
 
-const exactStockTokenResult = (
-  exactRead: AccountAssetExactReadState,
-): AccountAssetExactSuccess | undefined =>
-  exactRead.status === "available" &&
-  projectAccountAssetExactView(exactRead.result).classification.kind ===
-    "robinhood_stock_token"
-    ? exactRead.result
-    : undefined;
-
 export type StockTokenInformationTaskPresentation = Readonly<{
   presentation: StockTokenInformationDialogPresentation | undefined;
 }>;
@@ -320,7 +310,6 @@ export const presentStockTokenInformationTask = (
   if (exactRead.status === "idle") {
     return Object.freeze({ presentation: undefined });
   }
-  const result = exactStockTokenResult(exactRead);
   if (exactRead.status === "loading") {
     return Object.freeze({
       presentation: {
@@ -338,17 +327,20 @@ export const presentStockTokenInformationTask = (
       },
     });
   }
-  if (result === undefined) {
+  const row = projectAccountAssetExactView(exactRead.result);
+  if (row.classification.kind !== "robinhood_stock_token") {
     return Object.freeze({
       presentation: {
         status: "classification_mismatch",
         selection: exactRead.selection,
-        message: "This token is not available in the current Stock Token list.",
+        message: row.classification.kind === "custom_erc20"
+          ? "This token is not available in the current Stock Token list."
+          : row.classification.limitation,
       },
     });
   }
   return Object.freeze({
-    presentation: { status: "available", result },
+    presentation: { status: "available", result: exactRead.result },
   });
 };
 

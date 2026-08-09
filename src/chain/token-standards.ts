@@ -313,14 +313,16 @@ export const completeTokenStandardObservation = async (
         );
         if (onchain.status === "unavailable") {
           balances = observation("erc8056_balances", "unknown");
-          calculatedBalance = undefined;
-        }
-        else if (onchain.status !== "available" ||
-          calculatedBalance.status !== "available" ||
-          onchain.value !== calculatedBalance.adjustedRaw) {
+        } else if (onchain.status !== "available") {
           balances = observation("erc8056_balances", "inconsistent");
-          calculatedBalance = undefined;
-        } else balanceOfUi = onchain.value;
+        } else {
+          balanceOfUi = onchain.value;
+          if (calculatedBalance.status !== "available") {
+            balances = observation("erc8056_balances", "unknown");
+          } else if (onchain.value !== calculatedBalance.adjustedRaw) {
+            balances = observation("erc8056_balances", "inconsistent");
+          }
+        }
       }
     }
   }

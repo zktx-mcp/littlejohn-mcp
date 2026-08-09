@@ -4,6 +4,10 @@ import type {
   ReferenceMarketChainReadPort,
 } from "../chain/index.js";
 import {
+  getChainOperationFailure,
+  type ChainErrorCode,
+} from "../chain/errors.js";
+import {
   createReferenceHistoryWorkPlan,
   findReferenceFeed,
   referenceFeedIds,
@@ -20,7 +24,10 @@ import type {
   ReferenceFeedCacheSnapshot,
   ReferenceMarketStore,
 } from "../runtime/reference-market-storage.js";
-import { ReferenceMarketOperationError } from "./errors.js";
+import {
+  getReferenceMarketOperationFailure,
+  ReferenceMarketOperationError,
+} from "./errors.js";
 
 interface SynchronizationJob {
   readonly block: CanonicalBlock;
@@ -43,6 +50,19 @@ interface FeedQueue {
 }
 
 const unixSeconds = (timestamp: string): bigint => BigInt(Math.floor(Date.parse(timestamp) / 1_000));
+
+const boundedSourceStopCodes = Object.freeze([
+  "chain_response_unavailable",
+  "rate_limited",
+  "source_unavailable",
+] as const satisfies readonly ChainErrorCode[]);
+
+const isBoundedSourceStop = (error: unknown): boolean => {
+  const code = (
+    getChainOperationFailure(error) ?? getReferenceMarketOperationFailure(error)
+  )?.error.code;
+  return code !== undefined && boundedSourceStopCodes.some((candidate) => candidate === code);
+};
 
 export class ReferenceFeedSynchronizationOwner {
   readonly #chain: ReferenceMarketChainReadPort;
@@ -199,7 +219,9 @@ export class ReferenceFeedSynchronizationOwner {
     if (current.integrityStatus === "conflict") {
       throw new ReferenceMarketOperationError("source_inconsistent");
     }
-    if (stoppedByFailure !== undefined) throw stoppedByFailure;
+    if (stoppedByFailure !== undefined && !isBoundedSourceStop(stoppedByFailure)) {
+      throw stoppedByFailure;
+    }
     const traversal = referenceFeedTraversalStateSchema.parse({
       backfillPhaseId: current.backfillPhaseId,
       backfillNextRoundId: current.backfillNextRoundId,

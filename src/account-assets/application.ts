@@ -41,6 +41,7 @@ import {
   type AccountAssetExactSuccess,
   type AccountAssetOverviewInput,
   type AccountAssetOverviewSuccess,
+  type AccountAssetOfficialSnapshotUnavailableReason,
   type AccountAssetViewRevision,
   type ContractAccountAsset,
 } from "./contracts.js";
@@ -60,12 +61,16 @@ type CapturedWallet = Readonly<{
   sessionSourceId: string;
 }>;
 
-interface OfficialView {
-  readonly status: "current" | "unavailable";
-  readonly snapshot: CommittedOfficialAssetSnapshot | null;
-  readonly storedRevision: CommittedOfficialAssetSnapshot["revision"] | null;
-  readonly failureReason: "source_inconsistent" | "source_unavailable" | null;
-}
+type OfficialView =
+  | Readonly<{
+      status: "current";
+      snapshot: CommittedOfficialAssetSnapshot;
+    }>
+  | Readonly<{
+      status: "unavailable";
+      storedRevision: CommittedOfficialAssetSnapshot["revision"] | null;
+      failureReason: AccountAssetOfficialSnapshotUnavailableReason;
+    }>;
 
 const sameAccount = (left: EvmAccountIdentity, right: EvmAccountIdentity): boolean =>
   left.chainId === right.chainId && left.address === right.address;
@@ -109,7 +114,9 @@ const ensureNotAborted = (caller: AbortSignal, owner: AbortSignal): void => {
   if (owner.aborted) throw new AccountAssetOperationError("runtime_state_unavailable");
 };
 
-const sourceFailureReason = (failure: ApplicationFailure): OfficialView["failureReason"] => {
+const sourceFailureReason = (
+  failure: ApplicationFailure,
+): AccountAssetOfficialSnapshotUnavailableReason => {
   const code: string = failure.error.code;
   return code === "source_inconsistent" || code === "source_unavailable"
     ? code
@@ -129,12 +136,9 @@ const synchronizeOfficialView = async (
     ? Object.freeze({
         status: "current",
         snapshot: result.snapshot,
-        storedRevision: result.snapshot.revision,
-        failureReason: null,
       })
     : Object.freeze({
         status: "unavailable",
-        snapshot: null,
         storedRevision: result.storedRevision,
         failureReason: sourceFailureReason(result.failure),
       });
@@ -143,51 +147,68 @@ const synchronizeOfficialView = async (
 const readOfficialView = (
   dependencies: AccountAssetReadProcessDependencies,
   revision: AccountAssetViewRevision,
+  admittedView: OfficialView | undefined,
 ): OfficialView => {
   const stored = dependencies.officialAssets.readStored();
   if ((stored?.revision ?? null) !== revision.officialSnapshotRevision) {
     throw new AccountAssetOperationError("state_conflict");
   }
-  return revision.officialSnapshotStatus === "current"
-    ? Object.freeze({
-        status: "current",
-        snapshot: stored ?? null,
-        storedRevision: stored?.revision ?? null,
-        failureReason: null,
-      })
-    : Object.freeze({
-        status: "unavailable",
-        snapshot: null,
-        storedRevision: stored?.revision ?? null,
-        failureReason: "source_unavailable",
-      });
+  if (revision.officialSnapshotStatus === "current") {
+    if (
+      stored === undefined ||
+      admittedView?.status !== "current" ||
+      admittedView.snapshot.revision !== revision.officialSnapshotRevision
+    ) throw new AccountAssetOperationError("state_conflict");
+    return admittedView;
+  }
+  if (
+    admittedView?.status !== "unavailable" ||
+    admittedView.storedRevision !== revision.officialSnapshotRevision ||
+    admittedView.failureReason !== revision.officialSnapshotUnavailableReason
+  ) throw new AccountAssetOperationError("state_conflict");
+  return admittedView;
 };
 
 const viewRevision = (
   official: OfficialView,
   state: TokenSelectionState | undefined,
-): AccountAssetViewRevision => Object.freeze({
-  officialSnapshotStatus: official.status,
-  officialSnapshotRevision: official.storedRevision,
-  selectionSetRevision: state?.revision ?? null,
-});
+): AccountAssetViewRevision => official.status === "current"
+  ? Object.freeze({
+      officialSnapshotStatus: "current",
+      officialSnapshotRevision: official.snapshot.revision,
+      selectionSetRevision: state?.revision ?? null,
+    })
+  : Object.freeze({
+      officialSnapshotStatus: "unavailable",
+      officialSnapshotRevision: official.storedRevision,
+      officialSnapshotUnavailableReason: official.failureReason,
+      selectionSetRevision: state?.revision ?? null,
+    });
 
-const cursorViewRevision = (cursor: AccountAssetCursor): AccountAssetViewRevision => Object.freeze({
-  officialSnapshotStatus: cursor.officialSnapshotStatus,
-  officialSnapshotRevision: cursor.officialSnapshotRevision,
-  selectionSetRevision: cursor.selectionSetRevision,
-});
+const cursorViewRevision = (cursor: AccountAssetCursor): AccountAssetViewRevision =>
+  cursor.officialSnapshotStatus === "current"
+    ? Object.freeze({
+        officialSnapshotStatus: "current",
+        officialSnapshotRevision: cursor.officialSnapshotRevision,
+        selectionSetRevision: cursor.selectionSetRevision,
+      })
+    : Object.freeze({
+        officialSnapshotStatus: "unavailable",
+        officialSnapshotRevision: cursor.officialSnapshotRevision,
+        officialSnapshotUnavailableReason: cursor.officialSnapshotUnavailableReason,
+        selectionSetRevision: cursor.selectionSetRevision,
+      });
 
 const assertViewContinuity = (
   dependencies: AccountAssetReadProcessDependencies,
   wallet: CapturedWallet,
   expected: AccountAssetViewRevision,
+  admittedView: OfficialView | undefined,
 ): void => {
   assertWalletContinuity(wallet, captureWallet(dependencies));
-  if (
-    (dependencies.officialAssets.readStored()?.revision ?? null) !== expected.officialSnapshotRevision ||
-    (dependencies.selections.getState(wallet.account)?.revision ?? null) !== expected.selectionSetRevision
-  ) throw new AccountAssetOperationError("state_conflict");
+  if ((dependencies.selections.getState(wallet.account)?.revision ?? null) !==
+    expected.selectionSetRevision) throw new AccountAssetOperationError("state_conflict");
+  readOfficialView(dependencies, expected, admittedView);
 };
 
 const defaultDetails = (
@@ -205,7 +226,10 @@ const assertCursor = (cursor: AccountAssetCursor, revision: AccountAssetViewRevi
   if (
     cursor.officialSnapshotStatus !== revision.officialSnapshotStatus ||
     cursor.officialSnapshotRevision !== revision.officialSnapshotRevision ||
-    cursor.selectionSetRevision !== revision.selectionSetRevision
+    cursor.selectionSetRevision !== revision.selectionSetRevision ||
+    (cursor.officialSnapshotStatus === "unavailable" &&
+      revision.officialSnapshotStatus === "unavailable" &&
+      cursor.officialSnapshotUnavailableReason !== revision.officialSnapshotUnavailableReason)
   ) throw new AccountAssetOperationError("state_conflict");
   if (cursor.group === "default") {
     const expected = defaultStockTokenManifest.assets[cursor.rank];
@@ -294,31 +318,35 @@ const classification = (
   asset: TokenSelection["asset"],
   result: OfficialAssetVerificationResult | undefined,
 ): AccountAssetClassification => {
-  if (official.status === "unavailable" || official.snapshot === null) {
+  if (official.status === "unavailable") {
     return Object.freeze({
       kind: "classification_unavailable",
-      storedRevision: official.storedRevision,
-      snapshot: null,
-      member: null,
-      reason: official.failureReason ?? "source_unavailable",
+      cause: Object.freeze({
+        kind: "official_snapshot_unavailable",
+        storedRevision: official.storedRevision,
+        reason: official.failureReason,
+      }),
     });
   }
   const member = findOfficialAssetMember(official.snapshot, asset.address);
   if (member === undefined) {
     return Object.freeze({ kind: "custom_erc20", snapshot: snapshotEvidence(official.snapshot) });
   }
-  if (result?.status !== "verified") {
+  if (result === undefined) throw new AccountAssetOperationError("internal_error");
+  if (result.status !== "verified") {
     return Object.freeze({
       kind: "classification_unavailable",
-      storedRevision: official.snapshot.revision,
-      snapshot: snapshotEvidence(official.snapshot),
-      member: {
-        assetUid: member.assetUid,
-        contractAddress: member.contractAddress,
-        sourceName: member.sourceName ?? null,
-        sourceSymbol: member.sourceSymbol ?? null,
-      },
-      reason: result?.reason ?? "source_inconsistent",
+      cause: Object.freeze({
+        kind: "stock_factory_verification_unavailable",
+        snapshot: snapshotEvidence(official.snapshot),
+        member: {
+          assetUid: member.assetUid,
+          contractAddress: member.contractAddress,
+          sourceName: member.sourceName ?? null,
+          sourceSymbol: member.sourceSymbol ?? null,
+        },
+        reason: result.reason,
+      }),
     });
   }
   return Object.freeze({
@@ -342,7 +370,7 @@ const verifyVisibleMembers = async (
   context: ChainInvocationContext,
   retained: ReadonlyMap<string, OfficialAssetVerificationResult> = new Map(),
 ): Promise<ReadonlyMap<string, OfficialAssetVerificationResult>> => {
-  if (official.status !== "current" || official.snapshot === null) return new Map();
+  if (official.status !== "current") return new Map();
   const results = new Map<string, OfficialAssetVerificationResult>();
   const pending: OfficialAssetSourceMember[] = [];
   for (const detail of selections) {
@@ -372,13 +400,13 @@ const initializeDefaults = async (
   pageLimit: number,
   context: ChainInvocationContext,
 ): Promise<ReadonlyMap<string, OfficialAssetVerificationResult>> => {
-  if (official.status !== "current" || official.snapshot === null) return new Map();
+  if (official.status !== "current") return new Map();
   const state = dependencies.selections.getState(wallet.account);
   if (state?.defaultsInitialized === true) return new Map();
   const missingMembers: OfficialAssetSourceMember[] = [];
   const includedDefaults: string[] = [];
   for (const entry of defaultStockTokenManifest.assets) {
-    const member = findOfficialAssetMember(official.snapshot!, entry.contractAddress);
+    const member = findOfficialAssetMember(official.snapshot, entry.contractAddress);
     const existing = dependencies.selections.getForAccount({
       account: wallet.account,
       asset: { kind: "erc20", chainId: wallet.account.chainId, address: entry.contractAddress },
@@ -412,27 +440,28 @@ const initializeDefaults = async (
     if (result === undefined) throw new AccountAssetOperationError("internal_error");
     return [member.contractAddress, result] as const;
   }));
-  if (missingMembers.some((member) => resultByAddress.get(member.contractAddress)?.status !== "verified")) {
-    throw new AccountAssetOperationError("source_inconsistent");
-  }
-  const verifiedDefaults = missingMembers.map((member) => ({
-    asset: {
-      kind: "erc20" as const,
-      chainId: wallet.account.chainId,
-      address: member.contractAddress,
-    },
-    verification: (resultByAddress.get(member.contractAddress) as Extract<
-      OfficialAssetVerificationResult,
-      { status: "verified" }
-    >).verification,
-  }));
-  dependencies.selections.initializeDefaults({
-    account: wallet.account,
-    expectedConnectionRevision: wallet.connectionRevision,
-    snapshotRevision: official.snapshot.revision,
-    verifiedDefaults,
-    now: dependencies.clock.now(),
+  const verifiedDefaults = missingMembers.flatMap((member) => {
+    const result = resultByAddress.get(member.contractAddress);
+    return result?.status === "verified"
+      ? [{
+          asset: {
+            kind: "erc20" as const,
+            chainId: wallet.account.chainId,
+            address: member.contractAddress,
+          },
+          verification: result.verification,
+        }]
+      : [];
   });
+  if (verifiedDefaults.length === missingMembers.length) {
+    dependencies.selections.initializeDefaults({
+      account: wallet.account,
+      expectedConnectionRevision: wallet.connectionRevision,
+      snapshotRevision: official.snapshot.revision,
+      verifiedDefaults,
+      now: dependencies.clock.now(),
+    });
+  }
   return resultByAddress;
 };
 
@@ -460,7 +489,7 @@ const selectedOfficialDetails = (
   account: EvmAccountIdentity,
   official: OfficialView,
 ): readonly TokenSelectionDetail[] => {
-  if (official.snapshot === null) throw new AccountAssetOperationError("source_unavailable");
+  if (official.status !== "current") throw new AccountAssetOperationError("source_unavailable");
   const selected: TokenSelectionDetail[] = [];
   for (const member of official.snapshot.members) {
     const detail = dependencies.selections.getForAccount({
@@ -486,9 +515,19 @@ export const createAccountAssetApplication = (
   const active = new Set<Promise<unknown>>();
   let state: "open" | "closing" | "closed" = "open";
   let closePromise: Promise<void> | undefined;
+  let admittedOfficialView: OfficialView | undefined;
   const abortFromParent = (): void => ownerAbort.abort();
   if (dependencies.signal.aborted) ownerAbort.abort();
   else dependencies.signal.addEventListener("abort", abortFromParent, { once: true });
+
+  const synchronizeOfficial = async (signal: AbortSignal): Promise<OfficialView> => {
+    const official = await synchronizeOfficialView(dependencies, signal);
+    admittedOfficialView = official;
+    return official;
+  };
+
+  const readAdmittedOfficialView = (revision: AccountAssetViewRevision): OfficialView =>
+    readOfficialView(dependencies, revision, admittedOfficialView);
 
   const run = <Input, Success>(
     contract: AccountAssetRequestContract<Input, Success>,
@@ -533,8 +572,8 @@ export const createAccountAssetApplication = (
           const wallet = captureWallet(dependencies);
           const firstPage = request.cursor === null;
           const official = firstPage
-            ? await synchronizeOfficialView(dependencies, signal)
-            : readOfficialView(dependencies, request.cursor!);
+            ? await synchronizeOfficial(signal)
+            : readAdmittedOfficialView(request.cursor!);
           return dependencies.chainInvocations.run(signal, async (context) => {
             const block = await dependencies.chainReads.resolveCurrentBlock(context);
             const retained = firstPage
@@ -560,7 +599,7 @@ export const createAccountAssetApplication = (
             if (chain.tokens.length !== page.entries.length) {
               throw new AccountAssetOperationError("internal_error");
             }
-            assertViewContinuity(dependencies, wallet, revision);
+            assertViewContinuity(dependencies, wallet, revision, admittedOfficialView);
             return Object.freeze({
               account: wallet.account,
               block: block.anchor,
@@ -591,7 +630,7 @@ export const createAccountAssetApplication = (
         callerSignal,
         async (_request: AccountAssetOverviewInput, signal): Promise<AccountAssetOverviewSuccess> => {
           const wallet = captureWallet(dependencies);
-          const official = await synchronizeOfficialView(dependencies, signal);
+          const official = await synchronizeOfficial(signal);
           return dependencies.chainInvocations.run(signal, async (context) => {
             const block = await dependencies.chainReads.resolveCurrentBlock(context);
             const retained = await initializeDefaults(
@@ -636,7 +675,7 @@ export const createAccountAssetApplication = (
                 ),
               ]),
             );
-            assertViewContinuity(dependencies, wallet, revision);
+            assertViewContinuity(dependencies, wallet, revision, admittedOfficialView);
             return Object.freeze({
               account: wallet.account,
               block: block.anchor,
@@ -650,8 +689,8 @@ export const createAccountAssetApplication = (
               stockTokens: official.status === "current"
                 ? {
                     status: "current" as const,
-                    candidateListDigest: official.snapshot!.candidateListDigest,
-                    members: official.snapshot!.members.map((member) => {
+                    candidateListDigest: official.snapshot.candidateListDigest,
+                    members: official.snapshot.members.map((member) => {
                       const asset = selectedByAddress.get(member.contractAddress);
                       return asset === undefined
                         ? Object.freeze({
@@ -671,7 +710,7 @@ export const createAccountAssetApplication = (
                   }
                 : {
                     status: "unavailable" as const,
-                    reason: official.failureReason ?? "source_unavailable",
+                    reason: official.failureReason,
                   },
             });
           });
@@ -701,7 +740,7 @@ export const createAccountAssetApplication = (
           if (detail === undefined || !detail.selection.included) {
             throw new AccountAssetOperationError("token_selection_not_found");
           }
-          const official = readOfficialView(dependencies, request.viewRevision);
+          const official = readAdmittedOfficialView(request.viewRevision);
           return dependencies.chainInvocations.run(signal, async (context) => {
             const block = await dependencies.chainReads.resolveCurrentBlock(context);
             const verification = await verifyVisibleMembers(
@@ -716,7 +755,12 @@ export const createAccountAssetApplication = (
               asset: detail.selection.asset,
               block,
             }, context);
-            assertViewContinuity(dependencies, wallet, request.viewRevision);
+            assertViewContinuity(
+              dependencies,
+              wallet,
+              request.viewRevision,
+              admittedOfficialView,
+            );
             return Object.freeze({
               account: wallet.account,
               block: block.anchor,
@@ -741,6 +785,7 @@ export const createAccountAssetApplication = (
     close(): Promise<void> {
       if (closePromise !== undefined) return closePromise;
       state = "closing";
+      admittedOfficialView = undefined;
       ownerAbort.abort();
       dependencies.signal.removeEventListener("abort", abortFromParent);
       closePromise = Promise.allSettled([...active]).then(() => { state = "closed"; });

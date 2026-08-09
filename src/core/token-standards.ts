@@ -226,25 +226,31 @@ export const tokenStandardObservationResultSchema = guardJsonSchema(jsonObject({
   )) {
     context.addIssue({ code: "custom", message: "An optional ERC-8056 extension lacks required support." });
   }
-  if (value.calculatedBalance !== undefined) {
+  const requiresCalculatedBalance =
+    value.account !== undefined && value.requiredErc8056 !== undefined;
+  if ((value.calculatedBalance !== undefined) !== requiresCalculatedBalance) {
+    context.addIssue({ code: "custom", message: "The account result omits its scaled-balance conclusion." });
+  } else if (value.calculatedBalance !== undefined) {
     if (value.account === undefined || value.requiredErc8056 === undefined ||
       value.calculatedBalance.multiplier !== value.requiredErc8056.currentMultiplier) {
       context.addIssue({ code: "custom", message: "The scaled balance is not bound to its account evidence." });
     }
-  } else if (
-    value.account !== undefined &&
-    value.requiredErc8056 !== undefined &&
-    standards.erc8056_balances?.status !== tokenStandardObservationStatuses.unknown &&
-    standards.erc8056_balances?.status !== tokenStandardObservationStatuses.inconsistent
-  ) {
-    context.addIssue({ code: "custom", message: "The account result omits its scaled-balance conclusion." });
   }
-  if (value.balanceOfUi !== undefined && (
-    value.calculatedBalance?.status !== "available" ||
-    value.balanceOfUi !== value.calculatedBalance.adjustedRaw ||
-    standards.erc8056_balances?.status !== tokenStandardObservationStatuses.supported
-  )) {
-    context.addIssue({ code: "custom", message: "The onchain UI balance is not cross-checked." });
+  if (value.balanceOfUi !== undefined) {
+    const balanceStatus = standards.erc8056_balances?.status;
+    const calculation = value.calculatedBalance;
+    const comparisonAvailable = calculation?.status === "available";
+    const agrees = comparisonAvailable && value.balanceOfUi === calculation.adjustedRaw;
+    const relationValid = balanceStatus === tokenStandardObservationStatuses.unknown
+      ? calculation?.status === "unavailable"
+      : balanceStatus === tokenStandardObservationStatuses.supported
+        ? agrees
+        : balanceStatus === tokenStandardObservationStatuses.inconsistent
+          ? comparisonAvailable && !agrees
+          : false;
+    if (!relationValid) {
+      context.addIssue({ code: "custom", message: "The onchain UI balance is not cross-checked." });
+    }
   }
   if (
     value.account !== undefined &&

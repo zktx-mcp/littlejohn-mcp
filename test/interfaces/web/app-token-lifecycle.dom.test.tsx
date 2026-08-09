@@ -183,10 +183,29 @@ describe("application token task lifecycle", () => {
       state: "awaiting_confirmation",
       operationId: "A".repeat(43),
     });
+    const assetWithoutMetadata = Object.freeze({
+      ...stockTokenExactResult.asset,
+      name: { status: "unavailable" as const, reason: "call_failed" as const },
+      symbol: { status: "unavailable" as const, reason: "malformed" as const },
+    });
+    const exactWithoutMetadata = Object.freeze({
+      ...stockTokenExactResult,
+      asset: assetWithoutMetadata,
+    });
+    if (stockTokenOverviewResult.stockTokens.status !== "current") {
+      throw new TypeError("Expected a current Stock Token overview fixture.");
+    }
+    const overviewWithoutMetadata = Object.freeze({
+      ...stockTokenOverviewResult,
+      stockTokens: Object.freeze({
+        ...stockTokenOverviewResult.stockTokens,
+        members: Object.freeze([{ status: "selected" as const, asset: assetWithoutMetadata }]),
+      }),
+    });
     let observable = false;
     const exactPath = accountAssetBrowserRoutes.exact(
-      stockTokenExactResult.asset.selection.asset.chainId,
-      stockTokenExactResult.asset.selection.asset.address,
+      exactWithoutMetadata.asset.selection.asset.chainId,
+      exactWithoutMetadata.asset.selection.asset.address,
     );
     const fetch = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
       const path = typeof input === "string" ? input : input.toString();
@@ -194,9 +213,9 @@ describe("application token task lifecycle", () => {
         return json(connectedWallet);
       }
       if (path === accountAssetBrowserRoutes.overview) {
-        return json(stockTokenOverviewResult);
+        return json(overviewWithoutMetadata);
       }
-      if (path === exactPath) return json(stockTokenExactResult);
+      if (path === exactPath) return json(exactWithoutMetadata);
       if (path === tokenCatalogBrowserRoutes.currentOperation) {
         return json({ operation: null });
       }
@@ -229,7 +248,7 @@ describe("application token task lifecycle", () => {
     />);
 
     fireEvent.click(await screen.findByRole("button", {
-      name: "Open Example Stock Token information",
+      name: `Open ${stockTokenExactResult.asset.selection.asset.address} information`,
     }));
     const information = await screen.findByRole("dialog", {
       name: "Token information",
@@ -237,25 +256,25 @@ describe("application token task lifecycle", () => {
     fireEvent.click(within(information).getByRole("button", { name: "Remove" }));
 
     const uncertain = await screen.findByRole("dialog", {
-      name: "Remove Example Stock Token",
+      name: `Remove ${stockTokenExactResult.asset.selection.asset.address}`,
     });
     expect(within(uncertain).getByText("Removal status unknown")).toBeTruthy();
     fireEvent.click(within(uncertain).getByRole("button", { name: "Close" }));
     await waitFor(() => {
       expect(screen.queryByRole("dialog", {
-        name: "Remove Example Stock Token",
+        name: `Remove ${stockTokenExactResult.asset.selection.asset.address}`,
       })).toBeNull();
     });
     await act(async () => {
       await new Promise((resolve) => { setTimeout(resolve, 650); });
     });
     expect(screen.queryByRole("dialog", {
-      name: "Remove Example Stock Token",
+      name: `Remove ${stockTokenExactResult.asset.selection.asset.address}`,
     })).toBeNull();
 
     observable = true;
     const review = await screen.findByRole("dialog", {
-      name: "Remove Example Stock Token",
+      name: `Remove ${stockTokenExactResult.asset.selection.asset.address}`,
     }, { timeout: 2_000 });
     expect(within(review).getByRole("button", { name: "Remove" })).toBeTruthy();
     expect(fetch.mock.calls.filter(([input]) =>

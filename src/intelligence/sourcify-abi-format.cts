@@ -1,3 +1,13 @@
-const { formatAbiItem } = require("viem/utils");
+const {
+  formatAbiItem,
+  formatAbiParams,
+  parseAbiItem,
+  parseAbiParameter,
+} = require("viem/utils");
 
-module.exports = Object.freeze({ formatAbiItem });
+module.exports = Object.freeze({
+  formatAbiItem,
+  formatAbiParams,
+  parseAbiItem,
+  parseAbiParameter,
+});

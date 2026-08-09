@@ -119,6 +119,21 @@ unavailable, and unavailable when all required conclusions are unavailable.
 Coverage derives only from these three conclusion-status partitions and never
 from capability identities or reason-specific exceptions.
 
+## ERC-8056 Balance Relation Evidence
+
+The ERC-8056 balance relation compares the independently admitted onchain
+`balanceOfUi` value and locally calculated adjusted raw amount for the same
+token, account, and canonical block. Two available equal operands establish a
+`supported` relation; two available unequal operands establish an
+`inconsistent` relation. An unavailable balance call or unavailable bounded
+local calculation makes the relation `unknown`. A reverted declared balance
+call or malformed balance response is inconsistent source evidence rather than
+an unavailable comparison.
+
+The relation outcome never removes an independently admitted operand. The
+numeric construction and meaning of the locally calculated operand remain
+owned by `docs/NUMERIC_POLICY.md`.
+
 ## Robinhood Stock Token Classification
 
 Current Robinhood Stock Token membership is owned by a complete successful

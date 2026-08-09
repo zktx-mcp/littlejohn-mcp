@@ -27,6 +27,7 @@ import {
   type CliTerminalPort,
 } from "../../src/cli.js";
 import { runtimeReleased } from "../../src/runtime/shutdown.js";
+import { accountAssetApplicationContracts } from "../../src/account-assets/index.js";
 
 const runCli = async (...input: Parameters<typeof runCliResult>): Promise<number> =>
   (await runCliResult(...input)).exitCode;
@@ -34,6 +35,7 @@ import {
   uniswapV2FactoryAddress,
   uniswapV2QuoteInputSchema,
 } from "../../src/protocols/uniswap-v2/index.js";
+import { officialAssetSourceDefinition } from "../../src/registry/index.js";
 import {
   ScriptedRpc,
   createChainHandlerHarness,
@@ -263,6 +265,93 @@ describe("read CLI", () => {
       ],
     ];
     for (const command of invalid) expect(() => parseReadCliCommand(command)).toThrow();
+  });
+
+  it("uses the account-asset human projection for an unidentified selected token", async () => {
+    const chainId = "eip155:4663";
+    const observedAt = "2026-07-21T00:00:00.000Z";
+    const collection = accountAssetApplicationContracts.collection.parsePublicSuccess(
+      { limit: 5, cursor: null },
+      {
+        account: { chainId, address },
+        block: {
+          chainId,
+          blockNumber: "42",
+          blockHash,
+          blockTimestamp: observedAt,
+        },
+        viewRevision: {
+          officialSnapshotStatus: "current",
+          officialSnapshotRevision: Buffer.alloc(16, 1).toString("base64url"),
+          selectionSetRevision: Buffer.alloc(16, 2).toString("base64url"),
+        },
+        native: {
+          kind: "native",
+          asset: { kind: "native", chainId },
+          rawBalance: "0",
+          classification: "native",
+        },
+        assets: [{
+          kind: "erc20",
+          selection: {
+            account: { chainId, address },
+            asset: { kind: "erc20", chainId, address: tokenA },
+            included: true,
+            revision: Buffer.alloc(16, 3).toString("base64url"),
+            createdAt: observedAt,
+            updatedAt: observedAt,
+          },
+          name: { status: "unavailable", reason: "call_failed" },
+          symbol: { status: "unavailable", reason: "malformed" },
+          classification: {
+            kind: "custom_erc20",
+            snapshot: {
+              sourceUri: officialAssetSourceDefinition.sourceUri,
+              sourceObservedAt: observedAt,
+              rawResponseDigest: blockHash,
+              memberSetDigest: blockHash,
+              revision: Buffer.alloc(16, 1).toString("base64url"),
+            },
+          },
+          amount: {
+            raw: "0",
+            decimals: "0",
+            formattedRaw: "0",
+            uiAdjusted: null,
+            formattedUiAdjusted: null,
+          },
+          requiredStandards: {
+            asset: { kind: "erc20", chainId, address: tokenA },
+            block: {
+              chainId,
+              blockNumber: "42",
+              blockHash,
+              blockTimestamp: observedAt,
+            },
+            erc165: { standardId: "erc165", status: "not_supported" },
+            erc8056: { standardId: "erc8056", status: "unknown" },
+            pendingMultiplier: {
+              standardId: "erc8056_pending_multiplier",
+              status: "unknown",
+            },
+          },
+        }],
+        nextCursor: null,
+      },
+    );
+    const output = outputPort();
+    expect(await runReadCliCommand(
+      new FakeRuntime(Object.freeze({
+        status: 200,
+        body: captureCanonicalJson(collection),
+      })),
+      parseReadCliCommand(["read", "assets"]),
+      output,
+    )).toBe(0);
+    const text = output.output.join("");
+    expect(text).toContain(`Token: ${tokenA}`);
+    expect(text).toContain("Classification: Custom ERC-20");
+    expect(text).not.toContain("Token: Stock Token");
   });
 
   it("dispatches a canonical read with the caller signal and emits the unchanged JSON result", async () => {

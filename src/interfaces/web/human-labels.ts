@@ -10,7 +10,6 @@ import {
   type ReferencePriceSuccess,
 } from "../../core/browser.js";
 import {
-  classificationLabel,
   officialSnapshotStatusText,
   tokenOptionalTextUnavailableReasonLabel,
   type AccountAssetExactSuccess,
@@ -50,7 +49,6 @@ type ContractControlStatus =
   | ContractAnalysis["controls"]["paused"]["status"]
   | ContractAnalysis["controls"]["defaultAdmins"]["status"];
 export {
-  classificationLabel,
   officialSnapshotStatusText,
   tokenOptionalTextUnavailableReasonLabel,
 };

@@ -95,12 +95,15 @@ export const StockTokenInformationDialog = ({
           <h2 id="stock-token-facts-heading">Token facts</h2>
           <dl className="analysis-control-grid">
             <dt>Name</dt>
-            <dd>{row?.name ?? "Unavailable"}</dd>
+            <dd>{row?.identity.name ?? "Unavailable"}</dd>
             <dt>Symbol</dt>
-            <dd>{row?.symbol ?? "Unavailable"}</dd>
+            <dd>{row?.identity.symbol ?? "Unavailable"}</dd>
             <dt>Decimals</dt>
             <dd>{row?.quantity.decimals ?? "Unavailable"}</dd>
           </dl>
+          {row?.identity.warnings.map((warning) => (
+            <p className="limitation" role="status" key={warning}>{warning}</p>
+          ))}
         </section>
         <section
           className="analysis-target"

@@ -6,11 +6,7 @@ import {
   accountAssetViewRevisionSchema,
   createAccountAssetAmount,
 } from "../../src/account-assets/contracts.js";
-import type { AccountAssetRowView } from "../../src/account-assets/view.js";
 import {
-  assetIdentityWarnings,
-  classificationLabel,
-  classificationUnavailableReasonLabel,
   officialSnapshotFresh,
   officialSnapshotStatusText,
   projectAccountAssetCollectionView,
@@ -22,11 +18,11 @@ import {
   parseUtcTimestamp,
   requiredErc8056ObservationSchema,
 } from "../../src/core/index.js";
-import { stockFactoryAdmissionManifest } from "../../src/registry/browser.js";
 import {
   tokenSelectionRevisionSchema,
   tokenSelectionSetRevisionSchema,
 } from "../../src/token-catalog/index.js";
+import { officialAssetSourceDefinition } from "../../src/registry/browser.js";
 
 const chainId = parseEvmChainId("eip155:4663");
 const at = parseUtcTimestamp("2026-07-21T00:00:00.000Z");
@@ -44,52 +40,16 @@ const block = chainAnchorSchema.parse({
   blockHash: hash,
   blockTimestamp: at,
 });
-const snapshot = {
-  sourceUri: "https://api.robinhood.com/rhj/assets",
-  sourceObservedAt: at,
-  rawResponseDigest: hash,
-  memberSetDigest: hash,
-  revision,
-};
-
-const stockToken = accountAssetClassificationSchema.parse({
-  kind: "robinhood_stock_token",
-  snapshot,
-  member: { assetUid: hash, contractAddress: address, sourceName: "Apple Inc.", sourceSymbol: "AAPL" },
-  verification: {
-    assetUid: hash,
-    contractAddress: address,
-    block,
-    proxyAddress: stockFactoryAdmissionManifest.proxyAddress,
-    proxyCodeHash: stockFactoryAdmissionManifest.proxyCodeHash,
-    implementationAddress: stockFactoryAdmissionManifest.implementationAddress,
-    implementationCodeHash: stockFactoryAdmissionManifest.implementationCodeHash,
-    tokenCodeHash: hash,
-  },
-});
-const customErc20 = accountAssetClassificationSchema.parse({ kind: "custom_erc20", snapshot });
 const unavailable = accountAssetClassificationSchema.parse({
   kind: "classification_unavailable",
-  storedRevision: null,
-  snapshot: null,
-  member: null,
-  reason: "token_code_missing",
+  cause: {
+    kind: "official_snapshot_unavailable",
+    storedRevision: null,
+    reason: "source_unavailable",
+  },
 });
 
 describe("account asset browser view", () => {
-  it("labels each classification kind from one source", () => {
-    expect(classificationLabel(stockToken)).toBe("Robinhood Stock Token");
-    expect(classificationLabel(customErc20)).toBe("Custom ERC-20");
-    expect(classificationLabel(unavailable)).toBe("Classification unavailable");
-  });
-
-  it("maps an unavailable classification reason to one human explanation", () => {
-    expect(classificationUnavailableReasonLabel("token_code_missing"))
-      .toContain("No contract code");
-    expect(classificationUnavailableReasonLabel("source_unavailable"))
-      .toContain("official asset source was unavailable");
-  });
-
   it("derives official-snapshot freshness from the view revision", () => {
     const current = accountAssetViewRevisionSchema.parse({
       officialSnapshotStatus: "current",
@@ -99,6 +59,7 @@ describe("account asset browser view", () => {
     const stale = accountAssetViewRevisionSchema.parse({
       officialSnapshotStatus: "unavailable",
       officialSnapshotRevision: null,
+      officialSnapshotUnavailableReason: "source_unavailable",
       selectionSetRevision: null,
     });
     expect(officialSnapshotFresh(current)).toBe(true);
@@ -107,15 +68,7 @@ describe("account asset browser view", () => {
     expect(officialSnapshotStatusText(stale)).toBe("Official data unavailable");
   });
 
-  it("warns when an unsafe identity string is withheld", () => {
-    const row = { nameIssue: "unsafe_text", symbolIssue: null } as AccountAssetRowView;
-    const warnings = assetIdentityWarnings(row);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain("unsafe text");
-    expect(assetIdentityWarnings({ nameIssue: null, symbolIssue: null } as AccountAssetRowView)).toHaveLength(0);
-  });
-
-  it("projects exact admitted decimals without reconstructing the amount", () => {
+  it("projects one admitted human identity, classification, and amount", () => {
     const asset = { kind: "erc20" as const, chainId, address };
     const requiredStandards = requiredErc8056ObservationSchema.parse({
       asset,
@@ -132,6 +85,7 @@ describe("account asset browser view", () => {
         viewRevision: {
           officialSnapshotStatus: "unavailable",
           officialSnapshotRevision: null,
+          officialSnapshotUnavailableReason: "source_unavailable",
           selectionSetRevision: setRevision,
         },
         native: {
@@ -150,8 +104,8 @@ describe("account asset browser view", () => {
             createdAt: at,
             updatedAt: at,
           },
-          name: { status: "available", value: "Example" },
-          symbol: { status: "available", value: "EXT" },
+          name: { status: "unavailable", reason: "unsafe_text" },
+          symbol: { status: "unavailable", reason: "call_failed" },
           classification: unavailable,
           amount: createAccountAssetAmount({
             raw: "1234500",
@@ -166,6 +120,64 @@ describe("account asset browser view", () => {
 
     const view = projectAccountAssetCollectionView(result);
     expect(view.native.decimals).toBeNull();
+    expect(view.assets[0]?.identity).toEqual({
+      address,
+      label: address,
+      name: null,
+      symbol: null,
+      warnings: [
+        "Token name contained unsafe text and was withheld.",
+        "Token symbol read call failed.",
+      ],
+    });
+    expect(view.assets[0]?.classification).toEqual({
+      kind: "official_snapshot_unavailable",
+      label: "Classification unavailable",
+      limitation: "The current official Stock Token list was unavailable.",
+    });
+    const currentRevision = Buffer.alloc(16, 4).toString("base64url");
+    const factoryUnavailableResult = accountAssetApplicationContracts.collection.parsePublicSuccess(
+      { limit: 5, cursor: null },
+      {
+        ...result,
+        viewRevision: {
+          officialSnapshotStatus: "current",
+          officialSnapshotRevision: currentRevision,
+          selectionSetRevision: result.viewRevision.selectionSetRevision,
+        },
+        assets: [{
+          ...result.assets[0]!,
+          classification: {
+            kind: "classification_unavailable",
+            cause: {
+              kind: "stock_factory_verification_unavailable",
+              snapshot: {
+                sourceUri: officialAssetSourceDefinition.sourceUri,
+                sourceObservedAt: at,
+                rawResponseDigest: hash,
+                memberSetDigest: hash,
+                revision: currentRevision,
+              },
+              member: {
+                assetUid: hash,
+                contractAddress: address,
+                sourceName: null,
+                sourceSymbol: null,
+              },
+              reason: "source_unavailable",
+            },
+          },
+        }],
+      },
+    );
+    const factoryView = projectAccountAssetCollectionView(factoryUnavailableResult);
+    expect(factoryView.assets[0]?.classification).toEqual({
+      kind: "stock_factory_verification_unavailable",
+      label: "Classification unavailable",
+      limitation: "Chain evidence required for StockFactory verification was unavailable.",
+    });
+    expect(factoryView.assets[0]?.classification.limitation)
+      .not.toBe(view.assets[0]?.classification.limitation);
     expect(view.assets[0]?.quantity).toMatchObject({
       raw: "1234500",
       decimals: "6",

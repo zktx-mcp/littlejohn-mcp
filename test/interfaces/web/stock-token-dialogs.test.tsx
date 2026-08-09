@@ -5,11 +5,14 @@ import { describe, expect, it, vi } from "vitest";
 import { StockTokenAddDialog } from "../../../src/interfaces/web/stock-token-add-dialog.js";
 import { StockTokenInformationDialog } from "../../../src/interfaces/web/stock-token-information-dialog.js";
 import { StockTokenRemoveDialog } from "../../../src/interfaces/web/stock-token-remove-dialog.js";
+import { accountAssetApplicationContracts } from "../../../src/account-assets/browser.js";
 import { presentStockTokenOperationTask } from "../../../src/interfaces/web/stock-token-task-presentation.js";
 import {
   stockTokenCandidate as candidate,
   stockTokenExactResult as exactResult,
+  stockTokenAsset,
   stockTokenSelection as selection,
+  stockTokenViewRevision,
 } from "./stock-token-fixtures.js";
 import { createTokenOperation } from "../../token-catalog/harness.js";
 const callbacks = Object.freeze({
@@ -90,6 +93,33 @@ describe("Stock Token dialogs", () => {
     expect(markup).toContain(">Close<");
     expect(markup).toContain(">Remove<");
     expect(markup).not.toContain("Remove from Assets");
+  });
+
+  it("presents the admitted token metadata limitations", () => {
+    for (const [reason, expected] of [
+      ["call_failed", "Token name read call failed."],
+      ["malformed", "Token name returned malformed data."],
+      ["unsafe_text", "Token name contained unsafe text and was withheld."],
+    ] as const) {
+      const limited = accountAssetApplicationContracts.exact.parsePublicSuccess(
+        { asset: stockTokenAsset, viewRevision: stockTokenViewRevision },
+        {
+          ...exactResult,
+          asset: {
+            ...exactResult.asset,
+            name: { status: "unavailable", reason },
+          },
+        },
+      );
+      const markup = renderToStaticMarkup(createElement(StockTokenInformationDialog, {
+        presentation: { status: "available", result: limited },
+        onClose: vi.fn(),
+        onRemove: vi.fn(),
+        onRetry: vi.fn(),
+        recoverSession: () => false,
+      }));
+      expect(markup).toContain(expected);
+    }
   });
 
   it("keeps removal in a dedicated token-bound dialog", () => {

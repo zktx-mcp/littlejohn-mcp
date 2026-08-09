@@ -89,5 +89,5 @@ export const stockTokenAmount = (
   row: AccountAssetRowView,
 ): AssetAmountPresentation => presentAssetAmount(row.quantity, {
   kind: "contract",
-  symbol: row.symbol,
+  symbol: row.identity.symbol,
 });

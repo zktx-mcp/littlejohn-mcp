@@ -352,9 +352,12 @@ const assetsHuman = (result: AccountAssetCollectionSuccess): string => {
     view.block === null ? "Block: unavailable" : `Block: ${view.block.blockNumber}`,
     `Native: ${quantity(view.native)}`,
     ...view.assets.map((entry) => [
-      `Token: ${entry.symbol ?? entry.name ?? entry.selection.asset.address}`,
-      `  Address: ${entry.selection.asset.address}`,
-      `  Classification: ${entry.classification.kind}`,
+      `Token: ${entry.identity.label}`,
+      `  Address: ${entry.identity.address}`,
+      `  Classification: ${entry.classification.label}`,
+      ...(entry.classification.limitation === null
+        ? []
+        : [`  Limitation: ${entry.classification.limitation}`]),
       `  Balance: ${quantity(entry.quantity)}`,
     ].join("\n")),
     ...(view.nextCursor === null ? [] : [

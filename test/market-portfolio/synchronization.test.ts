@@ -345,8 +345,11 @@ describe("reference feed synchronization ownership", () => {
     await expect(synchronize(lifecycle, owner, {
       feedId: "eth_usd", requestedStartUnixSeconds: 1n,
       latest: observation(5n),
-    })).rejects.toSatisfy((error: unknown) =>
-      getReferenceMarketOperationFailure(error)?.error.code === "source_unavailable");
+    })).resolves.toMatchObject({
+      report: {
+        remainingContinuation: true,
+      },
+    });
     expect(store.readFeed("eth_usd")).toMatchObject({
       backfillNextRoundId,
       backfillStatus: "malformed",

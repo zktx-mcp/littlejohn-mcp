@@ -140,6 +140,9 @@ const selectionMatchesAccount = (
 const revisionKey = (revision: AccountAssetViewRevision): string => [
   revision.officialSnapshotStatus,
   revision.officialSnapshotRevision ?? "",
+  revision.officialSnapshotStatus === "unavailable"
+    ? revision.officialSnapshotUnavailableReason
+    : "",
   revision.selectionSetRevision ?? "",
 ].join(":");
 

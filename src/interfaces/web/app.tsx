@@ -898,7 +898,7 @@ export const App = ({
               );
               const subject = Object.freeze({
                 selection: informationPresentation.result.asset.selection,
-                name: row.name ?? row.symbol ?? "Stock Token",
+                name: row.identity.label,
               });
               if (!stockTokenProcess.openRemove(subject)) return;
               accountAssets.closeExact();

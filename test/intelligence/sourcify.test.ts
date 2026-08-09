@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  contractDeclaredFunctionUtf16CodeUnitLimit,
   createCanonicalClock,
   parseEvmAddress,
   parseEvmChainId,
@@ -27,6 +28,18 @@ const jsonResponse = (value: unknown, status = 200): Response =>
 const identity = {
   chainId: "4663",
   address,
+};
+const inspectAbi = async (abi: readonly unknown[]) => {
+  const adapter = createSourcifyContractSourceVerification({
+    clock: clock(),
+    fetch: async () => jsonResponse({
+      ...identity,
+      runtimeMatch: "exact_match",
+      runtimeBytecode: { onchainBytecode: runtimeBytecode },
+      abi,
+    }),
+  });
+  return adapter.port.inspect(request());
 };
 
 afterEach(() => {
@@ -106,6 +119,77 @@ describe("Sourcify source verification adapter", () => {
         runtimeBytecode: { onchainBytecode: runtimeBytecode },
         abi: [{ type: "function", name: 1 }],
       }),
+      jsonResponse({
+        ...identity,
+        runtimeMatch: "exact_match",
+        runtimeBytecode: { onchainBytecode: runtimeBytecode },
+        abi: [{ type: "constructor", inputs: [], stateMutability: "view" }],
+      }),
+      jsonResponse({
+        ...identity,
+        runtimeMatch: "exact_match",
+        runtimeBytecode: { onchainBytecode: runtimeBytecode },
+        abi: [{
+          type: "function",
+          name: "f",
+          inputs: [{ type: "tuple", components: "not-an-array" }],
+          outputs: [],
+          stateMutability: "view",
+        }],
+      }),
+      jsonResponse({
+        ...identity,
+        runtimeMatch: "exact_match",
+        runtimeBytecode: { onchainBytecode: runtimeBytecode },
+        abi: [{
+          type: "function",
+          name: "f",
+          inputs: [],
+          outputs: [{ type: "bytes33" }],
+          stateMutability: "view",
+        }],
+      }),
+      jsonResponse({
+        ...identity,
+        runtimeMatch: "exact_match",
+        runtimeBytecode: { onchainBytecode: runtimeBytecode },
+        abi: [{
+          type: "event",
+          name: "Bad",
+          anonymous: false,
+          inputs: [{ type: "uint257", indexed: false }],
+        }],
+      }),
+      jsonResponse({
+        ...identity,
+        runtimeMatch: "exact_match",
+        runtimeBytecode: { onchainBytecode: runtimeBytecode },
+        abi: [{ type: "receive", stateMutability: "nonpayable" }],
+      }),
+      jsonResponse({
+        ...identity,
+        runtimeMatch: "exact_match",
+        runtimeBytecode: { onchainBytecode: runtimeBytecode },
+        abi: [{
+          type: "function",
+          name: "f",
+          inputs: [{ type: "uint257" }],
+          outputs: [],
+          stateMutability: "view",
+        }],
+      }),
+      jsonResponse({
+        ...identity,
+        runtimeMatch: "exact_match",
+        runtimeBytecode: { onchainBytecode: runtimeBytecode },
+        abi: [{
+          type: "function",
+          name: "\ud800",
+          inputs: [],
+          outputs: [],
+          stateMutability: "view",
+        }],
+      }),
       jsonResponse({ ...identity, runtimeMatch: null }, 404),
       jsonResponse({ error: "temporarily unavailable" }, 503),
       new Response("{", { headers: { "content-type": "application/json" } }),
@@ -114,7 +198,14 @@ describe("Sourcify source verification adapter", () => {
       clock: clock(),
       fetch: async () => responses.shift()!,
     });
-    for (const expected of [
+    const expectedStatuses = [
+      "inconsistent",
+      "inconsistent",
+      "inconsistent",
+      "inconsistent",
+      "inconsistent",
+      "inconsistent",
+      "inconsistent",
       "inconsistent",
       "inconsistent",
       "inconsistent",
@@ -123,8 +214,10 @@ describe("Sourcify source verification adapter", () => {
       "inconsistent",
       "unavailable",
       "inconsistent",
-    ]) {
-      await expect(adapter.port.inspect(request())).resolves.toMatchObject({ status: expected });
+    ];
+    for (const [index, expected] of expectedStatuses.entries()) {
+      const result = await adapter.port.inspect(request());
+      expect(result, `response case ${index}`).toMatchObject({ status: expected });
     }
   });
 
@@ -177,6 +270,290 @@ describe("Sourcify source verification adapter", () => {
     );
   });
 
+  it("normalizes complete historical ABI facts before control matching", async () => {
+    const result = await inspectAbi([
+      {
+        type: "function",
+        name: "owner",
+        inputs: [],
+        outputs: [{ type: "address" }],
+        constant: true,
+        payable: false,
+        gas: 2_300,
+      },
+      {
+        type: "function",
+        name: "transferOwnership",
+        inputs: [{ type: "address" }],
+        outputs: [],
+        constant: false,
+        payable: false,
+      },
+      {
+        type: "event",
+        name: "OwnershipTransferred",
+        inputs: [
+          { type: "address", indexed: true },
+          { type: "address", indexed: true },
+        ],
+      },
+      {
+        type: "function",
+        name: "deposit",
+        inputs: [],
+        outputs: [],
+        constant: false,
+        payable: true,
+      },
+      { type: "constructor", inputs: [], payable: false },
+      { type: "fallback", payable: true },
+    ]);
+
+    expect(result).toMatchObject({
+      status: "exact_match",
+      exactInterface: {
+        declaredFunctions: ["deposit()", "owner()", "transferOwnership(address)"],
+        owner: "erc173",
+      },
+    });
+  });
+
+  it.each([
+    {
+      name: "an incomplete historical function pair",
+      entry: { type: "function", name: "f", inputs: [], outputs: [], constant: true },
+    },
+    {
+      name: "a contradictory historical function pair",
+      entry: {
+        type: "function",
+        name: "f",
+        inputs: [],
+        outputs: [],
+        constant: true,
+        payable: true,
+      },
+    },
+    {
+      name: "explicit and historical function disagreement",
+      entry: {
+        type: "function",
+        name: "f",
+        inputs: [],
+        outputs: [],
+        stateMutability: "view",
+        constant: false,
+      },
+    },
+    {
+      name: "invalid historical gas",
+      entry: {
+        type: "function",
+        name: "f",
+        inputs: [],
+        outputs: [],
+        stateMutability: "view",
+        gas: -1,
+      },
+    },
+    {
+      name: "a historical fallback without its payable fact",
+      entry: { type: "fallback" },
+    },
+    {
+      name: "explicit and historical fallback disagreement",
+      entry: { type: "fallback", stateMutability: "payable", payable: false },
+    },
+  ])("rejects $name", async ({ entry }) => {
+    await expect(inspectAbi([entry])).resolves.toMatchObject({ status: "inconsistent" });
+  });
+
+  it.each([
+    {
+      name: "function anonymous",
+      entry: {
+        type: "function",
+        name: "f",
+        inputs: [],
+        outputs: [],
+        stateMutability: "view",
+        anonymous: false,
+      },
+    },
+    {
+      name: "function-level parameter indexing",
+      entry: {
+        type: "function",
+        name: "f",
+        inputs: [],
+        outputs: [],
+        stateMutability: "view",
+        indexed: false,
+      },
+    },
+    {
+      name: "event outputs",
+      entry: { type: "event", name: "E", inputs: [], anonymous: false, outputs: [] },
+    },
+    {
+      name: "error outputs",
+      entry: { type: "error", name: "E", inputs: [], outputs: [] },
+    },
+    {
+      name: "constructor outputs",
+      entry: { type: "constructor", inputs: [], outputs: [], stateMutability: "nonpayable" },
+    },
+    {
+      name: "fallback inputs",
+      entry: { type: "fallback", inputs: [], stateMutability: "nonpayable" },
+    },
+    {
+      name: "receive inputs",
+      entry: { type: "receive", inputs: [], stateMutability: "payable" },
+    },
+    {
+      name: "non-event parameter indexing",
+      entry: {
+        type: "function",
+        name: "f",
+        inputs: [{ type: "address", indexed: false }],
+        outputs: [],
+        stateMutability: "view",
+      },
+    },
+    {
+      name: "item mutability on a parameter",
+      entry: {
+        type: "function",
+        name: "f",
+        inputs: [{ type: "address", stateMutability: "view" }],
+        outputs: [],
+        stateMutability: "view",
+      },
+    },
+    {
+      name: "nested event parameter indexing",
+      entry: {
+        type: "event",
+        name: "E",
+        inputs: [{
+          type: "tuple",
+          components: [{ type: "address", indexed: false }],
+          indexed: false,
+        }],
+        anonymous: false,
+      },
+    },
+  ])("rejects the cross-kind semantic field in $name", async ({ entry }) => {
+    await expect(inspectAbi([entry])).resolves.toMatchObject({ status: "inconsistent" });
+  });
+
+  it("admits constructor, fallback, and receive entries without treating them as functions", async () => {
+    const adapter = createSourcifyContractSourceVerification({
+      clock: clock(),
+      fetch: async () => jsonResponse({
+        ...identity,
+        runtimeMatch: "exact_match",
+        runtimeBytecode: { onchainBytecode: runtimeBytecode },
+        abi: [
+          {
+            type: "constructor",
+            inputs: [{ name: "initialOwner", type: "address" }],
+            stateMutability: "nonpayable",
+          },
+          { type: "fallback", stateMutability: "payable" },
+          { type: "receive", stateMutability: "payable" },
+          {
+            type: "error",
+            name: "Unauthorized",
+            inputs: [{ name: "account", type: "address" }],
+          },
+          {
+            type: "event",
+            name: "Observed",
+            inputs: [{ name: "account", type: "address" }],
+          },
+          {
+            type: "function",
+            name: "owner",
+            inputs: [],
+            outputs: [{ type: "address" }],
+            stateMutability: "view",
+          },
+        ],
+      }),
+    });
+
+    await expect(adapter.port.inspect(request())).resolves.toMatchObject({
+      status: "exact_match",
+      exactInterface: {
+        declaredFunctions: ["owner()"],
+        owner: "not_declared",
+        paused: "not_declared",
+        defaultAdmins: "not_declared",
+      },
+    });
+  });
+
+  it("rejects malformed named ABI items without dropping event-only structure", async () => {
+    const malformedAbiItems = [
+      [{ type: "function", name: "", inputs: [], outputs: [], stateMutability: "view" }],
+      [{ type: "event", name: "bad name", anonymous: false, inputs: [] }],
+      [{ type: "event", name: "", anonymous: false, inputs: [] }],
+      [{ type: "error", name: "bad name", inputs: [] }],
+      [{ type: "error", name: "", inputs: [] }],
+      [{
+        type: "event",
+        name: "Transfer",
+        anonymous: false,
+        inputs: [{ name: "from", type: "address", indexed: "yes" }],
+      }],
+      [{
+        type: "event",
+        name: "Transfer",
+        anonymous: "no",
+        inputs: [{ name: "from", type: "address", indexed: true }],
+      }],
+    ];
+
+    for (const abi of malformedAbiItems) {
+      const adapter = createSourcifyContractSourceVerification({
+        clock: clock(),
+        fetch: async () => jsonResponse({
+          ...identity,
+          runtimeMatch: "exact_match",
+          runtimeBytecode: { onchainBytecode: runtimeBytecode },
+          abi,
+        }),
+      });
+      await expect(adapter.port.inspect(request())).resolves.toMatchObject({
+        status: "inconsistent",
+      });
+    }
+  });
+
+  it("reports a valid ABI outside the local declared-function result limit as unavailable", async () => {
+    const adapter = createSourcifyContractSourceVerification({
+      clock: clock(),
+      fetch: async () => jsonResponse({
+        ...identity,
+        runtimeMatch: "exact_match",
+        runtimeBytecode: { onchainBytecode: runtimeBytecode },
+        abi: [{
+          type: "function",
+          name: "f".repeat(contractDeclaredFunctionUtf16CodeUnitLimit),
+          inputs: [],
+          outputs: [],
+          stateMutability: "view",
+        }],
+      }),
+    });
+
+    await expect(adapter.port.inspect(request())).resolves.toMatchObject({
+      status: "unavailable",
+    });
+  });
+
   it("does not treat an anonymous OwnershipTransferred event as ERC-173", async () => {
     const abi = [
       {
@@ -213,6 +590,38 @@ describe("Sourcify source verification adapter", () => {
       }),
     });
     await expect(adapter.port.inspect(request())).resolves.toMatchObject({
+      status: "exact_match",
+      exactInterface: { owner: "not_declared" },
+    });
+  });
+
+  it("does not treat omitted event indexing as an indexed ERC-173 parameter", async () => {
+    const result = await inspectAbi([
+      {
+        type: "function",
+        name: "owner",
+        inputs: [],
+        outputs: [{ type: "address" }],
+        stateMutability: "view",
+      },
+      {
+        type: "function",
+        name: "transferOwnership",
+        inputs: [{ type: "address" }],
+        outputs: [],
+        stateMutability: "nonpayable",
+      },
+      {
+        type: "event",
+        name: "OwnershipTransferred",
+        inputs: [
+          { type: "address" },
+          { type: "address", indexed: true },
+        ],
+      },
+    ]);
+
+    expect(result).toMatchObject({
       status: "exact_match",
       exactInterface: { owner: "not_declared" },
     });

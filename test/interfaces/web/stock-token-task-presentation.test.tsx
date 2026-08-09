@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  accountAssetApplicationContracts,
+} from "../../../src/account-assets/browser.js";
+import {
   evmChainIdSchema,
   parseEvmAddressInput,
 } from "../../../src/core/browser.js";
@@ -35,6 +38,16 @@ const operationTask = (
   actionIntent,
   delivery: undefined,
 });
+
+const exactResultWithClassification = (
+  classification: typeof exactResult.asset.classification,
+) => accountAssetApplicationContracts.exact.parsePublicSuccess(
+  { asset: exactResult.asset.selection.asset, viewRevision: exactResult.viewRevision },
+  {
+    ...exactResult,
+    asset: { ...exactResult.asset, classification },
+  },
+);
 
 const withOfficialEvidence = (
   operation: TokenCatalogOperation,
@@ -300,6 +313,47 @@ describe("Stock Token task presentation ownership", () => {
     })).toMatchObject({
       claimsOperation: true,
       presentation: { status: "closing" },
+    });
+  });
+
+  it("distinguishes list absence from current-member verification unavailability", () => {
+    const verified = exactResult.asset.classification;
+    if (verified.kind !== "robinhood_stock_token") {
+      throw new TypeError("Expected a verified Stock Token fixture.");
+    }
+    const custom = exactResultWithClassification({
+      kind: "custom_erc20",
+      snapshot: verified.snapshot,
+    });
+    const verificationUnavailable = exactResultWithClassification({
+      kind: "classification_unavailable",
+      cause: {
+        kind: "stock_factory_verification_unavailable",
+        snapshot: verified.snapshot,
+        member: verified.member,
+        reason: "source_unavailable",
+      },
+    });
+
+    expect(presentStockTokenInformationTask({
+      status: "available",
+      selection,
+      result: custom,
+    })).toMatchObject({
+      presentation: {
+        status: "classification_mismatch",
+        message: "This token is not available in the current Stock Token list.",
+      },
+    });
+    expect(presentStockTokenInformationTask({
+      status: "available",
+      selection,
+      result: verificationUnavailable,
+    })).toMatchObject({
+      presentation: {
+        status: "classification_mismatch",
+        message: "Chain evidence required for StockFactory verification was unavailable.",
+      },
     });
   });
 

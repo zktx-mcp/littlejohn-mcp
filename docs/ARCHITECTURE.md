@@ -656,6 +656,12 @@ isolated data directory to be moved aside or replaced with a new empty
 directory; no runtime migration, selective restoration, compatibility reader,
 or schema repair exists.
 
+Every product write checks the retained main-file lease before entering its
+SQLite transaction and again before commit. Successful commit is the final
+reported write outcome; a later operation rechecks the lease as its own
+precondition. Read operations continue to check the lease before and after
+their non-durable observation.
+
 The persisted owner projection contains only a fixed singleton identity plus
 the profile, owner instance, configuration identifier, process ID, owner
 revision, and acquisition time. The application record omits the singleton and
@@ -709,17 +715,37 @@ read. On a first-page read it atomically captures the active wallet and attempts
 one bounded official-source synchronization before entering one chain
 invocation. That invocation resolves one opaque canonical block, initializes
 the exact ordered defaults once for that account after verifying them at that
-block, and reads one bounded included-selection page at the same block. Later
-pages preserve the admitted official-snapshot and selection-set revisions while
-resolving a fresh block in their own invocation. Each visible official member
-is verified against StockFactory before it is classified as a Robinhood Stock
-Token; a source member without that proof is not displayed as official. The
-application reads ERC-20 metadata, raw balance, required ERC-8056 observations,
+block, and reads one bounded included-selection page at the same block. Default
+initialization is one optional atomic mutation: if any missing default cannot be
+verified, no partial initialization is committed, the read continues with the
+existing selections and native balance, and a later first-page read may retry.
+Later pages preserve the admitted official-snapshot status, revision,
+unavailability reason, and selection-set revision while resolving a fresh block
+in their own invocation. The view revision and cursor make the unavailable
+reason a required member of only the unavailable state, so an exact or later-page
+read cannot reconstruct a different source outcome. The account-assets owner
+retains only its current synchronization observation and admits a continuation
+or exact request only when its status, revision, and unavailable reason match
+that owner state. Every list, overview, and exact result repeats that comparison
+at its public-success boundary. A later synchronization with the same canonical
+correlation value does not invalidate an in-flight read; a different value does.
+Owner close or process restart removes the correlation and requires a fresh
+overview or first page. Each visible official
+member is verified against StockFactory before it is classified as a Robinhood
+Stock Token. An unavailable official snapshot retains only its admitted source
+outcome and stored revision, while a current member whose StockFactory
+verification is unavailable retains that member and verification outcome as a
+different classification cause. The account-assets view derives one human
+identity and classification presentation from that admitted result; Browser and
+CLI consumers use that projection without reconstructing a name, membership, or
+failure explanation. The application reads ERC-20 metadata, raw balance,
+required ERC-8056 observations,
 and the native balance through the exact block authority, then rereads the
 selection-set revision and recaptures the wallet. It accepts the result only
 when the account, connection revision, stable session-source identity, official
-snapshot revision, and selection-set revision remain unchanged. SQLite stores
-no balance page, token standard observation, or read error. The separate
+snapshot status, revision, unavailable reason when applicable, and selection-set
+revision still equal the values consumed by that read. SQLite stores no balance
+page, token standard observation, or read error. The separate
 browser overview initializes the same defaults and scans the complete admitted
 official snapshot. It partitions every member in snapshot order, reads selected
 members and native balance at one block, carries the snapshot's candidate-list
@@ -747,6 +773,11 @@ continuation, admitted identities, and cutoff. Synchronization derives the
 request report from the committed snapshot through the same planner. Remaining
 continuation, remaining gap, phase-boundary, malformed-round, and retention
 facts become explicit history limitations rather than completeness claims.
+One history segment publishes its observations and traversal position together.
+A retryable source or transport stop retains completed segments and returns the
+bounded committed snapshot with its remaining work explicit; cancellation,
+application closure, inconsistent source evidence, and internal failure remain
+failures.
 Candles and empty-bucket starts partition only the represented UTC buckets and
 never prove that the source had no other updates. Stored read evidence retains
 its original block and read time instead of being rewritten under a later

@@ -168,15 +168,20 @@ export const AccountAssetsPage = ({
                   {stockTokens.map((row) => (
                     <article className="asset-row" key={row.selection.asset.address}>
                       <div className="asset-identity">
-                        <p className="type-label">Stock Token</p>
-                        <h3>{row.name ?? row.symbol ?? "Stock Token"}</h3>
+                        <p className="type-label">{row.classification.label}</p>
+                        <h3>{row.identity.label}</h3>
+                        {row.classification.limitation === null ? null : (
+                          <p className="limitation" role="status">
+                            {row.classification.limitation}
+                          </p>
+                        )}
                       </div>
                       <AssetAmount amount={stockTokenAmount(row)} />
                       <div className="asset-row-actions">
                         <button
                           type="button"
                           className="icon-button secondary"
-                          aria-label={`Open ${row.name ?? row.symbol ?? "Stock Token"} information`}
+                          aria-label={`Open ${row.identity.label} information`}
                           title="Token information"
                           disabled={assetActionsDisabled}
                           onClick={(event) => {
