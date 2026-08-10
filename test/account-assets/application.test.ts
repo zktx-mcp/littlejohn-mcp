@@ -23,6 +23,7 @@ import {
   type ChainInvocationContext,
   type OfficialAssetChainReadPort,
 } from "../../src/chain/index.js";
+import { ChainOperationError } from "../../src/chain/errors.js";
 import {
   assertCommittedOfficialAssetSnapshot,
   committedOfficialAssetSnapshotSchema,
@@ -32,6 +33,7 @@ import {
   stockFactoryAdmissionManifest,
   type CommittedOfficialAssetSnapshot,
   type OfficialAssetSourceMember,
+  type StockFactoryVerificationResult,
 } from "../../src/registry/index.js";
 import {
   officialAssetCandidateListDigest,
@@ -181,14 +183,26 @@ const fullObservation = (
   ],
 });
 
+type OfficialSourceFailureCode =
+  | "official_asset_response_too_large"
+  | "official_asset_response_unavailable"
+  | "rate_limited"
+  | "source_inconsistent"
+  | "source_unavailable";
+
 const fixture = (options: Readonly<{
   sourceAvailable?: boolean;
-  sourceFailureCode?: "source_inconsistent" | "source_unavailable";
+  sourceFailureCode?: OfficialSourceFailureCode;
   defaultsInitialized?: boolean;
   defaultVerificationUnavailable?: boolean;
+  verificationFailureCode?: "runtime_busy" | "runtime_state_unavailable";
   selectionEntries?: readonly TokenSelectionDetail[];
   blocks?: readonly [typeof block, ...(typeof block)[]];
   afterVerification?: (signal: AbortSignal) => void | Promise<void>;
+  transformVerificationResults?: (
+    members: readonly OfficialAssetSourceMember[],
+    results: readonly StockFactoryVerificationResult[],
+  ) => readonly StockFactoryVerificationResult[];
   beforeCollectionReturn?: (signal: AbortSignal) => void | Promise<void>;
   beforeExactReturn?: (signal: AbortSignal) => void | Promise<void>;
 }> = {}) => {
@@ -273,27 +287,39 @@ const fixture = (options: Readonly<{
       entry: Parameters<OfficialAssetChainReadPort["verifyAtBlock"]>[0],
       verificationBlock: Parameters<OfficialAssetChainReadPort["verifyAtBlock"]>[1],
       context: Parameters<OfficialAssetChainReadPort["verifyAtBlock"]>[2],
-    ) => verificationFor(
-      entry.assetUid,
-      entry.contractAddress,
-      readBlock(verificationBlock, context),
-    ),
+    ) => Object.freeze({
+      status: "verified" as const,
+      member: entry,
+      verification: verificationFor(
+        entry.assetUid,
+        entry.contractAddress,
+        readBlock(verificationBlock, context),
+      ),
+    }),
     verifyManyAtBlock: async (
       members: Parameters<OfficialAssetChainReadPort["verifyManyAtBlock"]>[0],
       verificationBlock: Parameters<OfficialAssetChainReadPort["verifyManyAtBlock"]>[1],
       context: Parameters<OfficialAssetChainReadPort["verifyManyAtBlock"]>[2],
     ) => {
       const verificationAnchor = readBlock(verificationBlock, context);
-      const results = Object.freeze(members.map((entry) =>
+      if (options.verificationFailureCode !== undefined) {
+        throw new ChainOperationError(options.verificationFailureCode);
+      }
+      const results: readonly StockFactoryVerificationResult[] = Object.freeze(members.map((entry) =>
         options.defaultVerificationUnavailable === true &&
           entry.contractAddress === defaultMember.contractAddress
-          ? Object.freeze({ status: "unavailable" as const, reason: "source_unavailable" as const })
+          ? Object.freeze({
+              status: "unavailable" as const,
+              member: entry,
+              reason: "source_unavailable" as const,
+            })
           : Object.freeze({
               status: "verified" as const,
+              member: entry,
               verification: verificationFor(entry.assetUid, entry.contractAddress, verificationAnchor),
             })));
       await afterVerification?.(context.signal);
-      return results;
+      return options.transformVerificationResults?.(members, results) ?? results;
     },
   });
   const chainReads: AccountAssetChainReadPort = Object.freeze({
@@ -360,13 +386,7 @@ const fixture = (options: Readonly<{
         : Object.freeze({
             status: "unavailable" as const,
             storedRevision: officialSnapshot.revision,
-            failure: { ok: false as const, error: {
-              code: sourceFailureCode as never,
-              category: "source" as const,
-              message: "Official source synchronization failed.",
-              retryable: sourceFailureCode !== "source_inconsistent",
-              issues: [],
-            } },
+            reason: sourceFailureCode,
           }),
       readStored: () => officialSnapshot,
       close: async () => undefined,
@@ -389,7 +409,7 @@ const fixture = (options: Readonly<{
     setSessionSourceId(next: string) { sessionSourceId = next; },
     setSourceAvailability(
       available: boolean,
-      failureCode: "source_inconsistent" | "source_unavailable" = sourceFailureCode,
+      failureCode: OfficialSourceFailureCode = sourceFailureCode,
     ) {
       sourceAvailable = available;
       sourceFailureCode = failureCode;
@@ -456,6 +476,20 @@ describe("account asset read process", () => {
       },
     });
     await test.close();
+  });
+
+  it("keeps local StockFactory stops as whole-request failures without partial assets", async () => {
+    for (const [verificationFailureCode, retryable] of [
+      ["runtime_busy", true],
+      ["runtime_state_unavailable", false],
+    ] as const) {
+      const test = fixture({ verificationFailureCode });
+      await expect(test.application.list({ limit: 5 })).resolves.toMatchObject({
+        ok: false,
+        error: { code: verificationFailureCode, retryable },
+      });
+      await test.close();
+    }
   });
 
   it("admits one complete official-only overview at one block", async () => {
@@ -697,6 +731,33 @@ describe("account asset read process", () => {
       reason: "source_inconsistent",
     });
     await test.close();
+  });
+
+  it("rejects StockFactory result count and member-order mismatches", async () => {
+    const selections = [
+      detail(defaultMember.contractAddress, 1),
+      detail(unselectedMember.contractAddress, 2),
+    ];
+    const transforms = [
+      (_members: readonly OfficialAssetSourceMember[], results: readonly StockFactoryVerificationResult[]) =>
+        results.slice(0, 1),
+      (_members: readonly OfficialAssetSourceMember[], results: readonly StockFactoryVerificationResult[]) => [
+        {
+          status: "unavailable" as const,
+          member: member(customAddress, "44", "OTHER"),
+          reason: "source_unavailable" as const,
+        },
+        results[1]!,
+      ],
+    ];
+    for (const transformVerificationResults of transforms) {
+      const test = fixture({ selectionEntries: selections, transformVerificationResults });
+      await expect(test.application.list({})).resolves.toMatchObject({
+        ok: false,
+        error: { code: "internal_error" },
+      });
+      await test.close();
+    }
   });
 
   it("accepts overlapping first pages when the current official view remains equal", async () => {

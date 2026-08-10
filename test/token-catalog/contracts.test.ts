@@ -208,6 +208,47 @@ describe("token catalog contracts", () => {
       .toContain("token_total_supply_reverted");
     expect(tokenCatalogApplicationContracts.startAddition.failureCodes)
       .toContain("token_total_supply_reverted");
+    expect(tokenCatalogErrorDefinitions).toEqual(expect.arrayContaining([
+      {
+        code: "official_asset_response_unavailable",
+        category: "transport",
+        message: "A complete official asset response was not obtained.",
+        retryable: true,
+      },
+      {
+        code: "official_asset_response_too_large",
+        category: "domain",
+        message: "The official asset response exceeds the supported size.",
+        retryable: false,
+      },
+      {
+        code: "factory_identity_mismatch",
+        category: "source",
+        message: "The StockFactory deployment identity did not match the admitted identity.",
+        retryable: false,
+      },
+      {
+        code: "token_code_missing",
+        category: "source",
+        message: "No runtime code was found at the mapped token address.",
+        retryable: false,
+      },
+      {
+        code: "token_identity_mismatch",
+        category: "source",
+        message: "The StockFactory UID mapping did not match the official token address.",
+        retryable: false,
+      },
+    ]));
+    expect(tokenCatalogApplicationContracts.startAddition.failureCodes).toEqual(
+      expect.arrayContaining([
+        "official_asset_response_unavailable",
+        "official_asset_response_too_large",
+        "factory_identity_mismatch",
+        "token_code_missing",
+        "token_identity_mismatch",
+      ]),
+    );
   });
 
   it("keeps inspection input and application input objects strict", () => {

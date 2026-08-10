@@ -301,49 +301,66 @@ export type OfficialAssetSnapshotEvidence = z.infer<
   typeof officialAssetSnapshotEvidenceSchema
 >;
 
-export const stockFactoryVerificationFailureDefinitions = deepFreezeValue([
-  { code: "chain_response_unavailable", classificationReason: true },
-  { code: "factory_identity_mismatch", classificationReason: true },
-  { code: "rate_limited", classificationReason: true },
+export const officialAssetSourceFailureDefinitions = deepFreezeValue([
   { code: "request_aborted", classificationReason: false },
-  { code: "runtime_busy", classificationReason: true },
+  { code: "rate_limited", classificationReason: true },
+  { code: "official_asset_response_too_large", classificationReason: true },
+  { code: "official_asset_response_unavailable", classificationReason: true },
   { code: "source_inconsistent", classificationReason: true },
   { code: "source_unavailable", classificationReason: true },
-  { code: "token_code_missing", classificationReason: true },
-  { code: "token_identity_mismatch", classificationReason: true },
 ] as const);
 
-export type StockFactoryVerificationErrorCode =
-  (typeof stockFactoryVerificationFailureDefinitions)[number]["code"];
+export type OfficialAssetSourceUnavailableReason =
+  (typeof officialAssetSourceFailureDefinitions)[number]["code"];
 
-const stockFactoryVerificationErrorCodeValues = Object.freeze(
-  stockFactoryVerificationFailureDefinitions.map((definition) => definition.code),
+export const officialAssetSourceUnavailableReasons = Object.freeze(
+  officialAssetSourceFailureDefinitions.map((definition) => definition.code),
 ) as readonly [
-  StockFactoryVerificationErrorCode,
-  ...StockFactoryVerificationErrorCode[],
+  OfficialAssetSourceUnavailableReason,
+  ...OfficialAssetSourceUnavailableReason[],
 ];
 
-export const stockFactoryVerificationErrorCodeSchema =
-  z.enum(stockFactoryVerificationErrorCodeValues);
+export const officialAssetSourceUnavailableReasonSchema = z.enum(
+  officialAssetSourceUnavailableReasons,
+);
 
-type StockFactoryClassificationFailureDefinition =
-  (typeof stockFactoryVerificationFailureDefinitions)[number] extends infer Definition
+type OfficialAssetSourceClassificationFailureDefinition =
+  (typeof officialAssetSourceFailureDefinitions)[number] extends infer Definition
     ? Definition extends { readonly classificationReason: true }
       ? Definition
       : never
     : never;
 
-export type StockFactoryClassificationUnavailableReason =
-  StockFactoryClassificationFailureDefinition["code"];
+export type OfficialAssetSourceClassificationUnavailableReason =
+  OfficialAssetSourceClassificationFailureDefinition["code"];
 
-export const stockFactoryClassificationUnavailableReasons = Object.freeze(
-  stockFactoryVerificationFailureDefinitions
+export const officialAssetSourceClassificationUnavailableReasons = Object.freeze(
+  officialAssetSourceFailureDefinitions
     .filter((definition) => definition.classificationReason)
     .map((definition) => definition.code),
 ) as readonly [
-  StockFactoryClassificationUnavailableReason,
-  ...StockFactoryClassificationUnavailableReason[],
+  OfficialAssetSourceClassificationUnavailableReason,
+  ...OfficialAssetSourceClassificationUnavailableReason[],
 ];
+
+export const officialAssetSourceClassificationUnavailableReasonSchema = z.enum(
+  officialAssetSourceClassificationUnavailableReasons,
+);
+
+export const stockFactoryClassificationUnavailableReasons = Object.freeze(
+  [
+    "chain_response_unavailable",
+    "factory_identity_mismatch",
+    "rate_limited",
+    "source_inconsistent",
+    "source_unavailable",
+    "token_code_missing",
+    "token_identity_mismatch",
+  ] as const,
+);
+
+export type StockFactoryClassificationUnavailableReason =
+  (typeof stockFactoryClassificationUnavailableReasons)[number];
 
 export const stockFactoryClassificationUnavailableReasonSchema =
   z.enum(stockFactoryClassificationUnavailableReasons);
@@ -372,3 +389,38 @@ export const stockFactoryVerificationSchema = jsonObject({
   }
 });
 export type StockFactoryVerification = z.infer<typeof stockFactoryVerificationSchema>;
+
+export const stockFactoryVerificationResultSchema = z.discriminatedUnion("status", [
+  jsonObject({
+    status: z.literal("verified"),
+    member: officialAssetSourceMemberSchema,
+    verification: stockFactoryVerificationSchema,
+  }).strict(),
+  jsonObject({
+    status: z.literal("unavailable"),
+    member: officialAssetSourceMemberSchema,
+    reason: stockFactoryClassificationUnavailableReasonSchema,
+  }).strict(),
+]).superRefine((value, context) => {
+  if (
+    value.status === "verified" &&
+    (
+      value.verification.assetUid !== value.member.assetUid ||
+      value.verification.contractAddress !== value.member.contractAddress
+    )
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "StockFactory verification result member is inconsistent.",
+    });
+  }
+});
+export type StockFactoryVerificationResult = z.infer<
+  typeof stockFactoryVerificationResultSchema
+>;
+
+export const assertStockFactoryVerificationResult = (
+  input: StockFactoryVerificationResult,
+): StockFactoryVerificationResult => deepFreezeValue(
+  stockFactoryVerificationResultSchema.parse(input),
+);

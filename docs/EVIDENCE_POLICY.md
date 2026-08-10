@@ -148,6 +148,14 @@ establishes the source-owner contract table. A malformed, partial, oversized,
 or failed response establishes neither membership nor absence. A stored
 observation becomes stale whenever a required refresh fails.
 
+An official-asset unavailable result is supported only by an admitted caller
+abort, rate limit, non-success response, incomplete transport response,
+response that exceeds the bounded adapter limit, or malformed provider
+response. A local dependency contract, clock, digest, canonical construction,
+storage, or unknown runtime failure is not official-source evidence. It
+terminates the request as its admitted local or internal failure and cannot
+establish membership absence, source inconsistency, or source unavailability.
+
 Before Little John adds an API member to an account or publishes that member as
 a verified account asset, the exact UID and token address require an independent
 pinned Robinhood Chain read under `stockFactoryAdmissionManifest` in the same
@@ -160,6 +168,15 @@ implementation runtime code, `tokenAddress(uid)`, and nonempty runtime code at
 the returned token address at one canonical block. A mismatch makes that exact
 asset unavailable for selection or verified presentation; it does not rewrite
 or invalidate other members of a complete API observation.
+
+A StockFactory unavailable result is supported only by an admitted pinned
+Chain source or response failure, a verified deployment or UID-to-address
+mismatch, missing token runtime code, a reverted required call, or malformed
+provider-returned code, storage, or ABI return data. Caller cancellation, local
+request capacity, owner closure, call encoding, dependency contracts,
+canonical construction, and unknown local runtime failures are not
+StockFactory evidence. They terminate the whole request without creating a
+classification cause.
 
 The API determines current membership; StockFactory proves the admitted
 UID-to-address deployment identity. Factory mappings and deployment events do

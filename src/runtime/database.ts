@@ -57,7 +57,6 @@ import {
   defaultStockTokenManifest,
   findOfficialAssetMember,
   officialAssetSnapshotRevisionSchema,
-  officialAssetSourceDefinition,
   stockFactoryVerificationSchema,
   type CommittedOfficialAssetSnapshot,
   type OfficialAssetSnapshotStore,
@@ -205,6 +204,7 @@ interface TokenSelectionStateRow {
 }
 interface OfficialAssetSnapshotRow {
   readonly chainId: string;
+  readonly sourceUri: string;
   readonly sourceObservedAt: string;
   readonly rawResponseDigest: string;
   readonly memberSetDigest: string;
@@ -525,7 +525,8 @@ const readOfficialAssetSnapshotRaw = (
   database: Database.Database,
 ): CommittedOfficialAssetSnapshot | undefined => {
   const rows = database.prepare(`SELECT chain_id AS chainId,
-    source_observed_at AS sourceObservedAt, raw_response_digest AS rawResponseDigest,
+    source_uri AS sourceUri, source_observed_at AS sourceObservedAt,
+    raw_response_digest AS rawResponseDigest,
     member_set_digest AS memberSetDigest, candidate_list_digest AS candidateListDigest,
     revision, updated_at AS updatedAt FROM robinhood_asset_snapshot ORDER BY chain_id`)
     .all() as OfficialAssetSnapshotRow[];
@@ -538,7 +539,7 @@ const readOfficialAssetSnapshotRaw = (
     WHERE chain_id = ? ORDER BY asset_uid, contract_address`)
     .all(row.chainId) as OfficialAssetMemberRow[];
   return assertCommittedOfficialAssetSnapshot({
-    sourceUri: officialAssetSourceDefinition.sourceUri,
+    sourceUri: row.sourceUri,
     sourceObservedAt: row.sourceObservedAt as never,
     rawResponseDigest: row.rawResponseDigest as never,
     memberSetDigest: row.memberSetDigest as never,
@@ -1363,10 +1364,11 @@ export class ProductDatabase {
         this.#database.prepare("DELETE FROM robinhood_asset WHERE chain_id = ?")
           .run(snapshot.chainId);
         this.#database.prepare(`INSERT INTO robinhood_asset_snapshot(
-          chain_id, source_observed_at, raw_response_digest, member_set_digest,
-          candidate_list_digest, revision, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          chain_id, source_uri, source_observed_at, raw_response_digest,
+          member_set_digest, candidate_list_digest, revision, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(chain_id) DO UPDATE SET
+          source_uri = excluded.source_uri,
           source_observed_at = excluded.source_observed_at,
           raw_response_digest = excluded.raw_response_digest,
           member_set_digest = excluded.member_set_digest,
@@ -1375,6 +1377,7 @@ export class ProductDatabase {
           updated_at = excluded.updated_at`)
           .run(
             snapshot.chainId,
+            snapshot.sourceUri,
             snapshot.sourceObservedAt,
             snapshot.rawResponseDigest,
             snapshot.memberSetDigest,

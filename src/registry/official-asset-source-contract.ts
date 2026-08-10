@@ -1,8 +1,10 @@
 import { deepFreezeValue } from "../core/index.js";
 import {
   assertOfficialAssetSourceSnapshot,
+  officialAssetSourceUnavailableReasonSchema,
   type CommittedOfficialAssetSnapshot,
   type OfficialAssetSnapshotRevision,
+  type OfficialAssetSourceUnavailableReason,
   type OfficialAssetSourceSnapshot,
 } from "./official-asset-contract.js";
 
@@ -16,7 +18,7 @@ export interface RobinhoodOfficialAssetSourceObservation
 }
 
 export interface RobinhoodOfficialAssetSourceClient {
-  read(signal: AbortSignal): Promise<RobinhoodOfficialAssetSourceObservation>;
+  read(signal: AbortSignal): Promise<RobinhoodOfficialAssetSourceReadResult>;
 }
 
 export interface OfficialAssetSnapshotStore {
@@ -27,32 +29,33 @@ export interface OfficialAssetSnapshotStore {
   ): CommittedOfficialAssetSnapshot;
 }
 
-export type RobinhoodOfficialAssetSourceErrorCode =
-  | "request_aborted"
-  | "source_inconsistent"
-  | "source_unavailable";
+export type RobinhoodOfficialAssetSourceObservedResult = Readonly<{
+  status: "observed";
+  observation: RobinhoodOfficialAssetSourceObservation;
+}>;
 
-const sourceErrorCodes =
-  new WeakMap<object, RobinhoodOfficialAssetSourceErrorCode>();
+export type RobinhoodOfficialAssetSourceUnavailableResult = Readonly<{
+  status: "unavailable";
+  reason: OfficialAssetSourceUnavailableReason;
+}>;
 
-export class RobinhoodOfficialAssetSourceError extends Error {
-  override readonly name = "RobinhoodOfficialAssetSourceError";
-  readonly code: RobinhoodOfficialAssetSourceErrorCode;
+export type RobinhoodOfficialAssetSourceReadResult =
+  | RobinhoodOfficialAssetSourceObservedResult
+  | RobinhoodOfficialAssetSourceUnavailableResult;
 
-  constructor(code: RobinhoodOfficialAssetSourceErrorCode) {
-    super(code);
-    this.code = code;
-    sourceErrorCodes.set(this, code);
-    Object.freeze(this);
-  }
-}
+export const officialAssetSourceUnavailable = (
+  reason: OfficialAssetSourceUnavailableReason,
+): RobinhoodOfficialAssetSourceUnavailableResult => Object.freeze({
+  status: "unavailable",
+  reason: officialAssetSourceUnavailableReasonSchema.parse(reason),
+});
 
-export const getRobinhoodOfficialAssetSourceErrorCode = (
-  error: unknown,
-): RobinhoodOfficialAssetSourceErrorCode | undefined =>
-  typeof error === "object" && error !== null
-    ? sourceErrorCodes.get(error)
-    : undefined;
+export const officialAssetSourceObserved = (
+  observation: RobinhoodOfficialAssetSourceObservation,
+): RobinhoodOfficialAssetSourceObservedResult => Object.freeze({
+  status: "observed",
+  observation: assertRobinhoodOfficialAssetSourceObservation(observation),
+});
 
 export const admitRobinhoodOfficialAssetSourceObservation = (
   input: OfficialAssetSourceSnapshot,
@@ -72,7 +75,5 @@ export const assertRobinhoodOfficialAssetSourceObservation = (
       "The official asset snapshot was not admitted from the source response.",
     );
   }
-  return assertOfficialAssetSourceSnapshot(
-    input,
-  ) as RobinhoodOfficialAssetSourceObservation;
+  return input;
 };

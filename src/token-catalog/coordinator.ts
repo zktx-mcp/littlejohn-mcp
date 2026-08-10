@@ -37,6 +37,7 @@ import {
   type TokenRemovalStartInput,
 } from "./contracts.js";
 import { normalizeTokenCatalogError, TokenCatalogOperationError } from "./operation-error.js";
+import { createTokenCatalogFailure } from "./errors.js";
 import type {
   TokenCatalogCoordinatorDependencies,
   TokenCatalogOperationCoordinatorPort,
@@ -340,7 +341,7 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
         }
         const synchronization = await this.#dependencies.officialAssets.synchronize(signal);
         if (synchronization.status === "unavailable") {
-          return synchronization.failure;
+          return createTokenCatalogFailure(synchronization.reason);
         }
         const member = findOfficialAssetMember(synchronization.snapshot, command.input.asset.address);
         const chainResult = await this.#dependencies.additionChainReads.inspectAndVerifyOfficial({

@@ -1,12 +1,16 @@
-import type { ApplicationFailure } from "../core/index.js";
 import type {
   CommittedOfficialAssetSnapshot,
   OfficialAssetSnapshotRevision,
+  OfficialAssetSourceUnavailableReason,
 } from "./official-asset-contract.js";
 import type {
   OfficialAssetSnapshotStore,
   RobinhoodOfficialAssetSourceClient,
 } from "./official-asset-source-contract.js";
+
+export type OfficialAssetSynchronizationUnavailableReason =
+  | OfficialAssetSourceUnavailableReason
+  | "runtime_state_unavailable";
 
 export type OfficialAssetSynchronizationResult =
   | Readonly<{
@@ -16,7 +20,7 @@ export type OfficialAssetSynchronizationResult =
   | Readonly<{
       status: "unavailable";
       storedRevision: OfficialAssetSnapshotRevision | null;
-      failure: ApplicationFailure;
+      reason: OfficialAssetSynchronizationUnavailableReason;
     }>;
 
 export interface OfficialAssetSynchronizationPort {
@@ -29,19 +33,24 @@ export interface OfficialAssetSynchronizationDependencies {
   readonly source: RobinhoodOfficialAssetSourceClient;
   readonly store: OfficialAssetSnapshotStore;
   readonly signal: AbortSignal;
-  readonly failureFor: (error: unknown) => ApplicationFailure;
-  readonly abortedFailure: () => ApplicationFailure;
 }
+
+type CallerWaitResult<Value> =
+  | Readonly<{ status: "completed"; value: Value }>
+  | Readonly<{ status: "caller_aborted" }>;
 
 const waitForCaller = async <Value>(
   shared: Promise<Value>,
   signal: AbortSignal,
-): Promise<Value> => {
-  if (signal.aborted) throw new DOMException("The request was aborted.", "AbortError");
-  return await new Promise<Value>((resolve, reject) => {
-    const onAbort = (): void => reject(new DOMException("The request was aborted.", "AbortError"));
+): Promise<CallerWaitResult<Value>> => {
+  if (signal.aborted) return Object.freeze({ status: "caller_aborted" });
+  return await new Promise<CallerWaitResult<Value>>((resolve, reject) => {
+    const onAbort = (): void => resolve(Object.freeze({ status: "caller_aborted" }));
     signal.addEventListener("abort", onAbort, { once: true });
-    void shared.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+    void shared.then(
+      (value) => resolve(Object.freeze({ status: "completed", value })),
+      reject,
+    ).finally(() => signal.removeEventListener("abort", onAbort));
   });
 };
 
@@ -56,36 +65,39 @@ export const createOfficialAssetSynchronization = (
   let closed = false;
 
   const run = async (): Promise<OfficialAssetSynchronizationResult> => {
-    try {
-      const prior = dependencies.store.readSnapshot();
-      const observation = await dependencies.source.read(ownerAbort.signal);
-      return Object.freeze({
-        status: "current" as const,
-        snapshot: dependencies.store.replaceSnapshot(
-          observation,
-          prior?.revision ?? null,
-        ),
-      });
-    } catch (error) {
-      const stored = dependencies.store.readSnapshot();
+    const prior = dependencies.store.readSnapshot();
+    const sourceResult = await dependencies.source.read(ownerAbort.signal);
+    if (ownerAbort.signal.aborted) {
       return Object.freeze({
         status: "unavailable" as const,
-        storedRevision: stored?.revision ?? null,
-        failure: ownerAbort.signal.aborted
-          ? dependencies.abortedFailure()
-          : dependencies.failureFor(error),
+        storedRevision: prior?.revision ?? null,
+        reason: "runtime_state_unavailable" as const,
       });
     }
+    if (sourceResult.status === "unavailable") {
+      return Object.freeze({
+        status: "unavailable" as const,
+        storedRevision: prior?.revision ?? null,
+        reason: sourceResult.reason,
+      });
+    }
+    return Object.freeze({
+      status: "current" as const,
+      snapshot: dependencies.store.replaceSnapshot(
+        sourceResult.observation,
+        prior?.revision ?? null,
+      ),
+    });
   };
 
   return Object.freeze({
-    synchronize(signal: AbortSignal): Promise<OfficialAssetSynchronizationResult> {
+    async synchronize(signal: AbortSignal): Promise<OfficialAssetSynchronizationResult> {
       if (closed || ownerAbort.signal.aborted) {
-        return Promise.resolve(Object.freeze({
+        return Object.freeze({
           status: "unavailable" as const,
           storedRevision: dependencies.store.readSnapshot()?.revision ?? null,
-          failure: dependencies.abortedFailure(),
-        }));
+          reason: "runtime_state_unavailable" as const,
+        });
       }
       const shared = active ?? run();
       if (active === undefined) {
@@ -95,11 +107,13 @@ export const createOfficialAssetSynchronization = (
           () => { if (active === shared) active = undefined; },
         );
       }
-      return waitForCaller(shared, signal).catch(() => Object.freeze({
+      const waited = await waitForCaller(shared, signal);
+      if (waited.status === "completed") return waited.value;
+      return Object.freeze({
         status: "unavailable" as const,
         storedRevision: dependencies.store.readSnapshot()?.revision ?? null,
-        failure: dependencies.abortedFailure(),
-      }));
+        reason: "request_aborted" as const,
+      });
     },
     readStored: () => dependencies.store.readSnapshot(),
     close(): Promise<void> {

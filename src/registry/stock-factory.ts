@@ -1,5 +1,4 @@
 import {
-  deepFreezeValue,
   parseEvmAddressInput,
   type ChainAnchor,
   type EvmAddress,
@@ -16,42 +15,34 @@ import {
 } from "../chain/normalization.js";
 import {
   isRpcExecutionRevertedError,
+  type ChainRpcMethod,
+  type ChainRpcRequestMap,
   type RpcCanonicalBlockReference,
   type RpcRequester,
 } from "../chain/rpc.js";
 import { admitChainReadFailure } from "../chain/errors.js";
 import {
   assertOfficialAssetSourceMember,
+  assertStockFactoryVerificationResult,
   stockFactoryAdmissionManifest,
-  stockFactoryVerificationSchema,
-  stockFactoryVerificationErrorCodeSchema,
+  stockFactoryClassificationUnavailableReasonSchema,
   type OfficialAssetSourceMember,
-  type StockFactoryVerification,
-  type StockFactoryVerificationErrorCode,
+  type StockFactoryClassificationUnavailableReason,
+  type StockFactoryVerificationResult,
 } from "./official-asset-contract.js";
 
-const verificationErrorCodes = new WeakMap<object, StockFactoryVerificationErrorCode>();
+type StockFactoryUnavailableResult = Readonly<{
+  status: "unavailable";
+  reason: StockFactoryClassificationUnavailableReason;
+}>;
 
-export class StockFactoryVerificationError extends Error {
-  override readonly name = "StockFactoryVerificationError";
-  readonly code: StockFactoryVerificationErrorCode;
-
-  constructor(code: StockFactoryVerificationErrorCode) {
-    super(code);
-    this.code = code;
-    verificationErrorCodes.set(this, code);
-    Object.freeze(this);
-  }
-}
-
-export const getStockFactoryVerificationErrorCode = (
-  error: unknown,
-): StockFactoryVerificationErrorCode | undefined =>
-  typeof error === "object" && error !== null ? verificationErrorCodes.get(error) : undefined;
+export type StockFactoryVerifierInitializationResult =
+  | Readonly<{ status: "ready"; verifier: StockFactoryVerifier }>
+  | StockFactoryUnavailableResult;
 
 export interface StockFactoryVerifier {
   readonly block: ChainAnchor;
-  verify(member: OfficialAssetSourceMember): Promise<StockFactoryVerification>;
+  verify(member: OfficialAssetSourceMember): Promise<StockFactoryVerificationResult>;
 }
 
 export interface StockFactoryVerifierInput {
@@ -61,40 +52,101 @@ export interface StockFactoryVerifierInput {
   readonly signal: AbortSignal;
 }
 
-const normalizeFailure = (error: unknown, signal: AbortSignal): StockFactoryVerificationError => {
-  const existing = getStockFactoryVerificationErrorCode(error);
-  if (existing !== undefined) return error as StockFactoryVerificationError;
-  if (isRpcExecutionRevertedError(error)) {
-    return new StockFactoryVerificationError("source_inconsistent");
-  }
+type ReadResult<Value> =
+  | Readonly<{ status: "available"; value: Value }>
+  | StockFactoryUnavailableResult;
+
+const unavailable = (
+  reason: StockFactoryClassificationUnavailableReason,
+): StockFactoryUnavailableResult => Object.freeze({
+  status: "unavailable",
+  reason: stockFactoryClassificationUnavailableReasonSchema.parse(reason),
+});
+
+const admittedReadFailure = (
+  error: unknown,
+  signal: AbortSignal,
+): StockFactoryClassificationUnavailableReason | undefined => {
+  if (isRpcExecutionRevertedError(error)) return "source_inconsistent";
   const failure = admitChainReadFailure(error, signal);
-  if (failure !== undefined) {
-    const admitted = stockFactoryVerificationErrorCodeSchema.safeParse(failure.error.code);
-    if (admitted.success) return new StockFactoryVerificationError(admitted.data);
-  }
-  return new StockFactoryVerificationError("source_inconsistent");
+  if (failure === undefined) return undefined;
+  const reason = stockFactoryClassificationUnavailableReasonSchema.safeParse(
+    failure.error.code,
+  );
+  return reason.success ? reason.data : undefined;
 };
 
-const decodeImplementationAddress = (input: unknown): EvmAddress => {
-  const word = normalizeRpcHash(input);
+const request = async <Method extends ChainRpcMethod>(
+  rpc: RpcRequester,
+  method: Method,
+  params: ChainRpcRequestMap[Method],
+  signal: AbortSignal,
+): Promise<ReadResult<unknown>> => {
+  try {
+    return Object.freeze({
+      status: "available",
+      value: await rpc.request(method, params, signal),
+    });
+  } catch (error) {
+    const reason = admittedReadFailure(error, signal);
+    if (reason !== undefined) return unavailable(reason);
+    throw error;
+  }
+};
+
+const decodeImplementationAddress = (input: unknown): ReadResult<EvmAddress> => {
+  let word: Hash32;
+  try {
+    word = normalizeRpcHash(input);
+  } catch {
+    return unavailable("source_inconsistent");
+  }
   if (!/^0x0{24}[0-9a-f]{40}$/u.test(word)) {
-    throw new StockFactoryVerificationError("factory_identity_mismatch");
+    return unavailable("source_inconsistent");
   }
-  return parseEvmAddressInput(`0x${word.slice(-40)}`);
+  return Object.freeze({
+    status: "available",
+    value: parseEvmAddressInput(`0x${word.slice(-40)}`),
+  });
 };
 
-const requiredRuntimeCodeHash = (
+const decodeRuntimeCodeHash = (
   input: unknown,
-  missingCode: StockFactoryVerificationErrorCode,
-): Hash32 => {
-  const code = normalizeRpcRuntimeCode(input);
-  if (code.status === "empty") throw new StockFactoryVerificationError(missingCode);
-  return code.codeHash;
+  emptyReason: StockFactoryClassificationUnavailableReason,
+): ReadResult<Hash32> => {
+  try {
+    const code = normalizeRpcRuntimeCode(input);
+    return code.status === "empty"
+      ? unavailable(emptyReason)
+      : Object.freeze({ status: "available", value: code.codeHash });
+  } catch {
+    return unavailable("source_inconsistent");
+  }
 };
+
+const decodeMappedAddress = (input: unknown): ReadResult<EvmAddress> => {
+  try {
+    return Object.freeze({
+      status: "available",
+      value: decodeAbiAddressResult(normalizeRpcBytes(input)),
+    });
+  } catch {
+    return unavailable("source_inconsistent");
+  }
+};
+
+const verificationUnavailable = (
+  member: OfficialAssetSourceMember,
+  reason: StockFactoryClassificationUnavailableReason,
+): StockFactoryVerificationResult => assertStockFactoryVerificationResult({
+    status: "unavailable",
+    member,
+    reason,
+  });
 
 export const createStockFactoryVerifier = async (
   input: StockFactoryVerifierInput,
-): Promise<StockFactoryVerifier> => {
+): Promise<StockFactoryVerifierInitializationResult> => {
   if (input.block.chainId !== stockFactoryAdmissionManifest.chainId) {
     throw new TypeError("StockFactory verification requires Robinhood Chain.");
   }
@@ -102,84 +154,109 @@ export const createStockFactoryVerifier = async (
     throw new TypeError("StockFactory verification block reference is inconsistent.");
   }
   const encoder = createStockFactoryCallEncoder();
-  let proxyCodeHash: Hash32;
-  let implementationAddress: EvmAddress;
-  let implementationCodeHash: Hash32;
-  try {
-    const [proxyCodeRaw, implementationWordRaw] = await Promise.all([
-      input.rpc.request(
-        "eth_getCode",
-        [stockFactoryAdmissionManifest.proxyAddress, input.stateReference],
-        input.signal,
-      ),
-      input.rpc.request(
-        "eth_getStorageAt",
-        [
-          stockFactoryAdmissionManifest.proxyAddress,
-          stockFactoryAdmissionManifest.implementationSlot,
-          input.stateReference,
-        ],
-        input.signal,
-      ),
-    ]);
-    proxyCodeHash = requiredRuntimeCodeHash(proxyCodeRaw, "factory_identity_mismatch");
-    implementationAddress = decodeImplementationAddress(implementationWordRaw);
-    if (
-      proxyCodeHash !== stockFactoryAdmissionManifest.proxyCodeHash ||
-      implementationAddress !== stockFactoryAdmissionManifest.implementationAddress
-    ) throw new StockFactoryVerificationError("factory_identity_mismatch");
-    const implementationCodeRaw = await input.rpc.request(
-      "eth_getCode",
-      [implementationAddress, input.stateReference],
-      input.signal,
-    );
-    implementationCodeHash = requiredRuntimeCodeHash(
-      implementationCodeRaw,
-      "factory_identity_mismatch",
-    );
-    if (
-      implementationCodeHash !== stockFactoryAdmissionManifest.implementationCodeHash
-    ) {
-      throw new StockFactoryVerificationError("factory_identity_mismatch");
-    }
-  } catch (error) {
-    throw normalizeFailure(error, input.signal);
+
+  const proxyCodeRead = await request(
+    input.rpc,
+    "eth_getCode",
+    [stockFactoryAdmissionManifest.proxyAddress, input.stateReference],
+    input.signal,
+  );
+  if (proxyCodeRead.status === "unavailable") return proxyCodeRead;
+  const proxyCode = decodeRuntimeCodeHash(
+    proxyCodeRead.value,
+    "factory_identity_mismatch",
+  );
+  if (proxyCode.status === "unavailable") return proxyCode;
+  if (proxyCode.value !== stockFactoryAdmissionManifest.proxyCodeHash) {
+    return unavailable("factory_identity_mismatch");
   }
 
-  return Object.freeze({
+  const implementationRead = await request(
+    input.rpc,
+    "eth_getStorageAt",
+    [
+      stockFactoryAdmissionManifest.proxyAddress,
+      stockFactoryAdmissionManifest.implementationSlot,
+      input.stateReference,
+    ],
+    input.signal,
+  );
+  if (implementationRead.status === "unavailable") return implementationRead;
+  const implementation = decodeImplementationAddress(implementationRead.value);
+  if (implementation.status === "unavailable") return implementation;
+  if (implementation.value !== stockFactoryAdmissionManifest.implementationAddress) {
+    return unavailable("factory_identity_mismatch");
+  }
+
+  const implementationCodeRead = await request(
+    input.rpc,
+    "eth_getCode",
+    [implementation.value, input.stateReference],
+    input.signal,
+  );
+  if (implementationCodeRead.status === "unavailable") return implementationCodeRead;
+  const implementationCode = decodeRuntimeCodeHash(
+    implementationCodeRead.value,
+    "factory_identity_mismatch",
+  );
+  if (implementationCode.status === "unavailable") return implementationCode;
+  if (implementationCode.value !== stockFactoryAdmissionManifest.implementationCodeHash) {
+    return unavailable("factory_identity_mismatch");
+  }
+
+  const verifier: StockFactoryVerifier = Object.freeze({
     block: input.block,
-    async verify(member: OfficialAssetSourceMember): Promise<StockFactoryVerification> {
-      const validatedMember = assertOfficialAssetSourceMember(member);
-      try {
-        const [mappedAddressRaw, tokenCodeRaw] = await Promise.all([
-          input.rpc.request("eth_call", [{
-            to: stockFactoryAdmissionManifest.proxyAddress,
-            data: encoder.tokenAddress(validatedMember.assetUid),
-          }, input.stateReference], input.signal),
-          input.rpc.request(
-            "eth_getCode",
-            [validatedMember.contractAddress, input.stateReference],
-            input.signal,
-          ),
-        ]);
-        const mappedAddress = decodeAbiAddressResult(normalizeRpcBytes(mappedAddressRaw));
-        if (mappedAddress !== validatedMember.contractAddress) {
-          throw new StockFactoryVerificationError("token_identity_mismatch");
-        }
-        const tokenCodeHash = requiredRuntimeCodeHash(tokenCodeRaw, "token_code_missing");
-        return deepFreezeValue(stockFactoryVerificationSchema.parse({
-          assetUid: validatedMember.assetUid,
-          contractAddress: validatedMember.contractAddress,
+    async verify(memberInput: OfficialAssetSourceMember): Promise<StockFactoryVerificationResult> {
+      const member = assertOfficialAssetSourceMember(memberInput);
+      const mappedAddressRead = await request(
+        input.rpc,
+        "eth_call",
+        [{
+          to: stockFactoryAdmissionManifest.proxyAddress,
+          data: encoder.tokenAddress(member.assetUid),
+        }, input.stateReference],
+        input.signal,
+      );
+      if (mappedAddressRead.status === "unavailable") {
+        return verificationUnavailable(member, mappedAddressRead.reason);
+      }
+      const mappedAddress = decodeMappedAddress(mappedAddressRead.value);
+      if (mappedAddress.status === "unavailable") {
+        return verificationUnavailable(member, mappedAddress.reason);
+      }
+      if (mappedAddress.value !== member.contractAddress) {
+        return verificationUnavailable(member, "token_identity_mismatch");
+      }
+
+      const tokenCodeRead = await request(
+        input.rpc,
+        "eth_getCode",
+        [member.contractAddress, input.stateReference],
+        input.signal,
+      );
+      if (tokenCodeRead.status === "unavailable") {
+        return verificationUnavailable(member, tokenCodeRead.reason);
+      }
+      const tokenCode = decodeRuntimeCodeHash(tokenCodeRead.value, "token_code_missing");
+      if (tokenCode.status === "unavailable") {
+        return verificationUnavailable(member, tokenCode.reason);
+      }
+      return assertStockFactoryVerificationResult({
+        status: "verified",
+        member,
+        verification: {
+          assetUid: member.assetUid,
+          contractAddress: member.contractAddress,
           block: input.block,
           proxyAddress: stockFactoryAdmissionManifest.proxyAddress,
-          proxyCodeHash,
-          implementationAddress,
-          implementationCodeHash,
-          tokenCodeHash,
-        }));
-      } catch (error) {
-        throw normalizeFailure(error, input.signal);
-      }
+          proxyCodeHash: proxyCode.value,
+          implementationAddress: implementation.value,
+          implementationCodeHash: implementationCode.value,
+          tokenCodeHash: tokenCode.value,
+        },
+      });
     },
   });
+
+  return Object.freeze({ status: "ready", verifier });
 };

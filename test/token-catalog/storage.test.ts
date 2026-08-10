@@ -136,13 +136,15 @@ const sourceObservation = async (additionalAssets: readonly Readonly<{
       })),
     ],
   };
-  return await createRobinhoodOfficialAssetSourceClient({
+  const result = await createRobinhoodOfficialAssetSourceClient({
     fetch: (async () => new Response(JSON.stringify(response), {
       status: 200,
       headers: { "content-type": "application/json" },
     })) as typeof fetch,
     now: () => new Date(now),
   }).read(new AbortController().signal);
+  if (result.status !== "observed") throw new Error("Expected source observation.");
+  return result.observation;
 };
 
 const sourceSnapshot = async (database: ProductDatabase) =>
@@ -395,6 +397,31 @@ describe("token selection persistence", () => {
     try { await ProductDatabase.open(path, now); }
     catch (error) { failure = error; }
     expect(getRuntimeOperationFailure(failure)?.error.code).toBe("runtime_state_unavailable");
+  });
+
+  it("stores and reads the admitted official source URI instead of rebuilding it", async () => {
+    const { database, path } = await openDatabase();
+    const snapshot = await sourceSnapshot(database);
+    const raw = new Database(path);
+    expect(raw.prepare("SELECT source_uri AS sourceUri FROM robinhood_asset_snapshot").get())
+      .toEqual({ sourceUri: snapshot.sourceUri });
+    expect(() => raw.prepare("UPDATE robinhood_asset_snapshot SET source_uri = ?")
+      .run("https://example.invalid/assets")).toThrow();
+    raw.close();
+    database.close();
+
+    const reopened = await ProductDatabase.open(path, now);
+    expect(reopened.officialAssetSnapshotStore().readSnapshot()?.sourceUri)
+      .toBe(snapshot.sourceUri);
+    reopened.close();
+
+    const forged = new Database(path);
+    forged.pragma("ignore_check_constraints = ON");
+    forged.prepare("UPDATE robinhood_asset_snapshot SET source_uri = ?")
+      .run("https://example.invalid/assets");
+    forged.close();
+    await expect(ProductDatabase.open(path, now)).rejects.toSatisfy((error: unknown) =>
+      getRuntimeOperationFailure(error)?.error.code === "runtime_state_unavailable");
   });
 
   it("binds each default verification to the persisted source member identity", async () => {

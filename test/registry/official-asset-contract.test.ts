@@ -6,15 +6,16 @@ import { z } from "zod";
 import {
   canonicalJsonStringify,
   parseEvmAddressInput,
+  parseHash32,
   type CanonicalJson,
 } from "../../src/core/index.js";
 import {
+  assertStockFactoryVerificationResult,
   officialAssetCandidateSchema,
   officialAssetSnapshotEvidenceSchema,
   officialAssetSourceDefinition,
   stockFactoryAdmissionManifest,
-  stockFactoryClassificationUnavailableReasons,
-  stockFactoryVerificationFailureDefinitions,
+  stockFactoryVerificationResultSchema,
   stockFactoryVerificationSchema,
 } from "../../src/registry/official-asset-contract.js";
 
@@ -64,30 +65,6 @@ describe("official asset contract", () => {
     );
   });
 
-  it("derives the full and classification failure languages from one ordered owner", () => {
-    expect(stockFactoryVerificationFailureDefinitions.map(({ code }) => code)).toEqual([
-      "chain_response_unavailable",
-      "factory_identity_mismatch",
-      "rate_limited",
-      "request_aborted",
-      "runtime_busy",
-      "source_inconsistent",
-      "source_unavailable",
-      "token_code_missing",
-      "token_identity_mismatch",
-    ]);
-    expect(stockFactoryClassificationUnavailableReasons).toEqual([
-      "chain_response_unavailable",
-      "factory_identity_mismatch",
-      "rate_limited",
-      "runtime_busy",
-      "source_inconsistent",
-      "source_unavailable",
-      "token_code_missing",
-      "token_identity_mismatch",
-    ]);
-  });
-
   it("rejects foreign source evidence and forged fixed StockFactory identity", () => {
     expect(() => officialAssetSnapshotEvidenceSchema.parse({
       sourceUri: "https://example.invalid/assets",
@@ -111,5 +88,38 @@ describe("official asset contract", () => {
       implementationCodeHash: stockFactoryAdmissionManifest.implementationCodeHash,
       tokenCodeHash: `0x${"77".repeat(32)}`,
     })).toThrow();
+    const member = {
+      assetUid: `0x${"33".repeat(32)}`,
+      contractAddress: parseEvmAddressInput(`0x${"44".repeat(20)}`),
+    };
+    expect(() => stockFactoryVerificationResultSchema.parse({
+      status: "verified",
+      member,
+      verification: {
+        assetUid: member.assetUid,
+        contractAddress: parseEvmAddressInput(`0x${"45".repeat(20)}`),
+        block: {
+          chainId: "eip155:4663",
+          blockNumber: "42",
+          blockHash: `0x${"55".repeat(32)}`,
+          blockTimestamp: "2026-07-20T00:00:00.000Z",
+        },
+        proxyAddress: stockFactoryAdmissionManifest.proxyAddress,
+        proxyCodeHash: stockFactoryAdmissionManifest.proxyCodeHash,
+        implementationAddress: stockFactoryAdmissionManifest.implementationAddress,
+        implementationCodeHash: stockFactoryAdmissionManifest.implementationCodeHash,
+        tokenCodeHash: `0x${"77".repeat(32)}`,
+      },
+    })).toThrow("member is inconsistent");
+    const unavailable = assertStockFactoryVerificationResult({
+      status: "unavailable",
+      member: {
+        assetUid: parseHash32(member.assetUid),
+        contractAddress: member.contractAddress,
+      },
+      reason: "source_unavailable",
+    });
+    expect(Object.isFrozen(unavailable)).toBe(true);
+    expect(Object.isFrozen(unavailable.member)).toBe(true);
   });
 });

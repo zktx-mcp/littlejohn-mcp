@@ -31,11 +31,13 @@ import {
 } from "../token-catalog/browser.js";
 import {
   officialAssetCandidateSchema,
+  officialAssetSourceClassificationUnavailableReasonSchema,
   officialAssetSourceDefinition,
   officialAssetSnapshotEvidenceSchema,
   officialAssetSnapshotRevisionSchema,
   stockFactoryClassificationUnavailableReasonSchema,
   stockFactoryVerificationSchema,
+  type OfficialAssetSourceClassificationUnavailableReason,
   type OfficialAssetCandidate,
   type OfficialAssetSourceMember,
 } from "../registry/browser.js";
@@ -47,15 +49,8 @@ export const accountAssetLimits = Object.freeze({
   maximumPageSize: 5,
 });
 
-const accountAssetOfficialSnapshotUnavailableReasons = Object.freeze([
-  "source_inconsistent",
-  "source_unavailable",
-] as const);
-const accountAssetOfficialSnapshotUnavailableReasonSchema = z.enum(
-  accountAssetOfficialSnapshotUnavailableReasons,
-);
 export type AccountAssetOfficialSnapshotUnavailableReason =
-  z.infer<typeof accountAssetOfficialSnapshotUnavailableReasonSchema>;
+  OfficialAssetSourceClassificationUnavailableReason;
 
 const currentOfficialSnapshotRevisionShape = {
   officialSnapshotStatus: z.literal("current"),
@@ -65,7 +60,7 @@ const currentOfficialSnapshotRevisionShape = {
 const unavailableOfficialSnapshotRevisionShape = {
   officialSnapshotStatus: z.literal("unavailable"),
   officialSnapshotRevision: officialAssetSnapshotRevisionSchema.nullable(),
-  officialSnapshotUnavailableReason: accountAssetOfficialSnapshotUnavailableReasonSchema,
+  officialSnapshotUnavailableReason: officialAssetSourceClassificationUnavailableReasonSchema,
   selectionSetRevision: tokenSelectionSetRevisionSchema.nullable(),
 };
 export const accountAssetViewRevisionSchema = z.discriminatedUnion("officialSnapshotStatus", [
@@ -107,7 +102,7 @@ const accountAssetClassificationUnavailableCauseSchema = z.discriminatedUnion("k
   jsonObject({
     kind: z.literal("official_snapshot_unavailable"),
     storedRevision: officialAssetSnapshotRevisionSchema.nullable(),
-    reason: accountAssetOfficialSnapshotUnavailableReasonSchema,
+    reason: officialAssetSourceClassificationUnavailableReasonSchema,
   }).strict(),
   jsonObject({
     kind: z.literal("stock_factory_verification_unavailable"),
@@ -345,7 +340,7 @@ const accountAssetOverviewStockTokensSchema = z.discriminatedUnion("status", [
   }).strict(),
   jsonObject({
     status: z.literal("unavailable"),
-    reason: accountAssetOfficialSnapshotUnavailableReasonSchema,
+    reason: officialAssetSourceClassificationUnavailableReasonSchema,
   }).strict(),
 ]);
 

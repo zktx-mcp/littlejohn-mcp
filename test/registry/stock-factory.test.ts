@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   canonicalBlockReference,
+  ChainRpcError,
   type ChainRpcMethod,
   type ChainRpcRequestMap,
   type RpcRequester,
@@ -16,7 +17,6 @@ import {
 } from "../../src/core/index.js";
 import {
   createStockFactoryVerifier,
-  getStockFactoryVerificationErrorCode,
 } from "../../src/registry/index.js";
 import {
   assertOfficialAssetSourceSnapshot,
@@ -91,6 +91,19 @@ const decodedSnapshot = assertOfficialAssetSourceSnapshot({
 });
 const member = decodedSnapshot.members[0]!;
 
+const readyVerifier = async (rpc: RpcRequester) => {
+  const result = await createStockFactoryVerifier({
+    rpc,
+    block,
+    stateReference: reference,
+    signal: new AbortController().signal,
+  });
+  if (result.status !== "ready") {
+    throw new Error(`Expected a ready verifier, received ${result.reason}.`);
+  }
+  return result.verifier;
+};
+
 describe("StockFactory verifier", () => {
   it("proves the pinned code hashes from independent raw bytecode fixtures", () => {
     const hash = (hex: string): string =>
@@ -116,21 +129,20 @@ describe("StockFactory verifier", () => {
       expectedImplementationCodeHash,
     );
     const rpc = new FactoryRpc();
-    const verifier = await createStockFactoryVerifier({
-      rpc,
-      block,
-      stateReference: reference,
-      signal: new AbortController().signal,
-    });
+    const verifier = await readyVerifier(rpc);
     await expect(verifier.verify(member)).resolves.toEqual({
-      assetUid: uid,
-      contractAddress: token,
-      block,
-      proxyAddress: expectedProxyAddress,
-      proxyCodeHash: expectedProxyCodeHash,
-      implementationAddress: expectedImplementationAddress,
-      implementationCodeHash: expectedImplementationCodeHash,
-      tokenCodeHash: "0x5fe7f977e71dba2ea1a68e21057beebb9be2ac30c6410aa38d4f3fbe41dcffd2",
+      status: "verified",
+      member,
+      verification: {
+        assetUid: uid,
+        contractAddress: token,
+        block,
+        proxyAddress: expectedProxyAddress,
+        proxyCodeHash: expectedProxyCodeHash,
+        implementationAddress: expectedImplementationAddress,
+        implementationCodeHash: expectedImplementationCodeHash,
+        tokenCodeHash: "0x5fe7f977e71dba2ea1a68e21057beebb9be2ac30c6410aa38d4f3fbe41dcffd2",
+      },
     });
     await verifier.verify(member);
     expect(rpc.calls.map((call) => call.method)).toEqual([
@@ -169,28 +181,63 @@ describe("StockFactory verifier", () => {
       mutate(rpc);
       await expect(createStockFactoryVerifier({
         rpc, block, stateReference: reference, signal: new AbortController().signal,
-      })).rejects.toSatisfy(
-        (error: unknown) => getStockFactoryVerificationErrorCode(error) === "factory_identity_mismatch",
-      );
+      })).resolves.toEqual({
+        status: "unavailable",
+        reason: "factory_identity_mismatch",
+      });
     }
 
     const wrongMapping = new FactoryRpc();
     wrongMapping.mappedAddress = `0x${"0".repeat(64)}`;
-    const mappingVerifier = await createStockFactoryVerifier({
-      rpc: wrongMapping, block, stateReference: reference, signal: new AbortController().signal,
+    const mappingVerifier = await readyVerifier(wrongMapping);
+    await expect(mappingVerifier.verify(member)).resolves.toEqual({
+      status: "unavailable",
+      member,
+      reason: "token_identity_mismatch",
     });
-    await expect(mappingVerifier.verify(member)).rejects.toSatisfy(
-      (error: unknown) => getStockFactoryVerificationErrorCode(error) === "token_identity_mismatch",
-    );
+    expect(wrongMapping.calls.filter((call) =>
+      call.method === "eth_getCode" && call.params[0] === token)).toHaveLength(0);
 
     const noCode = new FactoryRpc();
     noCode.tokenCode = "0x";
-    const codeVerifier = await createStockFactoryVerifier({
-      rpc: noCode, block, stateReference: reference, signal: new AbortController().signal,
+    const codeVerifier = await readyVerifier(noCode);
+    await expect(codeVerifier.verify(member)).resolves.toEqual({
+      status: "unavailable",
+      member,
+      reason: "token_code_missing",
     });
-    await expect(codeVerifier.verify(member)).rejects.toSatisfy(
-      (error: unknown) => getStockFactoryVerificationErrorCode(error) === "token_code_missing",
-    );
+  });
+
+  it("separates provider decode failures from local and whole-request failures", async () => {
+    const malformed = new FactoryRpc();
+    malformed.implementationStorage = "not-storage";
+    await expect(createStockFactoryVerifier({
+      rpc: malformed,
+      block,
+      stateReference: reference,
+      signal: new AbortController().signal,
+    })).resolves.toEqual({ status: "unavailable", reason: "source_inconsistent" });
+
+    const wholeRequest = new ChainRpcError("runtime_busy");
+    const busy = new FactoryRpc();
+    busy.proxyCode = undefined;
+    busy.request = async () => { throw wholeRequest; };
+    await expect(createStockFactoryVerifier({
+      rpc: busy,
+      block,
+      stateReference: reference,
+      signal: new AbortController().signal,
+    })).rejects.toBe(wholeRequest);
+
+    const localFailure = new Error("local dependency failed");
+    const local = new FactoryRpc();
+    local.request = async () => { throw localFailure; };
+    await expect(createStockFactoryVerifier({
+      rpc: local,
+      block,
+      stateReference: reference,
+      signal: new AbortController().signal,
+    })).rejects.toBe(localFailure);
   });
 
   it("rejects a block label that does not match the exact RPC state reference", async () => {

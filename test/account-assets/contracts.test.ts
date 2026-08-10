@@ -192,28 +192,28 @@ describe("account asset contracts", () => {
       ],
       [
         accountAssetClassificationSchema,
-        5_660,
-        "e0e7ad20a4d8d34e6aac3f4b341b17a3c7dd9576e5035bd503b0be4bb1219d25",
+        5_734,
+        "b545ef4a9c379badd3a3ffbe615b387ebb47eccdc365c8732da5951019122a16",
       ],
       [
         contractAccountAssetSchema,
-        11_931,
-        "67cc94af82104a1301826140df1fd1e8b2de87c4b6b8c1c003da7096f3e8cf87",
+        12_005,
+        "ddfc3d5c55da5a1a25b4acaa2f10f539bfb62f047045af356552b466fd7cdfb7",
       ],
       [
         accountAssetApplicationContracts.collection.successSchema,
-        17_095,
-        "abfb2edc4e3c663f8125fc38632fc0e642220eb9f9ad985cb79ba486da821309",
+        17_436,
+        "304c5ec81cd0329c39d88bd31557375384c5d3669f26e724bc42db6b54b27087",
       ],
       [
         accountAssetApplicationContracts.exact.successSchema,
-        16_999,
-        "9b658db7740577ad2051c7b47790f5b4fce7b44ef6a8b4898eb23468befd411d",
+        17_162,
+        "e552032618038b9ea48f0f510a25757526a199ac9999907cbca59ac61198a018",
       ],
       [
         accountAssetOverviewQueryContract.successSchema,
-        15_684,
-        "71841c7a03e43c83f754ed7b849ded033ce89dfb9fb77c9ad79ada71428d3df5",
+        15_936,
+        "5cd8ddbc2a4a9977b7cd0b1a89ac0f9a1446960aceb9be37e49d066632c3624c",
       ],
     ] as const) {
       const canonical = canonicalOutputSchema(schema);

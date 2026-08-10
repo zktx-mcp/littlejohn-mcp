@@ -6,7 +6,6 @@ import {
 import type {
   CanonicalBlock,
   ChainInvocationContext,
-  OfficialAssetVerificationResult,
 } from "../chain/index.js";
 import {
   defaultStockTokenManifest,
@@ -17,6 +16,7 @@ import {
   type CommittedOfficialAssetSnapshot,
   type OfficialAssetSourceMember,
   type StockFactoryVerification,
+  type StockFactoryVerificationResult,
 } from "../registry/index.js";
 import {
   type TokenSelection,
@@ -114,34 +114,32 @@ const ensureNotAborted = (caller: AbortSignal, owner: AbortSignal): void => {
   if (owner.aborted) throw new AccountAssetOperationError("runtime_state_unavailable");
 };
 
-const sourceFailureReason = (
-  failure: ApplicationFailure,
-): AccountAssetOfficialSnapshotUnavailableReason => {
-  const code: string = failure.error.code;
-  return code === "source_inconsistent" || code === "source_unavailable"
-    ? code
-    : "source_unavailable";
-};
-
 const synchronizeOfficialView = async (
   dependencies: AccountAssetReadProcessDependencies,
   signal: AbortSignal,
 ): Promise<OfficialView> => {
   const result = await dependencies.officialAssets.synchronize(signal);
-  if (result.status === "unavailable" && (
-    result.failure.error.code === "request_aborted" ||
-    result.failure.error.code === "runtime_state_unavailable"
-  )) throw new AccountAssetOperationError(result.failure.error.code);
-  return result.status === "current"
-    ? Object.freeze({
-        status: "current",
-        snapshot: result.snapshot,
-      })
-    : Object.freeze({
+  if (result.status === "current") {
+    return Object.freeze({
+      status: "current",
+      snapshot: result.snapshot,
+    });
+  }
+  switch (result.reason) {
+    case "request_aborted":
+    case "runtime_state_unavailable":
+      throw new AccountAssetOperationError(result.reason);
+    case "official_asset_response_too_large":
+    case "official_asset_response_unavailable":
+    case "rate_limited":
+    case "source_inconsistent":
+    case "source_unavailable":
+      return Object.freeze({
         status: "unavailable",
         storedRevision: result.storedRevision,
-        failureReason: sourceFailureReason(result.failure),
+        failureReason: result.reason,
       });
+  }
 };
 
 const readOfficialView = (
@@ -316,7 +314,7 @@ const snapshotEvidence = (snapshot: CommittedOfficialAssetSnapshot) =>
 const classification = (
   official: OfficialView,
   asset: TokenSelection["asset"],
-  result: OfficialAssetVerificationResult | undefined,
+  result: StockFactoryVerificationResult | undefined,
 ): AccountAssetClassification => {
   if (official.status === "unavailable") {
     return Object.freeze({
@@ -362,16 +360,38 @@ const classification = (
   });
 };
 
+const verificationResultsByAddress = (
+  members: readonly OfficialAssetSourceMember[],
+  inputs: readonly StockFactoryVerificationResult[],
+): ReadonlyMap<string, StockFactoryVerificationResult> => {
+  if (inputs.length !== members.length) {
+    throw new AccountAssetOperationError("internal_error");
+  }
+  const results = new Map<string, StockFactoryVerificationResult>();
+  for (let index = 0; index < members.length; index += 1) {
+    const member = members[index];
+    const result = inputs[index];
+    if (
+      member === undefined ||
+      result === undefined ||
+      result.member.assetUid !== member.assetUid ||
+      result.member.contractAddress !== member.contractAddress
+    ) throw new AccountAssetOperationError("internal_error");
+    results.set(member.contractAddress, result);
+  }
+  return results;
+};
+
 const verifyVisibleMembers = async (
   dependencies: AccountAssetReadProcessDependencies,
   official: OfficialView,
   selections: readonly TokenSelectionDetail[],
   block: CanonicalBlock,
   context: ChainInvocationContext,
-  retained: ReadonlyMap<string, OfficialAssetVerificationResult> = new Map(),
-): Promise<ReadonlyMap<string, OfficialAssetVerificationResult>> => {
+  retained: ReadonlyMap<string, StockFactoryVerificationResult> = new Map(),
+): Promise<ReadonlyMap<string, StockFactoryVerificationResult>> => {
   if (official.status !== "current") return new Map();
-  const results = new Map<string, OfficialAssetVerificationResult>();
+  const results = new Map<string, StockFactoryVerificationResult>();
   const pending: OfficialAssetSourceMember[] = [];
   for (const detail of selections) {
     const address = detail.selection.asset.address;
@@ -384,11 +404,9 @@ const verifyVisibleMembers = async (
   const verified = pending.length === 0
     ? []
     : await dependencies.officialAssetReads.verifyManyAtBlock(pending, block, context);
-  pending.forEach((member, index) => {
-    const result = verified[index];
-    if (result === undefined) throw new AccountAssetOperationError("internal_error");
-    results.set(member.contractAddress, result);
-  });
+  for (const [address, result] of verificationResultsByAddress(pending, verified)) {
+    results.set(address, result);
+  }
   return results;
 };
 
@@ -399,7 +417,7 @@ const initializeDefaults = async (
   block: CanonicalBlock,
   pageLimit: number,
   context: ChainInvocationContext,
-): Promise<ReadonlyMap<string, OfficialAssetVerificationResult>> => {
+): Promise<ReadonlyMap<string, StockFactoryVerificationResult>> => {
   if (official.status !== "current") return new Map();
   const state = dependencies.selections.getState(wallet.account);
   if (state?.defaultsInitialized === true) return new Map();
@@ -435,11 +453,7 @@ const initializeDefaults = async (
   const results = members.length === 0
     ? []
     : await dependencies.officialAssetReads.verifyManyAtBlock(members, block, context);
-  const resultByAddress = new Map(members.map((member, index) => {
-    const result = results[index];
-    if (result === undefined) throw new AccountAssetOperationError("internal_error");
-    return [member.contractAddress, result] as const;
-  }));
+  const resultByAddress = verificationResultsByAddress(members, results);
   const verifiedDefaults = missingMembers.flatMap((member) => {
     const result = resultByAddress.get(member.contractAddress);
     return result?.status === "verified"
@@ -469,7 +483,7 @@ const contractAsset = (
   detail: TokenSelectionDetail,
   read: Awaited<ReturnType<AccountAssetReadProcessDependencies["chainReads"]["readCollectionAtBlock"]>>["tokens"][number],
   official: OfficialView,
-  verification: OfficialAssetVerificationResult | undefined,
+  verification: StockFactoryVerificationResult | undefined,
 ): ContractAccountAsset => Object.freeze({
   kind: "erc20",
   selection: detail.selection,
@@ -578,7 +592,7 @@ export const createAccountAssetApplication = (
             const block = await dependencies.chainReads.resolveCurrentBlock(context);
             const retained = firstPage
               ? await initializeDefaults(dependencies, wallet, official, block, request.limit, context)
-              : new Map<string, OfficialAssetVerificationResult>();
+              : new Map<string, StockFactoryVerificationResult>();
             const revision: AccountAssetViewRevision = firstPage
               ? viewRevision(official, dependencies.selections.getState(wallet.account))
               : cursorViewRevision(request.cursor!);

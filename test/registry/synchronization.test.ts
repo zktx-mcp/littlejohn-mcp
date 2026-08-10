@@ -13,7 +13,6 @@ import type {
   RobinhoodOfficialAssetSourceClient,
   RobinhoodOfficialAssetSourceObservation,
 } from "../../src/registry/official-asset-source-contract.js";
-import { createTokenCatalogFailure } from "../../src/token-catalog/index.js";
 
 const observedAt = "2026-07-21T00:00:00.000Z";
 const sourceObservation = async (): Promise<RobinhoodOfficialAssetSourceObservation> =>
@@ -26,7 +25,10 @@ const sourceObservation = async (): Promise<RobinhoodOfficialAssetSourceObservat
       }],
     }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch,
     now: () => new Date(observedAt),
-  }).read(new AbortController().signal);
+  }).read(new AbortController().signal).then((result) => {
+    if (result.status !== "observed") throw new Error("Expected source observation.");
+    return result.observation;
+  });
 
 const committed = (
   observation: RobinhoodOfficialAssetSourceObservation,
@@ -37,18 +39,13 @@ const committed = (
   updatedAt: observation.sourceObservedAt,
 });
 
-const failures = Object.freeze({
-  failureFor: () => createTokenCatalogFailure("source_unavailable"),
-  abortedFailure: () => createTokenCatalogFailure("runtime_state_unavailable"),
-});
-
 describe("official asset synchronization", () => {
   it("shares one source read and one atomic replacement across concurrent callers", async () => {
     const observation = await sourceObservation();
     let release: (() => void) | undefined;
     const sourceRead = vi.fn(async () => {
       await new Promise<void>((resolve) => { release = resolve; });
-      return observation;
+      return Object.freeze({ status: "observed" as const, observation });
     });
     let stored: CommittedOfficialAssetSnapshot | undefined;
     const replaceSnapshot = vi.fn((input: RobinhoodOfficialAssetSourceObservation) => {
@@ -60,7 +57,6 @@ describe("official asset synchronization", () => {
       source: Object.freeze({ read: sourceRead }),
       store: Object.freeze({ readSnapshot: () => stored, replaceSnapshot }),
       signal: owner.signal,
-      ...failures,
     });
 
     const first = synchronization.synchronize(new AbortController().signal);
@@ -85,49 +81,119 @@ describe("official asset synchronization", () => {
       replaceSnapshot: vi.fn(),
     });
     const synchronization = createOfficialAssetSynchronization({
-      source: Object.freeze({ read: async () => { throw new Error("source failed"); } }),
+      source: Object.freeze({
+        read: async () => Object.freeze({
+          status: "unavailable" as const,
+          reason: "source_unavailable" as const,
+        }),
+      }),
       store,
       signal: new AbortController().signal,
-      ...failures,
     });
 
     await expect(synchronization.synchronize(new AbortController().signal)).resolves.toEqual({
       status: "unavailable",
       storedRevision: prior.revision,
-      failure: createTokenCatalogFailure("source_unavailable"),
+      reason: "source_unavailable",
     });
     expect(store.replaceSnapshot).not.toHaveBeenCalled();
     await synchronization.close();
   });
 
-  it("aborts and drains the owned source read before close resolves", async () => {
-    let settled = false;
+  it("drains the source read without committing an observation after owner close", async () => {
+    const observation = await sourceObservation();
+    let ownerAborted = false;
+    let release: (() => void) | undefined;
     const source: RobinhoodOfficialAssetSourceClient = Object.freeze({
       read: async (signal: AbortSignal) =>
-        await new Promise<RobinhoodOfficialAssetSourceObservation>((_resolve, reject) => {
-        signal.addEventListener("abort", () => {
-          settled = true;
-          reject(new DOMException("aborted", "AbortError"));
-        }, { once: true });
-      }),
+        await new Promise<Readonly<{
+          status: "observed";
+          observation: RobinhoodOfficialAssetSourceObservation;
+        }>>((resolve) => {
+          signal.addEventListener("abort", () => {
+            ownerAborted = true;
+          }, { once: true });
+          release = () => resolve(Object.freeze({ status: "observed", observation }));
+        }),
     });
+    const replaceSnapshot = vi.fn();
     const synchronization = createOfficialAssetSynchronization({
       source,
       store: Object.freeze({
         readSnapshot: () => undefined,
-        replaceSnapshot: vi.fn(),
+        replaceSnapshot,
       }),
       signal: new AbortController().signal,
-      ...failures,
     });
 
     const active = synchronization.synchronize(new AbortController().signal);
-    await synchronization.close();
-    expect(settled).toBe(true);
-    await expect(active).resolves.toMatchObject({
+    let closeResolved = false;
+    const closing = synchronization.close().then(() => { closeResolved = true; });
+    expect(ownerAborted).toBe(true);
+    await Promise.resolve();
+    expect(closeResolved).toBe(false);
+    release?.();
+    await expect(active).resolves.toEqual({
       status: "unavailable",
       storedRevision: null,
-      failure: { error: { code: "runtime_state_unavailable" } },
+      reason: "runtime_state_unavailable",
     });
+    await expect(closing).resolves.toBeUndefined();
+    expect(replaceSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("stops one caller without aborting or relabeling the shared source read", async () => {
+    const observation = await sourceObservation();
+    let release: (() => void) | undefined;
+    const sourceRead = vi.fn(async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return Object.freeze({ status: "observed" as const, observation });
+    });
+    let stored: CommittedOfficialAssetSnapshot | undefined;
+    const synchronization = createOfficialAssetSynchronization({
+      source: Object.freeze({ read: sourceRead }),
+      store: Object.freeze({
+        readSnapshot: () => stored,
+        replaceSnapshot: (input: RobinhoodOfficialAssetSourceObservation) =>
+          (stored = committed(input, 3)),
+      }),
+      signal: new AbortController().signal,
+    });
+    const caller = new AbortController();
+    const stopped = synchronization.synchronize(caller.signal);
+    const continuing = synchronization.synchronize(new AbortController().signal);
+    caller.abort();
+    await expect(stopped).resolves.toEqual({
+      status: "unavailable",
+      storedRevision: null,
+      reason: "request_aborted",
+    });
+    release?.();
+    await expect(continuing).resolves.toMatchObject({ status: "current" });
+    expect(sourceRead).toHaveBeenCalledTimes(1);
+    await synchronization.close();
+  });
+
+  it("does not convert storage or local source failures into source results", async () => {
+    const localFailure = new Error("local source bug");
+    const sourceFailure = createOfficialAssetSynchronization({
+      source: Object.freeze({ read: async () => { throw localFailure; } }),
+      store: Object.freeze({ readSnapshot: () => undefined, replaceSnapshot: vi.fn() }),
+      signal: new AbortController().signal,
+    });
+    await expect(sourceFailure.synchronize(new AbortController().signal)).rejects.toBe(localFailure);
+    await expect(sourceFailure.close()).resolves.toBeUndefined();
+
+    const storageFailure = new Error("storage failed");
+    const storage = createOfficialAssetSynchronization({
+      source: Object.freeze({ read: vi.fn() }),
+      store: Object.freeze({
+        readSnapshot: () => { throw storageFailure; },
+        replaceSnapshot: vi.fn(),
+      }),
+      signal: new AbortController().signal,
+    });
+    await expect(storage.synchronize(new AbortController().signal)).rejects.toBe(storageFailure);
+    await expect(storage.close()).resolves.toBeUndefined();
   });
 });

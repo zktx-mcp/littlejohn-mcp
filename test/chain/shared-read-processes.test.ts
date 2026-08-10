@@ -25,6 +25,7 @@ import {
 } from "../../src/chain/canonical-block.js";
 import { validateConfiguredChain } from "../../src/chain/configured-chain.js";
 import { createErc20CallEncoder } from "../../src/chain/evm-standard.js";
+import { ChainOperationError, getChainOperationFailure } from "../../src/chain/errors.js";
 import {
   createChainInvocationLifecycle,
   type ChainInvocationContext,
@@ -383,8 +384,76 @@ describe("shared chain read processes", () => {
       });
       await expect(officialPort.verifyManyAtBlock([member], block, context)).resolves.toEqual([{
         status: "unavailable",
+        member,
         reason: "chain_response_unavailable",
       }]);
+    });
+    await lifecycle.close();
+  });
+
+  it("drains a failed StockFactory batch and selects whole-request failure by member order", async () => {
+    const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
+    const issuanceRpc = new RecordingRpc((method) => method === "eth_chainId"
+      ? "0x1237"
+      : { number: "0x2c", hash: blockHash, timestamp: "0x687787a4" });
+    let codeReads = 0;
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    let releaseFirst!: () => void;
+    const firstRelease = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const members = [
+      officialAssetSourceMemberSchema.parse({
+        assetUid: parseHash32(`0x${"21".repeat(32)}`),
+        contractAddress: `0x${"31".repeat(20)}`,
+      }),
+      officialAssetSourceMemberSchema.parse({
+        assetUid: parseHash32(`0x${"22".repeat(32)}`),
+        contractAddress: `0x${"32".repeat(20)}`,
+      }),
+    ];
+    const stateRpc: RpcRequester = {
+      async request(method, params) {
+        if (method === "eth_getCode") {
+          codeReads += 1;
+          return codeReads === 1
+            ? stockFactoryProxyCodeFixture
+            : stockFactoryImplementationCodeFixture;
+        }
+        if (method === "eth_getStorageAt") {
+          return `0x${"0".repeat(24)}${stockFactoryAdmissionManifest.implementationAddress.slice(2)}`;
+        }
+        if (method === "eth_call") {
+          const call = params[0] as { readonly data: string };
+          if (call.data.endsWith(members[0]!.assetUid.slice(2))) {
+            markFirstStarted();
+            await firstRelease;
+            throw new ChainRpcError("runtime_busy");
+          }
+          await firstStarted;
+          throw new ChainOperationError("runtime_state_unavailable");
+        }
+        throw new TypeError(`Unexpected StockFactory RPC method: ${method}.`);
+      },
+    };
+    const officialPort = createOfficialAssetChainReadPort({ rpc: stateRpc, chainId, lifecycle });
+
+    await lifecycle.run(new AbortController().signal, async (context) => {
+      const block = await resolveConfiguredCanonicalBlock({
+        rpc: issuanceRpc,
+        chainId,
+        selector: { kind: "number", blockNumber: parseUnsignedDecimal("44") },
+        context,
+      });
+      let settled = false;
+      const pending = officialPort.verifyManyAtBlock(members, block, context).finally(() => {
+        settled = true;
+      });
+      await firstStarted;
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(settled).toBe(false);
+      releaseFirst();
+      await expect(pending).rejects.toSatisfy((error: unknown) =>
+        getChainOperationFailure(error)?.error.code === "runtime_busy");
     });
     await lifecycle.close();
   });

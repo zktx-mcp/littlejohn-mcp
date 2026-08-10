@@ -105,6 +105,19 @@ export const StockTokenInformationDialog = ({
             <p className="limitation" role="status" key={warning}>{warning}</p>
           ))}
         </section>
+        {row !== undefined && row.limitations.length > 0 ? (
+          <section
+            className="analysis-limitations"
+            aria-labelledby="stock-token-limitations-heading"
+          >
+            <h2 id="stock-token-limitations-heading">Balance limitation</h2>
+            {row.limitations.map((limitation) => (
+              <p className="limitation" role="status" key={limitation.code}>
+                {limitation.message}
+              </p>
+            ))}
+          </section>
+        ) : null}
         <section
           className="analysis-target"
           aria-labelledby="stock-token-target-heading"

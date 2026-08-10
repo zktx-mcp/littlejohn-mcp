@@ -66,6 +66,8 @@ export {
   projectAccountAssetExactView,
 } from "./view.js";
 export type {
+  AccountAssetExactLimitation,
+  AccountAssetExactView,
   AccountAssetQuantityView,
   AccountAssetRowView,
 } from "./view.js";

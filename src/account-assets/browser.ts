@@ -43,6 +43,8 @@ export {
   accountAssetControlRoutes,
 } from "./http-contract.js";
 export type {
+  AccountAssetExactLimitation,
+  AccountAssetExactView,
   AccountAssetQuantityView,
   AccountAssetRowView,
 } from "./view.js";

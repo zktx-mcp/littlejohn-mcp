@@ -19,7 +19,6 @@ import {
   extendWalletRuntimeSupportManifest,
 } from "../../src/runtime/support-manifest.js";
 import { createTokenCatalogApplicationFactory } from "../../src/token-catalog/application-factory.js";
-import { createTokenCatalogFailure } from "../../src/token-catalog/errors.js";
 import { getTokenCatalogOperationFailure } from "../../src/token-catalog/operation-error.js";
 import type {
   TokenCatalogCoordinatorDependencies,
@@ -71,7 +70,7 @@ const officialAssets = Object.freeze({
   synchronize: async () => Object.freeze({
     status: "unavailable" as const,
     storedRevision: null,
-    failure: createTokenCatalogFailure("runtime_state_unavailable"),
+    reason: "runtime_state_unavailable" as const,
   }),
   readStored: () => undefined,
   close: async (): Promise<void> => undefined,
@@ -179,7 +178,7 @@ describe("token catalog application factory", () => {
           resolve(Object.freeze({
             status: "unavailable",
             storedRevision: null,
-            failure: createTokenCatalogFailure("request_aborted"),
+            reason: "request_aborted",
           }));
         }, { once: true });
       }),

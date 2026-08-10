@@ -3,6 +3,8 @@ export {
   officialAssetCandidateSchema,
   officialAssetSnapshotEvidenceSchema,
   officialAssetSnapshotRevisionSchema,
+  officialAssetSourceClassificationUnavailableReasons,
+  officialAssetSourceClassificationUnavailableReasonSchema,
   officialAssetSourceDefinition,
   officialAssetSourceLabelSchema,
   officialAssetSourceMemberSchema,
@@ -10,8 +12,6 @@ export {
   stockFactoryAdmissionManifest,
   stockFactoryClassificationUnavailableReasons,
   stockFactoryClassificationUnavailableReasonSchema,
-  stockFactoryVerificationErrorCodeSchema,
-  stockFactoryVerificationFailureDefinitions,
   stockFactoryVerificationSchema,
 } from "./official-asset-contract.js";
 export type {
@@ -19,9 +19,10 @@ export type {
   OfficialAssetCandidate,
   OfficialAssetSnapshotEvidence,
   OfficialAssetSnapshotRevision,
+  OfficialAssetSourceClassificationUnavailableReason,
   OfficialAssetSourceMember,
   OfficialAssetSourceSnapshot,
+  OfficialAssetSourceUnavailableReason,
   StockFactoryClassificationUnavailableReason,
   StockFactoryVerification,
-  StockFactoryVerificationErrorCode,
 } from "./official-asset-contract.js";

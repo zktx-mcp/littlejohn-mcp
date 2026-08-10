@@ -205,6 +205,27 @@ const copyForCode = (
         summary: `${task.subject} could not be loaded because a required data source is unavailable.`,
         recovery: "Try again.",
       });
+    case "official_asset_response_unavailable":
+      return Object.freeze({
+        summary: `A complete official Stock Token source response was not obtained for ${task.request}.`,
+        recovery: "Try again.",
+      });
+    case "official_asset_response_too_large":
+      return Object.freeze({
+        summary: `The official Stock Token source response for ${task.request} exceeded Little John's supported size.`,
+      });
+    case "factory_identity_mismatch":
+      return Object.freeze({
+        summary: "The StockFactory deployment identity did not match the admitted identity.",
+      });
+    case "token_code_missing":
+      return Object.freeze({
+        summary: "No runtime code was found at the mapped token address.",
+      });
+    case "token_identity_mismatch":
+      return Object.freeze({
+        summary: "The StockFactory UID mapping did not match the official token address.",
+      });
     case "chain_response_unavailable":
       return Object.freeze({
         summary: `${task.subject} could not be loaded because a complete chain response was not obtained.`,

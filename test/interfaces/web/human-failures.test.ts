@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   browserErrorCodes,
+  parseBrowserProblemDetails,
   type BrowserErrorCode,
 } from "../../../src/interfaces/browser-error-response.js";
 import {
@@ -14,6 +15,11 @@ import {
   presentBrowserRequestFailure,
   presentHumanFailure,
 } from "../../../src/interfaces/web/human-failures.js";
+import { toProblemDetails } from "../../../src/runtime/index.js";
+import {
+  createTokenCatalogFailure,
+  tokenCatalogInterfaceErrorMappings,
+} from "../../../src/token-catalog/errors.js";
 
 const responseFailure = (
   code: BrowserErrorCode,
@@ -32,6 +38,47 @@ const responseFailure = (
 });
 
 describe("human browser failure projection", () => {
+  it("keeps official-source and StockFactory recovery aligned with canonical retryability", () => {
+    const expected = {
+      official_asset_response_unavailable: {
+        retryable: true,
+        recovery: "Try again.",
+      },
+      official_asset_response_too_large: {
+        retryable: false,
+        recovery: undefined,
+      },
+      factory_identity_mismatch: {
+        retryable: false,
+        recovery: undefined,
+      },
+      token_code_missing: {
+        retryable: false,
+        recovery: undefined,
+      },
+      token_identity_mismatch: {
+        retryable: false,
+        recovery: undefined,
+      },
+    } as const;
+
+    for (const [code, contract] of Object.entries(expected)) {
+      const problem = toProblemDetails(
+        createTokenCatalogFailure(code),
+        tokenCatalogInterfaceErrorMappings,
+      );
+      const presentation = presentHumanFailure("stock_token_change", {
+        kind: "response_problem",
+        problem: parseBrowserProblemDetails(problem, problem.status),
+      });
+
+      expect({
+        retryable: presentation.retryable,
+        recovery: presentation.recovery,
+      }).toEqual(contract);
+    }
+  });
+
   it("covers every current browser code in every task context without copying canonical detail", () => {
     for (const context of humanFailureTaskContexts) {
       for (const code of browserErrorCodes) {

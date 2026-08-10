@@ -1,13 +1,11 @@
 import type { ChainAnchor } from "../core/index.js";
-import type {
-  OfficialAssetSourceMember,
-  StockFactoryClassificationUnavailableReason,
-  StockFactoryVerification,
-} from "../registry/official-asset-contract.js";
 import {
-  createStockFactoryVerifier,
-  getStockFactoryVerificationErrorCode,
-} from "../registry/stock-factory.js";
+  assertOfficialAssetSourceMember,
+  assertStockFactoryVerificationResult,
+  type OfficialAssetSourceMember,
+  type StockFactoryVerificationResult,
+} from "../registry/official-asset-contract.js";
+import { createStockFactoryVerifier } from "../registry/stock-factory.js";
 import type {
   ChainInvocationContext,
   ChainInvocationLifecycle,
@@ -16,7 +14,6 @@ import type { RpcRequester } from "./rpc.js";
 import {
   admitChainReadFailure,
   ChainOperationError,
-  createChainFailure,
 } from "./errors.js";
 import {
   readConfiguredCanonicalBlock,
@@ -28,20 +25,13 @@ export interface OfficialAssetChainReadPort {
     member: OfficialAssetSourceMember,
     block: CanonicalBlock,
     context: ChainInvocationContext,
-  ): Promise<StockFactoryVerification>;
+  ): Promise<StockFactoryVerificationResult>;
   verifyManyAtBlock(
     members: readonly OfficialAssetSourceMember[],
     block: CanonicalBlock,
     context: ChainInvocationContext,
-  ): Promise<readonly OfficialAssetVerificationResult[]>;
+  ): Promise<readonly StockFactoryVerificationResult[]>;
 }
-
-export type OfficialAssetVerificationResult =
-  | Readonly<{ status: "verified"; verification: StockFactoryVerification }>
-  | Readonly<{
-      status: "unavailable";
-      reason: StockFactoryClassificationUnavailableReason;
-    }>;
 
 const officialAssetVerificationConcurrency = 5;
 
@@ -51,24 +41,35 @@ export const createOfficialAssetChainReadPort = (input: Readonly<{
   lifecycle: ChainInvocationLifecycle;
 }>): OfficialAssetChainReadPort => {
   const verifyManyAtBlock = async (
-    members: readonly OfficialAssetSourceMember[],
+    memberInputs: readonly OfficialAssetSourceMember[],
     blockInput: CanonicalBlock,
     context: ChainInvocationContext,
-  ): Promise<readonly OfficialAssetVerificationResult[]> => {
+  ): Promise<readonly StockFactoryVerificationResult[]> => {
     input.lifecycle.assertActiveContext(context);
+    const members = memberInputs.map(assertOfficialAssetSourceMember);
     try {
       const block = readConfiguredCanonicalBlock({
         context,
         block: blockInput,
         chainId: input.chainId,
       });
-      const verifier = await createStockFactoryVerifier({
+      if (members.length === 0) return Object.freeze([]);
+      const initialization = await createStockFactoryVerifier({
         rpc: input.rpc,
         block: block.anchor,
         stateReference: block.stateReference,
         signal: context.signal,
       });
-      const results: OfficialAssetVerificationResult[] = [];
+      if (initialization.status === "unavailable") {
+        return Object.freeze(members.map((member) =>
+          assertStockFactoryVerificationResult({
+            status: "unavailable",
+            member,
+            reason: initialization.reason,
+          }),
+        ));
+      }
+      const results: StockFactoryVerificationResult[] = [];
       for (
         let start = 0;
         start < members.length;
@@ -76,21 +77,15 @@ export const createOfficialAssetChainReadPort = (input: Readonly<{
       ) {
         input.lifecycle.assertActiveContext(context);
         const batch = members.slice(start, start + officialAssetVerificationConcurrency);
-        const settled = await Promise.allSettled(batch.map((member) => verifier.verify(member)));
+        const settled = await Promise.allSettled(
+          batch.map((member) => initialization.verifier.verify(member)),
+        );
+        const failure = settled.find(
+          (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        if (failure !== undefined) throw failure.reason;
         for (const result of settled) {
-          if (result.status === "fulfilled") {
-            results.push(Object.freeze({
-              status: "verified",
-              verification: result.value,
-            }));
-            continue;
-          }
-          const reason = getStockFactoryVerificationErrorCode(result.reason);
-          if (reason === "request_aborted") throw result.reason;
-          results.push(Object.freeze({
-            status: "unavailable",
-            reason: reason ?? "source_inconsistent",
-          }));
+          if (result.status === "fulfilled") results.push(result.value);
         }
       }
       return Object.freeze(results);
@@ -107,17 +102,10 @@ export const createOfficialAssetChainReadPort = (input: Readonly<{
       context: ChainInvocationContext,
     ) => {
       const result = (await verifyManyAtBlock([member], block, context))[0];
-      if (result?.status === "verified") return result.verification;
-      const reason = result?.reason;
-      throw new ChainOperationError(
-        reason === "chain_response_unavailable" ||
-        reason === "rate_limited" ||
-        reason === "runtime_busy" ||
-        reason === "source_unavailable" ||
-        reason === "source_inconsistent"
-          ? createChainFailure(reason)
-          : createChainFailure("source_inconsistent"),
-      );
+      if (result === undefined) {
+        throw new TypeError("StockFactory single verification result is missing.");
+      }
+      return result;
     },
     verifyManyAtBlock,
   });

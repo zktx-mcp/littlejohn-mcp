@@ -35,6 +35,7 @@ import {
 import {
   stockTokenAddress,
   stockTokenBlock,
+  stockTokenExactBalanceInconsistentResult,
   stockTokenExactResult,
 } from "./stock-token-fixtures.js";
 
@@ -73,6 +74,50 @@ afterAll(() => {
 });
 
 describe("Stock Token information progressive presentation", () => {
+  it("keeps the exact balance limitation before target and control content", async () => {
+    const request: BrowserFetch = vi.fn(async () => new Response(
+      JSON.stringify(inspection),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    ));
+
+    render(
+      <StockTokenInformationDialog
+        presentation={{
+          status: "available",
+          result: stockTokenExactBalanceInconsistentResult,
+        }}
+        onClose={vi.fn()}
+        onRemove={vi.fn()}
+        onRetry={vi.fn()}
+        recoverSession={() => false}
+        request={request}
+      />,
+    );
+
+    const limitation = screen.getByText(
+      "ERC-8056 balance evidence is inconsistent with the adjusted balance.",
+    );
+    expect(limitation.closest('[role="status"]')).not.toBeNull();
+    expect(
+      limitation.compareDocumentPosition(
+        screen.getByRole("heading", { name: "Originating token target" }),
+      ) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(
+      limitation.compareDocumentPosition(
+        screen.getByRole("heading", { name: "Control summary" }),
+      ) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+
+    expect(await screen.findByText(/Exact source match/u)).toBeTruthy();
+    expect(screen.getByText(
+      "ERC-8056 balance evidence is inconsistent with the adjusted balance.",
+    )).toBeTruthy();
+  });
+
   it("keeps exact facts visible while the control summary is still loading", async () => {
     let resolveRequest: ((response: Response) => void) | undefined;
     const request = vi.fn<BrowserFetch>(async () =>

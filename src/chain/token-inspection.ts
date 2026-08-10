@@ -447,13 +447,17 @@ export const createTokenInspectionService = (input: {
             if (!inspection.ok) return inspection;
             const block = capturedBlocks.get(context);
             if (block === undefined) throw new ChainOperationError("internal_error");
-            const officialVerification = request.officialMember === null
+            const officialResult = request.officialMember === null
               ? null
               : await input.officialAssetReads.verifyAtBlock(
                   request.officialMember,
                   block,
                   context,
                 );
+            if (officialResult?.status === "unavailable") {
+              return createTokenCatalogFailure(officialResult.reason);
+            }
+            const officialVerification = officialResult?.verification ?? null;
             return Object.freeze({ inspection, officialVerification });
           } finally {
             captureContexts.delete(context);

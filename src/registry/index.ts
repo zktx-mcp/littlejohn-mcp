@@ -6,15 +6,19 @@ export {
   officialAssetCandidateSchema,
   officialAssetSnapshotEvidenceSchema,
   officialAssetSnapshotRevisionSchema,
+  officialAssetSourceClassificationUnavailableReasons,
+  officialAssetSourceClassificationUnavailableReasonSchema,
   officialAssetSourceDefinition,
+  officialAssetSourceFailureDefinitions,
   officialAssetSourceLabelSchema,
   officialAssetSourceMemberSchema,
   officialAssetSourceSnapshotSchema,
+  officialAssetSourceUnavailableReasons,
+  officialAssetSourceUnavailableReasonSchema,
   stockFactoryAdmissionManifest,
   stockFactoryClassificationUnavailableReasons,
   stockFactoryClassificationUnavailableReasonSchema,
-  stockFactoryVerificationErrorCodeSchema,
-  stockFactoryVerificationFailureDefinitions,
+  stockFactoryVerificationResultSchema,
   stockFactoryVerificationSchema,
 } from "./official-asset-contract.js";
 export type {
@@ -22,18 +26,19 @@ export type {
   OfficialAssetCandidate,
   OfficialAssetSnapshotEvidence,
   OfficialAssetSnapshotRevision,
+  OfficialAssetSourceClassificationUnavailableReason,
   OfficialAssetSourceMember,
   OfficialAssetSourceSnapshot,
+  OfficialAssetSourceUnavailableReason,
   StockFactoryClassificationUnavailableReason,
   StockFactoryVerification,
-  StockFactoryVerificationErrorCode,
+  StockFactoryVerificationResult,
 } from "./official-asset-contract.js";
 export {
   createRobinhoodOfficialAssetSourceClient,
 } from "./official-assets.js";
 export {
   assertRobinhoodOfficialAssetSourceObservation,
-  getRobinhoodOfficialAssetSourceErrorCode,
 } from "./official-asset-source-contract.js";
 export {
   defaultStockTokenManifest,
@@ -49,13 +54,13 @@ export type {
 export type {
   OfficialAssetSnapshotStore,
   RobinhoodOfficialAssetSourceClient,
+  RobinhoodOfficialAssetSourceReadResult,
 } from "./official-asset-source-contract.js";
 export {
   createStockFactoryVerifier,
-  getStockFactoryVerificationErrorCode,
-  StockFactoryVerificationError,
 } from "./stock-factory.js";
 export type {
   StockFactoryVerifier,
+  StockFactoryVerifierInitializationResult,
   StockFactoryVerifierInput,
 } from "./stock-factory.js";

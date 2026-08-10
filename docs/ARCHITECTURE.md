@@ -182,8 +182,8 @@ The current external integration classification is:
 | Ethereum JSON-RPC endpoint | Standard chain transport | `docs/PRODUCT_POLICY.md` owns chain identity; `chain` owns RPC methods, normalization, limits, and failures | `runtime` owns default selection, exact admitted URI bytes, and source identity; `src/chain/rpc-transport-target.ts` owns HTTPS target admission; `chain` owns the bounded requester | The chain application constructs the requester from the exact admitted URI and passes only chain-read ports to features |
 | Model Context Protocol | Binding product transport | The official MCP specification owns JSON-RPC transport meaning; this document's interface contract model and the canonical binding owners own Little John tool meaning | `src/interfaces/mcp.ts` owns official SDK server and stdio transport adaptation; role registries own their exact tool bindings | Interface composition constructs one MCP server from canonical bindings; replacing SDK details preserves the complete MCP identity and tool contracts |
 | WalletConnect | Binding product transport | `docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture | `wallet` owns SDK adaptation, project-ID validation, required namespace settings, metadata, SDK options, lifecycle, and provider defaults | The wallet application factory constructs one `WalletConnectClientPort` from opaque configuration received through runtime composition; other modules receive wallet product ports |
-| Robinhood official-asset API | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority; `officialAssetSourceDefinition` and the registry source contract own the exact source identity, normalized observations, failures, evidence, and storage ports | `src/registry/official-assets.ts` owns request and response admission, endpoint consumption, transport behavior, deadlines, and operational limits | Runtime composition constructs one source client; registry synchronization consumes the product-owned client and store ports; replacing the membership source changes the binding evidence authority |
-| Robinhood StockFactory | Binding source authority | `docs/EVIDENCE_POLICY.md` owns the independent UID-to-token-address proof meaning; `stockFactoryAdmissionManifest` and the registry verification contract own the admitted deployment identity and exact verification result | `src/registry/stock-factory.ts` owns StockFactory call and identity verification behind the pinned-block `OfficialAssetChainReadPort` in `src/chain/official-assets.ts`; common RPC configuration remains with the chain transport | The chain application constructs the port for account-asset and token-inspection composition; changing verification internals preserves the admitted identity, while changing the deployment or source owner changes the manifest and evidence authority |
+| Robinhood official-asset API | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority; `officialAssetSourceDefinition` and the registry source contract own the exact source identity, normalized observed-or-unavailable read result, evidence, and storage ports | `src/registry/official-assets.ts` owns request and response admission, endpoint consumption, transport behavior, deadlines, and operational limits | Runtime composition constructs one source client; registry synchronization consumes its value result and the product-owned store without an exception translation layer; replacing the membership source changes the binding evidence authority |
+| Robinhood StockFactory | Binding source authority | `docs/EVIDENCE_POLICY.md` owns the independent UID-to-token-address proof meaning; `stockFactoryAdmissionManifest` and the registry verification contract own the admitted deployment identity and identity-bearing verification result | `src/registry/stock-factory.ts` owns StockFactory call and identity verification behind the pinned-block `OfficialAssetChainReadPort` in `src/chain/official-assets.ts`; common RPC configuration remains with the chain transport | The chain application constructs the port and preserves the same result contract for single and batch reads used by account-assets and token inspection; changing verification internals preserves the admitted identity, while changing the deployment or source owner changes the manifest and evidence authority |
 | Chainlink Data Feeds | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority and evidence meaning; `referenceMarketManifest` owns the admitted directory identity and exact feed mappings; `docs/NUMERIC_POLICY.md` owns reference-price, cross-price, and candle meaning; `market-portfolio` and the canonical reference-market application contracts own admitted price and history result lifecycles | `src/chain/reference-market.ts` owns Data Feed call encoding, round admission, response validation, and batch fallback behind `ReferenceMarketChainReadPort`; common RPC configuration remains with the chain transport | The chain application constructs the port and runtime composition passes it to `market-portfolio`; changing a mapping changes the manifest, and replacing Chainlink with another source owner requires an accepted evidence or product-policy change |
 | Sourcify API v2 | Replaceable implementation provider | `intelligence` owns `ContractSourceVerificationPort`, its normalized results and failures, evidence requirements, and lifecycle | `src/intelligence/sourcify.ts` owns the origin, path, request and response admission, deadline, response-size and concurrency limits, cleanup, and provider identity | Runtime composition constructs one Sourcify adapter and passes only `ContractSourceVerificationPort` to the shared contract-analysis process |
 | Uniswap V2 | Binding protocol identity | `docs/PROTOCOL_ADAPTERS.md` and `src/protocols/uniswap-v2` own the exact V2 package, deployment records, native mapping, and capability registration; `docs/NUMERIC_POLICY.md` owns numeric meaning and `docs/EVIDENCE_POLICY.md` owns evidence meaning | `src/protocols/uniswap-v2/sdk.ts` owns the pinned Uniswap SDK loading and admission boundary; the package owns immutable deployment and route-asset records | Runtime composition constructs the statically registered V2 package once and passes only its canonical quote binding to interfaces |
@@ -676,6 +676,11 @@ projection, account watchlists, and account token-selection state. The exact
 table names and their SQL relationships are read from the SQLite schema owner,
 not maintained as an independent documentation contract.
 
+An official-asset snapshot stores the exact admitted source URI with its source
+observation and members. Snapshot replacement writes that URI, and every
+subsequent read admits the stored value through the same snapshot contract; the
+database never reconstructs provenance from the current build constant.
+
 The connection projection includes one secret-free `revalidation_required`
 boolean. It records only a contradiction or ambiguous product write that
 Little John itself admitted and that the SDK may not retain. It is not a session copy,
@@ -713,7 +718,10 @@ successor owner.
 The account-assets application is the sole owner of the connected-account asset
 read. On a first-page read it atomically captures the active wallet and attempts
 one bounded official-source synchronization before entering one chain
-invocation. That invocation resolves one opaque canonical block, initializes
+invocation. Synchronization returns either the committed snapshot or the exact
+unavailable reason and retained stored revision; persistence and other local
+failures are not translated into that result. The invocation resolves one
+opaque canonical block, initializes
 the exact ordered defaults once for that account after verifying them at that
 block, and reads one bounded included-selection page at the same block. Default
 initialization is one optional atomic mutation: if any missing default cannot be
@@ -732,10 +740,15 @@ correlation value does not invalidate an in-flight read; a different value does.
 Owner close or process restart removes the correlation and requires a fresh
 overview or first page. Each visible official
 member is verified against StockFactory before it is classified as a Robinhood
-Stock Token. An unavailable official snapshot retains only its admitted source
-outcome and stored revision, while a current member whose StockFactory
-verification is unavailable retains that member and verification outcome as a
-different classification cause. The account-assets view derives one human
+Stock Token. Single and batch verification use the same identity-bearing result;
+the account-assets owner rejects a missing, duplicate, unexpected, reordered,
+or member-mismatched result instead of recovering identity from array position.
+An unavailable official snapshot retains only its admitted source outcome and
+stored revision, while a current member whose StockFactory verification is
+unavailable retains that member and verification outcome as a different
+classification cause. Caller cancellation, runtime request capacity, and owner
+closure fail the whole account read and do not publish a partial classification.
+The account-assets view derives one human
 identity and classification presentation from that admitted result; Browser and
 CLI consumers use that projection without reconstructing a name, membership, or
 failure explanation. The application reads ERC-20 metadata, raw balance,

@@ -114,6 +114,7 @@ const createState = async (
   additionChainReads = createAdditionChainReads(),
   onRegister?: () => void,
   captureError?: () => Error | undefined,
+  officialContractAddress = `0x${"56".repeat(20)}`,
 ) => {
   const directory = await mkdtemp(resolve(tmpdir(), "littlejohn-token-coordinator-"));
   directories.push(directory);
@@ -135,18 +136,20 @@ const createState = async (
   let liveConnectionRevision = connection.revision;
   const controller = new AbortController();
   const catalogStore = database.tokenCatalogStore();
-  const observation = await createRobinhoodOfficialAssetSourceClient({
+  const sourceResult = await createRobinhoodOfficialAssetSourceClient({
     fetch: (async () => new Response(JSON.stringify({
       assets: [{
         id: `0x${"11".repeat(32)}`,
         status: "ASSET_STATUS_ACTIVE",
-        deployments: [{ chainId: 4663, contractAddress: `0x${"56".repeat(20)}` }],
+        deployments: [{ chainId: 4663, contractAddress: officialContractAddress }],
         tokenName: "Unrelated Stock Token",
         tokenSymbol: "OTHER",
       }],
     }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch,
     now: () => new Date(currentTime),
   }).read(controller.signal);
+  if (sourceResult.status !== "observed") throw new Error("Expected source observation.");
+  const observation = sourceResult.observation;
   const officialSnapshot = database.officialAssetSnapshotStore().replaceSnapshot(observation, null);
   const operationStore = onRegister === undefined
     ? catalogStore
@@ -345,6 +348,36 @@ describe("token catalog operation coordinator", () => {
       await state.coordinator.cancel(started.operation.operationId);
     }
     state.coordinator.close();
+    state.database.close();
+  });
+
+  it("preserves member and whole-request verification failures without creating an operation", async () => {
+    let failureCode = "token_identity_mismatch";
+    const state = await createState(Object.freeze({
+      async inspectAndVerifyOfficial(
+        request: Parameters<TokenAdditionChainReadPort["inspectAndVerifyOfficial"]>[0],
+      ) {
+        expect(request.officialMember?.contractAddress).toBe(tokenAddress);
+        return createTokenCatalogFailure(failureCode);
+      },
+    }), undefined, undefined, tokenAddress);
+
+    for (const code of ["token_identity_mismatch", "runtime_busy"] as const) {
+      failureCode = code;
+      await expect(startAddition(state.coordinator, {
+        asset: { kind: "erc20", chainId, address: tokenAddress },
+      }, "web")).resolves.toMatchObject({
+        ok: false,
+        error: { code, ...(code === "runtime_busy" ? { retryable: true } : {}) },
+      });
+      expect(state.coordinator.getCurrentOperation()).toBeNull();
+    }
+    expect(state.database.tokenCatalogStore().listSelections({
+      account: { chainId, address: walletAddress },
+      limit: tokenCatalogContractLimits.listMaximumLimit,
+      cursor: null,
+    }).selections).toEqual([]);
+    await state.coordinator.close();
     state.database.close();
   });
 

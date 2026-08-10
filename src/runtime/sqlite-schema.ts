@@ -11,6 +11,7 @@ import {
   walletConnectionStatusDefinitions,
 } from "../core/index.js";
 import { tokenCatalogContractLimits } from "../token-catalog/contracts.js";
+import { officialAssetSourceDefinition } from "../registry/official-asset-contract.js";
 import {
   runtimeConfigurationMacByteLength,
   runtimeIdentifierByteLength,
@@ -226,6 +227,7 @@ CREATE TABLE reference_feed_sync_state (
 ) STRICT, WITHOUT ROWID;
 CREATE TABLE robinhood_asset_snapshot (
   chain_id TEXT NOT NULL PRIMARY KEY CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
+  source_uri TEXT NOT NULL CHECK (source_uri = ${sqlString(officialAssetSourceDefinition.sourceUri)}),
   source_observed_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("source_observed_at")}),
   raw_response_digest TEXT NOT NULL CHECK (${canonicalHash32SqlCheck("raw_response_digest")}),
   member_set_digest TEXT NOT NULL CHECK (${canonicalHash32SqlCheck("member_set_digest")}),

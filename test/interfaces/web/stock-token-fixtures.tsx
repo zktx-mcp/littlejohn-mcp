@@ -2,6 +2,7 @@ import {
   accountAssetApplicationContracts,
   accountAssetOverviewQueryContract,
 } from "../../../src/account-assets/browser.js";
+import { createAccountAssetAmount } from "../../../src/account-assets/contracts.js";
 import {
   officialAssetCandidateListDigest,
 } from "../../../src/registry/official-asset-contract.js";
@@ -10,6 +11,7 @@ import {
   parseEvmAddressInput,
   parseHash32,
   requiredErc8056ObservationSchema,
+  scaledUiAmountScale,
   tokenStandardObservationResultSchema,
   utcTimestampSchema,
 } from "../../../src/core/browser.js";
@@ -164,6 +166,67 @@ export const stockTokenExactResult =
           { standardId: "erc8056_conversion", status: "unknown" },
           { standardId: "erc8056_balances", status: "unknown" },
         ],
+      }),
+    },
+  );
+
+const stockTokenBalanceRequiredStandards = requiredErc8056ObservationSchema.parse({
+  asset: stockTokenAsset,
+  block: stockTokenBlock,
+  erc165: { standardId: "erc165", status: "supported" },
+  erc8056: { standardId: "erc8056", status: "supported" },
+  pendingMultiplier: {
+    standardId: "erc8056_pending_multiplier",
+    status: "supported",
+  },
+  values: {
+    currentMultiplier: scaledUiAmountScale,
+    pendingMultiplier: scaledUiAmountScale,
+    pendingEffectiveAt: "0",
+  },
+});
+
+export const stockTokenExactBalanceInconsistentResult =
+  accountAssetApplicationContracts.exact.parsePublicSuccess(
+    {
+      asset: stockTokenAsset,
+      viewRevision: stockTokenViewRevision,
+    },
+    {
+      ...stockTokenExactResult,
+      asset: {
+        ...stockTokenExactResult.asset,
+        amount: createAccountAssetAmount({
+          raw: "5",
+          decimals: "0",
+          multiplier: scaledUiAmountScale,
+        }),
+        requiredStandards: stockTokenBalanceRequiredStandards,
+      },
+      standards: tokenStandardObservationResultSchema.parse({
+        asset: stockTokenAsset,
+        account: stockTokenAccount,
+        block: stockTokenBlock,
+        standards: [
+          { standardId: "erc20_read_surface", status: "observed" },
+          { standardId: "erc165", status: "supported" },
+          { standardId: "erc8056", status: "supported" },
+          {
+            standardId: "erc8056_pending_multiplier",
+            status: "supported",
+          },
+          { standardId: "erc8056_conversion", status: "not_supported" },
+          { standardId: "erc8056_balances", status: "inconsistent" },
+        ],
+        requiredErc8056: stockTokenBalanceRequiredStandards.values,
+        balanceOfUi: "6",
+        calculatedBalance: {
+          status: "available",
+          raw: "5",
+          multiplier: scaledUiAmountScale,
+          scale: scaledUiAmountScale,
+          adjustedRaw: "5",
+        },
       }),
     },
   );

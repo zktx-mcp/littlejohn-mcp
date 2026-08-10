@@ -45,7 +45,6 @@ import {
 import {
   createRobinhoodOfficialAssetSourceClient,
   createOfficialAssetSynchronization,
-  getRobinhoodOfficialAssetSourceErrorCode,
   type RobinhoodOfficialAssetSourceClient,
   type OfficialAssetSynchronizationPort,
 } from "../registry/index.js";
@@ -67,8 +66,6 @@ import type {
   InterfaceOwnerApplicationContext,
   InterfaceOwnerApplicationFactory,
 } from "../interfaces/application.js";
-import { createTokenCatalogFailure } from "../token-catalog/errors.js";
-import { normalizeTokenCatalogError } from "../token-catalog/operation-error.js";
 import {
   tokenCatalogCapabilityIds,
   tokenInspectCapability,
@@ -1066,15 +1063,6 @@ export class LocalRuntime {
               source,
               store: database.officialAssetSnapshotStore(),
               signal,
-              failureFor: (error) => {
-                const sourceCode = getRobinhoodOfficialAssetSourceErrorCode(error);
-                return sourceCode === undefined
-                  ? normalizeTokenCatalogError(error).failure
-                  : createTokenCatalogFailure(sourceCode);
-              },
-              abortedFailure: () => createTokenCatalogFailure(
-                signal.aborted ? "runtime_state_unavailable" : "request_aborted",
-              ),
             });
             const application = await createTokenCatalogApplicationFactory({
               routes,

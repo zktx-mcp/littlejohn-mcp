@@ -75,7 +75,6 @@ export type { TokenInspectionService } from "./token-inspection.js";
 export { readTokenMetadataAtBlock } from "./token-metadata.js";
 export { createOfficialAssetChainReadPort } from "./official-assets.js";
 export type { OfficialAssetChainReadPort } from "./official-assets.js";
-export type { OfficialAssetVerificationResult } from "./official-assets.js";
 export { createAccountAssetChainReadPort } from "./account-assets.js";
 export type {
   AccountAssetChainReadPort,

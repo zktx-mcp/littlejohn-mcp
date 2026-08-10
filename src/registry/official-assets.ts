@@ -1,3 +1,4 @@
+import type { ReadableStreamReadResult } from "node:stream/web";
 import { z } from "zod";
 
 import {
@@ -22,10 +23,11 @@ import {
 } from "./official-asset-contract.js";
 import {
   admitRobinhoodOfficialAssetSourceObservation,
-  getRobinhoodOfficialAssetSourceErrorCode,
-  RobinhoodOfficialAssetSourceError,
+  officialAssetSourceObserved,
+  officialAssetSourceUnavailable,
   type RobinhoodOfficialAssetSourceClient,
-  type RobinhoodOfficialAssetSourceObservation,
+  type RobinhoodOfficialAssetSourceReadResult,
+  type RobinhoodOfficialAssetSourceUnavailableResult,
 } from "./official-asset-source-contract.js";
 
 const robinhoodOfficialAssetSourceSettings = deepFreezeValue({
@@ -125,33 +127,29 @@ const normalizeSourceResponse = (
 const exactResponseDigest = (bytes: Uint8Array): Hash32 =>
   parseHash32(`0x${sha256Bytes(bytes)}`);
 
-const parseOfficialAssetSourceResponse = (
-  bytesInput: Uint8Array,
+const parseProviderMembers = (
+  bytes: Uint8Array,
+): readonly OfficialAssetSourceMember[] | undefined => {
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return normalizeSourceResponse(JSON.parse(text) as unknown);
+  } catch {
+    return undefined;
+  }
+};
+
+const constructOfficialAssetSourceSnapshot = (
+  bytes: Uint8Array,
+  members: readonly OfficialAssetSourceMember[],
   observedAtInput: unknown,
 ): OfficialAssetSourceSnapshot => {
-  if (
-    !(bytesInput instanceof Uint8Array) ||
-    bytesInput.byteLength > robinhoodOfficialAssetSourceSettings.responseByteLimit
-  ) {
-    throw new TypeError("The official asset response exceeds its byte limit.");
+  if (!(bytes instanceof Uint8Array)) {
+    throw new TypeError("The official asset response body is invalid.");
   }
-  let text: string;
-  try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(bytesInput);
-  } catch {
-    throw new TypeError("The official asset response is not valid UTF-8.");
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text) as unknown;
-  } catch {
-    throw new TypeError("The official asset response is not valid JSON.");
-  }
-  const members = normalizeSourceResponse(parsed);
   return deepFreezeValue(officialAssetSourceSnapshotSchema.parse({
     sourceUri: officialAssetSourceDefinition.sourceUri,
     sourceObservedAt: parseUtcTimestamp(observedAtInput),
-    rawResponseDigest: exactResponseDigest(bytesInput),
+    rawResponseDigest: exactResponseDigest(bytes),
     memberSetDigest: officialAssetMemberSetDigest(members),
     candidateListDigest: officialAssetCandidateListDigest(members),
     chainId: officialAssetSourceDefinition.chainId,
@@ -163,63 +161,89 @@ const cancelResponseBody = (response: Response): void => {
   if (response.body !== null) void response.body.cancel().catch(() => undefined);
 };
 
-const assertContentType = (response: Response): void => {
+const hasJsonContentType = (response: Response): boolean => {
   const contentType = response.headers.get("content-type");
-  if (contentType === null || contentType.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-    cancelResponseBody(response);
-    throw new RobinhoodOfficialAssetSourceError("source_inconsistent");
-  }
+  return contentType !== null &&
+    contentType.split(";", 1)[0]?.trim().toLowerCase() === "application/json";
 };
+
+type BoundedResponseResult =
+  | Readonly<{ status: "complete"; bytes: Uint8Array }>
+  | RobinhoodOfficialAssetSourceUnavailableResult;
 
 const readBoundedResponse = async (
   response: Response,
   signal: AbortSignal,
-): Promise<Uint8Array> => {
+  callerSignal: AbortSignal,
+  deadlineReached: () => boolean,
+): Promise<BoundedResponseResult> => {
   const contentLength = response.headers.get("content-length");
   if (contentLength !== null) {
-    if (!/^(?:0|[1-9][0-9]*)$/u.test(contentLength) ||
-      BigInt(contentLength) > BigInt(robinhoodOfficialAssetSourceSettings.responseByteLimit)) {
+    if (!/^(?:0|[1-9][0-9]*)$/u.test(contentLength)) {
       cancelResponseBody(response);
-      throw new RobinhoodOfficialAssetSourceError("source_inconsistent");
+      return officialAssetSourceUnavailable("source_inconsistent");
+    }
+    if (BigInt(contentLength) > BigInt(robinhoodOfficialAssetSourceSettings.responseByteLimit)) {
+      cancelResponseBody(response);
+      return officialAssetSourceUnavailable("official_asset_response_too_large");
     }
   }
-  if (response.body === null) throw new RobinhoodOfficialAssetSourceError("source_inconsistent");
+  if (response.body === null) {
+    return officialAssetSourceUnavailable("source_inconsistent");
+  }
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
   try {
     while (true) {
-      if (signal.aborted) throw new RobinhoodOfficialAssetSourceError("request_aborted");
-      const part = await new Promise<Awaited<ReturnType<typeof reader.read>>>((resolve, reject) => {
-        let settled = false;
-        const finish = (action: () => void): void => {
-          if (settled) return;
-          settled = true;
-          signal.removeEventListener("abort", onAbort);
-          action();
-        };
-        const onAbort = (): void => finish(() => reject(new RobinhoodOfficialAssetSourceError("request_aborted")));
-        signal.addEventListener("abort", onAbort, { once: true });
-        reader.read().then(
-          (value) => finish(() => resolve(value)),
-          (error: unknown) => finish(() => reject(error)),
-        );
-      });
+      if (callerSignal.aborted) {
+        void reader.cancel().catch(() => undefined);
+        return officialAssetSourceUnavailable("request_aborted");
+      }
+      if (deadlineReached()) {
+        void reader.cancel().catch(() => undefined);
+        return officialAssetSourceUnavailable("official_asset_response_unavailable");
+      }
+      let part: ReadableStreamReadResult<Uint8Array>;
+      try {
+        part = await new Promise<ReadableStreamReadResult<Uint8Array>>((resolve, reject) => {
+          let settled = false;
+          const finish = (action: () => void): void => {
+            if (settled) return;
+            settled = true;
+            signal.removeEventListener("abort", onAbort);
+            action();
+          };
+          const onAbort = (): void => finish(() => reject(new DOMException(
+            "The official asset response was interrupted.",
+            "AbortError",
+          )));
+          signal.addEventListener("abort", onAbort, { once: true });
+          reader.read().then(
+            (value) => finish(() => resolve(value)),
+            (error: unknown) => finish(() => reject(error)),
+          );
+        });
+      } catch {
+        void reader.cancel().catch(() => undefined);
+        if (callerSignal.aborted) {
+          return officialAssetSourceUnavailable("request_aborted");
+        }
+        return officialAssetSourceUnavailable("official_asset_response_unavailable");
+      }
       if (part.done) break;
       if (!(part.value instanceof Uint8Array)) {
-        throw new RobinhoodOfficialAssetSourceError("source_inconsistent");
+        throw new TypeError("The official asset response stream produced a non-byte value.");
       }
       if (part.value.byteLength === 0) continue;
       total += part.value.byteLength;
       if (!Number.isSafeInteger(total) ||
         total > robinhoodOfficialAssetSourceSettings.responseByteLimit) {
-        throw new RobinhoodOfficialAssetSourceError("source_inconsistent");
+        void reader.cancel().catch(() => undefined);
+        return officialAssetSourceUnavailable("official_asset_response_too_large");
       }
       chunks.push(part.value);
     }
-  } catch (error) {
-    void reader.cancel().catch(() => undefined);
-    throw error;
   } finally {
     reader.releaseLock();
   }
@@ -229,7 +253,7 @@ const readBoundedResponse = async (
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return bytes;
+  return Object.freeze({ status: "complete", bytes });
 };
 
 interface RobinhoodOfficialAssetSourceClientOptions {
@@ -240,17 +264,17 @@ interface RobinhoodOfficialAssetSourceClientOptions {
 export const createRobinhoodOfficialAssetSourceClient = (
   options: RobinhoodOfficialAssetSourceClientOptions = {},
 ): RobinhoodOfficialAssetSourceClient => {
-  const fetchFn = options.fetch ?? fetch;
-  const now = options.now ?? (() => new Date());
+  const fetchFn = options.fetch === undefined ? fetch : options.fetch;
+  const now = options.now === undefined ? () => new Date() : options.now;
   if (typeof fetchFn !== "function" || typeof now !== "function") {
     throw new TypeError("Official asset source dependencies are invalid.");
   }
   return Object.freeze({
-    async read(callerSignal: AbortSignal): Promise<RobinhoodOfficialAssetSourceObservation> {
+    async read(callerSignal: AbortSignal): Promise<RobinhoodOfficialAssetSourceReadResult> {
       if (!(callerSignal instanceof AbortSignal)) {
         throw new TypeError("Official asset source abort signal is invalid.");
       }
-      if (callerSignal.aborted) throw new RobinhoodOfficialAssetSourceError("request_aborted");
+      if (callerSignal.aborted) return officialAssetSourceUnavailable("request_aborted");
       const deadline = new AbortController();
       let deadlineReached = false;
       const timer = setTimeout(() => {
@@ -259,38 +283,64 @@ export const createRobinhoodOfficialAssetSourceClient = (
       }, robinhoodOfficialAssetSourceSettings.responseDeadlineMs);
       timer.unref();
       const signal = AbortSignal.any([callerSignal, deadline.signal]);
+      let response: Response;
       try {
-        const response = await fetchFn(officialAssetSourceDefinition.sourceUri, {
+        response = await fetchFn(officialAssetSourceDefinition.sourceUri, {
           ...robinhoodOfficialAssetSourceSettings.request,
           signal,
         });
-        if (!(response instanceof Response)) {
-          throw new RobinhoodOfficialAssetSourceError("source_inconsistent");
-        }
-        if (response.status !== 200) {
-          cancelResponseBody(response);
-          throw new RobinhoodOfficialAssetSourceError("source_unavailable");
-        }
-        assertContentType(response);
-        const bytes = await readBoundedResponse(response, signal);
-        const observedAt = now();
-        if (!(observedAt instanceof Date) || !Number.isFinite(observedAt.getTime())) {
-          throw new RobinhoodOfficialAssetSourceError("source_inconsistent");
-        }
-        try {
-          const snapshot = parseOfficialAssetSourceResponse(bytes, observedAt.toISOString());
-          return admitRobinhoodOfficialAssetSourceObservation(snapshot);
-        } catch {
-          throw new RobinhoodOfficialAssetSourceError("source_inconsistent");
-        }
       } catch (error) {
-        if (callerSignal.aborted) throw new RobinhoodOfficialAssetSourceError("request_aborted");
-        if (deadlineReached) throw new RobinhoodOfficialAssetSourceError("source_unavailable");
-        if (getRobinhoodOfficialAssetSourceErrorCode(error) !== undefined) throw error;
-        throw new RobinhoodOfficialAssetSourceError("source_unavailable");
+        clearTimeout(timer);
+        if (callerSignal.aborted) return officialAssetSourceUnavailable("request_aborted");
+        if (deadlineReached) {
+          return officialAssetSourceUnavailable("official_asset_response_unavailable");
+        }
+        return officialAssetSourceUnavailable("official_asset_response_unavailable");
+      }
+      if (!(response instanceof Response)) {
+        clearTimeout(timer);
+        throw new TypeError("Official asset source returned an invalid response.");
+      }
+      if (response.status !== 200) {
+        cancelResponseBody(response);
+        clearTimeout(timer);
+        return officialAssetSourceUnavailable(
+          response.status === 429 ? "rate_limited" : "source_unavailable",
+        );
+      }
+      if (!hasJsonContentType(response)) {
+        cancelResponseBody(response);
+        clearTimeout(timer);
+        return officialAssetSourceUnavailable("source_inconsistent");
+      }
+      let body: BoundedResponseResult;
+      try {
+        body = await readBoundedResponse(
+          response,
+          signal,
+          callerSignal,
+          () => deadlineReached,
+        );
       } finally {
         clearTimeout(timer);
       }
+      if (body.status === "unavailable") return body;
+      const members = parseProviderMembers(body.bytes);
+      if (members === undefined) {
+        return officialAssetSourceUnavailable("source_inconsistent");
+      }
+      const observedAt = now();
+      if (!(observedAt instanceof Date) || !Number.isFinite(observedAt.getTime())) {
+        throw new TypeError("Official asset source clock returned an invalid value.");
+      }
+      const snapshot = constructOfficialAssetSourceSnapshot(
+        body.bytes,
+        members,
+        observedAt.toISOString(),
+      );
+      return officialAssetSourceObserved(
+        admitRobinhoodOfficialAssetSourceObservation(snapshot),
+      );
     },
   });
 };

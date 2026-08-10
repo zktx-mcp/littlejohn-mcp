@@ -70,6 +70,10 @@ import {
   type TokenStandardObservationStatus,
 } from "../core/browser.js";
 import { tokenCatalogErrorRegistry } from "./error-registry.js";
+import type {
+  OfficialAssetSourceUnavailableReason,
+  StockFactoryClassificationUnavailableReason,
+} from "../registry/browser.js";
 import {
   tokenCatalogInteractionInterfaces,
   tokenCatalogOperationKinds,
@@ -1319,11 +1323,20 @@ export type TokenCatalogCancellationResult = Readonly<{ operation: TokenCatalogT
 const contractFailureCodes = Object.freeze({
   selection: ["internal_error", "invalid_input", "runtime_state_unavailable", "token_selection_not_found", "wallet_not_connected", "wallet_session_unusable"],
   selections: ["internal_error", "invalid_input", "runtime_state_unavailable", "wallet_not_connected", "wallet_session_unusable"],
-  startAddition: ["chain_response_unavailable", "internal_error", "invalid_input", "not_found", "rate_limited", "request_aborted", "runtime_busy", "runtime_state_unavailable", "source_inconsistent", "source_unavailable", "state_conflict", "token_operation_conflict", "token_selection_already_included", "token_selection_revision_changed", "token_total_supply_reverted", "wallet_not_connected", "wallet_session_unusable"],
+  startAddition: ["chain_response_unavailable", "factory_identity_mismatch", "internal_error", "invalid_input", "not_found", "official_asset_response_too_large", "official_asset_response_unavailable", "rate_limited", "request_aborted", "runtime_busy", "runtime_state_unavailable", "source_inconsistent", "source_unavailable", "state_conflict", "token_code_missing", "token_identity_mismatch", "token_operation_conflict", "token_selection_already_included", "token_selection_revision_changed", "token_total_supply_reverted", "wallet_not_connected", "wallet_session_unusable"],
   startRemoval: ["internal_error", "invalid_input", "runtime_busy", "runtime_state_unavailable", "state_conflict", "token_operation_conflict", "token_selection_not_found", "token_selection_not_included", "token_selection_revision_changed", "wallet_not_connected", "wallet_session_unusable"],
   operation: ["internal_error", "invalid_input", "runtime_state_unavailable", "token_operation_not_found"],
   cancelOperation: ["internal_error", "invalid_input", "runtime_state_unavailable", "state_conflict", "token_operation_not_found"],
 } as const);
+
+const startAdditionExternalFailuresAreComplete: Exclude<
+  OfficialAssetSourceUnavailableReason | StockFactoryClassificationUnavailableReason,
+  (typeof contractFailureCodes.startAddition)[number]
+> extends never ? true : never = true;
+
+if (!startAdditionExternalFailuresAreComplete) {
+  throw new TypeError("Token addition external failure contract is incomplete.");
+}
 
 const confirmationFailureCodes = Object.freeze([
   "internal_error",

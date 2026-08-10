@@ -6,9 +6,6 @@ import {
   createRobinhoodOfficialAssetSourceClient,
 } from "../../src/registry/official-assets.js";
 import {
-  getRobinhoodOfficialAssetSourceErrorCode,
-} from "../../src/registry/official-asset-source-contract.js";
-import {
   officialAssetSourceDefinition,
 } from "../../src/registry/official-asset-contract.js";
 import {
@@ -35,14 +32,19 @@ const asset = (value: number, overrides: Record<string, unknown> = {}) => ({
 const bytes = (value: unknown): Uint8Array => Buffer.from(JSON.stringify(value), "utf8");
 const sha256 = (value: Uint8Array | string): string =>
   `0x${createHash("sha256").update(value).digest("hex")}`;
-const readSnapshot = async (body: Uint8Array) =>
-  await createRobinhoodOfficialAssetSourceClient({
-  fetch: (async () => new Response(body, {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  })) as typeof globalThis.fetch,
-  now: () => new Date(observedAt),
-}).read(new AbortController().signal);
+const readSnapshot = async (body: Uint8Array) => {
+  const result = await createRobinhoodOfficialAssetSourceClient({
+    fetch: (async () => new Response(body, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as typeof globalThis.fetch,
+    now: () => new Date(observedAt),
+  }).read(new AbortController().signal);
+  if (result.status !== "observed") {
+    throw new Error(`Expected an observed source result, received ${result.reason}.`);
+  }
+  return result.observation;
+};
 
 describe("official asset source", () => {
   it("accepts one complete response, normalizes ordering and addresses, and derives independent digests", async () => {
@@ -115,10 +117,15 @@ describe("official asset source", () => {
       ) },
     ];
     for (const response of invalidResponses) {
-      await expect(readSnapshot(bytes(response))).rejects.toSatisfy(
-        (error: unknown) =>
-          getRobinhoodOfficialAssetSourceErrorCode(error) === "source_inconsistent",
-      );
+      await expect(createRobinhoodOfficialAssetSourceClient({
+        fetch: (async () => new Response(bytes(response), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })) as typeof globalThis.fetch,
+      }).read(new AbortController().signal)).resolves.toEqual({
+        status: "unavailable",
+        reason: "source_inconsistent",
+      });
     }
   });
 
@@ -155,36 +162,40 @@ describe("official asset source", () => {
     expect(Reflect.ownKeys(client)).toEqual(["read"]);
     expect(Object.isFrozen(client)).toBe(true);
     await expect(client.read(new AbortController().signal)).resolves.toMatchObject({
-      sourceObservedAt: observedAt,
-      members: [{ assetUid: uid(1), contractAddress: address(1) }],
+      status: "observed",
+      observation: {
+        sourceObservedAt: observedAt,
+        members: [{ assetUid: uid(1), contractAddress: address(1) }],
+      },
     });
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
   it("rejects wrong media, status, and declared or streamed oversize without a partial snapshot", async () => {
     const cases = [
-      new Response("{}", { status: 500, headers: { "content-type": "application/json" } }),
-      new Response("{}", { status: 200, headers: { "content-type": "text/plain" } }),
-      new Response("{}", {
+      [new Response("{}", { status: 429, headers: { "content-type": "application/json" } }), "rate_limited"],
+      [new Response("{}", { status: 500, headers: { "content-type": "application/json" } }), "source_unavailable"],
+      [new Response("{}", { status: 200, headers: { "content-type": "text/plain" } }), "source_inconsistent"],
+      [new Response("{}", {
         status: 200,
         headers: {
           "content-type": "application/json",
           "content-length": String(expectedResponseByteLimit + 1),
         },
-      }),
-      new Response(new Uint8Array(expectedResponseByteLimit + 1), {
+      }), "official_asset_response_too_large"],
+      [new Response(new Uint8Array(expectedResponseByteLimit + 1), {
         status: 200,
         headers: { "content-type": "application/json" },
-      }),
-    ];
-    for (const response of cases) {
+      }), "official_asset_response_too_large"],
+    ] as const;
+    for (const [response, reason] of cases) {
       const client = createRobinhoodOfficialAssetSourceClient({
         fetch: (async () => response) as typeof globalThis.fetch,
       });
-      await expect(client.read(new AbortController().signal)).rejects.toSatisfy(
-        (error: unknown) =>
-          getRobinhoodOfficialAssetSourceErrorCode(error) !== undefined,
-      );
+      await expect(client.read(new AbortController().signal)).resolves.toEqual({
+        status: "unavailable",
+        reason,
+      });
     }
   });
 
@@ -198,12 +209,12 @@ describe("official asset source", () => {
           })) as typeof globalThis.fetch,
       });
       const pending = client.read(new AbortController().signal);
-      const rejection = expect(pending).rejects.toSatisfy(
-        (error: unknown) =>
-          getRobinhoodOfficialAssetSourceErrorCode(error) === "source_unavailable",
-      );
+      const result = expect(pending).resolves.toEqual({
+        status: "unavailable",
+        reason: "official_asset_response_unavailable",
+      });
       await vi.advanceTimersByTimeAsync(10_000);
-      await rejection;
+      await result;
     } finally {
       vi.useRealTimers();
     }
@@ -221,12 +232,12 @@ describe("official asset source", () => {
         })) as typeof globalThis.fetch,
       });
       const pending = client.read(new AbortController().signal);
-      const rejection = expect(pending).rejects.toSatisfy(
-        (error: unknown) =>
-          getRobinhoodOfficialAssetSourceErrorCode(error) === "source_unavailable",
-      );
+      const result = expect(pending).resolves.toEqual({
+        status: "unavailable",
+        reason: "official_asset_response_unavailable",
+      });
       await vi.advanceTimersByTimeAsync(10_000);
-      await rejection;
+      await result;
     } finally {
       vi.useRealTimers();
     }
@@ -243,10 +254,10 @@ describe("official asset source", () => {
           headers: { "content-type": "application/json" },
         })) as typeof globalThis.fetch,
       });
-      await expect(client.read(new AbortController().signal)).rejects.toSatisfy(
-        (error: unknown) =>
-          getRobinhoodOfficialAssetSourceErrorCode(error) === "source_inconsistent",
-      );
+      await expect(client.read(new AbortController().signal)).resolves.toEqual({
+        status: "unavailable",
+        reason: "source_inconsistent",
+      });
     }
 
     const controller = new AbortController();
@@ -254,10 +265,10 @@ describe("official asset source", () => {
     const client = createRobinhoodOfficialAssetSourceClient({
       fetch: (async () => { throw new Error("fetch must not start"); }) as typeof globalThis.fetch,
     });
-    await expect(client.read(controller.signal)).rejects.toSatisfy(
-      (error: unknown) =>
-        getRobinhoodOfficialAssetSourceErrorCode(error) === "request_aborted",
-    );
+    await expect(client.read(controller.signal)).resolves.toEqual({
+      status: "unavailable",
+      reason: "request_aborted",
+    });
 
     const activeController = new AbortController();
     const stalledClient = createRobinhoodOfficialAssetSourceClient({
@@ -268,9 +279,56 @@ describe("official asset source", () => {
     });
     const pending = stalledClient.read(activeController.signal);
     activeController.abort();
-    await expect(pending).rejects.toSatisfy(
-      (error: unknown) =>
-        getRobinhoodOfficialAssetSourceErrorCode(error) === "request_aborted",
+    await expect(pending).resolves.toEqual({
+      status: "unavailable",
+      reason: "request_aborted",
+    });
+  });
+
+  it("does not relabel invalid dependencies, responses, or clock values as source evidence", async () => {
+    expect(() => createRobinhoodOfficialAssetSourceClient({
+      fetch: null as never,
+    })).toThrow(TypeError);
+    expect(() => createRobinhoodOfficialAssetSourceClient({
+      now: null as never,
+    })).toThrow(TypeError);
+
+    const invalidResponseClient = createRobinhoodOfficialAssetSourceClient({
+      fetch: (async () => ({ status: 200 })) as unknown as typeof globalThis.fetch,
+    });
+    await expect(invalidResponseClient.read(new AbortController().signal)).rejects.toThrow(
+      "invalid response",
+    );
+
+    const invalidClockClient = createRobinhoodOfficialAssetSourceClient({
+      fetch: (async () => new Response(bytes({ assets: [asset(1)] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof globalThis.fetch,
+      now: () => new Date(Number.NaN),
+    });
+    await expect(invalidClockClient.read(new AbortController().signal)).rejects.toThrow(
+      "clock",
+    );
+
+    const nonByteResponse = new Response("{}", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+    Object.defineProperty(nonByteResponse, "body", {
+      value: {
+        getReader: () => ({
+          read: async () => ({ done: false, value: "not bytes" }),
+          cancel: async () => undefined,
+          releaseLock: () => undefined,
+        }),
+      },
+    });
+    const nonByteClient = createRobinhoodOfficialAssetSourceClient({
+      fetch: (async () => nonByteResponse) as typeof globalThis.fetch,
+    });
+    await expect(nonByteClient.read(new AbortController().signal)).rejects.toThrow(
+      "non-byte value",
     );
   });
 });
