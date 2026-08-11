@@ -607,8 +607,10 @@ to contain a malicious process already running with the same user authority.
 
 - Shared product state lives in local SQLite.
 - Runtime owns one immutable presentation-snapshot store in product SQLite.
-  It retains lossless canonical result bytes for exact App redisplay and is
-  never a domain input, evidence source, current-state cache, or CLI
+  It retains the lossless normalized canonical input and admitted canonical
+  result bytes required for exact App redisplay. The stored input is used only
+  to repeat the owning contract's result admission; it is never submitted to
+  domain execution or used as an evidence source, current-state cache, or CLI
   dependency.
 - View layout, disclosure, focus, scroll, and mount state are ephemeral Host
   state. Cookies, local storage, session storage, IndexedDB, Host widget
@@ -944,23 +946,32 @@ application logs, exports, and diagnostic bundles.
 
 ## Immutable Presentation Snapshot Ownership
 
-One Runtime-owned SQLite store retains exact admitted values for MCP App
-redisplay. A snapshot is a presentation replay cache. Domain applications,
-evidence owners, operation transitions, CLI projections, and support
-projection cannot read it or derive availability from it.
+One Runtime-owned SQLite store retains exact admitted input/result pairs for
+MCP App redisplay. A snapshot is a presentation replay cache. Domain
+applications, evidence owners, operation transitions, CLI projections, and
+support projection cannot read it, execute its stored input, or derive
+availability from it.
 
 The closed presentation registry binds an existing canonical contract object
-to its contract ID, contract version, parser, canonical serializer,
-deterministic MCP text projection, and typed renderer. It never reconstructs a
-contract from a string identifier. After the contract admits a value, the
-registry captures canonical JSON and encodes it once as UTF-8. One snapshot
-admits at most the canonical capability success boundary of `8,388,607` bytes.
+to its contract ID, contract version, input parser, public-result parser,
+canonical serializer, deterministic MCP text projection, and typed renderer.
+It never reconstructs a contract from a string identifier. After the contract
+normalizes and admits input and admits its correlated result, the registry
+captures each value as canonical JSON and encodes it once as UTF-8. Canonical
+input is at most the unchanged `65,536`-byte compatible-process request bound;
+canonical result is at most the canonical capability-success bound of
+`8,388,607` bytes. Raw MCP or HTTP envelopes, headers, Host metadata, user
+messages, credentials, WalletConnect material, and signing material are not
+snapshot input.
 
-For canonical bytes `B`, contract ID `C`, and decimal contract version `V`:
+For canonical input bytes `I`, canonical result bytes `R`, contract ID `C`,
+and decimal contract version `V`:
 
-- `contentDigest = lowercase_hex(SHA-256(B))`;
-- `identityInput` is `C`, NUL, `V`, NUL, the canonical decimal byte length,
-  NUL, and `contentDigest` concatenated in that order;
+- `inputDigest = lowercase_hex(SHA-256(I))`;
+- `resultDigest = lowercase_hex(SHA-256(R))`;
+- `identityInput` is `C`, NUL, `V`, NUL, the canonical decimal byte length of
+  `I`, NUL, `inputDigest`, NUL, the canonical decimal byte length of `R`, NUL,
+  and `resultDigest` concatenated in that order;
 - `identityDigest = lowercase_hex(SHA-256(UTF-8(identityInput)))`;
 - `snapshotId` is `sha256:` followed by `identityDigest`; and
 - `snapshotUri` is `littlejohn://presentation/snapshots/sha256/` followed by
@@ -969,21 +980,30 @@ For canonical bytes `B`, contract ID `C`, and decimal contract version `V`:
 Contract IDs cannot contain NUL and contract versions are positive canonical
 base-10 integers. The strict descriptor has kind
 `presentation_snapshot_descriptor` and contains only that kind, snapshot URI,
-snapshot ID, contract ID and version, canonical UTF-8 byte length, canonical
-content digest, chunk byte limit, and chunk count. The chunk byte limit is
-`65,536`; the chunk count is the ceiling of the byte length divided by that
-limit. Chunk indexes are zero-based. Every non-final chunk is exactly `65,536`
-raw bytes and the final chunk is the remaining nonempty slice. Chunks cover
-`B` once, in order, without overlap or gap.
+snapshot ID, contract ID and version, the input and result UTF-8 byte lengths
+and digests, result-chunk byte limit, and result-chunk count. The chunk byte
+limit is `65,536`; the chunk count is the ceiling of the result byte length
+divided by the limit. Chunk indexes are zero-based. Every non-final chunk is
+exactly `65,536` raw bytes and the final chunk is the remaining nonempty slice.
+Result chunks cover `R` once, in order without overlap or gap.
+
+The strict `presentation_snapshot_resource` contains only that kind, the
+descriptor, and the normalized canonical input value. Canonically serializing
+that input must reproduce the descriptor's input length and digest. The
+complete resource response must fit the unchanged internal compatible-process
+response limit. Snapshot admission checks this bound before insertion or
+advertising.
 
 Retention uses these two independent bounds:
 
 - at most `16,384` distinct snapshots; and
-- at most `536,870,912` aggregate canonical bytes.
+- at most `536,870,912` aggregate input-plus-result canonical bytes.
 
-Equal contract identity and canonical bytes reuse one row and do not refresh
-or mutate it. A new snapshot is admitted only when both post-insert bounds
-hold.
+Equal contract identity, canonical input bytes, and canonical result bytes
+reuse one row and do not refresh or mutate it. A new snapshot is admitted only
+when both post-insert bounds hold.
+The first product schema stores only this pair. There is no result-only row,
+compatibility reader, inferred input, or snapshot migration path.
 The owner checks identity, count, aggregate bytes, and insertion in one SQLite
 transaction. A collision, partial write, lease failure, capacity failure, or
 invalid existing row advertises no new snapshot. No snapshot is automatically
@@ -995,6 +1015,9 @@ ordinary MCP text or structured output, or CLI output. The affected App
 presentation reports `presentation_unavailable` and receives no durable-card
 claim. Its reason is exactly one of `capacity_exceeded`,
 `runtime_unavailable`, `snapshot_missing`, or `snapshot_inconsistent`.
+An input or result above its section bound, a snapshot resource above the
+internal response limit, or an insert above either retention bound is
+`capacity_exceeded`.
 Invalid request syntax remains the owning interface's `invalid_input` failure
 and is not converted into a presentation reason. Corruption, identifier
 mismatch, invalid canonical UTF-8 or JSON, contract-admission failure, and
@@ -1004,25 +1027,32 @@ readable. Existing SQLite schema mismatch keeps the reset behavior defined by
 [Local Persistence Boundary](#local-persistence-boundary).
 
 The creating MCP result keeps its canonical structured result. After snapshot
-commit it also carries the exact descriptor in View-private metadata and one
-standard MCP resource link to `snapshotUri`. `resources/read` accepts only
-that canonical URI and returns the bounded descriptor, never `B`.
+commit it also carries the exact snapshot resource in View-private metadata
+and one standard MCP resource link to `snapshotUri`. `resources/read` accepts
+only that canonical URI and returns the bounded snapshot resource, never `R`.
 `presentation_get_snapshot` is a pure model-visible tool that accepts only the
-exact URI, re-admits the retained value, and returns one strict
+exact URI, re-admits the retained input/result pair, and returns one strict
 `presentation_snapshot_reference` with the same link and descriptor; it copies
-no retained payload into its structured result.
+no retained payload into its structured result and attaches the exact snapshot
+resource only in View-private metadata.
 `presentation_get_snapshot_chunk` is App-only and accepts only an admitted
-snapshot ID and chunk index. It returns one strict
+snapshot ID and result-chunk index. It returns one strict
 `presentation_snapshot_chunk` containing that ID, index, and RFC 4648 Base64
-with required padding and no whitespace for the exact slice. Decoding and
-encoding again must reproduce the identical string. None of these owners
-exposes a current, latest, default, list, mount, or descriptor-free lookup.
+with required padding and no whitespace for the exact result slice.
+Decoding and encoding again must reproduce the identical string. None of these
+owners exposes a current, latest, default, list, mount, or descriptor-free
+lookup.
 
-The View validates the descriptor and snapshot identity, decodes each chunk
-as base64, joins raw bytes, verifies total length and content digest, performs
-one fatal UTF-8 decode, verifies canonical JSON, and re-admits the value
-through the same registry entry before renderer dispatch. JavaScript string
-indexes never own chunk boundaries.
+The View validates the snapshot resource, descriptor, and snapshot identity;
+canonically serializes and verifies the carried input; and parses that input
+through the registry entry. When the creating result carries a complete
+canonical structured result, the View canonically serializes it and verifies
+the descriptor's result length and digest. Otherwise it reconstructs the
+result through its exact sequential result chunks, decodes base64, joins raw
+bytes, verifies total length and digest, performs one fatal UTF-8 decode, and
+verifies canonical JSON. The same registry entry fully re-admits the correlated
+result before renderer dispatch. JavaScript string indexes never own chunk
+boundaries.
 
 ## Durable Operation Ownership
 
@@ -1137,18 +1167,17 @@ and SVG only and cannot make tool calls or configure lifecycle order.
 
 The immutable process admits one creating result or exact snapshot reference,
 selects the standard transport before an exact Host adapter, admits the linked
-descriptor, obtains and verifies the exact canonical value when necessary,
-dispatches through the presentation registry, and renders without polling or a
-domain read.
+snapshot resource, obtains and verifies the exact normalized input and canonical
+result, dispatches through the presentation registry, and renders without
+polling or a domain read.
 
-When the result carries the complete canonical structured value and
-descriptor, the View admits that value directly. When the descriptor is
-absent, the View may read only the exact linked descriptor and only when View
+When the result carries the complete canonical structured result and
+snapshot resource, the View uses both directly. When the resource is absent,
+the View may read only the exact linked snapshot resource and only when View
 initialization reports `serverResources`. A View that has neither a complete
-descriptor nor `serverResources` fails that presentation without guessing a
-descriptor or reading domain state. After descriptor admission, missing
-canonical bytes are obtained only through the exact sequential snapshot-chunk
-path.
+resource nor `serverResources` fails that presentation without guessing a
+descriptor or reading domain state. After resource admission, missing result
+bytes are obtained only through the exact sequential snapshot-chunk path.
 
 Both decision processes first admit the immutable Review and perform one
 immediate exact read of its reserved operation ID. `operation_not_found` means
@@ -1192,9 +1221,10 @@ state may optimize display but are not replay authority.
   list.
   Another canonical read remains MCP text and structured output plus CLI where
   declared; it does not enter a generic JSON View.
-- Each immutable card presents only its creating canonical result or exact
-  retained snapshot. It has no navigation shell, current-value refresh, global
-  dashboard, local HTTP request, domain read, or client-storage recovery.
+- Each immutable card presents only the canonical result correlated with its
+  creating normalized input or exact retained snapshot. It has no navigation
+  shell, current-value refresh, global dashboard, local HTTP request, domain
+  read, or client-storage recovery.
 - Fixed reference history may render accessible semantic HTML and SVG from its
   exact admitted candles and empty intervals. It never performs another price
   or history read and never treats chart coordinates as canonical values.
@@ -1379,8 +1409,10 @@ These values have separate authority and are never interchangeable:
   CLI to the loopback owner. It permits only the declared control resource and
   never proves a direct App or CLI decision, Wallet approval, signature, or
   transaction confirmation.
-- A presentation snapshot ID and URI select one immutable display value. They
-  are not credentials, evidence, operation identifiers, or action authority.
+- A presentation snapshot ID and URI select one immutable admitted
+  input/result pair whose result is displayed. They are not credentials,
+  evidence, operation identifiers, or action authority. The stored input may
+  validate the paired result but cannot initiate domain execution.
 - A reserved operation ID correlates an immutable Review with a possible
   future exact operation. It grants no action and is not stored until a direct
   decision is admitted.
@@ -1449,7 +1481,8 @@ external effect ordering, no-resend restart, QR lifetime, stable session
 restoration and invalidation, MCP App and CLI use of the same domain owners,
 native credential separation, Host adapter isolation and deletion conditions,
 snapshot identity,
-capacity, corruption, exact byte reconstruction and canonical re-admission,
+capacity, corruption, exact input/result reconstruction and full canonical
+re-admission,
 terminal observation stopping, request limits, token-selection and watchlist
 atomicity, account-assets continuity, reference-market evidence and history
 bounds, send-once delivery, owner takeover, and secret-leak boundaries.
