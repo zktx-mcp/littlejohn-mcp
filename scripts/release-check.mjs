@@ -17,7 +17,7 @@ assertSupportedNode();
 process.stdout.write("Preparing a clean repository install and staged tarball...\n");
 const prepared = await prepareReleasePackage(repositoryRoot);
 try {
-  process.stdout.write("Verifying packaged owner, deferred peers, MCP, CLI, HTTP, and React...\n");
+  process.stdout.write("Verifying packaged owner, deferred peers, MCP, MCP App, CLI, HTTP, and Browser...\n");
   await verifyPackagedIntegration(prepared);
   const tarballDigest = await sha256File(prepared.tarballPath);
   const outputPath = process.env["LITTLEJOHN_RELEASE_OUTPUT"];

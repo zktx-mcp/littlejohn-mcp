@@ -17,6 +17,7 @@ import {
   runtimeIdentifierByteLength,
 } from "./runtime-identity.js";
 import { walletConnectionFieldPresenceCheckSql } from "./wallet-connection-storage.js";
+import { presentationSnapshotLimits } from "./presentation-snapshot.js";
 
 const sqlIdentifierPattern = /^[a-z][a-z0-9_]*$/u;
 const base64UrlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -119,6 +120,12 @@ export const canonicalHash32SqlCheck = (columnInput: string): string => {
     `substr(${column}, 3) NOT GLOB '*[^0-9a-f]*')`;
 };
 
+export const canonicalSha256HexSqlCheck = (columnInput: string): string => {
+  const column = sqlColumn(columnInput);
+  return `(${canonicalSqlTextCheck(column)} AND length(${column}) = 64 AND ` +
+    `lower(${column}) = ${column} AND ${column} NOT GLOB '*[^0-9a-f]*')`;
+};
+
 export const canonicalSelectionRevisionSqlCheck = (columnInput: string): string =>
   canonicalBase64UrlSqlCheck(columnInput, tokenCatalogContractLimits.selectionRevisionBytes);
 
@@ -147,6 +154,40 @@ export const currentSqliteSchemaSql = `CREATE TABLE local_profile (
   profile_id TEXT NOT NULL UNIQUE CHECK (${canonicalRuntimeIdentifierSqlCheck("profile_id")}),
   created_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("created_at")})
 ) STRICT;
+CREATE TABLE presentation_snapshot (
+  snapshot_id TEXT NOT NULL PRIMARY KEY CHECK (
+    ${canonicalSqlTextCheck("snapshot_id")} AND length(snapshot_id) = 71 AND
+    substr(snapshot_id, 1, 7) = 'sha256:' AND lower(snapshot_id) = snapshot_id AND
+    substr(snapshot_id, 8) NOT GLOB '*[^0-9a-f]*'
+  ),
+  contract_id TEXT NOT NULL CHECK (
+    ${canonicalSqlTextCheck("contract_id")} AND length(contract_id) >= 1
+  ),
+  contract_version TEXT NOT NULL CHECK (
+    ${canonicalUnsignedDecimalSqlCheck("contract_version")} AND contract_version != '0'
+  ),
+  input_bytes BLOB NOT NULL CHECK (
+    typeof(input_bytes) = 'blob' AND length(input_bytes) BETWEEN 1 AND ${presentationSnapshotLimits.inputBytes}
+  ),
+  input_digest TEXT NOT NULL CHECK (${canonicalSha256HexSqlCheck("input_digest")}),
+  result_bytes BLOB NOT NULL CHECK (
+    typeof(result_bytes) = 'blob' AND length(result_bytes) BETWEEN 1 AND ${presentationSnapshotLimits.resultBytes}
+  ),
+  result_digest TEXT NOT NULL CHECK (${canonicalSha256HexSqlCheck("result_digest")}),
+  result_chunk_digests_json TEXT NOT NULL CHECK (
+    ${canonicalSqlTextCheck("result_chunk_digests_json")} AND
+    length(CAST(result_chunk_digests_json AS BLOB)) BETWEEN 68 AND
+      ${2 + Math.ceil(presentationSnapshotLimits.resultBytes /
+        presentationSnapshotLimits.resultChunkBytes) * 66 +
+        Math.ceil(presentationSnapshotLimits.resultBytes /
+          presentationSnapshotLimits.resultChunkBytes) - 1} AND
+    json_valid(result_chunk_digests_json) = 1 AND
+    json_type(result_chunk_digests_json) = 'array' AND
+    json_array_length(result_chunk_digests_json) BETWEEN 1 AND
+      ${Math.ceil(presentationSnapshotLimits.resultBytes /
+        presentationSnapshotLimits.resultChunkBytes)}
+  )
+) STRICT, WITHOUT ROWID;
 CREATE TABLE runtime_owner (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),

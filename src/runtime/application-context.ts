@@ -1,6 +1,7 @@
 import type {
   CapabilityBinding,
   CanonicalClock,
+  CanonicalJson,
   CapabilityInvocationAuthority,
   InvocationBoundaryPorts,
 } from "../core/index.js";
@@ -26,6 +27,17 @@ import type {
   WalletRuntimeSupportManifest,
 } from "./support-manifest.js";
 import type { WalletProjectionStore } from "./wallet-projection.js";
+
+export {
+  presentationSnapshotLimits,
+  presentationSnapshotUnavailableReasons,
+} from "./presentation-snapshot.js";
+export type {
+  PresentationSnapshotRecord,
+  PresentationSnapshotResult,
+  PresentationSnapshotStore,
+  PresentationSnapshotUnavailableReason,
+} from "./presentation-snapshot.js";
 
 export interface WalletCapabilityAuthorityPort {
   readonly clock: CanonicalClock;

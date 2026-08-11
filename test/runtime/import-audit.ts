@@ -63,6 +63,7 @@ export type ModuleSpecifierClass = "forbidden" | "node_builtin" | "package" | "r
 
 export interface PackageImportPolicy {
   readonly auditedSourceFiles: ReadonlySet<string>;
+  readonly buildPackageOwners: ReadonlyMap<string, ReadonlySet<string>>;
   readonly repositoryRoot: string;
   readonly runtimePackageOwners: ReadonlyMap<string, ReadonlySet<string>>;
   readonly toolPackages: ReadonlySet<string>;
@@ -87,6 +88,10 @@ export const runtimePackageSourceRoots = Object.freeze({
   "react-dom": ["src/interfaces"],
   viem: ["src/chain", "src/intelligence"],
   zod: ["src"],
+} satisfies Readonly<Record<string, readonly string[]>>);
+
+export const buildPackageSourceRoots = Object.freeze({
+  "@modelcontextprotocol/ext-apps": ["src/interfaces/mcp-app/view/main.ts"],
 } satisfies Readonly<Record<string, readonly string[]>>);
 
 interface SourceContext {
@@ -269,6 +274,7 @@ export const createPackageImportPolicy = (
 ): PackageImportPolicy => {
   const manifest = parsePackageManifest(manifestValue);
   const runtimePackageOwners = new Map<string, ReadonlySet<string>>();
+  const buildPackageOwners = new Map<string, ReadonlySet<string>>();
   for (const name of Object.keys(manifest.dependencies)) {
     const sourceRoots = runtimePackageSourceRoots[name as keyof typeof runtimePackageSourceRoots];
     if (sourceRoots === undefined || sourceRoots.length === 0) {
@@ -285,6 +291,16 @@ export const createPackageImportPolicy = (
       throw new TypeError(`Runtime package owner is undeclared: ${name}`);
     }
   }
+  for (const [name, sourceRoots] of Object.entries(buildPackageSourceRoots)) {
+    if (!Object.hasOwn(manifest.devDependencies, name)) {
+      throw new TypeError(`Build package owner is undeclared: ${name}`);
+    }
+    buildPackageOwners.set(
+      name,
+      new Set(sourceRoots.map((sourceRoot) =>
+        validatedSourceRoot(name, sourceRoot, repositoryRoot))),
+    );
+  }
   for (const name of Object.keys(manifest.devDependencies)) {
     if (Object.hasOwn(manifest.dependencies, name)) {
       throw new TypeError(`Package is both runtime and development dependency: ${name}`);
@@ -293,6 +309,7 @@ export const createPackageImportPolicy = (
 
   return {
     auditedSourceFiles: new Set(auditedSourceFiles.map((sourcePath) => resolve(sourcePath))),
+    buildPackageOwners,
     repositoryRoot,
     runtimePackageOwners,
     toolPackages: new Set(Object.keys(manifest.devDependencies)),
@@ -1306,9 +1323,11 @@ export const moduleImportPolicyViolations = (
 
     if (reference.packageRoot !== undefined) {
       const owners = policy.runtimePackageOwners.get(reference.packageRoot);
-      if (owners !== undefined) {
-        if (![...owners].some((owner) => isWithin(file, owner))) {
-          const ownerNames = [...owners]
+      const buildOwners = policy.buildPackageOwners.get(reference.packageRoot);
+      const admittedOwners = owners ?? buildOwners;
+      if (admittedOwners !== undefined) {
+        if (![...admittedOwners].some((owner) => isWithin(file, owner))) {
+          const ownerNames = [...admittedOwners]
             .map((owner) => relative(policy.repositoryRoot, owner).split(sep).join("/"))
             .join("|");
           violations.push(`${name}:${reference.packageRoot}:${ownerNames}`);

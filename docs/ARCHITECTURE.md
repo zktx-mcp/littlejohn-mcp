@@ -29,12 +29,19 @@ canonical wallet contracts without treating their methods, credentials, or
 mutation authority as interchangeable.
 
 A no-argument package process exposes one stdio MCP connection while sharing or
-taking over that HTTP owner. The interactive CLI and React application consume
-the same runtime-owned applications and state. Canonical binding catalogs and
-their role registries own exact MCP names, HTTP paths, CLI commands, browser
-locations, parsing, and availability. Help text, route coverage, capability
-catalogs, and the generated public support projection derive from those owners;
-this document does not maintain a second interface catalog.
+taking over that HTTP owner. On an admitted MCP Apps connection, the registered
+read tools retain one content-addressed input/result snapshot and attach one
+self-contained App resource without changing their MCP text or structured
+result. The standard transport is primary; the exact Codex and Claude transport
+adapters defined under [MCP Apps Integration Requirements](#mcp-apps-integration-requirements)
+are current only for their measured missing primitives. The interactive CLI and
+React application consume the same runtime-owned applications and state.
+Canonical binding catalogs and their role registries own exact MCP names, HTTP
+paths, CLI commands, browser locations, parsing, and availability. The closed
+App presentation registry owns its implemented contract set. Help text, route
+coverage, capability and presentation catalogs, and the generated public
+support projection derive from those owners; this document does not maintain a
+second interface catalog.
 
 The React application currently uses one persistent shell for Assets, Prices,
 and a selected reference-price detail, plus one shared modal host for explicit
@@ -51,7 +58,8 @@ browser-content policies, and canonical JSON rejects ill-formed Unicode before
 UTF-8 encoding.
 
 The runtime support manifest is the sole machine authority for implemented
-binding availability. Its deterministic public projection is
+binding availability and the implemented App presentation catalog. Its
+deterministic public projection is
 `docs/PRODUCT_POLICY.md#current-support`. Exact chain, protocol, evidence,
 numeric, transaction, and presentation meaning remains in each owning binding
 document rather than being restated in this Current State section.
@@ -184,6 +192,9 @@ The current external integration classification is:
 | --- | --- | --- | --- | --- |
 | Ethereum JSON-RPC endpoint | Standard chain transport | `docs/PRODUCT_POLICY.md` owns chain identity; `chain` owns RPC methods, normalization, limits, and failures | `runtime` owns default selection, exact admitted URI bytes, and source identity; `src/chain/rpc-transport-target.ts` owns HTTPS target admission; `chain` owns the bounded requester | The chain application constructs the requester from the exact admitted URI and passes only chain-read ports to features |
 | Model Context Protocol | Binding product transport | The official MCP specification owns JSON-RPC transport meaning; this document's interface contract model and the canonical binding owners own Little John tool meaning | `src/interfaces/mcp.ts` owns official SDK server and stdio transport adaptation; role registries own their exact tool bindings | Interface composition constructs one MCP server from canonical bindings; replacing SDK details preserves the complete MCP identity and tool contracts |
+| Model Context Protocol Apps | Binding product transport | The official MCP Apps specification owns resource and View transport meaning; Little John's canonical contracts own product results and this document owns presentation lifecycle | `src/interfaces/mcp-app` owns the self-contained resource, descriptor and chunk transport, View bridge, renderers, and narrow Host adapters; Runtime owns the immutable snapshot store | MCP composition attaches presentation only to contracts in the closed registry; replacing a Host adapter preserves the standard transport and every canonical result, while replacing the extension requires an accepted integration change |
+| Codex MCP App Host | Replaceable implementation provider | The MCP Apps integration requirements below own the provider-neutral Host role and the exact current Codex transport boundary | Local Codex configuration owns Host enablement; the Codex adapters under `src/interfaces/mcp-app` own only the measured missing transport facts defined below | The local stdio MCP connection and sandboxed View enter the common MCP Apps process; another Host may replace Codex only by satisfying that complete unchanged process |
+| Claude MCP App Host | Replaceable implementation provider | The MCP Apps integration requirements below own the provider-neutral Host role and the exact current Claude transport boundary | Local Claude configuration owns Host enablement; the Claude adapter under `src/interfaces/mcp-app` owns only the measured missing transport fact defined below | The local stdio MCP connection and sandboxed View enter the common MCP Apps process; another Host may replace Claude only by satisfying that complete unchanged process |
 | WalletConnect | Binding product transport | `docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture | `wallet` owns SDK adaptation, project-ID validation, required namespace settings, metadata, SDK options, lifecycle, and provider defaults | The wallet application factory constructs one `WalletConnectClientPort` from opaque configuration received through runtime composition; other modules receive wallet product ports |
 | Robinhood official-asset API | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority; `officialAssetSourceDefinition` and the registry source contract own the exact source identity, normalized observed-or-unavailable read result, evidence, and storage ports | `src/registry/official-assets.ts` owns request and response admission, endpoint consumption, transport behavior, deadlines, and operational limits | Runtime composition constructs one source client; registry synchronization consumes its value result and the product-owned store without an exception translation layer; replacing the membership source changes the binding evidence authority |
 | Robinhood StockFactory | Binding source authority | `docs/EVIDENCE_POLICY.md` owns the independent UID-to-token-address proof meaning; `stockFactoryAdmissionManifest` and the registry verification contract own the admitted deployment identity and identity-bearing verification result | `src/registry/stock-factory.ts` owns StockFactory call and identity verification behind the pinned-block `OfficialAssetChainReadPort` in `src/chain/official-assets.ts`; common RPC configuration remains with the chain transport | The chain application constructs the port and preserves the same result contract for single and batch reads used by account-assets and token inspection; changing verification internals preserves the admitted identity, while changing the deployment or source owner changes the manifest and evidence authority |
@@ -228,9 +239,12 @@ The admitted Host adapters are closed:
   capability;
 - the Codex View adapter unwraps only the measured single JSON text wrapper in
   exact `chatgpt` View Host identity; and
-- the Claude View adapter admits only the strict same-result descriptor from
+- the Claude View adapter admits the strict same-result snapshot resource from
   View-private metadata when exact `Claude` View Host identity omits the
-  standard result resource link.
+  standard result resource link, or reverses only Claude's measured exact
+  flattened snapshot-link text when that is the sole redelivered link form.
+  The flattened name and URI must carry the same snapshot digest before the
+  result rejoins standard resource admission.
 
 Each adapter supplies only the missing transport fact and then enters the same
 descriptor, byte, digest, canonical-admission, lifecycle, and renderer owners.

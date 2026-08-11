@@ -7,6 +7,7 @@ import Database from "better-sqlite3";
 
 import {
   canonicalJsonStringify,
+  captureCanonicalJson,
   canonicalBase64UrlSchema,
   compareCodePointSequences,
   createExactRational,
@@ -37,6 +38,7 @@ import {
   referenceSupportedPairIdSchema,
   referenceWatchlistRevisionSchema,
   referenceWatchlistSuccessSchema,
+  sha256Bytes,
   walletConnectionCapability,
   type CanonicalJson,
   type EvmAccountIdentity,
@@ -50,6 +52,13 @@ import {
   type UtcTimestamp,
   type WalletConnectionData,
 } from "../core/index.js";
+import {
+  presentationSnapshotLimits,
+  type PresentationSnapshotRecord,
+  type PresentationSnapshotResult,
+  type PresentationSnapshotStore,
+  type PresentationSnapshotUnavailableReason,
+} from "./presentation-snapshot.js";
 import {
   assertCommittedOfficialAssetSnapshot,
   assertRobinhoodOfficialAssetSourceObservation,
@@ -166,6 +175,27 @@ interface OwnerRow {
   processId: number;
   ownerRevision: string;
   acquiredAt: string;
+}
+interface PresentationSnapshotRow {
+  readonly snapshotId: string;
+  readonly contractId: string;
+  readonly contractVersion: string;
+  readonly inputBytes: Buffer;
+  readonly inputDigest: string;
+  readonly resultBytes: Buffer;
+  readonly resultDigest: string;
+  readonly resultChunkDigestsJson: string;
+}
+interface PresentationSnapshotMetadataRow {
+  readonly snapshotId: string;
+  readonly contractId: string;
+  readonly contractVersion: string;
+  readonly inputBytes: number;
+  readonly inputDigest: string;
+  readonly resultBytes: number;
+  readonly resultDigest: string;
+  readonly resultChunkDigestsJson: string;
+  readonly chunkBytes: Buffer;
 }
 interface WalletRow extends WalletConnectionStorageRow {
   singleton: number;
@@ -386,6 +416,190 @@ const exclusive = <Result>(database: Database.Database, operation: () => Result)
     try { database.exec("ROLLBACK"); } catch { /* Preserve the original failure. */ }
     throw error;
   }
+};
+
+const snapshotIdPattern = /^sha256:[0-9a-f]{64}$/u;
+const sha256Pattern = /^[0-9a-f]{64}$/u;
+const positiveCanonicalDecimalPattern = /^[1-9][0-9]*$/u;
+
+const presentationAvailable = <Value>(value: Value): PresentationSnapshotResult<Value> =>
+  Object.freeze({ status: "available", value });
+
+const presentationUnavailable = <Value>(
+  reason: PresentationSnapshotUnavailableReason,
+): PresentationSnapshotResult<Value> => Object.freeze({ status: "unavailable", reason });
+
+const canonicalBytes = (value: CanonicalJson): Buffer =>
+  Buffer.from(canonicalJsonStringify(value), "utf8");
+
+const presentationResultChunkDigests = (bytes: Uint8Array): readonly string[] => Object.freeze(
+  Array.from(
+    { length: Math.ceil(bytes.length / presentationSnapshotLimits.resultChunkBytes) },
+    (_, index) => sha256Bytes(bytes.slice(
+      index * presentationSnapshotLimits.resultChunkBytes,
+      Math.min((index + 1) * presentationSnapshotLimits.resultChunkBytes, bytes.length),
+    )),
+  ),
+);
+
+const encodePresentationResultChunkDigests = (bytes: Uint8Array): string =>
+  canonicalJsonStringify(captureCanonicalJson(presentationResultChunkDigests(bytes)));
+
+const decodePresentationResultChunkDigests = (
+  value: unknown,
+  expectedCount: number,
+): readonly string[] => {
+  if (typeof value !== "string") throw new TypeError("Stored chunk digests are invalid.");
+  const captured = captureCanonicalJson(JSON.parse(value) as unknown);
+  if (
+    !Array.isArray(captured) || captured.length !== expectedCount ||
+    captured.some((digest) => typeof digest !== "string" || !sha256Pattern.test(digest)) ||
+    canonicalJsonStringify(captured) !== value
+  ) throw new TypeError("Stored chunk digests are invalid.");
+  return Object.freeze([...captured] as string[]);
+};
+
+const admitCanonicalBytes = (value: Buffer): CanonicalJson => {
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(value);
+  const admitted = captureCanonicalJson(JSON.parse(text) as unknown);
+  if (canonicalJsonStringify(admitted) !== text) {
+    throw new TypeError("Stored presentation JSON is not canonical.");
+  }
+  return admitted;
+};
+
+const parsePresentationContractIdentity = (contractId: unknown, contractVersion: unknown): Readonly<{
+  contractId: string;
+  contractVersion: string;
+}> => {
+  if (
+    typeof contractId !== "string" || contractId.length === 0 || contractId.includes("\0") ||
+    typeof contractVersion !== "string" || !positiveCanonicalDecimalPattern.test(contractVersion)
+  ) throw new TypeError("Presentation contract identity is invalid.");
+  return Object.freeze({ contractId, contractVersion });
+};
+
+const presentationSnapshotIdentity = (input: Readonly<{
+  contractId: string;
+  contractVersion: string;
+  inputBytes: number;
+  inputDigest: string;
+  resultBytes: number;
+  resultDigest: string;
+}>): string => {
+  parsePresentationContractIdentity(input.contractId, input.contractVersion);
+  if (
+    !Number.isSafeInteger(input.inputBytes) || input.inputBytes < 1 ||
+    !Number.isSafeInteger(input.resultBytes) || input.resultBytes < 1 ||
+    !sha256Pattern.test(input.inputDigest) || !sha256Pattern.test(input.resultDigest)
+  ) throw new TypeError("Presentation snapshot identity fields are invalid.");
+  const identityInput = [
+    input.contractId,
+    input.contractVersion,
+    String(input.inputBytes),
+    input.inputDigest,
+    String(input.resultBytes),
+    input.resultDigest,
+  ].join("\0");
+  return `sha256:${sha256Bytes(new TextEncoder().encode(identityInput))}`;
+};
+
+const snapshotSelect = `SELECT snapshot_id AS snapshotId, contract_id AS contractId,
+  contract_version AS contractVersion, input_bytes AS inputBytes,
+  input_digest AS inputDigest, result_bytes AS resultBytes, result_digest AS resultDigest,
+  result_chunk_digests_json AS resultChunkDigestsJson
+  FROM presentation_snapshot`;
+
+const decodePresentationSnapshotRow = (row: PresentationSnapshotRow): PresentationSnapshotRecord => {
+  if (!Buffer.isBuffer(row.inputBytes) || !Buffer.isBuffer(row.resultBytes)) {
+    throw new TypeError("Stored presentation snapshot bytes are invalid.");
+  }
+  const identity = parsePresentationContractIdentity(row.contractId, row.contractVersion);
+  if (
+    row.inputBytes.length < 1 || row.inputBytes.length > presentationSnapshotLimits.inputBytes ||
+    row.resultBytes.length < 1 || row.resultBytes.length > presentationSnapshotLimits.resultBytes
+  ) throw new TypeError("Stored presentation snapshot size is invalid.");
+  admitCanonicalBytes(row.inputBytes);
+  admitCanonicalBytes(row.resultBytes);
+  const inputDigest = sha256Bytes(row.inputBytes);
+  const resultDigest = sha256Bytes(row.resultBytes);
+  const chunkDigests = decodePresentationResultChunkDigests(
+    row.resultChunkDigestsJson,
+    Math.ceil(row.resultBytes.length / presentationSnapshotLimits.resultChunkBytes),
+  );
+  if (inputDigest !== row.inputDigest || resultDigest !== row.resultDigest) {
+    throw new TypeError("Stored presentation snapshot digest is invalid.");
+  }
+  if (
+    canonicalJsonStringify(captureCanonicalJson(chunkDigests)) !==
+      encodePresentationResultChunkDigests(row.resultBytes)
+  ) throw new TypeError("Stored presentation snapshot chunk digests are invalid.");
+  const snapshotId = presentationSnapshotIdentity({
+    ...identity,
+    inputBytes: row.inputBytes.length,
+    inputDigest,
+    resultBytes: row.resultBytes.length,
+    resultDigest,
+  });
+  if (snapshotId !== row.snapshotId || !snapshotIdPattern.test(row.snapshotId)) {
+    throw new TypeError("Stored presentation snapshot identity is invalid.");
+  }
+  return Object.freeze({
+    snapshotId,
+    ...identity,
+    inputBytes: Uint8Array.from(row.inputBytes),
+    inputDigest,
+    resultBytes: Uint8Array.from(row.resultBytes),
+    resultDigest,
+  });
+};
+
+const samePresentationSnapshot = (
+  left: PresentationSnapshotRecord,
+  right: PresentationSnapshotRecord,
+): boolean => left.snapshotId === right.snapshotId &&
+  left.contractId === right.contractId && left.contractVersion === right.contractVersion &&
+  left.inputDigest === right.inputDigest && left.resultDigest === right.resultDigest &&
+  Buffer.compare(Buffer.from(left.inputBytes), Buffer.from(right.inputBytes)) === 0 &&
+  Buffer.compare(Buffer.from(left.resultBytes), Buffer.from(right.resultBytes)) === 0;
+
+const createPresentationSnapshot = (input: Readonly<{
+  contractId: string;
+  contractVersion: string;
+  normalizedInput: CanonicalJson;
+  admittedResult: CanonicalJson;
+}>): PresentationSnapshotResult<PresentationSnapshotRecord> => {
+  let identity: Readonly<{ contractId: string; contractVersion: string }>;
+  let inputBytes: Buffer;
+  let resultBytes: Buffer;
+  try {
+    identity = parsePresentationContractIdentity(input.contractId, input.contractVersion);
+    inputBytes = canonicalBytes(input.normalizedInput);
+    resultBytes = canonicalBytes(input.admittedResult);
+  } catch {
+    return presentationUnavailable("snapshot_inconsistent");
+  }
+  if (
+    inputBytes.length > presentationSnapshotLimits.inputBytes ||
+    resultBytes.length > presentationSnapshotLimits.resultBytes
+  ) return presentationUnavailable("capacity_exceeded");
+  const inputDigest = sha256Bytes(inputBytes);
+  const resultDigest = sha256Bytes(resultBytes);
+  const snapshotId = presentationSnapshotIdentity({
+    ...identity,
+    inputBytes: inputBytes.length,
+    inputDigest,
+    resultBytes: resultBytes.length,
+    resultDigest,
+  });
+  return presentationAvailable(Object.freeze({
+    snapshotId,
+    ...identity,
+    inputBytes: Uint8Array.from(inputBytes),
+    inputDigest,
+    resultBytes: Uint8Array.from(resultBytes),
+    resultDigest,
+  }));
 };
 
 const configureConnection = (database: Database.Database): void => {
@@ -774,6 +988,15 @@ const createReferenceRevision = (current: string | null): string => {
 const validateDatabaseState = (database: Database.Database): void => {
   readProfileRaw(database);
   readOwnerRaw(database);
+  const snapshotCapacity = database.prepare(`SELECT count(*) AS rowCount,
+    coalesce(sum(length(input_bytes) + length(result_bytes)), 0) AS aggregateBytes
+    FROM presentation_snapshot`).get() as { rowCount: number; aggregateBytes: number };
+  if (
+    !Number.isSafeInteger(snapshotCapacity.rowCount) || snapshotCapacity.rowCount < 0 ||
+    !Number.isSafeInteger(snapshotCapacity.aggregateBytes) || snapshotCapacity.aggregateBytes < 0 ||
+    snapshotCapacity.rowCount > presentationSnapshotLimits.rows ||
+    snapshotCapacity.aggregateBytes > presentationSnapshotLimits.aggregateBytes
+  ) throw new Error("Stored presentation snapshot capacity is invalid.");
   readChainRows(database);
   readContractRows(database, "contract");
   readContractRows(database, "token_contract");
@@ -1091,6 +1314,7 @@ export class ProductDatabase {
   readonly #accountTokenSelectionStore: AccountTokenSelectionStore;
   readonly #tokenCatalogStore: TokenCatalogStore;
   readonly #referenceMarketStore: ReferenceMarketStore;
+  readonly #presentationSnapshotStore: PresentationSnapshotStore;
   #databaseClosed = false;
   #mainLeaseClosed = false;
 
@@ -1148,6 +1372,12 @@ export class ProductDatabase {
       readWatchlist: (account) => this.readReferenceWatchlist(account),
       mutateWatchlist: (input) => this.mutateReferenceWatchlist(input),
     } satisfies ReferenceMarketStore);
+    this.#presentationSnapshotStore = Object.freeze({
+      prepare: (input) => createPresentationSnapshot(input),
+      commit: (input) => this.commitPresentationSnapshot(input),
+      read: (snapshotId) => this.readPresentationSnapshot(snapshotId),
+      readResultChunk: (input) => this.readPresentationSnapshotResultChunk(input),
+    } satisfies PresentationSnapshotStore);
   }
 
   static async open(
@@ -1183,6 +1413,7 @@ export class ProductDatabase {
   }
   tokenCatalogStore(): TokenCatalogStore { return this.#tokenCatalogStore; }
   referenceMarketStore(): ReferenceMarketStore { return this.#referenceMarketStore; }
+  presentationSnapshotStore(): PresentationSnapshotStore { return this.#presentationSnapshotStore; }
 
   close(): void {
     let failure: unknown;
@@ -1221,6 +1452,137 @@ export class ProductDatabase {
   private readProfile(): LocalProfile {
     try { return this.#readWithIdentity(() => readProfileRaw(this.#database)); }
     catch (error) { throw storageError(error); }
+  }
+
+  private commitPresentationSnapshot(
+    input: Parameters<PresentationSnapshotStore["commit"]>[0],
+  ): PresentationSnapshotResult<PresentationSnapshotRecord> {
+    const candidate = createPresentationSnapshot(input);
+    if (candidate.status === "unavailable") return candidate;
+    try {
+      return this.#writeWithIdentity(() => {
+        const existingRows = this.#database.prepare(`${snapshotSelect} WHERE snapshot_id = ?`)
+          .all(candidate.value.snapshotId) as PresentationSnapshotRow[];
+        if (existingRows.length > 1) return presentationUnavailable("snapshot_inconsistent");
+        const existing = existingRows[0];
+        if (existing !== undefined) {
+          try {
+            const admitted = decodePresentationSnapshotRow(existing);
+            return samePresentationSnapshot(admitted, candidate.value)
+              ? presentationAvailable(admitted)
+              : presentationUnavailable("snapshot_inconsistent");
+          } catch { return presentationUnavailable("snapshot_inconsistent"); }
+        }
+        const capacity = this.#database.prepare(`SELECT count(*) AS rowCount,
+          coalesce(sum(length(input_bytes) + length(result_bytes)), 0) AS aggregateBytes
+          FROM presentation_snapshot`).get() as { rowCount: number; aggregateBytes: number };
+        if (
+          !Number.isSafeInteger(capacity.rowCount) || capacity.rowCount < 0 ||
+          !Number.isSafeInteger(capacity.aggregateBytes) || capacity.aggregateBytes < 0
+        ) return presentationUnavailable("snapshot_inconsistent");
+        if (
+          capacity.rowCount + 1 > presentationSnapshotLimits.rows ||
+          capacity.aggregateBytes + candidate.value.inputBytes.length +
+            candidate.value.resultBytes.length > presentationSnapshotLimits.aggregateBytes
+        ) return presentationUnavailable("capacity_exceeded");
+        const inserted = this.#database.prepare(`INSERT INTO presentation_snapshot(
+          snapshot_id, contract_id, contract_version, input_bytes, input_digest,
+          result_bytes, result_digest, result_chunk_digests_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+          candidate.value.snapshotId,
+          candidate.value.contractId,
+          candidate.value.contractVersion,
+          Buffer.from(candidate.value.inputBytes),
+          candidate.value.inputDigest,
+          Buffer.from(candidate.value.resultBytes),
+          candidate.value.resultDigest,
+          encodePresentationResultChunkDigests(candidate.value.resultBytes),
+        );
+        if (inserted.changes !== 1) throw new TypeError("Presentation snapshot was not inserted.");
+        return candidate;
+      });
+    } catch { return presentationUnavailable("runtime_unavailable"); }
+  }
+
+  private readPresentationSnapshot(
+    snapshotId: string,
+  ): PresentationSnapshotResult<PresentationSnapshotRecord> {
+    if (!snapshotIdPattern.test(snapshotId)) return presentationUnavailable("snapshot_inconsistent");
+    try {
+      return this.#readWithIdentity(() => {
+        const rows = this.#database.prepare(`${snapshotSelect} WHERE snapshot_id = ?`)
+          .all(snapshotId) as PresentationSnapshotRow[];
+        if (rows.length === 0) return presentationUnavailable("snapshot_missing");
+        if (rows.length !== 1 || rows[0] === undefined) {
+          return presentationUnavailable("snapshot_inconsistent");
+        }
+        try { return presentationAvailable(decodePresentationSnapshotRow(rows[0])); }
+        catch { return presentationUnavailable("snapshot_inconsistent"); }
+      });
+    } catch { return presentationUnavailable("runtime_unavailable"); }
+  }
+
+  private readPresentationSnapshotResultChunk(
+    input: Parameters<PresentationSnapshotStore["readResultChunk"]>[0],
+  ): ReturnType<PresentationSnapshotStore["readResultChunk"]> {
+    if (
+      !snapshotIdPattern.test(input.snapshotId) ||
+      !Number.isSafeInteger(input.index) || input.index < 0
+    ) return presentationUnavailable("snapshot_inconsistent");
+    try {
+      return this.#readWithIdentity(() => {
+        const offset = input.index * presentationSnapshotLimits.resultChunkBytes;
+        if (!Number.isSafeInteger(offset)) return presentationUnavailable("snapshot_inconsistent");
+        const rows = this.#database.prepare(`SELECT snapshot_id AS snapshotId,
+          contract_id AS contractId, contract_version AS contractVersion,
+          length(input_bytes) AS inputBytes, input_digest AS inputDigest,
+          length(result_bytes) AS resultBytes, result_digest AS resultDigest,
+          result_chunk_digests_json AS resultChunkDigestsJson,
+          substr(result_bytes, ?, ?) AS chunkBytes
+          FROM presentation_snapshot WHERE snapshot_id = ?`).all(
+            offset + 1,
+            presentationSnapshotLimits.resultChunkBytes,
+            input.snapshotId,
+          ) as PresentationSnapshotMetadataRow[];
+        if (rows.length === 0) return presentationUnavailable("snapshot_missing");
+        const row = rows[0];
+        if (rows.length !== 1 || row === undefined || !Buffer.isBuffer(row.chunkBytes)) {
+          return presentationUnavailable("snapshot_inconsistent");
+        }
+        let expectedId: string;
+        try {
+          expectedId = presentationSnapshotIdentity({
+            contractId: row.contractId,
+            contractVersion: row.contractVersion,
+            inputBytes: row.inputBytes,
+            inputDigest: row.inputDigest,
+            resultBytes: row.resultBytes,
+            resultDigest: row.resultDigest,
+          });
+        } catch { return presentationUnavailable("snapshot_inconsistent"); }
+        const chunkCount = Math.ceil(row.resultBytes / presentationSnapshotLimits.resultChunkBytes);
+        let chunkDigests: readonly string[];
+        try {
+          chunkDigests = decodePresentationResultChunkDigests(
+            row.resultChunkDigestsJson,
+            chunkCount,
+          );
+        } catch { return presentationUnavailable("snapshot_inconsistent"); }
+        const expectedBytes = input.index === chunkCount - 1
+          ? row.resultBytes - offset
+          : presentationSnapshotLimits.resultChunkBytes;
+        if (
+          expectedId !== input.snapshotId || input.index >= chunkCount ||
+          expectedBytes < 1 || row.chunkBytes.length !== expectedBytes ||
+          chunkDigests[input.index] !== sha256Bytes(row.chunkBytes)
+        ) return presentationUnavailable("snapshot_inconsistent");
+        return presentationAvailable(Object.freeze({
+          snapshotId: input.snapshotId,
+          index: input.index,
+          bytes: Uint8Array.from(row.chunkBytes),
+        }));
+      });
+    } catch { return presentationUnavailable("runtime_unavailable"); }
   }
 
   private readOwner(): RuntimeOwnerRecord | undefined {

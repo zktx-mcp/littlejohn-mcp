@@ -43,6 +43,7 @@ export type {
 } from "./capability.js";
 export {
   contractInspectCapability,
+  walletConnectionCapability,
 } from "./capabilities.js";
 export type {
   ContractInspectData,
@@ -51,6 +52,7 @@ export type {
 export {
   canonicalJsonStringify,
   canonicalSha256,
+  sha256Bytes,
   utf8ByteLength,
 } from "./canonical-json.js";
 export {

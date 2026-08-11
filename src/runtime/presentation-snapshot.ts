@@ -1,0 +1,57 @@
+import type { CanonicalJson } from "../core/browser.js";
+
+export const presentationSnapshotUnavailableReasons = Object.freeze([
+  "capacity_exceeded",
+  "runtime_unavailable",
+  "snapshot_missing",
+  "snapshot_inconsistent",
+] as const);
+
+export const presentationSnapshotLimits = Object.freeze({
+  inputBytes: 65_536,
+  resultBytes: 8_388_607,
+  resultChunkBytes: 65_536,
+  rows: 16_384,
+  aggregateBytes: 536_870_912,
+} as const);
+
+export type PresentationSnapshotUnavailableReason =
+  (typeof presentationSnapshotUnavailableReasons)[number];
+
+export interface PresentationSnapshotRecord {
+  readonly snapshotId: string;
+  readonly contractId: string;
+  readonly contractVersion: string;
+  readonly inputBytes: Uint8Array;
+  readonly inputDigest: string;
+  readonly resultBytes: Uint8Array;
+  readonly resultDigest: string;
+}
+
+export type PresentationSnapshotResult<Value> =
+  | Readonly<{ status: "available"; value: Value }>
+  | Readonly<{ status: "unavailable"; reason: PresentationSnapshotUnavailableReason }>;
+
+export interface PresentationSnapshotStore {
+  prepare(input: Readonly<{
+    contractId: string;
+    contractVersion: string;
+    normalizedInput: CanonicalJson;
+    admittedResult: CanonicalJson;
+  }>): PresentationSnapshotResult<PresentationSnapshotRecord>;
+  commit(input: Readonly<{
+    contractId: string;
+    contractVersion: string;
+    normalizedInput: CanonicalJson;
+    admittedResult: CanonicalJson;
+  }>): PresentationSnapshotResult<PresentationSnapshotRecord>;
+  read(snapshotId: string): PresentationSnapshotResult<PresentationSnapshotRecord>;
+  readResultChunk(input: Readonly<{
+    snapshotId: string;
+    index: number;
+  }>): PresentationSnapshotResult<Readonly<{
+    snapshotId: string;
+    index: number;
+    bytes: Uint8Array;
+  }>>;
+}

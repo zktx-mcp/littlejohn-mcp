@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  buildPackageSourceRoots,
   classifyModuleSpecifier,
   collectProductCodeSourceFiles,
   collectProductSourceFiles,
@@ -29,8 +30,10 @@ const testPolicy = (
   toolPackages: ReadonlySet<string> = new Set(),
   repositoryRoot = resolve("src"),
   auditedSourceFiles: readonly string[] = [],
+  buildPackageOwners: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
 ): PackageImportPolicy => ({
   auditedSourceFiles: new Set(auditedSourceFiles.map((path) => resolve(path))),
+  buildPackageOwners,
   repositoryRoot,
   runtimePackageOwners,
   toolPackages,
@@ -103,6 +106,10 @@ describe("module import audit", () => {
     const manifest = await loadPackageManifest();
     const policy = createPackageImportPolicy(manifest);
     expect(Object.keys(runtimePackageSourceRoots).sort()).toEqual(Object.keys(manifest.dependencies).sort());
+    expect(Object.keys(buildPackageSourceRoots)).toEqual(["@modelcontextprotocol/ext-apps"]);
+    expect(policy.buildPackageOwners.get("@modelcontextprotocol/ext-apps")).toEqual(new Set([
+      resolve("src/interfaces/mcp-app/view/main.ts"),
+    ]));
     expect(policy.runtimePackageOwners.get("zod")).toEqual(new Set([resolve("src")]));
     expect(policy.runtimePackageOwners.get("@noble/hashes")).toEqual(new Set([resolve("src/core")]));
     expect(policy.runtimePackageOwners.get("@uniswap/sdk-core"))
@@ -126,6 +133,19 @@ describe("module import audit", () => {
     ]));
     expect(policy.runtimePackageOwners.get("react")).toEqual(new Set([resolve("src/interfaces")]));
     expect(policy.toolPackages.has("typescript")).toBe(true);
+    expect(moduleViolations(
+      `import { App } from "@modelcontextprotocol/ext-apps"; void App;`,
+      resolve("src/interfaces/mcp-app/view/main.ts"),
+      policy,
+    )).toEqual([]);
+    expect(moduleViolations(
+      `import { App } from "@modelcontextprotocol/ext-apps"; void App;`,
+      resolve("src/interfaces/mcp-app/view/lifecycle.ts"),
+      policy,
+    )).toEqual([
+      "src/interfaces/mcp-app/view/lifecycle.ts:@modelcontextprotocol/ext-apps:" +
+        "src/interfaces/mcp-app/view/main.ts",
+    ]);
 
     const missingReact = { ...manifest.dependencies };
     delete missingReact["react"];

@@ -38,6 +38,14 @@ const lightweightChartsLicenseDigest =
   "70c9d5382506dd184465425c08a99ad9bd6d9ac1313c252968ba0b585e5ef823";
 const fancyCanvasLicenseDigest =
   "52d2ba0c8f8f4532bd524358d679693ff3dd9e40c56fe0c0c63061ed0733aa18";
+const mcpAppsNotice = "Model Context Protocol Apps";
+const mcpSdkNotice = "Model Context Protocol TypeScript SDK";
+const mcpAppsLicenseDigest =
+  "0382b0057770ca05e9c350a50aa3b1c1fea84da0bc81d723bf00b9aa841be58a";
+const mcpSdkLicenseDigest =
+  "5e13dbbc1d120fc2a03cecde7c91424ae2d7de11b63d58ded2f4431e261ee50d";
+const standardSchemaLicenseDigest =
+  "653b779005a3a4d64a7288c940f7b9a0e8f0b1e0375f6aa6af9473caf131e564";
 const automaticallyPermittedLicenses = new Set([
   "0BSD",
   "MIT",
@@ -70,6 +78,11 @@ const fixedDistributionArtifacts = Object.freeze([
     path: "LICENSES/FANCY-CANVAS-LICENSE.txt",
     licenseName: "fancy-canvas",
     digest: fancyCanvasLicenseDigest,
+  }),
+  Object.freeze({
+    path: "LICENSES/MCP-APPS-LICENSE.txt",
+    licenseName: "MCP Apps",
+    digest: mcpAppsLicenseDigest,
   }),
 ]);
 const fixedDistributionPaths = Object.freeze(fixedDistributionArtifacts.map(({ path }) => path));
@@ -402,6 +415,152 @@ const assertInstalledLightweightChartsClosure = async (
   }
 };
 
+const exactStringRecord = (value, expected, label) => {
+  if (
+    typeof value !== "object" || value === null || Array.isArray(value) ||
+    Object.keys(value).sort().join("\0") !== Object.keys(expected).sort().join("\0") ||
+    Object.entries(expected).some(([key, expectedValue]) =>
+      Object.getOwnPropertyDescriptor(value, key)?.value !== expectedValue)
+  ) throw new TypeError(`${label} is invalid.`);
+};
+
+const assertInstalledMcpAppsClosure = async (
+  sourceRoot,
+  dependencyRoot,
+  sourceManifest,
+) => {
+  const dependencies = requiredObjectProperty(
+    sourceManifest,
+    "dependencies",
+    "Release dependency authority",
+  );
+  const developmentDependencies = requiredObjectProperty(
+    sourceManifest,
+    "devDependencies",
+    "Release development dependency authority",
+  );
+  if (
+    Object.getOwnPropertyDescriptor(dependencies, "@modelcontextprotocol/ext-apps") !== undefined ||
+    requiredObjectProperty(
+    developmentDependencies,
+    "@modelcontextprotocol/ext-apps",
+    "MCP Apps direct build dependency",
+  ) !== "1.7.5"
+  ) {
+    throw new TypeError("MCP Apps direct build dependency is not exact.");
+  }
+  const lockfile = await readJsonFile(resolve(sourceRoot, "package-lock.json"));
+  const packages = requiredObjectProperty(lockfile, "packages", "Release lockfile package graph");
+  const expectedPackages = Object.freeze([
+    Object.freeze({
+      path: "node_modules/@modelcontextprotocol/ext-apps",
+      name: "@modelcontextprotocol/ext-apps",
+      version: "1.7.5",
+      license: "MIT",
+      integrity:
+        "sha512-TjPH2S2y5UEGKhmI6+XGFuqfqOV4ppe1x6DA3txnUaEWkgtA4G5vo14jGKFZmegdkZ1H4QMLyujLvoU1BEdnAg==",
+      licenseDigest: mcpAppsLicenseDigest,
+      development: true,
+    }),
+    Object.freeze({
+      path: "node_modules/@standard-schema/spec",
+      name: "@standard-schema/spec",
+      version: "1.1.0",
+      license: "MIT",
+      integrity:
+        "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==",
+      licenseDigest: standardSchemaLicenseDigest,
+      development: true,
+    }),
+  ]);
+  for (const expected of expectedPackages) {
+    const locked = requiredObjectProperty(packages, expected.path, `${expected.name} lock entry`);
+    const installedRoot = resolve(dependencyRoot, expected.path);
+    const installed = await readJsonFile(resolve(installedRoot, "package.json"));
+    for (const field of ["version", "license", "integrity"]) {
+      if (field === "integrity") {
+        if (requiredObjectProperty(locked, field, `${expected.name} ${field}`) !== expected[field]) {
+          throw new TypeError(`MCP Apps closure differs from the reviewed artifact: ${expected.name}`);
+        }
+      } else if (
+        requiredObjectProperty(locked, field, `${expected.name} lock ${field}`) !== expected[field] ||
+        requiredObjectProperty(installed, field, `${expected.name} installed ${field}`) !== expected[field]
+      ) {
+        throw new TypeError(`MCP Apps closure differs from the reviewed artifact: ${expected.name}`);
+      }
+    }
+    if (requiredObjectProperty(installed, "name", `${expected.name} installed name`) !== expected.name) {
+      throw new TypeError(`MCP Apps installed package name is invalid: ${expected.name}`);
+    }
+    for (const field of ["optional", "os", "cpu", "hasInstallScript"]) {
+      if (Object.getOwnPropertyDescriptor(locked, field)?.value !== undefined) {
+        throw new TypeError(`MCP Apps lock boundary is invalid: ${expected.name}`);
+      }
+    }
+    if (Object.getOwnPropertyDescriptor(locked, "dev")?.value !== expected.development) {
+      throw new TypeError(`MCP Apps dependency class is invalid: ${expected.name}`);
+    }
+    const license = await readFile(resolve(installedRoot, "LICENSE"));
+    if (sha256(license) !== expected.licenseDigest) {
+      throw new TypeError(`MCP Apps closure license is invalid: ${expected.name}`);
+    }
+  }
+  const appsLock = requiredObjectProperty(
+    packages,
+    "node_modules/@modelcontextprotocol/ext-apps",
+    "MCP Apps lock entry",
+  );
+  const appsManifest = await readJsonFile(resolve(
+    dependencyRoot,
+    "node_modules/@modelcontextprotocol/ext-apps/package.json",
+  ));
+  const expectedDependencies = { "@standard-schema/spec": "^1.1.0" };
+  const expectedPeers = {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    react: "^17.0.0 || ^18.0.0 || ^19.0.0",
+    "react-dom": "^17.0.0 || ^18.0.0 || ^19.0.0",
+    zod: "^3.25.0 || ^4.0.0",
+  };
+  for (const source of [appsLock, appsManifest]) {
+    exactStringRecord(
+      requiredObjectProperty(source, "dependencies", "MCP Apps dependencies"),
+      expectedDependencies,
+      "MCP Apps dependencies",
+    );
+    exactStringRecord(
+      requiredObjectProperty(source, "peerDependencies", "MCP Apps peers"),
+      expectedPeers,
+      "MCP Apps peers",
+    );
+  }
+  const peerVersions = {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    react: "19.2.7",
+    "react-dom": "19.2.7",
+    zod: "4.4.3",
+  };
+  for (const [name, version] of Object.entries(peerVersions)) {
+    const installed = await readJsonFile(resolve(dependencyRoot, "node_modules", name, "package.json"));
+    if (requiredObjectProperty(installed, "version", `MCP Apps peer ${name}`) !== version) {
+      throw new TypeError(`MCP Apps peer resolution is invalid: ${name}`);
+    }
+  }
+  const entry = await lstat(resolve(
+    dependencyRoot,
+    "node_modules/@modelcontextprotocol/ext-apps/dist/src/app.js",
+  ));
+  if (!entry.isFile() || entry.isSymbolicLink()) {
+    throw new TypeError("MCP Apps framework-neutral entry is invalid.");
+  }
+  const sdkLicense = await readFile(resolve(
+    dependencyRoot,
+    "node_modules/@modelcontextprotocol/sdk/LICENSE",
+  ));
+  if (sha256(sdkLicense) !== mcpSdkLicenseDigest) {
+    throw new TypeError("MCP SDK license is invalid.");
+  }
+};
+
 /** @type {typeof import("./package-audit.d.mts").parseReleasePackageIdentity} */
 export const parseReleasePackageIdentity = (value) => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -532,6 +691,13 @@ const assertDistributionArtifacts = async (sourceRoot, packageRoot) => {
   ) {
     throw new TypeError("Packaged Lightweight Charts notice is invalid.");
   }
+  if (
+    notice.split(mcpAppsNotice).length !== 2 ||
+    notice.split(mcpSdkNotice).length !== 2 ||
+    !notice.includes("LICENSES/MCP-APPS-LICENSE.txt")
+  ) {
+    throw new TypeError("Packaged MCP Apps notice is invalid.");
+  }
 };
 
 const assertInstalledBinary = async (installRoot, packageRoot) => {
@@ -557,6 +723,19 @@ const assertInstalledBinary = async (installRoot, packageRoot) => {
   if (target !== await realpath(resolve(packageRoot, "dist/cli.js"))) {
     throw new TypeError("Installed package binary resolves outside the packaged dist tree.");
   }
+};
+
+const assertBuildDependencyAbsent = async (installRoot, packageName) => {
+  try {
+    await lstat(resolve(installRoot, "node_modules", packageName));
+  } catch (error) {
+    if (
+      typeof error === "object" && error !== null &&
+      Object.getOwnPropertyDescriptor(error, "code")?.value === "ENOENT"
+    ) return;
+    throw error;
+  }
+  throw new TypeError(`Build dependency was installed with the product: ${packageName}`);
 };
 
 /** @type {typeof import("./package-audit.d.mts").prepareReleasePackage} */
@@ -588,6 +767,7 @@ export const prepareReleasePackage = async (repositoryRoot) => {
     }
     await assertInstalledUniswapSdkClosure(sourceRoot, sourceRoot, sourceManifest);
     await assertInstalledLightweightChartsClosure(sourceRoot, sourceRoot, sourceManifest);
+    await assertInstalledMcpAppsClosure(sourceRoot, sourceRoot, sourceManifest);
     await runCommand(process.execPath, [
       resolve(sourceRoot, "node_modules/typescript/bin/tsc"),
       "-p",
@@ -641,6 +821,7 @@ export const prepareReleasePackage = async (repositoryRoot) => {
     await assertExactFileBytes(sourceRoot, installedPackageRoot, expectedPaths, "installed package");
     await assertDistributionArtifacts(sourceRoot, installedPackageRoot);
     await assertInstalledBinary(installRoot, installedPackageRoot);
+    await assertBuildDependencyAbsent(installRoot, "@modelcontextprotocol/ext-apps");
 
     if ((await readdir(npxRoot)).length !== 0) {
       throw new TypeError("Local tarball npx smoke must start from an empty directory.");

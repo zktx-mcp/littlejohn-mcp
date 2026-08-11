@@ -29,7 +29,7 @@ import {
 } from "./configuration.js";
 import { guardRuntimeJsonSchema, parseRuntimeAuthority } from "./schema-authority.js";
 
-const runtimeSupportManifestContractVersion = "1" as const;
+const runtimeSupportManifestContractVersion = "2" as const;
 
 const availabilityDefinitions = Object.freeze(["unavailable", "internal", "available"] as const);
 export type Availability = typeof availabilityDefinitions[number];
@@ -86,6 +86,10 @@ const createSupportSchemaSet = () => {
     capabilityId: capabilityIdSchema,
     availability: capabilityAvailability,
   }).strict();
+  const presentationManifestEntry = z.object({
+    contractId: capabilityIdSchema,
+    contractVersion: z.string().regex(/^[1-9][0-9]*$/u),
+  }).strict();
   const capabilityExtension = z.object({
     registrations: z.array(capabilityManifestEntry),
     changes: z.array(capabilityManifestEntry),
@@ -133,6 +137,7 @@ const createSupportSchemaSet = () => {
     protocols: z.array(protocolSupport).max(128),
     transactionActions: z.array(transactionActionSupport).max(256),
     capabilities: z.array(capabilityManifestEntry).min(initialReadCapabilityIds.length),
+    presentations: z.array(presentationManifestEntry).max(256),
   }).strict().superRefine((value, context) => {
     const ids = value.capabilities.map((entry) => entry.capabilityId);
     for (let index = 1; index < ids.length; index += 1) {
@@ -143,6 +148,25 @@ const createSupportSchemaSet = () => {
     }
     if (initialReadCapabilityIds.some((capabilityId) => !ids.includes(capabilityId))) {
       context.addIssue({ code: "custom", message: "A canonical read capability support identity is missing." });
+    }
+    const presentationIds = value.presentations.map((entry) =>
+      `${entry.contractId}\0${entry.contractVersion}`);
+    for (let index = 1; index < presentationIds.length; index += 1) {
+      if (compareCodePointSequences(presentationIds[index - 1] ?? "", presentationIds[index] ?? "") >= 0) {
+        context.addIssue({ code: "custom", message: "Presentation support entries must be unique and ordered." });
+        break;
+      }
+    }
+    const capabilityAvailability = new Map(value.capabilities.map((entry) =>
+      [entry.capabilityId, entry.availability] as const));
+    for (const presentation of value.presentations) {
+      if (capabilityAvailability.get(presentation.contractId)?.mcp !== availableAvailability) {
+        context.addIssue({
+          code: "custom",
+          message: "Presentation support requires an available canonical MCP capability.",
+        });
+        break;
+      }
     }
     for (const entries of [value.protocols, value.transactionActions]) {
       const ids = entries.map((entry) => "protocolId" in entry ? entry.protocolId : entry.actionId);
@@ -158,6 +182,7 @@ const createSupportSchemaSet = () => {
     availability,
     capabilityAvailability,
     capabilityExtension,
+    presentationManifestEntry,
     protocolExtension,
     manifest,
   });
@@ -188,6 +213,14 @@ export interface CapabilitySupportEntryInput {
 export interface RuntimeSupportManifestExtensionInput {
   readonly registrations: readonly CapabilitySupportEntryInput[];
   readonly changes: readonly CapabilitySupportEntryInput[];
+}
+export interface PresentationSupportEntryInput {
+  readonly contractId: string;
+  readonly contractVersion: string;
+}
+export interface RuntimeInterfaceSupportManifestExtensionInput
+  extends RuntimeSupportManifestExtensionInput {
+  readonly presentations: readonly PresentationSupportEntryInput[];
 }
 export interface ProtocolSupportEntryInput {
   readonly protocolId: string;
@@ -250,12 +283,14 @@ const freezeSnapshot = (input: unknown): RuntimeSupportManifestSnapshot => {
     Object.freeze(entry.availability);
     Object.freeze(entry);
   }
+  for (const entry of parsed.presentations) Object.freeze(entry);
   for (const entry of parsed.protocols) deepFreezeValue(entry);
   for (const entry of parsed.transactionActions) Object.freeze(entry);
   Object.freeze(parsed.chains);
   Object.freeze(parsed.protocols);
   Object.freeze(parsed.transactionActions);
   Object.freeze(parsed.capabilities);
+  Object.freeze(parsed.presentations);
   return Object.freeze(parsed);
 };
 
@@ -301,6 +336,7 @@ export const createInitialRuntimeSupportManifest = (
     protocols: [],
     transactionActions: [],
     capabilities: initialReadCapabilityIds.map((capabilityId) => ({ capabilityId, availability: unavailable })),
+    presentations: [],
   }) as InitialRuntimeSupportManifest;
 };
 
@@ -482,15 +518,27 @@ export const extendProtocolRuntimeSupportManifest = (
 
 export const extendInterfaceRuntimeSupportManifest = (
   parent: ProtocolRuntimeSupportManifest,
-  extensionInput: RuntimeSupportManifestExtensionInput,
+  extensionInput: RuntimeInterfaceSupportManifestExtensionInput,
 ): InterfaceRuntimeSupportManifest => {
   const parentState = manifestState(parent);
   if (parentState.scope !== "protocols") {
     throw new TypeError("Interface support requires the protocol support manifest.");
   }
+  const presentations = parseRuntimeAuthority(
+    z.array(authoritySchemas.presentationManifestEntry).max(256),
+    extensionInput.presentations,
+  );
+  assertOrderedUnique(presentations.map((entry) => `${entry.contractId}\0${entry.contractVersion}`));
   const extension = createManifest(
     "interfaces",
-    { ...parentState.snapshot, capabilities: applyCapabilityExtension(parentState.snapshot, extensionInput) },
+    {
+      ...parentState.snapshot,
+      capabilities: applyCapabilityExtension(parentState.snapshot, {
+        registrations: extensionInput.registrations,
+        changes: extensionInput.changes,
+      }),
+      presentations,
+    },
     parent,
   ) as InterfaceRuntimeSupportManifest;
   assertInterfaceRuntimeSupportManifestExtension(parent, extension);
@@ -585,6 +633,8 @@ export const renderCurrentSupportSection = (manifest: RuntimeSupportManifest): s
     ];
   });
   const transactionActions = snapshot.transactionActions.map((entry) => `\`${entry.actionId}\` (${displayLevel(entry.supportLevel)})`);
+  const presentations = snapshot.presentations.map((entry) =>
+    `\`${entry.contractId}@${entry.contractVersion}\``);
   return [
     "## Current Support",
     "",
@@ -604,6 +654,9 @@ export const renderCurrentSupportSection = (manifest: RuntimeSupportManifest): s
     transactionActions.length === 0
       ? "- Implemented transaction actions: none."
       : `- Implemented transaction actions: ${transactionActions.join(", ")}.`,
+    presentations.length === 0
+      ? "- Implemented MCP App presentation contracts: none."
+      : `- Implemented MCP App presentation contracts: ${presentations.join(", ")}.`,
     availableCapabilities.length === 0
       ? "- Available user-facing capabilities: none."
       : `- Available user-facing capabilities: ${availableCapabilities.join(", ")}.`,

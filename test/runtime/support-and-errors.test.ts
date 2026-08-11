@@ -194,8 +194,8 @@ describe("runtime support manifest authority", () => {
     for (const [schema, bytes, digest] of [
       [
         runtimeSupportManifestSchema,
-        3_589,
-        "f92d285bc7aec151198f08a29e0904c8f5cfabad9895c84725cb53f27407c6f3",
+        3_965,
+        "5f54073362f712e47a029b2862203c54f88751d41508a33641dbad0f03fc391e",
       ],
       [
         interfaceCapabilityCatalogSchema,
@@ -216,7 +216,8 @@ describe("runtime support manifest authority", () => {
 
   it("starts with only the five canonical read identities and official L0 evidence", () => {
     const snapshot = readRuntimeSupportManifest(initialRuntimeSupportManifest);
-    expect(snapshot.contractVersion).toBe("1");
+    expect(snapshot.contractVersion).toBe("2");
+    expect(snapshot.presentations).toEqual([]);
     expect(snapshot.chains).toEqual([{
       chainId: "eip155:4663",
       supportLevel: "L0_discovered",
@@ -293,6 +294,7 @@ describe("runtime support manifest authority", () => {
     })).toThrow();
     const interfaces = extendInterfaceRuntimeSupportManifest(protocols, {
       registrations: [],
+      presentations: [],
       changes: [{
         capabilityId: "wallet.operation",
         availability: { ...cliAvailable, web: "available" },
@@ -402,6 +404,7 @@ describe("runtime support manifest authority", () => {
     const protocols = extendUniswapV2ProtocolHarnessManifest(referenceMarkets);
     const interfaces = extendInterfaceRuntimeSupportManifest(protocols, {
       registrations: [],
+      presentations: [],
       changes: [{
         capabilityId: "token.inspect",
         availability: {

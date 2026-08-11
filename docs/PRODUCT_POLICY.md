@@ -111,6 +111,7 @@ Canonical source: `defaultStockTokenManifest` for `eip155:4663`.
   Exclusions: `all_other_deployments`, `runtime_code_and_state`, `pair_existence_and_liquidity`, `quote_and_execution_quality`, `safety`.
 - Implemented wallet support: `wallet.cancel_operation` (MCP, CLI, web); `wallet.connect` (MCP, CLI, web); `wallet.connection` (HTTP, MCP, CLI); `wallet.disconnect` (MCP, CLI, web); `wallet.operation` (MCP, CLI, web).
 - Implemented transaction actions: none.
+- Implemented MCP App presentation contracts: `account.assets@1`, `contract.inspect@1`, `market.reference_history@1`, `market.reference_price@1`, `market.watchlist@1`, `token.inspect@1`, `token.selection@1`, `token.selections@1`, `wallet.connection@1`.
 - Available user-facing capabilities: `account.assets`, `account.balance`, `chain.status`, `contract.inspect`, `market.add_watchlist_pair`, `market.reference_history`, `market.reference_price`, `market.remove_watchlist_pair`, `market.reorder_watchlist_pairs`, `market.watchlist`, `token.cancel_operation`, `token.inspect`, `token.operation`, `token.selection`, `token.selections`, `token.start_addition`, `token.start_removal`, `transaction.inspect`, `uniswap_v2.quote_exact_input`, `wallet.cancel_operation`, `wallet.connect`, `wallet.connection`, `wallet.disconnect`, `wallet.operation`.
 - Experiments and collected research do not establish product support.
 

@@ -248,6 +248,7 @@ const extendTestInterfaceSupportManifest = (
   parent: ReturnType<typeof extendUniswapV2ProtocolHarnessManifest>,
 ) => extendInterfaceRuntimeSupportManifest(parent, {
   registrations: [],
+  presentations: [],
   changes: [{
     capabilityId: "chain.status",
     availability: {

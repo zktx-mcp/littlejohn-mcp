@@ -13,6 +13,7 @@ import {
   type ProtocolRuntimeSupportManifest,
 } from "../runtime/support-manifest.js";
 import { browserCapabilityBindingFor } from "./browser-capability-bindings.js";
+import { presentationContractRegistry } from "./mcp-app/registry.js";
 import {
   interfaceReadCapabilityRegistry,
   accountAssetInterfaceBindingList,
@@ -147,5 +148,9 @@ export const extendInterfaceSupportManifest = (
   return extendInterfaceRuntimeSupportManifest(parent, {
     registrations: [],
     changes: Object.freeze(changes),
+    presentations: Object.freeze(presentationContractRegistry.values().map((entry) => Object.freeze({
+      contractId: entry.contractId,
+      contractVersion: entry.contractVersion,
+    }))),
   });
 };

@@ -84,6 +84,7 @@ import { walletControlResources } from "../wallet/routes.js";
 import type { CanonicalDispatchAuthority } from "./http-client.js";
 import type { ReferenceMarketDeliveryAction } from "./reference-market-delivery.js";
 import type { OperationDeliveryAction } from "./operation-delivery.js";
+import { presentationMcpTools } from "./mcp-app/contracts.js";
 import type { InterfaceErrorMappingRegistry } from "../runtime/errors.js";
 import type { RuntimeHttpRequest } from "../runtime/http-boundary.js";
 import {
@@ -1421,6 +1422,7 @@ export const declaredMcpToolNames = Object.freeze([
   ...referenceMarketInterfaceBindingList.map((binding) => binding.mcp.name),
   ...tokenCatalogInterfaceBindingList.map((binding) => binding.mcp.name),
   capabilityCatalogInterface.mcp.name,
+  ...Object.values(presentationMcpTools),
   ...walletInterfaceBindingList.flatMap((binding) =>
     binding.mcp === undefined ? [] : [binding.mcp.name]),
 ].sort(compareCodePointSequences));

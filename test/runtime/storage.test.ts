@@ -648,13 +648,13 @@ describe("application data and local credential", () => {
 
 describe("SQLite product state", () => {
   it("preserves the independent canonical SQLite schema bytes", () => {
-    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(23_795);
+    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(25_472);
     expect(createHash("sha256").update(currentSqliteSchemaSql, "utf8").digest("hex")).toBe(
-      "0871cb9bbe9c6f84531ed1a5e8735770c55ee6f55b1d6872d7a5a214b31a3f1d",
+      "ddfc4d75155d1818d169f0803cd61dba0f7b82d142997bc009cae4d82eb21d8f",
     );
     const structure = JSON.stringify(deriveIndependentCurrentSqliteSchema());
     expect(createHash("sha256").update(structure, "utf8").digest("hex")).toBe(
-      "2969f13b451767534187074992fd74c326403fb27990a8d7b2bfe8975b31f20f",
+      "dccbeee145418c47d91880dc7666b7f2503881fc1127c8b0b2484d0120bd0f44",
     );
   });
 
@@ -1081,6 +1081,7 @@ describe("SQLite product state", () => {
       { name: "contract", wr: 1, strict: 1 },
       { name: "current_wallet_connection", wr: 0, strict: 1 },
       { name: "local_profile", wr: 0, strict: 1 },
+      { name: "presentation_snapshot", wr: 1, strict: 1 },
       { name: "reference_feed_round", wr: 1, strict: 1 },
       { name: "reference_feed_sync_state", wr: 1, strict: 1 },
       { name: "reference_pair_watchlist_entry", wr: 1, strict: 1 },

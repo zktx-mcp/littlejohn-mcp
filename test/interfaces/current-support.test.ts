@@ -9,6 +9,7 @@ import {
   extendInterfaceSupportManifest,
   sameInterfaceAvailabilityAxes,
 } from "../../src/interfaces/support.js";
+import { presentationContractRegistry } from "../../src/interfaces/mcp-app/registry.js";
 import { extendReferenceMarketSupportManifest } from "../../src/market-portfolio/support.js";
 import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
 import {
@@ -88,6 +89,10 @@ describe("interface Current Support projection", () => {
   it("matches the independent browser, public-read, and overall availability oracles", () => {
     const manifest = finalManifest();
     const snapshot = readRuntimeSupportManifest(manifest);
+    expect(snapshot.presentations).toEqual(presentationContractRegistry.values().map((entry) => ({
+      contractId: entry.contractId,
+      contractVersion: entry.contractVersion,
+    })));
     expect(snapshot.capabilities
       .filter((entry) => entry.availability.web === "available")
       .map((entry) => entry.capabilityId)).toEqual(expectedWebCapabilities);
@@ -151,6 +156,9 @@ describe("interface Current Support projection", () => {
     );
     expect(renderCurrentSupportSection(manifest)).toContain(
       "`uniswap_v2.quote_exact_input`",
+    );
+    expect(renderCurrentSupportSection(manifest)).toContain(
+      "Implemented MCP App presentation contracts: `account.assets@1`",
     );
     expect(() => verifyCurrentSupportDocument(document, manifest)).not.toThrow();
   });

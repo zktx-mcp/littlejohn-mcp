@@ -3,7 +3,22 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
-describe("browser bundle distribution notices", () => {
+describe("bundled interface distribution notices", () => {
+  it("retains the exact MCP Apps license and bundled MCP SDK notice", async () => {
+    const [installedApps, retainedApps, installedSdk, notice] = await Promise.all([
+      readFile("node_modules/@modelcontextprotocol/ext-apps/LICENSE"),
+      readFile("LICENSES/MCP-APPS-LICENSE.txt"),
+      readFile("node_modules/@modelcontextprotocol/sdk/LICENSE", "utf8"),
+      readFile("THIRD_PARTY_NOTICES.txt", "utf8"),
+    ]);
+    expect(retainedApps).toEqual(installedApps);
+    expect(createHash("sha256").update(retainedApps).digest("hex"))
+      .toBe("0382b0057770ca05e9c350a50aa3b1c1fea84da0bc81d723bf00b9aa841be58a");
+    expect(notice.split("Model Context Protocol Apps")).toHaveLength(2);
+    expect(notice).toContain("LICENSES/MCP-APPS-LICENSE.txt");
+    expect(notice.split(installedSdk.trim())).toHaveLength(2);
+  });
+
   it("retains the exact Lightweight Charts closure licenses and official notice", async () => {
     const [installed, retained, fancyCanvas, notice] = await Promise.all([
       readFile("node_modules/lightweight-charts/LICENSE"),

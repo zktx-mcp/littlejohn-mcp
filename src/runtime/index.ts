@@ -23,6 +23,16 @@ export type {
   WalletOwnerBootstrapPort,
   WalletPrivateStoreDirectoryPort,
 } from "./application-context.js";
+export {
+  presentationSnapshotLimits,
+  presentationSnapshotUnavailableReasons,
+} from "./presentation-snapshot.js";
+export type {
+  PresentationSnapshotRecord,
+  PresentationSnapshotResult,
+  PresentationSnapshotStore,
+  PresentationSnapshotUnavailableReason,
+} from "./presentation-snapshot.js";
 export type { WalletSessionSource } from "./source-identity.js";
 export type {
   RuntimeOwnerResponsePacket,
@@ -161,7 +171,9 @@ export type {
   RuntimeSupportManifest,
   RuntimeSupportManifestExtensionInput,
   RuntimeProtocolSupportManifestExtensionInput,
+  RuntimeInterfaceSupportManifestExtensionInput,
   RuntimeSupportManifestSnapshot,
+  PresentationSupportEntryInput,
   TokenCatalogRuntimeSupportManifest,
   WalletRuntimeSupportManifest,
 } from "./support-manifest.js";

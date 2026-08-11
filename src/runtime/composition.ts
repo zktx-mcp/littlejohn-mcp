@@ -152,6 +152,7 @@ import type {
   WalletConnectionReadCapabilityPort,
   WalletPrivateStoreDirectoryPort,
 } from "./application-context.js";
+import type { PresentationSnapshotStore } from "./presentation-snapshot.js";
 import type {
   WalletOwnerApplication,
   WalletOwnerApplicationFactory,
@@ -944,6 +945,11 @@ export class LocalRuntime {
   }
 
   get ownerState(): FixedHttpOwner["state"] { return this.#httpOwner?.state ?? "stopped"; }
+
+  presentationSnapshotStore(): PresentationSnapshotStore {
+    if (this.#databaseClosed) throw new RuntimeOperationError("state_conflict");
+    return this.#database.presentationSnapshotStore();
+  }
 
   static async create<
     ActiveWallet extends object = object,

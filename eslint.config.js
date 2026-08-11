@@ -13,6 +13,8 @@ export default [
     files: [
       "src/interfaces/web/**/*.{ts,tsx}",
       "test/interfaces/web/**/*.{ts,tsx}",
+      "src/interfaces/mcp-app/**/*.ts",
+      "test/interfaces/mcp-app/**/*.ts",
     ],
     languageOptions: {
       parser,

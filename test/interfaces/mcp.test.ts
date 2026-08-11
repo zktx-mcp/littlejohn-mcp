@@ -28,7 +28,6 @@ import {
 import {
   createMcpToolRegistry,
   createMcpServer,
-  mcpToolNames,
   parseMcpToolName,
 } from "../../src/interfaces/mcp.js";
 import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
@@ -294,11 +293,20 @@ describe("MCP interface", () => {
   });
 
   it("registers the exact convention-validated tool set with strict schemas and annotations", async () => {
-    const { client } = await connect(new FakeRuntime());
+    const runtime = new FakeRuntime();
+    const operationClient = new LocalOperationClient({
+      ownerSessions: runtime,
+      createOperationId: () => operationId,
+    });
+    const { client } = await connect(runtime, () => operationId, operationClient);
     const listed = await client.listTools();
     const names = listed.tools.map((tool) => tool.name).sort();
+    const ordinaryNames = createMcpToolRegistry(runtime, operationClient).values()
+      .filter((definition) => definition.presentationTool === undefined)
+      .map((definition) => definition.name)
+      .sort();
 
-    expect(names).toEqual([...mcpToolNames].sort());
+    expect(names).toEqual(ordinaryNames);
     for (const name of names) expect(parseMcpToolName(name)).toBe(name);
     expect(() => parseMcpToolName("read.get_chain_status")).toThrow();
     expect(() => parseMcpToolName("Read_Get_Chain_Status")).toThrow();

@@ -80,6 +80,11 @@ const expectedToolNames = Object.freeze([
   "wallet_start_connection",
   "wallet_start_disconnection",
 ]);
+const expectedAppToolNames = Object.freeze([
+  ...expectedToolNames,
+  "presentation_get_snapshot",
+  "presentation_get_snapshot_chunk",
+]);
 const exactPackagedToolSchemaNames = Object.freeze([
   "read_get_chain_status",
   "wallet_get_connection",
@@ -297,10 +302,11 @@ const assertIncompatibleWorkerConfiguration = async (
 };
 
 class RawMcpClient {
-  constructor(ownership, expectedServerIdentity) {
+  constructor(ownership, expectedServerIdentity, appConnection = false) {
     this.child = ownership.child;
     this.ownership = ownership;
     this.expectedServerIdentity = expectedServerIdentity;
+    this.appConnection = appConnection;
     this.nextId = 1;
     this.pending = new Map();
     this.stderr = "";
@@ -381,8 +387,19 @@ class RawMcpClient {
   async initialize() {
     const result = await this.request("initialize", {
       protocolVersion: "2025-11-25",
-      capabilities: {},
-      clientInfo: { name: "littlejohn-release-check", version: "1.0.0" },
+      capabilities: this.appConnection ? {
+        extensions: {
+          "io.modelcontextprotocol/ui": {
+            mimeTypes: ["text/html;profile=mcp-app"],
+          },
+        },
+      } : {},
+      clientInfo: {
+        name: this.appConnection
+          ? "littlejohn-release-app-check"
+          : "littlejohn-release-check",
+        version: "1.0.0",
+      },
     });
     assertPackagedMcpServerIdentity(result, this.expectedServerIdentity);
     await this.send({ jsonrpc: "2.0", method: "notifications/initialized" });
@@ -402,12 +419,28 @@ class RawMcpClient {
     return result;
   }
 
+  async listResources() {
+    const result = await this.request("resources/list", {});
+    if (!Array.isArray(result?.resources)) {
+      throw new TypeError("Packaged MCP resource list is invalid.");
+    }
+    return result.resources;
+  }
+
+  async readResource(uri) {
+    const result = await this.request("resources/read", { uri });
+    if (!Array.isArray(result?.contents) || result.contents.length !== 1) {
+      throw new TypeError("Packaged MCP resource result is invalid.");
+    }
+    return result.contents[0];
+  }
+
   async close() {
     await this.ownership.terminate();
   }
 }
 
-const startNpxMcp = async (prepared, environment) => {
+const startNpxMcp = async (prepared, environment, appConnection = false) => {
   const child = spawn("npx", [
     "--yes",
     "--package",
@@ -419,7 +452,11 @@ const startNpxMcp = async (prepared, environment) => {
     stdio: ["pipe", "pipe", "pipe"],
   });
   const ownership = ownChildProcess(child, "Packaged MCP process", childShutdownTimeoutMs);
-  const client = new RawMcpClient(ownership, prepared.packageIdentity);
+  const client = new RawMcpClient(
+    ownership,
+    prepared.packageIdentity,
+    appConnection,
+  );
   await initializeOwnedChild(
     ownership,
     () => client.initialize(),
@@ -688,6 +725,101 @@ const canonicalSemanticToolContent = (toolResult, label) => {
     canonicalToolText(toolResult) !== JSON.stringify(structured)
   ) throw new TypeError(`${label} text and structured content differ.`);
   return structured;
+};
+
+const assertPackagedReadApp = async (client, prepared) => {
+  const tools = await client.listTools();
+  const names = tools.map((tool) => tool.name).sort();
+  if (JSON.stringify(names) !== JSON.stringify([...expectedAppToolNames].sort())) {
+    throw new TypeError("Packaged MCP App tool registry is incomplete.");
+  }
+  const readTool = tools.find((tool) => tool.name === "wallet_get_connection");
+  const snapshotTool = tools.find((tool) => tool.name === "presentation_get_snapshot");
+  const chunkTool = tools.find((tool) => tool.name === "presentation_get_snapshot_chunk");
+  const resourceUri = readTool?._meta?.ui?.resourceUri;
+  if (
+    typeof resourceUri !== "string" ||
+    !resourceUri.startsWith("ui://littlejohn/read/") ||
+    JSON.stringify(readTool?._meta?.ui?.visibility) !== JSON.stringify(["model"]) ||
+    JSON.stringify(snapshotTool?._meta?.ui?.visibility) !== JSON.stringify(["model"]) ||
+    snapshotTool?._meta?.ui?.resourceUri !== resourceUri ||
+    JSON.stringify(chunkTool?._meta?.ui?.visibility) !== JSON.stringify(["app"]) ||
+    chunkTool?._meta?.ui?.resourceUri !== undefined ||
+    tools.some((tool) => tool?._meta?.["openai/outputTemplate"] !== undefined)
+  ) throw new TypeError("Packaged MCP App tool metadata is invalid.");
+
+  const resources = await client.listResources();
+  if (
+    resources.length !== 1 ||
+    resources[0]?.uri !== resourceUri ||
+    resources[0]?.mimeType !== "text/html;profile=mcp-app"
+  ) throw new TypeError("Packaged MCP App resource catalog is invalid.");
+  const appResource = await client.readResource(resourceUri);
+  const packagedHtml = await readFile(
+    resolve(prepared.installedPackageRoot, "dist/mcp-app/index.html"),
+    "utf8",
+  );
+  const appDigest = createHash("sha256").update(packagedHtml, "utf8").digest("hex");
+  if (
+    appResource?.uri !== resourceUri ||
+    appResource?.mimeType !== "text/html;profile=mcp-app" ||
+    appResource?.text !== packagedHtml ||
+    resourceUri !== `ui://littlejohn/read/${appDigest}.html`
+  ) throw new TypeError("Packaged MCP App resource bytes are invalid.");
+
+  const creatingResult = await client.callTool("wallet_get_connection");
+  const text = creatingResult?.content?.filter((entry) => entry?.type === "text");
+  const links = creatingResult?.content?.filter((entry) => entry?.type === "resource_link");
+  const snapshotResource = creatingResult?._meta?.["littlejohn/presentation-snapshot"];
+  const descriptor = snapshotResource?.descriptor;
+  const link = links?.[0];
+  if (
+    text?.length !== 1 ||
+    text[0]?.text !== independentCanonicalJson(creatingResult.structuredContent) ||
+    links?.length !== 1 ||
+    link?.uri !== descriptor?.snapshotUri ||
+    snapshotResource?.kind !== "presentation_snapshot_resource" ||
+    descriptor?.contractId !== "wallet.connection" ||
+    descriptor?.contractVersion !== "1"
+  ) throw new TypeError("Packaged MCP App creating result is invalid.");
+
+  const exactResource = await client.readResource(link.uri);
+  if (
+    exactResource?.uri !== link.uri ||
+    exactResource?.mimeType !== "application/json" ||
+    exactResource?.text !== independentCanonicalJson(snapshotResource)
+  ) throw new TypeError("Packaged MCP App exact snapshot resource is invalid.");
+
+  const reference = await client.callTool("presentation_get_snapshot", {
+    snapshotUri: link.uri,
+  });
+  if (
+    reference?.structuredContent?.kind !== "presentation_snapshot_reference" ||
+    reference.structuredContent.snapshotUri !== link.uri ||
+    independentCanonicalJson(reference.structuredContent.descriptor) !==
+      independentCanonicalJson(descriptor) ||
+    Object.hasOwn(reference.structuredContent, "result") ||
+    Object.hasOwn(reference.structuredContent, "payload")
+  ) throw new TypeError("Packaged MCP App exact snapshot reference is invalid.");
+
+  const chunk = await client.callTool("presentation_get_snapshot_chunk", {
+    snapshotId: descriptor.snapshotId,
+    index: 0,
+  });
+  const chunkContent = chunk?.structuredContent;
+  if (
+    descriptor.resultChunkCount !== 1 ||
+    chunkContent?.kind !== "presentation_snapshot_chunk" ||
+    chunkContent.snapshotId !== descriptor.snapshotId ||
+    chunkContent.index !== 0 ||
+    typeof chunkContent.canonicalBase64 !== "string"
+  ) throw new TypeError("Packaged MCP App exact snapshot chunk is invalid.");
+  const resultBytes = Buffer.from(chunkContent.canonicalBase64, "base64");
+  if (
+    resultBytes.length !== descriptor.resultUtf8Bytes ||
+    createHash("sha256").update(resultBytes).digest("hex") !== descriptor.resultSha256 ||
+    resultBytes.toString("utf8") !== independentCanonicalJson(creatingResult.structuredContent)
+  ) throw new TypeError("Packaged MCP App snapshot reconstruction is invalid.");
 };
 
 const operationIdFrom = (toolResult) => {
@@ -1444,6 +1576,11 @@ export const verifyPackagedIntegration = async (prepared) => {
         !Array.isArray(entry?.failureCodes) ||
         entry.failureCodes.filter((code) => code === "result_too_large").length !== 1)
     ) throw new TypeError("Packaged MCP capability catalog is not the exact canonical set.");
+    const appMcp = await startNpxMcp(prepared, environment, true);
+    mcpClients.push(appMcp);
+    await assertPackagedReadApp(appMcp, prepared);
+    await appMcp.close();
+    mcpClients.splice(mcpClients.indexOf(appMcp), 1);
     const chainStatus = await callSemanticRead(firstMcp, "read_get_chain_status");
     if (
       chainStatus.structuredContent?.data?.chainId !== expectedChainId ||

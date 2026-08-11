@@ -45,6 +45,10 @@ const browserCoreConsumers = new Set([
   "interfaces/browser-capability-bindings.ts",
   "interfaces/browser-contract.ts",
   "interfaces/browser-error-response.ts",
+  "interfaces/mcp-app/contracts.ts",
+  "interfaces/mcp-app/registry.ts",
+  "interfaces/mcp-app/view/lifecycle.ts",
+  "interfaces/mcp-app/view/renderers.ts",
   "interfaces/operation-delivery.ts",
   "interfaces/reference-market-delivery.ts",
   "interfaces/web/analysis-details.tsx",
@@ -79,6 +83,7 @@ const browserCoreConsumers = new Set([
   "protocols/uniswap-v2/evidence.ts",
   "protocols/uniswap-v2/quote.ts",
   "registry/official-asset-contract.ts",
+  "runtime/presentation-snapshot.ts",
   "token-catalog/contract-schema.ts",
   "wallet/management-contracts.ts",
   "wallet/operation-contract.ts",
@@ -86,6 +91,8 @@ const browserCoreConsumers = new Set([
 const browserTokenCatalogConsumers = new Set([
   resolve(sourceRoot, "interfaces/browser-capability-bindings.ts"),
   resolve(sourceRoot, "interfaces/browser-error-response.ts"),
+  resolve(sourceRoot, "interfaces/mcp-app/registry.ts"),
+  resolve(sourceRoot, "interfaces/mcp-app/view/renderers.ts"),
 ]);
 const runtimeEntryPoint = resolve(sourceRoot, "runtime/index.ts");
 const runtimeComposition = resolve(sourceRoot, "runtime/composition.ts");
