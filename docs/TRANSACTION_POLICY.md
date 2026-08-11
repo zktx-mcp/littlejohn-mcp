@@ -12,8 +12,12 @@ and transaction security claims.
 - MCP and AI clients never sign, hold signing authority, or autonomously execute.
 - Little John never stores private keys, seed phrases, mnemonics, or raw
   signatures.
-- MCP responses and ordinary review responses never contain WalletConnect
-  secrets, raw signed transactions, or a new transaction's signable request.
+- Model-visible MCP content and structured results, ordinary Review responses,
+  presentation snapshots, and durable operations never contain WalletConnect
+  pairing or session secrets, raw signed transactions, or a new transaction's
+  signable request. Active QR presentation follows the ephemeral App-private
+  and direct-TTY boundary in
+  `docs/ARCHITECTURE.md#durable-operation-ownership`.
 - A wallet transport never weakens explicit user confirmation, non-custodial
   authority, reviewed-request equality, or receipt verification.
 - Wallet management operations, local wallet-management confirmation, and
@@ -21,33 +25,45 @@ and transaction security claims.
   `docs/ARCHITECTURE.md#wallet-connection-lifecycle`. None creates transaction
   authority. Wallet approval remains separate from the transaction confirmation
   defined below.
-- MCP, piped CLI input, redirected CLI input, environment variables, saved
-  settings, and command flags never authorize a wallet request.
+- Model-visible MCP calls, piped or redirected CLI input, environment
+  variables, saved settings, and command flags never authorize a wallet
+  request.
 
 ## Confirmation Authority
 
 A `confirmation grant` is the only Little John authority to hand a reviewed
-transaction to a wallet. It is separate from local HTTP authentication, direct
-wallet-connection commands, and a WalletConnect session.
+transaction to a wallet. It is server-owned, single-use state created only by
+one direct user decision in an admitted MCP App or interactive CLI. It is
+separate from MCP transport, local-process authentication, wallet-management
+operations, and a WalletConnect session.
 
-- The runtime creates a grant only after an explicit transaction-confirmation
-  action in the review's selected local web interface or interactive CLI.
-- A grant binds one review, the `transaction_handoff` operation, one
-  confirmation interface, the selected chain and account, and a short expiry.
-- A grant is single-use. Consumption, expiry, interface transfer, review
-  invalidation, account change, chain change, rejection, cancellation, or
-  terminal result revokes it.
-- Grant storage and transport follow
-  `docs/ARCHITECTURE.md#local-credential-taxonomy`.
-- A local control credential or browser request credential authenticates the
-  transport under `docs/ARCHITECTURE.md#local-credential-taxonomy`; neither can
-  create or replace a confirmation grant.
+- An MCP App decision enters only through an App-only control after the View
+  reports the required standard tool capability. A model-visible tool may
+  construct or read an immutable Review but cannot create a grant or issue a
+  WalletConnect request.
+- An interactive CLI decision requires a live TTY and one exact affirmative
+  response to the complete server-owned Review.
+- The direct decision carries the complete admitted canonical Review. The
+  runtime re-admits it, recomputes its commitment, recaptures its current
+  closed preconditions, and independently revalidates its fixed evidence
+  anchors before creating a grant.
+- A grant binds one Review, the `transaction_handoff` operation, selected
+  chain and account, exact wallet-request commitment, and short server-owned
+  expiry. Its interface is recorded as provenance and is not an authority
+  lock.
+- The runtime creates and consumes the grant inside the same admitted handoff
+  operation. No opaque grant reference is returned to an App, CLI, model, URL,
+  or local transport client.
+- Consumption, expiry, Review invalidation, account change, chain change,
+  rejection, cancellation, or terminal result revokes it. At most one
+  unconsumed grant exists for a Review.
 - WalletConnect namespace approval permits the advertised protocol methods. It
-  does not create or replace a confirmation grant and does not replace the
-  wallet's approval of an individual request.
-- An interface transfer revokes the old grant and never creates a grant for the
-  new interface. The user performs a new explicit action in that interface.
-- At most one unconsumed confirmation grant exists for a review.
+  does not create or replace a grant and does not replace the wallet's
+  approval of the individual request.
+- The external wallet is the private-key and signature owner. Little John and
+  its Host may request the exact reviewed transaction only after the grant is
+  consumed; they cannot produce the signature or complete the spend without
+  the wallet's separate approval.
 
 ## Transaction Construction
 
@@ -132,8 +148,8 @@ localized values, unordered fields, or approximate numeric values.
   deltas, warnings, and blocks. It omits a fact that does not apply and records
   an unestablished required fact as unavailable; it never substitutes raw
   calldata, hashes, digests, or source records for a missing conclusion.
-- Browser information priority and presentation of the admitted canonical
-  review are owned only by `docs/USER_INTERFACE_POLICY.md`.
+- Human information priority and presentation of the admitted canonical Review
+  are owned only by `docs/USER_INTERFACE_POLICY.md`.
 - Simulation uses the exact transaction commitment shown in review.
 - Simulation success is evidence only for its exact state, block, provider, and
   requested coverage.

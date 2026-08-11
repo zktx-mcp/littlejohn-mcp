@@ -24,14 +24,23 @@ support values. `Current Support` is its deterministic public projection.
 - Little John is a local Robinhood Chain MCP and transaction review application.
 - Chain scope is Robinhood Chain only.
 - The current wallet transport contract is WalletConnect.
-- Users access one local runtime through MCP text interaction, a host-controlled
-  local web interface, or an interactive CLI.
+- Users access one local runtime through MCP text and structured results,
+  MCP App presentation and direct controls, or an interactive CLI.
+- MCP App and CLI are independent user-selected interfaces over the same
+  canonical backend. Neither is a fallback for, launcher for, or substitute
+  for the other.
+- The loopback HTTP owner is a native backend and compatible-process
+  transport. It is not a separately navigable user interface.
 - Repository ownership is defined in
   `docs/ARCHITECTURE.md#repository-ownership`.
 
 ## Product Philosophy
 
-- User-specific data and review material stay on the user's device.
+- Product-owned durable state stays on the user's device. MCP sends only the
+  exact requested result, Review, operation, or App-private presentation data
+  required by that interaction. The admitted MCP Host can observe the values
+  it transports, including an active Wallet connection QR displayed by an
+  App.
 - Only the user authorizes a wallet request and signature.
 - Conclusions expose their source, freshness, and coverage under
   `docs/EVIDENCE_POLICY.md`.
@@ -148,3 +157,15 @@ and to each of its direct, HTTP, MCP, CLI, and web bindings:
 Capability availability never implies a higher chain, protocol, or transaction
 support level. A support claim records both the applicable support level and the
 availability of each capability used to establish it.
+
+MCP App presentation is not another capability-availability axis. Canonical
+MCP read availability remains the same whether a particular connection can
+display an App. App presentation and App-only controls are admitted for that
+connection from the MCP Apps protocol capabilities and the exact registered
+tool catalog. A connection without the required App transport keeps its
+ordinary MCP text and structured results and receives no App or App-only
+authority. CLI availability is evaluated independently.
+
+`Current Support` continues to project the bindings implemented by the current
+runtime. Its schema and values change only when the corresponding interface
+implementation changes.

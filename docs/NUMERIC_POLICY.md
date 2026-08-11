@@ -100,7 +100,7 @@ present and bound to the same asset and observation identity.
   decimal point implied by verified decimals, and removes trailing fractional
   zeroes. Zero is `0`; no exponent notation, locale separator, rounding, or
   `number` conversion is used. The raw integer remains canonical and remains
-  available to exact machine projections. Browser presentation follows
+  available to exact machine projections. Human presentation follows
   `docs/USER_INTERFACE_POLICY.md` and does not display the raw integer merely
   because the canonical result contains it.
 - A formatted value round-trips to the identical raw integer.
@@ -109,13 +109,14 @@ present and bound to the same asset and observation identity.
 - Zero may be paired with the exact asset symbol in human presentation without
   an admitted decimals value because every decimal scale represents zero as
   zero. A nonzero raw quantity without admitted decimals is not formatted or
-  labelled as a human asset amount. The browser may present its human amount as
-  unavailable while exact machine projections retain the canonical raw value.
+  labelled as a human asset amount. A human interface may present its amount
+  as unavailable while exact machine projections retain the canonical raw
+  value.
 
 ### Rational Display
 
-- One browser-safe core owner formats a nonnegative reduced rational for human
-  display with at most eight significant base-10 digits.
+- One interface-neutral core owner formats a nonnegative reduced rational for
+  human display with at most eight significant base-10 digits.
 - It uses round-half-to-even once, removes trailing fractional zeroes, and
   reports whether the display is exact or approximate.
 - Plain notation is used when the normalized base-10 exponent is from `-6`
@@ -132,7 +133,7 @@ present and bound to the same asset and observation identity.
   persisted value, or evidence value.
 - A raw-output-units-per-raw-input-unit price is converted to an exact reduced
   output-token-units-per-input-token rational by applying both admitted decimal
-  scales once. Browser and CLI consumers use that object and do not parse a
+  scales once. Human-interface consumers use that object and do not parse a
   fraction string to recover it.
 
 ## Arithmetic And Rounding
@@ -151,7 +152,7 @@ present and bound to the same asset and observation identity.
 
 ## External Boundaries
 
-- SDK, RPC, API, registry, database, and browser values are normalized and
+- SDK, RPC, API, registry, database, and interface values are normalized and
   validated before arithmetic.
 - An SDK `number` result is display-only unless exactness for the required range
   is independently established.
@@ -188,8 +189,8 @@ present and bound to the same asset and observation identity.
 
 - Registry identifier, contract address, symbol, legal underlying, and token
   unit remain separate.
-- Stock Token raw balance and UI-adjusted balance remain separate.
-- A verified ERC-8056 current UI multiplier applies exactly once. For raw
+- Stock Token raw balance and human-display-adjusted balance remain separate.
+- A verified current ERC-8056 multiplier applies exactly once. For raw
   balance `raw` and current multiplier `multiplier`, both unsigned integers,
   the adjusted raw amount is exactly
   `floor(raw * multiplier / 1000000000000000000)`. The implementation uses
@@ -261,9 +262,10 @@ present and bound to the same asset and observation identity.
   partition the represented bucket starts. An empty bucket means only that no
   admitted point appears in that bucket; neither a candle nor an empty bucket
   proves exhaustive source history. Every candle has no trade volume.
-- Browser chart coordinates may use only the non-authoritative floating-point
-  projection allowed by [`Charts`](#charts). Exact rational OHLC values remain
-  visible beside that projection and are the only values returned or stored.
+- Human-interface chart coordinates may use only the non-authoritative
+  floating-point projection allowed by [`Charts`](#charts). Exact rational
+  OHLC values remain visible beside that projection and are the only values
+  returned or stored.
 
 ## Verification
 
