@@ -92,6 +92,7 @@ const createState = async () => {
     resolveCurrentBlock: unavailable,
     readLatestAtBlock: unavailable,
     readHistoryAtBlock: unavailable,
+    readStockTokenAtBlock: unavailable,
   });
   const createApplication = () => {
     const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
@@ -100,6 +101,11 @@ const createState = async () => {
       chainInvocations: lifecycle,
       store: database.referenceMarketStore(),
       activeWallet,
+      officialAssets: Object.freeze({
+        synchronize: async () => { throw new Error("Official asset reads are not expected."); },
+        readStored: () => undefined,
+        close: async () => undefined,
+      }),
       clock,
     });
     return Object.freeze({

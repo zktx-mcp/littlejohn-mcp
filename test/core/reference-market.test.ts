@@ -33,6 +33,7 @@ import {
   referencePriceSuccessSchema,
   referencePriceWarnings,
   referenceRoundObservationSchema,
+  stockTokenReferenceMarketCatalog,
   referenceWatchlistInputSchema,
   referenceWatchlistMutationInputSchema,
   referenceWatchlistReorderInputSchema,
@@ -76,7 +77,7 @@ const mappingEvidence = {
   ],
 } as const;
 
-const expectedReferenceMarketManifest = {
+const expectedGenericReferenceMarketManifest = {
   version: 1,
   chainId: "eip155:4663",
   mappingEvidence,
@@ -373,12 +374,45 @@ describe("reference market core contract", () => {
   });
 
   it("preserves the complete manifest and ordered history windows from independent fixtures", () => {
-    expect(referenceMarketManifest).toEqual(expectedReferenceMarketManifest);
+    expect(referenceMarketManifest).toMatchObject({
+      version: expectedGenericReferenceMarketManifest.version,
+      chainId: expectedGenericReferenceMarketManifest.chainId,
+      mappingEvidence: expectedGenericReferenceMarketManifest.mappingEvidence,
+      pairs: expectedGenericReferenceMarketManifest.pairs,
+    });
+    expect(referenceMarketManifest.feeds.slice(0, 2)).toEqual(
+      expectedGenericReferenceMarketManifest.feeds,
+    );
+    const mappedCatalogEntries = stockTokenReferenceMarketCatalog.dispositions.filter(
+      (entry) => entry.mapping.status === "mapped",
+    );
+    expect(referenceMarketManifest.feeds.slice(2)).toHaveLength(mappedCatalogEntries.length);
+    for (const [index, entry] of mappedCatalogEntries.entries()) {
+      if (entry.mapping.status !== "mapped") throw new TypeError("Expected a mapped catalog entry.");
+      expect(referenceMarketManifest.feeds[index + 2]).toEqual({
+        feedId: entry.mapping.feed.feedId,
+        chainId: "eip155:4663",
+        asset: {
+          kind: "stock_token",
+          assetUid: entry.asset.assetUid,
+          tokenAddress: entry.mapping.selectedDeployment.contractAddress,
+          symbol: entry.asset.symbol,
+        },
+        quote: "usd_reference",
+        standardProxy: entry.mapping.feed.proxyAddress,
+        expectedDescription: entry.mapping.feed.expectedDescription,
+        decimals: entry.mapping.feed.decimals,
+        heartbeatSeconds: entry.mapping.feed.heartbeatSeconds,
+        availability: entry.mapping.feed.availability,
+        mappingBasis: "generated_complete_source_association",
+        sequencerEvidence: "sequencer_status_unavailable",
+      });
+    }
     expect(referenceHistoryWindowDefinitions).toEqual(
       expectedReferenceHistoryWindowDefinitions,
     );
     expect(referenceMarketLimits).toMatchObject({
-      feedCount: 2,
+      feedCount: 34,
       pairCount: 3,
       watchlistEntries: 3,
       maximumPairSources: 2,
@@ -393,9 +427,9 @@ describe("reference market core contract", () => {
 
   it("preserves the exact manifest, owner schemas, and public contract bytes", () => {
     const manifest = canonicalBytes(referenceMarketManifest as unknown as CanonicalJson);
-    expect(Buffer.byteLength(manifest, "utf8")).toBe(2_611);
+    expect(Buffer.byteLength(manifest, "utf8")).toBe(21_185);
     expect(sha256(manifest)).toBe(
-      "28c6e39d6752e10a1aa3dd42c7d7da1c844f8415c446f1cc66a5aecdbc54807e",
+      "d51c5e154a0b4323ae90504e96ff7d4a187884feab4e5c5f6bc4718202253383",
     );
 
     const mapping = canonicalBytes(referenceMarketMappingEvidence as unknown as CanonicalJson);
@@ -415,9 +449,9 @@ describe("reference market core contract", () => {
         historyWindow: canonicalSchema(referenceHistoryWindowSchema, "input"),
       },
     } as unknown as CanonicalJson);
-    expect(Buffer.byteLength(ownerProjection, "utf8")).toBe(13_225);
+    expect(Buffer.byteLength(ownerProjection, "utf8")).toBe(34_219);
     expect(sha256(ownerProjection)).toBe(
-      "5ee8d8607a0aaf3a40fa75f4efdfd30eebb29d6c5e1630becaf6069992c6bced",
+      "eac19431d799dd9208200fa247e94e0686166c3eb3cd1da0ae1e16610d350864",
     );
 
     const publicContractProjection = canonicalBytes({
@@ -432,9 +466,9 @@ describe("reference market core contract", () => {
       watchlistReorderInput:
         canonicalSchema(referenceWatchlistReorderInputSchema, "input"),
     } as unknown as CanonicalJson);
-    expect(Buffer.byteLength(publicContractProjection, "utf8")).toBe(57_604);
+    expect(Buffer.byteLength(publicContractProjection, "utf8")).toBe(58_371);
     expect(sha256(publicContractProjection)).toBe(
-      "a357f64de36b206d7286ee7914b0896f8082830a15d0c362c9b153077e1b776a",
+      "1074c18c9d18d5c2ff26eb48ab0f38d7288a7d6aa33b635b0c32c783b053763c",
     );
   });
 

@@ -2,18 +2,22 @@ import {
   compareExactRationals,
   deriveReferencePairValue,
   findReferenceFeed,
+  parseUtcTimestamp,
+  referenceCandleSchema,
   referenceHistoryWindowDefinitions,
   referenceHistorySuccessSchema,
   referenceHistoryWarnings,
   referenceMarketMappingEvidence,
   type ChainAnchor,
   type ExactRational,
+  type ReferenceCandle,
   type ReferenceFeedId,
   type ReferenceHistorySuccess,
   type ReferenceHistoryTraversalReport,
   type ReferenceHistoryWindow,
   type ReferencePairManifestEntry,
   type ReferenceRoundObservation,
+  type UtcTimestamp,
 } from "../core/index.js";
 import type { ReferenceFeedCacheSnapshot } from "../runtime/reference-market-storage.js";
 
@@ -36,7 +40,27 @@ const chronological = (
   return leftRound === rightRound ? 0 : leftRound < rightRound ? -1 : 1;
 }));
 
-const pointsFor = (
+const directPoints = (
+  feedId: ReferenceFeedId,
+  snapshot: ReferenceFeedCacheSnapshot | undefined,
+  requestedStart: number,
+  requestedEnd: number,
+): readonly PricePoint[] => {
+  findReferenceFeed(feedId);
+  if (snapshot === undefined || snapshot.integrityStatus === "conflict") return Object.freeze([]);
+  if (
+    snapshot.feedId !== feedId ||
+    snapshot.observations.some((observation) => observation.fact.feedId !== feedId)
+  ) throw new TypeError("Reference history snapshot identity is invalid.");
+  return Object.freeze(chronological(snapshot.observations).flatMap((observation) => {
+    const time = observationTime(observation);
+    return time >= requestedStart && time <= requestedEnd
+      ? [{ time, value: observation.fact.value, sources: [observation] }]
+      : [];
+  }));
+};
+
+const pointsForPair = (
   pair: ReferencePairManifestEntry,
   snapshots: ReadonlyMap<ReferenceFeedId, ReferenceFeedCacheSnapshot>,
   requestedStart: number,
@@ -45,16 +69,15 @@ const pointsFor = (
   const byFeed = new Map(pair.contract.sourceIds.map((feedId) => {
     const snapshot = snapshots.get(feedId);
     if (snapshot === undefined || snapshot.integrityStatus === "conflict") return [feedId, []] as const;
+    if (
+      snapshot.feedId !== feedId ||
+      snapshot.observations.some((observation) => observation.fact.feedId !== feedId)
+    ) throw new TypeError("Reference history snapshot identity is invalid.");
     return [feedId, chronological(snapshot.observations)] as const;
   }));
   if (pair.contract.sourceIds.length === 1) {
     const feedId = pair.contract.sourceIds[0]!;
-    return Object.freeze((byFeed.get(feedId) ?? []).flatMap((observation) => {
-      const time = observationTime(observation);
-      return time >= requestedStart && time <= requestedEnd
-        ? [{ time, value: observation.fact.value, sources: [observation] }]
-        : [];
-    }));
+    return directPoints(feedId, snapshots.get(feedId), requestedStart, requestedEnd);
   }
   const candidateTimes = [...new Set(pair.contract.sourceIds.flatMap((feedId) =>
     (byFeed.get(feedId) ?? []).map(observationTime)
@@ -84,20 +107,28 @@ const selectExtreme = (
   return direction === "high" ? comparison > 0 ? point : selected : comparison < 0 ? point : selected;
 });
 
-export const createReferenceHistory = (input: Readonly<{
-  pair: ReferencePairManifestEntry;
+export interface ReferenceCandleSeries {
+  readonly coverage: Readonly<{
+    basis: "observed_rounds";
+    requestedStart: UtcTimestamp;
+    requestedEnd: UtcTimestamp;
+    emptyBucketStarts: readonly UtcTimestamp[];
+  }>;
+  readonly candles: readonly ReferenceCandle[];
+  readonly sourceObservations: readonly ReferenceRoundObservation[];
+}
+
+const createCandleSeries = (input: Readonly<{
+  points: readonly PricePoint[];
   window: ReferenceHistoryWindow;
   block: ChainAnchor;
-  snapshots: ReadonlyMap<ReferenceFeedId, ReferenceFeedCacheSnapshot>;
-  reports: ReadonlyMap<ReferenceFeedId, ReferenceHistoryTraversalReport>;
-}>): ReferenceHistorySuccess => {
+}>): ReferenceCandleSeries => {
   const requestedEnd = Date.parse(input.block.blockTimestamp);
   const windowDefinition = referenceHistoryWindowDefinitions[input.window];
   const requestedStart = requestedEnd - windowDefinition.windowMilliseconds;
   const bucketSize = windowDefinition.bucketMilliseconds;
   const firstBucket = Math.ceil(requestedStart / bucketSize) * bucketSize;
-  const points = pointsFor(input.pair, input.snapshots, firstBucket, requestedEnd);
-  const candles = [];
+  const candles: ReferenceCandle[] = [];
   const sourceObservations: ReferenceRoundObservation[] = [];
   const admittedSourceKeys = new Set<string>();
   const sourcePointers = (sources: readonly ReferenceRoundObservation[]) => Object.freeze(sources.map((source) => {
@@ -108,23 +139,23 @@ export const createReferenceHistory = (input: Readonly<{
     }
     return Object.freeze({ feedId: source.fact.feedId, roundId: source.fact.roundId });
   }));
-  const emptyBucketStarts: string[] = [];
+  const emptyBucketStarts: UtcTimestamp[] = [];
   for (let openedAt = firstBucket; openedAt < requestedEnd; openedAt += bucketSize) {
     const naturalEnd = openedAt + bucketSize;
     const openBucket = requestedEnd < naturalEnd;
     const closedAt = openBucket ? requestedEnd : naturalEnd;
-    const bucketPoints = points.filter((point) =>
+    const bucketPoints = input.points.filter((point) =>
       point.time >= openedAt &&
       (openBucket ? point.time <= closedAt : point.time < naturalEnd));
     if (bucketPoints.length === 0) {
-      emptyBucketStarts.push(new Date(openedAt).toISOString());
+      emptyBucketStarts.push(parseUtcTimestamp(new Date(openedAt).toISOString()));
       continue;
     }
     const open = bucketPoints[0]!;
     const close = bucketPoints.at(-1)!;
     const high = selectExtreme(bucketPoints, "high");
     const low = selectExtreme(bucketPoints, "low");
-    candles.push({
+    candles.push(referenceCandleSchema.parse({
       openedAt: new Date(openedAt).toISOString(),
       closedAt: new Date(closedAt).toISOString(),
       openBucket,
@@ -140,11 +171,55 @@ export const createReferenceHistory = (input: Readonly<{
       lowSourceSkewSeconds: sourceSkewSeconds(low.sources),
       closeSourcePointers: sourcePointers(close.sources),
       closeSourceSkewSeconds: sourceSkewSeconds(close.sources),
-    });
+    }));
   }
+  return Object.freeze({
+    coverage: Object.freeze({
+      basis: "observed_rounds" as const,
+      requestedStart: parseUtcTimestamp(new Date(requestedStart).toISOString()),
+      requestedEnd: parseUtcTimestamp(new Date(requestedEnd).toISOString()),
+      emptyBucketStarts: Object.freeze(emptyBucketStarts),
+    }),
+    candles: Object.freeze(candles),
+    sourceObservations: Object.freeze(sourceObservations),
+  });
+};
 
-  const requestedStartUtc = new Date(requestedStart).toISOString();
-  const requestedEndUtc = new Date(requestedEnd).toISOString();
+export const createDirectReferenceCandleSeries = (input: Readonly<{
+  feedId: ReferenceFeedId;
+  window: ReferenceHistoryWindow;
+  block: ChainAnchor;
+  snapshot: ReferenceFeedCacheSnapshot;
+}>): ReferenceCandleSeries => {
+  const requestedEnd = Date.parse(input.block.blockTimestamp);
+  const windowDefinition = referenceHistoryWindowDefinitions[input.window];
+  const requestedStart = requestedEnd - windowDefinition.windowMilliseconds;
+  const firstBucket = Math.ceil(requestedStart / windowDefinition.bucketMilliseconds) *
+    windowDefinition.bucketMilliseconds;
+  return createCandleSeries({
+    points: directPoints(input.feedId, input.snapshot, firstBucket, requestedEnd),
+    window: input.window,
+    block: input.block,
+  });
+};
+
+export const createReferenceHistory = (input: Readonly<{
+  pair: ReferencePairManifestEntry;
+  window: ReferenceHistoryWindow;
+  block: ChainAnchor;
+  snapshots: ReadonlyMap<ReferenceFeedId, ReferenceFeedCacheSnapshot>;
+  reports: ReadonlyMap<ReferenceFeedId, ReferenceHistoryTraversalReport>;
+}>): ReferenceHistorySuccess => {
+  const requestedEnd = Date.parse(input.block.blockTimestamp);
+  const windowDefinition = referenceHistoryWindowDefinitions[input.window];
+  const requestedStart = requestedEnd - windowDefinition.windowMilliseconds;
+  const firstBucket = Math.ceil(requestedStart / windowDefinition.bucketMilliseconds) *
+    windowDefinition.bucketMilliseconds;
+  const series = createCandleSeries({
+    points: pointsForPair(input.pair, input.snapshots, firstBucket, requestedEnd),
+    window: input.window,
+    block: input.block,
+  });
   const reports = input.pair.contract.sourceIds.map((feedId) => {
     const report = input.reports.get(feedId);
     if (report === undefined) throw new TypeError("Reference history traversal report is missing.");
@@ -163,7 +238,7 @@ export const createReferenceHistory = (input: Readonly<{
       input.snapshots.get(feedId)?.retentionCutoffRoundId !== undefined)
       ? ["retention_limited" as const] : []),
   ];
-  if (candles.length === 0) {
+  if (series.candles.length === 0) {
     return referenceHistorySuccessSchema.parse({
       status: "unavailable",
       reason: "no_valid_observation",
@@ -173,9 +248,9 @@ export const createReferenceHistory = (input: Readonly<{
       mappingEvidence: referenceMarketMappingEvidence,
       coverage: {
         basis: "observed_rounds",
-        requestedStart: requestedStartUtc,
-        requestedEnd: requestedEndUtc,
-        emptyBucketStarts,
+        requestedStart: series.coverage.requestedStart,
+        requestedEnd: series.coverage.requestedEnd,
+        emptyBucketStarts: series.coverage.emptyBucketStarts,
         limitations,
       },
       candles: [],
@@ -191,13 +266,13 @@ export const createReferenceHistory = (input: Readonly<{
     mappingEvidence: referenceMarketMappingEvidence,
     coverage: {
       basis: "observed_rounds",
-      requestedStart: requestedStartUtc,
-      requestedEnd: requestedEndUtc,
-      emptyBucketStarts,
+      requestedStart: series.coverage.requestedStart,
+      requestedEnd: series.coverage.requestedEnd,
+      emptyBucketStarts: series.coverage.emptyBucketStarts,
       limitations,
     },
-    candles,
-    sourceObservations,
+    candles: series.candles,
+    sourceObservations: series.sourceObservations,
     warnings: [...referenceHistoryWarnings, "partial_history"],
   });
 };

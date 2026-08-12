@@ -11,6 +11,7 @@ import type {
   ReferencePriceSuccess,
   ReferenceWatchlistSuccess,
 } from "../core/index.js";
+import type { OfficialAssetSynchronizationPort } from "../registry/index.js";
 import type { ReferenceMarketStore } from "../runtime/reference-market-storage.js";
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
 import type {
@@ -20,10 +21,18 @@ import type {
   ReferenceWatchlistReviewRequest,
   ReferenceWatchlistReviewResult,
 } from "./contracts.js";
+import type {
+  StockTokenMarketInput,
+  StockTokenMarketResult,
+} from "./stock-token-market.js";
 
 export interface ReferenceMarketApplicationPort {
   price(input: ReferencePriceInput, signal?: AbortSignal): Promise<ReferencePriceSuccess | ApplicationFailure>;
   history(input: ReferenceHistoryInput, signal?: AbortSignal): Promise<ReferenceHistorySuccess | ApplicationFailure>;
+  stockTokenMarket(
+    input: StockTokenMarketInput,
+    signal?: AbortSignal,
+  ): Promise<StockTokenMarketResult | ApplicationFailure>;
   watchlist(input: Record<string, never>, signal?: AbortSignal): Promise<ReferenceWatchlistSuccess | ApplicationFailure>;
   reviewWatchlistChange(
     input: ReferenceWatchlistReviewRequest,
@@ -44,5 +53,6 @@ export interface ReferenceMarketApplicationDependencies {
   readonly chain: ReferenceMarketChainReadPort;
   readonly store: ReferenceMarketStore;
   readonly activeWallet: ActiveWalletReadPort;
+  readonly officialAssets: OfficialAssetSynchronizationPort;
   readonly clock: CanonicalClock;
 }

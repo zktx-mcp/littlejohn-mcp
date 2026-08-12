@@ -28,6 +28,8 @@ const sourceRoot = resolve(repositoryRoot, "src");
 const uniswapV2SdkFile = resolve(sourceRoot, "protocols/uniswap-v2/sdk.ts");
 const testRoot = resolve(repositoryRoot, "test");
 const coreRoot = resolve("src/core");
+const generatedStockTokenReferenceMarketModule =
+  resolve(coreRoot, "stock-token-reference-market.generated.ts");
 const tokenCatalogRoot = resolve(sourceRoot, "token-catalog");
 const interfaceConsumerRoots = Object.freeze([
   resolve(sourceRoot, "interfaces"),
@@ -49,6 +51,7 @@ const clientCoreConsumers = new Set([
   "interfaces/mcp-app/view/renderers.ts",
   "interfaces/operation-delivery.ts",
   "market-portfolio/contracts.ts",
+  "market-portfolio/stock-token-market.ts",
   "protocols/contracts.ts",
   "protocols/registry.ts",
   "protocols/uniswap-v2/contracts.ts",
@@ -923,6 +926,7 @@ const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRu
       symbol: "assertOfficialAssetSourceMember",
       importers: new Set([
         resolve(sourceRoot, "chain/official-assets.ts"),
+        resolve(sourceRoot, "chain/reference-market.ts"),
         robinhoodOfficialAssetAdapterModule,
         resolve(sourceRoot, "registry/stock-factory.ts"),
       ]),
@@ -1800,6 +1804,7 @@ describe("runtime architecture boundary", () => {
     const productChainLiteralOwners: string[] = [];
     const productChainNumericLiteralOwners: string[] = [];
     for (const file of await collectSourceFiles(sourceRoot)) {
+      if (file === generatedStockTokenReferenceMarketModule) continue;
       const name = relative(sourceRoot, file).split(sep).join("/");
       const source = await readFile(file, "utf8");
       const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
@@ -2025,6 +2030,7 @@ describe("runtime architecture boundary", () => {
         .map((literal) => [literal, new Set<string>()]),
     );
     for (const file of await collectSourceFiles(sourceRoot)) {
+      if (file === generatedStockTokenReferenceMarketModule) continue;
       const name = relative(sourceRoot, file).split(sep).join("/");
       const source = await readFile(file, "utf8");
       const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
@@ -2570,7 +2576,8 @@ describe("runtime architecture boundary", () => {
         if (
           ts.isNumericLiteral(node) &&
           node.getText(parsed).replaceAll("_", "") === "86400" &&
-          referenceMarketRelated
+          referenceMarketRelated &&
+          file !== generatedStockTokenReferenceMarketModule
         ) {
           heartbeatOwners.add(name);
         }
@@ -2656,12 +2663,12 @@ describe("runtime architecture boundary", () => {
       ["trade_price", "referenceMarketMappingEvidenceDefinition"],
       ["sequencer_status", "referenceMarketMappingEvidenceDefinition"],
       ["legal_value", "referenceMarketMappingEvidenceDefinition"],
-      ["eth_usd", "referenceFeedDefinitions"],
-      ["usdg_usd", "referenceFeedDefinitions"],
-      ["0x78f3556b67e17df817d51ef5a990cdaf09e8d3a9", "referenceFeedDefinitions"],
-      ["0x61b7e5650328764b076a108eff5fa7282a1b9ad2", "referenceFeedDefinitions"],
-      ["ETH / USD", "referenceFeedDefinitions"],
-      ["USDG / USD", "referenceFeedDefinitions"],
+      ["eth_usd", "genericReferenceFeedDefinitions"],
+      ["usdg_usd", "genericReferenceFeedDefinitions"],
+      ["0x78f3556b67e17df817d51ef5a990cdaf09e8d3a9", "genericReferenceFeedDefinitions"],
+      ["0x61b7e5650328764b076a108eff5fa7282a1b9ad2", "genericReferenceFeedDefinitions"],
+      ["ETH / USD", "genericReferenceFeedDefinitions"],
+      ["USDG / USD", "genericReferenceFeedDefinitions"],
       ["ETH/USD", "referencePairDefinitions"],
       ["USDG/USD", "referencePairDefinitions"],
       ["ETH/USDG", "referencePairDefinitions"],
@@ -2698,11 +2705,21 @@ describe("runtime architecture boundary", () => {
       "referenceHistoryCandleBucketRecord",
     ]));
     expect(declarationIdentifiers("referenceFeedIdSchema"))
-      .toContain("referenceFeedDefinitionIds");
+      .toEqual(expect.arrayContaining([
+        "referencePairSourceIdSchema",
+        "stockTokenReferenceFeedIdSchema",
+      ]));
+    expect(declarationIdentifiers("genericReferenceFeedManifestEntrySchema"))
+      .toEqual(expect.arrayContaining([
+        "genericReferenceFeedAssets",
+        "genericReferenceFeedDescriptions",
+      ]));
+    expect(declarationIdentifiers("stockTokenReferenceFeedManifestEntrySchema"))
+      .toContain("stockTokenReferenceFeedIdSchema");
     expect(declarationIdentifiers("referenceFeedManifestEntrySchema"))
       .toEqual(expect.arrayContaining([
-        "referenceFeedAssets",
-        "referenceFeedDescriptions",
+        "genericReferenceFeedManifestEntrySchema",
+        "stockTokenReferenceFeedManifestEntrySchema",
         "referenceFeedDefinitionById",
       ]));
     expect(declarationIdentifiers("referencePairManifestEntrySchema"))

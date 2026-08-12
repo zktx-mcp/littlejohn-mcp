@@ -22,7 +22,10 @@ import {
   captureConnectedWalletSession,
   type ConnectedWalletSession,
 } from "../token-catalog/active-wallet.js";
-import { createReferenceHistory } from "./candles.js";
+import {
+  createDirectReferenceCandleSeries,
+  createReferenceHistory,
+} from "./candles.js";
 import {
   createReferenceWatchlistReviewProjection,
   parseReferenceWatchlistReview,
@@ -48,6 +51,13 @@ import type {
   ReferenceMarketApplicationDependencies,
   ReferenceMarketApplicationPort,
 } from "./ports.js";
+import {
+  createAvailableStockTokenMarketResult,
+  createStockTokenMarketUnavailableAfterChainRead,
+  resolveStockTokenMarketAsset,
+  type StockTokenMarketInput,
+  type StockTokenMarketResult,
+} from "./stock-token-market.js";
 import { ReferenceFeedSynchronizationOwner } from "./synchronization.js";
 
 type CapturedWallet = Readonly<{
@@ -173,6 +183,68 @@ export class ReferenceMarketApplication implements ReferenceMarketApplicationPor
         });
       });
     });
+  }
+
+  stockTokenMarket(
+    input: StockTokenMarketInput,
+    signal?: AbortSignal,
+  ): Promise<StockTokenMarketResult | ApplicationFailure> {
+    return this.#runRead(
+      referenceMarketApplicationContracts.stockTokenMarket,
+      input,
+      signal,
+      async (request, activeSignal) => {
+        const official = await this.#dependencies.officialAssets.synchronize(activeSignal);
+        if (official.status === "unavailable") {
+          throw new ReferenceMarketOperationError(official.reason);
+        }
+        const resolution = resolveStockTokenMarketAsset(request, official.snapshot);
+        if (resolution.status !== "mapped") return resolution;
+        return this.#dependencies.chainInvocations.run(activeSignal, async (context) => {
+          const block = await this.#dependencies.chain.resolveCurrentBlock(context);
+          const feedId = resolution.mapping.disposition.mapping.feed.feedId;
+          const read = await this.#dependencies.chain.readStockTokenAtBlock({
+            member: resolution.officialAsset.member,
+            feedId,
+            block,
+          }, context);
+          if (read.status !== "observed") {
+            return createStockTokenMarketUnavailableAfterChainRead({
+              request,
+              resolution,
+              block: block.anchor,
+              read,
+            });
+          }
+          const requestedStartUnixSeconds = BigInt(Math.floor(
+            (Date.parse(block.anchor.blockTimestamp) -
+              referenceHistoryWindowDefinitions[request.window].windowMilliseconds) / 1_000,
+          ));
+          const synchronized = await this.#synchronization.synchronize({
+            feedId,
+            block,
+            requestedStartUnixSeconds,
+            latest: read.latest,
+            context,
+          });
+          const series = createDirectReferenceCandleSeries({
+            feedId,
+            window: request.window,
+            block: block.anchor,
+            snapshot: synchronized.snapshot,
+          });
+          return createAvailableStockTokenMarketResult({
+            request,
+            resolution,
+            block: block.anchor,
+            read,
+            series,
+            snapshot: synchronized.snapshot,
+            report: synchronized.report,
+          });
+        });
+      },
+    );
   }
 
   watchlist(

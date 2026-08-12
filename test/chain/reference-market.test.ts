@@ -6,6 +6,7 @@ import {
   type ReferenceHistoryTraversal,
   type ReferenceMarketChainReadPort,
 } from "../../src/chain/reference-market.js";
+import { encodeStockTokenOraclePausedCall } from "../../src/chain/evm-standard.js";
 import {
   resolveConfiguredCanonicalBlock,
   type CanonicalBlock,
@@ -28,12 +29,21 @@ import {
   findReferenceFeed,
   parseEvmAddress,
   parseEvmChainId,
+  stockTokenReferenceMarketCatalog,
   referenceCompositeRoundIdSchema,
   referenceFeedTraversalStateSchema,
   referenceRoundObservationSchema,
   sourceReferenceSchema,
   type ChainAnchor,
 } from "../../src/core/index.js";
+import {
+  assertOfficialAssetSourceMember,
+  stockFactoryAdmissionManifest,
+} from "../../src/registry/index.js";
+import {
+  stockFactoryImplementationCodeFixture,
+  stockFactoryProxyCodeFixture,
+} from "../registry/stock-factory-fixture.js";
 
 const ethProxy = parseEvmAddress("0x78f3556b67e17df817d51ef5a990cdaf09e8d3a9");
 const usdgProxy = parseEvmAddress("0x61b7e5650328764b076a108eff5fa7282a1b9ad2");
@@ -147,6 +157,73 @@ class LatestRequester implements RpcRequester {
   }
 }
 
+const aaplFixture = (() => {
+  const disposition = stockTokenReferenceMarketCatalog.dispositions.find((entry) =>
+    entry.asset.symbol === "AAPL");
+  if (disposition === undefined) throw new Error("AAPL chain fixture is missing.");
+  if (disposition.mapping.status !== "mapped") throw new Error("AAPL mapping fixture is missing.");
+  return Object.freeze({ asset: disposition.asset, mapping: disposition.mapping });
+})();
+const aaplFeed = aaplFixture.mapping.feed;
+const aaplMember = assertOfficialAssetSourceMember({
+  assetUid: aaplFixture.asset.assetUid,
+  contractAddress: aaplFixture.mapping.selectedDeployment.contractAddress,
+  sourceName: aaplFixture.asset.name,
+  sourceSymbol: aaplFixture.asset.symbol,
+});
+
+class StockTokenRequester implements RpcRequester {
+  readonly references: unknown[] = [];
+
+  constructor(
+    private readonly paused: boolean,
+    private readonly latestAnswer: bigint = 23_125_000_000n,
+  ) {}
+
+  async request<Method extends ChainRpcMethod>(
+    method: Method,
+    params: Parameters<RpcRequester["request"]>[1],
+    _signal: AbortSignal,
+  ): Promise<unknown> {
+    if (method === "eth_chainId") return "0x1237";
+    if (method === "eth_getBlockByNumber") {
+      return { number: "0x2a", hash: blockHash, timestamp: "0x6a600800" };
+    }
+    this.references.push(params[params.length - 1]);
+    const address = params[0] as string;
+    if (method === "eth_getStorageAt") {
+      return `0x${"0".repeat(24)}${stockFactoryAdmissionManifest.implementationAddress.slice(2)}`;
+    }
+    if (method === "eth_getCode") {
+      if (address === stockFactoryAdmissionManifest.proxyAddress) return stockFactoryProxyCodeFixture;
+      if (address === stockFactoryAdmissionManifest.implementationAddress) {
+        return stockFactoryImplementationCodeFixture;
+      }
+      return "0x6000";
+    }
+    if (method !== "eth_call") throw new Error(`Unexpected RPC method: ${method}`);
+    const call = params[0] as { readonly to: string; readonly data: string };
+    if (call.to === stockFactoryAdmissionManifest.proxyAddress) {
+      return `0x${"0".repeat(24)}${aaplMember.contractAddress.slice(2)}`;
+    }
+    if (call.to === aaplMember.contractAddress && call.data === encodeStockTokenOraclePausedCall()) {
+      return `0x${word(this.paused ? 1n : 0n)}`;
+    }
+    if (call.to === aaplFeed.proxyAddress) {
+      if (call.data === "0x7284e416") return encodedText(aaplFeed.expectedDescription);
+      if (call.data === "0x313ce567") return `0x${word(BigInt(aaplFeed.decimals))}`;
+      if (call.data === "0xfeaf968c") {
+        return encodedRound(
+          BigInt(compositeRoundId(1n, 2n)),
+          this.latestAnswer,
+          1_784_592_000n,
+        );
+      }
+    }
+    throw new Error(`Unexpected Stock Token call: ${call.to}:${call.data}`);
+  }
+}
+
 const createObservationContext = () => {
   const clock = createCanonicalClock(() => readObservedAt);
   return Object.freeze({
@@ -216,6 +293,12 @@ const createPort = (rpc: RpcRequester) => {
     ): Promise<ReferenceHistoryTraversal> {
       return runAtBlock((block, context) =>
         port.readHistoryAtBlock({ ...input, block }, context));
+    },
+    stockToken(
+      input: Omit<Parameters<ReferenceMarketChainReadPort["readStockTokenAtBlock"]>[0], "block">,
+    ) {
+      return runAtBlock((block, context) =>
+        port.readStockTokenAtBlock({ ...input, block }, context));
     },
   };
 };
@@ -1154,6 +1237,43 @@ describe("reference market chain reads", () => {
     await expect(active.latestAtIssuedBlock(["eth_usd"]))
       .rejects.toMatchObject({ failure: { error: { code: "source_unavailable" } } });
     expect(abortedSiblings).toBe(3);
+    await active.lifecycle.close();
+  });
+
+  it("admits StockFactory, pause state, and latest feed at one exact block", async () => {
+    const requester = new StockTokenRequester(true);
+    const active = createPort(requester);
+    await expect(active.stockToken({
+      member: aaplMember,
+      feedId: aaplFeed.feedId,
+    })).resolves.toMatchObject({
+      status: "observed",
+      oraclePaused: true,
+      stockFactory: {
+        assetUid: aaplMember.assetUid,
+        contractAddress: aaplMember.contractAddress,
+        block: currentBlock,
+      },
+      latest: { fact: { feedId: aaplFeed.feedId } },
+    });
+    expect(requester.references.length).toBeGreaterThan(0);
+    for (const reference of requester.references) {
+      expect(reference).toEqual({ blockHash, requireCanonical: true });
+    }
+    await active.lifecycle.close();
+  });
+
+  it("returns typed observation unavailability but rejects a mismatched mapping", async () => {
+    const requester = new StockTokenRequester(false, 0n);
+    const active = createPort(requester);
+    await expect(active.stockToken({
+      member: aaplMember,
+      feedId: aaplFeed.feedId,
+    })).resolves.toMatchObject({
+      status: "market_observation_unavailable",
+      oraclePaused: false,
+    });
+    await expect(active.stockToken({ member: aaplMember, feedId: "eth_usd" })).rejects.toThrow();
     await active.lifecycle.close();
   });
 });

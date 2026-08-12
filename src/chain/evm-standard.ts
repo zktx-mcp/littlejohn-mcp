@@ -292,6 +292,11 @@ export const decodeAbiBooleanResult = (input: unknown): boolean => {
   return decoded;
 };
 
+const stockTokenOraclePausedCall = parseHexBytes("0x7706ba52");
+
+export const encodeStockTokenOraclePausedCall = (): HexBytes =>
+  stockTokenOraclePausedCall;
+
 export const decodeAbiAddressResult = (input: unknown): EvmAddress => {
   const word = exactWord(input);
   if (!/^0x0{24}[0-9a-f]{40}$/u.test(word)) return invalidStandardEncoding();

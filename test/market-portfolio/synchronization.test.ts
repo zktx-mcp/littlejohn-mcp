@@ -16,6 +16,7 @@ import {
   createCanonicalClock,
   createExactRational,
   findReferenceFeed,
+  referenceFeedIds,
   referenceRoundObservationSchema,
   type ReferenceFeedId,
   type ReferenceRoundObservation,
@@ -68,13 +69,19 @@ const synchronize = (
   context,
 }));
 
-const observation = (aggregatorRound: bigint): ReferenceRoundObservation => {
-  const feed = findReferenceFeed("eth_usd");
+const unexpectedStockTokenRead: ReferenceMarketChainReadPort["readStockTokenAtBlock"] =
+  async () => { throw new Error("Stock Token reads are outside synchronization tests."); };
+
+const observation = (
+  aggregatorRound: bigint,
+  feedId: ReferenceFeedId = "eth_usd",
+): ReferenceRoundObservation => {
+  const feed = findReferenceFeed(feedId);
   const roundId = ((1n << 64n) | aggregatorRound).toString(10);
   return referenceRoundObservationSchema.parse({
     fact: {
       manifestVersion: 1,
-      feedId: "eth_usd",
+      feedId,
       proxyAddress: feed.standardProxy,
       decimals: feed.decimals,
       roundId,
@@ -167,6 +174,7 @@ describe("reference feed synchronization ownership", () => {
     const chain: ReferenceMarketChainReadPort = {
       resolveCurrentBlock: async () => { throw new Error("Unexpected block resolution."); },
       readLatestAtBlock: async () => [],
+      readStockTokenAtBlock: unexpectedStockTokenRead,
       readHistoryAtBlock: async (input) => {
         starts.push(input.latestRoundId);
         const result = deferred<ReferenceHistoryTraversal>();
@@ -210,16 +218,19 @@ describe("reference feed synchronization ownership", () => {
     await lifecycle.close();
   });
 
-  it("admits one active job and 32 waiters, releases a cancelled place, and rejects the next", async () => {
+  it("bounds the shared scheduler at two active and 32 total jobs and releases a cancelled place", async () => {
     const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
-    const activeRead = deferred<ReferenceHistoryTraversal>();
-    const started = deferred<void>();
+    const activeReads = [deferred<ReferenceHistoryTraversal>(), deferred<ReferenceHistoryTraversal>()];
+    const starts: ReferenceFeedId[] = [];
+    const secondFeedId = referenceFeedIds.find((feedId) => feedId !== "eth_usd")!;
     const chain: ReferenceMarketChainReadPort = {
       resolveCurrentBlock: async () => { throw new Error("Unexpected block resolution."); },
       readLatestAtBlock: async () => [],
-      readHistoryAtBlock: async () => {
-        started.resolve();
-        return await activeRead.promise;
+      readStockTokenAtBlock: unexpectedStockTokenRead,
+      readHistoryAtBlock: async (input) => {
+        starts.push(input.feedId);
+        const gate = activeReads[starts.length - 1];
+        return gate === undefined ? traversal() : await gate.promise;
       },
     };
     const owner = new ReferenceFeedSynchronizationOwner({
@@ -232,8 +243,15 @@ describe("reference feed synchronization ownership", () => {
       requestedStartUnixSeconds: 1n,
       latest: observation(100n),
     });
-    await started.promise;
-    const controllers = Array.from({ length: 32 }, () => new AbortController());
+    const second = synchronize(lifecycle, owner, {
+      feedId: secondFeedId,
+      requestedStartUnixSeconds: 1n,
+      latest: observation(100n, secondFeedId),
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(new Set(starts)).toEqual(new Set(["eth_usd", secondFeedId]));
+
+    const controllers = Array.from({ length: 30 }, () => new AbortController());
     const queued = controllers.map((controller, index) => synchronize(lifecycle, owner, {
       feedId: "eth_usd",
       requestedStartUnixSeconds: 1n,
@@ -258,8 +276,9 @@ describe("reference feed synchronization ownership", () => {
     });
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    activeRead.resolve(traversal());
-    await first;
+    activeReads[0]!.resolve(traversal());
+    activeReads[1]!.resolve(traversal());
+    await Promise.all([first, second]);
     await Promise.all(queued.filter((_entry, index) => index !== 7));
     await replacement;
     await owner.close();
@@ -275,6 +294,7 @@ describe("reference feed synchronization ownership", () => {
     const chain: ReferenceMarketChainReadPort = {
       resolveCurrentBlock: async () => { throw new Error("Unexpected block resolution."); },
       readLatestAtBlock: async () => [],
+      readStockTokenAtBlock: unexpectedStockTokenRead,
       readHistoryAtBlock: async (_input, context) => {
         readStarted.resolve();
         return await new Promise((_resolve, reject) => context.signal.addEventListener("abort", () => {
@@ -333,6 +353,7 @@ describe("reference feed synchronization ownership", () => {
     const chain: ReferenceMarketChainReadPort = {
       resolveCurrentBlock: async () => { throw new Error("Unexpected block resolution."); },
       readLatestAtBlock: async () => [],
+      readStockTokenAtBlock: unexpectedStockTokenRead,
       readHistoryAtBlock: async () => {
         throw new ReferenceMarketOperationError("source_unavailable");
       },
@@ -376,6 +397,7 @@ describe("reference feed synchronization ownership", () => {
     const chain: ReferenceMarketChainReadPort = {
       resolveCurrentBlock: async () => { throw new Error("Unexpected block resolution."); },
       readLatestAtBlock: async () => [],
+      readStockTokenAtBlock: unexpectedStockTokenRead,
       readHistoryAtBlock: async (input) => {
         received = input;
         return Object.freeze({
@@ -439,6 +461,7 @@ describe("reference feed synchronization ownership", () => {
     const chain: ReferenceMarketChainReadPort = {
       resolveCurrentBlock: async () => { throw new Error("Unexpected block resolution."); },
       readLatestAtBlock: async () => [],
+      readStockTokenAtBlock: unexpectedStockTokenRead,
       readHistoryAtBlock: async (input) => {
         received = input;
         return Object.freeze({
@@ -497,6 +520,7 @@ describe("reference feed synchronization ownership", () => {
       chain: {
         resolveCurrentBlock: async () => { throw new Error("Unexpected block resolution."); },
         readLatestAtBlock: async () => [],
+        readStockTokenAtBlock: unexpectedStockTokenRead,
         readHistoryAtBlock: async () => {
           historyReads += 1;
           return traversal();

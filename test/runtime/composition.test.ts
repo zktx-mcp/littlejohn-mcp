@@ -124,6 +124,7 @@ const testReferenceMarketReads = Object.freeze({
   resolveCurrentBlock: async () => unavailableOperation(),
   readLatestAtBlock: async () => unavailableOperation(),
   readHistoryAtBlock: async () => unavailableOperation(),
+  readStockTokenAtBlock: async () => unavailableOperation(),
 });
 const testPinnedEvmReads = Object.freeze({
   observationAuthority: Object.freeze({}) as PinnedEvmReadPort["observationAuthority"],
@@ -187,6 +188,7 @@ const referenceMarketFailure = new ReferenceMarketOperationError("internal_error
 const testReferenceMarkets: ReferenceMarketApplicationPort = Object.freeze({
   price: async () => referenceMarketFailure,
   history: async () => referenceMarketFailure,
+  stockTokenMarket: async () => referenceMarketFailure,
   watchlist: async () => referenceMarketFailure,
   reviewWatchlistChange: async () => referenceMarketFailure,
   decideWatchlistChange: async () => referenceMarketFailure,
@@ -539,6 +541,7 @@ describe("owner application composition", () => {
             "history",
             "price",
             "reviewWatchlistChange",
+            "stockTokenMarket",
             "watchlist",
           ]);
         return {

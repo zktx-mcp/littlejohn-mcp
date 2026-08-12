@@ -648,13 +648,13 @@ describe("application data and local credential", () => {
 
 describe("SQLite product state", () => {
   it("preserves the independent canonical SQLite schema bytes", () => {
-    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(30_487);
+    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(41_431);
     expect(createHash("sha256").update(currentSqliteSchemaSql, "utf8").digest("hex")).toBe(
-      "18c91ec5840ee450a9ec9cc100e1655bb20676e68afb30e10cd6a1f5d4d2c57f",
+      "63076e1aab77633f1b05cf61a68c5f2478ce7d801bcc4154de79e04f09860729",
     );
     const structure = JSON.stringify(deriveIndependentCurrentSqliteSchema());
     expect(createHash("sha256").update(structure, "utf8").digest("hex")).toBe(
-      "8464ee397095e9aefccb2a52bf7ac61cb688d9ba1cbb5ee5ee1e96627adc368a",
+      "0e003cc6cdad7cdd76db8fbe06c2d296b23a024740b543d2669397d74b7d0f26",
     );
   });
 

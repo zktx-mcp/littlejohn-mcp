@@ -17,6 +17,7 @@ import {
   referenceRoundObservationSchema,
   walletConnectionCapability,
   type ChainAnchor,
+  type ReferenceFeedId,
   type ReferenceRoundObservation,
 } from "../../src/core/index.js";
 import {
@@ -111,19 +112,21 @@ const watchlistAction = (input: Readonly<{
 const observation = (
   answer = "193384405462",
   input: Readonly<{
+    feedId?: ReferenceFeedId;
     roundId?: string;
     updatedAtUnixSeconds?: string;
     observedAt?: string;
     block?: ChainAnchor;
   }> = {},
 ) => {
-  const feed = referenceMarketManifest.feeds[0]!;
+  const feed = referenceMarketManifest.feeds.find((entry) =>
+    entry.feedId === (input.feedId ?? "eth_usd"))!;
   const roundId = input.roundId ?? "18446744073709552818";
   const updatedAtUnixSeconds = input.updatedAtUnixSeconds ?? "1784731033";
   return referenceRoundObservationSchema.parse({
     fact: {
       manifestVersion: 1,
-      feedId: "eth_usd",
+      feedId: feed.feedId,
       proxyAddress: feed.standardProxy,
       decimals: 8,
       roundId,
@@ -131,7 +134,7 @@ const observation = (
       answer,
       startedAtUnixSeconds: updatedAtUnixSeconds,
       updatedAtUnixSeconds,
-      value: createExactRational(BigInt(answer), 100_000_000n),
+      value: createExactRational(BigInt(answer), 10n ** BigInt(feed.decimals)),
     },
     readEvidence: {
       observedAt: input.observedAt ?? now,
@@ -187,11 +190,25 @@ describe("reference-market storage", () => {
         observations: [],
       });
     }
+    expect(() => store.commitFeed({
+      feedId: "eth_usd",
+      expectedRevision: null,
+      observations: [],
+      backfillPhaseId: null,
+      backfillNextRoundId: null,
+      backfillStatus: null,
+      retainAfterUnixSeconds: "1",
+      now,
+    })).toThrow(RuntimeOperationError);
+    expect(store.readFeed("eth_usd")).toMatchObject({
+      revision: null,
+      observations: [],
+    });
     database.close();
   });
 
   it("commits an exact cache batch atomically and makes conflicting re-observation permanent", async () => {
-    const { database } = await openConnected();
+    const { database, directory } = await openConnected();
     const store = database.referenceMarketStore();
     expect(store.readFeed("eth_usd")).toMatchObject({ revision: null, observations: [] });
 
@@ -264,6 +281,9 @@ describe("reference-market storage", () => {
       now,
     })).toEqual(conflicted);
     database.close();
+    const reopened = await ProductDatabase.open(runtimePaths(directory).database, now);
+    expect(reopened.referenceMarketStore().readFeed("eth_usd")).toEqual(conflicted);
+    reopened.close();
   });
 
   it("evicts only an expired identity prefix and makes its cutoff irreversible", async () => {
@@ -357,6 +377,7 @@ describe("reference-market storage", () => {
     ]);
     expect(committed.observations.find((entry) => entry.fact.roundId === roundId(3))
       ?.fact.updatedAtUnixSeconds).toBe("1782100000");
+    expect(committed.integrityStatus).toBe("conflict");
     database.close();
   });
 
@@ -406,6 +427,93 @@ describe("reference-market storage", () => {
     database.close();
   }, 30_000);
 
+  it("evicts the globally earliest removable prefix and rolls back every feed on state failure", async () => {
+    const { database, directory } = await openConnected();
+    const store = database.referenceMarketStore();
+    const secondFeedId = "usdg_usd" as const;
+    const stockFeedId = referenceMarketManifest.feeds.find((feed) =>
+      feed.feedId.startsWith("0x"))!.feedId;
+    const fill = (feedId: ReferenceFeedId): void => {
+      let current = store.readFeed(feedId);
+      for (let first = 1; first <= 16_384; first += 1_024) {
+        const observations = Array.from({ length: 1_024 }, (_, index) =>
+          observation("193384405462", {
+            feedId,
+            roundId: roundId(first + index),
+            updatedAtUnixSeconds: (1_784_000_000 + first + index).toString(10),
+          }));
+        current = store.commitFeed({
+          feedId,
+          expectedRevision: current.revision,
+          observations,
+          backfillPhaseId: null,
+          backfillNextRoundId: null,
+          backfillStatus: null,
+          retainAfterUnixSeconds: "1",
+          now,
+        });
+      }
+    };
+    fill("eth_usd");
+    fill(secondFeedId);
+
+    const stockFirst = store.commitFeed({
+      feedId: stockFeedId,
+      expectedRevision: null,
+      observations: [observation("193384405462", {
+        feedId: stockFeedId,
+        roundId: roundId(1),
+        updatedAtUnixSeconds: "1784731000",
+      })],
+      backfillPhaseId: null,
+      backfillNextRoundId: null,
+      backfillStatus: null,
+      retainAfterUnixSeconds: "1",
+      now,
+    });
+    expect(store.readFeed("eth_usd")).toMatchObject({
+      retentionCutoffRoundId: roundId(1),
+    });
+    expect(store.readFeed("eth_usd").observations).toHaveLength(16_383);
+    expect(store.readFeed(secondFeedId).observations).toHaveLength(16_384);
+    expect(stockFirst.observations).toHaveLength(1);
+
+    const before = {
+      eth: store.readFeed("eth_usd"),
+      second: store.readFeed(secondFeedId),
+      stock: store.readFeed(stockFeedId),
+    };
+    const raw = new Database(runtimePaths(directory).database);
+    raw.exec(`CREATE TRIGGER reject_aggregate_cutoff BEFORE UPDATE ON reference_feed_sync_state
+      WHEN OLD.feed_id = 'usdg_usd'
+      BEGIN SELECT RAISE(ABORT, 'reject aggregate cutoff'); END`);
+    raw.close();
+    expect(() => store.commitFeed({
+      feedId: stockFeedId,
+      expectedRevision: stockFirst.revision,
+      observations: [observation("193384405463", {
+        feedId: stockFeedId,
+        roundId: roundId(2),
+        updatedAtUnixSeconds: "1784731001",
+      })],
+      backfillPhaseId: null,
+      backfillNextRoundId: null,
+      backfillStatus: null,
+      retainAfterUnixSeconds: "1",
+      now,
+    })).toThrow();
+    expect({
+      eth: store.readFeed("eth_usd"),
+      second: store.readFeed(secondFeedId),
+      stock: store.readFeed(stockFeedId),
+    }).toEqual(before);
+    const check = new Database(runtimePaths(directory).database, { readonly: true });
+    expect(check.prepare("SELECT COUNT(*) AS count FROM reference_feed_round").get())
+      .toEqual({ count: 32_768 });
+    check.close();
+    database.close();
+  }, 60_000);
+
   it("rejects non-manifest feed identities at admission and during startup integrity scanning", async () => {
     const { database, directory } = await openConnected();
     database.close();
@@ -421,6 +529,52 @@ describe("reference-market storage", () => {
       .toThrow();
     raw.pragma("ignore_check_constraints = ON");
     insert.run(1, chainId, "eth_usd", wrongProxy, "AQEBAQEBAQEBAQEBAQEBAQ", now);
+    raw.close();
+
+    await expect(ProductDatabase.open(path, now)).rejects.toMatchObject({
+      failure: { error: { code: "runtime_state_unavailable" } },
+    });
+  });
+
+  it("rejects a stored feed whose rounds no longer have their owning state", async () => {
+    const { database, directory } = await openConnected();
+    database.referenceMarketStore().commitFeed({
+      feedId: "eth_usd",
+      expectedRevision: null,
+      observations: [observation()],
+      backfillPhaseId: null,
+      backfillNextRoundId: null,
+      backfillStatus: null,
+      retainAfterUnixSeconds: "1",
+      now,
+    });
+    database.close();
+    const path = runtimePaths(directory).database;
+    const raw = new Database(path);
+    raw.prepare("DELETE FROM reference_feed_sync_state WHERE feed_id = ?").run("eth_usd");
+    raw.close();
+
+    await expect(ProductDatabase.open(path, now)).rejects.toMatchObject({
+      failure: { error: { code: "runtime_state_unavailable" } },
+    });
+  });
+
+  it("rejects a stored feed whose state no longer has a current round", async () => {
+    const { database, directory } = await openConnected();
+    database.referenceMarketStore().commitFeed({
+      feedId: "eth_usd",
+      expectedRevision: null,
+      observations: [observation()],
+      backfillPhaseId: null,
+      backfillNextRoundId: null,
+      backfillStatus: null,
+      retainAfterUnixSeconds: "1",
+      now,
+    });
+    database.close();
+    const path = runtimePaths(directory).database;
+    const raw = new Database(path);
+    raw.prepare("DELETE FROM reference_feed_round WHERE feed_id = ?").run("eth_usd");
     raw.close();
 
     await expect(ProductDatabase.open(path, now)).rejects.toMatchObject({

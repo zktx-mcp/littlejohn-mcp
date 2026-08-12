@@ -1044,14 +1044,43 @@ const readReferenceFeedRaw = (
     ORDER BY length(updated_at_unix_seconds), updated_at_unix_seconds,
       length(round_id), round_id`)
     .all(referenceMarketManifestVersion, productChainId, feedId, feed.standardProxy) as ReferenceFeedRoundRow[];
+  const observations = rows.map(decodeReferenceRoundRow);
+  const retentionCutoffRoundId = state?.retentionCutoffRoundId ?? null;
+  const integrityStatus = decodeReferenceIntegrityStatus(state?.integrityStatus ?? null);
+  if (state === undefined && rows.length !== 0) {
+    throw new Error("Stored reference feed rounds are orphaned.");
+  }
+  if (state !== undefined && rows.length === 0) {
+    throw new Error("Stored reference feed state has no current round.");
+  }
+  if (rows.length > referenceMarketLimits.historyRoundsPerFeed) {
+    throw new Error("Stored reference feed capacity is invalid.");
+  }
+  const rowsByRound = [...rows].sort((left, right) => {
+    const leftRound = BigInt(left.roundId);
+    const rightRound = BigInt(right.roundId);
+    return leftRound === rightRound ? 0 : leftRound < rightRound ? -1 : 1;
+  });
+  if (
+    retentionCutoffRoundId !== null &&
+    (rows.length === 0 || rowsByRound.some((row) =>
+      BigInt(row.roundId) <= BigInt(retentionCutoffRoundId)))
+  ) {
+    throw new Error("Stored reference feed retention boundary is invalid.");
+  }
+  const hasNonmonotonicUpdate = rowsByRound.some((row, index) => index > 0 &&
+    BigInt(row.updatedAtUnixSeconds) < BigInt(rowsByRound[index - 1]!.updatedAtUnixSeconds));
+  if (hasNonmonotonicUpdate && integrityStatus !== "conflict") {
+    throw new Error("Stored reference feed integrity state is invalid.");
+  }
   return deepFreezeValue({
     feedId,
     revision: state?.revision ?? null,
-    observations: rows.map(decodeReferenceRoundRow),
+    observations,
     backfillPhaseId: state?.backfillPhaseId ?? null,
     backfillNextRoundId: state?.backfillNextRoundId ?? null,
-    retentionCutoffRoundId: state?.retentionCutoffRoundId ?? null,
-    integrityStatus: decodeReferenceIntegrityStatus(state?.integrityStatus ?? null),
+    retentionCutoffRoundId,
+    integrityStatus,
     backfillStatus: decodeReferenceBackfillStatus(state?.backfillStatus ?? null),
   });
 };
@@ -1108,6 +1137,12 @@ const readReferenceWatchlistRaw = (
 };
 
 const readReferenceMarketRows = (database: Database.Database): void => {
+  const capacity = database.prepare(`SELECT count(*) AS rowCount FROM reference_feed_round`)
+    .get() as { rowCount: number };
+  if (
+    !Number.isSafeInteger(capacity.rowCount) || capacity.rowCount < 0 ||
+    capacity.rowCount > referenceMarketLimits.historyRoundsAggregate
+  ) throw new Error("Stored reference history aggregate capacity is invalid.");
   const allRounds = database.prepare(`${roundSelect}
     ORDER BY manifest_version, chain_id, feed_id, proxy_address,
       length(round_id), round_id`).iterate() as IterableIterator<ReferenceFeedRoundRow>;
@@ -1141,6 +1176,38 @@ const createReferenceRevision = (current: string | null): string => {
     if (revision !== initialReferenceWatchlistRevision && revision !== current) return revision;
   }
   throw new Error("A distinct reference-market revision could not be generated.");
+};
+
+const advanceReferenceTraversalForCutoff = (input: Readonly<{
+  backfillPhaseId: string | null;
+  backfillNextRoundId: string | null;
+  backfillStatus: ReferenceFeedTraversalStatus;
+  retentionCutoffRoundId: string | null;
+}>): Readonly<{
+  backfillPhaseId: string | null;
+  backfillNextRoundId: string | null;
+  backfillStatus: ReferenceFeedTraversalStatus;
+}> => {
+  let { backfillPhaseId, backfillNextRoundId, backfillStatus } = input;
+  if (
+    input.retentionCutoffRoundId !== null && backfillNextRoundId !== null &&
+    BigInt(backfillNextRoundId) <= BigInt(input.retentionCutoffRoundId)
+  ) {
+    backfillPhaseId = parseReferenceCompositeRoundId(input.retentionCutoffRoundId).phaseId;
+    backfillNextRoundId = null;
+    backfillStatus = "retention_boundary";
+  } else if (
+    input.retentionCutoffRoundId !== null && backfillStatus === "retention_boundary"
+  ) {
+    backfillPhaseId = parseReferenceCompositeRoundId(input.retentionCutoffRoundId).phaseId;
+  }
+  referenceFeedTraversalStateSchema.parse({
+    backfillPhaseId,
+    backfillNextRoundId,
+    backfillStatus,
+    retentionCutoffRoundId: input.retentionCutoffRoundId,
+  });
+  return Object.freeze({ backfillPhaseId, backfillNextRoundId, backfillStatus });
 };
 
 const validateDatabaseState = (database: Database.Database): void => {
@@ -2318,7 +2385,8 @@ export class ProductDatabase {
         parseReferenceCompositeRoundId(observation.fact.roundId));
       if (
         observations.length > referenceMarketLimits.historyProbes + 1 ||
-        observations.some((observation) => observation.fact.feedId !== feedId)
+        observations.some((observation) => observation.fact.feedId !== feedId) ||
+        (expectedRevision === null && observations.length === 0)
       ) {
         throw new RuntimeOperationError("state_conflict");
       }
@@ -2393,6 +2461,16 @@ export class ProductDatabase {
         ) {
           throw new Error("Stored reference round is at or below the retention cutoff.");
         }
+        for (let index = 1; index < storedRows.length; index += 1) {
+          if (
+            BigInt(storedRows[index]!.updatedAtUnixSeconds) <
+            BigInt(storedRows[index - 1]!.updatedAtUnixSeconds)
+          ) {
+            conflict = true;
+            break;
+          }
+        }
+
         let ageCandidate: ReferenceFeedRoundRow | undefined;
         for (let index = 0; index < storedRows.length - 1; index += 1) {
           const row = storedRows[index]!;
@@ -2411,16 +2489,16 @@ export class ProductDatabase {
           ageCandidate?.roundId,
           capacityCandidate?.roundId,
         ].filter((value): value is string => value !== undefined);
-        const retentionCutoffRoundId = cutoffCandidates.length === 0
+        const initialTargetCutoff = cutoffCandidates.length === 0
           ? null
           : cutoffCandidates.reduce((greatest, value) =>
               BigInt(value) > BigInt(greatest) ? value : greatest);
-        const deleted = retentionCutoffRoundId === null
+        const deleted = initialTargetCutoff === null
           ? []
-          : storedRows.filter((row) => BigInt(row.roundId) <= BigInt(retentionCutoffRoundId));
-        const retained = retentionCutoffRoundId === null
+          : storedRows.filter((row) => BigInt(row.roundId) <= BigInt(initialTargetCutoff));
+        const retained = initialTargetCutoff === null
           ? storedRows
-          : storedRows.filter((row) => BigInt(row.roundId) > BigInt(retentionCutoffRoundId));
+          : storedRows.filter((row) => BigInt(row.roundId) > BigInt(initialTargetCutoff));
         if (storedRows.length !== 0 && retained.length === 0) {
           throw new Error("Reference feed retention removed the greatest current identity.");
         }
@@ -2434,41 +2512,74 @@ export class ProductDatabase {
           );
         }
         if (deleted.length !== 0) changed = true;
-        let finalBackfillPhaseId = backfillPhaseId;
-        let finalBackfillNextRoundId = backfillNextRoundId;
-        let finalBackfillStatus = backfillStatus;
-        if (
-          retentionCutoffRoundId !== null &&
-          finalBackfillNextRoundId !== null &&
-          BigInt(finalBackfillNextRoundId) <= BigInt(retentionCutoffRoundId)
-        ) {
-          finalBackfillPhaseId = parseReferenceCompositeRoundId(retentionCutoffRoundId).phaseId;
-          finalBackfillNextRoundId = null;
-          finalBackfillStatus = "retention_boundary";
-        } else if (
-          retentionCutoffRoundId !== null &&
-          finalBackfillStatus === "retention_boundary"
-        ) {
-          finalBackfillPhaseId = parseReferenceCompositeRoundId(retentionCutoffRoundId).phaseId;
+
+        const aggregateRows = this.#database.prepare(`${roundSelect}
+          WHERE manifest_version = ? AND chain_id = ?
+          ORDER BY feed_id, length(round_id), round_id`)
+          .all(referenceMarketManifestVersion, productChainId) as ReferenceFeedRoundRow[];
+        const retainedByFeed = new Map<ReferenceFeedId, ReferenceFeedRoundRow[]>();
+        for (const row of aggregateRows) {
+          const rowFeedId = referenceFeedIdSchema.parse(row.feedId);
+          const rows = retainedByFeed.get(rowFeedId) ?? [];
+          rows.push(row);
+          retainedByFeed.set(rowFeedId, rows);
         }
-        referenceFeedTraversalStateSchema.parse({
-          backfillPhaseId: finalBackfillPhaseId,
-          backfillNextRoundId: finalBackfillNextRoundId,
-          backfillStatus: finalBackfillStatus,
-          retentionCutoffRoundId,
+        const aggregateCutoffByFeed = new Map<ReferenceFeedId, string>();
+        let aggregateRowCount = aggregateRows.length;
+        while (aggregateRowCount > referenceMarketLimits.historyRoundsAggregate) {
+          const candidates = [...retainedByFeed.entries()]
+            .filter(([, rows]) => rows.length >= 2)
+            .map(([candidateFeedId, rows]) => ({ candidateFeedId, row: rows[0]! }))
+            .sort((left, right) => {
+              const leftTime = BigInt(left.row.updatedAtUnixSeconds);
+              const rightTime = BigInt(right.row.updatedAtUnixSeconds);
+              if (leftTime !== rightTime) return leftTime < rightTime ? -1 : 1;
+              const feedOrder = compareCodePointSequences(left.candidateFeedId, right.candidateFeedId);
+              if (feedOrder !== 0) return feedOrder;
+              const leftRound = BigInt(left.row.roundId);
+              const rightRound = BigInt(right.row.roundId);
+              return leftRound === rightRound ? 0 : leftRound < rightRound ? -1 : 1;
+            });
+          const selected = candidates[0];
+          if (selected === undefined) {
+            throw new Error("Reference history aggregate capacity cannot preserve one current identity per feed.");
+          }
+          const selectedFeed = findReferenceFeed(selected.candidateFeedId);
+          const removed = remove.run(
+            referenceMarketManifestVersion, productChainId, selected.candidateFeedId,
+            selectedFeed.standardProxy, selected.row.phaseId, selected.row.aggregatorRoundId,
+          );
+          if (removed.changes !== 1) {
+            throw new Error("Reference history aggregate eviction did not remove its exact prefix head.");
+          }
+          retainedByFeed.get(selected.candidateFeedId)!.shift();
+          aggregateCutoffByFeed.set(selected.candidateFeedId, selected.row.roundId);
+          aggregateRowCount -= 1;
+        }
+
+        const aggregateTargetCutoff = aggregateCutoffByFeed.get(feedId);
+        const finalRetentionCutoffRoundId = aggregateTargetCutoff === undefined ||
+          (initialTargetCutoff !== null && BigInt(initialTargetCutoff) > BigInt(aggregateTargetCutoff))
+          ? initialTargetCutoff
+          : aggregateTargetCutoff;
+        if (aggregateTargetCutoff !== undefined) changed = true;
+        const targetTraversal = advanceReferenceTraversalForCutoff({
+          backfillPhaseId,
+          backfillNextRoundId,
+          backfillStatus,
+          retentionCutoffRoundId: finalRetentionCutoffRoundId,
         });
         const finalIntegrity = conflict ? "conflict" : current.integrityStatus;
         if (
-          current.backfillPhaseId !== finalBackfillPhaseId ||
-          current.backfillNextRoundId !== finalBackfillNextRoundId ||
+          current.backfillPhaseId !== targetTraversal.backfillPhaseId ||
+          current.backfillNextRoundId !== targetTraversal.backfillNextRoundId ||
           current.integrityStatus !== finalIntegrity ||
-          current.backfillStatus !== finalBackfillStatus ||
-          current.retentionCutoffRoundId !== retentionCutoffRoundId
+          current.backfillStatus !== targetTraversal.backfillStatus ||
+          current.retentionCutoffRoundId !== finalRetentionCutoffRoundId
         ) changed = true;
         if (!changed) return current;
 
-        const revision = createReferenceRevision(current.revision);
-        this.#database.prepare(`INSERT INTO reference_feed_sync_state(
+        const upsertState = this.#database.prepare(`INSERT INTO reference_feed_sync_state(
           manifest_version, chain_id, feed_id, proxy_address, revision, backfill_phase_id,
           backfill_next_round_id,
           retention_cutoff_round_id, integrity_status, backfill_status, updated_at
@@ -2478,22 +2589,46 @@ export class ProductDatabase {
           backfill_next_round_id = excluded.backfill_next_round_id,
           retention_cutoff_round_id = excluded.retention_cutoff_round_id,
           integrity_status = excluded.integrity_status, backfill_status = excluded.backfill_status,
-          updated_at = excluded.updated_at`)
-          .run(
-            referenceMarketManifestVersion, productChainId, feedId, feed.standardProxy,
-            revision, finalBackfillPhaseId, finalBackfillNextRoundId,
-            retentionCutoffRoundId, finalIntegrity, finalBackfillStatus, now,
+          updated_at = excluded.updated_at`);
+        for (const [affectedFeedId, aggregateCutoff] of aggregateCutoffByFeed) {
+          if (affectedFeedId === feedId) continue;
+          const affected = readReferenceFeedRaw(this.#database, affectedFeedId);
+          const affectedCutoff = affected.retentionCutoffRoundId === null ||
+            BigInt(aggregateCutoff) > BigInt(affected.retentionCutoffRoundId)
+            ? aggregateCutoff
+            : affected.retentionCutoffRoundId;
+          const traversal = advanceReferenceTraversalForCutoff({
+            backfillPhaseId: affected.backfillPhaseId,
+            backfillNextRoundId: affected.backfillNextRoundId,
+            backfillStatus: affected.backfillStatus,
+            retentionCutoffRoundId: affectedCutoff,
+          });
+          const affectedFeed = findReferenceFeed(affectedFeedId);
+          upsertState.run(
+            referenceMarketManifestVersion, productChainId, affectedFeedId,
+            affectedFeed.standardProxy, createReferenceRevision(affected.revision),
+            traversal.backfillPhaseId, traversal.backfillNextRoundId, affectedCutoff,
+            affected.integrityStatus, traversal.backfillStatus, now,
           );
+        }
+
+        const revision = createReferenceRevision(current.revision);
+        upsertState.run(
+          referenceMarketManifestVersion, productChainId, feedId, feed.standardProxy,
+          revision, targetTraversal.backfillPhaseId, targetTraversal.backfillNextRoundId,
+          finalRetentionCutoffRoundId, finalIntegrity, targetTraversal.backfillStatus, now,
+        );
         const stored = readReferenceFeedRaw(this.#database, feedId);
         if (
           stored.revision !== revision || stored.integrityStatus !== finalIntegrity ||
-          stored.backfillPhaseId !== finalBackfillPhaseId ||
-          stored.backfillStatus !== finalBackfillStatus ||
-          stored.backfillNextRoundId !== finalBackfillNextRoundId ||
-          stored.retentionCutoffRoundId !== retentionCutoffRoundId ||
+          stored.backfillPhaseId !== targetTraversal.backfillPhaseId ||
+          stored.backfillStatus !== targetTraversal.backfillStatus ||
+          stored.backfillNextRoundId !== targetTraversal.backfillNextRoundId ||
+          stored.retentionCutoffRoundId !== finalRetentionCutoffRoundId ||
           stored.observations.length > referenceMarketLimits.historyRoundsPerFeed ||
-          (retentionCutoffRoundId !== null && stored.observations.some((observation) =>
-            BigInt(observation.fact.roundId) <= BigInt(retentionCutoffRoundId)))
+          (finalRetentionCutoffRoundId !== null && stored.observations.some((observation) =>
+            BigInt(observation.fact.roundId) <= BigInt(finalRetentionCutoffRoundId))) ||
+          aggregateRowCount > referenceMarketLimits.historyRoundsAggregate
         ) {
           throw new Error("Reference feed cache postcondition failed.");
         }

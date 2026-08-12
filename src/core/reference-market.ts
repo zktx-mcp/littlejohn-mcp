@@ -11,7 +11,9 @@ import {
   type ObservationAuthority,
 } from "./invocation.js";
 import { jsonObject } from "./json-object.js";
-import { productChainId } from "./product-identity.js";
+import { productChainId, productChainNumericId } from "./product-identity.js";
+import { stockTokenReferenceMarketGeneratedCatalog } from
+  "./stock-token-reference-market.generated.js";
 import {
   canonicalBase64UrlSchema,
   chainAnchorSchema,
@@ -157,7 +159,7 @@ export const canonicalUsdgAddress = evmAddressSchema.parse(
   "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
 );
 
-const referenceFeedDefinitions = deepFreezeValue([
+const genericReferenceFeedDefinitions = deepFreezeValue([
   {
     feedId: "eth_usd",
     chainId: productChainId,
@@ -186,47 +188,290 @@ const referenceFeedDefinitions = deepFreezeValue([
   },
 ] as const);
 
-const referenceFeedDefinitionIds = definitionValues(referenceFeedDefinitions, "feedId");
-const referenceFeedAssets = definitionValues(referenceFeedDefinitions, "asset");
-const referenceFeedDescriptions =
-  definitionValues(referenceFeedDefinitions, "expectedDescription");
-const fixedReferenceFeedDecimals = referenceFeedDefinitions[0].decimals;
-const fixedReferenceFeedHeartbeatSeconds = referenceFeedDefinitions[0].heartbeatSeconds;
+const stockTokenCatalogSourceUriSchemas = [
+  z.literal(stockTokenReferenceMarketGeneratedCatalog.sources[0].uri),
+  z.literal(stockTokenReferenceMarketGeneratedCatalog.sources[1].uri),
+] as const;
+const stockTokenCatalogSourceSchema = jsonObject({
+  uri: z.union(stockTokenCatalogSourceUriSchemas),
+  observedAt: utcTimestampSchema,
+  rawResponseBytes: z.number().int().positive().max(1_048_576),
+  rawResponseDigest: hash32Schema,
+}).strict();
+const stockTokenCatalogDeploymentSchema = jsonObject({
+  chainId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  contractAddress: evmAddressSchema,
+  networkName: generalSingleLineTextSchema,
+}).strict();
+export const stockTokenCatalogAssetSchema = jsonObject({
+  assetUid: hash32Schema,
+  sourceStatus: z.string().min(1).max(64).regex(/^[A-Z][A-Z0-9_]*$/u),
+  symbol: z.string().min(1).max(32).regex(/^[A-Z0-9][A-Z0-9.-]*$/u),
+  name: generalSingleLineTextSchema,
+  deployments: z.array(stockTokenCatalogDeploymentSchema).max(8),
+}).strict();
+export type StockTokenCatalogAsset = z.infer<typeof stockTokenCatalogAssetSchema>;
 
-export const referenceFeedIdSchema = z.enum(referenceFeedDefinitionIds);
-export type ReferenceFeedId = z.infer<typeof referenceFeedIdSchema>;
-export const referenceFeedIds: readonly ReferenceFeedId[] = referenceFeedDefinitionIds;
+export const stockTokenCatalogUnmappedReasonSchema = z.enum([
+  "asset_inactive",
+  "asset_deployment_missing",
+  "asset_deployment_ambiguous",
+  "asset_symbol_ambiguous",
+  "feed_not_found",
+  "feed_ambiguous",
+  "feed_non_usd",
+  "feed_source_inconsistent",
+]);
+export type StockTokenCatalogUnmappedReason =
+  z.infer<typeof stockTokenCatalogUnmappedReasonSchema>;
+
+const stockTokenCatalogFeedSchema = jsonObject({
+  feedId: evmAddressSchema,
+  proxyAddress: evmAddressSchema,
+  expectedDescription: generalSingleLineTextSchema,
+  decimals: z.literal(8),
+  heartbeatSeconds: z.literal(86_400),
+  availability: z.literal("session_dependent_24_5"),
+  sourceRow: z.number().int().nonnegative().max(511),
+}).strict().superRefine((value, context) => {
+  if (value.feedId !== value.proxyAddress) {
+    context.addIssue({ code: "custom", message: "Stock Token feed identity is inconsistent." });
+  }
+});
+const mappedStockTokenSourceStatus =
+  stockTokenReferenceMarketGeneratedCatalog.dispositions.find((entry) =>
+    entry.mapping.status === "mapped")?.asset.sourceStatus;
+if (mappedStockTokenSourceStatus === undefined) {
+  throw new TypeError("The generated Stock Token catalog has no mapped source status.");
+}
+const mappedStockTokenCatalogDispositionSchema = jsonObject({
+  asset: stockTokenCatalogAssetSchema,
+  mapping: jsonObject({
+    status: z.literal("mapped"),
+    selectedDeployment: stockTokenCatalogDeploymentSchema,
+    feed: stockTokenCatalogFeedSchema,
+  }).strict(),
+}).strict().superRefine((value, context) => {
+  const selected = value.mapping.selectedDeployment;
+  if (
+    value.asset.sourceStatus !== mappedStockTokenSourceStatus ||
+    selected.chainId !== productChainNumericId ||
+    !value.asset.deployments.some((deployment) =>
+      deployment.chainId === selected.chainId &&
+      deployment.contractAddress === selected.contractAddress &&
+      deployment.networkName === selected.networkName)
+  ) {
+    context.addIssue({ code: "custom", message: "Mapped Stock Token deployment is inconsistent." });
+  }
+});
+const unmappedStockTokenCatalogDispositionSchema = jsonObject({
+  asset: stockTokenCatalogAssetSchema,
+  mapping: jsonObject({
+    status: z.literal("unmapped"),
+    reason: stockTokenCatalogUnmappedReasonSchema,
+  }).strict(),
+}).strict();
+export const stockTokenCatalogDispositionSchema = z.union([
+  mappedStockTokenCatalogDispositionSchema,
+  unmappedStockTokenCatalogDispositionSchema,
+]);
+export type StockTokenCatalogDisposition =
+  z.infer<typeof stockTokenCatalogDispositionSchema>;
+
+export const stockTokenReferenceMarketGeneratedCatalogSchema = jsonObject({
+  contractVersion: z.literal("1"),
+  sources: closedTupleSchema([
+    stockTokenCatalogSourceSchema,
+    stockTokenCatalogSourceSchema,
+  ]),
+  dispositionSetDigest: hash32Schema,
+  dispositions: z.array(stockTokenCatalogDispositionSchema).min(1).max(512),
+}).strict().superRefine((value, context) => {
+  if (value.sources.some((source, index) =>
+    source.uri !== stockTokenReferenceMarketGeneratedCatalog.sources[index]!.uri)) {
+    context.addIssue({ code: "custom", message: "Stock Token catalog source order is invalid." });
+  }
+  if (
+    value.dispositionSetDigest !== `0x${canonicalSha256(value.dispositions)}`
+  ) {
+    context.addIssue({ code: "custom", message: "Stock Token catalog digest is invalid." });
+  }
+  const assetUids = value.dispositions.map((entry) => entry.asset.assetUid);
+  if (
+    new Set(assetUids).size !== assetUids.length ||
+    assetUids.some((assetUid, index) => index > 0 && assetUids[index - 1]! >= assetUid)
+  ) {
+    context.addIssue({ code: "custom", message: "Stock Token catalog order is invalid." });
+  }
+  const mappedFeedIds = value.dispositions.flatMap((entry) =>
+    entry.mapping.status === "mapped" ? [entry.mapping.feed.feedId] : []);
+  if (new Set(mappedFeedIds).size !== mappedFeedIds.length) {
+    context.addIssue({ code: "custom", message: "Stock Token feed identities are duplicated." });
+  }
+});
+export type StockTokenReferenceMarketGeneratedCatalog =
+  z.infer<typeof stockTokenReferenceMarketGeneratedCatalogSchema>;
+
+export const stockTokenReferenceMarketCatalog = deepFreezeValue(
+  stockTokenReferenceMarketGeneratedCatalogSchema.parse(
+    stockTokenReferenceMarketGeneratedCatalog,
+  ),
+);
+
+export const stockTokenCatalogSourceEvidenceSchema = jsonObject({
+  uri: z.union(stockTokenCatalogSourceUriSchemas),
+  observedAt: utcTimestampSchema,
+  rawResponseDigest: hash32Schema,
+}).strict();
+export type StockTokenCatalogSourceEvidence =
+  z.infer<typeof stockTokenCatalogSourceEvidenceSchema>;
+
+export const stockTokenCatalogEvidenceSchema = jsonObject({
+  contractVersion: z.literal(stockTokenReferenceMarketCatalog.contractVersion),
+  dispositionSetDigest: z.literal(
+    stockTokenReferenceMarketCatalog.dispositionSetDigest,
+  ),
+  sources: closedTupleSchema([
+    stockTokenCatalogSourceEvidenceSchema,
+    stockTokenCatalogSourceEvidenceSchema,
+  ]),
+}).strict().superRefine((value, context) => {
+  const expected = stockTokenReferenceMarketCatalog.sources;
+  if (value.sources.some((source, index) =>
+    source.uri !== expected[index]!.uri ||
+    source.observedAt !== expected[index]!.observedAt ||
+    source.rawResponseDigest !== expected[index]!.rawResponseDigest)) {
+    context.addIssue({ code: "custom", message: "Stock Token catalog evidence is invalid." });
+  }
+});
+export type StockTokenCatalogEvidence = z.infer<typeof stockTokenCatalogEvidenceSchema>;
+
+export const stockTokenCatalogEvidence = deepFreezeValue(
+  stockTokenCatalogEvidenceSchema.parse({
+    contractVersion: stockTokenReferenceMarketCatalog.contractVersion,
+    dispositionSetDigest: stockTokenReferenceMarketCatalog.dispositionSetDigest,
+    sources: stockTokenReferenceMarketCatalog.sources.map((source) => ({
+      uri: source.uri,
+      observedAt: source.observedAt,
+      rawResponseDigest: source.rawResponseDigest,
+    })),
+  }),
+);
+
+const stockTokenCatalogDispositionByAssetUid = new Map(
+  stockTokenReferenceMarketCatalog.dispositions.map((entry) =>
+    [entry.asset.assetUid, entry] as const),
+);
+export const findStockTokenCatalogDisposition = (
+  assetUidInput: unknown,
+): StockTokenCatalogDisposition | undefined =>
+  stockTokenCatalogDispositionByAssetUid.get(hash32Schema.parse(assetUidInput));
+
+const referencePairSourceIds = definitionValues(genericReferenceFeedDefinitions, "feedId");
+const genericReferenceFeedAssets =
+  definitionValues(genericReferenceFeedDefinitions, "asset");
+const genericReferenceFeedDescriptions =
+  definitionValues(genericReferenceFeedDefinitions, "expectedDescription");
+export const referencePairSourceIdSchema = z.enum(referencePairSourceIds);
+export type ReferencePairSourceId = z.infer<typeof referencePairSourceIdSchema>;
+const fixedReferenceFeedDecimals = genericReferenceFeedDefinitions[0].decimals;
+const fixedReferenceFeedHeartbeatSeconds =
+  genericReferenceFeedDefinitions[0].heartbeatSeconds;
+
+type MappedStockTokenCatalogDisposition = Extract<
+  StockTokenCatalogDisposition,
+  { readonly mapping: { readonly status: "mapped" } }
+>;
+const isMappedStockTokenCatalogDisposition = (
+  entry: StockTokenCatalogDisposition,
+): entry is MappedStockTokenCatalogDisposition => entry.mapping.status === "mapped";
+const mappedStockTokenCatalogDispositions =
+  stockTokenReferenceMarketCatalog.dispositions.filter(
+    isMappedStockTokenCatalogDisposition,
+  );
+const stockTokenReferenceFeedDefinitions = deepFreezeValue(
+  mappedStockTokenCatalogDispositions.map((entry) => ({
+    feedId: entry.mapping.feed.feedId,
+    chainId: productChainId,
+    asset: {
+      kind: "stock_token" as const,
+      assetUid: entry.asset.assetUid,
+      tokenAddress: entry.mapping.selectedDeployment.contractAddress,
+      symbol: entry.asset.symbol,
+    },
+    quote: "usd_reference" as const,
+    standardProxy: entry.mapping.feed.proxyAddress,
+    expectedDescription: entry.mapping.feed.expectedDescription,
+    decimals: entry.mapping.feed.decimals,
+    heartbeatSeconds: entry.mapping.feed.heartbeatSeconds,
+    availability: entry.mapping.feed.availability,
+    mappingBasis: "generated_complete_source_association" as const,
+    sequencerEvidence: "sequencer_status_unavailable" as const,
+  })),
+);
+const referenceFeedDefinitions = deepFreezeValue([
+  ...genericReferenceFeedDefinitions,
+  ...stockTokenReferenceFeedDefinitions,
+]);
+
+export type ReferenceFeedId = ReferencePairSourceId |
+  z.infer<typeof evmAddressSchema>;
+export const referenceFeedIds = Object.freeze(
+  referenceFeedDefinitions.map((definition) => definition.feedId),
+) as readonly ReferenceFeedId[];
+export const stockTokenReferenceFeedIds = Object.freeze(
+  stockTokenReferenceFeedDefinitions.map((definition) => definition.feedId),
+);
+export const stockTokenReferenceFeedIdSchema = z.enum(
+  stockTokenReferenceFeedIds as unknown as readonly [string, ...string[]],
+).pipe(evmAddressSchema);
+export const referenceFeedIdSchema = z.union([
+  referencePairSourceIdSchema,
+  stockTokenReferenceFeedIdSchema,
+]);
 
 const referenceFeedDefinitionById = new Map(
   referenceFeedDefinitions.map((definition) => [definition.feedId, definition] as const),
 );
-
-export const referenceFeedManifestEntrySchema = jsonObject({
-  feedId: referenceFeedIdSchema,
-  chainId: z.literal(referenceFeedDefinitions[0].chainId),
-  asset: z.enum(referenceFeedAssets),
-  quote: z.literal(referenceFeedDefinitions[0].quote),
+const genericReferenceFeedManifestEntrySchema = jsonObject({
+  feedId: referencePairSourceIdSchema,
+  chainId: z.literal(genericReferenceFeedDefinitions[0].chainId),
+  asset: z.enum(genericReferenceFeedAssets),
+  quote: z.literal(genericReferenceFeedDefinitions[0].quote),
   standardProxy: evmAddressSchema,
-  expectedDescription: z.enum(referenceFeedDescriptions),
-  decimals: z.literal(referenceFeedDefinitions[0].decimals),
-  heartbeatSeconds: z.literal(referenceFeedDefinitions[0].heartbeatSeconds),
-  availability: z.literal(referenceFeedDefinitions[0].availability),
-  mappingBasis: z.literal(referenceFeedDefinitions[0].mappingBasis),
-  sequencerEvidence: z.literal(referenceFeedDefinitions[0].sequencerEvidence),
-}).strict().superRefine((value, context) => {
+  expectedDescription: z.enum(genericReferenceFeedDescriptions),
+  decimals: z.literal(genericReferenceFeedDefinitions[0].decimals),
+  heartbeatSeconds: z.literal(genericReferenceFeedDefinitions[0].heartbeatSeconds),
+  availability: z.literal(genericReferenceFeedDefinitions[0].availability),
+  mappingBasis: z.literal(genericReferenceFeedDefinitions[0].mappingBasis),
+  sequencerEvidence: z.literal(genericReferenceFeedDefinitions[0].sequencerEvidence),
+}).strict();
+const stockTokenReferenceFeedManifestEntrySchema = jsonObject({
+  feedId: stockTokenReferenceFeedIdSchema,
+  chainId: z.literal(productChainId),
+  asset: jsonObject({
+    kind: z.literal("stock_token"),
+    assetUid: hash32Schema,
+    tokenAddress: evmAddressSchema,
+    symbol: z.string().min(1).max(32).regex(/^[A-Z0-9][A-Z0-9.-]*$/u),
+  }).strict(),
+  quote: z.literal("usd_reference"),
+  standardProxy: evmAddressSchema,
+  expectedDescription: generalSingleLineTextSchema,
+  decimals: z.literal(8),
+  heartbeatSeconds: z.literal(86_400),
+  availability: z.literal("session_dependent_24_5"),
+  mappingBasis: z.literal("generated_complete_source_association"),
+  sequencerEvidence: z.literal("sequencer_status_unavailable"),
+}).strict();
+export const referenceFeedManifestEntrySchema = z.union([
+  genericReferenceFeedManifestEntrySchema,
+  stockTokenReferenceFeedManifestEntrySchema,
+]).superRefine((value, context) => {
   const expected = referenceFeedDefinitionById.get(value.feedId);
   if (
     expected === undefined ||
-    value.chainId !== expected.chainId ||
-    value.asset !== expected.asset ||
-    value.quote !== expected.quote ||
-    value.standardProxy !== expected.standardProxy ||
-    value.expectedDescription !== expected.expectedDescription ||
-    value.decimals !== expected.decimals ||
-    value.heartbeatSeconds !== expected.heartbeatSeconds ||
-    value.availability !== expected.availability ||
-    value.mappingBasis !== expected.mappingBasis ||
-    value.sequencerEvidence !== expected.sequencerEvidence
+    canonicalSha256(value) !== canonicalSha256(expected)
   ) {
     context.addIssue({ code: "custom", message: "Reference feed identity differs from the manifest." });
   }
@@ -249,7 +494,7 @@ export const referencePairContractSchema = jsonObject({
   base: referenceAssetSchema,
   quote: referenceAssetSchema,
   seriesType: z.literal("reference_price"),
-  sourceIds: z.array(referenceFeedIdSchema).min(1).max(maximumReferencePairSources),
+  sourceIds: z.array(referencePairSourceIdSchema).min(1).max(maximumReferencePairSources),
 }).strict().superRefine((value, context) => {
   if (new Set(value.sourceIds).size !== value.sourceIds.length) {
     context.addIssue({ code: "custom", message: "Reference pair sources must be unique." });
@@ -276,7 +521,7 @@ const pairContract = (input: Readonly<{
   base: ReferencePairContract["base"];
   quote: ReferencePairContract["quote"];
   seriesType: ReferencePairContract["seriesType"];
-  sourceIds: readonly ReferenceFeedId[];
+  sourceIds: readonly ReferencePairSourceId[];
 }>): ReferencePairContract => deepFreezeValue(referencePairContractSchema.parse(input));
 
 const referencePairDefinitions = deepFreezeValue([
@@ -288,7 +533,7 @@ const referencePairDefinitions = deepFreezeValue([
       base: nativeEth,
       quote: usdReference,
       seriesType: "reference_price",
-      sourceIds: [referenceFeedDefinitions[0].feedId],
+      sourceIds: [genericReferenceFeedDefinitions[0].feedId],
     },
   },
   {
@@ -299,7 +544,7 @@ const referencePairDefinitions = deepFreezeValue([
       base: canonicalUsdg,
       quote: usdReference,
       seriesType: "reference_price",
-      sourceIds: [referenceFeedDefinitions[1].feedId],
+      sourceIds: [genericReferenceFeedDefinitions[1].feedId],
     },
   },
   {
@@ -311,8 +556,8 @@ const referencePairDefinitions = deepFreezeValue([
       quote: canonicalUsdg,
       seriesType: "reference_price",
       sourceIds: [
-        referenceFeedDefinitions[0].feedId,
-        referenceFeedDefinitions[1].feedId,
+        genericReferenceFeedDefinitions[0].feedId,
+        genericReferenceFeedDefinitions[1].feedId,
       ],
     },
   },
@@ -347,9 +592,13 @@ export const referenceMarketLimits = Object.freeze({
   historyProbes: 1_024,
   providerBatchCalls: 32,
   historyRoundsPerFeed: 16_384,
+  historyRoundsAggregate: 32_768,
   historySourceObservations:
     maximumReferenceHistoryWindowDefinition.maximumBuckets * 4 * maximumReferencePairSources,
-  synchronizationWaiters: 32,
+  stockTokenHistorySourceObservations:
+    maximumReferenceHistoryWindowDefinition.maximumBuckets * 4,
+  synchronizationJobs: 32,
+  synchronizationActiveJobs: 2,
   revisionBytes: 16,
   exactRationalDigits: 96,
   candleBuckets: referenceHistoryCandleBuckets,
@@ -517,24 +766,101 @@ export const compareExactRationals = (left: ExactRational, right: ExactRational)
 const exactRationalsEqual = (left: ExactRational, right: ExactRational): boolean =>
   left.numerator === right.numerator && left.denominator === right.denominator;
 
-export const referenceMarketWarningCodeSchema = z.enum([
-  "no_trade_volume",
-  "partial_history",
-  "reference_price_not_trade_price",
-  "sequencer_status_unavailable",
-  "source_listing_not_revalidated",
-]);
+export const referenceMarketWarningDefinitions = deepFreezeValue([
+  {
+    code: "reference_price_not_trade_price",
+    meaning: "The value is a reference value, not an executable quote, trade, fill, or recommendation.",
+    appliesTo: ["price", "history", "stock_token"],
+  },
+  {
+    code: "source_listing_not_revalidated",
+    meaning: "Runtime did not re-fetch the maintainer-only feed directory.",
+    appliesTo: ["price", "history", "stock_token"],
+  },
+  {
+    code: "sequencer_status_unavailable",
+    meaning: "No independently admitted sequencer-status observation qualifies the chain read.",
+    appliesTo: ["price", "history", "stock_token"],
+  },
+  {
+    code: "no_trade_volume",
+    meaning: "Reference-round candles contain no trade-volume observation.",
+    appliesTo: ["history", "stock_token"],
+  },
+  {
+    code: "partial_history",
+    meaning: "The admitted observations do not establish the complete requested history window.",
+    appliesTo: ["history", "stock_token"],
+  },
+] as const);
+const referenceMarketWarningCodes =
+  definitionValues(referenceMarketWarningDefinitions, "code");
+export const referenceMarketWarningCodeSchema = z.enum(referenceMarketWarningCodes);
 export type ReferenceMarketWarningCode = z.infer<typeof referenceMarketWarningCodeSchema>;
 
-export const referencePriceWarnings = Object.freeze([
-  "reference_price_not_trade_price",
-  "source_listing_not_revalidated",
-  "sequencer_status_unavailable",
+const warningCodesFor = (
+  result: "price" | "history" | "stock_token",
+): readonly ReferenceMarketWarningCode[] => Object.freeze(
+  referenceMarketWarningDefinitions
+    .filter((definition) =>
+      (definition.appliesTo as readonly string[]).includes(result))
+    .map((definition) => definition.code),
+);
+export const referencePriceWarnings = warningCodesFor("price");
+export const referenceHistoryWarnings = Object.freeze(
+  warningCodesFor("history").filter((code) => code !== "partial_history"),
+);
+export const stockTokenMarketBaseWarnings = Object.freeze(
+  warningCodesFor("stock_token").filter((code) => code !== "partial_history"),
+);
+export const stockTokenMarketWarningCodes = Object.freeze(
+  warningCodesFor("stock_token"),
+);
+
+export const stockTokenMarketLimitationDefinitions = deepFreezeValue([
+  {
+    code: "oracle_paused",
+    meaning: "The token contract reported that its oracle is paused at the result block.",
+  },
+  {
+    code: "observation_not_fresh",
+    meaning: "The latest valid round is older than its admitted heartbeat at the result block.",
+  },
+  {
+    code: "source_history_not_exhaustive",
+    meaning: "Round traversal cannot prove that the provider published no additional rounds.",
+  },
+  {
+    code: "remaining_continuation",
+    meaning: "A durable continuation remains after bounded synchronization.",
+  },
+  {
+    code: "remaining_gap",
+    meaning: "A bounded unresolved round interval remains.",
+  },
+  {
+    code: "phase_boundary",
+    meaning: "Traversal reached an aggregator phase boundary it did not cross.",
+  },
+  {
+    code: "malformed_round",
+    meaning: "A traversed source round failed strict round admission.",
+  },
+  {
+    code: "retention_boundary",
+    meaning: "Local deterministic retention excludes an older round prefix.",
+  },
+  {
+    code: "empty_history",
+    meaning: "No admitted source observation produced a candle in the requested window.",
+  },
 ] as const);
-export const referenceHistoryWarnings = Object.freeze([
-  ...referencePriceWarnings,
-  "no_trade_volume",
-] as const);
+export const stockTokenMarketLimitationCodes =
+  definitionValues(stockTokenMarketLimitationDefinitions, "code");
+export const stockTokenMarketLimitationCodeSchema =
+  z.enum(stockTokenMarketLimitationCodes);
+export type StockTokenMarketLimitationCode =
+  z.infer<typeof stockTokenMarketLimitationCodeSchema>;
 
 const exactSequence = <Value>(actual: readonly Value[], expected: readonly Value[]): boolean =>
   actual.length === expected.length && actual.every((entry, index) => entry === expected[index]);

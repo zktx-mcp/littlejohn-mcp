@@ -318,6 +318,7 @@ export type ReferenceMarketOwnerApplicationStage<ActiveWallet extends object> = 
   wallet: WalletOwnerHandoff<ActiveWallet>,
   chain: ChainOwnerHandoff,
   supportManifest: AccountAssetRuntimeSupportManifest,
+  officialAssets: OfficialAssetSynchronizationPort,
 ) => Promise<ReferenceMarketOwnerApplication> | ReferenceMarketOwnerApplication;
 export type InterfaceOwnerApplicationStage<
   ActiveWallet extends object,
@@ -565,7 +566,8 @@ export const composeOwnerApplicationStages = async <
           typeof referenceMarketReads !== "object" || referenceMarketReads === null ||
           typeof referenceMarketReads.resolveCurrentBlock !== "function" ||
           typeof referenceMarketReads.readLatestAtBlock !== "function" ||
-          typeof referenceMarketReads.readHistoryAtBlock !== "function"
+          typeof referenceMarketReads.readHistoryAtBlock !== "function" ||
+          typeof referenceMarketReads.readStockTokenAtBlock !== "function"
         ) throw new TypeError("Reference market chain read authority is unavailable.");
         if (
           typeof protocolReads !== "object" || protocolReads === null ||
@@ -727,6 +729,7 @@ export const composeOwnerApplicationStages = async <
     if (referenceMarketStage !== undefined) {
       if (
         chain === undefined || chainHandoff === undefined ||
+        tokenCatalogHandoff === undefined ||
         accountAssetApplication === undefined || accountAssetHandoff === undefined
       ) throw new TypeError("Reference market dependencies are unavailable.");
       const referenceMarketRoutes = currentRoutes;
@@ -737,6 +740,7 @@ export const composeOwnerApplicationStages = async <
           walletHandoff,
           chainHandoff,
           accountAssetApplication.supportManifest,
+          tokenCatalogHandoff.officialAssets,
         ),
         (application) => {
           assertRuntimeRouteRegistryDescendant(referenceMarketRoutes, application.routes);
@@ -749,6 +753,9 @@ export const composeOwnerApplicationStages = async <
           const referenceMarkets = Object.freeze({
             price: (...args: Parameters<ReferenceMarketApplicationPort["price"]>) => application.price(...args),
             history: (...args: Parameters<ReferenceMarketApplicationPort["history"]>) => application.history(...args),
+            stockTokenMarket: (
+              ...args: Parameters<ReferenceMarketApplicationPort["stockTokenMarket"]>
+            ) => application.stockTokenMarket(...args),
             watchlist: (...args: Parameters<ReferenceMarketApplicationPort["watchlist"]>) => application.watchlist(...args),
             reviewWatchlistChange: (
               ...args: Parameters<ReferenceMarketApplicationPort["reviewWatchlistChange"]>
@@ -1062,15 +1069,17 @@ export class LocalRuntime {
       const referenceMarketStage: ReferenceMarketOwnerApplicationStage<ActiveWallet> | undefined =
         accountAssetStage === undefined
           ? undefined
-          : ({ routes }, wallet, chain, supportManifest) => createReferenceMarketApplicationFactory({
-            routes,
-            supportManifest,
-            activeWallet: requireActiveWalletAuthority(wallet.activeWallet),
-            chainInvocations: chain.invocations,
-            chain: chain.referenceMarketReads,
-            store: database.referenceMarketStore(),
-            clock,
-          });
+          : ({ routes }, wallet, chain, supportManifest, officialAssets) =>
+            createReferenceMarketApplicationFactory({
+              routes,
+              supportManifest,
+              activeWallet: requireActiveWalletAuthority(wallet.activeWallet),
+              chainInvocations: chain.invocations,
+              chain: chain.referenceMarketReads,
+              store: database.referenceMarketStore(),
+              officialAssets,
+              clock,
+            });
       const interfaceStage: InterfaceOwnerApplicationStage<ActiveWallet, WalletOperations> | undefined =
         interfaceApplicationFactory === undefined
           ? undefined

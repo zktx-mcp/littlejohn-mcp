@@ -25,8 +25,17 @@ import {
   type ReferenceRoundObservation,
 } from "../core/index.js";
 import {
+  assertOfficialAssetSourceMember,
+  stockFactoryVerificationSchema,
+  type OfficialAssetSourceMember,
+  type StockFactoryVerification,
+  type StockFactoryVerificationResult,
+} from "../registry/official-asset-contract.js";
+import {
+  decodeAbiBooleanResult,
   decodeErc20DecimalsResult,
   decodeErc20TextResult,
+  encodeStockTokenOraclePausedCall,
 } from "./evm-standard.js";
 import {
   readConfiguredCanonicalBlock,
@@ -43,6 +52,7 @@ import {
   type ChainInvocationLifecycle,
 } from "./invocation-lifecycle.js";
 import { normalizeRpcBytes, normalizeRpcRuntimeCode } from "./normalization.js";
+import { createOfficialAssetChainReadPort } from "./official-assets.js";
 import {
   isRpcBatchRejectedError,
   isRpcExecutionRevertedError,
@@ -137,7 +147,32 @@ export interface ReferenceMarketChainReadPort {
     }>,
     context: ChainInvocationContext,
   ): Promise<ReferenceHistoryTraversal>;
+  readonly readStockTokenAtBlock: (
+    input: Readonly<{
+      member: OfficialAssetSourceMember;
+      feedId: ReferenceFeedId;
+      block: CanonicalBlock;
+    }>,
+    context: ChainInvocationContext,
+  ) => Promise<StockTokenChainRead>;
 }
+
+export type StockTokenChainRead =
+  | Readonly<{
+      status: "stock_factory_unavailable";
+      stockFactory: Extract<StockFactoryVerificationResult, { readonly status: "unavailable" }>;
+    }>
+  | Readonly<{
+      status: "market_observation_unavailable";
+      stockFactory: StockFactoryVerification;
+      oraclePaused: boolean;
+    }>
+  | Readonly<{
+      status: "observed";
+      stockFactory: StockFactoryVerification;
+      oraclePaused: boolean;
+      latest: ReferenceRoundObservation;
+    }>;
 
 interface Dependencies {
   readonly rpc: RpcRequester;
@@ -260,13 +295,13 @@ const captureObservation = (
   }
 };
 
-const readLatestFeed = async (
+const readLatestFeedCandidate = async (
   dependencies: Dependencies,
   feedId: ReferenceFeedId,
   reference: RpcCanonicalBlockReference,
   block: ChainAnchor,
   signal: AbortSignal,
-): Promise<ReferenceRoundObservation> => {
+): Promise<ReferenceRoundObservation | null> => {
   const feed = findReferenceFeed(feedId);
   let results: readonly unknown[];
   try {
@@ -287,10 +322,53 @@ const readLatestFeed = async (
       throw new TypeError("Reference feed identity is inconsistent.");
     }
     const candidate = parseRoundCandidate(feedId, results[3], block);
-    if (candidate.status === "malformed") throw new TypeError("Reference latest round is malformed.");
+    if (candidate.status === "malformed") return null;
     return captureObservation(dependencies, candidate.fact, block);
   } catch (error) {
     if (getChainOperationFailure(error) !== undefined) throw error;
+    throw new ChainOperationError("source_inconsistent");
+  }
+};
+
+const readLatestFeed = async (
+  dependencies: Dependencies,
+  feedId: ReferenceFeedId,
+  reference: RpcCanonicalBlockReference,
+  block: ChainAnchor,
+  signal: AbortSignal,
+): Promise<ReferenceRoundObservation> => {
+  const observation = await readLatestFeedCandidate(
+    dependencies,
+    feedId,
+    reference,
+    block,
+    signal,
+  );
+  if (observation === null) throw new ChainOperationError("source_inconsistent");
+  return observation;
+};
+
+const readStockTokenOraclePause = async (
+  dependencies: Dependencies,
+  member: OfficialAssetSourceMember,
+  reference: RpcCanonicalBlockReference,
+  signal: AbortSignal,
+): Promise<boolean> => {
+  let result: unknown;
+  try {
+    result = await dependencies.rpc.request("eth_call", [{
+      to: member.contractAddress,
+      data: encodeStockTokenOraclePausedCall(),
+    }, reference], signal);
+  } catch (error) {
+    if (isRpcExecutionRevertedError(error)) {
+      throw new ChainOperationError("source_inconsistent");
+    }
+    throw error;
+  }
+  try {
+    return decodeAbiBooleanResult(normalizeRpcBytes(result));
+  } catch {
     throw new ChainOperationError("source_inconsistent");
   }
 };
@@ -414,6 +492,11 @@ export const createReferenceMarketChainReadPort = (dependencies: Dependencies): 
     typeof dependencies.encoder?.getRoundData !== "function" ||
     typeof dependencies.lifecycle?.run !== "function"
   ) throw new TypeError("Reference market chain dependencies are invalid.");
+  const officialAssetReads = createOfficialAssetChainReadPort({
+    rpc: dependencies.rpc,
+    chainId: dependencies.chainId,
+    lifecycle: dependencies.lifecycle,
+  });
   const port: ReferenceMarketChainReadPort = {
     async resolveCurrentBlock(context: ChainInvocationContext): Promise<CanonicalBlock> {
       dependencies.lifecycle.assertActiveContext(context);
@@ -685,6 +768,61 @@ export const createReferenceMarketChainReadPort = (dependencies: Dependencies): 
         malformedRoundObserved,
         failure,
       });
+    },
+    async readStockTokenAtBlock(input, context) {
+      dependencies.lifecycle.assertActiveContext(context);
+      const block = requireBlock(dependencies.chainId, input.block, context);
+      const member = assertOfficialAssetSourceMember(input.member);
+      const feedId = referenceFeedIdSchema.parse(input.feedId);
+      const feed = findReferenceFeed(feedId);
+      if (
+        typeof feed.asset !== "object" ||
+        feed.asset.kind !== "stock_token" ||
+        feed.asset.assetUid !== member.assetUid ||
+        feed.asset.tokenAddress !== member.contractAddress ||
+        feed.asset.symbol !== member.sourceSymbol
+      ) {
+        throw new TypeError("Stock Token feed does not match the official asset.");
+      }
+      try {
+        const stockFactory = await officialAssetReads.verifyAtBlock(
+          member,
+          input.block,
+          context,
+        );
+        if (stockFactory.status === "unavailable") {
+          return Object.freeze({ status: "stock_factory_unavailable", stockFactory });
+        }
+        const admittedStockFactory = stockFactoryVerificationSchema.parse(stockFactory.verification);
+        const oraclePaused = await readStockTokenOraclePause(
+          dependencies,
+          member,
+          block.reference,
+          context.signal,
+        );
+        const latest = await readLatestFeedCandidate(
+          dependencies,
+          feedId,
+          block.reference,
+          block.block,
+          context.signal,
+        );
+        if (latest === null) {
+          return Object.freeze({
+            status: "market_observation_unavailable" as const,
+            stockFactory: admittedStockFactory,
+            oraclePaused,
+          });
+        }
+        return Object.freeze({
+          status: "observed",
+          stockFactory: admittedStockFactory,
+          oraclePaused,
+          latest,
+        });
+      } catch (error) {
+        return normalizeFailure(error, context.signal);
+      }
     },
   };
   return Object.freeze(port);

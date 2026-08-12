@@ -44,6 +44,13 @@ import {
 } from "../core/client.js";
 import { tokenCatalogErrorRegistry } from "../token-catalog/error-registry.js";
 import { referenceMarketErrorDefinitions } from "./error-definitions.js";
+import {
+  parseStockTokenMarketResult,
+  stockTokenMarketInputSchema,
+  stockTokenMarketResultSchema,
+  type StockTokenMarketInput,
+  type StockTokenMarketResult,
+} from "./stock-token-market.js";
 
 export const referenceMarketErrorRegistry =
   tokenCatalogErrorRegistry.extend(referenceMarketErrorDefinitions);
@@ -60,6 +67,7 @@ export const referenceMarketCapabilities = Object.freeze({
   remove: "market.remove_watchlist_pair",
   reorder: "market.reorder_watchlist_pairs",
   review: "market.watchlist_change_review",
+  stockTokenMarket: "market.stock_token_market",
   watchlist: "market.watchlist",
 } as const);
 export type ReferenceMarketCapabilityId =
@@ -492,6 +500,20 @@ const validateActionOperation = <Kind extends ReferenceWatchlistOperationKind>(
 };
 
 const readFailures = referenceMarketReadFailureCodes;
+export const stockTokenMarketFailureCodes = Object.freeze([
+  "chain_response_unavailable",
+  "internal_error",
+  "invalid_input",
+  "official_asset_response_too_large",
+  "official_asset_response_unavailable",
+  "rate_limited",
+  "request_aborted",
+  "result_too_large",
+  "runtime_busy",
+  "runtime_state_unavailable",
+  "source_inconsistent",
+  "source_unavailable",
+] as const);
 const watchlistReadFailures = referenceWatchlistMutationCommonFailureCodes;
 const reviewFailures = Object.freeze([
   ...referenceWatchlistMutationCommonFailureCodes,
@@ -540,6 +562,20 @@ export const referenceMarketApplicationContracts = Object.freeze({
       if (input.pairId !== success.pair.pairId || input.window !== success.window) {
         throw new TypeError("Reference history result does not match its request.");
       }
+    },
+  }),
+  stockTokenMarket: defineReferenceMarketContract<
+    StockTokenMarketInput,
+    StockTokenMarketResult,
+    typeof referenceMarketCapabilities.stockTokenMarket
+  >({
+    capabilityId: referenceMarketCapabilities.stockTokenMarket,
+    contractVersion: "1",
+    inputSchema: stockTokenMarketInputSchema,
+    successSchema: stockTokenMarketResultSchema,
+    failureCodes: stockTokenMarketFailureCodes,
+    validatePublicSuccess: (input, success) => {
+      parseStockTokenMarketResult(input, success);
     },
   }),
   watchlist: defineReferenceMarketContract<

@@ -30,6 +30,7 @@ import {
 } from "./errors.js";
 
 interface SynchronizationJob {
+  readonly feedId: ReferenceFeedId;
   readonly block: CanonicalBlock;
   readonly requestedStartUnixSeconds: bigint;
   readonly latest: ReferenceRoundObservation;
@@ -42,11 +43,6 @@ interface SynchronizationJob {
 export interface ReferenceFeedSynchronizationResult {
   readonly snapshot: ReferenceFeedCacheSnapshot;
   readonly report: ReferenceHistoryTraversalReport;
-}
-
-interface FeedQueue {
-  readonly jobs: SynchronizationJob[];
-  active: SynchronizationJob | undefined;
 }
 
 const unixSeconds = (timestamp: string): bigint => BigInt(Math.floor(Date.parse(timestamp) / 1_000));
@@ -69,9 +65,9 @@ export class ReferenceFeedSynchronizationOwner {
   readonly #store: ReferenceMarketStore;
   readonly #clock: CanonicalClock;
   readonly #owner = new AbortController();
-  readonly #queues = new Map<ReferenceFeedId, FeedQueue>(
-    referenceFeedIds.map((feedId) => [feedId, { jobs: [], active: undefined }]),
-  );
+  readonly #feedIds = new Set<ReferenceFeedId>(referenceFeedIds);
+  readonly #pending: SynchronizationJob[] = [];
+  readonly #activeFeedIds = new Set<ReferenceFeedId>();
   readonly #activeSettlements = new Set<Promise<void>>();
   #state: "open" | "closing" | "closed" = "open";
   #closePromise: Promise<void> | undefined;
@@ -99,15 +95,18 @@ export class ReferenceFeedSynchronizationOwner {
     if (input.context.signal.aborted) {
       return Promise.reject(new ReferenceMarketOperationError("request_aborted"));
     }
-    const queue = this.#queues.get(input.feedId);
-    if (queue === undefined || input.latest.fact.feedId !== input.feedId) {
+    if (!this.#feedIds.has(input.feedId) || input.latest.fact.feedId !== input.feedId) {
       return Promise.reject(new ReferenceMarketOperationError("invalid_input"));
     }
-    if (queue.jobs.length >= referenceMarketLimits.synchronizationWaiters) {
+    if (
+      this.#pending.length + this.#activeSettlements.size >=
+        referenceMarketLimits.synchronizationJobs
+    ) {
       return Promise.reject(new ReferenceMarketOperationError("runtime_busy"));
     }
     return new Promise<ReferenceFeedSynchronizationResult>((resolve, reject) => {
       const job: SynchronizationJob = {
+        feedId: input.feedId,
         block: input.block,
         requestedStartUnixSeconds: input.requestedStartUnixSeconds,
         latest: input.latest,
@@ -116,32 +115,37 @@ export class ReferenceFeedSynchronizationOwner {
         reject,
       };
       const abortQueued = (): void => {
-        const index = queue.jobs.indexOf(job);
+        const index = this.#pending.indexOf(job);
         if (index < 0) return;
-        queue.jobs.splice(index, 1);
+        this.#pending.splice(index, 1);
         job.removeAbortListener?.();
         reject(new ReferenceMarketOperationError("request_aborted"));
+        this.#pump();
       };
       input.context.signal.addEventListener("abort", abortQueued, { once: true });
       job.removeAbortListener = () => input.context.signal.removeEventListener("abort", abortQueued);
-      queue.jobs.push(job);
-      this.#pump(input.feedId, queue);
+      this.#pending.push(job);
+      this.#pump();
     });
   }
 
-  #pump(feedId: ReferenceFeedId, queue: FeedQueue): void {
-    if (this.#state !== "open" || queue.active !== undefined) return;
-    const job = queue.jobs.shift();
-    if (job === undefined) return;
-    queue.active = job;
-    let settlement!: Promise<void>;
-    settlement = this.#run(feedId, job).then(job.resolve, job.reject).finally(() => {
-      job.removeAbortListener?.();
-      queue.active = undefined;
-      this.#activeSettlements.delete(settlement);
-      this.#pump(feedId, queue);
-    });
-    this.#activeSettlements.add(settlement);
+  #pump(): void {
+    if (this.#state !== "open") return;
+    while (this.#activeSettlements.size < referenceMarketLimits.synchronizationActiveJobs) {
+      const index = this.#pending.findIndex((job) => !this.#activeFeedIds.has(job.feedId));
+      if (index < 0) return;
+      const [job] = this.#pending.splice(index, 1);
+      if (job === undefined) return;
+      this.#activeFeedIds.add(job.feedId);
+      let settlement!: Promise<void>;
+      settlement = this.#run(job.feedId, job).then(job.resolve, job.reject).finally(() => {
+        job.removeAbortListener?.();
+        this.#activeFeedIds.delete(job.feedId);
+        this.#activeSettlements.delete(settlement);
+        this.#pump();
+      });
+      this.#activeSettlements.add(settlement);
+    }
   }
 
   async #run(feedId: ReferenceFeedId, job: SynchronizationJob): Promise<ReferenceFeedSynchronizationResult> {
@@ -250,11 +254,9 @@ export class ReferenceFeedSynchronizationOwner {
     if (this.#closePromise !== undefined) return this.#closePromise;
     this.#state = "closing";
     this.#owner.abort();
-    for (const queue of this.#queues.values()) {
-      for (const job of queue.jobs.splice(0)) {
-        job.removeAbortListener?.();
-        job.reject(new ReferenceMarketOperationError("runtime_state_unavailable"));
-      }
+    for (const job of this.#pending.splice(0)) {
+      job.removeAbortListener?.();
+      job.reject(new ReferenceMarketOperationError("runtime_state_unavailable"));
     }
     this.#closePromise = Promise.allSettled([...this.#activeSettlements]).then(() => {
       this.#state = "closed";

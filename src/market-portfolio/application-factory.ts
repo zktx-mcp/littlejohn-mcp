@@ -58,6 +58,13 @@ export const createReferenceMarketApplicationFactory = async (
         assertOpen();
         return application.history(request, signal);
       },
+      stockTokenMarket(
+        request: Parameters<ReferenceMarketApplicationPort["stockTokenMarket"]>[0],
+        signal?: AbortSignal,
+      ) {
+        assertOpen();
+        return application.stockTokenMarket(request, signal);
+      },
       watchlist(request: Parameters<ReferenceMarketApplicationPort["watchlist"]>[0], signal?: AbortSignal) {
         assertOpen();
         return application.watchlist(request, signal);

@@ -118,6 +118,7 @@ export {
   exactRationalSchema,
   findReferenceFeed,
   findReferencePair,
+  findStockTokenCatalogDisposition,
   initialReferenceWatchlistRevision,
   isReferenceObservationFresh,
   referenceCandleSchema,
@@ -143,6 +144,7 @@ export {
   referenceMarketSourceObservedAt,
   referenceMarketSourceUri,
   referenceMarketWarningCodeSchema,
+  referenceMarketWarningDefinitions,
   referencePairContractSchema,
   referencePairIdSchema,
   referencePairIds,
@@ -150,6 +152,11 @@ export {
   referencePriceInputSchema,
   referencePriceSuccessSchema,
   referencePriceWarnings,
+  stockTokenMarketBaseWarnings,
+  stockTokenMarketLimitationCodes,
+  stockTokenMarketLimitationCodeSchema,
+  stockTokenMarketLimitationDefinitions,
+  stockTokenMarketWarningCodes,
   referenceRoundFactSchema,
   referenceRoundObservationSchema,
   referenceRoundPointerSchema,
@@ -162,6 +169,11 @@ export {
   referenceWatchlistReorderInputSchema,
   referenceWatchlistRevisionSchema,
   referenceWatchlistSuccessSchema,
+  stockTokenCatalogAssetSchema,
+  stockTokenCatalogDispositionSchema,
+  stockTokenCatalogEvidence,
+  stockTokenCatalogEvidenceSchema,
+  stockTokenReferenceMarketCatalog,
 } from "./reference-market.js";
 export type {
   ExactRational,
@@ -173,6 +185,7 @@ export type {
   ReferenceHistoryInput,
   ReferenceHistoryLimitationCode,
   ReferenceHistorySuccess,
+  ReferenceHistoryTraversalReport,
   ReferenceHistoryWindow,
   ReferenceMarketManifest,
   ReferenceMarketMappingEvidence,
@@ -190,6 +203,8 @@ export type {
   ReferenceWatchlistMutationInput,
   ReferenceWatchlistReorderInput,
   ReferenceWatchlistSuccess,
+  StockTokenCatalogDisposition,
+  StockTokenMarketLimitationCode,
 } from "./reference-market.js";
 export {
   admitApplicationInput,
@@ -316,7 +331,7 @@ export {
   unsignedDecimalSchema,
   utcTimestampSchema,
 } from "./primitives.js";
-export type { UtcTimestamp } from "./primitives.js";
+export type { ChainAnchor, UtcTimestamp } from "./primitives.js";
 export {
   walletConnectionDataSchema,
 } from "./wallet-connection.js";

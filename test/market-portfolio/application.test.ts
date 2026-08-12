@@ -310,6 +310,9 @@ const fixture = () => {
     malformedRoundObserved: false,
     failure: undefined,
   });
+  let stockTokenRead: ReferenceMarketChainReadPort["readStockTokenAtBlock"] = async () => {
+    throw new Error("Stock Token reads are not expected in this fixture.");
+  };
   let historyReadCalls = 0;
   const chain: ReferenceMarketChainReadPort = {
     resolveCurrentBlock: (context) => resolveConfiguredCanonicalBlock({
@@ -323,6 +326,7 @@ const fixture = () => {
       historyReadCalls += 1;
       return historyRead(input, context);
     },
+    readStockTokenAtBlock: (input, context) => stockTokenRead(input, context),
   };
   let currentTime = "2026-07-22T00:07:00.000Z";
   const clock = createCanonicalClock(() => currentTime);
@@ -354,6 +358,11 @@ const fixture = () => {
         sessionSource,
       }),
     },
+    officialAssets: Object.freeze({
+      synchronize: async () => { throw new Error("Official asset reads are not expected."); },
+      readStored: () => undefined,
+      close: async () => undefined,
+    }),
     clock,
   });
   return {
