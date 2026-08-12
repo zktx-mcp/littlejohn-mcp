@@ -871,16 +871,38 @@ synchronization preserves the last committed snapshot and never changes
 account choices.
 
 The reference-market application is the sole owner of latest reference prices,
-bounded history synchronization, exact cross construction, candle aggregation,
-and account watchlists. Each latest or history read enters one chain invocation,
-resolves one opaque canonical block, and performs every dependent feed read
-through that exact authority and the fixed product manifest. History
-synchronization serializes each feed, admits bounded callers, and commits
-validated observations, the exact backfill phase and continuation, and
-retention state in one transaction. Age eviction removes only a wholly expired
-composite-identity prefix; capacity eviction retains at most the canonical
-per-feed history-round limit owned by `referenceMarketLimits`. Both advance one
-irreversible inclusive identity cutoff.
+Stock Token market results, bounded history synchronization, exact cross
+construction, candle aggregation, and account watchlists. One canonical feed
+registry owns feed identities. The fixed generic pair registry addresses only
+its three admitted pair identities; generated Stock Token feed membership does
+not make a feed addressable through a generic pair or watchlist contract.
+
+The generated Stock Token mapping catalog is an offline product-data artifact.
+One maintainer generator consumes two complete retained source responses,
+validates every source member and disposition, and atomically publishes the
+complete generated file. Runtime, build, and release code never refreshes the
+directory. Runtime symbol resolution consumes only the registry owner's
+complete current official-asset observation and the generated disposition. It
+has no directory client, mapping override, alias table, or second Robinhood
+adapter.
+
+Each latest, history, or Stock Token market read enters one chain invocation,
+resolves one opaque canonical block, and performs every dependent feed,
+StockFactory, and oracle-pause read through that exact authority. One shared
+history scheduler admits at most `32` active-or-queued jobs across all feed
+identities, runs at most `2` jobs concurrently and at most one for a given
+feed, and preserves FIFO admission. Each job retains the canonical limits of
+`1,024` probes and `32` provider calls per batch.
+
+History synchronization commits validated observations, exact backfill and
+continuation state, integrity state, aggregate retention, and every affected
+feed cutoff in one exclusive transaction. Age eviction removes only a wholly
+expired composite-identity prefix. Per-feed retention admits at most `16,384`
+rounds and aggregate retention admits at most `32,768` rounds without scaling
+with registry membership. Aggregate eviction repeatedly selects the earliest
+removable feed-prefix head, then feed ID and numeric round ID as deterministic
+ties. Every eviction advances one irreversible inclusive identity cutoff and
+never removes the greatest identity of a nonempty feed.
 Reads never traverse or admit an identity at or below it, and that cutoff never
 becomes source-time, source-absence, finality, or coverage evidence. The chain
 reader consumes one nonoverlapping work plan derived from the durable

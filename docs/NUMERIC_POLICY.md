@@ -241,6 +241,16 @@ present and bound to the same asset and observation identity.
 - A direct feed answer `answer` with `decimals` is exactly
   `answer / 10^decimals`. A nonpositive answer, invalid round identity, future
   update time, or malformed decimals produces no reference value.
+- A Robinhood Stock Token feed value is Chainlink's tokenized-equity Total
+  Return Value. It already applies the Stock Token multiplier. Little John does
+  not multiply it by the catalog multiplier, token decimals, or any other
+  multiplier again. Robinhood underlying-equity bid or ask, a DEX quote, a
+  trade, a fill, and a balance are different units and cannot replace it.
+- A Stock Token value is `current` only when its exact positive round is not in
+  the future, its age is within the mapped heartbeat, and the same-block token
+  `oraclePaused()` observation is `false`. A valid older or paused value is
+  `last_observed`. Pause and age are reported independently; a clock does not
+  infer weekends, holidays, exchange sessions, or trading halts.
 - ETH/USDG is exactly ETH/USD divided by USDG/USD. Its reduced rational is
   `(ethAnswer * 10^usdgDecimals) / (usdgAnswer * 10^ethDecimals)`. Current cross
   construction requires both source rounds to be fresh at the same canonical
@@ -262,6 +272,11 @@ present and bound to the same asset and observation identity.
   partition the represented bucket starts. An empty bucket means only that no
   admitted point appears in that bucket; neither a candle nor an empty bucket
   proves exhaustive source history. Every candle has no trade volume.
+- One Stock Token market result derives its value and chart from the same
+  mapped direct feed and canonical block. Its largest chart admits at most 180
+  candles and 720 distinct source observations. A valid current or
+  last-observed value can coexist with unavailable chart history; the result
+  states that missing coverage and never creates candles from another source.
 - Human-interface chart coordinates may use only the non-authoritative
   floating-point projection allowed by [`Charts`](#charts). Exact rational
   OHLC values remain visible beside that projection and are the only values
