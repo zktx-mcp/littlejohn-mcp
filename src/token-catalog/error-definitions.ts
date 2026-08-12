@@ -5,7 +5,7 @@ import type {
 import type {
   OfficialAssetSourceUnavailableReason,
   StockFactoryClassificationUnavailableReason,
-} from "../registry/browser.js";
+} from "../registry/client.js";
 import type {
   runtimeErrorDefinitions,
   runtimeInterfaceErrorMappingDefinitions,
@@ -73,21 +73,15 @@ export const tokenCatalogErrorDefinitions = Object.freeze([
     retryable: false,
   },
   {
-    code: "token_operation_conflict",
-    category: "state",
-    message: "Another account token operation is active.",
-    retryable: false,
-  },
-  {
     code: "token_operation_not_found",
     category: "state",
     message: "The account token operation is not available.",
     retryable: false,
   },
   {
-    code: "token_operation_expired",
+    code: "token_review_expired",
     category: "state",
-    message: "The account token operation expired before confirmation.",
+    message: "The token selection Review expired before a decision was admitted.",
     retryable: false,
   },
 ] as const);
@@ -103,9 +97,8 @@ export const tokenCatalogInterfaceErrorMappingDefinitions = Object.freeze([
   { code: "token_selection_not_included", httpStatus: 409, problemTitle: "Token not included", cliExitCode: 5 },
   { code: "token_selection_revision_changed", httpStatus: 409, problemTitle: "Token selection changed", cliExitCode: 5 },
   { code: "token_total_supply_reverted", httpStatus: 422, problemTitle: "Token total supply reverted", cliExitCode: 3 },
-  { code: "token_operation_conflict", httpStatus: 409, problemTitle: "Token operation conflict", cliExitCode: 5 },
   { code: "token_operation_not_found", httpStatus: 404, problemTitle: "Token operation not found", cliExitCode: 3 },
-  { code: "token_operation_expired", httpStatus: 409, problemTitle: "Token operation expired", cliExitCode: 5 },
+  { code: "token_review_expired", httpStatus: 409, problemTitle: "Token Review expired", cliExitCode: 5 },
 ] as const);
 
 type RequiredExternalFailureCode =

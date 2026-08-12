@@ -8,6 +8,16 @@ import {
 } from "./identities.js";
 import { guardJsonSchema, jsonObject } from "./json-object.js";
 
+type NonEmptyTupleSchemas = readonly [z.ZodType, ...z.ZodType[]];
+
+export const closedTupleSchema = <const Items extends NonEmptyTupleSchemas>(
+  items: Items,
+) => z.tuple(items).meta({
+  minItems: items.length,
+  maxItems: items.length,
+  items: false,
+});
+
 const unsafeSingleLineCodePoint = (codePoint: number): boolean =>
   codePoint <= 0x1f ||
   (codePoint >= 0x7f && codePoint <= 0x9f) ||

@@ -5,6 +5,9 @@
     "checkJs": true,
     "declaration": false,
     "declarationMap": false,
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
     "noEmit": true,
     "noImplicitAny": false,
     "sourceMap": false

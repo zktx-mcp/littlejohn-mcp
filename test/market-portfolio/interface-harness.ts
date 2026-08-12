@@ -9,7 +9,7 @@ export const referenceMarketInterfaceHarnessPort = (): ReferenceMarketApplicatio
   price: async () => unavailable(),
   history: async () => unavailable(),
   watchlist: async () => unavailable(),
-  addPair: async () => unavailable(),
-  removePair: async () => unavailable(),
-  reorderPairs: async () => unavailable(),
+  reviewWatchlistChange: async () => unavailable(),
+  decideWatchlistChange: async () => unavailable(),
+  getWatchlistOperation: async () => unavailable(),
 });

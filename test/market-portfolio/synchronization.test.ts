@@ -144,7 +144,8 @@ const storeFixture = (
       return next;
     },
     readWatchlist: () => { throw new Error("Watchlist access is not expected."); },
-    mutateWatchlist: () => { throw new Error("Watchlist mutation is not expected."); },
+    readWatchlistOperation: () => { throw new Error("Watchlist operation access is not expected."); },
+    applyWatchlistChange: () => { throw new Error("Watchlist mutation is not expected."); },
   });
 };
 

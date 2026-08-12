@@ -1,4 +1,4 @@
-import { assertDirectApplicationErrorRegistryExtension } from "../core/browser.js";
+import { assertDirectApplicationErrorRegistryExtension } from "../core/client.js";
 import { runtimeErrorRegistry } from "../runtime/error-registry.js";
 import { walletErrorDefinitions } from "./error-definitions.js";
 

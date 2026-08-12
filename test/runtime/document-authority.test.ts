@@ -4,27 +4,21 @@ import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 
 import {
-  accountAssetBrowserRoutes,
   accountAssetControlRoutes,
 } from "../../src/account-assets/index.js";
 import { productChainId } from "../../src/core/index.js";
 import {
-  browserApiRoot,
-  browserAssetPaths,
-  browserInformationPages,
-  browserWalletApiPaths,
-  publicInspectionPaths,
-  referenceMarketPublicRoutes,
-} from "../../src/interfaces/browser-contract.js";
-import {
   capabilityCatalogInterface,
   declaredCliCommandIdentities,
   declaredMcpToolNames,
+  publicInspectionPaths,
   readInterfaceIdentities,
   referenceMarketInterfaceBindingList,
-  referenceMarketLocalMutationPaths,
+  referenceMarketPublicRoutes,
   uniswapV2PublicRoutes,
 } from "../../src/interfaces/identities.js";
+import { publicInterfaceRoutes } from "../../src/interfaces/http-routes.js";
+import { operationControlResources } from "../../src/interfaces/operation-bindings.js";
 import {
   fixedOrigin,
   internalApiPathPrefix,
@@ -34,10 +28,8 @@ import {
 } from "../../src/runtime/http-boundary.js";
 import { currentSqliteSchemaSql } from "../../src/runtime/sqlite-schema.js";
 import {
-  tokenCatalogBrowserRoutes,
   tokenCatalogControlRoutes,
 } from "../../src/token-catalog/index.js";
-import { walletControlResources } from "../../src/wallet/routes.js";
 
 const architecturePath = "docs/ARCHITECTURE.md";
 
@@ -83,28 +75,28 @@ const containsExactPhrase = (text: string, words: readonly string[]): boolean =>
 const stringValues = (value: object): readonly string[] =>
   Object.values(value).filter((entry): entry is string => typeof entry === "string");
 
+const nestedStringValues = (value: unknown): readonly string[] => {
+  if (typeof value === "string") return [value];
+  if (typeof value !== "object" || value === null) return [];
+  return Object.values(value).flatMap(nestedStringValues);
+};
+
 const sourceOwnedPaths = Object.freeze([
   ...new Set([
-    browserApiRoot,
-    browserAssetPaths.pattern,
     capabilityCatalogInterface.http.path,
     internalApiPathPrefix,
     localControlApiPathPrefix,
     publicApiPathPrefix,
     runtimeIdentityPath,
     ...readInterfaceIdentities.map((identity) => identity.http.path),
-    ...browserInformationPages.map((page) => page.pathPattern),
     ...referenceMarketInterfaceBindingList.map((binding) => binding.http.path),
-    ...stringValues(accountAssetBrowserRoutes),
     ...stringValues(accountAssetControlRoutes),
-    ...stringValues(browserWalletApiPaths),
     ...stringValues(publicInspectionPaths),
-    ...stringValues(referenceMarketLocalMutationPaths),
+    ...stringValues(publicInterfaceRoutes),
     ...stringValues(referenceMarketPublicRoutes),
-    ...stringValues(tokenCatalogBrowserRoutes),
     ...stringValues(tokenCatalogControlRoutes),
     ...stringValues(uniswapV2PublicRoutes),
-    ...Object.values(walletControlResources).map((resource) => resource.pathPattern),
+    ...nestedStringValues(operationControlResources),
   ].filter((path) => path !== "/")),
 ].sort());
 

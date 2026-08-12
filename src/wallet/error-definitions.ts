@@ -46,6 +46,18 @@ export const walletErrorDefinitions = Object.freeze([
   walletUserRejectedErrorDefinition,
   walletTimeoutErrorDefinition,
   {
+    code: "wallet_operation_not_found",
+    category: "state",
+    message: "The wallet operation is not available.",
+    retryable: false,
+  },
+  {
+    code: "wallet_operation_expired",
+    category: "state",
+    message: "The wallet Review expired before a decision was admitted.",
+    retryable: false,
+  },
+  {
     code: "interactive_terminal_required",
     category: "input",
     message: "This command requires an interactive terminal.",
@@ -60,5 +72,7 @@ export const walletInterfaceErrorMappingDefinitions = Object.freeze([
   { code: "walletconnect_unavailable", httpStatus: 503, problemTitle: "WalletConnect unavailable", cliExitCode: 4 },
   { code: "wallet_user_rejected", httpStatus: 409, problemTitle: "Wallet request rejected", cliExitCode: 5 },
   { code: "wallet_timeout", httpStatus: 504, problemTitle: "Wallet action deadline exceeded", cliExitCode: 4 },
+  { code: "wallet_operation_not_found", httpStatus: 404, problemTitle: "Wallet operation not found", cliExitCode: 3 },
+  { code: "wallet_operation_expired", httpStatus: 409, problemTitle: "Wallet Review expired", cliExitCode: 5 },
   { code: "interactive_terminal_required", httpStatus: 422, problemTitle: "Interactive terminal required", cliExitCode: 2 },
 ] as const);

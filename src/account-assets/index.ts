@@ -46,9 +46,7 @@ export {
 } from "./errors.js";
 export {
   accountAssetApplicationResult,
-  accountAssetBrowserRoutes,
   accountAssetCollectionRequestBody,
-  accountAssetExactRequestBody,
   accountAssetControlRoutes,
   extendAccountAssetControlRouteRegistry,
   parseAccountAssetExactPath,

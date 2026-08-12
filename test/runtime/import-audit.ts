@@ -81,17 +81,16 @@ export const runtimePackageSourceRoots = Object.freeze({
   "@uniswap/v2-sdk": ["src/protocols/uniswap-v2/sdk.ts"],
   "@walletconnect/sign-client": ["src/wallet"],
   "better-sqlite3": ["src/runtime", "src/wallet/walletconnect-storage.ts"],
-  "lightweight-charts": ["src/interfaces/web/lightweight-charts-adapter.tsx"],
-  "lucide-react": ["src/interfaces"],
   qrcode: ["src/wallet"],
-  react: ["src/interfaces"],
-  "react-dom": ["src/interfaces"],
   viem: ["src/chain", "src/intelligence"],
   zod: ["src"],
 } satisfies Readonly<Record<string, readonly string[]>>);
 
 export const buildPackageSourceRoots = Object.freeze({
-  "@modelcontextprotocol/ext-apps": ["src/interfaces/mcp-app/view/main.ts"],
+  "@modelcontextprotocol/ext-apps": [
+    "src/interfaces/mcp-app/view/main.ts",
+    "scripts/release/packaged-integration.mjs",
+  ],
 } satisfies Readonly<Record<string, readonly string[]>>);
 
 interface SourceContext {
@@ -1293,13 +1292,23 @@ export const moduleImportPolicyViolations = (
 ): readonly string[] => {
   const name = relative(policy.repositoryRoot, file).split(sep).join("/");
   const violations: string[] = [];
+  const expectedNonLiteralDynamicImports =
+    name === "scripts/release/packaged-integration.mjs" ? 1 : undefined;
+  if (expectedNonLiteralDynamicImports !== undefined) {
+    const actual = references.filter((reference) =>
+      reference.kind === "dynamic_import" && reference.specifier === undefined).length;
+    if (actual !== expectedNonLiteralDynamicImports) {
+      violations.push(`${name}:dynamic_import:expected_${expectedNonLiteralDynamicImports}:actual_${actual}`);
+    }
+  }
   for (const reference of references) {
     if (reference.kind === "parse_error") {
       violations.push(`${name}:parse_error`);
     } else if (
       (reference.kind === "dynamic_import" || reference.kind === "import_equals" ||
         reference.kind === "import_type" || reference.kind === "require") &&
-      reference.specifier === undefined
+      reference.specifier === undefined &&
+      !(reference.kind === "dynamic_import" && expectedNonLiteralDynamicImports !== undefined)
     ) {
       violations.push(`${name}:${reference.kind}:non_literal`);
     } else if (reference.specifierClass === "forbidden") {
@@ -1352,7 +1361,9 @@ export const directCodeExecutionViolations = (
   const name = relative(repositoryRoot, file).split(sep).join("/");
   const exactOwner = name === "src/protocols/uniswap-v2/sdk.ts"
     ? new Set<DirectCodeExecutionKind>(["node_module", "create_require"])
-    : undefined;
+    : name === "scripts/release/packaged-integration.mjs"
+      ? new Set<DirectCodeExecutionKind>(["global_eval", "global_function"])
+      : undefined;
   const violations = references
     .filter((reference) => exactOwner?.has(reference.kind) !== true)
     .map((reference) => `${name}:direct_code_execution:${reference.kind}`);

@@ -17,7 +17,7 @@ import {
   unsignedDecimalSchema,
   utcTimestampSchema,
   type EvmAddress,
-} from "../core/browser.js";
+} from "../core/client.js";
 
 const positiveSafeIntegerSchema = z.number().int().positive().safe();
 

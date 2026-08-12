@@ -9,29 +9,34 @@ import type {
   ReferenceHistorySuccess,
   ReferencePriceInput,
   ReferencePriceSuccess,
-  ReferenceWatchlistMutationInput,
-  ReferenceWatchlistReorderInput,
   ReferenceWatchlistSuccess,
 } from "../core/index.js";
 import type { ReferenceMarketStore } from "../runtime/reference-market-storage.js";
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
+import type {
+  ReferenceWatchlistDirectAction,
+  ReferenceWatchlistOperation,
+  ReferenceWatchlistOperationInput,
+  ReferenceWatchlistReviewRequest,
+  ReferenceWatchlistReviewResult,
+} from "./contracts.js";
 
 export interface ReferenceMarketApplicationPort {
   price(input: ReferencePriceInput, signal?: AbortSignal): Promise<ReferencePriceSuccess | ApplicationFailure>;
   history(input: ReferenceHistoryInput, signal?: AbortSignal): Promise<ReferenceHistorySuccess | ApplicationFailure>;
   watchlist(input: Record<string, never>, signal?: AbortSignal): Promise<ReferenceWatchlistSuccess | ApplicationFailure>;
-  addPair(
-    input: ReferenceWatchlistMutationInput,
+  reviewWatchlistChange(
+    input: ReferenceWatchlistReviewRequest,
     signal?: AbortSignal,
-  ): Promise<ReferenceWatchlistSuccess | ApplicationFailure>;
-  removePair(
-    input: ReferenceWatchlistMutationInput,
+  ): Promise<ReferenceWatchlistReviewResult | ApplicationFailure>;
+  decideWatchlistChange(
+    input: ReferenceWatchlistDirectAction,
     signal?: AbortSignal,
-  ): Promise<ReferenceWatchlistSuccess | ApplicationFailure>;
-  reorderPairs(
-    input: ReferenceWatchlistReorderInput,
+  ): Promise<ReferenceWatchlistOperation | ApplicationFailure>;
+  getWatchlistOperation(
+    input: ReferenceWatchlistOperationInput,
     signal?: AbortSignal,
-  ): Promise<ReferenceWatchlistSuccess | ApplicationFailure>;
+  ): Promise<ReferenceWatchlistOperation | ApplicationFailure>;
 }
 
 export interface ReferenceMarketApplicationDependencies {

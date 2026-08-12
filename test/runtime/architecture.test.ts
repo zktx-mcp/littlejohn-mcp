@@ -29,7 +29,6 @@ const uniswapV2SdkFile = resolve(sourceRoot, "protocols/uniswap-v2/sdk.ts");
 const testRoot = resolve(repositoryRoot, "test");
 const coreRoot = resolve("src/core");
 const tokenCatalogRoot = resolve(sourceRoot, "token-catalog");
-const browserInterfaceRoot = resolve(sourceRoot, "interfaces/web");
 const interfaceConsumerRoots = Object.freeze([
   resolve(sourceRoot, "interfaces"),
   resolve(repositoryRoot, "scripts/release"),
@@ -37,44 +36,18 @@ const interfaceConsumerRoots = Object.freeze([
 const interfaceConsumerEntryPoints = new Set([
   resolve(sourceRoot, "cli.ts"),
 ]);
-const browserCoreConsumers = new Set([
-  "account-assets/browser.ts",
+const clientCoreConsumers = new Set([
+  "account-assets/client.ts",
   "account-assets/contracts.ts",
-  "account-assets/http-contract.ts",
   "account-assets/view.ts",
-  "interfaces/browser-capability-bindings.ts",
-  "interfaces/browser-contract.ts",
-  "interfaces/browser-error-response.ts",
+  "chain/error-registry.ts",
   "interfaces/mcp-app/contracts.ts",
   "interfaces/mcp-app/registry.ts",
+  "interfaces/mcp-app/view/codex-operation-result-adapter.ts",
   "interfaces/mcp-app/view/lifecycle.ts",
+  "interfaces/mcp-app/view/operation-lifecycle.ts",
   "interfaces/mcp-app/view/renderers.ts",
   "interfaces/operation-delivery.ts",
-  "interfaces/reference-market-delivery.ts",
-  "interfaces/web/analysis-details.tsx",
-  "interfaces/web/analysis-dialog.tsx",
-  "interfaces/web/application-shell.tsx",
-  "interfaces/web/human-labels.ts",
-  "interfaces/web/human-failures.ts",
-  "interfaces/web/human-time.ts",
-  "interfaces/web/prices-page.tsx",
-  "interfaces/web/rational-value.tsx",
-  "interfaces/web/reference-market-client.ts",
-  "interfaces/web/reference-price-page.tsx",
-  "interfaces/web/reference-price-presentation.ts",
-  "interfaces/web/app.tsx",
-  "interfaces/web/browser-client.ts",
-  "interfaces/web/contract-inspection-client.ts",
-  "interfaces/web/main.tsx",
-  "interfaces/web/operation-id.ts",
-  "interfaces/web/reference-market-chart.tsx",
-  "interfaces/web/token-catalog-client.ts",
-  "interfaces/web/wallet-dialog-view.ts",
-  "runtime/error-definitions.ts",
-  "runtime/error-registry.ts",
-  "wallet/error-registry.ts",
-  "chain/error-registry.ts",
-  "token-catalog/error-registry.ts",
   "market-portfolio/contracts.ts",
   "protocols/contracts.ts",
   "protocols/registry.ts",
@@ -83,16 +56,22 @@ const browserCoreConsumers = new Set([
   "protocols/uniswap-v2/evidence.ts",
   "protocols/uniswap-v2/quote.ts",
   "registry/official-asset-contract.ts",
+  "runtime/error-definitions.ts",
+  "runtime/error-registry.ts",
   "runtime/presentation-snapshot.ts",
   "token-catalog/contract-schema.ts",
+  "token-catalog/error-registry.ts",
+  "wallet/error-registry.ts",
   "wallet/management-contracts.ts",
   "wallet/operation-contract.ts",
 ]);
-const browserTokenCatalogConsumers = new Set([
-  resolve(sourceRoot, "interfaces/browser-capability-bindings.ts"),
-  resolve(sourceRoot, "interfaces/browser-error-response.ts"),
+const clientTokenCatalogConsumers = new Set([
   resolve(sourceRoot, "interfaces/mcp-app/registry.ts"),
+  resolve(sourceRoot, "interfaces/mcp-app/view/operation-lifecycle.ts"),
   resolve(sourceRoot, "interfaces/mcp-app/view/renderers.ts"),
+]);
+const directTokenCatalogContractConsumers = new Set([
+  resolve(sourceRoot, "interfaces/operation-tool-contracts.ts"),
 ]);
 const runtimeEntryPoint = resolve(sourceRoot, "runtime/index.ts");
 const runtimeComposition = resolve(sourceRoot, "runtime/composition.ts");
@@ -881,8 +860,8 @@ const sourcifyAdapterModule =
   resolve(sourceRoot, "intelligence/sourcify.ts");
 const registryServerEntryModule =
   resolve(sourceRoot, "registry/index.ts");
-const registryBrowserEntryModule =
-  resolve(sourceRoot, "registry/browser.ts");
+const registryClientEntryModule =
+  resolve(sourceRoot, "registry/client.ts");
 
 interface ExternalIntegrationAuthorityRule {
   readonly module: string;
@@ -1321,7 +1300,7 @@ const registryServerEntryExports = Object.freeze([
   "stockFactoryVerificationSchema",
 ] as const);
 
-const registryBrowserEntryExports = Object.freeze([
+const registryClientEntryExports = Object.freeze([
   "CommittedOfficialAssetSnapshot",
   "OfficialAssetCandidate",
   "OfficialAssetSnapshotEvidence",
@@ -1412,8 +1391,8 @@ const exactExternalIntegrationExportRules = new Map<string, Readonly<{
     expected: registryServerEntryExports,
     allowExternalReexports: true,
   }],
-  [registryBrowserEntryModule, {
-    expected: registryBrowserEntryExports,
+  [registryClientEntryModule, {
+    expected: registryClientEntryExports,
     allowExternalReexports: true,
   }],
 ]);
@@ -1763,7 +1742,7 @@ const externalIntegrationAuthorityViolations = (
 };
 
 describe("runtime architecture boundary", () => {
-  it("enforces current package owners and the exact Uniswap V2 SDK load boundary", async () => {
+  it("enforces current package and exact dynamic-execution owners", async () => {
     const policy = await loadPackagePolicy();
     const violations: string[] = [];
     for (const file of await collectProductSourceFiles(repositoryRoot)) {
@@ -1789,8 +1768,8 @@ describe("runtime architecture boundary", () => {
         const target = resolvesInsideCore(file, reference.specifier);
         if (target !== undefined) {
           const consumer = relative(sourceRoot, file).split(sep).join("/");
-          const allowed = browserCoreConsumers.has(consumer)
-            ? target === "browser.js"
+          const allowed = clientCoreConsumers.has(consumer)
+            ? target === "client.js"
             : target === "index.js";
           if (!allowed) violations.push(`${consumer}:${reference.specifier}`);
         }
@@ -1839,20 +1818,18 @@ describe("runtime architecture boundary", () => {
     expect(productChainNumericLiteralOwners).toEqual([]);
   });
 
-  it("keeps wallet finite vocabularies in their owners without coupling token interfaces", async () => {
+  it("keeps Wallet operation vocabulary and transport binding in their final owners", async () => {
     const [
+      operationState,
       operationContract,
-      managementContracts,
-      coordinator,
-      identities,
-      walletRoutes,
+      toolContracts,
+      operationBindings,
       mcp,
     ] = await Promise.all([
+      parseSource(resolve(sourceRoot, "wallet/operation-state.ts")),
       parseSource(resolve(sourceRoot, "wallet/operation-contract.ts")),
-      parseSource(resolve(sourceRoot, "wallet/management-contracts.ts")),
-      parseSource(resolve(sourceRoot, "wallet/coordinator.ts")),
-      parseSource(resolve(sourceRoot, "interfaces/identities.ts")),
-      parseSource(resolve(sourceRoot, "wallet/routes.ts")),
+      parseSource(resolve(sourceRoot, "interfaces/operation-tool-contracts.ts")),
+      parseSource(resolve(sourceRoot, "interfaces/operation-bindings.ts")),
       parseSource(resolve(sourceRoot, "interfaces/mcp.ts")),
     ]);
     const declaration = (source: ts.SourceFile, name: string): ts.VariableDeclaration => {
@@ -1865,74 +1842,39 @@ describe("runtime architecture boundary", () => {
       sourceDescendants(node)
         .filter((descendant): descendant is ts.Identifier => ts.isIdentifier(descendant))
         .map((identifier) => identifier.text);
-    const exactStringArrayExists = (node: ts.Node, expected: readonly string[]): boolean =>
-      sourceDescendants(node).some((descendant) =>
-        ts.isArrayLiteralExpression(descendant) &&
-        descendant.elements.length === expected.length &&
-        descendant.elements.every((element, index) =>
-          ts.isStringLiteralLike(element) && element.text === expected[index]));
+    const initiators = declaration(operationState, "walletInitiators");
+    expect(sourceDescendants(initiators)
+      .filter((node): node is ts.StringLiteralLike => ts.isStringLiteralLike(node))
+      .map((node) => node.text)).toEqual(["cli", "mcp_app"]);
 
-    const interactionSchema = declaration(operationContract, "walletInteractionInterfaceSchema");
-    expect(identifierNames(interactionSchema)).toContain("walletInteractionInterfaces");
+    const initiatorSchema = declaration(operationContract, "walletInitiatorSchema");
+    expect(identifierNames(initiatorSchema)).toContain("walletInitiators");
+    const directActionSchema = declaration(operationContract, "walletDirectActionSchema");
+    expect(identifierNames(directActionSchema)).toContain("walletInitiatorSchema");
 
-    const operationFailure = declaration(operationContract, "operationFailureErrorSchema");
-    expect(identifierNames(operationFailure)).toContain("walletOperationFailureCategories");
-    expect(exactStringArrayExists(operationFailure, ["internal", "runtime", "wallet"])).toBe(false);
+    const declaredTools = declaration(toolContracts, "operationToolContracts");
+    expect(identifierNames(declaredTools)).toContain("walletManagementContracts");
+    expect(identifierNames(declaredTools)).not.toContain("operationControlResources");
 
-    const internalContext = declaration(managementContracts, "walletManagementInternalContextSchema");
-    expect(identifierNames(internalContext)).toContain("walletInteractionInterfaceSchema");
-    expect(exactStringArrayExists(internalContext, ["cli", "web"])).toBe(false);
+    const resources = declaration(operationBindings, "operationControlResources");
+    expect(identifierNames(resources)).not.toContain("walletManagementContracts");
+    const bindings = declaration(operationBindings, "operationInterfaceBindings");
+    expect(identifierNames(bindings)).toContain("operationToolContracts");
+    expect(identifierNames(bindings)).not.toContain("RouteMethod");
 
-    const complete = sourceDescendants(coordinator).find((node): node is ts.MethodDeclaration =>
-      ts.isMethodDeclaration(node) && node.name.getText(coordinator) === "#complete");
-    if (complete === undefined) throw new TypeError("Missing WalletCoordinator completion method.");
-    expect(complete.parameters[1]?.type?.getText(coordinator)).toBe("WalletOperationResult");
-
-    const walletStart = declaration(identities, "walletStartLocalIdentity");
-    expect(identifierNames(walletStart)).toContain("WalletInteractionInterface");
-    expect(exactStringArrayExists(walletStart, ["cli", "web"])).toBe(false);
-
-    const walletBinding = sourceDescendants(identities).find((node): node is ts.InterfaceDeclaration =>
-      ts.isInterfaceDeclaration(node) && node.name.text === "WalletInterfaceBinding");
-    if (walletBinding === undefined) throw new TypeError("Missing WalletInterfaceBinding.");
-    expect(identifierNames(walletBinding)).not.toContain("RouteMethod");
-    expect(walletBinding.members.some((member) =>
-      ts.isPropertySignature(member) && member.name.getText(identities) === "control")).toBe(false);
-
-    for (const name of [
-      "walletStartLocalIdentity",
-      "walletOperationReadIdentity",
-      "walletPresentationReadIdentity",
-      "walletCancelLocalIdentity",
-      "walletConfirmationLocalIdentity",
-    ]) {
-      expect(identifierNames(declaration(identities, name))).toContain("walletControlResources");
-    }
-    expect(identifierNames(declaration(walletRoutes, "extendWalletControlRouteRegistry")))
-      .toContain("walletControlResources");
-
-    const walletTool = declaration(mcp, "walletTool");
-    expect(sourceDescendants(walletTool)
+    const mcpOperationTool = declaration(mcp, "operationTool");
+    expect(identifierNames(mcpOperationTool)).toContain("resolveLocalOperationIdentity");
+    expect(sourceDescendants(mcpOperationTool)
       .filter((node): node is ts.StringLiteralLike => ts.isStringLiteralLike(node))
       .map((node) => node.text)
       .filter((value) => ["GET", "POST", "DELETE"].includes(value))).toEqual([]);
-
-    for (const tokenDeclaration of [
-      declaration(identities, "tokenStartLocalIdentity"),
-      declaration(identities, "tokenStartIdentities"),
-    ]) {
-      expect(identifierNames(tokenDeclaration)).not.toContain("WalletInteractionInterface");
-      expect(identifierNames(tokenDeclaration)).toContain("TokenCatalogInteractionInterface");
-    }
   });
 
   it("keeps runtime finite vocabularies and reserved paths in their exact owners", async () => {
     const finiteOwners = {
       routeMethods: [] as string[],
       routeMutations: [] as string[],
-      routeResponses: [] as string[],
       routeStatuses: [] as string[],
-      requestOrigins: [] as string[],
       requestBodies: [] as string[],
       availability: [] as string[],
       supportLevels: [] as string[],
@@ -1952,9 +1894,7 @@ describe("runtime architecture boundary", () => {
     }>> = [
       { expected: ["GET", "POST", "DELETE"], key: "routeMethods", kind: "string" },
       { expected: ["none", "declared_control"], key: "routeMutations", kind: "string" },
-      { expected: ["canonical_json", "browser_content"], key: "routeResponses", kind: "string" },
       { expected: ["200", "201"], key: "routeStatuses", kind: "number" },
-      { expected: ["absent", "absent_or_fixed", "fixed"], key: "requestOrigins", kind: "string" },
       { expected: ["none", "route_json"], key: "requestBodies", kind: "string" },
       { expected: ["unavailable", "internal", "available"], key: "availability", kind: "string" },
       {
@@ -1962,7 +1902,7 @@ describe("runtime architecture boundary", () => {
         key: "supportLevels",
         kind: "string",
       },
-      { expected: ["cli", "web"], key: "interactionInterfaces", kind: "string" },
+      { expected: ["cli", "mcp_app"], key: "interactionInterfaces", kind: "string" },
       { expected: ["Robinhood", "user_configured"], key: "rpcSourceOwners", kind: "string" },
     ];
     const finiteVocabularyMatches = (root: ts.Node): readonly (keyof typeof finiteOwners)[] => {
@@ -1988,9 +1928,8 @@ describe("runtime architecture boundary", () => {
       [
         'const reorderedMethods = ["DELETE", "GET", "POST"] as const;',
         'type RepeatedMethods = "POST" | "DELETE" | "GET";',
-        'type ReorderedOrigins = "fixed" | "absent" | "absent_or_fixed";',
         "type ReorderedStatuses = 201 | 200;",
-        'type ReorderedInteractions = "web" | "cli";',
+        'type ReorderedInteractions = "mcp_app" | "cli";',
         'type ReorderedRpcOwners = "user_configured" | "Robinhood";',
       ].join("\n"),
       ts.ScriptTarget.Latest,
@@ -1998,7 +1937,6 @@ describe("runtime architecture boundary", () => {
     );
     expect([...finiteVocabularyMatches(counterexample)].sort()).toEqual([
       "interactionInterfaces",
-      "requestOrigins",
       "routeMethods",
       "routeMethods",
       "routeStatuses",
@@ -2042,13 +1980,12 @@ describe("runtime architecture boundary", () => {
     const sorted = (values: readonly string[]): readonly string[] => [...values].sort();
     expect(sorted(finiteOwners.routeMethods)).toEqual(["runtime/http-boundary.ts"]);
     expect(sorted(finiteOwners.routeMutations)).toEqual(["runtime/http-boundary.ts"]);
-    expect(sorted(finiteOwners.routeResponses)).toEqual(["runtime/http-boundary.ts"]);
     expect(sorted(finiteOwners.routeStatuses)).toEqual(["runtime/http-boundary.ts"]);
-    expect(sorted(finiteOwners.requestOrigins)).toEqual(["runtime/request-security.ts"]);
     expect(sorted(finiteOwners.requestBodies)).toEqual(["runtime/request-security.ts"]);
     expect(sorted(finiteOwners.availability)).toEqual(["runtime/support-manifest.ts"]);
     expect(sorted(finiteOwners.supportLevels)).toEqual(["core/support-level.ts"]);
     expect(sorted(finiteOwners.interactionInterfaces)).toEqual([
+      "market-portfolio/contracts.ts",
       "token-catalog/state.ts",
       "wallet/operation-state.ts",
     ]);
@@ -2298,12 +2235,12 @@ describe("runtime architecture boundary", () => {
     expect(verificationSdkPackageImporters).toEqual([]);
     expect(verificationExternalModuleConsumers).toEqual([]);
 
-    const browserExports = new Set<string>(registryBrowserEntryExports);
+    const clientExports = new Set<string>(registryClientEntryExports);
     for (const forbidden of [
       ...robinhoodOfficialAssetSourceContractExports,
       ...robinhoodOfficialAssetAdapterExports,
     ]) {
-      expect(browserExports.has(forbidden), forbidden).toBe(false);
+      expect(clientExports.has(forbidden), forbidden).toBe(false);
     }
   }, 15_000);
 
@@ -2665,7 +2602,7 @@ describe("runtime architecture boundary", () => {
       .toEqual(["market-portfolio/candles.ts"]);
     expect([...canonicalWatchlistLimitConsumers]).toEqual([
       "core/reference-market.ts",
-      "runtime/database.ts",
+      "market-portfolio/contracts.ts",
       "runtime/sqlite-schema.ts",
     ]);
     expect(forbiddenLogReaders).toEqual([]);
@@ -2795,10 +2732,11 @@ describe("runtime architecture boundary", () => {
       for (const reference of (await inspectSourceFile(file)).moduleImports) {
         if (reference.specifier === undefined) continue;
         const target = resolvesInsideTokenCatalog(file, reference.specifier);
-        const expectedEntryPoint = browserTokenCatalogConsumers.has(file) ||
-          isWithin(file, browserInterfaceRoot)
-          ? "browser.js"
-          : "index.js";
+        const expectedEntryPoint = clientTokenCatalogConsumers.has(file)
+          ? "client.js"
+          : directTokenCatalogContractConsumers.has(file)
+            ? "contract-schema.js"
+            : "index.js";
         if (target !== undefined && target !== expectedEntryPoint) {
           violations.push(`${relative(repositoryRoot, file).split(sep).join("/")}:${reference.specifier}`);
         }
@@ -2809,7 +2747,8 @@ describe("runtime architecture boundary", () => {
 
   it("confines local operation bindings and catalog resolution to their process owner", async () => {
     const allowed = new Set([
-      resolve(sourceRoot, "interfaces/identities.ts"),
+      resolve(sourceRoot, "interfaces/local-operation.ts"),
+      resolve(sourceRoot, "interfaces/mcp.ts"),
       resolve(sourceRoot, "interfaces/operation-client.ts"),
     ]);
     const violations: string[] = [];

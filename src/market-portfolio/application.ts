@@ -1,7 +1,10 @@
 import {
+  canonicalJsonStringify,
   findReferencePair,
+  parseUtcTimestamp,
   referenceHistoryWindowDefinitions,
   type ApplicationFailure,
+  type CanonicalJson,
   type EvmAccountIdentity,
   type ReferenceFeedId,
   type ReferenceHistoryTraversalReport,
@@ -9,11 +12,11 @@ import {
   type ReferenceHistorySuccess,
   type ReferencePriceInput,
   type ReferencePriceSuccess,
-  type ReferenceWatchlistMutationInput,
-  type ReferenceWatchlistReorderInput,
   type ReferenceWatchlistSuccess,
+  type UtcTimestamp,
 } from "../core/index.js";
 import type { ReferenceFeedCacheSnapshot } from "../runtime/reference-market-storage.js";
+import { createOperationId } from "../runtime/operation-id.js";
 import type { RuntimeRevision } from "../runtime/runtime-identity.js";
 import {
   captureConnectedWalletSession,
@@ -21,8 +24,20 @@ import {
 } from "../token-catalog/active-wallet.js";
 import { createReferenceHistory } from "./candles.js";
 import {
+  createReferenceWatchlistReviewProjection,
+  parseReferenceWatchlistReview,
   referenceMarketApplicationContracts,
+  referenceWatchlistDirectActionSchema,
+  referenceWatchlistOperationLimits,
+  referenceWatchlistReviewDigest,
   type ReferenceMarketApplicationContract,
+  type ReferenceMarketCapabilityId,
+  type ReferenceWatchlistDirectAction,
+  type ReferenceWatchlistOperation,
+  type ReferenceWatchlistOperationInput,
+  type ReferenceWatchlistReview,
+  type ReferenceWatchlistReviewRequest,
+  type ReferenceWatchlistReviewResult,
 } from "./contracts.js";
 import {
   ReferenceMarketOperationError,
@@ -44,6 +59,18 @@ type CapturedWallet = Readonly<{
 const sameAccount = (left: EvmAccountIdentity, right: EvmAccountIdentity): boolean =>
   left.chainId === right.chainId && left.address === right.address;
 
+const sameWatchlist = (
+  left: ReferenceWatchlistSuccess,
+  right: ReferenceWatchlistSuccess,
+): boolean => canonicalJsonStringify(left as unknown as CanonicalJson) ===
+  canonicalJsonStringify(right as unknown as CanonicalJson);
+
+const sameReview = (
+  left: ReferenceWatchlistReview,
+  right: ReferenceWatchlistReview,
+): boolean => canonicalJsonStringify(left as unknown as CanonicalJson) ===
+  canonicalJsonStringify(right as unknown as CanonicalJson);
+
 const captureWallet = (dependencies: ReferenceMarketApplicationDependencies): CapturedWallet => {
   const captured: ConnectedWalletSession = captureConnectedWalletSession(dependencies.activeWallet);
   return Object.freeze({
@@ -61,8 +88,8 @@ const assertWalletContinuity = (initial: CapturedWallet, final: CapturedWallet):
   ) throw new ReferenceMarketOperationError("state_conflict");
 };
 
-const parseFailure = <Input, Success>(
-  contract: ReferenceMarketApplicationContract<Input, Success>,
+const parseFailure = <Input, Success, CapabilityId extends ReferenceMarketCapabilityId, Context>(
+  contract: ReferenceMarketApplicationContract<Input, Success, CapabilityId, Context>,
   error: unknown,
 ): ApplicationFailure => {
   try {
@@ -81,6 +108,9 @@ const terminalCancellation = (
     : ownerSignal.aborted
       ? new ReferenceMarketOperationError("runtime_state_unavailable")
       : undefined;
+
+const addMilliseconds = (value: UtcTimestamp, milliseconds: number): UtcTimestamp =>
+  parseUtcTimestamp(new Date(Date.parse(value) + milliseconds).toISOString());
 
 export class ReferenceMarketApplication implements ReferenceMarketApplicationPort {
   readonly #dependencies: ReferenceMarketApplicationDependencies;
@@ -158,60 +188,156 @@ export class ReferenceMarketApplication implements ReferenceMarketApplicationPor
     });
   }
 
-  addPair(
-    input: ReferenceWatchlistMutationInput,
+  reviewWatchlistChange(
+    input: ReferenceWatchlistReviewRequest,
     signal?: AbortSignal,
-  ): Promise<ReferenceWatchlistSuccess | ApplicationFailure> {
-    return this.#mutate("add", referenceMarketApplicationContracts.add, input, signal);
-  }
-
-  removePair(
-    input: ReferenceWatchlistMutationInput,
-    signal?: AbortSignal,
-  ): Promise<ReferenceWatchlistSuccess | ApplicationFailure> {
-    return this.#mutate("remove", referenceMarketApplicationContracts.remove, input, signal);
-  }
-
-  reorderPairs(
-    input: ReferenceWatchlistReorderInput,
-    signal?: AbortSignal,
-  ): Promise<ReferenceWatchlistSuccess | ApplicationFailure> {
-    return this.#runMutation(referenceMarketApplicationContracts.reorder, input, signal, (request) => {
+  ): Promise<ReferenceWatchlistReviewResult | ApplicationFailure> {
+    const contract = referenceMarketApplicationContracts.watchlistChangeReview;
+    return this.#runSynchronous(contract, input, signal, (request) => {
+      const operationId = createOperationId();
+      if (this.#dependencies.store.readWatchlistOperation(operationId) !== null) {
+        throw new ReferenceMarketOperationError("state_conflict");
+      }
       const wallet = captureWallet(this.#dependencies);
-      const result = this.#dependencies.store.mutateWatchlist({
-        account: wallet.account,
-        expectedConnectionRevision: wallet.connectionRevision,
-        expectedRevision: request.expectedRevision,
-        mutation: { kind: "reorder", pairIds: request.pairIds },
-        now: this.#dependencies.clock.now(),
+      const watchlist = this.#dependencies.store.readWatchlist(wallet.account);
+      if (watchlist.revision !== request.expectedRevision) {
+        throw new ReferenceMarketOperationError("state_conflict");
+      }
+      const projection = createReferenceWatchlistReviewProjection({
+        kind: request.kind,
+        currentEntries: watchlist.entries,
+        ...(request.kind === "reorder"
+          ? { pairIds: request.pairIds }
+          : { pairId: request.pairId }),
       });
-      if (result.status === "rejected") throw new ReferenceMarketOperationError(result.reason);
-      return result.watchlist;
+      if (projection.status === "rejected") {
+        throw new ReferenceMarketOperationError(projection.reason);
+      }
+      const finalWallet = captureWallet(this.#dependencies);
+      const finalWatchlist = this.#dependencies.store.readWatchlist(wallet.account);
+      assertWalletContinuity(wallet, finalWallet);
+      if (!sameWatchlist(watchlist, finalWatchlist)) {
+        throw new ReferenceMarketOperationError("state_conflict");
+      }
+      const createdAt = this.#dependencies.clock.now();
+      const withoutDigest = {
+        contractVersion: "1" as const,
+        domain: "reference_watchlist" as const,
+        operationId,
+        kind: request.kind,
+        createdAt,
+        actionExpiresAt: addMilliseconds(
+          createdAt,
+          referenceWatchlistOperationLimits.reviewActionMilliseconds,
+        ),
+        target: projection.projection.target,
+        decision: projection.projection.decision,
+        precondition: {
+          account: wallet.account,
+          connectionRevision: wallet.connectionRevision,
+          watchlistRevision: watchlist.revision,
+          currentEntries: watchlist.entries,
+        },
+        fixedEvidence: projection.projection.fixedEvidence,
+      };
+      const review = parseReferenceWatchlistReview({
+        ...withoutDigest,
+        reviewDigest: referenceWatchlistReviewDigest(withoutDigest),
+      });
+      return contract.parsePublicSuccess(request, { review });
     });
   }
 
-  #mutate(
-    kind: "add" | "remove",
-    contract: typeof referenceMarketApplicationContracts.add | typeof referenceMarketApplicationContracts.remove,
-    input: ReferenceWatchlistMutationInput,
+  decideWatchlistChange(
+    input: ReferenceWatchlistDirectAction,
     signal?: AbortSignal,
-  ): Promise<ReferenceWatchlistSuccess | ApplicationFailure> {
-    return this.#runMutation(contract, input, signal, (request) => {
-      const wallet = captureWallet(this.#dependencies);
-      const result = this.#dependencies.store.mutateWatchlist({
-        account: wallet.account,
-        expectedConnectionRevision: wallet.connectionRevision,
-        expectedRevision: request.expectedRevision,
-        mutation: { kind, pairId: request.pairId },
-        now: this.#dependencies.clock.now(),
+  ): Promise<ReferenceWatchlistOperation | ApplicationFailure> {
+    let action: ReferenceWatchlistDirectAction;
+    try { action = referenceWatchlistDirectActionSchema.parse(input); }
+    catch {
+      return Promise.resolve(parseFailure(
+        referenceMarketApplicationContracts.add,
+        new ReferenceMarketOperationError("invalid_input"),
+      ));
+    }
+    const contract = action.review.kind === "add"
+      ? referenceMarketApplicationContracts.add
+      : action.review.kind === "remove"
+        ? referenceMarketApplicationContracts.remove
+        : referenceMarketApplicationContracts.reorder;
+    return this.#runSynchronous(contract as never, action as never, signal, () => {
+      const admitted = contract.parseInput(action as never) as ReferenceWatchlistDirectAction;
+      const existing = this.#dependencies.store.readWatchlistOperation(admitted.review.operationId);
+      if (existing !== null) {
+        if (!sameReview(existing.review, admitted.review) || existing.kind !== admitted.review.kind) {
+          throw new ReferenceMarketOperationError("state_conflict");
+        }
+        return contract.parsePublicSuccess(admitted as never, existing as never) as ReferenceWatchlistOperation;
+      }
+      if (Date.parse(admitted.review.actionExpiresAt) <= Date.parse(this.#dependencies.clock.now())) {
+        throw new ReferenceMarketOperationError("watchlist_review_expired");
+      }
+      this.#assertReviewPrecondition(admitted.review);
+      const projection = createReferenceWatchlistReviewProjection({
+        kind: admitted.review.kind,
+        currentEntries: admitted.review.precondition.currentEntries,
+        ...(admitted.review.kind === "reorder"
+          ? { pairIds: admitted.review.target.entries.map((entry) => entry.pairId) }
+          : { pairId: admitted.review.target.pair.pairId }),
       });
-      if (result.status === "rejected") throw new ReferenceMarketOperationError(result.reason);
-      return result.watchlist;
+      if (
+        projection.status !== "success" ||
+        canonicalJsonStringify({
+          target: admitted.review.target,
+          decision: admitted.review.decision,
+          fixedEvidence: admitted.review.fixedEvidence,
+        } as unknown as CanonicalJson) !== canonicalJsonStringify({
+          target: projection.status === "success" ? projection.projection.target : null,
+          decision: projection.status === "success" ? projection.projection.decision : null,
+          fixedEvidence: projection.status === "success" ? projection.projection.fixedEvidence : null,
+        } as unknown as CanonicalJson)
+      ) throw new ReferenceMarketOperationError("state_conflict");
+      this.#assertReviewPrecondition(admitted.review);
+      const operation = this.#dependencies.store.applyWatchlistChange({
+        action: admitted,
+        completedAt: this.#dependencies.clock.now(),
+      });
+      return contract.parsePublicSuccess(admitted as never, operation as never) as ReferenceWatchlistOperation;
+    }) as Promise<ReferenceWatchlistOperation | ApplicationFailure>;
+  }
+
+  getWatchlistOperation(
+    input: ReferenceWatchlistOperationInput,
+    signal?: AbortSignal,
+  ): Promise<ReferenceWatchlistOperation | ApplicationFailure> {
+    const contract = referenceMarketApplicationContracts.operation;
+    return this.#runSynchronous(contract, input, signal, (request) => {
+      const operation = this.#dependencies.store.readWatchlistOperation(request.operationId);
+      if (operation === null) throw new ReferenceMarketOperationError("watchlist_operation_not_found");
+      return contract.parsePublicSuccess(request, operation);
     });
   }
 
-  #runRead<Input, Success>(
-    contract: ReferenceMarketApplicationContract<Input, Success>,
+  #assertReviewPrecondition(review: ReferenceWatchlistReview): void {
+    const initialWallet = captureWallet(this.#dependencies);
+    if (
+      !sameAccount(initialWallet.account, review.precondition.account) ||
+      initialWallet.connectionRevision !== review.precondition.connectionRevision
+    ) throw new ReferenceMarketOperationError("state_conflict");
+    const current = this.#dependencies.store.readWatchlist(review.precondition.account);
+    if (
+      current.revision !== review.precondition.watchlistRevision ||
+      canonicalJsonStringify(current.entries as unknown as CanonicalJson) !==
+        canonicalJsonStringify(review.precondition.currentEntries as unknown as CanonicalJson)
+    ) throw new ReferenceMarketOperationError("state_conflict");
+    const finalWallet = captureWallet(this.#dependencies);
+    const final = this.#dependencies.store.readWatchlist(review.precondition.account);
+    assertWalletContinuity(initialWallet, finalWallet);
+    if (!sameWatchlist(current, final)) throw new ReferenceMarketOperationError("state_conflict");
+  }
+
+  #runRead<Input, Success, CapabilityId extends ReferenceMarketCapabilityId, Context>(
+    contract: ReferenceMarketApplicationContract<Input, Success, CapabilityId, Context>,
     input: unknown,
     callerSignal: AbortSignal | undefined,
     operation: (request: Input, signal: AbortSignal) => Promise<Success>,
@@ -236,33 +362,26 @@ export class ReferenceMarketApplication implements ReferenceMarketApplicationPor
         ? this.#owner.signal
         : AbortSignal.any([callerSignal, this.#owner.signal]);
       const initialCancellation = terminalCancellation(callerSignal, this.#owner.signal);
-      if (initialCancellation !== undefined) {
-        return parseFailure(contract, initialCancellation);
-      }
+      if (initialCancellation !== undefined) return parseFailure(contract, initialCancellation);
       let success: Success | undefined;
       let failure: unknown;
-      try {
-        success = await operation(request, interruptSignal);
-      } catch (error) {
-        failure = error;
-      }
+      try { success = await operation(request, interruptSignal); }
+      catch (error) { failure = error; }
       const cancellation = terminalCancellation(callerSignal, this.#owner.signal);
       if (cancellation !== undefined) return parseFailure(contract, cancellation);
       if (failure !== undefined) return parseFailure(contract, failure);
-      try {
-        return contract.parsePublicSuccess(request, success as Success);
-      } catch (error) {
-        return parseFailure(contract, error);
-      }
+      try { return contract.parsePublicSuccess(request, success as Success); }
+      catch (error) { return parseFailure(contract, error); }
     })();
     let settlement!: Promise<void>;
-    settlement = execution.then(() => undefined, () => undefined).finally(() => this.#active.delete(settlement));
+    settlement = execution.then(() => undefined, () => undefined)
+      .finally(() => this.#active.delete(settlement));
     this.#active.add(settlement);
     return execution;
   }
 
-  #runMutation<Input, Success>(
-    contract: ReferenceMarketApplicationContract<Input, Success>,
+  #runSynchronous<Input, Success, CapabilityId extends ReferenceMarketCapabilityId, Context>(
+    contract: ReferenceMarketApplicationContract<Input, Success, CapabilityId, Context>,
     input: unknown,
     callerSignal: AbortSignal | undefined,
     operation: (request: Input) => Success,
@@ -285,9 +404,9 @@ export class ReferenceMarketApplication implements ReferenceMarketApplicationPor
     const cancellation = terminalCancellation(callerSignal, this.#owner.signal);
     if (cancellation !== undefined) return Promise.resolve(parseFailure(contract, cancellation));
     try {
-      // The synchronous store result fixes the durable outcome. Cancellation
-      // observed after this call may affect delivery but cannot reclassify it.
-      return Promise.resolve(contract.parsePublicSuccess(request, operation(request)));
+      // A synchronous store commit fixes the durable outcome. A later caller
+      // cancellation may affect delivery but cannot reclassify that commit.
+      return Promise.resolve(operation(request));
     } catch (error) {
       return Promise.resolve(parseFailure(contract, error));
     }

@@ -13,7 +13,7 @@ import {
   captureCanonicalJson,
   sha256Bytes,
   type CanonicalJson,
-} from "../../../core/browser.js";
+} from "../../../core/client.js";
 import {
   admitPresentationSnapshotReference,
   admitPresentationSnapshotResource,

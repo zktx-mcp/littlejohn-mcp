@@ -16,46 +16,42 @@ official-asset synchronization and StockFactory admission, account token
 selection, account assets, reference prices and local reference history,
 account-scoped reference-pair state, and the statically registered protocol
 packages. Each feature owns its canonical application contracts and persistence
-ports. This document records the current external-integration classification in
+ports. Wallet management persists its operation before an external effect;
+token-selection and reference-watchlist decisions atomically persist their
+local mutation and terminal operation. Exact terminal operations have no
+automatic eviction. This document records the current external-integration
+classification in
 [External Integration Model](#external-integration-model); exact support,
 evidence, numeric, and protocol meanings remain in their owning sources.
 
 One authenticated fixed-port HTTP owner serves the owner-identity handshake,
-compatible-process controls, public reads, browser-session resources, and
-browser content under the current route and request-security registries.
-Public wallet reads, browser wallet controls, and compatible-process wallet
-controls remain separate route registries and authority classes. They share
-canonical wallet contracts without treating their methods, credentials, or
-mutation authority as interchangeable.
+compatible-process controls, and public canonical reads under fixed route and
+request-security registries. Public reads and authenticated controls remain
+separate authority classes. The loopback endpoint serves no user interface,
+browser session, Cookie credential, or CSRF authority.
 
 A no-argument package process exposes one stdio MCP connection while sharing or
-taking over that HTTP owner. On an admitted MCP Apps connection, the registered
-read tools retain one content-addressed input/result snapshot and attach one
-self-contained App resource without changing their MCP text or structured
-result. The standard transport is primary; the exact Codex and Claude transport
-adapters defined under [MCP Apps Integration Requirements](#mcp-apps-integration-requirements)
-are current only for their measured missing primitives. The interactive CLI and
-React application consume the same runtime-owned applications and state.
-Canonical binding catalogs and their role registries own exact MCP names, HTTP
-paths, CLI commands, browser locations, parsing, and availability. The closed
-App presentation registry owns its implemented contract set. Help text, route
-coverage, capability and presentation catalogs, and the generated public
-support projection derive from those owners; this document does not maintain a
-second interface catalog.
-
-The React application currently uses one persistent shell for Assets, Prices,
-and a selected reference-price detail, plus one shared modal host for explicit
-wallet, token-selection, token-information, and contract-analysis tasks. The
-browser location registry owns the exact paths and admitted query values.
-Opening an information page performs no wallet mutation or transaction action.
+taking over that HTTP owner. On an admitted MCP Apps connection, registered read
+and Review tools retain one content-addressed input/result snapshot and attach
+one self-contained App resource without changing their MCP text or structured
+result. App-only controls and interactive CLI commands independently send the
+same admitted Reviews to the same domain owners and read the same exact durable
+operations. The standard transport is primary. Implemented Host adapters are
+limited to current App association, immutable snapshot delivery, and the
+measured Codex View operation-result carriage path.
+Canonical binding catalogs and role registries own exact MCP names, native HTTP
+resources, CLI commands, parsing, and availability. The closed App presentation
+registry owns its implemented contract set. Help text, route coverage,
+capability and presentation catalogs, and the generated public support
+projection derive from those owners; this document does not maintain a second
+interface catalog.
 
 Owner-only application-data permissions separate the SQLite product store,
-WalletConnect private store, and local control credential. Browser request
-credentials, compatible-process credentials, and WalletConnect session state
-remain distinct. The current runtime exposes no transaction confirmation
-authority. Route responses use the declared canonical-JSON or bounded
-browser-content policies, and canonical JSON rejects ill-formed Unicode before
-UTF-8 encoding.
+WalletConnect private store, and local control credential. Compatible-process
+credentials and WalletConnect session state remain distinct. The current
+runtime exposes no transaction confirmation authority. Route responses use the
+declared canonical-JSON policies, and canonical JSON rejects ill-formed Unicode
+before UTF-8 encoding.
 
 The runtime support manifest is the sole machine authority for implemented
 binding availability and the implemented App presentation catalog. Its
@@ -65,10 +61,10 @@ numeric, transaction, and presentation meaning remains in each owning binding
 document rather than being restated in this Current State section.
 
 This document is the sole authority for repository ownership, module
-dependencies, local processes, persistence, MCP App, Browser, and CLI
-surfaces, WalletConnect session ownership, local credentials, and the loopback
-HTTP boundary. Sections after Current State define required architecture and
-do not claim that it is implemented. Product availability is owned by
+dependencies, local processes, persistence, MCP App and CLI surfaces,
+WalletConnect session ownership, local credentials, and the loopback HTTP
+boundary. Sections after Current State define required architecture and do not
+claim that it is implemented. Product availability is owned by
 `docs/PRODUCT_POLICY.md#current-support`. Transaction and wallet-request
 authority are owned by `docs/TRANSACTION_POLICY.md`.
 
@@ -201,7 +197,6 @@ The current external integration classification is:
 | Chainlink Data Feeds | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority and evidence meaning; `referenceMarketManifest` owns the admitted directory identity and exact feed mappings; `docs/NUMERIC_POLICY.md` owns reference-price, cross-price, and candle meaning; `market-portfolio` and the canonical reference-market application contracts own admitted price and history result lifecycles | `src/chain/reference-market.ts` owns Data Feed call encoding, round admission, response validation, and batch fallback behind `ReferenceMarketChainReadPort`; common RPC configuration remains with the chain transport | The chain application constructs the port and runtime composition passes it to `market-portfolio`; changing a mapping changes the manifest, and replacing Chainlink with another source owner requires an accepted evidence or product-policy change |
 | Sourcify API v2 | Replaceable implementation provider | `intelligence` owns `ContractSourceVerificationPort`, its normalized results and failures, evidence requirements, and lifecycle | `src/intelligence/sourcify.ts` owns the origin, path, request and response admission, deadline, response-size and concurrency limits, cleanup, and provider identity | Runtime composition constructs one Sourcify adapter and passes only `ContractSourceVerificationPort` to the shared contract-analysis process |
 | Uniswap V2 | Binding protocol identity | `docs/PROTOCOL_ADAPTERS.md` and `src/protocols/uniswap-v2` own the exact V2 package, deployment records, native mapping, and capability registration; `docs/NUMERIC_POLICY.md` owns numeric meaning and `docs/EVIDENCE_POLICY.md` owns evidence meaning | `src/protocols/uniswap-v2/sdk.ts` owns the pinned Uniswap SDK loading and admission boundary; the package owns immutable deployment and route-asset records | Runtime composition constructs the statically registered V2 package once and passes only its canonical quote binding to interfaces |
-| Lightweight Charts | Replaceable implementation provider | The browser interface owns `ReferenceChartPort`; admitted reference history and `docs/NUMERIC_POLICY.md` own the exact values and permitted ephemeral chart projection | `src/interfaces/web/lightweight-charts-adapter.tsx` owns package loading, chart options, event admission, failure normalization, subscriptions, and destruction | `src/interfaces/web/main.tsx` constructs one adapter; only a selected Prices pair detail requests the dynamic package chunk and receives `ReferenceChartPort` |
 
 This table contains implemented external integrations only. The implementation
 task that adds or removes an integration updates the table after the runtime
@@ -238,7 +233,13 @@ The admitted Host adapters are closed:
   only when exact `codex-mcp-client` identity omits the standard UI
   capability;
 - the Codex View adapter unwraps only the measured single JSON text wrapper in
-  exact `chatgpt` View Host identity; and
+  exact `chatgpt` View Host identity;
+- the Codex View operation-result adapter runs only after ordinary owning
+  admission of `structuredContent` fails in exact `chatgpt` View Host identity.
+  It admits only the canonical result text from the same `CallToolResult` when
+  the strict response descriptor matches and recursively removing only object
+  properties whose value is exactly `null` produces the delivered
+  `structuredContent`; and
 - the Claude View adapter admits the strict same-result snapshot resource from
   View-private metadata when exact `Claude` View Host identity omits the
   standard result resource link, or reverses only Claude's measured exact
@@ -253,6 +254,36 @@ grant action authority. When the Host physically supplies the corresponding
 standard primitive, the standard path handles that primitive and the adapter
 is deleted in the same Host-support change. There is no version branch,
 generic Host registry, guessed identity, or compatibility reader.
+
+Every View-initiated operation result whose input reached owning admission
+carries one strict View-private `operation_tool_result_descriptor`. Version
+`1` contains the canonical tool name, normalized input UTF-8 byte length and
+SHA-256, canonical result UTF-8 byte length and SHA-256, and server `isError`
+meaning. The MCP binding computes it from the same admitted input and final
+canonical result used for that `CallToolResult`. It is ephemeral transport
+correlation and is never a domain field, persisted value, snapshot, evidence
+record, signature, MAC, or Host authentication.
+
+The View always applies the unchanged owning success, failure, or
+`delivery_unknown` admission to standard `structuredContent` first. Only the
+Codex operation-result adapter may inspect another carrier after that fails.
+It requires one canonical JSON text item, exact descriptor agreement with the
+current tool, input, result bytes, and `isError`, at least one omitted object
+property whose value is exactly `null`, and exact equality between the
+delivered structured value and that one null-elided projection. It preserves
+array positions and array `null` values, then applies the same owning admission
+to the complete candidate. Missing or conflicting metadata, descriptive text,
+a wrapper with another shape, a changed or omitted non-null value, an added
+value, a type conversion, an array change, an `isError` mismatch, or owning
+admission failure rejects the result. The adapter never infers a field,
+inserts `null`, applies a schema default, repeats a call, or selects another
+operation. Claude operation results use only standard structured admission.
+
+The Codex operation-result adapter is deleted when a current physical Codex
+qualification preserves required object-valued `null` properties in
+View-initiated action and exact-operation `structuredContent`. Its descriptor
+emission is deleted with the adapter when no remaining admitted transport path
+consumes it.
 
 An MCP connection that does not admit the App transport retains ordinary MCP
 text and structured results. It receives no App resource or App-only
@@ -403,15 +434,26 @@ reader does not implement a weaker result parser.
   [JSON-RPC tool surface](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
   through the official SDK. Little John does not define a second agent JSON-RPC
   protocol or duplicate MCP tool catalog.
+- MCP input JSON Schema is a derived projection of the owning parser. A closed
+  top-level discriminated object union publishes one closed object with common
+  fields declared once and discriminator-specific requirements retained in
+  its branches. The server still admits the value through the unchanged owning
+  parser. No Host adapter parses a JSON string as an input object or changes
+  the owning contract's accepted value set.
 - Compatible-process control resources are private owner IPC consumed by MCP and
   CLI adapters. They are not agent-facing URLs and do not redefine the MCP
   contract.
 - Machine-interface identity catalogs bind canonical contracts to their MCP,
   native HTTP, and CLI identities. A separate closed presentation registry
   binds an exact canonical contract object to its canonical serializer and
-  parser, deterministic MCP text projection, and typed MCP App renderer. The
-  registry never reconstructs a contract from a string identifier and
-  contains no generic JSON renderer.
+  parser, deterministic MCP text projection, typed MCP App renderer, and
+  exactly one `presentationKind`: `immutable_result`, `review`, or `operation`.
+  That field is the sole View-process classifier. Only `review` enters an
+  operation lifecycle; `immutable_result` stops after immutable rendering, and
+  `operation` is valid only as a nested exact-operation result. The registry
+  never reconstructs a contract from a string identifier and contains no
+  generic JSON renderer, secondary process set, or Host-dependent
+  classification.
 - MCP App presentation is connection-local metadata on a canonical MCP
   result, not another canonical binding or support-manifest axis. The standard
   resource and View path and the exact Host adapters in
@@ -966,10 +1008,10 @@ applications, evidence owners, operation transitions, CLI projections, and
 support projection cannot read it, execute its stored input, or derive
 availability from it.
 
-The closed presentation registry binds an existing canonical contract object
-to its contract ID, contract version, input parser, public-result parser,
-canonical serializer, deterministic MCP text projection, and typed renderer.
-It never reconstructs a contract from a string identifier. After the contract
+The closed presentation registry defined by
+[Interface Contract Model](#interface-contract-model) binds an existing
+canonical contract object to its immutable snapshot admission and typed
+presentation. It never reconstructs a contract from a string identifier. After the contract
 normalizes and admits input and admits its correlated result, the registry
 captures each value as canonical JSON and encodes it once as UTF-8. Canonical
 input is at most the unchanged `65,536`-byte compatible-process request bound;
@@ -1170,6 +1212,14 @@ or durable evidence. QR is visible only for the exact unexpired
 failure, owner loss, or validated completion removes it before the successor
 is published. Scanning alone is not completion; one validated session is.
 
+Wallet App-private metadata never copies the canonical operation. When an
+active operation has QR material, one strict envelope carries only its kind,
+exact operation ID, the admitted public operation-result SHA-256, and the QR
+matrix. The View first admits the public operation result and accepts that QR
+only when the operation ID and result digest match and the admitted state and
+deadline still permit presentation. Missing, malformed, stale, or mismatched
+metadata displays no QR and cannot change the public operation.
+
 ## MCP App View Lifecycle
 
 One `interfaces/mcp-app` owner implements two process families over typed
@@ -1183,7 +1233,9 @@ The immutable process admits one creating result or exact snapshot reference,
 selects the standard transport before an exact Host adapter, admits the linked
 snapshot resource, obtains and verifies the exact normalized input and canonical
 result, dispatches through the presentation registry, and renders without
-polling or a domain read.
+polling or a domain read. The registry-owned `presentationKind` then terminates
+an immutable result, starts the matching Review operation lifecycle, or rejects
+an operation as an invalid creating presentation.
 
 When the result carries the complete canonical structured result and
 snapshot resource, the View uses both directly. When the resource is absent,
@@ -1214,6 +1266,16 @@ owner loss, or an action failure removes automatic observation. A read failure
 disables mutation controls and permits only an explicit retry of the same
 exact operation. No rule depends on Host cancellation propagation or a
 teardown callback receipt.
+
+Every direct-action and exact-operation tool result enters one operation-result
+transport admission step before a lifecycle reads its state or renders it.
+Standard structured admission is first. Only the measured Codex View adapter
+defined under
+[MCP Apps Integration Requirements](#mcp-apps-integration-requirements) may
+recover the same complete canonical value from the same response. Transport or
+owning admission failure stops observation and mutation controls and renders
+one bounded fail-closed message without parser internals, raw schema
+diagnostics, or another operation read.
 
 A terminal operation is rendered from its complete admitted value and causes
 permanent removal of polling, QR, countdown, and action controls for that

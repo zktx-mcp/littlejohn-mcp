@@ -15,12 +15,15 @@ import {
   assertDirectApplicationErrorRegistryExtension,
   createCanonicalClock,
   createExactRational,
+  createObservationAuthority,
   evmAccountIdentitySchema,
   parseCapabilityDataAt,
   parseUtcTimestamp,
   referenceMarketManifest,
   referencePriceWarnings,
   referenceRoundObservationSchema,
+  referenceWatchlistRevisionSchema,
+  sourceReferenceSchema,
   walletConnectionCapability,
   type ApplicationFailure,
   type ChainAnchor,
@@ -32,8 +35,11 @@ import {
 import { ReferenceMarketApplication } from "../../src/market-portfolio/application.js";
 import { createReferenceHistory } from "../../src/market-portfolio/candles.js";
 import {
+  createReferenceWatchlistReviewProjection,
+  parseReferenceWatchlistOperation,
   referenceMarketApplicationContracts,
   referenceMarketErrorRegistry,
+  type ReferenceWatchlistOperation,
 } from "../../src/market-portfolio/contracts.js";
 import type {
   ReferenceFeedCacheCommit,
@@ -204,7 +210,7 @@ const fixture = () => {
   };
   let watchlist: ReferenceWatchlistSuccess = {
     account,
-    revision: "AAAAAAAAAAAAAAAAAAAAAA" as never,
+    revision: referenceWatchlistRevisionSchema.parse("AAAAAAAAAAAAAAAAAAAAAA"),
     entries: [],
   };
   const watchlistRevisions = [
@@ -214,6 +220,8 @@ const fixture = () => {
     "BQUFBQUFBQUFBQUFBQUFBQ",
   ] as const;
   let watchlistMutationIndex = 0;
+  let watchlistMutationCalls = 0;
+  const operations = new Map<string, ReferenceWatchlistOperation>();
   let feedReadCalls = 0;
   let feedCommitCalls = 0;
   const store: ReferenceMarketStore = {
@@ -244,23 +252,50 @@ const fixture = () => {
       };
     },
     readWatchlist: () => watchlist,
-    mutateWatchlist: (input) => {
-      const currentIds = watchlist.entries.map((entry) => entry.pairId);
-      let ids: readonly typeof currentIds[number][];
-      if (input.mutation.kind === "add") {
-        ids = [...currentIds, input.mutation.pairId];
-      } else if (input.mutation.kind === "remove") {
-        const removedPairId = input.mutation.pairId;
-        ids = currentIds.filter((pairId) => pairId !== removedPairId);
-      } else {
-        ids = [...input.mutation.pairIds];
-      }
+    readWatchlistOperation: (operationId) => operations.get(operationId) ?? null,
+    applyWatchlistChange: ({ action, completedAt }) => {
+      const existing = operations.get(action.review.operationId);
+      if (existing !== undefined) return existing;
+      watchlistMutationCalls += 1;
+      const projection = action.review.kind === "reorder"
+        ? createReferenceWatchlistReviewProjection({
+            kind: action.review.kind,
+            currentEntries: watchlist.entries,
+            pairIds: action.review.target.entries.map((entry) => entry.pairId),
+          })
+        : createReferenceWatchlistReviewProjection({
+            kind: action.review.kind,
+            currentEntries: watchlist.entries,
+            pairId: action.review.target.pair.pairId,
+          });
+      if (projection.status !== "success") throw new Error(projection.reason);
       watchlist = {
         account,
-        revision: watchlistRevisions[watchlistMutationIndex++]! as never,
-        entries: ids.map((pairId) => referenceMarketManifest.pairs.find((entry) => entry.pairId === pairId)!),
+        revision: referenceWatchlistRevisionSchema.parse(
+          watchlistRevisions[watchlistMutationIndex++]!,
+        ),
+        entries: [...projection.projection.nextEntries],
       };
-      return { status: "success", watchlist };
+      const operation = parseReferenceWatchlistOperation({
+        contractVersion: "1",
+        domain: "reference_watchlist",
+        operationId: action.review.operationId,
+        kind: action.review.kind,
+        initiatedBy: action.initiatedBy,
+        review: action.review,
+        state: "completed",
+        completedAt,
+        result: {
+          outcome: action.review.kind === "add"
+            ? "watchlist_pair_added"
+            : action.review.kind === "remove"
+              ? "watchlist_pair_removed"
+              : "watchlist_pairs_reordered",
+          watchlist,
+        },
+      });
+      operations.set(operation.operationId, operation);
+      return operation;
     },
   };
   let latest = [latestEth, latestUsdg] as readonly ReferenceRoundObservation[];
@@ -289,6 +324,25 @@ const fixture = () => {
       return historyRead(input, context);
     },
   };
+  let currentTime = "2026-07-22T00:07:00.000Z";
+  const clock = createCanonicalClock(() => currentTime);
+  const topicDigest = "A".repeat(43);
+  const sessionSourceId = `wallet-session:${topicDigest}`;
+  const sessionSource = Object.freeze({
+    sourceId: sessionSourceId,
+    candidateId: sessionSourceId,
+    topicDigest,
+    observationAuthority: createObservationAuthority({
+      clock,
+      sourceClass: "wallet_session",
+      owner: "WalletConnect session",
+      reference: sourceReferenceSchema.parse({
+        kind: "wallet_session",
+        sourceId: sessionSourceId,
+        topicDigest,
+      }),
+    }),
+  });
   const application = new ReferenceMarketApplication({
     chain,
     chainInvocations: lifecycle,
@@ -297,10 +351,10 @@ const fixture = () => {
       capture: () => ({
         connection: walletConnection,
         connectionRevision,
-        sessionSource: { sourceId: "wallet-session:test" } as never,
+        sessionSource,
       }),
     },
-    clock: createCanonicalClock(() => "2026-07-22T00:07:00.000Z"),
+    clock,
   });
   return {
     application,
@@ -311,8 +365,15 @@ const fixture = () => {
     setLatest(value: readonly ReferenceRoundObservation[]) { latest = value; },
     setLatestRead(value: typeof latestRead) { latestRead = value; },
     setHistoryRead(value: typeof historyRead) { historyRead = value; },
+    setNow(value: string) { currentTime = value; },
     currentWatchlist: () => watchlist,
-    counts: () => Object.freeze({ feedReadCalls, feedCommitCalls, historyReadCalls }),
+    readOperation: (operationId: string) => operations.get(operationId) ?? null,
+    watchlistMutationCalls: () => watchlistMutationCalls,
+    counts: () => Object.freeze({
+      feedReadCalls,
+      feedCommitCalls,
+      historyReadCalls,
+    }),
   };
 };
 
@@ -338,77 +399,90 @@ describe("reference-market application", () => {
     await context.close();
   });
 
-  it("uses the canonical watchlist transaction result and rejects work after close", async () => {
+  it("keeps Review creation pure and fixes one exact terminal operation at the mutation", async () => {
     const context = fixture();
     const pairId = referenceMarketManifest.pairs[0]!.pairId;
     const initial = success(await context.application.watchlist({}));
-    const added = success(await context.application.addPair({
+    const reviewed = success(await context.application.reviewWatchlistChange({
+      kind: "add",
       pairId,
       expectedRevision: initial.revision,
+    })).review;
+    expect(context.currentWatchlist()).toEqual(initial);
+    expect(context.readOperation(reviewed.operationId)).toBeNull();
+    expect(context.watchlistMutationCalls()).toBe(0);
+
+    const operation = success(await context.application.decideWatchlistChange({
+      review: reviewed,
+      initiatedBy: "mcp_app",
     }));
-    expect(added.entries.map((entry) => entry.pairId)).toEqual([pairId]);
+    expect(operation).toMatchObject({
+      operationId: reviewed.operationId,
+      review: reviewed,
+      state: "completed",
+      result: { outcome: "watchlist_pair_added" },
+    });
+    expect(operation.result.watchlist.entries.map((entry) => entry.pairId)).toEqual([pairId]);
+    expect(success(await context.application.getWatchlistOperation({
+      operationId: reviewed.operationId,
+    }))).toEqual(operation);
+    expect(context.watchlistMutationCalls()).toBe(1);
+
+    expect(success(await context.application.decideWatchlistChange({
+      review: reviewed,
+      initiatedBy: "mcp_app",
+    }))).toEqual(operation);
+    expect(context.watchlistMutationCalls()).toBe(1);
+
     await context.application.close();
     const afterClose = await context.application.watchlist({});
     expect(afterClose).toMatchObject({ ok: false, error: { code: "runtime_state_unavailable" } });
     await context.close();
   });
 
-  it("fixes each durable watchlist mutation result before later abort or close", async () => {
-    const context = fixture();
+  it("rejects stale and expired direct actions before creating an operation", async () => {
+    const stale = fixture();
     const [firstPair, secondPair] = referenceMarketManifest.pairs;
-    const initial = success(await context.application.watchlist({}));
-
-    const addCaller = new AbortController();
-    const pendingAdd = context.application.addPair({
+    const initial = success(await stale.application.watchlist({}));
+    const firstReview = success(await stale.application.reviewWatchlistChange({
+      kind: "add",
       pairId: firstPair!.pairId,
       expectedRevision: initial.revision,
-    }, addCaller.signal);
-    addCaller.abort();
-    const added = success(await pendingAdd);
-    expect(added.entries.map((entry) => entry.pairId)).toEqual([firstPair!.pairId]);
-
-    const secondAdded = success(await context.application.addPair({
+    })).review;
+    const secondReview = success(await stale.application.reviewWatchlistChange({
+      kind: "add",
       pairId: secondPair!.pairId,
-      expectedRevision: added.revision,
-    }));
-    const reorderCaller = new AbortController();
-    const pendingReorder = context.application.reorderPairs({
-      pairIds: [secondPair!.pairId, firstPair!.pairId],
-      expectedRevision: secondAdded.revision,
-    }, reorderCaller.signal);
-    reorderCaller.abort();
-    const reordered = success(await pendingReorder);
-    expect(reordered.entries.map((entry) => entry.pairId)).toEqual([
-      secondPair!.pairId,
-      firstPair!.pairId,
-    ]);
-
-    const pendingRemove = context.application.removePair({
-      pairId: firstPair!.pairId,
-      expectedRevision: reordered.revision,
-    });
-    const closing = context.application.close();
-    const removed = success(await pendingRemove);
-    expect(removed.entries.map((entry) => entry.pairId)).toEqual([secondPair!.pairId]);
-    expect(context.currentWatchlist()).toEqual(removed);
-    await closing;
-    await context.close();
-  });
-
-  it("rejects a watchlist mutation cancelled before its durable call without changing state", async () => {
-    const context = fixture();
-    const initial = success(await context.application.watchlist({}));
-    const caller = new AbortController();
-    caller.abort();
-    await expect(context.application.addPair({
-      pairId: referenceMarketManifest.pairs[0]!.pairId,
       expectedRevision: initial.revision,
-    }, caller.signal)).resolves.toMatchObject({
+    })).review;
+    success(await stale.application.decideWatchlistChange({
+      review: secondReview,
+      initiatedBy: "cli",
+    }));
+    await expect(stale.application.decideWatchlistChange({
+      review: firstReview,
+      initiatedBy: "mcp_app",
+    })).resolves.toMatchObject({ ok: false, error: { code: "state_conflict" } });
+    expect(stale.readOperation(firstReview.operationId)).toBeNull();
+    await stale.close();
+
+    const expired = fixture();
+    const expiresFrom = success(await expired.application.watchlist({}));
+    const expiredReview = success(await expired.application.reviewWatchlistChange({
+      kind: "add",
+      pairId: firstPair!.pairId,
+      expectedRevision: expiresFrom.revision,
+    })).review;
+    expired.setNow(expiredReview.actionExpiresAt);
+    await expect(expired.application.decideWatchlistChange({
+      review: expiredReview,
+      initiatedBy: "cli",
+    })).resolves.toMatchObject({
       ok: false,
-      error: { code: "request_aborted" },
+      error: { code: "watchlist_review_expired" },
     });
-    expect(context.currentWatchlist()).toEqual(initial);
-    await context.close();
+    expect(expired.currentWatchlist()).toEqual(expiresFrom);
+    expect(expired.readOperation(expiredReview.operationId)).toBeNull();
+    await expired.close();
   });
 
   it("aborts and drains an active price read before close settles", async () => {

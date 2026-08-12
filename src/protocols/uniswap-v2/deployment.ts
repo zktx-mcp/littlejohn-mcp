@@ -11,8 +11,8 @@ import {
   hash32Schema,
   jsonObject,
   productChainId,
-} from "../../core/browser.js";
-import { officialAssetSourceDefinition } from "../../registry/browser.js";
+} from "../../core/client.js";
+import { officialAssetSourceDefinition } from "../../registry/client.js";
 import {
   admitProtocolFamilyDescriptor,
   admitProtocolPackageDescriptor,

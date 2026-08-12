@@ -10,6 +10,7 @@ import {
   capabilitySchemaProjectionSchema,
   defineReadCapability,
   getCapabilityDefinitionSnapshot,
+  projectZodJsonSchema,
   projectCapabilities,
   readCapabilityRegistry,
   safeParseCapabilityData,
@@ -20,6 +21,7 @@ import {
   createEvidenceReplayDefinition,
   createExactConclusionIdentityDeclaration,
 } from "../../src/core/evidence-replay.js";
+import { guardJsonSchema } from "../../src/core/json-object.js";
 
 const independentCanonicalJson = (value: unknown): string => {
   if (value === null || typeof value === "string" || typeof value === "boolean") {
@@ -93,7 +95,7 @@ const defineProjectionTestCapability = <Data extends { readonly value: string }>
 describe("generated capability projections", () => {
   const golden = {
     "account.balance": [
-      "9bc55be852eea73f596c30b47c57e56ccbf63736a7693a85d1f5bf094f54670e",
+      "b1f78b224258be61f63c6b2dbc8e1d9eda760685e67af2efdf4c1c421392d6b2",
       "9f1202d070b5ec1e43c92abff41d79400c80e8485b3bf9668ea9f93cd8ebf1d8",
       "dfa0919b74a027a54052c51772b07df5f99df6ed43132523f4fdb00048b0c668",
     ],
@@ -103,7 +105,7 @@ describe("generated capability projections", () => {
       "42288c45ba463dfe7c4f272431edba4c90fd8dfc572a2856ad33297501358d9b",
     ],
     "contract.inspect": [
-      "5839724d847eafb35975597756e5b2443d3745160d33128356bd763653669566",
+      "3a6aafc4166f130a61067d5862f9697a6d20b2c0f44a9dc65ae4460412d229e3",
       "1a47a7278a24ac59eeaaa53d298f31ebfd095596b36f98d857625e76c04beab0",
       "2294d9f03a3c2d9dabfe6fed2f6e844bc03b3c33d254a62ececfc8e94d09436c",
     ],
@@ -118,6 +120,23 @@ describe("generated capability projections", () => {
       "1c8aeaaf04ecee59fe656510a0735fdf2ad6a6996b1b6adb1850085a1b33c330",
     ],
   } as const;
+
+  it("derives guarded object requiredness from the owning parser", () => {
+    const guarded = guardJsonSchema(z.object({ value: z.string() }).strict());
+    const parser = z.object({
+      requiredValue: guarded,
+      optionalValue: guarded.optional(),
+      defaultedValue: z.string().default("default"),
+    }).strict();
+    const projected = projectZodJsonSchema(parser, "input");
+    const validate = new Ajv2020({ strict: true }).compile(projected as object);
+
+    expect(validate({ requiredValue: { value: "present" } })).toBe(true);
+    expect(parser.safeParse({ requiredValue: { value: "present" } }).success).toBe(true);
+    expect(validate({})).toBe(false);
+    expect(parser.safeParse({}).success).toBe(false);
+    expect((projected["required"] as readonly string[])).toEqual(["requiredValue"]);
+  });
 
   it("projects one unique schema identity and digest from each canonical definition", () => {
     const projections = projectCapabilities(readCapabilityRegistry);

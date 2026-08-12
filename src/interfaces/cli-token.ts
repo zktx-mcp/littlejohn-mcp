@@ -8,7 +8,6 @@ import {
   parseEvmAddressInput,
   type ApplicationFailure,
   type BlockSelector,
-  type CanonicalJson,
   type EvmAddress,
   type EvmChainId,
 } from "../core/index.js";
@@ -16,14 +15,12 @@ import {
   tokenCatalogApplicationContracts,
   createTokenCatalogFailure,
   tokenCatalogInterfaceErrorMappings,
-  tokenCatalogOperationConfirmationContract,
   tokenCatalogOperationIdSchema,
   tokenSelectionRevisionSchema,
-  type AnyTokenCatalogApplicationContract,
   type TokenCatalogOperation,
-  type TokenCatalogOperationStartResult,
   type TokenSelection,
   type TokenSelectionDetail,
+  type TokenSelectionReview,
 } from "../token-catalog/index.js";
 import type { RuntimeDispatchPort } from "./http-client.js";
 import {
@@ -43,10 +40,12 @@ import {
 import {
   chainStatusInterface,
   tokenCatalogInterfaceBindings,
-  tokenLocalOperationIdentities,
+  tokenLocalReadIdentities,
   tokenInspectInterface,
 } from "./identities.js";
 import { contractAnalysisHumanLines } from "./cli-contract-analysis.js";
+import { runAtomicCliDecision } from "./cli-operation.js";
+import { operationInterfaceBindings } from "./operation-bindings.js";
 
 export type TokenCliCommand =
   | Readonly<{ kind: "inspect"; address: EvmAddress; block: BlockSelector; json: boolean }>
@@ -59,8 +58,7 @@ export type TokenCliCommand =
       expectedRevision: TokenSelection["revision"];
       json: false;
     }>
-  | Readonly<{ kind: "operation"; operationId: TokenCatalogOperation["operationId"]; json: boolean }>
-  | Readonly<{ kind: "cancel"; operationId: TokenCatalogOperation["operationId"]; json: boolean }>;
+  | Readonly<{ kind: "operation"; operationId: TokenCatalogOperation["operationId"]; json: boolean }>;
 
 export interface TokenCliOutputPort {
   readonly inputIsTTY: boolean;
@@ -190,7 +188,7 @@ export const parseTokenCliCommand = (argumentsInput: readonly string[]): TokenCl
       json: parsed.json,
     });
   }
-  if (command === tokenCatalogInterfaceBindings.startAddition.cli.command) {
+  if (command === operationInterfaceBindings.tokenAdd.cli?.command) {
     const parsed = parseTokens(tokens, new Set());
     return Object.freeze({
       kind: "add",
@@ -198,7 +196,7 @@ export const parseTokenCliCommand = (argumentsInput: readonly string[]): TokenCl
       json: false,
     });
   }
-  if (command === tokenCatalogInterfaceBindings.startRemoval.cli.command) {
+  if (command === operationInterfaceBindings.tokenRemove.cli?.command) {
     const parsed = parseTokens(tokens, new Set(["--revision"]));
     return Object.freeze({
       kind: "remove",
@@ -207,11 +205,10 @@ export const parseTokenCliCommand = (argumentsInput: readonly string[]): TokenCl
       json: false,
     });
   }
-  if (command === tokenCatalogInterfaceBindings.operation.cli.command ||
-    command === tokenCatalogInterfaceBindings.cancelOperation.cli.command) {
+  if (command === operationInterfaceBindings.tokenOperation.cli?.command) {
     const parsed = parseTokens(tokens, new Set(), new Set(), true);
     return Object.freeze({
-      kind: command === tokenCatalogInterfaceBindings.operation.cli.command ? "operation" : "cancel",
+      kind: "operation",
       operationId: operationId(position(parsed)),
       json: parsed.json,
     });
@@ -328,102 +325,76 @@ const selectionHuman = (selection: TokenSelection): string => [
   `Revision: ${selection.revision}`,
 ].join("\n");
 
-const operationAction = (operation: TokenCatalogOperation): string => {
-  switch (operation.kind) {
+const reviewAction = (review: TokenSelectionReview): string => {
+  switch (review.kind) {
     case "add": return "Add token";
     case "remove": return "Remove token";
   }
 };
 
-const operationReviewHuman = (operation: TokenCatalogOperation): string => {
-  const previous = operation.review.previousSelection;
+const reviewedText = (
+  observation: Extract<TokenSelectionReview, { kind: "add" }>["decision"]["name"],
+): string => observation.status === "available"
+  ? observation.value
+  : `unavailable (${observation.reason})`;
+
+const tokenReviewHuman = (review: TokenSelectionReview): string => {
+  const previous = review.precondition.previousSelection;
   return [
-    operationAction(operation),
-    `Token: ${operation.asset.address}`,
-    `Chain: ${operation.asset.chainId}`,
-    ...(previous === null ? [] : [
-      `Current selection revision: ${previous.revision}`,
-    ]),
-    ...(operation.kind !== "add" ? [] : [
-      `Classification: ${operation.review.officialEvidence === null
-        ? "Custom ERC-20"
-        : "Robinhood Stock Token"}`,
-    ]),
-    ...(operation.review.officialEvidence === null ? [] : [
-      `Official asset UID: ${operation.review.officialEvidence.assetUid}`,
-    ]),
-    "",
-    "Reviewed token inspection",
-    ...(operation.review.inspection === null ? [] : [inspectionHuman(operation.review.inspection)]),
+    reviewAction(review),
+    `Token: ${review.target.asset.address}`,
+    `Chain: ${review.target.asset.chainId}`,
+    `Account: ${review.precondition.account.address}`,
+    `Connection revision: ${review.precondition.connectionRevision}`,
+    `Current selection: ${previous === null
+      ? "none"
+      : `${previous.included ? "included" : "not included"}, revision ${previous.revision}`}`,
+    `Selection-set revision: ${review.precondition.selectionSetRevision ?? "none"}`,
+    ...(review.kind === "add" ? [
+      `Name: ${reviewedText(review.decision.name)}`,
+      `Symbol: ${reviewedText(review.decision.symbol)}`,
+      `Classification: ${review.decision.officialClassification === "official"
+        ? "Robinhood Stock Token"
+        : "Unlisted ERC-20"}`,
+      `Warnings: ${review.decision.warningCodes.join(", ") || "none"}`,
+      `Inspection block: ${review.fixedEvidence.inspectionBlock.blockNumber} ` +
+        `(${review.fixedEvidence.inspectionBlock.blockHash})`,
+      `Official snapshot revision: ${review.fixedEvidence.officialSnapshotRevision}`,
+      ...(review.fixedEvidence.officialEvidence === null ? [] : [
+        `Official asset UID: ${review.fixedEvidence.officialEvidence.assetUid}`,
+      ]),
+    ] : []),
+    `Action deadline: ${review.actionExpiresAt}`,
+    `Operation ID: ${review.operationId}`,
+    `Review digest: ${review.reviewDigest}`,
   ].join("\n");
 };
 
-const operationOutcomeHuman = (operation: TokenCatalogOperation): string => operation.state === "completed"
-    ? operation.kind === "add"
-      ? "Token added."
-      : "Token removed."
-    : operation.state === "cancelled"
-      ? "Token selection change cancelled."
-      : `Token selection operation: ${operation.state}.`;
+const operationHuman = (operation: TokenCatalogOperation): string => [
+  `Token selection operation ${operation.operationId}: completed`,
+  `Action: ${operation.kind}`,
+  `Outcome: ${operation.result.outcome}`,
+  `Completed at: ${operation.completedAt}`,
+  `Review digest: ${operation.review.reviewDigest}`,
+  `Selection-set revision: ${operation.result.selectionSetRevision}`,
+  selectionHuman(operation.result.selection.selection),
+].join("\n");
 
-const operationHuman = (operation: TokenCatalogOperation): string =>
-  `${operationReviewHuman(operation)}\n${operationOutcomeHuman(operation)}`;
-
-type ConfirmationDecision = "confirm" | "decline" | "interrupt";
-
-const confirmationDecision = async (
-  output: TokenCliOutputPort,
-): Promise<ConfirmationDecision> => {
-  if (output.interruptSignal.aborted) return "interrupt";
-  let resolveInterrupt!: () => void;
-  const interrupted = new Promise<"interrupt">((resolve) => { resolveInterrupt = () => resolve("interrupt"); });
-  const onAbort = (): void => { resolveInterrupt(); };
-  output.interruptSignal.addEventListener("abort", onAbort, { once: true });
-  try {
-    const answer = output.readLine("Confirm this account token change? [y/N] ")
-      .then((value): ConfirmationDecision => /^y$/iu.test(value) ? "confirm" : "decline");
-    return await Promise.race([answer, interrupted]);
-  } finally {
-    output.interruptSignal.removeEventListener("abort", onAbort);
-  }
-};
-
-const startInput = async (
+const reviewInput = async (
   runtime: RuntimeDispatchPort,
   command: Extract<TokenCliCommand, { kind: "add" | "remove" }>,
   signal: AbortSignal,
-): Promise<Readonly<{
-  contract: AnyTokenCatalogApplicationContract;
-  request: Readonly<Record<string, CanonicalJson>>;
-  operationKind: "add" | "remove";
-}> | ApplicationFailure> => {
+): Promise<
+  ReturnType<typeof tokenCatalogApplicationContracts.selectionChangeReview.parseInput> |
+  ApplicationFailure
+> => {
   const chainId = await configuredChainId(runtime, signal);
   if (typeof chainId !== "string") return chainId;
   const tokenAsset = asset(chainId, command.address);
-  if (command.kind === "add") {
-    const contract = tokenCatalogApplicationContracts.startAddition;
-    return Object.freeze({
-      contract,
-      request: contract.parseInput({ asset: tokenAsset }) as unknown as Readonly<Record<string, CanonicalJson>>,
-      operationKind: "add" as const,
-    });
-  }
-  const contract = tokenCatalogApplicationContracts.startRemoval;
-  return Object.freeze({
-    contract,
-    request: contract.parseInput({ asset: tokenAsset, expectedRevision: command.expectedRevision }) as unknown as Readonly<Record<string, CanonicalJson>>,
-    operationKind: "remove" as const,
-  });
+  return tokenCatalogApplicationContracts.selectionChangeReview.parseInput(command.kind === "add"
+    ? { kind: "add", asset: tokenAsset }
+    : { kind: "remove", asset: tokenAsset, expectedRevision: command.expectedRevision });
 };
-
-const cancelStartedOperation = async (
-  client: LocalOperationClient,
-  operation: TokenCatalogOperation,
-): Promise<InterfaceInvocationResult> => invokeLocal(
-  client,
-  tokenLocalOperationIdentities.shared.cancel,
-  { operationId: operation.operationId },
-);
 
 const runInteractiveChange = async (
   runtime: RuntimeDispatchPort,
@@ -431,72 +402,31 @@ const runInteractiveChange = async (
   command: Extract<TokenCliCommand, { kind: "add" | "remove" }>,
   output: TokenCliOutputPort,
 ): Promise<number> => {
-  const prepared = await startInput(runtime, command, output.interruptSignal);
-  if (!("contract" in prepared)) return reportFailure(output, prepared, false);
+  const prepared = await reviewInput(runtime, command, output.interruptSignal);
+  if ("ok" in prepared) return reportFailure(output, prepared, false);
   if (output.interruptSignal.aborted) {
     return reportFailure(output, createInterfaceFailure("request_aborted"), false);
   }
-  const start = prepared.operationKind === "add"
-    ? await invokeLocal(
-      client,
-      tokenLocalOperationIdentities.cli.addition,
-      prepared.request,
-      output.interruptSignal,
-    )
-    : await invokeLocal(
-        client,
-        tokenLocalOperationIdentities.cli.removal,
-        prepared.request,
-        output.interruptSignal,
-      );
-  if (!start.ok) return reportFailure(output, start.failure, false);
-  const started = start.value as unknown as TokenCatalogOperationStartResult;
-  if (output.interruptSignal.aborted) {
-    const cancelled = await cancelStartedOperation(client, started.operation);
-    if (!cancelled.ok) return reportFailure(output, cancelled.failure, false);
-    return 0;
-  }
-  output.writeOutput(`${operationReviewHuman(started.operation)}\n`);
-  let decision: ConfirmationDecision;
-  let confirmationInputFailed = false;
-  try { decision = await confirmationDecision(output); }
-  catch {
-    confirmationInputFailed = true;
-    decision = "decline";
-  }
-  if (decision !== "confirm" || output.interruptSignal.aborted) {
-    const cancelled = await cancelStartedOperation(client, started.operation);
-    if (!cancelled.ok) return reportFailure(output, cancelled.failure, false);
-    const operation = (cancelled.value as unknown as { operation: TokenCatalogOperation }).operation;
-    if (confirmationInputFailed) {
-      return reportFailure(output, createInterfaceFailure("internal_error"), false);
-    }
-    output.writeOutput(`${operationOutcomeHuman(operation)}\n`);
-    return 0;
-  }
-  const confirmationInput = tokenCatalogOperationConfirmationContract.parseInput({
-    operationId: started.operation.operationId,
-    reviewDigest: started.operation.review.reviewDigest,
-  });
-  const constrained = await invokeLocal(
+  const binding = command.kind === "add"
+    ? operationInterfaceBindings.tokenAdd
+    : operationInterfaceBindings.tokenRemove;
+  const decided = await runAtomicCliDecision({
     client,
-    tokenLocalOperationIdentities.cli.confirm,
-    confirmationInput,
-    output.interruptSignal,
-  );
-  if (!constrained.ok) return reportFailure(output, constrained.failure, false);
-  let operation: TokenCatalogOperation;
-  try {
-    operation = tokenCatalogOperationConfirmationContract.parsePublicSuccess(
-      confirmationInput,
-      constrained.value,
-    );
-  } catch {
-    return reportFailure(output, createInterfaceFailure("internal_error"), false);
+    reviewIdentity: operationInterfaceBindings.tokenReview.identity,
+    reviewInput: prepared,
+    selectReview: (result) => result.review,
+    actionIdentity: binding.identity,
+    actionInput: (review) => binding.contract.parseInput({ review, initiatedBy: "cli" }) as never,
+    formatReview: tokenReviewHuman,
+    formatOperation: operationHuman,
+    prompt: "Apply this account token change? [y/N] ",
+    output,
+  });
+  if (decided.status === "completed" || decided.status === "declined") return 0;
+  if (decided.status === "delivery_unknown") {
+    throw new TokenCliDeliveryUnknown(decided.delivery);
   }
-  if (operation.state === "failed") return reportFailure(output, operation.failure, false);
-  output.writeOutput(`${operationOutcomeHuman(operation)}\n`);
-  return 0;
+  return reportFailure(output, decided.failure, false);
 };
 
 export const runTokenCliCommand = async (
@@ -513,24 +443,19 @@ export const runTokenCliCommand = async (
     if (command.kind === "add" || command.kind === "remove") {
       return await runInteractiveChange(runtime, client, command, output);
     }
-    if (command.kind === "operation" || command.kind === "cancel") {
-      const contract = command.kind === "operation"
-        ? tokenCatalogApplicationContracts.operation
-        : tokenCatalogApplicationContracts.cancelOperation;
-      const input = contract.parseInput({ operationId: command.operationId });
+    if (command.kind === "operation") {
+      const input = tokenCatalogApplicationContracts.operation.parseInput({
+        operationId: command.operationId,
+      });
       const result = await invokeLocal(
         client,
-        command.kind === "operation"
-          ? tokenLocalOperationIdentities.shared.operation
-          : tokenLocalOperationIdentities.shared.cancel,
+        operationInterfaceBindings.tokenOperation.identity,
         input,
         output.interruptSignal,
       );
       if (!result.ok) return reportFailure(output, result.failure, command.json);
       if (command.json) canonical(output, result.value);
-      else output.writeOutput(`${operationHuman(
-        (result.value as unknown as { operation: TokenCatalogOperation }).operation,
-      )}\n`);
+      else output.writeOutput(`${operationHuman(result.value as unknown as TokenCatalogOperation)}\n`);
       return 0;
     }
     if (command.kind === "list") {
@@ -541,7 +466,7 @@ export const runTokenCliCommand = async (
       };
       const result = await invokeLocal(
         client,
-        tokenLocalOperationIdentities.shared.selections,
+        tokenLocalReadIdentities.selections,
         input,
         output.interruptSignal,
       );
@@ -589,7 +514,7 @@ export const runTokenCliCommand = async (
     const input = contract.parseInput({ asset: tokenAsset });
     const result = await invokeLocal(
       client,
-      tokenLocalOperationIdentities.shared.selection,
+      tokenLocalReadIdentities.selection,
       input,
       output.interruptSignal,
     );

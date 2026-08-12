@@ -15,11 +15,12 @@ import {
   type InitialRuntimeSupportManifest,
 } from "../runtime/support-manifest.js";
 import {
+  compareCodePointSequences,
   getCapabilityDefinitionSnapshot,
   walletConnectionCapability,
 } from "../core/index.js";
 import {
-  type WalletInterfaceOperations,
+  type WalletManagementPort,
 } from "./contracts.js";
 import { walletManagementCapabilityIdList } from "./management-contracts.js";
 import {
@@ -27,7 +28,6 @@ import {
   type ActiveWalletReadPort,
   type WalletCoordinatorPort,
 } from "./coordinator.js";
-import { extendWalletControlRouteRegistry } from "./routes.js";
 import {
   createWalletConnectClient,
   createWalletConnectAcquisitionScope,
@@ -43,16 +43,17 @@ const walletInternalAvailability = Object.freeze({
   http: "internal" as const,
   mcp: "unavailable" as const,
   cli: "unavailable" as const,
-  web: "unavailable" as const,
 });
 
 export const extendWalletSupportManifest = (
   parent: InitialRuntimeSupportManifest,
 ): WalletRuntimeSupportManifest => extendWalletRuntimeSupportManifest(parent, {
-  registrations: walletManagementCapabilityIdList.map((capabilityId) => ({
-    capabilityId,
-    availability: walletInternalAvailability,
-  })),
+  registrations: [...walletManagementCapabilityIdList]
+    .sort(compareCodePointSequences)
+    .map((capabilityId) => ({
+      capabilityId,
+      availability: walletInternalAvailability,
+    })),
   changes: [{
     capabilityId: getCapabilityDefinitionSnapshot(walletConnectionCapability).capabilityId,
     availability: walletInternalAvailability,
@@ -88,7 +89,7 @@ export const createWalletOwnerApplicationFactory = (
   createClient: WalletConnectClientFactory,
 ): WalletOwnerApplicationFactory<
   ActiveWalletReadPort,
-  WalletInterfaceOperations
+  WalletManagementPort
 > => {
   if (typeof createClient !== "function") {
     throw new TypeError("Wallet client factory must be a function.");
@@ -98,7 +99,7 @@ export const createWalletOwnerApplicationFactory = (
     context: WalletOwnerApplicationContext,
   ): Promise<WalletOwnerApplication<
     ActiveWalletReadPort,
-    WalletInterfaceOperations
+    WalletManagementPort
   >> => {
     const privateStoreDirectory = await context.wallet.privateStoreDirectory.ensureDirectory();
     const acquisitionScope = createWalletConnectAcquisitionScope();
@@ -116,25 +117,14 @@ export const createWalletOwnerApplicationFactory = (
         client: acquisition.client,
         wallet: context.wallet,
       });
-      const walletOperations: WalletInterfaceOperations = Object.freeze({
-        operation: createdCoordinator.operation,
-        confirmation: createdCoordinator.webConfirmation,
-        presentation: createdCoordinator.operationPresentation,
-        currentProjection: createdCoordinator.currentOperationProjection,
-      });
+      const walletOperations: WalletManagementPort = createdCoordinator;
       const shutdown = async (): Promise<RuntimeShutdownOutcome> => {
         try { await createdCoordinator.close(); }
         catch (error) { throw requireProcessTermination(error); }
         return runtimeProcessTerminal;
       };
       const application = Object.freeze({
-        routes: extendWalletControlRouteRegistry({
-          routes: context.routes,
-          operations: createdCoordinator,
-          presentation: createdCoordinator.operationPresentation,
-          cliConfirmation: createdCoordinator.cliConfirmation,
-          walletConnection: createdCoordinator.walletConnection,
-        }),
+        routes: context.routes,
         supportManifest: extendWalletSupportManifest(context.supportManifest),
         walletConnection: createdCoordinator.walletConnection,
         activeWallet: createdCoordinator.activeWallet,

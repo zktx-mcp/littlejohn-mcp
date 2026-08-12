@@ -344,6 +344,19 @@ describe("release fake boundaries", () => {
       ])).resolves.toMatchObject({
         result: `0x${BigInt(rpc.semanticReads.account.nativeBalanceRaw).toString(16)}`,
       });
+      const latestBlock = await rpcRequest(
+        rpc.url,
+        rpc.caCertificatePath,
+        "eth_getBlockByNumber",
+        ["latest", false],
+      );
+      const exactBlock = await rpcRequest(
+        rpc.url,
+        rpc.caCertificatePath,
+        "eth_getBlockByNumber",
+        ["0x20000000000001", false],
+      );
+      expect(exactBlock).toEqual(latestBlock);
       await expect(rpcRequest(rpc.url, rpc.caCertificatePath, "eth_getCode", [
         rpc.semanticReads.contract.address,
         rpc.canonicalBlockReference,

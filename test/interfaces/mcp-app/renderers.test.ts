@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  captureCanonicalJson,
   chainAnchorSchema,
   createExactRational,
   referenceHistorySuccessSchema,
@@ -10,12 +11,12 @@ import {
   referenceMarketManifest,
   referenceMarketMappingEvidence,
   referenceRoundObservationSchema,
-} from "../../../src/core/browser.js";
+} from "../../../src/core/client.js";
 import { referenceMarketApplicationContracts } from
   "../../../src/market-portfolio/contracts.js";
-import { presentationContractRegistry } from
+import { presentationContractRegistry, presentationContracts } from
   "../../../src/interfaces/mcp-app/registry.js";
-import { renderPresentation } from
+import { renderOperation, renderPresentation } from
   "../../../src/interfaces/mcp-app/view/renderers.js";
 
 const pair = referenceMarketManifest.pairs[0]!;
@@ -119,10 +120,37 @@ describe("MCP App typed read renderers", () => {
     expect([...card.querySelectorAll("tbody td")].map((cell) => cell.textContent))
       .toContain(`${observation.fact.value.numerator} / ${observation.fact.value.denominator}`);
     expect(card.querySelectorAll("button, input, select, textarea")).toHaveLength(0);
+    expect(card.querySelector(".operation-region")).toBeNull();
     expect(card.textContent).toContain("Partial history");
     expect(card.textContent).toContain("The source history is not exhaustive.");
     expect(card.textContent).toContain("This reference price is not a trade or executable quote.");
     expect(card.querySelector("details, pre")).toBeNull();
     expect(card.textContent).not.toContain("source_history_not_exhaustive");
+  });
+
+  it("uses the closed presentation registry as the only View-process classifier", () => {
+    const reviews = presentationContractRegistry.values()
+      .filter((entry) => entry.presentationKind === "review");
+    const operations = presentationContractRegistry.values()
+      .filter((entry) => entry.presentationKind === "operation");
+
+    expect(reviews).toEqual([
+      presentationContracts.referenceWatchlistReview,
+      presentationContracts.tokenSelectionReview,
+      presentationContracts.walletReview,
+    ]);
+    expect(operations).toEqual([
+      presentationContracts.referenceWatchlistOperation,
+      presentationContracts.tokenSelectionOperation,
+      presentationContracts.walletOperation,
+    ]);
+    expect(() => renderPresentation(
+      presentationContracts.walletOperation,
+      captureCanonicalJson({}),
+    )).toThrow("operation cannot create a top-level presentation");
+    expect(() => renderOperation(
+      presentationContracts.referenceHistory,
+      captureCanonicalJson({}),
+    )).toThrow("not an operation");
   });
 });

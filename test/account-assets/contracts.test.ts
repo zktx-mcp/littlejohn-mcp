@@ -15,7 +15,7 @@ import {
   officialAssetCandidateSchema,
   officialAssetSourceDefinition,
   stockFactoryAdmissionManifest,
-} from "../../src/registry/browser.js";
+} from "../../src/registry/client.js";
 import {
   officialAssetCandidateListDigest,
 } from "../../src/registry/official-asset-contract.js";

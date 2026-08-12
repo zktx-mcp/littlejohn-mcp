@@ -648,13 +648,13 @@ describe("application data and local credential", () => {
 
 describe("SQLite product state", () => {
   it("preserves the independent canonical SQLite schema bytes", () => {
-    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(25_472);
+    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(30_487);
     expect(createHash("sha256").update(currentSqliteSchemaSql, "utf8").digest("hex")).toBe(
-      "ddfc4d75155d1818d169f0803cd61dba0f7b82d142997bc009cae4d82eb21d8f",
+      "18c91ec5840ee450a9ec9cc100e1655bb20676e68afb30e10cd6a1f5d4d2c57f",
     );
     const structure = JSON.stringify(deriveIndependentCurrentSqliteSchema());
     expect(createHash("sha256").update(structure, "utf8").digest("hex")).toBe(
-      "dccbeee145418c47d91880dc7666b7f2503881fc1127c8b0b2484d0120bd0f44",
+      "8464ee397095e9aefccb2a52bf7ac61cb688d9ba1cbb5ee5ee1e96627adc368a",
     );
   });
 
@@ -1086,12 +1086,15 @@ describe("SQLite product state", () => {
       { name: "reference_feed_sync_state", wr: 1, strict: 1 },
       { name: "reference_pair_watchlist_entry", wr: 1, strict: 1 },
       { name: "reference_pair_watchlist_state", wr: 1, strict: 1 },
+      { name: "reference_watchlist_operation", wr: 1, strict: 1 },
       { name: "robinhood_asset", wr: 1, strict: 1 },
       { name: "robinhood_asset_snapshot", wr: 1, strict: 1 },
       { name: "runtime_owner", wr: 0, strict: 1 },
       { name: "token_contract", wr: 1, strict: 1 },
       { name: "token_contract_inspection", wr: 1, strict: 1 },
+      { name: "token_selection_operation", wr: 1, strict: 1 },
       { name: "wallet_account", wr: 1, strict: 1 },
+      { name: "wallet_operation", wr: 1, strict: 1 },
       { name: "wallet_token_selection", wr: 1, strict: 1 },
       { name: "wallet_token_selection_state", wr: 1, strict: 1 },
     ]);
@@ -1100,11 +1103,14 @@ describe("SQLite product state", () => {
       "reference_feed_round",
       "reference_feed_sync_state",
       "reference_pair_watchlist_state",
+      "reference_watchlist_operation",
       "robinhood_asset_snapshot",
       "contract",
       "token_contract",
       "token_contract_inspection",
+      "token_selection_operation",
       "wallet_account",
+      "wallet_operation",
       "wallet_token_selection_state",
       "wallet_token_selection",
       "current_wallet_connection",

@@ -179,7 +179,6 @@ describe("public read HTTP routes", () => {
           method,
           requestClass: "public_read",
           mutation: "none",
-          response: "canonical_json",
           successStatus: 200,
         });
       }
@@ -194,7 +193,7 @@ describe("public read HTTP routes", () => {
     const { routes, chain } = await createRoutes();
     const result = await invoke(routes, "GET", publicInterfaceRoutes.chainStatus);
     expect(result.ok).toBe(true);
-    if (!result.ok || result.response !== "canonical_json") throw new Error("Expected canonical JSON.");
+    if (!result.ok) throw new Error("Expected canonical JSON.");
     expect(result.body).toMatchObject({
       ok: true,
       meta: { capabilityId: "chain.status", chainId: "eip155:4663" },
@@ -239,7 +238,6 @@ describe("public read HTTP routes", () => {
     const result = await invoke(routes, "GET", publicInterfaceRoutes.capabilities);
     expect(result).toEqual({
       ok: true,
-      response: "canonical_json",
       body: composeInterfaceCapabilityCatalog(manifest),
     });
     const match = routes.match("GET", publicInterfaceRoutes.capabilities);

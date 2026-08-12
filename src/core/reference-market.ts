@@ -15,6 +15,7 @@ import { productChainId } from "./product-identity.js";
 import {
   canonicalBase64UrlSchema,
   chainAnchorSchema,
+  closedTupleSchema,
   generalSingleLineTextSchema,
   hash32Schema,
   unsignedDecimalSchema,
@@ -45,7 +46,7 @@ type StringLiteralSchemas<Values extends readonly string[]> = {
 };
 const literalTupleSchema = <
   const Values extends readonly [string, ...string[]],
->(values: Values) => z.tuple(
+>(values: Values) => closedTupleSchema(
   values.map((value) => z.literal(value)) as unknown as StringLiteralSchemas<Values>,
 );
 

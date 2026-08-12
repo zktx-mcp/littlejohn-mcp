@@ -20,7 +20,7 @@ import {
   uint256DecimalSchema,
   type ContractAnalysis,
   type Erc20AssetIdentity,
-} from "../../core/browser.js";
+} from "../../core/client.js";
 import {
   uniswapV2DeploymentIdentity,
   uniswapV2DeploymentSource,

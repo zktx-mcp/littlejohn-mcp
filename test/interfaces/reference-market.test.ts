@@ -1,9 +1,4 @@
-import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { resolve } from "node:path";
-
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   chainAnchorSchema,
@@ -19,26 +14,11 @@ import {
   formatReferenceHistoryForCli,
   formatReferencePriceForCli,
   parseReferenceMarketCliCommand,
+  referenceMarketCliCommandRequiresInteractiveTerminal,
 } from "../../src/interfaces/reference-market-cli.js";
-import { referenceMarketPublicRoutes } from "../../src/interfaces/browser-contract.js";
-import { referenceMarketLocalMutationPaths } from "../../src/interfaces/identities.js";
-import {
-  extendReferenceMarketInterfaceRoutes,
-} from "../../src/interfaces/reference-market-http.js";
-import { createReferenceMarketDeliveryUnknown } from "../../src/interfaces/reference-market-delivery.js";
-import { createControlCredentialVerifier, loadOrCreateControlCredential } from "../../src/runtime/control-credential.js";
-import { createRuntimeRouteRegistry, type RuntimeRouteRegistry } from "../../src/runtime/http-routing.js";
-import { runtimePaths } from "../../src/runtime/paths.js";
 import type { ReferenceFeedCacheSnapshot } from "../../src/runtime/reference-market-storage.js";
 import { createReferenceHistory } from "../../src/market-portfolio/candles.js";
-import {
-  createReferenceMarketFailure,
-  type ReferenceMarketApplicationPort,
-} from "../../src/market-portfolio/index.js";
-import { referenceMarketInterfaceHarnessPort } from "../market-portfolio/interface-harness.js";
-import { tokenCatalogInterfaceErrorMappings } from "../../src/token-catalog/errors.js";
 
-const directories: string[] = [];
 const block = chainAnchorSchema.parse({
   chainId: "eip155:4663",
   blockNumber: "42",
@@ -99,103 +79,7 @@ const history = createReferenceHistory({
   reports: new Map([[feed.feedId, traversalReport]]),
 });
 
-afterEach(async () => {
-  await Promise.all(directories.splice(0).map((directory) => rm(directory, { force: true, recursive: true })));
-});
-
-const routes = async (
-  referenceMarkets: ReferenceMarketApplicationPort = referenceMarketInterfaceHarnessPort(),
-): Promise<RuntimeRouteRegistry> => {
-  const directory = await mkdtemp(resolve(tmpdir(), "littlejohn-reference-market-routes-"));
-  directories.push(directory);
-  const paths = runtimePaths(directory);
-  const credential = await loadOrCreateControlCredential(directory, paths.controlCredential);
-  return extendReferenceMarketInterfaceRoutes({
-    routes: createRuntimeRouteRegistry({
-      controlVerifier: createControlCredentialVerifier(credential),
-      errorMappings: tokenCatalogInterfaceErrorMappings,
-    }),
-    referenceMarkets,
-  });
-};
-
 describe("reference-market interface boundary", () => {
-  it("registers the six exact POST resources with their declared trust and mutation classes", async () => {
-    const registry = await routes();
-    const expected = [
-      [referenceMarketPublicRoutes.priceQueries, "public_read", "none"],
-      [referenceMarketPublicRoutes.historyQueries, "public_read", "none"],
-      [referenceMarketPublicRoutes.watchlistQueries, "public_read", "none"],
-      [referenceMarketLocalMutationPaths.add, "local_control", "declared_control"],
-      [referenceMarketLocalMutationPaths.remove, "local_control", "declared_control"],
-      [referenceMarketLocalMutationPaths.reorder, "local_control", "declared_control"],
-    ] as const;
-    for (const [path, requestClass, mutation] of expected) {
-      const match = registry.match("POST", path);
-      expect(match.status).toBe("matched");
-      if (match.status === "matched") {
-        expect(match.route).toMatchObject({ method: "POST", requestClass, mutation, successStatus: 200 });
-      }
-      expect(registry.match("GET", path).status).toBe("method_not_allowed");
-    }
-  });
-
-  it("binds each local mutation path to the matching application effect", async () => {
-    const calls: string[] = [];
-    const base = referenceMarketInterfaceHarnessPort();
-    const record = (
-      action: "add" | "remove" | "reorder",
-    ) => async () => {
-      calls.push(action);
-      return createReferenceMarketFailure("wallet_not_connected");
-    };
-    const application: ReferenceMarketApplicationPort = Object.freeze({
-      ...base,
-      addPair: record("add"),
-      removePair: record("remove"),
-      reorderPairs: record("reorder"),
-    });
-    const registry = await routes(application);
-    const pairId = referenceMarketManifest.pairs[0]!.pairId;
-    const expectedRevision = "AAAAAAAAAAAAAAAAAAAAAA";
-    const requests = {
-      add: { pairId, expectedRevision },
-      remove: { pairId, expectedRevision },
-      reorder: { pairIds: [pairId], expectedRevision },
-    } as const;
-    for (const action of ["add", "remove", "reorder"] as const) {
-      const match = registry.match("POST", referenceMarketLocalMutationPaths[action]);
-      if (match.status !== "matched") throw new Error(`Missing ${action} route.`);
-      await match.route.handler({
-        params: {},
-        body: requests[action],
-        query: "",
-        signal: new AbortController().signal,
-      });
-    }
-    expect(calls).toEqual(["add", "remove", "reorder"]);
-  });
-
-  it("rejects malformed input at the route contract and preserves a declared domain failure", async () => {
-    const registry = await routes();
-    const malformed = registry.match("POST", referenceMarketPublicRoutes.priceQueries);
-    if (malformed.status !== "matched") throw new Error("Reference price route is unavailable.");
-    const malformedResult = registry.normalizeResult(malformed.route, await malformed.route.handler({
-      params: {},
-      body: { pairId: referenceMarketManifest.pairs[0]!.pairId, extra: true },
-      query: "",
-      signal: new AbortController().signal,
-    }));
-    expect(malformedResult).toMatchObject({ ok: false, problem: { code: "invalid_input" } });
-
-    const watchlist = registry.match("POST", referenceMarketPublicRoutes.watchlistQueries);
-    if (watchlist.status !== "matched") throw new Error("Reference watchlist route is unavailable.");
-    const disconnected = registry.normalizeResult(watchlist.route, await watchlist.route.handler({
-      params: {}, body: {}, query: "", signal: new AbortController().signal,
-    }));
-    expect(disconnected).toMatchObject({ ok: false, problem: { code: "wallet_not_connected" } });
-  });
-
   it("accepts only the fixed CLI grammar and delegates identities to the canonical schemas", () => {
     const pairId = referenceMarketManifest.pairs[0]!.pairId;
     expect(parseReferenceMarketCliCommand(["market", "price", pairId])).toMatchObject({
@@ -206,64 +90,16 @@ describe("reference-market interface boundary", () => {
     expect(parseReferenceMarketCliCommand([
       "market", "add-pair", pairId, "--revision", "AAAAAAAAAAAAAAAAAAAAAA",
     ])).toMatchObject({ kind: "add", input: { pairId, expectedRevision: "AAAAAAAAAAAAAAAAAAAAAA" } });
+    const operation = parseReferenceMarketCliCommand([
+      "market", "watchlist-operation", Buffer.alloc(32, 23).toString("base64url"), "--json",
+    ]);
+    expect(operation).toMatchObject({ kind: "operation", json: true });
+    expect(referenceMarketCliCommandRequiresInteractiveTerminal(operation)).toBe(false);
+    expect(referenceMarketCliCommandRequiresInteractiveTerminal(parseReferenceMarketCliCommand([
+      "market", "add-pair", pairId, "--revision", "AAAAAAAAAAAAAAAAAAAAAA",
+    ]))).toBe(true);
     expect(() => parseReferenceMarketCliCommand(["market", "add-pair", pairId])).toThrow();
     expect(() => parseReferenceMarketCliCommand(["market", "history", pairId, "--window", "90d"])).toThrow();
-  });
-
-  it("derives the delivery commitment only from the canonical action and request", () => {
-    const pairId = referenceMarketManifest.pairs[0]!.pairId;
-    const otherPairId = referenceMarketManifest.pairs[1]!.pairId;
-    const expectedRevision = "AAAAAAAAAAAAAAAAAAAAAA";
-    const independentPreimage =
-      `{"capabilityId":"market.add_watchlist_pair","domain":"littlejohn.reference-market-watchlist.delivery.v1",` +
-      `"request":{"expectedRevision":"${expectedRevision}","pairId":"${pairId}"}}`;
-    const independentDigest = createHash("sha256").update(independentPreimage).digest("hex");
-    expect(independentDigest).toBe("26ba5ebfd2ed004b2e15c2bc669d6dd9edfc4764085ad0f212f4e621af1f774d");
-
-    const add = createReferenceMarketDeliveryUnknown({
-      action: "add",
-      request: { pairId, expectedRevision },
-    });
-    expect(add).toMatchObject({
-      action: "add",
-      requestDigest: independentDigest,
-      expectedRevision,
-      resendAllowed: false,
-      verificationCapability: "market.watchlist",
-    });
-
-    const digests = [
-      add.requestDigest,
-      createReferenceMarketDeliveryUnknown({
-        action: "remove",
-        request: { pairId, expectedRevision },
-      }).requestDigest,
-      createReferenceMarketDeliveryUnknown({
-        action: "add",
-        request: { pairId: otherPairId, expectedRevision },
-      }).requestDigest,
-      createReferenceMarketDeliveryUnknown({
-        action: "add",
-        request: { pairId, expectedRevision: "BBBBBBBBBBBBBBBBBBBBBA" },
-      }).requestDigest,
-      createReferenceMarketDeliveryUnknown({
-        action: "reorder",
-        request: { pairIds: [pairId, otherPairId], expectedRevision },
-      }).requestDigest,
-      createReferenceMarketDeliveryUnknown({
-        action: "reorder",
-        request: { pairIds: [otherPairId, pairId], expectedRevision },
-      }).requestDigest,
-    ];
-    expect(new Set(digests).size).toBe(digests.length);
-    expect(() => createReferenceMarketDeliveryUnknown({
-      action: "add",
-      request: { pairIds: [pairId], expectedRevision },
-    })).toThrow();
-    expect(() => createReferenceMarketDeliveryUnknown({
-      action: "reorder",
-      request: { pairId, expectedRevision },
-    })).toThrow();
   });
 
   it("renders canonical price and observed-history evidence without weakening limitations", () => {

@@ -13,17 +13,13 @@ import {
   normalizeAccountAssetError,
 } from "./errors.js";
 import {
-  accountAssetBrowserRoutes,
   accountAssetCollectionRequestBody,
-  accountAssetExactRequestBody,
   accountAssetControlRoutes,
 } from "./http-contract.js";
 import type { AccountAssetApplicationPort } from "./ports.js";
 
 export {
-  accountAssetBrowserRoutes,
   accountAssetCollectionRequestBody,
-  accountAssetExactRequestBody,
   accountAssetControlRoutes,
 } from "./http-contract.js";
 
@@ -58,9 +54,7 @@ export const extendAccountAssetControlRouteRegistry = (input: Readonly<{
 }>): RuntimeRouteRegistry => input.routes.extend([{
   method: "POST",
   mutation: "none",
-  query: "none",
   pathPattern: accountAssetControlRoutes.queries,
-  response: "canonical_json",
   successStatus: 200,
   handler: async (context) => {
     const contract = accountAssetApplicationContracts.collection;

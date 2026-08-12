@@ -5,15 +5,15 @@ import {
   captureCanonicalJson,
   type CanonicalJson,
 } from "../../src/core/index.js";
-import {
-  LocalOperationClient,
-  walletLocalOperationIdentities,
-  type LocalOperationIdentity,
-} from "../../src/interfaces/index.js";
+import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
+import { operationControlResources, operationInterfaceBindings } from "../../src/interfaces/operation-bindings.js";
+import type { LocalOperationIdentity } from "../../src/interfaces/local-operation.js";
 import {
   internalResponseLimitBytes,
   jsonContentType,
   noStoreCacheControl,
+  problemJsonContentType,
+  toProblemDetails,
   type RuntimeOwnerResponsePacket,
   type RuntimeOwnerSendResult,
   type RuntimeOwnerSession,
@@ -27,41 +27,83 @@ import {
   parseRuntimeConfigurationMac,
   parseRuntimeRevision,
 } from "../../src/runtime/runtime-identity.js";
-import { parseWalletManagementOperation } from "../../src/wallet/contracts.js";
+import {
+  parseWalletManagementOperation,
+  parseWalletReview,
+  walletReviewDigest,
+} from "../../src/wallet/contracts.js";
+import { createWalletFailure, walletInterfaceErrorMappings } from "../../src/wallet/errors.js";
 
 const operationId = Buffer.alloc(32, 31).toString("base64url");
-const foreignOperationId = Buffer.alloc(32, 32).toString("base64url");
-const actionExpiresAt = "2026-07-21T04:00:00.000Z";
 
-const ownerIdentity = (overrides: Partial<RuntimeOwnerSessionIdentity> = {}): RuntimeOwnerSessionIdentity =>
-  Object.freeze({
-    profileId: parseProfileId(Buffer.alloc(16, 1).toString("base64url")),
-    ownerInstanceId: parseOwnerInstanceId(Buffer.alloc(16, 2).toString("base64url")),
-    configurationMac: parseRuntimeConfigurationMac(Buffer.alloc(32, 3).toString("base64url")),
-    ownerRevision: parseRuntimeRevision("1"),
-    ...overrides,
-  });
-
-const operation = (
-  state: "awaiting_wallet_approval" | "cancelled" | "expired",
-  id = operationId,
-) => parseWalletManagementOperation({
-  operationId: id,
+const review = parseWalletReview({
+  contractVersion: "1",
+  domain: "wallet",
+  operationId,
   kind: "connect",
-  state,
-  connectionRevision: "4",
-  actionExpiresAt,
-  interactionInterface: "cli",
+  createdAt: "2026-08-12T00:00:00.000Z",
+  actionExpiresAt: "2026-08-12T00:05:00.000Z",
+  target: { chainId: "eip155:4663" },
+  decision: {
+    requiredMethods: ["eth_sendTransaction"],
+    requiredEvents: ["accountsChanged", "chainChanged"],
+  },
+  precondition: {
+    connectionRevision: "4",
+    connection: { status: "disconnected", reason: "no_session" },
+  },
+  fixedEvidence: { sessionSourceIds: [] },
+  reviewDigest: walletReviewDigest({
+    contractVersion: "1",
+    domain: "wallet",
+    operationId,
+    kind: "connect",
+    createdAt: "2026-08-12T00:00:00.000Z",
+    actionExpiresAt: "2026-08-12T00:05:00.000Z",
+    target: { chainId: "eip155:4663" },
+    decision: {
+      requiredMethods: ["eth_sendTransaction"],
+      requiredEvents: ["accountsChanged", "chainChanged"],
+    },
+    precondition: {
+      connectionRevision: "4",
+      connection: { status: "disconnected", reason: "no_session" },
+    },
+    fixedEvidence: { sessionSourceIds: [] },
+  }),
+});
+
+const action = Object.freeze({ review, initiatedBy: "mcp_app" as const });
+const operation = parseWalletManagementOperation({
+  contractVersion: "1",
+  domain: "wallet",
+  operationId,
+  kind: "connect",
+  initiatedBy: "mcp_app",
+  review,
+  state: "starting_connection",
+  terminationTarget: null,
   result: null,
   failure: null,
   peerRefusalCode: null,
 });
 
-const responsePacket = (body: unknown): RuntimeOwnerResponsePacket => Object.freeze({
-  statusCode: 200,
-  contentType: jsonContentType,
+const ownerIdentity = (revision = "1"): RuntimeOwnerSessionIdentity => Object.freeze({
+  profileId: parseProfileId(Buffer.alloc(16, 1).toString("base64url")),
+  ownerInstanceId: parseOwnerInstanceId(Buffer.alloc(16, 2).toString("base64url")),
+  configurationMac: parseRuntimeConfigurationMac(Buffer.alloc(32, 3).toString("base64url")),
+  ownerRevision: parseRuntimeRevision(revision),
+});
+
+const responsePacket = (
+  body: unknown,
+  statusCode = 200,
+  contentType = statusCode >= 400 ? problemJsonContentType : jsonContentType,
+): RuntimeOwnerResponsePacket => Object.freeze({
+  statusCode,
+  contentType,
   cacheControl: noStoreCacheControl,
-  bytes: new TextEncoder().encode(`${canonicalJsonStringify(captureCanonicalJson(body))}\n`),
+  bytes: new TextEncoder().encode(`${canonicalJsonStringify(captureCanonicalJson(body as CanonicalJson))}\n`),
 });
 
 const received = (body: unknown): RuntimeOwnerSendResult => Object.freeze({
@@ -69,103 +111,142 @@ const received = (body: unknown): RuntimeOwnerSendResult => Object.freeze({
   response: responsePacket(body),
 });
 
+const session = (input: Readonly<{
+  identity?: RuntimeOwnerSessionIdentity;
+  usable?: () => boolean;
+  send(request: RuntimeOwnerSessionRequest, signal?: AbortSignal): Promise<RuntimeOwnerSendResult>;
+}>): RuntimeOwnerSession => Object.freeze({
+  identity: input.identity ?? ownerIdentity(),
+  get usable(): boolean { return input.usable?.() ?? true; },
+  send: input.send,
+  close: () => undefined,
+});
+
 const ownerSessions = (...sessions: RuntimeOwnerSession[]): RuntimeOwnerSessionPort => {
-  let next = 0;
+  let index = 0;
   return Object.freeze({
     async openOwnerSession(): Promise<RuntimeOwnerSession> {
-      const session = sessions[next];
-      next += 1;
-      if (session === undefined) throw new Error("Unexpected owner-session open.");
-      return session;
+      const selected = sessions[index];
+      index += 1;
+      if (selected === undefined) throw new Error("Unexpected owner-session open.");
+      return selected;
     },
   });
 };
 
-const session = (input: Readonly<{
-  identity?: RuntimeOwnerSessionIdentity;
-  usable?: boolean;
-  send(request: RuntimeOwnerSessionRequest, signal?: AbortSignal): Promise<RuntimeOwnerSendResult>;
-  close?: () => void;
-}>): RuntimeOwnerSession => Object.freeze({
-  identity: input.identity ?? ownerIdentity(),
-  get usable(): boolean { return input.usable ?? true; },
-  send: input.send,
-  close: input.close ?? (() => undefined),
-});
-
-describe("authenticated local operation client", () => {
-  it("accepts only identities from the canonical local operation catalog", async () => {
-    let sessionOpens = 0;
+describe("local operation delivery", () => {
+  it("rejects identities outside the canonical identity owner before opening a session", async () => {
+    let opens = 0;
     const client = new LocalOperationClient({
       ownerSessions: Object.freeze({
-        async openOwnerSession(): Promise<RuntimeOwnerSession> {
-          sessionOpens += 1;
+        async openOwnerSession(): Promise<never> {
+          opens += 1;
           throw new Error("A foreign identity must not open an owner session.");
         },
       }),
-      createOperationId: () => operationId,
     });
-    const foreignIdentity = Object.freeze({}) as LocalOperationIdentity<unknown, unknown>;
+    const foreign = Object.freeze({}) as LocalOperationIdentity<unknown, unknown>;
 
-    expect(() => client.invoke(foreignIdentity, {})).toThrow("Local operation identity is invalid.");
-    expect(sessionOpens).toBe(0);
+    expect(() => client.invoke(foreign, {})).toThrow("Local operation identity is invalid.");
+    expect(opens).toBe(0);
     await client.close();
   });
 
-  it("distinguishes abort before send from uncertainty after send", async () => {
-    const controller = new AbortController();
-    controller.abort();
-    let sends = 0;
+  it("returns the owning input path before opening an owner session", async () => {
+    let opens = 0;
+    const client = new LocalOperationClient({
+      ownerSessions: Object.freeze({
+        async openOwnerSession(): Promise<never> {
+          opens += 1;
+          throw new Error("Invalid input must not open an owner session.");
+        },
+      }),
+    });
+
+    const result = await client.invoke(operationInterfaceBindings.walletReview.identity, {
+      kind: "replace",
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      failure: {
+        error: {
+          code: "invalid_input",
+          issues: [{ path: "/kind", code: "invalid_value" }],
+        },
+      },
+    });
+    expect(opens).toBe(0);
+    await client.close();
+  });
+
+  it("does not convert an unobserved pure Review into durable-delivery uncertainty", async () => {
     const client = new LocalOperationClient({
       ownerSessions: ownerSessions(session({
-        async send(_request, signal) {
-          sends += 1;
-          expect(signal?.aborted).toBe(true);
-          return Object.freeze({ status: "request_not_sent", reason: "request_aborted" });
+        async send() {
+          return Object.freeze({ status: "response_unavailable_after_send_began" as const });
         },
       })),
-      createOperationId: () => operationId,
     });
 
-    const result = await client.invoke(walletLocalOperationIdentities.cli.connect, {}, controller.signal);
-    expect(result).toMatchObject({ ok: false, failure: { error: { code: "request_aborted" } } });
-    expect(sends).toBe(1);
+    const result = await client.invoke(operationInterfaceBindings.walletReview.identity, { kind: "connect" });
+
+    expect(result).toMatchObject({
+      ok: false,
+      failure: { error: { code: "runtime_state_unavailable" } },
+    });
+    expect(result).not.toHaveProperty("status", "delivery_unknown");
     await client.close();
   });
 
-  it("uses one exact read with the client lifecycle signal when the same owner remains provable", async () => {
-    const caller = new AbortController();
+  it("keeps a proven pre-send abort definitive", async () => {
+    const client = new LocalOperationClient({
+      ownerSessions: ownerSessions(session({
+        async send() {
+          return Object.freeze({ status: "request_not_sent" as const, reason: "request_aborted" as const });
+        },
+      })),
+    });
+
+    const result = await client.invoke(operationInterfaceBindings.walletConnect.identity, action);
+
+    expect(result).toMatchObject({ ok: false, failure: { error: { code: "request_aborted" } } });
+    expect(result).not.toHaveProperty("status", "delivery_unknown");
+    await client.close();
+  });
+
+  it("recovers a sent direct decision with one exact same-owner read and never resends", async () => {
     const requests: RuntimeOwnerSessionRequest[] = [];
-    const recoverySignals: (AbortSignal | undefined)[] = [];
+    let firstUsable = true;
+    const caller = new AbortController();
     const first = session({
-      usable: false,
+      usable: () => firstUsable,
       async send(request) {
         requests.push(request);
+        firstUsable = false;
         caller.abort();
-        return Object.freeze({ status: "response_unavailable_after_send_began" });
+        return Object.freeze({ status: "response_unavailable_after_send_began" as const });
       },
     });
     const replacement = session({
       async send(request, signal) {
         requests.push(request);
-        recoverySignals.push(signal);
-        return received(operation("awaiting_wallet_approval"));
+        expect(signal).not.toBe(caller.signal);
+        expect(signal?.aborted).toBe(false);
+        return received(operation);
       },
     });
-    const client = new LocalOperationClient({
-      ownerSessions: ownerSessions(first, replacement),
-      createOperationId: () => operationId,
-    });
+    const client = new LocalOperationClient({ ownerSessions: ownerSessions(first, replacement) });
 
-    const result = await client.invoke(walletLocalOperationIdentities.cli.connect, {}, caller.signal);
-    expect(result).toMatchObject({
-      ok: true,
-      value: { status: "operation_started", operation: { operationId } },
-    });
+    const result = await client.invoke(operationInterfaceBindings.walletConnect.identity, action, caller.signal);
+
+    expect(result).toEqual({ ok: true, value: operation });
     expect(requests.map(({ method, path }) => ({ method, path }))).toEqual([
-      { method: "POST", path: "/api/v1/internal/control/wallet/operations" },
-      { method: "GET", path: `/api/v1/internal/control/wallet/operations/${operationId}` },
+      { method: "POST", path: operationControlResources.wallet.decisions },
+      { method: "GET", path: operationControlResources.wallet.operation(operationId) },
     ]);
+    expect(requests[0]?.body).toEqual(action);
+    expect(requests[1]?.body).toBeUndefined();
     expect(requests.map(({ maximumResponseBytes, responseDeadlineMilliseconds }) => ({
       maximumResponseBytes,
       responseDeadlineMilliseconds,
@@ -173,300 +254,101 @@ describe("authenticated local operation client", () => {
       { maximumResponseBytes: internalResponseLimitBytes, responseDeadlineMilliseconds: 300_000 },
       { maximumResponseBytes: internalResponseLimitBytes, responseDeadlineMilliseconds: 2_000 },
     ]);
-    expect(recoverySignals).toHaveLength(1);
-    expect(recoverySignals[0]).not.toBe(caller.signal);
-    expect(recoverySignals[0]?.aborted).toBe(false);
     await client.close();
   });
 
-  it("recovers after a malformed post-send Problem Details response instead of inventing a failure", async () => {
-    let sends = 0;
+  it("reports delivery_unknown when the exact operation cannot be proved by the same owner", async () => {
+    let firstUsable = true;
+    let replacementSends = 0;
     const client = new LocalOperationClient({
-      ownerSessions: ownerSessions(session({
-        async send() {
-          sends += 1;
-          if (sends === 1) {
-            return Object.freeze({
-              status: "response_received" as const,
-              response: Object.freeze({
-                statusCode: 500,
-                contentType: jsonContentType,
-                cacheControl: noStoreCacheControl,
-                bytes: new TextEncoder().encode("{}"),
-              }),
-            });
-          }
-          return received(operation("awaiting_wallet_approval"));
-        },
-      })),
-      createOperationId: () => operationId,
-    });
-
-    expect(await client.invoke(walletLocalOperationIdentities.cli.connect, {})).toMatchObject({
-      ok: true,
-      value: { status: "operation_started", operation: { operationId } },
-    });
-    expect(sends).toBe(2);
-    await client.close();
-  });
-
-  it("refuses recovery when any authenticated owner identity field changes", async () => {
-    const replacements: RuntimeOwnerSessionIdentity[] = [
-      ownerIdentity({ profileId: parseProfileId(Buffer.alloc(16, 4).toString("base64url")) }),
-      ownerIdentity({ ownerInstanceId: parseOwnerInstanceId(Buffer.alloc(16, 5).toString("base64url")) }),
-      ownerIdentity({
-        configurationMac: parseRuntimeConfigurationMac(Buffer.alloc(32, 6).toString("base64url")),
-      }),
-      ownerIdentity({ ownerRevision: parseRuntimeRevision("2") }),
-    ];
-
-    for (const replacementIdentity of replacements) {
-      let recoverySends = 0;
-      const client = new LocalOperationClient({
-        ownerSessions: ownerSessions(
-          session({
-            usable: false,
-            async send() {
-              return Object.freeze({ status: "response_unavailable_after_send_began" });
-            },
-          }),
-          session({
-            identity: replacementIdentity,
-            async send() {
-              recoverySends += 1;
-              return received(operation("awaiting_wallet_approval"));
-            },
-          }),
-        ),
-        createOperationId: () => operationId,
-      });
-
-      expect(await client.invoke(walletLocalOperationIdentities.cli.connect, {})).toEqual({
-        status: "delivery_unknown",
-        action: "start",
-        operationId,
-        resendAllowed: false,
-      });
-      expect(recoverySends).toBe(0);
-      await client.close();
-    }
-  });
-
-  it("does not treat a foreign same-ID read as start proof", async () => {
-    const expectUnproved = async <Input, Success>(
-      identity: LocalOperationIdentity<Input, Success>,
-      input: unknown,
-      recovery: unknown,
-    ): Promise<void> => {
-      let sends = 0;
-      const client = new LocalOperationClient({
-        ownerSessions: ownerSessions(session({
+      ownerSessions: ownerSessions(
+        session({
+          usable: () => firstUsable,
           async send() {
-            sends += 1;
-            return sends === 1
-              ? Object.freeze({ status: "response_unavailable_after_send_began" })
-              : received(recovery);
+            firstUsable = false;
+            return Object.freeze({ status: "response_unavailable_after_send_began" as const });
           },
-        })),
-        createOperationId: () => operationId,
-      });
-
-      const result = await client.invoke(identity, input);
-      expect(result).toMatchObject({ status: "delivery_unknown", operationId, resendAllowed: false });
-      expect(sends).toBe(2);
-      await client.close();
-    };
-
-    await expectUnproved(
-      walletLocalOperationIdentities.cli.connect,
-      {},
-      operation("awaiting_wallet_approval", foreignOperationId),
-    );
-  });
-
-  it("preserves source uncertainty across incomplete transport, provenance, and target observations", async () => {
-    const incompleteObservations: readonly RuntimeOwnerSendResult[] = [
-      Object.freeze({ status: "request_not_sent", reason: "owner_unavailable" }),
-      Object.freeze({ status: "response_unavailable_after_send_began" }),
-      Object.freeze({
-        status: "response_received",
-        response: Object.freeze({
-          statusCode: 409,
-          contentType: jsonContentType,
-          cacheControl: noStoreCacheControl,
-          bytes: new TextEncoder().encode("{}"),
         }),
-      }),
-      Object.freeze({
-        status: "response_received",
-        response: Object.freeze({
-          statusCode: 200,
-          contentType: undefined,
-          cacheControl: noStoreCacheControl,
-          bytes: responsePacket(operation("awaiting_wallet_approval")).bytes,
-        }),
-      }),
-      Object.freeze({
-        status: "response_received",
-        response: Object.freeze({
-          statusCode: 200,
-          contentType: jsonContentType,
-          cacheControl: noStoreCacheControl,
-          bytes: new TextEncoder().encode("{"),
-        }),
-      }),
-      received(operation("awaiting_wallet_approval", foreignOperationId)),
-    ];
-
-    for (const incomplete of incompleteObservations) {
-      let sends = 0;
-      const client = new LocalOperationClient({
-        ownerSessions: ownerSessions(session({
+        session({
+          identity: ownerIdentity("2"),
           async send() {
-            sends += 1;
-            return sends === 1
-              ? Object.freeze({ status: "response_unavailable_after_send_began" })
-              : incomplete;
+            replacementSends += 1;
+            return received(operation);
           },
-        })),
-        createOperationId: () => operationId,
-      });
-
-      await expect(client.invoke(walletLocalOperationIdentities.cli.connect, {})).resolves.toEqual({
-        status: "delivery_unknown",
-        action: "start",
-        operationId,
-        resendAllowed: false,
-      });
-      expect(sends).toBe(2);
-      await client.close();
-    }
-  });
-
-  it("preserves source uncertainty when an admitted target result fails source admission", async () => {
-    let sends = 0;
-    const client = new LocalOperationClient({
-      ownerSessions: ownerSessions(session({
-        async send() {
-          sends += 1;
-          return sends === 1
-            ? Object.freeze({ status: "response_unavailable_after_send_began" })
-            : received({ ...operation("cancelled"), connectionRevision: "5" });
-        },
-      })),
-      createOperationId: () => operationId,
+        }),
+      ),
     });
 
-    await expect(client.invoke(walletLocalOperationIdentities.cli.cancel, {
-      operationId,
-      connectionRevision: "4",
-    })).resolves.toEqual({
+    const result = await client.invoke(operationInterfaceBindings.walletConnect.identity, action);
+
+    expect(result).toEqual({
       status: "delivery_unknown",
-      action: "cancel",
+      action: "decide",
       operationId,
       resendAllowed: false,
     });
-    expect(sends).toBe(2);
+    expect(replacementSends).toBe(0);
     await client.close();
   });
 
-  it("preserves source uncertainty when client close aborts the recovery observation", async () => {
-    let finishRecovery!: (result: RuntimeOwnerSendResult) => void;
-    let markRecoveryStarted!: () => void;
-    const recoveryStarted = new Promise<void>((resolve) => { markRecoveryStarted = resolve; });
-    const pendingRecovery = new Promise<RuntimeOwnerSendResult>((resolve) => { finishRecovery = resolve; });
-    let sends = 0;
+  it("keeps an exact read failure definitive and never turns it into a resendable action", async () => {
     const client = new LocalOperationClient({
       ownerSessions: ownerSessions(session({
         async send() {
-          sends += 1;
-          if (sends === 1) {
-            return Object.freeze({ status: "response_unavailable_after_send_began" });
-          }
-          markRecoveryStarted();
-          return pendingRecovery;
-        },
-        close() {
-          finishRecovery(Object.freeze({ status: "request_not_sent", reason: "request_aborted" }));
+          return Object.freeze({ status: "response_unavailable_after_send_began" as const });
         },
       })),
-      createOperationId: () => operationId,
     });
 
-    const active = client.invoke(walletLocalOperationIdentities.cli.connect, {});
-    await recoveryStarted;
-    const closing = client.close();
-    await expect(active).resolves.toEqual({
-      status: "delivery_unknown",
-      action: "start",
-      operationId,
-      resendAllowed: false,
-    });
-    await closing;
-    expect(sends).toBe(2);
-  });
+    const result = await client.invoke(operationInterfaceBindings.walletOperation.identity, { operationId });
 
-  it("preserves the exact operation state recovered after a lost cancellation response", async () => {
-    for (const recovered of [operation("awaiting_wallet_approval"), operation("expired")]) {
-      let sends = 0;
-      const client = new LocalOperationClient({
-        ownerSessions: ownerSessions(session({
-          async send(request) {
-            sends += 1;
-            if (sends === 1) {
-              expect(request).toMatchObject({
-                method: "POST",
-                path: `/api/v1/internal/control/wallet/operations/${operationId}/cancellation`,
-              });
-              expect(request.body).toEqual({ connectionRevision: "4" });
-              return Object.freeze({ status: "response_unavailable_after_send_began" });
-            }
-            expect(request).toMatchObject({
-              method: "GET",
-              path: `/api/v1/internal/control/wallet/operations/${operationId}`,
-            });
-            return received(recovered);
-          },
-        })),
-        createOperationId: () => operationId,
-      });
-
-      await expect(client.invoke(walletLocalOperationIdentities.cli.cancel, {
-        operationId,
-        connectionRevision: "4",
-      })).resolves.toEqual({ ok: true, value: recovered });
-      expect(sends).toBe(2);
-      await client.close();
-    }
-  });
-
-  it("close aborts and drains active delivery before rejecting later calls", async () => {
-    let finish!: (result: RuntimeOwnerSendResult) => void;
-    const pending = new Promise<RuntimeOwnerSendResult>((resolve) => { finish = resolve; });
-    let closed = false;
-    const client = new LocalOperationClient({
-      ownerSessions: ownerSessions(session({
-        async send() { return pending; },
-        close() {
-          closed = true;
-          finish(Object.freeze({ status: "response_unavailable_after_send_began" }));
-        },
-      })),
-      createOperationId: () => operationId,
-    });
-    const active = client.invoke(walletLocalOperationIdentities.cli.operation, { operationId });
-    await Promise.resolve();
-    const closing = client.close();
-    expect(closed).toBe(true);
-    await closing;
-    await expect(active).resolves.toMatchObject({
+    expect(result).toMatchObject({
       ok: false,
       failure: { error: { code: "runtime_state_unavailable" } },
     });
-    await expect(client.invoke(walletLocalOperationIdentities.cli.operation, { operationId }))
-      .resolves.toMatchObject({
-        ok: false,
-        failure: { error: { code: "runtime_state_unavailable" } },
-      });
+    expect(result).not.toHaveProperty("resendAllowed");
+    await client.close();
+  });
+
+  it("preserves an admitted owner failure only with its Problem Details content type", async () => {
+    const failure = createWalletFailure("wallet_operation_not_found");
+    const problem = toProblemDetails(failure, walletInterfaceErrorMappings);
+    const client = new LocalOperationClient({
+      ownerSessions: ownerSessions(session({
+        async send() {
+          return Object.freeze({
+            status: "response_received" as const,
+            response: responsePacket(problem, problem.status),
+          });
+        },
+      })),
+    });
+
+    expect(await client.invoke(
+      operationInterfaceBindings.walletOperation.identity,
+      { operationId },
+    )).toEqual({ ok: false, failure });
+    await client.close();
+  });
+
+  it("rejects a failure body carried with the success content type", async () => {
+    const failure = createWalletFailure("wallet_operation_not_found");
+    const problem = toProblemDetails(failure, walletInterfaceErrorMappings);
+    const client = new LocalOperationClient({
+      ownerSessions: ownerSessions(session({
+        async send() {
+          return Object.freeze({
+            status: "response_received" as const,
+            response: responsePacket(problem, problem.status, jsonContentType),
+          });
+        },
+      })),
+    });
+
+    expect(await client.invoke(
+      operationInterfaceBindings.walletOperation.identity,
+      { operationId },
+    )).toMatchObject({ ok: false, failure: { error: { code: "internal_error" } } });
+    await client.close();
   });
 });

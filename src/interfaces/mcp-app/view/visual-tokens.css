@@ -14,6 +14,12 @@
   --unavailable: light-dark(#626a75, #bec5cf);
   --chart: light-dark(#20744a, #67d79d);
   --focus: light-dark(#0969da, #8ec5ff);
+  --action-primary: light-dark(#0969da, #6fb0ff);
+  --action-primary-text: light-dark(#ffffff, #101820);
+  --action-destructive: light-dark(#b42318, #ff8c82);
+  --action-destructive-text: light-dark(#ffffff, #24100e);
+  --qr-background: #ffffff;
+  --qr-module: #000000;
   --radius: 12px;
   --space-1: 4px;
   --space-2: 8px;
@@ -53,6 +59,23 @@ main { width: min(100%, 720px); margin: 0 auto; }
 .status-error { border-color: var(--error); }
 .status-copy { margin: var(--space-3) 0 0; color: var(--error); }
 .status-pending .status-copy { color: var(--text-secondary); }
+.operation-region { margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid var(--border); }
+.operation-message .status-copy { margin-top: 0; }
+.operation-message.status-unavailable .status-copy { color: var(--unavailable); }
+.operation-message.status-error .status-copy { color: var(--error); }
+.decision-group, .operation-result { display: grid; gap: var(--space-2); }
+.deadline-copy, .qr-instruction { margin: 0; color: var(--text-secondary); font-size: 0.82rem; }
+.action-row { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.action { min-height: 44px; padding: var(--space-2) var(--space-4); border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font: inherit; font-weight: 700; cursor: pointer; }
+.action.primary { border-color: var(--action-primary); color: var(--action-primary-text); background: var(--action-primary); }
+.action.destructive { border-color: var(--action-destructive); color: var(--action-destructive-text); background: var(--action-destructive); }
+.action.secondary { color: var(--text-primary); background: var(--surface-subtle); }
+.action:disabled { cursor: not-allowed; opacity: 0.55; }
+.action:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.qr-region { display: grid; gap: var(--space-2); justify-items: start; }
+.qr-matrix { display: block; width: min(100%, 280px); aspect-ratio: 1; shape-rendering: crispEdges; border: 1px solid var(--border); }
+.qr-background { fill: var(--qr-background); }
+.qr-module { fill: var(--qr-module); }
 
 @media (max-width: 420px) {
   body { padding: 0; }

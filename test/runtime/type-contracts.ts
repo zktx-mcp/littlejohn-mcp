@@ -25,6 +25,7 @@ import type {
   WalletOwnerApplication,
   WalletOwnerApplicationFactory,
 } from "../../src/wallet/application.js";
+import type { WalletManagementPort } from "../../src/wallet/contracts.js";
 import type {
   RuntimeChainConfiguration,
   RuntimeConfiguration,
@@ -41,11 +42,8 @@ import {
 import { tokenCatalogConsumerPortContract } from "../../src/token-catalog/ports.js";
 import type {
   TokenCatalogApplicationDependencies,
-  TokenCatalogBrowserOperationPort,
-  TokenCatalogInteractiveCliPort,
-  TokenCatalogNonInteractiveOperationPort,
+  TokenCatalogManagementApplicationPort,
   TokenCatalogQueryApplicationPort,
-  TokenCatalogWebStartPort,
 } from "../../src/token-catalog/ports.js";
 
 type Equal<Left, Right> =
@@ -55,23 +53,14 @@ type Assert<Value extends true> = Value;
 type AssertFalse<Value extends false> = Value;
 type ConsumerPortKeys<Definition> = Definition extends Readonly<{
   methods: readonly (infer Method extends string)[];
-  interactionInterface: string;
-}>
-  ? Method | "interactionInterface"
-  : Definition extends Readonly<{ methods: readonly (infer Method extends string)[] }>
-    ? Method
-    : never;
+}> ? Method : never;
 
-interface TestWalletOperations {
+interface TestWalletOperations extends WalletManagementPort {
   readOperation(): unknown;
 }
 
 interface TestActiveWallet {
   capture(): unknown;
-}
-
-interface OtherWalletOperations {
-  cancelOperation(): unknown;
 }
 
 interface OtherActiveWallet {
@@ -80,7 +69,7 @@ interface OtherActiveWallet {
 
 type TestWalletApplicationFactory = WalletOwnerApplicationFactory<TestActiveWallet, TestWalletOperations>;
 type TestChainApplicationFactory = ChainOwnerApplicationFactory<TestActiveWallet>;
-type TestInterfaceApplicationFactory = InterfaceOwnerApplicationFactory<TestWalletOperations>;
+type TestInterfaceApplicationFactory = InterfaceOwnerApplicationFactory;
 
 type _WalletContextKeys = Assert<Equal<
   keyof WalletOwnerApplicationContext,
@@ -99,15 +88,14 @@ type _ChainActiveWallet = Assert<Equal<
   TestActiveWallet
 >>;
 type _InterfaceContextKeys = Assert<Equal<
-  keyof InterfaceOwnerApplicationContext<TestWalletOperations>,
+  keyof InterfaceOwnerApplicationContext,
   "routes" | "signal" | "startupResources" | "supportManifest" | "walletConnection" | "walletOperations" |
-  "chainReads" | "uniswapV2Quote" | "tokenInspection" | "tokenCatalogQueries" | "tokenCatalogWebStart" |
-  "tokenCatalogBrowserOperations" | "tokenCatalogInteractiveCli" | "tokenCatalogNonInteractiveOperations" |
+  "chainReads" | "uniswapV2Quote" | "tokenInspection" | "tokenCatalogQueries" | "tokenCatalogManagement" |
   "accountAssets" | "referenceMarkets"
 >>;
 type _InterfaceWalletOperations = Assert<Equal<
-  InterfaceOwnerApplicationContext<TestWalletOperations>["walletOperations"],
-  TestWalletOperations
+  InterfaceOwnerApplicationContext["walletOperations"],
+  WalletManagementPort
 >>;
 type _WalletApplicationKeys = Assert<Equal<
   keyof WalletOwnerApplication<TestActiveWallet, TestWalletOperations>,
@@ -115,7 +103,8 @@ type _WalletApplicationKeys = Assert<Equal<
 >>;
 type _WalletPortKeys = Assert<Equal<
   keyof WalletOwnerBootstrapPort,
-  "configuration" | "privateStoreDirectory" | "projection" | "sourceAuthority" | "capabilityAuthority"
+  "configuration" | "privateStoreDirectory" | "projection" | "operations" |
+  "sourceAuthority" | "capabilityAuthority"
 >>;
 type _WalletPortConfiguration = Assert<Equal<
   WalletOwnerBootstrapPort["configuration"],
@@ -200,11 +189,6 @@ type _InterfaceWithoutChainRejected = AssertFalse<{
   walletApplicationFactory: TestWalletApplicationFactory;
   interfaceApplicationFactory: TestInterfaceApplicationFactory;
 } extends LocalRuntimeOptions<TestActiveWallet, TestWalletOperations> ? true : false>;
-type _MismatchedInterfaceOperationsRejected = AssertFalse<{
-  walletApplicationFactory: TestWalletApplicationFactory;
-  chainApplicationFactory: TestChainApplicationFactory;
-  interfaceApplicationFactory: InterfaceOwnerApplicationFactory<OtherWalletOperations>;
-} extends LocalRuntimeOptions<TestActiveWallet, TestWalletOperations> ? true : false>;
 type _MismatchedActiveWalletRejected = AssertFalse<{
   walletApplicationFactory: TestWalletApplicationFactory;
   chainApplicationFactory: ChainOwnerApplicationFactory<OtherActiveWallet>;
@@ -225,21 +209,9 @@ type _TokenCatalogQueryKeys = Assert<Equal<
   keyof TokenCatalogQueryApplicationPort,
   ConsumerPortKeys<typeof tokenCatalogConsumerPortContract.tokenCatalogQueries>
 >>;
-type _TokenCatalogWebStartKeys = Assert<Equal<
-  keyof TokenCatalogWebStartPort,
-  ConsumerPortKeys<typeof tokenCatalogConsumerPortContract.tokenCatalogWebStart>
->>;
-type _TokenCatalogBrowserOperationKeys = Assert<Equal<
-  keyof TokenCatalogBrowserOperationPort,
-  ConsumerPortKeys<typeof tokenCatalogConsumerPortContract.tokenCatalogBrowserOperations>
->>;
-type _TokenCatalogInteractiveCliKeys = Assert<Equal<
-  keyof TokenCatalogInteractiveCliPort,
-  ConsumerPortKeys<typeof tokenCatalogConsumerPortContract.tokenCatalogInteractiveCli>
->>;
-type _TokenCatalogNonInteractiveOperationKeys = Assert<Equal<
-  keyof TokenCatalogNonInteractiveOperationPort,
-  ConsumerPortKeys<typeof tokenCatalogConsumerPortContract.tokenCatalogNonInteractiveOperations>
+type _TokenCatalogManagementKeys = Assert<Equal<
+  keyof TokenCatalogManagementApplicationPort,
+  ConsumerPortKeys<typeof tokenCatalogConsumerPortContract.tokenCatalogManagement>
 >>;
 
 export type RuntimePortTypeContracts =
@@ -271,13 +243,9 @@ export type RuntimePortTypeContracts =
   | _InterfaceFactoryPrefix
   | _ChainWithoutWalletRejected
   | _InterfaceWithoutChainRejected
-  | _MismatchedInterfaceOperationsRejected
   | _MismatchedActiveWalletRejected
   | _WalletSessionSourceKeys
   | _TokenCatalogApplicationStoreKeys
   | _TokenCatalogHandoffKeys
   | _TokenCatalogQueryKeys
-  | _TokenCatalogWebStartKeys
-  | _TokenCatalogBrowserOperationKeys
-  | _TokenCatalogInteractiveCliKeys
-  | _TokenCatalogNonInteractiveOperationKeys;
+  | _TokenCatalogManagementKeys;

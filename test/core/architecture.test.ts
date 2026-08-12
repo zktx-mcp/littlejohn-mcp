@@ -95,7 +95,7 @@ const applicationErrorRegistryConstructionRules = Object.freeze([
   },
 ] satisfies readonly ApplicationErrorRegistryConstructionRule[]);
 const pureRegistryParentImportFiles = new Map([
-  [resolve("src/runtime/error-registry.ts"), resolve("src/core/browser.ts")],
+  [resolve("src/runtime/error-registry.ts"), resolve("src/core/client.ts")],
   [resolve("src/wallet/error-registry.ts"), resolve("src/runtime/error-registry.ts")],
   [resolve("src/chain/error-registry.ts"), resolve("src/wallet/error-registry.ts")],
   [resolve("src/token-catalog/error-registry.ts"), resolve("src/chain/error-registry.ts")],
@@ -114,17 +114,17 @@ const semanticEvidenceAuthoringSymbols = new Set([
 ]);
 const semanticEvidenceAuthoringModules = new Set([
   evidenceReplayModule,
-  resolve("src/core/browser.js"),
+  resolve("src/core/client.js"),
 ]);
 const semanticEvidenceAuthoringOwners = new Set([
   resolve("src/core/capability-evidence.ts"),
   resolve("src/token-catalog/contract-schema.ts"),
   resolve("src/protocols/uniswap-v2/evidence.ts"),
 ]);
-const semanticEvidenceAuthoringReexporter = resolve("src/core/browser.ts");
+const semanticEvidenceAuthoringReexporter = resolve("src/core/client.ts");
 const evidenceReplayFacadeModules = new Set([
   evidenceReplayModule,
-  resolve("src/core/browser.js"),
+  resolve("src/core/client.js"),
 ]);
 const evidenceObservationConsumer = resolve("src/core/capability-execution.ts");
 const evidenceReplayConsumers = new Set([
@@ -1080,7 +1080,7 @@ void spreadVersionCapability;
   {
     name: "a namespace reference to the capability constructor",
     overrides: new Map([[uniswapCapabilityOwner, replaceExactAuditSource(
-      `import * as capabilityCore from "../../core/browser.js";\n${uniswapCapabilitySource}`,
+      `import * as capabilityCore from "../../core/client.js";\n${uniswapCapabilitySource}`,
       "export const uniswapV2QuoteCapability = defineReadCapability<",
       "export const uniswapV2QuoteCapability = capabilityCore.defineReadCapability<",
     )]]),
@@ -1096,7 +1096,7 @@ void spreadVersionCapability;
   {
     name: "a direct capability construction outside a registered owner",
     overrides: new Map([[resolve("src/architecture-audit-fixtures/unreachable-capability.ts"), `
-import { defineReadCapability } from "../core/browser.js";
+import { defineReadCapability } from "../core/client.js";
 export const unreachableDirectCapability = defineReadCapability({ contractVersion: "1" } as never);
 `]]),
     expected: [
@@ -1126,8 +1126,8 @@ export const unreachableAliasCapability = defineFromIndex({ contractVersion: "1"
   {
     name: "a namespace capability construction outside a registered owner",
     overrides: new Map([[resolve("src/architecture-audit-fixtures/unreachable-capability.ts"), `
-import * as browserCore from "../core/browser.js";
-export const unreachableNamespaceCapability = browserCore.defineReadCapability({} as never);
+import * as clientCore from "../core/client.js";
+export const unreachableNamespaceCapability = clientCore.defineReadCapability({} as never);
 `]]),
     expected: [
       {
@@ -1149,7 +1149,7 @@ const registryAuditMutations = Object.freeze([
 import {
   assertDirectApplicationErrorRegistryExtension,
   coreErrorRegistry as parentRegistry,
-} from "../core/browser.js";
+} from "../core/client.js";
 import { runtimeErrorDefinitions } from "./error-definitions.js";
 export const runtimeErrorRegistry = parentRegistry.extend(runtimeErrorDefinitions);
 assertDirectApplicationErrorRegistryExtension(parentRegistry, runtimeErrorRegistry);
@@ -1174,7 +1174,7 @@ assertDirectApplicationErrorRegistryExtension(parentRegistry, runtimeErrorRegist
 import {
   assertDirectApplicationErrorRegistryExtension,
   coreErrorRegistry,
-} from "../core/browser.js";
+} from "../core/client.js";
 import { runtimeErrorDefinitions as definitions } from "./error-definitions.js";
 export const runtimeErrorRegistry = coreErrorRegistry.extend(definitions);
 assertDirectApplicationErrorRegistryExtension(coreErrorRegistry, runtimeErrorRegistry);
@@ -1281,7 +1281,7 @@ export const duplicateRuntimeRegistry = aliasedRegistryParent.extend(aliasedRegi
   {
     name: "a registry parent imported through a facade",
     overrides: new Map([[resolve("src/wallet/error-registry.ts"), `
-import { assertDirectApplicationErrorRegistryExtension } from "../core/browser.js";
+import { assertDirectApplicationErrorRegistryExtension } from "../core/client.js";
 import { runtimeErrorRegistry } from "../runtime/errors.js";
 import { walletErrorDefinitions } from "./error-definitions.js";
 export const walletErrorRegistry = runtimeErrorRegistry.extend(walletErrorDefinitions);
@@ -1512,7 +1512,7 @@ describe("core dependency boundary", () => {
       outsideOwner,
     )).toEqual(["chain/unauthorized-evidence.ts:named_import"]);
     expect(semanticEvidenceAuthoringViolations(
-      'import { createEvidenceReplayDefinition as defineEvidence } from "../core/browser.js";',
+      'import { createEvidenceReplayDefinition as defineEvidence } from "../core/client.js";',
       outsideOwner,
     )).toEqual(["chain/unauthorized-evidence.ts:named_import"]);
     expect(semanticEvidenceAuthoringViolations(
@@ -1520,7 +1520,7 @@ describe("core dependency boundary", () => {
       outsideOwner,
     )).toEqual(["chain/unauthorized-evidence.ts:namespace_import"]);
     expect(semanticEvidenceAuthoringViolations(
-      'export { createEvidenceReplayDefinition as defineEvidence } from "../core/browser.js";',
+      'export { createEvidenceReplayDefinition as defineEvidence } from "../core/client.js";',
       outsideOwner,
     )).toEqual(["chain/unauthorized-evidence.ts:reexport"]);
     expect(semanticEvidenceAuthoringViolations(
@@ -1539,7 +1539,7 @@ describe("core dependency boundary", () => {
     const unregisteredProtocolOwner =
       resolve("src/protocols/unregistered-v3/evidence.ts");
     expect(semanticEvidenceAuthoringViolations(
-      'import { createEvidenceReplayDefinition } from "../../core/browser.js";',
+      'import { createEvidenceReplayDefinition } from "../../core/client.js";',
       unregisteredProtocolOwner,
     )).toEqual(["protocols/unregistered-v3/evidence.ts:named_import"]);
   });
@@ -1603,16 +1603,16 @@ describe("core dependency boundary", () => {
       resolve("src/chain/unauthorized-replay.ts"),
     )).toEqual(["chain/unauthorized-replay.ts:public_replay"]);
     expect(evidenceReplayAuthorityViolations(
-      'import * as core from "../core/browser.js"; core.replayPublicEvidence({});',
+      'import * as core from "../core/client.js"; core.replayPublicEvidence({});',
       resolve("src/chain/unauthorized-replay.ts"),
     )).toEqual(["chain/unauthorized-replay.ts:public_replay"]);
     expect(evidenceReplayAuthorityViolations(
-      'import { replayPublicEvidence as replay } from "../core/browser.js"; replay({});',
+      'import { replayPublicEvidence as replay } from "../core/client.js"; replay({});',
       resolve("src/chain/unauthorized-replay.ts"),
     )).toEqual(["chain/unauthorized-replay.ts:public_replay"]);
     expect(Object.hasOwn(publicCore, "createEvidenceObservationId")).toBe(false);
     expect(await readFile(resolve("src/core/index.ts"), "utf8")).not.toMatch(/\bObservedFact\b/u);
-    expect(await readFile(resolve("src/core/browser.ts"), "utf8")).not.toMatch(/\bObservedFact\b/u);
+    expect(await readFile(resolve("src/core/client.ts"), "utf8")).not.toMatch(/\bObservedFact\b/u);
   });
 
   it("keeps the dynamic token-balance conclusion prefix at its declaration owner", async () => {

@@ -4,9 +4,9 @@ import {
   deepFreezeValue,
   operationIdSchema,
   type OperationId,
-} from "../core/browser.js";
+} from "../core/client.js";
 
-export const operationDeliveryActions = Object.freeze(["start", "cancel", "confirm"] as const);
+export const operationDeliveryActions = Object.freeze(["decide", "cancel"] as const);
 export type OperationDeliveryAction = typeof operationDeliveryActions[number];
 
 export const deliveryUnknownSchema = z.object({

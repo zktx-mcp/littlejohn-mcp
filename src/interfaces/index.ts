@@ -2,46 +2,12 @@ export {
   createInterfaceOwnerApplication,
   createInterfaceOwnerApplicationFactory,
 } from "./application.js";
-export type { InterfaceApplicationDependencies } from "./application.js";
-export {
-  browserAssetPaths,
-  browserApiRoot,
-  browserCsrfHeaderName,
-  browserCsrfMetaName,
-  browserCsrfTokenByteLength,
-  browserBaseLocationForPath,
-  browserInformationPages,
-  browserLocationHref,
-  browserLocations,
-  browserPageMetadata,
-  browserPages,
-  browserPrimaryPages,
-  browserOperationCancellationPath,
-  browserOperationConfirmationPath,
-  browserOperationPath,
-  browserWalletApiRoot,
-  browserWalletApiPaths,
-  parseBrowserLocation,
-  parseBrowserCsrfToken,
-} from "./browser-contract.js";
 export type {
-  BrowserLocation,
-  BrowserPage,
-  BrowserPageId,
-  BrowserPageKind,
-  BrowserPageMetadata,
-  BrowserPrimaryPageId,
-} from "./browser-contract.js";
-export {
-  browserSessionCookieName,
-  browserSessionLifetimeSeconds,
-  createBrowserRequestCredentialAuthority,
-} from "./browser-credentials.js";
-export type {
-  BrowserCredentialAuthorityOptions,
-  BrowserCredentialIssue,
-  BrowserRequestCredentialAuthority,
-} from "./browser-credentials.js";
+  InterfaceOwnerApplication,
+  InterfaceOwnerApplicationContext,
+  InterfaceOwnerApplicationFactory,
+} from "./application.js";
+
 export {
   createMcpServer,
   mcpToolNames,
@@ -49,48 +15,62 @@ export {
   startStdioMcp,
 } from "./mcp.js";
 export type { StdioMcpHandle } from "./mcp.js";
-export {
-  parseReadCliCommand,
-  runReadCliCommand,
-} from "./cli-read.js";
-export type {
-  ReadCliCommand,
-  ReadCliOutputPort,
-} from "./cli-read.js";
+
+export { parseReadCliCommand, runReadCliCommand } from "./cli-read.js";
+export type { ReadCliCommand, ReadCliOutputPort } from "./cli-read.js";
 export {
   parseReferenceMarketCliCommand,
+  referenceMarketCliCommandRequiresInteractiveTerminal,
   runReferenceMarketCliCommand,
 } from "./reference-market-cli.js";
 export type {
   ReferenceMarketCliCommand,
   ReferenceMarketCliOutputPort,
 } from "./reference-market-cli.js";
+
 export {
-  cliHelpText,
   accountAssetInterfaceBindingList,
   accountAssetInterfaceBindings,
   accountAssetLocalOperationIdentities,
+  cliHelpText,
   declaredCliCommandIdentities,
+  declaredMcpToolNames,
+  interfaceReadCapabilityRegistry,
+  readInterfaceIdentities,
   referenceMarketInterfaceBindingList,
   referenceMarketInterfaceBindings,
-  tokenLocalOperationIdentities,
-  walletLocalOperationIdentities,
-  walletInterfaceBindingList,
-  walletInterfaceBindings,
-  walletConnectionInterface,
+  referenceMarketPublicRoutes,
+  tokenCatalogInterfaceBindingList,
+  tokenCatalogInterfaceBindings,
+  tokenLocalReadIdentities,
+  uniswapV2PublicRoutes,
   uniswapV2QuoteInterface,
+  walletConnectionInterface,
 } from "./identities.js";
 export type {
   AccountAssetInterfaceBinding,
   CliInterfaceIdentity,
+  ReadInterfaceIdentity,
   ReferenceMarketInterfaceBinding,
-  WalletInterfaceBinding,
 } from "./identities.js";
+
 export {
-  LocalOperationClient,
-} from "./operation-client.js";
-export { LocalMutationClient } from "./reference-market-local-client.js";
-export type { ReferenceMarketLocalMutationResult } from "./reference-market-local-client.js";
+  operationCliCommandIdentities,
+  operationControlResources,
+  operationInterfaceBindingList,
+  operationInterfaceBindings,
+  operationMcpToolNames,
+  walletOperationPresentationIdentity,
+} from "./operation-bindings.js";
+export type {
+  OperationApplicationContract,
+  OperationCliIdentity,
+  OperationInterfaceBinding,
+  OperationToolAnnotations,
+  OperationToolVisibility,
+} from "./operation-bindings.js";
+
+export { LocalOperationClient } from "./operation-client.js";
 export type {
   LocalOperationIdentity,
   LocalOperationResult,
@@ -102,24 +82,21 @@ export {
   operationDeliveryActions,
   parseDeliveryUnknown,
 } from "./operation-delivery.js";
-export { deliveryUnknownCliExitCode } from "./delivery-exit.js";
-export {
-  createReferenceMarketDeliveryUnknown,
-  parseReferenceMarketDeliveryUnknown,
-  referenceMarketDeliveryActions,
-  referenceMarketDeliveryUnknownSchema,
-} from "./reference-market-delivery.js";
-export type {
-  ReferenceMarketDeliveryAction,
-  ReferenceMarketDeliveryUnknown,
-} from "./reference-market-delivery.js";
-export { referenceMarketPublicRoutes } from "./browser-contract.js";
-export {
-  referenceMarketLocalMutationPaths,
-  uniswapV2PublicRoutes,
-} from "./identities.js";
 export type {
   DeliveryUnknown,
   OperationDeliveryAction,
 } from "./operation-delivery.js";
-export { normalizeProblemDetailsFailure, parseProblemDetailsFailure } from "./http-client.js";
+export { deliveryUnknownCliExitCode } from "./delivery-exit.js";
+
+export {
+  constrainInterfaceFailure,
+  createInterfaceFailure,
+  dispatchCanonical,
+  normalizeProblemDetailsFailure,
+  parseProblemDetailsFailure,
+} from "./http-client.js";
+export type {
+  CanonicalDispatchAuthority,
+  InterfaceInvocationResult,
+  RuntimeDispatchPort,
+} from "./http-client.js";

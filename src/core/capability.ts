@@ -42,6 +42,7 @@ import {
 } from "./evidence-replay.js";
 import { evmChainIdSchema, type EvmChainId } from "./identities.js";
 import { deepFreezeValue } from "./immutability.js";
+import { projectZodJsonSchema } from "./json-object.js";
 import {
   compareCodePointSequences,
   sortUniqueStrings,
@@ -170,12 +171,10 @@ export interface CapabilityExecutionDefinition<Input, Data> {
   readonly successParser: (value: unknown) => z.ZodSafeParseResult<CapabilitySuccess<Data>>;
 }
 
-const structuralSchemaSnapshot = (schema: ZodType, io: "input" | "output"): CanonicalJson =>
-  deepFreezeValue(JSON.parse(canonicalJsonStringify(JSON.parse(JSON.stringify(z.toJSONSchema(schema, {
-    target: "draft-2020-12",
-    unrepresentable: "throw",
-    io,
-  }))) as CanonicalJson)) as CanonicalJson);
+const structuralSchemaSnapshot = (schema: ZodType, io: "input" | "output"): CanonicalJson => {
+  const projected = JSON.parse(JSON.stringify(projectZodJsonSchema(schema, io))) as CanonicalJson;
+  return deepFreezeValue(JSON.parse(canonicalJsonStringify(projected)) as CanonicalJson);
+};
 
 const definitionRecord = <Input, Data>(
   definition: ReadCapabilityDefinition<Input, Data>,

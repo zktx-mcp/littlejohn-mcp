@@ -441,12 +441,23 @@ export const createTokenInspectionService = (input: {
           try {
             const inspection = await inspections.invoke(
               tokenInspectCapability,
-              { asset: request.asset, block: { kind: "latest" } },
+              {
+                asset: request.asset,
+                block: request.block === null
+                  ? { kind: "latest" }
+                  : { kind: "number", blockNumber: request.block.blockNumber },
+              },
               { signal: context.signal },
             );
             if (!inspection.ok) return inspection;
             const block = capturedBlocks.get(context);
             if (block === undefined) throw new ChainOperationError("internal_error");
+            if (request.block !== null && (
+              block.anchor.chainId !== request.block.chainId ||
+              block.anchor.blockNumber !== request.block.blockNumber ||
+              block.anchor.blockHash !== request.block.blockHash ||
+              block.anchor.blockTimestamp !== request.block.blockTimestamp
+            )) throw new ChainOperationError("source_inconsistent");
             const officialResult = request.officialMember === null
               ? null
               : await input.officialAssetReads.verifyAtBlock(

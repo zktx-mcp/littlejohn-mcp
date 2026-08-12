@@ -12,19 +12,20 @@ import {
   type InterfaceRuntimeSupportManifest,
   type ProtocolRuntimeSupportManifest,
 } from "../runtime/support-manifest.js";
-import { browserCapabilityBindingFor } from "./browser-capability-bindings.js";
 import { presentationContractRegistry } from "./mcp-app/registry.js";
+import {
+  operationInterfaceBindingList,
+  type OperationInterfaceBinding,
+} from "./operation-bindings.js";
 import {
   interfaceReadCapabilityRegistry,
   accountAssetInterfaceBindingList,
   readInterfaceIdentities,
   referenceMarketInterfaceBindingList,
   tokenCatalogInterfaceBindingList,
-  walletInterfaceBindingList,
   type ReadInterfaceIdentity,
   type ReferenceMarketInterfaceBinding,
   type TokenCatalogInterfaceBinding,
-  type WalletInterfaceBinding,
   type AccountAssetInterfaceBinding,
 } from "./identities.js";
 
@@ -50,7 +51,6 @@ const readBindingAvailability = (
   http: "available",
   mcp: "available",
   cli: "available",
-  web: browserAvailability(identity.definition),
 });
 
 const tokenCatalogBindingAvailability = (
@@ -60,7 +60,6 @@ const tokenCatalogBindingAvailability = (
   http: "internal",
   mcp: "available",
   cli: "available",
-  web: browserAvailability(binding.contract),
 });
 
 const accountAssetBindingAvailability = (
@@ -70,17 +69,15 @@ const accountAssetBindingAvailability = (
   http: "internal",
   mcp: binding.mcp === undefined ? "unavailable" : "available",
   cli: binding.cli === undefined ? "unavailable" : "available",
-  web: browserAvailability(binding.contract),
 });
 
-const walletBindingAvailability = (
-  binding: WalletInterfaceBinding,
+const operationBindingAvailability = (
+  binding: OperationInterfaceBinding,
 ): CapabilityAvailabilityInput => createCapabilityAvailability({
   direct: "internal",
   http: "internal",
-  mcp: binding.mcp === undefined ? "unavailable" : "available",
+  mcp: "available",
   cli: binding.cli === undefined ? "unavailable" : "available",
-  web: browserAvailability(binding.contract),
 });
 
 const referenceMarketBindingAvailability = (
@@ -92,13 +89,9 @@ const referenceMarketBindingAvailability = (
     : "internal",
   mcp: "available",
   cli: "available",
-  web: browserAvailability(binding.contract),
 });
 
 type InterfaceAvailabilityAxes = Omit<CapabilityAvailabilityInput, "overall">;
-
-const browserAvailability = (contract: object): "available" | "unavailable" =>
-  browserCapabilityBindingFor(contract) === undefined ? "unavailable" : "available";
 
 export const sameInterfaceAvailabilityAxes = (
   left: InterfaceAvailabilityAxes,
@@ -106,8 +99,7 @@ export const sameInterfaceAvailabilityAxes = (
 ): boolean => left.direct === right.direct &&
   left.http === right.http &&
   left.mcp === right.mcp &&
-  left.cli === right.cli &&
-  left.web === right.web;
+  left.cli === right.cli;
 
 export const extendInterfaceSupportManifest = (
   parent: ProtocolRuntimeSupportManifest,
@@ -133,9 +125,9 @@ export const extendInterfaceSupportManifest = (
       capabilityId: binding.contract.capabilityId,
       availability: tokenCatalogBindingAvailability(binding),
     })),
-    ...walletInterfaceBindingList.map((binding) => ({
+    ...operationInterfaceBindingList.map((binding) => ({
       capabilityId: binding.contract.capabilityId,
-      availability: walletBindingAvailability(binding),
+      availability: operationBindingAvailability(binding),
     })),
   ].sort((left, right) => compareCodePointSequences(left.capabilityId, right.capabilityId));
   const changes = candidates.filter((candidate) => {
@@ -148,9 +140,14 @@ export const extendInterfaceSupportManifest = (
   return extendInterfaceRuntimeSupportManifest(parent, {
     registrations: [],
     changes: Object.freeze(changes),
-    presentations: Object.freeze(presentationContractRegistry.values().map((entry) => Object.freeze({
-      contractId: entry.contractId,
-      contractVersion: entry.contractVersion,
-    }))),
+    presentations: Object.freeze(presentationContractRegistry.values()
+      .map((entry) => Object.freeze({
+        contractId: entry.contractId,
+        contractVersion: entry.contractVersion,
+      }))
+      .sort((left, right) => compareCodePointSequences(
+        `${left.contractId}\0${left.contractVersion}`,
+        `${right.contractId}\0${right.contractVersion}`,
+      ))),
   });
 };

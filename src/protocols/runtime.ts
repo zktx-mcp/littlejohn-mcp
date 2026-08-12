@@ -28,7 +28,6 @@ const internalReadAvailability = Object.freeze({
   http: "unavailable" as const,
   mcp: "unavailable" as const,
   cli: "unavailable" as const,
-  web: "unavailable" as const,
 });
 
 export interface ProtocolOwnerApplication extends HttpOwnerApplication {

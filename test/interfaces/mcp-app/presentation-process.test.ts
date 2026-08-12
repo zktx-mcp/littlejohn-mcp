@@ -16,7 +16,7 @@ import { referenceMarketApplicationContracts } from "../../../src/market-portfol
 import {
   tokenCatalogApplicationContracts,
   tokenSelectionDetailSchema,
-} from "../../../src/token-catalog/browser.js";
+} from "../../../src/token-catalog/client.js";
 import {
   admitPresentationSnapshotResource,
   presentationSnapshotMetadataKey,

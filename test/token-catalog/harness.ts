@@ -24,20 +24,19 @@ import {
   type TokenInspectionSuccess,
 } from "../../src/token-catalog/contracts.js";
 import {
-  tokenCatalogOperationSchema,
-  tokenInspectionDigest,
+  createTokenAdditionReviewProjection,
+  parseTokenCatalogOperation,
+  parseTokenSelectionReview,
+  tokenSelectionReviewDigest,
   tokenSelectionDetailSchema,
   tokenSelectionSchema,
   type TokenCatalogOperation,
   type TokenSelection,
   type TokenSelectionDetail,
 } from "../../src/token-catalog/contract-schema.js";
+import { officialAssetSnapshotRevisionSchema } from "../../src/registry/index.js";
 import { tokenCatalogErrorRegistry } from "../../src/token-catalog/errors.js";
-import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
-import type {
-  TokenCatalogOperationKind,
-  TokenCatalogOperationState,
-} from "../../src/token-catalog/state.js";
+import type { TokenCatalogInitiator, TokenCatalogOperationKind } from "../../src/token-catalog/state.js";
 import { bindForHarness, createCapabilityHarness } from "../core/capability-harness.js";
 
 export const tokenAddress = parseEvmAddressInput(`0x${"12".repeat(20)}`);
@@ -318,8 +317,7 @@ export const createTokenSelectionDetail = (
 
 export const createTokenOperation = async (options: Readonly<{
   kind: TokenCatalogOperationKind;
-  state: TokenCatalogOperationState;
-  interactionInterface?: "cli" | "web";
+  initiatedBy?: TokenCatalogInitiator;
   operationId?: string;
 }>): Promise<TokenCatalogOperation> => {
   const inspection = await createInspectionSuccess();
@@ -327,40 +325,77 @@ export const createTokenOperation = async (options: Readonly<{
     ? createTokenSelection(inspection)
     : null;
   const createdAt = "2026-07-18T00:00:03.000Z";
+  const completedAt = "2026-07-18T00:00:04.000Z";
   const completedSelection = createTokenSelection(inspection, {
     included: options.kind === "add",
     revisionByte: 2,
-    createdAt: previousSelection?.createdAt ?? createdAt,
-    updatedAt: "2026-07-18T00:00:04.000Z",
+    createdAt: previousSelection?.createdAt ?? completedAt,
+    updatedAt: completedAt,
   });
-  return tokenCatalogOperationSchema.parse({
-    operationId: options.operationId ?? Buffer.alloc(32, options.kind === "add" ? 1 : 2).toString("base64url"),
+  const operationId = options.operationId ??
+    Buffer.alloc(32, options.kind === "add" ? 1 : 2).toString("base64url");
+  const selectionSetRevision = Buffer.alloc(16, 3).toString("base64url");
+  const reviewBase = options.kind === "add"
+    ? {
+        contractVersion: "1" as const,
+        domain: "token_selection" as const,
+        operationId,
+        kind: options.kind,
+        createdAt,
+        actionExpiresAt: "2026-07-18T00:05:03.000Z",
+        target: { asset: completedSelection.asset },
+        precondition: {
+          account: completedSelection.account,
+          connectionRevision: "1",
+          previousSelection,
+          selectionSetRevision: null,
+        },
+        ...createTokenAdditionReviewProjection({
+          inspection,
+          officialSnapshotRevision: officialAssetSnapshotRevisionSchema.parse(
+            Buffer.alloc(16, 4).toString("base64url"),
+          ),
+          officialMember: null,
+          officialVerification: null,
+        }),
+      }
+    : {
+        contractVersion: "1" as const,
+        domain: "token_selection" as const,
+        operationId,
+        kind: options.kind,
+        createdAt,
+        actionExpiresAt: "2026-07-18T00:05:03.000Z",
+        target: { asset: completedSelection.asset },
+        decision: { action: "remove_selection" as const },
+        precondition: {
+          account: completedSelection.account,
+          connectionRevision: "1",
+          previousSelection,
+          selectionSetRevision,
+        },
+        fixedEvidence: {},
+      };
+  const review = parseTokenSelectionReview({
+    ...reviewBase,
+    reviewDigest: tokenSelectionReviewDigest(reviewBase),
+  });
+  return parseTokenCatalogOperation({
+    contractVersion: "1",
+    domain: "token_selection",
+    operationId,
     kind: options.kind,
-    state: options.state,
-    interactionInterface: options.interactionInterface ?? "web",
-    createdAt,
-    expiresAt: "2026-07-18T00:05:03.000Z",
-    account: completedSelection.account,
-    connectionRevision: "1",
-    asset: completedSelection.asset,
-    review: {
-      previousSelection,
-      selectionSetRevision: Buffer.alloc(16, 3).toString("base64url"),
-      inspection: options.kind === "add" ? inspection : null,
-      inspectionDigest: options.kind === "add"
-        ? tokenInspectionDigest(inspection)
-        : null,
-      officialSnapshotRevision: options.kind === "add"
-        ? Buffer.alloc(16, 4).toString("base64url")
-        : null,
-      officialEvidence: null,
-      reviewDigest: `0x${"ef".repeat(32)}`,
+    initiatedBy: options.initiatedBy ?? "mcp_app",
+    review,
+    state: "completed",
+    completedAt,
+    result: {
+      outcome: options.kind === "add" ? "selection_added" : "selection_removed",
+      selectionSetRevision: Buffer.alloc(16, 5).toString("base64url"),
+      selection: {
+        selection: completedSelection,
+        historicalInspection: inspection,
+      },
     },
-    result: options.state === "completed"
-      ? { selection: completedSelection, historicalInspection: inspection }
-      : null,
-    failure: options.state === "failed"
-      ? new TokenCatalogOperationError("state_conflict").failure
-      : null,
   });
 };

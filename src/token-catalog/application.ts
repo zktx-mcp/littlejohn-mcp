@@ -11,7 +11,6 @@ import type {
   TokenCatalogApplicationPort,
   TokenCatalogOperationCoordinatorPort,
 } from "./ports.js";
-import type { TokenCatalogInteractionInterface } from "./state.js";
 
 const invalidInput = (): ApplicationFailure => new TokenCatalogOperationError("invalid_input").failure;
 const internalFailure = (): ApplicationFailure => new TokenCatalogOperationError("internal_error").failure;
@@ -39,15 +38,6 @@ const requireAccountAsset = (
 
 const sameAccount = (left: EvmAccountIdentity, right: EvmAccountIdentity): boolean =>
   left.chainId === right.chainId && left.address === right.address;
-
-const requireInteractionInterface = <Result extends Readonly<{
-  operation: Readonly<{ interactionInterface: TokenCatalogInteractionInterface }>;
-}>>(interactionInterface: TokenCatalogInteractionInterface, result: Result): Result => {
-  if (result.operation.interactionInterface !== interactionInterface) {
-    throw new TokenCatalogOperationError("internal_error");
-  }
-  return result;
-};
 
 export const createTokenCatalogApplication = (input: Readonly<{
   dependencies: TokenCatalogApplicationDependencies;
@@ -91,32 +81,28 @@ export const createTokenCatalogApplication = (input: Readonly<{
       }
     },
 
-    async startAddition(inputValue, control) {
-      const contract = tokenCatalogApplicationContracts.startAddition;
+    async review(inputValue) {
+      const contract = tokenCatalogApplicationContracts.selectionChangeReview;
       let request;
       try { request = contract.parseInput(inputValue); }
       catch { return contract.parseFailure(invalidInput()); }
       try {
-        const result = await input.operations.startAddition(request, control);
-        if ("ok" in result && result.ok === false) return normalizedFailure(contract, result);
-        return requireInteractionInterface(
-          control.interactionInterface,
-          contract.parseBoundSuccess(request, control, result),
-        );
+        const reviewed = await input.operations.review(request);
+        return contract.parsePublicSuccess(request, reviewed);
       } catch (error) { return normalizedFailure(contract, error); }
     },
 
-    async startRemoval(inputValue, control) {
-      const contract = tokenCatalogApplicationContracts.startRemoval;
+    async decide(inputValue) {
+      const contract = inputValue.review.kind === "add"
+        ? tokenCatalogApplicationContracts.addSelection
+        : tokenCatalogApplicationContracts.removeSelection;
       let request;
-      try { request = contract.parseInput(inputValue); }
+      try { request = contract.parseInput(inputValue as never); }
       catch { return contract.parseFailure(invalidInput()); }
       try {
-        const result = await input.operations.startRemoval(request, control);
-        if ("ok" in result && result.ok === false) return normalizedFailure(contract, result);
-        return requireInteractionInterface(
-          control.interactionInterface,
-          contract.parseBoundSuccess(request, control, result),
+        return contract.parsePublicSuccess(
+          request as never,
+          await input.operations.decide(request) as never,
         );
       } catch (error) { return normalizedFailure(contract, error); }
     },
@@ -127,21 +113,10 @@ export const createTokenCatalogApplication = (input: Readonly<{
       try { request = contract.parseInput(inputValue); }
       catch { return contract.parseFailure(invalidInput()); }
       try {
-        return contract.parsePublicSuccess(request, {
-          operation: input.operations.getOperation(request.operationId),
-        });
-      } catch (error) { return normalizedFailure(contract, error); }
-    },
-
-    async cancelOperation(inputValue) {
-      const contract = tokenCatalogApplicationContracts.cancelOperation;
-      let request;
-      try { request = contract.parseInput(inputValue); }
-      catch { return contract.parseFailure(invalidInput()); }
-      try {
-        return contract.parsePublicSuccess(request, {
-          operation: await input.operations.cancel(request.operationId),
-        });
+        return contract.parsePublicSuccess(
+          request,
+          input.operations.getOperation(request.operationId),
+        );
       } catch (error) { return normalizedFailure(contract, error); }
     },
   };

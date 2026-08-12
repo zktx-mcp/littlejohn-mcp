@@ -14,19 +14,30 @@ import {
   type ReferencePriceSuccess,
   type ReferenceWatchlistSuccess,
   type WalletConnectionData,
-} from "../../../core/browser.js";
+} from "../../../core/client.js";
 import {
   officialSnapshotStatusText,
   projectAccountAssetCollectionView,
   tokenOptionalTextUnavailableReasonLabel,
   type AccountAssetCollectionSuccess,
-} from "../../../account-assets/browser.js";
+} from "../../../account-assets/client.js";
 import {
   tokenInspectCapability,
+  type TokenCatalogOperation,
   type TokenInspectionSuccess,
   type TokenSelectionDetail,
   type TokenSelectionListResult,
-} from "../../../token-catalog/browser.js";
+  type TokenSelectionReviewResult,
+} from "../../../token-catalog/client.js";
+import type {
+  ReferenceWatchlistOperation,
+  ReferenceWatchlistReviewResult,
+} from "../../../market-portfolio/contracts.js";
+import type {
+  WalletManagementOperation,
+  WalletQrMatrix,
+  WalletReviewResult,
+} from "../../../wallet/contracts.js";
 import {
   presentationContractRegistry,
   presentationContracts,
@@ -228,6 +239,29 @@ const walletReasonLabels = Object.freeze({
   no_session: "No wallet session is connected.",
   expired: "The wallet session expired.",
   disconnected: "The wallet session was disconnected.",
+} as const);
+
+const walletOperationStateLabels = Object.freeze({
+  starting_connection: "Starting connection",
+  awaiting_wallet_approval: "Waiting for approval in the external wallet",
+  validating_session: "Validating the approved wallet session",
+  cancelling: "Cancelling the connection attempt",
+  disconnecting: "Disconnecting the wallet session",
+  completed: "Completed",
+  cancelled: "Cancelled",
+  rejected: "Rejected by the external wallet",
+  expired: "Expired",
+  failed: "Failed",
+} as const);
+
+const decisionProvenanceLabels = Object.freeze({
+  cli: "CLI",
+  mcp_app: "MCP App",
+} as const);
+
+const tokenReviewWarningLabels = Object.freeze({
+  decimals_unavailable: "Token decimals were unavailable during the fixed inspection.",
+  partial_result: "The fixed token inspection was partial.",
 } as const);
 
 const tokenStandardStatusLabels = Object.freeze({
@@ -527,6 +561,175 @@ const renderWalletConnection = (result: WalletConnectionResult): DocumentFragmen
   return output;
 };
 
+const walletReviewFields = (value: WalletReviewResult): readonly SummaryField[] => {
+  if (value.status === "current_connection") {
+    return [
+      ["Result", "The wallet is already connected."],
+      ["Account", value.connection.address],
+      ["Chain", value.connection.chainId],
+      ["Connection revision", value.connectionRevision],
+    ];
+  }
+  if (value.status === "already_disconnected") {
+    return [
+      ["Result", "The wallet is already disconnected."],
+      ["Reason", walletReasonLabels[value.connection.reason]],
+      ["Connection revision", value.connectionRevision],
+    ];
+  }
+  const review = value.review;
+  return [
+    ["Action", review.kind === "connect" ? "Connect the external wallet" : "Disconnect the external wallet"],
+    ["Chain", review.target.chainId],
+    ["Current state", walletStatusLabels[review.precondition.connection.status]],
+    ["Connection revision", review.precondition.connectionRevision],
+    ["Action deadline", review.actionExpiresAt],
+    ["Operation ID", review.operationId],
+    ...(review.kind === "connect"
+      ? [
+          ["Required request", review.decision.requiredMethods.join(", ")],
+          ["Required events", review.decision.requiredEvents.join(", ")],
+        ] satisfies SummaryField[]
+      : [
+          ["Account", review.precondition.connection.address],
+          ["Session expires", review.precondition.connection.expiresAt],
+        ] satisfies SummaryField[]),
+  ];
+};
+
+const renderWalletReview = (value: WalletReviewResult): DocumentFragment => {
+  const output = document.createDocumentFragment();
+  output.append(summary(walletReviewFields(value)));
+  return output;
+};
+
+const renderTokenSelectionReview = (value: TokenSelectionReviewResult): DocumentFragment => {
+  const review = value.review;
+  const previous = review.precondition.previousSelection;
+  const output = document.createDocumentFragment();
+  output.append(summary([
+    ["Action", review.kind === "add" ? "Add this token selection" : "Remove this token selection"],
+    ["Account", review.precondition.account.address],
+    ["Token", review.target.asset.address],
+    ["Current selection", previous?.included === true ? "Included" : "Not included"],
+    ["Current revision", previous?.revision ?? "None"],
+    ["Action deadline", review.actionExpiresAt],
+    ["Operation ID", review.operationId],
+    ...(review.kind === "add"
+      ? [
+          ["Name", review.decision.name.status === "available"
+            ? review.decision.name.value
+            : `Unavailable: token name ${tokenOptionalTextUnavailableReasonLabel(review.decision.name.reason)}`],
+          ["Symbol", review.decision.symbol.status === "available"
+            ? review.decision.symbol.value
+            : `Unavailable: token symbol ${tokenOptionalTextUnavailableReasonLabel(review.decision.symbol.reason)}`],
+          ["Official classification", review.decision.officialClassification === "official"
+            ? "Verified official asset"
+            : "Not listed in the fixed official snapshot"],
+        ] satisfies SummaryField[]
+      : []),
+  ]));
+  if (review.kind === "add") {
+    appendWarnings(output, review.decision.warningCodes.map((code) => tokenReviewWarningLabels[code]));
+  }
+  return output;
+};
+
+const watchlistDecisionLabel = (
+  kind: ReferenceWatchlistReviewResult["review"]["kind"],
+): string => kind === "add"
+  ? "Add this reference pair"
+  : kind === "remove"
+    ? "Remove this reference pair"
+    : "Use this reference-pair order";
+
+const renderReferenceWatchlistReview = (
+  value: ReferenceWatchlistReviewResult,
+): DocumentFragment => {
+  const review = value.review;
+  const target = review.kind === "reorder"
+    ? review.target.entries.map((entry) => entry.label).join(" → ")
+    : `${review.target.pair.label} · ${review.target.pair.pairId}`;
+  const output = document.createDocumentFragment();
+  output.append(summary([
+    ["Action", watchlistDecisionLabel(review.kind)],
+    ["Account", review.precondition.account.address],
+    ["Target", target],
+    ["Current revision", review.precondition.watchlistRevision],
+    ["Current pairs", String(review.precondition.currentEntries.length)],
+    ["Action deadline", review.actionExpiresAt],
+    ["Operation ID", review.operationId],
+  ]));
+  return output;
+};
+
+const renderWalletOperation = (operation: WalletManagementOperation): DocumentFragment => {
+  const output = document.createDocumentFragment();
+  const fields: SummaryField[] = [
+    ["Operation ID", operation.operationId],
+    ["Decision", operation.kind === "connect" ? "Connect wallet" : "Disconnect wallet"],
+    ["Status", walletOperationStateLabels[operation.state]],
+    ["Decision interface", decisionProvenanceLabels[operation.initiatedBy]],
+    ["Action deadline", operation.review.actionExpiresAt],
+  ];
+  if (operation.state === "completed" && operation.result !== null) {
+    fields.push(
+      ["Outcome", operation.kind === "connect" ? "Wallet connected" : "Wallet disconnected"],
+      ["Connection revision", operation.result.connectionRevision],
+    );
+    if (operation.result.connection.status === "connected") {
+      fields.push(
+        ["Account", operation.result.connection.address],
+        ["Chain", operation.result.connection.chainId],
+      );
+    }
+  } else if (operation.state === "rejected") {
+    fields.push(["Outcome", `The external wallet rejected the request (code ${operation.peerRefusalCode}).`]);
+  } else if (operation.state === "cancelled") {
+    fields.push(["Outcome", "The connection attempt was cancelled."]);
+  } else if (operation.state === "expired") {
+    fields.push(["Outcome", "The connection attempt expired."]);
+  } else if (operation.state === "failed" && operation.failure !== null) {
+    fields.push(["Failure", operation.failure.error.message]);
+  }
+  output.append(summary(fields));
+  return output;
+};
+
+const renderTokenSelectionOperation = (operation: TokenCatalogOperation): DocumentFragment => {
+  const selection = operation.result.selection.selection;
+  const output = document.createDocumentFragment();
+  output.append(summary([
+    ["Operation ID", operation.operationId],
+    ["Decision", operation.kind === "add" ? "Add token selection" : "Remove token selection"],
+    ["Status", "Completed"],
+    ["Decision interface", decisionProvenanceLabels[operation.initiatedBy]],
+    ["Account", selection.account.address],
+    ["Token", selection.asset.address],
+    ["Included", selection.included ? "Yes" : "No"],
+    ["Selection revision", selection.revision],
+    ["Completed at", operation.completedAt],
+  ]));
+  return output;
+};
+
+const renderReferenceWatchlistOperation = (
+  operation: ReferenceWatchlistOperation,
+): DocumentFragment => {
+  const output = document.createDocumentFragment();
+  output.append(summary([
+    ["Operation ID", operation.operationId],
+    ["Decision", watchlistDecisionLabel(operation.kind)],
+    ["Status", "Completed"],
+    ["Decision interface", decisionProvenanceLabels[operation.initiatedBy]],
+    ["Account", operation.result.watchlist.account.address],
+    ["Pairs", String(operation.result.watchlist.entries.length)],
+    ["Watchlist revision", operation.result.watchlist.revision],
+    ["Completed at", operation.completedAt],
+  ]));
+  return output;
+};
+
 interface PresentationRendererBinding {
   readonly entry: PresentationContractEntry;
   render(value: CanonicalJson): DocumentFragment;
@@ -546,10 +749,16 @@ const rendererBindings = Object.freeze([
   bindRenderer(presentationContracts.referenceHistory, renderReferenceHistory),
   bindRenderer(presentationContracts.referencePrice, renderReferencePrice),
   bindRenderer(presentationContracts.referenceWatchlist, renderWatchlist),
+  bindRenderer(presentationContracts.referenceWatchlistOperation, renderReferenceWatchlistOperation),
+  bindRenderer(presentationContracts.referenceWatchlistReview, renderReferenceWatchlistReview),
   bindRenderer(presentationContracts.tokenAnalysis, renderTokenInspection),
   bindRenderer(presentationContracts.tokenSelection, renderTokenSelection),
+  bindRenderer(presentationContracts.tokenSelectionOperation, renderTokenSelectionOperation),
+  bindRenderer(presentationContracts.tokenSelectionReview, renderTokenSelectionReview),
   bindRenderer(presentationContracts.tokenSelections, renderTokenSelections),
   bindRenderer(presentationContracts.walletConnection, renderWalletConnection),
+  bindRenderer(presentationContracts.walletOperation, renderWalletOperation),
+  bindRenderer(presentationContracts.walletReview, renderWalletReview),
 ]);
 
 const renderByEntry = new Map<PresentationContractEntry, PresentationRendererBinding["render"]>();
@@ -562,16 +771,160 @@ if (
   presentationContractRegistry.values().some((entry) => !renderByEntry.has(entry))
 ) throw new TypeError("Presentation renderer registry coverage is incomplete.");
 
+const operationRegion = (content: Node): HTMLElement => {
+  const region = element("section", "operation-region");
+  region.setAttribute("aria-live", "polite");
+  region.append(content);
+  return region;
+};
+
+export const replaceOperationRegion = (article: HTMLElement, content: Node): void => {
+  const current = article.querySelector<HTMLElement>(".operation-region");
+  if (current === null) throw new TypeError("Review operation region is unavailable.");
+  current.replaceWith(operationRegion(content));
+};
+
+export interface RenderedReviewControls {
+  readonly node: HTMLElement;
+  readonly accept: HTMLButtonElement;
+  readonly dismiss: HTMLButtonElement;
+}
+
+export const renderReviewControls = (
+  acceptLabel: string,
+  destructive: boolean,
+  actionExpiresAt: string,
+): RenderedReviewControls => {
+  const group = element("div", "decision-group");
+  group.append(
+    element("h2", "section-title", "Choose an action"),
+    element("p", "deadline-copy", `Available until ${actionExpiresAt}`),
+  );
+  const controls = element("div", "action-row");
+  const accept = element("button", destructive ? "action destructive" : "action primary", acceptLabel);
+  accept.type = "button";
+  const dismiss = element("button", "action secondary", "Dismiss");
+  dismiss.type = "button";
+  controls.append(accept, dismiss);
+  group.append(controls);
+  return Object.freeze({ node: group, accept, dismiss });
+};
+
+export const renderOperationMessage = (
+  title: string,
+  message: string,
+  status: "pending" | "unavailable" | "error" = "pending",
+): HTMLElement => {
+  const region = element("div", `operation-message status-${status}`);
+  region.append(
+    element("h2", "section-title", title),
+    element("p", "status-copy", message),
+  );
+  return region;
+};
+
+export interface RenderedExactReadFailure {
+  readonly node: HTMLElement;
+  readonly retry: HTMLButtonElement;
+}
+
+export const renderExactReadFailure = (message: string): RenderedExactReadFailure => {
+  const region = renderOperationMessage(
+    "Operation unavailable",
+    message,
+    "error",
+  );
+  const retry = element("button", "action secondary", "Read exact operation again");
+  retry.type = "button";
+  region.append(retry);
+  return Object.freeze({ node: region, retry });
+};
+
+const renderQr = (matrix: WalletQrMatrix, actionExpiresAt: string): HTMLElement => {
+  const region = element("section", "qr-region");
+  region.append(
+    element("h3", "section-title", "Approve in the external wallet"),
+    element("p", "qr-instruction", "Scan this code with the external wallet while this connection attempt is active."),
+    element("p", "deadline-copy", `Server deadline: ${actionExpiresAt}`),
+  );
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "qr-matrix");
+  svg.setAttribute("viewBox", `-4 -4 ${matrix.size + 8} ${matrix.size + 8}`);
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "Active WalletConnect pairing code");
+  const background = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  background.setAttribute("class", "qr-background");
+  background.setAttribute("x", "-4");
+  background.setAttribute("y", "-4");
+  background.setAttribute("width", String(matrix.size + 8));
+  background.setAttribute("height", String(matrix.size + 8));
+  svg.append(background);
+  for (const [rowIndex, row] of matrix.rows.entries()) {
+    for (let columnIndex = 0; columnIndex < row.length; columnIndex += 1) {
+      if (row[columnIndex] !== "1") continue;
+      const module = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      module.setAttribute("class", "qr-module");
+      module.setAttribute("x", String(columnIndex));
+      module.setAttribute("y", String(rowIndex));
+      module.setAttribute("width", "1");
+      module.setAttribute("height", "1");
+      svg.append(module);
+    }
+  }
+  region.append(svg);
+  return region;
+};
+
+export interface RenderedOperation {
+  readonly node: HTMLElement;
+  readonly cancel?: HTMLButtonElement;
+}
+
+export const renderOperation = (
+  entry: PresentationContractEntry,
+  result: CanonicalJson,
+  options: Readonly<{ qr?: WalletQrMatrix; cancellable?: boolean }> = {},
+): RenderedOperation => {
+  if (entry.presentationKind !== "operation") {
+    throw new TypeError("Presentation entry is not an operation.");
+  }
+  const renderer = renderByEntry.get(entry);
+  if (renderer === undefined) throw new TypeError("Operation renderer is not registered.");
+  const region = element("div", "operation-result");
+  region.append(element("h2", "section-title", "Operation"), renderer(result));
+  if (options.qr !== undefined) {
+    const operation = result as unknown as WalletManagementOperation;
+    region.append(renderQr(options.qr, operation.review.actionExpiresAt));
+  }
+  if (options.cancellable !== true) return Object.freeze({ node: region });
+  const cancel = element("button", "action secondary", "Cancel connection attempt");
+  cancel.type = "button";
+  region.append(cancel);
+  return Object.freeze({ node: region, cancel });
+};
+
 export const renderPresentation = (
   entry: PresentationContractEntry,
   result: CanonicalJson,
 ): HTMLElement => {
+  if (entry.presentationKind === "operation") {
+    throw new TypeError("An operation cannot create a top-level presentation.");
+  }
   const article = element("article", "card");
   const header = element("header", "card-header");
-  header.append(element("p", "eyebrow", "Immutable result"), element("h1", "title", entry.title));
+  header.append(
+    element("p", "eyebrow", entry.presentationKind === "review" ? "Decision" : "Immutable result"),
+    element("h1", "title", entry.title),
+  );
   const renderer = renderByEntry.get(entry);
   if (renderer === undefined) throw new TypeError("Presentation renderer is not registered.");
   article.append(header, renderer(result));
+  if (entry.presentationKind === "review") {
+    article.append(operationRegion(renderOperationMessage(
+      "Operation",
+      "Little John is reading the reserved operation ID.",
+    )));
+  }
   return article;
 };
 

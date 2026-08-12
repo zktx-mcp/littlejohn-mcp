@@ -1,4 +1,5 @@
 import {
+  admitApplicationInput,
   captureCanonicalJson,
   type ApplicationFailure,
 } from "../core/index.js";
@@ -22,16 +23,10 @@ import {
   type InterfaceInvocationResult,
   type RuntimeDispatchPort,
 } from "./http-client.js";
-import { referenceMarketPublicRoutes } from "./browser-contract.js";
-import { browserCapabilityBindings } from "./browser-capability-bindings.js";
 import {
-  referenceMarketLocalMutationPaths,
+  referenceMarketInterfaceBindings,
   type ReferenceMarketInterfaceBinding,
 } from "./identities.js";
-import {
-  referenceMarketDeliveryActions,
-  type ReferenceMarketDeliveryAction,
-} from "./reference-market-delivery.js";
 
 const success = (body: unknown): RouteResult => ({ ok: true, body: captureCanonicalJson(body) });
 const failure = (value: ApplicationFailure): RouteResult => ({ ok: false, failure: value });
@@ -45,9 +40,9 @@ export const dispatchReferenceMarketRead = async (
   if (binding.action !== "price" && binding.action !== "history" && binding.action !== "watchlist") {
     throw new TypeError("Reference market binding is not a read.");
   }
-  let input: unknown;
-  try { input = binding.contract.parseInput(value); }
-  catch { return { ok: false, failure: createReferenceMarketFailure("invalid_input") }; }
+  const admission = admitApplicationInput(binding.contract, value);
+  if (!admission.ok) return admission;
+  const input = admission.value;
   const result = constrainInterfaceFailure(await dispatchCanonical(runtime, {
     requestClass: "public_read",
     method: binding.http.method,
@@ -86,83 +81,38 @@ const readRoute = <Input, Success>(input: Readonly<{
   method: "POST",
   mutation: "none",
   pathPattern: input.path,
-  query: "none",
-  response: "canonical_json",
   successStatus: 200,
   handler: async (context: RouteContext) => {
-    let request: Input;
-    try { request = input.contract.parseInput(context.body); }
-    catch { return failure(createReferenceMarketFailure("invalid_input")); }
-    const result = await input.invoke(request, context.signal);
-    return referenceMarketApplicationResult(input.contract, request, result);
+    const admission = admitApplicationInput(input.contract, context.body);
+    if (!admission.ok) return failure(admission.failure);
+    const result = await input.invoke(admission.value, context.signal);
+    return referenceMarketApplicationResult(input.contract, admission.value, result);
   },
-});
-
-const mutationRoute = <Input, Success>(input: Readonly<{
-  path: string;
-  contract: ReferenceMarketApplicationContract<Input, Success>;
-  invoke(request: Input, signal: AbortSignal): Promise<Success | ApplicationFailure>;
-}>): RouteDefinition => Object.freeze({
-  ...readRoute(input),
-  mutation: "declared_control",
 });
 
 const publicReadDefinitions = (application: ReferenceMarketApplicationPort): readonly RouteDefinition[] =>
   Object.freeze([
     readRoute({
-      path: referenceMarketPublicRoutes.priceQueries,
-      contract: browserCapabilityBindings.referencePrice.contract,
+      path: referenceMarketInterfaceBindings.price.http.path,
+      contract: referenceMarketInterfaceBindings.price.contract,
       invoke: (request, signal) => application.price(request, signal),
     }),
     readRoute({
-      path: referenceMarketPublicRoutes.historyQueries,
-      contract: browserCapabilityBindings.referenceHistory.contract,
+      path: referenceMarketInterfaceBindings.history.http.path,
+      contract: referenceMarketInterfaceBindings.history.contract,
       invoke: (request, signal) => application.history(request, signal),
     }),
     readRoute({
-      path: referenceMarketPublicRoutes.watchlistQueries,
+      path: referenceMarketInterfaceBindings.watchlist.http.path,
       contract: referenceMarketApplicationContracts.watchlist,
       invoke: (request, signal) => application.watchlist(request, signal),
     }),
   ]);
 
-const controlDefinition = (
-  application: ReferenceMarketApplicationPort,
-  paths: Readonly<Record<ReferenceMarketDeliveryAction, string>>,
-  action: ReferenceMarketDeliveryAction,
-): RouteDefinition => {
-  switch (action) {
-    case "add":
-      return mutationRoute({
-        path: paths.add,
-        contract: referenceMarketApplicationContracts.add,
-        invoke: (request, signal) => application.addPair(request, signal),
-      });
-    case "remove":
-      return mutationRoute({
-        path: paths.remove,
-        contract: referenceMarketApplicationContracts.remove,
-        invoke: (request, signal) => application.removePair(request, signal),
-      });
-    case "reorder":
-      return mutationRoute({
-        path: paths.reorder,
-        contract: referenceMarketApplicationContracts.reorder,
-        invoke: (request, signal) => application.reorderPairs(request, signal),
-      });
-  }
-};
-
-const controlDefinitions = (
-  application: ReferenceMarketApplicationPort,
-  paths: Readonly<Record<ReferenceMarketDeliveryAction, string>>,
-): readonly RouteDefinition[] => Object.freeze(referenceMarketDeliveryActions.map((action) =>
-  controlDefinition(application, paths, action)));
-
 export const extendReferenceMarketInterfaceRoutes = (input: Readonly<{
   routes: RuntimeRouteRegistry;
   referenceMarkets: ReferenceMarketApplicationPort;
-}>): RuntimeRouteRegistry => input.routes.extend([
-  ...publicReadDefinitions(input.referenceMarkets),
-  ...controlDefinitions(input.referenceMarkets, referenceMarketLocalMutationPaths),
-], referenceMarketInterfaceErrorMappings);
+}>): RuntimeRouteRegistry => input.routes.extend(
+  publicReadDefinitions(input.referenceMarkets),
+  referenceMarketInterfaceErrorMappings,
+);

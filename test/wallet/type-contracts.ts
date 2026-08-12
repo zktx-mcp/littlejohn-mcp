@@ -1,14 +1,11 @@
 import type {
-  WalletCurrentOperationProjection,
   WalletManagementOperation,
   WalletOperationFailure,
-  WalletOperationOutcome,
-  WalletOperationOutcomeForKind,
-  WalletOperationPresentation,
   WalletOperationResult,
+  WalletOperationPresentation,
 } from "../../src/wallet/contracts.js";
 import type {
-  WalletInteractionInterface,
+  WalletInitiator,
   WalletNonterminalOperationState,
 } from "../../src/wallet/operation-state.js";
 
@@ -39,38 +36,22 @@ type _DisconnectNeverCancelsAttempt = Assert<Equal<
   Extract<WalletManagementOperation, { readonly kind: "disconnect"; readonly state: "cancelling" }>,
   never
 >>;
-type _InteractionInterface = Assert<Equal<WalletInteractionInterface, "cli" | "web">>;
-type _ConnectOutcome = Assert<Equal<WalletOperationOutcomeForKind<"connect">, "connected">>;
-type _DisconnectOutcome = Assert<Equal<
-  WalletOperationOutcomeForKind<"disconnect">,
-  "disconnected" | "already_disconnected"
->>;
-type _OperationOutcome = Assert<Equal<
-  WalletOperationOutcome,
-  "connected" | "disconnected" | "already_disconnected"
->>;
-type CurrentOperation = Extract<
-  WalletCurrentOperationProjection,
-  { readonly status: "present" }
->["presentation"]["operation"];
-type _CurrentOperationStates = Assert<
-  Equal<CurrentOperation["state"], WalletNonterminalOperationState>
+type _Initiator = Assert<Equal<WalletInitiator, "cli" | "mcp_app">>;
+type ActivePresentation = Extract<
+  WalletOperationPresentation["operation"],
+  { readonly state: WalletNonterminalOperationState }
 >;
-type _CurrentOperationRejectsTerminalStates = Assert<Equal<
-  Extract<CurrentOperation, {
+type _PresentationKeepsAllActiveStates = Assert<Equal<
+  ActivePresentation,
+  Extract<WalletManagementOperation, { readonly state: WalletNonterminalOperationState }>
+>>;
+type _PresentationKeepsTerminalStates = Assert<Equal<
+  Extract<WalletOperationPresentation["operation"], {
     readonly state: "completed" | "cancelled" | "rejected" | "failed" | "expired";
   }>,
-  never
->>;
-type _RetainedOperationKeepsTerminalStates = Assert<Equal<
-  Extract<
-    WalletOperationPresentation["operation"],
-    { readonly state: "completed" | "cancelled" | "rejected" | "failed" | "expired" }
-  >,
-  Extract<
-    WalletManagementOperation,
-    { readonly state: "completed" | "cancelled" | "rejected" | "failed" | "expired" }
-  >
+  Extract<WalletManagementOperation, {
+    readonly state: "completed" | "cancelled" | "rejected" | "failed" | "expired";
+  }>
 >>;
 
 const consumeNarrowedOperation = (operation: WalletManagementOperation): void => {
@@ -104,12 +85,8 @@ export type WalletOperationTypeContracts =
   | _DisconnectRejected
   | _ConnectNeverDisconnects
   | _DisconnectNeverCancelsAttempt
-  | _InteractionInterface
-  | _ConnectOutcome
-  | _DisconnectOutcome
-  | _OperationOutcome
-  | _CurrentOperationStates
-  | _CurrentOperationRejectsTerminalStates
-  | _RetainedOperationKeepsTerminalStates;
+  | _Initiator
+  | _PresentationKeepsAllActiveStates
+  | _PresentationKeepsTerminalStates;
 
 export { consumeNarrowedOperation };

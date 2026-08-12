@@ -18,9 +18,7 @@ import {
 } from "./canonical-json.js";
 import {
   createEvidenceSchemaSet,
-  createFieldIssue,
   type EvidenceSource,
-  type FieldIssue,
   type InvocationId,
   type ObservationId,
   type SourceClass,
@@ -46,6 +44,7 @@ import {
 import {
   assertApplicationErrorRegistry,
   createApplicationFailure,
+  fieldIssuesFromInputError,
   type ApplicationErrorRegistry,
   type ApplicationFailure,
 } from "./errors.js";
@@ -115,14 +114,6 @@ const issuePathBelongsToInput = (path: string, input: unknown): boolean => {
   }
   return true;
 };
-
-const zodIssues = (error: z.ZodError): FieldIssue[] =>
-  error.issues
-    .map((issue) => createFieldIssue("invalid_value", pathToJsonPointer(issue.path)))
-    .sort((left, right) => {
-      const pathOrder = compareCodePointSequences(left.path, right.path);
-      return pathOrder === 0 ? compareCodePointSequences(left.code, right.code) : pathOrder;
-    });
 
 const handlerEnvelopeSchema = z.discriminatedUnion("status", [
   jsonObject({
@@ -500,7 +491,7 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
     return createApplicationFailure(
       record.errorRegistry,
       "invalid_input",
-      zodIssues(parsedInput.error),
+      fieldIssuesFromInputError(parsedInput.error),
     );
   }
   const validatedInput = deepFreezeValue(parsedInput.data) as CapabilityInput<Definition>;

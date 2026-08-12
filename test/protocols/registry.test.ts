@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { parseEvmAddressInput } from "../../src/core/browser.js";
+import { parseEvmAddressInput } from "../../src/core/client.js";
 import {
   protocolFamilyDescriptorSchema,
   protocolPackageDescriptorSchema,
   ProtocolRegistry,
   type ProtocolFamilyDescriptor,
   type ProtocolPackageDescriptor,
-} from "../../src/protocols/browser.js";
+} from "../../src/protocols/client.js";
 import {
   createProtocolRegistrySupportExtension,
   readProtocolSupportExtension,
@@ -18,7 +18,7 @@ import {
   uniswapV2DeploymentSourceId,
   uniswapV2PackageDescriptor,
   uniswapV2QuoteCapabilityId,
-} from "../../src/protocols/uniswap-v2/browser.js";
+} from "../../src/protocols/uniswap-v2/client.js";
 
 const family = (
   familyId: string,
@@ -73,7 +73,6 @@ const internalAvailability = Object.freeze({
   http: "unavailable" as const,
   mcp: "unavailable" as const,
   cli: "unavailable" as const,
-  web: "unavailable" as const,
 });
 
 describe("protocol registration contracts", () => {

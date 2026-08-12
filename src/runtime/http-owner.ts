@@ -16,7 +16,6 @@ import {
   type CanonicalJson,
   type UtcTimestamp,
 } from "../core/index.js";
-import { browserCsrfHeaderName } from "../interfaces/browser-contract.js";
 import {
   createControlAuthorizationHeader,
   createControlCredentialVerifier,
@@ -33,10 +32,6 @@ import {
 } from "./errors.js";
 import type { RuntimeApplicationContext } from "./application-context.js";
 import {
-  browserContentSecurityPolicy,
-  browserContentTypeOptions,
-  browserCrossOriginOpenerPolicy,
-  browserReferrerPolicy,
   fixedHost,
   fixedHostHeader,
   fixedPort,
@@ -49,7 +44,6 @@ import {
   requestBodyLimitBytes,
   routeMethods,
   runtimeIdentityPath,
-  type BrowserContentType,
   type RequestTarget,
   type RuntimeHttpRequest,
 } from "./http-boundary.js";
@@ -104,8 +98,6 @@ const headerValues = (request: IncomingMessage, name: string): string[] => {
   return Array.isArray(value) ? value : [value];
 };
 
-const browserCsrfHeaderKey = browserCsrfHeaderName.toLowerCase();
-
 const writeJson = (
   response: ServerResponse,
   status: number,
@@ -134,31 +126,6 @@ const writeFailure = (
     ? toProblemDetails(failure, runtimeInterfaceErrorMappings)
     : routes.toProblemDetails(failure);
   writeJson(response, problem.status, problem as unknown as CanonicalJson);
-};
-
-const writeBrowserContent = (
-  response: ServerResponse,
-  status: number,
-  body: string,
-  contentType: BrowserContentType,
-  maximumBytes: number,
-  setCookie?: string,
-): void => {
-  if (response.destroyed || response.writableEnded) return;
-  const length = Buffer.byteLength(body);
-  if (length > maximumBytes) throw new Error("HTTP response exceeds its size limit.");
-  const headers: Record<string, string> = {
-    "Content-Type": contentType,
-    "Content-Length": String(length),
-    "Cache-Control": noStoreCacheControl,
-    "Content-Security-Policy": browserContentSecurityPolicy,
-    "X-Content-Type-Options": browserContentTypeOptions,
-    "Referrer-Policy": browserReferrerPolicy,
-    "Cross-Origin-Opener-Policy": browserCrossOriginOpenerPolicy,
-  };
-  if (setCookie !== undefined) headers["Set-Cookie"] = setCookie;
-  response.writeHead(status, headers);
-  response.end(body);
 };
 
 const readBodySize = (request: IncomingMessage): number => {
@@ -1275,10 +1242,8 @@ export class FixedHttpOwner {
       origin: headerValues(request, "origin"),
       authorization: headerValues(request, "authorization"),
       cookie: headerValues(request, "cookie"),
-      csrfToken: headerValues(request, browserCsrfHeaderKey),
       contentType: headerValues(request, "content-type"),
       query: target.query,
-      queryMode: "none",
       bodyLength: readBodySize(request),
       acceptsBody: false,
     });
@@ -1334,7 +1299,6 @@ export class FixedHttpOwner {
         origin: headerValues(request, "origin"),
         authorization: headerValues(request, "authorization"),
         cookie: headerValues(request, "cookie"),
-        csrfToken: headerValues(request, browserCsrfHeaderKey),
       });
       if (!classSecurity.ok) return writeFailure(response, classSecurity.code, this.#routes);
       response.setHeader("Allow", match.allow.join(", "));
@@ -1345,7 +1309,6 @@ export class FixedHttpOwner {
       origin: headerValues(request, "origin"),
       authorization: headerValues(request, "authorization"),
       cookie: headerValues(request, "cookie"),
-      csrfToken: headerValues(request, browserCsrfHeaderKey),
       contentType: headerValues(request, "content-type"),
       query: target.query,
       bodyLength,
@@ -1381,17 +1344,6 @@ export class FixedHttpOwner {
     if (!result.ok) {
       return writeJson(response, result.problem.status, result.problem as unknown as CanonicalJson);
     }
-    if (result.response === "canonical_json") {
-      writeJson(response, match.route.successStatus, result.body, match.route.responseLimitBytes);
-    } else {
-      writeBrowserContent(
-        response,
-        match.route.successStatus,
-        result.body,
-        result.contentType,
-        match.route.responseLimitBytes,
-        result.setCookie,
-      );
-    }
+    writeJson(response, match.route.successStatus, result.body, match.route.responseLimitBytes);
   }
 }

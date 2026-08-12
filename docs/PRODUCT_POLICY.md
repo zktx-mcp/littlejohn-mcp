@@ -109,10 +109,10 @@ Canonical source: `defaultStockTokenManifest` for `eip155:4663`.
   Supported conclusions: `factory_address_at_source_revision`, `pair_init_code_hash_at_source_revision`.
   Unsupported conclusions: `current_runtime_code`, `current_protocol_availability`, `pair_identity_or_liquidity`, `quote_or_execution_result`, `safety`.
   Exclusions: `all_other_deployments`, `runtime_code_and_state`, `pair_existence_and_liquidity`, `quote_and_execution_quality`, `safety`.
-- Implemented wallet support: `wallet.cancel_operation` (MCP, CLI, web); `wallet.connect` (MCP, CLI, web); `wallet.connection` (HTTP, MCP, CLI); `wallet.disconnect` (MCP, CLI, web); `wallet.operation` (MCP, CLI, web).
+- Implemented wallet support: `wallet.cancel_operation` (MCP, CLI); `wallet.connect` (MCP, CLI); `wallet.connection` (HTTP, MCP, CLI); `wallet.connection_change_review` (MCP); `wallet.disconnect` (MCP, CLI); `wallet.operation` (MCP, CLI).
 - Implemented transaction actions: none.
-- Implemented MCP App presentation contracts: `account.assets@1`, `contract.inspect@1`, `market.reference_history@1`, `market.reference_price@1`, `market.watchlist@1`, `token.inspect@1`, `token.selection@1`, `token.selections@1`, `wallet.connection@1`.
-- Available user-facing capabilities: `account.assets`, `account.balance`, `chain.status`, `contract.inspect`, `market.add_watchlist_pair`, `market.reference_history`, `market.reference_price`, `market.remove_watchlist_pair`, `market.reorder_watchlist_pairs`, `market.watchlist`, `token.cancel_operation`, `token.inspect`, `token.operation`, `token.selection`, `token.selections`, `token.start_addition`, `token.start_removal`, `transaction.inspect`, `uniswap_v2.quote_exact_input`, `wallet.cancel_operation`, `wallet.connect`, `wallet.connection`, `wallet.disconnect`, `wallet.operation`.
+- Implemented MCP App presentation contracts: `account.assets@1`, `contract.inspect@1`, `market.reference_history@1`, `market.reference_price@1`, `market.watchlist@1`, `market.watchlist_change_review@1`, `market.watchlist_operation@1`, `token.inspect@1`, `token.operation@1`, `token.selection@1`, `token.selection_change_review@1`, `token.selections@1`, `wallet.connection@1`, `wallet.connection_change_review@1`, `wallet.operation@1`.
+- Available user-facing capabilities: `account.assets`, `account.balance`, `chain.status`, `contract.inspect`, `market.add_watchlist_pair`, `market.reference_history`, `market.reference_price`, `market.remove_watchlist_pair`, `market.reorder_watchlist_pairs`, `market.watchlist`, `market.watchlist_change_review`, `market.watchlist_operation`, `token.add_selection`, `token.inspect`, `token.operation`, `token.remove_selection`, `token.selection`, `token.selection_change_review`, `token.selections`, `transaction.inspect`, `uniswap_v2.quote_exact_input`, `wallet.cancel_operation`, `wallet.connect`, `wallet.connection`, `wallet.connection_change_review`, `wallet.disconnect`, `wallet.operation`.
 - Experiments and collected research do not establish product support.
 
 ## Support Levels
@@ -147,7 +147,7 @@ user-visible behavior for that exact identity. `L3 executable` requires:
 ## Capability Availability
 
 Assign one availability state to every exact read, wallet, and review capability
-and to each of its direct, HTTP, MCP, CLI, and web bindings:
+and to each of its direct, HTTP, MCP, and CLI bindings:
 
 - `unavailable`: no complete implementation is exposed to a user.
 - `internal`: a complete internal dependency exists but no supported

@@ -14,9 +14,7 @@ import {
   getCapabilityDefinitionSnapshot,
   parseCapabilitySuccess,
   type ApplicationFailure,
-  type CanonicalJson,
   type CapabilitySuccess,
-  type OperationId,
   type WalletConnectionData,
 } from "./core/index.js";
 import { createChainOwnerApplication } from "./chain/application.js";
@@ -24,21 +22,27 @@ import {
   createInterfaceOwnerApplication,
   cliHelpText,
   LocalOperationClient,
-  LocalMutationClient,
-  normalizeProblemDetailsFailure,
   parseReadCliCommand,
   runReadCliCommand,
   startStdioMcp,
   walletConnectionInterface,
-  walletLocalOperationIdentities,
-  walletInterfaceBindings,
   type DeliveryUnknown,
   type ReadCliCommand,
   parseReferenceMarketCliCommand,
+  referenceMarketCliCommandRequiresInteractiveTerminal,
   runReferenceMarketCliCommand,
   type ReferenceMarketCliCommand,
   type StdioMcpHandle,
 } from "./interfaces/index.js";
+import {
+  constrainInterfaceFailure,
+  dispatchCanonical,
+} from "./interfaces/http-client.js";
+import { readCliDecision } from "./interfaces/cli-operation.js";
+import {
+  operationInterfaceBindings,
+  walletOperationPresentationIdentity,
+} from "./interfaces/operation-bindings.js";
 import { deliveryUnknownCliExitCode } from "./interfaces/delivery-exit.js";
 import {
   parseTokenCliCommand,
@@ -52,14 +56,12 @@ import {
 } from "./token-catalog/index.js";
 import {
   LocalRuntime,
-  createOperationId as createRuntimeOperationId,
   getInvalidRpcConfigurationError,
   getRuntimeStateResetRequiredError,
   runtimeInterfaceErrorMappings,
   runtimeStateResetRequiredCode,
   type RuntimeStateResetRequiredError,
   type RuntimeDispatchRequest,
-  type RuntimeHttpRequest,
   type RuntimeDispatchResponse,
   type RuntimeOwnerSession,
 } from "./runtime/index.js";
@@ -73,13 +75,13 @@ import { getRuntimeOperationFailure } from "./runtime/errors.js";
 import { createWalletOwnerApplication } from "./wallet/application.js";
 import {
   parseWalletOperationId,
-  walletTerminalStateFailureCodes,
   type WalletManagementOperation,
   type WalletOperationPresentation,
-  type WalletOperationStartResult,
+  type WalletReview,
+  type WalletReviewResult,
 } from "./wallet/contracts.js";
 import {
-  isWalletOperationConfirmableState,
+  isWalletOperationCancellableState,
   isWalletOperationTerminalState,
   type WalletOperationKind,
 } from "./wallet/operation-state.js";
@@ -87,11 +89,7 @@ import {
   WalletOperationError,
   createWalletFailure,
   getWalletOperationFailure,
-  normalizeWalletError,
-  walletErrorRegistry,
-  walletInterfaceErrorMappings,
 } from "./wallet/errors.js";
-import { walletControlResources } from "./wallet/routes.js";
 import {
   createTerminalQrDisplay,
   renderTerminalQr,
@@ -124,7 +122,6 @@ export interface CliTerminalPort {
 
 export interface CliDependencies {
   readonly createRuntime: () => Promise<CliRuntimePort>;
-  readonly createOperationId: () => OperationId;
   readonly terminal: CliTerminalPort;
   readonly waitForPoll: () => Promise<void>;
   readonly startMcp?: (runtime: CliRuntimePort) => Promise<StdioMcpHandle>;
@@ -224,20 +221,20 @@ const parseCommand = (argumentsInput: readonly string[]): CliCommand => {
   if (domain === walletConnectionInterface.cli.domain && command === walletConnectionInterface.cli.command) {
     return Object.freeze({ kind: "status", json: parseJsonFlag(tokens) });
   }
-  if (domain === walletInterfaceBindings.connect.cli?.domain &&
-    command === walletInterfaceBindings.connect.cli.command) {
+  if (domain === operationInterfaceBindings.walletConnect.cli?.domain &&
+    command === operationInterfaceBindings.walletConnect.cli.command) {
     if (tokens.length !== 0) return invalidInput();
     return Object.freeze({ kind: "connect", json: false });
   }
-  if (domain === walletInterfaceBindings.disconnect.cli?.domain &&
-    command === walletInterfaceBindings.disconnect.cli.command) {
+  if (domain === operationInterfaceBindings.walletDisconnect.cli?.domain &&
+    command === operationInterfaceBindings.walletDisconnect.cli.command) {
     if (tokens.length !== 0) return invalidInput();
     return Object.freeze({ kind: "disconnect", json: false });
   }
-  if (domain === walletInterfaceBindings.operation.cli?.domain &&
-    command === walletInterfaceBindings.operation.cli.command) return parseOperationCommand(tokens);
-  if (domain === walletInterfaceBindings.cancelOperation.cli?.domain &&
-    command === walletInterfaceBindings.cancelOperation.cli.command) {
+  if (domain === operationInterfaceBindings.walletOperation.cli?.domain &&
+    command === operationInterfaceBindings.walletOperation.cli.command) return parseOperationCommand(tokens);
+  if (domain === operationInterfaceBindings.walletCancel.cli?.domain &&
+    command === operationInterfaceBindings.walletCancel.cli.command) {
     if (tokens.length !== 1) return invalidInput();
     try {
       return Object.freeze({ kind: "cancel", operationId: parseWalletOperationId(tokens[0]), json: false });
@@ -246,100 +243,74 @@ const parseCommand = (argumentsInput: readonly string[]): CliCommand => {
   return invalidInput();
 };
 
-const constrainCliDispatchFailure = (
-  failure: ApplicationFailure,
-  failureCodes: readonly string[],
-): ApplicationFailure => failureCodes.includes(failure.error.code)
-  ? failure
-  : createWalletFailure("internal_error");
-
-const canonicalFailureFromResponse = (
-  response: RuntimeDispatchResponse,
-  failureCodes: readonly string[],
-): CliApplicationFailure => new CliApplicationFailure(constrainCliDispatchFailure(
-  normalizeProblemDetailsFailure(
-    response,
-    walletErrorRegistry,
-    walletInterfaceErrorMappings,
-    "runtime_state_unavailable",
-  ),
-  failureCodes,
-));
-
-const execute = async (
-  runtime: CliRuntimePort,
-  failureCodes: readonly string[],
-  request: RuntimeHttpRequest,
-): Promise<CanonicalJson> => {
-  let response: RuntimeDispatchResponse;
-  try {
-    response = await runtime.dispatchRuntimeRequest({ requestClass: "local_control", ...request });
-  } catch (error) {
-    throw new CliApplicationFailure(constrainCliDispatchFailure(
-      normalizeWalletError(error).failure,
-      failureCodes,
-    ));
-  }
-  if (response.status >= 400) throw canonicalFailureFromResponse(response, failureCodes);
-  if (response.status !== 200) {
-    throw new CliApplicationFailure(constrainCliDispatchFailure(
-      createWalletFailure("runtime_state_unavailable"),
-      failureCodes,
-    ));
-  }
-  return response.body;
-};
-
-const startOperation = async (
+const getConnectionChangeReview = async (
   client: LocalOperationClient,
   kind: WalletOperationKind,
-): Promise<WalletOperationStartResult> => resolvedLocalOperation(
-  await client.invoke(walletLocalOperationIdentities.cli[kind], {}),
+): Promise<WalletReviewResult> => resolvedLocalOperation(
+  await client.invoke(operationInterfaceBindings.walletReview.identity, { kind }),
 );
 
 const getOperation = async (
   client: LocalOperationClient,
   operationId: string,
 ): Promise<WalletManagementOperation> => resolvedLocalOperation(
-  await client.invoke(walletLocalOperationIdentities.cli.operation, { operationId }),
+  await client.invoke(operationInterfaceBindings.walletOperation.identity, { operationId }),
 );
 
 const getOperationPresentation = async (
   client: LocalOperationClient,
   operationId: string,
 ): Promise<WalletOperationPresentation> => resolvedLocalOperation(
-  await client.invoke(walletLocalOperationIdentities.cli.presentation, { operationId }),
+  await client.invoke(walletOperationPresentationIdentity, { operationId }),
 );
 
-const confirmOperation = async (
+const decideConnectionChange = async (
   client: LocalOperationClient,
-  operation: WalletManagementOperation,
+  review: WalletReview,
 ): Promise<WalletManagementOperation> => resolvedLocalOperation(
-  await client.invoke(walletLocalOperationIdentities.cli.confirm, {
-    operationId: operation.operationId,
-    connectionRevision: operation.connectionRevision,
-  }),
+  await client.invoke(
+    review.kind === "connect"
+      ? operationInterfaceBindings.walletConnect.identity
+      : operationInterfaceBindings.walletDisconnect.identity,
+    { review, initiatedBy: "cli" } as never,
+  ),
 );
 
 const cancelOperation = async (
   client: LocalOperationClient,
   operation: WalletManagementOperation,
-): Promise<WalletManagementOperation> => resolvedLocalOperation(
-  await client.invoke(walletLocalOperationIdentities.cli.cancel, {
+): Promise<WalletManagementOperation> => {
+  if (
+    operation.state !== "starting_connection" &&
+    operation.state !== "awaiting_wallet_approval"
+  ) throw new CliApplicationFailure(createWalletFailure("state_conflict"));
+  return resolvedLocalOperation(
+    await client.invoke(operationInterfaceBindings.walletCancel.identity, {
     operationId: operation.operationId,
-    connectionRevision: operation.connectionRevision,
-  }),
-);
+      reviewDigest: operation.review.reviewDigest,
+      expectedState: operation.state,
+      connectionRevision: operation.review.precondition.connectionRevision,
+    }),
+  );
+};
 
-const readConnection = async (runtime: CliRuntimePort): Promise<WalletConnectionSuccess> =>
-  parseCapabilitySuccess(walletConnectionInterface.definition, {}, await execute(
-    runtime,
-    getCapabilityDefinitionSnapshot(walletConnectionInterface.definition).failureCodes,
-    {
-      method: walletControlResources.connection.method,
-      path: walletControlResources.connection.path,
-    },
-  ));
+const readConnection = async (runtime: CliRuntimePort): Promise<WalletConnectionSuccess> => {
+  if (walletConnectionInterface.http.method !== "GET") {
+    throw new CliApplicationFailure(createWalletFailure("internal_error"));
+  }
+  const result = constrainInterfaceFailure(await dispatchCanonical(runtime, {
+    requestClass: "public_read",
+    method: walletConnectionInterface.http.method,
+    path: walletConnectionInterface.http.path,
+  }, 200, walletConnectionInterface.responseAuthority),
+  getCapabilityDefinitionSnapshot(walletConnectionInterface.definition).failureCodes);
+  if (!result.ok) throw new CliApplicationFailure(result.failure);
+  try {
+    return parseCapabilitySuccess(walletConnectionInterface.definition, {}, result.value);
+  } catch {
+    throw new CliApplicationFailure(createWalletFailure("internal_error"));
+  }
+};
 
 const writeCanonical = (terminal: CliTerminalPort, value: unknown): void => {
   terminal.writeOutput(`${canonicalJsonStringify(captureCanonicalJson(value))}\n`);
@@ -362,27 +333,41 @@ const writeConnectionHuman = (terminal: CliTerminalPort, connection: WalletConne
   terminal.writeOutput(`${connectionSummary(connection)}\n`);
 };
 
+const walletReviewHuman = (review: WalletReview): string => [
+  review.kind === "connect" ? "Connect wallet" : "Disconnect wallet",
+  `Chain: ${review.target.chainId}`,
+  `Current state: ${connectionSummary(review.precondition.connection)}`,
+  `Connection revision: ${review.precondition.connectionRevision}`,
+  ...(review.kind === "connect" ? [
+    `Required methods: ${review.decision.requiredMethods.join(", ")}`,
+    `Required events: ${review.decision.requiredEvents.join(", ")}`,
+  ] : [
+    "Decision: disconnect the current WalletConnect session",
+    `Session source: ${review.fixedEvidence.sessionSourceIds[0]}`,
+  ]),
+  `Action deadline: ${review.actionExpiresAt}`,
+  `Operation ID: ${review.operationId}`,
+  `Review digest: ${review.reviewDigest}`,
+].join("\n");
+
 const writeOperationHuman = (terminal: CliTerminalPort, operation: WalletManagementOperation): void => {
-  terminal.writeOutput(`Wallet operation ${operation.operationId}: ${operation.state}\n`);
+  terminal.writeOutput([
+    `Wallet operation ${operation.operationId}: ${operation.state}`,
+    `Action: ${operation.kind}`,
+    `Initiated by: ${operation.initiatedBy}`,
+    `Review digest: ${operation.review.reviewDigest}`,
+    ...(operation.peerRefusalCode === null
+      ? []
+      : [`Wallet refusal code: ${operation.peerRefusalCode}`]),
+    ...(operation.failure === null
+      ? []
+      : [`Failure: ${operation.failure.error.code}: ${operation.failure.error.message}`]),
+    "",
+  ].join("\n"));
   if (operation.result !== null) {
     terminal.writeOutput(`Outcome: ${operation.result.outcome}\n`);
     writeConnectionHuman(terminal, operation.result.connection);
   }
-};
-
-const confirmationPrompt = (
-  operation: WalletManagementOperation,
-  connection: WalletConnectionData,
-): string => {
-  if (operation.kind === "disconnect") {
-    return [
-      connectionSummary(connection),
-      `Connection revision: ${operation.connectionRevision}`,
-      "Every existing wallet session for this profile will be disconnected.",
-      "Disconnect every existing wallet session? [y/N] ",
-    ].join("\n");
-  }
-  throw new WalletOperationError("runtime_state_unavailable");
 };
 
 const cancelledResponse = async (
@@ -563,6 +548,9 @@ const resolveExactCancellation = async (
   if (isWalletOperationTerminalState(operation.state)) {
     return operation;
   }
+  if (!isWalletOperationCancellableState(operation.state)) {
+    return await observeAuthoritativeTransition(client, operationId, dependencies);
+  }
   const cancellation = cancelOperation(client, operation);
   try { afterCancellationStarted?.(); }
   catch { /* Runtime settlement and final terminal restoration retain authority. */ }
@@ -578,6 +566,19 @@ const resolveExactCancellation = async (
     if (!isStateConflict(error)) throw error;
     return await observeAuthoritativeTransition(client, operationId, dependencies);
   }
+};
+
+const cancelRequestedOperation = async (
+  client: LocalOperationClient,
+  operationId: string,
+  dependencies: CliDependencies,
+): Promise<WalletManagementOperation> => {
+  const operation = await getOperation(client, operationId);
+  if (isWalletOperationTerminalState(operation.state)) return operation;
+  if (!isWalletOperationCancellableState(operation.state)) {
+    throw new CliApplicationFailure(createWalletFailure("state_conflict"));
+  }
+  return await cancelledResponse(client, operation, dependencies);
 };
 
 const waitForTerminalOperation = async (
@@ -656,9 +657,8 @@ const operationFailure = (operation: WalletManagementOperation): ApplicationFail
   if (operation.state === "failed") {
     return operation.failure ?? createWalletFailure("runtime_state_unavailable");
   }
-  if (operation.state === "rejected" || operation.state === "expired") {
-    return createWalletFailure(walletTerminalStateFailureCodes[operation.state]);
-  }
+  if (operation.state === "rejected") return createWalletFailure("wallet_user_rejected");
+  if (operation.state === "expired") return createWalletFailure("wallet_timeout");
   return undefined;
 };
 
@@ -680,73 +680,33 @@ const runWalletTransition = async (
       dependencies.terminal.writeError("Retry with: littlejohn read assets\n");
     }
   };
-  const startResult = await startOperation(client, kind);
-  if (startResult.status === "current_connection") {
-    if (kind !== "connect") throw new WalletOperationError("runtime_state_unavailable");
-    writeConnectionHuman(dependencies.terminal, startResult.connection);
+  const reviewed = await getConnectionChangeReview(client, kind);
+  if (reviewed.status === "current_connection") {
+    writeConnectionHuman(dependencies.terminal, reviewed.connection);
     await readConnectedAssets();
     return;
   }
-  let operation = startResult.operation;
-  let resolvedOperation: WalletManagementOperation | undefined;
-  if (isWalletOperationConfirmableState(operation.state)) {
-    let decision: "confirm" | "decline" | "interrupt" | undefined;
-    try {
-      if (dependencies.terminal.interruptSignal.aborted) {
-        decision = "interrupt";
-      } else {
-        const connection = await raceWithInterrupt(
-          () => readConnection(runtime),
-          dependencies.terminal.interruptSignal,
-        );
-        if (connection.kind === "interrupted" || dependencies.terminal.interruptSignal.aborted) {
-          decision = "interrupt";
-        } else {
-          const confirmation = await raceWithInterrupt(
-            () => dependencies.terminal.readLine(
-              confirmationPrompt(operation, connection.result.data),
-            ),
-            dependencies.terminal.interruptSignal,
-          );
-          decision = confirmation.kind === "interrupted" || dependencies.terminal.interruptSignal.aborted
-            ? "interrupt"
-            : /^(?:y|yes)$/iu.test(confirmation.result.trim())
-              ? "confirm"
-              : "decline";
-        }
-      }
-    } catch {
-      try {
-        resolvedOperation = await resolveExactCancellation(
-          client,
-          operation.operationId,
-          dependencies,
-        );
-      } catch (error) {
-        if (error instanceof CliDeliveryUnknown) throw error;
-        throw new WalletOperationError("runtime_state_unavailable");
-      }
-    }
-    if (resolvedOperation === undefined) {
-      if (decision === "interrupt" || decision === "decline" ||
-        decision === "confirm" && dependencies.terminal.interruptSignal.aborted) {
-        resolvedOperation = await resolveExactCancellation(
-          client,
-          operation.operationId,
-          dependencies,
-        );
-      } else if (decision === "confirm") {
-        operation = await confirmOperation(client, operation);
-      }
-    }
+  if (reviewed.status === "already_disconnected") {
+    writeConnectionHuman(dependencies.terminal, reviewed.connection);
+    return;
   }
-  const terminalOperation = resolvedOperation ??
-    (isWalletOperationTerminalState(operation.state)
-      ? operation
-      : await waitForTerminalOperation(client, operation, dependencies));
+  dependencies.terminal.writeOutput(`${walletReviewHuman(reviewed.review)}\n`);
+  const decision = await readCliDecision(
+    dependencies.terminal,
+    kind === "connect" ? "Connect this wallet? [y/N] " : "Disconnect this wallet? [y/N] ",
+  );
+  if (decision !== "accepted" || dependencies.terminal.interruptSignal.aborted) {
+    dependencies.terminal.writeOutput("Declined. No Wallet operation was created.\n");
+    return;
+  }
+
+  const operation = await decideConnectionChange(client, reviewed.review);
+  const terminalOperation = isWalletOperationTerminalState(operation.state)
+    ? operation
+    : await waitForTerminalOperation(client, operation, dependencies);
+  writeOperationHuman(dependencies.terminal, terminalOperation);
   const failure = operationFailure(terminalOperation);
   if (failure !== undefined) throw new CliApplicationFailure(failure);
-  writeOperationHuman(dependencies.terminal, terminalOperation);
   if (terminalOperation.result?.outcome === "connected") {
     await readConnectedAssets();
   }
@@ -823,7 +783,7 @@ const runCommand = async (
       return;
     }
     case "cancel": {
-      const terminalOperation = await resolveExactCancellation(
+      const terminalOperation = await cancelRequestedOperation(
         client,
         command.operationId,
         dependencies,
@@ -850,7 +810,6 @@ export const runCli = async (
   const mcpMode = argumentsInput.length === 0;
   let runtime: CliRuntimePort | undefined;
   let operationClient: LocalOperationClient | undefined;
-  let mutationClient: LocalMutationClient | undefined;
   let mcp: StdioMcpHandle | undefined;
   let readExitCode: number | undefined;
   let tokenExitCode: number | undefined;
@@ -892,11 +851,17 @@ export const runCli = async (
       try { marketCommand = parseReferenceMarketCliCommand(argumentsInput); }
       catch { throw new WalletOperationError("invalid_input"); }
     } else if (!mcpMode) command = parseCommand(argumentsInput);
-    if (command !== undefined && command.kind !== "help" &&
+    if (command !== undefined &&
+      (command.kind === "connect" || command.kind === "disconnect" || command.kind === "cancel") &&
       (!dependencies.terminal.inputIsTTY || !dependencies.terminal.outputIsTTY)) {
       throw new WalletOperationError("interactive_terminal_required");
     }
     if (tokenCommand !== undefined && tokenCliCommandRequiresInteractiveTerminal(tokenCommand) &&
+      (!dependencies.terminal.inputIsTTY || !dependencies.terminal.outputIsTTY)) {
+      throw new WalletOperationError("interactive_terminal_required");
+    }
+    if (marketCommand !== undefined &&
+      referenceMarketCliCommandRequiresInteractiveTerminal(marketCommand) &&
       (!dependencies.terminal.inputIsTTY || !dependencies.terminal.outputIsTTY)) {
       throw new WalletOperationError("interactive_terminal_required");
     }
@@ -924,7 +889,6 @@ export const runCli = async (
           } else if (readCommand !== undefined) {
             operationClient = new LocalOperationClient({
               ownerSessions: runtime,
-              createOperationId: dependencies.createOperationId,
             });
             readExitCode = await runReadCliCommand(
               runtime,
@@ -936,7 +900,6 @@ export const runCli = async (
           } else if (tokenCommand !== undefined) {
             operationClient = new LocalOperationClient({
               ownerSessions: runtime,
-              createOperationId: dependencies.createOperationId,
             });
             tokenExitCode = await runTokenCliCommand(runtime, operationClient, tokenCommand, Object.freeze({
               inputIsTTY: dependencies.terminal.inputIsTTY,
@@ -947,10 +910,10 @@ export const runCli = async (
               readLine: (prompt: string) => dependencies.terminal.readLine(prompt),
             }));
           } else if (marketCommand !== undefined) {
-            mutationClient = new LocalMutationClient(runtime);
+            operationClient = new LocalOperationClient({ ownerSessions: runtime });
             marketExitCode = await runReferenceMarketCliCommand(
               runtime,
-              mutationClient,
+              operationClient,
               marketCommand,
               dependencies.terminal,
               dependencies.terminal.interruptSignal,
@@ -958,7 +921,6 @@ export const runCli = async (
           } else if (command !== undefined) {
             operationClient = new LocalOperationClient({
               ownerSessions: runtime,
-              createOperationId: dependencies.createOperationId,
             });
             await runCommand(command, runtime, operationClient, dependencies);
           }
@@ -974,10 +936,6 @@ export const runCli = async (
     }
     if (operationClient !== undefined) {
       try { await operationClient.close(); }
-      catch (error) { retainFailure(error); }
-    }
-    if (mutationClient !== undefined) {
-      try { await mutationClient.close(); }
       catch (error) { retainFailure(error); }
     }
     if (runtime !== undefined && !runtimeStopped) {
@@ -1214,9 +1172,8 @@ const createDefaultDependencies = (): CliDependencies => {
       chainApplicationFactory: createChainOwnerApplication,
       interfaceApplicationFactory: createInterfaceOwnerApplication,
     }),
-    createOperationId: createRuntimeOperationId,
     terminal,
-    waitForPoll: () => new Promise<void>((resolvePoll) => { setTimeout(resolvePoll, 100); }),
+    waitForPoll: () => new Promise<void>((resolvePoll) => { setTimeout(resolvePoll, 500); }),
     startMcp: (runtime: CliRuntimePort) => startStdioMcp(
       runtime,
       process.stdin,

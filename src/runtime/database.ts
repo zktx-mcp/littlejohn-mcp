@@ -15,9 +15,11 @@ import {
   deepFreezeValue,
   erc20AssetIdentitySchema,
   evmAccountIdentitySchema,
+  operationIdSchema,
   parseEvmAccountIdentity,
   parseEvmChainId,
   parseEvmContractIdentity,
+  parseHash32,
   parseCapabilityDataAt,
   productChainId,
   parseReferenceCompositeRoundId,
@@ -72,9 +74,11 @@ import {
   type OfficialAssetSourceMember,
 } from "../registry/index.js";
 import {
+  createTokenAdditionReviewProjection,
+  parseTokenCatalogOperation,
   tokenCatalogContractLimits,
-  tokenCatalogConfirmedOperationSchema,
   tokenCatalogOperationSchema,
+  tokenSelectionDirectActionSchema,
   tokenInspectionDigest,
   tokenInspectionSuccessSchema,
   tokenSelectionSchema,
@@ -82,20 +86,42 @@ import {
   tokenSelectionRevisionSchema,
   tokenSelectionSetRevisionSchema,
   tokenSelectionStateSchema,
+  type TokenCatalogOperation,
   type TokenInspectionSuccess,
   type TokenSelection,
   type TokenSelectionDetail,
   type TokenSelectionState,
 } from "../token-catalog/contracts.js";
 import { TokenCatalogOperationError } from "../token-catalog/operation-error.js";
+import {
+  createReferenceWatchlistReviewProjection,
+  parseReferenceWatchlistOperation,
+  referenceWatchlistDirectActionSchema,
+  type ReferenceWatchlistOperation,
+} from "../market-portfolio/contracts.js";
+import { ReferenceMarketOperationError } from "../market-portfolio/errors.js";
 import type {
   AccountTokenSelectionReadPort,
   AccountTokenSelectionStore,
   TokenCatalogQueryStore,
-  TokenCatalogConfirmationCommand,
+  TokenSelectionActionCommand,
   TokenCatalogStore,
   TokenSelectionPage,
 } from "../token-catalog/ports.js";
+import {
+  assertWalletOperationTransition,
+  parseWalletManagementOperation,
+  type WalletManagementOperation,
+  type WalletNonterminalManagementOperation,
+} from "../wallet/operation-contract.js";
+import {
+  isWalletOperationTerminalState,
+  walletNonterminalOperationStates,
+} from "../wallet/operation-state.js";
+import type {
+  WalletOperationStore,
+  WalletOperationTransitionCommand,
+} from "../wallet/contracts.js";
 import { getRuntimeOperationFailure, RuntimeOperationError } from "./errors.js";
 import {
   attestOwnerOnlyStateFile,
@@ -135,7 +161,7 @@ import type {
   ReferenceFeedCacheCommit,
   ReferenceFeedCacheSnapshot,
   ReferenceMarketStore,
-  ReferenceWatchlistMutationResult,
+  ReferenceWatchlistActionCommand,
 } from "./reference-market-storage.js";
 
 export interface LocalProfile {
@@ -203,6 +229,29 @@ interface WalletRow extends WalletConnectionStorageRow {
   revision: string;
   revalidationRequired: number;
   updatedAt: string;
+}
+interface WalletOperationRow {
+  readonly profileId: string;
+  readonly operationId: string;
+  readonly kind: string;
+  readonly initiatedBy: string;
+  readonly reviewDigest: string;
+  readonly connectionRevision: string;
+  readonly state: string;
+  readonly createdAt: string;
+  readonly actionExpiresAt: string;
+  readonly operationJson: Buffer;
+}
+interface TokenSelectionOperationRow {
+  readonly profileId: string;
+  readonly operationId: string;
+  readonly kind: string;
+  readonly initiatedBy: string;
+  readonly reviewDigest: string;
+  readonly chainId: string;
+  readonly walletAddress: string;
+  readonly tokenAddress: string;
+  readonly operationJson: Buffer;
 }
 
 interface ChainRow { readonly chainId: string }
@@ -292,6 +341,16 @@ interface ReferenceWatchlistEntryRow {
   readonly pairJson: string;
   readonly position: number;
 }
+interface ReferenceWatchlistOperationRow {
+  readonly profileId: string;
+  readonly operationId: string;
+  readonly kind: string;
+  readonly initiatedBy: string;
+  readonly reviewDigest: string;
+  readonly chainId: string;
+  readonly walletAddress: string;
+  readonly operationJson: Buffer;
+}
 export interface WalletAccountStorageRow {
   readonly profileId: string;
   readonly chainId: string;
@@ -335,6 +394,101 @@ const decodeInspectionRow = (row: TokenInspectionRow): TokenInspectionSuccess =>
     tokenInspectionDigest(inspection) !== row.inspectionDigest
   ) throw new Error("Stored token inspection is invalid.");
   return inspection;
+};
+
+const walletOperationSelect = `SELECT profile_id AS profileId, operation_id AS operationId,
+  kind, initiated_by AS initiatedBy, review_digest AS reviewDigest,
+  connection_revision AS connectionRevision, state, created_at AS createdAt,
+  action_expires_at AS actionExpiresAt, operation_json AS operationJson
+  FROM wallet_operation`;
+
+const tokenSelectionOperationSelect = `SELECT profile_id AS profileId,
+  operation_id AS operationId, kind, initiated_by AS initiatedBy,
+  review_digest AS reviewDigest, chain_id AS chainId,
+  wallet_address AS walletAddress, token_address AS tokenAddress,
+  operation_json AS operationJson FROM token_selection_operation`;
+const referenceWatchlistOperationSelect = `SELECT profile_id AS profileId,
+  operation_id AS operationId, kind, initiated_by AS initiatedBy,
+  review_digest AS reviewDigest, chain_id AS chainId,
+  wallet_address AS walletAddress, operation_json AS operationJson
+  FROM reference_watchlist_operation`;
+
+const decodeWalletOperationRow = (
+  row: WalletOperationRow,
+  expectedProfileId?: ProfileId,
+): WalletManagementOperation => {
+  const profileId = parseProfileId(row.profileId);
+  if (expectedProfileId !== undefined && profileId !== expectedProfileId) {
+    throw new Error("Stored wallet operation profile is invalid.");
+  }
+  if (!Buffer.isBuffer(row.operationJson)) {
+    throw new Error("Stored wallet operation bytes are invalid.");
+  }
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(row.operationJson);
+  const operation = parseWalletManagementOperation(JSON.parse(text) as unknown);
+  if (
+    canonicalJsonStringify(operation as unknown as CanonicalJson) !== text ||
+    operation.operationId !== row.operationId ||
+    operation.kind !== row.kind ||
+    operation.initiatedBy !== row.initiatedBy ||
+    operation.review.reviewDigest !== row.reviewDigest ||
+    operation.review.precondition.connectionRevision !== row.connectionRevision ||
+    operation.state !== row.state ||
+    operation.review.createdAt !== row.createdAt ||
+    operation.review.actionExpiresAt !== row.actionExpiresAt
+  ) throw new Error("Stored wallet operation does not match its indexed identity.");
+  return operation;
+};
+
+const decodeTokenSelectionOperationRow = (
+  row: TokenSelectionOperationRow,
+  expectedProfileId?: ProfileId,
+): TokenCatalogOperation => {
+  const profileId = parseProfileId(row.profileId);
+  if (expectedProfileId !== undefined && profileId !== expectedProfileId) {
+    throw new Error("Stored token selection operation profile is invalid.");
+  }
+  if (!Buffer.isBuffer(row.operationJson)) {
+    throw new Error("Stored token selection operation bytes are invalid.");
+  }
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(row.operationJson);
+  const operation = parseTokenCatalogOperation(JSON.parse(text) as unknown);
+  if (
+    canonicalJsonStringify(operation as unknown as CanonicalJson) !== text ||
+    operation.operationId !== row.operationId ||
+    operation.kind !== row.kind ||
+    operation.initiatedBy !== row.initiatedBy ||
+    operation.review.reviewDigest !== row.reviewDigest ||
+    operation.review.precondition.account.chainId !== row.chainId ||
+    operation.review.precondition.account.address !== row.walletAddress ||
+    operation.review.target.asset.address !== row.tokenAddress
+  ) throw new Error("Stored token selection operation does not match its indexed identity.");
+  return operation;
+};
+
+const decodeReferenceWatchlistOperationRow = (
+  row: ReferenceWatchlistOperationRow,
+  expectedProfileId?: ProfileId,
+): ReferenceWatchlistOperation => {
+  const profileId = parseProfileId(row.profileId);
+  if (expectedProfileId !== undefined && profileId !== expectedProfileId) {
+    throw new Error("Stored reference watchlist operation profile is invalid.");
+  }
+  if (!Buffer.isBuffer(row.operationJson)) {
+    throw new Error("Stored reference watchlist operation bytes are invalid.");
+  }
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(row.operationJson);
+  const operation = parseReferenceWatchlistOperation(JSON.parse(text) as unknown);
+  if (
+    canonicalJsonStringify(operation as unknown as CanonicalJson) !== text ||
+    operation.operationId !== row.operationId ||
+    operation.kind !== row.kind ||
+    operation.initiatedBy !== row.initiatedBy ||
+    operation.review.reviewDigest !== row.reviewDigest ||
+    operation.review.precondition.account.chainId !== row.chainId ||
+    operation.review.precondition.account.address !== row.walletAddress
+  ) throw new Error("Stored reference watchlist operation does not match its indexed identity.");
+  return operation;
 };
 
 const decodeTokenSelectionRecordRow = (
@@ -972,6 +1126,10 @@ const readReferenceMarketRows = (database: Database.Database): void => {
       WHERE profile_id = ? ORDER BY chain_id, wallet_address`)
       .all(profileId) as WalletAccountStorageRow[];
     for (const row of accounts) readReferenceWatchlistRaw(database, profileId, decodeWalletAccountRecordKey(row).account);
+    const operations = database.prepare(`${referenceWatchlistOperationSelect}
+      WHERE profile_id = ? ORDER BY operation_id`)
+      .iterate(profileId) as IterableIterator<ReferenceWatchlistOperationRow>;
+    for (const row of operations) decodeReferenceWatchlistOperationRow(row, profileId);
   }
 };
 
@@ -1309,6 +1467,7 @@ export class ProductDatabase {
   readonly #ownerStore: RuntimeOwnerStore;
   readonly #configuredChainStore: ConfiguredChainStore;
   readonly #walletStore: WalletProjectionStore;
+  readonly #walletOperationStore: WalletOperationStore;
   readonly #officialAssetSnapshotStore: OfficialAssetSnapshotStore;
   readonly #tokenCatalogReadStore: TokenCatalogQueryStore;
   readonly #accountTokenSelectionStore: AccountTokenSelectionStore;
@@ -1344,6 +1503,12 @@ export class ProductDatabase {
         updatedAt,
       ),
     });
+    this.#walletOperationStore = Object.freeze({
+      read: (operationId) => this.readWalletOperation(operationId),
+      readActive: () => this.readActiveWalletOperation(),
+      create: (operation) => this.createWalletOperation(operation),
+      transition: (command) => this.transitionWalletOperation(command),
+    } satisfies WalletOperationStore);
     this.#officialAssetSnapshotStore = Object.freeze({
       readSnapshot: () => this.readOfficialAssetSnapshot(),
       replaceSnapshot: (snapshot, expectedRevision) =>
@@ -1364,13 +1529,15 @@ export class ProductDatabase {
       getSelection: (account, asset) => this.getTokenSelection(account, asset),
       getSelectionState: (account) => this.getTokenSelectionState(account),
       listSelections: (input) => this.listTokenSelections(input),
-      applyConfirmation: (input) => this.applyTokenConfirmation(input),
+      readOperation: (operationId) => this.readTokenSelectionOperation(operationId),
+      applySelectionChange: (input) => this.applyTokenSelectionChange(input),
     } satisfies TokenCatalogStore);
     this.#referenceMarketStore = Object.freeze({
       readFeed: (feedId) => this.readReferenceFeed(feedId),
       commitFeed: (input) => this.commitReferenceFeed(input),
       readWatchlist: (account) => this.readReferenceWatchlist(account),
-      mutateWatchlist: (input) => this.mutateReferenceWatchlist(input),
+      readWatchlistOperation: (operationId) => this.readReferenceWatchlistOperation(operationId),
+      applyWatchlistChange: (input) => this.applyReferenceWatchlistChange(input),
     } satisfies ReferenceMarketStore);
     this.#presentationSnapshotStore = Object.freeze({
       prepare: (input) => createPresentationSnapshot(input),
@@ -1406,6 +1573,7 @@ export class ProductDatabase {
   ownerStore(): RuntimeOwnerStore { return this.#ownerStore; }
   configuredChainStore(): ConfiguredChainStore { return this.#configuredChainStore; }
   walletStore(): WalletProjectionStore { return this.#walletStore; }
+  walletOperationStore(): WalletOperationStore { return this.#walletOperationStore; }
   officialAssetSnapshotStore(): OfficialAssetSnapshotStore { return this.#officialAssetSnapshotStore; }
   tokenCatalogReadStore(): TokenCatalogQueryStore { return this.#tokenCatalogReadStore; }
   accountTokenSelectionStore(): AccountTokenSelectionStore {
@@ -1695,6 +1863,139 @@ export class ProductDatabase {
           );
         if (result.changes !== 1) throw new RuntimeOperationError("state_conflict");
         return readWalletRaw(this.#database);
+      });
+    } catch (error) { throw storageError(error); }
+  }
+
+  private readWalletOperation(
+    operationIdInput: WalletManagementOperation["operationId"],
+  ): WalletManagementOperation | null {
+    try {
+      const operationId = operationIdSchema.parse(operationIdInput);
+      return this.#readWithIdentity(() => {
+        const profile = readProfileRaw(this.#database);
+        const rows = this.#database.prepare(`${walletOperationSelect}
+          WHERE profile_id = ? AND operation_id = ?`)
+          .all(profile.profileId, operationId) as WalletOperationRow[];
+        if (rows.length === 0) return null;
+        if (rows.length !== 1 || rows[0] === undefined) {
+          throw new Error("Wallet operation identity is not unique.");
+        }
+        return decodeWalletOperationRow(rows[0], profile.profileId);
+      });
+    } catch (error) { throw storageError(error); }
+  }
+
+  private readActiveWalletOperation(): WalletNonterminalManagementOperation | null {
+    try {
+      return this.#readWithIdentity(() => {
+        const profile = readProfileRaw(this.#database);
+        const placeholders = walletNonterminalOperationStates.map(() => "?").join(", ");
+        const rows = this.#database.prepare(`${walletOperationSelect}
+          WHERE profile_id = ? AND state IN (${placeholders})`)
+          .all(profile.profileId, ...walletNonterminalOperationStates) as WalletOperationRow[];
+        if (rows.length === 0) return null;
+        if (rows.length !== 1 || rows[0] === undefined) {
+          throw new Error("More than one active wallet operation is stored.");
+        }
+        const operation = decodeWalletOperationRow(rows[0], profile.profileId);
+        if (isWalletOperationTerminalState(operation.state)) {
+          throw new Error("Stored active wallet operation is terminal.");
+        }
+        return operation as WalletNonterminalManagementOperation;
+      });
+    } catch (error) { throw storageError(error); }
+  }
+
+  private createWalletOperation(
+    operationInput: WalletNonterminalManagementOperation,
+  ): WalletNonterminalManagementOperation {
+    try {
+      const operation = parseWalletManagementOperation(operationInput);
+      if (isWalletOperationTerminalState(operation.state)) {
+        throw new TypeError("A created wallet operation must be active.");
+      }
+      return this.#writeWithIdentity(() => {
+        const profile = readProfileRaw(this.#database);
+        const existingRows = this.#database.prepare(`${walletOperationSelect}
+          WHERE operation_id = ?`).all(operation.operationId) as WalletOperationRow[];
+        if (existingRows.length !== 0) throw new RuntimeOperationError("state_conflict");
+        const operationJson = canonicalBytes(operation as unknown as CanonicalJson);
+        this.#database.prepare(`INSERT INTO wallet_operation(
+          profile_id, operation_id, kind, initiated_by, review_digest,
+          connection_revision, state, created_at, action_expires_at, operation_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+          profile.profileId,
+          operation.operationId,
+          operation.kind,
+          operation.initiatedBy,
+          operation.review.reviewDigest,
+          operation.review.precondition.connectionRevision,
+          operation.state,
+          operation.review.createdAt,
+          operation.review.actionExpiresAt,
+          operationJson,
+        );
+        const rows = this.#database.prepare(`${walletOperationSelect}
+          WHERE profile_id = ? AND operation_id = ?`)
+          .all(profile.profileId, operation.operationId) as WalletOperationRow[];
+        if (rows.length !== 1 || rows[0] === undefined) {
+          throw new Error("Wallet operation persistence failed.");
+        }
+        return decodeWalletOperationRow(rows[0], profile.profileId) as WalletNonterminalManagementOperation;
+      });
+    } catch (error) { throw storageError(error); }
+  }
+
+  private transitionWalletOperation(
+    commandInput: WalletOperationTransitionCommand,
+  ): WalletManagementOperation {
+    try {
+      const operation = parseWalletManagementOperation(commandInput.operation);
+      const operationId = operationIdSchema.parse(commandInput.operationId);
+      const reviewDigest = parseHash32(commandInput.reviewDigest);
+      const connectionRevision = parseRuntimeRevision(commandInput.connectionRevision);
+      const expectedState = walletNonterminalOperationStates.find((state) =>
+        state === commandInput.expectedState);
+      if (
+        expectedState === undefined ||
+        operation.operationId !== operationId ||
+        operation.review.reviewDigest !== reviewDigest ||
+        operation.review.precondition.connectionRevision !== connectionRevision
+      ) throw new TypeError("Wallet operation transition identity is invalid.");
+      return this.#writeWithIdentity(() => {
+        const profile = readProfileRaw(this.#database);
+        const currentRows = this.#database.prepare(`${walletOperationSelect}
+          WHERE profile_id = ? AND operation_id = ?`)
+          .all(profile.profileId, operationId) as WalletOperationRow[];
+        if (currentRows.length !== 1 || currentRows[0] === undefined) {
+          throw new RuntimeOperationError("state_conflict");
+        }
+        const current = decodeWalletOperationRow(currentRows[0], profile.profileId);
+        if (isWalletOperationTerminalState(current.state) || current.state !== expectedState) {
+          throw new RuntimeOperationError("state_conflict");
+        }
+        assertWalletOperationTransition(current as WalletNonterminalManagementOperation, operation);
+        const update = this.#database.prepare(`UPDATE wallet_operation
+          SET state = ?, operation_json = ?
+          WHERE profile_id = ? AND operation_id = ? AND review_digest = ?
+            AND connection_revision = ? AND state = ?`).run(
+          operation.state,
+          canonicalBytes(operation as unknown as CanonicalJson),
+          profile.profileId,
+          operationId,
+          reviewDigest,
+          connectionRevision,
+          expectedState,
+        );
+        if (update.changes !== 1) throw new RuntimeOperationError("state_conflict");
+        const storedRows = this.#database.prepare(`${walletOperationSelect}
+          WHERE profile_id = ? AND operation_id = ?`)
+          .all(profile.profileId, operationId) as WalletOperationRow[];
+        if (storedRows.length !== 1 || storedRows[0] === undefined) {
+          throw new Error("Wallet operation transition persistence failed.");
+        }
+        return decodeWalletOperationRow(storedRows[0], profile.profileId);
       });
     } catch (error) { throw storageError(error); }
   }
@@ -2209,100 +2510,189 @@ export class ProductDatabase {
     } catch (error) { throw storageError(error); }
   }
 
-  private mutateReferenceWatchlist(
-    input: Parameters<ReferenceMarketStore["mutateWatchlist"]>[0],
-  ): ReferenceWatchlistMutationResult {
+  private readReferenceWatchlistOperation(
+    operationIdInput: ReferenceWatchlistOperation["operationId"],
+  ): ReferenceWatchlistOperation | null {
     try {
-      const account = evmAccountIdentitySchema.parse(input.account);
-      const expectedConnectionRevision = parseRuntimeRevision(input.expectedConnectionRevision);
-      const expectedRevision = referenceWatchlistRevisionSchema.parse(input.expectedRevision);
-      const now = parseUtcTimestamp(input.now);
-      const mutation = input.mutation.kind === "reorder"
-        ? Object.freeze({
-            kind: "reorder" as const,
-            pairIds: Object.freeze(input.mutation.pairIds.map((pairId) =>
-              referenceSupportedPairIdSchema.parse(pairId))),
-          })
-        : input.mutation.kind === "add"
-          ? Object.freeze({
-              kind: "add" as const,
-              pairId: referenceSupportedPairIdSchema.parse(input.mutation.pairId),
-            })
-          : Object.freeze({
-              kind: "remove" as const,
-              pairId: referenceSupportedPairIdSchema.parse(input.mutation.pairId),
-            });
-      return this.#writeWithIdentity(() => {
+      const operationId = operationIdSchema.parse(operationIdInput);
+      return this.#readWithIdentity(() => {
         const profile = readProfileRaw(this.#database);
-        this.assertCurrentWalletConnection(account, expectedConnectionRevision);
-        const current = readReferenceWatchlistRaw(this.#database, profile.profileId, account);
-        if (current.revision !== expectedRevision) throw new RuntimeOperationError("state_conflict");
-        const currentIds = current.entries.map((entry) => entry.pairId);
-        let nextIds: readonly ReferencePairId[];
-        if (mutation.kind === "add") {
-          if (currentIds.length >= referenceMarketLimits.watchlistEntries) {
-            return Object.freeze({ status: "rejected", reason: "watchlist_full" });
-          }
-          if (currentIds.includes(mutation.pairId)) {
-            return Object.freeze({ status: "rejected", reason: "watchlist_pair_already_saved" });
-          }
-          nextIds = Object.freeze([...currentIds, mutation.pairId]);
-        } else if (mutation.kind === "remove") {
-          if (!currentIds.includes(mutation.pairId)) {
-            return Object.freeze({ status: "rejected", reason: "watchlist_pair_not_found" });
-          }
-          nextIds = Object.freeze(currentIds.filter((pairId) => pairId !== mutation.pairId));
-        } else {
-          if (new Set(mutation.pairIds).size !== mutation.pairIds.length ||
-            mutation.pairIds.length !== currentIds.length ||
-            mutation.pairIds.some((pairId) => !currentIds.includes(pairId))) {
-            return Object.freeze({ status: "rejected", reason: "watchlist_order_conflict" });
-          }
-          if (mutation.pairIds.every((pairId, index) => pairId === currentIds[index])) {
-            return Object.freeze({ status: "success", watchlist: current });
-          }
-          nextIds = mutation.pairIds;
+        const rows = this.#database.prepare(`${referenceWatchlistOperationSelect}
+          WHERE profile_id = ? AND operation_id = ?`)
+          .all(profile.profileId, operationId) as ReferenceWatchlistOperationRow[];
+        if (rows.length === 0) return null;
+        if (rows.length !== 1 || rows[0] === undefined) {
+          throw new Error("Reference watchlist operation identity is not unique.");
         }
-
-        const revision = createReferenceRevision(current.revision);
-        const stateRows = this.#database.prepare(`${watchlistStateSelect}
-          WHERE profile_id = ? AND chain_id = ? AND wallet_address = ?`)
-          .all(profile.profileId, account.chainId, account.address) as ReferenceWatchlistStateRow[];
-        if (stateRows.length === 0) {
-          this.#database.prepare(`INSERT INTO reference_pair_watchlist_state(
-            profile_id, chain_id, wallet_address, revision, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?)`)
-            .run(profile.profileId, account.chainId, account.address, revision, now, now);
-        } else {
-          const update = this.#database.prepare(`UPDATE reference_pair_watchlist_state
-            SET revision = ?, updated_at = ?
-            WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? AND revision = ?`)
-            .run(
-              revision, now, profile.profileId, account.chainId, account.address, current.revision,
-            );
-          if (update.changes !== 1) throw new RuntimeOperationError("state_conflict");
-        }
-        this.#database.prepare(`DELETE FROM reference_pair_watchlist_entry
-          WHERE profile_id = ? AND chain_id = ? AND wallet_address = ?`)
-          .run(profile.profileId, account.chainId, account.address);
-        const insert = this.#database.prepare(`INSERT INTO reference_pair_watchlist_entry(
-          profile_id, chain_id, wallet_address, pair_id, pair_json, position
-        ) VALUES (?, ?, ?, ?, ?, ?)`);
-        nextIds.forEach((pairId, position) => {
-          const pair = findReferencePair(pairId);
-          insert.run(
-            profile.profileId, account.chainId, account.address, pairId,
-            canonicalJsonStringify(pair as unknown as CanonicalJson), position,
-          );
-        });
-        const stored = readReferenceWatchlistRaw(this.#database, profile.profileId, account);
-        if (stored.revision !== revision || stored.entries.length !== nextIds.length ||
-          stored.entries.some((entry, index) => entry.pairId !== nextIds[index])) {
-          throw new Error("Reference watchlist postcondition failed.");
-        }
-        return Object.freeze({ status: "success", watchlist: stored });
+        return decodeReferenceWatchlistOperationRow(rows[0], profile.profileId);
       });
     } catch (error) { throw storageError(error); }
+  }
+
+  private applyReferenceWatchlistChange(
+    input: ReferenceWatchlistActionCommand,
+  ): ReferenceWatchlistOperation {
+    try {
+      const action = referenceWatchlistDirectActionSchema.parse(input.action);
+      const completedAt = parseUtcTimestamp(input.completedAt);
+      const account = evmAccountIdentitySchema.parse(action.review.precondition.account);
+      const expectedConnectionRevision = parseRuntimeRevision(
+        action.review.precondition.connectionRevision,
+      );
+      return this.#writeWithIdentity(() => {
+        const profile = readProfileRaw(this.#database);
+        const existingRows = this.#database.prepare(`${referenceWatchlistOperationSelect}
+          WHERE operation_id = ?`)
+          .all(action.review.operationId) as ReferenceWatchlistOperationRow[];
+        if (existingRows.length > 0) {
+          if (existingRows.length !== 1 || existingRows[0] === undefined) {
+            throw new Error("Reference watchlist operation identity is not unique.");
+          }
+          const existing = decodeReferenceWatchlistOperationRow(
+            existingRows[0],
+            profile.profileId,
+          );
+          if (
+            existing.kind !== action.review.kind ||
+            canonicalJsonStringify(existing.review as unknown as CanonicalJson) !==
+              canonicalJsonStringify(action.review as unknown as CanonicalJson)
+          ) throw new RuntimeOperationError("state_conflict");
+          return existing;
+        }
+        if (Date.parse(completedAt) >= Date.parse(action.review.actionExpiresAt)) {
+          throw new ReferenceMarketOperationError("watchlist_review_expired");
+        }
+        this.assertCurrentWalletConnection(account, expectedConnectionRevision);
+        const current = readReferenceWatchlistRaw(this.#database, profile.profileId, account);
+        if (
+          current.revision !== action.review.precondition.watchlistRevision ||
+          canonicalJsonStringify(current.entries as unknown as CanonicalJson) !==
+            canonicalJsonStringify(
+              action.review.precondition.currentEntries as unknown as CanonicalJson,
+            )
+        ) throw new RuntimeOperationError("state_conflict");
+        const projection = action.review.kind === "reorder"
+          ? createReferenceWatchlistReviewProjection({
+              kind: action.review.kind,
+              currentEntries: current.entries,
+              pairIds: action.review.target.entries.map((entry) => entry.pairId),
+            })
+          : createReferenceWatchlistReviewProjection({
+              kind: action.review.kind,
+              currentEntries: current.entries,
+              pairId: action.review.target.pair.pairId,
+            });
+        if (
+          projection.status !== "success" ||
+          canonicalJsonStringify({
+            target: action.review.target,
+            decision: action.review.decision,
+            fixedEvidence: action.review.fixedEvidence,
+          } as unknown as CanonicalJson) !== canonicalJsonStringify({
+            target: projection.status === "success" ? projection.projection.target : null,
+            decision: projection.status === "success" ? projection.projection.decision : null,
+            fixedEvidence: projection.status === "success"
+              ? projection.projection.fixedEvidence
+              : null,
+          } as unknown as CanonicalJson)
+        ) throw new RuntimeOperationError("state_conflict");
+        const nextIds = projection.projection.nextEntries.map((entry) => entry.pairId);
+        const currentIds = current.entries.map((entry) => entry.pairId);
+        const changed = nextIds.length !== currentIds.length ||
+          nextIds.some((pairId, index) => pairId !== currentIds[index]);
+        let stored = current;
+        if (changed) {
+          const revision = createReferenceRevision(current.revision);
+          const stateRows = this.#database.prepare(`${watchlistStateSelect}
+            WHERE profile_id = ? AND chain_id = ? AND wallet_address = ?`)
+            .all(profile.profileId, account.chainId, account.address) as ReferenceWatchlistStateRow[];
+          if (stateRows.length === 0) {
+            this.#database.prepare(`INSERT INTO reference_pair_watchlist_state(
+              profile_id, chain_id, wallet_address, revision, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)`)
+              .run(profile.profileId, account.chainId, account.address, revision, completedAt, completedAt);
+          } else {
+            const update = this.#database.prepare(`UPDATE reference_pair_watchlist_state
+              SET revision = ?, updated_at = ?
+              WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? AND revision = ?`)
+              .run(
+                revision,
+                completedAt,
+                profile.profileId,
+                account.chainId,
+                account.address,
+                current.revision,
+              );
+            if (update.changes !== 1) throw new RuntimeOperationError("state_conflict");
+          }
+          this.#database.prepare(`DELETE FROM reference_pair_watchlist_entry
+            WHERE profile_id = ? AND chain_id = ? AND wallet_address = ?`)
+            .run(profile.profileId, account.chainId, account.address);
+          const insert = this.#database.prepare(`INSERT INTO reference_pair_watchlist_entry(
+            profile_id, chain_id, wallet_address, pair_id, pair_json, position
+          ) VALUES (?, ?, ?, ?, ?, ?)`);
+          projection.projection.nextEntries.forEach((pair, position) => {
+            insert.run(
+              profile.profileId,
+              account.chainId,
+              account.address,
+              pair.pairId,
+              canonicalJsonStringify(pair as unknown as CanonicalJson),
+              position,
+            );
+          });
+          stored = readReferenceWatchlistRaw(this.#database, profile.profileId, account);
+          if (
+            stored.revision !== revision ||
+            canonicalJsonStringify(stored.entries as unknown as CanonicalJson) !==
+              canonicalJsonStringify(
+                projection.projection.nextEntries as unknown as CanonicalJson,
+              )
+          ) throw new Error("Reference watchlist persistence postcondition failed.");
+        }
+        const operation = parseReferenceWatchlistOperation({
+          contractVersion: "1",
+          domain: "reference_watchlist",
+          operationId: action.review.operationId,
+          kind: action.review.kind,
+          initiatedBy: action.initiatedBy,
+          review: action.review,
+          state: "completed",
+          completedAt,
+          result: {
+            outcome: action.review.kind === "add"
+              ? "watchlist_pair_added"
+              : action.review.kind === "remove"
+                ? "watchlist_pair_removed"
+                : "watchlist_pairs_reordered",
+            watchlist: stored,
+          },
+        });
+        this.#database.prepare(`INSERT INTO reference_watchlist_operation(
+          profile_id, operation_id, kind, initiated_by, review_digest,
+          chain_id, wallet_address, operation_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+          profile.profileId,
+          operation.operationId,
+          operation.kind,
+          operation.initiatedBy,
+          operation.review.reviewDigest,
+          account.chainId,
+          account.address,
+          canonicalBytes(operation as unknown as CanonicalJson),
+        );
+        const storedRows = this.#database.prepare(`${referenceWatchlistOperationSelect}
+          WHERE profile_id = ? AND operation_id = ?`)
+          .all(profile.profileId, operation.operationId) as ReferenceWatchlistOperationRow[];
+        if (storedRows.length !== 1 || storedRows[0] === undefined) {
+          throw new Error("Reference watchlist operation persistence failed.");
+        }
+        return decodeReferenceWatchlistOperationRow(storedRows[0], profile.profileId);
+      });
+    } catch (error) {
+      if (error instanceof ReferenceMarketOperationError) throw error;
+      throw storageError(error);
+    }
   }
 
   private assertCurrentWalletConnection(
@@ -2318,76 +2708,101 @@ export class ProductDatabase {
     ) throw new RuntimeOperationError("state_conflict");
   }
 
-  private applyTokenConfirmation(
-    input: TokenCatalogConfirmationCommand,
-  ): ReturnType<TokenCatalogStore["applyConfirmation"]> {
+  private readTokenSelectionOperation(
+    operationIdInput: TokenCatalogOperation["operationId"],
+  ): TokenCatalogOperation | null {
     try {
-      const operation = tokenCatalogOperationSchema.parse(input.operation);
-      if (operation.state !== "applying" || operation.kind !== input.kind) {
-        throw new TokenCatalogOperationError("invalid_input");
-      }
-      const account = evmAccountIdentitySchema.parse(operation.account);
-      const asset = erc20AssetIdentitySchema.parse(operation.asset);
-      const expectedConnectionRevision = parseRuntimeRevision(input.expectedConnectionRevision);
+      const operationId = operationIdSchema.parse(operationIdInput);
+      return this.#readWithIdentity(() => {
+        const profile = readProfileRaw(this.#database);
+        const rows = this.#database.prepare(`${tokenSelectionOperationSelect}
+          WHERE profile_id = ? AND operation_id = ?`)
+          .all(profile.profileId, operationId) as TokenSelectionOperationRow[];
+        if (rows.length === 0) return null;
+        if (rows.length !== 1 || rows[0] === undefined) {
+          throw new Error("Token selection operation identity is not unique.");
+        }
+        return decodeTokenSelectionOperationRow(rows[0], profile.profileId);
+      });
+    } catch (error) { throw tokenCatalogStorageError(error); }
+  }
+
+  private applyTokenSelectionChange(
+    input: TokenSelectionActionCommand,
+  ): ReturnType<TokenCatalogStore["applySelectionChange"]> {
+    try {
+      const action = tokenSelectionDirectActionSchema.parse(input.action);
+      const account = evmAccountIdentitySchema.parse(action.review.precondition.account);
+      const asset = erc20AssetIdentitySchema.parse(action.review.target.asset);
+      const expectedConnectionRevision = parseRuntimeRevision(
+        action.review.precondition.connectionRevision,
+      );
+      const revision = tokenSelectionRevisionSchema.parse(input.selectionRevision);
+      const stateRevision = tokenSelectionSetRevisionSchema.parse(input.selectionSetRevision);
+      const completedAt = parseUtcTimestamp(input.completedAt);
+      const inspection = input.inspection === null
+        ? null
+        : tokenInspectionSuccessSchema.parse(input.inspection);
+      const verification = input.officialVerification === null
+        ? null
+        : stockFactoryVerificationSchema.parse(input.officialVerification);
       return this.#writeWithIdentity(() => {
         const profile = readProfileRaw(this.#database);
+        const existingRows = this.#database.prepare(`${tokenSelectionOperationSelect}
+          WHERE operation_id = ?`).all(action.review.operationId) as TokenSelectionOperationRow[];
+        if (existingRows.length > 0) {
+          if (existingRows.length !== 1 || existingRows[0] === undefined) {
+            throw new Error("Token selection operation identity is not unique.");
+          }
+          const existing = decodeTokenSelectionOperationRow(existingRows[0], profile.profileId);
+          if (
+            existing.kind !== action.review.kind ||
+            canonicalJsonStringify(existing.review as unknown as CanonicalJson) !==
+              canonicalJsonStringify(action.review as unknown as CanonicalJson)
+          ) throw new TokenCatalogOperationError("state_conflict");
+          return existing;
+        }
+
         this.assertCurrentWalletConnection(account, expectedConnectionRevision);
-        const inspection = operation.review.inspection === null
-          ? null
-          : tokenInspectionSuccessSchema.parse(operation.review.inspection);
-        const revision = tokenSelectionRevisionSchema.parse(input.selectionRevision);
-        const stateRevision = tokenSelectionSetRevisionSchema.parse(input.selectionSetRevision);
-        const now = parseUtcTimestamp(input.now);
         let state = this.getTokenSelectionStateRaw(profile.profileId, account);
-        if ((state?.revision ?? null) !== operation.review.selectionSetRevision) {
+        if ((state?.revision ?? null) !== action.review.precondition.selectionSetRevision) {
           throw new TokenCatalogOperationError("token_selection_revision_changed");
         }
         if (stateRevision === state?.revision) throw new TokenCatalogOperationError("state_conflict");
-        if (state === undefined) {
-          this.#database.prepare(`INSERT INTO wallet_token_selection_state(
-            profile_id, chain_id, wallet_address, revision, defaults_initialized, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, 0, ?, ?)`)
-            .run(profile.profileId, account.chainId, account.address, stateRevision, now, now);
-        }
         const current = this.getTokenSelectionRaw(profile.profileId, account, asset);
-        if (canonicalJsonStringify((current?.selection ?? null) as unknown as CanonicalJson) !==
-          canonicalJsonStringify(operation.review.previousSelection as unknown as CanonicalJson)) {
-          throw new TokenCatalogOperationError("token_selection_revision_changed");
-        }
+        if (
+          canonicalJsonStringify((current?.selection ?? null) as unknown as CanonicalJson) !==
+            canonicalJsonStringify(
+              action.review.precondition.previousSelection as unknown as CanonicalJson,
+            )
+        ) throw new TokenCatalogOperationError("token_selection_revision_changed");
 
-        if (input.kind === "add" && operation.kind === "add") {
-          if (inspection === null) throw new TokenCatalogOperationError("internal_error");
-          const inspectionDigest = operation.review.inspectionDigest;
-          if (inspectionDigest === null) {
-            throw new TokenCatalogOperationError("internal_error");
-          }
+        if (action.review.kind === "add") {
+          if (inspection === null) throw new TokenCatalogOperationError("invalid_input");
           const snapshot = readOfficialAssetSnapshotRaw(this.#database);
-          if (snapshot === undefined || snapshot.revision !== operation.review.officialSnapshotRevision) {
-            throw new RuntimeOperationError("state_conflict");
-          }
-          const member = findOfficialAssetMember(snapshot, asset.address);
-          const parsedVerification = input.officialVerification === null
-            ? null
-            : stockFactoryVerificationSchema.safeParse(input.officialVerification);
-          if (parsedVerification !== null && !parsedVerification.success) {
-            throw new RuntimeOperationError("state_conflict");
-          }
-          const verification = parsedVerification?.data ?? null;
-          if ((member === undefined) !== (verification === null) ||
-            (member !== undefined && verification !== null && (
-              verification.assetUid !== member.assetUid ||
-              verification.contractAddress !== member.contractAddress ||
-              verification.block.chainId !== account.chainId ||
-              operation.review.officialEvidence?.assetUid !== member.assetUid ||
-              operation.review.officialEvidence.verificationBlock.chainId !== verification.block.chainId ||
-              operation.review.officialEvidence.verificationBlock.blockNumber !== verification.block.blockNumber ||
-              operation.review.officialEvidence.verificationBlock.blockHash !== verification.block.blockHash ||
-              operation.review.officialEvidence.verificationBlock.blockTimestamp !== verification.block.blockTimestamp
-            ))) throw new RuntimeOperationError("state_conflict");
-          const resultJson = canonicalJsonStringify(inspection as unknown as CanonicalJson);
+          if (
+            snapshot === undefined ||
+            snapshot.revision !== action.review.fixedEvidence.officialSnapshotRevision
+          ) throw new RuntimeOperationError("state_conflict");
+          const member = findOfficialAssetMember(snapshot, asset.address) ?? null;
+          const projection = createTokenAdditionReviewProjection({
+            inspection,
+            officialSnapshotRevision: snapshot.revision,
+            officialMember: member,
+            officialVerification: verification,
+          });
+          if (
+            canonicalJsonStringify(projection as unknown as CanonicalJson) !==
+              canonicalJsonStringify({
+                decision: action.review.decision,
+                fixedEvidence: action.review.fixedEvidence,
+              } as unknown as CanonicalJson)
+          ) throw new RuntimeOperationError("state_conflict");
           if (current?.selection.included === true) {
             throw new TokenCatalogOperationError("token_selection_already_included");
           }
+          const inspectionDigest = tokenInspectionDigest(inspection);
+          const resultJson = canonicalJsonStringify(inspection as unknown as CanonicalJson);
           this.#database.prepare(`INSERT INTO contract(chain_id, contract_address) VALUES (?, ?)
             ON CONFLICT(chain_id, contract_address) DO NOTHING`).run(asset.chainId, asset.address);
           this.#database.prepare(`INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)
@@ -2406,14 +2821,37 @@ export class ProductDatabase {
           } else {
             decodeInspectionRow(inspectionRows[0]);
           }
+          if (state === undefined) {
+            this.#database.prepare(`INSERT INTO wallet_token_selection_state(
+              profile_id, chain_id, wallet_address, revision, defaults_initialized, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 0, ?, ?)`).run(
+              profile.profileId,
+              account.chainId,
+              account.address,
+              stateRevision,
+              completedAt,
+              completedAt,
+            );
+          }
           this.#database.prepare(`INSERT INTO wallet_token_selection(
             profile_id, chain_id, wallet_address, token_address, included, revision, created_at, updated_at
           ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)
           ON CONFLICT(profile_id, chain_id, wallet_address, token_address) DO UPDATE SET
             included = 1, revision = excluded.revision, updated_at = excluded.updated_at`)
-            .run(profile.profileId, account.chainId, account.address, asset.address, revision, now, now);
-        } else if (input.kind === "remove" && operation.kind === "remove") {
-          const previous = operation.review.previousSelection;
+            .run(
+              profile.profileId,
+              account.chainId,
+              account.address,
+              asset.address,
+              revision,
+              completedAt,
+              completedAt,
+            );
+        } else {
+          if (inspection !== null || verification !== null) {
+            throw new TokenCatalogOperationError("invalid_input");
+          }
+          const previous = action.review.precondition.previousSelection;
           if (previous === null || !previous.included || current === undefined) {
             throw new TokenCatalogOperationError("token_selection_not_included");
           }
@@ -2422,14 +2860,17 @@ export class ProductDatabase {
             WHERE profile_id = ? AND chain_id = ? AND wallet_address = ?
               AND token_address = ? AND revision = ? AND included = 1`)
             .run(
-              revision, now, profile.profileId, account.chainId, account.address,
-              asset.address, previous.revision,
+              revision,
+              completedAt,
+              profile.profileId,
+              account.chainId,
+              account.address,
+              asset.address,
+              previous.revision,
             );
           if (removal.changes !== 1) {
             throw new TokenCatalogOperationError("token_selection_revision_changed");
           }
-        } else {
-          throw new TokenCatalogOperationError("invalid_input");
         }
 
         if (state !== undefined) {
@@ -2437,30 +2878,65 @@ export class ProductDatabase {
             SET revision = ?, updated_at = ?
             WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? AND revision = ?`)
             .run(
-              stateRevision, now, profile.profileId, account.chainId, account.address, state.revision,
+              stateRevision,
+              completedAt,
+              profile.profileId,
+              account.chainId,
+              account.address,
+              state.revision,
             );
           if (stateUpdate.changes !== 1) throw new RuntimeOperationError("state_conflict");
         }
         state = this.getTokenSelectionStateRaw(profile.profileId, account);
         const stored = this.getTokenSelectionRaw(profile.profileId, account, asset);
-        if (state?.revision !== stateRevision || stored === undefined ||
+        if (
+          state?.revision !== stateRevision ||
+          stored === undefined ||
           stored.selection.revision !== revision ||
-          stored.selection.included !== (operation.kind === "add")) {
-          throw new Error("Token selection persistence postcondition failed.");
-        }
-        const result: TokenSelectionDetail = operation.kind === "add"
+          stored.selection.included !== (action.review.kind === "add")
+        ) throw new Error("Token selection persistence postcondition failed.");
+        const selection: TokenSelectionDetail = action.review.kind === "add"
           ? tokenSelectionDetailSchema.parse({
               selection: stored.selection,
               historicalInspection: inspection,
             })
           : stored;
-
-        return deepFreezeValue(tokenCatalogConfirmedOperationSchema.parse({
-          ...operation,
+        const operation = parseTokenCatalogOperation({
+          contractVersion: "1",
+          domain: "token_selection",
+          operationId: action.review.operationId,
+          kind: action.review.kind,
+          initiatedBy: action.initiatedBy,
+          review: action.review,
           state: "completed",
-          result,
-          failure: null,
-        }));
+          completedAt,
+          result: {
+            outcome: action.review.kind === "add" ? "selection_added" : "selection_removed",
+            selectionSetRevision: stateRevision,
+            selection,
+          },
+        });
+        this.#database.prepare(`INSERT INTO token_selection_operation(
+          profile_id, operation_id, kind, initiated_by, review_digest,
+          chain_id, wallet_address, token_address, operation_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+          profile.profileId,
+          operation.operationId,
+          operation.kind,
+          operation.initiatedBy,
+          operation.review.reviewDigest,
+          account.chainId,
+          account.address,
+          asset.address,
+          canonicalBytes(operation as unknown as CanonicalJson),
+        );
+        const storedRows = this.#database.prepare(`${tokenSelectionOperationSelect}
+          WHERE profile_id = ? AND operation_id = ?`)
+          .all(profile.profileId, operation.operationId) as TokenSelectionOperationRow[];
+        if (storedRows.length !== 1 || storedRows[0] === undefined) {
+          throw new Error("Token selection operation persistence failed.");
+        }
+        return decodeTokenSelectionOperationRow(storedRows[0], profile.profileId);
       });
     } catch (error) { throw tokenCatalogStorageError(error); }
   }

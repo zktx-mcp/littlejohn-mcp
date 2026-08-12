@@ -70,8 +70,6 @@ const readRoutes = (
   method: identity.http.method,
   mutation: "none" as const,
   pathPattern: identity.http.path,
-  query: "none" as const,
-  response: "canonical_json" as const,
   successStatus: 200 as const,
   handler: (context: RouteContext) => invoke(bindings, identity.definition, context),
 }));
@@ -111,8 +109,6 @@ export const extendPublicInterfaceRoutes = (input: {
       method: capabilityCatalogInterface.http.method,
       mutation: "none",
       pathPattern: capabilityCatalogInterface.http.path,
-      query: "none",
-      response: "canonical_json",
       successStatus: 200,
       handler: async () => success(catalog as unknown as CanonicalJson),
     },

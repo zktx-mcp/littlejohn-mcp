@@ -12,6 +12,7 @@ import {
   capabilityIdSchema,
   captureCanonicalJson,
   chainAnchorSchema,
+  closedTupleSchema,
   compareCodePointSequences,
   contractAnalysisSchema,
   createCapabilitySuccessSchema,
@@ -35,9 +36,11 @@ import {
   hash32Schema,
   getCapabilityDefinitionSnapshot,
   parseHash32,
+  projectZodJsonSchema,
   observationIdSchema,
   operationIdByteLength,
   operationIdSchema,
+  optionalTokenTextSchema,
   readCapabilityLimits,
   replayPublicEvidence,
   staticScopeExclusionSchema,
@@ -50,6 +53,7 @@ import {
   unavailableTokenTextSchema,
   unsignedDecimalSchema,
   utcTimestampSchema,
+  utf8ByteLength,
   type ApplicationFailure,
   type ApplicationContract,
   type CanonicalJson,
@@ -68,16 +72,20 @@ import {
   type TokenOptionalTextUnavailableReason,
   type TokenStandardId,
   type TokenStandardObservationStatus,
-} from "../core/browser.js";
+} from "../core/client.js";
 import { tokenCatalogErrorRegistry } from "./error-registry.js";
 import type {
+  OfficialAssetSnapshotRevision,
+  OfficialAssetSourceMember,
   OfficialAssetSourceUnavailableReason,
+  StockFactoryVerification,
   StockFactoryClassificationUnavailableReason,
-} from "../registry/browser.js";
+} from "../registry/client.js";
 import {
-  tokenCatalogInteractionInterfaces,
+  tokenCatalogInitiators,
   tokenCatalogOperationKinds,
   tokenCatalogOperationStates,
+  type TokenCatalogInitiator,
   type TokenCatalogOperationKind,
   type TokenCatalogOperationState,
 } from "./state.js";
@@ -89,6 +97,8 @@ export const tokenCatalogContractLimits = Object.freeze({
   operationIdBytes: operationIdByteLength,
   listDefaultLimit: 25,
   listMaximumLimit: 25,
+  directActionUtf8Bytes: 32_768,
+  reviewActionMilliseconds: 300_000,
 });
 
 export const tokenCatalogDigestVersions = Object.freeze({
@@ -911,14 +921,9 @@ const sortGeneratedRequiredArrays = (value: unknown): unknown => {
   return result;
 };
 
-const directTokenInspectionProjection = JSON.parse(JSON.stringify(z.toJSONSchema(
-  canonicalTokenInspectionSuccessSchema,
-  {
-    target: "draft-2020-12",
-    unrepresentable: "throw",
-    io: "output",
-  },
-))) as Record<string, unknown>;
+const directTokenInspectionProjection = JSON.parse(JSON.stringify(
+  projectZodJsonSchema(canonicalTokenInspectionSuccessSchema, "output"),
+)) as Record<string, unknown>;
 delete directTokenInspectionProjection["$schema"];
 export const tokenInspectionSuccessProjectionSchema = deepFreezeValue(captureCanonicalJson(
   sortGeneratedRequiredArrays(directTokenInspectionProjection),
@@ -930,41 +935,6 @@ export const tokenInspectionDigest = (resultInput: unknown) => {
     digestKind: "token_inspection",
     digestVersion: tokenCatalogDigestVersions.inspection,
     result: result as unknown as CanonicalJson,
-  })}`);
-};
-
-const tokenCatalogReviewDigestInputSchema = z.object({
-  operationId: tokenCatalogOperationIdSchema,
-  kind: z.enum(tokenCatalogOperationKinds),
-  account: evmAccountIdentitySchema,
-  connectionRevision: unsignedDecimalSchema,
-  asset: erc20AssetIdentitySchema,
-  previousSelection: z.lazy(() => tokenSelectionSchema).nullable(),
-  selectionSetRevision: z.lazy(() => tokenSelectionSetRevisionSchema).nullable(),
-  inspection: tokenInspectionSuccessSchema.nullable(),
-  officialSnapshotRevision: canonicalBase64UrlSchema(16).nullable(),
-  officialEvidence: z.lazy(() => tokenOfficialSelectionEvidenceSchema).nullable(),
-  interactionInterface: z.enum(tokenCatalogInteractionInterfaces),
-  expiresAt: utcTimestampSchema,
-}).strict();
-
-export const tokenCatalogReviewDigest = (inputValue: unknown) => {
-  const input = tokenCatalogReviewDigestInputSchema.parse(captureCanonicalJson(inputValue));
-  return parseHash32(`0x${canonicalSha256({
-    digestKind: "token_catalog_review",
-    digestVersion: tokenCatalogDigestVersions.review,
-    operationId: input.operationId,
-    operationKind: input.kind,
-    account: input.account as unknown as CanonicalJson,
-    connectionRevision: input.connectionRevision,
-    asset: input.asset as unknown as CanonicalJson,
-    previousSelection: input.previousSelection as unknown as CanonicalJson,
-    selectionSetRevision: input.selectionSetRevision,
-    inspection: input.inspection as unknown as CanonicalJson,
-    officialSnapshotRevision: input.officialSnapshotRevision,
-    officialEvidence: input.officialEvidence as unknown as CanonicalJson,
-    interactionInterface: input.interactionInterface,
-    expiresAt: input.expiresAt,
   })}`);
 };
 
@@ -1019,42 +989,6 @@ export const tokenSelectionDetailSchema = z.object({
 });
 export type TokenSelectionDetail = z.infer<typeof tokenSelectionDetailSchema>;
 
-const operationFailureCodes = Object.freeze([
-  "internal_error",
-  "runtime_state_unavailable",
-  "state_conflict",
-  "token_selection_revision_changed",
-  "wallet_not_connected",
-  "wallet_session_unusable",
-]);
-const tokenOperationFailureSchema = applicationFailureSchemaFor(
-  tokenCatalogErrorRegistry,
-  operationFailureCodes,
-);
-
-const operationReviewSchema = z.object({
-  previousSelection: tokenSelectionSchema.nullable(),
-  selectionSetRevision: tokenSelectionSetRevisionSchema.nullable(),
-  inspection: tokenInspectionSuccessSchema.nullable(),
-  inspectionDigest: hash32Schema.nullable(),
-  officialSnapshotRevision: canonicalBase64UrlSchema(16).nullable(),
-  officialEvidence: tokenOfficialSelectionEvidenceSchema.nullable(),
-  reviewDigest: hash32Schema,
-}).strict();
-
-const selectionOperationResultSchema = tokenSelectionDetailSchema;
-
-const operationCommonShape = {
-  operationId: tokenCatalogOperationIdSchema,
-  interactionInterface: z.enum(tokenCatalogInteractionInterfaces),
-  createdAt: utcTimestampSchema,
-  expiresAt: utcTimestampSchema,
-  account: evmAccountIdentitySchema,
-  connectionRevision: unsignedDecimalSchema,
-  asset: erc20AssetIdentitySchema,
-  review: operationReviewSchema,
-} as const;
-
 const sameAccount = (left: EvmAccountIdentity, right: EvmAccountIdentity): boolean =>
   left.chainId === right.chainId && left.address === right.address;
 
@@ -1072,167 +1006,263 @@ const sameChainAnchor = (
   left.blockHash === right.blockHash &&
   left.blockTimestamp === right.blockTimestamp;
 
-const operationVariantSchema = <
-  Kind extends TokenCatalogOperationKind,
-  State extends TokenCatalogOperationState,
-  ResultSchema extends ZodType,
-  FailureSchema extends ZodType,
->(
-  kind: Kind,
-  state: State,
-  result: ResultSchema,
-  failure: FailureSchema,
-) => z.object({
-  ...operationCommonShape,
-  kind: z.literal(kind),
-  state: z.literal(state),
-  result,
-  failure,
-}).strict();
-
-const operationSchemasForKind = <
-  Kind extends TokenCatalogOperationKind,
-  CompletedResultSchema extends ZodType,
->(kind: Kind, completedResult: CompletedResultSchema) => ({
-  applying: operationVariantSchema(kind, "applying", z.null(), z.null()),
-  awaiting_confirmation: operationVariantSchema(
-    kind,
-    "awaiting_confirmation",
-    z.null(),
-    z.null(),
-  ),
-  cancelled: operationVariantSchema(kind, "cancelled", z.null(), z.null()),
-  completed: operationVariantSchema(kind, "completed", completedResult, z.null()),
-  expired: operationVariantSchema(kind, "expired", z.null(), z.null()),
-  failed: operationVariantSchema(kind, "failed", z.null(), tokenOperationFailureSchema),
-} as const satisfies Record<TokenCatalogOperationState, ZodType>);
-
-const operationSchemas = {
-  add: operationSchemasForKind("add", selectionOperationResultSchema),
-  remove: operationSchemasForKind("remove", selectionOperationResultSchema),
-} as const satisfies Record<TokenCatalogOperationKind, object>;
-
-const tokenCatalogOperationStructuralSchema = z.union([
-  operationSchemas.add.applying,
-  operationSchemas.add.awaiting_confirmation,
-  operationSchemas.add.cancelled,
-  operationSchemas.add.completed,
-  operationSchemas.add.expired,
-  operationSchemas.add.failed,
-  operationSchemas.remove.applying,
-  operationSchemas.remove.awaiting_confirmation,
-  operationSchemas.remove.cancelled,
-  operationSchemas.remove.completed,
-  operationSchemas.remove.expired,
-  operationSchemas.remove.failed,
+const tokenInspectionWarningCodeSubsetSchema = z.union([
+  z.array(z.never()).max(0),
+  closedTupleSchema([z.literal("decimals_unavailable")]),
+  closedTupleSchema([z.literal("partial_result")]),
+  closedTupleSchema([z.literal("decimals_unavailable"), z.literal("partial_result")]),
 ]);
 
-export type TokenCatalogOperation = z.output<typeof tokenCatalogOperationStructuralSchema>;
-export type TokenCatalogOperationVariant<
-  Kind extends TokenCatalogOperationKind,
-  State extends TokenCatalogOperationState,
-> = Extract<TokenCatalogOperation, { readonly kind: Kind; readonly state: State }>;
+const projectTokenSelectionReviewText = (
+  value: TokenInspectionData["metadata"]["name"],
+): z.output<typeof optionalTokenTextSchema> => optionalTokenTextSchema.parse(
+  value.status === "available"
+    ? { status: value.status, value: value.value }
+    : { status: value.status, reason: value.reason },
+);
 
-export type TokenCatalogAwaitingOperation<Kind extends TokenCatalogOperationKind = TokenCatalogOperationKind> =
-  Extract<TokenCatalogOperation, { readonly kind: Kind; readonly state: "awaiting_confirmation" }>;
-export type TokenCatalogConfirmedOperation = Extract<
-  TokenCatalogOperation,
-  { readonly state: "completed" | "failed" }
->;
-export type TokenCatalogTerminalOperation = Extract<
-  TokenCatalogOperation,
-  { readonly state: "cancelled" | "completed" | "expired" | "failed" }
+const tokenSelectionReviewCommonShape = {
+  contractVersion: z.literal("1"),
+  domain: z.literal("token_selection"),
+  operationId: tokenCatalogOperationIdSchema,
+  createdAt: utcTimestampSchema,
+  actionExpiresAt: utcTimestampSchema,
+  target: z.object({ asset: erc20AssetIdentitySchema }).strict(),
+  precondition: z.object({
+    account: evmAccountIdentitySchema,
+    connectionRevision: unsignedDecimalSchema,
+    previousSelection: tokenSelectionSchema.nullable(),
+    selectionSetRevision: tokenSelectionSetRevisionSchema.nullable(),
+  }).strict(),
+} as const;
+
+const additionReviewWithoutDigestSchema = z.object({
+  ...tokenSelectionReviewCommonShape,
+  kind: z.literal("add"),
+  decision: z.object({
+    name: optionalTokenTextSchema,
+    symbol: optionalTokenTextSchema,
+    officialClassification: z.enum(["official", "unlisted"]),
+    warningCodes: tokenInspectionWarningCodeSubsetSchema,
+  }).strict(),
+  fixedEvidence: z.object({
+    inspectionBlock: chainAnchorSchema,
+    officialSnapshotRevision: canonicalBase64UrlSchema(16),
+    officialEvidence: tokenOfficialSelectionEvidenceSchema.nullable(),
+  }).strict(),
+}).strict();
+
+const removalReviewWithoutDigestSchema = z.object({
+  ...tokenSelectionReviewCommonShape,
+  kind: z.literal("remove"),
+  decision: z.object({ action: z.literal("remove_selection") }).strict(),
+  fixedEvidence: z.object({}).strict(),
+}).strict();
+
+const tokenSelectionReviewWithoutDigestSchema = z.discriminatedUnion("kind", [
+  additionReviewWithoutDigestSchema,
+  removalReviewWithoutDigestSchema,
+]);
+export type TokenSelectionReviewWithoutDigest = z.infer<
+  typeof tokenSelectionReviewWithoutDigestSchema
 >;
 
-const validateTokenCatalogOperation = (
-  operation: TokenCatalogOperation,
-  addIssue: (message: string) => void,
-): void => {
-  if (
-    operation.account.chainId !== operation.asset.chainId ||
-    operation.expiresAt <= operation.createdAt
-  ) {
-    addIssue("Token operation identity or lifetime is invalid.");
-    return;
-  }
-  const previous = operation.review.previousSelection;
-  if (previous !== null && (
-    !sameAccount(previous.account, operation.account) ||
-    !sameAsset(previous.asset, operation.asset)
-  )) {
-    addIssue("Token operation previous selection is invalid.");
-  }
-  if (
-    (operation.kind === "add" && previous?.included === true) ||
-    (operation.kind === "remove" && previous?.included !== true) ||
-    (operation.kind === "add" && operation.review.inspection === null) ||
-    (operation.kind === "remove" && operation.review.inspection !== null) ||
-    (operation.kind === "add" && operation.review.officialSnapshotRevision === null) ||
-    (operation.kind === "remove" && (
-      operation.review.officialSnapshotRevision !== null ||
-      operation.review.officialEvidence !== null
-    )) ||
-    (operation.review.officialEvidence !== null &&
-      operation.review.officialEvidence.snapshotRevision !== operation.review.officialSnapshotRevision)
-  ) {
-    addIssue("Token operation review does not match its kind.");
-  }
-  const inspection = operation.review.inspection;
-  const inspectionDigest = operation.review.inspectionDigest;
-  if (
-    (inspection === null) !== (inspectionDigest === null) ||
-    (inspection !== null &&
-      inspectionDigest !== tokenInspectionDigest(inspection))
-  ) addIssue("Token operation inspection digest is invalid.");
-  if (inspection !== null && (
-    inspection.data.asset.chainId !== operation.asset.chainId ||
-    inspection.data.asset.address !== operation.asset.address
-  )) addIssue("Token operation inspection identity is invalid.");
-  if (
-    inspection !== null &&
-    operation.review.officialEvidence !== null &&
-    !sameChainAnchor(
-      operation.review.officialEvidence.verificationBlock,
-      inspection.data.analysis.block,
-    )
-  ) addIssue("Token operation official verification anchor is invalid.");
-  if (operation.state !== "completed" || operation.result === null) return;
-  if (!("selection" in operation.result)) {
-    addIssue("Token selection result is invalid.");
-    return;
-  }
-  const selection = operation.result.selection;
-  if (
-    !sameAccount(selection.account, operation.account) ||
-    !sameAsset(selection.asset, operation.asset) ||
-    selection.included !== (operation.kind === "add") ||
-    selection.revision === previous?.revision ||
-    selection.updatedAt < operation.createdAt ||
-    (previous === null
-      ? selection.createdAt < operation.createdAt
-      : selection.createdAt !== previous.createdAt) ||
-    (operation.kind === "add" && (
-      operation.result.historicalInspection === null ||
-      inspection === null ||
-      tokenInspectionDigest(operation.result.historicalInspection) !== tokenInspectionDigest(inspection)
-    ))
-  ) addIssue("Token selection result is invalid.");
+export const tokenSelectionReviewDigest = (inputValue: unknown) => {
+  const review = tokenSelectionReviewWithoutDigestSchema.parse(captureCanonicalJson(inputValue));
+  return parseHash32(`0x${canonicalSha256({
+    digestKind: "token_selection_change_review",
+    digestVersion: tokenCatalogDigestVersions.review,
+    review: review as unknown as CanonicalJson,
+  })}`);
 };
 
-const validateOperationSchema = <Schema extends ZodType<TokenCatalogOperation>>(schema: Schema) =>
-  schema.superRefine((value, context) => {
-    validateTokenCatalogOperation(value, (message) => {
-      context.addIssue({ code: "custom", message });
-    });
+const validateTokenSelectionReview = (
+  review: TokenSelectionReviewWithoutDigest & { readonly reviewDigest: string },
+  context: z.core.$RefinementCtx,
+): void => {
+  const previous = review.precondition.previousSelection;
+  const expectedDigest = tokenSelectionReviewDigest(
+    (({ reviewDigest: _digest, ...withoutDigest }) => withoutDigest)(review),
+  );
+  if (
+    Date.parse(review.actionExpiresAt) - Date.parse(review.createdAt) !==
+      tokenCatalogContractLimits.reviewActionMilliseconds ||
+    review.target.asset.chainId !== review.precondition.account.chainId ||
+    (previous !== null && (
+      !sameAccount(previous.account, review.precondition.account) ||
+      !sameAsset(previous.asset, review.target.asset)
+    )) ||
+    expectedDigest !== review.reviewDigest
+  ) {
+    context.addIssue({ code: "custom", message: "Token selection Review is inconsistent." });
+    return;
+  }
+  if (review.kind === "add") {
+    if (
+      previous?.included === true ||
+      (previous !== null && review.precondition.selectionSetRevision === null) ||
+      review.fixedEvidence.inspectionBlock.chainId !== review.target.asset.chainId ||
+      (review.decision.officialClassification === "official") !==
+        (review.fixedEvidence.officialEvidence !== null) ||
+      (review.fixedEvidence.officialEvidence !== null && (
+        review.fixedEvidence.officialEvidence.snapshotRevision !==
+          review.fixedEvidence.officialSnapshotRevision ||
+        !sameChainAnchor(
+          review.fixedEvidence.officialEvidence.verificationBlock,
+          review.fixedEvidence.inspectionBlock,
+        )
+      ))
+    ) context.addIssue({ code: "custom", message: "Token addition Review is inconsistent." });
+  } else if (
+    previous?.included !== true ||
+    review.precondition.selectionSetRevision === null
+  ) context.addIssue({ code: "custom", message: "Token removal Review is inconsistent." });
+};
+
+const additionReviewSchema = additionReviewWithoutDigestSchema.extend({
+  reviewDigest: hash32Schema,
+}).strict().superRefine(validateTokenSelectionReview);
+const removalReviewSchema = removalReviewWithoutDigestSchema.extend({
+  reviewDigest: hash32Schema,
+}).strict().superRefine(validateTokenSelectionReview);
+
+export const tokenSelectionReviewSchema = z.discriminatedUnion("kind", [
+  additionReviewSchema,
+  removalReviewSchema,
+]);
+export type TokenSelectionReview = z.infer<typeof tokenSelectionReviewSchema>;
+
+export const createTokenAdditionReviewProjection = (input: Readonly<{
+  inspection: TokenInspectionSuccess;
+  officialSnapshotRevision: OfficialAssetSnapshotRevision;
+  officialMember: OfficialAssetSourceMember | null;
+  officialVerification: StockFactoryVerification | null;
+}>): Readonly<{
+  decision: z.infer<typeof additionReviewWithoutDigestSchema>["decision"];
+  fixedEvidence: z.infer<typeof additionReviewWithoutDigestSchema>["fixedEvidence"];
+}> => {
+  const inspection = tokenInspectionSuccessSchema.parse(input.inspection);
+  const warningCodes = tokenInspectionWarningCodeSubsetSchema.parse(
+    tokenInspectionEvidence.warningCodes.filter((code) =>
+      inspection.warnings.some((warning) => warning.code === code)),
+  );
+  const member = input.officialMember;
+  const verification = input.officialVerification;
+  if ((member === null) !== (verification === null)) {
+    throw new TypeError("Official token verification does not match its source member.");
+  }
+  const block = inspection.data.analysis.block;
+  if (member !== null && verification !== null && (
+    member.contractAddress !== inspection.data.asset.address ||
+    member.assetUid !== verification.assetUid ||
+    member.contractAddress !== verification.contractAddress ||
+    !sameChainAnchor(block, verification.block)
+  )) throw new TypeError("Official token verification is inconsistent.");
+  return deepFreezeValue({
+    decision: {
+      name: projectTokenSelectionReviewText(inspection.data.metadata.name),
+      symbol: projectTokenSelectionReviewText(inspection.data.metadata.symbol),
+      officialClassification: member === null ? "unlisted" : "official",
+      warningCodes,
+    },
+    fixedEvidence: {
+      inspectionBlock: block,
+      officialSnapshotRevision: input.officialSnapshotRevision,
+      officialEvidence: member === null || verification === null
+        ? null
+        : {
+            assetUid: member.assetUid,
+            snapshotRevision: input.officialSnapshotRevision,
+            verificationBlock: verification.block,
+          },
+    },
+  });
+};
+
+export const tokenSelectionReviewRequestSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("add"), asset: erc20AssetIdentitySchema }).strict(),
+  z.object({
+    kind: z.literal("remove"),
+    asset: erc20AssetIdentitySchema,
+    expectedRevision: tokenSelectionRevisionSchema,
+  }).strict(),
+]);
+export type TokenSelectionReviewRequest = z.infer<typeof tokenSelectionReviewRequestSchema>;
+
+export const tokenSelectionReviewResultSchema = z.object({
+  review: tokenSelectionReviewSchema,
+}).strict();
+export type TokenSelectionReviewResult = z.infer<typeof tokenSelectionReviewResultSchema>;
+
+export const tokenSelectionDirectActionSchema = z.object({
+  review: tokenSelectionReviewSchema,
+  initiatedBy: z.enum(tokenCatalogInitiators),
+}).strict().superRefine((action, context) => {
+  if (
+    utf8ByteLength(canonicalJsonStringify(action as unknown as CanonicalJson)) >
+      tokenCatalogContractLimits.directActionUtf8Bytes
+  ) context.addIssue({ code: "custom", message: "Token selection action is too large." });
+});
+export type TokenSelectionDirectAction = z.infer<typeof tokenSelectionDirectActionSchema>;
+
+const tokenSelectionOperationResultSchema = z.object({
+  outcome: z.enum(["selection_added", "selection_removed"]),
+  selectionSetRevision: tokenSelectionSetRevisionSchema,
+  selection: tokenSelectionDetailSchema,
+}).strict();
+export type TokenSelectionOperationResult = z.infer<
+  typeof tokenSelectionOperationResultSchema
+>;
+
+const tokenSelectionOperationForKind = <Kind extends TokenCatalogOperationKind>(kind: Kind) =>
+  z.object({
+    contractVersion: z.literal("1"),
+    domain: z.literal("token_selection"),
+    operationId: tokenCatalogOperationIdSchema,
+    kind: z.literal(kind),
+    initiatedBy: z.enum(tokenCatalogInitiators),
+    review: kind === "add" ? additionReviewSchema : removalReviewSchema,
+    state: z.literal("completed"),
+    completedAt: utcTimestampSchema,
+    result: tokenSelectionOperationResultSchema,
+  }).strict().superRefine((operation, context) => {
+    const selection = operation.result.selection.selection;
+    const previous = operation.review.precondition.previousSelection;
+    if (
+      operation.completedAt < operation.review.createdAt ||
+      operation.operationId !== operation.review.operationId ||
+      !sameAccount(selection.account, operation.review.precondition.account) ||
+      !sameAsset(selection.asset, operation.review.target.asset) ||
+      selection.included !== (kind === "add") ||
+      selection.revision === previous?.revision ||
+      operation.result.selectionSetRevision === operation.review.precondition.selectionSetRevision ||
+      selection.updatedAt !== operation.completedAt ||
+      (previous === null
+        ? selection.createdAt !== operation.completedAt
+        : selection.createdAt !== previous.createdAt) ||
+      operation.result.outcome !== (kind === "add" ? "selection_added" : "selection_removed") ||
+      (kind === "add" && operation.result.selection.historicalInspection === null)
+    ) context.addIssue({ code: "custom", message: "Token selection operation is inconsistent." });
   });
 
-export const tokenCatalogOperationSchema = validateOperationSchema(tokenCatalogOperationStructuralSchema);
-export const tokenCatalogConfirmedOperationSchema = validateOperationSchema(z.union([
-  operationSchemas.add.completed,
-  operationSchemas.add.failed,
-  operationSchemas.remove.completed,
-  operationSchemas.remove.failed,
-]));
+const additionOperationSchema = tokenSelectionOperationForKind("add");
+const removalOperationSchema = tokenSelectionOperationForKind("remove");
+export const tokenCatalogOperationSchema = z.discriminatedUnion("kind", [
+  additionOperationSchema,
+  removalOperationSchema,
+]);
+export type TokenCatalogOperation = z.infer<typeof tokenCatalogOperationSchema>;
+export type TokenCatalogOperationVariant<Kind extends TokenCatalogOperationKind> = Extract<
+  TokenCatalogOperation,
+  { readonly kind: Kind }
+>;
+export type TokenCatalogConfirmedOperation = TokenCatalogOperation;
+export type TokenCatalogTerminalOperation = TokenCatalogOperation;
+
+export const parseTokenSelectionReview = (value: unknown): TokenSelectionReview =>
+  deepFreezeValue(tokenSelectionReviewSchema.parse(captureCanonicalJson(value)));
+export const parseTokenCatalogOperation = (value: unknown): TokenCatalogOperation =>
+  deepFreezeValue(tokenCatalogOperationSchema.parse(captureCanonicalJson(value)));
 
 const selectionInputSchema = z.object({ asset: erc20AssetIdentitySchema }).strict();
 const selectionsInputSchema = z.object({
@@ -1246,38 +1276,9 @@ const selectionsRequestSchema = z.object({
   limit: z.number().int().min(1).max(tokenCatalogContractLimits.listMaximumLimit),
   cursor: evmAddressSchema.nullable(),
 }).strict();
-const startAdditionInputSchema = z.object({
-  asset: erc20AssetIdentitySchema,
-}).strict();
-const startRemovalInputSchema = z.object({
-  asset: erc20AssetIdentitySchema,
-  expectedRevision: tokenSelectionRevisionSchema,
-}).strict();
-const operationInputSchema = z.object({ operationId: tokenCatalogOperationIdSchema }).strict();
-export const tokenCatalogOperationConfirmationInputSchema = z.object({
+export const tokenCatalogOperationInputSchema = z.object({
   operationId: tokenCatalogOperationIdSchema,
-  reviewDigest: hash32Schema,
 }).strict();
-
-const operationResultSchema = z.object({ operation: tokenCatalogOperationSchema }).strict();
-const selectionOperationStartResultSchema = z.object({
-  operation: validateOperationSchema(operationSchemas.add.awaiting_confirmation),
-}).strict();
-const removalOperationStartResultSchema = z.object({
-  operation: validateOperationSchema(operationSchemas.remove.awaiting_confirmation),
-}).strict();
-const terminalOperationStructuralSchema = z.union([
-  operationSchemas.add.cancelled,
-  operationSchemas.add.completed,
-  operationSchemas.add.expired,
-  operationSchemas.add.failed,
-  operationSchemas.remove.cancelled,
-  operationSchemas.remove.completed,
-  operationSchemas.remove.expired,
-  operationSchemas.remove.failed,
-]);
-const terminalOperationSchema = validateOperationSchema(terminalOperationStructuralSchema);
-const operationCancellationResultSchema = z.object({ operation: terminalOperationSchema }).strict();
 const selectionListResultSchema = z.object({
   selections: z.array(tokenSelectionSchema).max(tokenCatalogContractLimits.listMaximumLimit),
   nextCursor: evmAddressSchema.nullable(),
@@ -1307,45 +1308,25 @@ export type TokenSelectionInput = z.output<typeof selectionInputSchema>;
 export type TokenSelectionListInput = z.input<typeof selectionsInputSchema>;
 export type TokenSelectionListRequest = z.output<typeof selectionsInputSchema>;
 export type TokenSelectionListResult = z.output<typeof selectionListResultSchema>;
-export type TokenAdditionStartInput = z.input<typeof startAdditionInputSchema>;
-export type TokenAdditionStartRequest = z.output<typeof startAdditionInputSchema>;
-export type TokenRemovalStartInput = z.output<typeof startRemovalInputSchema>;
-export type TokenCatalogOperationInput = z.output<typeof operationInputSchema>;
-export type TokenCatalogOperationConfirmationInput = z.output<
-  typeof tokenCatalogOperationConfirmationInputSchema
->;
-export type TokenCatalogOperationResult = z.output<typeof operationResultSchema>;
-export type TokenCatalogOperationStartResult<
-  Kind extends TokenCatalogOperationKind = TokenCatalogOperationKind,
-> = Readonly<{ operation: TokenCatalogAwaitingOperation<Kind> }>;
-export type TokenCatalogCancellationResult = Readonly<{ operation: TokenCatalogTerminalOperation }>;
+export type TokenCatalogOperationInput = z.output<typeof tokenCatalogOperationInputSchema>;
 
 const contractFailureCodes = Object.freeze({
   selection: ["internal_error", "invalid_input", "runtime_state_unavailable", "token_selection_not_found", "wallet_not_connected", "wallet_session_unusable"],
   selections: ["internal_error", "invalid_input", "runtime_state_unavailable", "wallet_not_connected", "wallet_session_unusable"],
-  startAddition: ["chain_response_unavailable", "factory_identity_mismatch", "internal_error", "invalid_input", "not_found", "official_asset_response_too_large", "official_asset_response_unavailable", "rate_limited", "request_aborted", "runtime_busy", "runtime_state_unavailable", "source_inconsistent", "source_unavailable", "state_conflict", "token_code_missing", "token_identity_mismatch", "token_operation_conflict", "token_selection_already_included", "token_selection_revision_changed", "token_total_supply_reverted", "wallet_not_connected", "wallet_session_unusable"],
-  startRemoval: ["internal_error", "invalid_input", "runtime_busy", "runtime_state_unavailable", "state_conflict", "token_operation_conflict", "token_selection_not_found", "token_selection_not_included", "token_selection_revision_changed", "wallet_not_connected", "wallet_session_unusable"],
+  review: ["chain_response_unavailable", "factory_identity_mismatch", "internal_error", "invalid_input", "not_found", "rate_limited", "request_aborted", "result_too_large", "runtime_busy", "runtime_state_unavailable", "source_inconsistent", "source_unavailable", "state_conflict", "token_code_missing", "token_identity_mismatch", "token_selection_already_included", "token_selection_not_found", "token_selection_not_included", "token_selection_revision_changed", "token_total_supply_reverted", "wallet_not_connected", "wallet_session_unusable"],
+  addSelection: ["chain_response_unavailable", "factory_identity_mismatch", "internal_error", "invalid_input", "not_found", "rate_limited", "request_aborted", "result_too_large", "runtime_busy", "runtime_state_unavailable", "source_inconsistent", "source_unavailable", "state_conflict", "token_code_missing", "token_identity_mismatch", "token_review_expired", "token_selection_already_included", "token_selection_revision_changed", "token_total_supply_reverted", "wallet_not_connected", "wallet_session_unusable"],
+  removeSelection: ["internal_error", "invalid_input", "runtime_busy", "runtime_state_unavailable", "state_conflict", "token_review_expired", "token_selection_not_found", "token_selection_not_included", "token_selection_revision_changed", "wallet_not_connected", "wallet_session_unusable"],
   operation: ["internal_error", "invalid_input", "runtime_state_unavailable", "token_operation_not_found"],
-  cancelOperation: ["internal_error", "invalid_input", "runtime_state_unavailable", "state_conflict", "token_operation_not_found"],
 } as const);
 
-const startAdditionExternalFailuresAreComplete: Exclude<
-  OfficialAssetSourceUnavailableReason | StockFactoryClassificationUnavailableReason,
-  (typeof contractFailureCodes.startAddition)[number]
+const tokenAdditionExternalFailuresAreComplete: Exclude<
+  StockFactoryClassificationUnavailableReason,
+  (typeof contractFailureCodes.review)[number] | (typeof contractFailureCodes.addSelection)[number]
 > extends never ? true : never = true;
 
-if (!startAdditionExternalFailuresAreComplete) {
+if (!tokenAdditionExternalFailuresAreComplete) {
   throw new TypeError("Token addition external failure contract is incomplete.");
 }
-
-const confirmationFailureCodes = Object.freeze([
-  "internal_error",
-  "invalid_input",
-  "runtime_state_unavailable",
-  "state_conflict",
-  "token_operation_expired",
-  "token_operation_not_found",
-] as const);
 
 export interface TokenCatalogApplicationContract<Input, Success> {
   readonly capabilityId: CapabilityId;
@@ -1363,7 +1344,6 @@ export interface TokenCatalogApplicationContract<Input, Success> {
 
 export const tokenCatalogInternalContextSchema = z.object({
   operationId: operationIdSchema.optional(),
-  interactionInterface: z.enum(tokenCatalogInteractionInterfaces).optional(),
 }).strict();
 export type TokenCatalogInternalContext = z.infer<typeof tokenCatalogInternalContextSchema>;
 
@@ -1412,83 +1392,33 @@ const defineApplicationContract = <Input, Success>(options: {
   });
 };
 
-export interface TokenCatalogOperationConfirmationContract {
-  readonly contractVersion: "1";
-  readonly inputSchema: typeof tokenCatalogOperationConfirmationInputSchema;
-  readonly successSchema: typeof tokenCatalogConfirmedOperationSchema;
-  readonly failureCodes: readonly string[];
-  readonly applicationContract: ApplicationContract<
-    TokenCatalogOperationConfirmationInput,
-    TokenCatalogInternalContext,
-    TokenCatalogConfirmedOperation
-  >;
-  parseInput(value: unknown): TokenCatalogOperationConfirmationInput;
-  parsePublicSuccess(
-    input: unknown,
-    value: unknown,
-  ): TokenCatalogConfirmedOperation;
-  parseBoundSuccess(input: unknown, context: unknown, value: unknown): TokenCatalogConfirmedOperation;
-  parseFailure(value: unknown): ApplicationFailure;
-  normalizeFailure(value: unknown): ApplicationFailure;
-}
+type TokenSelectionActionForKind<Kind extends TokenCatalogOperationKind> =
+  TokenSelectionDirectAction & {
+    readonly review: Extract<TokenSelectionReview, { readonly kind: Kind }>;
+  };
 
-const confirmationApplicationContract = defineCanonicalApplicationContract({
-  contractVersion: "1",
-  inputSchema: tokenCatalogOperationConfirmationInputSchema,
-  successSchema: tokenCatalogConfirmedOperationSchema,
-  internalContextSchema: tokenCatalogInternalContextSchema,
-  errorRegistry: tokenCatalogErrorRegistry,
-  failureCodes: confirmationFailureCodes,
-  validatePublicSuccess: (input, success) => {
-    if (
-      success.operationId !== input.operationId ||
-      success.review.reviewDigest !== input.reviewDigest
-    ) throw new TypeError("Token operation confirmation result does not match its input.");
-  },
-  validateBoundSuccess: (_input, context, success) => {
-    if (
-      context.operationId !== success.operationId ||
-      context.interactionInterface !== success.interactionInterface
-    ) throw new TypeError("Token operation confirmation result does not match its internal context.");
-  },
-});
+const actionSchemaForKind = <Kind extends TokenCatalogOperationKind>(kind: Kind) =>
+  tokenSelectionDirectActionSchema.refine(
+    (action): action is TokenSelectionActionForKind<Kind> => action.review.kind === kind,
+    `Token selection action must carry a ${kind} Review.`,
+  ) as ZodType<TokenSelectionActionForKind<Kind>>;
 
-export const tokenCatalogOperationConfirmationContract: TokenCatalogOperationConfirmationContract =
-  Object.freeze({
-    contractVersion: confirmationApplicationContract.contractVersion,
-    inputSchema: tokenCatalogOperationConfirmationInputSchema,
-    successSchema: tokenCatalogConfirmedOperationSchema,
-    failureCodes: confirmationApplicationContract.failureCodes,
-    applicationContract: confirmationApplicationContract,
-    parseInput: confirmationApplicationContract.parseInput,
-    parsePublicSuccess: confirmationApplicationContract.parsePublicSuccess,
-    parseBoundSuccess: confirmationApplicationContract.parseBoundSuccess,
-    parseFailure: confirmationApplicationContract.parseFailure,
-    normalizeFailure: confirmationApplicationContract.normalizeFailure,
-  });
+const operationSchemaForKind = <Kind extends TokenCatalogOperationKind>(kind: Kind) =>
+  tokenCatalogOperationSchema.refine(
+    (operation): operation is TokenCatalogOperationVariant<Kind> => operation.kind === kind,
+    `Token selection operation must be ${kind}.`,
+  ) as ZodType<TokenCatalogOperationVariant<Kind>>;
 
-const validateOperationId = (
-  input: Readonly<{ operationId: string }>,
-  success: Readonly<{ operation: TokenCatalogOperation }>,
-) => {
-  if (input.operationId !== success.operation.operationId) throw new TypeError("Token operation identity mismatch.");
-};
-
-const validateCancelledOperation = (
-  input: Readonly<{ operationId: string }>,
-  success: TokenCatalogCancellationResult,
-) => {
-  validateOperationId(input, success);
-};
-
-const validateStartCommon = <Kind extends TokenCatalogOperationKind>(
-  asset: TokenSelection["asset"],
-  success: TokenCatalogOperationStartResult<Kind>,
-): TokenCatalogAwaitingOperation<Kind> => {
-  if (!sameAsset(success.operation.asset, asset)) {
-    throw new TypeError("Token operation start result is invalid.");
-  }
-  return success.operation;
+const validateActionOperation = <Kind extends TokenCatalogOperationKind>(
+  input: TokenSelectionActionForKind<Kind>,
+  success: TokenCatalogOperationVariant<Kind>,
+): void => {
+  if (
+    success.operationId !== input.review.operationId ||
+    success.review.reviewDigest !== input.review.reviewDigest ||
+    canonicalJsonStringify(success.review as unknown as CanonicalJson) !==
+      canonicalJsonStringify(input.review as unknown as CanonicalJson)
+  ) throw new TypeError("Token selection operation does not match its action.");
 };
 
 export const tokenCatalogApplicationContracts = Object.freeze({
@@ -1521,59 +1451,48 @@ export const tokenCatalogApplicationContracts = Object.freeze({
       ) throw new TypeError("Token selection page does not match its request.");
     },
   }),
-  startAddition: defineApplicationContract({
-    capabilityId: "token.start_addition",
+  selectionChangeReview: defineApplicationContract({
+    capabilityId: "token.selection_change_review",
     contractVersion: "1",
-    inputSchema: startAdditionInputSchema,
-    successSchema: selectionOperationStartResultSchema,
-    failureCodes: contractFailureCodes.startAddition,
+    inputSchema: tokenSelectionReviewRequestSchema,
+    successSchema: tokenSelectionReviewResultSchema,
+    failureCodes: contractFailureCodes.review,
     validatePublicSuccess: (input, success) => {
-      const operation = validateStartCommon(input.asset, success);
-      if (operation.review.previousSelection?.included === true) {
-        throw new TypeError("Token selection start result is invalid.");
-      }
-    },
-    validateBoundSuccess: (_input, context, success) => {
       if (
-        context.operationId !== success.operation.operationId ||
-        context.interactionInterface !== success.operation.interactionInterface
-      ) throw new TypeError("Token selection start result does not match its internal context.");
+        success.review.kind !== input.kind ||
+        !sameAsset(success.review.target.asset, input.asset) ||
+        (input.kind === "remove" &&
+          success.review.precondition.previousSelection?.revision !== input.expectedRevision)
+      ) throw new TypeError("Token selection Review does not match its request.");
     },
   }),
-  startRemoval: defineApplicationContract({
-    capabilityId: "token.start_removal",
+  addSelection: defineApplicationContract({
+    capabilityId: "token.add_selection",
     contractVersion: "1",
-    inputSchema: startRemovalInputSchema,
-    successSchema: removalOperationStartResultSchema,
-    failureCodes: contractFailureCodes.startRemoval,
-    validatePublicSuccess: (input, success) => {
-      const operation = validateStartCommon(input.asset, success);
-      if (
-        operation.review.previousSelection?.revision !== input.expectedRevision
-      ) throw new TypeError("Token removal start result is invalid.");
-    },
-    validateBoundSuccess: (_input, context, success) => {
-      if (
-        context.operationId !== success.operation.operationId ||
-        context.interactionInterface !== success.operation.interactionInterface
-      ) throw new TypeError("Token removal start result does not match its internal context.");
-    },
+    inputSchema: actionSchemaForKind("add"),
+    successSchema: operationSchemaForKind("add"),
+    failureCodes: contractFailureCodes.addSelection,
+    validatePublicSuccess: validateActionOperation,
+  }),
+  removeSelection: defineApplicationContract({
+    capabilityId: "token.remove_selection",
+    contractVersion: "1",
+    inputSchema: actionSchemaForKind("remove"),
+    successSchema: operationSchemaForKind("remove"),
+    failureCodes: contractFailureCodes.removeSelection,
+    validatePublicSuccess: validateActionOperation,
   }),
   operation: defineApplicationContract({
     capabilityId: "token.operation",
     contractVersion: "1",
-    inputSchema: operationInputSchema,
-    successSchema: operationResultSchema,
+    inputSchema: tokenCatalogOperationInputSchema,
+    successSchema: tokenCatalogOperationSchema,
     failureCodes: contractFailureCodes.operation,
-    validatePublicSuccess: validateOperationId,
-  }),
-  cancelOperation: defineApplicationContract({
-    capabilityId: "token.cancel_operation",
-    contractVersion: "1",
-    inputSchema: operationInputSchema,
-    successSchema: operationCancellationResultSchema,
-    failureCodes: contractFailureCodes.cancelOperation,
-    validatePublicSuccess: validateCancelledOperation,
+    validatePublicSuccess: (input, success) => {
+      if (input.operationId !== success.operationId) {
+        throw new TypeError("Token selection operation identity mismatch.");
+      }
+    },
   }),
 });
 
@@ -1583,10 +1502,3 @@ export type AnyTokenCatalogApplicationContract =
 export const tokenCatalogApplicationContractList = Object.freeze(
   Object.values(tokenCatalogApplicationContracts),
 );
-
-export const tokenCatalogCurrentOperationSchema = z.object({
-  operation: tokenCatalogOperationSchema.nullable(),
-}).strict();
-
-export const parseTokenOperationFailure = (value: unknown): ApplicationFailure =>
-  tokenOperationFailureSchema.parse(captureCanonicalJson(value));

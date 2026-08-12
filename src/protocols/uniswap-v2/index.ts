@@ -1,4 +1,4 @@
-export * from "./browser.js";
+export * from "./client.js";
 export {
   createUniswapV2QuoteApplication,
 } from "./application.js";

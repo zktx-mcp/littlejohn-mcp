@@ -66,6 +66,33 @@ const approvedSessionDisconnectReason = Object.freeze({
   message: "User disconnected.",
 });
 
+const settleBooleanWithin = (
+  work: Promise<boolean>,
+  milliseconds: number,
+): Promise<boolean> => new Promise((resolve) => {
+  let settled = false;
+  const timer = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    resolve(false);
+  }, milliseconds);
+  if (typeof timer === "object" && timer !== null && "unref" in timer) timer.unref();
+  work.then(
+    (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    },
+    () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(false);
+    },
+  );
+});
+
 export interface WalletConnectNamespaceSnapshot {
   readonly chains?: readonly string[];
   readonly accounts: readonly string[];
@@ -183,6 +210,7 @@ const clientError = (code: WalletConnectClientErrorCode): WalletConnectClientErr
 export interface WalletConnectClientPort {
   observe(): WalletConnectStableObservation;
   startConnection(): Promise<WalletConnectConnectionAttemptPort>;
+  containPendingConnectionState(): Promise<void>;
   disconnectSession(sessionSourceId: string): Promise<void>;
   activate(listener: (event: WalletConnectClientEvent) => void): WalletConnectClientActivation;
   contain(): Promise<void>;
@@ -265,6 +293,7 @@ export type WalletConnectSdkEventListener = (event: unknown) => void;
 export interface WalletConnectSdkPort {
   listProposals(): readonly unknown[];
   listSessions(): readonly unknown[];
+  listPairings(): readonly unknown[];
   startConnection(input: WalletConnectSdkConnectInput): Promise<unknown>;
   expireProposal(id: number): void;
   disconnectPairing(topic: string): Promise<void>;
@@ -463,11 +492,44 @@ const sourceForRawSession = (
   }
 };
 
+interface PairingReference {
+  readonly topic: string;
+}
+
+const normalizePairings = (value: unknown): readonly PairingReference[] => {
+  const pairings = copyArray(value, maximumSdkCollectionLength).map((pairing) => {
+    const topic = readOwnData(pairing, "topic");
+    const expiry = readOwnData(pairing, "expiry");
+    const active = readOwnData(pairing, "active");
+    if (
+      typeof topic !== "string" || !topicPattern.test(topic) ||
+      typeof expiry !== "number" || !Number.isSafeInteger(expiry) || expiry <= 0 ||
+      typeof active !== "boolean"
+    ) throw clientError("sdk");
+    return Object.freeze({ topic });
+  });
+  const topics = new Set<string>();
+  for (const pairing of pairings) {
+    if (topics.has(pairing.topic)) throw clientError("sdk");
+    topics.add(pairing.topic);
+  }
+  return Object.freeze(pairings.sort((left, right) =>
+    compareCodePointSequences(left.topic, right.topic)));
+};
+
 const normalizeSession = (
   value: unknown,
   createSessionSource: (topic: string) => WalletSessionSource,
-): { readonly public: WalletConnectSessionSnapshot; readonly topic: string } => {
+): {
+  readonly public: WalletConnectSessionSnapshot;
+  readonly topic: string;
+  readonly pairingTopic: string;
+} => {
   const identity = sourceForRawSession(value, createSessionSource);
+  const pairingTopic = readOwnData(value, "pairingTopic");
+  if (typeof pairingTopic !== "string" || !topicPattern.test(pairingTopic)) {
+    throw clientError("observation");
+  }
   try {
     const expiry = readOwnData(value, "expiry");
     if (typeof expiry !== "number" || !Number.isSafeInteger(expiry) || expiry <= 0) {
@@ -475,6 +537,7 @@ const normalizeSession = (
     }
     return Object.freeze({
       topic: identity.topic,
+      pairingTopic,
       public: Object.freeze({
         status: "valid" as const,
         source: identity.source,
@@ -485,6 +548,7 @@ const normalizeSession = (
   } catch {
     return Object.freeze({
       topic: identity.topic,
+      pairingTopic,
       public: Object.freeze({ status: "invalid" as const, source: identity.source }),
     });
   }
@@ -788,11 +852,13 @@ const createProductionSdkFactory = (signClientModule: unknown): WalletConnectSdk
       const disconnect = captureMethod(client, "disconnect");
       const expirerSet = captureMethod(expirer, "set");
       const pairingDisconnect = captureMethod(pairing, "disconnect");
+      const pairingGetAll = captureMethod(pairing, "getPairings");
       const on = captureMethod(client, "on");
       const off = captureMethod(client, "off");
       return Object.freeze({
         listProposals: () => invoke(proposalGetAll, []) as readonly unknown[],
         listSessions: () => invoke(sessionGetAll, []) as readonly unknown[],
+        listPairings: () => invoke(pairingGetAll, []) as readonly unknown[],
         startConnection: async (input: WalletConnectSdkConnectInput) =>
           invoke(connect, [{
             optionalNamespaces: {
@@ -958,7 +1024,11 @@ class WalletConnectConnectionAttempt {
       );
       if (!cleanupContained) this.poison();
     }
-    const approvalContained = await this.#approvalSettlement;
+    const approvalContained = await settleBooleanWithin(
+      this.#approvalSettlement,
+      acquisitionDeadlineMilliseconds,
+    );
+    if (!approvalContained) this.poison();
     return cleanupContained && approvalContained;
   }
 
@@ -1179,6 +1249,53 @@ class WalletConnectClient implements WalletConnectClientPort {
       if (topic === undefined) throw clientError("local_admission");
       try { await this.sdk.disconnectSession(topic); }
       catch { throw clientError("sdk"); }
+    });
+  }
+
+  containPendingConnectionState(): Promise<void> {
+    this.#assertCommandAdmission();
+    return this.#runCommand(async () => {
+      this.#assertCommandAdmission();
+      if (this.#activeAttempt !== undefined) throw clientError("local_admission");
+      let proposals: readonly ProposalReference[];
+      let pairings: readonly PairingReference[];
+      let sessionPairingTopics: ReadonlySet<string>;
+      try {
+        proposals = normalizeProposals(this.sdk.listProposals());
+        pairings = normalizePairings(this.sdk.listPairings());
+        sessionPairingTopics = new Set(copyArray(
+          this.sdk.listSessions(),
+          maximumSdkCollectionLength,
+        ).map((session) => normalizeSession(session, this.createSessionSource).pairingTopic));
+      }
+      catch { throw clientError("observation"); }
+      let complete = true;
+      for (const proposal of proposals) {
+        try { this.sdk.expireProposal(proposal.id); }
+        catch { complete = false; }
+      }
+      const orphanTopics = new Set<string>([
+        ...pairings.map((pairing) => pairing.topic),
+        ...proposals.map((proposal) => proposal.pairingTopic),
+      ].filter((topic) => !sessionPairingTopics.has(topic)));
+      for (const topic of [...orphanTopics].sort(compareCodePointSequences)) {
+        try { await this.sdk.disconnectPairing(topic); }
+        catch { complete = false; }
+      }
+      if (!complete) throw clientError("sdk");
+      try {
+        if (normalizeProposals(this.sdk.listProposals()).length !== 0) {
+          throw clientError("observation");
+        }
+        const remainingSessionTopics = new Set(copyArray(
+          this.sdk.listSessions(),
+          maximumSdkCollectionLength,
+        ).map((session) => normalizeSession(session, this.createSessionSource).pairingTopic));
+        if (normalizePairings(this.sdk.listPairings()).some((pairing) =>
+          !remainingSessionTopics.has(pairing.topic))) {
+          throw clientError("observation");
+        }
+      } catch { throw clientError("observation"); }
     });
   }
 
@@ -1511,6 +1628,7 @@ export const createWalletConnectClient = async (
     const publicClient: WalletConnectClientPort = Object.freeze({
       observe: () => client.observe(),
       startConnection: () => client.startConnection(),
+      containPendingConnectionState: () => client.containPendingConnectionState(),
       disconnectSession: (sourceId: string) => client.disconnectSession(sourceId),
       activate: (listener: (event: WalletConnectClientEvent) => void) =>
         client.activate(listener),

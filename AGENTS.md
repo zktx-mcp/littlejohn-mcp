@@ -16,8 +16,8 @@ Read every document whose boundary a task touches.
 | --- | --- |
 | `docs/PRODUCT_POLICY.md` | Product identity, scope, philosophy, responsibilities, support meanings, and the public current-support projection |
 | `docs/EVIDENCE_POLICY.md` | Source authority, provenance, freshness, coverage, inference, and public evidence claims |
-| `docs/ARCHITECTURE.md` | Repository state and ownership, modules, dependencies, processes, persistence, browser and CLI surfaces, WalletConnect session ownership, and loopback HTTP |
-| `docs/USER_INTERFACE_POLICY.md` | Browser information priority, interaction hierarchy, visual-role meaning, responsive composition, and accessibility presentation |
+| `docs/ARCHITECTURE.md` | Repository state and ownership, modules, dependencies, processes, persistence, MCP App and CLI surfaces, WalletConnect session ownership, and loopback HTTP |
+| `docs/USER_INTERFACE_POLICY.md` | Human-interface information priority, interaction hierarchy, visual-role meaning, responsive composition, and accessibility presentation |
 | `docs/NUMERIC_POLICY.md` | Numeric values, units, asset identity, decimals, conversion, arithmetic, prices, charts, serialization, and numeric verification |
 | `docs/PROTOCOL_ADAPTERS.md` | Protocol packages, capability mapping, activation, commercial behavior, and adapter verification |
 | `docs/TRANSACTION_POLICY.md` | Transaction authority, explicit confirmation, construction, commitments, review, simulation, wallet handoff, broadcast, receipts, and transaction security claims |
@@ -94,7 +94,7 @@ owner and does not paraphrase the rule.
   contract version, input schema, success schema, failure codes, and state
   transitions.
 - TypeScript types, JSON Schema, MCP tool schemas, HTTP request and response
-  bodies, CLI JSON, browser read models, support projections, and generated
+  bodies, CLI JSON, MCP App presentations, support projections, and generated
   documentation derive from that canonical contract. An interface never
   rewrites the domain contract.
 - After an owning contract admits a canonical product result, evidence record,
@@ -105,7 +105,7 @@ owner and does not paraphrase the rule.
   input from which another consumer reconstructs it. This rule does not bypass
   the owning admission and normalization of untrusted external input.
 - Protocol envelopes are transport concerns. MCP JSON-RPC, HTTP status and
-  headers, CLI presentation, and browser navigation may differ without changing
+  headers, CLI presentation, and App View lifecycle may differ without changing
   the canonical input, result, failure, or operation meaning.
 - Runtime binding, registry, path, and correlation architecture is owned only by
   `docs/ARCHITECTURE.md#interface-contract-model`.

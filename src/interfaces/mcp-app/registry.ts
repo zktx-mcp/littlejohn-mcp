@@ -9,21 +9,30 @@ import {
   type CanonicalJson,
   type CapabilitySuccess,
   type ReadCapabilityDefinition,
-} from "../../core/browser.js";
-import { accountAssetApplicationContracts } from "../../account-assets/browser.js";
+} from "../../core/client.js";
+import { accountAssetApplicationContracts } from "../../account-assets/client.js";
 import { referenceMarketApplicationContracts } from "../../market-portfolio/contracts.js";
 import {
   tokenCatalogApplicationContracts,
   tokenInspectCapability,
-} from "../../token-catalog/browser.js";
+} from "../../token-catalog/client.js";
+import { walletManagementContracts } from "../../wallet/management-contracts.js";
 
 declare const presentationContractEntryType: unique symbol;
+
+export const presentationKindList = Object.freeze([
+  "immutable_result",
+  "review",
+  "operation",
+] as const);
+export type PresentationKind = typeof presentationKindList[number];
 
 export interface PresentationContractEntry<Result = unknown> {
   readonly [presentationContractEntryType]?: Result;
   readonly contract: object;
   readonly contractId: string;
   readonly contractVersion: "1";
+  readonly presentationKind: PresentationKind;
   readonly title: string;
   parseInput(value: unknown): CanonicalJson;
   parseResult(input: unknown, value: unknown): CanonicalJson;
@@ -49,6 +58,7 @@ const capabilityEntry = <Input, Data>(
     contract: definition,
     contractId: identity.capabilityId,
     contractVersion: identity.contractVersion,
+    presentationKind: "immutable_result",
     title,
     parseInput: (value: unknown) => captureCanonicalJson(parseCapabilityInput(definition, value)),
     parseResult: (input: unknown, value: unknown) =>
@@ -59,12 +69,14 @@ const capabilityEntry = <Input, Data>(
 
 const applicationEntry = <Input, Result>(
   contract: ApplicationPresentationContract<Input, Result>,
+  presentationKind: PresentationKind,
   title: string,
 ): PresentationContractEntry<Result> => {
   return Object.freeze({
     contract,
     contractId: contract.capabilityId,
     contractVersion: contract.contractVersion,
+    presentationKind,
     title,
     parseInput: (value: unknown) => captureCanonicalJson(contract.parseInput(value)),
     parseResult: (input: unknown, value: unknown) =>
@@ -74,24 +86,69 @@ const applicationEntry = <Input, Result>(
 };
 
 export const presentationContracts = Object.freeze({
-  accountAssets: applicationEntry(accountAssetApplicationContracts.collection, "Account assets"),
+  accountAssets: applicationEntry(
+    accountAssetApplicationContracts.collection,
+    "immutable_result",
+    "Account assets",
+  ),
   contractAnalysis: capabilityEntry(contractInspectCapability, "Contract analysis"),
   referenceHistory: applicationEntry(
     referenceMarketApplicationContracts.history,
+    "immutable_result",
     "Reference price history",
   ),
-  referencePrice: applicationEntry(referenceMarketApplicationContracts.price, "Reference price"),
+  referencePrice: applicationEntry(
+    referenceMarketApplicationContracts.price,
+    "immutable_result",
+    "Reference price",
+  ),
   referenceWatchlist: applicationEntry(
     referenceMarketApplicationContracts.watchlist,
+    "immutable_result",
     "Reference watchlist",
   ),
+  referenceWatchlistOperation: applicationEntry(
+    referenceMarketApplicationContracts.operation,
+    "operation",
+    "Reference watchlist change",
+  ),
+  referenceWatchlistReview: applicationEntry(
+    referenceMarketApplicationContracts.watchlistChangeReview,
+    "review",
+    "Reference watchlist change",
+  ),
   tokenAnalysis: capabilityEntry(tokenInspectCapability, "Token analysis"),
-  tokenSelection: applicationEntry(tokenCatalogApplicationContracts.selection, "Token selection"),
+  tokenSelection: applicationEntry(
+    tokenCatalogApplicationContracts.selection,
+    "immutable_result",
+    "Token selection",
+  ),
+  tokenSelectionOperation: applicationEntry(
+    tokenCatalogApplicationContracts.operation,
+    "operation",
+    "Token selection change",
+  ),
+  tokenSelectionReview: applicationEntry(
+    tokenCatalogApplicationContracts.selectionChangeReview,
+    "review",
+    "Token selection change",
+  ),
   tokenSelections: applicationEntry(
     tokenCatalogApplicationContracts.selections,
+    "immutable_result",
     "Token selections",
   ),
   walletConnection: capabilityEntry(walletConnectionCapability, "Wallet connection"),
+  walletOperation: applicationEntry(
+    walletManagementContracts.operation,
+    "operation",
+    "Wallet operation",
+  ),
+  walletReview: applicationEntry(
+    walletManagementContracts.review,
+    "review",
+    "Wallet connection change",
+  ),
 });
 
 const entries: readonly PresentationContractEntry[] = Object.freeze(
@@ -107,6 +164,9 @@ export class PresentationContractRegistry {
     const byContract = new Map<object, PresentationContractEntry>();
     const byIdentity = new Map<string, PresentationContractEntry>();
     for (const entry of entriesInput) {
+      if (!presentationKindList.includes(entry.presentationKind)) {
+        throw new TypeError("Presentation kind is invalid.");
+      }
       const identity = `${entry.contractId}\0${entry.contractVersion}`;
       if (byContract.has(entry.contract) || byIdentity.has(identity)) {
         throw new TypeError("Presentation contract identity is duplicated.");

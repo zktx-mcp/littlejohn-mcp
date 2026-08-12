@@ -6,6 +6,7 @@ import type { RuntimeDispatchPort } from "../../src/interfaces/http-client.js";
 import {
   jsonContentType,
   noStoreCacheControl,
+  problemJsonContentType,
   type RuntimeDispatchRequest,
   type RuntimeOwnerSession,
   type RuntimeOwnerSessionRequest,
@@ -81,7 +82,7 @@ export const openTestOwnerSession = async (
         status: "response_received" as const,
         response: Object.freeze({
           statusCode: result.value.status,
-          contentType: jsonContentType,
+          contentType: result.value.status >= 400 ? problemJsonContentType : jsonContentType,
           cacheControl: noStoreCacheControl,
           bytes: new TextEncoder().encode(`${canonicalJsonStringify(result.value.body)}\n`),
         }),

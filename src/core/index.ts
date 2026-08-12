@@ -25,6 +25,7 @@ export type {
   ScaledUiAmount,
   Uint256Decimal,
 } from "./amounts.js";
+export { projectZodJsonSchema } from "./json-object.js";
 export {
   formatRationalForDisplay,
   scaleRawUnitPriceToTokenUnits,
@@ -225,10 +226,12 @@ export type {
   ReferenceWatchlistSuccess,
 } from "./reference-market.js";
 export {
+  admitApplicationInput,
   defineApplicationContract,
 } from "./application-contract.js";
 export type {
   ApplicationContract,
+  ApplicationInputAdmission,
   ApplicationContractInternalContext,
   ApplicationContractPublicInput,
   ApplicationContractSuccess,
@@ -352,6 +355,7 @@ export {
   coreErrorRegistry,
   createApplicationFailure,
   errorCategorySchema,
+  fieldIssuesFromInputError,
 } from "./errors.js";
 export { coreErrorDefinitions } from "./error-definitions.js";
 export type {
@@ -455,6 +459,7 @@ export {
   canonicalBase64UrlPattern,
   canonicalBase64UrlSchema,
   chainAnchorSchema,
+  closedTupleSchema,
   codePointLength,
   compareCodePointSequences,
   decodeCanonicalBase64Url,

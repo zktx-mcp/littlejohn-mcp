@@ -6,6 +6,7 @@ import {
   applicationFailureSchemaFor,
   assertApplicationErrorRegistry,
   createApplicationFailure,
+  fieldIssuesFromInputError,
   type ApplicationFailure,
 } from "./errors.js";
 import { deepFreezeValue } from "./immutability.js";
@@ -36,6 +37,39 @@ export type ApplicationContractInternalContext<Contract> =
   Contract extends ApplicationContract<unknown, infer Context, unknown> ? Context : never;
 export type ApplicationContractSuccess<Contract> =
   Contract extends ApplicationContract<unknown, unknown, infer Success> ? Success : never;
+
+export type ApplicationInputAdmission<Input> =
+  | Readonly<{ readonly ok: true; readonly value: Input }>
+  | Readonly<{ readonly ok: false; readonly failure: ApplicationFailure }>;
+
+type ApplicationInputOwner = Readonly<{
+  parseInput(value: unknown): unknown;
+}> & (
+  | Readonly<{ errorRegistry: ApplicationErrorRegistry }>
+  | Readonly<{ applicationContract: Readonly<{ errorRegistry: ApplicationErrorRegistry }> }>
+);
+
+export const admitApplicationInput = <Owner extends ApplicationInputOwner>(
+  contract: Owner,
+  value: unknown,
+): ApplicationInputAdmission<ReturnType<Owner["parseInput"]>> => {
+  try {
+    const parsed = contract.parseInput(value) as ReturnType<Owner["parseInput"]>;
+    return Object.freeze({ ok: true, value: parsed });
+  } catch (error) {
+    const errorRegistry = "errorRegistry" in contract
+      ? contract.errorRegistry
+      : contract.applicationContract.errorRegistry;
+    return Object.freeze({
+      ok: false,
+      failure: createApplicationFailure(
+        errorRegistry,
+        "invalid_input",
+        fieldIssuesFromInputError(error),
+      ),
+    });
+  }
+};
 
 export const defineApplicationContract = <PublicInput, InternalContext, Success>(options: Readonly<{
   contractVersion: "1";

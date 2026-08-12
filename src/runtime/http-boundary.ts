@@ -18,14 +18,6 @@ export const runtimeIdentityPath = "/api/v1/runtime-identity";
 export const publicApiPathPrefix = "/api/v1/";
 export const internalApiPathPrefix = "/api/v1/internal/";
 export const localControlApiPathPrefix = "/api/v1/internal/control/";
-export const browserContentSecurityPolicy =
-  "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; " +
-  "base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
-export const browserContentTypeOptions = "nosniff";
-export const browserReferrerPolicy = "no-referrer";
-export const browserCrossOriginOpenerPolicy = "same-origin";
-export const browserSetCookieLimitBytes = 4_096;
-
 export const routeMethods = Object.freeze(["GET", "POST", "DELETE"] as const);
 export type RouteMethod = typeof routeMethods[number];
 
@@ -44,20 +36,8 @@ export type RuntimeHttpRequest =
 export const routeMutationClasses = Object.freeze(["none", "declared_control"] as const);
 export type RouteMutation = typeof routeMutationClasses[number];
 
-export const routeResponseKinds = Object.freeze(["canonical_json", "browser_content"] as const);
-export type RouteResponseKind = typeof routeResponseKinds[number];
-
 export const routeSuccessStatuses = Object.freeze([200, 201] as const);
 export type RouteSuccessStatus = typeof routeSuccessStatuses[number];
-
-export const browserContentTypes = Object.freeze([
-  "text/html; charset=utf-8",
-  "text/css; charset=utf-8",
-  "text/javascript; charset=utf-8",
-  "image/svg+xml",
-] as const);
-
-export type BrowserContentType = (typeof browserContentTypes)[number];
 
 export interface RequestTarget {
   readonly pathname: string;

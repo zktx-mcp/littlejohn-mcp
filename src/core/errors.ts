@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-import { createEvidenceSchemaSet, type FieldIssue } from "./evidence.js";
+import {
+  createEvidenceSchemaSet,
+  createFieldIssue,
+  type FieldIssue,
+} from "./evidence.js";
 import { coreErrorDefinitions } from "./error-definitions.js";
 import { deepFreezeValue } from "./immutability.js";
 import { guardJsonSchema, jsonObject } from "./json-object.js";
@@ -156,6 +160,16 @@ export const assertDirectApplicationErrorRegistryExtension = (
 };
 
 export const coreErrorRegistry = createRegistry(coreErrorDefinitions);
+
+const pathToJsonPointer = (path: readonly PropertyKey[]): string =>
+  path.length === 0
+    ? ""
+    : `/${path.map((part) => String(part).replaceAll("~", "~0").replaceAll("/", "~1")).join("/")}`;
+
+export const fieldIssuesFromInputError = (error: unknown): readonly FieldIssue[] =>
+  error instanceof z.ZodError
+    ? error.issues.map((issue) => createFieldIssue("invalid_value", pathToJsonPointer(issue.path)))
+    : [createFieldIssue("invalid_value", "")];
 
 export const createApplicationFailure = (
   registry: ApplicationErrorRegistry,

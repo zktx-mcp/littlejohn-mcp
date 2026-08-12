@@ -1,363 +1,233 @@
 import { describe, expect, it } from "vitest";
 
+import { createWalletFailure } from "../../src/wallet/errors.js";
 import {
-  parseWalletCurrentOperationProjection,
+  assertWalletOperationTransition,
+  operationFailure,
+  parseWalletDirectAction,
   parseWalletManagementOperation,
   parseWalletOperationCancellation,
-  parseWalletOperationConfirmation,
-  parseWalletOperationCreate,
-  parseWalletOperationId,
   parseWalletOperationPresentation,
-  parseWalletOperationPresentationAccess,
-  parseWalletOperationStartResult,
-  parseWalletQrMatrix,
-  parseWalletWebOperationCreate,
-  walletOperationFailureCodes,
+  parseWalletReview,
+  walletOperationAllowsQr,
   walletOperationIdByteLength,
-  walletOperationOutcomes,
-  walletPeerRefusalCodes,
-  walletQrMatrixSizeLimits,
+  walletReviewDigest,
+  type WalletManagementOperation,
+  type WalletNonterminalManagementOperation,
+  type WalletReview,
 } from "../../src/wallet/contracts.js";
 import {
   isWalletOperationCancellableState,
-  isWalletOperationConfirmableState,
-  isWalletOperationTerminalState,
-  walletInteractionInterfaces,
-  walletOperationKinds,
-  walletOperationStateDefinitions,
-  walletOperationStates,
+  walletInitiators,
+  type WalletOperationState,
 } from "../../src/wallet/operation-state.js";
-import {
-  createWalletFailure,
-  walletInterfaceErrorMappings,
-} from "../../src/wallet/errors.js";
 
 const operationId = Buffer.alloc(walletOperationIdByteLength, 7).toString("base64url");
-const actionExpiresAt = "2026-07-14T01:05:00.000Z";
-const disconnected = Object.freeze({ status: "disconnected", reason: "no_session" });
+const otherOperationId = Buffer.alloc(walletOperationIdByteLength, 8).toString("base64url");
+const createdAt = "2026-07-14T00:00:00.000Z";
+const actionExpiresAt = "2026-07-14T00:05:00.000Z";
+const sourceId = `wallet-session:${Buffer.alloc(32, 9).toString("base64url")}`;
+const address = "0x1111111111111111111111111111111111111111";
+
+const disconnected = Object.freeze({ status: "disconnected" as const, reason: "no_session" as const });
 const connected = Object.freeze({
-  status: "connected",
-  address: "0x1111111111111111111111111111111111111111",
+  status: "connected" as const,
+  address,
   chainId: "eip155:4663",
-  approvedMethods: ["eth_sendTransaction"],
-  approvedEvents: ["accountsChanged", "chainChanged"],
-  expiresAt: "2026-07-14T01:10:00.000Z",
+  approvedMethods: Object.freeze(["eth_sendTransaction"]),
+  approvedEvents: Object.freeze(["accountsChanged", "chainChanged"]),
+  expiresAt: "2026-07-15T00:00:00.000Z",
 });
-const qr = {
-  size: 21,
-  rows: Array.from({ length: 21 }, () => "0".repeat(21)),
+
+const createReview = (
+  kind: "connect" | "disconnect",
+  id = operationId,
+): WalletReview => {
+  const withoutDigest = kind === "connect"
+    ? {
+        contractVersion: "1" as const,
+        domain: "wallet" as const,
+        kind,
+        operationId: id,
+        createdAt,
+        actionExpiresAt,
+        target: { chainId: "eip155:4663" },
+        decision: {
+          requiredMethods: ["eth_sendTransaction"] as const,
+          requiredEvents: ["accountsChanged", "chainChanged"] as const,
+        },
+        precondition: { connectionRevision: "3", connection: disconnected },
+        fixedEvidence: { sessionSourceIds: [] as const },
+      }
+    : {
+        contractVersion: "1" as const,
+        domain: "wallet" as const,
+        kind,
+        operationId: id,
+        createdAt,
+        actionExpiresAt,
+        target: { chainId: "eip155:4663" },
+        decision: { action: "disconnect_session" as const },
+        precondition: { connectionRevision: "3", connection: connected },
+        fixedEvidence: { sessionSourceIds: [sourceId] as const },
+      };
+  return parseWalletReview({
+    ...withoutDigest,
+    reviewDigest: walletReviewDigest(withoutDigest),
+  });
 };
 
-const operation = (overrides: Readonly<Record<string, unknown>> = {}) => ({
-  operationId,
-  kind: "disconnect",
-  state: "completed",
-  connectionRevision: "3",
-  actionExpiresAt,
-  interactionInterface: "web",
-  result: { outcome: "already_disconnected", connection: disconnected },
-  failure: null,
-  peerRefusalCode: null,
-  ...overrides,
+const createOperation = (
+  kind: "connect" | "disconnect",
+  state: WalletOperationState,
+  overrides: Readonly<Record<string, unknown>> = {},
+): WalletManagementOperation => {
+  const review = createReview(kind);
+  const result = state === "completed"
+    ? kind === "connect"
+      ? { outcome: "connected", connectionRevision: "4", connection: connected }
+      : {
+          outcome: "disconnected",
+          connectionRevision: "4",
+          connection: { status: "disconnected", reason: "disconnected" },
+        }
+    : null;
+  return parseWalletManagementOperation({
+    contractVersion: "1",
+    domain: "wallet",
+    operationId: review.operationId,
+    kind,
+    initiatedBy: "mcp_app",
+    review,
+    state,
+    terminationTarget: state === "cancelling" ? "cancelled" : null,
+    result,
+    failure: state === "failed" ? operationFailure(createWalletFailure("wallet_timeout")) : null,
+    peerRefusalCode: state === "rejected" ? 5000 : null,
+    ...overrides,
+  });
+};
+
+const qr = Object.freeze({
+  size: 21,
+  rows: Object.freeze(Array.from({ length: 21 }, () => "0".repeat(21))),
 });
 
-describe("wallet management contracts", () => {
-  it("owns exact identifiers, interfaces, outcomes, and QR dimensions", () => {
-    expect(walletInteractionInterfaces).toEqual(["cli", "web"]);
-    expect(walletOperationKinds).toEqual(["connect", "disconnect"]);
-    expect(walletOperationOutcomes).toEqual({
-      connect: ["connected"],
-      disconnect: ["disconnected", "already_disconnected"],
-    });
-    expect(walletQrMatrixSizeLimits).toEqual({ minimum: 21, maximum: 177 });
-    expect(parseWalletOperationId(operationId)).toBe(operationId);
-    expect(parseWalletOperationPresentationAccess("interactive")).toBe("interactive");
-    expect(parseWalletOperationPresentationAccess("read_only")).toBe("read_only");
-    expect(parseWalletQrMatrix(qr)).toEqual(qr);
+describe("wallet immutable Review and durable operation contracts", () => {
+  it("binds every Review field into one digest and rejects changed structure", () => {
+    const review = createReview("connect");
+    expect(Object.isFrozen(review)).toBe(true);
+    expect(parseWalletReview(review)).toEqual(review);
 
-    expect(() => parseWalletOperationId(`${operationId}=`)).toThrow();
-    expect(() => parseWalletOperationPresentationAccess("mcp")).toThrow();
-    expect(() => parseWalletQrMatrix({ ...qr, rows: qr.rows.slice(1) })).toThrow();
+    expect(() => parseWalletReview({
+      ...review,
+      target: { chainId: "eip155:1" },
+    })).toThrow("Wallet Review is inconsistent");
+    expect(() => parseWalletReview({
+      ...review,
+      actionExpiresAt: "2026-07-14T00:05:00.001Z",
+    })).toThrow("Wallet Review is inconsistent");
+    expect(createReview("disconnect").fixedEvidence.sessionSourceIds).toEqual([sourceId]);
   });
 
-  it("admits one strict command shape and keeps local control separate from web creation", () => {
-    expect(parseWalletOperationCreate({
-      control: { operationId, interactionInterface: "cli" },
-      request: { kind: "connect", connectionRevision: null },
-    })).toEqual({
-      operationId,
-      interactionInterface: "cli",
-      kind: "connect",
-      connectionRevision: null,
-    });
-    expect(parseWalletWebOperationCreate({
-      kind: "disconnect",
-      connectionRevision: "3",
-    })).toEqual({ kind: "disconnect", connectionRevision: "3" });
-    expect(parseWalletOperationConfirmation({ connectionRevision: "3" }))
-      .toEqual({ connectionRevision: "3" });
-    expect(parseWalletOperationCancellation({ operationId, connectionRevision: "3" }))
-      .toEqual({ operationId, connectionRevision: "3" });
-
-    expect(() => parseWalletOperationCreate({
-      control: { operationId, interactionInterface: "mcp" },
-      request: { kind: "connect", connectionRevision: null },
+  it("admits direct decisions only with the complete Review and final initiator vocabulary", () => {
+    const review = createReview("connect");
+    expect(walletInitiators).toEqual(["cli", "mcp_app"]);
+    expect(parseWalletDirectAction({ review, initiatedBy: "cli" }))
+      .toEqual({ review, initiatedBy: "cli" });
+    expect(parseWalletDirectAction({ review, initiatedBy: "mcp_app" }))
+      .toEqual({ review, initiatedBy: "mcp_app" });
+    expect(() => parseWalletDirectAction({ review, initiatedBy: "web" })).toThrow();
+    expect(() => parseWalletDirectAction({
+      review: { ...review, operationId: otherOperationId },
+      initiatedBy: "cli",
     })).toThrow();
-    expect(() => parseWalletOperationCreate({
-      operationId,
-      interactionInterface: "cli",
-      kind: "connect",
-      connectionRevision: null,
-    })).toThrow();
-    expect(() => parseWalletWebOperationCreate({ kind: "connect" })).toThrow();
-    expect(() => parseWalletOperationCancellation({ operationId })).toThrow();
   });
 
-  it("binds immutable action and interface identity into every operation", () => {
-    const parsed = parseWalletManagementOperation(operation());
-    expect(parsed).toMatchObject({
-      operationId,
-      connectionRevision: "3",
-      actionExpiresAt,
-      interactionInterface: "web",
-    });
-    expect(Object.isFrozen(parsed)).toBe(true);
-    expect(Object.isFrozen(parsed.result)).toBe(true);
-
-    const { actionExpiresAt: _action, ...withoutAction } = operation();
-    expect(() => parseWalletManagementOperation(withoutAction)).toThrow();
-    const { interactionInterface: _interface, ...withoutInterface } = operation();
-    expect(() => parseWalletManagementOperation(withoutInterface)).toThrow();
-    expect(() => parseWalletManagementOperation({ ...operation(), expiresAt: actionExpiresAt })).toThrow();
-    expect(() => parseWalletManagementOperation({ ...operation(), qr })).toThrow();
-  });
-
-  it("derives reachable states and their only legal payload from one state authority", () => {
-    const allowed = {
-      connect: new Set([
-        "starting_connection", "awaiting_wallet_approval", "cancelling",
-        "validating_session", "completed", "cancelled", "rejected", "failed", "expired",
-      ]),
-      disconnect: new Set([
-        "awaiting_confirmation", "disconnecting", "completed", "cancelled", "failed", "expired",
-      ]),
-    } as const;
-    expect(walletOperationStates.map((state) => ({
-      state,
-      terminal: isWalletOperationTerminalState(state),
-      confirmable: isWalletOperationConfirmableState(state),
-      cancellable: isWalletOperationCancellableState(state),
-      payload: walletOperationStateDefinitions[state].payload,
-    }))).toEqual(walletOperationStates.map((state) => ({
-      state,
-      terminal: walletOperationStateDefinitions[state].terminal,
-      confirmable: walletOperationStateDefinitions[state].confirmable,
-      cancellable: walletOperationStateDefinitions[state].cancellable,
-      payload: walletOperationStateDefinitions[state].payload,
-    })));
-
-    for (const kind of walletOperationKinds) {
-      for (const state of walletOperationStates) {
-        const candidate = operation({
-          kind,
-          state,
-          result: state === "completed"
-            ? kind === "connect"
-              ? { outcome: "connected", connection: connected }
-              : { outcome: "disconnected", connection: disconnected }
-            : null,
-          failure: state === "failed" ? createWalletFailure("runtime_state_unavailable") : null,
-          peerRefusalCode: state === "rejected" ? 5001 : null,
-        });
-        if (allowed[kind].has(state as never)) {
-          expect(parseWalletManagementOperation(candidate)).toMatchObject({ kind, state });
-        } else {
-          expect(() => parseWalletManagementOperation(candidate)).toThrow();
-        }
-      }
-    }
-  });
-
-  it("binds completed outcomes to the operation kind and connection status", () => {
-    expect(parseWalletManagementOperation(operation()).result)
-      .toEqual({ outcome: "already_disconnected", connection: disconnected });
-    expect(parseWalletManagementOperation(operation({
+  it("makes operation kind, state payload, Review, and initiator one immutable value", () => {
+    const starting = createOperation("connect", "starting_connection");
+    expect(starting).toMatchObject({
       kind: "connect",
-      result: { outcome: "connected", connection: connected },
-    })).result).toEqual({ outcome: "connected", connection: connected });
-
-    expect(() => parseWalletManagementOperation(operation({
-      kind: "connect",
-      result: { outcome: "connected", connection: disconnected },
-    }))).toThrow();
-    expect(() => parseWalletManagementOperation(operation({
-      result: { outcome: "already_disconnected", connection: connected },
-    }))).toThrow();
-  });
-
-  it("keeps canonical local failures and numeric peer refusals mutually exclusive", () => {
-    expect(walletOperationFailureCodes).toEqual([
-      "internal_error",
-      "runtime_state_unavailable",
-      "state_conflict",
-      "wallet_pairing_code_unavailable",
-      "wallet_session_unusable",
-      "wallet_timeout",
-      "walletconnect_unavailable",
-    ]);
-    for (const code of walletOperationFailureCodes) {
-      const failed = parseWalletManagementOperation(operation({
-        state: "failed",
-        result: null,
-        failure: createWalletFailure(code),
-      }));
-      expect(failed.failure?.error.code).toBe(code);
-    }
-
-    for (const peerRefusalCode of walletPeerRefusalCodes) {
-      expect(parseWalletManagementOperation(operation({
-        kind: "connect",
-        state: "rejected",
-        result: null,
-        failure: null,
-        peerRefusalCode,
-      }))).toMatchObject({ state: "rejected", peerRefusalCode });
-    }
-    expect(() => parseWalletManagementOperation(operation({
-      kind: "connect",
-      state: "rejected",
+      initiatedBy: "mcp_app",
+      state: "starting_connection",
       result: null,
-      peerRefusalCode: 5004,
-    }))).toThrow();
-    expect(() => parseWalletManagementOperation(operation({
+      failure: null,
+      peerRefusalCode: null,
+      review: { kind: "connect" },
+    });
+    expect(Object.isFrozen(starting)).toBe(true);
+
+    const failed = createOperation("disconnect", "failed");
+    expect(failed).toMatchObject({
+      kind: "disconnect",
       state: "failed",
       result: null,
-      failure: createWalletFailure("wallet_timeout"),
-      peerRefusalCode: 5001,
-    }))).toThrow();
+      failure: { error: { code: "wallet_timeout" } },
+      review: { kind: "disconnect" },
+    });
+
+    expect(() => createOperation("connect", "completed", {
+      result: {
+        outcome: "connected",
+        connectionRevision: "3",
+        connection: connected,
+      },
+    })).toThrow("Wallet operation result is inconsistent");
   });
 
-  it("owns the exact local deadline, pairing-code, and WalletConnect failure meanings", () => {
-    expect(createWalletFailure("wallet_timeout")).toEqual({
-      ok: false,
-      error: {
-        code: "wallet_timeout",
-        category: "wallet",
-        message: "The wallet action exceeded Little John's local action deadline.",
-        retryable: false,
-        issues: [],
-      },
-    });
-    expect(createWalletFailure("wallet_pairing_code_unavailable")).toEqual({
-      ok: false,
-      error: {
-        code: "wallet_pairing_code_unavailable",
-        category: "internal",
-        message: "The wallet pairing code could not be created.",
-        retryable: false,
-        issues: [],
-      },
-    });
-    expect(createWalletFailure("walletconnect_unavailable")).toEqual({
-      ok: false,
-      error: {
-        code: "walletconnect_unavailable",
-        category: "wallet",
-        message: "WalletConnect could not complete the wallet action.",
-        retryable: false,
-        issues: [],
-      },
-    });
-    expect(walletInterfaceErrorMappings.get("wallet_timeout")).toEqual({
-      code: "wallet_timeout",
-      httpStatus: 504,
-      problemTitle: "Wallet action deadline exceeded",
-      cliExitCode: 4,
-    });
-    expect(walletInterfaceErrorMappings.get("wallet_pairing_code_unavailable")).toEqual({
-      code: "wallet_pairing_code_unavailable",
-      httpStatus: 500,
-      problemTitle: "Wallet pairing code unavailable",
-      cliExitCode: 1,
-    });
-    expect(walletInterfaceErrorMappings.get("walletconnect_unavailable")).toEqual({
-      code: "walletconnect_unavailable",
-      httpStatus: 503,
-      problemTitle: "WalletConnect unavailable",
-      cliExitCode: 4,
-    });
+  it("allows only declared transitions without replacing Review or initiator identity", () => {
+    const starting = createOperation("connect", "starting_connection");
+    const awaiting = createOperation("connect", "awaiting_wallet_approval");
+    expect(assertWalletOperationTransition(
+      starting as WalletNonterminalManagementOperation,
+      awaiting,
+    )).toEqual(awaiting);
+
+    expect(() => assertWalletOperationTransition(
+      starting as WalletNonterminalManagementOperation,
+      createOperation("connect", "rejected"),
+    ))
+      .toThrow("Wallet operation transition is invalid");
+    expect(() => assertWalletOperationTransition(starting as WalletNonterminalManagementOperation, createOperation(
+      "connect",
+      "awaiting_wallet_approval",
+      { initiatedBy: "cli" },
+    ))).toThrow("Wallet operation transition is invalid");
+    expect(() => assertWalletOperationTransition(starting as WalletNonterminalManagementOperation, {
+      ...awaiting,
+      review: createReview("connect", otherOperationId),
+      operationId: starting.operationId,
+    } as unknown as WalletManagementOperation)).toThrow();
   });
 
-  it("keeps QR authority in exact presentation and out of canonical start/read results", () => {
-    const pending = operation({
-      kind: "connect",
-      state: "awaiting_wallet_approval",
-      result: null,
-    });
-    const presentation = parseWalletOperationPresentation({
-      operation: pending,
-      access: "read_only",
-      qr,
-    });
-    expect(presentation.qr).toEqual(qr);
-    expect("qr" in presentation.operation).toBe(false);
-
-    const started = parseWalletOperationStartResult({
-      status: "operation_started",
-      operation: pending,
-    });
-    expect(started).toEqual({ status: "operation_started", operation: pending });
-    expect(() => parseWalletOperationStartResult({ ...started, qr })).toThrow();
-    expect(() => parseWalletOperationStartResult({ result: started })).toThrow();
-    expect(() => parseWalletOperationPresentation({ operation: operation(), access: "read_only", qr }))
+  it("binds cancellation to the exact active state, Review digest, and connection revision", () => {
+    const awaiting = createOperation("connect", "awaiting_wallet_approval");
+    const input = {
+      operationId: awaiting.operationId,
+      reviewDigest: awaiting.review.reviewDigest,
+      expectedState: awaiting.state,
+      connectionRevision: awaiting.review.precondition.connectionRevision,
+    };
+    expect(parseWalletOperationCancellation(input)).toEqual(input);
+    expect(isWalletOperationCancellableState(awaiting.state)).toBe(true);
+    expect(() => parseWalletOperationCancellation({ ...input, expectedState: "validating_session" }))
       .toThrow();
-    expect(() => parseWalletOperationPresentation({
-      operation: pending,
-      access: "read_only",
+    expect(() => parseWalletOperationCancellation({ operationId: awaiting.operationId }))
+      .toThrow();
+  });
+
+  it("permits QR only on the exact active approval state and never on terminal values", () => {
+    const awaiting = createOperation("connect", "awaiting_wallet_approval");
+    expect(walletOperationAllowsQr(awaiting)).toBe(true);
+    expect(parseWalletOperationPresentation({ operation: awaiting, qr })).toEqual({
+      operation: awaiting,
       qr,
-      uri: "wc:secret",
-    })).toThrow();
-  });
-
-  it("admits terminal exact reads but only nonterminal current-operation projections", () => {
-    const terminal = parseWalletManagementOperation(operation());
-    expect(terminal.state).toBe("completed");
-    expect(parseWalletCurrentOperationProjection({
-      status: "absent",
-      connectionRevision: "3",
-      connection: disconnected,
-    })).toMatchObject({ status: "absent" });
-
-    const pending = parseWalletOperationPresentation({
-      operation: operation({ state: "awaiting_confirmation", result: null }),
-      access: "interactive",
     });
-    expect(parseWalletCurrentOperationProjection({
-      status: "present",
-      connectionRevision: "3",
-      connection: connected,
-      presentation: pending,
-    })).toMatchObject({ status: "present" });
-    expect(() => parseWalletCurrentOperationProjection({
-      status: "present",
-      connectionRevision: "3",
-      connection: disconnected,
-      presentation: { operation: terminal, access: "interactive" },
-    })).toThrow();
-  });
 
-  it("rejects extra fields and hostile accessors without reading them", () => {
-    expect(() => parseWalletManagementOperation({ ...operation(), extra: true })).toThrow();
-    let accessorRead = false;
-    const hostile = { ...operation() };
-    Object.defineProperty(hostile, "state", {
-      enumerable: true,
-      get() {
-        accessorRead = true;
-        throw new Error("secret");
-      },
-    });
-    expect(() => parseWalletManagementOperation(hostile)).toThrow();
-    expect(accessorRead).toBe(false);
+    const completed = createOperation("connect", "completed");
+    expect(walletOperationAllowsQr(completed)).toBe(false);
+    expect(parseWalletOperationPresentation({ operation: completed })).toEqual({ operation: completed });
+    expect(() => parseWalletOperationPresentation({ operation: completed, qr }))
+      .toThrow("QR is not active");
   });
 });

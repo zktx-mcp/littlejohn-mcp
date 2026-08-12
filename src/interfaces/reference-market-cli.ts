@@ -2,6 +2,7 @@ import {
   canonicalJsonStringify,
   type CanonicalJson,
   type ChainAnchor,
+  type OperationId,
   type ReferenceHistorySuccess,
   type ReferenceMarketMappingEvidence,
   type ReferencePriceSuccess,
@@ -9,12 +10,20 @@ import {
   type ReferenceWatchlistSuccess,
   type SourceReference,
 } from "../core/index.js";
-import { referenceMarketApplicationContracts, referenceMarketInterfaceErrorMappings } from "../market-portfolio/index.js";
+import {
+  createReferenceMarketFailure,
+  referenceMarketApplicationContracts,
+  referenceMarketInterfaceErrorMappings,
+  type ReferenceWatchlistOperation,
+  type ReferenceWatchlistReview,
+} from "../market-portfolio/index.js";
 import {
   referenceMarketInterfaceBindings,
 } from "./identities.js";
 import { deliveryUnknownCliExitCode } from "./delivery-exit.js";
-import { LocalMutationClient } from "./reference-market-local-client.js";
+import { LocalOperationClient } from "./operation-client.js";
+import { runAtomicCliDecision } from "./cli-operation.js";
+import { operationInterfaceBindings } from "./operation-bindings.js";
 import { dispatchReferenceMarketRead } from "./reference-market-http.js";
 import type { RuntimeDispatchPort } from "./http-client.js";
 
@@ -23,14 +32,23 @@ export type ReferenceMarketCliCommand =
   | (ReferenceMarketCliBase & { readonly kind: "price"; readonly input: ReturnType<typeof referenceMarketApplicationContracts.price.parseInput> })
   | (ReferenceMarketCliBase & { readonly kind: "history"; readonly input: ReturnType<typeof referenceMarketApplicationContracts.history.parseInput> })
   | (ReferenceMarketCliBase & { readonly kind: "watchlist"; readonly input: Record<string, never> })
-  | (ReferenceMarketCliBase & { readonly kind: "add"; readonly input: ReturnType<typeof referenceMarketApplicationContracts.add.parseInput> })
-  | (ReferenceMarketCliBase & { readonly kind: "remove"; readonly input: ReturnType<typeof referenceMarketApplicationContracts.remove.parseInput> })
-  | (ReferenceMarketCliBase & { readonly kind: "reorder"; readonly input: ReturnType<typeof referenceMarketApplicationContracts.reorder.parseInput> });
+  | (ReferenceMarketCliBase & { readonly kind: "add"; readonly input: ReturnType<typeof referenceMarketApplicationContracts.watchlistChangeReview.parseInput> })
+  | (ReferenceMarketCliBase & { readonly kind: "remove"; readonly input: ReturnType<typeof referenceMarketApplicationContracts.watchlistChangeReview.parseInput> })
+  | (ReferenceMarketCliBase & { readonly kind: "reorder"; readonly input: ReturnType<typeof referenceMarketApplicationContracts.watchlistChangeReview.parseInput> })
+  | (ReferenceMarketCliBase & { readonly kind: "operation"; readonly operationId: OperationId });
 
 export interface ReferenceMarketCliOutputPort {
+  readonly inputIsTTY: boolean;
+  readonly outputIsTTY: boolean;
+  readonly interruptSignal: AbortSignal;
   writeOutput(value: string): void;
   writeError(value: string): void;
+  readLine(prompt: string): Promise<string>;
 }
+
+export const referenceMarketCliCommandRequiresInteractiveTerminal = (
+  command: ReferenceMarketCliCommand,
+): boolean => command.kind === "add" || command.kind === "remove" || command.kind === "reorder";
 
 const invalidInput = (): never => { throw new TypeError("Reference market CLI input is invalid."); };
 
@@ -102,25 +120,41 @@ export const parseReferenceMarketCliCommand = (
       parsed.positionals.length === 0 && parsed.window === undefined && parsed.revision === undefined) {
       return Object.freeze({ kind: "watchlist", json: parsed.json, input: Object.freeze({}) });
     }
-    if ((command === referenceMarketInterfaceBindings.add.cli.command ||
-      command === referenceMarketInterfaceBindings.remove.cli.command) &&
-      parsed.positionals.length === 1 && parsed.revision !== undefined && parsed.window === undefined) {
-      const contract = command === referenceMarketInterfaceBindings.add.cli.command
-        ? referenceMarketApplicationContracts.add
-        : referenceMarketApplicationContracts.remove;
+    if ((command === operationInterfaceBindings.watchlistAdd.cli?.command ||
+      command === operationInterfaceBindings.watchlistRemove.cli?.command) &&
+      !parsed.json && parsed.positionals.length === 1 && parsed.revision !== undefined &&
+      parsed.window === undefined) {
+      const kind = command === operationInterfaceBindings.watchlistAdd.cli?.command
+        ? "add" as const
+        : "remove" as const;
       return Object.freeze({
-        kind: command === referenceMarketInterfaceBindings.add.cli.command ? "add" : "remove",
-        json: parsed.json,
-        input: contract.parseInput({ pairId: parsed.positionals[0], expectedRevision: parsed.revision }),
+        kind,
+        json: false,
+        input: referenceMarketApplicationContracts.watchlistChangeReview.parseInput({
+          kind,
+          pairId: parsed.positionals[0],
+          expectedRevision: parsed.revision,
+        }),
       }) as ReferenceMarketCliCommand;
     }
-    if (command === referenceMarketInterfaceBindings.reorder.cli.command &&
-      parsed.revision !== undefined && parsed.window === undefined) {
+    if (command === operationInterfaceBindings.watchlistReorder.cli?.command &&
+      !parsed.json && parsed.revision !== undefined && parsed.window === undefined) {
       return Object.freeze({
-        kind: "reorder", json: parsed.json,
-        input: referenceMarketApplicationContracts.reorder.parseInput({
-          pairIds: parsed.positionals, expectedRevision: parsed.revision,
+        kind: "reorder", json: false,
+        input: referenceMarketApplicationContracts.watchlistChangeReview.parseInput({
+          kind: "reorder", pairIds: parsed.positionals, expectedRevision: parsed.revision,
         }),
+      });
+    }
+    if (command === operationInterfaceBindings.watchlistOperation.cli?.command &&
+      parsed.positionals.length === 1 && parsed.revision === undefined && parsed.window === undefined) {
+      const input = referenceMarketApplicationContracts.operation.parseInput({
+        operationId: parsed.positionals[0],
+      });
+      return Object.freeze({
+        kind: "operation",
+        json: parsed.json,
+        operationId: input.operationId,
       });
     }
   } catch { return invalidInput(); }
@@ -228,33 +262,123 @@ const watchlistHuman = (result: ReferenceWatchlistSuccess): string => [
     : result.entries.map((entry, index) => `${index + 1}. ${entry.label} (${entry.pairId})`)),
 ].join("\n");
 
+const pairHuman = (entry: ReferenceWatchlistReview["precondition"]["currentEntries"][number]): string =>
+  `${entry.label} (${entry.pairId})`;
+
+const watchlistReviewHuman = (review: ReferenceWatchlistReview): string => {
+  const target = review.kind === "reorder"
+    ? review.target.entries.map(pairHuman).join(", ") || "none"
+    : pairHuman(review.target.pair);
+  return [
+    `Reference watchlist ${review.kind}`,
+    `Account: ${review.precondition.account.address}`,
+    `Chain: ${review.precondition.account.chainId}`,
+    `Connection revision: ${review.precondition.connectionRevision}`,
+    `Watchlist revision: ${review.precondition.watchlistRevision}`,
+    `Current pairs: ${review.precondition.currentEntries.map(pairHuman).join(", ") || "none"}`,
+    `Target: ${target}`,
+    `Manifest version: ${review.fixedEvidence.manifestVersion}`,
+    `Action deadline: ${review.actionExpiresAt}`,
+    `Operation ID: ${review.operationId}`,
+    `Review digest: ${review.reviewDigest}`,
+  ].join("\n");
+};
+
+const watchlistOperationHuman = (operation: ReferenceWatchlistOperation): string => [
+  `Reference watchlist operation ${operation.operationId}: completed`,
+  `Outcome: ${operation.result.outcome}`,
+  `Completed at: ${operation.completedAt}`,
+  watchlistHuman(operation.result.watchlist),
+].join("\n");
+
+const reportReferenceMarketFailure = (
+  output: ReferenceMarketCliOutputPort,
+  failure: Readonly<{ error: { code: string; message: string } }>,
+  json: boolean,
+): number => {
+  if (json) output.writeOutput(`${canonicalJsonStringify(failure as unknown as CanonicalJson)}\n`);
+  else output.writeError(`${failure.error.code}: ${failure.error.message}\n`);
+  return referenceMarketInterfaceErrorMappings.get(failure.error.code).cliExitCode;
+};
+
 export const runReferenceMarketCliCommand = async (
   runtime: RuntimeDispatchPort,
-  mutationClient: LocalMutationClient,
+  operationClient: LocalOperationClient,
   command: ReferenceMarketCliCommand,
   output: ReferenceMarketCliOutputPort,
   signal?: AbortSignal,
 ): Promise<number> => {
+  if (command.kind === "add" || command.kind === "remove" || command.kind === "reorder") {
+    if (!output.inputIsTTY || !output.outputIsTTY) {
+      return reportReferenceMarketFailure(
+        output,
+        createReferenceMarketFailure("interactive_terminal_required"),
+        false,
+      );
+    }
+    const actionBinding = command.kind === "add"
+      ? operationInterfaceBindings.watchlistAdd
+      : command.kind === "remove"
+        ? operationInterfaceBindings.watchlistRemove
+        : operationInterfaceBindings.watchlistReorder;
+    const decided = await runAtomicCliDecision({
+      client: operationClient,
+      reviewIdentity: operationInterfaceBindings.watchlistReview.identity,
+      reviewInput: command.input,
+      selectReview: (result) => result.review,
+      actionIdentity: actionBinding.identity,
+      actionInput: (review) => actionBinding.contract.parseInput({ review, initiatedBy: "cli" }) as never,
+      formatReview: watchlistReviewHuman,
+      formatOperation: watchlistOperationHuman,
+      prompt: "Apply this reference watchlist change? [y/N] ",
+      output,
+    });
+    if (decided.status === "completed" || decided.status === "declined") return 0;
+    if (decided.status === "delivery_unknown") {
+      output.writeError([
+        `delivery_unknown: Operation ${decided.delivery.operationId} may have completed.`,
+        "Do not repeat the action. Read that exact operation.",
+        "",
+      ].join("\n"));
+      return deliveryUnknownCliExitCode;
+    }
+    return reportReferenceMarketFailure(output, decided.failure, false);
+  }
+
+  if (command.kind === "operation") {
+    const input = referenceMarketApplicationContracts.operation.parseInput({
+      operationId: command.operationId,
+    });
+    const result = await operationClient.invoke(
+      operationInterfaceBindings.watchlistOperation.identity,
+      input,
+      output.interruptSignal,
+    );
+    if (!("ok" in result) || !result.ok) {
+      if ("status" in result) {
+        output.writeError("delivery_unknown: Exact read did not complete.\n");
+        return deliveryUnknownCliExitCode;
+      }
+      return reportReferenceMarketFailure(output, result.failure, command.json);
+    }
+    output.writeOutput(command.json
+      ? `${canonicalJsonStringify(result.value as unknown as CanonicalJson)}\n`
+      : `${watchlistOperationHuman(result.value)}\n`);
+    return 0;
+  }
+
   const result = command.kind === "price"
     ? await dispatchReferenceMarketRead(runtime, referenceMarketInterfaceBindings.price, command.input, signal)
     : command.kind === "history"
       ? await dispatchReferenceMarketRead(runtime, referenceMarketInterfaceBindings.history, command.input, signal)
-      : command.kind === "watchlist"
-        ? await dispatchReferenceMarketRead(runtime, referenceMarketInterfaceBindings.watchlist, command.input, signal)
-        : command.kind === "add"
-          ? await mutationClient.add(command.input, signal)
-          : command.kind === "remove"
-            ? await mutationClient.remove(command.input, signal)
-            : await mutationClient.reorder(command.input, signal);
+      : await dispatchReferenceMarketRead(runtime, referenceMarketInterfaceBindings.watchlist, command.input, signal);
   if ("status" in result) {
     if (command.json) output.writeOutput(`${canonicalJsonStringify(result as unknown as CanonicalJson)}\n`);
     else output.writeError("delivery_unknown: The watchlist result is unavailable after sending began; read the watchlist before deciding whether to send again.\n");
     return deliveryUnknownCliExitCode;
   }
   if (!result.ok) {
-    if (command.json) output.writeOutput(`${canonicalJsonStringify(result.failure as unknown as CanonicalJson)}\n`);
-    else output.writeError(`${result.failure.error.code}: ${result.failure.error.message}\n`);
-    return referenceMarketInterfaceErrorMappings.get(result.failure.error.code).cliExitCode;
+    return reportReferenceMarketFailure(output, result.failure, command.json);
   }
   const value = result.value;
   output.writeOutput(command.json

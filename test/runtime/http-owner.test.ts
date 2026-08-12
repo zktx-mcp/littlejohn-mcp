@@ -20,11 +20,8 @@ import {
   canonicalJsonStringify,
   parseEvmChainId,
   parseUtcTimestamp,
-  walletConnectionCapability,
   type CanonicalJson,
 } from "../../src/core/index.js";
-import { walletLocalOperationIdentities } from "../../src/interfaces/identities.js";
-import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
 import {
   readConfiguredRpcEndpoint,
   readRuntimeConfiguration,
@@ -53,15 +50,6 @@ import {
   publicReadResponseLimitBytes,
 } from "../../src/runtime/http-boundary.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
-import {
-  parseWalletManagementOperation,
-  type WalletLocalControlOperationPort,
-  type WalletOperationCancellation,
-  type WalletOperationConfirmationPort,
-  type WalletOperationPresentationPort,
-} from "../../src/wallet/contracts.js";
-import { extendWalletControlRouteRegistry } from "../../src/wallet/routes.js";
-import { bindForHarness, createCapabilityHarness } from "../core/capability-harness.js";
 
 const directories: string[] = [];
 const owners: FixedHttpOwner[] = [];
@@ -1217,10 +1205,8 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       routes: routes.extend([
         {
           method: "GET",
-          query: "none" as const,
           pathPattern: "/api/v1/internal/control/example",
           mutation: "none" as const,
-          response: "canonical_json" as const,
           successStatus: 200,
           handler: async () => {
             executions += 1;
@@ -1229,10 +1215,8 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         },
         {
           method: "GET",
-          query: "none" as const,
           pathPattern: "/api/v1/dispatch-example",
           mutation: "none" as const,
-          response: "canonical_json" as const,
           successStatus: 200,
           handler: async () => {
             executions += 1;
@@ -1298,10 +1282,8 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
         routes: routes.extend([
           {
             method: "GET",
-            query: "none" as const,
             pathPattern: "/api/v1/internal/control/session-fast",
             mutation: "none" as const,
-            response: "canonical_json" as const,
             successStatus: 200,
             handler: async () => {
               fastExecutions += 1;
@@ -1310,10 +1292,8 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
           },
           {
             method: "GET",
-            query: "none" as const,
             pathPattern: "/api/v1/internal/control/session-abort",
             mutation: "none" as const,
-            response: "canonical_json" as const,
             successStatus: 200,
             handler: async () => {
               enterAbort();
@@ -1323,10 +1303,8 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
           },
           {
             method: "GET",
-            query: "none" as const,
             pathPattern: "/api/v1/internal/control/session-timeout",
             mutation: "none" as const,
-            response: "canonical_json" as const,
             successStatus: 200,
             handler: async () => {
               enterTimeout();
@@ -1397,82 +1375,6 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     releaseTimeout();
   });
 
-  it("delivers exact wallet cancellation through the authenticated owner session", async () => {
-    const test = await fixture();
-    const operationId = Buffer.alloc(32, 29).toString("base64url");
-    const terminal = parseWalletManagementOperation({
-      operationId,
-      kind: "connect",
-      state: "cancelled",
-      connectionRevision: "4",
-      actionExpiresAt: "2026-07-12T10:20:00.000Z",
-      interactionInterface: "cli",
-      result: null,
-      failure: null,
-      peerRefusalCode: null,
-    });
-    const cancellations: unknown[] = [];
-    const operations: WalletLocalControlOperationPort = Object.freeze({
-      async start() {
-        throw new Error("Cancellation must not start an operation.");
-      },
-      async get() {
-        throw new Error("Cancellation must not read an operation before delivery.");
-      },
-      async cancel(input: WalletOperationCancellation) {
-        cancellations.push(input);
-        return terminal;
-      },
-    });
-    const presentation: WalletOperationPresentationPort = Object.freeze({
-      async get() {
-        throw new Error("Cancellation must not read presentation state.");
-      },
-    });
-    const confirmation: WalletOperationConfirmationPort<"cli"> = Object.freeze({
-      interactionInterface: "cli",
-      async confirm() {
-        throw new Error("Cancellation must not confirm an operation.");
-      },
-    });
-    const harness = createCapabilityHarness();
-    const owner = createReleasedFixedHttpOwner({
-      ...fixedOwnerOptions(test),
-      applicationFactory: ({ routes }) => ({
-        routes: extendWalletControlRouteRegistry({
-          routes,
-          operations,
-          presentation,
-          cliConfirmation: confirmation,
-          walletConnection: Object.freeze({
-            connection: bindForHarness(walletConnectionCapability, harness, async () => {
-              throw new Error("Cancellation must not read wallet connection state.");
-            }),
-          }),
-        }),
-        close: () => undefined,
-      }),
-    });
-    owners.push(owner);
-    expect(await owner.start()).toBe("owner");
-
-    const client = new LocalOperationClient({
-      ownerSessions: owner,
-      createOperationId: () => {
-        throw new Error("Cancellation must not allocate an operation ID.");
-      },
-    });
-    try {
-      expect(await client.invoke(walletLocalOperationIdentities.cli.cancel, {
-        operationId,
-        connectionRevision: "4",
-      })).toEqual({ ok: true, value: terminal });
-      expect(cancellations).toEqual([{ operationId, connectionRevision: "4" }]);
-    } finally {
-      await client.close();
-    }
-  });
-
   it("enforces the exact byte-counted public read response limit across a deferred owner", async () => {
     const test = await fixture();
     const secondDatabase = await ProductDatabase.open(test.paths.database, now);
@@ -1488,19 +1390,15 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       routes: routes.extend([
         {
           method: "GET",
-          query: "none" as const,
           pathPattern: "/api/v1/public-read-at-limit",
           mutation: "none" as const,
-          response: "canonical_json" as const,
           successStatus: 200,
           handler: async () => ({ ok: true as const, body: { value } }),
         },
         {
           method: "GET",
-          query: "none" as const,
           pathPattern: "/api/v1/public-read-over-limit",
           mutation: "none" as const,
-          response: "canonical_json" as const,
           successStatus: 200,
           handler: async () => ({ ok: true as const, body: { value: oversizedValue } }),
         },
@@ -1527,151 +1425,6 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       method: "GET",
       path: "/api/v1/public-read-over-limit",
     })).toMatchObject({ status: 500, body: { code: "internal_error" } });
-  });
-
-  it("serves browser content through fixed headers without exposing an arbitrary header channel", async () => {
-    const test = await fixture();
-    const shell = "<!doctype html><html><head></head><body><div id=\"root\"></div></body></html>";
-    const cookie =
-      "example_session=token; Path=/api/v1/examples/example; Max-Age=60; HttpOnly; SameSite=Strict";
-    let observedQuery: string | undefined;
-    const owner = createReleasedFixedHttpOwner({
-      ...fixedOwnerOptions(test),
-      applicationFactory: ({ routes }) => {
-        const browserRoutes = routes.extendRequestPolicies({
-          authenticationVerifiers: [],
-          policies: [{
-            requestClass: "browser_bootstrap",
-            host: "fixed",
-            origin: "absent",
-            authentication: "none",
-            body: "none",
-            responseLimitBytes: 65_536,
-            mutation: "none",
-          }],
-        }, [{
-          kind: "route",
-          method: "GET",
-          pathPattern: "/examples/{operationId}",
-          requestClass: "browser_bootstrap",
-        }]);
-        return {
-          routes: browserRoutes.extend([{
-            method: "GET",
-            query: "browser_location",
-            pathPattern: "/examples/{operationId}",
-            mutation: "none",
-            response: "browser_content",
-            successStatus: 200,
-            handler: async ({ query }) => {
-              observedQuery = query;
-              return {
-                ok: true,
-                body: shell,
-                contentType: "text/html; charset=utf-8",
-                setCookie: cookie,
-              };
-            },
-          }]),
-          close: () => undefined,
-        };
-      },
-    });
-    owners.push(owner);
-    expect(await owner.start()).toBe("owner");
-
-    const response = await requestText("/examples/example?window=30d");
-    expect(response.status).toBe(200);
-    expect(observedQuery).toBe("?window=30d");
-    expect(response.body).toBe(shell);
-    expect(response.headers["content-type"]).toBe("text/html; charset=utf-8");
-    expect(response.headers["content-length"]).toBe(String(Buffer.byteLength(shell)));
-    expect(response.headers["cache-control"]).toBe("no-store");
-    expect(response.headers["content-security-policy"]).toBe(
-      "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; " +
-      "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-    );
-    expect(response.headers["x-content-type-options"]).toBe("nosniff");
-    expect(response.headers["referrer-policy"]).toBe("no-referrer");
-    expect(response.headers["cross-origin-opener-policy"]).toBe("same-origin");
-    expect(response.headers["set-cookie"]).toEqual([cookie]);
-  });
-
-  it("binds browser authentication to the immutable matched path parameters before dispatch", async () => {
-    const test = await fixture();
-    let handlerCalls = 0;
-    const owner = createReleasedFixedHttpOwner({
-      ...fixedOwnerOptions(test),
-      applicationFactory: ({ routes }) => {
-        const securedRoutes = routes.extendRequestPolicies({
-          authenticationVerifiers: [{
-            authentication: "browser_resource",
-            verify: (input) => input.authorization.length === 0 &&
-              input.cookie.length === 1 && input.cookie[0] === "example_session=credential" &&
-              input.csrfToken.length === 0 && Object.isFrozen(input.params) &&
-              Object.getPrototypeOf(input.params) === null &&
-              input.params["resourceId"] === "authorized-resource",
-          }],
-          policies: [{
-            requestClass: "browser_read", host: "fixed", origin: "absent_or_fixed",
-            authentication: "browser_resource", body: "none",
-            responseLimitBytes: 65_536, mutation: "none",
-          }],
-        }, [{
-          kind: "route", method: "GET",
-          pathPattern: "/api/v1/examples/{resourceId}",
-          requestClass: "browser_read",
-        }]);
-        return {
-          routes: securedRoutes.extend([{
-            method: "GET", mutation: "none", query: "none",
-            pathPattern: "/api/v1/examples/{resourceId}",
-            response: "canonical_json", successStatus: 200,
-            handler: async () => {
-              handlerCalls += 1;
-              return { ok: true, body: { authorized: true } };
-            },
-          }]),
-          close: () => undefined,
-        };
-      },
-    });
-    owners.push(owner);
-    expect(await owner.start()).toBe("owner");
-
-    const cookie = { Cookie: "example_session=credential" };
-    const accepted = await requestJson(
-      "/api/v1/examples/authorized-resource",
-      "GET",
-      cookie,
-    );
-    expect(accepted).toMatchObject({ status: 200, body: { authorized: true } });
-
-    const foreign = await requestJson(
-      "/api/v1/examples/foreign-resource",
-      "GET",
-      cookie,
-    );
-    expect(foreign).toMatchObject({ status: 401, body: { code: "unauthorized" } });
-
-    const acceptedMethodRejection = await requestJson(
-      "/api/v1/examples/authorized-resource",
-      "POST",
-      cookie,
-    );
-    expect(acceptedMethodRejection.status).toBe(405);
-    expect(acceptedMethodRejection.headers["allow"]).toBe("GET");
-
-    const foreignMethodRejection = await requestJson(
-      "/api/v1/examples/foreign-resource",
-      "POST",
-      cookie,
-    );
-    expect(foreignMethodRejection).toMatchObject({
-      status: 401,
-      body: { code: "unauthorized" },
-    });
-    expect(handlerCalls).toBe(1);
   });
 
   it("accepts standard formatted JSON while pinning the operation to the authenticated socket", async () => {
@@ -2376,10 +2129,9 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       applicationFactory: ({ routes }) => ({
         routes: routes.extend([{
           method: "GET",
-          query: "none" as const,
           pathPattern: "/api/v1/internal/control/example",
           mutation: "none" as const,
-          response: "canonical_json" as const, successStatus: 200,
+          successStatus: 200,
           handler: async ({ signal }) => {
             handlerCalls += 1;
             entered(signal);
@@ -2434,10 +2186,9 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       applicationFactory: ({ routes }) => ({
         routes: routes.extend([{
           method: "POST",
-          query: "none" as const,
           pathPattern: "/api/v1/internal/control/examples",
           mutation: "declared_control" as const,
-          response: "canonical_json" as const, successStatus: 201,
+          successStatus: 201,
           handler: async () => {
             handlerCalls += 1;
             return { ok: true, body: { accepted: true } };
@@ -2476,10 +2227,9 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       applicationFactory: ({ routes }) => ({
         routes: routes.extend([{
           method: "GET",
-          query: "none" as const,
           pathPattern: "/api/v1/internal/control/example",
           mutation: "none" as const,
-          response: "canonical_json" as const, successStatus: 200,
+          successStatus: 200,
           handler: async () => ({ ok: true, body: {} }),
         }]),
         close: () => undefined,
@@ -2536,10 +2286,9 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       applicationFactory: ({ routes }) => ({
         routes: routes.extend([{
           method: "POST",
-          query: "none" as const,
           pathPattern: "/api/v1/internal/control/examples",
           mutation: "declared_control" as const,
-          response: "canonical_json" as const, successStatus: 201,
+          successStatus: 201,
           handler: async () => {
             handlerCalls += 1;
             return { ok: true, body: {} };

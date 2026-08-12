@@ -300,7 +300,6 @@ const internalDirectAvailability = Object.freeze({
   http: "unavailable",
   mcp: "unavailable",
   cli: "unavailable",
-  web: "unavailable",
 });
 
 describe("chain owner application", () => {
@@ -882,6 +881,7 @@ describe("chain owner application", () => {
     await expect(application.tokenAdditionReads.inspectAndVerifyOfficial({
       asset: { kind: "erc20", chainId: configuredChainId, address: tokenAddress },
       officialMember: null,
+      block: null,
     }, caller.signal)).resolves.toMatchObject({
       ok: false,
       error: {
@@ -959,6 +959,7 @@ describe("chain owner application", () => {
     const pending = application.tokenAdditionReads.inspectAndVerifyOfficial({
       asset: { kind: "erc20", chainId: configuredChainId, address: tokenAddress },
       officialMember: { assetUid, contractAddress: tokenAddress },
+      block: null,
     }, new AbortController().signal);
     await inspectionCodeStarted;
     expect(vi.getTimerCount()).toBe(1);

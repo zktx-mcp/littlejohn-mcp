@@ -11,7 +11,7 @@ import {
   officialIdentityEvidenceSchema,
   snakeCaseCodeSchema,
   supportLevelSchema,
-} from "../core/browser.js";
+} from "../core/client.js";
 
 const protocolIdentifierSchema = snakeCaseCodeSchema.refine(
   (value) => !value.split("_").includes("latest"),

@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -18,6 +19,12 @@ import {
   type ChainAnchor,
   type ReferenceRoundObservation,
 } from "../../src/core/index.js";
+import {
+  createReferenceWatchlistReviewProjection,
+  referenceWatchlistDirectActionSchema,
+  referenceWatchlistReviewDigest,
+  type ReferenceWatchlistOperationKind,
+} from "../../src/market-portfolio/contracts.js";
 import { ProductDatabase } from "../../src/runtime/database.js";
 import { RuntimeOperationError } from "../../src/runtime/errors.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
@@ -59,6 +66,46 @@ const openConnected = async () => {
     expiresAt: "2026-07-23T15:07:34.000Z",
   }, now), false, now);
   return { database, directory };
+};
+
+const watchlistAction = (input: Readonly<{
+  kind: Exclude<ReferenceWatchlistOperationKind, "reorder">;
+  operationSeed: string;
+  watchlist: ReturnType<ReturnType<ProductDatabase["referenceMarketStore"]>["readWatchlist"]>;
+  pairId: (typeof referenceMarketManifest.pairs)[number]["pairId"];
+  createdAt?: string;
+  actionExpiresAt?: string;
+}>) => {
+  const projection = createReferenceWatchlistReviewProjection({
+    kind: input.kind,
+    currentEntries: input.watchlist.entries,
+    pairId: input.pairId,
+  });
+  if (projection.status !== "success") throw new Error(projection.reason);
+  const withoutDigest = {
+    contractVersion: "1",
+    domain: "reference_watchlist",
+    operationId: Buffer.alloc(32, input.operationSeed.charCodeAt(0)).toString("base64url"),
+    kind: input.kind,
+    createdAt: input.createdAt ?? "2026-07-22T15:02:35.000Z",
+    actionExpiresAt: input.actionExpiresAt ?? "2026-07-22T15:07:35.000Z",
+    precondition: {
+      account,
+      connectionRevision: connectedRevision,
+      watchlistRevision: input.watchlist.revision,
+      currentEntries: input.watchlist.entries,
+    },
+    target: projection.projection.target,
+    decision: projection.projection.decision,
+    fixedEvidence: projection.projection.fixedEvidence,
+  };
+  return referenceWatchlistDirectActionSchema.parse({
+    review: {
+      ...withoutDigest,
+      reviewDigest: referenceWatchlistReviewDigest(withoutDigest),
+    },
+    initiatedBy: "mcp_app",
+  });
 };
 
 const observation = (
@@ -381,111 +428,78 @@ describe("reference-market storage", () => {
     });
   });
 
-  it("owns add, no-op reorder, stale revision rejection, remove, and restart persistence", async () => {
+  it("commits one admitted action and its terminal operation atomically across restart", async () => {
     const { database, directory } = await openConnected();
     const store = database.referenceMarketStore();
     const initial = store.readWatchlist(account);
     expect(initial.entries).toEqual([]);
     const pair = referenceMarketManifest.pairs[0]!;
-    const added = store.mutateWatchlist({
-      account,
-      expectedConnectionRevision: connectedRevision,
-      expectedRevision: initial.revision,
-      mutation: { kind: "add", pairId: pair.pairId },
-      now,
+    const action = watchlistAction({
+      kind: "add",
+      operationSeed: "A",
+      watchlist: initial,
+      pairId: pair.pairId,
     });
-    expect(added.status).toBe("success");
-    if (added.status !== "success") throw new Error("Expected a stored watchlist.");
-    const noOp = store.mutateWatchlist({
-      account,
-      expectedConnectionRevision: connectedRevision,
-      expectedRevision: added.watchlist.revision,
-      mutation: { kind: "reorder", pairIds: [pair.pairId] },
-      now,
+    const operation = store.applyWatchlistChange({ action, completedAt: now });
+    expect(operation).toMatchObject({
+      operationId: action.review.operationId,
+      review: action.review,
+      state: "completed",
+      result: { outcome: "watchlist_pair_added" },
     });
-    expect(noOp).toEqual(added);
-    expect(() => store.mutateWatchlist({
-      account,
-      expectedConnectionRevision: connectedRevision,
-      expectedRevision: initial.revision,
-      mutation: { kind: "remove", pairId: pair.pairId },
-      now,
-    })).toThrow(RuntimeOperationError);
+    expect(operation.result.watchlist.entries.map((entry) => entry.pairId)).toEqual([pair.pairId]);
+    expect(store.readWatchlistOperation(action.review.operationId)).toEqual(operation);
+    expect(store.applyWatchlistChange({ action, completedAt: now })).toEqual(operation);
     database.close();
 
     const reopened = await ProductDatabase.open(runtimePaths(directory).database, now);
-    expect(reopened.referenceMarketStore().readWatchlist(account)).toEqual(added.watchlist);
-    const removed = reopened.referenceMarketStore().mutateWatchlist({
-      account,
-      expectedConnectionRevision: connectedRevision,
-      expectedRevision: added.watchlist.revision,
-      mutation: { kind: "remove", pairId: pair.pairId },
-      now,
-    });
-    expect(removed.status).toBe("success");
-    if (removed.status === "success") expect(removed.watchlist.entries).toEqual([]);
+    expect(reopened.referenceMarketStore().readWatchlist(account)).toEqual(operation.result.watchlist);
+    expect(reopened.referenceMarketStore().readWatchlistOperation(action.review.operationId)).toEqual(operation);
     reopened.close();
   });
 
-  it("rejects duplicate, missing, incomplete-order, and changed-wallet mutations without changing state", async () => {
+  it("rejects stale, expired, and identity-conflicting actions without changing durable state", async () => {
     const { database } = await openConnected();
     const store = database.referenceMarketStore();
     const initial = store.readWatchlist(account);
-    const pair = referenceMarketManifest.pairs[0]!;
-
-    expect(store.mutateWatchlist({
-      account,
-      expectedConnectionRevision: connectedRevision,
-      expectedRevision: initial.revision,
-      mutation: { kind: "remove", pairId: pair.pairId },
-      now,
-    })).toEqual({ status: "rejected", reason: "watchlist_pair_not_found" });
-    expect(store.readWatchlist(account)).toEqual(initial);
-
-    const added = store.mutateWatchlist({
-      account,
-      expectedConnectionRevision: connectedRevision,
-      expectedRevision: initial.revision,
-      mutation: { kind: "add", pairId: pair.pairId },
-      now,
+    const [firstPair, secondPair] = referenceMarketManifest.pairs;
+    const first = watchlistAction({
+      kind: "add",
+      operationSeed: "B",
+      watchlist: initial,
+      pairId: firstPair!.pairId,
     });
-    if (added.status !== "success") throw new Error("Expected a stored watchlist.");
-    expect(store.mutateWatchlist({
-      account,
-      expectedConnectionRevision: connectedRevision,
-      expectedRevision: added.watchlist.revision,
-      mutation: { kind: "add", pairId: pair.pairId },
-      now,
-    })).toEqual({ status: "rejected", reason: "watchlist_pair_already_saved" });
-    expect(store.mutateWatchlist({
-      account,
-      expectedConnectionRevision: connectedRevision,
-      expectedRevision: added.watchlist.revision,
-      mutation: { kind: "reorder", pairIds: [] },
-      now,
-    })).toEqual({ status: "rejected", reason: "watchlist_order_conflict" });
-    expect(store.readWatchlist(account)).toEqual(added.watchlist);
+    const stale = watchlistAction({
+      kind: "add",
+      operationSeed: "C",
+      watchlist: initial,
+      pairId: secondPair!.pairId,
+    });
+    const completed = store.applyWatchlistChange({ action: first, completedAt: now });
+    expect(() => store.applyWatchlistChange({ action: stale, completedAt: now }))
+      .toThrow(RuntimeOperationError);
+    expect(store.readWatchlist(account)).toEqual(completed.result.watchlist);
 
-    let full = added.watchlist;
-    for (const nextPair of referenceMarketManifest.pairs.slice(1)) {
-      const result = store.mutateWatchlist({
-        account,
-        expectedConnectionRevision: connectedRevision,
-        expectedRevision: full.revision,
-        mutation: { kind: "add", pairId: nextPair.pairId },
-        now,
-      });
-      if (result.status !== "success") throw new Error("Expected the watchlist to reach its fixed capacity.");
-      full = result.watchlist;
-    }
-    expect(store.mutateWatchlist({
-      account,
-      expectedConnectionRevision: connectedRevision,
-      expectedRevision: full.revision,
-      mutation: { kind: "add", pairId: pair.pairId },
-      now,
-    })).toEqual({ status: "rejected", reason: "watchlist_full" });
-    expect(store.readWatchlist(account)).toEqual(full);
+    const expired = watchlistAction({
+      kind: "add",
+      operationSeed: "D",
+      watchlist: completed.result.watchlist,
+      pairId: secondPair!.pairId,
+      createdAt: "2026-07-22T15:02:34.000Z",
+      actionExpiresAt: "2026-07-22T15:07:34.000Z",
+    });
+    expect(() => store.applyWatchlistChange({ action: expired, completedAt: now }))
+      .toThrow("expired");
+    expect(store.readWatchlistOperation(expired.review.operationId)).toBeNull();
+
+    const conflictingIdentity = watchlistAction({
+      kind: "add",
+      operationSeed: "B",
+      watchlist: completed.result.watchlist,
+      pairId: secondPair!.pairId,
+    });
+    expect(() => store.applyWatchlistChange({ action: conflictingIdentity, completedAt: now }))
+      .toThrow(RuntimeOperationError);
 
     const alternateAddress = parseEvmAddressInput(`0x${"34".repeat(20)}`);
     database.walletStore().replace(connectedRevision, parseCapabilityDataAt(walletConnectionCapability, {
@@ -496,14 +510,15 @@ describe("reference-market storage", () => {
       approvedEvents: ["accountsChanged", "chainChanged"],
       expiresAt: "2026-07-23T15:07:34.000Z",
     }, now), false, now);
-    expect(() => store.mutateWatchlist({
-      account,
-      expectedConnectionRevision: connectedRevision,
-      expectedRevision: full.revision,
-      mutation: { kind: "remove", pairId: pair.pairId },
-      now,
-    })).toThrow(RuntimeOperationError);
-    expect(store.readWatchlist(account)).toEqual(full);
+    const changedWallet = watchlistAction({
+      kind: "add",
+      operationSeed: "E",
+      watchlist: completed.result.watchlist,
+      pairId: secondPair!.pairId,
+    });
+    expect(() => store.applyWatchlistChange({ action: changedWallet, completedAt: now }))
+      .toThrow(RuntimeOperationError);
+    expect(store.readWatchlist(account)).toEqual(completed.result.watchlist);
     database.close();
   });
 });

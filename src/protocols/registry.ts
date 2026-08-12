@@ -1,4 +1,4 @@
-import { compareCodePointSequences, deepFreezeValue } from "../core/browser.js";
+import { compareCodePointSequences, deepFreezeValue } from "../core/client.js";
 import {
   admitProtocolFamilyDescriptor,
   admitProtocolPackageDescriptor,

@@ -172,18 +172,26 @@ class FakeWalletConnectClient {
       closed: false,
     };
     this.pending = pending;
-    const terminal = (value) => {
-      if (pending.closed) return value;
-      pending.closed = true;
-      if (this.pending === pending) this.pending = undefined;
-      pending.resolve(value);
-      return value;
-    };
     return Object.freeze({
       qr,
       wait: () => outcome,
-      cancel: async () => terminal(Object.freeze({ status: "cancelled" })),
+      cancel: async () => this.settlePending(pending, Object.freeze({ status: "cancelled" })),
     });
+  }
+
+  settlePending(pending, outcome) {
+    if (pending.closed) return outcome;
+    pending.closed = true;
+    if (this.pending === pending) this.pending = undefined;
+    pending.resolve(outcome);
+    return outcome;
+  }
+
+  async containPendingConnectionState() {
+    const pending = this.pending;
+    if (pending !== undefined) {
+      this.settlePending(pending, Object.freeze({ status: "cancelled" }));
+    }
   }
 
   async approve() {
@@ -192,9 +200,10 @@ class FakeWalletConnectClient {
     const approved = session(sessionExpiry(), this.nextSessionAccount);
     this.sessions = [approved];
     await this.persistSessions();
-    pending.closed = true;
-    this.pending = undefined;
-    pending.resolve(Object.freeze({ status: "approved", session: this.publicSession(approved) }));
+    this.settlePending(
+      pending,
+      Object.freeze({ status: "approved", session: this.publicSession(approved) }),
+    );
     return approved;
   }
 
@@ -253,13 +262,8 @@ class FakeWalletConnectClient {
 
   async contain() {
     if (this.contained) return;
+    await this.containPendingConnectionState();
     this.contained = true;
-    const pending = this.pending;
-    if (pending !== undefined && !pending.closed) {
-      pending.closed = true;
-      this.pending = undefined;
-      pending.resolve(Object.freeze({ status: "cancelled" }));
-    }
     this.listener = undefined;
   }
 
@@ -288,6 +292,7 @@ const createFakeClient = async (configuration, registration, signal) => {
     client: Object.freeze({
       observe: () => created.observe(),
       startConnection: () => created.startConnection(),
+      containPendingConnectionState: () => created.containPendingConnectionState(),
       disconnectSession: (sessionSourceId) => created.disconnectSession(sessionSourceId),
       activate: (listener) => created.activate(listener),
       contain: () => created.contain(),

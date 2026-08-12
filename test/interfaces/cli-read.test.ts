@@ -83,7 +83,6 @@ const runReadCliCommand = (
   runtime,
   new LocalOperationClient({
     ownerSessions: runtime,
-    createOperationId: () => "A".repeat(43),
   }),
   command,
   output,
@@ -563,7 +562,6 @@ describe("read CLI", () => {
     const runtime = new FakeRuntime(Object.freeze({ status: 200, body: success }));
     const terminal = nonInteractiveTerminal();
     expect(await runCli(["read", "chain-status", "--json"], {
-      createOperationId: () => "A".repeat(43),
       createRuntime: async () => runtime,
       terminal,
       waitForPoll: async () => undefined,

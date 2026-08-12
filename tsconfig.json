@@ -22,13 +22,12 @@
   "include": [
     "src/**/*.ts",
     "test/**/*.ts",
-    "scripts/browser-build-policy.ts",
     "scripts/mcp-app-build-policy.ts",
-    "vite.config.ts",
     "vite.mcp-app.config.ts"
   ],
   "exclude": [
     "src/interfaces/mcp-app/view/**/*.ts",
+    "test/interfaces/mcp-app/operation-lifecycle.test.ts",
     "test/interfaces/mcp-app/renderers.test.ts"
   ]
 }

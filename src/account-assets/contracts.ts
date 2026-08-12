@@ -24,11 +24,11 @@ import {
   type ApplicationFailure,
   type Erc20AssetIdentity,
   type ScaledUiAmount,
-} from "../core/browser.js";
+} from "../core/client.js";
 import {
   tokenSelectionSchema,
   tokenSelectionSetRevisionSchema,
-} from "../token-catalog/browser.js";
+} from "../token-catalog/client.js";
 import {
   officialAssetCandidateSchema,
   officialAssetSourceClassificationUnavailableReasonSchema,
@@ -40,7 +40,7 @@ import {
   type OfficialAssetSourceClassificationUnavailableReason,
   type OfficialAssetCandidate,
   type OfficialAssetSourceMember,
-} from "../registry/browser.js";
+} from "../registry/client.js";
 import { officialAssetCandidateListDigest } from "../registry/official-asset-contract.js";
 import { tokenCatalogErrorRegistry } from "../token-catalog/error-registry.js";
 

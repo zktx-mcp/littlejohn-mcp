@@ -3,8 +3,8 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
-  tokenCatalogReviewDigest,
   tokenInspectionDigest,
+  tokenSelectionReviewDigest,
 } from "../../src/token-catalog/contract-schema.js";
 
 type Json = null | boolean | number | string | readonly Json[] | { readonly [key: string]: Json };
@@ -360,22 +360,34 @@ const inspection = {
 } as const;
 
 const additionReview = {
+  contractVersion: "1",
+  domain: "token_selection",
   operationId: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
   kind: "add",
-  account,
-  connectionRevision: "1",
-  asset,
-  previousSelection: null,
-  selectionSetRevision: null,
-  inspection,
-  officialSnapshotRevision: "BAQEBAQEBAQEBAQEBAQEBA",
-  officialEvidence: {
-    assetUid: "0x5656565656565656565656565656565656565656565656565656565656565656",
-    snapshotRevision: "BAQEBAQEBAQEBAQEBAQEBA",
-    verificationBlock: block,
+  createdAt: "2026-07-18T00:00:03.000Z",
+  actionExpiresAt: "2026-07-18T00:05:03.000Z",
+  target: { asset },
+  decision: {
+    name: { status: "available", value: inspection.data.metadata.name.value },
+    symbol: { status: "available", value: inspection.data.metadata.symbol.value },
+    officialClassification: "official",
+    warningCodes: [],
   },
-  interactionInterface: "web",
-  expiresAt: "2026-07-18T00:05:03.000Z",
+  precondition: {
+    account,
+    connectionRevision: "1",
+    previousSelection: null,
+    selectionSetRevision: null,
+  },
+  fixedEvidence: {
+    inspectionBlock: block,
+    officialSnapshotRevision: "BAQEBAQEBAQEBAQEBAQEBA",
+    officialEvidence: {
+      assetUid: "0x5656565656565656565656565656565656565656565656565656565656565656",
+      snapshotRevision: "BAQEBAQEBAQEBAQEBAQEBA",
+      verificationBlock: block,
+    },
+  },
 } as const;
 
 const previousSelection = {
@@ -388,18 +400,21 @@ const previousSelection = {
 } as const;
 
 const removalReview = {
+  contractVersion: "1",
+  domain: "token_selection",
   operationId: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
   kind: "remove",
-  account,
-  connectionRevision: "1",
-  asset,
-  previousSelection,
-  selectionSetRevision: "AwMDAwMDAwMDAwMDAwMDAw",
-  inspection: null,
-  officialSnapshotRevision: null,
-  officialEvidence: null,
-  interactionInterface: "web",
-  expiresAt: "2026-07-18T00:05:03.000Z",
+  createdAt: "2026-07-18T00:00:03.000Z",
+  actionExpiresAt: "2026-07-18T00:05:03.000Z",
+  target: { asset },
+  decision: { action: "remove_selection" },
+  precondition: {
+    account,
+    connectionRevision: "1",
+    previousSelection,
+    selectionSetRevision: "AwMDAwMDAwMDAwMDAwMDAw",
+  },
+  fixedEvidence: {},
 } as const;
 
 describe("token commitment independent vectors", () => {
@@ -435,45 +450,23 @@ describe("token commitment independent vectors", () => {
 
   it("fixes the exact official-addition preimage without a global contract version", () => {
     const preimage = {
-      digestKind: "token_catalog_review",
+      digestKind: "token_selection_change_review",
       digestVersion: "1",
-      operationId: additionReview.operationId,
-      operationKind: additionReview.kind,
-      account,
-      connectionRevision: additionReview.connectionRevision,
-      asset,
-      previousSelection: null,
-      selectionSetRevision: null,
-      inspection,
-      officialSnapshotRevision: additionReview.officialSnapshotRevision,
-      officialEvidence: additionReview.officialEvidence,
-      interactionInterface: additionReview.interactionInterface,
-      expiresAt: additionReview.expiresAt,
+      review: additionReview,
     } as const;
-    const expected = "0x69edc5946a33ba1cda4f17dccea96361d0aceb4c737204944cb5df1fa11bf75d";
+    const expected = "0x83531215302171c478b25769c5ddbb00c80c4561cae3248d499481f4f8e1f8cf";
     expect(independentSha256(preimage)).toBe(expected);
-    expect(tokenCatalogReviewDigest(additionReview)).toBe(expected);
+    expect(tokenSelectionReviewDigest(additionReview)).toBe(expected);
   });
 
   it("fixes the exact removal preimage without a global contract version", () => {
     const preimage = {
-      digestKind: "token_catalog_review",
+      digestKind: "token_selection_change_review",
       digestVersion: "1",
-      operationId: removalReview.operationId,
-      operationKind: removalReview.kind,
-      account,
-      connectionRevision: removalReview.connectionRevision,
-      asset,
-      previousSelection,
-      selectionSetRevision: removalReview.selectionSetRevision,
-      inspection: null,
-      officialSnapshotRevision: null,
-      officialEvidence: null,
-      interactionInterface: removalReview.interactionInterface,
-      expiresAt: removalReview.expiresAt,
+      review: removalReview,
     } as const;
-    const expected = "0xbd3c4afc7c6006d2e844b59a52fa7bc1af908f31fc9a7e24e6774fc9d958bea0";
+    const expected = "0x8cc7a414ccaa6e1a4120962114130cdf6d0525e3a471dfacb7d75f50dca90d61";
     expect(independentSha256(preimage)).toBe(expected);
-    expect(tokenCatalogReviewDigest(removalReview)).toBe(expected);
+    expect(tokenSelectionReviewDigest(removalReview)).toBe(expected);
   });
 });

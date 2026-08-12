@@ -17,11 +17,6 @@ import {
   chainInterfaceErrorMappings,
 } from "../../src/chain/errors.js";
 import { interfaceReadCapabilityRegistry } from "../../src/interfaces/identities.js";
-import {
-  browserErrorCodes,
-  isBrowserErrorCode,
-} from "../../src/interfaces/browser-error-response.js";
-import { presentHumanFailure } from "../../src/interfaces/web/human-failures.js";
 import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
 import { extendReferenceMarketSupportManifest } from "../../src/market-portfolio/support.js";
 import {
@@ -69,7 +64,7 @@ import {
   tokenCatalogErrorRegistry,
   tokenCatalogInterfaceErrorMappings,
 } from "../../src/token-catalog/errors.js";
-import { uniswapV2PackageDescriptor } from "../../src/protocols/uniswap-v2/browser.js";
+import { uniswapV2PackageDescriptor } from "../../src/protocols/uniswap-v2/client.js";
 import {
   uniswapV2ErrorRegistry,
   uniswapV2InterfaceErrorMappings,
@@ -121,7 +116,6 @@ const unavailable = {
   http: "unavailable",
   mcp: "unavailable",
   cli: "unavailable",
-  web: "unavailable",
 } as const;
 
 const internal = {
@@ -130,7 +124,6 @@ const internal = {
   http: "unavailable",
   mcp: "unavailable",
   cli: "unavailable",
-  web: "unavailable",
 } as const;
 
 const cliAvailable = {
@@ -139,7 +132,6 @@ const cliAvailable = {
   http: "internal",
   mcp: "unavailable",
   cli: "available",
-  web: "unavailable",
 } as const;
 
 const walletExtensionInput = {
@@ -167,14 +159,12 @@ describe("runtime support manifest authority", () => {
       http: "unavailable",
       mcp: "unavailable",
       cli: "unavailable",
-      web: "unavailable",
     })).toEqual(unavailable);
     expect(createCapabilityAvailability({
       direct: "internal",
       http: "unavailable",
       mcp: "unavailable",
       cli: "unavailable",
-      web: "unavailable",
     })).toEqual(internal);
     const callerProjection = Object.freeze({
       overall: "unavailable" as const,
@@ -182,7 +172,6 @@ describe("runtime support manifest authority", () => {
       http: "internal",
       mcp: "unavailable",
       cli: "available",
-      web: "unavailable",
       unrelated: "caller-owned",
     });
     const exposed = createCapabilityAvailability(callerProjection);
@@ -194,13 +183,13 @@ describe("runtime support manifest authority", () => {
     for (const [schema, bytes, digest] of [
       [
         runtimeSupportManifestSchema,
-        3_965,
-        "5f54073362f712e47a029b2862203c54f88751d41508a33641dbad0f03fc391e",
+        3_889,
+        "5f839eeba35fb03f0662cdbda3b91b2965d4d1aad57419d8130e4ed93bffecb4",
       ],
       [
         interfaceCapabilityCatalogSchema,
-        3_328,
-        "08c67de0a3d371d95cc73d2a18def4d3b499f52ab7f940d85f77b96d33d83d1d",
+        3_252,
+        "b3a19ed7aed00970a01fa21daa06e1920a124d2c129844d8ae1daeaab4cfebe6",
       ],
       [
         ownerIdentitySchema,
@@ -216,7 +205,7 @@ describe("runtime support manifest authority", () => {
 
   it("starts with only the five canonical read identities and official L0 evidence", () => {
     const snapshot = readRuntimeSupportManifest(initialRuntimeSupportManifest);
-    expect(snapshot.contractVersion).toBe("2");
+    expect(snapshot.contractVersion).toBe("3");
     expect(snapshot.presentations).toEqual([]);
     expect(snapshot.chains).toEqual([{
       chainId: "eip155:4663",
@@ -297,11 +286,11 @@ describe("runtime support manifest authority", () => {
       presentations: [],
       changes: [{
         capabilityId: "wallet.operation",
-        availability: { ...cliAvailable, web: "available" },
+        availability: { ...cliAvailable, mcp: "available" },
       }],
     });
     expect(readRuntimeSupportManifest(interfaces).capabilities
-      .find((entry) => entry.capabilityId === "wallet.operation")?.availability.web).toBe("available");
+      .find((entry) => entry.capabilityId === "wallet.operation")?.availability.mcp).toBe("available");
     expect(() => assertChainRuntimeSupportManifestExtension(wallet, chain)).not.toThrow();
     expect(() => assertInterfaceRuntimeSupportManifestExtension(protocols, interfaces)).not.toThrow();
     expect(() => assertWalletRuntimeSupportManifestExtension(initialRuntimeSupportManifest, chain as never))
@@ -361,7 +350,7 @@ describe("runtime support manifest authority", () => {
     })).toThrow("already registered");
     expect(() => extendChainRuntimeSupportManifest(wallet, {
       registrations: [],
-      changes: [{ capabilityId: "wallet.operation", availability: { ...cliAvailable, web: "available", overall: "internal" } }],
+      changes: [{ capabilityId: "wallet.operation", availability: { ...cliAvailable, mcp: "available", overall: "internal" } }],
     })).toThrow();
   });
 
@@ -413,7 +402,6 @@ describe("runtime support manifest authority", () => {
           http: "available",
           mcp: "available",
           cli: "available",
-          web: "available",
         },
       }],
     });
@@ -547,16 +535,6 @@ describe("interface error authority", () => {
     ]) {
       expect(mappings.values().some(({ code }) => code === runtimeStateResetRequiredCode as string)).toBe(false);
     }
-    expect(browserErrorCodes).not.toContain(runtimeStateResetRequiredCode);
-    expect(isBrowserErrorCode(runtimeStateResetRequiredCode)).toBe(false);
-    expect(() => presentHumanFailure("wallet_status", {
-      ok: false,
-      error: {
-        code: runtimeStateResetRequiredCode,
-        retryable: false,
-        issues: [],
-      },
-    })).toThrow("outside browser authority");
     expect(normalizeRuntimeError(source).failure.error.code).toBe("internal_error");
   });
 

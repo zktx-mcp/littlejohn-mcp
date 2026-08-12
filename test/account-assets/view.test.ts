@@ -28,7 +28,7 @@ import {
 import {
   officialAssetSourceDefinition,
   stockFactoryAdmissionManifest,
-} from "../../src/registry/browser.js";
+} from "../../src/registry/client.js";
 
 const chainId = parseEvmChainId("eip155:4663");
 const at = parseUtcTimestamp("2026-07-21T00:00:00.000Z");
@@ -160,7 +160,7 @@ const exactResultWithBalanceRelation = (
   },
 );
 
-describe("account asset browser view", () => {
+describe("account asset human projection", () => {
   it("projects only an admitted inconsistent ERC-8056 balance relation as an exact limitation", () => {
     const expectedLimitation = [{
       code: "erc8056_balance_evidence_inconsistent",

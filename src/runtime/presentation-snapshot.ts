@@ -1,4 +1,4 @@
-import type { CanonicalJson } from "../core/browser.js";
+import type { CanonicalJson } from "../core/client.js";
 
 export const presentationSnapshotUnavailableReasons = Object.freeze([
   "capacity_exceeded",

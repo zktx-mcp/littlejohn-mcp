@@ -108,6 +108,7 @@ describe("module import audit", () => {
     expect(Object.keys(runtimePackageSourceRoots).sort()).toEqual(Object.keys(manifest.dependencies).sort());
     expect(Object.keys(buildPackageSourceRoots)).toEqual(["@modelcontextprotocol/ext-apps"]);
     expect(policy.buildPackageOwners.get("@modelcontextprotocol/ext-apps")).toEqual(new Set([
+      resolve("scripts/release/packaged-integration.mjs"),
       resolve("src/interfaces/mcp-app/view/main.ts"),
     ]));
     expect(policy.runtimePackageOwners.get("zod")).toEqual(new Set([resolve("src")]));
@@ -116,10 +117,6 @@ describe("module import audit", () => {
       .toEqual(new Set([resolve("src/protocols/uniswap-v2/sdk.ts")]));
     expect(policy.runtimePackageOwners.get("@uniswap/v2-sdk"))
       .toEqual(new Set([resolve("src/protocols/uniswap-v2/sdk.ts")]));
-    expect(policy.runtimePackageOwners.get("lightweight-charts"))
-      .toEqual(new Set([
-        resolve("src/interfaces/web/lightweight-charts-adapter.tsx"),
-      ]));
     expect(policy.runtimePackageOwners.get("better-sqlite3")).toEqual(new Set([
       resolve("src/runtime"),
       resolve("src/wallet/walletconnect-storage.ts"),
@@ -131,7 +128,6 @@ describe("module import audit", () => {
       resolve("src/chain"),
       resolve("src/intelligence"),
     ]));
-    expect(policy.runtimePackageOwners.get("react")).toEqual(new Set([resolve("src/interfaces")]));
     expect(policy.toolPackages.has("typescript")).toBe(true);
     expect(moduleViolations(
       `import { App } from "@modelcontextprotocol/ext-apps"; void App;`,
@@ -144,21 +140,21 @@ describe("module import audit", () => {
       policy,
     )).toEqual([
       "src/interfaces/mcp-app/view/lifecycle.ts:@modelcontextprotocol/ext-apps:" +
-        "src/interfaces/mcp-app/view/main.ts",
+        "src/interfaces/mcp-app/view/main.ts|scripts/release/packaged-integration.mjs",
     ]);
 
-    const missingReact = { ...manifest.dependencies };
-    delete missingReact["react"];
-    expect(() => createPackageImportPolicy({ ...manifest, dependencies: missingReact }))
-      .toThrow("Runtime package owner is undeclared: react");
+    const missingQrcode = { ...manifest.dependencies };
+    delete missingQrcode["qrcode"];
+    expect(() => createPackageImportPolicy({ ...manifest, dependencies: missingQrcode }))
+      .toThrow("Runtime package owner is undeclared: qrcode");
     expect(() => createPackageImportPolicy({
       ...manifest,
       dependencies: { ...manifest.dependencies, "qrcode-extra": "1.0.0" },
     })).toThrow("Runtime package has no source owner: qrcode-extra");
     expect(() => createPackageImportPolicy({
       ...manifest,
-      devDependencies: { ...manifest.devDependencies, react: manifest.dependencies["react"] as string },
-    })).toThrow("Package is both runtime and development dependency: react");
+      devDependencies: { ...manifest.devDependencies, qrcode: manifest.dependencies["qrcode"] as string },
+    })).toThrow("Package is both runtime and development dependency: qrcode");
   });
 
   it("collects literal imports, exports, import types, import-equals, dynamic imports, and direct require", () => {
@@ -270,19 +266,6 @@ describe("module import audit", () => {
       resolve("src/intelligence/source-adapter.ts"),
       policy,
     )).toEqual([]);
-    expect(moduleViolations(
-      `void import("lightweight-charts");`,
-      resolve("src/interfaces/web/lightweight-charts-adapter.tsx"),
-      policy,
-    )).toEqual([]);
-    expect(moduleViolations(
-      `void import("lightweight-charts");`,
-      resolve("src/interfaces/web/reference-market-chart.tsx"),
-      policy,
-    )).toEqual([
-      "src/interfaces/web/reference-market-chart.tsx:lightweight-charts:" +
-      "src/interfaces/web/lightweight-charts-adapter.tsx",
-    ]);
     for (const packageName of ["@uniswap/sdk-core", "@uniswap/v2-sdk"]) {
       expect(moduleViolations(
         `import type { Token } from ${JSON.stringify(packageName)};`,
@@ -362,9 +345,9 @@ describe("module import audit", () => {
     const allowed = [
       ["src/wallet/client.ts", "../runtime/index.js"],
       ["scripts/release-check.mjs", "../src/core/index.js"],
-      ["vite.config.ts", "./vitest.config.ts"],
-      ["src/interfaces/web/main.tsx", "./app.js"],
-      ["src/interfaces/web/main.tsx", "./styles.css"],
+      ["vite.mcp-app.config.ts", "./vitest.config.ts"],
+      ["src/interfaces/mcp-app/view/main.ts", "./lifecycle.js"],
+      ["src/interfaces/mcp-app/view/main.ts", "./visual-tokens.css"],
       ["src/runtime/esm-consumer.mts", "./esm-target.mjs"],
       ["src/runtime/cjs-consumer.cts", "./cjs-target.cjs"],
     ] as const;
@@ -373,8 +356,8 @@ describe("module import audit", () => {
       resolve("src/runtime/index.ts"),
       resolve("src/core/index.ts"),
       resolve("vitest.config.ts"),
-      resolve("src/interfaces/web/app.tsx"),
-      resolve("src/interfaces/web/styles.css"),
+      resolve("src/interfaces/mcp-app/view/lifecycle.ts"),
+      resolve("src/interfaces/mcp-app/view/visual-tokens.css"),
       resolve("src/runtime/esm-target.mts"),
       resolve("src/runtime/cjs-target.cts"),
     ];
@@ -389,8 +372,8 @@ describe("module import audit", () => {
     for (const [fileName, specifier] of [
       ["src/wallet/client.ts", "../../../outside-loader.mjs"],
       ["scripts/release-check.mjs", "../../outside-loader.mjs"],
-      ["vite.config.ts", "../outside-loader.mjs"],
-      ["vite.config.ts", "./config/loader.ts"],
+      ["vite.mcp-app.config.ts", "../outside-loader.mjs"],
+      ["vite.mcp-app.config.ts", "./config/loader.ts"],
       ["src/wallet/client.ts", "../../vitest.config.ts"],
       ["src/wallet/client.ts", "./native.node"],
       ["src/wallet/client.ts", "./local.js?variant=1"],
@@ -418,7 +401,7 @@ describe("module import audit", () => {
   it("collects product sources without generated or ignored work material", async () => {
     const files = await collectProductSourceFiles(resolve("."));
     expect(files).toContain(resolve("src/cli.ts"));
-    expect(files).toContain(resolve("src/interfaces/web/styles.css"));
+    expect(files).toContain(resolve("src/interfaces/mcp-app/view/visual-tokens.css"));
     expect(files).toContain(resolve("scripts/clean.mjs"));
     expect(files).toContain(resolve("vitest.config.ts"));
     expect(files.some((file) => file.includes("/dist/"))).toBe(false);
@@ -426,9 +409,9 @@ describe("module import audit", () => {
 
     const codeFiles = await collectProductCodeSourceFiles(resolve("src"));
     expect(codeFiles).toContain(resolve("src/cli.ts"));
-    expect(codeFiles).not.toContain(resolve("src/interfaces/web/styles.css"));
+    expect(codeFiles).not.toContain(resolve("src/interfaces/mcp-app/view/visual-tokens.css"));
     expect(() => createProductSourceProgram([
-      resolve("src/interfaces/web/styles.css"),
+      resolve("src/interfaces/mcp-app/view/visual-tokens.css"),
     ])).toThrow("Product TypeScript program received an unsupported source");
   });
 
@@ -583,7 +566,7 @@ escapedRequire("../../runtime/sqlite-schema.js");`),
       },
       {
         name: "additional package load",
-        source: afterLoader(`const extraPackage = require("react");`),
+        source: afterLoader(`const extraPackage = require("qrcode");`),
         kind: "unexpected_package_load",
       },
       {

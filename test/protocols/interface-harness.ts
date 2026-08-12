@@ -306,7 +306,6 @@ export const uniswapV2ProtocolHarnessSupportExtension = (
         http: "unavailable",
         mcp: "unavailable",
         cli: "unavailable",
-        web: "unavailable",
       },
     }],
   },

@@ -9,76 +9,31 @@ import {
   createCanonicalClock,
   createObservationAuthority,
   parseCapabilityDataAt,
-  parseHash32,
   parseUtcTimestamp,
   sourceReferenceSchema,
   walletConnectionCapability,
 } from "../../src/core/index.js";
+import { createRobinhoodOfficialAssetSourceClient } from "../../src/registry/official-assets.js";
 import { ProductDatabase } from "../../src/runtime/database.js";
-import { RuntimeOperationError } from "../../src/runtime/errors.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
-import {
-  officialAssetSnapshotRevisionSchema,
-  type CommittedOfficialAssetSnapshot,
-} from "../../src/registry/index.js";
-import {
-  createRobinhoodOfficialAssetSourceClient,
-} from "../../src/registry/official-assets.js";
 import type { WalletSessionSource } from "../../src/runtime/source-identity.js";
-import {
-  TokenCatalogCoordinator,
-} from "../../src/token-catalog/coordinator.js";
-import { createTokenCatalogFailure } from "../../src/token-catalog/errors.js";
-import {
-  getTokenCatalogOperationFailure,
-  TokenCatalogOperationError,
-} from "../../src/token-catalog/operation-error.js";
-import {
-  tokenCatalogContractLimits,
-  tokenSelectionDetailSchema,
-} from "../../src/token-catalog/contracts.js";
+import type { TokenInspectionSuccess } from "../../src/token-catalog/contracts.js";
+import { TokenCatalogCoordinator } from "../../src/token-catalog/coordinator.js";
+import { getTokenCatalogOperationFailure } from "../../src/token-catalog/operation-error.js";
 import type { TokenAdditionChainReadPort } from "../../src/token-catalog/ports.js";
 import { createInspectionSuccess, chainId, tokenAddress, walletAddress } from "./harness.js";
 
 const directories: string[] = [];
-let currentTime = "2026-07-18T00:00:03.000Z";
-let operationIdSequence = 0;
-
-const nextOperationId = () => {
-  operationIdSequence += 1;
-  return Buffer.alloc(32, operationIdSequence).toString("base64url");
-};
-
-const startAddition = (
-  coordinator: TokenCatalogCoordinator,
-  input: Parameters<TokenCatalogCoordinator["startAddition"]>[0],
-  interactionInterface: "cli" | "web",
-  operationId = nextOperationId(),
-) => coordinator.startAddition(input, { operationId, interactionInterface });
-
-const startRemoval = (
-  coordinator: TokenCatalogCoordinator,
-  input: Parameters<TokenCatalogCoordinator["startRemoval"]>[0],
-  interactionInterface: "cli" | "web",
-  operationId = nextOperationId(),
-) => coordinator.startRemoval(input, { operationId, interactionInterface });
-
-const confirmOperation = (
-  coordinator: TokenCatalogCoordinator,
-  interactionInterface: "cli" | "web",
-  input: Parameters<TokenCatalogCoordinator["confirm"]>[1],
-) => coordinator.confirm({ operationId: input.operationId, interactionInterface }, input);
 
 afterEach(async () => {
-  currentTime = "2026-07-18T00:00:03.000Z";
-  operationIdSequence = 0;
-  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+  await Promise.all(directories.splice(0).map((directory) =>
+    rm(directory, { recursive: true, force: true })));
 });
 
 const createSessionSource = (
   clock: ReturnType<typeof createCanonicalClock>,
-  topicDigest = "A".repeat(43),
 ): WalletSessionSource => {
+  const topicDigest = "A".repeat(43);
   const sourceId = `wallet-session:${topicDigest}`;
   return Object.freeze({
     sourceId,
@@ -93,644 +48,195 @@ const createSessionSource = (
   });
 };
 
-const createAdditionChainReads = (
-  beforeResult?: () => Promise<void>,
-): TokenAdditionChainReadPort => Object.freeze({
-  async inspectAndVerifyOfficial(
-    { asset }: Parameters<TokenAdditionChainReadPort["inspectAndVerifyOfficial"]>[0],
-    signal: Parameters<TokenAdditionChainReadPort["inspectAndVerifyOfficial"]>[1],
-  ) {
-    if (signal.aborted) return createTokenCatalogFailure("request_aborted");
-    await beforeResult?.();
-    if (signal.aborted) return createTokenCatalogFailure("request_aborted");
-    return Object.freeze({
-      inspection: await createInspectionSuccess({ asset, block: { kind: "latest" } }),
-      officialVerification: null,
-    });
-  },
-});
-
-const createState = async (
-  additionChainReads = createAdditionChainReads(),
-  onRegister?: () => void,
-  captureError?: () => Error | undefined,
-  officialContractAddress = `0x${"56".repeat(20)}`,
-) => {
-  const directory = await mkdtemp(resolve(tmpdir(), "littlejohn-token-coordinator-"));
+const createState = async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "littlejohn-token-operation-"));
   directories.push(directory);
   await ensureOwnerOnlyDirectory(directory);
   const path = runtimePaths(directory).database;
-  const database = await ProductDatabase.open(path, parseUtcTimestamp(currentTime));
-  database.configuredChainStore().insertConfiguredChainIfAbsent(chainId);
-  const connection = database.walletStore().replace("0", parseCapabilityDataAt(walletConnectionCapability, {
-    status: "connected",
-    chainId,
-    address: walletAddress,
-    approvedMethods: ["eth_sendTransaction"],
-    approvedEvents: ["accountsChanged", "chainChanged"],
-    expiresAt: "2026-07-19T00:00:00.000Z",
-  }, parseUtcTimestamp(currentTime)), false, parseUtcTimestamp(currentTime));
+  let currentTime = "2026-07-18T00:00:03.000Z";
   const clock = createCanonicalClock(() => currentTime);
-  let sessionSource = createSessionSource(clock);
-  let liveConnection = connection.connection;
-  let liveConnectionRevision = connection.revision;
+  let database = await ProductDatabase.open(path, parseUtcTimestamp(currentTime));
+  database.configuredChainStore().insertConfiguredChainIfAbsent(chainId);
+  const connected = database.walletStore().replace(
+    "0",
+    parseCapabilityDataAt(walletConnectionCapability, {
+      status: "connected",
+      chainId,
+      address: walletAddress,
+      approvedMethods: ["eth_sendTransaction"],
+      approvedEvents: ["accountsChanged", "chainChanged"],
+      expiresAt: "2026-07-19T00:00:00.000Z",
+    }, parseUtcTimestamp(currentTime)),
+    false,
+    parseUtcTimestamp(currentTime),
+  );
   const controller = new AbortController();
-  const catalogStore = database.tokenCatalogStore();
   const sourceResult = await createRobinhoodOfficialAssetSourceClient({
     fetch: (async () => new Response(JSON.stringify({
       assets: [{
         id: `0x${"11".repeat(32)}`,
         status: "ASSET_STATUS_ACTIVE",
-        deployments: [{ chainId: 4663, contractAddress: officialContractAddress }],
+        deployments: [{ chainId: 4663, contractAddress: `0x${"56".repeat(20)}` }],
         tokenName: "Unrelated Stock Token",
         tokenSymbol: "OTHER",
       }],
     }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch,
     now: () => new Date(currentTime),
   }).read(controller.signal);
-  if (sourceResult.status !== "observed") throw new Error("Expected source observation.");
-  const observation = sourceResult.observation;
-  const officialSnapshot = database.officialAssetSnapshotStore().replaceSnapshot(observation, null);
-  const operationStore = onRegister === undefined
-    ? catalogStore
-    : Object.freeze({
-        ...catalogStore,
-        applyConfirmation: (input: Parameters<typeof catalogStore.applyConfirmation>[0]) => {
-          if (input.kind === "add") onRegister();
-          return catalogStore.applyConfirmation(input);
-        },
+  if (sourceResult.status !== "observed") throw new Error("Expected official source observation.");
+  const officialSnapshot = database.officialAssetSnapshotStore().replaceSnapshot(
+    sourceResult.observation,
+    null,
+  );
+  const chainInputs: Array<Parameters<TokenAdditionChainReadPort["inspectAndVerifyOfficial"]>[0]> = [];
+  const inspections: TokenInspectionSuccess[] = [];
+  const additionChainReads: TokenAdditionChainReadPort = Object.freeze({
+    async inspectAndVerifyOfficial(
+      input: Parameters<TokenAdditionChainReadPort["inspectAndVerifyOfficial"]>[0],
+    ) {
+      chainInputs.push(input);
+      const inspection = await createInspectionSuccess({
+        asset: input.asset,
+        block: input.block === null
+          ? { kind: "latest" }
+          : { kind: "number", blockNumber: input.block.blockNumber },
       });
-  const createCoordinator = (signal: AbortSignal = controller.signal) => new TokenCatalogCoordinator({
-      activeWallet: {
-        capture: () => {
-          const error = captureError?.();
-          if (error !== undefined) throw error;
-          return Object.freeze({
-            connection: liveConnection,
-            connectionRevision: liveConnectionRevision,
-            sessionSource,
-          });
-        },
-      },
-      additionChainReads,
-      officialAssets: Object.freeze({
-        synchronize: async () => Object.freeze({ status: "current" as const, snapshot: officialSnapshot }),
-        readStored: () => officialSnapshot,
-        close: async () => undefined,
-      }),
-      store: operationStore,
-      clock,
-      signal,
-    });
-  const coordinator = createCoordinator();
+      inspections.push(inspection);
+      return Object.freeze({
+        inspection,
+        officialVerification: null,
+      });
+    },
+  });
+  const sessionSource = createSessionSource(clock);
+  const activeWallet = Object.freeze({
+    capture: () => Object.freeze({
+      connection: connected.connection,
+      connectionRevision: connected.revision,
+      sessionSource,
+    }),
+  });
+  const createCoordinator = () => new TokenCatalogCoordinator({
+    activeWallet,
+    additionChainReads,
+    officialAssets: Object.freeze({ readStored: () => officialSnapshot }),
+    store: database.tokenCatalogStore(),
+    clock,
+    signal: controller.signal,
+  });
   return {
     path,
-    database,
-    coordinator,
-    controller,
+    get database() { return database; },
+    coordinator: createCoordinator(),
     createCoordinator,
-    republishSessionSource: () => { sessionSource = createSessionSource(clock); },
-    replaceSessionAuthority: () => {
-      const sourceId = `wallet-sdk:${Buffer.alloc(16, 7).toString("base64url")}`;
-      sessionSource = Object.freeze({
-        ...sessionSource,
-        observationAuthority: createObservationAuthority({
-          clock,
-          sourceClass: "wallet_sdk",
-          owner: "WalletConnect SDK",
-          reference: sourceReferenceSchema.parse({ kind: "wallet_sdk", sourceId }),
-        }),
-      });
-    },
-    replaceSessionSource: () => {
-      sessionSource = createSessionSource(clock, `${"C".repeat(42)}A`);
-    },
-    disconnectLive: () => { liveConnection = { status: "disconnected", reason: "disconnected" }; },
-    reconnectProjection: () => {
-      const before = database.walletStore().read();
-      const disconnected = database.walletStore().replace(
-        before.revision,
-        { status: "disconnected", reason: "disconnected" },
-        false,
-        parseUtcTimestamp(currentTime),
-      );
-      const reconnected = database.walletStore().replace(
-        disconnected.revision,
-        connection.connection,
-        false,
-        parseUtcTimestamp(currentTime),
-      );
-      liveConnection = reconnected.connection;
-      liveConnectionRevision = reconnected.revision;
+    chainInputs,
+    inspections,
+    setNow(value: string) { currentTime = value; },
+    async reopen() {
+      database.close();
+      database = await ProductDatabase.open(path, parseUtcTimestamp(currentTime));
     },
   };
 };
 
 const failureCode = (error: unknown) => getTokenCatalogOperationFailure(error)?.error.code;
+const asset = Object.freeze({ kind: "erc20" as const, chainId, address: tokenAddress });
 
-describe("token catalog operation coordinator", () => {
-  it("keeps selection mutation absent until exact-interface confirmation", async () => {
+describe("token selection durable operations", () => {
+  it("keeps Review creation pure, commits mutation and terminal result together, and reopens the exact result", async () => {
     const state = await createState();
-    const start = await startAddition(state.coordinator, {
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-    }, "web");
-    expect("ok" in start).toBe(false);
-    if ("ok" in start) throw new Error("Selection start failed.");
-    expect(start.operation).toMatchObject({
-      kind: "add",
-      state: "awaiting_confirmation",
-      interactionInterface: "web",
-      account: { chainId, address: walletAddress },
+    const review = (await state.coordinator.review({ kind: "add", asset })).review;
+
+    const before = new Database(state.path, { readonly: true });
+    for (const table of [
+      "contract",
+      "token_contract",
+      "token_contract_inspection",
+      "wallet_token_selection_state",
+      "wallet_token_selection",
+      "token_selection_operation",
+    ]) expect(before.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table)
+      .toEqual({ count: 0 });
+    before.close();
+    expect(state.chainInputs).toHaveLength(1);
+    expect(state.chainInputs[0]?.block).toBeNull();
+
+    const operation = await state.coordinator.decide({ review, initiatedBy: "mcp_app" });
+    expect(operation).toMatchObject({
+      operationId: review.operationId,
+      review,
+      state: "completed",
+      result: { outcome: "selection_added" },
     });
-    const rawBefore = new Database(state.path, { readonly: true });
-    for (const table of ["contract", "token_contract", "token_contract_inspection", "wallet_token_selection"]) {
-      expect(rawBefore.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table).toEqual({ count: 0 });
-    }
-    rawBefore.close();
+    expect(state.chainInputs).toHaveLength(2);
+    expect(state.chainInputs[1]?.block).toEqual(review.fixedEvidence.inspectionBlock);
+    expect(state.inspections[0]?.data.metadata.name.observationId)
+      .not.toBe(state.inspections[1]?.data.metadata.name.observationId);
+    if (review.kind !== "add") throw new Error("Expected one token addition Review.");
+    expect(Object.keys(review.decision.name)).not.toContain("observationId");
+    expect(state.coordinator.getOperation(review.operationId)).toEqual(operation);
 
-    const concurrent = await startRemoval(state.coordinator, {
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-      expectedRevision: Buffer.alloc(16, 9).toString("base64url"),
-    }, "web");
-    expect(concurrent).toMatchObject({ ok: false, error: { code: "token_operation_conflict" } });
-    await expect(confirmOperation(state.coordinator, "web", {
-      operationId: start.operation.operationId,
-      reviewDigest: parseHash32(`0x${"00".repeat(32)}`),
-    })).rejects.toSatisfy((error: unknown) => failureCode(error) === "state_conflict");
-    await expect(state.coordinator.cancel(start.operation.operationId, "cli"))
-      .rejects.toSatisfy((error: unknown) => failureCode(error) === "state_conflict");
-    await expect(confirmOperation(state.coordinator, "cli", {
-      operationId: start.operation.operationId,
-      reviewDigest: start.operation.review.reviewDigest,
-    })).rejects.toSatisfy((error: unknown) => failureCode(error) === "state_conflict");
+    const after = new Database(state.path, { readonly: true });
+    expect(after.prepare("SELECT COUNT(*) AS count FROM wallet_token_selection").get())
+      .toEqual({ count: 1 });
+    expect(after.prepare("SELECT COUNT(*) AS count FROM token_selection_operation").get())
+      .toEqual({ count: 1 });
+    after.close();
 
-    const completed = await confirmOperation(state.coordinator, "web", {
-      operationId: start.operation.operationId,
-      reviewDigest: start.operation.review.reviewDigest,
-    });
-    expect(completed).toMatchObject({ state: "completed", result: { selection: {
-      account: { chainId, address: walletAddress },
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-    } } });
-    expect(state.database.tokenCatalogStore().listSelections({
-      account: { chainId, address: walletAddress }, limit: tokenCatalogContractLimits.listMaximumLimit, cursor: null,
-    }).selections).toHaveLength(1);
-    await expect(confirmOperation(state.coordinator, "web", {
-      operationId: start.operation.operationId,
-      reviewDigest: start.operation.review.reviewDigest,
-    })).rejects.toSatisfy((error: unknown) => failureCode(error) === "state_conflict");
-    state.coordinator.close();
-    state.database.close();
-  });
-
-  it("validates the canonical confirmation input before operation lookup or state comparison", async () => {
-    const state = await createState();
-    const start = await startAddition(state.coordinator, {
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-    }, "web");
-    if ("ok" in start) throw new Error("Selection start failed.");
-
-    const validInput = {
-      operationId: start.operation.operationId,
-      reviewDigest: start.operation.review.reviewDigest,
-    };
-    const malformedInputs = [
-      {
-        name: "operation identifier",
-        value: { ...validInput, operationId: "not-an-operation-id" },
-      },
-      {
-        name: "review digest",
-        value: { ...validInput, reviewDigest: "0x00" },
-      },
-      {
-        name: "unknown field",
-        value: { ...validInput, confirmation: true },
-      },
-    ] as const;
-
-    for (const malformed of malformedInputs) {
-      await expect(
-        confirmOperation(state.coordinator, "web", malformed.value as never),
-        malformed.name,
-      ).rejects.toSatisfy((error: unknown) => failureCode(error) === "invalid_input");
-      expect(state.coordinator.getOperation(start.operation.operationId), malformed.name).toEqual(start.operation);
-    }
-
-    expect((await state.coordinator.cancel(start.operation.operationId, "web")).state).toBe("cancelled");
-    state.coordinator.close();
-    state.database.close();
-  });
-
-  it("holds the single-operation reservation for the complete asynchronous token-addition chain read", async () => {
-    let markAdditionReadEntered!: () => void;
-    let releaseAdditionRead!: () => void;
-    const additionReadEntered = new Promise<void>((resolveEntered) => { markAdditionReadEntered = resolveEntered; });
-    const additionReadGate = new Promise<void>((resolveGate) => { releaseAdditionRead = resolveGate; });
-    const state = await createState(createAdditionChainReads(async () => {
-      markAdditionReadEntered();
-      await additionReadGate;
-    }));
-    const pending = startAddition(state.coordinator, {
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-    }, "web");
-    await additionReadEntered;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      expect(await startAddition(state.coordinator, {
-        asset: { kind: "erc20", chainId, address: tokenAddress },
-      }, "web")).toMatchObject({ ok: false, error: { code: "token_operation_conflict" } });
-    }
-    releaseAdditionRead();
-    const started = await pending;
-    expect("ok" in started).toBe(false);
-    if (!("ok" in started)) {
-      expect(started.operation.state).toBe("awaiting_confirmation");
-      await state.coordinator.cancel(started.operation.operationId);
-    }
-    state.coordinator.close();
-    state.database.close();
-  });
-
-  it("preserves member and whole-request verification failures without creating an operation", async () => {
-    let failureCode = "token_identity_mismatch";
-    const state = await createState(Object.freeze({
-      async inspectAndVerifyOfficial(
-        request: Parameters<TokenAdditionChainReadPort["inspectAndVerifyOfficial"]>[0],
-      ) {
-        expect(request.officialMember?.contractAddress).toBe(tokenAddress);
-        return createTokenCatalogFailure(failureCode);
-      },
-    }), undefined, undefined, tokenAddress);
-
-    for (const code of ["token_identity_mismatch", "runtime_busy"] as const) {
-      failureCode = code;
-      await expect(startAddition(state.coordinator, {
-        asset: { kind: "erc20", chainId, address: tokenAddress },
-      }, "web")).resolves.toMatchObject({
-        ok: false,
-        error: { code, ...(code === "runtime_busy" ? { retryable: true } : {}) },
-      });
-      expect(state.coordinator.getCurrentOperation()).toBeNull();
-    }
-    expect(state.database.tokenCatalogStore().listSelections({
-      account: { chainId, address: walletAddress },
-      limit: tokenCatalogContractLimits.listMaximumLimit,
-      cursor: null,
-    }).selections).toEqual([]);
+    expect(await state.coordinator.decide({ review, initiatedBy: "mcp_app" })).toEqual(operation);
     await state.coordinator.close();
-    state.database.close();
-  });
-
-  it("aborts an unfinished token-addition chain read when the owner closes without leaving operation state", async () => {
-    let markAdditionReadEntered!: () => void;
-    let releaseAdditionRead!: () => void;
-    const additionReadEntered = new Promise<void>((resolveEntered) => { markAdditionReadEntered = resolveEntered; });
-    const additionReadGate = new Promise<void>((resolveGate) => { releaseAdditionRead = resolveGate; });
-    const state = await createState(createAdditionChainReads(async () => {
-      markAdditionReadEntered();
-      await additionReadGate;
-    }));
-    const pending = startAddition(state.coordinator, {
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-    }, "web");
-    await additionReadEntered;
-    const close = state.coordinator.close();
-    expect(state.coordinator.close()).toBe(close);
-    await expect(startAddition(state.coordinator, {
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-    }, "web")).rejects.toSatisfy((error: unknown) =>
-      failureCode(error) === "runtime_state_unavailable");
-    let closeSettled = false;
-    void close.then(() => { closeSettled = true; });
-    await Promise.resolve();
-    expect(closeSettled).toBe(false);
-    releaseAdditionRead();
-    expect(await pending).toMatchObject({ ok: false, error: { code: "request_aborted" } });
-    await close;
-    expect(closeSettled).toBe(true);
-    expect(() => state.coordinator.getCurrentOperation()).toThrow();
-    expect(state.database.tokenCatalogStore().listSelections({
-      account: { chainId, address: walletAddress }, limit: tokenCatalogContractLimits.listMaximumLimit, cursor: null,
-    }).selections).toEqual([]);
-    state.database.close();
-  });
-
-  it("preserves continuity when the same live session is republished as a new object", async () => {
-    const state = await createState();
-    const start = await startAddition(state.coordinator, {
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-    }, "cli");
-    if ("ok" in start) throw new Error("Selection start failed.");
-    state.republishSessionSource();
-    const completed = await confirmOperation(state.coordinator, "cli", {
-      operationId: start.operation.operationId,
-      reviewDigest: start.operation.review.reviewDigest,
-    });
-    expect(completed.state).toBe("completed");
-    state.coordinator.close();
-    state.database.close();
-  });
-
-  it("fails closed when the live session identity changes or the wallet deletes it before confirmation", async () => {
-    for (const invalidate of [
-      (state: Awaited<ReturnType<typeof createState>>) => { state.replaceSessionSource(); },
-      (state: Awaited<ReturnType<typeof createState>>) => { state.replaceSessionAuthority(); },
-      (state: Awaited<ReturnType<typeof createState>>) => { state.disconnectLive(); },
-    ]) {
-      const state = await createState();
-      const start = await startAddition(state.coordinator, {
-        asset: { kind: "erc20", chainId, address: tokenAddress },
-      }, "cli");
-      if ("ok" in start) throw new Error("Selection start failed.");
-      invalidate(state);
-      await expect(confirmOperation(state.coordinator, "cli", {
-        operationId: start.operation.operationId,
-        reviewDigest: start.operation.review.reviewDigest,
-      })).rejects.toSatisfy((error: unknown) => failureCode(error) === "state_conflict");
-      expect(state.database.tokenCatalogStore().listSelections({
-        account: { chainId, address: walletAddress }, limit: tokenCatalogContractLimits.listMaximumLimit, cursor: null,
-      }).selections).toEqual([]);
-      expect(state.coordinator.getOperation(start.operation.operationId).state).toBe("awaiting_confirmation");
-      state.coordinator.close();
-      state.database.close();
-    }
-  });
-
-  it("removes the exact selection revision without deleting contract identity", async () => {
-    const state = await createState();
-    const additionStart = await startAddition(state.coordinator, {
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-    }, "cli");
-    if ("ok" in additionStart) throw new Error("Selection start failed.");
-    const registered = await confirmOperation(state.coordinator, "cli", {
-      operationId: additionStart.operation.operationId,
-      reviewDigest: additionStart.operation.review.reviewDigest,
-    });
-    if (registered.kind !== "add" || registered.state !== "completed") {
-      throw new Error("Selection did not complete.");
-    }
-    const registeredResult = tokenSelectionDetailSchema.parse(registered.result);
-
-    const removalStart = await startRemoval(state.coordinator, {
-      asset: registeredResult.selection.asset,
-      expectedRevision: registeredResult.selection.revision,
-    }, "web");
-    if ("ok" in removalStart) throw new Error("Selection removal start failed.");
-    const removed = await confirmOperation(state.coordinator, "web", {
-      operationId: removalStart.operation.operationId,
-      reviewDigest: removalStart.operation.review.reviewDigest,
-    });
-    expect(removed).toMatchObject({
-      kind: "remove",
-      state: "completed",
-      result: { selection: { included: false } },
-    });
-    const removedSelection = tokenSelectionDetailSchema.parse(removed.result).selection;
-    const readditionStart = await startAddition(state.coordinator, {
-      asset: registeredResult.selection.asset,
-    }, "web");
-    if ("ok" in readditionStart) throw new Error("Selection re-addition start failed.");
-    expect(readditionStart.operation.review.previousSelection).toMatchObject({
-      included: false,
-      revision: removedSelection.revision,
-    });
-    const readded = await confirmOperation(state.coordinator, "web", {
-      operationId: readditionStart.operation.operationId,
-      reviewDigest: readditionStart.operation.review.reviewDigest,
-    });
-    expect(readded).toMatchObject({
-      kind: "add",
-      state: "completed",
-      failure: null,
-      result: { selection: { included: true } },
-    });
-    const selections = state.database.tokenCatalogStore().listSelections({
-      account: { chainId, address: walletAddress }, limit: tokenCatalogContractLimits.listMaximumLimit, cursor: null,
-    }).selections;
-    expect(selections).toHaveLength(1);
-    expect(selections[0]).toMatchObject({ included: true });
-    expect(selections[0]?.revision).not.toBe(registeredResult.selection.revision);
-    const raw = new Database(state.path, { readonly: true });
-    expect(raw.prepare("SELECT COUNT(*) AS count FROM token_contract").get()).toEqual({ count: 1 });
-    raw.close();
-    state.coordinator.close();
-    state.database.close();
-  });
-
-  it("records one failed operation and rolls back storage when applying fails", async () => {
-    const state = await createState();
-    const start = await startAddition(state.coordinator, {
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-    }, "web");
-    if ("ok" in start) throw new Error("Selection start failed.");
-    const raw = new Database(state.path);
-    raw.exec(`CREATE TRIGGER reject_token_selection
-      BEFORE INSERT ON wallet_token_selection
-      BEGIN SELECT RAISE(ABORT, 'injected selection failure'); END`);
-    const failed = await confirmOperation(state.coordinator, "web", {
-      operationId: start.operation.operationId,
-      reviewDigest: start.operation.review.reviewDigest,
-    });
-    expect(failed).toMatchObject({
-      state: "failed",
-      failure: { error: { code: "runtime_state_unavailable" } },
-    });
-    expect((await state.coordinator.cancel(start.operation.operationId)).state).toBe("failed");
-    for (const table of ["contract", "token_contract", "token_contract_inspection", "wallet_token_selection"]) {
-      expect(raw.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table).toEqual({ count: 0 });
-    }
-    raw.close();
-    state.coordinator.close();
-    state.database.close();
-  });
-
-  it("normalizes inherited runtime failures without losing their declared meaning", async () => {
-    const state = await createState(
-      createAdditionChainReads(),
-      undefined,
-      () => new RuntimeOperationError("runtime_state_unavailable"),
-    );
-    const result = await startAddition(state.coordinator, {
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-    }, "web");
-    expect(result).toMatchObject({
-      ok: false,
-      error: { code: "runtime_state_unavailable" },
-    });
-    state.coordinator.close();
-    state.database.close();
-  });
-
-  it("normalizes a runtime failure during confirmation and leaves the operation cancellable", async () => {
-    let projectionUnavailable = false;
-    const state = await createState(
-      createAdditionChainReads(),
-      undefined,
-      () => projectionUnavailable ? new RuntimeOperationError("runtime_state_unavailable") : undefined,
-    );
-    const start = await startAddition(state.coordinator, {
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-    }, "web");
-    if ("ok" in start) throw new Error("Selection start failed.");
-
-    projectionUnavailable = true;
-    await expect(confirmOperation(state.coordinator, "web", {
-      operationId: start.operation.operationId,
-      reviewDigest: start.operation.review.reviewDigest,
-    })).rejects.toSatisfy((error: unknown) => failureCode(error) === "runtime_state_unavailable");
-    expect(state.coordinator.getOperation(start.operation.operationId).state).toBe("awaiting_confirmation");
-    expect((await state.coordinator.cancel(start.operation.operationId, "web")).state).toBe("cancelled");
-
-    state.coordinator.close();
-    state.database.close();
-  });
-
-  it("closes an applying operation when a dependency reports an undeclared failure", async () => {
-    const state = await createState(createAdditionChainReads(), () => {
-      throw new Error("The dependency returned an undeclared failure.");
-    });
-    const start = await startAddition(state.coordinator, {
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-    }, "web");
-    if ("ok" in start) throw new Error("Selection start failed.");
-
-    const failed = await confirmOperation(state.coordinator, "web", {
-      operationId: start.operation.operationId,
-      reviewDigest: start.operation.review.reviewDigest,
-    });
-    expect(failed).toMatchObject({
-      state: "failed",
-      failure: { error: { code: "internal_error" } },
-    });
-    expect(state.coordinator.getOperation(start.operation.operationId)).toEqual(failed);
-
-    const successor = await startAddition(state.coordinator, {
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-    }, "web");
-    expect("ok" in successor).toBe(false);
-    if (!("ok" in successor)) await state.coordinator.cancel(successor.operation.operationId);
-
-    state.coordinator.close();
-    state.database.close();
-  });
-
-  it("retains the single-operation slot through a reentrant applying transaction", async () => {
-    let reentrantStart: Promise<unknown> | undefined;
-    let state!: Awaited<ReturnType<typeof createState>>;
-    state = await createState(createAdditionChainReads(), () => {
-      reentrantStart = startAddition(state.coordinator, {
-        asset: { kind: "erc20", chainId, address: tokenAddress },
-      }, "web");
-    });
-    const start = await startAddition(state.coordinator, {
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-    }, "web");
-    if ("ok" in start) throw new Error("Selection start failed.");
-
-    const completed = await confirmOperation(state.coordinator, "web", {
-      operationId: start.operation.operationId,
-      reviewDigest: start.operation.review.reviewDigest,
-    });
-    expect(completed.state).toBe("completed");
-    expect(await reentrantStart).toMatchObject({
-      ok: false,
-      error: { code: "token_operation_conflict" },
-    });
-
-    state.coordinator.close();
-    state.database.close();
-  });
-
-  it("waits for an admitted confirmation transaction before close releases operation state", async () => {
-    let close: Promise<void> | undefined;
-    let state!: Awaited<ReturnType<typeof createState>>;
-    state = await createState(createAdditionChainReads(), () => {
-      close = state.coordinator.close();
-    });
-    const start = await startAddition(state.coordinator, {
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-    }, "web");
-    if ("ok" in start) throw new Error("Selection start failed.");
-
-    const completed = await confirmOperation(state.coordinator, "web", {
-      operationId: start.operation.operationId,
-      reviewDigest: start.operation.review.reviewDigest,
-    });
-    expect(completed.state).toBe("completed");
-    await close;
+    await state.reopen();
+    const successor = state.createCoordinator();
+    expect(successor.getOperation(review.operationId)).toEqual(operation);
     expect(state.database.tokenCatalogStore().getSelection(
       { chainId, address: walletAddress },
-      { kind: "erc20", chainId, address: tokenAddress },
-    )).toEqual(completed.result);
-    expect(() => state.coordinator.getCurrentOperation()).toThrow();
+      asset,
+    )?.selection.included).toBe(true);
+    await successor.close();
     state.database.close();
   });
 
-  it("rejects confirmation after reconnect and does not restore operations in a successor owner", async () => {
-    const state = await createState();
-    const start = await startAddition(state.coordinator, {
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-    }, "web");
-    if ("ok" in start) throw new Error("Selection start failed.");
-    state.reconnectProjection();
-    await expect(confirmOperation(state.coordinator, "web", {
-      operationId: start.operation.operationId,
-      reviewDigest: start.operation.review.reviewDigest,
-    })).rejects.toSatisfy((error: unknown) => failureCode(error) === "state_conflict");
-    state.coordinator.close();
+  it("rejects stale and expired actions without creating an operation", async () => {
+    const stale = await createState();
+    const first = (await stale.coordinator.review({ kind: "add", asset })).review;
+    const second = (await stale.coordinator.review({ kind: "add", asset })).review;
+    await stale.coordinator.decide({ review: first, initiatedBy: "cli" });
+    await expect(stale.coordinator.decide({ review: second, initiatedBy: "mcp_app" }))
+      .rejects.toSatisfy((error: unknown) => failureCode(error) === "token_selection_revision_changed");
+    expect(stale.database.tokenCatalogStore().readOperation(second.operationId)).toBeNull();
+    await stale.coordinator.close();
+    stale.database.close();
 
-    const successor = state.createCoordinator(new AbortController().signal);
-    expect(successor.getCurrentOperation()).toBeNull();
-    let missingOperation: unknown;
-    try { successor.getOperation(start.operation.operationId); }
-    catch (error) { missingOperation = error; }
-    expect(failureCode(missingOperation)).toBe("token_operation_not_found");
-    expect(state.database.tokenCatalogStore().listSelections({
-      account: { chainId, address: walletAddress }, limit: tokenCatalogContractLimits.listMaximumLimit, cursor: null,
-    }).selections).toEqual([]);
-    successor.close();
-    state.database.close();
+    const expired = await createState();
+    const review = (await expired.coordinator.review({ kind: "add", asset })).review;
+    expired.setNow(review.actionExpiresAt);
+    await expect(expired.coordinator.decide({ review, initiatedBy: "cli" }))
+      .rejects.toSatisfy((error: unknown) => failureCode(error) === "token_review_expired");
+    expect(expired.database.tokenCatalogStore().readOperation(review.operationId)).toBeNull();
+    expect(expired.database.tokenCatalogStore().getSelection(
+      { chainId, address: walletAddress },
+      asset,
+    )).toBeUndefined();
+    await expired.coordinator.close();
+    expired.database.close();
   });
 
-  it("expires, cancels, retains, and removes operations without persistent partial state", async () => {
+  it("rolls back the selection when the terminal operation cannot be stored", async () => {
     const state = await createState();
-    const cancelledStart = await startAddition(state.coordinator, {
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-    }, "web");
-    if ("ok" in cancelledStart) throw new Error("Selection start failed.");
-    expect((await state.coordinator.cancel(cancelledStart.operation.operationId, "web")).state).toBe("cancelled");
-    expect((await state.coordinator.cancel(cancelledStart.operation.operationId)).state).toBe("cancelled");
+    const review = (await state.coordinator.review({ kind: "add", asset })).review;
+    const raw = new Database(state.path);
+    raw.exec(`CREATE TRIGGER reject_token_operation BEFORE INSERT ON token_selection_operation
+      BEGIN SELECT RAISE(ABORT, 'reject terminal operation'); END`);
+    raw.close();
 
-    const expiringStart = await startAddition(state.coordinator, {
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-    }, "web");
-    if ("ok" in expiringStart) throw new Error("Selection start failed.");
-    expect(state.coordinator.getOperation(cancelledStart.operation.operationId).state).toBe("cancelled");
-    expect(state.coordinator.getCurrentOperation()?.operationId).toBe(expiringStart.operation.operationId);
-    currentTime = "2026-07-18T00:05:04.000Z";
-    expect(state.coordinator.getOperation(expiringStart.operation.operationId).state).toBe("expired");
-    currentTime = "2026-07-18T00:10:05.000Z";
-    expect(() => state.coordinator.getOperation(expiringStart.operation.operationId)).toThrow();
-    expect(state.database.tokenCatalogStore().listSelections({
-      account: { chainId, address: walletAddress }, limit: tokenCatalogContractLimits.listMaximumLimit, cursor: null,
-    }).selections).toEqual([]);
-    state.coordinator.close();
-    state.database.close();
-  });
-
-  it("does not extend expired-operation retention when expiry is first observed late", async () => {
-    const state = await createState();
-    const start = await startAddition(state.coordinator, {
-      asset: { kind: "erc20", chainId, address: tokenAddress },
-    }, "web");
-    if ("ok" in start) throw new Error("Selection start failed.");
-    currentTime = "2026-07-18T00:10:04.000Z";
-    let missingOperation: unknown;
-    try { state.coordinator.getOperation(start.operation.operationId); }
-    catch (error) { missingOperation = error; }
-    expect(failureCode(missingOperation)).toBe("token_operation_not_found");
-    expect(state.coordinator.getCurrentOperation()).toBeNull();
-    state.coordinator.close();
+    await expect(state.coordinator.decide({ review, initiatedBy: "cli" })).rejects.toBeDefined();
+    const check = new Database(state.path, { readonly: true });
+    expect(check.prepare("SELECT COUNT(*) AS count FROM wallet_token_selection").get())
+      .toEqual({ count: 0 });
+    expect(check.prepare("SELECT COUNT(*) AS count FROM token_selection_operation").get())
+      .toEqual({ count: 0 });
+    check.close();
+    await state.coordinator.close();
     state.database.close();
   });
 });

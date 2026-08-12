@@ -5,23 +5,25 @@ import {
   compareCodePointSequences,
   coreErrorDefinitions,
   defineApplicationContract,
-  operationIdSchema,
   type ApplicationContract,
   type CapabilityId,
-} from "../core/browser.js";
+} from "../core/client.js";
 import { runtimeErrorDefinitions } from "../runtime/error-definitions.js";
 import { walletErrorDefinitions } from "./error-definitions.js";
 import { walletErrorRegistry } from "./error-registry.js";
 import {
-  walletCurrentOperationProjectionSchema,
-  walletCurrentConnectionStartResultSchema,
-  walletInteractionInterfaceSchema,
+  walletDirectActionSchema,
   walletManagementOperationSchema,
-  walletOperationConfirmationSchema,
-  walletOperationIdSchema,
-  walletOperationStartedResultSchemaForKind,
+  walletOperationCancellationSchema,
+  walletOperationInputSchema,
+  walletReviewRequestSchema,
+  walletReviewResultSchema,
+  type WalletDirectAction,
   type WalletManagementOperation,
-  type WalletOperationStartResult,
+  type WalletOperationCancellation,
+  type WalletOperationInput,
+  type WalletReviewRequest,
+  type WalletReviewResult,
 } from "./operation-contract.js";
 import type { WalletOperationKind } from "./operation-state.js";
 
@@ -33,6 +35,8 @@ const selectedFailureCodes = new Set([
   "runtime_busy",
   "runtime_state_unavailable",
   "state_conflict",
+  "wallet_operation_expired",
+  "wallet_operation_not_found",
   "wallet_session_unusable",
   "wallet_timeout",
 ]);
@@ -49,9 +53,7 @@ const walletManagementFailureCodes = Object.freeze([
 if (
   walletManagementFailureCodes.length !== selectedFailureCodes.size ||
   new Set(walletManagementFailureCodes).size !== walletManagementFailureCodes.length
-) {
-  throw new TypeError("Wallet management failure-code authority is incomplete.");
-}
+) throw new TypeError("Wallet management failure-code authority is incomplete.");
 
 export interface WalletManagementContractDefinition<Input, Success> {
   readonly capabilityId: CapabilityId;
@@ -59,45 +61,32 @@ export interface WalletManagementContractDefinition<Input, Success> {
   readonly inputSchema: ZodType<Input>;
   readonly successSchema: ZodType<Success>;
   readonly failureCodes: readonly string[];
-  readonly applicationContract: ApplicationContract<Input, WalletManagementInternalContext, Success>;
+  readonly applicationContract: ApplicationContract<Input, Record<string, never>, Success>;
   parseInput(value: unknown): Input;
   parsePublicSuccess(input: unknown, value: unknown): Success;
   parseBoundSuccess(input: unknown, context: unknown, value: unknown): Success;
-  parseFailure(value: unknown): import("../core/browser.js").ApplicationFailure;
-  normalizeFailure(value: unknown): import("../core/browser.js").ApplicationFailure;
+  parseFailure(value: unknown): import("../core/client.js").ApplicationFailure;
+  normalizeFailure(value: unknown): import("../core/client.js").ApplicationFailure;
 }
 
-export const walletManagementInternalContextSchema = z.object({
-  operationId: operationIdSchema.optional(),
-  interactionInterface: walletInteractionInterfaceSchema.optional(),
-}).strict();
-export type WalletManagementInternalContext = z.infer<typeof walletManagementInternalContextSchema>;
+const internalContextSchema = z.object({}).strict();
 
 const defineWalletManagementContract = <Input, Success>(input: {
   readonly capabilityId: string;
-  readonly contractVersion: "1";
   readonly inputSchema: ZodType<Input>;
   readonly successSchema: ZodType<Success>;
   readonly validatePublicSuccess?: (input: Input, success: Success) => void;
-  readonly validateBoundSuccess?: (
-    input: Input,
-    context: WalletManagementInternalContext,
-    success: Success,
-  ) => void;
 }): WalletManagementContractDefinition<Input, Success> => {
   const capabilityId = capabilityIdSchema.parse(input.capabilityId);
   const applicationContract = defineApplicationContract({
-    contractVersion: input.contractVersion,
+    contractVersion: "1",
     inputSchema: input.inputSchema,
     successSchema: input.successSchema,
-    internalContextSchema: walletManagementInternalContextSchema,
+    internalContextSchema,
     errorRegistry: walletErrorRegistry,
     failureCodes: walletManagementFailureCodes,
     ...(input.validatePublicSuccess === undefined ? {} : {
       validatePublicSuccess: input.validatePublicSuccess,
-    }),
-    ...(input.validateBoundSuccess === undefined ? {} : {
-      validateBoundSuccess: input.validateBoundSuccess,
     }),
   });
   return Object.freeze({
@@ -105,7 +94,7 @@ const defineWalletManagementContract = <Input, Success>(input: {
     contractVersion: applicationContract.contractVersion,
     inputSchema: input.inputSchema,
     successSchema: input.successSchema,
-    failureCodes: walletManagementFailureCodes,
+    failureCodes: applicationContract.failureCodes,
     applicationContract,
     parseInput: applicationContract.parseInput,
     parsePublicSuccess: applicationContract.parsePublicSuccess,
@@ -115,137 +104,85 @@ const defineWalletManagementContract = <Input, Success>(input: {
   });
 };
 
-const emptyInputSchema = z.object({}).strict();
-const operationInputSchema = z.object({
-  operationId: walletOperationIdSchema,
-}).strict();
-const confirmationInputSchema = z.object({
-  operationId: walletOperationIdSchema,
-  connectionRevision: walletOperationConfirmationSchema.shape.connectionRevision,
-}).strict();
-
-const walletConfirmedOperationSchema = walletManagementOperationSchema.superRefine(
-  (operation, context) => {
-    if (
-      operation.kind !== "disconnect" ||
-      !(["disconnecting", "completed", "failed"] as const).includes(
-        operation.state as "disconnecting" | "completed" | "failed",
-      )
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "Wallet confirmation did not enter a confirmed disconnection state.",
-      });
-    }
-  },
-);
-
-const startResultSchemaFor = (
-  kind: WalletOperationKind,
-  allowCurrentConnection: boolean,
-): ZodType<WalletOperationStartResult> => {
-  const started = walletOperationStartedResultSchemaForKind(kind);
-  return (allowCurrentConnection
-    ? z.discriminatedUnion("status", [walletCurrentConnectionStartResultSchema, started])
-    : started) as ZodType<WalletOperationStartResult>;
+type WalletActionForKind<Kind extends WalletOperationKind> = WalletDirectAction & {
+  readonly review: Extract<WalletDirectAction["review"], { readonly kind: Kind }>;
 };
+type WalletOperationForKind<Kind extends WalletOperationKind> = Extract<
+  WalletManagementOperation,
+  { readonly kind: Kind }
+>;
 
-const validateOperationIdentity = (
-  input: Readonly<{ operationId: string }>,
-  success: WalletManagementOperation,
-): void => {
-  if (input.operationId !== success.operationId) {
-    throw new TypeError("Wallet operation result does not match the requested operation.");
-  }
-};
+const actionSchemaFor = <Kind extends WalletOperationKind>(kind: Kind) =>
+  walletDirectActionSchema.refine(
+    (action): action is WalletActionForKind<Kind> => action.review.kind === kind,
+    `Wallet action must carry a ${kind} Review.`,
+  ) as ZodType<WalletActionForKind<Kind>>;
 
-const validateOperationControl = (
-  input: Readonly<{ operationId: string; connectionRevision: string }>,
-  success: WalletManagementOperation,
-): void => {
-  validateOperationIdentity(input, success);
-  if (input.connectionRevision !== success.connectionRevision) {
-    throw new TypeError("Wallet operation result does not match the requested connection revision.");
-  }
-};
+const operationSchemaFor = <Kind extends WalletOperationKind>(kind: Kind) =>
+  walletManagementOperationSchema.refine(
+    (operation): operation is WalletOperationForKind<Kind> => operation.kind === kind,
+    `Wallet operation must be ${kind}.`,
+  ) as ZodType<WalletOperationForKind<Kind>>;
 
-const validateBoundOperation = (
-  context: WalletManagementInternalContext,
-  operation: WalletManagementOperation,
+const validateActionOperation = <Kind extends WalletOperationKind>(
+  input: WalletActionForKind<Kind>,
+  operation: WalletOperationForKind<Kind>,
 ): void => {
   if (
-    context.operationId !== operation.operationId ||
-    context.interactionInterface !== operation.interactionInterface
-  ) {
-    throw new TypeError("Wallet operation result does not match its internal context.");
-  }
+    operation.operationId !== input.review.operationId ||
+    operation.review.reviewDigest !== input.review.reviewDigest
+  ) throw new TypeError("Wallet operation does not match its direct action.");
 };
 
 export const walletManagementContracts = Object.freeze({
-  cancelOperation: defineWalletManagementContract({
-    capabilityId: "wallet.cancel_operation",
-    contractVersion: "1",
-    inputSchema: confirmationInputSchema,
-    successSchema: walletManagementOperationSchema,
-    validatePublicSuccess: validateOperationControl,
-    validateBoundSuccess: (_input, context, success) => validateBoundOperation(context, success),
+  review: defineWalletManagementContract<WalletReviewRequest, WalletReviewResult>({
+    capabilityId: "wallet.connection_change_review",
+    inputSchema: walletReviewRequestSchema,
+    successSchema: walletReviewResultSchema,
+    validatePublicSuccess: (input, success) => {
+      if (success.status === "review" && success.review.kind !== input.kind) {
+        throw new TypeError("Wallet Review does not match its request.");
+      }
+      if (
+        input.kind === "connect" && success.status === "already_disconnected" ||
+        input.kind === "disconnect" && success.status === "current_connection"
+      ) throw new TypeError("Wallet Review no-op result does not match its request.");
+    },
   }),
   connect: defineWalletManagementContract({
     capabilityId: "wallet.connect",
-    contractVersion: "1",
-    inputSchema: emptyInputSchema,
-    successSchema: startResultSchemaFor("connect", true),
-    validateBoundSuccess: (_input, context, success) => {
-      if (success.status === "operation_started" && (
-        context.operationId !== success.operation.operationId ||
-        context.interactionInterface !== success.operation.interactionInterface
-      )) throw new TypeError("Wallet start result does not match its internal context.");
-    },
-  }),
-  currentOperation: defineWalletManagementContract({
-    capabilityId: "wallet.current_operation",
-    contractVersion: "1",
-    inputSchema: emptyInputSchema,
-    successSchema: walletCurrentOperationProjectionSchema,
+    inputSchema: actionSchemaFor("connect"),
+    successSchema: operationSchemaFor("connect"),
+    validatePublicSuccess: validateActionOperation,
   }),
   disconnect: defineWalletManagementContract({
     capabilityId: "wallet.disconnect",
-    contractVersion: "1",
-    inputSchema: emptyInputSchema,
-    successSchema: startResultSchemaFor("disconnect", false),
-    validateBoundSuccess: (_input, context, success) => {
-      if (
-        success.status !== "operation_started" ||
-        context.operationId !== success.operation.operationId ||
-        context.interactionInterface !== success.operation.interactionInterface
-      ) throw new TypeError("Wallet start result does not match its internal context.");
+    inputSchema: actionSchemaFor("disconnect"),
+    successSchema: operationSchemaFor("disconnect"),
+    validatePublicSuccess: validateActionOperation,
+  }),
+  operation: defineWalletManagementContract<WalletOperationInput, WalletManagementOperation>({
+    capabilityId: "wallet.operation",
+    inputSchema: walletOperationInputSchema,
+    successSchema: walletManagementOperationSchema,
+    validatePublicSuccess: (input, success) => {
+      if (success.operationId !== input.operationId) {
+        throw new TypeError("Wallet operation does not match its request.");
+      }
     },
   }),
-  operation: defineWalletManagementContract({
-    capabilityId: "wallet.operation",
-    contractVersion: "1",
-    inputSchema: operationInputSchema,
+  cancelOperation: defineWalletManagementContract<WalletOperationCancellation, WalletManagementOperation>({
+    capabilityId: "wallet.cancel_operation",
+    inputSchema: walletOperationCancellationSchema,
     successSchema: walletManagementOperationSchema,
-    validatePublicSuccess: validateOperationIdentity,
+    validatePublicSuccess: (input, success) => {
+      if (
+        success.operationId !== input.operationId ||
+        success.review.reviewDigest !== input.reviewDigest ||
+        success.review.precondition.connectionRevision !== input.connectionRevision
+      ) throw new TypeError("Wallet cancellation result does not match its request.");
+    },
   }),
-});
-
-export const walletOperationConfirmationContract = defineApplicationContract({
-  contractVersion: "1",
-  inputSchema: confirmationInputSchema,
-  successSchema: walletConfirmedOperationSchema,
-  internalContextSchema: walletManagementInternalContextSchema,
-  errorRegistry: walletErrorRegistry,
-  failureCodes: walletManagementFailureCodes,
-  validatePublicSuccess: (input, operation) => {
-    if (
-      operation.operationId !== input.operationId ||
-      operation.connectionRevision !== input.connectionRevision
-    ) throw new TypeError("Wallet confirmation result does not match its input.");
-  },
-  validateBoundSuccess: (_input, context, operation) => {
-    validateBoundOperation(context, operation);
-  },
 });
 
 export type AnyWalletManagementContract =

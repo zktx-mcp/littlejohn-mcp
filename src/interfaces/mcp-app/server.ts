@@ -42,7 +42,7 @@ import {
   type PresentationContractEntry,
 } from "./registry.js";
 
-const appResourceUriPrefix = "ui://littlejohn/read/" as const;
+const appResourceUriPrefix = "ui://littlejohn/presentation/" as const;
 const codexMcpClientName = "codex-mcp-client" as const;
 const mcpAppsExtensionId = "io.modelcontextprotocol/ui" as const;
 
@@ -133,7 +133,7 @@ export const admitMcpAppConnection = (
 export const appToolMetadata = (
   connection: McpAppConnection,
   resource: McpAppResource,
-  visibility: readonly ["model"] | readonly ["app"],
+  visibility: readonly ["model"] | readonly ["app"] | readonly ["model", "app"],
   createsView: boolean,
 ): Tool["_meta"] | undefined => {
   if (connection.status === "ordinary") return undefined;

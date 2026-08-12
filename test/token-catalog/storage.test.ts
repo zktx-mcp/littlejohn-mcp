@@ -31,16 +31,16 @@ import { ProductDatabase } from "../../src/runtime/database.js";
 import { getRuntimeOperationFailure } from "../../src/runtime/errors.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
 import {
+  createTokenAdditionReviewProjection,
+  parseTokenSelectionReview,
   tokenCatalogOperationIdSchema,
-  tokenCatalogOperationSchema,
-  tokenCatalogReviewDigest,
   tokenInspectionDigest,
+  tokenSelectionReviewDigest,
   tokenSelectionRevisionSchema,
   tokenSelectionSetRevisionSchema,
-  type TokenCatalogOperation,
   type TokenInspectionSuccess,
-  type TokenOfficialSelectionEvidence,
   type TokenSelection,
+  type TokenSelectionDirectAction,
 } from "../../src/token-catalog/contracts.js";
 import { getTokenCatalogOperationFailure } from "../../src/token-catalog/operation-error.js";
 import type { TokenCatalogStore } from "../../src/token-catalog/ports.js";
@@ -177,74 +177,85 @@ const setRevision = (byte: number) => tokenSelectionSetRevisionSchema.parse(
   Buffer.alloc(16, byte).toString("base64url"),
 );
 
-const applyingOperation = (input: Readonly<{
+const selectionAction = (input: Readonly<{
   kind: "add" | "remove";
   connectionRevision: string;
   asset: TokenSelection["asset"];
   previousSelection: TokenSelection | null;
   currentSetRevision: ReturnType<typeof tokenSelectionSetRevisionSchema.parse> | null;
   inspection: TokenInspectionSuccess | null;
-  snapshotRevision: string | null;
-  officialEvidence?: TokenOfficialSelectionEvidence | null;
-}>): Extract<TokenCatalogOperation, { state: "applying" }> => {
+  snapshotRevision: Parameters<
+    typeof createTokenAdditionReviewProjection
+  >[0]["officialSnapshotRevision"] | null;
+  officialMember?: Parameters<typeof createTokenAdditionReviewProjection>[0]["officialMember"];
+  officialVerification?: StockFactoryVerification | null;
+}>): Readonly<{
+  action: TokenSelectionDirectAction;
+  inspection: TokenInspectionSuccess | null;
+}> => {
   const id = operationId();
-  const officialEvidence = input.officialEvidence ?? null;
-  const reviewDigest = tokenCatalogReviewDigest({
-    operationId: id,
-    kind: input.kind,
-    account,
-    connectionRevision: input.connectionRevision,
-    asset: input.asset,
-    previousSelection: input.previousSelection,
-    selectionSetRevision: input.currentSetRevision,
-    inspection: input.inspection,
-    officialSnapshotRevision: input.snapshotRevision,
-    officialEvidence,
-    interactionInterface: "cli",
-    expiresAt: "2026-07-21T00:05:00.000Z",
+  const withoutDigest = input.kind === "add"
+    ? {
+        contractVersion: "1" as const,
+        domain: "token_selection" as const,
+        operationId: id,
+        kind: input.kind,
+        createdAt: now,
+        actionExpiresAt: "2026-07-21T00:05:00.000Z",
+        target: { asset: input.asset },
+        precondition: {
+          account,
+          connectionRevision: input.connectionRevision,
+          previousSelection: input.previousSelection,
+          selectionSetRevision: input.currentSetRevision,
+        },
+        ...createTokenAdditionReviewProjection({
+          inspection: input.inspection!,
+          officialSnapshotRevision: input.snapshotRevision!,
+          officialMember: input.officialMember ?? null,
+          officialVerification: input.officialVerification ?? null,
+        }),
+      }
+    : {
+        contractVersion: "1" as const,
+        domain: "token_selection" as const,
+        operationId: id,
+        kind: input.kind,
+        createdAt: now,
+        actionExpiresAt: "2026-07-21T00:05:00.000Z",
+        target: { asset: input.asset },
+        decision: { action: "remove_selection" as const },
+        precondition: {
+          account,
+          connectionRevision: input.connectionRevision,
+          previousSelection: input.previousSelection,
+          selectionSetRevision: input.currentSetRevision,
+        },
+        fixedEvidence: {},
+      };
+  const review = parseTokenSelectionReview({
+    ...withoutDigest,
+    reviewDigest: tokenSelectionReviewDigest(withoutDigest),
   });
-  return tokenCatalogOperationSchema.parse({
-    operationId: id,
-    kind: input.kind,
-    state: "applying",
-    interactionInterface: "cli",
-    createdAt: now,
-    expiresAt: "2026-07-21T00:05:00.000Z",
-    account,
-    connectionRevision: input.connectionRevision,
-    asset: input.asset,
-    review: {
-      previousSelection: input.previousSelection,
-      selectionSetRevision: input.currentSetRevision,
-      inspection: input.inspection,
-      inspectionDigest: input.kind === "add" && input.inspection !== null
-        ? tokenInspectionDigest(input.inspection)
-        : null,
-      officialSnapshotRevision: input.snapshotRevision,
-      officialEvidence,
-      reviewDigest,
-    },
-    result: null,
-    failure: null,
-  }) as Extract<TokenCatalogOperation, { state: "applying" }>;
+  return Object.freeze({
+    action: Object.freeze({ review, initiatedBy: "cli" }),
+    inspection: input.inspection,
+  });
 };
 
 const apply = (store: TokenCatalogStore, input: Readonly<{
-  kind: "add" | "remove";
-  connectionRevision: string;
-  operation: Extract<TokenCatalogOperation, { state: "applying" }>;
+  action: ReturnType<typeof selectionAction>;
   selectionRevision: ReturnType<typeof tokenSelectionRevisionSchema.parse>;
   selectionSetRevision: ReturnType<typeof tokenSelectionSetRevisionSchema.parse>;
   officialVerification?: StockFactoryVerification | null;
-}>) => store.applyConfirmation({
-  kind: input.kind,
-  operation: input.operation as never,
-  expectedConnectionRevision: input.connectionRevision,
+}>) => store.applySelectionChange({
+  action: input.action.action,
   selectionRevision: input.selectionRevision,
   selectionSetRevision: input.selectionSetRevision,
-  ...(input.kind === "add" ? { officialVerification: input.officialVerification ?? null } : {}),
-  now: later,
-} as never);
+  inspection: input.action.inspection,
+  officialVerification: input.officialVerification ?? null,
+  completedAt: later,
+});
 
 const failureCode = (effect: () => unknown): string | undefined => {
   try { effect(); return undefined; }
@@ -473,7 +484,7 @@ describe("token selection persistence", () => {
 
     const catalog = database.tokenCatalogStore();
     const excluded = catalog.getSelection(account, initialized.selections[0]!.asset)!;
-    const removal = applyingOperation({
+    const removal = selectionAction({
       kind: "remove",
       connectionRevision: connection.revision,
       asset: excluded.selection.asset,
@@ -483,9 +494,7 @@ describe("token selection persistence", () => {
       snapshotRevision: null,
     });
     apply(catalog, {
-      kind: "remove",
-      connectionRevision: connection.revision,
-      operation: removal,
+      action: removal,
       selectionRevision: selectionRevision(10),
       selectionSetRevision: setRevision(11),
     });
@@ -572,7 +581,7 @@ describe("token selection persistence", () => {
       tokenInspectionDigest(inspection) <= tokenInspectionDigest(reinspection)) {
       throw new TypeError("Same-time inspection counterexample is invalid.");
     }
-    const addOperation = applyingOperation({
+    const addOperation = selectionAction({
       kind: "add",
       connectionRevision: connection.revision,
       asset: inspection.data.asset,
@@ -582,16 +591,17 @@ describe("token selection persistence", () => {
       snapshotRevision: snapshot.revision,
     });
     const added = apply(store, {
-      kind: "add",
-      connectionRevision: connection.revision,
-      operation: addOperation,
+      action: addOperation,
       selectionRevision: selectionRevision(1),
       selectionSetRevision: setRevision(2),
     });
-    expect(added).toMatchObject({ state: "completed", result: { selection: { included: true } } });
+    expect(added).toMatchObject({
+      state: "completed",
+      result: { selection: { selection: { included: true } } },
+    });
     const first = store.getSelection(account, inspection.data.asset)!;
 
-    const removeOperation = applyingOperation({
+    const removeOperation = selectionAction({
       kind: "remove",
       connectionRevision: connection.revision,
       asset: inspection.data.asset,
@@ -601,9 +611,7 @@ describe("token selection persistence", () => {
       snapshotRevision: null,
     });
     apply(store, {
-      kind: "remove",
-      connectionRevision: connection.revision,
-      operation: removeOperation,
+      action: removeOperation,
       selectionRevision: selectionRevision(3),
       selectionSetRevision: setRevision(4),
     });
@@ -613,7 +621,7 @@ describe("token selection persistence", () => {
       account, limit: 25, cursor: null, excludedAddresses: [],
     }).selections).toEqual([]);
 
-    const readdOperation = applyingOperation({
+    const readdOperation = selectionAction({
       kind: "add",
       connectionRevision: connection.revision,
       asset: reinspection.data.asset,
@@ -623,20 +631,15 @@ describe("token selection persistence", () => {
       snapshotRevision: snapshot.revision,
     });
     const restored = apply(store, {
-      kind: "add",
-      connectionRevision: connection.revision,
-      operation: readdOperation,
+      action: readdOperation,
       selectionRevision: selectionRevision(5),
       selectionSetRevision: setRevision(6),
     });
-    if (restored.state !== "completed" || restored.result === null) {
-      throw new TypeError("Same-time re-addition did not complete.");
-    }
-    expect(restored.result.selection).toMatchObject({
+    expect(restored.result.selection.selection).toMatchObject({
       included: true,
       createdAt: first.selection.createdAt,
     });
-    expect(tokenInspectionDigest(restored.result.historicalInspection))
+    expect(tokenInspectionDigest(restored.result.selection.historicalInspection))
       .toBe(tokenInspectionDigest(reinspection));
 
     const raw = new Database(path, { readonly: true });
@@ -666,7 +669,7 @@ describe("token selection persistence", () => {
       asset: { kind: "erc20", chainId, address: firstAddress },
       block: { kind: "latest" },
     });
-    const firstAdd = applyingOperation({
+    const firstAdd = selectionAction({
       kind: "add",
       connectionRevision: connection.revision,
       asset: firstInspection.data.asset,
@@ -676,9 +679,7 @@ describe("token selection persistence", () => {
       snapshotRevision: snapshot.revision,
     });
     apply(store, {
-      kind: "add",
-      connectionRevision: connection.revision,
-      operation: firstAdd,
+      action: firstAdd,
       selectionRevision: selectionRevision(20),
       selectionSetRevision: setRevision(21),
     });
@@ -703,7 +704,7 @@ describe("token selection persistence", () => {
       await sourceObservation([firstSource]),
       snapshot.revision,
     );
-    const firstRemove = applyingOperation({
+    const firstRemove = selectionAction({
       kind: "remove",
       connectionRevision: connection.revision,
       asset: firstInspection.data.asset,
@@ -713,9 +714,7 @@ describe("token selection persistence", () => {
       snapshotRevision: null,
     });
     apply(store, {
-      kind: "remove",
-      connectionRevision: connection.revision,
-      operation: firstRemove,
+      action: firstRemove,
       selectionRevision: selectionRevision(22),
       selectionSetRevision: setRevision(23),
     });
@@ -729,7 +728,7 @@ describe("token selection persistence", () => {
       asset: { kind: "erc20", chainId, address: secondAddress },
       block: { kind: "latest" },
     });
-    const secondAdd = applyingOperation({
+    const secondAdd = selectionAction({
       kind: "add",
       connectionRevision: connection.revision,
       asset: secondInspection.data.asset,
@@ -739,14 +738,12 @@ describe("token selection persistence", () => {
       snapshotRevision: snapshot.revision,
     });
     apply(store, {
-      kind: "add",
-      connectionRevision: connection.revision,
-      operation: secondAdd,
+      action: secondAdd,
       selectionRevision: selectionRevision(24),
       selectionSetRevision: setRevision(25),
     });
     const secondSelection = store.getSelection(account, secondInspection.data.asset)!.selection;
-    const secondRemove = applyingOperation({
+    const secondRemove = selectionAction({
       kind: "remove",
       connectionRevision: connection.revision,
       asset: secondInspection.data.asset,
@@ -756,9 +753,7 @@ describe("token selection persistence", () => {
       snapshotRevision: null,
     });
     apply(store, {
-      kind: "remove",
-      connectionRevision: connection.revision,
-      operation: secondRemove,
+      action: secondRemove,
       selectionRevision: selectionRevision(26),
       selectionSetRevision: setRevision(27),
     });
@@ -785,7 +780,25 @@ describe("token selection persistence", () => {
       block: { kind: "latest" },
     });
     const store = database.tokenCatalogStore();
-    const operation = applyingOperation({
+    const staleConnectionAction = selectionAction({
+      kind: "add",
+      connectionRevision: "0",
+      asset: inspection.data.asset,
+      previousSelection: null,
+      currentSetRevision: null,
+      inspection,
+      snapshotRevision: snapshot.revision,
+    });
+    const staleAction = selectionAction({
+      kind: "add",
+      connectionRevision: connection.revision,
+      asset: inspection.data.asset,
+      previousSelection: null,
+      currentSetRevision: null,
+      inspection,
+      snapshotRevision: snapshot.revision,
+    });
+    const action = selectionAction({
       kind: "add",
       connectionRevision: connection.revision,
       asset: inspection.data.asset,
@@ -795,25 +808,19 @@ describe("token selection persistence", () => {
       snapshotRevision: snapshot.revision,
     });
     expect(failureCode(() => apply(store, {
-      kind: "add",
-      connectionRevision: "0",
-      operation,
+      action: staleConnectionAction,
       selectionRevision: selectionRevision(5),
       selectionSetRevision: setRevision(6),
     }))).toBe("state_conflict");
     expect(store.getSelection(account, inspection.data.asset)).toBeUndefined();
 
     apply(store, {
-      kind: "add",
-      connectionRevision: connection.revision,
-      operation,
+      action,
       selectionRevision: selectionRevision(5),
       selectionSetRevision: setRevision(6),
     });
     expect(failureCode(() => apply(store, {
-      kind: "add",
-      connectionRevision: connection.revision,
-      operation,
+      action: staleAction,
       selectionRevision: selectionRevision(7),
       selectionSetRevision: setRevision(8),
     }))).toBe("token_selection_revision_changed");
@@ -821,7 +828,7 @@ describe("token selection persistence", () => {
     database.close();
   });
 
-  it("rejects every internal official anchor mismatch before durable mutation", async () => {
+  it("rejects mismatched admitted official evidence before durable mutation", async () => {
     const { database, path, connection } = await openDatabase();
     const snapshot = await sourceSnapshot(database);
     const manifestEntry = defaultStockTokenManifest.assets[0];
@@ -839,7 +846,10 @@ describe("token selection persistence", () => {
       manifestEntry.contractAddress,
       inspection.data.analysis.block,
     );
-    const operation = applyingOperation({
+    const officialMember = snapshot.members.find((member) =>
+      member.contractAddress === manifestEntry.contractAddress);
+    if (officialMember === undefined) throw new TypeError("Official source member is missing.");
+    const action = selectionAction({
       kind: "add",
       connectionRevision: connection.revision,
       asset: inspection.data.asset,
@@ -847,85 +857,39 @@ describe("token selection persistence", () => {
       currentSetRevision: null,
       inspection,
       snapshotRevision: snapshot.revision,
-      officialEvidence: {
-        assetUid: manifestEntry.assetUid,
-        snapshotRevision: snapshot.revision,
-        verificationBlock: inspection.data.analysis.block,
-      },
+      officialMember,
+      officialVerification: correctVerification,
     });
-    const anchorMutations = [
-      { field: "chainId", value: "eip155:1" },
-      { field: "blockNumber", value: "43" },
-      { field: "blockHash", value: `0x${"cd".repeat(32)}` },
-      { field: "blockTimestamp", value: "2026-07-18T00:00:01.000Z" },
-    ] as const;
     const store = database.tokenCatalogStore();
-
-    for (const mutation of anchorMutations) {
-      const mismatchedVerification = {
-        ...correctVerification,
-        block: {
-          ...correctVerification.block,
-          [mutation.field]: mutation.value,
-        },
-      } as StockFactoryVerification;
-      expect(failureCode(() => apply(store, {
-        kind: "add",
-        connectionRevision: connection.revision,
-        operation,
-        selectionRevision: selectionRevision(40),
-        selectionSetRevision: setRevision(41),
-        officialVerification: mismatchedVerification,
-      }))).toBe("state_conflict");
-      expect(store.getSelection(account, inspection.data.asset)).toBeUndefined();
-      expect(store.getSelectionState(account)).toBeUndefined();
-      const raw = new Database(path, { readonly: true });
-      expect(raw.prepare("SELECT COUNT(*) AS count FROM token_contract_inspection").get())
-        .toEqual({ count: 0 });
-      raw.close();
-    }
-
-    for (const forgedVerification of [
-      {
-        ...correctVerification,
-        proxyAddress: parseEvmAddressInput(`0x${"aa".repeat(20)}`),
+    const mismatchedVerification: StockFactoryVerification = {
+      ...correctVerification,
+      block: {
+        ...correctVerification.block,
+        blockHash: parseHash32(`0x${"cd".repeat(32)}`),
       },
-      {
-        ...correctVerification,
-        proxyCodeHash: parseHash32(`0x${"bb".repeat(32)}`),
-      },
-      {
-        ...correctVerification,
-        implementationAddress: parseEvmAddressInput(`0x${"cc".repeat(20)}`),
-      },
-      {
-        ...correctVerification,
-        implementationCodeHash: parseHash32(`0x${"dd".repeat(32)}`),
-      },
-    ] as const) {
-      expect(failureCode(() => apply(store, {
-        kind: "add",
-        connectionRevision: connection.revision,
-        operation,
-        selectionRevision: selectionRevision(40),
-        selectionSetRevision: setRevision(41),
-        officialVerification: forgedVerification,
-      }))).toBe("state_conflict");
-      expect(store.getSelection(account, inspection.data.asset)).toBeUndefined();
-      expect(store.getSelectionState(account)).toBeUndefined();
-    }
+    };
+    expect(failureCode(() => apply(store, {
+      action,
+      selectionRevision: selectionRevision(40),
+      selectionSetRevision: setRevision(41),
+      officialVerification: mismatchedVerification,
+    }))).toBe("runtime_state_unavailable");
+    expect(store.getSelection(account, inspection.data.asset)).toBeUndefined();
+    expect(store.getSelectionState(account)).toBeUndefined();
+    const empty = new Database(path, { readonly: true });
+    expect(empty.prepare("SELECT COUNT(*) AS count FROM token_contract_inspection").get())
+      .toEqual({ count: 0 });
+    empty.close();
 
     const completed = apply(store, {
-      kind: "add",
-      connectionRevision: connection.revision,
-      operation,
+      action,
       selectionRevision: selectionRevision(40),
       selectionSetRevision: setRevision(41),
       officialVerification: correctVerification,
     });
     expect(completed).toMatchObject({
       state: "completed",
-      result: { selection: { included: true } },
+      result: { selection: { selection: { included: true } } },
     });
     expect(store.getSelection(account, inspection.data.asset)?.selection.included).toBe(true);
     const raw = new Database(path, { readonly: true });

@@ -7,20 +7,17 @@ import {
   captureCanonicalJson,
   deepFreezeValue,
   getCapabilityDefinitionSnapshot,
+  projectZodJsonSchema,
   type CanonicalJson,
 } from "../core/index.js";
 import { tokenCatalogErrorDefinitions } from "./error-definitions.js";
 import {
   tokenCatalogApplicationContractList,
   tokenCatalogDigestVersions,
-  tokenCatalogOperationConfirmationContract,
   tokenInspectCapability,
   tokenInspectionSuccessProjectionSchema,
 } from "./contract-schema.js";
-import {
-  tokenCatalogOperationKinds,
-  tokenCatalogOperationStates,
-} from "./state.js";
+import { tokenCatalogInitiators, tokenCatalogOperationKinds, tokenCatalogOperationStates } from "./state.js";
 
 export * from "./contract-schema.js";
 
@@ -60,11 +57,9 @@ const substituteTokenInspectionProjection = (value: CanonicalJson): CanonicalJso
 };
 
 const projectSchema = (schema: z.ZodType, io: "input" | "output"): CanonicalJson =>
-  substituteTokenInspectionProjection(captureCanonicalJson(JSON.parse(JSON.stringify(z.toJSONSchema(schema, {
-    target: "draft-2020-12",
-    unrepresentable: "throw",
-    io,
-  })))));
+  substituteTokenInspectionProjection(captureCanonicalJson(JSON.parse(JSON.stringify(
+    projectZodJsonSchema(schema, io),
+  ))));
 
 export const tokenCatalogContractProjection = deepFreezeValue({
   contractVersion: "1" as const,
@@ -76,13 +71,8 @@ export const tokenCatalogContractProjection = deepFreezeValue({
     successSchema: projectSchema(contract.successSchema, "output"),
     failureCodes: contract.failureCodes,
   })),
-  operationConfirmation: {
-    contractVersion: tokenCatalogOperationConfirmationContract.contractVersion,
-    inputSchema: projectSchema(tokenCatalogOperationConfirmationContract.inputSchema, "input"),
-    successSchema: projectSchema(tokenCatalogOperationConfirmationContract.successSchema, "output"),
-    failureCodes: tokenCatalogOperationConfirmationContract.failureCodes,
-  },
   errors: tokenCatalogErrorDefinitions,
+  initiators: tokenCatalogInitiators,
   operationKinds: tokenCatalogOperationKinds,
   operationStates: tokenCatalogOperationStates,
   digestVersions: tokenCatalogDigestVersions,

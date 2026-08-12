@@ -1,389 +1,259 @@
-import { describe, expect, it } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 
-import { extendChainSupportManifest } from "../../src/chain/application.js";
-import { accountAssetApplicationContracts } from "../../src/account-assets/contracts.js";
+import { afterEach, describe, expect, it } from "vitest";
+
 import {
-  compareCodePointSequences,
-  getCapabilityDefinitionSnapshot,
-  readCapabilityRegistry,
-} from "../../src/core/index.js";
+  accountAssetApplicationContracts,
+  accountAssetInterfaceErrorMappings,
+} from "../../src/account-assets/index.js";
+import { getCapabilityDefinitionSnapshot } from "../../src/core/index.js";
 import {
-  admitTokenCatalogInterfaceCatalog,
-  admitWalletInterfaceCatalog,
+  accountAssetInterfaceBindingList,
   declaredCliCommandIdentities,
   declaredMcpToolNames,
   interfaceReadCapabilityRegistry,
-  accountAssetInterfaceBindingList,
-  contractInspectInterface,
   readInterfaceIdentities,
   referenceMarketInterfaceBindingList,
   tokenCatalogInterfaceBindingList,
-  tokenCatalogInterfaceBindings,
-  tokenLocalOperationIdentities,
-  tokenMcpLocalOperationCatalog,
-  tokenInspectInterface,
-  resolveLocalOperationIdentity,
-  walletInterfaceBindings,
-  walletLocalOperationIdentities,
-  walletMcpLocalOperationCatalog,
-  type LocalOperationIdentity,
 } from "../../src/interfaces/identities.js";
-import { publicInspectionPaths } from "../../src/interfaces/browser-contract.js";
+import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
+import {
+  operationCliCommandIdentities,
+  operationControlResources,
+  operationInterfaceBindingList,
+  operationInterfaceBindings,
+  operationMcpToolNames,
+} from "../../src/interfaces/operation-bindings.js";
+import { resolveLocalOperationIdentity } from "../../src/interfaces/local-operation.js";
+import { createMcpToolRegistry, type McpRuntimePort } from "../../src/interfaces/mcp.js";
+import { extendOperationRoutes } from "../../src/interfaces/operation-routes.js";
+import { createControlCredentialVerifier, loadOrCreateControlCredential } from "../../src/runtime/control-credential.js";
+import { createRuntimeRouteRegistry } from "../../src/runtime/http-routing.js";
+import { runtimePaths } from "../../src/runtime/paths.js";
 import {
   referenceMarketApplicationContracts,
   referenceMarketErrorRegistry,
-} from "../../src/market-portfolio/contracts.js";
-import { referenceMarketInterfaceErrorMappings } from "../../src/market-portfolio/errors.js";
-import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
+  referenceMarketInterfaceErrorMappings,
+  type ReferenceMarketApplicationPort,
+} from "../../src/market-portfolio/index.js";
 import {
-  createInitialRuntimeSupportManifest,
-  readRuntimeSupportManifest,
-} from "../../src/runtime/support-manifest.js";
-import {
-  tokenCatalogApplicationContractList,
-  tokenCatalogOperationConfirmationContract,
-  tokenInspectCapability,
-} from "../../src/token-catalog/contracts.js";
-import {
+  tokenCatalogApplicationContracts,
   tokenCatalogErrorRegistry,
-  tokenCatalogInterfaceErrorMappings,
-} from "../../src/token-catalog/errors.js";
-import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
-import { extendWalletSupportManifest } from "../../src/wallet/application.js";
+  type TokenCatalogManagementApplicationPort,
+} from "../../src/token-catalog/index.js";
+import type { WalletManagementPort } from "../../src/wallet/contracts.js";
 
-const tokenCatalogManifest = () => extendTokenCatalogSupportManifest(
-  extendChainSupportManifest(
-    extendWalletSupportManifest(
-      createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
-    ),
-  ),
-);
+const directories: string[] = [];
 
-describe("interface binding identity authority", () => {
-  it("admits one exact local recovery relationship for each MCP mutation source", () => {
-    expect(Object.keys(walletMcpLocalOperationCatalog)).toEqual([
-      "operation",
-      "connect",
-      "disconnect",
-      "cancelOperation",
-    ]);
-    expect(Object.keys(tokenMcpLocalOperationCatalog)).toEqual([
-      "operation",
-      "startAddition",
-      "startRemoval",
-      "cancelOperation",
-    ]);
+afterEach(async () => {
+  await Promise.all(directories.splice(0).map((directory) =>
+    rm(directory, { force: true, recursive: true })));
+});
 
-    for (const entry of [
-      walletMcpLocalOperationCatalog.connect,
-      walletMcpLocalOperationCatalog.disconnect,
-      walletMcpLocalOperationCatalog.cancelOperation,
-    ]) {
-      expect(entry.deliveryRecovery?.target).toBe(walletMcpLocalOperationCatalog.operation);
-      expect(entry.deliveryRecovery?.target.binding).toBe(walletInterfaceBindings.operation);
-      expect(entry.deliveryRecovery?.target.identity).toBe(walletLocalOperationIdentities.mcp.operation);
-    }
-    for (const entry of [
-      tokenMcpLocalOperationCatalog.startAddition,
-      tokenMcpLocalOperationCatalog.startRemoval,
-      tokenMcpLocalOperationCatalog.cancelOperation,
-    ]) {
-      expect(entry.deliveryRecovery?.target).toBe(tokenMcpLocalOperationCatalog.operation);
-      expect(entry.deliveryRecovery?.target.binding).toBe(tokenCatalogInterfaceBindings.operation);
-      expect(entry.deliveryRecovery?.target.identity).toBe(tokenLocalOperationIdentities.shared.operation);
-    }
-    expect(walletMcpLocalOperationCatalog.operation.deliveryRecovery).toBeUndefined();
-    expect(tokenMcpLocalOperationCatalog.operation.deliveryRecovery).toBeUndefined();
+const unreachableRuntime = Object.freeze({
+  async dispatchRuntimeRequest(): Promise<never> {
+    throw new Error("The registry test must not dispatch a runtime request.");
+  },
+  async openOwnerSession(): Promise<never> {
+    throw new Error("The registry test must not open an owner session.");
+  },
+}) as McpRuntimePort;
+
+const routeRegistry = async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "littlejohn-operation-bindings-"));
+  directories.push(directory);
+  const paths = runtimePaths(directory);
+  const credential = await loadOrCreateControlCredential(directory, paths.controlCredential);
+  return extendOperationRoutes({
+    routes: createRuntimeRouteRegistry({
+      controlVerifier: createControlCredentialVerifier(credential),
+    }),
+    wallet: Object.freeze({}) as WalletManagementPort,
+    token: Object.freeze({}) as TokenCatalogManagementApplicationPort,
+    market: Object.freeze({}) as ReferenceMarketApplicationPort,
   });
+};
 
-  it("uses typed operation reads for every local recovery owner and retains no raw route pair", () => {
-    const walletSources = [
-      walletLocalOperationIdentities.cli.connect,
-      walletLocalOperationIdentities.cli.disconnect,
-      walletLocalOperationIdentities.cli.cancel,
-      walletLocalOperationIdentities.cli.confirm,
-      walletLocalOperationIdentities.mcp.connect,
-      walletLocalOperationIdentities.mcp.disconnect,
-      walletLocalOperationIdentities.mcp.cancel,
-    ];
-    const tokenSources = [
-      tokenLocalOperationIdentities.cli.addition,
-      tokenLocalOperationIdentities.cli.removal,
-      tokenLocalOperationIdentities.cli.confirm,
-      tokenLocalOperationIdentities.mcp.addition,
-      tokenLocalOperationIdentities.mcp.removal,
-      tokenLocalOperationIdentities.shared.cancel,
-    ];
-    for (const identity of walletSources) {
-      const binding = resolveLocalOperationIdentity(identity as LocalOperationIdentity<unknown, unknown>);
-      expect(binding.recoveryObservation?.target).toBe(walletLocalOperationIdentities.mcp.operation);
-      expect(Object.hasOwn(binding, "recoveryRequest")).toBe(false);
-      expect(Object.hasOwn(binding, "parseRecoveryResponse")).toBe(false);
-    }
-    for (const identity of tokenSources) {
-      const binding = resolveLocalOperationIdentity(identity as LocalOperationIdentity<unknown, unknown>);
-      expect(binding.recoveryObservation?.target).toBe(tokenLocalOperationIdentities.shared.operation);
-      expect(Object.hasOwn(binding, "recoveryRequest")).toBe(false);
-      expect(Object.hasOwn(binding, "parseRecoveryResponse")).toBe(false);
-    }
-    expect(resolveLocalOperationIdentity(walletLocalOperationIdentities.mcp.operation).recoveryObservation)
-      .toBeUndefined();
-    expect(resolveLocalOperationIdentity(tokenLocalOperationIdentities.shared.operation).recoveryObservation)
-      .toBeUndefined();
-  });
-
-  it("rejects incomplete and structurally invalid recovery catalog inputs", () => {
-    const walletIdentities = Object.freeze({
-      connect: walletLocalOperationIdentities.mcp.connect,
-      disconnect: walletLocalOperationIdentities.mcp.disconnect,
-      operation: walletLocalOperationIdentities.mcp.operation,
-      cancelOperation: walletLocalOperationIdentities.mcp.cancel,
-    });
-    const tokenIdentities = Object.freeze({
-      startAddition: tokenLocalOperationIdentities.mcp.addition,
-      startRemoval: tokenLocalOperationIdentities.mcp.removal,
-      operation: tokenLocalOperationIdentities.shared.operation,
-      cancelOperation: tokenLocalOperationIdentities.shared.cancel,
-    });
-    const { deliveryRecovery: _walletRecovery, ...walletConnectMcp } =
-      walletInterfaceBindings.connect.mcp;
-    expect(() => admitWalletInterfaceCatalog({
-      bindings: {
-        ...walletInterfaceBindings,
-        connect: { ...walletInterfaceBindings.connect, mcp: walletConnectMcp },
-      },
-      identities: walletIdentities,
-    })).toThrow("Mutation binding recovery relationship is missing.");
-
-    expect(() => admitWalletInterfaceCatalog({
-      bindings: walletInterfaceBindings,
-      identities: {
-        ...walletIdentities,
-        connect: walletLocalOperationIdentities.mcp.cancel,
-      },
-    })).toThrow("Mutation binding action is invalid.");
-
-    expect(() => admitWalletInterfaceCatalog({
-      bindings: walletInterfaceBindings,
-      identities: {
-        ...walletIdentities,
-        connect: walletLocalOperationIdentities.mcp.disconnect,
-      },
-    })).toThrow("Mutation binding contract is invalid.");
-
-    expect(() => admitWalletInterfaceCatalog({
-      bindings: walletInterfaceBindings,
-      identities: {
-        ...walletIdentities,
-        operation: walletLocalOperationIdentities.mcp.connect,
-      },
-    })).toThrow("Operation-read identity action is invalid.");
-
-    expect(() => admitWalletInterfaceCatalog({
-      bindings: walletInterfaceBindings,
-      identities: {
-        ...walletIdentities,
-        operation: tokenLocalOperationIdentities.shared.operation,
-      },
-    })).toThrow("Operation-read identity contract is invalid.");
-
-    expect(() => admitWalletInterfaceCatalog({
-      bindings: walletInterfaceBindings,
-      identities: {
-        ...walletIdentities,
-        operation: walletLocalOperationIdentities.cli.presentation,
-      },
-    })).toThrow("Mutation binding recovery target is invalid.");
-
-    expect(() => admitTokenCatalogInterfaceCatalog({
-      bindings: {
-        ...tokenCatalogInterfaceBindings,
-        selection: {
-          ...tokenCatalogInterfaceBindings.selection,
-          mcp: {
-            ...tokenCatalogInterfaceBindings.selection.mcp,
-            deliveryRecovery: { targetBinding: "operation" },
-          },
-        },
-      },
-      identities: tokenIdentities,
-    })).toThrow("Non-operation binding owns a recovery relationship.");
-  });
-
-  it("rejects structurally valid but non-canonical catalog objects", () => {
-    const walletIdentities = Object.freeze({
-      connect: walletLocalOperationIdentities.mcp.connect,
-      disconnect: walletLocalOperationIdentities.mcp.disconnect,
-      operation: walletLocalOperationIdentities.mcp.operation,
-      cancelOperation: walletLocalOperationIdentities.mcp.cancel,
-    });
-    const tokenIdentities = Object.freeze({
-      startAddition: tokenLocalOperationIdentities.mcp.addition,
-      startRemoval: tokenLocalOperationIdentities.mcp.removal,
-      operation: tokenLocalOperationIdentities.shared.operation,
-      cancelOperation: tokenLocalOperationIdentities.shared.cancel,
-    });
-
-    expect(() => admitWalletInterfaceCatalog({
-      bindings: walletInterfaceBindings,
-      identities: {
-        ...walletIdentities,
-        connect: walletLocalOperationIdentities.cli.connect,
-      },
-    })).toThrow("Wallet operation identity is invalid.");
-
-    expect(() => admitWalletInterfaceCatalog({
-      bindings: {
-        ...walletInterfaceBindings,
-        operation: {
-          ...walletInterfaceBindings.operation,
-          contract: { ...walletInterfaceBindings.operation.contract },
-        },
-      },
-      identities: walletIdentities,
-    })).toThrow("Operation-read binding is invalid.");
-
-    expect(() => admitWalletInterfaceCatalog({
-      bindings: {
-        ...walletInterfaceBindings,
-        operation: { ...walletInterfaceBindings.operation },
-      },
-      identities: walletIdentities,
-    })).toThrow("Wallet interface binding identity is invalid.");
-
-    expect(() => admitWalletInterfaceCatalog({
-      bindings: {
-        ...walletInterfaceBindings,
-        connect: { ...walletInterfaceBindings.connect },
-      },
-      identities: walletIdentities,
-    })).toThrow("Wallet interface binding identity is invalid.");
-
-    expect(() => admitTokenCatalogInterfaceCatalog({
-      bindings: tokenCatalogInterfaceBindings,
-      identities: {
-        ...tokenIdentities,
-        operation: walletLocalOperationIdentities.mcp.operation,
-      },
-    })).toThrow("Operation-read identity contract is invalid.");
-  });
-
-  it("builds the read registry from the exact binding definition objects", () => {
-    expect(readInterfaceIdentities.map((identity) => identity.capabilityId)).toEqual([
-      "account.balance",
-      "chain.status",
-      "contract.inspect",
-      "token.inspect",
-      "transaction.inspect",
-      "uniswap_v2.quote_exact_input",
-      "wallet.connection",
-    ]);
+describe("operation interface binding authority", () => {
+  it("retains each surviving read contract and derives its public identities without copies", () => {
     expect(interfaceReadCapabilityRegistry.values()).toEqual(
       readInterfaceIdentities.map((identity) => identity.definition),
     );
     for (const identity of readInterfaceIdentities) {
       expect(interfaceReadCapabilityRegistry.owns(identity.definition)).toBe(true);
-      expect(identity.capabilityId).toBe(getCapabilityDefinitionSnapshot(identity.definition).capabilityId);
+      expect(identity.capabilityId).toBe(
+        getCapabilityDefinitionSnapshot(identity.definition).capabilityId,
+      );
+      expect(declaredMcpToolNames.filter((name) => name === identity.mcp.name)).toHaveLength(1);
+      expect(declaredCliCommandIdentities.filter((entry) =>
+        entry.domain === identity.cli.domain && entry.command === identity.cli.command,
+      )).toHaveLength(1);
     }
-    expect(tokenInspectInterface.definition).toBe(tokenInspectCapability);
-    expect(tokenInspectInterface.mcp.name).toBe("token_inspect_contract");
-    expect(tokenInspectInterface.cli).toEqual({
-      domain: "token",
-      command: "inspect",
-      argumentSyntax: "<token-address> --block <latest|block-number> [--json]",
-    });
-    expect(contractInspectInterface.http.path).toBe(publicInspectionPaths.contractQueries);
-    expect(tokenInspectInterface.http.path).toBe(publicInspectionPaths.tokenQueries);
-    expect(readCapabilityRegistry.owns(tokenInspectCapability)).toBe(false);
-  });
 
-  it("maps each token application contract to one canonical interface binding", () => {
-    const canonicalContracts = [...tokenCatalogApplicationContractList]
-      .sort((left, right) => compareCodePointSequences(left.capabilityId, right.capabilityId));
-    expect(tokenCatalogInterfaceBindingList).toHaveLength(canonicalContracts.length);
-    for (const [index, binding] of tokenCatalogInterfaceBindingList.entries()) {
-      expect(binding.contract).toBe(canonicalContracts[index]);
-    }
-    expect(tokenCatalogInterfaceBindingList.map((binding) => binding.contract.capabilityId)).toEqual([
-      "token.cancel_operation",
-      "token.operation",
-      "token.selection",
-      "token.selections",
-      "token.start_addition",
-      "token.start_removal",
+    expect(accountAssetInterfaceBindingList.map((binding) => binding.contract)).toEqual([
+      accountAssetApplicationContracts.collection,
+      accountAssetApplicationContracts.exact,
     ]);
-    expect(tokenCatalogInterfaceBindingList.map((binding) => binding.mcp.name)).toEqual([
-      "token_cancel_operation",
-      "token_get_operation",
-      "token_get_selection",
-      "token_list_selections",
-      "token_start_addition",
-      "token_start_removal",
-    ]);
-    expect(tokenCatalogInterfaceBindingList.map((binding) => binding.action)).toEqual([
-      "cancel_operation",
-      "get_operation",
-      "get",
-      "list",
-      "start",
-      "start",
-    ]);
-    for (const binding of [
-      ...Object.values(walletInterfaceBindings),
-      ...tokenCatalogInterfaceBindingList,
-    ]) {
-      expect(Object.hasOwn(binding, "operationKind")).toBe(false);
-    }
-    expect(tokenCatalogInterfaceBindingList.some(
-      (binding) => binding.contract === tokenCatalogOperationConfirmationContract as never,
-    )).toBe(false);
-    expect(new Set(tokenCatalogInterfaceBindingList.map((binding) => binding.contract)).size)
-      .toBe(tokenCatalogApplicationContractList.length);
-  });
-
-  it("binds account assets and reference markets to their exact response authorities", () => {
     for (const binding of accountAssetInterfaceBindingList) {
       expect(binding.responseAuthority.applicationErrors).toBe(tokenCatalogErrorRegistry);
-      expect(binding.responseAuthority.interfaceMappings).toBe(tokenCatalogInterfaceErrorMappings);
+      expect(binding.responseAuthority.interfaceMappings).toBe(accountAssetInterfaceErrorMappings);
     }
-    const canonicalContracts = Object.values(referenceMarketApplicationContracts)
-      .sort((left, right) => compareCodePointSequences(left.capabilityId, right.capabilityId));
-    expect(referenceMarketInterfaceBindingList).toHaveLength(canonicalContracts.length);
-    for (const [index, binding] of referenceMarketInterfaceBindingList.entries()) {
-      expect(binding.contract).toBe(canonicalContracts[index]);
+    for (const binding of referenceMarketInterfaceBindingList) {
+      expect(binding.contract).toBe(referenceMarketApplicationContracts[binding.action]);
       expect(binding.responseAuthority.applicationErrors).toBe(referenceMarketErrorRegistry);
       expect(binding.responseAuthority.interfaceMappings).toBe(referenceMarketInterfaceErrorMappings);
     }
+    expect(tokenCatalogInterfaceBindingList.map((binding) => binding.contract)).toEqual([
+      tokenCatalogApplicationContracts.selection,
+      tokenCatalogApplicationContracts.selections,
+    ]);
+
+    for (const binding of [
+      ...accountAssetInterfaceBindingList,
+      ...referenceMarketInterfaceBindingList,
+      ...tokenCatalogInterfaceBindingList,
+    ]) {
+      if (binding.mcp !== undefined) {
+        expect(declaredMcpToolNames.filter((name) => name === binding.mcp?.name)).toHaveLength(1);
+      }
+      if (binding.cli !== undefined) {
+        expect(declaredCliCommandIdentities.filter((entry) =>
+          entry.domain === binding.cli?.domain && entry.command === binding.cli?.command,
+        )).toHaveLength(1);
+      }
+    }
   });
 
-  it("derives CLI and MCP identities from the binding catalogs", () => {
-    expect(accountAssetInterfaceBindingList).toHaveLength(2);
-    expect(accountAssetInterfaceBindingList[0]?.contract)
-      .toBe(accountAssetApplicationContracts.collection);
-    expect(accountAssetInterfaceBindingList[1]?.contract)
-      .toBe(accountAssetApplicationContracts.exact);
-    for (const binding of tokenCatalogInterfaceBindingList) {
-      expect(declaredMcpToolNames).toContain(binding.mcp.name);
-      expect(declaredCliCommandIdentities).toContain(binding.cli);
-    }
-    expect(declaredMcpToolNames).toContain(tokenInspectInterface.mcp.name);
-    expect(declaredCliCommandIdentities).toContain(tokenInspectInterface.cli);
+  it("derives MCP and CLI identities from one closed operation binding list", async () => {
+    expect(operationInterfaceBindingList).toEqual(Object.values(operationInterfaceBindings));
+    expect(new Set(operationInterfaceBindingList).size).toBe(operationInterfaceBindingList.length);
+    expect(Object.keys(operationInterfaceBindings)).toEqual([
+      "walletReview",
+      "walletConnect",
+      "walletDisconnect",
+      "walletOperation",
+      "walletCancel",
+      "tokenReview",
+      "tokenAdd",
+      "tokenRemove",
+      "tokenOperation",
+      "watchlistReview",
+      "watchlistAdd",
+      "watchlistRemove",
+      "watchlistReorder",
+      "watchlistOperation",
+    ]);
 
-    const internalSnapshot = readRuntimeSupportManifest(tokenCatalogManifest());
-    for (const capabilityId of [
-      "token.inspect",
-      ...tokenCatalogInterfaceBindingList.map((binding) => binding.contract.capabilityId),
-    ]) {
-      expect(internalSnapshot.capabilities.find((entry) => entry.capabilityId === capabilityId)?.availability)
-        .toEqual({
-          overall: "internal",
-          direct: "internal",
-          http: "unavailable",
-          mcp: "unavailable",
-          cli: "unavailable",
-          web: "unavailable",
-        });
+    const expectedMcpNames = operationInterfaceBindingList.map((binding) => binding.mcp.name);
+    expect(operationMcpToolNames).toEqual(expectedMcpNames);
+    for (const name of expectedMcpNames) {
+      expect(declaredMcpToolNames.filter((candidate) => candidate === name)).toHaveLength(1);
     }
 
+    const expectedCli = operationInterfaceBindingList.flatMap((binding) =>
+      binding.cli === undefined ? [] : [binding.cli]);
+    expect(operationCliCommandIdentities).toEqual(expectedCli);
+    for (const identity of expectedCli) {
+      expect(declaredCliCommandIdentities.filter((candidate) =>
+        candidate.domain === identity.domain && candidate.command === identity.command,
+      )).toHaveLength(1);
+    }
+
+    const client = new LocalOperationClient({ ownerSessions: unreachableRuntime });
+    try {
+      const definitions = createMcpToolRegistry(unreachableRuntime, client).values();
+      for (const binding of operationInterfaceBindingList) {
+        const definition = definitions.find((candidate) => candidate.name === binding.mcp.name);
+        expect(definition).toBeDefined();
+        expect(definition?.operationBinding).toBe(binding);
+        expect(definition?.visibility).toEqual(binding.mcp.visibility);
+        expect(definition?.annotations).toEqual(binding.mcp.annotations);
+        expect(definition?.createsView).toBe(binding.mcp.createsView);
+      }
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("keeps pure Reviews, direct decisions, exact reads, and recovery distinct by structure", () => {
+    const reviews = operationInterfaceBindingList.filter((binding) => binding.action === "review");
+    const decisions = operationInterfaceBindingList.filter((binding) => binding.action === "decide");
+    const exactReads = operationInterfaceBindingList.filter((binding) => binding.action === "get_operation");
+    const cancellations = operationInterfaceBindingList.filter((binding) => binding.action === "cancel_operation");
+
+    expect(reviews).toHaveLength(3);
+    expect(decisions).toHaveLength(7);
+    expect(exactReads).toHaveLength(3);
+    expect(cancellations).toEqual([operationInterfaceBindings.walletCancel]);
+
+    for (const review of reviews) {
+      expect(review.mcp.visibility).toEqual(["model"]);
+      expect(review.mcp.createsView).toBe(true);
+      expect(review.mcp.annotations).toMatchObject({
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: false,
+      });
+      expect(resolveLocalOperationIdentity(review.identity)).toMatchObject({ action: "read" });
+      expect(review.recoveryOperation).toBeUndefined();
+    }
+
+    for (const decision of [...decisions, ...cancellations]) {
+      expect(decision.mcp.visibility).toEqual(["app"]);
+      expect(decision.mcp.createsView).toBe(false);
+      expect(resolveLocalOperationIdentity(decision.identity).action).toMatch(/^(decide|cancel)$/u);
+      expect(decision.recoveryOperation?.action).toBe("get_operation");
+      expect(decision.recoveryOperation?.contract.capabilityId.split(".")[0]).toBe(
+        decision.contract.capabilityId.split(".")[0],
+      );
+    }
+
+    for (const exactRead of exactReads) {
+      expect(exactRead.mcp.visibility).toEqual(["model", "app"]);
+      expect(exactRead.mcp.createsView).toBe(false);
+      expect(resolveLocalOperationIdentity(exactRead.identity)).toMatchObject({ action: "read" });
+      expect(exactRead.recoveryOperation).toBeUndefined();
+    }
+  });
+
+  it("registers only the final exact operation resources with their owning mutation class", async () => {
+    const routes = await routeRegistry();
+    const operationId = Buffer.alloc(32, 17).toString("base64url");
+    const expected = [
+      ["POST", "/api/v1/internal/control/wallet/connection-change-reviews", "none"],
+      ["POST", "/api/v1/internal/control/wallet/connection-decisions", "declared_control"],
+      ["GET", `/api/v1/internal/control/wallet/operations/${operationId}`, "none"],
+      ["GET", `/api/v1/internal/control/wallet/operations/${operationId}/presentation`, "none"],
+      ["POST", `/api/v1/internal/control/wallet/operations/${operationId}/cancellation`, "declared_control"],
+      ["POST", "/api/v1/internal/control/token-selection/change-reviews", "none"],
+      ["POST", "/api/v1/internal/control/token-selection/decisions", "declared_control"],
+      ["GET", `/api/v1/internal/control/token-selection/operations/${operationId}`, "none"],
+      ["POST", "/api/v1/internal/control/reference-watchlist/change-reviews", "none"],
+      ["POST", "/api/v1/internal/control/reference-watchlist/decisions", "declared_control"],
+      ["GET", `/api/v1/internal/control/reference-watchlist/operations/${operationId}`, "none"],
+    ] as const;
+
+    expect([
+      operationControlResources.wallet.reviews,
+      operationControlResources.wallet.decisions,
+      operationControlResources.wallet.operation(operationId),
+      operationControlResources.wallet.presentation(operationId),
+      operationControlResources.wallet.cancellation(operationId),
+      operationControlResources.tokenSelection.reviews,
+      operationControlResources.tokenSelection.decisions,
+      operationControlResources.tokenSelection.operation(operationId),
+      operationControlResources.referenceWatchlist.reviews,
+      operationControlResources.referenceWatchlist.decisions,
+      operationControlResources.referenceWatchlist.operation(operationId),
+    ]).toEqual(expected.map((entry) => entry[1]));
+
+    for (const [method, path, mutation] of expected) {
+      const match = routes.match(method, path);
+      expect(match.status).toBe("matched");
+      if (match.status !== "matched") throw new TypeError(`Route ${method} ${path} is unavailable.`);
+      expect(match.route.mutation).toBe(mutation);
+    }
   });
 });

@@ -3,20 +3,29 @@ import { z } from "zod";
 import {
   canonicalJsonStringify,
   captureCanonicalJson,
+  operationIdSchema,
   sha256Bytes,
   type CanonicalJson,
-} from "../../core/browser.js";
+} from "../../core/client.js";
 import {
   presentationSnapshotLimits,
   presentationSnapshotUnavailableReasons,
   type PresentationSnapshotRecord,
 } from "../../runtime/presentation-snapshot.js";
+import {
+  walletOperationAllowsQr,
+  walletQrMatrixSchema,
+  type WalletManagementOperation,
+  type WalletQrMatrix,
+} from "../../wallet/operation-contract.js";
 
 export const mcpAppResourceMimeType = "text/html;profile=mcp-app" as const;
 export const presentationSnapshotResourceMimeType = "application/json" as const;
 export const presentationSnapshotUriPrefix =
   "littlejohn://presentation/snapshots/sha256/" as const;
 export const presentationSnapshotMetadataKey = "littlejohn/presentation-snapshot" as const;
+export const operationToolResultMetadataKey = "littlejohn/operation-tool-result" as const;
+export const walletOperationQrMetadataKey = "littlejohn/wallet-operation-qr" as const;
 
 export const presentationMcpTools = Object.freeze({
   getSnapshot: "presentation_get_snapshot",
@@ -29,6 +38,84 @@ export const presentationSnapshotUriSchema = z.string().regex(
   /^littlejohn:\/\/presentation\/snapshots\/sha256\/[0-9a-f]{64}$/u,
 );
 const positiveCanonicalDecimalSchema = z.string().regex(/^[1-9][0-9]*$/u);
+
+export const operationToolResultDescriptorSchema = z.object({
+  kind: z.literal("operation_tool_result_descriptor"),
+  version: z.literal(1),
+  toolName: z.string().min(1).max(64).regex(/^[a-z][a-z0-9]*(?:_[a-z0-9]+){2,}$/u),
+  inputUtf8Bytes: z.number().int().min(1).max(presentationSnapshotLimits.inputBytes),
+  inputSha256: sha256HexSchema,
+  resultUtf8Bytes: z.number().int().min(1).max(presentationSnapshotLimits.resultBytes),
+  resultSha256: sha256HexSchema,
+  isError: z.boolean(),
+}).strict();
+export type OperationToolResultDescriptor = z.infer<typeof operationToolResultDescriptorSchema>;
+
+export const walletOperationQrMetadataSchema = z.object({
+  kind: z.literal("wallet_operation_qr"),
+  operationId: operationIdSchema,
+  resultSha256: sha256HexSchema,
+  qr: walletQrMatrixSchema,
+}).strict();
+export type WalletOperationQrMetadata = z.infer<typeof walletOperationQrMetadataSchema>;
+
+export const operationToolResultEvidence = (value: unknown): Readonly<{
+  value: CanonicalJson;
+  utf8Bytes: number;
+  sha256: string;
+}> => {
+  const admitted = captureCanonicalJson(value);
+  const bytes = new TextEncoder().encode(canonicalJsonStringify(admitted));
+  return Object.freeze({ value: admitted, utf8Bytes: bytes.length, sha256: sha256Bytes(bytes) });
+};
+
+export const createOperationToolResultDescriptor = (input: Readonly<{
+  toolName: string;
+  normalizedInput: unknown;
+  result: unknown;
+  isError: boolean;
+}>): OperationToolResultDescriptor => {
+  const normalizedInput = operationToolResultEvidence(input.normalizedInput);
+  const result = operationToolResultEvidence(input.result);
+  return Object.freeze(operationToolResultDescriptorSchema.parse({
+    kind: "operation_tool_result_descriptor",
+    version: 1,
+    toolName: input.toolName,
+    inputUtf8Bytes: normalizedInput.utf8Bytes,
+    inputSha256: normalizedInput.sha256,
+    resultUtf8Bytes: result.utf8Bytes,
+    resultSha256: result.sha256,
+    isError: input.isError,
+  }));
+};
+
+export const admitOperationToolResultDescriptor = (
+  value: unknown,
+): OperationToolResultDescriptor => Object.freeze(
+  operationToolResultDescriptorSchema.parse(captureCanonicalJson(value)),
+);
+
+export const createWalletOperationQrMetadata = (
+  operationInput: WalletManagementOperation,
+  qrInput: WalletQrMatrix,
+): WalletOperationQrMetadata => {
+  if (!walletOperationAllowsQr(operationInput)) {
+    throw new TypeError("QR is not active for this Wallet operation.");
+  }
+  const operation = operationToolResultEvidence(operationInput);
+  return Object.freeze(walletOperationQrMetadataSchema.parse({
+    kind: "wallet_operation_qr",
+    operationId: operationInput.operationId,
+    resultSha256: operation.sha256,
+    qr: qrInput,
+  }));
+};
+
+export const admitWalletOperationQrMetadata = (
+  value: unknown,
+): WalletOperationQrMetadata => Object.freeze(
+  walletOperationQrMetadataSchema.parse(captureCanonicalJson(value)),
+);
 
 export const presentationSnapshotDescriptorSchema = z.object({
   kind: z.literal("presentation_snapshot_descriptor"),

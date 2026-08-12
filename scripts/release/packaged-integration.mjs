@@ -8,6 +8,10 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+import { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
+import { JSDOM, VirtualConsole } from "jsdom";
 
 import {
   initializeOwnedChild,
@@ -19,7 +23,6 @@ import { renderPackagedOwnerWorkerSource } from "./packaged-owner-worker-source.
 import { runCommand } from "./release-support.mjs";
 
 const fixedOrigin = "http://127.0.0.1:46630";
-const csrfHeaderName = "Littlejohn-CSRF-Token";
 const identityChallengeHeaderName = "Littlejohn-Identity-Challenge";
 const expectedChainId = "eip155:4663";
 const expectedWalletAddress = "0x1111111111111111111111111111111111111111";
@@ -55,35 +58,38 @@ const expectedSemanticReadToolNames = Object.freeze([
 ]);
 const expectedToolNames = Object.freeze([
   "account_list_assets",
-  "market_add_watchlist_pair",
   "market_get_reference_history",
   "market_get_reference_price",
   "market_get_watchlist",
-  "market_remove_watchlist_pair",
-  "market_reorder_watchlist_pairs",
   "read_get_account_balance",
   "read_get_chain_status",
   "read_inspect_contract",
   "read_inspect_transaction",
   "read_list_capabilities",
-  "token_cancel_operation",
-  "token_get_operation",
   "token_get_selection",
   "token_inspect_contract",
   "token_list_selections",
-  "token_start_addition",
-  "token_start_removal",
   "uniswap_v2_quote_exact_input",
-  "wallet_cancel_operation",
   "wallet_get_connection",
-  "wallet_get_operation",
-  "wallet_start_connection",
-  "wallet_start_disconnection",
 ]);
 const expectedAppToolNames = Object.freeze([
   ...expectedToolNames,
+  "market_add_watchlist_pair",
+  "market_get_watchlist_change_review",
+  "market_get_watchlist_operation",
+  "market_remove_watchlist_pair",
+  "market_reorder_watchlist_pairs",
   "presentation_get_snapshot",
   "presentation_get_snapshot_chunk",
+  "token_add_selection",
+  "token_get_operation",
+  "token_get_selection_change_review",
+  "token_remove_selection",
+  "wallet_cancel_operation",
+  "wallet_get_connection_change_review",
+  "wallet_get_operation",
+  "wallet_start_connection",
+  "wallet_start_disconnection",
 ]);
 const exactPackagedToolSchemaNames = Object.freeze([
   "read_get_chain_status",
@@ -674,29 +680,6 @@ const problemCode = (value) => {
   return typeof code === "string" ? code : undefined;
 };
 
-const startToolResult = (toolResult) => {
-  const result = toolResult?.structuredContent?.result;
-  if (typeof result !== "object" || result === null) {
-    throw new TypeError("MCP wallet start result is unavailable.");
-  }
-  if (toolResult.structuredContent?.displayUrl !== `${fixedOrigin}/`) {
-    throw new TypeError("MCP wallet display URL is not the fixed browser root.");
-  }
-  return result;
-};
-
-const startedToolOperation = (toolResult) => {
-  const result = startToolResult(toolResult);
-  if (result.status !== "operation_started") {
-    throw new TypeError("MCP wallet start did not create an operation.");
-  }
-  const operation = result.operation;
-  if (typeof operation !== "object" || operation === null) {
-    throw new TypeError("MCP wallet start operation is unavailable.");
-  }
-  return operation;
-};
-
 const readToolOperation = (toolResult) => {
   const operation = toolResult?.structuredContent;
   if (typeof operation !== "object" || operation === null) {
@@ -727,6 +710,176 @@ const canonicalSemanticToolContent = (toolResult, label) => {
   return structured;
 };
 
+const assertOperationToolResultDescriptor = (toolResult, toolName, normalizedInput) => {
+  const descriptor = toolResult?._meta?.["littlejohn/operation-tool-result"];
+  const result = toolResult?.structuredContent;
+  const inputText = independentCanonicalJson(normalizedInput);
+  const resultText = independentCanonicalJson(result);
+  if (
+    !hasExactObjectKeys(descriptor, [
+      "inputSha256",
+      "inputUtf8Bytes",
+      "isError",
+      "kind",
+      "resultSha256",
+      "resultUtf8Bytes",
+      "toolName",
+      "version",
+    ]) ||
+    descriptor.kind !== "operation_tool_result_descriptor" ||
+    descriptor.version !== 1 ||
+    descriptor.toolName !== toolName ||
+    descriptor.inputUtf8Bytes !== Buffer.byteLength(inputText, "utf8") ||
+    descriptor.inputSha256 !== createHash("sha256").update(inputText, "utf8").digest("hex") ||
+    descriptor.resultUtf8Bytes !== Buffer.byteLength(resultText, "utf8") ||
+    descriptor.resultSha256 !== createHash("sha256").update(resultText, "utf8").digest("hex") ||
+    descriptor.isError !== (toolResult?.isError === true) ||
+    canonicalToolText(toolResult) !== resultText
+  ) throw new TypeError("Packaged operation result descriptor is invalid.");
+  return descriptor;
+};
+
+const callOperationTool = async (client, toolName, normalizedInput) => {
+  const result = await client.callTool(toolName, normalizedInput);
+  assertOperationToolResultDescriptor(result, toolName, normalizedInput);
+  return result;
+};
+
+const assertPackagedReviewWithoutServerTools = async (
+  client,
+  packagedHtml,
+  moduleRoot,
+) => {
+  const reviewResult = await client.callTool(
+    "wallet_get_connection_change_review",
+    { kind: "connect" },
+  );
+  const review = reviewResult?.structuredContent?.review;
+  if (
+    reviewResult?.structuredContent?.status !== "review" ||
+    review?.kind !== "connect" ||
+    typeof review?.operationId !== "string"
+  ) throw new TypeError("Packaged no-serverTools Wallet Review is invalid.");
+
+  const script = /<script type="module">([\s\S]*)<\/script>/u.exec(packagedHtml)?.[1];
+  if (script === undefined) {
+    throw new TypeError("Packaged MCP App module is unavailable.");
+  }
+  const dom = new JSDOM(
+    packagedHtml.replace(/<script type="module">[\s\S]*<\/script>/u, ""),
+    {
+      pretendToBeVisual: true,
+      runScripts: "outside-only",
+      url: "https://example.invalid/",
+      virtualConsole: new VirtualConsole(),
+    },
+  );
+  const view = dom.window;
+  view.ResizeObserver = class {
+    observe() {}
+    disconnect() {}
+  };
+  let viewToolCalls = 0;
+  const hostTransport = {
+    async start() {},
+    async send(message) {
+      view.dispatchEvent(new view.MessageEvent("message", { data: message, source: view }));
+    },
+    async close() {
+      this.onclose?.();
+    },
+  };
+  Object.defineProperty(view, "postMessage", {
+    configurable: true,
+    value: (message) => queueMicrotask(() => {
+      if (message?.method === "tools/call") viewToolCalls += 1;
+      hostTransport.onmessage?.(message);
+    }),
+  });
+  const bridge = new AppBridge(
+    null,
+    { name: "littlejohn-release-no-server-tools-host", version: "1.0.0" },
+    {},
+  );
+  bridge.oncalltool = async () => ({ content: [], isError: true });
+  let initializedResolve;
+  const initialized = new Promise((resolveInitialized) => {
+    initializedResolve = resolveInitialized;
+  });
+  bridge.oninitialized = () => initializedResolve();
+
+  const globalDescriptors = new Map();
+  const installGlobal = (name, value) => {
+    globalDescriptors.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    Object.defineProperty(globalThis, name, {
+      configurable: true,
+      writable: true,
+      value,
+    });
+  };
+  for (const [name, value] of Object.entries({
+    window: view,
+    document: view.document,
+    navigator: view.navigator,
+    Event: view.Event,
+    MessageEvent: view.MessageEvent,
+    CustomEvent: view.CustomEvent,
+    HTMLElement: view.HTMLElement,
+    MutationObserver: view.MutationObserver,
+    ResizeObserver: view.ResizeObserver,
+    getComputedStyle: view.getComputedStyle.bind(view),
+    requestAnimationFrame: view.requestAnimationFrame.bind(view),
+    cancelAnimationFrame: view.cancelAnimationFrame.bind(view),
+  })) installGlobal(name, value);
+
+  const modulePath = resolve(
+    moduleRoot,
+    `release-packaged-view-${randomBytes(8).toString("hex")}.mjs`,
+  );
+  const originalConsoleDebug = console.debug;
+  console.debug = () => {};
+  try {
+    await writeFile(modulePath, script, { mode: 0o600 });
+    await bridge.connect(hostTransport);
+    await import(pathToFileURL(modulePath).href);
+    await waitForPromise(
+      initialized,
+      requestTimeoutMs,
+      "Packaged no-serverTools View initialization",
+    );
+    await bridge.sendToolResult(reviewResult);
+    await waitFor(
+      () => Promise.resolve(view.document.body.textContent),
+      (text) => text.includes("Direct controls unavailable"),
+      "Packaged no-serverTools Review presentation",
+    );
+    const text = view.document.body.textContent;
+    if (
+      !text.includes("Connect the external wallet") ||
+      view.document.querySelectorAll("button").length !== 0 ||
+      viewToolCalls !== 0
+    ) throw new TypeError("Packaged no-serverTools View exposed decision authority.");
+  } finally {
+    await bridge.close().catch(() => undefined);
+    view.close();
+    await rm(modulePath, { force: true });
+    console.debug = originalConsoleDebug;
+    for (const [name, descriptor] of globalDescriptors) {
+      if (descriptor === undefined) delete globalThis[name];
+      else Object.defineProperty(globalThis, name, descriptor);
+    }
+  }
+
+  const exactOperation = await client.request("tools/call", {
+    name: "wallet_get_operation",
+    arguments: { operationId: review.operationId },
+  });
+  if (
+    exactOperation?.isError !== true ||
+    exactOperation?.structuredContent?.error?.code !== "wallet_operation_not_found"
+  ) throw new TypeError("Packaged no-serverTools View created Wallet operation state.");
+};
+
 const assertPackagedReadApp = async (client, prepared) => {
   const tools = await client.listTools();
   const names = tools.map((tool) => tool.name).sort();
@@ -739,7 +892,7 @@ const assertPackagedReadApp = async (client, prepared) => {
   const resourceUri = readTool?._meta?.ui?.resourceUri;
   if (
     typeof resourceUri !== "string" ||
-    !resourceUri.startsWith("ui://littlejohn/read/") ||
+    !resourceUri.startsWith("ui://littlejohn/presentation/") ||
     JSON.stringify(readTool?._meta?.ui?.visibility) !== JSON.stringify(["model"]) ||
     JSON.stringify(snapshotTool?._meta?.ui?.visibility) !== JSON.stringify(["model"]) ||
     snapshotTool?._meta?.ui?.resourceUri !== resourceUri ||
@@ -764,7 +917,7 @@ const assertPackagedReadApp = async (client, prepared) => {
     appResource?.uri !== resourceUri ||
     appResource?.mimeType !== "text/html;profile=mcp-app" ||
     appResource?.text !== packagedHtml ||
-    resourceUri !== `ui://littlejohn/read/${appDigest}.html`
+    resourceUri !== `ui://littlejohn/presentation/${appDigest}.html`
   ) throw new TypeError("Packaged MCP App resource bytes are invalid.");
 
   const creatingResult = await client.callTool("wallet_get_connection");
@@ -820,24 +973,12 @@ const assertPackagedReadApp = async (client, prepared) => {
     createHash("sha256").update(resultBytes).digest("hex") !== descriptor.resultSha256 ||
     resultBytes.toString("utf8") !== independentCanonicalJson(creatingResult.structuredContent)
   ) throw new TypeError("Packaged MCP App snapshot reconstruction is invalid.");
-};
 
-const operationIdFrom = (toolResult) => {
-  const operationId = startedToolOperation(toolResult).operationId;
-  if (typeof operationId !== "string") throw new TypeError("MCP wallet operation identity is unavailable.");
-  return operationId;
-};
-
-const tokenStartOperation = (toolResult) => {
-  const result = toolResult?.structuredContent?.result;
-  if (
-    typeof result !== "object" ||
-    result === null ||
-    typeof result.operation !== "object" ||
-    result.operation === null ||
-    toolResult.structuredContent?.displayUrl !== `${fixedOrigin}/`
-  ) throw new TypeError("MCP token catalog start result is unavailable.");
-  return result.operation;
+  await assertPackagedReviewWithoutServerTools(
+    client,
+    packagedHtml,
+    prepared.installRoot,
+  );
 };
 
 const tokenAsset = (fakeRpc) => Object.freeze({
@@ -1051,201 +1192,6 @@ const findTokenSelection = (value, token, included) => {
   return assertTokenSelection(selection, token, included);
 };
 
-const assertBrowserAssets = async (shell) => {
-  const assets = [...shell.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/gu)]
-    .map((match) => match[1])
-    .filter((value) => value !== undefined);
-  if (assets.length === 0) throw new TypeError("Packaged browser shell has no compiled assets.");
-  let javascript = "";
-  for (const path of assets) {
-    const asset = await fetch(`${fixedOrigin}${path}`, { redirect: "error" });
-    if (asset.status !== 200) throw new TypeError(`Packaged browser asset failed: ${path}`);
-    if (path.endsWith(".js")) javascript += await asset.text();
-    else await asset.arrayBuffer();
-  }
-  if (javascript.includes("/api/v1/uniswap-v2-exact-input-quotes")) {
-    throw new TypeError("Packaged browser bundle exposes a machine-only quote transport.");
-  }
-  if (
-    !javascript.includes("/api/v1/contract-inspections") ||
-    !javascript.includes("/api/v1/token-inspections") ||
-    !javascript.includes("Analysis")
-  ) {
-    throw new TypeError("Packaged browser bundle omits contextual Analysis.");
-  }
-};
-
-const browserSession = async () => {
-  const page = await fetch(`${fixedOrigin}/`, { redirect: "error" });
-  if (page.status !== 200) throw new TypeError("Packaged browser root did not load.");
-  const shell = await page.text();
-  const cookie = page.headers.get("set-cookie")?.split(";", 1)[0];
-  const csrf = shell.match(/<meta name="littlejohn-csrf-token" content="([^"]+)"/u)?.[1];
-  const csp = page.headers.get("content-security-policy");
-  if (
-    cookie === undefined ||
-    csrf === undefined ||
-    csp === null ||
-    !csp.includes("default-src 'none'") ||
-    /https?:\/\/(?!127\.0\.0\.1:46630)/u.test(shell) ||
-    shell.includes("__LITTLEJOHN_CSRF_TOKEN__")
-  ) throw new TypeError("Packaged browser root security metadata is invalid.");
-  await assertBrowserAssets(shell);
-  const unsupportedPage = await fetch(`${fixedOrigin}/unsupported`, {
-    redirect: "error",
-  });
-  if (unsupportedPage.status !== 404) throw new TypeError("Packaged unknown page is available.");
-  return Object.freeze({ cookie, csrf, shell });
-};
-
-const browserCurrent = (browser) => fetch(
-  `${fixedOrigin}/api/v1/wallet/current-operation`,
-  { headers: { Cookie: browser.cookie }, redirect: "error" },
-);
-
-const browserOperation = (operationId, browser) => fetch(
-  `${fixedOrigin}/api/v1/wallet/operations/${operationId}`,
-  { headers: { Cookie: browser.cookie }, redirect: "error" },
-);
-
-const browserStart = (operationId, kind, connectionRevision, browser) => fetch(
-  `${fixedOrigin}/api/v1/wallet/operations`,
-  {
-    method: "POST",
-    headers: {
-      Cookie: browser.cookie,
-      Origin: fixedOrigin,
-      [csrfHeaderName]: browser.csrf,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      control: { operationId, interactionInterface: "web" },
-      request: { kind, connectionRevision },
-    }),
-    redirect: "error",
-  },
-);
-
-const browserStartFromCurrentState = async (kind, browser) => {
-  const state = await jsonResponse(await browserCurrent(browser));
-  if (typeof state?.connectionRevision !== "string") {
-    throw new TypeError("Packaged browser connection revision is unavailable.");
-  }
-  const operationId = randomBytes(32).toString("base64url");
-  const response = await browserStart(operationId, kind, state.connectionRevision, browser);
-  if (response.status !== 200) {
-    const problem = await response.json();
-    const after = await jsonResponse(await browserCurrent(browser));
-    throw new Error(
-      `HTTP ${response.status}: ${JSON.stringify(problem)}; ` +
-      `before=${JSON.stringify(state)}; after=${JSON.stringify(after)}`,
-    );
-  }
-  const result = await jsonResponse(response);
-  if (result.status === "operation_started" && result.operation?.operationId !== operationId) {
-    throw new TypeError("Packaged browser start did not retain its operation identity.");
-  }
-  return Object.freeze({ state, result });
-};
-
-const browserConfirm = (operationId, revision, browser) => fetch(
-  `${fixedOrigin}/api/v1/wallet/operations/${operationId}/confirmation`,
-  {
-    method: "POST",
-    headers: {
-      Cookie: browser.cookie,
-      Origin: fixedOrigin,
-      [csrfHeaderName]: browser.csrf,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ connectionRevision: revision }),
-    redirect: "error",
-  },
-);
-
-const browserCancel = (operationId, revision, browser) => fetch(
-  `${fixedOrigin}/api/v1/wallet/operations/${operationId}/cancellation`,
-  {
-    method: "POST",
-    headers: {
-      Cookie: browser.cookie,
-      Origin: fixedOrigin,
-      [csrfHeaderName]: browser.csrf,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ connectionRevision: revision }),
-    redirect: "error",
-  },
-);
-
-const browserTokenCurrent = (browser) => fetch(
-  `${fixedOrigin}/api/v1/token-catalog/current-operation`,
-  { headers: { Cookie: browser.cookie }, redirect: "error" },
-);
-
-const unsupportedBrowserTokenResource = (browser) => fetch(
-  `${fixedOrigin}/api/v1/token-catalog/unsupported`,
-  {
-    method: "POST",
-    headers: {
-      Cookie: browser.cookie,
-      "Content-Type": "application/json",
-    },
-    body: "{}",
-    redirect: "error",
-  },
-);
-
-const browserAccountAssets = (browser) => fetch(
-  `${fixedOrigin}/api/v1/account-assets/overview`,
-  {
-    headers: {
-      Cookie: browser.cookie,
-    },
-    redirect: "error",
-  },
-);
-
-const browserExactAccountAsset = (browser, token, viewRevision) => fetch(
-  `${fixedOrigin}/api/v1/account-assets/${token.chainId}/${token.address}`,
-  {
-    method: "POST",
-    headers: {
-      Cookie: browser.cookie,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ viewRevision }),
-    redirect: "error",
-  },
-);
-
-const browserReferencePrice = (pairId, headers = {}) => fetch(
-  `${fixedOrigin}/api/v1/reference-markets/price-queries`,
-  {
-    method: "POST",
-    headers: {
-      Origin: fixedOrigin,
-      "Content-Type": "application/json",
-      ...headers,
-    },
-    body: JSON.stringify({ pairId }),
-    redirect: "error",
-  },
-);
-
-const browserReferenceHistory = (pairId, window) => fetch(
-  `${fixedOrigin}/api/v1/reference-markets/history-queries`,
-  {
-    method: "POST",
-    headers: {
-      Origin: fixedOrigin,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ pairId, window }),
-    redirect: "error",
-  },
-);
-
 const assertReferenceWatchlist = (value, expectedPairIds) => {
   if (
     value?.account?.chainId !== expectedChainId ||
@@ -1277,111 +1223,6 @@ const assertAccountAssetCollection = (value, fakeRpc, expectedTokens) => {
   return value;
 };
 
-const assertAccountAssetOverview = (value, fakeRpc, expectedSelectedTokens) => {
-  const officialTokens = [...fakeRpc.defaultTokens, fakeRpc.officialCandidate]
-    .sort((left, right) =>
-      left.assetUid < right.assetUid
-        ? -1
-        : left.assetUid > right.assetUid
-          ? 1
-          : left.address < right.address
-            ? -1
-            : left.address > right.address
-              ? 1
-              : 0);
-  const selectedAddresses = new Set(expectedSelectedTokens.map((token) => token.address));
-  if (
-    selectedAddresses.size !== expectedSelectedTokens.length ||
-    expectedSelectedTokens.some((token) =>
-      !officialTokens.some((official) => official.address === token.address)) ||
-    value?.account?.chainId !== fakeRpc.token.chainId ||
-    value.account.address !== expectedWalletAddress ||
-    value.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
-    value.native?.rawBalance !== fakeRpc.nativeBalanceRaw ||
-    value.viewRevision?.officialSnapshotStatus !== "current" ||
-    typeof value.viewRevision.officialSnapshotRevision !== "string" ||
-    typeof value.viewRevision.selectionSetRevision !== "string" ||
-    value.stockTokens?.status !== "current" ||
-    !/^0x[0-9a-f]{64}$/u.test(value.stockTokens.candidateListDigest) ||
-    !Array.isArray(value.stockTokens.members) ||
-    value.stockTokens.members.length !== officialTokens.length ||
-    officialTokens.some((token, index) => {
-      const member = value.stockTokens.members[index];
-      if (selectedAddresses.has(token.address)) {
-        const asset = member?.status === "selected" ? member.asset : undefined;
-        return asset?.selection?.asset?.address !== token.address ||
-          asset.selection.account?.address !== expectedWalletAddress ||
-          asset.selection.included !== true ||
-          asset.amount?.raw !== token.accountBalanceRaw ||
-          asset.requiredStandards?.block?.blockHash !==
-            fakeRpc.canonicalBlockReference.blockHash;
-      }
-      const candidate = member?.status === "available_to_add"
-        ? member.candidate
-        : undefined;
-      return candidate?.assetUid !== token.assetUid ||
-        candidate.contractAddress !== token.address ||
-        candidate.sourceName !== token.name ||
-        candidate.sourceSymbol !== token.symbol;
-    })
-  ) throw new TypeError("Packaged account asset overview is invalid.");
-  return value;
-};
-
-const assertUnavailableAccountAssetOverview = (
-  value,
-  fakeRpc,
-  retainedSnapshotRevision,
-) => {
-  if (
-    value?.account?.chainId !== fakeRpc.token.chainId ||
-    value.account.address !== expectedWalletAddress ||
-    value.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
-    value.native?.rawBalance !== fakeRpc.nativeBalanceRaw ||
-    value.viewRevision?.officialSnapshotStatus !== "unavailable" ||
-    value.viewRevision.officialSnapshotRevision !== retainedSnapshotRevision ||
-    value.stockTokens?.status !== "unavailable" ||
-    value.stockTokens.reason !== "source_unavailable"
-  ) throw new TypeError("Packaged unavailable account asset overview is invalid.");
-  return value;
-};
-
-const assertExactAccountAsset = (value, fakeRpc, token) => {
-  if (
-    value?.account?.chainId !== token.chainId ||
-    value.account.address !== expectedWalletAddress ||
-    value.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
-    value.asset?.selection?.asset?.address !== token.address ||
-    value.asset.selection.account?.address !== expectedWalletAddress ||
-    value.asset.selection.included !== true ||
-    value.asset.amount?.raw !== token.accountBalanceRaw ||
-    value.asset.amount?.uiAdjusted?.status !== "available" ||
-    value.asset.amount.uiAdjusted.adjustedRaw !== (
-      BigInt(token.accountBalanceRaw) * BigInt(token.currentMultiplier) /
-      1_000_000_000_000_000_000n
-    ).toString(10) ||
-    value.totalSupply !== token.totalSupplyRaw ||
-    value.standards?.asset?.address !== token.address ||
-    value.standards.requiredErc8056?.currentMultiplier !== token.currentMultiplier
-  ) throw new TypeError("Packaged exact account asset is invalid.");
-  return value;
-};
-
-const browserTokenConfirm = (operationId, reviewDigest, browser) => fetch(
-  `${fixedOrigin}/api/v1/token-catalog/operations/${operationId}/confirmation`,
-  {
-    method: "POST",
-    headers: {
-      Cookie: browser.cookie,
-      Origin: fixedOrigin,
-      [csrfHeaderName]: browser.csrf,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ reviewDigest }),
-    redirect: "error",
-  },
-);
-
 const dispatch = async (worker, request) => {
   const result = await worker.request("dispatch", { request });
   if (typeof result !== "object" || result === null) {
@@ -1394,12 +1235,6 @@ const publicWalletConnection = (worker) => dispatch(worker, {
   requestClass: "public_read",
   method: "GET",
   path: "/api/v1/wallet/connection",
-});
-
-const internalOperation = (worker, operationId) => dispatch(worker, {
-  requestClass: "local_control",
-  method: "GET",
-  path: `/api/v1/internal/control/wallet/operations/${operationId}`,
 });
 
 const assertFixedPortReleased = async () => {
@@ -1579,8 +1414,6 @@ export const verifyPackagedIntegration = async (prepared) => {
     const appMcp = await startNpxMcp(prepared, environment, true);
     mcpClients.push(appMcp);
     await assertPackagedReadApp(appMcp, prepared);
-    await appMcp.close();
-    mcpClients.splice(mcpClients.indexOf(appMcp), 1);
     const chainStatus = await callSemanticRead(firstMcp, "read_get_chain_status");
     if (
       chainStatus.structuredContent?.data?.chainId !== expectedChainId ||
@@ -1783,18 +1616,6 @@ export const verifyPackagedIntegration = async (prepared) => {
       !hasExactObjectKeys(httpChainStatus.data, ["chainId", "latestBlock"]) ||
       httpChainStatus.data?.latestBlock?.blockHash !== `0x${"88".repeat(32)}`
     ) throw new TypeError("Packaged HTTP chain status is invalid.");
-    const browser = await browserSession();
-    const unauthorizedCurrent = await fetch(
-      `${fixedOrigin}/api/v1/wallet/current-operation`,
-      { redirect: "error" },
-    );
-    const unauthorizedCurrentProblem = await unauthorizedCurrent.json();
-    if (
-      unauthorizedCurrent.status !== 401 ||
-      problemCode(unauthorizedCurrentProblem) !== "unauthorized"
-    ) {
-      throw new TypeError("Packaged browser wallet state is readable without session authority.");
-    }
 
     const cli = await runCommand(process.execPath, [
       resolve(prepared.installedPackageRoot, "dist/cli.js"),
@@ -1806,71 +1627,123 @@ export const verifyPackagedIntegration = async (prepared) => {
     if (
       cliStatus.data?.chainId !== expectedChainId ||
       !hasExactObjectKeys(cliStatus.data, ["chainId", "latestBlock"]) ||
-      cliStatus.data?.latestBlock?.blockHash !== `0x${"88".repeat(32)}`
+      cliStatus.data?.latestBlock?.blockHash !== "0x" + "88".repeat(32)
     ) throw new TypeError("Packaged CLI chain status is invalid.");
 
-    const {
-      state: cancellableConnectionState,
-      result: cancellableConnection,
-    } = await browserStartFromCurrentState("connect", browser);
+    const removedBrowserRoot = await fetch(fixedOrigin + "/", { redirect: "error" });
     if (
-      cancellableConnectionState.status !== "absent" ||
-      cancellableConnectionState.connection?.status !== "disconnected" ||
-      cancellableConnection.status !== "operation_started" ||
-      cancellableConnection.operation?.kind !== "connect" ||
-      typeof cancellableConnection.operation?.operationId !== "string"
-    ) throw new TypeError("Browser connection cancellation precondition is invalid.");
-    const cancellablePresentation = await waitFor(
-      async () => jsonResponse(await browserOperation(
-        cancellableConnection.operation.operationId,
-        browser,
-      )),
-      (value) => value.operation?.state === "awaiting_wallet_approval",
-      "Browser connection cancellation operation",
+      removedBrowserRoot.status !== 404 ||
+      removedBrowserRoot.headers.get("set-cookie") !== null
+    ) throw new TypeError("Packaged local Browser surface still exists.");
+    await removedBrowserRoot.arrayBuffer();
+    const credentialedPublicRead = await fetch(
+      fixedOrigin + "/api/v1/wallet/connection",
+      { headers: { Cookie: "littlejohn_browser_session=obsolete" }, redirect: "error" },
     );
-    const cancellationAccepted = await jsonResponse(await browserCancel(
-      cancellableConnection.operation.operationId,
-      cancellablePresentation.operation.connectionRevision,
-      browser,
-    ));
     if (
-      cancellationAccepted.operationId !== cancellableConnection.operation.operationId ||
-      cancellationAccepted.connectionRevision !== cancellablePresentation.operation.connectionRevision
-    ) throw new TypeError("Browser cancellation did not retain the exact operation identity.");
-    const cancelledConnection = (await waitFor(
-      async () => jsonResponse(await browserOperation(
-        cancellableConnection.operation.operationId,
-        browser,
-      )),
-      (value) => value.operation?.state === "cancelled",
-      "Browser connection cancellation",
-    )).operation;
-    if (cancelledConnection.state !== "cancelled") throw new TypeError("Browser cancellation did not settle.");
-    const stateAfterCancellation = await jsonResponse(await browserCurrent(browser));
+      credentialedPublicRead.status !== 401 ||
+      problemCode(await credentialedPublicRead.json()) !== "unauthorized"
+    ) throw new TypeError("Packaged public read accepted obsolete Browser authority.");
+    const queriedPublicRead = await fetch(
+      fixedOrigin + "/api/v1/wallet/connection?refresh=true",
+      { redirect: "error" },
+    );
     if (
-      stateAfterCancellation.status !== "absent" ||
-      stateAfterCancellation.connection?.status !== "disconnected"
-    ) throw new TypeError("Cancelled browser connection changed wallet state.");
+      queriedPublicRead.status < 400 ||
+      problemCode(await queriedPublicRead.json()) !== "query_not_supported"
+    ) throw new TypeError("Packaged public read accepted a Browser-style query.");
 
-    const started = await firstMcp.callTool("wallet_start_connection");
-    const operationId = operationIdFrom(started);
-    const serializedStart = JSON.stringify(started);
-    for (const secretWord of [
-      "pairing",
-      "topic",
-      "credential",
-      "\"qr\"",
-    ]) {
-      if (serializedStart.includes(secretWord)) {
-        throw new TypeError("Packaged MCP wallet start leaked private connection material.");
+    const walletReview = async (kind) => {
+      const result = await appMcp.callTool("wallet_get_connection_change_review", { kind });
+      const value = result?.structuredContent;
+      if (value?.status !== "review" || value.review?.kind !== kind) {
+        throw new TypeError("Packaged Wallet Review is invalid.");
       }
-    }
-    const waiting = await waitFor(
-      () => firstMcp.callTool("wallet_get_operation", { operationId }),
-      (result) => readToolOperation(result).state === "awaiting_wallet_approval",
-      "Wallet approval operation",
+      return value.review;
+    };
+    const walletExact = (operationId) =>
+      callOperationTool(appMcp, "wallet_get_operation", { operationId });
+    const awaitWalletState = (operationId, state, label) => waitFor(
+      () => walletExact(operationId),
+      (result) => readToolOperation(result).state === state,
+      label,
     );
-    const waitingOperation = readToolOperation(waiting);
+    const startWallet = async (review) => {
+      const toolName =
+        review.kind === "connect"
+          ? "wallet_start_connection"
+          : "wallet_start_disconnection";
+      const result = await callOperationTool(
+        appMcp,
+        toolName,
+        { review, initiatedBy: "mcp_app" },
+      );
+      const operation = readToolOperation(result);
+      if (
+        operation.operationId !== review.operationId ||
+        operation.review?.reviewDigest !== review.reviewDigest ||
+        operation.initiatedBy !== "mcp_app"
+      ) throw new TypeError("Packaged Wallet action lost its exact Review.");
+      return operation;
+    };
+
+    const cancellableReview = await walletReview("connect");
+    const cancellableStart = await startWallet(cancellableReview);
+    const cancellableActive = await awaitWalletState(
+      cancellableStart.operationId,
+      "awaiting_wallet_approval",
+      "Packaged cancellable Wallet connection",
+    );
+    const cancellableOperation = readToolOperation(cancellableActive);
+    const resultDescriptor =
+      cancellableActive?._meta?.["littlejohn/operation-tool-result"];
+    const privateQr = cancellableActive?._meta?.["littlejohn/wallet-operation-qr"];
+    if (
+      !hasExactObjectKeys(privateQr, ["kind", "operationId", "qr", "resultSha256"]) ||
+      privateQr.kind !== "wallet_operation_qr" ||
+      privateQr.operationId !== cancellableOperation.operationId ||
+      privateQr.resultSha256 !== resultDescriptor.resultSha256 ||
+      typeof privateQr.qr?.size !== "number" ||
+      privateQr.qr.rows?.length !== privateQr.qr.size ||
+      JSON.stringify(cancellableActive.structuredContent).includes("\"qr\"")
+    ) throw new TypeError("Packaged Wallet QR did not remain View-private.");
+    await callOperationTool(appMcp, "wallet_cancel_operation", {
+      operationId: cancellableOperation.operationId,
+      reviewDigest: cancellableOperation.review.reviewDigest,
+      expectedState: cancellableOperation.state,
+      connectionRevision: cancellableOperation.review.precondition.connectionRevision,
+    });
+    const cancelledResult = await awaitWalletState(
+      cancellableOperation.operationId,
+      "cancelled",
+      "Packaged Wallet cancellation",
+    );
+    if (
+      readToolOperation(cancelledResult).result !== null ||
+      JSON.stringify(cancelledResult).includes("\"qr\"")
+    ) throw new TypeError("Packaged cancelled Wallet operation retained authority.");
+
+    const connectionReview = await walletReview("connect");
+    const connectionStart = await startWallet(connectionReview);
+    await awaitWalletState(
+      connectionStart.operationId,
+      "awaiting_wallet_approval",
+      "Packaged Wallet approval",
+    );
+    await owner.request("approve");
+    const completedConnectionResult = await awaitWalletState(
+      connectionStart.operationId,
+      "completed",
+      "Packaged connected Wallet operation",
+    );
+    const completedConnectionOperation = readToolOperation(completedConnectionResult);
+    if (
+      completedConnectionOperation.result?.outcome !== "connected" ||
+      completedConnectionOperation.result.connection?.address !== expectedWalletAddress ||
+      completedConnectionOperation.result.connection?.chainId !== expectedChainId ||
+      JSON.stringify(completedConnectionResult).includes("\"qr\"")
+    ) throw new TypeError("Packaged Wallet connection terminal result is invalid.");
+
     const cliOperationResult = await runCommand(process.execPath, [
       "--input-type=module",
       "--eval",
@@ -1878,752 +1751,227 @@ export const verifyPackagedIntegration = async (prepared) => {
       resolve(prepared.installedPackageRoot, "dist/cli.js"),
       "wallet",
       "operation",
-      operationId,
+      connectionStart.operationId,
       "--json",
     ], { cwd: prepared.installRoot, env: environment, output: "capture" });
-    const cliOperationText = cliOperationResult.stdout.toString("utf8").replace(/\n$/u, "");
     if (
-      cliOperationText !== canonicalToolText(waiting) ||
-      JSON.stringify(JSON.parse(cliOperationText)) !== JSON.stringify(waitingOperation)
-    ) {
-      throw new TypeError(
-        "Packaged CLI did not preserve the MCP-created wallet operation exactly.",
-      );
-    }
-    const browserState = await jsonResponse(await browserCurrent(browser));
-    if (
-      browserState.status !== "present" ||
-      browserState.presentation?.operation?.operationId !== operationId ||
-      browserState.presentation?.access !== "interactive"
-    ) throw new TypeError("Packaged browser current-operation projection is invalid.");
-    const qr = browserState.presentation;
-    if (
-      typeof qr.qr?.size !== "number" ||
-      !Array.isArray(qr.qr?.rows) ||
-      qr.qr.rows.length !== qr.qr.size
-    ) throw new TypeError("Packaged browser QR projection is invalid.");
-    for (const { method, path, status, headers } of [
-      {
-        method: "GET",
-        path: `${fixedOrigin}/unsupported`,
-        status: 404,
-        headers: undefined,
-      },
-      {
-        method: "GET",
-        path: `${fixedOrigin}/api/v1/wallet/operations/${operationId}/unsupported`,
-        status: 404,
-        headers: undefined,
-      },
-      {
-        method: "DELETE",
-        path: `${fixedOrigin}/api/v1/wallet/operations/${operationId}`,
-        status: 405,
-        headers: { Cookie: browser.cookie },
-      },
-    ]) {
-      const undeclared = await fetch(path, {
-        method,
-        ...(headers === undefined ? {} : { headers }),
-        redirect: "error",
-      });
-      if (undeclared.status !== status) {
-        throw new TypeError(
-          `Packaged browser undeclared-resource status mismatch: ` +
-          `${method} ${path} expected ${status}, received ${undeclared.status}.`,
-        );
-      }
-    }
+      JSON.stringify(JSON.parse(cliOperationResult.stdout.toString("utf8"))) !==
+      JSON.stringify(completedConnectionOperation)
+    ) throw new TypeError("Packaged CLI did not read the exact App-created Wallet operation.");
 
-    await owner.request("approve");
-    const completed = await waitFor(
-      () => firstMcp.callTool("wallet_get_operation", { operationId }),
-      (result) => readToolOperation(result).state === "completed",
-      "Approved wallet operation",
-    );
-    if (readToolOperation(completed).result?.outcome !== "connected") {
-      throw new TypeError("Packaged fake wallet approval did not connect.");
-    }
-    const completedBrowserOperation =
-      await jsonResponse(await browserOperation(operationId, browser));
-    if (
-      completedBrowserOperation.operation?.state !== "completed" ||
-      completedBrowserOperation.operation?.result?.outcome !== "connected"
-    ) throw new TypeError("Packaged browser lost the completed connection result.");
     const firstConnection = await callSemanticRead(firstMcp, "wallet_get_connection");
     const firstConnectionData = firstConnection.structuredContent?.data;
     if (
       firstConnectionData?.status !== "connected" ||
       firstConnectionData.chainId !== expectedChainId ||
-      firstConnectionData.address !== expectedWalletAddress ||
-      !hasExactObjectKeys(firstConnectionData, [
-        "approvedEvents",
-        "approvedMethods",
-        "address",
-        "chainId",
-        "expiresAt",
-        "status",
-      ])
-    ) {
-      throw new TypeError("Packaged MCP wallet connection is not connected.");
-    }
-    assertPackagedClaimsDigests(
-      firstConnection.structuredContent,
-      "Packaged MCP wallet connection",
-    );
-    const connectedBrowserState = await jsonResponse(await browserCurrent(browser));
-    if (
-      connectedBrowserState.status !== "absent" ||
-      connectedBrowserState.connection?.status !== "connected" ||
-      connectedBrowserState.connection.chainId !== expectedChainId ||
-      connectedBrowserState.connection.address !== expectedWalletAddress ||
-      !hasExactObjectKeys(connectedBrowserState.connection, [
-        "approvedEvents",
-        "approvedMethods",
-        "address",
-        "chainId",
-        "expiresAt",
-        "status",
-      ])
-    ) throw new TypeError("Packaged browser did not settle to the connected global wallet state.");
+      firstConnectionData.address !== expectedWalletAddress
+    ) throw new TypeError("Packaged Wallet connection read is invalid.");
+    assertPackagedClaimsDigests(firstConnection.structuredContent, "Packaged Wallet connection");
 
     const secondMcp = await startNpxMcp(prepared, environment);
     mcpClients.push(secondMcp);
     const secondConnection = await secondMcp.callTool("wallet_get_connection");
     if (
       JSON.stringify(secondConnection.structuredContent?.data) !==
-      JSON.stringify(firstConnection.structuredContent?.data)
-    ) throw new TypeError("Compatible MCP processes do not share one wallet projection.");
+      JSON.stringify(firstConnectionData)
+    ) throw new TypeError("Compatible MCP processes do not share one Wallet projection.");
 
     const referencePair = fakeRpc.referenceMarkets.pairs[0];
     if (referencePair === undefined) throw new TypeError("Release reference pair is unavailable.");
-    const selectedPricePage = await fetch(
-      `${fixedOrigin}/prices/${referencePair.pairId}?window=30d`,
-      { redirect: "error" },
-    );
-    if (
-      selectedPricePage.status !== 200 ||
-      selectedPricePage.headers.get("set-cookie") === null
-    ) {
-      throw new TypeError("Packaged selected Price location did not load with its admitted window.");
-    }
-    await selectedPricePage.arrayBuffer();
-    const invalidSelectedPriceQuery = await fetch(
-      `${fixedOrigin}/prices/${referencePair.pairId}?window=1d&window=30d`,
-      { redirect: "error" },
-    );
-    const invalidSelectedPriceProblem = await invalidSelectedPriceQuery.json();
-    if (
-      invalidSelectedPriceQuery.status !== 400 ||
-      invalidSelectedPriceQuery.headers.get("set-cookie") !== null ||
-      problemCode(invalidSelectedPriceProblem) !== "invalid_input"
-    ) {
-      throw new TypeError(
-        "Packaged selected Price location accepted a duplicate window or issued credentials.",
-      );
-    }
     const referencePrice = await callSemanticRead(firstMcp, "market_get_reference_price", {
       pairId: referencePair.pairId,
     });
     if (
       referencePrice.structuredContent?.status !== "current" ||
       referencePrice.structuredContent.pair?.pairId !== referencePair.pairId ||
-      referencePrice.structuredContent.currentPrice?.numerator !== "96692202731" ||
-      referencePrice.structuredContent.currentPrice?.denominator !== "50000000" ||
-      referencePrice.structuredContent.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash
+      referencePrice.structuredContent.block?.blockHash !==
+        fakeRpc.canonicalBlockReference.blockHash
     ) throw new TypeError("Packaged reference price is invalid.");
-    const browserPrice = await jsonResponse(await browserReferencePrice(referencePair.pairId));
-    if (JSON.stringify(browserPrice) !== JSON.stringify(referencePrice.structuredContent)) {
-      throw new TypeError("Packaged browser and MCP reference prices differ.");
-    }
-    const credentialedReferencePrice = await browserReferencePrice(referencePair.pairId, {
-      Cookie: browser.cookie,
-    });
-    const credentialedReferenceProblem = await credentialedReferencePrice.json();
-    if (
-      credentialedReferencePrice.status !== 401 ||
-      problemCode(credentialedReferenceProblem) !== "unauthorized"
-    ) throw new TypeError("Public reference price accepted browser credentials.");
-
     const referenceHistory = await callSemanticRead(firstMcp, "market_get_reference_history", {
       pairId: referencePair.pairId,
       window: "1d",
     });
-    const referenceHistoryContent = referenceHistory.structuredContent;
     if (
-      referenceHistoryContent?.status !== "partial" ||
-      referenceHistoryContent.pair?.pairId !== referencePair.pairId ||
-      referenceHistoryContent.window !== "1d" ||
-      referenceHistoryContent.coverage?.basis !== "observed_rounds" ||
-      JSON.stringify(Object.keys(referenceHistoryContent.coverage).sort()) !==
-        JSON.stringify(["basis", "emptyBucketStarts", "limitations", "requestedEnd", "requestedStart"]) ||
-      JSON.stringify(referenceHistoryContent.coverage.limitations) !==
-        JSON.stringify(["source_history_not_exhaustive", "phase_boundary"]) ||
-      !Array.isArray(referenceHistoryContent.candles) ||
-      referenceHistoryContent.candles.length !== 1 ||
-      Object.hasOwn(referenceHistoryContent.candles[0] ?? {}, "volume") ||
-      !Array.isArray(referenceHistoryContent.warnings) ||
-      !referenceHistoryContent.warnings.includes("partial_history")
+      referenceHistory.structuredContent?.pair?.pairId !== referencePair.pairId ||
+      referenceHistory.structuredContent?.window !== "1d" ||
+      !Array.isArray(referenceHistory.structuredContent?.candles) ||
+      referenceHistory.structuredContent.candles.length === 0
     ) throw new TypeError("Packaged reference history is invalid.");
-    const browserHistory = await jsonResponse(await browserReferenceHistory(referencePair.pairId, "1d"));
-    if (JSON.stringify(browserHistory) !== JSON.stringify(referenceHistoryContent)) {
-      throw new TypeError("Packaged browser and MCP reference histories differ.");
-    }
-    for (const [command, expected] of [
-      [["market", "price", referencePair.pairId, "--json"], referencePrice.structuredContent],
-      [["market", "history", referencePair.pairId, "--window", "1d", "--json"], referenceHistoryContent],
-    ]) {
-      const result = await runCommand(process.execPath, [
-        resolve(prepared.installedPackageRoot, "dist/cli.js"),
-        ...command,
-      ], { cwd: prepared.installRoot, env: environment, output: "capture" });
-      if (JSON.stringify(JSON.parse(result.stdout.toString("utf8"))) !== JSON.stringify(expected)) {
-        throw new TypeError("Packaged CLI and MCP reference reads differ.");
-      }
-    }
 
-    const initialReferenceWatchlist = assertReferenceWatchlist(
+    const initialWatchlist = assertReferenceWatchlist(
       (await callSemanticRead(firstMcp, "market_get_watchlist")).structuredContent,
       [],
     );
-    const cliReferenceWatchlist = await runCommand(process.execPath, [
-      resolve(prepared.installedPackageRoot, "dist/cli.js"),
-      "market",
-      "watchlist",
-      "--json",
-    ], { cwd: prepared.installRoot, env: environment, output: "capture" });
-    assertReferenceWatchlist(
-      JSON.parse(cliReferenceWatchlist.stdout.toString("utf8")),
-      [],
-    );
-    const addedReferenceWatchlist = assertReferenceWatchlist(
-      (await firstMcp.callTool("market_add_watchlist_pair", {
+    const watchlistAddReviewResult = await appMcp.callTool(
+      "market_get_watchlist_change_review",
+      {
+        kind: "add",
         pairId: referencePair.pairId,
-        expectedRevision: initialReferenceWatchlist.revision,
-      })).structuredContent,
-      [referencePair.pairId],
+        expectedRevision: initialWatchlist.revision,
+      },
     );
-    const reorderedReferenceWatchlist = assertReferenceWatchlist(
-      (await firstMcp.callTool("market_reorder_watchlist_pairs", {
-        pairIds: [referencePair.pairId],
-        expectedRevision: addedReferenceWatchlist.revision,
-      })).structuredContent,
-      [referencePair.pairId],
-    );
-    if (reorderedReferenceWatchlist.revision !== addedReferenceWatchlist.revision) {
-      throw new TypeError("Packaged no-op watchlist reorder changed its revision.");
+    const watchlistAddReview = watchlistAddReviewResult.structuredContent?.review;
+    const watchlistAdd = readToolOperation(await callOperationTool(
+      appMcp,
+      "market_add_watchlist_pair",
+      { review: watchlistAddReview, initiatedBy: "mcp_app" },
+    ));
+    if (
+      watchlistAdd.state !== "completed" ||
+      watchlistAdd.kind !== "add" ||
+      watchlistAdd.result?.watchlist?.entries?.[0]?.pairId !== referencePair.pairId
+    ) throw new TypeError("Packaged watchlist addition is invalid.");
+    const exactWatchlistAdd = readToolOperation(await callOperationTool(
+      appMcp,
+      "market_get_watchlist_operation",
+      { operationId: watchlistAdd.operationId },
+    ));
+    if (JSON.stringify(exactWatchlistAdd) !== JSON.stringify(watchlistAdd)) {
+      throw new TypeError("Packaged watchlist operation is not immutable.");
     }
+    const watchlistRemoveReviewResult = await appMcp.callTool(
+      "market_get_watchlist_change_review",
+      {
+        kind: "remove",
+        pairId: referencePair.pairId,
+        expectedRevision: watchlistAdd.result.watchlist.revision,
+      },
+    );
+    const watchlistRemoveReview = watchlistRemoveReviewResult.structuredContent?.review;
+    const watchlistTerminal = readToolOperation(await callOperationTool(
+      appMcp,
+      "market_remove_watchlist_pair",
+      { review: watchlistRemoveReview, initiatedBy: "mcp_app" },
+    ));
+    if (
+      watchlistTerminal.state !== "completed" ||
+      watchlistTerminal.kind !== "remove" ||
+      watchlistTerminal.result?.watchlist?.entries?.length !== 0
+    ) throw new TypeError("Packaged watchlist removal is invalid.");
+
     const catalogAsset = tokenAsset(fakeRpc);
     const officialCandidateAsset = Object.freeze({
       kind: "erc20",
       chainId: fakeRpc.officialCandidate.chainId,
       address: fakeRpc.officialCandidate.address,
     });
-    const publicInspectionResponse = await fetch(`${fixedOrigin}/api/v1/token-inspections`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ asset: catalogAsset, block: { kind: "latest" } }),
-      redirect: "error",
-    });
-    const publicInspection = await jsonResponse(publicInspectionResponse);
-    assertTokenInspection(publicInspection, fakeRpc);
-    const credentialedPublicInspection = await fetch(`${fixedOrigin}/api/v1/token-inspections`, {
-      method: "POST",
-      headers: {
-        Cookie: browser.cookie,
-        "Content-Type": "application/json",
+    const publicInspection = await jsonResponse(await fetch(
+      fixedOrigin + "/api/v1/token-inspections",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ asset: catalogAsset, block: { kind: "latest" } }),
+        redirect: "error",
       },
-      body: JSON.stringify({ asset: catalogAsset, block: { kind: "latest" } }),
-      redirect: "error",
-    });
-    const credentialedPublicProblem = await credentialedPublicInspection.json();
-    if (
-      credentialedPublicInspection.status !== 401 ||
-      problemCode(credentialedPublicProblem) !== "unauthorized"
-    ) throw new TypeError("Public token inspection accepted browser authority.");
-
+    ));
+    assertTokenInspection(publicInspection, fakeRpc);
     const mcpInspection = await callSemanticRead(firstMcp, "token_inspect_contract", {
       asset: catalogAsset,
       block: { kind: "latest" },
     });
     assertTokenInspection(mcpInspection.structuredContent, fakeRpc);
+
+    const initialAssetRequestCount = fakeRpc.calls.length;
+    const initialAssets = assertAccountAssetCollection(
+      (await firstMcp.callTool("account_list_assets")).structuredContent,
+      fakeRpc,
+      fakeRpc.defaultTokens,
+    );
+    assertRpcRequestBudget(fakeRpc, initialAssetRequestCount, 71, "Initial account assets");
+    if (initialAssets.nextCursor !== null) {
+      throw new TypeError("Default initialization created unexpected account selections.");
+    }
+
+    const tokenAddReviewResult = await appMcp.callTool(
+      "token_get_selection_change_review",
+      { kind: "add", asset: officialCandidateAsset },
+    );
+    const tokenAddReview = tokenAddReviewResult.structuredContent?.review;
+    const tokenAdd = readToolOperation(await callOperationTool(
+      appMcp,
+      "token_add_selection",
+      { review: tokenAddReview, initiatedBy: "mcp_app" },
+    ));
+    if (
+      tokenAdd.state !== "completed" ||
+      tokenAdd.kind !== "add" ||
+      tokenAdd.result?.selection?.selection?.included !== true
+    ) throw new TypeError("Packaged token addition is invalid.");
+    const addedSelection = assertTokenSelectionDetail(
+      tokenAdd.result.selection,
+      fakeRpc,
+      fakeRpc.officialCandidate,
+      true,
+    );
+    const exactTokenAdd = readToolOperation(await callOperationTool(
+      appMcp,
+      "token_get_operation",
+      { operationId: tokenAdd.operationId },
+    ));
+    if (JSON.stringify(exactTokenAdd) !== JSON.stringify(tokenAdd)) {
+      throw new TypeError("Packaged token operation is not immutable.");
+    }
+    findTokenSelection(
+      (await firstMcp.callTool("token_list_selections")).structuredContent,
+      fakeRpc.officialCandidate,
+      true,
+    );
+    assertTokenSelectionDetail(
+      (await firstMcp.callTool("token_get_selection", {
+        asset: officialCandidateAsset,
+      })).structuredContent,
+      fakeRpc,
+      fakeRpc.officialCandidate,
+      true,
+    );
+
+    const tokenRemoveReviewResult = await appMcp.callTool(
+      "token_get_selection_change_review",
+      {
+        kind: "remove",
+        asset: officialCandidateAsset,
+        expectedRevision: addedSelection.revision,
+      },
+    );
+    const tokenRemoveReview = tokenRemoveReviewResult.structuredContent?.review;
+    const tokenTerminal = readToolOperation(await callOperationTool(
+      appMcp,
+      "token_remove_selection",
+      { review: tokenRemoveReview, initiatedBy: "mcp_app" },
+    ));
+    if (
+      tokenTerminal.state !== "completed" ||
+      tokenTerminal.kind !== "remove" ||
+      tokenTerminal.result?.selection?.selection?.included !== false
+    ) throw new TypeError("Packaged token removal is invalid.");
+    findTokenSelection(
+      (await secondMcp.callTool("token_list_selections")).structuredContent,
+      fakeRpc.officialCandidate,
+      false,
+    );
+
     if (
       JSON.stringify([...invokedSemanticReadToolNames].sort()) !==
       JSON.stringify([...expectedSemanticReadToolNames].sort())
     ) throw new TypeError("Packaged MCP did not execute every semantic read tool.");
 
-    const initialAssetRequestCount = fakeRpc.calls.length;
-    let initialMcpAssets;
-    try {
-      initialMcpAssets = await firstMcp.callTool("account_list_assets");
-    } catch (error) {
-      throw new AggregateError(
-        [error],
-        `Packaged initial account-asset read failed: ${JSON.stringify({
-          failures: fakeRpc.failures,
-          tail: fakeRpc.calls.slice(-12),
-        })}`,
-      );
-    }
-    const initialAssets = assertAccountAssetCollection(
-      initialMcpAssets.structuredContent,
-      fakeRpc,
-      fakeRpc.defaultTokens,
-    );
-    assertRpcRequestBudget(fakeRpc, initialAssetRequestCount, 71, "Initial account asset page");
-    if (initialAssets.nextCursor !== null) {
-      throw new TypeError("Default initialization created unexpected account selections.");
-    }
-    const browserAssets = assertAccountAssetOverview(
-      await jsonResponse(await browserAccountAssets(browser)),
-      fakeRpc,
-      fakeRpc.defaultTokens,
-    );
-    const browserExactDefault = await jsonResponse(await browserExactAccountAsset(
-      browser,
-      fakeRpc.defaultTokens[0],
-      browserAssets.viewRevision,
-    ));
-    assertExactAccountAsset(browserExactDefault, fakeRpc, fakeRpc.defaultTokens[0]);
-
-    const officialAdditionRequestCount = fakeRpc.calls.length;
-    const officialStart = await firstMcp.callTool("token_start_addition", {
-      asset: officialCandidateAsset,
-    });
-    assertRpcRequestBudget(fakeRpc, officialAdditionRequestCount, 24, "Official token addition");
-    const pendingTokenOperation = tokenStartOperation(officialStart);
-    if (
-      pendingTokenOperation.kind !== "add" ||
-      pendingTokenOperation.state !== "awaiting_confirmation" ||
-      pendingTokenOperation.interactionInterface !== "web" ||
-      pendingTokenOperation.account?.address !== expectedWalletAddress ||
-      pendingTokenOperation.asset?.chainId !== fakeRpc.officialCandidate.chainId ||
-      pendingTokenOperation.asset.address !== fakeRpc.officialCandidate.address ||
-      pendingTokenOperation.review?.officialEvidence?.assetUid !==
-        fakeRpc.officialCandidate.assetUid ||
-      typeof pendingTokenOperation.review.reviewDigest !== "string"
-    ) throw new TypeError("Packaged official token addition operation is invalid.");
-    assertTokenInspection(
-      pendingTokenOperation.review.inspection,
-      Object.freeze({ ...fakeRpc, token: fakeRpc.officialCandidate }),
-    );
-    const tokenOperationId = pendingTokenOperation.operationId;
-    const currentTokenOperation = await jsonResponse(await browserTokenCurrent(browser));
-    if (
-      JSON.stringify(currentTokenOperation.operation) !== JSON.stringify(pendingTokenOperation)
-    ) throw new TypeError("Browser did not expose the MCP-created token operation exactly.");
-    const secondTokenOperation = await secondMcp.callTool("token_get_operation", {
-      operationId: tokenOperationId,
-    });
-    if (
-      JSON.stringify(secondTokenOperation.structuredContent?.operation) !==
-      JSON.stringify(pendingTokenOperation)
-    ) throw new TypeError("Compatible MCP processes do not share one token operation.");
-    const confirmedTokenOperation = await jsonResponse(await browserTokenConfirm(
-      tokenOperationId,
-      pendingTokenOperation.review.reviewDigest,
-      browser,
-    ));
-    if (
-      confirmedTokenOperation.operationId !== tokenOperationId ||
-      confirmedTokenOperation.kind !== "add" ||
-      confirmedTokenOperation.state !== "completed" ||
-      confirmedTokenOperation.failure !== null
-    ) throw new TypeError("Browser token confirmation did not complete the exact operation.");
-    const officialSelection = assertTokenSelectionDetail(
-      confirmedTokenOperation.result,
-      fakeRpc,
-      fakeRpc.officialCandidate,
-      true,
-    );
-    assertAccountAssetOverview(
-      await jsonResponse(await browserAccountAssets(browser)),
-      fakeRpc,
-      [...fakeRpc.defaultTokens, fakeRpc.officialCandidate],
-    );
-
-    const firstSelection = await firstMcp.callTool("token_get_selection", {
-      asset: officialCandidateAsset,
-    });
-    assertTokenSelectionDetail(
-      firstSelection.structuredContent,
-      fakeRpc,
-      fakeRpc.officialCandidate,
-      true,
-    );
-    findTokenSelection(
-      (await secondMcp.callTool("token_list_selections")).structuredContent,
-      fakeRpc.officialCandidate,
-      true,
-    );
-    const unsupportedTokenResource = await unsupportedBrowserTokenResource(browser);
-    if (
-      unsupportedTokenResource.status !== 404 ||
-      problemCode(await unsupportedTokenResource.json()) !== "route_not_found"
-    ) throw new TypeError("Packaged unknown token resource is available.");
-
-    const tokenRemovalStart = await firstMcp.callTool("token_start_removal", {
-      asset: officialCandidateAsset,
-      expectedRevision: officialSelection.revision,
-    });
-    const pendingTokenRemoval = tokenStartOperation(tokenRemovalStart);
-    if (
-      pendingTokenRemoval.kind !== "remove" ||
-      pendingTokenRemoval.state !== "awaiting_confirmation" ||
-      pendingTokenRemoval.review?.previousSelection?.revision !== officialSelection.revision
-    ) throw new TypeError("Packaged token removal operation is invalid.");
-    const currentTokenRemoval = await jsonResponse(await browserTokenCurrent(browser));
-    if (JSON.stringify(currentTokenRemoval.operation) !== JSON.stringify(pendingTokenRemoval)) {
-      throw new TypeError("Browser did not expose the token removal operation exactly.");
-    }
-    const confirmedTokenRemoval = await jsonResponse(await browserTokenConfirm(
-      pendingTokenRemoval.operationId,
-      pendingTokenRemoval.review.reviewDigest,
-      browser,
-    ));
-    if (
-      confirmedTokenRemoval.kind !== "remove" ||
-      confirmedTokenRemoval.state !== "completed" ||
-      confirmedTokenRemoval.result?.selection?.included !== false
-    ) throw new TypeError("Browser token removal confirmation did not complete the exact operation.");
-    const excludedOfficial = findTokenSelection(
-      (await secondMcp.callTool("token_list_selections")).structuredContent,
-      fakeRpc.officialCandidate,
-      false,
-    );
-    assertAccountAssetOverview(
-      await jsonResponse(await browserAccountAssets(browser)),
-      fakeRpc,
-      fakeRpc.defaultTokens,
-    );
-    const retainedExclusion = await firstMcp.callTool("token_get_selection", {
-      asset: officialCandidateAsset,
-    });
-    assertTokenSelectionDetail(
-      retainedExclusion.structuredContent,
-      fakeRpc,
-      fakeRpc.officialCandidate,
-      false,
-    );
-
-    const customAdditionRequestCount = fakeRpc.calls.length;
-    const customStart = await firstMcp.callTool("token_start_addition", {
-      asset: catalogAsset,
-    });
-    assertRpcRequestBudget(fakeRpc, customAdditionRequestCount, 24, "Custom token addition");
-    const pendingCustomAddition = tokenStartOperation(customStart);
-    if (
-      pendingCustomAddition.kind !== "add" ||
-      pendingCustomAddition.review?.officialEvidence !== null
-    ) throw new TypeError("Packaged custom token addition operation is invalid.");
-    const confirmedCustomAddition = await jsonResponse(await browserTokenConfirm(
-      pendingCustomAddition.operationId,
-      pendingCustomAddition.review.reviewDigest,
-      browser,
-    ));
-    if (
-      confirmedCustomAddition.kind !== "add" ||
-      confirmedCustomAddition.state !== "completed" ||
-      confirmedCustomAddition.failure !== null
-    ) {
-      throw new TypeError(
-        `Packaged custom token addition did not complete: ${JSON.stringify(confirmedCustomAddition)}`,
-      );
-    }
-    const customSelection = assertTokenSelectionDetail(
-      confirmedCustomAddition.result,
-      fakeRpc,
-      fakeRpc.token,
-      true,
-    );
-    const customAssetView = assertAccountAssetOverview(
-      await jsonResponse(await browserAccountAssets(browser)),
-      fakeRpc,
-      fakeRpc.defaultTokens,
-    );
-    const exactAssetRequestCount = fakeRpc.calls.length;
-    const exactCustom = await jsonResponse(await browserExactAccountAsset(
-      browser,
-      fakeRpc.token,
-      customAssetView.viewRevision,
-    ));
-    assertRpcRequestBudget(fakeRpc, exactAssetRequestCount, 22, "Exact account asset read");
-    assertExactAccountAsset(exactCustom, fakeRpc, fakeRpc.token);
-
-    const cliTokenList = await runCommand(process.execPath, [
-      resolve(prepared.installedPackageRoot, "dist/cli.js"),
-      "token",
-      "list",
-      "--json",
-    ], { cwd: prepared.installRoot, env: environment, output: "capture" });
-    findTokenSelection(
-      JSON.parse(cliTokenList.stdout.toString("utf8")),
-      fakeRpc.token,
-      true,
-    );
-    const cliTokenGet = await runCommand(process.execPath, [
-      resolve(prepared.installedPackageRoot, "dist/cli.js"),
-      "token",
-      "get",
-      fakeRpc.token.address,
-      "--json",
-    ], { cwd: prepared.installRoot, env: environment, output: "capture" });
-    assertTokenSelectionDetail(
-      JSON.parse(cliTokenGet.stdout.toString("utf8")),
-      fakeRpc,
-      fakeRpc.token,
-      true,
-    );
-    const cliAssets = await runCommand(process.execPath, [
-      resolve(prepared.installedPackageRoot, "dist/cli.js"),
-      "read",
-      "assets",
-      "--json",
-    ], { cwd: prepared.installRoot, env: environment, output: "capture" });
-    assertAccountAssetCollection(
-      JSON.parse(cliAssets.stdout.toString("utf8")),
-      fakeRpc,
-      fakeRpc.defaultTokens,
-    );
-
-    const customRemovalStart = tokenStartOperation(await firstMcp.callTool("token_start_removal", {
-      asset: catalogAsset,
-      expectedRevision: customSelection.revision,
-    }));
-    const removedCustom = await jsonResponse(await browserTokenConfirm(
-      customRemovalStart.operationId,
-      customRemovalStart.review.reviewDigest,
-      browser,
-    ));
-    const excludedCustom = assertTokenSelectionDetail(
-      removedCustom.result,
-      fakeRpc,
-      fakeRpc.token,
-      false,
-    );
-    const customRestart = tokenStartOperation(await firstMcp.callTool("token_start_addition", {
-      asset: catalogAsset,
-    }));
-    const restoredCustomOperation = await jsonResponse(await browserTokenConfirm(
-      customRestart.operationId,
-      customRestart.review.reviewDigest,
-      browser,
-    ));
-    if (
-      restoredCustomOperation.kind !== "add" ||
-      restoredCustomOperation.state !== "completed" ||
-      restoredCustomOperation.failure !== null
-    ) {
-      throw new TypeError(
-        `Packaged custom token re-addition did not complete: ${JSON.stringify(restoredCustomOperation)}`,
-      );
-    }
-    const restoredToken = assertTokenSelectionDetail(
-      restoredCustomOperation.result,
-      fakeRpc,
-      fakeRpc.token,
-      true,
-    );
-    if (
-      excludedOfficial.revision === officialSelection.revision ||
-      restoredToken.revision === customSelection.revision ||
-      restoredToken.revision === excludedCustom.revision
-    ) throw new TypeError("Packaged selection transitions reused stale revisions.");
-
-    fakeRpc.setAssetSourceUnavailable(true);
-    const unavailableSourceAssets = assertUnavailableAccountAssetOverview(
-      await jsonResponse(await browserAccountAssets(browser)),
-      fakeRpc,
-      customAssetView.viewRevision.officialSnapshotRevision,
-    );
-    fakeRpc.setAssetSourceUnavailable(false);
-    if (unavailableSourceAssets.viewRevision.selectionSetRevision === null) {
-      throw new TypeError("Packaged source failure did not preserve the committed snapshot revision.");
-    }
-
-    const idempotentConnection = startToolResult(
-      await firstMcp.callTool("wallet_start_connection"),
-    );
-    if (
-      idempotentConnection.status !== "current_connection" ||
-      JSON.stringify(idempotentConnection.connection) !==
-        JSON.stringify(firstConnection.structuredContent?.data)
-    ) throw new TypeError("Connected MCP Connect did not return the current connection.");
-
-    const { result: browserConnection } =
-      await browserStartFromCurrentState("connect", browser);
-    if (
-      browserConnection.status !== "current_connection" ||
-      JSON.stringify(browserConnection.connection) !==
-        JSON.stringify(firstConnection.structuredContent?.data)
-    ) throw new TypeError("Connected browser Connect did not return the current connection.");
-
-    const staleDisconnection = await firstMcp.callTool("wallet_start_disconnection");
-    const staleDisconnectionId = operationIdFrom(staleDisconnection);
-    const staleDisconnectionOperation = startedToolOperation(staleDisconnection);
-    if (
-      staleDisconnectionOperation.kind !== "disconnect" ||
-      staleDisconnectionOperation.state !== "awaiting_confirmation"
-    ) {
-      throw new TypeError("Connected disconnection did not require explicit confirmation.");
-    }
-    await owner.request("touch_session");
-    const staleConfirmation = await browserConfirm(
-      staleDisconnectionId,
-      staleDisconnectionOperation.connectionRevision,
-      browser,
-    );
-    const staleProblem = await staleConfirmation.json();
-    if (staleConfirmation.status < 400 || problemCode(staleProblem) !== "state_conflict") {
-      throw new TypeError("Stale browser confirmation was not rejected.");
-    }
-    const disconnectionCancellationAccepted = await jsonResponse(await browserCancel(
-      staleDisconnectionId,
-      staleDisconnectionOperation.connectionRevision,
-      browser,
-    ));
-    if (
-      disconnectionCancellationAccepted.operationId !== staleDisconnectionId ||
-      disconnectionCancellationAccepted.connectionRevision !==
-        staleDisconnectionOperation.connectionRevision ||
-      disconnectionCancellationAccepted.kind !== "disconnect"
-    ) {
-      throw new TypeError("Browser disconnection cancellation lost its exact operation identity.");
-    }
-    const cancelledDisconnection = (await waitFor(
-      async () => jsonResponse(await browserOperation(staleDisconnectionId, browser)),
-      (value) => value.operation?.state === "cancelled",
-      "Browser disconnection cancellation",
-    )).operation;
-    if (cancelledDisconnection.state !== "cancelled") {
-      throw new TypeError("Browser disconnection cancellation did not settle.");
-    }
-    const preservedConnection = await firstMcp.callTool("wallet_get_connection");
-    if (preservedConnection.structuredContent?.data?.status !== "connected") {
-      throw new TypeError("Cancelled disconnection changed the active wallet session.");
-    }
-
-    const {
-      state: disconnectState,
-      result: disconnectStart,
-    } = await browserStartFromCurrentState("disconnect", browser);
-    if (
-      disconnectState.status !== "absent" ||
-      disconnectState.connection?.status !== "connected"
-    ) throw new TypeError("Browser disconnection precondition is invalid.");
-    if (
-      disconnectStart.status !== "operation_started" ||
-      disconnectStart.operation?.kind !== "disconnect" ||
-      disconnectStart.operation?.state !== "awaiting_confirmation" ||
-      typeof disconnectStart.operation?.operationId !== "string"
-    ) throw new TypeError("Direct browser disconnection did not start exactly once.");
-    const confirmedDisconnection = await jsonResponse(await browserConfirm(
-      disconnectStart.operation.operationId,
-      disconnectStart.operation.connectionRevision,
-      browser,
-    ));
-    if (
-      confirmedDisconnection.operationId !== disconnectStart.operation.operationId ||
-      confirmedDisconnection.connectionRevision !== disconnectStart.operation.connectionRevision ||
-      confirmedDisconnection.kind !== "disconnect" ||
-      confirmedDisconnection.state !== "disconnecting"
-    ) throw new TypeError("Direct browser disconnection did not retain exact confirmation authority.");
-    const completedDisconnection = await waitFor(
-      async () => jsonResponse(await browserOperation(
-        disconnectStart.operation.operationId,
-        browser,
-      )),
-      (value) => value.operation?.state === "completed",
-      "Direct browser disconnection",
-    );
-    if (
-      completedDisconnection.operation?.state !== "completed" ||
-      completedDisconnection.operation?.result?.outcome !== "disconnected"
-    ) throw new TypeError("Packaged browser lost the completed disconnection result.");
-
-    const {
-      state: expiringState,
-      result: expiringStart,
-    } = await browserStartFromCurrentState("connect", browser);
-    if (
-      expiringState.status !== "absent" ||
-      expiringState.connection?.status !== "disconnected"
-    ) throw new TypeError("Browser pairing expiry precondition is invalid.");
-    if (
-      expiringStart.status !== "operation_started" ||
-      expiringStart.operation?.kind !== "connect" ||
-      typeof expiringStart.operation?.operationId !== "string"
-    ) throw new TypeError("Browser pairing expiry scenario did not start a connection.");
-    const expiringOperation = (await waitFor(
-      async () => jsonResponse(await browserOperation(
-        expiringStart.operation.operationId,
-        browser,
-      )),
-      (value) => value.operation?.state === "awaiting_wallet_approval",
-      "Browser pairing expiry operation",
-    )).operation;
-    const expiringPresentation = await jsonResponse(await browserCurrent(browser));
-    if (
-      expiringPresentation.status !== "present" ||
-      expiringPresentation.presentation?.operation?.operationId !== expiringOperation.operationId ||
-      expiringPresentation.presentation?.qr === undefined
-    ) throw new TypeError("Browser pairing expiry scenario did not expose one atomic QR snapshot.");
-    const actionExpiresAtMs = Date.parse(expiringOperation.actionExpiresAt);
-    if (!Number.isFinite(actionExpiresAtMs)) {
-      throw new TypeError("Packaged wallet operation deadline is invalid.");
-    }
-    const clock = new Date(actionExpiresAtMs + 1);
-    await writeFile(clockPath, `${clock.toISOString()}\n`, { mode: 0o600 });
-    const expiryStarted = await internalOperation(owner, expiringOperation.operationId);
-    if (
-      expiryStarted.response?.body?.state !== "cancelling" ||
-      JSON.stringify(expiryStarted.response?.body).includes("\"qr\"")
-    ) {
-      throw new TypeError("Packaged wallet operation did not withdraw approval authority at its deadline.");
-    }
-    await waitFor(
-      () => internalOperation(owner, expiringOperation.operationId),
-      (value) => value.response?.body?.state === "expired",
-      "Packaged wallet operation expiry",
-    );
-    const expiredBrowserOperation = await jsonResponse(await browserOperation(
-      expiringOperation.operationId,
-      browser,
-    ));
-    if (
-      expiredBrowserOperation.operation?.state !== "expired" ||
-      JSON.stringify(expiredBrowserOperation).includes("\"qr\"")
-    ) throw new TypeError("Packaged browser retained QR authority after operation expiry.");
-    const stateAfterExpiry = await jsonResponse(await browserCurrent(browser));
-    if (
-      stateAfterExpiry.status !== "absent" ||
-      stateAfterExpiry.connection?.status !== "disconnected" ||
-      JSON.stringify(stateAfterExpiry).includes("\"qr\"")
-    ) throw new TypeError("Expired packaged operation retained browser QR authority.");
-
-    const { result: reconnect } =
-      await browserStartFromCurrentState("connect", browser);
-    if (
-      reconnect.status !== "operation_started" ||
-      reconnect.operation?.kind !== "connect" ||
-      typeof reconnect.operation?.operationId !== "string"
-    ) throw new TypeError("Browser reconnect did not start a connection.");
-    await waitFor(
-      async () => jsonResponse(await browserOperation(reconnect.operation.operationId, browser)),
-      (value) => value.operation?.state === "awaiting_wallet_approval",
-      "Browser reconnect wallet approval",
-    );
-    await owner.request("approve");
-    const reconnected = await waitFor(
-      () => firstMcp.callTool("wallet_get_operation", {
-        operationId: reconnect.operation.operationId,
+    const durableOperations = Object.freeze([
+      Object.freeze({
+        tool: "wallet_get_operation",
+        operationId: completedConnectionOperation.operationId,
+        value: completedConnectionOperation,
       }),
-      (result) => readToolOperation(result).state === "completed",
-      "Browser-started wallet reconnect",
-    );
-    if (readToolOperation(reconnected).result?.outcome !== "connected") {
-      throw new TypeError("Browser-started wallet reconnect did not complete.");
-    }
+      Object.freeze({
+        tool: "token_get_operation",
+        operationId: tokenTerminal.operationId,
+        value: tokenTerminal,
+      }),
+      Object.freeze({
+        tool: "market_get_watchlist_operation",
+        operationId: watchlistTerminal.operationId,
+        value: watchlistTerminal,
+      }),
+    ]);
 
     await Promise.all(mcpClients.splice(0).map((client) => client.close()));
     await owner.stop();
@@ -2632,53 +1980,37 @@ export const verifyPackagedIntegration = async (prepared) => {
     if (
       restored.ownerState !== "owner" ||
       restored.response?.body?.data?.status !== "connected"
-    ) throw new TypeError("Deferred packaged process did not restore the persisted wallet session.");
+    ) throw new TypeError("Deferred packaged process did not restore the Wallet session.");
     const restoredRuntimeIdentity = await readPackagedRuntimeIdentity();
     if (
       restoredRuntimeIdentity.profileId !== initialRuntimeIdentity.profileId ||
       restoredRuntimeIdentity.configurationMac !== initialRuntimeIdentity.configurationMac ||
       restoredRuntimeIdentity.ownerInstanceId === initialRuntimeIdentity.ownerInstanceId ||
-      BigInt(restoredRuntimeIdentity.ownerRevision) <= BigInt(initialRuntimeIdentity.ownerRevision)
+      BigInt(restoredRuntimeIdentity.ownerRevision) <=
+        BigInt(initialRuntimeIdentity.ownerRevision)
     ) throw new TypeError("Compatible packaged takeover changed configuration identity.");
 
-    const staleBrowserResponse = await browserCurrent(browser);
-    const staleBrowserProblem = await staleBrowserResponse.json();
-    if (
-      staleBrowserResponse.status !== 401 ||
-      problemCode(staleBrowserProblem) !== "unauthorized"
-    ) throw new TypeError("Owner takeover did not invalidate the previous browser session.");
-    const renewedBrowser = await browserSession();
-    const renewedBrowserState = await jsonResponse(await browserCurrent(renewedBrowser));
-    if (renewedBrowserState.connection?.status !== "connected") {
-      throw new TypeError("Browser bootstrap did not recover after owner takeover.");
-    }
-    const renewedAssets = await jsonResponse(await browserAccountAssets(renewedBrowser));
-    assertAccountAssetOverview(renewedAssets, fakeRpc, fakeRpc.defaultTokens);
-    const takeoverMcp = await startNpxMcp(prepared, environment);
+    const takeoverMcp = await startNpxMcp(prepared, environment, true);
     mcpClients.push(takeoverMcp);
-    const takeoverAssets = await takeoverMcp.callTool("account_list_assets");
-    assertAccountAssetCollection(
-      takeoverAssets.structuredContent,
-      fakeRpc,
-      fakeRpc.defaultTokens,
-    );
-    const takeoverReferenceWatchlist = assertReferenceWatchlist(
-      (await callSemanticRead(takeoverMcp, "market_get_watchlist")).structuredContent,
-      [referencePair.pairId],
-    );
-    if (takeoverReferenceWatchlist.revision !== reorderedReferenceWatchlist.revision) {
-      throw new TypeError("Packaged owner takeover changed the persisted reference watchlist.");
+    for (const durable of durableOperations) {
+      const restoredOperation = readToolOperation(await callOperationTool(
+        takeoverMcp,
+        durable.tool,
+        { operationId: durable.operationId },
+      ));
+      if (JSON.stringify(restoredOperation) !== JSON.stringify(durable.value)) {
+        throw new TypeError("Packaged owner takeover changed a durable operation.");
+      }
     }
-    const removedReferenceWatchlist = assertReferenceWatchlist(
-      (await takeoverMcp.callTool("market_remove_watchlist_pair", {
-        pairId: referencePair.pairId,
-        expectedRevision: takeoverReferenceWatchlist.revision,
-      })).structuredContent,
+    assertReferenceWatchlist(
+      (await takeoverMcp.callTool("market_get_watchlist")).structuredContent,
       [],
     );
-    if (removedReferenceWatchlist.revision === takeoverReferenceWatchlist.revision) {
-      throw new TypeError("Packaged watchlist removal did not commit a new revision.");
-    }
+    findTokenSelection(
+      (await takeoverMcp.callTool("token_list_selections")).structuredContent,
+      fakeRpc.officialCandidate,
+      false,
+    );
     await takeoverMcp.close();
     mcpClients.splice(mcpClients.indexOf(takeoverMcp), 1);
 

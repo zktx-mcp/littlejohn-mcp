@@ -1,4 +1,4 @@
-import { productDisplayName } from "../core/browser.js";
+import { productDisplayName } from "../core/client.js";
 
 export const runtimeStateUnavailableErrorDefinition = Object.freeze({
   code: "runtime_state_unavailable",

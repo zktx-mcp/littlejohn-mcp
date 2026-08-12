@@ -76,6 +76,35 @@ export const guardJsonSchema = <Schema extends z.ZodType>(schema: Schema) =>
     z.input<Schema>
   >;
 
+const compareCodePoints = (left: string, right: string): number =>
+  left < right ? -1 : left > right ? 1 : 0;
+
+/**
+ * Projects the public schema admitted by the owning Zod parser. A preprocess
+ * used only to capture safe JSON accepts `unknown` at Zod's internal input
+ * layer, which otherwise makes a required object property appear optional in
+ * generated JSON Schema. Recompute object requiredness from the parser's
+ * public `isOptional()` meaning while preserving real optional/default input.
+ */
+export const projectZodJsonSchema = (
+  schema: z.ZodType,
+  io: "input" | "output",
+): Readonly<Record<string, unknown>> => z.toJSONSchema(schema, {
+  target: "draft-2020-12",
+  unrepresentable: "throw",
+  io,
+  override: ({ zodSchema, jsonSchema }) => {
+    if (io !== "input" || !(zodSchema instanceof z.ZodObject)) return;
+    const required = Object.entries(zodSchema.shape)
+      .filter(([, property]) => !property.isOptional())
+      .map(([name]) => name)
+      .sort(compareCodePoints);
+    const projected = jsonSchema as Record<string, unknown>;
+    if (required.length === 0) delete projected["required"];
+    else projected["required"] = required;
+  },
+}) as Readonly<Record<string, unknown>>;
+
 const inheritedPrototypeOnly = z.any()
   .refine(
     (value) => value === Object.prototype || value === undefined,

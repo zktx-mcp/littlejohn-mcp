@@ -1,4 +1,5 @@
 import {
+  admitApplicationInput,
   captureCanonicalJson,
   createApplicationFailure,
   operationIdSchema,
@@ -10,6 +11,7 @@ import {
   internalResponseLimitBytes,
   jsonContentType,
   noStoreCacheControl,
+  problemJsonContentType,
   type RuntimeHttpRequest,
 } from "../runtime/http-boundary.js";
 import type {
@@ -19,7 +21,6 @@ import type {
 } from "../runtime/owner-session.js";
 import {
   getRuntimeOperationFailure,
-  type InterfaceErrorMappingRegistry,
 } from "../runtime/errors.js";
 import {
   createDeliveryUnknown,
@@ -30,10 +31,10 @@ import { parseProblemDetailsFailure } from "./http-client.js";
 import type {
   LocalOperationBinding,
   LocalOperationIdentity,
-} from "./identities.js";
-import { resolveLocalOperationIdentity } from "./identities.js";
+} from "./local-operation.js";
+import { resolveLocalOperationIdentity } from "./local-operation.js";
 
-export type { LocalOperationIdentity } from "./identities.js";
+export type { LocalOperationIdentity } from "./local-operation.js";
 
 const responseObservationMilliseconds = 5 * 60 * 1_000;
 const recoveryReadMilliseconds = 2_000;
@@ -56,7 +57,6 @@ const parseJsonBytes = (bytes: Uint8Array): CanonicalJson =>
 
 export class LocalOperationClient {
   readonly #ownerSessions: RuntimeOwnerSessionPort;
-  readonly #createOperationId: () => OperationId;
   readonly #lifecycle = new AbortController();
   readonly #active = new Set<Promise<void>>();
   readonly #sessions = new Set<RuntimeOwnerSession>();
@@ -65,10 +65,8 @@ export class LocalOperationClient {
 
   constructor(input: Readonly<{
     ownerSessions: RuntimeOwnerSessionPort;
-    createOperationId: () => OperationId;
   }>) {
     this.#ownerSessions = input.ownerSessions;
-    this.#createOperationId = input.createOperationId;
   }
 
   invoke<Input, Success>(
@@ -95,17 +93,16 @@ export class LocalOperationClient {
     inputValue: unknown,
     callerSignal?: AbortSignal,
   ): Promise<LocalOperationResult<Success>> {
-    let input: Input;
-    try { input = binding.contract.parseInput(inputValue); }
-    catch {
-      return { ok: false, failure: createApplicationFailure(binding.contract.errorRegistry, "invalid_input") };
-    }
-    const allocated = binding.action === "start" ? this.#createOperationId() : undefined;
+    const admission = admitApplicationInput(binding.contract, inputValue);
+    if (!admission.ok) return admission;
+    const input = admission.value;
     let operationId: OperationId | undefined;
     try {
-      const selected = binding.operationId(input, allocated);
+      const selected = binding.operationId(input);
       operationId = selected === undefined ? undefined : operationIdSchema.parse(selected);
-      if (binding.action !== "read" && operationId === undefined) throw new TypeError("Operation ID is required.");
+      if (binding.action !== "read" && operationId === undefined) {
+        throw new TypeError("Operation ID is required.");
+      }
     }
     catch {
       return { ok: false, failure: createApplicationFailure(binding.contract.errorRegistry, "invalid_input") };
@@ -153,7 +150,10 @@ export class LocalOperationClient {
       bytes: Uint8Array;
     }>,
   ): LocalOperationResult<Success> {
-    if (response.contentType !== jsonContentType || response.cacheControl !== noStoreCacheControl) {
+    const expectedContentType = response.statusCode >= 400
+      ? problemJsonContentType
+      : jsonContentType;
+    if (response.contentType !== expectedContentType || response.cacheControl !== noStoreCacheControl) {
       throw new TypeError("Owner response provenance is invalid.");
     }
     const body = parseJsonBytes(response.bytes);
@@ -189,7 +189,7 @@ export class LocalOperationClient {
         throw new TypeError("Recovery target must be a terminal read.");
       }
       targetInput = targetBinding.contract.parseInput({ operationId });
-      targetOperationId = operationIdSchema.parse(targetBinding.operationId(targetInput, undefined));
+      targetOperationId = operationIdSchema.parse(targetBinding.operationId(targetInput));
       if (targetOperationId !== operationId) {
         throw new TypeError("Recovery target selected another operation.");
       }

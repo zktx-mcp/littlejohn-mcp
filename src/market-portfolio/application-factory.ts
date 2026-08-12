@@ -62,17 +62,26 @@ export const createReferenceMarketApplicationFactory = async (
         assertOpen();
         return application.watchlist(request, signal);
       },
-      addPair(request: Parameters<ReferenceMarketApplicationPort["addPair"]>[0], signal?: AbortSignal) {
+      reviewWatchlistChange(
+        request: Parameters<ReferenceMarketApplicationPort["reviewWatchlistChange"]>[0],
+        signal?: AbortSignal,
+      ) {
         assertOpen();
-        return application.addPair(request, signal);
+        return application.reviewWatchlistChange(request, signal);
       },
-      removePair(request: Parameters<ReferenceMarketApplicationPort["removePair"]>[0], signal?: AbortSignal) {
+      decideWatchlistChange(
+        request: Parameters<ReferenceMarketApplicationPort["decideWatchlistChange"]>[0],
+        signal?: AbortSignal,
+      ) {
         assertOpen();
-        return application.removePair(request, signal);
+        return application.decideWatchlistChange(request, signal);
       },
-      reorderPairs(request: Parameters<ReferenceMarketApplicationPort["reorderPairs"]>[0], signal?: AbortSignal) {
+      getWatchlistOperation(
+        request: Parameters<ReferenceMarketApplicationPort["getWatchlistOperation"]>[0],
+        signal?: AbortSignal,
+      ) {
         assertOpen();
-        return application.reorderPairs(request, signal);
+        return application.getWatchlistOperation(request, signal);
       },
       close,
     });

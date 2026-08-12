@@ -2,6 +2,7 @@ import { App } from "@modelcontextprotocol/ext-apps";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { admitPresentationToolResult } from "./lifecycle.js";
+import { mountOperationReview } from "./operation-lifecycle.js";
 import {
   renderPresentation,
   renderPresentationFailure,
@@ -13,7 +14,7 @@ const root = document.getElementById("app");
 if (root === null) throw new TypeError("MCP App root is unavailable.");
 
 const app = new App(
-  { name: "littlejohn-read-view", version: "1.0.0" },
+  { name: "littlejohn-view", version: "1.0.0" },
   {},
   { autoResize: true, strict: true },
 );
@@ -26,10 +27,10 @@ let processing = false;
 
 const replace = (node: HTMLElement): void => { root.replaceChildren(node); };
 
-const fail = (error: unknown): void => {
+const fail = (_error: unknown): void => {
   settled = true;
   replace(renderPresentationFailure(
-    error instanceof Error ? error.message : "The presentation result is invalid.",
+    "Little John could not verify the data required to display this result.",
   ));
 };
 
@@ -41,7 +42,15 @@ const drain = async (): Promise<void> => {
   try {
     const admitted = await admitPresentationToolResult(app, result, controller.signal);
     if (controller.signal.aborted || settled) return;
-    replace(renderPresentation(admitted.entry, admitted.result));
+    if (admitted.entry.presentationKind === "operation") {
+      throw new TypeError("An operation cannot create a top-level presentation.");
+    }
+    const article = renderPresentation(admitted.entry, admitted.result);
+    replace(article);
+    if (admitted.entry.presentationKind === "review") {
+      const mounted = await mountOperationReview(app, admitted, article, controller.signal);
+      if (!mounted) throw new TypeError("Review lifecycle was not mounted.");
+    }
     settled = true;
   } catch (error) {
     if (!controller.signal.aborted && !settled) fail(error);
@@ -51,7 +60,7 @@ const drain = async (): Promise<void> => {
 
 app.addEventListener("toolresult", (result) => {
   if (received) {
-    fail(new TypeError("The immutable View received more than one creating result."));
+    fail(new TypeError("The View received more than one creating result."));
     return;
   }
   received = true;

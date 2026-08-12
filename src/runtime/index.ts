@@ -64,12 +64,6 @@ export type {
   ProblemDetails,
 } from "./errors.js";
 export {
-  browserContentSecurityPolicy,
-  browserContentTypeOptions,
-  browserContentTypes,
-  browserCrossOriginOpenerPolicy,
-  browserReferrerPolicy,
-  browserSetCookieLimitBytes,
   fixedHost,
   fixedHostHeader,
   fixedOrigin,
@@ -81,7 +75,7 @@ export {
   publicReadResponseLimitBytes,
   requestBodyLimitBytes,
 } from "./http-boundary.js";
-export type { BrowserContentType, RuntimeHttpRequest } from "./http-boundary.js";
+export type { RuntimeHttpRequest } from "./http-boundary.js";
 export type {
   HttpOwnerStartupResourceRegistry,
   HttpOwnerReleasePermit,
@@ -110,14 +104,11 @@ export type {
   RouteDefinition,
   RouteMethod,
   RouteResult,
-  ResourcePathDefinition,
   RuntimeRouteRegistry,
 } from "./http-routing.js";
 export type {
-  AuthenticationVerifierDefinition,
   RequestAuthenticationInput,
   RequestPolicyDefinition,
-  RequestPolicyExtension,
 } from "./request-security.js";
 export type {
   ConfiguredChainStore,

@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 
 import {
   productChainId,
+  operationIdByteLength,
   referenceFeedIntegrityStatuses,
   referenceFeedTraversalStatuses,
   referenceMarketLimits,
@@ -10,7 +11,17 @@ import {
   tokenDisplayTextLimits,
   walletConnectionStatusDefinitions,
 } from "../core/index.js";
-import { tokenCatalogContractLimits } from "../token-catalog/contracts.js";
+import {
+  tokenCatalogContractLimits,
+} from "../token-catalog/contracts.js";
+import {
+  referenceWatchlistInitiators,
+  referenceWatchlistOperationKinds,
+} from "../market-portfolio/contracts.js";
+import {
+  tokenCatalogInitiators,
+  tokenCatalogOperationKinds,
+} from "../token-catalog/state.js";
 import { officialAssetSourceDefinition } from "../registry/official-asset-contract.js";
 import {
   runtimeConfigurationMacByteLength,
@@ -18,6 +29,12 @@ import {
 } from "./runtime-identity.js";
 import { walletConnectionFieldPresenceCheckSql } from "./wallet-connection-storage.js";
 import { presentationSnapshotLimits } from "./presentation-snapshot.js";
+import {
+  walletInitiators,
+  walletNonterminalOperationStates,
+  walletOperationKinds,
+  walletOperationStates,
+} from "../wallet/operation-state.js";
 
 const sqlIdentifierPattern = /^[a-z][a-z0-9_]*$/u;
 const base64UrlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -346,6 +363,23 @@ CREATE TABLE reference_pair_watchlist_entry (
     REFERENCES reference_pair_watchlist_state(profile_id, chain_id, wallet_address)
     ON UPDATE RESTRICT ON DELETE CASCADE
 ) STRICT, WITHOUT ROWID;
+CREATE TABLE reference_watchlist_operation (
+  profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),
+  operation_id TEXT NOT NULL PRIMARY KEY CHECK (
+    ${canonicalBase64UrlSqlCheck("operation_id", operationIdByteLength)}
+  ),
+  kind TEXT NOT NULL CHECK (kind IN (${sqlStringList(referenceWatchlistOperationKinds)})),
+  initiated_by TEXT NOT NULL CHECK (initiated_by IN (${sqlStringList(referenceWatchlistInitiators)})),
+  review_digest TEXT NOT NULL CHECK (${canonicalHash32SqlCheck("review_digest")}),
+  chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
+  wallet_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("wallet_address")}),
+  operation_json BLOB NOT NULL CHECK (
+    typeof(operation_json) = 'blob' AND
+    length(operation_json) BETWEEN 2 AND ${presentationSnapshotLimits.resultBytes}
+  ),
+  FOREIGN KEY (profile_id) REFERENCES local_profile(profile_id)
+    ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID;
 CREATE TABLE wallet_token_selection_state (
   profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),
   chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
@@ -378,6 +412,46 @@ CREATE TABLE wallet_token_selection (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX wallet_token_selection_token_fk
   ON wallet_token_selection(chain_id, token_address);
+CREATE TABLE token_selection_operation (
+  profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),
+  operation_id TEXT NOT NULL PRIMARY KEY CHECK (
+    ${canonicalBase64UrlSqlCheck("operation_id", operationIdByteLength)}
+  ),
+  kind TEXT NOT NULL CHECK (kind IN (${sqlStringList(tokenCatalogOperationKinds)})),
+  initiated_by TEXT NOT NULL CHECK (initiated_by IN (${sqlStringList(tokenCatalogInitiators)})),
+  review_digest TEXT NOT NULL CHECK (${canonicalHash32SqlCheck("review_digest")}),
+  chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
+  wallet_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("wallet_address")}),
+  token_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("token_address")}),
+  operation_json BLOB NOT NULL CHECK (
+    typeof(operation_json) = 'blob' AND
+    length(operation_json) BETWEEN 2 AND ${presentationSnapshotLimits.resultBytes}
+  ),
+  FOREIGN KEY (profile_id) REFERENCES local_profile(profile_id)
+    ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID;
+CREATE TABLE wallet_operation (
+  profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),
+  operation_id TEXT NOT NULL PRIMARY KEY CHECK (
+    ${canonicalBase64UrlSqlCheck("operation_id", operationIdByteLength)}
+  ),
+  kind TEXT NOT NULL CHECK (kind IN (${sqlStringList(walletOperationKinds)})),
+  initiated_by TEXT NOT NULL CHECK (initiated_by IN (${sqlStringList(walletInitiators)})),
+  review_digest TEXT NOT NULL CHECK (${canonicalHash32SqlCheck("review_digest")}),
+  connection_revision TEXT NOT NULL CHECK (${canonicalUnsignedDecimalSqlCheck("connection_revision")}),
+  state TEXT NOT NULL CHECK (state IN (${sqlStringList(walletOperationStates)})),
+  created_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("created_at")}),
+  action_expires_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("action_expires_at")}),
+  operation_json BLOB NOT NULL CHECK (
+    typeof(operation_json) = 'blob' AND
+    length(operation_json) BETWEEN 2 AND ${presentationSnapshotLimits.resultBytes}
+  ),
+  FOREIGN KEY (profile_id) REFERENCES local_profile(profile_id)
+    ON UPDATE RESTRICT ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID;
+CREATE UNIQUE INDEX wallet_operation_one_active
+  ON wallet_operation(profile_id)
+  WHERE state IN (${sqlStringList(walletNonterminalOperationStates)});
 CREATE TABLE current_wallet_connection (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),

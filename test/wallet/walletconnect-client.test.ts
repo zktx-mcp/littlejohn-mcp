@@ -67,6 +67,7 @@ const session = (
   chains: "absent" | "empty" | "configured" = "configured",
 ): object => ({
   topic,
+  pairingTopic,
   expiry: 1_900_000_000,
   namespaces: { eip155: namespace(chains) },
   relay: { secret: "must not escape" },
@@ -76,6 +77,12 @@ const proposal = (id = 1, topic = pairingTopic): object => ({
   id,
   pairingTopic: topic,
   expiryTimestamp: 1_900_000_000,
+});
+
+const pairing = (topic = pairingTopic): object => ({
+  topic,
+  expiry: 1_900_000_000,
+  active: true,
 });
 
 const sessionSource = (topic: string): WalletSessionSource => {
@@ -130,6 +137,7 @@ class FakeStorageOwner implements WalletConnectStorageOwner {
 class FakeSdk implements WalletConnectSdkPort {
   proposals: unknown[] = [];
   sessions: unknown[] = [];
+  pairings: unknown[] = [];
   approval = deferred<unknown>();
   approvalCallCount = 0;
   connectionUri: string | undefined = pairingUri;
@@ -165,6 +173,12 @@ class FakeSdk implements WalletConnectSdkPort {
     return this.sessions;
   }
 
+  listPairings(): readonly unknown[] {
+    this.log.push("pairings");
+    this.trace.push("pairings");
+    return this.pairings;
+  }
+
   async startConnection(input: WalletConnectSdkConnectInput): Promise<unknown> {
     this.log.push("connect");
     this.connectInputs.push(input);
@@ -184,17 +198,29 @@ class FakeSdk implements WalletConnectSdkPort {
     this.log.push(`expire:${id}`);
     this.expiredProposalIds.push(id);
     if (this.expireProposalFailure !== undefined) throw this.expireProposalFailure;
+    this.proposals = this.proposals.filter((candidate) => {
+      try { return Reflect.get(candidate as object, "id") !== id; }
+      catch { return true; }
+    });
   }
 
   async disconnectPairing(topic: string): Promise<void> {
     this.log.push(`pairing-disconnect:${topic}`);
     this.pairingDisconnects.push(topic);
     if (this.pairingDisconnectFailure !== undefined) throw this.pairingDisconnectFailure;
+    this.pairings = this.pairings.filter((candidate) => {
+      try { return Reflect.get(candidate as object, "topic") !== topic; }
+      catch { return true; }
+    });
   }
 
   async disconnectSession(topic: string): Promise<void> {
     this.log.push(`session-disconnect:${topic}`);
     this.sessionDisconnects.push(topic);
+    this.sessions = this.sessions.filter((candidate) => {
+      try { return Reflect.get(candidate as object, "topic") !== topic; }
+      catch { return true; }
+    });
   }
 
   on(event: WalletConnectSdkEventName, listener: WalletConnectSdkEventListener): void {
@@ -348,7 +374,7 @@ describe("WalletConnect public adapter boundary", () => {
     created.sdk.sessions = [
       session(sessionTopic, "absent"),
       session(secondSessionTopic, "empty"),
-      { topic: "6".repeat(64), expiry: -1, namespaces: {} },
+      { topic: "6".repeat(64), pairingTopic, expiry: -1, namespaces: {} },
     ];
 
     const observed = created.acquisition.client.observe();
@@ -629,6 +655,22 @@ describe("WalletConnect public adapter boundary", () => {
     await containCreatedClient(created);
     expect(created.storage.closeCount).toBe(0);
     expect(created.sdk.sessionDisconnects).toEqual([]);
+  });
+
+  it("contains restart residue without disconnecting a pairing owned by a live session", async () => {
+    const orphanTopic = "7".repeat(64);
+    const created = await createClient();
+    created.sdk.sessions = [session()];
+    created.sdk.proposals = [proposal(9, orphanTopic)];
+    created.sdk.pairings = [pairing(pairingTopic), pairing(orphanTopic)];
+
+    await created.acquisition.client.containPendingConnectionState();
+
+    expect(created.sdk.expiredProposalIds).toEqual([9]);
+    expect(created.sdk.pairingDisconnects).toEqual([orphanTopic]);
+    expect(created.sdk.pairings).toEqual([pairing(pairingTopic)]);
+    expect(created.sdk.sessionDisconnects).toEqual([]);
+    await containCreatedClient(created);
   });
 
   it("maps an opaque source identifier back to the latest observed topic", async () => {
@@ -1009,9 +1051,12 @@ describe("WalletConnect production SDK projection", () => {
       session: { getAll: () => [session()] },
       core: {
         expirer: { set: (id: number) => log.push(`expire:${id}`) },
-        pairing: { disconnect: async ({ topic }: { topic: string }) => {
-          log.push(`pairing:${topic}`);
-        } },
+        pairing: {
+          getPairings: () => [],
+          disconnect: async ({ topic }: { topic: string }) => {
+            log.push(`pairing:${topic}`);
+          },
+        },
       },
       connect: async (input: unknown) => {
         connectInput = input;

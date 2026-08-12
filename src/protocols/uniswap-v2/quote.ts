@@ -7,7 +7,7 @@ import {
   type Erc20AssetIdentity,
   type ExactRational,
   type EvmAddress,
-} from "../../core/browser.js";
+} from "../../core/client.js";
 
 const uint256Maximum = (1n << 256n) - 1n;
 export const uniswapV2FeeAdjustedInputNumerator = 997n;

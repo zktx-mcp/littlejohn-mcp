@@ -415,9 +415,9 @@ describe("reference market core contract", () => {
         historyWindow: canonicalSchema(referenceHistoryWindowSchema, "input"),
       },
     } as unknown as CanonicalJson);
-    expect(Buffer.byteLength(ownerProjection, "utf8")).toBe(12_985);
+    expect(Buffer.byteLength(ownerProjection, "utf8")).toBe(13_225);
     expect(sha256(ownerProjection)).toBe(
-      "faa09e1e2ecc83a15f9f580bdfd88da90476b87e1c842d264e2f6f16f1ee20a5",
+      "5ee8d8607a0aaf3a40fa75f4efdfd30eebb29d6c5e1630becaf6069992c6bced",
     );
 
     const publicContractProjection = canonicalBytes({
@@ -432,9 +432,9 @@ describe("reference market core contract", () => {
       watchlistReorderInput:
         canonicalSchema(referenceWatchlistReorderInputSchema, "input"),
     } as unknown as CanonicalJson);
-    expect(Buffer.byteLength(publicContractProjection, "utf8")).toBe(57_004);
+    expect(Buffer.byteLength(publicContractProjection, "utf8")).toBe(57_604);
     expect(sha256(publicContractProjection)).toBe(
-      "135ddbfe094430f0c7b99098b0fc4271663c2e899bba7a67f25f62e72f0b0212",
+      "a357f64de36b206d7286ee7914b0896f8082830a15d0c362c9b153077e1b776a",
     );
   });
 

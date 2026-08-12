@@ -13,13 +13,16 @@ import {
   erc20AssetIdentitySchema,
   getCapabilityDefinitionSnapshot,
   parseCapabilitySuccess,
+  parseHash32,
   parseUtcTimestamp,
   tokenStandardObservationResultSchema,
-  type ApplicationFailure,
   type CanonicalJson,
 } from "../../src/core/index.js";
 import { internalResponseLimitBytes } from "../../src/runtime/http-boundary.js";
+import { officialAssetSnapshotRevisionSchema } from "../../src/registry/index.js";
 import {
+  createTokenAdditionReviewProjection,
+  parseTokenSelectionReview,
   tokenCatalogApplicationContracts,
   tokenCatalogCapabilityIds,
   tokenCatalogContractLimits,
@@ -27,11 +30,10 @@ import {
   tokenCatalogContractProjectionDigest,
   tokenCatalogErrorDefinitions,
   tokenCatalogInterfaceErrorMappingDefinitions,
-  tokenCatalogOperationConfirmationContract,
   tokenCatalogOperationIdSchema,
   tokenCatalogOperationSchema,
   tokenInspectCapability,
-  tokenInspectionDigest,
+  tokenSelectionReviewDigest,
   tokenInspectionDataSchema,
   tokenInspectionInputSchema,
   tokenInspectionSuccessSchema,
@@ -41,9 +43,9 @@ import {
   type TokenCatalogOperationVariant,
   type TokenInspectionSuccess,
   type TokenSelection,
+  type TokenSelectionReview,
 } from "../../src/token-catalog/index.js";
-import { TokenCatalogOperationError } from "../../src/token-catalog/operation-error.js";
-import { createInspectionSuccess, walletAddress } from "./harness.js";
+import { createInspectionSuccess, createTokenOperation, walletAddress } from "./harness.js";
 import {
   changeUnavailableOwnerReason,
   createExactResolvedAnalysis,
@@ -59,10 +61,11 @@ const asset = erc20AssetIdentitySchema.parse({
 
 const operationId = "A".repeat(43);
 const revisionA = Buffer.alloc(16, 1).toString("base64url");
-const revisionB = Buffer.alloc(16, 2).toString("base64url");
-const snapshotRevision = Buffer.alloc(16, 3).toString("base64url");
+const snapshotRevision = officialAssetSnapshotRevisionSchema.parse(
+  Buffer.alloc(16, 3).toString("base64url"),
+);
 const createdAt = parseUtcTimestamp("2026-07-18T00:00:03.000Z");
-const expiresAt = parseUtcTimestamp("2026-07-18T00:05:03.000Z");
+const actionExpiresAt = parseUtcTimestamp("2026-07-18T00:05:03.000Z");
 
 const independentCanonicalJson = (value: unknown): string => {
   if (value === null || typeof value === "string" || typeof value === "boolean") {
@@ -101,32 +104,57 @@ const selectionFor = (
   updatedAt: createdAt,
 });
 
-const awaitingOperation = (input: Readonly<{
-  inspection: TokenInspectionSuccess;
-  kind: TokenCatalogOperation["kind"];
-  previousSelection: TokenSelection | null;
-}>): TokenCatalogOperation => tokenCatalogOperationSchema.parse({
-  operationId,
-  kind: input.kind,
-  state: "awaiting_confirmation",
-  interactionInterface: "web",
-  createdAt,
-  expiresAt,
-  account: { chainId: input.inspection.data.asset.chainId, address: walletAddress },
-  connectionRevision: "1",
-  asset: input.inspection.data.asset,
-  review: {
-    previousSelection: input.previousSelection,
-    selectionSetRevision: null,
-    inspection: input.kind === "add" ? input.inspection : null,
-    inspectionDigest: input.kind === "add" ? tokenInspectionDigest(input.inspection) : null,
-    officialSnapshotRevision: input.kind === "add" ? snapshotRevision : null,
-    officialEvidence: null,
-    reviewDigest: `0x${"ab".repeat(32)}`,
-  },
-  result: null,
-  failure: null,
-});
+type AdditionReview = Extract<TokenSelectionReview, { readonly kind: "add" }>;
+
+const additionReviewFor = (
+  inspection: TokenInspectionSuccess,
+  officialEvidence: AdditionReview["fixedEvidence"]["officialEvidence"] = null,
+): AdditionReview => {
+  const projection = officialEvidence === null
+    ? createTokenAdditionReviewProjection({
+        inspection,
+        officialSnapshotRevision: snapshotRevision,
+        officialMember: null,
+        officialVerification: null,
+      })
+    : {
+        decision: {
+          name: inspection.data.metadata.name.status === "available"
+            ? { status: "available" as const, value: inspection.data.metadata.name.value }
+            : { status: "unavailable" as const, reason: inspection.data.metadata.name.reason },
+          symbol: inspection.data.metadata.symbol.status === "available"
+            ? { status: "available" as const, value: inspection.data.metadata.symbol.value }
+            : { status: "unavailable" as const, reason: inspection.data.metadata.symbol.reason },
+          officialClassification: "official" as const,
+          warningCodes: [],
+        },
+        fixedEvidence: {
+          inspectionBlock: inspection.data.analysis.block,
+          officialSnapshotRevision: snapshotRevision,
+          officialEvidence,
+        },
+      };
+  const withoutDigest = {
+    contractVersion: "1" as const,
+    domain: "token_selection" as const,
+    operationId,
+    kind: "add" as const,
+    createdAt,
+    actionExpiresAt,
+    target: { asset: inspection.data.asset },
+    precondition: {
+      account: { chainId: inspection.data.asset.chainId, address: walletAddress },
+      connectionRevision: "1",
+      previousSelection: null,
+      selectionSetRevision: null,
+    },
+    ...projection,
+  };
+  return parseTokenSelectionReview({
+    ...withoutDigest,
+    reviewDigest: tokenSelectionReviewDigest(withoutDigest),
+  }) as AdditionReview;
+};
 
 describe("token catalog contracts", () => {
   it("preserves the independent token inspection schema projections", () => {
@@ -161,31 +189,31 @@ describe("token catalog contracts", () => {
       contractVersion: "1",
     });
     expect(tokenCatalogCapabilityIds).toEqual([
-      "token.cancel_operation",
+      "token.add_selection",
       "token.inspect",
       "token.operation",
+      "token.remove_selection",
       "token.selection",
+      "token.selection_change_review",
       "token.selections",
-      "token.start_addition",
-      "token.start_removal",
     ]);
     expect(applicationVersions).toEqual({
-      "token.cancel_operation": "1",
+      "token.add_selection": "1",
       "token.operation": "1",
+      "token.remove_selection": "1",
       "token.selection": "1",
+      "token.selection_change_review": "1",
       "token.selections": "1",
-      "token.start_addition": "1",
-      "token.start_removal": "1",
     });
-    expect(tokenCatalogOperationConfirmationContract.contractVersion).toBe("1");
     expect(tokenCatalogContractProjection.contractVersion).toBe("1");
     expect(tokenCatalogContractProjection.inspection).toEqual(inspectionContract);
     expect(Object.fromEntries(tokenCatalogContractProjection.applications.map((contract) => [
       contract.capabilityId,
       contract.contractVersion,
     ]))).toEqual(applicationVersions);
-    expect(tokenCatalogContractProjection.operationConfirmation.contractVersion)
-      .toBe(tokenCatalogOperationConfirmationContract.contractVersion);
+    expect(tokenCatalogContractProjection.initiators).toEqual(["cli", "mcp_app"]);
+    expect(tokenCatalogContractProjection.operationKinds).toEqual(["add", "remove"]);
+    expect(tokenCatalogContractProjection.operationStates).toEqual(["completed"]);
     expect(tokenCatalogContractProjection.digestVersions).toEqual({
       inspection: "1",
       review: "1",
@@ -206,7 +234,7 @@ describe("token catalog contracts", () => {
     });
     expect(getCapabilityDefinitionSnapshot(tokenInspectCapability).failureCodes)
       .toContain("token_total_supply_reverted");
-    expect(tokenCatalogApplicationContracts.startAddition.failureCodes)
+    expect(tokenCatalogApplicationContracts.addSelection.failureCodes)
       .toContain("token_total_supply_reverted");
     expect(tokenCatalogErrorDefinitions).toEqual(expect.arrayContaining([
       {
@@ -240,10 +268,8 @@ describe("token catalog contracts", () => {
         retryable: false,
       },
     ]));
-    expect(tokenCatalogApplicationContracts.startAddition.failureCodes).toEqual(
+    expect(tokenCatalogApplicationContracts.addSelection.failureCodes).toEqual(
       expect.arrayContaining([
-        "official_asset_response_unavailable",
-        "official_asset_response_too_large",
         "factory_identity_mismatch",
         "token_code_missing",
         "token_identity_mismatch",
@@ -505,19 +531,16 @@ describe("token catalog contracts", () => {
       ...original,
       data: { ...original.data, analysis: changedOwner },
     };
-    const operation = awaitingOperation({
-      inspection: original,
-      kind: "add",
-      previousSelection: null,
-    });
-    expect(() => tokenCatalogOperationSchema.parse({
-      ...operation,
-      review: {
-        ...operation.review,
-        inspection: changedInspection,
-        inspectionDigest: tokenInspectionDigest(changedInspection),
+    const review = additionReviewFor(original);
+    expect(() => parseTokenSelectionReview({
+      ...review,
+      decision: {
+        ...review.decision,
+        name: review.decision.name.status === "available"
+          ? { ...review.decision.name, value: `${review.decision.name.value} changed` }
+          : changedInspection.data.metadata.name,
       },
-    }), "operation review").toThrow();
+    }), "Review digest").toThrow();
 
     expect(() => parseCapabilitySuccess(tokenInspectCapability, input, {
       ...original,
@@ -559,34 +582,32 @@ describe("token catalog contracts", () => {
       expect(() => tokenInspectionSuccessSchema.parse(invalidInspection)).toThrow();
     }
 
-    const add = awaitingOperation({
-      inspection,
-      kind: "add",
-      previousSelection: null,
-    });
-    const officialEvidence = {
-      assetUid: `0x${"56".repeat(32)}`,
+    const officialEvidence: NonNullable<
+      AdditionReview["fixedEvidence"]["officialEvidence"]
+    > = {
+      assetUid: parseHash32(`0x${"56".repeat(32)}`),
       snapshotRevision,
       verificationBlock: inspection.data.analysis.block,
     };
-    expect(() => tokenCatalogOperationSchema.parse({
-      ...add,
-      review: { ...add.review, officialEvidence },
-    })).not.toThrow();
+    const review = additionReviewFor(inspection, officialEvidence);
+    expect(() => parseTokenSelectionReview(review)).not.toThrow();
 
     for (const mutation of anchorMutations) {
-      expect(() => tokenCatalogOperationSchema.parse({
-        ...add,
-        review: {
-          ...add.review,
-          officialEvidence: {
-            ...officialEvidence,
-            verificationBlock: {
-              ...officialEvidence.verificationBlock,
-              [mutation.field]: mutation.value,
-            },
+      const fixedEvidence = {
+        ...review.fixedEvidence,
+        officialEvidence: {
+          ...officialEvidence,
+          verificationBlock: {
+            ...officialEvidence.verificationBlock,
+            [mutation.field]: mutation.value,
           },
         },
+      };
+      const { reviewDigest: _digest, ...base } = review;
+      const mutated = { ...base, fixedEvidence };
+      expect(() => parseTokenSelectionReview({
+        ...mutated,
+        reviewDigest: tokenSelectionReviewDigest(mutated),
       })).toThrow();
     }
   });
@@ -596,8 +617,12 @@ describe("token catalog contracts", () => {
       limit: 25,
       cursor: null,
     });
-    expect(tokenCatalogApplicationContracts.startAddition.parseInput({ asset })).toEqual({ asset });
-    expect(() => tokenCatalogApplicationContracts.startAddition.parseInput({
+    expect(tokenCatalogApplicationContracts.selectionChangeReview.parseInput({
+      kind: "add",
+      asset,
+    })).toEqual({ kind: "add", asset });
+    expect(() => tokenCatalogApplicationContracts.selectionChangeReview.parseInput({
+      kind: "add",
       asset,
       settings: {},
     })).toThrow();
@@ -611,6 +636,8 @@ describe("token catalog contracts", () => {
       operationIdBytes: 32,
       listDefaultLimit: 25,
       listMaximumLimit: 25,
+      directActionUtf8Bytes: 32_768,
+      reviewActionMilliseconds: 300_000,
     });
     expect(tokenSelectionRevisionSchema.safeParse("A".repeat(22)).success).toBe(true);
     expect(tokenSelectionRevisionSchema.safeParse("A".repeat(21)).success).toBe(false);
@@ -660,7 +687,7 @@ describe("token catalog contracts", () => {
     expect(() => tokenCatalogApplicationContracts.selection.parseInput({ asset, extra: true })).toThrow();
   });
 
-  it("binds list and operation-start successes to the exact normalized request", async () => {
+  it("binds list and Review successes to the exact normalized request", async () => {
     const inspection = await createInspectionSuccess();
     const secondAsset = erc20AssetIdentitySchema.parse({ ...asset, address: `0x${"13".repeat(20)}` });
     const secondInspection = await createInspectionSuccess({ asset: secondAsset, block: { kind: "latest" } });
@@ -691,157 +718,47 @@ describe("token catalog contracts", () => {
       page,
     )).toThrow();
 
-    const add = awaitingOperation({
-      inspection,
-      kind: "add",
-      previousSelection: null,
-    });
-    const registerSuccess = { operation: add };
-    expect(tokenCatalogApplicationContracts.startAddition.parsePublicSuccess({ asset }, registerSuccess))
-      .toEqual(registerSuccess);
-    expect(() => tokenCatalogApplicationContracts.startAddition.parseInput({
-      asset,
-      expectedRevision: revisionA,
-    })).toThrow();
-    expect(() => tokenCatalogApplicationContracts.startAddition.parsePublicSuccess({
-      asset: secondAsset,
-    }, registerSuccess)).toThrow();
-
-    const previous = selectionFor(inspection);
-    const remove = awaitingOperation({
-      inspection,
-      kind: "remove",
-      previousSelection: previous,
-    });
-    const unregisterSuccess = { operation: remove };
-    expect(tokenCatalogApplicationContracts.startRemoval.parsePublicSuccess({
-      asset,
-      expectedRevision: revisionA,
-    }, unregisterSuccess)).toEqual(unregisterSuccess);
-    expect(() => tokenCatalogApplicationContracts.startRemoval.parsePublicSuccess({
-      asset,
-      expectedRevision: revisionB,
-    }, unregisterSuccess)).toThrow();
-  });
-
-  it("owns one strict confirmation input, success, and failure contract", async () => {
-    const inspection = await createInspectionSuccess();
-    const awaiting = awaitingOperation({
-      inspection,
-      kind: "add",
-      previousSelection: null,
-    });
-    const input = {
-      operationId: awaiting.operationId,
-      reviewDigest: awaiting.review.reviewDigest,
-    };
-    const completed = tokenCatalogOperationSchema.parse({
-      ...awaiting,
-      state: "completed",
-      result: {
-        selection: selectionFor(inspection),
-        historicalInspection: inspection,
-      },
-    });
-    const failed = tokenCatalogOperationSchema.parse({
-      ...awaiting,
-      state: "failed",
-      failure: new TokenCatalogOperationError("state_conflict").failure,
-    });
-
-    expect(tokenCatalogOperationConfirmationContract.parseInput(input)).toEqual(input);
-    expect(Object.isFrozen(tokenCatalogOperationConfirmationContract.parseInput(input))).toBe(true);
-    expect(() => tokenCatalogOperationConfirmationContract.parseInput({ ...input, extra: true })).toThrow();
-    expect(() => tokenCatalogOperationConfirmationContract.parseInput({
-      ...input,
-      reviewDigest: input.reviewDigest.toUpperCase(),
-    })).toThrow();
-    expect(tokenCatalogOperationConfirmationContract.parsePublicSuccess(input, completed)).toEqual(completed);
-    expect(tokenCatalogOperationConfirmationContract.parsePublicSuccess(input, failed)).toEqual(failed);
-    expect(() => tokenCatalogOperationConfirmationContract.parsePublicSuccess({
-      ...input,
-      operationId: "B".repeat(43),
-    }, completed)).toThrow();
-    expect(() => tokenCatalogOperationConfirmationContract.parsePublicSuccess({
-      ...input,
-      reviewDigest: `0x${"cd".repeat(32)}`,
-    }, completed)).toThrow();
-
-    const declaredFailure = new TokenCatalogOperationError("state_conflict").failure;
-    expect(tokenCatalogOperationConfirmationContract.parseFailure(declaredFailure)).toEqual(declaredFailure);
-    expect(() => tokenCatalogOperationConfirmationContract.parseFailure(
-      new TokenCatalogOperationError("wallet_not_connected").failure,
-    )).toThrow();
-    expect(tokenCatalogContractProjection.operationConfirmation.failureCodes).toEqual([
-      "internal_error",
-      "invalid_input",
-      "runtime_state_unavailable",
-      "state_conflict",
-      "token_operation_expired",
-      "token_operation_not_found",
-    ]);
-
-    const ajv = new Ajv2020({ strict: true, formats: { uri: true, "date-time": true } });
-    const validateInput = ajv.compile(tokenCatalogContractProjection.operationConfirmation.inputSchema as object);
-    const validateSuccess = ajv.compile(tokenCatalogContractProjection.operationConfirmation.successSchema as object);
-    expect(validateInput(input)).toBe(true);
-    expect(validateInput({ ...input, extra: true })).toBe(false);
-    expect(validateSuccess(completed)).toBe(true);
-    expect(validateSuccess(awaiting)).toBe(false);
-  });
-
-  it("keeps start results pending and cancellation results terminal", async () => {
-    const inspection = await createInspectionSuccess();
-    const awaiting = awaitingOperation({
-      inspection,
-      kind: "add",
-      previousSelection: null,
-    });
-    const applying = tokenCatalogOperationSchema.parse({ ...awaiting, state: "applying" });
-    const cancelled = tokenCatalogOperationSchema.parse({ ...awaiting, state: "cancelled" });
-    const input = tokenCatalogApplicationContracts.startAddition.parseInput({ asset });
-
-    expect(tokenCatalogApplicationContracts.startAddition.parsePublicSuccess(input, { operation: awaiting }))
-      .toEqual({ operation: awaiting });
-    expect(() => tokenCatalogApplicationContracts.startAddition.parsePublicSuccess(input, {
-      operation: applying,
-    })).toThrow();
-    expect(() => tokenCatalogApplicationContracts.startAddition.parsePublicSuccess(input, {
-      operation: awaiting,
-      managementUrl: "http://127.0.0.1:46630/",
-    })).toThrow();
-    expect(tokenCatalogApplicationContracts.cancelOperation.parsePublicSuccess(
-      { operationId: cancelled.operationId },
-      { operation: cancelled },
-    )).toEqual({ operation: cancelled });
-    expect(() => tokenCatalogApplicationContracts.cancelOperation.parsePublicSuccess(
-      { operationId: awaiting.operationId },
-      { operation: awaiting },
-    )).toThrow();
-    expect(() => tokenCatalogApplicationContracts.cancelOperation.parsePublicSuccess(
-      { operationId: applying.operationId },
-      { operation: applying },
-    )).toThrow();
-    expect(() => tokenCatalogApplicationContracts.cancelOperation.parsePublicSuccess(
-      { operationId: "B".repeat(43) },
-      { operation: cancelled },
+    const review = additionReviewFor(inspection);
+    const reviewResult = { review };
+    expect(tokenCatalogApplicationContracts.selectionChangeReview.parsePublicSuccess(
+      { kind: "add", asset },
+      reviewResult,
+    )).toEqual(reviewResult);
+    expect(() => tokenCatalogApplicationContracts.selectionChangeReview.parsePublicSuccess(
+      { kind: "add", asset: secondAsset },
+      reviewResult,
     )).toThrow();
   });
 
-  it("projects exact structural schemas for start and cancellation results", async () => {
-    const inspection = await createInspectionSuccess();
-    const awaiting = awaitingOperation({
-      inspection,
+  it("owns strict direct actions and correlates them with one immutable terminal result", async () => {
+    const completed = await createTokenOperation({ kind: "add", initiatedBy: "mcp_app" });
+    const action = { review: completed.review, initiatedBy: "mcp_app" as const };
+    expect(tokenCatalogApplicationContracts.addSelection.parseInput(action)).toEqual(action);
+    expect(Object.isFrozen(tokenCatalogApplicationContracts.addSelection.parseInput(action))).toBe(true);
+    expect(() => tokenCatalogApplicationContracts.addSelection.parseInput({ ...action, extra: true }))
+      .toThrow();
+    expect(tokenCatalogApplicationContracts.addSelection.parsePublicSuccess(action, completed))
+      .toEqual(completed);
+    expect(() => tokenCatalogApplicationContracts.addSelection.parsePublicSuccess(action, {
+      ...completed,
+      operationId: Buffer.alloc(32, 7).toString("base64url"),
+    })).toThrow();
+
+    const other = await createTokenOperation({
       kind: "add",
-      previousSelection: null,
+      operationId: Buffer.alloc(32, 8).toString("base64url"),
+      initiatedBy: "mcp_app",
     });
-    const applying = tokenCatalogOperationSchema.parse({ ...awaiting, state: "applying" });
-    const cancelled = tokenCatalogOperationSchema.parse({ ...awaiting, state: "cancelled" });
-    const wrongKind = awaitingOperation({
-      inspection,
-      kind: "remove",
-      previousSelection: selectionFor(inspection),
-    });
+    expect(() => tokenCatalogApplicationContracts.addSelection.parsePublicSuccess(action, other))
+      .toThrow();
+    expect(() => tokenCatalogApplicationContracts.removeSelection.parseInput(action as never))
+      .toThrow();
+  });
+
+  it("projects exact structural schemas for Review, action, and terminal operation", async () => {
+    const completed = await createTokenOperation({ kind: "add", initiatedBy: "cli" });
+    const reviewResult = { review: completed.review };
+    const action = { review: completed.review, initiatedBy: "cli" as const };
     const schemaFor = (capabilityId: string): object => {
       const projection = tokenCatalogContractProjection.applications.find(
         (candidate) => candidate.capabilityId === capabilityId,
@@ -853,37 +770,29 @@ describe("token catalog contracts", () => {
       strict: true,
       formats: { uri: true, "date-time": true },
     });
-    const validateStart = ajv.compile(schemaFor("token.start_addition"));
-    const validateCancel = ajv.compile(schemaFor("token.cancel_operation"));
+    const validateReview = ajv.compile(schemaFor("token.selection_change_review"));
+    const validateAction = ajv.compile(schemaFor("token.add_selection"));
+    const validateOperation = ajv.compile(schemaFor("token.operation"));
 
-    expect(validateStart({ operation: awaiting })).toBe(true);
-    expect(validateStart({ operation: applying })).toBe(false);
-    expect(validateStart({ operation: wrongKind })).toBe(false);
-    expect(validateStart({ operation: awaiting, managementUrl: "http://127.0.0.1:46630/" })).toBe(false);
-    expect(validateCancel({ operation: cancelled })).toBe(true);
-    expect(validateCancel({ operation: awaiting })).toBe(false);
-    expect(validateCancel({ operation: applying })).toBe(false);
+    expect(validateReview(reviewResult)).toBe(true);
+    expect(validateReview({ ...reviewResult, extra: true })).toBe(false);
+    expect(validateAction(completed)).toBe(true);
+    expect(validateAction({ ...completed, state: "applying" })).toBe(false);
+    expect(validateOperation(completed)).toBe(true);
+    expect(tokenCatalogApplicationContracts.addSelection.inputSchema.parse(action)).toEqual(action);
   });
 
-  it("preserves operation result and failure correlation during type narrowing", () => {
+  it("narrows every operation to one completed result and exact kind", () => {
     const audit = (operation: TokenCatalogOperation): void => {
-      if (operation.state === "failed") {
-        expectTypeOf(operation.failure).toEqualTypeOf<ApplicationFailure>();
-        expectTypeOf(operation.result).toEqualTypeOf<null>();
-      }
-      if (operation.state === "awaiting_confirmation" || operation.state === "applying") {
-        expectTypeOf(operation.failure).toEqualTypeOf<null>();
-        expectTypeOf(operation.result).toEqualTypeOf<null>();
-      }
-      if (operation.state === "completed" && operation.kind === "remove") {
+      expect(operation.state).toBe("completed");
+      if (operation.kind === "remove") {
         expectTypeOf(operation.result).toEqualTypeOf<
-          TokenCatalogOperationVariant<"remove", "completed">["result"]
+          TokenCatalogOperationVariant<"remove">["result"]
         >();
-        expectTypeOf(operation.failure).toEqualTypeOf<null>();
       }
-      if (operation.state === "completed" && operation.kind === "add") {
+      if (operation.kind === "add") {
         expectTypeOf(operation.result).toEqualTypeOf<
-          TokenCatalogOperationVariant<"add", "completed">["result"]
+          TokenCatalogOperationVariant<"add">["result"]
         >();
       }
     };
@@ -891,24 +800,19 @@ describe("token catalog contracts", () => {
   });
 
   it("binds completed selection results to the reviewed inspection and lifecycle", async () => {
-    const inspection = await createInspectionSuccess();
-    const add = awaitingOperation({
-      inspection,
-      kind: "add",
-      previousSelection: null,
-    });
-    const created = selectionFor(inspection);
-    expect(tokenCatalogOperationSchema.parse({
-      ...add,
-      state: "completed",
-      result: { selection: created, historicalInspection: inspection },
-    })).toMatchObject({ state: "completed", result: { selection: { revision: revisionA } } });
+    const add = await createTokenOperation({ kind: "add" });
+    expect(tokenCatalogOperationSchema.parse(add)).toEqual(add);
     expect(() => tokenCatalogOperationSchema.parse({
       ...add,
-      state: "completed",
       result: {
-        selection: { ...created, createdAt: "2026-07-18T00:00:02.000Z" },
-        historicalInspection: inspection,
+        ...add.result,
+        selection: {
+          ...add.result.selection,
+          selection: {
+            ...add.result.selection.selection,
+            updatedAt: "2026-07-18T00:00:02.000Z",
+          },
+        },
       },
     })).toThrow();
   });

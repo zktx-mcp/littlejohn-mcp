@@ -1,4 +1,5 @@
 import type { CanonicalClock } from "../core/index.js";
+import type { OfficialAssetSynchronizationPort } from "../registry/index.js";
 import type { RuntimeRouteRegistry } from "../runtime/http-routing.js";
 import {
   createResourceOwnershipScope,
@@ -12,47 +13,19 @@ import { createTokenCatalogApplication } from "./application.js";
 import { TokenCatalogCoordinator } from "./coordinator.js";
 import { TokenCatalogOperationError } from "./operation-error.js";
 import type {
-  TokenCatalogApplicationPort,
   AccountTokenSelectionStore,
-  TokenCatalogBrowserOperationPort,
+  TokenCatalogApplicationPort,
   TokenCatalogConsumerPorts,
   TokenCatalogCoordinatorDependencies,
-  TokenCatalogInteractiveCliPort,
-  TokenCatalogNonInteractiveOperationPort,
-  TokenCatalogOperationCoordinatorPort,
+  TokenCatalogManagementApplicationPort,
   TokenCatalogQueryApplicationPort,
   TokenCatalogQueryStore,
-  TokenCatalogStartApplicationPort,
   TokenCatalogStore,
 } from "./ports.js";
-import type { TokenCatalogInteractionInterface } from "./state.js";
 import { extendTokenCatalogSupportManifest } from "./support.js";
-
-const createStartPort = <InteractionInterface extends TokenCatalogInteractionInterface>(
-  application: TokenCatalogApplicationPort,
-  interactionInterface: InteractionInterface,
-  assertOpen: () => void,
-): TokenCatalogStartApplicationPort<InteractionInterface> => Object.freeze({
-  interactionInterface,
-  startAddition(
-    input: Parameters<TokenCatalogApplicationPort["startAddition"]>[0],
-    operationId: Parameters<TokenCatalogStartApplicationPort<InteractionInterface>["startAddition"]>[1],
-  ) {
-    assertOpen();
-    return application.startAddition(input, { operationId, interactionInterface });
-  },
-  startRemoval(
-    input: Parameters<TokenCatalogApplicationPort["startRemoval"]>[0],
-    operationId: Parameters<TokenCatalogStartApplicationPort<InteractionInterface>["startRemoval"]>[1],
-  ) {
-    assertOpen();
-    return application.startRemoval(input, { operationId, interactionInterface });
-  },
-});
 
 const createTokenCatalogConsumerPorts = (
   application: TokenCatalogApplicationPort,
-  coordinator: TokenCatalogOperationCoordinatorPort,
   accountTokenSelectionStore: AccountTokenSelectionStore,
   assertOpen: () => void,
 ): TokenCatalogConsumerPorts => {
@@ -66,45 +39,20 @@ const createTokenCatalogConsumerPorts = (
       return application.listSelections(input);
     },
   }) satisfies TokenCatalogQueryApplicationPort;
-  const tokenCatalogWebStart = createStartPort(application, "web", assertOpen);
-  const cliStart = createStartPort(application, "cli", assertOpen);
-  const tokenCatalogBrowserOperations = Object.freeze({
-    interactionInterface: "web",
+  const tokenCatalogManagement = Object.freeze({
+    review(input: Parameters<TokenCatalogApplicationPort["review"]>[0]) {
+      assertOpen();
+      return application.review(input);
+    },
+    decide(input: Parameters<TokenCatalogApplicationPort["decide"]>[0]) {
+      assertOpen();
+      return application.decide(input);
+    },
     getOperation(input: Parameters<TokenCatalogApplicationPort["getOperation"]>[0]) {
       assertOpen();
       return application.getOperation(input);
     },
-    getCurrentOperation() {
-      assertOpen();
-      return coordinator.getCurrentOperation();
-    },
-    confirm(input: Parameters<TokenCatalogBrowserOperationPort["confirm"]>[0]) {
-      assertOpen();
-      return coordinator.confirm({ operationId: input.operationId, interactionInterface: "web" }, input);
-    },
-    cancel(operationId: Parameters<TokenCatalogBrowserOperationPort["cancel"]>[0]) {
-      assertOpen();
-      return coordinator.cancel(operationId, "web");
-    },
-  }) satisfies TokenCatalogBrowserOperationPort;
-  const tokenCatalogInteractiveCli = Object.freeze({
-    ...cliStart,
-    interactionInterface: "cli",
-    confirm(input: Parameters<TokenCatalogInteractiveCliPort["confirm"]>[0]) {
-      assertOpen();
-      return coordinator.confirm({ operationId: input.operationId, interactionInterface: "cli" }, input);
-    },
-  }) satisfies TokenCatalogInteractiveCliPort;
-  const tokenCatalogNonInteractiveOperations = Object.freeze({
-    getOperation(input: Parameters<TokenCatalogApplicationPort["getOperation"]>[0]) {
-      assertOpen();
-      return application.getOperation(input);
-    },
-    cancelOperation(input: Parameters<TokenCatalogApplicationPort["cancelOperation"]>[0]) {
-      assertOpen();
-      return application.cancelOperation(input);
-    },
-  }) satisfies TokenCatalogNonInteractiveOperationPort;
+  }) satisfies TokenCatalogManagementApplicationPort;
   return Object.freeze({
     accountTokenSelectionStore: Object.freeze({
       getState(input: Parameters<AccountTokenSelectionStore["getState"]>[0]) {
@@ -125,17 +73,14 @@ const createTokenCatalogConsumerPorts = (
       },
     }),
     tokenCatalogQueries,
-    tokenCatalogWebStart,
-    tokenCatalogBrowserOperations,
-    tokenCatalogInteractiveCli,
-    tokenCatalogNonInteractiveOperations,
+    tokenCatalogManagement,
   });
 };
 
 export interface TokenCatalogApplication extends TokenCatalogConsumerPorts {
   readonly routes: RuntimeRouteRegistry;
   readonly supportManifest: TokenCatalogRuntimeSupportManifest;
-  readonly officialAssets: TokenCatalogCoordinatorDependencies["officialAssets"];
+  readonly officialAssets: TokenCatalogApplicationFactoryInput["officialAssets"];
   close(): Promise<void>;
 }
 
@@ -144,7 +89,7 @@ export interface TokenCatalogApplicationFactoryInput {
   readonly supportManifest: ChainRuntimeSupportManifest;
   readonly activeWallet: TokenCatalogCoordinatorDependencies["activeWallet"];
   readonly additionChainReads: TokenCatalogCoordinatorDependencies["additionChainReads"];
-  readonly officialAssets: TokenCatalogCoordinatorDependencies["officialAssets"];
+  readonly officialAssets: OfficialAssetSynchronizationPort;
   readonly startupResources: OwnedResourceRegistry;
   readonly store: TokenCatalogStore;
   readonly readStore: TokenCatalogQueryStore;
@@ -199,7 +144,6 @@ export const createTokenCatalogApplicationFactory = async (
     });
     const ports = createTokenCatalogConsumerPorts(
       application,
-      coordinator,
       input.accountTokenSelectionStore,
       assertOpen,
     );

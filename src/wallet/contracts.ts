@@ -1,16 +1,11 @@
-import {
-  type WalletInteractionInterface,
-  type WalletOperationKind,
-} from "./operation-state.js";
 import type {
+  WalletDirectAction,
   WalletManagementOperation,
-  WalletCurrentOperationProjection,
+  WalletNonterminalManagementOperation,
   WalletOperationCancellation,
-  WalletOperationConfirmation,
-  WalletOperationCreate,
-  WalletOperationStartResult,
   WalletOperationPresentation,
-  WalletWebOperationCreate,
+  WalletReviewRequest,
+  WalletReviewResult,
 } from "./operation-contract.js";
 
 export * from "./operation-contract.js";
@@ -18,51 +13,33 @@ export {
   walletManagementCapabilityIdList,
   walletManagementContractList,
   walletManagementContracts,
-  walletOperationConfirmationContract,
 } from "./management-contracts.js";
 export type {
   AnyWalletManagementContract,
   WalletManagementContractDefinition,
 } from "./management-contracts.js";
 
-export interface WalletLocalControlOperationPort {
-  start(input: WalletOperationCreate): Promise<WalletOperationStartResult>;
-  get(operationId: string): Promise<WalletManagementOperation>;
+export interface WalletOperationTransitionCommand {
+  readonly operationId: WalletManagementOperation["operationId"];
+  readonly reviewDigest: WalletManagementOperation["review"]["reviewDigest"];
+  readonly expectedState: WalletNonterminalManagementOperation["state"];
+  readonly connectionRevision: WalletManagementOperation["review"]["precondition"]["connectionRevision"];
+  readonly operation: WalletManagementOperation;
+}
+
+export interface WalletOperationStore {
+  read(operationId: WalletManagementOperation["operationId"]): WalletManagementOperation | null;
+  readActive(): WalletNonterminalManagementOperation | null;
+  create(operation: WalletNonterminalManagementOperation): WalletNonterminalManagementOperation;
+  transition(command: WalletOperationTransitionCommand): WalletManagementOperation;
+}
+
+export interface WalletManagementPort {
+  review(input: WalletReviewRequest): Promise<WalletReviewResult>;
+  decide(input: WalletDirectAction): Promise<WalletManagementOperation>;
+  get(operationId: WalletManagementOperation["operationId"]): Promise<WalletManagementOperation>;
   cancel(input: WalletOperationCancellation): Promise<WalletManagementOperation>;
-}
-
-export interface WalletWebOperationPort {
-  start(input: WalletWebOperationCreate, operationId: string): Promise<WalletOperationStartResult>;
-  cancel(
-    operationId: string,
-    input: WalletOperationConfirmation,
-  ): Promise<WalletManagementOperation>;
-}
-
-export interface WalletOperationConfirmationPort<
-  InteractionInterface extends WalletInteractionInterface,
-> {
-  readonly interactionInterface: InteractionInterface;
-  confirm(
-    operationId: string,
-    input: WalletOperationConfirmation,
-  ): Promise<WalletManagementOperation>;
-}
-
-export interface WalletOperationPresentationPort {
-  get(
-    operationId: string,
-    interactionInterface: WalletInteractionInterface,
+  getPresentation(
+    operationId: WalletManagementOperation["operationId"],
   ): Promise<WalletOperationPresentation>;
-}
-
-export interface WalletCurrentOperationProjectionPort {
-  get(): Promise<WalletCurrentOperationProjection>;
-}
-
-export interface WalletInterfaceOperations {
-  readonly operation: WalletWebOperationPort;
-  readonly confirmation: WalletOperationConfirmationPort<"web">;
-  readonly presentation: WalletOperationPresentationPort;
-  readonly currentProjection: WalletCurrentOperationProjectionPort;
 }

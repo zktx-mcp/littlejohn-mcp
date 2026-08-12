@@ -38,21 +38,21 @@ const exactRuntimeGraphViolations = (
 };
 
 describe("shared protocol module boundary", () => {
-  it("keeps the shared browser graph on its exact browser-safe modules", async () => {
-    const browserEntry = resolve("src/protocols/browser.ts");
+  it("keeps the shared client graph on its exact interface-safe modules", async () => {
+    const clientEntry = resolve("src/protocols/client.ts");
     const contracts = resolve("src/protocols/contracts.ts");
     const registry = resolve("src/protocols/registry.ts");
     const expected = new Map<string, readonly string[]>([
-      [browserEntry, [
+      [clientEntry, [
         "module:./contracts.js",
         "module:./registry.js",
       ]],
       [contracts, [
         "module:zod",
-        "module:../core/browser.js",
+        "module:../core/client.js",
       ]],
       [registry, [
-        "module:../core/browser.js",
+        "module:../core/client.js",
         "module:./contracts.js",
       ]],
     ]);
@@ -88,24 +88,24 @@ describe("shared protocol module boundary", () => {
     ]) {
       expect(exactRuntimeGraphViolations(
         expected,
-        mutate(browserEntry, (edges) => [...edges, edge]),
-      )).toContain(`${browserEntry}:unexpected_runtime_edge:${edge}`);
+        mutate(clientEntry, (edges) => [...edges, edge]),
+      )).toContain(`${clientEntry}:unexpected_runtime_edge:${edge}`);
     }
     expect(exactRuntimeGraphViolations(
       expected,
-      mutate(browserEntry, (edges) => edges.filter((edge) => edge !== "module:./contracts.js")),
-    )).toContain(`${browserEntry}:missing_runtime_edge:module:./contracts.js`);
+      mutate(clientEntry, (edges) => edges.filter((edge) => edge !== "module:./contracts.js")),
+    )).toContain(`${clientEntry}:missing_runtime_edge:module:./contracts.js`);
     expect(exactRuntimeGraphViolations(
       expected,
-      mutate(browserEntry, (edges) => [...edges, "module:./contracts.js"]),
-    )).toContain(`${browserEntry}:unexpected_runtime_edge:module:./contracts.js`);
+      mutate(clientEntry, (edges) => [...edges, "module:./contracts.js"]),
+    )).toContain(`${clientEntry}:unexpected_runtime_edge:module:./contracts.js`);
     expect(exactRuntimeGraphViolations(
       expected,
-      mutate(browserEntry, (edges) => edges.map((edge) =>
+      mutate(clientEntry, (edges) => edges.map((edge) =>
         edge === "module:./contracts.js" ? "dynamic_import:./contracts.js" : edge)),
     )).toEqual([
-      `${browserEntry}:missing_runtime_edge:module:./contracts.js`,
-      `${browserEntry}:unexpected_runtime_edge:dynamic_import:./contracts.js`,
+      `${clientEntry}:missing_runtime_edge:module:./contracts.js`,
+      `${clientEntry}:unexpected_runtime_edge:dynamic_import:./contracts.js`,
     ]);
     const withUnexpectedSource = new Map(observed);
     const unexpectedSource = resolve("src/protocols/server.ts");
@@ -114,7 +114,7 @@ describe("shared protocol module boundary", () => {
       .toContain(`${unexpectedSource}:unexpected_source`);
     expect(inspectModuleImports(
       'export type { ProtocolPackageDescriptor } from "./contracts.js";',
-      browserEntry,
+      clientEntry,
     ).filter((reference) => reference.runtime)).toEqual([]);
   });
 
@@ -143,36 +143,36 @@ describe("shared protocol module boundary", () => {
       .map(runtimeEdgeKey)).toContain("module:./application.js");
   });
 
-  it("keeps the V2 browser graph on its exact browser-safe modules", async () => {
-    const browserEntry = resolve("src/protocols/uniswap-v2/browser.ts");
+  it("keeps the V2 client graph on its exact interface-safe modules", async () => {
+    const clientEntry = resolve("src/protocols/uniswap-v2/client.ts");
     const contracts = resolve("src/protocols/uniswap-v2/contracts.ts");
     const deployment = resolve("src/protocols/uniswap-v2/deployment.ts");
     const evidence = resolve("src/protocols/uniswap-v2/evidence.ts");
     const quote = resolve("src/protocols/uniswap-v2/quote.ts");
     const expected = new Map<string, readonly string[]>([
-      [browserEntry, [
+      [clientEntry, [
         "module:./contracts.js",
         "module:./deployment.js",
       ]],
       [contracts, [
         "module:zod",
-        "module:../../core/browser.js",
+        "module:../../core/client.js",
         "module:./deployment.js",
         "module:./evidence.js",
         "module:./quote.js",
       ]],
       [deployment, [
         "module:zod",
-        "module:../../core/browser.js",
-        "module:../../registry/browser.js",
+        "module:../../core/client.js",
+        "module:../../registry/client.js",
         "module:../contracts.js",
       ]],
       [evidence, [
-        "module:../../core/browser.js",
+        "module:../../core/client.js",
         "module:./deployment.js",
       ]],
       [quote, [
-        "module:../../core/browser.js",
+        "module:../../core/client.js",
       ]],
     ]);
     const observed = new Map<string, readonly string[]>();
@@ -207,20 +207,20 @@ describe("shared protocol module boundary", () => {
     ]) {
       expect(exactRuntimeGraphViolations(
         expected,
-        mutate(browserEntry, (edges) => [...edges, edge]),
-      )).toContain(`${browserEntry}:unexpected_runtime_edge:${edge}`);
+        mutate(clientEntry, (edges) => [...edges, edge]),
+      )).toContain(`${clientEntry}:unexpected_runtime_edge:${edge}`);
     }
     expect(exactRuntimeGraphViolations(
       expected,
-      mutate(browserEntry, (edges) => edges.filter((edge) => edge !== "module:./contracts.js")),
-    )).toContain(`${browserEntry}:missing_runtime_edge:module:./contracts.js`);
+      mutate(clientEntry, (edges) => edges.filter((edge) => edge !== "module:./contracts.js")),
+    )).toContain(`${clientEntry}:missing_runtime_edge:module:./contracts.js`);
     expect(exactRuntimeGraphViolations(
       expected,
-      mutate(browserEntry, (edges) => [...edges, "module:./contracts.js"]),
-    )).toContain(`${browserEntry}:unexpected_runtime_edge:module:./contracts.js`);
+      mutate(clientEntry, (edges) => [...edges, "module:./contracts.js"]),
+    )).toContain(`${clientEntry}:unexpected_runtime_edge:module:./contracts.js`);
     expect(inspectModuleImports(
       'import type { UniswapV2QuoteData } from "./contracts.js";',
-      browserEntry,
+      clientEntry,
     ).filter((reference) => reference.runtime)).toEqual([]);
   });
 

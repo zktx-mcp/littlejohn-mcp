@@ -7,7 +7,6 @@ import {
   type AnyAccountAssetApplicationContract,
 } from "../account-assets/index.js";
 import {
-  referenceMarketApplicationContracts,
   referenceMarketErrorRegistry,
   type AnyReferenceMarketApplicationContract,
 } from "../market-portfolio/index.js";
@@ -27,17 +26,17 @@ import {
   canonicalJsonStringify,
   captureCanonicalJson,
   compareCodePointSequences,
+  fieldIssuesFromInputError,
   fixedIdentifierSchema,
   parseCapabilityInput,
   parseCapabilitySuccess,
+  projectZodJsonSchema,
   projectCapabilities,
   readBoundaryFailureCodes,
   type CanonicalJson,
   type CapabilityId,
   type ApplicationErrorRegistry,
 } from "../core/index.js";
-import { fixedOrigin } from "../runtime/http-boundary.js";
-import { createOperationId } from "../runtime/operation-id.js";
 import type { RuntimeOwnerSessionPort } from "../runtime/owner-session.js";
 import type { PresentationSnapshotStore } from "../runtime/presentation-snapshot.js";
 import {
@@ -46,11 +45,7 @@ import {
 } from "../token-catalog/index.js";
 import type {
   AnyWalletManagementContract,
-} from "../wallet/contracts.js";
-import {
-  browserLocationHref,
-  browserLocations,
-} from "./browser-contract.js";
+} from "../wallet/management-contracts.js";
 import {
   createInterfaceFailure,
   constrainInterfaceFailure,
@@ -66,15 +61,10 @@ import {
   interfaceReadCapabilityRegistry,
   readInterfaceIdentities,
   referenceMarketInterfaceBindingList,
-  tokenMcpLocalOperationCatalog,
   tokenCatalogInterfaceBindings,
-  tokenLocalOperationIdentities,
-  walletMcpLocalOperationCatalog,
-  readLocalOperationDeliveryAction,
+  tokenLocalReadIdentities,
   type TokenCatalogInterfaceBinding,
   type AccountAssetInterfaceBinding,
-  type LocalOperationInterfaceCatalogEntry,
-  type WalletInterfaceBinding,
   type InterfaceToolAnnotations,
   type ReadInterfaceIdentity,
   type ReferenceMarketInterfaceBinding,
@@ -86,20 +76,30 @@ import {
   type DeliveryUnknown,
 } from "./operation-delivery.js";
 import { interfaceCapabilityCatalogSchema } from "./support.js";
-import { LocalMutationClient } from "./reference-market-local-client.js";
 import { dispatchReferenceMarketRead } from "./reference-market-http.js";
 import {
-  referenceMarketDeliveryUnknownSchema,
-  type ReferenceMarketDeliveryUnknown,
-} from "./reference-market-delivery.js";
+  resolveLocalOperationIdentity,
+} from "./local-operation.js";
 import {
+  operationInterfaceBindingList,
+  operationInterfaceBindings,
+  walletOperationPresentationIdentity,
+  type OperationInterfaceBinding,
+  type OperationToolVisibility,
+} from "./operation-bindings.js";
+import {
+  createOperationToolResultDescriptor,
+  createWalletOperationQrMetadata,
+  operationToolResultMetadataKey,
   presentationMcpTools,
   presentationSnapshotChunkSchema,
   presentationSnapshotIdSchema,
   presentationSnapshotReferenceSchema,
   presentationSnapshotUriSchema,
   presentationUnavailableSchema,
+  walletOperationQrMetadataKey,
 } from "./mcp-app/contracts.js";
+import { projectMcpInputSchema } from "./mcp-input-schema.js";
 import { presentationContractRegistry } from "./mcp-app/registry.js";
 import {
   appToolMetadata,
@@ -158,14 +158,24 @@ interface McpToolDefinition {
   readonly outputSchema: NonNullable<Tool["outputSchema"]>;
   readonly failureCodes: readonly string[];
   readonly annotations: ToolAnnotations;
+  readonly visibility: OperationToolVisibility;
+  readonly createsView: boolean;
   readonly deliveryRecovery?: McpDeliveryRecoveryDescriptor;
   readonly presentationContract?: object;
   readonly presentationTool?: "get_snapshot" | "get_snapshot_chunk";
+  readonly operationBinding?: OperationInterfaceBinding;
   readonly parseInput: (value: unknown) => unknown;
   readonly invoke: (input: unknown, signal: AbortSignal) => Promise<McpInvocationResult>;
 }
 
-type McpInvocationResult = InterfaceInvocationResult | DeliveryUnknown | ReferenceMarketDeliveryUnknown;
+type McpInvocationResult =
+  | InterfaceInvocationResult
+  | Readonly<{
+      readonly ok: true;
+      readonly value: CanonicalJson;
+      readonly privateMetadata: Readonly<Record<string, unknown>>;
+    }>
+  | DeliveryUnknown;
 
 interface McpDeliveryRecoveryDescriptor {
   readonly schema: z.ZodType;
@@ -190,11 +200,7 @@ const canonicalSchema = <Schema extends McpObjectSchema>(value: unknown): Schema
 const zodSchema = (
   schema: z.ZodType,
   io: "input" | "output",
-): Readonly<Record<string, unknown>> => z.toJSONSchema(schema, {
-  target: "draft-2020-12",
-  io,
-  unrepresentable: "throw",
-}) as Readonly<Record<string, unknown>>;
+): Readonly<Record<string, unknown>> => projectZodJsonSchema(schema, io);
 
 interface RebasedSchema {
   readonly schema: Readonly<Record<string, unknown>>;
@@ -259,7 +265,7 @@ const capabilityCatalogSchema = interfaceCapabilityCatalogSchema;
 const capabilityInputSchema = (capabilityId: CapabilityId): Tool["inputSchema"] => {
   const projection = projectedCapabilities.get(capabilityId);
   if (projection === undefined) throw new TypeError("Capability input schema is unavailable.");
-  return canonicalSchema<Tool["inputSchema"]>(projection.input.schema);
+  return projectMcpInputSchema(projection.input.schema);
 };
 
 const successOrFailureSchema = (
@@ -330,7 +336,7 @@ type InterfaceApplicationContract =
 const contractInputSchema = (
   contract: InterfaceApplicationContract,
 ): Tool["inputSchema"] =>
-  canonicalSchema<Tool["inputSchema"]>(zodSchema(contract.inputSchema, "input"));
+  projectMcpInputSchema(zodSchema(contract.inputSchema, "input"));
 
 const contractOutputSchema = (
   contract: InterfaceApplicationContract,
@@ -338,51 +344,33 @@ const contractOutputSchema = (
 ): NonNullable<Tool["outputSchema"]> =>
   successOrFailureSchema(zodSchema(contract.successSchema, "output"), contract.failureCodes, errorRegistry);
 
-const assetsDisplayUrl = `${fixedOrigin}${
-  browserLocationHref(browserLocations.assets())
-}`;
-const walletDisplayUrl = assetsDisplayUrl;
-const tokenCatalogDisplayUrl = assetsDisplayUrl;
-
-const startOutputSchema = (
-  contract: InterfaceApplicationContract,
-  displayUrl: string,
-  deliverySchema: z.ZodType = deliveryUnknownSchema,
-): NonNullable<Tool["outputSchema"]> =>
-  successFailureOrDeliverySchema(zodSchema(z.object({
-    result: contract.successSchema,
-    displayUrl: z.literal(displayUrl),
-  }).strict(), "output"), contract.failureCodes, tokenCatalogErrorRegistry, deliverySchema);
-
-const deliveryActionFor = (
-  source: LocalOperationInterfaceCatalogEntry,
-): DeliveryUnknown["action"] => readLocalOperationDeliveryAction(source.identity);
-
 const recoveryOperationId = (value: unknown): unknown =>
   typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Readonly<Record<string, unknown>>)["operationId"]
     : undefined;
 
-const createMcpDeliveryRecoveryDescriptor = <Binding extends
-  WalletInterfaceBinding | TokenCatalogInterfaceBinding>(
-  source: LocalOperationInterfaceCatalogEntry<Binding>,
+const createMcpDeliveryRecoveryDescriptor = (
+  source: OperationInterfaceBinding,
 ): McpDeliveryRecoveryDescriptor | undefined => {
-  const relation = source.deliveryRecovery;
-  if (relation === undefined) return undefined;
-  const target = relation.target;
-  if (target.binding.action !== "get_operation" || target.binding.mcp === undefined) {
+  const target = source.recoveryOperation;
+  if (target === undefined) return undefined;
+  if (target.action !== "get_operation") {
     throw new TypeError("MCP delivery recovery target is invalid.");
   }
-  const expectedAction = deliveryActionFor(source);
-  const targetTool = parseMcpToolName(target.binding.mcp.name);
+  const sourceBinding = resolveLocalOperationIdentity(source.identity);
+  if (sourceBinding.action !== "decide" && sourceBinding.action !== "cancel") {
+    throw new TypeError("MCP delivery action is invalid.");
+  }
+  const expectedAction = sourceBinding.action;
+  const targetTool = parseMcpToolName(target.mcp.name);
   const schema = z.object({
     delivery: deliveryUnknownSchema.extend({ action: z.literal(expectedAction) }),
     recovery: z.object({
       tool: z.literal(targetTool),
-      arguments: target.binding.contract.inputSchema,
+      arguments: target.contract.inputSchema,
     }).strict(),
   }).strict().superRefine((value, context) => {
-    if (recoveryOperationId(value.recovery.arguments) !== value.delivery.operationId) {
+    if (recoveryOperationId(value.recovery["arguments"]) !== value.delivery.operationId) {
       context.addIssue({
         code: "custom",
         path: ["recovery", "arguments", "operationId"],
@@ -393,10 +381,10 @@ const createMcpDeliveryRecoveryDescriptor = <Binding extends
   return Object.freeze({
     schema,
     project(delivery: DeliveryUnknown): CanonicalJson {
-      if (delivery.action !== deliveryActionFor(source)) {
+      if (delivery.action !== expectedAction) {
         throw new TypeError("MCP delivery action does not match its source identity.");
       }
-      const targetInput = target.binding.contract.parseInput({ operationId: delivery.operationId });
+      const targetInput = target.contract.parseInput({ operationId: delivery.operationId });
       return captureCanonicalJson(schema.parse({
         delivery,
         recovery: {
@@ -409,9 +397,13 @@ const createMcpDeliveryRecoveryDescriptor = <Binding extends
 };
 
 const annotations = (value: InterfaceToolAnnotations): ToolAnnotations => Object.freeze({ ...value });
-const success = (value: unknown): InterfaceInvocationResult => ({
+const success = (
+  value: unknown,
+  privateMetadata?: Readonly<Record<string, unknown>>,
+): McpInvocationResult => Object.freeze({
   ok: true,
   value: captureCanonicalJson(value),
+  ...(privateMetadata === undefined ? {} : { privateMetadata }),
 });
 const failure = (): InterfaceInvocationResult => ({
   ok: false,
@@ -443,13 +435,21 @@ const publicRead = (
   }, 200, identity.responseAuthority);
 };
 
+const definePresentedTool = (
+  definition: Omit<McpToolDefinition, "presentationContract">,
+  contract: object | undefined,
+): McpToolDefinition => contract === undefined
+  ? Object.freeze(definition)
+  : Object.freeze({ ...definition, presentationContract: contract });
+
 const readTool = (
   runtime: RuntimeDispatchPort,
   identity: ReadInterfaceIdentity,
 ): McpToolDefinition => {
   const projection = projectedCapabilities.get(identity.capabilityId);
   if (projection === undefined) throw new TypeError("Capability projection is unavailable.");
-  return Object.freeze({
+  const presented = presentationContractRegistry.forContract(identity.definition) !== undefined;
+  return definePresentedTool({
     name: parseMcpToolName(identity.mcp.name),
     description: identity.mcp.description,
     inputSchema: capabilityInputSchema(identity.capabilityId),
@@ -459,9 +459,8 @@ const readTool = (
     ),
     failureCodes: projection.failureCodes,
     annotations: annotations(identity.mcp.annotations),
-    ...(presentationContractRegistry.forContract(identity.definition) === undefined
-      ? {}
-      : { presentationContract: identity.definition }),
+    visibility: ["model"],
+    createsView: presented,
     parseInput: (value: unknown) => parseCapabilityInput(identity.definition, value),
     invoke: async (value: unknown, signal: AbortSignal) => {
       const result = await publicRead(
@@ -474,7 +473,7 @@ const readTool = (
       try { return success(parseCapabilitySuccess(identity.definition, value, result.value)); }
       catch { return failure(); }
     },
-  });
+  }, presented ? identity.definition : undefined);
 };
 
 const validateLocalToolInput = (
@@ -485,60 +484,55 @@ const validateLocalToolInput = (
   return captureCanonicalJson(value);
 };
 
-const walletTool = (
+const operationTool = (
   client: LocalOperationClient,
-  entry: LocalOperationInterfaceCatalogEntry<WalletInterfaceBinding>,
+  binding: OperationInterfaceBinding,
 ): McpToolDefinition => {
-  const binding = entry.binding;
-  if (binding.mcp === undefined) throw new TypeError("Wallet MCP binding is unavailable.");
-  const deliveryRecovery = createMcpDeliveryRecoveryDescriptor(entry);
+  const deliveryRecovery = createMcpDeliveryRecoveryDescriptor(binding);
+  const errorRegistry = resolveLocalOperationIdentity(binding.identity).contract.errorRegistry;
   const common = {
     name: parseMcpToolName(binding.mcp.name),
     description: binding.mcp.description,
     inputSchema: contractInputSchema(binding.contract),
     failureCodes: binding.contract.failureCodes,
     annotations: annotations(binding.mcp.annotations),
+    visibility: binding.mcp.visibility,
+    createsView: binding.mcp.createsView,
+    operationBinding: binding,
+    ...(binding.action === "review" ? { presentationContract: binding.contract } : {}),
     parseInput: (value: unknown): unknown => validateLocalToolInput(binding.contract.parseInput, value),
   } as const;
-  if (binding.action === "start") {
-    if (deliveryRecovery === undefined) throw new TypeError("Wallet start recovery is unavailable.");
-    return Object.freeze({
-      ...common,
-      deliveryRecovery,
-      outputSchema: startOutputSchema(binding.contract, walletDisplayUrl, deliveryRecovery.schema),
-      invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
-        const result = await client.invoke(entry.identity, value, signal);
+  return Object.freeze({
+    ...common,
+    ...(deliveryRecovery === undefined ? {} : { deliveryRecovery }),
+    outputSchema: deliveryRecovery === undefined
+      ? contractOutputSchema(binding.contract, errorRegistry)
+      : successFailureOrDeliverySchema(
+        zodSchema(binding.contract.successSchema, "output"),
+        binding.contract.failureCodes,
+        errorRegistry,
+        deliveryRecovery.schema,
+      ),
+    invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
+      if (binding === operationInterfaceBindings.walletOperation) {
+        const result = await client.invoke(walletOperationPresentationIdentity, value, signal);
         if ("status" in result || !result.ok) return result;
-        return success({
-          result: result.value,
-          displayUrl: walletDisplayUrl,
-        });
-      },
-    });
-  }
-  if (binding.action === "get_operation" || binding.action === "cancel_operation") {
-    if (binding.action === "cancel_operation" && deliveryRecovery === undefined) {
-      throw new TypeError("Wallet cancellation recovery is unavailable.");
-    }
-    return Object.freeze({
-      ...common,
-      ...(deliveryRecovery === undefined ? {} : { deliveryRecovery }),
-      outputSchema: binding.action === "cancel_operation"
-        ? successFailureOrDeliverySchema(
-          zodSchema(binding.contract.successSchema, "output"),
-          binding.contract.failureCodes,
-          tokenCatalogErrorRegistry,
-          deliveryRecovery!.schema,
-        )
-        : contractOutputSchema(binding.contract),
-      invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
-        const result = await client.invoke(entry.identity, value, signal);
-        if ("status" in result || !result.ok) return result;
-        return success(result.value);
-      },
-    });
-  }
-  throw new TypeError("Wallet MCP binding action is unsupported.");
+        return success(
+          result.value.operation,
+          result.value.qr === undefined
+            ? undefined
+            : {
+                [walletOperationQrMetadataKey]: createWalletOperationQrMetadata(
+                  result.value.operation,
+                  result.value.qr,
+                ),
+              },
+        );
+      }
+      const result = await client.invoke(binding.identity, value, signal);
+      return "status" in result || !result.ok ? result : success(result.value);
+    },
+  });
 };
 
 const tokenCatalogReadTool = (
@@ -551,6 +545,8 @@ const tokenCatalogReadTool = (
     inputSchema: contractInputSchema(binding.contract),
     failureCodes: binding.contract.failureCodes,
     annotations: annotations(binding.mcp.annotations),
+    visibility: ["model"] as const,
+    createsView: true,
     parseInput: (value: unknown): unknown => validateLocalToolInput(binding.contract.parseInput, value),
     presentationContract: binding.contract,
   } as const;
@@ -560,7 +556,7 @@ const tokenCatalogReadTool = (
       outputSchema: contractOutputSchema(binding.contract),
       invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
         const result = await client.invoke(
-          tokenLocalOperationIdentities.shared.selection,
+          tokenLocalReadIdentities.selection,
           value,
           signal,
         );
@@ -574,7 +570,7 @@ const tokenCatalogReadTool = (
       outputSchema: contractOutputSchema(binding.contract),
       invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
         const result = await client.invoke(
-          tokenLocalOperationIdentities.shared.selections,
+          tokenLocalReadIdentities.selections,
           value,
           signal,
         );
@@ -585,124 +581,45 @@ const tokenCatalogReadTool = (
   throw new TypeError("Token catalog read MCP binding action is unsupported.");
 };
 
-const tokenCatalogOperationTool = (
-  client: LocalOperationClient,
-  entry: LocalOperationInterfaceCatalogEntry<TokenCatalogInterfaceBinding>,
-): McpToolDefinition => {
-  const binding = entry.binding;
-  const deliveryRecovery = createMcpDeliveryRecoveryDescriptor(entry);
-  const common = {
-    name: parseMcpToolName(binding.mcp.name),
-    description: binding.mcp.description,
-    inputSchema: contractInputSchema(binding.contract),
-    failureCodes: binding.contract.failureCodes,
-    annotations: annotations(binding.mcp.annotations),
-    parseInput: (value: unknown): unknown => validateLocalToolInput(binding.contract.parseInput, value),
-  } as const;
-  if (binding.action === "start") {
-    if (deliveryRecovery === undefined) throw new TypeError("Token start recovery is unavailable.");
-    return Object.freeze({
-      ...common,
-      deliveryRecovery,
-      outputSchema: startOutputSchema(
-        binding.contract,
-        tokenCatalogDisplayUrl,
-        deliveryRecovery.schema,
-      ),
-      invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
-        const result = await client.invoke(entry.identity, value, signal);
-        if ("status" in result || !result.ok) return result;
-        return success({
-          result: result.value,
-          displayUrl: tokenCatalogDisplayUrl,
-        });
-      },
-    });
-  }
-  if (binding.action === "get_operation" || binding.action === "cancel_operation") {
-    if (binding.action === "cancel_operation" && deliveryRecovery === undefined) {
-      throw new TypeError("Token cancellation recovery is unavailable.");
-    }
-    return Object.freeze({
-      ...common,
-      ...(deliveryRecovery === undefined ? {} : { deliveryRecovery }),
-      outputSchema: binding.action === "cancel_operation"
-        ? successFailureOrDeliverySchema(
-          zodSchema(binding.contract.successSchema, "output"),
-          binding.contract.failureCodes,
-          tokenCatalogErrorRegistry,
-          deliveryRecovery!.schema,
-        )
-        : contractOutputSchema(binding.contract),
-      invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
-        const result = await client.invoke(entry.identity, value, signal);
-        return "status" in result || !result.ok ? result : success(result.value);
-      },
-    });
-  }
-  throw new TypeError("Token catalog operation MCP binding action is unsupported.");
-};
-
 const accountAssetTool = (
   client: LocalOperationClient,
   binding: AccountAssetInterfaceBinding,
-): McpToolDefinition => Object.freeze({
+): McpToolDefinition => definePresentedTool({
   name: parseMcpToolName(binding.mcp!.name),
   description: binding.mcp!.description,
   inputSchema: contractInputSchema(binding.contract),
   outputSchema: contractOutputSchema(binding.contract),
   failureCodes: binding.contract.failureCodes,
   annotations: annotations(binding.mcp!.annotations),
-  ...(presentationContractRegistry.forContract(binding.contract) === undefined
-    ? {}
-    : { presentationContract: binding.contract }),
+  visibility: ["model"],
+  createsView: presentationContractRegistry.forContract(binding.contract) !== undefined,
   parseInput: (value: unknown): unknown => validateLocalToolInput(binding.contract.parseInput, value),
   invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
     const result = await client.invoke(accountAssetLocalOperationIdentities.collection, value, signal);
     return "status" in result || !result.ok ? result : success(result.value);
   },
-});
+}, presentationContractRegistry.forContract(binding.contract) === undefined
+  ? undefined : binding.contract);
 
 const referenceMarketTool = (
   runtime: RuntimeDispatchPort,
-  mutationClient: LocalMutationClient,
   binding: ReferenceMarketInterfaceBinding,
-): McpToolDefinition => {
-  const mutation = binding.action === "add" || binding.action === "remove" || binding.action === "reorder";
-  return Object.freeze({
+): McpToolDefinition => definePresentedTool({
     name: parseMcpToolName(binding.mcp.name),
     description: binding.mcp.description,
     inputSchema: contractInputSchema(binding.contract),
-    outputSchema: mutation
-      ? successFailureOrDeliverySchema(
-        zodSchema(binding.contract.successSchema, "output"),
-        binding.contract.failureCodes,
-        referenceMarketErrorRegistry,
-        referenceMarketDeliveryUnknownSchema,
-      )
-      : contractOutputSchema(binding.contract, referenceMarketErrorRegistry),
+    outputSchema: contractOutputSchema(binding.contract, referenceMarketErrorRegistry),
     failureCodes: binding.contract.failureCodes,
     annotations: annotations(binding.mcp.annotations),
-    ...(presentationContractRegistry.forContract(binding.contract) === undefined
-      ? {}
-      : { presentationContract: binding.contract }),
+    visibility: ["model"],
+    createsView: presentationContractRegistry.forContract(binding.contract) !== undefined,
     parseInput: (value: unknown): unknown => validateLocalToolInput(binding.contract.parseInput, value),
     invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
-      const result = binding.action === "price"
-        ? await dispatchReferenceMarketRead(runtime, binding, value, signal)
-        : binding.action === "history"
-          ? await dispatchReferenceMarketRead(runtime, binding, value, signal)
-          : binding.action === "watchlist"
-            ? await dispatchReferenceMarketRead(runtime, binding, value, signal)
-            : binding.action === "add"
-              ? await mutationClient.add(referenceMarketApplicationContracts.add.parseInput(value), signal)
-              : binding.action === "remove"
-                ? await mutationClient.remove(referenceMarketApplicationContracts.remove.parseInput(value), signal)
-                : await mutationClient.reorder(referenceMarketApplicationContracts.reorder.parseInput(value), signal);
+      const result = await dispatchReferenceMarketRead(runtime, binding, value, signal);
       return "status" in result || !result.ok ? result : success(result.value);
     },
-  });
-};
+  }, presentationContractRegistry.forContract(binding.contract) === undefined
+    ? undefined : binding.contract);
 
 const presentationSnapshotInputSchema = z.object({
   snapshotUri: presentationSnapshotUriSchema,
@@ -718,9 +635,7 @@ const presentationToolDefinitions = (
   Object.freeze({
     name: parseMcpToolName(presentationMcpTools.getSnapshot),
     description: "Display one exact retained presentation snapshot.",
-    inputSchema: canonicalSchema<Tool["inputSchema"]>(
-      zodSchema(presentationSnapshotInputSchema, "input"),
-    ),
+    inputSchema: projectMcpInputSchema(zodSchema(presentationSnapshotInputSchema, "input")),
     outputSchema: successOrFailureSchema(zodSchema(z.union([
       presentationSnapshotReferenceSchema,
       presentationUnavailableSchema,
@@ -732,6 +647,8 @@ const presentationToolDefinitions = (
       idempotentHint: true,
       openWorldHint: false,
     }),
+    visibility: ["model"] as const,
+    createsView: true,
     presentationTool: "get_snapshot" as const,
     parseInput: (value: unknown) => presentationSnapshotInputSchema.parse(
       captureCanonicalJson(value),
@@ -747,9 +664,7 @@ const presentationToolDefinitions = (
   Object.freeze({
     name: parseMcpToolName(presentationMcpTools.getSnapshotChunk),
     description: "Read one exact raw-byte slice from a retained presentation result.",
-    inputSchema: canonicalSchema<Tool["inputSchema"]>(
-      zodSchema(presentationSnapshotChunkInputSchema, "input"),
-    ),
+    inputSchema: projectMcpInputSchema(zodSchema(presentationSnapshotChunkInputSchema, "input")),
     outputSchema: successOrFailureSchema(zodSchema(z.union([
       presentationSnapshotChunkSchema,
       presentationUnavailableSchema,
@@ -761,6 +676,8 @@ const presentationToolDefinitions = (
       idempotentHint: true,
       openWorldHint: false,
     }),
+    visibility: ["app"] as const,
+    createsView: false,
     presentationTool: "get_snapshot_chunk" as const,
     parseInput: (value: unknown) => presentationSnapshotChunkInputSchema.parse(
       captureCanonicalJson(value),
@@ -777,25 +694,25 @@ const presentationToolDefinitions = (
 const createToolDefinitions = (
   runtime: RuntimeDispatchPort,
   client: LocalOperationClient,
-  mutationClient: LocalMutationClient,
   presentation: McpAppPresentationService | undefined,
 ): readonly McpToolDefinition[] => Object.freeze([
   ...readInterfaceIdentities.map((identity) => readTool(runtime, identity)),
   ...accountAssetInterfaceBindingList
     .filter((binding) => binding.mcp !== undefined)
     .map((binding) => accountAssetTool(client, binding)),
-  ...referenceMarketInterfaceBindingList.map((binding) =>
-    referenceMarketTool(runtime, mutationClient, binding)),
+  ...referenceMarketInterfaceBindingList.map((binding) => referenceMarketTool(runtime, binding)),
   Object.freeze({
     name: parseMcpToolName(capabilityCatalogInterface.mcp.name),
     description: capabilityCatalogInterface.mcp.description,
-    inputSchema: canonicalSchema<Tool["inputSchema"]>(zodSchema(z.object({}).strict(), "input")),
+    inputSchema: projectMcpInputSchema(zodSchema(z.object({}).strict(), "input")),
     outputSchema: successOrFailureSchema(
       zodSchema(capabilityCatalogSchema, "output"),
       capabilityCatalogInterface.failureCodes,
     ),
     failureCodes: capabilityCatalogInterface.failureCodes,
     annotations: annotations(capabilityCatalogInterface.mcp.annotations),
+    visibility: ["model"] as const,
+    createsView: false,
     parseInput: (value: unknown) => z.object({}).strict().parse(captureCanonicalJson(value)),
     invoke: async (_value: unknown, signal: AbortSignal) => {
       const result = await publicRead(
@@ -808,11 +725,9 @@ const createToolDefinitions = (
       catch { return failure(); }
     },
   }),
-  ...Object.values(walletMcpLocalOperationCatalog).map((entry) => walletTool(client, entry)),
   tokenCatalogReadTool(client, tokenCatalogInterfaceBindings.selection),
   tokenCatalogReadTool(client, tokenCatalogInterfaceBindings.selections),
-  ...Object.values(tokenMcpLocalOperationCatalog)
-    .map((entry) => tokenCatalogOperationTool(client, entry)),
+  ...operationInterfaceBindingList.map((binding) => operationTool(client, binding)),
   ...presentationToolDefinitions(presentation),
 ]);
 
@@ -850,10 +765,9 @@ export class McpToolRegistry {
 export const createMcpToolRegistry = (
   runtime: McpRuntimePort,
   client: LocalOperationClient,
-  mutationClient = new LocalMutationClient(runtime),
   presentation?: McpAppPresentationService,
 ): McpToolRegistry => new McpToolRegistry(
-  createToolDefinitions(runtime, client, mutationClient, presentation),
+  createToolDefinitions(runtime, client, presentation),
 );
 
 const canonicalToolResult = (value: CanonicalJson, isError: boolean): CallToolResult => ({
@@ -892,19 +806,49 @@ const constrainedToolResult = (
       return internalToolResult(definition);
     }
   }
-  if ("status" in result) {
-    if (!referenceMarketDeliveryUnknownSchema.safeParse(result).success) {
-      return internalToolResult(definition);
-    }
-    return toolResult(result);
-  }
   return toolResult(constrainInterfaceFailure(result, definition.failureCodes));
+};
+
+const attachPrivateMetadata = (
+  result: CallToolResult,
+  invoked: McpInvocationResult,
+): CallToolResult => !isDeliveryUnknown(invoked) && invoked.ok && "privateMetadata" in invoked
+  ? Object.freeze({
+      ...result,
+      _meta: Object.freeze({ ...result._meta, ...invoked.privateMetadata }),
+    })
+  : result;
+
+const attachOperationToolResultDescriptor = (
+  definition: McpToolDefinition,
+  normalizedInput: unknown,
+  result: CallToolResult,
+): CallToolResult => {
+  if (
+    definition.operationBinding === undefined ||
+    definition.operationBinding.action === "review"
+  ) return result;
+  if (result._meta?.[operationToolResultMetadataKey] !== undefined) {
+    throw new TypeError("Operation tool result descriptor metadata is duplicated.");
+  }
+  const descriptor = createOperationToolResultDescriptor({
+    toolName: definition.name,
+    normalizedInput,
+    result: result.structuredContent,
+    isError: result.isError === true,
+  });
+  return Object.freeze({
+    ...result,
+    _meta: Object.freeze({
+      ...result._meta,
+      [operationToolResultMetadataKey]: descriptor,
+    }),
+  });
 };
 
 export const createMcpServer = (
   runtime: McpRuntimePort,
-  client = new LocalOperationClient({ ownerSessions: runtime, createOperationId }),
-  mutationClient = new LocalMutationClient(runtime),
+  client = new LocalOperationClient({ ownerSessions: runtime }),
   appResource?: McpAppResource,
 ): Server => {
   const snapshotStore = appResource === undefined
@@ -918,22 +862,24 @@ export const createMcpServer = (
     instructions: "Read Robinhood Chain data, inspect token contracts, and manage account token selections and Robinhood Wallet operations without establishing token safety or official status and without signing or transaction authority.",
   });
   const app = createMcpAppPresentationService(server, snapshotStore, appResource);
-  const registry = createMcpToolRegistry(runtime, client, mutationClient, app.service);
+  const registry = createMcpToolRegistry(runtime, client, app.service);
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: registry.values().flatMap((definition): Tool[] => {
       const connection = app.connection();
-      if (definition.presentationTool !== undefined && connection.status === "ordinary") {
+      if (
+        connection.status === "ordinary" &&
+        (definition.presentationTool !== undefined || definition.operationBinding !== undefined)
+      ) {
         return [];
       }
-      const createsView = definition.presentationContract !== undefined ||
-        definition.presentationTool === "get_snapshot";
-      const visibility = definition.presentationTool === "get_snapshot_chunk"
-        ? ["app"] as const
-        : ["model"] as const;
-      const metadata = (createsView || definition.presentationTool !== undefined) &&
-        app.service !== undefined
-        ? appToolMetadata(connection, app.service.resource, visibility, createsView)
+      const metadata = app.service !== undefined
+        ? appToolMetadata(
+            connection,
+            app.service.resource,
+            definition.visibility,
+            definition.createsView,
+          )
         : undefined;
       return [{
         name: definition.name,
@@ -951,9 +897,9 @@ export const createMcpServer = (
     server.setRequestHandler(ListResourcesRequestSchema, async () => ({
       resources: app.connection().status === "ordinary" ? [] : [{
         uri: presentationService.resource.uri,
-        name: "Little John immutable read view",
+        name: "Little John presentation",
         title: "Little John",
-        description: "Self-contained immutable read presentation.",
+        description: "Self-contained result, Review, and operation presentation.",
         mimeType: "text/html;profile=mcp-app",
         size: presentationService.resource.utf8Bytes,
         _meta: {
@@ -984,7 +930,10 @@ export const createMcpServer = (
       return toolResult({ ok: false, failure: createInterfaceFailure("invalid_input") });
     }
     const connection = app.connection();
-    if (definition.presentationTool !== undefined && connection.status === "ordinary") {
+    if (
+      connection.status === "ordinary" &&
+      (definition.presentationTool !== undefined || definition.operationBinding !== undefined)
+    ) {
       return constrainedToolResult(definition, {
         ok: false,
         failure: createInterfaceFailure("invalid_input"),
@@ -992,33 +941,44 @@ export const createMcpServer = (
     }
     let input: unknown;
     try { input = definition.parseInput(request.params.arguments ?? {}); }
-    catch {
+    catch (error) {
       return constrainedToolResult(definition, {
         ok: false,
-        failure: createInterfaceFailure("invalid_input"),
+        failure: createInterfaceFailure("invalid_input", [...fieldIssuesFromInputError(error)]),
       });
     }
     if (extra.signal.aborted) {
-      return constrainedToolResult(definition, {
-        ok: false,
-        failure: createInterfaceFailure("request_aborted"),
-      });
+      return attachOperationToolResultDescriptor(
+        definition,
+        input,
+        constrainedToolResult(definition, {
+          ok: false,
+          failure: createInterfaceFailure("request_aborted"),
+        }),
+      );
     }
     try {
       const invoked = await definition.invoke(input, extra.signal);
       if (
         definition.presentationTool === "get_snapshot" && presentationService !== undefined &&
-        !("status" in invoked) && invoked.ok
+        !isDeliveryUnknown(invoked) && invoked.ok
       ) {
         return presentationService.getSnapshotResult(
           presentationSnapshotInputSchema.parse(input).snapshotUri,
         );
       }
-      const ordinaryResult = constrainedToolResult(definition, invoked);
+      const ordinaryResult = attachOperationToolResultDescriptor(
+        definition,
+        input,
+        attachPrivateMetadata(
+          constrainedToolResult(definition, invoked),
+          invoked,
+        ),
+      );
       if (
         connection.status === "app" && presentationService !== undefined &&
         definition.presentationContract !== undefined &&
-        !("status" in invoked) && invoked.ok
+        !isDeliveryUnknown(invoked) && invoked.ok
       ) {
         try {
           return presentationService.present(
@@ -1032,13 +992,17 @@ export const createMcpServer = (
       return ordinaryResult;
     }
     catch {
-      return constrainedToolResult(definition, {
-        ok: false,
-        failure: createInterfaceFailure("internal_error"),
-      });
+      return attachOperationToolResultDescriptor(
+        definition,
+        input,
+        constrainedToolResult(definition, {
+          ok: false,
+          failure: createInterfaceFailure("internal_error"),
+        }),
+      );
     }
   });
-  server.onclose = () => { void Promise.allSettled([client.close(), mutationClient.close()]); };
+  server.onclose = () => { void client.close(); };
   return server;
 };
 
@@ -1052,17 +1016,16 @@ export const startStdioMcp = async (
   input: Readable,
   output: Writable,
 ): Promise<StdioMcpHandle> => {
-  const client = new LocalOperationClient({ ownerSessions: runtime, createOperationId });
-  const mutationClient = new LocalMutationClient(runtime);
-  const server = createMcpServer(runtime, client, mutationClient, loadMcpAppResource());
+  const client = new LocalOperationClient({ ownerSessions: runtime });
+  const server = createMcpServer(runtime, client, loadMcpAppResource());
   let resolveClosed!: () => void;
   const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
-  server.onclose = () => { void Promise.allSettled([client.close(), mutationClient.close()]).finally(resolveClosed); };
+  server.onclose = () => { void client.close().finally(resolveClosed); };
   await server.connect(new StdioServerTransport(input, output));
   return Object.freeze({
     closed,
     close: async (): Promise<void> => {
-      const results = await Promise.allSettled([server.close(), client.close(), mutationClient.close()]);
+      const results = await Promise.allSettled([server.close(), client.close()]);
       resolveClosed();
       const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
       if (failures.length === 1) throw failures[0];

@@ -19,9 +19,6 @@ import {
   type UtcTimestamp,
   type WalletConnectionData,
 } from "../../src/core/index.js";
-import {
-  createWalletOwnerApplicationFactory,
-} from "../../src/wallet/application.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import {
   createControlCredentialVerifier,
@@ -30,15 +27,14 @@ import {
 import { createRuntimeRouteRegistry } from "../../src/runtime/http-routing.js";
 import { runtimePaths } from "../../src/runtime/paths.js";
 import {
+  createResourceOwnershipScope,
+  type OwnedResource,
+} from "../../src/runtime/resource-ownership.js";
+import {
   isProcessTerminalRequiredError,
   requireProcessTermination,
   runtimeProcessTerminal,
 } from "../../src/runtime/shutdown.js";
-import { parseRuntimeRevision } from "../../src/runtime/runtime-identity.js";
-import {
-  createResourceOwnershipScope,
-  type OwnedResource,
-} from "../../src/runtime/resource-ownership.js";
 import {
   createInitialRuntimeSupportManifest,
   readRuntimeSupportManifest,
@@ -48,8 +44,19 @@ import {
   type WalletProjectionStore,
   type WalletSessionSource,
 } from "../../src/runtime/index.js";
-import { walletManagementCapabilityIdList } from "../../src/wallet/contracts.js";
-import { walletControlResources } from "../../src/wallet/routes.js";
+import { parseRuntimeRevision } from "../../src/runtime/runtime-identity.js";
+import {
+  createWalletOwnerApplicationFactory,
+} from "../../src/wallet/application.js";
+import {
+  assertWalletOperationTransition,
+  parseWalletManagementOperation,
+  walletManagementCapabilityIdList,
+  type WalletManagementOperation,
+  type WalletNonterminalManagementOperation,
+  type WalletOperationStore,
+  type WalletOperationTransitionCommand,
+} from "../../src/wallet/contracts.js";
 import {
   type WalletConnectClientAcquisition,
   type WalletConnectClientConfiguration,
@@ -98,9 +105,7 @@ class MemoryWalletProjection implements WalletProjectionStore {
     revalidationRequired: boolean,
     updatedAt: UtcTimestamp,
   ): WalletConnectionRecord {
-    if (expectedRevision !== this.#record.revision) {
-      throw new Error("Unexpected projection revision.");
-    }
+    if (expectedRevision !== this.#record.revision) throw new Error("Unexpected projection revision.");
     this.#record = Object.freeze({
       revision: parseRuntimeRevision(String(BigInt(this.#record.revision) + 1n)),
       connection,
@@ -108,6 +113,42 @@ class MemoryWalletProjection implements WalletProjectionStore {
       updatedAt,
     });
     return this.#record;
+  }
+}
+
+class MemoryWalletOperationStore implements WalletOperationStore {
+  readonly #values = new Map<string, WalletManagementOperation>();
+
+  read(operationId: string): WalletManagementOperation | null {
+    return this.#values.get(operationId) ?? null;
+  }
+
+  readActive(): WalletNonterminalManagementOperation | null {
+    return ([...this.#values.values()].find((operation) => ![
+      "completed", "cancelled", "rejected", "expired", "failed",
+    ].includes(operation.state)) as WalletNonterminalManagementOperation | undefined) ?? null;
+  }
+
+  create(operation: WalletNonterminalManagementOperation): WalletNonterminalManagementOperation {
+    if (this.readActive() !== null || this.#values.has(operation.operationId)) {
+      throw new Error("Operation create conflict.");
+    }
+    const admitted = parseWalletManagementOperation(operation) as WalletNonterminalManagementOperation;
+    this.#values.set(admitted.operationId, admitted);
+    return admitted;
+  }
+
+  transition(command: WalletOperationTransitionCommand): WalletManagementOperation {
+    const previous = this.#values.get(command.operationId);
+    if (previous === undefined || [
+      "completed", "cancelled", "rejected", "expired", "failed",
+    ].includes(previous.state)) throw new Error("Operation transition conflict.");
+    const admitted = assertWalletOperationTransition(
+      previous as WalletNonterminalManagementOperation,
+      command.operation,
+    );
+    this.#values.set(admitted.operationId, admitted);
+    return admitted;
   }
 }
 
@@ -131,6 +172,7 @@ const createBootstrap = (privateStoreDirectory: string): WalletOwnerBootstrapPor
     configuration: runtimeConfiguration.wallet,
     privateStoreDirectory: Object.freeze({ ensureDirectory: async () => privateStoreDirectory }),
     projection: new MemoryWalletProjection(),
+    operations: new MemoryWalletOperationStore(),
     sourceAuthority: Object.freeze({
       sdkStoreSourceId: `wallet-sdk:${"A".repeat(22)}`,
       sdkStoreAuthority,
@@ -211,9 +253,8 @@ class FakeWalletConnectClient implements WalletConnectClientPort {
     throw new Error("Connection is outside this composition test.");
   }
 
-  async disconnectSession(): Promise<void> {
-    throw new Error("Disconnect is outside this composition test.");
-  }
+  async containPendingConnectionState(): Promise<void> { this.steps.push("contain-pending"); }
+  async disconnectSession(): Promise<void> { throw new Error("Disconnect is outside this composition test."); }
 
   activate(listener: (event: WalletConnectClientEvent) => void) {
     this.steps.push("activate");
@@ -247,7 +288,6 @@ interface FakeFactorySubject {
   readonly configurations: WalletConnectClientConfiguration[];
   readonly signals: AbortSignal[];
   readonly steps: string[];
-  readonly clients: FakeWalletConnectClient[];
   cleanupCount: number;
 }
 
@@ -256,19 +296,16 @@ const createFakeFactory = (): FakeFactorySubject => {
     configurations: [],
     signals: [],
     steps: [],
-    clients: [],
     cleanupCount: 0,
     factory: undefined as unknown as ClientFactory,
   };
-  const factory: ClientFactory = async (configuration, storageRegistration, signal) => {
+  subject.factory = async (configuration, storageRegistration, signal) => {
     subject.configurations.push(configuration);
     subject.signals.push(signal);
     const client = new FakeWalletConnectClient(configuration.storageOwner, subject.steps);
-    subject.clients.push(client);
     const acquisitionOwner: OwnedResource = Object.freeze({
       async close(): Promise<void> {
         subject.cleanupCount += 1;
-        subject.steps.push("close-acquisition");
         await client.contain();
         throw requireProcessTermination();
       },
@@ -285,7 +322,6 @@ const createFakeFactory = (): FakeFactorySubject => {
     });
     return acquisition;
   };
-  subject.factory = factory;
   return subject;
 };
 
@@ -295,11 +331,10 @@ const availability = Object.freeze({
   http: "internal",
   mcp: "unavailable",
   cli: "unavailable",
-  web: "unavailable",
 });
 
 describe("wallet owner application composition", () => {
-  it("hands one registered store through the adapter, coordinator, routes, and application", async () => {
+  it("hands one WalletConnect acquisition to the final coordinator and operation owner", async () => {
     const subject = createFakeFactory();
     const { context, startupScope } = await createContext();
     const application = await createWalletOwnerApplicationFactory(subject.factory)(context);
@@ -308,21 +343,12 @@ describe("wallet owner application composition", () => {
     expect(Object.keys(subject.configurations[0] ?? {}).sort()).toEqual([
       "createSessionSource", "storageOwner", "wallet",
     ]);
-    expect(Object.isFrozen(subject.configurations[0])).toBe(true);
     expect(subject.signals).toEqual([context.signal]);
+    expect(application.routes).toBe(context.routes);
     expect(startupScope.empty).toBe(true);
 
-    const paths = [
-      ["POST", walletControlResources.operations.path],
-      ["GET", walletControlResources.operation.path(Buffer.alloc(32, 1).toString("base64url"))],
-      ["GET", walletControlResources.presentation.path(Buffer.alloc(32, 1).toString("base64url"))],
-      ["POST", walletControlResources.confirmation.path(Buffer.alloc(32, 1).toString("base64url"))],
-      ["POST", walletControlResources.cancellation.path(Buffer.alloc(32, 1).toString("base64url"))],
-      ["GET", walletControlResources.connection.path],
-    ] as const;
-    for (const [method, path] of paths) {
-      expect(application.routes.match(method, path).status).toBe("matched");
-    }
+    const review = await application.walletOperations.review({ kind: "connect" });
+    expect(review).toMatchObject({ status: "review", review: { kind: "connect" } });
 
     const parent = readRuntimeSupportManifest(context.supportManifest);
     const manifest = readRuntimeSupportManifest(application.supportManifest);
@@ -336,15 +362,12 @@ describe("wallet owner application composition", () => {
       .toBe(parent.capabilities.length + walletManagementCapabilityIdList.length);
 
     await expect(application.shutdown()).resolves.toBe(runtimeProcessTerminal);
-    await expect(application.close()).rejects.toMatchObject({
-      name: "ProcessTerminalRequiredError",
-    });
+    await expect(application.close()).rejects.toMatchObject({ name: "ProcessTerminalRequiredError" });
     expect(subject.steps.filter((step) => step === "contain")).toHaveLength(1);
-    expect(subject.steps).not.toContain("close-storage");
     expect(subject.cleanupCount).toBe(0);
   });
 
-  it("owns and closes storage when the client factory rejects before adoption", async () => {
+  it("closes storage when client acquisition fails before adoption", async () => {
     const creationFailure = new Error("client creation failed");
     const { context, privateStoreDirectory, startupScope } = await createContext();
     const factory: ClientFactory = async () => { throw creationFailure; };
@@ -357,106 +380,25 @@ describe("wallet owner application composition", () => {
     expect(startupScope.empty).toBe(true);
   });
 
-  it("closes the adapter acquisition owner when coordinator construction fails", async () => {
-    const subject = createFakeFactory();
-    const constructionFailure = new Error("subscription failed");
-    const { context, privateStoreDirectory, startupScope } = await createContext();
-    const baseFactory = subject.factory;
-    const failingFactory: ClientFactory = async (configuration, registration, signal) => {
-      const acquisition = await baseFactory(configuration, registration, signal);
-      const client = acquisition.client as FakeWalletConnectClient;
-      client.activationFailure = constructionFailure;
-      return acquisition;
-    };
-
-    const failure = await Promise.resolve(createWalletOwnerApplicationFactory(failingFactory)(context)).then(
-      () => undefined,
-      (error: unknown) => error,
-    );
-    expect(isProcessTerminalRequiredError(failure)).toBe(true);
-    if (!isProcessTerminalRequiredError(failure)) throw failure;
-    expect(failure.primaryFailure).toBe(constructionFailure);
-    expect(subject.cleanupCount).toBe(1);
-    expect(subject.steps).toContain("contain");
-    expect(startupScope.empty).toBe(false);
-  });
-
-  it("retains failed creation ownership after SDK acquisition becomes process-terminal", async () => {
+  it("retains process-terminal ownership when coordinator activation fails", async () => {
     const subject = createFakeFactory();
     const constructionFailure = new Error("subscription failed");
     const { context, startupScope } = await createContext();
     const baseFactory = subject.factory;
     const failingFactory: ClientFactory = async (configuration, registration, signal) => {
       const acquisition = await baseFactory(configuration, registration, signal);
-      const client = acquisition.client as FakeWalletConnectClient;
-      client.activationFailure = constructionFailure;
+      (acquisition.client as FakeWalletConnectClient).activationFailure = constructionFailure;
       return acquisition;
     };
-
-    const failure = await Promise.resolve(createWalletOwnerApplicationFactory(failingFactory)(context)).then(
-      () => undefined,
-      (error: unknown) => error,
-    );
-    expect(isProcessTerminalRequiredError(failure)).toBe(true);
-    if (!isProcessTerminalRequiredError(failure)) throw failure;
-    expect(failure.primaryFailure).toBe(constructionFailure);
-    expect(subject.cleanupCount).toBe(1);
-    expect(startupScope.empty).toBe(false);
-    await expect(startupScope.close()).rejects.toMatchObject({
-      name: "ProcessTerminalRequiredError",
-    });
-    expect(subject.cleanupCount).toBe(2);
-    expect(startupScope.empty).toBe(false);
-  });
-
-  it("retains the acquisition owner when route assembly fails after coordinator construction", async () => {
-    const subject = createFakeFactory();
-    const { context, startupScope } = await createContext();
-    const conflictingRoutes = context.routes.extend([{
-      method: walletControlResources.operations.method,
-      mutation: "declared_control",
-      query: "none",
-      pathPattern: walletControlResources.operations.pathPattern,
-      response: "canonical_json",
-      successStatus: 200,
-      handler: async () => ({ ok: true, body: {} }),
-    }]);
-    const conflictingContext: WalletOwnerApplicationContext = Object.freeze({
-      ...context,
-      routes: conflictingRoutes,
-    });
 
     const failure = await Promise.resolve(
-      createWalletOwnerApplicationFactory(subject.factory)(conflictingContext),
-    ).then(
-      () => undefined,
-      (error: unknown) => error,
-    );
-
+      createWalletOwnerApplicationFactory(failingFactory)(context),
+    ).then(() => undefined, (error: unknown) => error);
     expect(isProcessTerminalRequiredError(failure)).toBe(true);
     if (!isProcessTerminalRequiredError(failure)) throw failure;
-    expect(failure.primaryFailure).toMatchObject({
-      name: "TypeError",
-      message: "Route patterns intersect ambiguously.",
-    });
-    expect(subject.steps).toContain("activate");
-    expect(subject.steps).toContain("observe");
+    expect(failure.primaryFailure).toBe(constructionFailure);
     expect(subject.cleanupCount).toBe(1);
     expect(subject.steps).toContain("contain");
     expect(startupScope.empty).toBe(false);
-  });
-
-  it("keeps process-terminal shutdown sticky without reviving graceful-close stages", async () => {
-    const subject = createFakeFactory();
-    const { context } = await createContext();
-    const application = await createWalletOwnerApplicationFactory(subject.factory)(context);
-    await expect(application.shutdown()).resolves.toBe(runtimeProcessTerminal);
-    await expect(application.shutdown()).resolves.toBe(runtimeProcessTerminal);
-    await expect(application.close()).rejects.toMatchObject({ name: "ProcessTerminalRequiredError" });
-
-    expect(subject.steps.filter((step) => step === "unsubscribe")).toHaveLength(1);
-    expect(subject.steps.filter((step) => step === "contain")).toHaveLength(1);
-    expect(subject.steps).not.toContain("seal-storage");
-    expect(subject.steps).not.toContain("close-storage");
   });
 });

@@ -385,16 +385,9 @@ const resultFor = (method, params) => {
   if (
     method === "eth_getBlockByNumber" &&
     params.length === 2 &&
-    params[0] === "latest" &&
+    (params[0] === "latest" || params[0] === blockNumber) &&
     params[1] === false
-  ) {
-    return {
-      number: blockNumber,
-      hash: blockHash,
-      timestamp: blockTimestamp,
-      transactions: [inspectedTransactionHash],
-    };
-  }
+  ) return inspectedTransactionBlock;
   if (
     method === "eth_getBlockByHash" &&
     params.length === 2 &&

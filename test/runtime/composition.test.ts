@@ -26,13 +26,10 @@ import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/suppo
 import type {
   TokenAdditionChainReadPort,
   TokenCatalogApplicationPort,
-  TokenCatalogBrowserOperationPort,
-  TokenCatalogInteractiveCliPort,
-  TokenCatalogNonInteractiveOperationPort,
-  TokenCatalogOperationCoordinatorPort,
+  TokenCatalogManagementApplicationPort,
   TokenCatalogQueryApplicationPort,
-  TokenCatalogWebStartPort,
 } from "../../src/token-catalog/ports.js";
+import type { WalletManagementPort } from "../../src/wallet/contracts.js";
 import {
   LocalRuntime,
   composeOwnerApplicationStages,
@@ -82,15 +79,12 @@ const initialRuntimeSupportManifest = createInitialRuntimeSupportManifest(
 );
 
 const internalFailure = new TokenCatalogOperationError("internal_error").failure;
-const operationId = "A".repeat(43);
-
 const testTokenCatalog: TokenCatalogApplicationPort = Object.freeze({
   getSelection: () => internalFailure,
   listSelections: () => internalFailure,
-  startAddition: async () => internalFailure,
-  startRemoval: async () => internalFailure,
+  review: async () => internalFailure,
+  decide: async () => internalFailure,
   getOperation: () => internalFailure,
-  cancelOperation: async () => internalFailure,
 });
 
 const unavailableOperation = (): never => { throw new Error("Token catalog operation is unavailable in this fixture."); };
@@ -100,48 +94,15 @@ const testChainInvocations = Object.freeze({
 const testTokenAdditionReads = Object.freeze({
   inspectAndVerifyOfficial: async () => unavailableOperation(),
 }) satisfies TokenAdditionChainReadPort;
-const testTokenCatalogOperations: TokenCatalogOperationCoordinatorPort = Object.freeze({
-  startAddition: async () => internalFailure,
-  startRemoval: async () => internalFailure,
-  getOperation: unavailableOperation,
-  getCurrentOperation: () => null,
-  confirm: async () => unavailableOperation(),
-  cancel: async () => unavailableOperation(),
-});
-
 const testTokenCatalogQueries = Object.freeze({
   getSelection: testTokenCatalog.getSelection,
   listSelections: testTokenCatalog.listSelections,
 }) satisfies TokenCatalogQueryApplicationPort;
-const testTokenCatalogWebStart = Object.freeze({
-  interactionInterface: "web",
-  startAddition: (input: Parameters<TokenCatalogApplicationPort["startAddition"]>[0], id: typeof operationId) =>
-    testTokenCatalog.startAddition(input, { operationId: id, interactionInterface: "web" }),
-  startRemoval: (input: Parameters<TokenCatalogApplicationPort["startRemoval"]>[0], id: typeof operationId) =>
-    testTokenCatalog.startRemoval(input, { operationId: id, interactionInterface: "web" }),
-}) satisfies TokenCatalogWebStartPort;
-const testTokenCatalogBrowserOperations = Object.freeze({
-  interactionInterface: "web",
+const testTokenCatalogManagement = Object.freeze({
+  review: testTokenCatalog.review,
+  decide: testTokenCatalog.decide,
   getOperation: testTokenCatalog.getOperation,
-  getCurrentOperation: testTokenCatalogOperations.getCurrentOperation,
-  confirm: (input: Parameters<TokenCatalogBrowserOperationPort["confirm"]>[0]) =>
-    testTokenCatalogOperations.confirm({ operationId: input.operationId, interactionInterface: "web" }, input),
-  cancel: (operationId: Parameters<TokenCatalogBrowserOperationPort["cancel"]>[0]) =>
-    testTokenCatalogOperations.cancel(operationId, "web"),
-}) satisfies TokenCatalogBrowserOperationPort;
-const testTokenCatalogInteractiveCli = Object.freeze({
-  interactionInterface: "cli",
-  startAddition: (input: Parameters<TokenCatalogApplicationPort["startAddition"]>[0], id: typeof operationId) =>
-    testTokenCatalog.startAddition(input, { operationId: id, interactionInterface: "cli" }),
-  startRemoval: (input: Parameters<TokenCatalogApplicationPort["startRemoval"]>[0], id: typeof operationId) =>
-    testTokenCatalog.startRemoval(input, { operationId: id, interactionInterface: "cli" }),
-  confirm: (input: Parameters<TokenCatalogInteractiveCliPort["confirm"]>[0]) =>
-    testTokenCatalogOperations.confirm({ operationId: input.operationId, interactionInterface: "cli" }, input),
-}) satisfies TokenCatalogInteractiveCliPort;
-const testTokenCatalogNonInteractiveOperations = Object.freeze({
-  getOperation: testTokenCatalog.getOperation,
-  cancelOperation: testTokenCatalog.cancelOperation,
-}) satisfies TokenCatalogNonInteractiveOperationPort;
+}) satisfies TokenCatalogManagementApplicationPort;
 
 const testTokenInspection = () => bindForHarness(
   tokenInspectCapability,
@@ -200,10 +161,7 @@ const createTestTokenCatalogStage = <ActiveWallet extends object>(
     close: async () => undefined,
   }),
   tokenCatalogQueries: testTokenCatalogQueries,
-  tokenCatalogWebStart: testTokenCatalogWebStart,
-  tokenCatalogBrowserOperations: testTokenCatalogBrowserOperations,
-  tokenCatalogInteractiveCli: testTokenCatalogInteractiveCli,
-  tokenCatalogNonInteractiveOperations: testTokenCatalogNonInteractiveOperations,
+  tokenCatalogManagement: testTokenCatalogManagement,
   close: async () => { close(); },
 });
 
@@ -230,9 +188,9 @@ const testReferenceMarkets: ReferenceMarketApplicationPort = Object.freeze({
   price: async () => referenceMarketFailure,
   history: async () => referenceMarketFailure,
   watchlist: async () => referenceMarketFailure,
-  addPair: async () => referenceMarketFailure,
-  removePair: async () => referenceMarketFailure,
-  reorderPairs: async () => referenceMarketFailure,
+  reviewWatchlistChange: async () => referenceMarketFailure,
+  decideWatchlistChange: async () => referenceMarketFailure,
+  getWatchlistOperation: async () => referenceMarketFailure,
 });
 
 const createTestReferenceMarketStage = <ActiveWallet extends object>(
@@ -253,14 +211,14 @@ const extendTestInterfaceSupportManifest = (
     capabilityId: "chain.status",
     availability: {
       overall: "available", direct: "internal", http: "available",
-      mcp: "unavailable", cli: "unavailable", web: "unavailable",
+      mcp: "unavailable", cli: "unavailable",
     },
   }],
 });
 
 const composeStages = <
   ActiveWallet extends object,
-  WalletOperations extends object,
+  WalletOperations extends WalletManagementPort,
 >(
   context: Parameters<typeof composeOwnerApplicationStages<ActiveWallet, WalletOperations>>[0],
   stages: Parameters<typeof composeOwnerApplicationStages<ActiveWallet, WalletOperations>>[2],
@@ -280,10 +238,9 @@ const baseRoutes = async () => {
 
 const route = (pathPattern: string) => ({
   method: "GET" as const,
-  query: "none" as const,
   pathPattern,
   mutation: "none" as const,
-  response: "canonical_json" as const, successStatus: 200 as const,
+  successStatus: 200 as const,
   handler: async () => ({ ok: true as const, body: {} }),
 });
 
@@ -296,7 +253,7 @@ const ownerContext = (
   startupResources: createResourceOwnershipScope().resources,
 });
 
-interface TestWalletOperations {
+interface TestWalletOperations extends WalletManagementPort {
   readOperation(): "test-operation";
 }
 
@@ -306,6 +263,11 @@ interface TestActiveWallet {
 
 const testWalletOperations = (): TestWalletOperations => Object.freeze({
   readOperation: () => "test-operation" as const,
+  review: async () => unavailableOperation(),
+  decide: async () => unavailableOperation(),
+  get: async () => unavailableOperation(),
+  cancel: async () => unavailableOperation(),
+  getPresentation: async () => unavailableOperation(),
 });
 
 const testActiveWallet = (): TestActiveWallet => Object.freeze({
@@ -338,7 +300,7 @@ const manifests = () => {
       capabilityId: "wallet.connection",
       availability: {
         overall: "internal", direct: "internal", http: "unavailable",
-        mcp: "unavailable", cli: "unavailable", web: "unavailable",
+        mcp: "unavailable", cli: "unavailable",
       },
     }],
   });
@@ -348,7 +310,7 @@ const manifests = () => {
       capabilityId,
       availability: {
         overall: "internal", direct: "internal", http: "unavailable",
-        mcp: "unavailable", cli: "unavailable", web: "unavailable",
+        mcp: "unavailable", cli: "unavailable",
       },
     })),
   });
@@ -559,31 +521,26 @@ describe("owner application composition", () => {
           "supportManifest",
           "accountTokenSelectionStore",
           "officialAssets",
-          "tokenCatalogBrowserOperations",
-          "tokenCatalogInteractiveCli",
-          "tokenCatalogNonInteractiveOperations",
+          "tokenCatalogManagement",
           "tokenCatalogQueries",
-          "tokenCatalogWebStart",
         ].sort());
         expect(Reflect.ownKeys(catalog.tokenCatalogQueries).sort())
           .toEqual(["getSelection", "listSelections"]);
-        expect(Reflect.ownKeys(catalog.tokenCatalogWebStart).sort()).toEqual([
-          "interactionInterface", "startAddition", "startRemoval",
-        ].sort());
-        expect(Reflect.ownKeys(catalog.tokenCatalogBrowserOperations).sort()).toEqual([
-          "cancel", "confirm", "getCurrentOperation", "getOperation", "interactionInterface",
-        ].sort());
-        expect(Reflect.ownKeys(catalog.tokenCatalogInteractiveCli).sort()).toEqual([
-          "confirm", "interactionInterface", "startAddition", "startRemoval",
-        ].sort());
-        expect(Reflect.ownKeys(catalog.tokenCatalogNonInteractiveOperations).sort())
-          .toEqual(["cancelOperation", "getOperation"]);
+        expect(Reflect.ownKeys(catalog.tokenCatalogManagement).sort())
+          .toEqual(["decide", "getOperation", "review"]);
         expect(operations).toBe(walletOperations);
         expect(operations.readOperation()).toBe("test-operation");
         expect(Reflect.ownKeys(accountAssets.accountAssets).sort())
           .toEqual(["get", "getOverview", "list"]);
         expect(Reflect.ownKeys(referenceMarkets.referenceMarkets).sort())
-          .toEqual(["addPair", "history", "price", "removePair", "reorderPairs", "watchlist"]);
+          .toEqual([
+            "decideWatchlistChange",
+            "getWatchlistOperation",
+            "history",
+            "price",
+            "reviewWatchlistChange",
+            "watchlist",
+          ]);
         return {
           routes: interfaceRoutes,
           supportManifest: extendTestInterfaceSupportManifest(supportManifest),
@@ -597,70 +554,6 @@ describe("owner application composition", () => {
       "interfaces:close", "reference-markets:close", "account-assets:close", "catalog:close",
       "protocols:close", "chain:close", "wallet:close",
     ]);
-  });
-
-  it("rejects catalog handoffs whose interaction authority is not fixed by the port", async () => {
-    const routes = await baseRoutes();
-    const ports = capabilityPorts();
-    const support = manifests();
-    for (const invalidPort of ["webStart", "browser", "cli"] as const) {
-      const events: string[] = [];
-      await expect(composeStages(ownerContext(routes, new AbortController().signal), [
-        () => ({
-          routes,
-          supportManifest: support.wallet,
-          walletConnection: ports.wallet,
-          activeWallet: testActiveWallet(),
-          walletOperations: testWalletOperations(),
-          shutdown: async () => runtimeReleased,
-          close: () => { events.push("wallet:close"); },
-        }),
-        () => ({
-          routes,
-          supportManifest: support.chain,
-          invocations: testChainInvocations,
-          chainReads: ports.chain,
-          tokenInspection: testTokenInspection(),
-          tokenAdditionReads: testTokenAdditionReads,
-          officialAssetReads: testOfficialAssetReads,
-          accountAssetReads: testAccountAssetReads,
-          referenceMarketReads: testReferenceMarketReads,
-          protocolReads: testPinnedEvmReads,
-          close: () => { events.push("chain:close"); },
-        }),
-        createTestProtocolStage(() => { events.push("protocols:close"); }),
-        ({ routes: catalogRoutes }, _wallet, chain) => ({
-          routes: catalogRoutes,
-          supportManifest: extendTokenCatalogSupportManifest(chain.supportManifest),
-          tokenCatalogQueries: testTokenCatalogQueries,
-          accountTokenSelectionStore: Object.freeze({
-            getState: () => undefined,
-            getForAccount: () => undefined,
-            listIncludedForAccount: () => Object.freeze({ selections: [], nextCursor: null }),
-            initializeDefaults: () => unavailableOperation(),
-          }),
-          officialAssets: Object.freeze({
-            synchronize: async () => unavailableOperation(),
-            readStored: () => undefined,
-            close: async () => undefined,
-          }),
-          tokenCatalogWebStart: invalidPort === "webStart"
-            ? { ...testTokenCatalogWebStart, interactionInterface: "cli" as never }
-            : testTokenCatalogWebStart,
-          tokenCatalogBrowserOperations: invalidPort === "browser"
-            ? { ...testTokenCatalogBrowserOperations, interactionInterface: "cli" as never }
-            : testTokenCatalogBrowserOperations,
-          tokenCatalogInteractiveCli: invalidPort === "cli"
-            ? { ...testTokenCatalogInteractiveCli, interactionInterface: "web" as never }
-            : testTokenCatalogInteractiveCli,
-          tokenCatalogNonInteractiveOperations: testTokenCatalogNonInteractiveOperations,
-          close: async () => { events.push("catalog:close"); },
-        }),
-        createTestAccountAssetStage(),
-        createTestReferenceMarketStage(),
-      ])).rejects.toThrow("authority is invalid");
-      expect(events).toEqual(["catalog:close", "protocols:close", "chain:close", "wallet:close"]);
-    }
   });
 
   it("keeps the first shutdown failure terminal instead of reviving dependent stages", async () => {
@@ -746,7 +639,7 @@ describe("owner application composition", () => {
         capabilityId: "wallet.connection",
         availability: {
           overall: "internal", direct: "internal", http: "unavailable",
-          mcp: "unavailable", cli: "unavailable", web: "unavailable",
+          mcp: "unavailable", cli: "unavailable",
         },
       }],
     });
@@ -756,7 +649,7 @@ describe("owner application composition", () => {
         capabilityId,
         availability: {
           overall: "internal", direct: "internal", http: "unavailable",
-          mcp: "unavailable", cli: "unavailable", web: "unavailable",
+          mcp: "unavailable", cli: "unavailable",
         },
       })),
     });
@@ -941,7 +834,7 @@ describe("owner application composition", () => {
         capabilityId: "wallet.connect",
         availability: {
           overall: "internal", direct: "internal", http: "unavailable",
-          mcp: "unavailable", cli: "unavailable", web: "unavailable",
+          mcp: "unavailable", cli: "unavailable",
         },
       }],
       changes: [],

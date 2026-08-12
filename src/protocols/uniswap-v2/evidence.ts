@@ -15,7 +15,7 @@ import {
   type EvidenceReplayDeclaration,
   type FactRequirement,
   type ObservationExpectation,
-} from "../../core/browser.js";
+} from "../../core/client.js";
 import {
   uniswapV2RouteAssets,
   uniswapV2QuoteCapabilityId,

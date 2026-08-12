@@ -3,16 +3,12 @@ import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  CapabilityBindingRegistry,
-  CapabilityRegistry,
   ObservationAuthorityRegistry,
   createCanonicalClock,
   createCapabilityInvocationAuthority,
   createObservationAuthority,
-  deriveCaip10Account,
   parseCapabilityDataAt,
-  parseEvmAddressInput,
-  parseEvmChainId,
+  parseHash32,
   sourceReferenceSchema,
   walletConnectionCapability,
   type CanonicalClock,
@@ -31,10 +27,17 @@ import {
   createWalletCoordinator,
   type WalletCoordinator,
 } from "../../src/wallet/coordinator.js";
-import type {
-  WalletManagementOperation,
-  WalletOperationCreate,
-  WalletOperationStartResult,
+import {
+  assertWalletOperationTransition,
+  parseWalletManagementOperation,
+  parseWalletQrMatrix,
+  parseWalletReview,
+  walletReviewDigest,
+  type WalletManagementOperation,
+  type WalletNonterminalManagementOperation,
+  type WalletOperationStore,
+  type WalletOperationTransitionCommand,
+  type WalletReview,
 } from "../../src/wallet/contracts.js";
 import {
   WalletConnectClientError,
@@ -42,7 +45,6 @@ import {
   type WalletConnectClientEvent,
   type WalletConnectClientPort,
   type WalletConnectConnectionAttemptPort,
-  type WalletConnectAccountReference,
   type WalletConnectSessionSnapshot,
   type WalletConnectStableObservation,
 } from "../../src/wallet/walletconnect-client.js";
@@ -52,14 +54,8 @@ const addressA = "0x1111111111111111111111111111111111111111";
 const addressB = "0x2222222222222222222222222222222222222222";
 const topicA = "a".repeat(64);
 const topicB = "b".repeat(64);
-let operationIdSequence = 0;
 
-const nextOperationId = (): string => {
-  operationIdSequence += 1;
-  return Buffer.alloc(32, operationIdSequence).toString("base64url");
-};
-
-const qr = Object.freeze({
+const qr = parseWalletQrMatrix({
   size: 21,
   rows: Array.from({ length: 21 }, () => "0".repeat(21)),
 });
@@ -70,32 +66,27 @@ interface Deferred<Value> {
 }
 
 const deferred = <Value>(): Deferred<Value> => {
-  let settle: ((value: Value) => void) | undefined;
+  let settle!: (value: Value) => void;
   const promise = new Promise<Value>((resolve) => { settle = resolve; });
-  if (settle === undefined) throw new Error("Deferred result was not initialized.");
   return Object.freeze({ promise, resolve: settle });
 };
 
 class FakeConnectionAttempt implements WalletConnectConnectionAttemptPort {
   readonly qr = qr;
   readonly #outcome = deferred<WalletConnectAttemptOutcome>();
-  cancelOutcome: WalletConnectAttemptOutcome = Object.freeze({ status: "cancelled" });
-  cancelPromise: Promise<WalletConnectAttemptOutcome> | undefined;
-  onCancel: (() => void) | undefined;
   terminal: WalletConnectAttemptOutcome | undefined;
   cancelCount = 0;
+  onCancel: (() => void) | undefined;
 
-  wait(): Promise<WalletConnectAttemptOutcome> {
-    return this.#outcome.promise;
-  }
+  wait(): Promise<WalletConnectAttemptOutcome> { return this.#outcome.promise; }
 
   async cancel(): Promise<WalletConnectAttemptOutcome> {
     if (this.terminal !== undefined) return this.terminal;
     this.cancelCount += 1;
     this.onCancel?.();
-    if (this.cancelPromise !== undefined) return this.cancelPromise;
-    this.settle(this.cancelOutcome);
-    return this.cancelOutcome;
+    const outcome = Object.freeze({ status: "cancelled" as const });
+    this.settle(outcome);
+    return outcome;
   }
 
   settle(outcome: WalletConnectAttemptOutcome): void {
@@ -112,14 +103,14 @@ class FakeWalletConnectClient implements WalletConnectClientPort {
   observeError: Error | undefined;
   readonly attempts: FakeConnectionAttempt[] = [];
   readonly disconnectedSourceIds: string[] = [];
-  readonly lifecycle: string[] = [];
-  readonly disconnectAfterDeleteFailures: Error[] = [];
-  disconnectGate: Deferred<void> | undefined;
-  preserveDisconnectedSources = false;
+  readonly events: string[];
+  containmentCount = 0;
   #listener: ((event: WalletConnectClientEvent) => void) | undefined;
 
+  constructor(events: string[]) { this.events = events; }
+
   observe(): WalletConnectStableObservation {
-    this.lifecycle.push("observe");
+    this.events.push("sdk:observe");
     if (this.observeError !== undefined) throw this.observeError;
     return Object.freeze({
       proposalCount: this.proposalCount,
@@ -129,24 +120,27 @@ class FakeWalletConnectClient implements WalletConnectClientPort {
   }
 
   async startConnection(): Promise<WalletConnectConnectionAttemptPort> {
-    this.lifecycle.push("startConnection");
+    this.events.push("sdk:start_connection");
     const attempt = new FakeConnectionAttempt();
+    attempt.onCancel = () => this.setObservation(this.sessions, 0);
     this.attempts.push(attempt);
     this.setObservation(this.sessions, 1);
     return attempt;
   }
 
+  async containPendingConnectionState(): Promise<void> {
+    this.events.push("sdk:contain_pending");
+    this.containmentCount += 1;
+    this.setObservation(this.sessions, 0);
+  }
+
   async disconnectSession(sessionSourceId: string): Promise<void> {
-    this.lifecycle.push(`disconnect:${sessionSourceId}`);
+    this.events.push(`sdk:disconnect:${sessionSourceId}`);
     this.disconnectedSourceIds.push(sessionSourceId);
-    if (this.disconnectGate !== undefined) await this.disconnectGate.promise;
-    if (this.preserveDisconnectedSources) return;
     this.setObservation(
       this.sessions.filter((session) => session.source.sourceId !== sessionSourceId),
       this.proposalCount,
     );
-    const failure = this.disconnectAfterDeleteFailures.shift();
-    if (failure !== undefined) throw failure;
   }
 
   activate(listener: (event: WalletConnectClientEvent) => void) {
@@ -170,13 +164,9 @@ class FakeWalletConnectClient implements WalletConnectClientPort {
     });
   }
 
-  emit(event: WalletConnectClientEvent): void {
-    this.#listener?.(event);
-  }
+  emit(event: WalletConnectClientEvent): void { this.#listener?.(event); }
 
-  async contain(): Promise<void> {
-    this.lifecycle.push("contain");
-  }
+  async contain(): Promise<void> { this.events.push("sdk:contain"); }
 
   setObservation(
     sessions: readonly WalletConnectSessionSnapshot[],
@@ -190,8 +180,6 @@ class FakeWalletConnectClient implements WalletConnectClientPort {
 
 class MemoryWalletProjection implements WalletProjectionStore {
   #record: WalletConnectionRecord;
-  readonly replaceFailures: Error[] = [];
-  persistentReplaceFailure: Error | undefined;
 
   constructor(clock: CanonicalClock) {
     const observedAt = clock.now();
@@ -207,9 +195,7 @@ class MemoryWalletProjection implements WalletProjectionStore {
     });
   }
 
-  read(): WalletConnectionRecord {
-    return this.#record;
-  }
+  read(): WalletConnectionRecord { return this.#record; }
 
   replace(
     expectedRevision: string,
@@ -218,8 +204,6 @@ class MemoryWalletProjection implements WalletProjectionStore {
     updatedAt: UtcTimestamp,
   ): WalletConnectionRecord {
     if (expectedRevision !== this.#record.revision) throw new Error("stale projection revision");
-    const failure = this.replaceFailures.shift() ?? this.persistentReplaceFailure;
-    if (failure !== undefined) throw failure;
     this.#record = Object.freeze({
       revision: String(BigInt(this.#record.revision) + 1n) as never,
       connection,
@@ -235,29 +219,67 @@ class MemoryWalletProjection implements WalletProjectionStore {
       revision: String(BigInt(this.#record.revision) + 1n) as never,
     });
   }
+}
 
-  replaceExternally(
-    connection: WalletConnectionData,
-    revalidationRequired: boolean,
-    updatedAt: UtcTimestamp,
-  ): void {
-    this.#record = Object.freeze({
-      revision: String(BigInt(this.#record.revision) + 1n) as never,
-      connection,
-      revalidationRequired,
-      updatedAt,
-    });
+class MemoryWalletOperationStore implements WalletOperationStore {
+  readonly events: string[];
+  readonly #values = new Map<string, WalletManagementOperation>();
+
+  constructor(events: string[]) { this.events = events; }
+
+  read(operationId: string): WalletManagementOperation | null {
+    return this.#values.get(operationId) ?? null;
+  }
+
+  readActive(): WalletNonterminalManagementOperation | null {
+    const active = [...this.#values.values()].filter((operation) => ![
+      "completed", "cancelled", "rejected", "expired", "failed",
+    ].includes(operation.state));
+    if (active.length > 1) throw new Error("More than one active operation.");
+    return (active[0] as WalletNonterminalManagementOperation | undefined) ?? null;
+  }
+
+  create(operation: WalletNonterminalManagementOperation): WalletNonterminalManagementOperation {
+    if (this.#values.has(operation.operationId) || this.readActive() !== null) {
+      throw new Error("Operation create conflict.");
+    }
+    const admitted = parseWalletManagementOperation(operation) as WalletNonterminalManagementOperation;
+    this.events.push(`store:create:${admitted.state}`);
+    this.#values.set(admitted.operationId, admitted);
+    return admitted;
+  }
+
+  transition(command: WalletOperationTransitionCommand): WalletManagementOperation {
+    const previous = this.#values.get(command.operationId);
+    if (previous === undefined || [
+      "completed", "cancelled", "rejected", "expired", "failed",
+    ].includes(previous.state)) throw new Error("Operation transition conflict.");
+    if (
+      previous.state !== command.expectedState ||
+      previous.review.reviewDigest !== command.reviewDigest ||
+      previous.review.precondition.connectionRevision !== command.connectionRevision
+    ) throw new Error("Operation transition compare-and-set conflict.");
+    const admitted = assertWalletOperationTransition(
+      previous as WalletNonterminalManagementOperation,
+      command.operation,
+    );
+    this.events.push(`store:transition:${previous.state}->${admitted.state}`);
+    this.#values.set(admitted.operationId, admitted);
+    return admitted;
+  }
+
+  seed(operation: WalletManagementOperation): void {
+    const admitted = parseWalletManagementOperation(operation);
+    this.#values.set(admitted.operationId, admitted);
   }
 }
 
 const topicDigest = (topic: string): string =>
   createHash("sha256").update(topic, "utf8").digest("base64url");
 
-const createBootstrap = (): {
-  readonly wallet: WalletOwnerBootstrapPort;
-  readonly projection: MemoryWalletProjection;
-} => {
+const createBootstrap = (events: string[]) => {
   const clock = createCanonicalClock(() => new Date(Date.now()).toISOString());
+  const runtimeConfiguration = readRuntimeConfiguration({});
   const sdkStoreAuthority = createObservationAuthority({
     clock,
     sourceClass: "wallet_sdk",
@@ -292,823 +314,311 @@ const createBootstrap = (): {
     return source;
   };
   const projection = new MemoryWalletProjection(clock);
-  const runtimeConfiguration = readRuntimeConfiguration({});
+  const operations = new MemoryWalletOperationStore(events);
   const invocationAuthority = createCapabilityInvocationAuthority(
     clock,
     runtimeConfiguration.chain.chainId,
   );
-  return Object.freeze({
+  const wallet: WalletOwnerBootstrapPort = Object.freeze({
+    configuration: runtimeConfiguration.wallet,
+    privateStoreDirectory: Object.freeze({ ensureDirectory: async () => "/unused-wallet-store" }),
     projection,
-    wallet: Object.freeze({
-      configuration: runtimeConfiguration.wallet,
-      privateStoreDirectory: Object.freeze({ ensureDirectory: async () => "/unused-wallet-store" }),
-      projection,
-      sourceAuthority: Object.freeze({
-        sdkStoreSourceId: `wallet-sdk:${"A".repeat(22)}`,
-        sdkStoreAuthority,
-        createSessionSource,
-      }),
-      capabilityAuthority: Object.freeze({
-        clock,
-        invocationAuthority,
-        createInvocationPorts(sessionSource?: WalletSessionSource): InvocationBoundaryPorts {
-          const authorities = [sdkStoreAuthority];
-          if (sessionSource !== undefined) authorities.push(sessionSource.observationAuthority);
-          return Object.freeze({ observations: new ObservationAuthorityRegistry(clock, authorities) });
-        },
-      }),
+    operations,
+    sourceAuthority: Object.freeze({
+      sdkStoreSourceId: `wallet-sdk:${"A".repeat(22)}`,
+      sdkStoreAuthority,
+      createSessionSource,
+    }),
+    capabilityAuthority: Object.freeze({
+      clock,
+      invocationAuthority,
+      createInvocationPorts(sessionSource?: WalletSessionSource): InvocationBoundaryPorts {
+        return Object.freeze({
+          observations: new ObservationAuthorityRegistry(
+            clock,
+            sessionSource === undefined
+              ? [sdkStoreAuthority]
+              : [sdkStoreAuthority, sessionSource.observationAuthority],
+          ),
+        });
+      },
     }),
   });
+  return Object.freeze({ wallet, projection, operations, createSessionSource });
 };
 
 const validSession = (
   source: WalletSessionSource,
-  overrides: {
-    readonly address?: string;
-    readonly chains?: readonly string[] | "absent";
-    readonly accounts?: readonly string[];
-    readonly methods?: readonly string[];
-    readonly events?: readonly string[];
-    readonly expiry?: number;
-  } = {},
-): WalletConnectSessionSnapshot => {
-  const chains = overrides.chains ?? ["eip155:4663"];
-  return Object.freeze({
-    status: "valid",
-    source,
-    expiry: overrides.expiry ?? Date.parse("2026-07-15T00:00:00.000Z") / 1_000,
-    namespaces: Object.freeze({
-      eip155: Object.freeze({
-        ...(chains === "absent" ? {} : { chains: Object.freeze([...chains]) }),
-        accounts: Object.freeze(overrides.accounts ?? [
-          `eip155:4663:${overrides.address ?? addressA}`,
-        ]),
-        methods: Object.freeze(overrides.methods ?? ["eth_sendTransaction"]),
-        events: Object.freeze(overrides.events ?? ["accountsChanged", "chainChanged"]),
-      }),
+  address = addressA,
+): WalletConnectSessionSnapshot => Object.freeze({
+  status: "valid",
+  source,
+  expiry: Date.parse("2026-07-15T00:00:00.000Z") / 1_000,
+  namespaces: Object.freeze({
+    eip155: Object.freeze({
+      chains: Object.freeze(["eip155:4663"]),
+      accounts: Object.freeze([`eip155:4663:${address}`]),
+      methods: Object.freeze(["eth_sendTransaction"]),
+      events: Object.freeze(["accountsChanged", "chainChanged"]),
     }),
-  });
-};
-
-const invalidSession = (source: WalletSessionSource): WalletConnectSessionSnapshot =>
-  Object.freeze({ status: "invalid", source });
+  }),
+});
 
 interface Subject {
   readonly coordinator: WalletCoordinator;
   readonly client: FakeWalletConnectClient;
   readonly projection: MemoryWalletProjection;
+  readonly operations: MemoryWalletOperationStore;
   readonly source: (topic: string) => WalletSessionSource;
+  readonly events: string[];
 }
 
 const createSubject = async (setup?: (
   client: FakeWalletConnectClient,
   source: (topic: string) => WalletSessionSource,
 ) => void): Promise<Subject> => {
-  const bootstrap = createBootstrap();
-  const source = (topic: string): WalletSessionSource =>
-    bootstrap.wallet.sourceAuthority.createSessionSource(topic);
-  const client = new FakeWalletConnectClient();
-  setup?.(client, source);
+  const events: string[] = [];
+  const bootstrap = createBootstrap(events);
+  const client = new FakeWalletConnectClient(events);
+  setup?.(client, bootstrap.createSessionSource);
   const coordinator = await createWalletCoordinator({ client, wallet: bootstrap.wallet });
-  return Object.freeze({ coordinator, client, projection: bootstrap.projection, source });
+  events.length = 0;
+  return Object.freeze({
+    coordinator,
+    client,
+    projection: bootstrap.projection,
+    operations: bootstrap.operations,
+    source: bootstrap.createSessionSource,
+    events,
+  });
 };
 
-const drainCoordinator = async (): Promise<void> => {
+const drain = async (): Promise<void> => {
   for (let index = 0; index < 24; index += 1) await Promise.resolve();
 };
 
-const waitForOperation = async (
-  coordinator: WalletCoordinator,
-  operationId: string,
-  predicate: (operation: WalletManagementOperation) => boolean,
-): Promise<WalletManagementOperation> => {
-  let last: WalletManagementOperation | undefined;
-  for (let index = 0; index < 80; index += 1) {
-    await drainCoordinator();
-    last = await coordinator.get(operationId);
-    if (predicate(last)) return last;
-  }
-  throw new Error(`Operation did not reach the expected state; last state was ${last?.state ?? "absent"}.`);
-};
-
-const waitForState = (
+const waitForState = async (
   coordinator: WalletCoordinator,
   operationId: string,
   state: WalletManagementOperation["state"],
-): Promise<WalletManagementOperation> =>
-  waitForOperation(coordinator, operationId, (operation) => operation.state === state);
+): Promise<WalletManagementOperation> => {
+  let last: WalletManagementOperation | undefined;
+  for (let index = 0; index < 80; index += 1) {
+    await drain();
+    last = await coordinator.get(operationId);
+    if (last.state === state) return last;
+  }
+  throw new Error(`Operation remained ${last?.state ?? "absent"}.`);
+};
 
-const startOperation = async (
+const requireReview = async (
   coordinator: WalletCoordinator,
   kind: "connect" | "disconnect",
-  interactionInterface: "cli" | "web" = "web",
-  connectionRevision: WalletOperationCreate["connectionRevision"] = null,
-): Promise<Extract<WalletOperationStartResult, { readonly status: "operation_started" }>> => {
-  const result = await coordinator.start({
-    operationId: nextOperationId(),
-    kind,
-    interactionInterface,
-    connectionRevision,
-  } satisfies WalletOperationCreate);
-  if (result.status !== "operation_started") throw new Error("Expected an operation to start.");
-  return result;
+): Promise<WalletReview> => {
+  const result = await coordinator.review({ kind });
+  if (result.status !== "review") throw new Error("Expected an actionable Review.");
+  return result.review;
 };
 
-const expectWalletCode = async (action: Promise<unknown>, code: string): Promise<void> => {
-  const outcome = await action.then(
-    (value) => Object.freeze({ status: "resolved" as const, value }),
-    (error: unknown) => Object.freeze({ status: "rejected" as const, error }),
-  );
-  if (outcome.status === "resolved") {
-    expect(outcome.value).toMatchObject({ ok: false, error: { code } });
-  } else {
-    expect(outcome.error).toMatchObject({ failure: { error: { code } } });
-  }
+const expectWalletCode = async (work: Promise<unknown>, code: string): Promise<void> => {
+  await expect(work).rejects.toMatchObject({ failure: { error: { code } } });
 };
 
-const invokeWalletConnection = (coordinator: WalletCoordinator) =>
-  new CapabilityBindingRegistry(
-    new CapabilityRegistry([walletConnectionCapability]),
-    [coordinator.walletConnection.connection],
-  ).invoke(walletConnectionCapability, {}, { signal: new AbortController().signal });
-
-const expectNoConnectedPublicAuthority = async (
-  coordinator: WalletCoordinator,
-): Promise<void> => {
-  const active = await Promise.resolve()
-    .then(() => coordinator.activeWallet.capture())
-    .then(
-      (value) => Object.freeze({ status: "resolved" as const, value }),
-      (error: unknown) => Object.freeze({ status: "rejected" as const, error }),
-    );
-  if (active.status === "resolved") {
-    expect(active.value.connection.status).not.toBe("connected");
-    expect(active.value).not.toHaveProperty("sessionSource");
-  }
-
-  const capability = await invokeWalletConnection(coordinator).then(
-    (value) => Object.freeze({ status: "resolved" as const, value }),
-    (error: unknown) => Object.freeze({ status: "rejected" as const, error }),
-  );
-  if (capability.status === "resolved" && capability.value.ok) {
-    expect(capability.value.data.status).not.toBe("connected");
-  }
+const storedRestartReview = (operationId: string): WalletReview => {
+  const withoutDigest = {
+    contractVersion: "1" as const,
+    domain: "wallet" as const,
+    kind: "connect" as const,
+    operationId,
+    createdAt: initialTime,
+    actionExpiresAt: "2026-07-14T00:05:00.000Z",
+    target: { chainId: "eip155:4663" },
+    decision: {
+      requiredMethods: ["eth_sendTransaction"] as const,
+      requiredEvents: ["accountsChanged", "chainChanged"] as const,
+    },
+    precondition: {
+      connectionRevision: "1",
+      connection: { status: "disconnected" as const, reason: "no_session" as const },
+    },
+    fixedEvidence: { sessionSourceIds: [] as const },
+  };
+  return parseWalletReview({ ...withoutDigest, reviewDigest: walletReviewDigest(withoutDigest) });
 };
 
-describe("WalletCoordinator", () => {
+describe("WalletCoordinator final durable operation ownership", () => {
   beforeEach(() => {
-    operationIdSequence = 0;
     vi.useFakeTimers();
     vi.setSystemTime(new Date(initialTime));
   });
 
-  afterEach(() => {
-    vi.useRealTimers();
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("creates an immutable Review without operation state or WalletConnect effect", async () => {
+    const subject = await createSubject();
+    const review = await requireReview(subject.coordinator, "connect");
+
+    expect(review).toMatchObject({
+      kind: "connect",
+      precondition: { connectionRevision: subject.projection.read().revision },
+      fixedEvidence: { sessionSourceIds: [] },
+    });
+    expect(subject.operations.read(review.operationId)).toBeNull();
+    expect(subject.operations.readActive()).toBeNull();
+    expect(subject.client.attempts).toHaveLength(0);
+    expect(subject.events).toEqual([]);
   });
 
-  it("restores one valid stable session without inventing an absent optional chains field", async () => {
-    const subject = await createSubject((client, source) => {
-      client.setObservation([validSession(source(topicA), { chains: "absent" })]);
-    });
-
-    expect(subject.coordinator.activeWallet.capture()).toMatchObject({
-      connection: { status: "connected", address: addressA, chainId: "eip155:4663" },
-      sessionSource: { sourceId: subject.source(topicA).sourceId },
-    });
-
-    const explicitEmpty = await createSubject((client, source) => {
-      client.setObservation([validSession(source(topicA), { chains: [] })]);
-    });
-    expect(explicitEmpty.coordinator.activeWallet.capture().connection).toEqual({
-      status: "unresolved",
-      sessionCount: "1",
-    });
-  });
-
-  it("keeps unavailable, invalid, and multiple observations distinct from healthy absence", async () => {
-    const unavailable = await createSubject((client) => {
-      client.observeError = new WalletConnectClientError("observation");
-    });
-    expect(unavailable.projection.read().connection).toEqual({
-      status: "unknown",
-      reason: "observation_unavailable",
-    });
-    await expectWalletCode(invokeWalletConnection(unavailable.coordinator), "runtime_state_unavailable");
-
-    const invalid = await createSubject((client, source) => {
-      client.setObservation([invalidSession(source(topicA))]);
-    });
-    expect(invalid.projection.read().connection).toEqual({
-      status: "unresolved",
-      sessionCount: "1",
-    });
-
-    const multiple = await createSubject((client, source) => {
-      client.setObservation([
-        validSession(source(topicA)),
-        validSession(source(topicB), { address: addressB }),
-      ]);
-    });
-    expect(multiple.projection.read().connection).toEqual({
-      status: "unresolved",
-      sessionCount: "2",
-    });
-    await expectWalletCode(
-      multiple.coordinator.start({
-        operationId: nextOperationId(),
-        kind: "connect",
-        interactionInterface: "web",
-        connectionRevision: null,
-      }),
-      "wallet_session_unusable",
-    );
-    expect(multiple.client.attempts).toHaveLength(0);
-  });
-
-  it("requires exact local confirmation before disconnecting every observed source", async () => {
-    const subject = await createSubject((client, source) => {
-      client.setObservation([
-        invalidSession(source(topicA)),
-        validSession(source(topicB), { address: addressB }),
-      ]);
-    });
-    const started = await startOperation(subject.coordinator, "disconnect", "web");
-    const operation = started.operation;
-
-    expect(operation.state).toBe("awaiting_confirmation");
-    expect(subject.client.disconnectedSourceIds).toEqual([]);
-    await expectWalletCode(
-      subject.coordinator.cliConfirmation.confirm(operation.operationId, {
-        connectionRevision: operation.connectionRevision,
-      }),
-      "state_conflict",
-    );
-    expect(subject.client.disconnectedSourceIds).toEqual([]);
-
-    const confirming = await subject.coordinator.webConfirmation.confirm(operation.operationId, {
-      connectionRevision: operation.connectionRevision,
-    });
-    expect(confirming.state).toBe("disconnecting");
-    const completed = await waitForState(subject.coordinator, operation.operationId, "completed");
-    expect(completed.result).toMatchObject({ outcome: "disconnected" });
-    expect([...subject.client.disconnectedSourceIds].sort()).toEqual([
-      subject.source(topicA).sourceId,
-      subject.source(topicB).sourceId,
-    ].sort());
-  });
-
-  it("rejects a confirmation whose displayed projection revision is stale without an SDK effect", async () => {
-    const subject = await createSubject((client, source) => {
-      client.setObservation([validSession(source(topicA))]);
-    });
-    const started = await startOperation(subject.coordinator, "disconnect", "web");
+  it("revalidates the Review connection revision before creating state or issuing an effect", async () => {
+    const subject = await createSubject();
+    const review = await requireReview(subject.coordinator, "connect");
     subject.projection.advanceRevision();
 
     await expectWalletCode(
-      subject.coordinator.webConfirmation.confirm(started.operation.operationId, {
-        connectionRevision: started.operation.connectionRevision,
-      }),
+      subject.coordinator.decide({ review, initiatedBy: "mcp_app" }),
       "state_conflict",
     );
-    expect(subject.client.disconnectedSourceIds).toEqual([]);
+    expect(subject.operations.read(review.operationId)).toBeNull();
+    expect(subject.client.attempts).toHaveLength(0);
+    expect(subject.events).not.toContain("sdk:start_connection");
   });
 
-  it("cancellation wins an approval race and cleans the exact late session before terminal publication", async () => {
+  it("rejects an expired Review before creating state or issuing an effect", async () => {
     const subject = await createSubject();
-    const started = await startOperation(subject.coordinator, "connect", "web");
-    await waitForState(subject.coordinator, started.operation.operationId, "awaiting_wallet_approval");
-    const attempt = subject.client.attempts[0];
-    if (attempt === undefined) throw new Error("Connection attempt was not created.");
-    const approved = validSession(subject.source(topicA));
-    attempt.cancelOutcome = Object.freeze({ status: "approved", session: approved });
-    attempt.onCancel = () => subject.client.setObservation([approved], 0);
+    const review = await requireReview(subject.coordinator, "connect");
+    vi.setSystemTime(new Date(review.actionExpiresAt));
+
+    await expectWalletCode(
+      subject.coordinator.decide({ review, initiatedBy: "mcp_app" }),
+      "wallet_operation_expired",
+    );
+    expect(subject.operations.read(review.operationId)).toBeNull();
+    expect(subject.client.attempts).toHaveLength(0);
+    expect(subject.events).not.toContain("sdk:start_connection");
+  });
+
+  it("durably creates before the external effect and makes duplicate delivery idempotent", async () => {
+    const subject = await createSubject();
+    const review = await requireReview(subject.coordinator, "connect");
+    const started = await subject.coordinator.decide({ review, initiatedBy: "mcp_app" });
+    const awaiting = await waitForState(subject.coordinator, review.operationId, "awaiting_wallet_approval");
+
+    expect(started.state).toBe("starting_connection");
+    expect(subject.events.indexOf("store:create:starting_connection"))
+      .toBeLessThan(subject.events.indexOf("sdk:start_connection"));
+    expect(await subject.coordinator.decide({ review, initiatedBy: "mcp_app" })).toEqual(awaiting);
+    expect(subject.client.attempts).toHaveLength(1);
+
+    const session = validSession(subject.source(topicA));
+    subject.client.setObservation([session], 0);
+    subject.client.attempts[0]?.settle(Object.freeze({ status: "approved", session }));
+    const completed = await waitForState(subject.coordinator, review.operationId, "completed");
+    expect(completed).toMatchObject({
+      result: { outcome: "connected", connection: { status: "connected", address: addressA } },
+    });
+    expect(await subject.coordinator.get(review.operationId)).toEqual(completed);
+    expect(await subject.coordinator.decide({ review, initiatedBy: "mcp_app" })).toEqual(completed);
+    expect(subject.client.attempts).toHaveLength(1);
+  });
+
+  it("exposes QR only while the exact connect attempt is active and binds cancellation", async () => {
+    const subject = await createSubject();
+    const review = await requireReview(subject.coordinator, "connect");
+    await subject.coordinator.decide({ review, initiatedBy: "cli" });
+    const awaiting = await waitForState(subject.coordinator, review.operationId, "awaiting_wallet_approval");
+
+    expect(await subject.coordinator.getPresentation(review.operationId)).toEqual({
+      operation: awaiting,
+      qr,
+    });
+    await expectWalletCode(subject.coordinator.cancel({
+      operationId: review.operationId,
+      reviewDigest: parseHash32(`0x${"0".repeat(64)}`),
+      expectedState: "awaiting_wallet_approval",
+      connectionRevision: review.precondition.connectionRevision,
+    }), "state_conflict");
+    expect(subject.client.attempts[0]?.cancelCount).toBe(0);
 
     const cancelling = await subject.coordinator.cancel({
-      operationId: started.operation.operationId,
-      connectionRevision: started.operation.connectionRevision,
+      operationId: review.operationId,
+      reviewDigest: review.reviewDigest,
+      expectedState: "awaiting_wallet_approval",
+      connectionRevision: review.precondition.connectionRevision,
     });
-    expect(cancelling.state).toBe("cancelling");
-    const terminal = await waitForState(subject.coordinator, started.operation.operationId, "cancelled");
-
-    expect(terminal.result).toBeNull();
-    expect(terminal.failure).toBeNull();
-    expect(subject.client.disconnectedSourceIds).toEqual([subject.source(topicA).sourceId]);
-    expect(subject.projection.read().connection).toEqual({ status: "disconnected", reason: "no_session" });
-    expect(await subject.coordinator.operationPresentation.get(
-      started.operation.operationId,
-      "web",
-    )).not.toHaveProperty("qr");
+    expect(cancelling).toMatchObject({ state: "cancelling", terminationTarget: "cancelled" });
+    const cancelled = await waitForState(subject.coordinator, review.operationId, "cancelled");
+    expect(await subject.coordinator.getPresentation(review.operationId)).toEqual({
+      operation: cancelled,
+    });
+    expect(subject.client.attempts[0]?.cancelCount).toBe(1);
   });
 
-  it("preserves the exact numeric peer refusal instead of converting it into a local failure", async () => {
-    const subject = await createSubject();
-    const started = await startOperation(subject.coordinator, "connect", "web");
-    await waitForState(subject.coordinator, started.operation.operationId, "awaiting_wallet_approval");
-    const attempt = subject.client.attempts[0];
-    if (attempt === undefined) throw new Error("Connection attempt was not created.");
-    subject.client.setObservation([], 0);
-    attempt.settle(Object.freeze({ status: "rejected", peerRefusalCode: 5103 }));
-
-    const rejected = await waitForState(subject.coordinator, started.operation.operationId, "rejected");
-    expect(rejected).toMatchObject({
-      state: "rejected",
-      peerRefusalCode: 5103,
-      result: null,
-      failure: null,
-    });
-  });
-
-  it("durably gates a contradictory active-session event until stable emptiness clears it", async () => {
-    const subject = await createSubject((client, source) => {
-      client.setObservation([validSession(source(topicA))]);
-    });
-    subject.client.emit(Object.freeze({
-      kind: "accounts_changed",
-      sessionSourceId: subject.source(topicA).sourceId,
-      chainId: parseEvmChainId("eip155:4663"),
-      accounts: Object.freeze([deriveCaip10Account({
-        chainId: parseEvmChainId("eip155:4663"),
-        address: parseEvmAddressInput(addressB),
-      }) as WalletConnectAccountReference]),
-    }));
-
-    expect(subject.projection.read().revalidationRequired).toBe(true);
-    await drainCoordinator();
-    expect(subject.projection.read()).toMatchObject({
-      revalidationRequired: true,
-      connection: { status: "unresolved", sessionCount: "1" },
-    });
-    expect(subject.client.disconnectedSourceIds).toEqual([]);
-
-    subject.client.setObservation([], 0);
-    subject.client.emit(Object.freeze({ kind: "observation_changed" }));
-    await drainCoordinator();
-    expect(subject.projection.read()).toMatchObject({
-      revalidationRequired: false,
-      connection: { status: "disconnected", reason: "no_session" },
-    });
-  });
-
-  it("closes authority synchronously for an unattributed identity event before re-observation", async () => {
-    const subject = await createSubject((client, source) => {
-      client.setObservation([validSession(source(topicA))]);
-    });
-
-    subject.client.emit(Object.freeze({ kind: "identity_unattributed" }));
-    expect(subject.projection.read()).toMatchObject({
-      revalidationRequired: false,
-      connection: { status: "unknown", reason: "reconciling" },
-    });
-
-    await drainCoordinator();
-    expect(subject.projection.read()).toMatchObject({
-      revalidationRequired: false,
-      connection: { status: "connected", address: addressA },
-    });
-  });
-
-  it("retains exact event attribution while a nonempty observation is unresolved", async () => {
-    const subject = await createSubject((client, source) => {
-      client.setObservation([validSession(source(topicA))]);
-    });
-    subject.client.setObservation([
-      validSession(subject.source(topicA)),
-      validSession(subject.source(topicB)),
-    ]);
-    subject.client.emit(Object.freeze({ kind: "observation_changed" }));
-    await drainCoordinator();
-    expect(subject.projection.read()).toMatchObject({
-      revalidationRequired: false,
-      connection: { status: "unresolved", sessionCount: "2" },
-    });
-    expect(subject.coordinator.activeWallet.capture()).not.toHaveProperty("sessionSource");
-
-    subject.client.emit(Object.freeze({
-      kind: "identity_invalid",
-      sessionSourceId: subject.source(topicA).sourceId,
-    }));
-    expect(subject.projection.read().revalidationRequired).toBe(true);
-    await drainCoordinator();
-
-    subject.client.setObservation([validSession(subject.source(topicA))]);
-    subject.client.emit(Object.freeze({ kind: "observation_changed" }));
-    await drainCoordinator();
-    expect(subject.projection.read()).toMatchObject({
-      revalidationRequired: true,
-      connection: { status: "unresolved", sessionCount: "1" },
-    });
-  });
-
-  it("retains exact session attribution while a disconnect effect closes public authority", async () => {
-    const gate = deferred<void>();
-    const subject = await createSubject((client, source) => {
-      client.setObservation([validSession(source(topicA))]);
-      client.disconnectGate = gate;
-      client.preserveDisconnectedSources = true;
-    });
-    const started = await startOperation(subject.coordinator, "disconnect", "web");
-    await subject.coordinator.webConfirmation.confirm(started.operation.operationId, {
-      connectionRevision: started.operation.connectionRevision,
-    });
-    await drainCoordinator();
-
-    subject.client.emit(Object.freeze({
-      kind: "identity_invalid",
-      sessionSourceId: subject.source(topicA).sourceId,
-    }));
-    expect(subject.projection.read().revalidationRequired).toBe(true);
-
-    gate.resolve();
-    await waitForState(subject.coordinator, started.operation.operationId, "failed");
-    expect(subject.projection.read()).toMatchObject({
-      revalidationRequired: true,
-      connection: { status: "unresolved", sessionCount: "1" },
-    });
-    await expectNoConnectedPublicAuthority(subject.coordinator);
-  });
-
-  it("does not attribute a closed-authority event to a different session source", async () => {
-    const gate = deferred<void>();
-    const subject = await createSubject((client, source) => {
-      client.setObservation([validSession(source(topicA))]);
-      client.disconnectGate = gate;
-      client.preserveDisconnectedSources = true;
-    });
-    const started = await startOperation(subject.coordinator, "disconnect", "web");
-    await subject.coordinator.webConfirmation.confirm(started.operation.operationId, {
-      connectionRevision: started.operation.connectionRevision,
-    });
-    await drainCoordinator();
-
-    subject.client.emit(Object.freeze({
-      kind: "identity_invalid",
-      sessionSourceId: subject.source(topicB).sourceId,
-    }));
-    expect(subject.projection.read().revalidationRequired).toBe(false);
-
-    gate.resolve();
-    await waitForState(subject.coordinator, started.operation.operationId, "failed");
-    expect(subject.projection.read()).toMatchObject({
-      revalidationRequired: false,
-      connection: { status: "connected", address: addressA },
-    });
-  });
-
-  it("does not let later observation failure replace a definite completed operation", async () => {
-    const subject = await createSubject();
-    const started = await startOperation(subject.coordinator, "connect", "web");
-    await waitForState(subject.coordinator, started.operation.operationId, "awaiting_wallet_approval");
-    const attempt = subject.client.attempts[0];
-    if (attempt === undefined) throw new Error("Connection attempt was not created.");
-    const approved = validSession(subject.source(topicA));
-    subject.client.setObservation([approved], 0);
-    attempt.settle(Object.freeze({ status: "approved", session: approved }));
-    const completed = await waitForState(subject.coordinator, started.operation.operationId, "completed");
-
-    subject.client.observeError = new WalletConnectClientError("observation");
-    subject.client.emit(Object.freeze({ kind: "observation_changed" }));
-    await drainCoordinator();
-
-    expect(await subject.coordinator.get(started.operation.operationId)).toEqual(completed);
-    expect(subject.projection.read().connection).toEqual({
-      status: "unknown",
-      reason: "observation_unavailable",
-    });
-  });
-
-  it("contains product authority without observing, sealing, or closing SDK storage", async () => {
-    const subject = await createSubject((client, source) => {
-      client.setObservation([validSession(source(topicA))]);
-    });
-    subject.client.lifecycle.length = 0;
-    await subject.coordinator.close();
-    expect(subject.client.lifecycle).toEqual(["contain"]);
-    expect(subject.client.disconnectedSourceIds).toEqual([]);
-    expect(subject.projection.read().connection.status).toBe("connected");
-  });
-
-  it("prevents a late external effect from publishing after process-terminal containment", async () => {
-    const subject = await createSubject();
-    const started = await startOperation(subject.coordinator, "connect", "web");
-    await waitForState(subject.coordinator, started.operation.operationId, "awaiting_wallet_approval");
-    const attempt = subject.client.attempts[0];
-    if (attempt === undefined) throw new Error("Connection attempt was not created.");
-    const cancellation = deferred<WalletConnectAttemptOutcome>();
-    attempt.cancelPromise = cancellation.promise;
-
-    const closing = subject.coordinator.close();
-    await vi.advanceTimersByTimeAsync(5 * 60 * 1_000);
-    await closing;
-    const containedProjection = subject.projection.read();
-
-    subject.client.setObservation([], 0);
-    cancellation.resolve(Object.freeze({ status: "cancelled" }));
-    await drainCoordinator();
-
-    expect(subject.projection.read()).toEqual(containedProjection);
-    expect(subject.client.lifecycle).toContain("contain");
-  });
-
-  it("admits the closed projection before publishing a connect operation or starting the SDK effect", async () => {
-    const subject = await createSubject();
-    const operationId = nextOperationId();
-    const projectionFailure = new Error("projection admission failed");
-    subject.projection.replaceFailures.push(projectionFailure);
-
-    await expect(subject.coordinator.start({
+  it("reconciles a durable active operation after restart without reconstructing QR or resending", async () => {
+    const events: string[] = [];
+    const bootstrap = createBootstrap(events);
+    const operationId = Buffer.alloc(32, 44).toString("base64url");
+    const review = storedRestartReview(operationId);
+    bootstrap.operations.seed(parseWalletManagementOperation({
+      contractVersion: "1",
+      domain: "wallet",
       operationId,
       kind: "connect",
-      interactionInterface: "web",
-      connectionRevision: null,
-    })).rejects.toBe(projectionFailure);
-
-    expect(subject.client.attempts).toEqual([]);
-    expect(subject.client.lifecycle).not.toContain("startConnection");
-    await expect(subject.coordinator.get(operationId)).rejects.toMatchObject({
-      failure: { error: { code: "state_conflict" } },
-    });
-  });
-
-  it("keeps an expired action nonterminal until its exact effect and postcondition settle", async () => {
-    const readers = Object.freeze([
-      Object.freeze({
-        name: "operation",
-        read: (coordinator: WalletCoordinator, operationId: string) => coordinator.get(operationId),
-      }),
-      Object.freeze({
-        name: "presentation",
-        read: (coordinator: WalletCoordinator, operationId: string) =>
-          coordinator.operationPresentation.get(operationId, "web"),
-      }),
-      Object.freeze({
-        name: "current projection",
-        read: (coordinator: WalletCoordinator, _operationId: string) =>
-          coordinator.currentOperationProjection.get(),
-      }),
-      Object.freeze({
-        name: "active wallet",
-        read: (coordinator: WalletCoordinator, _operationId: string) =>
-          Promise.resolve(coordinator.activeWallet.capture()),
-      }),
-      Object.freeze({
-        name: "wallet capability",
-        read: (coordinator: WalletCoordinator, _operationId: string) =>
-          invokeWalletConnection(coordinator),
-      }),
-    ]);
-
-    for (const reader of readers) {
-      vi.setSystemTime(new Date(initialTime));
-      const subject = await createSubject();
-      const started = await startOperation(subject.coordinator, "connect", "web");
-      const awaiting = await waitForState(
-        subject.coordinator,
-        started.operation.operationId,
-        "awaiting_wallet_approval",
-      );
-      const attempt = subject.client.attempts[0];
-      if (attempt === undefined) throw new Error("Connection attempt was not created.");
-      const cancellation = deferred<WalletConnectAttemptOutcome>();
-      attempt.cancelPromise = cancellation.promise;
-      vi.setSystemTime(new Date(Date.parse(awaiting.actionExpiresAt) + 1));
-
-      await reader.read(subject.coordinator, awaiting.operationId);
-
-      expect(await subject.coordinator.get(awaiting.operationId), reader.name).toMatchObject({
-        state: "cancelling",
-        result: null,
-        failure: null,
-      });
-      expect(await subject.coordinator.currentOperationProjection.get(), reader.name).toMatchObject({
-        status: "present",
-        presentation: { operation: { state: "cancelling" } },
-      });
-      await expect(
-        startOperation(subject.coordinator, "connect", "web"),
-        `${reader.name} must keep the unsettled effect owned`,
-      ).rejects.toMatchObject({ failure: { error: { code: "state_conflict" } } });
-      expect(subject.client.attempts).toHaveLength(1);
-
-      subject.client.setObservation([], 0);
-      cancellation.resolve(Object.freeze({ status: "cancelled" }));
-      expect(await waitForState(
-        subject.coordinator,
-        awaiting.operationId,
-        "expired",
-      ), reader.name).toMatchObject({ state: "expired", result: null, failure: null });
-      expect(await subject.coordinator.currentOperationProjection.get(), reader.name)
-        .toMatchObject({ status: "absent" });
-    }
-  });
-
-  it("preserves a user's cancellation intent when its cleanup crosses the action deadline", async () => {
-    const subject = await createSubject();
-    const started = await startOperation(subject.coordinator, "connect", "web");
-    const awaiting = await waitForState(
-      subject.coordinator,
-      started.operation.operationId,
-      "awaiting_wallet_approval",
-    );
-    const attempt = subject.client.attempts[0];
-    if (attempt === undefined) throw new Error("Connection attempt was not created.");
-    const cancellation = deferred<WalletConnectAttemptOutcome>();
-    attempt.cancelPromise = cancellation.promise;
-
-    expect((await subject.coordinator.cancel({
-      operationId: awaiting.operationId,
-      connectionRevision: awaiting.connectionRevision,
-    })).state).toBe("cancelling");
-    vi.setSystemTime(new Date(Date.parse(awaiting.actionExpiresAt) + 1));
-    expect((await subject.coordinator.get(awaiting.operationId)).state).toBe("cancelling");
-
-    subject.client.setObservation([], 0);
-    cancellation.resolve(Object.freeze({ status: "cancelled" }));
-    expect((await waitForState(subject.coordinator, awaiting.operationId, "cancelled")).state)
-      .toBe("cancelled");
-  });
-
-  it("keeps an expired disconnect nonterminal until stable emptiness is observed", async () => {
-    const gate = deferred<void>();
-    const subject = await createSubject((client, source) => {
-      client.setObservation([validSession(source(topicA))]);
-      client.disconnectGate = gate;
-    });
-    const started = await startOperation(subject.coordinator, "disconnect", "web");
-    const disconnecting = await subject.coordinator.webConfirmation.confirm(
-      started.operation.operationId,
-      { connectionRevision: started.operation.connectionRevision },
-    );
-    await drainCoordinator();
-    vi.setSystemTime(new Date(Date.parse(disconnecting.actionExpiresAt) + 1));
-
-    expect((await subject.coordinator.get(disconnecting.operationId)).state).toBe("disconnecting");
-    expect(await subject.coordinator.currentOperationProjection.get()).toMatchObject({
-      status: "present",
-      presentation: { operation: { state: "disconnecting" } },
-    });
-
-    gate.resolve();
-    expect((await waitForState(subject.coordinator, disconnecting.operationId, "expired")).state)
-      .toBe("expired");
-  });
-
-  it("never republishes a connected source while contradiction-gate persistence keeps failing", async () => {
-    const subject = await createSubject((client, source) => {
-      client.setObservation([validSession(source(topicA))]);
-    });
-    const projectionFailure = new Error("projection remains unavailable");
-    subject.projection.persistentReplaceFailure = projectionFailure;
-
-    subject.client.emit(Object.freeze({
-      kind: "identity_invalid",
-      sessionSourceId: subject.source(topicA).sourceId,
-    }));
-
-    await expectNoConnectedPublicAuthority(subject.coordinator);
-    await expectNoConnectedPublicAuthority(subject.coordinator);
-    expect(subject.projection.read().connection.status).toBe("connected");
-  });
-
-  it("requires a durable revision boundary before identical connection data can bind a new source", async () => {
-    const subject = await createSubject((client, source) => {
-      client.setObservation([validSession(source(topicA))]);
-    });
-    const originalRevision = subject.projection.read().revision;
-    subject.client.setObservation([validSession(subject.source(topicB))]);
-    subject.projection.persistentReplaceFailure = new Error("source replacement was not durable");
-
-    subject.client.emit(Object.freeze({
-      kind: "accounts_changed",
-      sessionSourceId: subject.source(topicA).sourceId,
-      chainId: parseEvmChainId("eip155:4663"),
-      accounts: Object.freeze([deriveCaip10Account({
-        chainId: parseEvmChainId("eip155:4663"),
-        address: parseEvmAddressInput(addressA),
-      }) as WalletConnectAccountReference]),
-    }));
-    await drainCoordinator();
-
-    expect(subject.projection.read().revision).toBe(originalRevision);
-    await expectNoConnectedPublicAuthority(subject.coordinator);
-
-    subject.projection.persistentReplaceFailure = undefined;
-    subject.client.setObservation([], 0);
-    subject.client.emit(Object.freeze({ kind: "observation_changed" }));
-    await drainCoordinator();
-    const emptyRevision = subject.projection.read().revision;
-    expect(emptyRevision).not.toBe(originalRevision);
-
-    subject.client.setObservation([validSession(subject.source(topicB))]);
-    subject.client.emit(Object.freeze({ kind: "observation_changed" }));
-    await drainCoordinator();
-    const rebound = subject.coordinator.activeWallet.capture();
-    expect(rebound).toMatchObject({
-      connection: { status: "connected", address: addressA },
-      sessionSource: { sourceId: subject.source(topicB).sourceId },
-    });
-    expect(rebound.connectionRevision).not.toBe(emptyRevision);
-  });
-
-  it("uses the last admitted exact source to clean an expired connected session", async () => {
-    const expiresAt = Date.parse(initialTime) / 1_000 + 1;
-    const subject = await createSubject((client, source) => {
-      client.setObservation([validSession(source(topicA), { expiry: expiresAt })]);
-    });
-    vi.setSystemTime(new Date(Date.parse(initialTime) + 2_000));
-
-    expect(subject.coordinator.activeWallet.capture().connection.status).toBe("unknown");
-    await drainCoordinator();
-
-    expect(subject.client.disconnectedSourceIds).toEqual([subject.source(topicA).sourceId]);
-    expect(subject.projection.read()).toMatchObject({
-      revalidationRequired: false,
-      connection: { status: "disconnected", reason: "expired" },
-    });
-  });
-
-  it("accepts a fresh empty postcondition when disconnect deleted the session before throwing", async () => {
-    const subject = await createSubject((client, source) => {
-      client.setObservation([validSession(source(topicA))]);
-      client.disconnectAfterDeleteFailures.push(new WalletConnectClientError("sdk"));
-    });
-    const started = await startOperation(subject.coordinator, "disconnect", "web");
-    await subject.coordinator.webConfirmation.confirm(started.operation.operationId, {
-      connectionRevision: started.operation.connectionRevision,
-    });
-
-    const completed = await waitForState(
-      subject.coordinator,
-      started.operation.operationId,
-      "completed",
-    );
-    expect(completed).toMatchObject({
-      result: { outcome: "disconnected", connection: { status: "disconnected" } },
+      initiatedBy: "mcp_app",
+      review,
+      state: "awaiting_wallet_approval",
+      terminationTarget: null,
+      result: null,
       failure: null,
-    });
-    expect(subject.client.disconnectedSourceIds).toEqual([subject.source(topicA).sourceId]);
+      peerRefusalCode: null,
+    }));
+    const client = new FakeWalletConnectClient(events);
+
+    const coordinator = await createWalletCoordinator({ client, wallet: bootstrap.wallet });
+    const terminal = await coordinator.get(operationId);
+    expect(terminal.state).toBe("expired");
+    expect(await coordinator.getPresentation(operationId)).toEqual({ operation: terminal });
+    expect(client.attempts).toHaveLength(0);
+    expect(events).not.toContain("sdk:start_connection");
+    expect(client.containmentCount).toBe(1);
   });
 
-  it("attempts every independent session before deciding a disconnect postcondition", async () => {
+  it("keeps disconnect Review pure, then commits before one exact SDK deletion", async () => {
     const subject = await createSubject((client, source) => {
-      client.setObservation([
-        validSession(source(topicA)),
-        validSession(source(topicB), { address: addressB }),
-      ]);
-      client.disconnectAfterDeleteFailures.push(new WalletConnectClientError("sdk"));
+      client.setObservation([validSession(source(topicA), addressB)]);
     });
-    const started = await startOperation(subject.coordinator, "disconnect", "web");
-    await subject.coordinator.webConfirmation.confirm(started.operation.operationId, {
-      connectionRevision: started.operation.connectionRevision,
-    });
-
-    const completed = await waitForState(
-      subject.coordinator,
-      started.operation.operationId,
-      "completed",
-    );
-    expect(completed).toMatchObject({
-      result: { outcome: "disconnected", connection: { status: "disconnected" } },
-      failure: null,
-    });
-    expect(subject.client.disconnectedSourceIds).toEqual([
-      subject.source(topicA).sourceId,
-      subject.source(topicB).sourceId,
-    ]);
-  });
-
-  it("preserves an admitted disconnected cause across unchanged empty observations", async () => {
-    const subject = await createSubject((client, source) => {
-      client.setObservation([validSession(source(topicA))]);
-    });
-    const started = await startOperation(subject.coordinator, "disconnect", "web");
-    await subject.coordinator.webConfirmation.confirm(started.operation.operationId, {
-      connectionRevision: started.operation.connectionRevision,
-    });
-    await waitForState(subject.coordinator, started.operation.operationId, "completed");
-    const completedProjection = subject.projection.read();
-    expect(completedProjection.connection).toEqual({
-      status: "disconnected",
-      reason: "disconnected",
-    });
-
-    subject.client.emit(Object.freeze({ kind: "observation_changed" }));
-    await drainCoordinator();
-
-    expect(subject.projection.read()).toEqual(completedProjection);
-  });
-
-  it("contains an orphan proposal without converting it into a session claim", async () => {
-    const subject = await createSubject((client) => {
-      client.setObservation([], 1);
-    });
-    subject.client.lifecycle.length = 0;
-    await subject.coordinator.close();
-
-    expect(subject.client.lifecycle).toEqual(["contain"]);
-    expect(subject.projection.read()).toMatchObject({
-      revalidationRequired: false,
-      connection: { status: "unknown", reason: "reconciling" },
-    });
+    const review = await requireReview(subject.coordinator, "disconnect");
+    expect(review.fixedEvidence.sessionSourceIds).toEqual([subject.source(topicA).sourceId]);
     expect(subject.client.disconnectedSourceIds).toEqual([]);
+    expect(subject.operations.read(review.operationId)).toBeNull();
+
+    const started = await subject.coordinator.decide({ review, initiatedBy: "cli" });
+    expect(started.state).toBe("disconnecting");
+    const completed = await waitForState(subject.coordinator, review.operationId, "completed");
+    expect(completed).toMatchObject({
+      result: { outcome: "disconnected", connection: { status: "disconnected" } },
+    });
+    const disconnectEvent = `sdk:disconnect:${subject.source(topicA).sourceId}`;
+    expect(subject.events.indexOf("store:create:disconnecting"))
+      .toBeLessThan(subject.events.indexOf(disconnectEvent));
+    expect(subject.client.disconnectedSourceIds).toEqual([subject.source(topicA).sourceId]);
+
+    expect(await subject.coordinator.decide({ review, initiatedBy: "cli" })).toEqual(completed);
+    expect(subject.client.disconnectedSourceIds).toEqual([subject.source(topicA).sourceId]);
+  });
+
+  it("keeps unavailable and conflicting session evidence distinct from healthy absence", async () => {
+    const unavailable = await createSubject((client) => {
+      client.observeError = new WalletConnectClientError("observation");
+    });
+    await expectWalletCode(unavailable.coordinator.review({ kind: "connect" }), "runtime_state_unavailable");
+
+    const multiple = await createSubject((client, source) => {
+      client.setObservation([
+        validSession(source(topicA), addressA),
+        validSession(source(topicB), addressB),
+      ]);
+    });
+    await expectWalletCode(multiple.coordinator.review({ kind: "connect" }), "wallet_session_unusable");
+    expect(multiple.client.attempts).toHaveLength(0);
   });
 });

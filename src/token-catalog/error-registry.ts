@@ -1,4 +1,4 @@
-import { assertDirectApplicationErrorRegistryExtension } from "../core/browser.js";
+import { assertDirectApplicationErrorRegistryExtension } from "../core/client.js";
 import { chainErrorRegistry } from "../chain/error-registry.js";
 import { tokenCatalogErrorDefinitions } from "./error-definitions.js";
 

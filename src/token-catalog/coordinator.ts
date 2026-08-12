@@ -2,56 +2,48 @@ import { randomBytes } from "node:crypto";
 
 import {
   ObservationAuthorityRegistry,
-  deepFreezeValue,
+  canonicalJsonStringify,
   parseUtcTimestamp,
-  type ApplicationFailure,
   type CanonicalClock,
+  type CanonicalJson,
   type EvmAccountIdentity,
+  type OperationId,
   type UnsignedDecimal,
   type UtcTimestamp,
 } from "../core/index.js";
 import {
   findOfficialAssetMember,
-  type OfficialAssetSnapshotRevision,
-  type StockFactoryVerification,
+  type CommittedOfficialAssetSnapshot,
+  type OfficialAssetSourceMember,
 } from "../registry/index.js";
+import { createOperationId } from "../runtime/operation-id.js";
 import { captureConnectedWalletSession } from "./active-wallet.js";
 import {
+  createTokenAdditionReviewProjection,
+  parseTokenSelectionReview,
+  tokenCatalogApplicationContracts,
   tokenCatalogContractLimits,
-  tokenCatalogOperationConfirmationContract,
-  tokenCatalogOperationSchema,
-  tokenCatalogReviewDigest,
-  tokenInspectionDigest,
-  parseTokenOperationFailure,
+  tokenCatalogOperationIdSchema,
+  tokenSelectionDirectActionSchema,
+  tokenSelectionReviewDigest,
   tokenSelectionRevisionSchema,
   tokenSelectionSetRevisionSchema,
-  type TokenCatalogConfirmedOperation,
-  type TokenCatalogOperationConfirmationInput,
   type TokenCatalogOperation,
-  type TokenCatalogOperationStartResult,
-  type TokenCatalogTerminalOperation,
   type TokenInspectionSuccess,
   type TokenSelection,
-  type TokenOfficialSelectionEvidence,
-  type TokenAdditionStartRequest,
-  type TokenRemovalStartInput,
+  type TokenSelectionDirectAction,
+  type TokenSelectionReview,
+  type TokenSelectionReviewRequest,
+  type TokenSelectionReviewResult,
 } from "./contracts.js";
 import { normalizeTokenCatalogError, TokenCatalogOperationError } from "./operation-error.js";
-import { createTokenCatalogFailure } from "./errors.js";
 import type {
   TokenCatalogCoordinatorDependencies,
   TokenCatalogOperationCoordinatorPort,
 } from "./ports.js";
-import {
-  isTokenCatalogOperationTerminal,
-  tokenCatalogInteractionInterfaces,
-  type TokenCatalogInteractionInterface,
-  type TokenCatalogOperationKind,
-} from "./state.js";
 
 export const tokenCatalogCoordinatorPolicy = Object.freeze({
-  userActionMilliseconds: 5 * 60 * 1_000,
-  terminalRetentionMilliseconds: 5 * 60 * 1_000,
+  userActionMilliseconds: tokenCatalogContractLimits.reviewActionMilliseconds,
 });
 
 const addMilliseconds = (value: UtcTimestamp, milliseconds: number): UtcTimestamp =>
@@ -67,65 +59,30 @@ const createSelectionSetRevision = () => tokenSelectionSetRevisionSchema.parse(
 interface CapturedWallet {
   readonly account: EvmAccountIdentity;
   readonly connectionRevision: UnsignedDecimal;
-  readonly sessionSourceId: string;
-  readonly sessionTopicDigest: string;
 }
-
-interface OperationEntry {
-  operation: TokenCatalogOperation;
-  readonly connectionRevision: UnsignedDecimal;
-  readonly sessionSourceId: CapturedWallet["sessionSourceId"];
-  readonly sessionTopicDigest: CapturedWallet["sessionTopicDigest"];
-  terminalAt?: UtcTimestamp;
-  readonly sequence: number;
-  readonly officialVerification: StockFactoryVerification | null;
-}
-
-type TokenStartCommand =
-  | Readonly<{
-      kind: "add";
-      input: TokenAdditionStartRequest;
-      interactionInterface: TokenCatalogInteractionInterface;
-      operationId: TokenCatalogOperation["operationId"];
-    }>
-  | Readonly<{
-      kind: "remove";
-      input: TokenRemovalStartInput;
-      interactionInterface: TokenCatalogInteractionInterface;
-      operationId: TokenCatalogOperation["operationId"];
-    }>;
-
-type PreparedTokenStart = Readonly<{
-  kind: TokenCatalogOperationKind;
-  asset: TokenSelection["asset"];
-  previousSelection: TokenSelection | null;
-  selectionSetRevision: ReturnType<typeof tokenSelectionSetRevisionSchema.parse> | null;
-  inspection: TokenInspectionSuccess | null;
-  officialSnapshotRevision: OfficialAssetSnapshotRevision | null;
-  officialEvidence: TokenOfficialSelectionEvidence | null;
-  officialVerification: StockFactoryVerification | null;
-}>;
 
 export interface TokenCatalogCoordinatorRuntimeDependencies extends TokenCatalogCoordinatorDependencies {
   readonly clock: CanonicalClock;
   readonly signal: AbortSignal;
 }
 
-const failureFor = (error: unknown): ApplicationFailure =>
-  normalizeTokenCatalogError(error).failure;
+const sameAccount = (left: EvmAccountIdentity, right: EvmAccountIdentity): boolean =>
+  left.chainId === right.chainId && left.address === right.address;
 
-const operationFailureFor = (error: unknown): ApplicationFailure => {
-  try { return parseTokenOperationFailure(failureFor(error)); }
-  catch { return new TokenCatalogOperationError("internal_error").failure; }
-};
+const sameSelection = (
+  left: TokenSelection | null,
+  right: TokenSelection | null,
+): boolean => canonicalJsonStringify(left as unknown as CanonicalJson) ===
+  canonicalJsonStringify(right as unknown as CanonicalJson);
+
+const sameReview = (left: TokenSelectionReview, right: TokenSelectionReview): boolean =>
+  canonicalJsonStringify(left as unknown as CanonicalJson) ===
+    canonicalJsonStringify(right as unknown as CanonicalJson);
 
 export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinatorPort {
   readonly #dependencies: TokenCatalogCoordinatorRuntimeDependencies;
-  readonly #operations = new Map<string, OperationEntry>();
-  readonly #inspectionControllers = new Set<AbortController>();
+  readonly #controllers = new Set<AbortController>();
   readonly #activeCalls = new Set<Promise<void>>();
-  #starting = false;
-  #sequence = 0;
   #lifecycleState: "open" | "closing" | "closed" = "open";
   #closePromise?: Promise<void>;
 
@@ -134,170 +91,227 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
     Object.seal(this);
   }
 
-  startAddition(
-    input: TokenAdditionStartRequest,
-    control: import("./ports.js").TokenCatalogOperationControl,
-  ): Promise<TokenCatalogOperationStartResult<"add"> | ApplicationFailure> {
-    return this.#runAdmitted(() => this.#start({ kind: "add", input, ...control })) as Promise<
-      TokenCatalogOperationStartResult<"add"> | ApplicationFailure
-    >;
-  }
+  review(inputValue: TokenSelectionReviewRequest): Promise<TokenSelectionReviewResult> {
+    return this.#run(async (signal) => {
+      const input = tokenCatalogApplicationContracts.selectionChangeReview.parseInput(inputValue);
+      const operationId = tokenCatalogOperationIdSchema.parse(createOperationId());
+      if (this.#dependencies.store.readOperation(operationId) !== null) {
+        throw new TokenCatalogOperationError("state_conflict");
+      }
+      const wallet = this.#captureWallet();
+      if (input.asset.chainId !== wallet.account.chainId) {
+        throw new TokenCatalogOperationError("invalid_input");
+      }
+      const previous = this.#dependencies.store.getSelection(wallet.account, input.asset)?.selection ?? null;
+      const selectionSetRevision =
+        this.#dependencies.store.getSelectionState(wallet.account)?.revision ?? null;
 
-  startRemoval(
-    input: TokenRemovalStartInput,
-    control: import("./ports.js").TokenCatalogOperationControl,
-  ): Promise<TokenCatalogOperationStartResult<"remove"> | ApplicationFailure> {
-    return this.#runAdmitted(() => this.#start({ kind: "remove", input, ...control })) as Promise<
-      TokenCatalogOperationStartResult<"remove"> | ApplicationFailure
-    >;
-  }
-
-  getOperation(operationId: TokenCatalogOperation["operationId"]): TokenCatalogOperation {
-    this.#assertOpen();
-    this.#expireAndPurge();
-    const entry = this.#operations.get(operationId);
-    if (entry === undefined) throw new TokenCatalogOperationError("token_operation_not_found");
-    return entry.operation;
-  }
-
-  getCurrentOperation(): TokenCatalogOperation | null {
-    this.#assertOpen();
-    this.#expireAndPurge();
-    let current: OperationEntry | undefined;
-    for (const entry of this.#operations.values()) {
-      if (current === undefined || entry.sequence > current.sequence) current = entry;
-    }
-    return current?.operation ?? null;
-  }
-
-  confirm(
-    control: import("./ports.js").TokenCatalogOperationControl,
-    inputValue: TokenCatalogOperationConfirmationInput,
-  ): Promise<TokenCatalogConfirmedOperation> {
-    if (control.operationId !== inputValue.operationId) {
-      return Promise.reject(new TokenCatalogOperationError("state_conflict"));
-    }
-    return this.#runAdmitted(() => this.#confirm(control.interactionInterface, inputValue));
-  }
-
-  async #confirm(
-    interactionInterfaceInput: TokenCatalogInteractionInterface,
-    inputValue: TokenCatalogOperationConfirmationInput,
-  ): Promise<TokenCatalogConfirmedOperation> {
-    let input: TokenCatalogOperationConfirmationInput;
-    try { input = tokenCatalogOperationConfirmationContract.parseInput(inputValue); }
-    catch { throw new TokenCatalogOperationError("invalid_input"); }
-    const interactionInterface = tokenCatalogInteractionInterfaces.find(
-      (candidate) => candidate === interactionInterfaceInput,
-    );
-    if (interactionInterface === undefined) throw new TokenCatalogOperationError("invalid_input");
-    this.#expireAndPurge();
-    const entry = this.#operations.get(input.operationId);
-    if (entry === undefined) throw new TokenCatalogOperationError("token_operation_not_found");
-    if (entry.operation.state === "expired") throw new TokenCatalogOperationError("token_operation_expired");
-    const expectedReviewDigest = this.#reviewDigest(entry);
-    if (
-      entry.operation.state !== "awaiting_confirmation" ||
-      entry.operation.interactionInterface !== interactionInterface ||
-      entry.operation.review.reviewDigest !== expectedReviewDigest ||
-      input.reviewDigest !== expectedReviewDigest
-    ) throw new TokenCatalogOperationError("state_conflict");
-    try {
-      this.#recaptureWallet({
-        account: entry.operation.account,
-        connectionRevision: entry.connectionRevision,
-        sessionSourceId: entry.sessionSourceId,
-        sessionTopicDigest: entry.sessionTopicDigest,
-      });
-    } catch (error) {
-      throw normalizeTokenCatalogError(error);
-    }
-    entry.operation = this.#replaceOperation(entry.operation, { state: "applying" });
-    try {
-      const applying = entry.operation;
-      if (applying.state !== "applying") throw new TokenCatalogOperationError("internal_error");
-      if (applying.kind === "add") {
-        entry.operation = this.#dependencies.store.applyConfirmation({
-          kind: applying.kind,
-          operation: applying,
-          expectedConnectionRevision: entry.connectionRevision,
-          selectionRevision: createSelectionRevision(),
-          selectionSetRevision: createSelectionSetRevision(),
-          officialVerification: entry.officialVerification,
-          now: this.#now(),
+      let review: TokenSelectionReview;
+      if (input.kind === "add") {
+        if (previous?.included === true) {
+          throw new TokenCatalogOperationError("token_selection_already_included");
+        }
+        const snapshot = this.#readOfficialSnapshot();
+        const member = findOfficialAssetMember(snapshot, input.asset.address) ?? null;
+        const chainResult = await this.#dependencies.additionChainReads.inspectAndVerifyOfficial({
+          asset: input.asset,
+          officialMember: member,
+          block: null,
+        }, signal);
+        if (!("inspection" in chainResult)) {
+          throw new TokenCatalogOperationError(chainResult.error.code);
+        }
+        this.#assertReviewPrecondition(
+          wallet,
+          input.asset,
+          previous,
+          selectionSetRevision,
+          snapshot.revision,
+        );
+        const projection = createTokenAdditionReviewProjection({
+          inspection: chainResult.inspection,
+          officialSnapshotRevision: snapshot.revision,
+          officialMember: member,
+          officialVerification: chainResult.officialVerification,
+        });
+        const createdAt = this.#now();
+        const withoutDigest = {
+          contractVersion: "1" as const,
+          domain: "token_selection" as const,
+          operationId,
+          kind: input.kind,
+          createdAt,
+          actionExpiresAt: addMilliseconds(createdAt, tokenCatalogCoordinatorPolicy.userActionMilliseconds),
+          target: { asset: input.asset },
+          decision: projection.decision,
+          precondition: {
+            account: wallet.account,
+            connectionRevision: wallet.connectionRevision,
+            previousSelection: previous,
+            selectionSetRevision,
+          },
+          fixedEvidence: projection.fixedEvidence,
+        };
+        review = parseTokenSelectionReview({
+          ...withoutDigest,
+          reviewDigest: tokenSelectionReviewDigest(withoutDigest),
         });
       } else {
-        entry.operation = this.#dependencies.store.applyConfirmation({
-          kind: applying.kind,
-          operation: applying,
-          expectedConnectionRevision: entry.connectionRevision,
-          selectionRevision: createSelectionRevision(),
-          selectionSetRevision: createSelectionSetRevision(),
-          now: this.#now(),
+        if (previous === null) throw new TokenCatalogOperationError("token_selection_not_found");
+        if (!previous.included) throw new TokenCatalogOperationError("token_selection_not_included");
+        if (previous.revision !== input.expectedRevision) {
+          throw new TokenCatalogOperationError("token_selection_revision_changed");
+        }
+        if (selectionSetRevision === null) throw new TokenCatalogOperationError("internal_error");
+        this.#assertReviewPrecondition(
+          wallet,
+          input.asset,
+          previous,
+          selectionSetRevision,
+          null,
+        );
+        const createdAt = this.#now();
+        const withoutDigest = {
+          contractVersion: "1" as const,
+          domain: "token_selection" as const,
+          operationId,
+          kind: input.kind,
+          createdAt,
+          actionExpiresAt: addMilliseconds(createdAt, tokenCatalogCoordinatorPolicy.userActionMilliseconds),
+          target: { asset: input.asset },
+          decision: { action: "remove_selection" as const },
+          precondition: {
+            account: wallet.account,
+            connectionRevision: wallet.connectionRevision,
+            previousSelection: previous,
+            selectionSetRevision,
+          },
+          fixedEvidence: {},
+        };
+        review = parseTokenSelectionReview({
+          ...withoutDigest,
+          reviewDigest: tokenSelectionReviewDigest(withoutDigest),
         });
       }
-    } catch (error) {
-      entry.operation = this.#replaceOperation(entry.operation, {
-        state: "failed",
-        failure: operationFailureFor(error),
+      return tokenCatalogApplicationContracts.selectionChangeReview.parseBoundSuccess(
+        input,
+        { operationId },
+        { review },
+      );
+    });
+  }
+
+  decide(inputValue: TokenSelectionDirectAction): Promise<TokenCatalogOperation> {
+    return this.#run(async (signal) => {
+      const input = tokenSelectionDirectActionSchema.parse(inputValue);
+      const contract = input.review.kind === "add"
+        ? tokenCatalogApplicationContracts.addSelection
+        : tokenCatalogApplicationContracts.removeSelection;
+      const action = contract.parseInput(input);
+      const existing = this.#dependencies.store.readOperation(action.review.operationId);
+      if (existing !== null) {
+        if (
+          existing.kind !== action.review.kind ||
+          !sameReview(existing.review, action.review)
+        ) throw new TokenCatalogOperationError("state_conflict");
+        return contract.parsePublicSuccess(action as never, existing as never) as TokenCatalogOperation;
+      }
+      if (Date.parse(action.review.actionExpiresAt) <= Date.parse(this.#now())) {
+        throw new TokenCatalogOperationError("token_review_expired");
+      }
+      this.#assertWalletPrecondition(action.review);
+      this.#assertSelectionPrecondition(action.review);
+
+      let inspection: TokenInspectionSuccess | null = null;
+      let officialVerification: Parameters<
+        TokenCatalogCoordinatorDependencies["store"]["applySelectionChange"]
+      >[0]["officialVerification"] = null;
+      if (action.review.kind === "add") {
+        const snapshot = this.#readOfficialSnapshot(action.review.fixedEvidence.officialSnapshotRevision);
+        const member = this.#reviewedOfficialMember(action.review, snapshot);
+        const chainResult = await this.#dependencies.additionChainReads.inspectAndVerifyOfficial({
+          asset: action.review.target.asset,
+          officialMember: member,
+          block: action.review.fixedEvidence.inspectionBlock,
+        }, signal);
+        if (!("inspection" in chainResult)) {
+          throw new TokenCatalogOperationError(chainResult.error.code);
+        }
+        const projection = createTokenAdditionReviewProjection({
+          inspection: chainResult.inspection,
+          officialSnapshotRevision: snapshot.revision,
+          officialMember: member,
+          officialVerification: chainResult.officialVerification,
+        });
+        if (
+          canonicalJsonStringify(projection as unknown as CanonicalJson) !==
+            canonicalJsonStringify({
+              decision: action.review.decision,
+              fixedEvidence: action.review.fixedEvidence,
+            } as unknown as CanonicalJson)
+        ) throw new TokenCatalogOperationError("state_conflict");
+        inspection = chainResult.inspection;
+        officialVerification = chainResult.officialVerification;
+        this.#assertOfficialSnapshot(action.review.fixedEvidence.officialSnapshotRevision);
+      }
+
+      this.#assertWalletPrecondition(action.review);
+      this.#assertSelectionPrecondition(action.review);
+      const operation = this.#dependencies.store.applySelectionChange({
+        action,
+        selectionRevision: createSelectionRevision(),
+        selectionSetRevision: createSelectionSetRevision(),
+        inspection,
+        officialVerification,
+        completedAt: this.#now(),
       });
-    }
-    entry.terminalAt = this.#now();
-    if (entry.operation.state !== "completed" && entry.operation.state !== "failed") {
-      throw new TokenCatalogOperationError("internal_error");
-    }
-    try { return tokenCatalogOperationConfirmationContract.parsePublicSuccess(input, entry.operation); }
-    catch { throw new TokenCatalogOperationError("internal_error"); }
+      return contract.parsePublicSuccess(action as never, operation as never) as TokenCatalogOperation;
+    });
   }
 
-  cancel(
-    operationId: TokenCatalogOperation["operationId"],
-    interactionInterface?: TokenCatalogInteractionInterface,
-  ): Promise<TokenCatalogTerminalOperation> {
-    return this.#runAdmitted(() => this.#cancel(operationId, interactionInterface));
-  }
-
-  async #cancel(
-    operationId: TokenCatalogOperation["operationId"],
-    interactionInterface?: TokenCatalogInteractionInterface,
-  ): Promise<TokenCatalogTerminalOperation> {
-    this.#expireAndPurge();
-    const entry = this.#operations.get(operationId);
-    if (entry === undefined) throw new TokenCatalogOperationError("token_operation_not_found");
-    if (interactionInterface !== undefined && entry.operation.interactionInterface !== interactionInterface) {
-      throw new TokenCatalogOperationError("state_conflict");
-    }
-    if (isTokenCatalogOperationTerminal(entry.operation.state)) {
-      const operation = entry.operation;
-      if (
-        operation.state === "cancelled" || operation.state === "completed" ||
-        operation.state === "expired" || operation.state === "failed"
-      ) return operation;
-      throw new TokenCatalogOperationError("internal_error");
-    }
-    if (entry.operation.state !== "awaiting_confirmation") {
-      throw new TokenCatalogOperationError("state_conflict");
-    }
-    entry.operation = this.#replaceOperation(entry.operation, { state: "cancelled" });
-    entry.terminalAt = this.#now();
-    const cancelled = entry.operation;
-    if (cancelled.state !== "cancelled") throw new TokenCatalogOperationError("internal_error");
-    return cancelled;
+  getOperation(operationIdValue: TokenCatalogOperation["operationId"]): TokenCatalogOperation {
+    this.#assertOpen();
+    const operationId = tokenCatalogOperationIdSchema.parse(operationIdValue);
+    const operation = this.#dependencies.store.readOperation(operationId);
+    if (operation === null) throw new TokenCatalogOperationError("token_operation_not_found");
+    return tokenCatalogApplicationContracts.operation.parsePublicSuccess(
+      { operationId },
+      operation,
+    );
   }
 
   close(): Promise<void> {
     if (this.#closePromise !== undefined) return this.#closePromise;
     this.#lifecycleState = "closing";
-    for (const controller of this.#inspectionControllers) controller.abort();
+    for (const controller of this.#controllers) controller.abort();
     const closePromise = Promise.resolve().then(async () => {
       await Promise.allSettled([...this.#activeCalls]);
-      this.#inspectionControllers.clear();
-      this.#operations.clear();
-      this.#starting = false;
+      this.#controllers.clear();
       this.#lifecycleState = "closed";
     });
     this.#closePromise = closePromise;
     return closePromise;
+  }
+
+  #run<Result>(operation: (signal: AbortSignal) => Promise<Result>): Promise<Result> {
+    try { this.#assertOpen(); }
+    catch (error) { return Promise.reject(error); }
+    const controller = new AbortController();
+    this.#controllers.add(controller);
+    const signal = AbortSignal.any([this.#dependencies.signal, controller.signal]);
+    const active = Promise.resolve().then(() => operation(signal)).catch((error) => {
+      throw normalizeTokenCatalogError(error);
+    });
+    let settlement!: Promise<void>;
+    settlement = active.then(
+      () => undefined,
+      () => undefined,
+    ).finally(() => {
+      this.#controllers.delete(controller);
+      this.#activeCalls.delete(settlement);
+    });
+    this.#activeCalls.add(settlement);
+    return active;
   }
 
   #assertOpen(): void {
@@ -306,116 +320,8 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
     }
   }
 
-  #runAdmitted<Result>(operation: () => Promise<Result>): Promise<Result> {
-    try { this.#assertOpen(); }
-    catch (error) { return Promise.reject(error); }
-    const active = operation();
-    let settlement!: Promise<void>;
-    settlement = active.then(
-      () => undefined,
-      () => undefined,
-    ).finally(() => {
-      this.#activeCalls.delete(settlement);
-    });
-    this.#activeCalls.add(settlement);
-    return active;
-  }
-
-  async #start(command: TokenStartCommand): Promise<TokenCatalogOperationStartResult | ApplicationFailure> {
-    let admitted = false;
-    const controller = new AbortController();
-    try {
-      this.#admitStart(command.operationId);
-      admitted = true;
-      this.#inspectionControllers.add(controller);
-      const wallet = this.#captureWallet();
-      if (command.input.asset.chainId !== wallet.account.chainId) {
-        throw new TokenCatalogOperationError("invalid_input");
-      }
-      const signal = AbortSignal.any([this.#dependencies.signal, controller.signal]);
-      let prepared: PreparedTokenStart;
-      if (command.kind === "add") {
-        const current = this.#dependencies.store.getSelection(wallet.account, command.input.asset);
-        if (current?.selection.included === true) {
-          throw new TokenCatalogOperationError("token_selection_already_included");
-        }
-        const synchronization = await this.#dependencies.officialAssets.synchronize(signal);
-        if (synchronization.status === "unavailable") {
-          return createTokenCatalogFailure(synchronization.reason);
-        }
-        const member = findOfficialAssetMember(synchronization.snapshot, command.input.asset.address);
-        const chainResult = await this.#dependencies.additionChainReads.inspectAndVerifyOfficial({
-          asset: command.input.asset,
-          officialMember: member ?? null,
-        }, signal);
-        if (!("inspection" in chainResult)) return chainResult;
-        const { inspection, officialVerification } = chainResult;
-        const officialEvidence: TokenOfficialSelectionEvidence | null = member === undefined || officialVerification === null
-          ? null
-          : Object.freeze({
-              assetUid: member.assetUid,
-              snapshotRevision: synchronization.snapshot.revision,
-              verificationBlock: officialVerification.block,
-            });
-        prepared = Object.freeze({
-          kind: command.kind,
-          asset: command.input.asset,
-          previousSelection: current?.selection ?? null,
-          selectionSetRevision: this.#dependencies.store.getSelectionState(wallet.account)?.revision ?? null,
-          inspection,
-          officialSnapshotRevision: synchronization.snapshot.revision,
-          officialEvidence,
-          officialVerification,
-        });
-      } else {
-        const current = this.#dependencies.store.getSelection(wallet.account, command.input.asset);
-        if (current === undefined) throw new TokenCatalogOperationError("token_selection_not_found");
-        if (!current.selection.included) throw new TokenCatalogOperationError("token_selection_not_included");
-        if (current.selection.revision !== command.input.expectedRevision) {
-          throw new TokenCatalogOperationError("token_selection_revision_changed");
-        }
-        prepared = Object.freeze({
-          kind: command.kind,
-          asset: command.input.asset,
-          previousSelection: current.selection,
-          selectionSetRevision: this.#dependencies.store.getSelectionState(wallet.account)?.revision ?? null,
-          inspection: null,
-          officialSnapshotRevision: null,
-          officialEvidence: null,
-          officialVerification: null,
-        });
-      }
-      if (this.#lifecycleState !== "open" || signal.aborted) {
-        throw new TokenCatalogOperationError("request_aborted");
-      }
-      this.#recaptureWallet(wallet);
-      return this.#createOperation({
-        ...prepared,
-        interactionInterface: command.interactionInterface,
-        operationId: command.operationId,
-        wallet,
-      });
-    } catch (error) {
-      return failureFor(error);
-    } finally {
-      this.#inspectionControllers.delete(controller);
-      if (admitted) this.#starting = false;
-    }
-  }
-
   #now(): UtcTimestamp {
     return this.#dependencies.clock.now();
-  }
-
-  #admitStart(operationId: TokenCatalogOperation["operationId"]): void {
-    this.#expireAndPurge();
-    this.#assertOpen();
-    if (this.#operations.has(operationId)) throw new TokenCatalogOperationError("state_conflict");
-    if (this.#starting || [...this.#operations.values()].some((entry) =>
-      !isTokenCatalogOperationTerminal(entry.operation.state))) {
-      throw new TokenCatalogOperationError("token_operation_conflict");
-    }
-    this.#starting = true;
   }
 
   #captureWallet(): CapturedWallet {
@@ -434,14 +340,12 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
     return Object.freeze({
       account: active.account,
       connectionRevision: active.connectionRevision,
-      sessionSourceId: active.sessionSource.sourceId,
-      sessionTopicDigest: active.sessionSource.topicDigest,
     });
   }
 
-  #recaptureWallet(captured: CapturedWallet): void {
-    let active: CapturedWallet;
-    try { active = this.#captureWallet(); }
+  #assertWalletPrecondition(review: TokenSelectionReview): void {
+    let current: CapturedWallet;
+    try { current = this.#captureWallet(); }
     catch (error) {
       const code = normalizeTokenCatalogError(error).failure.error.code;
       if (code === "wallet_not_connected" || code === "wallet_session_unusable") {
@@ -450,129 +354,70 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
       throw error;
     }
     if (
-      active.account.chainId !== captured.account.chainId ||
-      active.account.address !== captured.account.address ||
-      active.connectionRevision !== captured.connectionRevision ||
-      active.sessionSourceId !== captured.sessionSourceId ||
-      active.sessionTopicDigest !== captured.sessionTopicDigest
+      !sameAccount(current.account, review.precondition.account) ||
+      current.connectionRevision !== review.precondition.connectionRevision
     ) throw new TokenCatalogOperationError("state_conflict");
   }
 
-  #createOperation<Kind extends TokenCatalogOperationKind>(input: Readonly<{
-    operationId: TokenCatalogOperation["operationId"];
-    kind: Kind;
-    interactionInterface: TokenCatalogInteractionInterface;
-    wallet: CapturedWallet;
-    asset: TokenSelection["asset"];
-    previousSelection: TokenSelection | null;
-    selectionSetRevision: ReturnType<typeof tokenSelectionSetRevisionSchema.parse> | null;
-    inspection: TokenInspectionSuccess | null;
-    officialSnapshotRevision: OfficialAssetSnapshotRevision | null;
-    officialEvidence: TokenOfficialSelectionEvidence | null;
-    officialVerification: StockFactoryVerification | null;
-  }>): TokenCatalogOperationStartResult<Kind> {
-    const createdAt = this.#now();
-    const expiresAt = addMilliseconds(createdAt, tokenCatalogCoordinatorPolicy.userActionMilliseconds);
-    const inspectionDigest = input.inspection === null
-      ? null
-      : tokenInspectionDigest(input.inspection);
-    const reviewDigest = tokenCatalogReviewDigest({
-      operationId: input.operationId,
-      kind: input.kind,
-      account: input.wallet.account,
-      connectionRevision: input.wallet.connectionRevision,
-      asset: input.asset,
-      previousSelection: input.previousSelection,
-      selectionSetRevision: input.selectionSetRevision,
-      inspection: input.inspection,
-      officialSnapshotRevision: input.officialSnapshotRevision,
-      officialEvidence: input.officialEvidence,
-      interactionInterface: input.interactionInterface,
-      expiresAt,
-    });
-    const operation = deepFreezeValue(tokenCatalogOperationSchema.parse({
-      operationId: input.operationId,
-      kind: input.kind,
-      state: "awaiting_confirmation",
-      interactionInterface: input.interactionInterface,
-      createdAt,
-      expiresAt,
-      account: input.wallet.account,
-      connectionRevision: input.wallet.connectionRevision,
-      asset: input.asset,
-      review: {
-        previousSelection: input.previousSelection,
-        selectionSetRevision: input.selectionSetRevision,
-        inspection: input.inspection,
-        inspectionDigest,
-        officialSnapshotRevision: input.officialSnapshotRevision,
-        officialEvidence: input.officialEvidence,
-        reviewDigest,
-      },
-      result: null,
-      failure: null,
-    }));
-    const entry: OperationEntry = {
-      operation,
-      connectionRevision: input.wallet.connectionRevision,
-      sessionSourceId: input.wallet.sessionSourceId,
-      sessionTopicDigest: input.wallet.sessionTopicDigest,
-      sequence: ++this.#sequence,
-      officialVerification: input.officialVerification,
-    };
-    this.#operations.set(operation.operationId, entry);
-    if (operation.kind !== input.kind || operation.state !== "awaiting_confirmation") {
-      throw new TokenCatalogOperationError("internal_error");
+  #assertSelectionPrecondition(review: TokenSelectionReview): void {
+    const current = this.#dependencies.store.getSelection(
+      review.precondition.account,
+      review.target.asset,
+    )?.selection ?? null;
+    const stateRevision = this.#dependencies.store.getSelectionState(
+      review.precondition.account,
+    )?.revision ?? null;
+    if (
+      !sameSelection(current, review.precondition.previousSelection) ||
+      stateRevision !== review.precondition.selectionSetRevision
+    ) throw new TokenCatalogOperationError("token_selection_revision_changed");
+  }
+
+  #assertReviewPrecondition(
+    wallet: CapturedWallet,
+    asset: TokenSelection["asset"],
+    previous: TokenSelection | null,
+    selectionSetRevision: TokenSelectionReview["precondition"]["selectionSetRevision"],
+    officialSnapshotRevision: string | null,
+  ): void {
+    const currentWallet = this.#captureWallet();
+    const currentSelection = this.#dependencies.store.getSelection(
+      wallet.account,
+      asset,
+    )?.selection ?? null;
+    const currentStateRevision = this.#dependencies.store.getSelectionState(wallet.account)?.revision ?? null;
+    if (
+      !sameAccount(currentWallet.account, wallet.account) ||
+      currentWallet.connectionRevision !== wallet.connectionRevision ||
+      !sameSelection(currentSelection, previous) ||
+      currentStateRevision !== selectionSetRevision
+    ) throw new TokenCatalogOperationError("state_conflict");
+    if (officialSnapshotRevision !== null) this.#assertOfficialSnapshot(officialSnapshotRevision);
+  }
+
+  #readOfficialSnapshot(expectedRevision?: string): CommittedOfficialAssetSnapshot {
+    const snapshot = this.#dependencies.officialAssets.readStored();
+    if (snapshot === undefined) throw new TokenCatalogOperationError("runtime_state_unavailable");
+    if (expectedRevision !== undefined && snapshot.revision !== expectedRevision) {
+      throw new TokenCatalogOperationError("state_conflict");
     }
-    return deepFreezeValue({ operation }) as TokenCatalogOperationStartResult<Kind>;
+    return snapshot;
   }
 
-  #replaceOperation(
-    operation: TokenCatalogOperation,
-    change: Readonly<{
-      state: TokenCatalogOperation["state"];
-      result?: NonNullable<TokenCatalogOperation["result"]>;
-      failure?: ApplicationFailure;
-    }>,
-  ): TokenCatalogOperation {
-    return deepFreezeValue(tokenCatalogOperationSchema.parse({
-      ...operation,
-      state: change.state,
-      result: change.result ?? null,
-      failure: change.failure ?? null,
-    }));
+  #assertOfficialSnapshot(expectedRevision: string): void {
+    this.#readOfficialSnapshot(expectedRevision);
   }
 
-  #reviewDigest(entry: OperationEntry): TokenCatalogOperation["review"]["reviewDigest"] {
-    return tokenCatalogReviewDigest({
-      operationId: entry.operation.operationId,
-      kind: entry.operation.kind,
-      account: entry.operation.account,
-      connectionRevision: entry.connectionRevision,
-      asset: entry.operation.asset,
-      previousSelection: entry.operation.review.previousSelection,
-      selectionSetRevision: entry.operation.review.selectionSetRevision,
-      inspection: entry.operation.review.inspection,
-      officialSnapshotRevision: entry.operation.review.officialSnapshotRevision,
-      officialEvidence: entry.operation.review.officialEvidence,
-      interactionInterface: entry.operation.interactionInterface,
-      expiresAt: entry.operation.expiresAt,
-    });
-  }
-
-  #expireAndPurge(): void {
-    const now = this.#now();
-    for (const [operationId, entry] of this.#operations) {
-      if (entry.operation.state === "awaiting_confirmation" && entry.operation.expiresAt <= now) {
-        entry.operation = this.#replaceOperation(entry.operation, { state: "expired" });
-        entry.terminalAt = entry.operation.expiresAt;
-      }
-      if (
-        entry.terminalAt !== undefined &&
-        addMilliseconds(entry.terminalAt, tokenCatalogCoordinatorPolicy.terminalRetentionMilliseconds) <= now
-      ) {
-        this.#operations.delete(operationId);
-      }
-    }
+  #reviewedOfficialMember(
+    review: Extract<TokenSelectionReview, { readonly kind: "add" }>,
+    snapshot: CommittedOfficialAssetSnapshot,
+  ): OfficialAssetSourceMember | null {
+    const member = findOfficialAssetMember(snapshot, review.target.asset.address) ?? null;
+    const evidence = review.fixedEvidence.officialEvidence;
+    if (
+      (member === null) !== (evidence === null) ||
+      (member !== null && evidence !== null && member.assetUid !== evidence.assetUid)
+    ) throw new TokenCatalogOperationError("state_conflict");
+    return member;
   }
 }

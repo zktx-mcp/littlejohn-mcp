@@ -1,19 +1,26 @@
 import { z } from "zod";
 
 import {
+  canonicalJsonStringify,
+  canonicalSha256,
   captureCanonicalJson,
+  closedTupleSchema,
   deepFreezeValue,
+  evmChainIdSchema,
+  hash32Schema,
   internalErrorDefinition,
   operationIdByteLength,
   operationIdSchema,
+  parseHash32,
   snakeCaseCodeSchema,
   unsignedDecimalSchema,
   utcTimestampSchema,
+  utf8ByteLength,
   walletConnectionDataSchema,
   type ApplicationFailure,
   type CanonicalJson,
   type WalletConnectionData,
-} from "../core/browser.js";
+} from "../core/client.js";
 import {
   runtimeStateUnavailableErrorDefinition,
   stateConflictErrorDefinition,
@@ -27,10 +34,11 @@ import {
 } from "./error-definitions.js";
 import {
   isWalletOperationTerminalState,
-  walletInteractionInterfaces,
+  walletInitiators,
   walletOperationKinds,
   walletOperationStateDefinitions,
   walletOperationStatesForKind,
+  type WalletInitiator,
   type WalletNonterminalOperationState,
   type WalletOperationKind,
   type WalletOperationStateForKind,
@@ -38,6 +46,8 @@ import {
 
 export const walletOperationIdByteLength = operationIdByteLength;
 export const walletOperationIdSchema = operationIdSchema;
+export const walletReviewActionLifetimeMilliseconds = 300_000;
+export const walletDirectActionMaximumBytes = 16_384;
 
 export const walletPeerRefusalCodes = Object.freeze([
   5000, 5001, 5002, 5003,
@@ -53,7 +63,7 @@ const walletPeerRefusalLiteralSchemas = walletPeerRefusalCodes.map((code) =>
   ];
 export const walletPeerRefusalCodeSchema: z.ZodType<WalletPeerRefusalCode> =
   z.union(walletPeerRefusalLiteralSchemas);
-export const walletInteractionInterfaceSchema = z.enum(walletInteractionInterfaces);
+export const walletInitiatorSchema = z.enum(walletInitiators);
 
 type WalletConnectionForStatus<Status extends WalletConnectionData["status"]> =
   Extract<WalletConnectionData, { readonly status: Status }>;
@@ -62,8 +72,128 @@ const canonicalWalletConnectionSchema = <Status extends WalletConnectionData["st
   status: Status,
 ) => walletConnectionDataSchema.refine(
   (connection): connection is WalletConnectionForStatus<Status> => connection.status === status,
-  "Wallet connection status does not match the operation result.",
+  "Wallet connection status does not match the required state.",
 );
+
+const walletSessionSourceIdSchema = z.string()
+  .regex(/^wallet-session:[A-Za-z0-9_-]{43}$/u);
+
+const walletReviewCommonShape = {
+  contractVersion: z.literal("1"),
+  domain: z.literal("wallet"),
+  operationId: walletOperationIdSchema,
+  createdAt: utcTimestampSchema,
+  actionExpiresAt: utcTimestampSchema,
+  target: z.object({ chainId: evmChainIdSchema }).strict(),
+} as const;
+
+const connectReviewWithoutDigestSchema = z.object({
+  ...walletReviewCommonShape,
+  kind: z.literal("connect"),
+  decision: z.object({
+    requiredMethods: closedTupleSchema([z.literal("eth_sendTransaction")]),
+    requiredEvents: closedTupleSchema([
+      z.literal("accountsChanged"),
+      z.literal("chainChanged"),
+    ]),
+  }).strict(),
+  precondition: z.object({
+    connectionRevision: unsignedDecimalSchema,
+    connection: canonicalWalletConnectionSchema("disconnected"),
+  }).strict(),
+  fixedEvidence: z.object({
+    sessionSourceIds: z.array(z.never()).max(0),
+  }).strict(),
+}).strict();
+
+const disconnectReviewWithoutDigestSchema = z.object({
+  ...walletReviewCommonShape,
+  kind: z.literal("disconnect"),
+  decision: z.object({ action: z.literal("disconnect_session") }).strict(),
+  precondition: z.object({
+    connectionRevision: unsignedDecimalSchema,
+    connection: canonicalWalletConnectionSchema("connected"),
+  }).strict(),
+  fixedEvidence: z.object({
+    sessionSourceIds: closedTupleSchema([walletSessionSourceIdSchema]),
+  }).strict(),
+}).strict();
+
+const walletReviewWithoutDigestSchema = z.discriminatedUnion("kind", [
+  connectReviewWithoutDigestSchema,
+  disconnectReviewWithoutDigestSchema,
+]);
+
+export type WalletReviewWithoutDigest = z.infer<typeof walletReviewWithoutDigestSchema>;
+
+export const walletReviewDigest = (inputValue: unknown) => {
+  const input = walletReviewWithoutDigestSchema.parse(captureCanonicalJson(inputValue));
+  return parseHash32(`0x${canonicalSha256({
+    digestKind: "wallet_connection_change_review",
+    digestVersion: "1",
+    review: input as unknown as CanonicalJson,
+  })}`);
+};
+
+const validateWalletReview = (
+  review: WalletReviewWithoutDigest & { readonly reviewDigest: string },
+  context: z.core.$RefinementCtx,
+): void => {
+  const chainMismatch = review.precondition.connection.status === "connected" &&
+    review.target.chainId !== review.precondition.connection.chainId;
+  if (
+    Date.parse(review.actionExpiresAt) - Date.parse(review.createdAt) !==
+      walletReviewActionLifetimeMilliseconds ||
+    chainMismatch ||
+    review.reviewDigest !== walletReviewDigest((({ reviewDigest: _digest, ...rest }) => rest)(review))
+  ) {
+    context.addIssue({ code: "custom", message: "Wallet Review is inconsistent." });
+  }
+};
+
+const connectReviewSchema = connectReviewWithoutDigestSchema.extend({
+  reviewDigest: hash32Schema,
+}).strict().superRefine(validateWalletReview);
+const disconnectReviewSchema = disconnectReviewWithoutDigestSchema.extend({
+  reviewDigest: hash32Schema,
+}).strict().superRefine(validateWalletReview);
+
+export const walletReviewSchema = z.discriminatedUnion("kind", [
+  connectReviewSchema,
+  disconnectReviewSchema,
+]);
+export type WalletReview = z.infer<typeof walletReviewSchema>;
+
+export const walletReviewRequestSchema = z.object({
+  kind: z.enum(walletOperationKinds),
+}).strict();
+export type WalletReviewRequest = z.infer<typeof walletReviewRequestSchema>;
+
+export const walletReviewResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("review"), review: walletReviewSchema }).strict(),
+  z.object({
+    status: z.literal("current_connection"),
+    connectionRevision: unsignedDecimalSchema,
+    connection: canonicalWalletConnectionSchema("connected"),
+  }).strict(),
+  z.object({
+    status: z.literal("already_disconnected"),
+    connectionRevision: unsignedDecimalSchema,
+    connection: canonicalWalletConnectionSchema("disconnected"),
+  }).strict(),
+]);
+export type WalletReviewResult = z.infer<typeof walletReviewResultSchema>;
+
+export const walletDirectActionSchema = z.object({
+  review: walletReviewSchema,
+  initiatedBy: walletInitiatorSchema,
+}).strict().superRefine((value, context) => {
+  const bytes = utf8ByteLength(canonicalJsonStringify(value as unknown as CanonicalJson));
+  if (bytes > walletDirectActionMaximumBytes) {
+    context.addIssue({ code: "custom", message: "Wallet direct action exceeds its canonical byte limit." });
+  }
+});
+export type WalletDirectAction = z.infer<typeof walletDirectActionSchema>;
 
 const walletOperationFailureDefinitions = Object.freeze([
   internalErrorDefinition,
@@ -92,9 +222,9 @@ const distinctDefinitionCategories = <
   ];
 };
 
-const definitionCodes = <
-  const Definitions extends readonly { readonly code: string }[],
->(definitions: Definitions): { readonly [Index in keyof Definitions]: Definitions[Index]["code"] } =>
+const definitionCodes = <const Definitions extends readonly { readonly code: string }[]>(
+  definitions: Definitions,
+): { readonly [Index in keyof Definitions]: Definitions[Index]["code"] } =>
   Object.freeze(definitions.map((definition) => definition.code)) as {
     readonly [Index in keyof Definitions]: Definitions[Index]["code"];
   };
@@ -105,31 +235,22 @@ const walletOperationFailureCodeSet = new Set<string>(walletOperationFailureCode
 export const isWalletOperationFailureCode = (value: unknown): value is WalletOperationFailureCode =>
   typeof value === "string" && walletOperationFailureCodeSet.has(value);
 
-export const walletTerminalStateFailureCodes = Object.freeze({
-  expired: walletTimeoutErrorDefinition.code,
-  rejected: walletUserRejectedErrorDefinition.code,
-} as const);
-
 const operationFailureDefinitionByCode = new Map(
   walletOperationFailureDefinitions.map((definition) => [definition.code, definition] as const),
 );
-const walletOperationFailureCategories =
-  distinctDefinitionCategories(walletOperationFailureDefinitions);
+const walletOperationFailureCategories = distinctDefinitionCategories(walletOperationFailureDefinitions);
 
 const operationFailureErrorSchema = z.object({
   code: z.enum(walletOperationFailureCodes).and(snakeCaseCodeSchema),
   category: z.enum(walletOperationFailureCategories),
   message: z.string(),
   retryable: z.boolean(),
-  issues: z.array(z.unknown()).length(0) as
-    z.ZodType<ApplicationFailure["error"]["issues"]>,
+  issues: z.array(z.unknown()).length(0) as z.ZodType<ApplicationFailure["error"]["issues"]>,
 }).strict().superRefine((error, context) => {
   const definition = operationFailureDefinitionByCode.get(error.code);
   if (
-    definition === undefined ||
-    error.category !== definition.category ||
-    error.message !== definition.message ||
-    error.retryable !== definition.retryable
+    definition === undefined || error.category !== definition.category ||
+    error.message !== definition.message || error.retryable !== definition.retryable
   ) context.addIssue({ code: "custom", message: "Application failure does not match its authority." });
 });
 
@@ -139,66 +260,48 @@ const walletOperationFailureSchema: z.ZodType<WalletOperationFailure> = z.object
 }).strict();
 
 export type WalletOperationFailure = ApplicationFailure & {
-  readonly error: ApplicationFailure["error"] & {
-    readonly code: WalletOperationFailureCode;
-  };
+  readonly error: ApplicationFailure["error"] & { readonly code: WalletOperationFailureCode };
 };
-
 
 export const walletOperationOutcomes = Object.freeze({
   connect: Object.freeze(["connected"] as const),
-  disconnect: Object.freeze(["disconnected", "already_disconnected"] as const),
+  disconnect: Object.freeze(["disconnected"] as const),
 });
-export type WalletOperationOutcomeForKind<Kind extends WalletOperationKind> =
-  typeof walletOperationOutcomes[Kind][number];
-export type WalletOperationOutcome =
-  typeof walletOperationOutcomes[keyof typeof walletOperationOutcomes][number];
 
 const connectOperationResultSchema = z.object({
-  outcome: z.literal(walletOperationOutcomes.connect[0]),
+  outcome: z.literal("connected"),
+  connectionRevision: unsignedDecimalSchema,
   connection: canonicalWalletConnectionSchema("connected"),
 }).strict();
-
 const disconnectOperationResultSchema = z.object({
   outcome: z.enum(walletOperationOutcomes.disconnect),
+  connectionRevision: unsignedDecimalSchema,
   connection: canonicalWalletConnectionSchema("disconnected"),
 }).strict();
+export type WalletOperationResult =
+  | z.infer<typeof connectOperationResultSchema>
+  | z.infer<typeof disconnectOperationResultSchema>;
 
-const walletManagementOperationBase = {
-  operationId: walletOperationIdSchema,
-  connectionRevision: unsignedDecimalSchema,
-  actionExpiresAt: utcTimestampSchema,
-  interactionInterface: walletInteractionInterfaceSchema,
-} as const;
-
-type ConnectOperationResult = z.infer<typeof connectOperationResultSchema>;
-type DisconnectOperationResult = z.infer<typeof disconnectOperationResultSchema>;
+type WalletReviewForKind<Kind extends WalletOperationKind> = Extract<WalletReview, { kind: Kind }>;
 type WalletOperationResultForKind<Kind extends WalletOperationKind> =
-  Kind extends "disconnect" ? DisconnectOperationResult : ConnectOperationResult;
+  Kind extends "connect"
+    ? z.infer<typeof connectOperationResultSchema>
+    : z.infer<typeof disconnectOperationResultSchema>;
 
 export type WalletManagementOperationForKind<Kind extends WalletOperationKind> = {
   [State in WalletOperationStateForKind<Kind>]: Readonly<{
+    contractVersion: "1";
+    domain: "wallet";
     operationId: z.infer<typeof walletOperationIdSchema>;
-    connectionRevision: z.infer<typeof unsignedDecimalSchema>;
-    actionExpiresAt: z.infer<typeof utcTimestampSchema>;
-    interactionInterface: z.infer<typeof walletInteractionInterfaceSchema>;
     kind: Kind;
+    initiatedBy: WalletInitiator;
+    review: WalletReviewForKind<Kind>;
     state: State;
-  }> & (State extends "completed"
-    ? Readonly<{
-        result: WalletOperationResultForKind<Kind>;
-        failure: null;
-        peerRefusalCode: null;
-      }>
-    : State extends "failed"
-      ? Readonly<{ result: null; failure: WalletOperationFailure; peerRefusalCode: null }>
-      : State extends "rejected"
-        ? Readonly<{
-            result: null;
-            failure: null;
-            peerRefusalCode: WalletPeerRefusalCode;
-          }>
-        : Readonly<{ result: null; failure: null; peerRefusalCode: null }>);
+    terminationTarget: State extends "cancelling" ? "cancelled" | "expired" : null;
+    result: State extends "completed" ? WalletOperationResultForKind<Kind> : null;
+    failure: State extends "failed" ? WalletOperationFailure : null;
+    peerRefusalCode: State extends "rejected" ? WalletPeerRefusalCode : null;
+  }>;
 }[WalletOperationStateForKind<Kind>];
 
 export type WalletManagementOperation = {
@@ -208,31 +311,48 @@ export type WalletNonterminalManagementOperation = Extract<
   WalletManagementOperation,
   { readonly state: WalletNonterminalOperationState }
 >;
-export type WalletOperationResult = ConnectOperationResult | DisconnectOperationResult;
 
 const operationResultSchema = (kind: WalletOperationKind) =>
-  kind === "disconnect" ? disconnectOperationResultSchema : connectOperationResultSchema;
+  kind === "connect" ? connectOperationResultSchema : disconnectOperationResultSchema;
 
 const operationVariantSchema = <
   Kind extends WalletOperationKind,
   State extends WalletOperationStateForKind<Kind>,
->(kind: Kind, state: State) => {
-  const payload = walletOperationStateDefinitions[state].payload;
-  return z.object({
-    ...walletManagementOperationBase,
-    kind: z.literal(kind),
-    state: z.literal(state),
-    result: payload === "result" ? operationResultSchema(kind) : z.null(),
-    failure: payload === "failure" ? walletOperationFailureSchema : z.null(),
-    peerRefusalCode: payload === "peer_refusal" ? walletPeerRefusalCodeSchema : z.null(),
-  }).strict();
+>(kind: Kind, state: State) => z.object({
+  contractVersion: z.literal("1"),
+  domain: z.literal("wallet"),
+  operationId: walletOperationIdSchema,
+  kind: z.literal(kind),
+  initiatedBy: walletInitiatorSchema,
+  review: kind === "connect" ? connectReviewSchema : disconnectReviewSchema,
+  state: z.literal(state),
+  terminationTarget: state === "cancelling"
+    ? z.enum(["cancelled", "expired"] as const)
+    : z.null(),
+  result: state === "completed" ? operationResultSchema(kind) : z.null(),
+  failure: state === "failed" ? walletOperationFailureSchema : z.null(),
+  peerRefusalCode: state === "rejected" ? walletPeerRefusalCodeSchema : z.null(),
+}).strict().superRefine((operation, context) => {
+  if (operation.state !== "completed" || operation.result === null) return;
+  if (
+    BigInt(operation.result.connectionRevision) <=
+      BigInt(operation.review.precondition.connectionRevision) ||
+    (operation.kind === "connect" &&
+      operation.result.connection.status === "connected" &&
+      operation.result.connection.chainId !== operation.review.target.chainId)
+  ) context.addIssue({ code: "custom", message: "Wallet operation result is inconsistent." });
+});
+
+const operationUnion = (schemas: readonly z.ZodType[]): z.ZodType => {
+  if (schemas.length < 2) throw new TypeError("Wallet operation variants are incomplete.");
+  return z.union(schemas as [z.ZodType, z.ZodType, ...z.ZodType[]]);
 };
 
-const connectOperationVariantSchemas = walletOperationStatesForKind("connect")
+const connectOperationSchemas = walletOperationStatesForKind("connect")
   .map((state) => operationVariantSchema("connect", state));
-const disconnectOperationVariantSchemas = walletOperationStatesForKind("disconnect")
+const disconnectOperationSchemas = walletOperationStatesForKind("disconnect")
   .map((state) => operationVariantSchema("disconnect", state));
-const nonterminalOperationVariantSchemas = [
+const nonterminalOperationSchemas = [
   ...walletOperationStatesForKind("connect")
     .filter((state) => !isWalletOperationTerminalState(state))
     .map((state) => operationVariantSchema("connect", state)),
@@ -241,197 +361,105 @@ const nonterminalOperationVariantSchemas = [
     .map((state) => operationVariantSchema("disconnect", state)),
 ];
 
-const operationUnion = (schemas: readonly z.ZodType[]): z.ZodType => {
-  if (schemas.length < 2) throw new TypeError("Wallet operation variants are incomplete.");
-  return z.union(schemas as [
-    z.ZodType,
-    z.ZodType,
-    ...z.ZodType[],
-  ]);
-};
+export const walletManagementOperationSchema = operationUnion([
+  ...connectOperationSchemas,
+  ...disconnectOperationSchemas,
+]) as z.ZodType<WalletManagementOperation>;
+export const walletNonterminalManagementOperationSchema = operationUnion(
+  nonterminalOperationSchemas,
+) as z.ZodType<WalletNonterminalManagementOperation>;
 
-export const walletManagementOperationSchemas = Object.freeze({
-  connect: operationUnion(connectOperationVariantSchemas) as
-    z.ZodType<WalletManagementOperationForKind<"connect">>,
-  disconnect: operationUnion(disconnectOperationVariantSchemas) as
-    z.ZodType<WalletManagementOperationForKind<"disconnect">>,
-});
-
-export const walletManagementOperationSchemaForKind = (
-  kind: WalletOperationKind,
-): z.ZodType<WalletManagementOperation> => walletManagementOperationSchemas[kind] as
-  z.ZodType<WalletManagementOperation>;
-
-export const walletOperationStartedResultSchemaForKind = (
-  kind: WalletOperationKind,
-) => z.object({
-  status: z.literal("operation_started"),
-  operation: walletManagementOperationSchemaForKind(kind),
-}).strict();
-
-const operationVariantSchemas: readonly z.ZodType[] = [
-  ...connectOperationVariantSchemas,
-  ...disconnectOperationVariantSchemas,
-];
-if (operationVariantSchemas.length < 2) throw new TypeError("Wallet operation variants are incomplete.");
-const operationVariantUnion = operationUnion(operationVariantSchemas);
-
-export const walletManagementOperationSchema =
-  operationVariantUnion as z.ZodType<WalletManagementOperation>;
-export const walletNonterminalManagementOperationSchema =
-  operationUnion(nonterminalOperationVariantSchemas) as
-    z.ZodType<WalletNonterminalManagementOperation>;
-
-export const walletOperationControlSchema = z.object({
+export const walletOperationInputSchema = z.object({
   operationId: walletOperationIdSchema,
-  interactionInterface: walletInteractionInterfaceSchema,
 }).strict();
-export type WalletOperationControl = z.infer<typeof walletOperationControlSchema>;
-
-const walletOperationCommandSchema = walletOperationControlSchema.extend({
-  kind: z.enum(walletOperationKinds),
-  connectionRevision: unsignedDecimalSchema.nullable(),
-}).strict();
-
-export const walletOperationCreateSchema = z.object({
-  control: walletOperationControlSchema,
-  request: z.object({
-    kind: z.enum(walletOperationKinds),
-    connectionRevision: unsignedDecimalSchema.nullable(),
-  }).strict(),
-}).strict().transform(({ control, request }) => walletOperationCommandSchema.parse({ ...control, ...request }));
-export type WalletOperationCreate = z.infer<typeof walletOperationCommandSchema>;
-
-export const walletWebOperationCreateSchema = z.object({
-  kind: z.enum(walletOperationKinds),
-  connectionRevision: unsignedDecimalSchema,
-}).strict();
-export type WalletWebOperationCreate = z.infer<typeof walletWebOperationCreateSchema>;
-
-export const walletOperationConfirmationSchema = z.object({
-  connectionRevision: unsignedDecimalSchema,
-}).strict();
-export type WalletOperationConfirmation = z.infer<typeof walletOperationConfirmationSchema>;
+export type WalletOperationInput = z.infer<typeof walletOperationInputSchema>;
 
 export const walletOperationCancellationSchema = z.object({
   operationId: walletOperationIdSchema,
+  reviewDigest: hash32Schema,
+  expectedState: z.enum(["starting_connection", "awaiting_wallet_approval"] as const),
   connectionRevision: unsignedDecimalSchema,
 }).strict();
 export type WalletOperationCancellation = z.infer<typeof walletOperationCancellationSchema>;
 
-export const walletQrMatrixSizeLimits = Object.freeze({
-  minimum: 21,
-  maximum: 177,
-} as const);
-
+export const walletQrMatrixSizeLimits = Object.freeze({ minimum: 21, maximum: 177 } as const);
 export const walletQrMatrixSchema = z.object({
-  size: z.number().int()
-    .min(walletQrMatrixSizeLimits.minimum)
-    .max(walletQrMatrixSizeLimits.maximum),
-  rows: z.array(z.string().regex(/^[01]+$/))
-    .min(walletQrMatrixSizeLimits.minimum)
-    .max(walletQrMatrixSizeLimits.maximum),
+  size: z.number().int().min(walletQrMatrixSizeLimits.minimum).max(walletQrMatrixSizeLimits.maximum),
+  rows: z.array(z.string().regex(/^[01]+$/u))
+    .min(walletQrMatrixSizeLimits.minimum).max(walletQrMatrixSizeLimits.maximum),
 }).strict().superRefine((matrix, context) => {
   if (matrix.rows.length !== matrix.size) {
     context.addIssue({ code: "custom", path: ["rows"], message: "QR row count must match its size." });
   }
-  for (let index = 0; index < matrix.rows.length; index += 1) {
-    if (matrix.rows[index]?.length !== matrix.size) {
+  matrix.rows.forEach((row, index) => {
+    if (row.length !== matrix.size) {
       context.addIssue({ code: "custom", path: ["rows", index], message: "QR row width must match its size." });
     }
-  }
+  });
 });
 export type WalletQrMatrix = z.infer<typeof walletQrMatrixSchema>;
 
 export const walletOperationAllowsQr = (operation: WalletManagementOperation): boolean =>
   operation.kind === "connect" && operation.state === "awaiting_wallet_approval";
 
-const addQrOperationIssue = (context: z.core.$RefinementCtx): void => {
-  context.addIssue({
-    code: "custom",
-    path: ["qr"],
-    message: "QR data is available only while wallet approval is pending.",
-  });
-};
-
-export const walletCurrentConnectionStartResultSchema = z.object({
-  status: z.literal("current_connection"),
-  connectionRevision: unsignedDecimalSchema,
-  connection: canonicalWalletConnectionSchema("connected"),
-}).strict();
-
-const operationStartedResultSchema = z.object({
-  status: z.literal("operation_started"),
+export const walletOperationPresentationSchema = z.object({
   operation: walletManagementOperationSchema,
-}).strict();
-
-export const walletOperationStartResultSchema = z.discriminatedUnion("status", [
-  walletCurrentConnectionStartResultSchema,
-  operationStartedResultSchema,
-]);
-export type WalletOperationStartResult = z.infer<typeof walletOperationStartResultSchema>;
-
-export const walletOperationPresentationAccess = Object.freeze(["interactive", "read_only"] as const);
-export const walletOperationPresentationAccessSchema = z.enum(walletOperationPresentationAccess);
-export type WalletOperationPresentationAccess = z.infer<typeof walletOperationPresentationAccessSchema>;
-const operationPresentationSchema = <Operation extends WalletManagementOperation>(
-  operationSchema: z.ZodType<Operation>,
-) => z.object({
-  operation: operationSchema,
-  access: walletOperationPresentationAccessSchema,
   qr: walletQrMatrixSchema.optional(),
 }).strict().superRefine((presentation, context) => {
-  if (presentation.qr !== undefined && !walletOperationAllowsQr(presentation.operation)) addQrOperationIssue(context);
+  if (presentation.qr !== undefined && !walletOperationAllowsQr(presentation.operation)) {
+    context.addIssue({ code: "custom", path: ["qr"], message: "QR is not active for this operation." });
+  }
 });
-export const walletOperationPresentationSchema = operationPresentationSchema(
-  walletManagementOperationSchema,
-);
-export const walletCurrentOperationPresentationSchema = operationPresentationSchema(
-  walletNonterminalManagementOperationSchema,
-);
 export type WalletOperationPresentation = z.infer<typeof walletOperationPresentationSchema>;
 
-export const walletCurrentOperationProjectionSchema = z.discriminatedUnion("status", [
-  z.object({
-    status: z.literal("absent"),
-    connectionRevision: unsignedDecimalSchema,
-    connection: walletConnectionDataSchema,
-  }).strict(),
-  z.object({
-    status: z.literal("present"),
-    connectionRevision: unsignedDecimalSchema,
-    connection: walletConnectionDataSchema,
-    presentation: walletCurrentOperationPresentationSchema,
-  }).strict(),
-]);
-export type WalletCurrentOperationProjection = z.infer<typeof walletCurrentOperationProjectionSchema>;
-
+export const parseWalletReview = (input: unknown): WalletReview =>
+  deepFreezeValue(walletReviewSchema.parse(captureCanonicalJson(input)));
+export const parseWalletReviewResult = (input: unknown): WalletReviewResult =>
+  deepFreezeValue(walletReviewResultSchema.parse(captureCanonicalJson(input)));
+export const parseWalletDirectAction = (input: unknown): WalletDirectAction =>
+  deepFreezeValue(walletDirectActionSchema.parse(captureCanonicalJson(input)));
 export const parseWalletOperationId = (input: unknown): string => walletOperationIdSchema.parse(input);
-export const parseWalletOperationPresentationAccess = (
-  input: unknown,
-): WalletOperationPresentationAccess => walletOperationPresentationAccessSchema.parse(input);
 export const parseWalletManagementOperation = (input: unknown): WalletManagementOperation =>
   deepFreezeValue(walletManagementOperationSchema.parse(captureCanonicalJson(input)));
-export const parseWalletOperationCreate = (input: unknown): WalletOperationCreate =>
-  deepFreezeValue(walletOperationCreateSchema.parse(captureCanonicalJson(input)));
-export const parseWalletOperationCommand = (input: unknown): WalletOperationCreate =>
-  deepFreezeValue(walletOperationCommandSchema.parse(captureCanonicalJson(input)));
-export const parseWalletWebOperationCreate = (input: unknown): WalletWebOperationCreate =>
-  deepFreezeValue(walletWebOperationCreateSchema.parse(captureCanonicalJson(input)));
-export const parseWalletOperationConfirmation = (input: unknown): WalletOperationConfirmation =>
-  deepFreezeValue(walletOperationConfirmationSchema.parse(captureCanonicalJson(input)));
 export const parseWalletOperationCancellation = (input: unknown): WalletOperationCancellation =>
   deepFreezeValue(walletOperationCancellationSchema.parse(captureCanonicalJson(input)));
 export const parseWalletQrMatrix = (input: unknown): WalletQrMatrix =>
   deepFreezeValue(walletQrMatrixSchema.parse(captureCanonicalJson(input)));
-export const parseWalletOperationStartResult = (input: unknown): WalletOperationStartResult =>
-  deepFreezeValue(walletOperationStartResultSchema.parse(captureCanonicalJson(input)));
-export const parseWalletOperationPresentation = (input: unknown): WalletOperationPresentation => {
-  const parsed = walletOperationPresentationSchema.parse(captureCanonicalJson(input));
-  return deepFreezeValue(parsed);
-};
-export const parseWalletCurrentOperationProjection = (input: unknown): WalletCurrentOperationProjection =>
-  deepFreezeValue(walletCurrentOperationProjectionSchema.parse(captureCanonicalJson(input)));
+export const parseWalletOperationPresentation = (input: unknown): WalletOperationPresentation =>
+  deepFreezeValue(walletOperationPresentationSchema.parse(captureCanonicalJson(input)));
 
 export const operationFailure = (failure: unknown): WalletOperationFailure =>
   deepFreezeValue(walletOperationFailureSchema.parse(captureCanonicalJson(failure as CanonicalJson)));
+
+export const walletOperationIsTerminal = (operation: WalletManagementOperation): boolean =>
+  isWalletOperationTerminalState(operation.state);
+
+const walletTransitionTargets = Object.freeze({
+  starting_connection: Object.freeze(["awaiting_wallet_approval", "cancelling", "completed", "expired", "failed"] as const),
+  awaiting_wallet_approval: Object.freeze(["validating_session", "cancelling", "completed", "rejected", "expired", "failed"] as const),
+  validating_session: Object.freeze(["cancelling", "completed", "expired", "failed"] as const),
+  cancelling: Object.freeze(["completed", "cancelled", "expired", "failed"] as const),
+  disconnecting: Object.freeze(["completed", "failed"] as const),
+} satisfies Readonly<Record<WalletNonterminalOperationState, readonly string[]>>);
+
+export const assertWalletOperationTransition = (
+  previous: WalletNonterminalManagementOperation,
+  nextInput: WalletManagementOperation,
+): WalletManagementOperation => {
+  const next = parseWalletManagementOperation(nextInput);
+  if (
+    previous.operationId !== next.operationId || previous.kind !== next.kind ||
+    previous.initiatedBy !== next.initiatedBy ||
+    previous.review.reviewDigest !== next.review.reviewDigest ||
+    canonicalJsonStringify(previous.review as unknown as CanonicalJson) !==
+      canonicalJsonStringify(next.review as unknown as CanonicalJson) ||
+    !(walletTransitionTargets[previous.state] as readonly string[]).includes(next.state)
+  ) throw new TypeError("Wallet operation transition is invalid.");
+  return next;
+};
+
+export const walletOperationReview = (operation: WalletManagementOperation): WalletReview =>
+  operation.review as WalletReview;
+
+export const walletOperationInitiator = (operation: WalletManagementOperation): WalletInitiator =>
+  operation.initiatedBy as WalletInitiator;

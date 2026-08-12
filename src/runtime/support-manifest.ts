@@ -29,7 +29,7 @@ import {
 } from "./configuration.js";
 import { guardRuntimeJsonSchema, parseRuntimeAuthority } from "./schema-authority.js";
 
-const runtimeSupportManifestContractVersion = "2" as const;
+const runtimeSupportManifestContractVersion = "3" as const;
 
 const availabilityDefinitions = Object.freeze(["unavailable", "internal", "available"] as const);
 export type Availability = typeof availabilityDefinitions[number];
@@ -46,15 +46,14 @@ type CapabilityAvailabilityAxes = Readonly<{
   http: Availability;
   mcp: Availability;
   cli: Availability;
-  web: Availability;
 }>;
 
 const deriveOverallAvailability = (
   axes: CapabilityAvailabilityAxes,
 ): Availability =>
-  [axes.http, axes.mcp, axes.cli, axes.web].includes(availableAvailability)
+  [axes.http, axes.mcp, axes.cli].includes(availableAvailability)
     ? availableAvailability
-    : [axes.direct, axes.http, axes.mcp, axes.cli, axes.web]
+    : [axes.direct, axes.http, axes.mcp, axes.cli]
         .includes(internalAvailability)
       ? internalAvailability
       : unavailableAvailability;
@@ -71,9 +70,8 @@ const createSupportSchemaSet = () => {
     http: availability,
     mcp: availability,
     cli: availability,
-    web: availability,
   }).strict().superRefine((value, context) => {
-    if (value.direct === unavailableAvailability && [value.http, value.mcp, value.cli, value.web]
+    if (value.direct === unavailableAvailability && [value.http, value.mcp, value.cli]
       .some((state) => state !== unavailableAvailability)) {
       context.addIssue({ code: "custom", message: "Exposed bindings require an internal direct capability." });
     }
@@ -203,7 +201,6 @@ export const createCapabilityAvailability = (
   http: axes.http,
   mcp: axes.mcp,
   cli: axes.cli,
-  web: axes.web,
   overall: deriveOverallAvailability(axes),
 });
 export interface CapabilitySupportEntryInput {
@@ -314,7 +311,6 @@ const unavailable = Object.freeze({
   http: unavailableAvailability,
   mcp: unavailableAvailability,
   cli: unavailableAvailability,
-  web: unavailableAvailability,
 } as const);
 export const createInitialRuntimeSupportManifest = (
   chain: RuntimeChainConfiguration,
@@ -361,7 +357,7 @@ const assertAvailabilityMovesForward = (
   next: CapabilityAvailability,
 ): void => {
   let advanced = false;
-  for (const binding of ["direct", "http", "mcp", "cli", "web"] as const) {
+  for (const binding of ["direct", "http", "mcp", "cli"] as const) {
     if (availabilityRank(next[binding]) < availabilityRank(previous[binding])) {
       throw new TypeError("Support availability cannot move backward.");
     }
@@ -610,7 +606,6 @@ export const renderCurrentSupportSection = (manifest: RuntimeSupportManifest): s
     availability.http === availableAvailability ? "HTTP" : undefined,
     availability.mcp === availableAvailability ? "MCP" : undefined,
     availability.cli === availableAvailability ? "CLI" : undefined,
-    availability.web === availableAvailability ? "web" : undefined,
   ].filter((value): value is string => value !== undefined));
   const walletSupport = walletCapabilities
     .filter((entry) => entry.availability.overall === availableAvailability)
