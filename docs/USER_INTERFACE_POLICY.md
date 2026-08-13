@@ -94,6 +94,9 @@ Evidence roles:
 Decision and operation roles:
 
 - `review` identifies the complete immutable facts presented for one decision.
+  Its top-level human label is `Decision`; `Review` remains the canonical
+  artifact term and may appear only when identifying that artifact or one of
+  its exact fields, such as a Review digest.
 - `primary_action` is the one permitted non-destructive decision.
 - `destructive_action` identifies an explicit destructive decision and never
   shares primary-action styling.

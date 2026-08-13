@@ -14,6 +14,7 @@ The current runtime composes wallet connection and operation ownership, pinned
 chain reads, contract analysis with the current source-verification provider,
 official-asset synchronization and StockFactory admission, account token
 selection, account assets, reference prices and local reference history,
+Stock Token market results with admitted external execution artifacts,
 account-scoped reference-pair state, and the statically registered protocol
 packages. Each feature owns its canonical application contracts and persistence
 ports. Wallet management persists its operation before an external effect;
@@ -89,8 +90,9 @@ This repository owns:
 - asset and deployment registries;
 - contract, calldata, transaction, and receipt analysis;
 - simulation and policy;
-- the fixed reference-feed manifest, exact reference prices and candles, and
-  account-scoped reference-pair watchlists;
+- the fixed reference-feed manifest, exact reference prices and candles, Stock
+  Token market composition and execution-artifact admission, and account-scoped
+  reference-pair watchlists;
 - protocol adapters;
 - WalletConnect handoff; and
 - receipt verification.
@@ -124,7 +126,7 @@ package verification does not replace manual host and wallet gates.
 | `registry` | Official-asset source admission, StockFactory identity, and ordered default Stock Tokens |
 | `intelligence` | ABI, source, contract, calldata, signature, and transaction analysis |
 | `security` | Deterministic policy, simulation coverage, warnings, blocks, and state deltas |
-| `market-portfolio` | Fixed-feed reference prices, bounded exact candles, and account-scoped pair watchlists |
+| `market-portfolio` | Fixed-feed reference prices and candles, Stock Token market composition and execution-artifact admission, and account-scoped pair watchlists |
 | `protocols` | Protocol package contract and protocol-specific capabilities and action adapters |
 | `review` | Transaction intent, account binding, commitments, freshness, and transaction Review state |
 | `wallet` | WalletConnect sessions and exact reviewed-request handoff |
@@ -873,11 +875,12 @@ synchronization preserves the last committed snapshot and never changes
 account choices.
 
 The reference-market application is the sole owner of latest reference prices,
-Stock Token market results, bounded history synchronization, exact cross
-construction, candle aggregation, and account watchlists. One canonical feed
-registry owns feed identities. The fixed generic pair registry addresses only
-its three admitted pair identities; generated Stock Token feed membership does
-not make a feed addressable through a generic pair or watchlist contract.
+Stock Token market results, bounded reference-history synchronization, exact
+cross construction, reference-feed candle aggregation, and account watchlists.
+One canonical feed registry owns feed identities. The fixed generic pair
+registry addresses only its three admitted pair identities; generated Stock
+Token feed membership does not make a feed addressable through a generic pair
+or watchlist contract.
 
 The generated Stock Token mapping catalog is an offline product-data artifact.
 One maintainer generator consumes two complete retained source responses,
@@ -1345,11 +1348,12 @@ state may optimize display but are not replay authority.
   interpolates, refreshes, or reconstructs either series. Exact values remain
   available in an on-demand local disclosure, while provider diagnostics and
   machine correlation fields remain in the canonical result.
-- An immutable Review card presents Wallet connection or disconnection,
-  token-selection addition or removal, or reference-watchlist addition,
-  removal, or reordering. Constructing, displaying, dismissing, or displaying
-  that Review again performs no domain mutation and occupies no operation
-  slot.
+- A decision card presents one immutable canonical Review for Wallet connection
+  or disconnection, token-selection addition or removal, or reference-watchlist
+  addition, removal, or reordering. `Decision` is the human presentation role;
+  `Review` remains the domain artifact carried to the action owner. Constructing,
+  displaying, dismissing, or displaying that Review again performs no domain
+  mutation and occupies no operation slot.
 - App-only controls appear only after standard View initialization reports
   `serverTools`. A Host is trusted to broker that direct control call, but the
   domain owner independently re-admits the complete Review and revalidates its
@@ -1602,4 +1606,6 @@ capacity, corruption, exact input/result reconstruction and full canonical
 re-admission,
 terminal observation stopping, request limits, token-selection and watchlist
 atomicity, account-assets continuity, reference-market evidence and history
-bounds, send-once delivery, owner takeover, and secret-leak boundaries.
+bounds, execution-artifact identity, digest, capacity, coverage, and
+source/provider separation, send-once delivery, owner takeover, and secret-leak
+boundaries.
