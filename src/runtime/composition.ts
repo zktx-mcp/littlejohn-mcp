@@ -6,8 +6,10 @@ import {
 } from "../account-assets/index.js";
 import {
   createReferenceMarketApplicationFactory,
+  createGitHubStockTokenExecutionIndex,
   type ReferenceMarketApplicationPort,
   type ReferenceMarketOwnerApplication,
+  type StockTokenExecutionIndexReadPort,
 } from "../market-portfolio/index.js";
 import {
   CapabilityBindingRegistry,
@@ -202,6 +204,7 @@ interface LocalRuntimeBaseOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly now?: () => UtcTimestamp;
   readonly robinhoodOfficialAssetSourceClient?: RobinhoodOfficialAssetSourceClient;
+  readonly stockTokenExecutionIndex?: StockTokenExecutionIndexReadPort;
   readonly contractSourceVerificationFactory?: (
     clock: CanonicalClock,
   ) => Readonly<{
@@ -931,6 +934,8 @@ export class LocalRuntime {
     const interfaceApplicationFactory = options.interfaceApplicationFactory;
     const robinhoodOfficialAssetSourceClient =
       options.robinhoodOfficialAssetSourceClient;
+    const stockTokenExecutionIndex = options.stockTokenExecutionIndex ??
+      createGitHubStockTokenExecutionIndex();
     const contractSourceVerificationFactory =
       options.contractSourceVerificationFactory;
     if ((walletApplicationFactory === undefined && (chainApplicationFactory !== undefined || interfaceApplicationFactory !== undefined)) ||
@@ -1078,6 +1083,7 @@ export class LocalRuntime {
               chain: chain.referenceMarketReads,
               store: database.referenceMarketStore(),
               officialAssets,
+              stockTokenExecutionIndex,
               clock,
             });
       const interfaceStage: InterfaceOwnerApplicationStage<ActiveWallet, WalletOperations> | undefined =

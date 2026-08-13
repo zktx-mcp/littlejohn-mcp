@@ -55,6 +55,7 @@ import {
   createAvailableStockTokenMarketResult,
   createStockTokenMarketUnavailableAfterChainRead,
   resolveStockTokenMarketAsset,
+  stockTokenHistoryInterval,
   type StockTokenMarketInput,
   type StockTokenMarketResult,
 } from "./stock-token-market.js";
@@ -200,7 +201,7 @@ export class ReferenceMarketApplication implements ReferenceMarketApplicationPor
         }
         const resolution = resolveStockTokenMarketAsset(request, official.snapshot);
         if (resolution.status !== "mapped") return resolution;
-        return this.#dependencies.chainInvocations.run(activeSignal, async (context) => {
+        const reference = await this.#dependencies.chainInvocations.run(activeSignal, async (context) => {
           const block = await this.#dependencies.chain.resolveCurrentBlock(context);
           const feedId = resolution.mapping.disposition.mapping.feed.feedId;
           const read = await this.#dependencies.chain.readStockTokenAtBlock({
@@ -209,11 +210,14 @@ export class ReferenceMarketApplication implements ReferenceMarketApplicationPor
             block,
           }, context);
           if (read.status !== "observed") {
-            return createStockTokenMarketUnavailableAfterChainRead({
-              request,
-              resolution,
-              block: block.anchor,
-              read,
+            return Object.freeze({
+              status: "unavailable" as const,
+              result: createStockTokenMarketUnavailableAfterChainRead({
+                request,
+                resolution,
+                block: block.anchor,
+                read,
+              }),
             });
           }
           const requestedStartUnixSeconds = BigInt(Math.floor(
@@ -233,15 +237,31 @@ export class ReferenceMarketApplication implements ReferenceMarketApplicationPor
             block: block.anchor,
             snapshot: synchronized.snapshot,
           });
-          return createAvailableStockTokenMarketResult({
-            request,
-            resolution,
+          return Object.freeze({
+            status: "available" as const,
             block: block.anchor,
             read,
             series,
             snapshot: synchronized.snapshot,
             report: synchronized.report,
           });
+        });
+        if (reference.status === "unavailable") return reference.result;
+        const interval = stockTokenHistoryInterval(request.window, reference.block.blockTimestamp);
+        const execution = await this.#dependencies.stockTokenExecutionIndex.read({
+          token: resolution.officialAsset.member.contractAddress,
+          requestedStart: interval.requestedStart,
+          requestedEnd: interval.requestedEnd,
+        }, activeSignal);
+        return createAvailableStockTokenMarketResult({
+          request,
+          resolution,
+          block: reference.block,
+          read: reference.read,
+          series: reference.series,
+          snapshot: reference.snapshot,
+          report: reference.report,
+          execution,
         });
       },
     );

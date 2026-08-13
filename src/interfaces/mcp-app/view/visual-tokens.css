@@ -47,12 +47,26 @@ main { width: min(100%, 720px); margin: 0 auto; }
 .status-unavailable { color: var(--unavailable); }
 .item-list { display: grid; gap: var(--space-2); margin: var(--space-4) 0 0; padding: 0; list-style: none; }
 .item { padding: var(--space-2) var(--space-3); border-radius: calc(var(--radius) - 4px); background: var(--surface-subtle); overflow-wrap: anywhere; font-size: 0.85rem; }
-.history-chart { display: block; width: 100%; min-height: 180px; margin-top: var(--space-4); color: var(--chart); }
+.history-figure { margin: var(--space-4) 0 0; }
+.chart-caption { margin-bottom: var(--space-2); font-size: 0.82rem; font-weight: 700; }
+.history-chart { display: block; width: 100%; min-height: 180px; color: var(--chart); }
+.chart-frame { fill: var(--surface-subtle); stroke: var(--border); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.chart-grid { stroke: var(--border); stroke-width: 1; stroke-dasharray: 4 6; vector-effect: non-scaling-stroke; }
 .candle-range, .candle-open, .candle-close { stroke: currentColor; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.candle-point { fill: currentColor; stroke: var(--surface); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.chart-time-range { display: flex; justify-content: space-between; gap: var(--space-3); color: var(--text-secondary); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.7rem; }
+.chart-time-range span:last-child { text-align: end; }
+.chart-price-range { margin: var(--space-2) 0 0; color: var(--text-primary); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.72rem; }
+.supporting-copy { margin: var(--space-3) 0 0; color: var(--text-secondary); font-size: 0.82rem; line-height: 1.45; }
 .history-values { display: block; width: 100%; margin-top: var(--space-4); overflow-x: auto; border-collapse: collapse; font-size: 0.72rem; }
 .history-values caption { text-align: left; }
 .history-values th, .history-values td { padding: var(--space-2); border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
 .section-title { margin: var(--space-4) 0 var(--space-2); font-size: 0.9rem; }
+.disclosure { margin-top: var(--space-3); border-top: 1px solid var(--border); }
+.disclosure-label { padding: var(--space-3) 0; color: var(--text-secondary); font-size: 0.82rem; font-weight: 700; cursor: pointer; }
+.disclosure-label:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.disclosure .section-title { margin-top: var(--space-2); }
+.disclosure .history-values { margin-top: 0; }
 .warning-list, .limitation-list { margin: 0; padding-inline-start: var(--space-5); }
 .warning-item { color: var(--warning); }
 .limitation-item::marker { content: "Limit: "; font-weight: 700; }

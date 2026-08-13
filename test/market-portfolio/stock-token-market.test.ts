@@ -45,6 +45,11 @@ import type {
   ReferenceFeedCacheSnapshot,
   ReferenceMarketStore,
 } from "../../src/runtime/reference-market-storage.js";
+import { unavailableExecutionIndex } from "./execution-index-fixture.js";
+import {
+  unavailableStockTokenExecutionSeries,
+  type StockTokenExecutionIndexReadPort,
+} from "../../src/market-portfolio/stock-token-execution-index.js";
 
 const block = chainAnchorSchema.parse({
   chainId: "eip155:4663",
@@ -220,6 +225,8 @@ const availableApplication = (options: Readonly<{
     readStockTokenAtBlock,
     readHistoryAtBlock,
   });
+  const readExecutionIndex = vi.fn<StockTokenExecutionIndexReadPort["read"]>(async (input) =>
+    unavailableStockTokenExecutionSeries(input, "index_unavailable"));
   const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
   const application = new ReferenceMarketApplication({
     chainInvocations: lifecycle,
@@ -231,9 +238,16 @@ const availableApplication = (options: Readonly<{
       close: async () => undefined,
     }),
     activeWallet: Object.freeze({ capture: () => { throw new Error("Wallet is not required."); } }),
+    stockTokenExecutionIndex: Object.freeze({ read: readExecutionIndex }),
     clock: createCanonicalClock(() => block.blockTimestamp),
   });
-  return { application, lifecycle, readStockTokenAtBlock, readHistoryAtBlock };
+  return {
+    application,
+    lifecycle,
+    readStockTokenAtBlock,
+    readHistoryAtBlock,
+    readExecutionIndex,
+  };
 };
 
 describe("Stock Token market ownership", () => {
@@ -245,10 +259,17 @@ describe("Stock Token market ownership", () => {
       symbol: "AAPL",
       price: { status: "current" },
       history: { status: "partial" },
+      execution: { status: "unavailable", reason: "index_unavailable" },
       limitations: expect.arrayContaining(["source_history_not_exhaustive", "phase_boundary"]),
     });
     expect(fixture.readStockTokenAtBlock).toHaveBeenCalledTimes(1);
     expect(fixture.readHistoryAtBlock).toHaveBeenCalledTimes(1);
+    expect(fixture.readExecutionIndex).toHaveBeenCalledWith({
+      token: dispositionFor("AAPL").asset.deployments.find((entry) => entry.chainId === 4663)!
+        .contractAddress,
+      requestedStart: "2026-08-11T13:30:00.000Z",
+      requestedEnd: block.blockTimestamp,
+    }, expect.any(AbortSignal));
     await fixture.application.close();
     await fixture.lifecycle.close();
   });
@@ -272,6 +293,7 @@ describe("Stock Token market ownership", () => {
         close: async () => undefined,
       }),
       activeWallet: Object.freeze({ capture: () => { throw new Error("Wallet is not required."); } }),
+      stockTokenExecutionIndex: unavailableExecutionIndex,
       clock: createCanonicalClock(() => block.blockTimestamp),
     });
     await expect(application.stockTokenMarket({ symbol: "p", window: "1d" }))

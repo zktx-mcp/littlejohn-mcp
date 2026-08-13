@@ -10,6 +10,17 @@ const evidenceDirectory = resolve(
 );
 const target = resolve(root, "src/core/stock-token-reference-market.generated.ts");
 const candidate = `${target}.candidate`;
+const executionIndexRegistrySource = resolve(
+  root,
+  "src/market-portfolio/stock-token-execution-index-registry.json",
+);
+const executionIndexRegistryTarget = resolve(
+  root,
+  "src/market-portfolio/stock-token-execution-index-registry.generated.ts",
+);
+const executionIndexRegistryCandidate = `${executionIndexRegistryTarget}.candidate`;
+const executionIndexRegistrySha256 =
+  "364a9c99b1f38175e6dd0f566168e024c721dc0532b2c08bdc53488a908de062";
 const maximumSourceBytes = 1_048_576;
 const maximumSourceMembers = 512;
 const robinhoodSourceUri = "https://api.robinhood.com/rhj/assets";
@@ -431,5 +442,41 @@ try {
   await rename(candidate, target);
 } catch (error) {
   await unlink(candidate).catch(() => undefined);
+  throw error;
+}
+
+const executionIndexRegistryBytes = await readFile(executionIndexRegistrySource);
+if (sha256(executionIndexRegistryBytes) !== executionIndexRegistrySha256) {
+  throw new TypeError("The passed execution-index registry digest changed.");
+}
+const executionIndexRegistryJson = new TextDecoder("utf-8", { fatal: true })
+  .decode(executionIndexRegistryBytes);
+const executionIndexRegistryValue = JSON.parse(executionIndexRegistryJson);
+if (
+  executionIndexRegistryValue === null ||
+  typeof executionIndexRegistryValue !== "object" ||
+  Array.isArray(executionIndexRegistryValue)
+) {
+  throw new TypeError("The passed execution-index registry is not an object.");
+}
+const executionIndexRegistryRendered = generatedHeader +
+  `// Source: src/market-portfolio/stock-token-execution-index-registry.json\n` +
+  `export const stockTokenExecutionIndexRegistrySourceSha256 = ` +
+  `${JSON.stringify(executionIndexRegistrySha256)} as const;\n` +
+  `export const stockTokenExecutionIndexRegistryJson = ` +
+  `${JSON.stringify(executionIndexRegistryJson)} as const;\n`;
+
+try {
+  await writeFile(executionIndexRegistryCandidate, executionIndexRegistryRendered, {
+    encoding: "utf8",
+    flag: "wx",
+  });
+  const written = await readFile(executionIndexRegistryCandidate, "utf8");
+  if (written !== executionIndexRegistryRendered) {
+    throw new TypeError("Generated execution-index registry bytes changed after write.");
+  }
+  await rename(executionIndexRegistryCandidate, executionIndexRegistryTarget);
+} catch (error) {
+  await unlink(executionIndexRegistryCandidate).catch(() => undefined);
   throw error;
 }

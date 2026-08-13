@@ -46,6 +46,11 @@ describe("CLI interface identity", () => {
       { domain: "market", command: "price", argumentSyntax: "<pair-id> [--json]" },
       { domain: "market", command: "remove-pair", argumentSyntax: "<pair-id> --revision <revision>" },
       { domain: "market", command: "reorder-pairs", argumentSyntax: "<pair-id>... --revision <revision>" },
+      {
+        domain: "market",
+        command: "stock-token-market",
+        argumentSyntax: "<symbol> [--window <1d|7d|30d>] [--json]",
+      },
       { domain: "market", command: "watchlist", argumentSyntax: "[--json]" },
       { domain: "market", command: "watchlist-operation", argumentSyntax: "<operation-id> [--json]" },
       {
@@ -109,6 +114,7 @@ describe("CLI interface identity", () => {
       "  littlejohn market price <pair-id> [--json]",
       "  littlejohn market remove-pair <pair-id> --revision <revision>",
       "  littlejohn market reorder-pairs <pair-id>... --revision <revision>",
+      "  littlejohn market stock-token-market <symbol> [--window <1d|7d|30d>] [--json]",
       "  littlejohn market watchlist [--json]",
       "  littlejohn market watchlist-operation <operation-id> [--json]",
       "  littlejohn read assets [--limit <1..5>] [--cursor <token-address>] [--json]",

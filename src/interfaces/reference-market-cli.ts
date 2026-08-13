@@ -1,5 +1,7 @@
 import {
   canonicalJsonStringify,
+  referenceMarketWarningDefinitions,
+  stockTokenMarketLimitationDefinitions,
   type CanonicalJson,
   type ChainAnchor,
   type OperationId,
@@ -16,6 +18,7 @@ import {
   referenceMarketInterfaceErrorMappings,
   type ReferenceWatchlistOperation,
   type ReferenceWatchlistReview,
+  type StockTokenMarketResult,
 } from "../market-portfolio/index.js";
 import {
   referenceMarketInterfaceBindings,
@@ -26,11 +29,17 @@ import { runAtomicCliDecision } from "./cli-operation.js";
 import { operationInterfaceBindings } from "./operation-bindings.js";
 import { dispatchReferenceMarketRead } from "./reference-market-http.js";
 import type { RuntimeDispatchPort } from "./http-client.js";
+import {
+  stockTokenExecutionLimitationLabel,
+  stockTokenExecutionUnavailableReasonLabel,
+  stockTokenMarketUnavailableReasonLabel,
+} from "./stock-token-market-presentation.js";
 
 type ReferenceMarketCliBase = { readonly json: boolean };
 export type ReferenceMarketCliCommand =
   | (ReferenceMarketCliBase & { readonly kind: "price"; readonly input: ReturnType<typeof referenceMarketApplicationContracts.price.parseInput> })
   | (ReferenceMarketCliBase & { readonly kind: "history"; readonly input: ReturnType<typeof referenceMarketApplicationContracts.history.parseInput> })
+  | (ReferenceMarketCliBase & { readonly kind: "stockTokenMarket"; readonly input: ReturnType<typeof referenceMarketApplicationContracts.stockTokenMarket.parseInput> })
   | (ReferenceMarketCliBase & { readonly kind: "watchlist"; readonly input: Record<string, never> })
   | (ReferenceMarketCliBase & { readonly kind: "add"; readonly input: ReturnType<typeof referenceMarketApplicationContracts.watchlistChangeReview.parseInput> })
   | (ReferenceMarketCliBase & { readonly kind: "remove"; readonly input: ReturnType<typeof referenceMarketApplicationContracts.watchlistChangeReview.parseInput> })
@@ -113,6 +122,16 @@ export const parseReferenceMarketCliCommand = (
         kind: "history", json: parsed.json,
         input: referenceMarketApplicationContracts.history.parseInput({
           pairId: parsed.positionals[0], window: parsed.window,
+        }),
+      });
+    }
+    if (command === referenceMarketInterfaceBindings.stockTokenMarket.cli.command &&
+      parsed.positionals.length === 1 && parsed.revision === undefined) {
+      return Object.freeze({
+        kind: "stockTokenMarket", json: parsed.json,
+        input: referenceMarketApplicationContracts.stockTokenMarket.parseInput({
+          symbol: parsed.positionals[0],
+          ...(parsed.window === undefined ? {} : { window: parsed.window }),
         }),
       });
     }
@@ -224,6 +243,19 @@ const observationHuman = (
 const warningsHuman = (warnings: readonly string[]): readonly string[] =>
   warnings.map((warning) => `Warning: ${warning}`);
 
+const referenceWarningMeanings = new Map(
+  referenceMarketWarningDefinitions.map((definition) => [definition.code, definition.meaning]),
+);
+const stockTokenLimitationMeanings = new Map(
+  stockTokenMarketLimitationDefinitions.map((definition) => [definition.code, definition.meaning]),
+);
+
+const requireMeaning = (meanings: ReadonlyMap<string, string>, code: string): string => {
+  const meaning = meanings.get(code);
+  if (meaning === undefined) throw new TypeError("Reference-market meaning is not registered.");
+  return meaning;
+};
+
 export const formatReferencePriceForCli = (result: ReferencePriceSuccess): string => [
   `Pair: ${result.pair.label}`,
   `Status: ${result.status}`,
@@ -253,6 +285,65 @@ export const formatReferenceHistoryForCli = (result: ReferenceHistorySuccess): s
   ...result.sourceObservations.flatMap(observationHuman),
   ...warningsHuman(result.warnings),
 ].join("\n");
+
+export const formatStockTokenMarketForCli = (result: StockTokenMarketResult): string => {
+  const common = [
+    `Stock Token: ${result.symbol}`,
+    `Window: ${result.window}`,
+    `Status: ${result.status}`,
+  ];
+  if (result.status === "unavailable") {
+    const officialAsset = "officialAsset" in result
+      ? [
+          `Name: ${result.officialAsset.member.sourceName ?? result.symbol}`,
+          `Contract: ${result.officialAsset.member.contractAddress}`,
+        ]
+      : [];
+    return [
+      ...common,
+      ...officialAsset,
+      `Reason: ${stockTokenMarketUnavailableReasonLabel(result.reason)}`,
+    ].join("\n");
+  }
+  const latestExecution = result.execution.status === "available"
+    ? result.execution.candles.at(-1)
+    : undefined;
+  const execution = result.execution.status === "unavailable"
+    ? [
+        "Executed trades (USDG): unavailable",
+        `Execution reason: ${stockTokenExecutionUnavailableReasonLabel(result.execution.reason)}`,
+      ]
+    : [
+        `Executed trades (USDG): ${result.execution.freshness === "stale"
+          ? "stale"
+          : result.execution.coverage.status}`,
+        `Execution one-minute candles: ${result.execution.candles.length}`,
+        ...(latestExecution === undefined
+          ? ["Latest execution close: no executed trade in the covered period"]
+          : [
+              `Latest execution close: ${rational(latestExecution.close)} USDG`,
+              `Latest execution candle: ${latestExecution.intervalEnd}`,
+            ]),
+        ...result.execution.coverage.limitations.map((limitation) =>
+          `Execution limitation: ${stockTokenExecutionLimitationLabel(limitation)}`),
+      ];
+  return [
+    `Stock Token: ${result.officialAsset.member.sourceName ?? result.mapping.disposition.asset.name} · ${result.symbol}`,
+    `Window: ${result.window}`,
+    `Reference value (USD): ${rational(result.price.value)}`,
+    `Reference status: ${result.price.status}`,
+    `Reference observed at: ${result.price.source.readEvidence.observedAt}`,
+    `Chainlink reference history: ${result.history.status}`,
+    `Reference candles: ${result.history.candles.length}`,
+    ...execution,
+    ...(result.oraclePaused.value ? ["Oracle paused: yes"] : []),
+    ...result.warnings.map((code) =>
+      `Warning: ${requireMeaning(referenceWarningMeanings, code)}`),
+    ...result.limitations.map((code) =>
+      `Limitation: ${requireMeaning(stockTokenLimitationMeanings, code)}`),
+    `Contract: ${result.officialAsset.member.contractAddress}`,
+  ].join("\n");
+};
 
 const watchlistHuman = (result: ReferenceWatchlistSuccess): string => [
   `Account: ${result.account.address}`,
@@ -367,14 +458,17 @@ export const runReferenceMarketCliCommand = async (
     return 0;
   }
 
-  const result = command.kind === "price"
-    ? await dispatchReferenceMarketRead(runtime, referenceMarketInterfaceBindings.price, command.input, signal)
+  const readBinding = command.kind === "price"
+    ? referenceMarketInterfaceBindings.price
     : command.kind === "history"
-      ? await dispatchReferenceMarketRead(runtime, referenceMarketInterfaceBindings.history, command.input, signal)
-      : await dispatchReferenceMarketRead(runtime, referenceMarketInterfaceBindings.watchlist, command.input, signal);
+      ? referenceMarketInterfaceBindings.history
+      : command.kind === "stockTokenMarket"
+        ? referenceMarketInterfaceBindings.stockTokenMarket
+        : referenceMarketInterfaceBindings.watchlist;
+  const result = await dispatchReferenceMarketRead(runtime, readBinding, command.input, signal);
   if ("status" in result) {
     if (command.json) output.writeOutput(`${canonicalJsonStringify(result as unknown as CanonicalJson)}\n`);
-    else output.writeError("delivery_unknown: The watchlist result is unavailable after sending began; read the watchlist before deciding whether to send again.\n");
+    else output.writeError("delivery_unknown: The reference-market result is unavailable after sending began.\n");
     return deliveryUnknownCliExitCode;
   }
   if (!result.ok) {
@@ -387,6 +481,8 @@ export const runReferenceMarketCliCommand = async (
       ? formatReferencePriceForCli(value as ReferencePriceSuccess)
       : command.kind === "history"
         ? formatReferenceHistoryForCli(value as ReferenceHistorySuccess)
-        : watchlistHuman(value as ReferenceWatchlistSuccess)}\n`);
+        : command.kind === "stockTokenMarket"
+          ? formatStockTokenMarketForCli(value as StockTokenMarketResult)
+          : watchlistHuman(value as ReferenceWatchlistSuccess)}\n`);
   return 0;
 };

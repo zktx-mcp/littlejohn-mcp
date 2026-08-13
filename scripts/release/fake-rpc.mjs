@@ -60,6 +60,14 @@ const referenceFeeds = Object.freeze([
     answer: "100008000",
   }),
 ]);
+const stockTokenReferenceFeed = Object.freeze({
+  feedId: "0x6b22a786baa607d76728168703a39ea9c99f2cd0",
+  address: "0x6b22a786baa607d76728168703a39ea9c99f2cd0",
+  description: "Robinhood AAPL / USD",
+  decimals: "8",
+  answer: "23125000000",
+});
+const rpcReferenceFeeds = Object.freeze([...referenceFeeds, stockTokenReferenceFeed]);
 const referencePairs = Object.freeze([
   Object.freeze({
     label: "ETH/USD",
@@ -78,7 +86,7 @@ const officialTokens = Object.freeze([
   {
     assetUid: "0x00000000000000000000000000000000c2425be3658540dd8e2424cbf3c5c649",
     address: "0xaf3d76f1834a1d425780943c99ea8a608f8a93f9",
-    name: "Apple",
+    name: "Apple • Robinhood Token",
     symbol: "AAPL",
   },
   {
@@ -112,6 +120,8 @@ const officialTokens = Object.freeze([
     symbol: "OFF",
   },
 ]);
+const aaplOfficialToken = officialTokens.find((token) => token.symbol === "AAPL");
+if (aaplOfficialToken === undefined) throw new TypeError("Fake AAPL authority is unavailable.");
 const customTokenAddress = `0x${"28".repeat(20)}`;
 const uniswapV2FactoryAddress = "0x8bceaa40b9acdfaedf85adf4ff01f5ad6517937f";
 const uniswapV2PairAddress = "0x590fa5a18e1086b3a0f0b8a6a29e07c4e1c88856";
@@ -298,6 +308,7 @@ const callResult = (token, data) => {
   if (data === "0xa60bf13d") return uint256Result(token.currentMultiplier);
   if (data === "0xdc767007") return uint256Result(token.pendingMultiplier);
   if (data === "0x97a4064f") return uint256Result(token.pendingEffectiveAt);
+  if (data === "0x7706ba52") return boolResult(false);
   if (/^0x01ffc9a7[0-9a-f]{64}$/u.test(data)) {
     const interfaceId = data.slice(10, 18);
     return boolResult(supportedInterfaceIds.has(interfaceId));
@@ -379,8 +390,8 @@ const resultFor = (method, params) => {
     ? fakeTokens.find((candidate) => candidate.address === params[0].to)
     : fakeTokens.find((candidate) => candidate.address === params[0]);
   const referenceFeed = typeof params[0] === "object" && params[0] !== null
-    ? referenceFeeds.find((candidate) => candidate.address === params[0].to)
-    : referenceFeeds.find((candidate) => candidate.address === params[0]);
+    ? rpcReferenceFeeds.find((candidate) => candidate.address === params[0].to)
+    : rpcReferenceFeeds.find((candidate) => candidate.address === params[0]);
   if (method === "eth_chainId" && params.length === 0) return "0x1237";
   if (
     method === "eth_getBlockByNumber" &&
@@ -589,6 +600,12 @@ export const startFakeRpc = async () => {
       pairs: referencePairs,
       roundId: referenceRoundId,
       updatedAtUnixSeconds: referenceUpdatedAt,
+    }),
+    stockTokenMarket: Object.freeze({
+      symbol: "AAPL",
+      tokenAddress: aaplOfficialToken.address,
+      feedId: stockTokenReferenceFeed.feedId,
+      value: Object.freeze({ numerator: "925", denominator: "4" }),
     }),
     semanticReads: Object.freeze({
       account: Object.freeze({

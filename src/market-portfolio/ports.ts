@@ -25,6 +25,7 @@ import type {
   StockTokenMarketInput,
   StockTokenMarketResult,
 } from "./stock-token-market.js";
+import type { StockTokenExecutionIndexReadPort } from "./stock-token-execution-index.js";
 
 export interface ReferenceMarketApplicationPort {
   price(input: ReferencePriceInput, signal?: AbortSignal): Promise<ReferencePriceSuccess | ApplicationFailure>;
@@ -54,5 +55,6 @@ export interface ReferenceMarketApplicationDependencies {
   readonly store: ReferenceMarketStore;
   readonly activeWallet: ActiveWalletReadPort;
   readonly officialAssets: OfficialAssetSynchronizationPort;
+  readonly stockTokenExecutionIndex: StockTokenExecutionIndexReadPort;
   readonly clock: CanonicalClock;
 }

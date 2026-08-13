@@ -40,6 +40,12 @@ export interface FakeRpcHandle {
     readonly roundId: string;
     readonly updatedAtUnixSeconds: string;
   }>;
+  readonly stockTokenMarket: Readonly<{
+    readonly symbol: "AAPL";
+    readonly tokenAddress: string;
+    readonly feedId: string;
+    readonly value: Readonly<{ readonly numerator: "925"; readonly denominator: "4" }>;
+  }>;
   readonly semanticReads: Readonly<{
     readonly account: Readonly<{
       readonly address: string;

@@ -102,6 +102,11 @@ export const presentationContracts = Object.freeze({
     "immutable_result",
     "Reference price",
   ),
+  stockTokenMarket: applicationEntry(
+    referenceMarketApplicationContracts.stockTokenMarket,
+    "immutable_result",
+    "Stock Token market",
+  ),
   referenceWatchlist: applicationEntry(
     referenceMarketApplicationContracts.watchlist,
     "immutable_result",

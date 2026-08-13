@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   accountBalanceInputSchema,
+  canonicalJsonStringify,
   captureCanonicalJson,
   referenceMarketManifest,
 } from "../../src/core/index.js";
@@ -33,6 +34,7 @@ import { tokenSelectionReviewRequestSchema } from "../../src/token-catalog/index
 import type { RuntimeDispatchRequest, RuntimeDispatchResponse } from "../../src/runtime/index.js";
 import { toProblemDetails } from "../../src/runtime/index.js";
 import { openTestOwnerSession } from "./owner-session-harness.js";
+import { stockTokenMarketUnmappedFixture } from "./stock-token-market-fixture.js";
 
 class FakeRuntime implements McpRuntimePort {
   readonly requests: RuntimeDispatchRequest[] = [];
@@ -272,6 +274,30 @@ describe("MCP binding projection", () => {
       method: "POST",
       path: referenceMarketInterfaceBindings.price.http.path,
       body: { pairId },
+      signal: expect.any(AbortSignal),
+    }]);
+  });
+
+  it("carries one admitted Stock Token result through MCP text and structured output", async () => {
+    const value = stockTokenMarketUnmappedFixture();
+    const runtime = new FakeRuntime(() => ({ status: 200, body: captureCanonicalJson(value) }));
+    const { client } = await connectOrdinary(runtime);
+    const result = await client.callTool({
+      name: referenceMarketInterfaceBindings.stockTokenMarket.mcp.name,
+      arguments: { symbol: "p" },
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toEqual(value);
+    expect(result.content).toEqual([{
+      type: "text",
+      text: canonicalJsonStringify(captureCanonicalJson(value)),
+    }]);
+    expect(runtime.requests).toEqual([{
+      requestClass: "public_read",
+      method: "POST",
+      path: referenceMarketInterfaceBindings.stockTokenMarket.http.path,
+      body: { symbol: "P", window: "1d" },
       signal: expect.any(AbortSignal),
     }]);
   });

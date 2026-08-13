@@ -264,6 +264,26 @@ result is `partial` when it contains at least one observed-point candle and
 `unavailable` when it contains none; no history result can claim complete
 source coverage.
 
+Stock Token execution history has a different source and evidence meaning.
+The admitted PoolManager deployment, complete PoolKey, exact Pool ID, and
+finalized `Swap` event positions identify the executed-trade source. One exact
+one-minute candle establishes only the admitted executions in that pool during
+that minute, quoted in USDG. A missing candle inside admitted continuous block
+coverage establishes only that the index admitted no matching `Swap` event for
+that pool and interval. It does not establish exchange activity, underlying
+equity activity, another pool's activity, liquidity, or trade availability.
+
+The versioned execution-index state and day artifacts retain finalized source
+coverage, exact candle values, raw token and USDG volumes, trade count, first
+and last source positions, and byte digests. The index read admits those exact
+artifacts and never reconstructs a candle from a chart, Chainlink history, or a
+provider response. GitHub Releases currently carries the artifacts but has no
+market-fact authority; repository, release, asset, URL, and credential fields
+do not enter the canonical result. Provider unavailability, stale publication,
+retention, integrity failure, or result capacity remains an explicit execution
+history outcome and cannot weaken or replace an independently admitted
+Chainlink reference value.
+
 ## Identity And Trust
 
 - Asset identity is defined only in `docs/NUMERIC_POLICY.md#token-identity-and-decimals`.

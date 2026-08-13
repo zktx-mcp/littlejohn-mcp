@@ -16,6 +16,12 @@ import { createChainOwnerApplication } from ${packageModule("chain/application.j
 import { createInterfaceOwnerApplication } from ${packageModule("interfaces/application.js")};
 import { createSourcifyContractSourceVerification } from ${packageModule("intelligence/sourcify.js")};
 import {
+  findStockTokenExecutionIndexAsset,
+  stockTokenExecutionIndexRegistry,
+  stockTokenExecutionSeriesSchema,
+  unavailableStockTokenExecutionSeries,
+} from ${packageModule("market-portfolio/stock-token-execution-index.js")};
+import {
   createRobinhoodOfficialAssetSourceClient,
   officialAssetSourceDefinition,
 } from ${packageModule("registry/index.js")};
@@ -40,6 +46,83 @@ const sessionAccount = "eip155:4663:0x1111111111111111111111111111111111111111";
 const sessionStoreKey = "littlejohn.release.fixture.sessions";
 const now = () => readFileSync(clockPath, "utf8").trim();
 const sessionExpiry = () => Math.floor(Date.parse(now()) / 1000) + 7 * 24 * 60 * 60;
+
+const stockTokenExecutionIndex = Object.freeze({
+  read: async (input, signal) => {
+    if (signal?.aborted === true) throw signal.reason;
+    const asset = findStockTokenExecutionIndexAsset(input.token);
+    if (asset === undefined) {
+      return unavailableStockTokenExecutionSeries(input, "asset_not_indexed");
+    }
+    const requestedEnd = Date.parse(input.requestedEnd);
+    const coverageEnd = new Date(Math.floor(requestedEnd / 60_000) * 60_000).toISOString();
+    const coverageStart = new Date(Date.parse(coverageEnd) - 10 * 60_000).toISOString();
+    const candleStarts = [7, 5, 2].map((minutes) =>
+      new Date(Date.parse(coverageEnd) - minutes * 60_000).toISOString());
+    const candles = candleStarts.map((intervalStart, index) => {
+      const blockNumber = String(34307190 + index);
+      const byte = String(40 + index).padStart(2, "0");
+      const transactionByte = String(50 + index).padStart(2, "0");
+      const source = Object.freeze({
+        blockNumber,
+        blockHash: "0x" + byte.repeat(32),
+        transactionIndex: 0,
+        transactionHash: "0x" + transactionByte.repeat(32),
+        logIndex: 0,
+      });
+      const numerator = String(925 + index * 2);
+      return Object.freeze({
+        symbol: asset.symbol,
+        token: asset.token,
+        poolId: asset.poolId,
+        intervalStart,
+        intervalEnd: new Date(Date.parse(intervalStart) + 60_000).toISOString(),
+        open: { numerator, denominator: "4" },
+        high: { numerator, denominator: "4" },
+        low: { numerator, denominator: "4" },
+        close: { numerator, denominator: "4" },
+        tokenVolumeRaw: String(1_000 + index),
+        quoteVolumeRaw: String(2_000 + index),
+        tradeCount: 1,
+        firstSource: source,
+        lastSource: source,
+      });
+    });
+    return stockTokenExecutionSeriesSchema.parse({
+      status: "available",
+      requestedStart: input.requestedStart,
+      requestedEnd: input.requestedEnd,
+      source: {
+        chainId: stockTokenExecutionIndexRegistry.chain.chainId,
+        finality: stockTokenExecutionIndexRegistry.chain.finalityTag,
+        poolManager: stockTokenExecutionIndexRegistry.deployment.poolManager,
+        poolId: asset.poolId,
+        quoteToken: stockTokenExecutionIndexRegistry.deployment.quoteToken,
+      },
+      artifact: {
+        contractVersion: "1",
+        groupId: stockTokenExecutionIndexRegistry.groups[0].groupId,
+        sequence: 1,
+        coveredUntilTimestamp: coverageEnd,
+        stateSha256: "31".repeat(32),
+        days: [{ day: coverageStart.slice(0, 10), sha256: "32".repeat(32) }],
+      },
+      freshness: "current",
+      coverage: {
+        status: "partial",
+        intervals: [{
+          fromBlock: "34307100",
+          fromTimestamp: coverageStart,
+          untilBlock: "34307200",
+          untilTimestamp: coverageEnd,
+        }],
+        limitations: ["before_published_coverage", "after_published_coverage"],
+        observedCandleCount: candles.length,
+      },
+      candles,
+    });
+  },
+});
 
 const createContractSourceVerification = (clock) =>
   createSourcifyContractSourceVerification({
@@ -328,6 +411,7 @@ const runtime = await LocalRuntime.create({
       return fetch(assetSourceUrl, init);
     },
   }),
+  stockTokenExecutionIndex,
   contractSourceVerificationFactory: createContractSourceVerification,
   walletApplicationFactory: createWalletOwnerApplicationFactory(createFakeClient),
   chainApplicationFactory: createChainOwnerApplication,

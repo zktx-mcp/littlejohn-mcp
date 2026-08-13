@@ -26,6 +26,7 @@ import type { ReferenceWatchlistOperation } from "../../src/market-portfolio/con
 import { ProductDatabase } from "../../src/runtime/database.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
 import type { WalletSessionSource } from "../../src/runtime/source-identity.js";
+import { unavailableExecutionIndex } from "./execution-index-fixture.js";
 
 const directories: string[] = [];
 
@@ -106,6 +107,7 @@ const createState = async () => {
         readStored: () => undefined,
         close: async () => undefined,
       }),
+      stockTokenExecutionIndex: unavailableExecutionIndex,
       clock,
     });
     return Object.freeze({

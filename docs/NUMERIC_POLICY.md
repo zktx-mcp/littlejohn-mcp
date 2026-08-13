@@ -272,11 +272,20 @@ present and bound to the same asset and observation identity.
   partition the represented bucket starts. An empty bucket means only that no
   admitted point appears in that bucket; neither a candle nor an empty bucket
   proves exhaustive source history. Every candle has no trade volume.
-- One Stock Token market result derives its value and chart from the same
-  mapped direct feed and canonical block. Its largest chart admits at most 180
-  candles and 720 distinct source observations. A valid current or
-  last-observed value can coexist with unavailable chart history; the result
-  states that missing coverage and never creates candles from another source.
+- One Stock Token market result keeps two numeric series separate. Its
+  Chainlink Total Return Value and reference history are denominated in USD and
+  retain the direct-feed rules above. Its Uniswap V4 executed-trade history is
+  denominated in USDG and contains exact one-minute OHLC values, raw Stock
+  Token and USDG volumes, and trade count derived by the admitted index from
+  exact `Swap` events. Little John does not convert USDG to USD, compare the two
+  series as equal units, merge their candles, interpolate a missing interval,
+  or derive either series from the other.
+- The Chainlink reference chart admits at most 180 candles and 720 distinct
+  source observations. The execution chart admits at most the most recent
+  3,072 exact one-minute candles from the requested interval and reports any
+  earlier result-capacity loss. A valid current or last-observed reference
+  value can coexist with partial, stale, unavailable, retained-out, or
+  capacity-limited execution history; neither outcome changes the other.
 - Human-interface chart coordinates may use only the non-authoritative
   floating-point projection allowed by [`Charts`](#charts). Exact rational
   OHLC values remain visible beside that projection and are the only values

@@ -40,8 +40,19 @@ import {
   type CapabilityData,
   type CapabilitySuccess,
   type CanonicalJson,
+  type EvmAddress,
   type WalletConnectionData,
 } from "../../src/core/index.js";
+import {
+  findStockTokenExecutionIndexAsset,
+  stockTokenExecutionIndexRegistry,
+  stockTokenExecutionSeriesLimits,
+  stockTokenExecutionSeriesSchema,
+  unavailableStockTokenExecutionSeries,
+} from
+  "../../src/market-portfolio/stock-token-execution-index.js";
+import { stockTokenHistoryInterval } from
+  "../../src/market-portfolio/stock-token-market.js";
 import {
   internalResponseLimitBytes,
   publicReadResponseLimitBytes,
@@ -541,9 +552,114 @@ export const verifySemanticReadMaximumEnvelopes = async (): Promise<void> => {
   expect(included).toMatchObject({ ok: false, error: { code: "result_too_large" } });
 };
 
-const maximumStockTokenMarketSuccess = () => {
+const maximumStockTokenExecutionSeries = (
+  token: EvmAddress,
+  interval: Readonly<{ requestedStart: string; requestedEnd: string }>,
+) => {
+  const asset = findStockTokenExecutionIndexAsset(token);
+  if (asset === undefined) throw new TypeError("The maximum execution fixture must be indexed.");
+  const requestedStart = Date.parse(interval.requestedStart);
+  const requestedEnd = Date.parse(interval.requestedEnd);
+  const dayMilliseconds = 86_400_000;
+  const intervals: Array<{
+    fromBlock: string;
+    fromTimestamp: string;
+    untilBlock: string;
+    untilTimestamp: string;
+  }> = [];
+  let cursor = requestedStart;
+  let nextBlock = 10n ** 77n;
+  while (cursor < requestedEnd) {
+    const dayEnd = Math.min(
+      requestedEnd,
+      Math.floor(cursor / dayMilliseconds) * dayMilliseconds + dayMilliseconds,
+    );
+    const untilBlock = nextBlock + 100_000n;
+    intervals.push({
+      fromBlock: nextBlock.toString(),
+      fromTimestamp: new Date(cursor).toISOString(),
+      untilBlock: untilBlock.toString(),
+      untilTimestamp: new Date(dayEnd).toISOString(),
+    });
+    cursor = dayEnd;
+    nextBlock = untilBlock;
+  }
+  const maximumNumerator = "9".repeat(96);
+  const maximumDenominator = `1${"0".repeat(95)}`;
+  const maximumVolume = "9".repeat(78);
+  const firstCandleStart = requestedEnd -
+    stockTokenExecutionSeriesLimits.candles * 60_000;
+  const candles = Array.from({ length: stockTokenExecutionSeriesLimits.candles }, (_, index) => {
+    const intervalStart = firstCandleStart + index * 60_000;
+    const coverage = intervals.find((candidate) =>
+      intervalStart >= Date.parse(candidate.fromTimestamp) &&
+      intervalStart < Date.parse(candidate.untilTimestamp));
+    if (coverage === undefined) throw new TypeError("Maximum execution candle lacks coverage.");
+    const blockNumber = (BigInt(coverage.fromBlock) +
+      BigInt((intervalStart - Date.parse(coverage.fromTimestamp)) / 60_000)).toString();
+    const source = {
+      blockNumber,
+      blockHash: `0x${"ff".repeat(32)}`,
+      transactionIndex: Number.MAX_SAFE_INTEGER,
+      transactionHash: `0x${"ee".repeat(32)}`,
+      logIndex: Number.MAX_SAFE_INTEGER,
+    };
+    const exact = { numerator: maximumNumerator, denominator: maximumDenominator };
+    return {
+      symbol: asset.symbol,
+      token: asset.token,
+      poolId: asset.poolId,
+      intervalStart: new Date(intervalStart).toISOString(),
+      intervalEnd: new Date(intervalStart + 60_000).toISOString(),
+      open: exact,
+      high: exact,
+      low: exact,
+      close: exact,
+      tokenVolumeRaw: maximumVolume,
+      quoteVolumeRaw: maximumVolume,
+      tradeCount: Number.MAX_SAFE_INTEGER,
+      firstSource: source,
+      lastSource: source,
+    };
+  });
+  return stockTokenExecutionSeriesSchema.parse({
+    status: "available",
+    ...interval,
+    source: {
+      chainId: stockTokenExecutionIndexRegistry.chain.chainId,
+      finality: stockTokenExecutionIndexRegistry.chain.finalityTag,
+      poolManager: stockTokenExecutionIndexRegistry.deployment.poolManager,
+      poolId: asset.poolId,
+      quoteToken: stockTokenExecutionIndexRegistry.deployment.quoteToken,
+    },
+    artifact: {
+      contractVersion: "1",
+      groupId: stockTokenExecutionIndexRegistry.groups[0]!.groupId,
+      sequence: Number.MAX_SAFE_INTEGER,
+      coveredUntilTimestamp: interval.requestedEnd,
+      stateSha256: "f".repeat(64),
+      days: intervals.map((entry, index) => ({
+        day: entry.fromTimestamp.slice(0, 10),
+        sha256: index.toString(16).padStart(64, "0"),
+      })),
+    },
+    freshness: "current",
+    coverage: {
+      status: "partial",
+      intervals,
+      limitations: ["candle_capacity"],
+      observedCandleCount: 43_200,
+    },
+    candles,
+  });
+};
+
+const maximumStockTokenMarketSuccess = (withExecution: boolean) => {
   const mapped = stockTokenReferenceMarketCatalog.dispositions.filter((entry) =>
-    entry.mapping.status === "mapped");
+    entry.mapping.status === "mapped" &&
+    (!withExecution || findStockTokenExecutionIndexAsset(
+      entry.mapping.selectedDeployment.contractAddress,
+    ) !== undefined));
   const disposition = mapped.reduce((largest, entry) =>
     Buffer.byteLength(independentCanonicalJson(entry), "utf8") >
       Buffer.byteLength(independentCanonicalJson(largest), "utf8") ? entry : largest);
@@ -556,7 +672,7 @@ const maximumStockTokenMarketSuccess = () => {
     sourceName: disposition.asset.name,
     sourceSymbol: disposition.asset.symbol,
   } as const;
-  const snapshotObservedAt = parseUtcTimestamp("9999-12-01T00:00:00.000Z");
+  const snapshotObservedAt = parseUtcTimestamp("9999-11-01T00:00:00.000Z");
   const officialSnapshot = assertCommittedOfficialAssetSnapshot({
     sourceUri: officialAssetSourceDefinition.sourceUri,
     sourceObservedAt: snapshotObservedAt,
@@ -580,7 +696,9 @@ const maximumStockTokenMarketSuccess = () => {
     chainId: "eip155:4663",
     blockNumber: maximumUint256,
     blockHash: `0x${"ff".repeat(32)}`,
-    blockTimestamp: "9999-12-31T23:59:59.999Z",
+    blockTimestamp: withExecution
+      ? "9999-12-30T12:00:00.000Z"
+      : "9999-12-31T23:59:59.999Z",
   });
   const window = referenceHistoryWindowDefinitions["30d"];
   const requestedEnd = Date.parse(block.blockTimestamp);
@@ -674,6 +792,17 @@ const maximumStockTokenMarketSuccess = () => {
       latest: observations.at(-1)!,
     },
     series,
+    execution: withExecution
+      ? maximumStockTokenExecutionSeries(
+          member.contractAddress,
+          stockTokenHistoryInterval(request.window, block.blockTimestamp),
+        )
+      : unavailableStockTokenExecutionSeries({
+          token: member.contractAddress,
+          ...stockTokenHistoryInterval(request.window, block.blockTimestamp),
+        }, findStockTokenExecutionIndexAsset(member.contractAddress) === undefined
+          ? "asset_not_indexed"
+          : "index_unavailable"),
     snapshot: cacheSnapshot,
     report: {
       remainingContinuation: true,
@@ -839,9 +968,10 @@ export const verifyMaximumReferenceMarketEnvelopes = (): void => {
     revision: referenceWatchlistRevisionSchema.parse(Buffer.alloc(16, 255).toString("base64url")),
     entries: referenceMarketManifest.pairs,
   });
-  const stockTokenMarket = maximumStockTokenMarketSuccess();
+  const stockTokenMarket = maximumStockTokenMarketSuccess(false);
+  const stockTokenMarketWithExecution = maximumStockTokenMarketSuccess(true);
 
-  for (const success of [price, history, stockTokenMarket]) {
+  for (const success of [price, history, stockTokenMarket, stockTokenMarketWithExecution]) {
     expect(canonicalUtf8Bytes(success)).toBeLessThanOrEqual(maximumSuccessUtf8Bytes);
     expect(Buffer.byteLength(JSON.stringify(success), "utf8")).toBeLessThan(publicReadResponseLimitBytes);
   }

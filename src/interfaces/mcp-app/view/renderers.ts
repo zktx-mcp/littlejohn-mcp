@@ -1,6 +1,8 @@
 import {
   contractInspectCapability,
   getCapabilityDefinitionSnapshot,
+  referenceMarketWarningDefinitions,
+  stockTokenMarketLimitationDefinitions,
   type CanonicalJson,
   type CapabilitySuccess,
   type ContractAnalysis,
@@ -13,6 +15,7 @@ import {
   type ReferenceMarketWarningCode,
   type ReferencePriceSuccess,
   type ReferenceWatchlistSuccess,
+  type StockTokenMarketLimitationCode,
   type WalletConnectionData,
 } from "../../../core/client.js";
 import {
@@ -33,6 +36,9 @@ import type {
   ReferenceWatchlistOperation,
   ReferenceWatchlistReviewResult,
 } from "../../../market-portfolio/contracts.js";
+import type { StockTokenExecutionCandle } from
+  "../../../market-portfolio/stock-token-execution-index.js";
+import type { StockTokenMarketResult } from "../../../market-portfolio/stock-token-market.js";
 import type {
   WalletManagementOperation,
   WalletQrMatrix,
@@ -44,6 +50,11 @@ import {
   type PresentationContractEntry,
   type PresentationContractResult,
 } from "../registry.js";
+import {
+  stockTokenExecutionLimitationLabel,
+  stockTokenExecutionUnavailableReasonLabel,
+  stockTokenMarketUnavailableReasonLabel,
+} from "../../stock-token-market-presentation.js";
 
 type ContractInspectionResult = CapabilitySuccess<ContractInspectData>;
 type WalletConnectionResult = CapabilitySuccess<WalletConnectionData>;
@@ -129,45 +140,182 @@ const svgLine = (
   return node;
 };
 
-const historyChart = (candlesInput: readonly ReferenceCandle[], label: string): SVGSVGElement => {
-  const candles = candlesInput.map((candle) => Object.freeze({
+const svgCircle = (
+  x: number,
+  y: number,
+  radius: number,
+  className: string,
+): SVGCircleElement => {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  node.setAttribute("cx", String(x));
+  node.setAttribute("cy", String(y));
+  node.setAttribute("r", String(radius));
+  node.setAttribute("class", className);
+  return node;
+};
+
+const svgRectangle = (
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  className: string,
+): SVGRectElement => {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  node.setAttribute("x", String(x));
+  node.setAttribute("y", String(y));
+  node.setAttribute("width", String(width));
+  node.setAttribute("height", String(height));
+  node.setAttribute("class", className);
+  return node;
+};
+
+interface ExactCandle {
+  readonly openedAt: string;
+  readonly closedAt: string;
+  readonly open: ExactRational;
+  readonly high: ExactRational;
+  readonly low: ExactRational;
+  readonly close: ExactRational;
+}
+
+interface ExactCandleSeries {
+  readonly candles: readonly ExactCandle[];
+  readonly requestedStart: string;
+  readonly requestedEnd: string;
+}
+
+const referenceCandleSeries = (value: Readonly<{
+  candles: readonly ReferenceCandle[];
+  coverage: Readonly<{ requestedStart: string; requestedEnd: string }>;
+}>): ExactCandleSeries => Object.freeze({
+  candles: value.candles,
+  requestedStart: value.coverage.requestedStart,
+  requestedEnd: value.coverage.requestedEnd,
+});
+
+const executionCandleSeries = (value: Readonly<{
+  candles: readonly StockTokenExecutionCandle[];
+  requestedStart: string;
+  requestedEnd: string;
+}>): ExactCandleSeries => Object.freeze({
+  candles: value.candles.map((candle) => Object.freeze({
+    openedAt: candle.intervalStart,
+    closedAt: candle.intervalEnd,
+    open: candle.open,
+    high: candle.high,
+    low: candle.low,
+    close: candle.close,
+  })),
+  requestedStart: value.requestedStart,
+  requestedEnd: value.requestedEnd,
+});
+
+const historyChart = (input: ExactCandleSeries, label: string): HTMLElement => {
+  const requestedStart = Date.parse(input.requestedStart);
+  const requestedEnd = Date.parse(input.requestedEnd);
+  if (!Number.isFinite(requestedStart) || !Number.isFinite(requestedEnd) ||
+    requestedStart >= requestedEnd) {
+    throw new TypeError("Chart time range is invalid.");
+  }
+  const candles = input.candles.map((candle) => Object.freeze({
     openedAt: candle.openedAt,
+    closedAt: candle.closedAt,
+    exactHigh: candle.high,
+    exactLow: candle.low,
     open: rational(candle.open),
     high: rational(candle.high),
     low: rational(candle.low),
     close: rational(candle.close),
   }));
+  const figure = element("figure", "history-figure");
+  const caption = element(
+    "figcaption",
+    "chart-caption",
+    `${label} · ${candles.length} exact candles`,
+  );
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("class", "history-chart");
-  svg.setAttribute("viewBox", "0 0 640 200");
+  svg.setAttribute("viewBox", "0 0 640 210");
   svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", `${label}; ${candles.length} fixed candles.`);
+  svg.setAttribute(
+    "aria-label",
+    `${label}; ${candles.length} exact candles from ${input.requestedStart} to ${input.requestedEnd}; absent intervals are not filled and observations are not interpolated.`,
+  );
   const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
-  title.textContent = `${label}; ${candles.length} fixed candles`;
-  svg.append(title);
-  if (candles.length === 0) return svg;
+  title.textContent = `${label}; observed candles retain their actual time positions`;
+  const plotLeft = 24;
+  const plotRight = 616;
+  const plotTop = 12;
+  const plotHeight = 174;
+  const plotWidth = plotRight - plotLeft;
+  const valueTop = plotTop + 10;
+  const valueHeight = plotHeight - 20;
+  svg.append(
+    title,
+    svgRectangle(plotLeft, plotTop, plotWidth, plotHeight, "chart-frame"),
+    svgLine(plotLeft, plotTop + plotHeight / 2, plotRight, plotTop + plotHeight / 2, "chart-grid"),
+  );
+  const timeRange = element("div", "chart-time-range");
+  timeRange.append(
+    element("span", undefined, input.requestedStart),
+    element("span", undefined, input.requestedEnd),
+  );
+  figure.append(caption, svg, timeRange);
+  if (candles.length === 0) return figure;
   let minimum = candles[0]!.low;
   let maximum = candles[0]!.high;
+  let exactMinimum = candles[0]!.exactLow;
+  let exactMaximum = candles[0]!.exactHigh;
   for (const candle of candles.slice(1)) {
-    if (compareRational(candle.low, minimum) < 0) minimum = candle.low;
-    if (compareRational(candle.high, maximum) > 0) maximum = candle.high;
+    if (compareRational(candle.low, minimum) < 0) {
+      minimum = candle.low;
+      exactMinimum = candle.exactLow;
+    }
+    if (compareRational(candle.high, maximum) > 0) {
+      maximum = candle.high;
+      exactMaximum = candle.exactHigh;
+    }
   }
-  const plotTop = 10;
-  const plotHeight = 180;
-  const step = 620 / candles.length;
-  for (const [index, candle] of candles.entries()) {
-    const x = 10 + step * (index + 0.5);
-    const highY = plotTop + scaledY(candle.high, minimum, maximum, plotHeight);
-    const lowY = plotTop + scaledY(candle.low, minimum, maximum, plotHeight);
-    const openY = plotTop + scaledY(candle.open, minimum, maximum, plotHeight);
-    const closeY = plotTop + scaledY(candle.close, minimum, maximum, plotHeight);
-    svg.append(
-      svgLine(x, highY, x, lowY, "candle-range"),
-      svgLine(x - Math.min(5, step / 3), openY, x, openY, "candle-open"),
-      svgLine(x, closeY, x + Math.min(5, step / 3), closeY, "candle-close"),
-    );
+  for (const candle of candles) {
+    const openedAt = Date.parse(candle.openedAt);
+    const closedAt = Date.parse(candle.closedAt);
+    if (
+      !Number.isFinite(openedAt) ||
+      !Number.isFinite(closedAt) ||
+      openedAt < requestedStart ||
+      closedAt <= openedAt ||
+      closedAt > requestedEnd
+    ) throw new TypeError("Chart candle time is invalid.");
+    const midpoint = openedAt + (closedAt - openedAt) / 2;
+    const x = plotLeft + (midpoint - requestedStart) / (requestedEnd - requestedStart) * plotWidth;
+    const highY = valueTop + scaledY(candle.high, minimum, maximum, valueHeight);
+    const lowY = valueTop + scaledY(candle.low, minimum, maximum, valueHeight);
+    const openY = valueTop + scaledY(candle.open, minimum, maximum, valueHeight);
+    const closeY = valueTop + scaledY(candle.close, minimum, maximum, valueHeight);
+    const mark = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    mark.setAttribute("class", "candle-mark");
+    mark.setAttribute("data-chart-x", String(x));
+    mark.setAttribute("data-opened-at", candle.openedAt);
+    mark.setAttribute("data-closed-at", candle.closedAt);
+    if (compareRational(candle.low, candle.high) === 0) {
+      mark.append(svgCircle(x, openY, 4, "candle-point"));
+    } else {
+      mark.append(
+        svgLine(x, highY, x, lowY, "candle-range"),
+        svgLine(x - 5, openY, x, openY, "candle-open"),
+        svgLine(x, closeY, x + 5, closeY, "candle-close"),
+      );
+    }
+    svg.append(mark);
   }
-  return svg;
+  const priceRange = element(
+    "p",
+    "chart-price-range",
+    `Observed range ${exactRationalText(exactMinimum)} to ${exactRationalText(exactMaximum)}`,
+  );
+  figure.append(priceRange);
+  return figure;
 };
 
 type EvidenceStatus = "current" | "stale" | "partial" | "unavailable";
@@ -187,13 +335,20 @@ const referenceStatusLabels = Object.freeze({
   unavailable: "Unavailable",
 } as const);
 
-const referenceWarningLabels = Object.freeze({
-  no_trade_volume: "Trade volume is not available from this reference feed.",
-  partial_history: "The available history does not cover the complete requested window.",
-  reference_price_not_trade_price: "This reference price is not a trade or executable quote.",
-  sequencer_status_unavailable: "Sequencer status is not available from the current sources.",
-  source_listing_not_revalidated: "The source listing was not revalidated during this read.",
-} satisfies Readonly<Record<ReferenceMarketWarningCode, string>>);
+const semanticMeaning = <Code extends string>(
+  definitions: readonly Readonly<{ code: Code; meaning: string }>[],
+  code: Code,
+): string => {
+  const definition = definitions.find((candidate) => candidate.code === code);
+  if (definition === undefined) throw new TypeError("Presentation meaning is not registered.");
+  return definition.meaning;
+};
+
+const referenceWarningLabel = (code: ReferenceMarketWarningCode): string =>
+  semanticMeaning(referenceMarketWarningDefinitions, code);
+
+const stockTokenLimitationLabel = (code: StockTokenMarketLimitationCode): string =>
+  semanticMeaning(stockTokenMarketLimitationDefinitions, code);
 
 const referenceHistoryLimitationLabels = Object.freeze({
   source_history_not_exhaustive: "The source history is not exhaustive.",
@@ -282,12 +437,11 @@ const tokenScopeLimitations = getCapabilityDefinitionSnapshot(
   tokenInspectCapability,
 ).staticScopeExclusions.map((value) => value.message);
 
-const appendNotices = (
-  output: DocumentFragment,
+const noticeSection = (
   heading: "Warnings" | "Limitations",
   values: readonly string[],
-): void => {
-  if (values.length === 0) return;
+): HTMLElement | undefined => {
+  if (values.length === 0) return undefined;
   const region = element("section", heading === "Warnings" ? "warning-group" : "limitation-group");
   region.append(element("h2", "section-title", heading));
   const list = element("ul", heading === "Warnings" ? "warning-list" : "limitation-list");
@@ -295,11 +449,44 @@ const appendNotices = (
     list.append(element("li", heading === "Warnings" ? "warning-item" : "limitation-item", value));
   }
   region.append(list);
-  output.append(region);
+  return region;
+};
+
+const appendNotices = (
+  output: DocumentFragment,
+  heading: "Warnings" | "Limitations",
+  values: readonly string[],
+): void => {
+  const region = noticeSection(heading, values);
+  if (region !== undefined) output.append(region);
 };
 
 const appendWarnings = (output: DocumentFragment, warnings: readonly string[]): void => {
   appendNotices(output, "Warnings", warnings);
+};
+
+const disclosure = (
+  label: string,
+  content: readonly HTMLElement[],
+): HTMLDetailsElement => {
+  const details = element("details", "disclosure");
+  details.append(element("summary", "disclosure-label", label), ...content);
+  return details;
+};
+
+const deferredDisclosure = (
+  label: string,
+  content: () => readonly HTMLElement[],
+): HTMLDetailsElement => {
+  const details = element("details", "disclosure");
+  details.append(element("summary", "disclosure-label", label));
+  const materialize = (): void => {
+    if (!details.open) return;
+    details.append(...content());
+    details.removeEventListener("toggle", materialize);
+  };
+  details.addEventListener("toggle", materialize);
+  return details;
 };
 
 const appendCapabilityContext = <Data>(
@@ -318,9 +505,12 @@ const appendCapabilityContext = <Data>(
   appendNotices(output, "Limitations", limitations);
 };
 
-const historyValues = (candles: readonly ReferenceCandle[]): HTMLTableElement => {
+const historyValues = (
+  candles: readonly ExactCandle[],
+  captionText = "Exact candle values",
+): HTMLTableElement => {
   const table = element("table", "history-values");
-  const caption = element("caption", "section-title", "Exact candle values");
+  const caption = element("caption", "section-title", captionText);
   const head = element("thead");
   const headingRow = element("tr");
   for (const label of ["Opened", "Closed", "Open", "High", "Low", "Close"] as const) {
@@ -434,7 +624,7 @@ const renderReferencePrice = (value: ReferencePriceSuccess): DocumentFragment =>
       ? [["Reason", "The required source observations are not all current."] as const]
       : []),
   ]));
-  appendWarnings(output, value.warnings.map((warning) => referenceWarningLabels[warning]));
+  appendWarnings(output, value.warnings.map(referenceWarningLabel));
   return output;
 };
 
@@ -446,16 +636,115 @@ const renderReferenceHistory = (value: ReferenceHistorySuccess): DocumentFragmen
     ["Status", referenceStatusLabels[value.status], statusFor(value.status)],
     ["Window", value.window],
     ["Candles", String(value.candles.length)],
-    ["Empty intervals", String(value.coverage.emptyBucketStarts.length)],
   ]));
-  output.append(historyChart(value.candles, `${label} reference history`));
-  if (value.candles.length > 0) output.append(historyValues(value.candles));
-  appendWarnings(output, value.warnings.map((warning) => referenceWarningLabels[warning]));
+  const series = referenceCandleSeries(value);
+  output.append(historyChart(series, `${label} reference history`));
+  if (value.candles.length > 0) {
+    output.append(deferredDisclosure("Exact candle values", () => [historyValues(series.candles)]));
+  }
+  appendWarnings(output, value.warnings.map(referenceWarningLabel));
   appendNotices(
     output,
     "Limitations",
     value.coverage.limitations.map((limitation) => referenceHistoryLimitationLabels[limitation]),
   );
+  return output;
+};
+
+const renderStockTokenMarket = (value: StockTokenMarketResult): DocumentFragment => {
+  const output = document.createDocumentFragment();
+  if (value.status === "unavailable") {
+    const officialAssetFields: readonly SummaryField[] = "officialAsset" in value
+      ? [
+          ["Name", value.officialAsset.member.sourceName ?? value.symbol],
+          ["Contract", value.officialAsset.member.contractAddress],
+        ]
+      : [];
+    output.append(summary([
+      ["Stock Token", value.symbol],
+      ...officialAssetFields,
+      ["Status", "Unavailable", "unavailable"],
+      ["Window", value.window],
+      ["Reason", stockTokenMarketUnavailableReasonLabel(value.reason)],
+    ]));
+    return output;
+  }
+
+  const label = value.officialAsset.member.sourceName ?? value.mapping.disposition.asset.name;
+  const priceStatus = value.price.status === "current" ? "Current" : "Last observed";
+  output.append(summary([
+    ["Stock Token", `${label} · ${value.symbol}`],
+    ["Reference value (USD)", exactRationalText(value.price.value)],
+    ["Reference status", priceStatus, value.price.status === "current" ? "current" : "stale"],
+    ["Observed at", value.price.source.readEvidence.observedAt],
+    ["Window", value.window],
+  ]));
+  output.append(element(
+    "p",
+    "supporting-copy",
+    "The Chainlink USD reference value and Uniswap V4 USDG executions are separate and are not converted or merged.",
+  ));
+
+  output.append(element("h2", "section-title", "Executed trades in USDG"));
+  if (value.execution.status === "unavailable") {
+    output.append(summary([
+      ["Status", "Unavailable", "unavailable"],
+      ["Reason", stockTokenExecutionUnavailableReasonLabel(value.execution.reason)],
+    ]));
+  } else {
+    const latestExecution = value.execution.candles.at(-1);
+    const executionStatus = value.execution.freshness === "stale"
+      ? "stale" as const
+      : value.execution.coverage.status === "partial" ? "partial" as const : "current" as const;
+    const executionSeries = executionCandleSeries(value.execution);
+    output.append(summary([
+      ["Status", value.execution.freshness === "stale" ? "Stale" :
+        value.execution.coverage.status === "partial" ? "Partial coverage" : "Current",
+      executionStatus],
+      ["One-minute candles", String(value.execution.candles.length)],
+      ["Latest exact close", latestExecution === undefined
+        ? "No executed trade in the covered period"
+        : `${exactRationalText(latestExecution.close)} USDG`],
+      ...(latestExecution === undefined
+        ? []
+        : [["Latest candle", latestExecution.intervalEnd] as const]),
+    ]));
+    output.append(historyChart(executionSeries, `${label} executed trades in USDG`));
+    if (executionSeries.candles.length > 0) {
+      output.append(deferredDisclosure("Exact executed-trade candles", () => [
+        historyValues(executionSeries.candles, "Exact executed-trade candle values in USDG"),
+      ]));
+    }
+  }
+
+  output.append(element("h2", "section-title", "Chainlink reference history in USD"));
+  const referenceSeries = referenceCandleSeries(value.history);
+  output.append(summary([
+    ["Status", value.history.status === "partial" ? "Partial history" : "Unavailable",
+      value.history.status],
+    ["Observed candles", String(value.history.candles.length)],
+  ]));
+  output.append(historyChart(referenceSeries, `${label} Chainlink reference history in USD`));
+  if (referenceSeries.candles.length > 0) {
+    output.append(deferredDisclosure("Exact reference candles", () => [
+      historyValues(referenceSeries.candles, "Exact Chainlink reference candle values in USD"),
+    ]));
+  }
+
+  const warnings = value.warnings.map(referenceWarningLabel);
+  const limitations = [
+    ...value.limitations.map(stockTokenLimitationLabel),
+    ...(value.execution.status === "available"
+      ? value.execution.coverage.limitations.map(stockTokenExecutionLimitationLabel)
+      : []),
+  ];
+  const diagnosticSections = [
+    noticeSection("Warnings", warnings),
+    noticeSection("Limitations", limitations),
+  ].filter((section): section is HTMLElement => section !== undefined);
+  if (diagnosticSections.length > 0) {
+    output.append(disclosure("Data limitations", diagnosticSections));
+  }
   return output;
 };
 
@@ -748,6 +1037,7 @@ const rendererBindings = Object.freeze([
   bindRenderer(presentationContracts.contractAnalysis, renderContractAnalysis),
   bindRenderer(presentationContracts.referenceHistory, renderReferenceHistory),
   bindRenderer(presentationContracts.referencePrice, renderReferencePrice),
+  bindRenderer(presentationContracts.stockTokenMarket, renderStockTokenMarket),
   bindRenderer(presentationContracts.referenceWatchlist, renderWatchlist),
   bindRenderer(presentationContracts.referenceWatchlistOperation, renderReferenceWatchlistOperation),
   bindRenderer(presentationContracts.referenceWatchlistReview, renderReferenceWatchlistReview),

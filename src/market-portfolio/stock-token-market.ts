@@ -53,6 +53,11 @@ import {
   createDirectReferenceCandleSeries,
   type ReferenceCandleSeries,
 } from "./candles.js";
+import {
+  findStockTokenExecutionIndexAsset,
+  stockTokenExecutionSeriesSchema,
+  type StockTokenExecutionSeries,
+} from "./stock-token-execution-index.js";
 
 const canonicalStockTokenSymbolSchema = z.string()
   .min(1)
@@ -191,6 +196,7 @@ const availableStockTokenMarketResultSchema = jsonObject({
   oraclePaused: stockTokenOraclePauseObservationSchema,
   price: stockTokenPriceSchema,
   history: stockTokenHistorySchema,
+  execution: stockTokenExecutionSeriesSchema,
   warnings: z.array(z.enum(stockTokenMarketWarningCodes))
     .min(stockTokenMarketBaseWarnings.length)
     .max(stockTokenMarketWarningCodes.length),
@@ -318,6 +324,7 @@ const validateAvailableResult = (
     ...candle.closeSourcePointers,
   ]).map((pointer) => pointer.feedId);
   const interval = stockTokenHistoryInterval(value.window, value.block.blockTimestamp);
+  const executionAsset = findStockTokenExecutionIndexAsset(member.contractAddress);
   const expectedSeries = createDirectReferenceCandleSeries({
     feedId,
     window: value.window,
@@ -351,6 +358,12 @@ const validateAvailableResult = (
     value.history.candles.length > maximumCandles ||
     value.history.coverage.requestedStart !== interval.requestedStart ||
     value.history.coverage.requestedEnd !== interval.requestedEnd ||
+    value.execution.requestedStart !== interval.requestedStart ||
+    value.execution.requestedEnd !== interval.requestedEnd ||
+    (value.execution.status === "available" &&
+      (executionAsset === undefined || value.execution.source.poolId !== executionAsset.poolId)) ||
+    (value.execution.status === "unavailable" &&
+      ((value.execution.reason === "asset_not_indexed") !== (executionAsset === undefined))) ||
     value.history.sourceObservations.some((observation) =>
       observation.fact.feedId !== feedId) ||
     !sameCanonicalValue(value.history.coverage, expectedSeries.coverage) ||
@@ -587,6 +600,7 @@ export const createAvailableStockTokenMarketResult = (input: Readonly<{
   series: ReferenceCandleSeries;
   snapshot: ReferenceFeedCacheSnapshot;
   report: ReferenceHistoryTraversalReport;
+  execution: StockTokenExecutionSeries;
 }>): StockTokenMarketResult => {
   const sourceIsFresh = isReferenceObservationFresh(
     input.read.latest,
@@ -636,6 +650,7 @@ export const createAvailableStockTokenMarketResult = (input: Readonly<{
           candles: [],
           sourceObservations: [],
         },
+    execution: input.execution,
     warnings: [
       ...stockTokenMarketBaseWarnings,
       ...(historyAvailable ? ["partial_history" as const] : []),

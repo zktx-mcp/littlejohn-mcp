@@ -25,7 +25,7 @@ export type {
   ScaledUiAmount,
   Uint256Decimal,
 } from "./amounts.js";
-export { projectZodJsonSchema } from "./json-object.js";
+export { jsonObject, projectZodJsonSchema } from "./json-object.js";
 export {
   formatRationalForDisplay,
   scaleRawUnitPriceToTokenUnits,

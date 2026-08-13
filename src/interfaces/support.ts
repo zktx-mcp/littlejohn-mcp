@@ -84,7 +84,10 @@ const referenceMarketBindingAvailability = (
   binding: ReferenceMarketInterfaceBinding,
 ): CapabilityAvailabilityInput => createCapabilityAvailability({
   direct: "internal",
-  http: binding.action === "price" || binding.action === "history" || binding.action === "watchlist"
+  http: binding.action === "price" ||
+    binding.action === "history" ||
+    binding.action === "stockTokenMarket" ||
+    binding.action === "watchlist"
     ? "available"
     : "internal",
   mcp: "available",

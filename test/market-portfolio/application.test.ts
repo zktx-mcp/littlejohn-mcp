@@ -33,6 +33,7 @@ import {
   type ReferenceWatchlistSuccess,
 } from "../../src/core/index.js";
 import { ReferenceMarketApplication } from "../../src/market-portfolio/application.js";
+import { unavailableExecutionIndex } from "./execution-index-fixture.js";
 import { createReferenceHistory } from "../../src/market-portfolio/candles.js";
 import {
   createReferenceWatchlistReviewProjection,
@@ -363,6 +364,7 @@ const fixture = () => {
       readStored: () => undefined,
       close: async () => undefined,
     }),
+    stockTokenExecutionIndex: unavailableExecutionIndex,
     clock,
   });
   return {

@@ -47,6 +47,7 @@ const expectedCapabilityIds = Object.freeze([
 const expectedSemanticReadToolNames = Object.freeze([
   "market_get_reference_history",
   "market_get_reference_price",
+  "market_get_stock_token_market",
   "market_get_watchlist",
   "read_get_account_balance",
   "read_get_chain_status",
@@ -60,6 +61,7 @@ const expectedToolNames = Object.freeze([
   "account_list_assets",
   "market_get_reference_history",
   "market_get_reference_price",
+  "market_get_stock_token_market",
   "market_get_watchlist",
   "read_get_account_balance",
   "read_get_chain_status",
@@ -1797,6 +1799,53 @@ export const verifyPackagedIntegration = async (prepared) => {
       !Array.isArray(referenceHistory.structuredContent?.candles) ||
       referenceHistory.structuredContent.candles.length === 0
     ) throw new TypeError("Packaged reference history is invalid.");
+
+    const stockTokenMarket = await callSemanticRead(
+      firstMcp,
+      "market_get_stock_token_market",
+      { symbol: fakeRpc.stockTokenMarket.symbol, window: "1d" },
+    );
+    const stockTokenContent = canonicalSemanticToolContent(
+      stockTokenMarket,
+      "Packaged Stock Token market",
+    );
+    if (
+      stockTokenContent.status !== "available" ||
+      stockTokenContent.symbol !== fakeRpc.stockTokenMarket.symbol ||
+      stockTokenContent.officialAsset?.member?.contractAddress !==
+        fakeRpc.stockTokenMarket.tokenAddress ||
+      stockTokenContent.price?.status !== "current" ||
+      independentCanonicalJson(stockTokenContent.price?.value) !==
+        independentCanonicalJson(fakeRpc.stockTokenMarket.value) ||
+      stockTokenContent.price?.source?.fact?.feedId !== fakeRpc.stockTokenMarket.feedId ||
+      stockTokenContent.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
+      stockTokenContent.oraclePaused?.value !== false ||
+      stockTokenContent.history?.status !== "partial" ||
+      !Array.isArray(stockTokenContent.history?.candles) ||
+      stockTokenContent.history.candles.length === 0 ||
+      stockTokenContent.execution?.status !== "available" ||
+      stockTokenContent.execution.source?.quoteToken?.symbol !== "USDG" ||
+      stockTokenContent.execution.coverage?.status !== "partial" ||
+      !Array.isArray(stockTokenContent.execution.candles) ||
+      stockTokenContent.execution.candles.length !== 3 ||
+      stockTokenContent.execution.candles.some((candle) =>
+        candle.token !== fakeRpc.stockTokenMarket.tokenAddress ||
+        Date.parse(candle.intervalEnd) - Date.parse(candle.intervalStart) !== 60_000) ||
+      independentCanonicalJson(stockTokenContent.execution).toLowerCase().includes("github")
+    ) throw new TypeError("Packaged Stock Token market result is invalid.");
+    const stockTokenCli = await runCommand(process.execPath, [
+      resolve(prepared.installedPackageRoot, "dist/cli.js"),
+      "market",
+      "stock-token-market",
+      fakeRpc.stockTokenMarket.symbol,
+      "--window",
+      "1d",
+      "--json",
+    ], { cwd: prepared.installRoot, env: environment, output: "capture" });
+    if (
+      independentCanonicalJson(JSON.parse(stockTokenCli.stdout.toString("utf8"))) !==
+      independentCanonicalJson(stockTokenContent)
+    ) throw new TypeError("Packaged Stock Token CLI changed the canonical result.");
 
     const initialWatchlist = assertReferenceWatchlist(
       (await callSemanticRead(firstMcp, "market_get_watchlist")).structuredContent,

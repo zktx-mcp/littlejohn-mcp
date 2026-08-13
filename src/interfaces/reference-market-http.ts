@@ -37,7 +37,12 @@ export const dispatchReferenceMarketRead = async (
   value: unknown,
   signal?: AbortSignal,
 ): Promise<InterfaceInvocationResult> => {
-  if (binding.action !== "price" && binding.action !== "history" && binding.action !== "watchlist") {
+  if (
+    binding.action !== "price" &&
+    binding.action !== "history" &&
+    binding.action !== "stockTokenMarket" &&
+    binding.action !== "watchlist"
+  ) {
     throw new TypeError("Reference market binding is not a read.");
   }
   const admission = admitApplicationInput(binding.contract, value);
@@ -101,6 +106,11 @@ const publicReadDefinitions = (application: ReferenceMarketApplicationPort): rea
       path: referenceMarketInterfaceBindings.history.http.path,
       contract: referenceMarketInterfaceBindings.history.contract,
       invoke: (request, signal) => application.history(request, signal),
+    }),
+    readRoute({
+      path: referenceMarketInterfaceBindings.stockTokenMarket.http.path,
+      contract: referenceMarketInterfaceBindings.stockTokenMarket.contract,
+      invoke: (request, signal) => application.stockTokenMarket(request, signal),
     }),
     readRoute({
       path: referenceMarketInterfaceBindings.watchlist.http.path,

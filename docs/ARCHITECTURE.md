@@ -194,7 +194,9 @@ The current external integration classification is:
 | WalletConnect | Binding product transport | `docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture | `wallet` owns SDK adaptation, project-ID validation, required namespace settings, metadata, SDK options, lifecycle, and provider defaults | The wallet application factory constructs one `WalletConnectClientPort` from opaque configuration received through runtime composition; other modules receive wallet product ports |
 | Robinhood official-asset API | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority; `officialAssetSourceDefinition` and the registry source contract own the exact source identity, normalized observed-or-unavailable read result, evidence, and storage ports | `src/registry/official-assets.ts` owns request and response admission, endpoint consumption, transport behavior, deadlines, and operational limits | Runtime composition constructs one source client; registry synchronization consumes its value result and the product-owned store without an exception translation layer; replacing the membership source changes the binding evidence authority |
 | Robinhood StockFactory | Binding source authority | `docs/EVIDENCE_POLICY.md` owns the independent UID-to-token-address proof meaning; `stockFactoryAdmissionManifest` and the registry verification contract own the admitted deployment identity and identity-bearing verification result | `src/registry/stock-factory.ts` owns StockFactory call and identity verification behind the pinned-block `OfficialAssetChainReadPort` in `src/chain/official-assets.ts`; common RPC configuration remains with the chain transport | The chain application constructs the port and preserves the same result contract for single and batch reads used by account-assets and token inspection; changing verification internals preserves the admitted identity, while changing the deployment or source owner changes the manifest and evidence authority |
-| Chainlink Data Feeds | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority and evidence meaning; `referenceMarketManifest` owns the admitted directory identity and exact feed mappings; `docs/NUMERIC_POLICY.md` owns reference-price, cross-price, and candle meaning; `market-portfolio` and the canonical reference-market application contracts own admitted price and history result lifecycles | `src/chain/reference-market.ts` owns Data Feed call encoding, round admission, response validation, and batch fallback behind `ReferenceMarketChainReadPort`; common RPC configuration remains with the chain transport | The chain application constructs the port and runtime composition passes it to `market-portfolio`; changing a mapping changes the manifest, and replacing Chainlink with another source owner requires an accepted evidence or product-policy change |
+| Chainlink Data Feeds | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority and evidence meaning; `referenceMarketManifest` owns the three generic pair mappings and `stockTokenReferenceMarketCatalog` owns the generated Stock Token mappings; `docs/NUMERIC_POLICY.md` owns reference-price, cross-price, and candle meaning; `market-portfolio` and the canonical reference-market application contracts own admitted price and history result lifecycles | `src/chain/reference-market.ts` owns Data Feed call encoding, round admission, response validation, and batch fallback behind `ReferenceMarketChainReadPort`; common RPC configuration remains with the chain transport | The chain application constructs the port and runtime composition passes it to `market-portfolio`; changing a mapping changes its owning manifest or generated catalog, and replacing Chainlink with another source owner requires an accepted evidence or product-policy change |
+| Robinhood Uniswap V4 PoolManager events | Binding source authority | `docs/EVIDENCE_POLICY.md` owns executed-trade evidence meaning; `stockTokenExecutionIndexRegistry` owns the exact PoolManager, PoolKey, Pool ID, USDG, finality, and event identity; `docs/NUMERIC_POLICY.md` owns exact execution-candle meaning | The separate project index owns bounded finalized log collection, exact decoding, cursor, repair, one-minute candle construction, and artifact publication; Little John has no log reader or candle builder | Little John consumes only the versioned provider-neutral execution artifact; changing collection internals preserves its exact contract, while changing the deployment, pool identity, event, quote asset, or numeric construction changes the binding source contract and does not imply Uniswap transaction support |
+| GitHub Releases Stock Token execution artifacts | Replaceable implementation provider | `market-portfolio` owns `StockTokenExecutionIndexReadPort`, the versioned artifact admission, normalized series, availability outcomes, limits, and lifecycle; finalized PoolManager events remain the semantic source | `src/market-portfolio/github-stock-token-execution-index.ts` privately owns the repository, release and asset requests, response admission, deadlines, byte limits, and concurrency | Runtime composition constructs one adapter and passes only the provider-neutral read port; another store may replace GitHub only by returning the unchanged admitted artifact and result contract |
 | Sourcify API v2 | Replaceable implementation provider | `intelligence` owns `ContractSourceVerificationPort`, its normalized results and failures, evidence requirements, and lifecycle | `src/intelligence/sourcify.ts` owns the origin, path, request and response admission, deadline, response-size and concurrency limits, cleanup, and provider identity | Runtime composition constructs one Sourcify adapter and passes only `ContractSourceVerificationPort` to the shared contract-analysis process |
 | Uniswap V2 | Binding protocol identity | `docs/PROTOCOL_ADAPTERS.md` and `src/protocols/uniswap-v2` own the exact V2 package, deployment records, native mapping, and capability registration; `docs/NUMERIC_POLICY.md` owns numeric meaning and `docs/EVIDENCE_POLICY.md` owns evidence meaning | `src/protocols/uniswap-v2/sdk.ts` owns the pinned Uniswap SDK loading and admission boundary; the package owns immutable deployment and route-asset records | Runtime composition constructs the statically registered V2 package once and passes only its canonical quote binding to interfaces |
 
@@ -886,6 +888,17 @@ complete current official-asset observation and the generated disposition. It
 has no directory client, mapping override, alias table, or second Robinhood
 adapter.
 
+Stock Token market reads additionally consume one provider-neutral execution
+index port after the canonical Chainlink read. The port admits one exact
+versioned state and its digest-bound day artifacts, selects only candles for
+the registry-owned token and pool, and returns their source coverage and
+availability without exposing provider identities. The current GitHub adapter
+is stateless and owns only bounded artifact carriage. Runtime contains no Swap
+log reader, PoolKey derivation, cursor, repair process, candle builder, or local
+execution-history store. An unavailable, stale, inconsistent, retained-out, or
+capacity-limited execution series leaves the independently admitted Chainlink
+reference result unchanged.
+
 Each latest, history, or Stock Token market read enters one chain invocation,
 resolves one opaque canonical block, and performs every dependent feed,
 StockFactory, and oracle-pause read through that exact authority. One shared
@@ -1314,9 +1327,9 @@ state may optimize display but are not replay authority.
   available on the connection. App metadata never replaces the admitted MCP
   result.
 - Immutable App renderers exist only for account assets, reference price,
-  fixed reference history, reference-pair watchlist, contract inspection,
-  token inspection, Wallet connection, token selection, and token-selection
-  list.
+  fixed reference history, Stock Token market, reference-pair watchlist,
+  contract inspection, token inspection, Wallet connection, token selection,
+  and token-selection list.
   Another canonical read remains MCP text and structured output plus CLI where
   declared; it does not enter a generic JSON View.
 - Each immutable card presents only the canonical result correlated with its
@@ -1326,6 +1339,12 @@ state may optimize display but are not replay authority.
 - Fixed reference history may render accessible semantic HTML and SVG from its
   exact admitted candles and empty intervals. It never performs another price
   or history read and never treats chart coordinates as canonical values.
+- A Stock Token market card renders the admitted Chainlink USD reference
+  series and Uniswap V4 USDG execution series as separate labeled charts
+  through the same exact-candle projection. It never converts, merges,
+  interpolates, refreshes, or reconstructs either series. Exact values remain
+  available in an on-demand local disclosure, while provider diagnostics and
+  machine correlation fields remain in the canonical result.
 - An immutable Review card presents Wallet connection or disconnection,
   token-selection addition or removal, or reference-watchlist addition,
   removal, or reordering. Constructing, displaying, dismissing, or displaying

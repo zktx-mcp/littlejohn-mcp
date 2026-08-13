@@ -64,6 +64,7 @@ export const publicInspectionPaths = Object.freeze({
 export const referenceMarketPublicRoutes = Object.freeze({
   priceQueries: "/api/v1/reference-markets/price-queries",
   historyQueries: "/api/v1/reference-markets/history-queries",
+  stockTokenMarketQueries: "/api/v1/stock-token-markets/queries",
   watchlistQueries: "/api/v1/reference-market-watchlist/queries",
 } as const);
 
@@ -271,7 +272,7 @@ export const capabilityCatalogInterface = Object.freeze({
 });
 
 export interface ReferenceMarketInterfaceBinding {
-  readonly action: "price" | "history" | "watchlist";
+  readonly action: "price" | "history" | "stockTokenMarket" | "watchlist";
   readonly contract: AnyReferenceMarketApplicationContract;
   readonly responseAuthority: CanonicalDispatchAuthority;
   readonly http: Readonly<{ method: "POST"; path: string }>;
@@ -326,6 +327,22 @@ export const referenceMarketInterfaceBindings = Object.freeze({
       domain: "market",
       command: "history",
       argumentSyntax: "<pair-id> --window <1d|7d|30d> [--json]",
+    },
+  }),
+  stockTokenMarket: referenceMarketBinding({
+    action: "stockTokenMarket",
+    contract: referenceMarketApplicationContracts.stockTokenMarket,
+    responseAuthority: referenceMarketResponseAuthority,
+    http: { method: "POST", path: referenceMarketPublicRoutes.stockTokenMarketQueries },
+    mcp: {
+      name: "market_get_stock_token_market",
+      description: "Read one official Stock Token USD reference value and distinct bounded USDG execution history.",
+      annotations: readAnnotations(true),
+    },
+    cli: {
+      domain: "market",
+      command: "stock-token-market",
+      argumentSyntax: "<symbol> [--window <1d|7d|30d>] [--json]",
     },
   }),
   watchlist: referenceMarketBinding({
