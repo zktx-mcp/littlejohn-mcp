@@ -360,6 +360,13 @@ environment aggregation may invoke that parser and carry the resulting opaque
 validated configuration to composition, but it does not copy provider defaults,
 schemas, limits, or SDK settings into a second configuration authority.
 
+For an optional adapter construction setting, exact `undefined` is the only
+omitted value. Every other supplied value, including `null`, is present input
+and must pass the setting owner's type and bound admission before the adapter
+publishes a port or starts external work. A setting that admits `null` declares
+and validates it explicitly. This admission rule shares no implementation or
+lifecycle between adapters.
+
 A repository-owned configuration-integrity mechanism may consume one canonical
 identity projection produced by the configuration owner when it must bind that
 configuration to an existing MAC or local authority. The configuration owner

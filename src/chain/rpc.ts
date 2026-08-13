@@ -337,7 +337,7 @@ const serializeRequest = (
 };
 
 const parseBoundedInteger = (value: number | undefined, fallback: number, maximum: number, name: string): number => {
-  const candidate = value ?? fallback;
+  const candidate = value === undefined ? fallback : value;
   if (!Number.isSafeInteger(candidate) || candidate < 1 || candidate > maximum) {
     throw new TypeError(`${name} is invalid.`);
   }
@@ -534,32 +534,35 @@ export const createBoundedRpcRequester = (
   options: BoundedRpcRequesterOptions,
 ): RpcRequester => {
   const { fetchUrl, authorization } = admitRpcTransportTarget(options.url);
-  const fetchFn = options.fetch ?? fetch;
+  const fetchFn = options.fetch === undefined ? fetch : options.fetch;
   if (typeof fetchFn !== "function") throw new TypeError("RPC fetch implementation is unavailable.");
   const timeoutMs = parseBoundedInteger(options.timeoutMs, rpcRequestTimeoutMs, rpcRequestTimeoutMs, "RPC timeout");
 
   const sendBody = async (body: string, signal: AbortSignal): Promise<string> => {
     if (!(signal instanceof AbortSignal)) throw new TypeError("RPC abort signal is invalid.");
     if (signal.aborted) throw new ChainRpcError("request_aborted");
-      if (activeExternalRpcRequests >= rpcConcurrencyLimit) throw new ChainRpcError("runtime_busy");
-      activeExternalRpcRequests += 1;
-
-      const controller = new AbortController();
-      let timedOut = false;
-      const onCallerAbort = (): void => controller.abort();
+    const controller = new AbortController();
+    let callerAbortListenerOwned = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    const onCallerAbort = (): void => controller.abort();
+    if (activeExternalRpcRequests >= rpcConcurrencyLimit) throw new ChainRpcError("runtime_busy");
+    activeExternalRpcRequests += 1;
+    try {
       signal.addEventListener("abort", onCallerAbort, { once: true });
-      const timeout = setTimeout(() => {
+      callerAbortListenerOwned = true;
+      timeout = setTimeout(() => {
         timedOut = true;
         controller.abort();
       }, timeoutMs);
       timeout.unref();
 
+      const headers = new Headers({
+        accept: "application/json",
+        "content-type": "application/json",
+      });
+      if (authorization !== undefined) headers.set("authorization", authorization);
       try {
-        const headers = new Headers({
-          accept: "application/json",
-          "content-type": "application/json",
-        });
-        if (authorization !== undefined) headers.set("authorization", authorization);
         const response = await raceWithAbort(
           fetchFn(fetchUrl, {
             method: "POST",
@@ -585,11 +588,18 @@ export const createBoundedRpcRequester = (
         if (signal.aborted) throw new ChainRpcError("request_aborted");
         if (timedOut) throw new ChainRpcError("chain_response_unavailable");
         throw normalizeChainRpcError(error);
-      } finally {
-        clearTimeout(timeout);
-        signal.removeEventListener("abort", onCallerAbort);
-        activeExternalRpcRequests -= 1;
       }
+    } finally {
+      try {
+        if (timeout !== undefined) clearTimeout(timeout);
+      } finally {
+        try {
+          if (callerAbortListenerOwned) signal.removeEventListener("abort", onCallerAbort);
+        } finally {
+          activeExternalRpcRequests -= 1;
+        }
+      }
+    }
   };
 
   const requester: RpcRequester = {

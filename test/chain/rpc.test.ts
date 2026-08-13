@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   canonicalBlockReference,
@@ -68,6 +68,11 @@ const expectExecutionRevert = async (promise: Promise<unknown>): Promise<unknown
 };
 
 describe("bounded RPC requester", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
   it("sends one unbatched JSON-RPC request with the caller abort signal", async () => {
     const fetchFn = vi.fn(fetchOf(async (input, init) => {
       expect(input).toBe("https://rpc.example/read?network=mainnet");
@@ -236,6 +241,43 @@ describe("bounded RPC requester", () => {
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
+  it("admits only exact undefined as an omitted requester setting", async () => {
+    const fetchFn = vi.fn(fetchOf(async (_input, init) => resultResponse(init, "0x1237")));
+    const createWithUnknownSettings = createBoundedRpcRequester as unknown as (options: {
+      readonly url: string;
+      readonly fetch?: unknown;
+      readonly timeoutMs?: unknown;
+    }) => RpcRequester;
+    vi.stubGlobal("fetch", fetchFn);
+    let requester: RpcRequester;
+    try {
+      requester = createWithUnknownSettings({
+        url: "https://rpc.example",
+        fetch: undefined,
+        timeoutMs: undefined,
+      });
+      expect(() => createWithUnknownSettings({
+        url: "https://rpc.example",
+        fetch: null,
+      })).toThrow("RPC fetch implementation is unavailable.");
+      expect(() => createWithUnknownSettings({
+        url: "https://rpc.example",
+        timeoutMs: null,
+      })).toThrow("RPC timeout is invalid.");
+      expect(() => createWithUnknownSettings({
+        url: "https://rpc.example",
+        fetch: "not-a-function",
+      })).toThrow("RPC fetch implementation is unavailable.");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    await expect(
+      requester.request("eth_chainId", [], new AbortController().signal),
+    ).resolves.toBe("0x1237");
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects the seventeenth process-wide external request without starting it", async () => {
     const completions: Array<Readonly<{ init: RequestInit | undefined; resolve: (response: Response) => void }>> = [];
     const fetchFn = vi.fn(fetchOf(async (_input, init) =>
@@ -253,6 +295,95 @@ describe("bounded RPC requester", () => {
       "runtime_busy",
     );
     expect(fetchFn).toHaveBeenCalledTimes(rpcConcurrencyLimit);
+
+    for (const completion of completions) completion.resolve(resultResponse(completion.init, "0x1237"));
+    await expect(Promise.all(active)).resolves.toEqual(
+      Array.from({ length: rpcConcurrencyLimit }, () => "0x1237"),
+    );
+  });
+
+  it("releases every acquired request resource when local setup fails", async () => {
+    const setupFetch = vi.fn(fetchOf(async (_input, init) => resultResponse(init, "0x1237")));
+    const requester = createBoundedRpcRequester({ url: "https://rpc.example", fetch: setupFetch });
+
+    {
+      const failure = new Error("controller setup failure");
+      const callerSignal = new AbortController().signal;
+      vi.stubGlobal("AbortController", class {
+        constructor() {
+          throw failure;
+        }
+      });
+      const pending = requester.request("eth_chainId", [], callerSignal);
+      vi.unstubAllGlobals();
+      await expect(pending).rejects.toBe(failure);
+    }
+
+    {
+      const failure = new Error("listener setup failure");
+      const callerSignal = new AbortController().signal;
+      const addListener = vi.spyOn(AbortSignal.prototype, "addEventListener")
+        .mockImplementation(() => { throw failure; });
+      const removeListener = vi.spyOn(AbortSignal.prototype, "removeEventListener")
+        .mockImplementation(() => undefined);
+      const pending = requester.request("eth_chainId", [], callerSignal);
+      expect(addListener).toHaveBeenCalledTimes(1);
+      expect(removeListener).not.toHaveBeenCalled();
+      vi.restoreAllMocks();
+      await expect(pending).rejects.toBe(failure);
+    }
+
+    {
+      const failure = new Error("timer setup failure");
+      const callerSignal = new AbortController().signal;
+      const addListener = vi.spyOn(AbortSignal.prototype, "addEventListener");
+      const removeListener = vi.spyOn(AbortSignal.prototype, "removeEventListener");
+      vi.stubGlobal("setTimeout", vi.fn(() => { throw failure; }));
+      const pending = requester.request("eth_chainId", [], callerSignal);
+      expect(addListener).toHaveBeenCalledTimes(1);
+      expect(removeListener).toHaveBeenCalledTimes(1);
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+      await expect(pending).rejects.toBe(failure);
+    }
+
+    {
+      const failure = new Error("timer unref failure");
+      const callerSignal = new AbortController().signal;
+      const fakeTimeout = Object.freeze({ unref: () => { throw failure; } });
+      const clearTimeoutFn = vi.fn();
+      const addListener = vi.spyOn(AbortSignal.prototype, "addEventListener");
+      const removeListener = vi.spyOn(AbortSignal.prototype, "removeEventListener");
+      vi.stubGlobal("setTimeout", vi.fn(() => fakeTimeout));
+      vi.stubGlobal("clearTimeout", clearTimeoutFn);
+      const pending = requester.request("eth_chainId", [], callerSignal);
+      expect(addListener).toHaveBeenCalledTimes(1);
+      expect(removeListener).toHaveBeenCalledTimes(1);
+      expect(clearTimeoutFn).toHaveBeenCalledTimes(1);
+      expect(clearTimeoutFn).toHaveBeenCalledWith(fakeTimeout);
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+      await expect(pending).rejects.toBe(failure);
+    }
+
+    expect(setupFetch).not.toHaveBeenCalled();
+
+    const completions: Array<Readonly<{ init: RequestInit | undefined; resolve: (response: Response) => void }>> = [];
+    const capacityFetch = vi.fn(fetchOf(async (_input, init) =>
+      await new Promise<Response>((resolve) => completions.push({ init, resolve }))
+    ));
+    const capacityRequester = createBoundedRpcRequester({
+      url: "https://rpc.example",
+      fetch: capacityFetch,
+    });
+    const active = Array.from({ length: rpcConcurrencyLimit }, () =>
+      capacityRequester.request("eth_chainId", [], new AbortController().signal)
+    );
+    await vi.waitFor(() => expect(capacityFetch).toHaveBeenCalledTimes(rpcConcurrencyLimit));
+    await expectCode(
+      capacityRequester.request("eth_chainId", [], new AbortController().signal),
+      "runtime_busy",
+    );
 
     for (const completion of completions) completion.resolve(resultResponse(completion.init, "0x1237"));
     await expect(Promise.all(active)).resolves.toEqual(
