@@ -52,6 +52,54 @@ describe("chain invocation lifecycle", () => {
     await expect(lifecycle.close()).resolves.toBeUndefined();
   });
 
+  it("publishes admitted work and one close completion before synchronous reentry", async () => {
+    const owner = new AbortController();
+    const removeListener = vi.spyOn(owner.signal, "removeEventListener");
+    const lifecycle = createChainInvocationLifecycle(owner.signal);
+    let releaseEffect!: () => void;
+    const effectPending = new Promise<void>((resolve) => { releaseEffect = resolve; });
+    let initiatingClose!: Promise<void>;
+    let reentrantClose!: Promise<void>;
+    let abortedBeforeAwait = false;
+    let effectDone = false;
+
+    const invocation = lifecycle.run(new AbortController().signal, async (context) => {
+      context.signal.addEventListener("abort", () => {
+        reentrantClose = lifecycle.close();
+      }, { once: true });
+      initiatingClose = lifecycle.close();
+      abortedBeforeAwait = context.signal.aborted;
+      await effectPending;
+      effectDone = true;
+      return "late result";
+    });
+    const concurrentClose = lifecycle.close();
+
+    expect(reentrantClose).toBe(initiatingClose);
+    expect(concurrentClose).toBe(initiatingClose);
+    expect(abortedBeforeAwait).toBe(true);
+    expect(removeListener).toHaveBeenCalledTimes(1);
+
+    let closeSettled = false;
+    void initiatingClose.then(
+      () => { closeSettled = true; },
+      () => { closeSettled = true; },
+    );
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    expect(closeSettled).toBe(false);
+    expect(effectDone).toBe(false);
+
+    releaseEffect();
+    let failure: unknown;
+    try { await invocation; }
+    catch (error) { failure = error; }
+    expect(getChainInvocationStopReason(failure)).toBe("application_closed");
+    await expect(initiatingClose).resolves.toBeUndefined();
+    expect(effectDone).toBe(true);
+    expect(lifecycle.close()).toBe(initiatingClose);
+    expect(removeListener).toHaveBeenCalledTimes(1);
+  });
+
   it("joins an exact nested signal under one deadline and drain, then rejects foreign and stale context use", async () => {
     vi.useFakeTimers();
     const owner = new AbortController();

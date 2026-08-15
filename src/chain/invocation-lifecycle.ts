@@ -110,28 +110,37 @@ export const createChainInvocationLifecycle = (
     };
     contextRecords.set(context, record);
     signalRecords.set(signal, record);
-    const invocation = (async (): Promise<Result> => {
-      try {
-        const initialStop = stopReason();
-        if (initialStop !== undefined) throw createChainInvocationStoppedError(initialStop);
-        const result = await effect(context);
-        const finalStop = stopReason();
-        if (finalStop !== undefined) throw createChainInvocationStoppedError(finalStop);
-        return result;
-      } catch (error) {
-        const reason = stopReason();
-        if (reason !== undefined) throw createChainInvocationStoppedError(reason);
-        throw error;
-      } finally {
-        record.active = false;
-        clearTimeout(timer);
-      }
-    })();
+    let resolveInvocation!: (result: Result) => void;
+    let rejectInvocation!: (reason: unknown) => void;
+    const invocation = new Promise<Result>((resolve, reject) => {
+      resolveInvocation = resolve;
+      rejectInvocation = reject;
+    });
     active.add(invocation);
     void invocation.then(
       () => active.delete(invocation),
       () => active.delete(invocation),
     );
+    const startInvocation = (): void => {
+      void (async (): Promise<Result> => {
+        try {
+          const initialStop = stopReason();
+          if (initialStop !== undefined) throw createChainInvocationStoppedError(initialStop);
+          const result = await effect(context);
+          const finalStop = stopReason();
+          if (finalStop !== undefined) throw createChainInvocationStoppedError(finalStop);
+          return result;
+        } catch (error) {
+          const reason = stopReason();
+          if (reason !== undefined) throw createChainInvocationStoppedError(reason);
+          throw error;
+        } finally {
+          record.active = false;
+          clearTimeout(timer);
+        }
+      })().then(resolveInvocation, rejectInvocation);
+    };
+    startInvocation();
     return invocation;
   };
 
@@ -148,10 +157,21 @@ export const createChainInvocationLifecycle = (
     },
     close(): Promise<void> {
       if (closePromise !== undefined) return closePromise;
+      let resolveClose!: () => void;
+      let rejectClose!: (reason: unknown) => void;
+      closePromise = new Promise<void>((resolve, reject) => {
+        resolveClose = resolve;
+        rejectClose = reject;
+      });
       closed = true;
-      applicationAbort.abort();
-      ownerSignal.removeEventListener("abort", abortForOwner);
-      closePromise = Promise.allSettled([...active]).then(() => undefined);
+      const startClose = (): void => {
+        void (async (): Promise<void> => {
+          applicationAbort.abort();
+          ownerSignal.removeEventListener("abort", abortForOwner);
+          await Promise.allSettled([...active]);
+        })().then(resolveClose, rejectClose);
+      };
+      startClose();
       return closePromise;
     },
   });
