@@ -70,7 +70,7 @@ export const decodeStockTokenExecutionIndexState = (
   if (
     state.pair.pairId !== expectedPairId ||
     (expectedSequence !== undefined && state.sequence !== expectedSequence)
-  ) throw new TypeError("Execution-index state does not match its selected carrier.");
+  ) throw new TypeError("Execution-index state does not match the selected pair-state identity.");
   return deepFreezeValue({ state, sha256: decoded.jsonSha256 });
 };
 

@@ -273,11 +273,13 @@ coverage establishes only that the index admitted no matching `Swap` event for
 that pool and interval. It does not establish exchange activity, underlying
 equity activity, another pool's activity, liquidity, or trade availability.
 
-The versioned execution-index state and day artifacts retain finalized source
-coverage, exact candle values, raw token and USDG volumes, trade count, first
-and last source positions, and byte digests. The index read admits those exact
-artifacts and never reconstructs a candle from a chart, Chainlink history, or a
-provider response. GitHub Releases currently carries the artifacts but has no
+The versioned pair-state, pair-month, and pair-day data files retain finalized
+source coverage, exact candle values, raw token and USDG volumes, trade count,
+first and last contributing `Swap` positions, and byte digests. The canonical
+result's `artifact` member identifies the admitted pair state by generation and
+digest and the selected pair-month and pair-day files by period and digest. The
+index read never reconstructs a candle from a chart, Chainlink history, or a
+provider response. GitHub Releases currently stores the files but has no
 market-fact authority; repository, release, asset, URL, and credential fields
 do not enter the canonical result. Provider unavailability, stale publication,
 retention, integrity failure, or result capacity remains an explicit execution

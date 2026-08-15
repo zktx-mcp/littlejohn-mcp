@@ -297,59 +297,59 @@ export const findStockTokenExecutionIndexAssetByPairId = (
   pairId: string,
 ): StockTokenExecutionIndexAsset | undefined => executionIndexAssetByPairId.get(pairId);
 
-export const stockTokenExecutionSourcePositionSchema = jsonObject({
+export const stockTokenExecutionSwapPositionSchema = jsonObject({
   blockNumber: boundedUnsignedDecimalSchema,
   blockHash: hash32Schema,
   transactionIndex: z.number().int().nonnegative().safe(),
   transactionHash: hash32Schema,
   logIndex: z.number().int().nonnegative().safe(),
 }).strict();
-export type StockTokenExecutionSourcePosition = z.infer<typeof stockTokenExecutionSourcePositionSchema>;
+export type StockTokenExecutionSwapPosition = z.infer<typeof stockTokenExecutionSwapPositionSchema>;
 
-const compareSourcePositions = (
-  left: StockTokenExecutionSourcePosition,
-  right: StockTokenExecutionSourcePosition,
+const compareSwapPositions = (
+  left: StockTokenExecutionSwapPosition,
+  right: StockTokenExecutionSwapPosition,
 ): number => {
   const block = BigInt(left.blockNumber) - BigInt(right.blockNumber);
   if (block !== 0n) return block < 0n ? -1 : 1;
   if (left.transactionIndex !== right.transactionIndex) return left.transactionIndex - right.transactionIndex;
   return left.logIndex - right.logIndex;
 };
-const sameSourcePosition = (
-  left: StockTokenExecutionSourcePosition,
-  right: StockTokenExecutionSourcePosition,
+const sameSwapPosition = (
+  left: StockTokenExecutionSwapPosition,
+  right: StockTokenExecutionSwapPosition,
 ): boolean => canonicalEqual(left, right);
 
-interface SourceIdentityState {
+interface SwapPositionIdentityState {
   readonly blockHashByNumber: Map<string, string>;
   readonly blockNumberByHash: Map<string, string>;
   readonly transactionHashByCoordinate: Map<string, string>;
   readonly transactionCoordinateByHash: Map<string, string>;
 }
-const createSourceIdentityState = (): SourceIdentityState => ({
+const createSwapPositionIdentityState = (): SwapPositionIdentityState => ({
   blockHashByNumber: new Map(),
   blockNumberByHash: new Map(),
   transactionHashByCoordinate: new Map(),
   transactionCoordinateByHash: new Map(),
 });
-const recordSourceIdentity = (
-  state: SourceIdentityState,
-  source: StockTokenExecutionSourcePosition,
+const recordSwapPositionIdentity = (
+  state: SwapPositionIdentityState,
+  position: StockTokenExecutionSwapPosition,
 ): boolean => {
-  const coordinate = `${source.blockNumber}:${source.transactionIndex}`;
+  const coordinate = `${position.blockNumber}:${position.transactionIndex}`;
   const conflict =
-    (state.blockHashByNumber.has(source.blockNumber) &&
-      state.blockHashByNumber.get(source.blockNumber) !== source.blockHash) ||
-    (state.blockNumberByHash.has(source.blockHash) &&
-      state.blockNumberByHash.get(source.blockHash) !== source.blockNumber) ||
+    (state.blockHashByNumber.has(position.blockNumber) &&
+      state.blockHashByNumber.get(position.blockNumber) !== position.blockHash) ||
+    (state.blockNumberByHash.has(position.blockHash) &&
+      state.blockNumberByHash.get(position.blockHash) !== position.blockNumber) ||
     (state.transactionHashByCoordinate.has(coordinate) &&
-      state.transactionHashByCoordinate.get(coordinate) !== source.transactionHash) ||
-    (state.transactionCoordinateByHash.has(source.transactionHash) &&
-      state.transactionCoordinateByHash.get(source.transactionHash) !== coordinate);
-  state.blockHashByNumber.set(source.blockNumber, source.blockHash);
-  state.blockNumberByHash.set(source.blockHash, source.blockNumber);
-  state.transactionHashByCoordinate.set(coordinate, source.transactionHash);
-  state.transactionCoordinateByHash.set(source.transactionHash, coordinate);
+      state.transactionHashByCoordinate.get(coordinate) !== position.transactionHash) ||
+    (state.transactionCoordinateByHash.has(position.transactionHash) &&
+      state.transactionCoordinateByHash.get(position.transactionHash) !== coordinate);
+  state.blockHashByNumber.set(position.blockNumber, position.blockHash);
+  state.blockNumberByHash.set(position.blockHash, position.blockNumber);
+  state.transactionHashByCoordinate.set(coordinate, position.transactionHash);
+  state.transactionCoordinateByHash.set(position.transactionHash, coordinate);
   return conflict;
 };
 
@@ -362,19 +362,19 @@ const candleCoreShape = {
   close: exactRationalSchema,
   quoteVolumeRaw: boundedUnsignedDecimalSchema.refine((value) => value !== "0"),
   tradeCount: positiveSafeIntegerSchema,
-  firstSource: stockTokenExecutionSourcePositionSchema,
-  lastSource: stockTokenExecutionSourcePositionSchema,
+  firstSource: stockTokenExecutionSwapPositionSchema,
+  lastSource: stockTokenExecutionSwapPositionSchema,
 } as const;
 
 const validateCandle = (
   value: Readonly<z.infer<ReturnType<typeof jsonObject<typeof candleCoreShape>>>> & {
-    readonly firstSource: StockTokenExecutionSourcePosition;
-    readonly lastSource: StockTokenExecutionSourcePosition;
+    readonly firstSource: StockTokenExecutionSwapPosition;
+    readonly lastSource: StockTokenExecutionSwapPosition;
   },
   context: z.RefinementCtx,
 ): void => {
-  const sourceOrder = compareSourcePositions(value.firstSource, value.lastSource);
-  const sameSource = sameSourcePosition(value.firstSource, value.lastSource);
+  const swapOrder = compareSwapPositions(value.firstSource, value.lastSource);
+  const sameSwap = sameSwapPosition(value.firstSource, value.lastSource);
   const sameBlock = value.firstSource.blockNumber === value.lastSource.blockNumber;
   const sameTransaction = sameBlock &&
     value.firstSource.transactionIndex === value.lastSource.transactionIndex;
@@ -385,13 +385,13 @@ const validateCandle = (
     compareExactRationals(value.low, value.open) > 0 ||
     compareExactRationals(value.low, value.close) > 0 ||
     compareExactRationals(value.high, value.low) < 0 ||
-    sourceOrder > 0 ||
+    swapOrder > 0 ||
     (sameBlock && value.firstSource.blockHash !== value.lastSource.blockHash) ||
     (!sameBlock && value.firstSource.blockHash === value.lastSource.blockHash) ||
     (sameTransaction && value.firstSource.transactionHash !== value.lastSource.transactionHash) ||
     (!sameTransaction && value.firstSource.transactionHash === value.lastSource.transactionHash) ||
-    (sameBlock && sourceOrder < 0 && value.firstSource.logIndex >= value.lastSource.logIndex) ||
-    (value.tradeCount === 1) !== sameSource
+    (sameBlock && swapOrder < 0 && value.firstSource.logIndex >= value.lastSource.logIndex) ||
+    (value.tradeCount === 1) !== sameSwap
   ) context.addIssue({ code: "custom", message: "Execution candle semantics are invalid." });
 };
 
@@ -584,7 +584,7 @@ export const stockTokenExecutionIndexDaySchema = pairDayObjectSchema.superRefine
     value.coverage.fromTimestamp < dayStart || value.coverage.untilTimestamp > dayUntil
   ) context.addIssue({ code: "custom", message: "Execution day identity or coverage is invalid." });
   let previous: StockTokenExecutionArtifactCandle | undefined;
-  const identities = createSourceIdentityState();
+  const identities = createSwapPositionIdentityState();
   for (const candle of value.candles) {
     if (
       !candle.intervalStart.startsWith(value.day) ||
@@ -596,9 +596,9 @@ export const stockTokenExecutionIndexDaySchema = pairDayObjectSchema.superRefine
         BigInt(previous.lastSource.blockNumber) >= BigInt(candle.firstSource.blockNumber)
       ))
     ) context.addIssue({ code: "custom", message: "Execution day candle sequence is inconsistent." });
-    for (const source of [candle.firstSource, candle.lastSource]) {
-      if (recordSourceIdentity(identities, source)) {
-        context.addIssue({ code: "custom", message: "Execution candle source identities conflict." });
+    for (const position of [candle.firstSource, candle.lastSource]) {
+      if (recordSwapPositionIdentity(identities, position)) {
+        context.addIssue({ code: "custom", message: "Execution candle Swap positions conflict." });
       }
     }
     previous = candle;
@@ -730,7 +730,7 @@ export const stockTokenExecutionSeriesSchema = executionSeriesUnionSchema.superR
     }
   }
   let previousCandle: StockTokenExecutionCandle | undefined;
-  const seriesIdentities = createSourceIdentityState();
+  const seriesIdentities = createSwapPositionIdentityState();
   for (const candle of value.candles) {
     const covered = value.coverage.intervals.some((interval) =>
       candle.intervalStart >= interval.fromTimestamp && candle.intervalEnd <= interval.untilTimestamp &&
@@ -745,10 +745,10 @@ export const stockTokenExecutionSeriesSchema = executionSeriesUnionSchema.superR
         BigInt(previousCandle.lastSource.blockNumber) >= BigInt(candle.firstSource.blockNumber)
       ))
     ) context.addIssue({ code: "custom", message: "Execution series candle membership is invalid." });
-    const firstIdentityConflict = recordSourceIdentity(seriesIdentities, candle.firstSource);
-    const lastIdentityConflict = recordSourceIdentity(seriesIdentities, candle.lastSource);
+    const firstIdentityConflict = recordSwapPositionIdentity(seriesIdentities, candle.firstSource);
+    const lastIdentityConflict = recordSwapPositionIdentity(seriesIdentities, candle.lastSource);
     if (firstIdentityConflict || lastIdentityConflict) {
-      context.addIssue({ code: "custom", message: "Execution series source identities conflict." });
+      context.addIssue({ code: "custom", message: "Execution series Swap positions conflict." });
     }
     previousCandle = candle;
   }
@@ -844,7 +844,7 @@ export const createStockTokenExecutionSeries = (input: Readonly<{
     sha256: sha256HexSchema.parse(entry.sha256),
   })).sort((left, right) => compareCodePointSequences(left.month.month, right.month.month));
   if (months.length !== requiredMonthReferences.length) {
-    throw new TypeError("Execution-index month closure is incomplete.");
+    throw new TypeError("Execution-index pair-month files do not cover the selected pair state.");
   }
   for (const entry of months) {
     if (
@@ -866,7 +866,7 @@ export const createStockTokenExecutionSeries = (input: Readonly<{
     sha256: sha256HexSchema.parse(entry.sha256),
   })).sort((left, right) => compareCodePointSequences(left.day.day, right.day.day));
   if (days.length !== requiredDayReferences.length) {
-    throw new TypeError("Execution-index day closure is incomplete.");
+    throw new TypeError("Execution-index pair-day files do not cover the selected pair months.");
   }
   for (const entry of days) {
     if (
@@ -890,16 +890,16 @@ export const createStockTokenExecutionSeries = (input: Readonly<{
   }
   let previousArtifactCandle: StockTokenExecutionArtifactCandle | undefined;
   const artifactCandles = days.flatMap((entry) => entry.day.candles);
-  const artifactIdentities = createSourceIdentityState();
+  const artifactIdentities = createSwapPositionIdentityState();
   for (const candle of artifactCandles) {
     if (previousArtifactCandle !== undefined && (
       candle.intervalStart <= previousArtifactCandle.intervalStart ||
       BigInt(previousArtifactCandle.lastSource.blockNumber) >= BigInt(candle.firstSource.blockNumber)
     )) throw new TypeError("Execution-index merged candle sequence is inconsistent.");
-    const firstIdentityConflict = recordSourceIdentity(artifactIdentities, candle.firstSource);
-    const lastIdentityConflict = recordSourceIdentity(artifactIdentities, candle.lastSource);
+    const firstIdentityConflict = recordSwapPositionIdentity(artifactIdentities, candle.firstSource);
+    const lastIdentityConflict = recordSwapPositionIdentity(artifactIdentities, candle.lastSource);
     if (firstIdentityConflict || lastIdentityConflict) {
-      throw new TypeError("Execution-index merged candle source identities conflict.");
+      throw new TypeError("Execution-index merged candle Swap positions conflict.");
     }
     previousArtifactCandle = candle;
   }

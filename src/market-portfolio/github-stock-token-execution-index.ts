@@ -57,7 +57,7 @@ const inputSchema = jsonObject({
 
 class IndexTransportError extends Error {
   constructor(readonly kind: "unavailable" | "inconsistent") {
-    super("Stock Token execution index carriage failed.");
+    super("Stock Token execution-index data read failed.");
     this.name = "IndexTransportError";
   }
 }

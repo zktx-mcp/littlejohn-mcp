@@ -51,7 +51,7 @@ describe("pair-based Stock Token execution index contract", () => {
     expect(asset.poolId).toBe("0x3bb34a44f1b2b5f32c034c38a53065a521a47b199700fa9bd19d60985ff24bf1");
   });
 
-  it("admits one exact state to month to day closure and rejects changed or noncanonical bytes", () => {
+  it("admits one exact pair-state file and its referenced pair-month and pair-day files", () => {
     const fixture = buildFixture();
     const selected = decodeStockTokenExecutionIndexState(
       fixture.stateEncoded.gzip,
@@ -160,7 +160,7 @@ describe("pair-based Stock Token execution index contract", () => {
     expect(result.candles.at(-1)?.intervalEnd).toBe("2026-08-14T00:00:00.000Z");
   });
 
-  it("admits the maximum three-month and 31-day closure without changing public endpoints", () => {
+  it("admits the maximum three pair-month and 31 pair-day inputs without changing public endpoints", () => {
     const fixture = buildPairExecutionIndexFixtureUntil("2027-03-02T12:01:00.000Z");
     const requestedStart = "2027-01-31T12:00:30.000Z";
     const requestedEnd = "2027-03-02T12:00:30.000Z";
@@ -220,7 +220,7 @@ describe("pair-based Stock Token execution index contract", () => {
     })).toThrow();
   });
 
-  it("rejects source-span and cross-day identity contradictions", () => {
+  it("rejects impossible Swap ranges and cross-day position contradictions", () => {
     const fixture = buildFixture();
     const first = fixture.days[0]!.day.candles[0]!;
     expect(() => stockTokenExecutionArtifactCandleSchema.parse({

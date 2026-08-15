@@ -107,8 +107,8 @@ const request = Object.freeze({
   requestedEnd: "2026-08-01T00:01:30.000Z",
 });
 
-describe("GitHub pair execution-index carriage", () => {
-  it("reads one selected pair state and only the overlapping pair-month and pair-day closure", async () => {
+describe("GitHub pair execution-index reads", () => {
+  it("reads one selected pair-state file and only the overlapping pair-month and pair-day files", async () => {
     const { fixture, fetchImplementation, readerReleases } = fetchFixture();
     const result = await createGitHubStockTokenExecutionIndex({ fetchImplementation }).read(request);
     expect(result).toMatchObject({
