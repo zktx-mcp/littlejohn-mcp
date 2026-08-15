@@ -573,10 +573,14 @@ reader does not implement a weaker result parser.
 - The direct executable owns process termination. It first settles every
   admitted CLI, terminal-restoration, QR, and MCP output write. A host-stream
   failure produces a nonzero status; backpressure remains pending rather than
-  being reported as successful truncated output. After successful settlement,
-  a process-terminal result uses operating-system teardown as the final SDK
-  resource boundary. This is not a wallet disconnect and does not revoke an
-  approved session. A released result permits normal Node termination.
+  being reported as successful truncated output. After settlement, the CLI
+  process decision requires operating-system teardown when applicable MCP or
+  local-operation-client cleanup rejects, Runtime stop rejects, or Runtime
+  shutdown is process-terminal. This decision does not claim that a retained
+  resource was released. It is not a wallet disconnect and does not revoke an
+  approved session. Normal Node termination requires either no created Runtime
+  or a fulfilled released Runtime result after the applicable dependent proves
+  closed.
 
 ## HTTP Owner Authentication
 

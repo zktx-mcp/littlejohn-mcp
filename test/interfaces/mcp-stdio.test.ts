@@ -5,7 +5,11 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { describe, expect, it } from "vitest";
 
-import { captureCanonicalJson, parseUnsignedDecimal } from "../../src/core/index.js";
+import {
+  canonicalJsonStringify,
+  captureCanonicalJson,
+  parseUnsignedDecimal,
+} from "../../src/core/index.js";
 import {
   runCli,
   type CliRuntimePort,
@@ -20,6 +24,9 @@ import { referenceMarketInterfaceBindings } from "../../src/interfaces/identitie
 import type { PresentationSnapshotStore } from "../../src/runtime/presentation-snapshot.js";
 import {
   RuntimeOperationError,
+  noStoreCacheControl,
+  problemJsonContentType,
+  toProblemDetails,
   type RuntimeDispatchRequest,
   type RuntimeDispatchResponse,
   type RuntimeOwnerSession,
@@ -34,6 +41,10 @@ import {
   requireProcessTermination,
   runtimeReleased,
 } from "../../src/runtime/shutdown.js";
+import {
+  createTokenCatalogFailure,
+  tokenCatalogInterfaceErrorMappings,
+} from "../../src/token-catalog/errors.js";
 import { openTestOwnerSession } from "./owner-session-harness.js";
 import { stockTokenMarketUnmappedFixture } from "./stock-token-market-fixture.js";
 
@@ -479,6 +490,81 @@ describe("MCP stdio lifecycle ownership", () => {
     await client.close();
   });
 
+  it("keeps MCP terminal ownership separate when its shared operation client fails closed", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const store = new CountingSnapshotStore();
+    const notFound = createTokenCatalogFailure("token_selection_not_found");
+    const problem = toProblemDetails(notFound, tokenCatalogInterfaceErrorMappings);
+    let opens = 0;
+    let sends = 0;
+    let sessionCloseCalls = 0;
+    const ownedSession: RuntimeOwnerSession = Object.freeze({
+      identity: sessionIdentity,
+      usable: true,
+      async send(): Promise<RuntimeOwnerSendResult> {
+        sends += 1;
+        return Object.freeze({
+          status: "response_received" as const,
+          response: Object.freeze({
+            statusCode: problem.status,
+            contentType: problemJsonContentType,
+            cacheControl: noStoreCacheControl,
+            bytes: new TextEncoder().encode(
+              `${canonicalJsonStringify(captureCanonicalJson(problem))}\n`,
+            ),
+          }),
+        });
+      },
+      close(): void {
+        sessionCloseCalls += 1;
+        if (sessionCloseCalls === 1) throw new Error("session release failed");
+      },
+    });
+    class FailingSessionRuntime extends TestRuntime {
+      override async openOwnerSession(): Promise<RuntimeOwnerSession> {
+        opens += 1;
+        return ownedSession;
+      }
+    }
+    const owner = createStdioMcp(new FailingSessionRuntime(store), input, output, appResource);
+    const client = await connectClient(owner, input, output);
+    const request = {
+      name: "token_get_selection",
+      arguments: {
+        asset: {
+          kind: "erc20",
+          chainId: "eip155:4663",
+          address: `0x${"1".repeat(40)}`,
+        },
+      },
+    } as const;
+
+    const first = await client.callTool(request);
+    expect(first.isError).toBe(true);
+    expect(first.structuredContent).toEqual(notFound);
+    expect(opens).toBe(1);
+    expect(sends).toBe(1);
+    expect(sessionCloseCalls).toBe(1);
+
+    const second = await client.callTool(request);
+    expect(second.isError).toBe(true);
+    expect(second.structuredContent).toMatchObject({
+      ok: false,
+      error: { code: "runtime_state_unavailable" },
+    });
+    expect(opens).toBe(1);
+    expect(sends).toBe(1);
+    expect(sessionCloseCalls).toBe(1);
+
+    input.end();
+    await expect(owner.closed).resolves.toBeUndefined();
+    await expect(owner.close()).resolves.toBeUndefined();
+    expect(sessionCloseCalls).toBe(2);
+    expect(store.prepareCalls).toBe(0);
+    await client.close();
+  });
+
   it("retries server before client and retains the client until its admitted request settles", async () => {
     const serverFailure = new Error("server close failed");
     const clientFailure = new AggregateError([], "client close failed");
@@ -525,26 +611,23 @@ describe("MCP stdio lifecycle ownership", () => {
     expect(sessionCloseCalls).toBe(0);
 
     const clientAttempt = owner.close();
-    await expect(clientAttempt).rejects.toBe(clientFailure);
-    expect(input.pauseCalls).toBe(2);
-    expect(sessionCloseCalls).toBe(1);
-
-    const release = owner.close();
-    const beforeSettlement = await Promise.race([
-      settle(release),
+    expect(await Promise.race([
+      settle(clientAttempt),
       new Promise<Readonly<{ status: "pending" }>>((resolve) => {
         setImmediate(() => resolve(Object.freeze({ status: "pending" })));
       }),
-    ]);
-    expect(beforeSettlement).toEqual({ status: "pending" });
+    ])).toEqual({ status: "pending" });
     expect(input.pauseCalls).toBe(2);
-    expect(sessionCloseCalls).toBe(2);
+    expect(sessionCloseCalls).toBe(1);
 
     resolveSend(Object.freeze({ status: "request_not_sent", reason: "request_aborted" }));
+    await expect(clientAttempt).rejects.toBe(clientFailure);
+
+    const release = owner.close();
     await expect(release).resolves.toBeUndefined();
     expect(owner.close()).toBe(release);
     await expect(owner.closed).rejects.toBe(serverFailure);
-    expect(sessionCloseCalls).toBe(3);
+    expect(sessionCloseCalls).toBe(2);
     expect(store.prepareCalls).toBe(0);
     await client.close();
   });
@@ -585,11 +668,10 @@ describe("MCP stdio lifecycle ownership", () => {
       "runtime.start",
       "mcp.start",
       "mcp.close",
-      "runtime.stop",
       "terminal.dispose",
     ]);
     expect(result.exitCode).toBeGreaterThan(0);
-    expect(result.shutdown).toBe(runtimeReleased);
+    expect(result.processDisposition).toBe("process_exit_required");
     expect(errors).toEqual(["internal_error: The request could not be completed.\n"]);
     expect(output).toEqual([]);
   });
@@ -651,6 +733,7 @@ describe("MCP stdio lifecycle ownership", () => {
       "terminal.dispose",
     ]);
     expect(result.exitCode).toBe(0);
+    expect(result.processDisposition).toBe("natural_exit");
     expect(output).toEqual([]);
     expect(errors).toEqual([]);
   });

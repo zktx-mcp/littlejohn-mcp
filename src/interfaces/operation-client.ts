@@ -55,11 +55,23 @@ const sameOwner = (
 const parseJsonBytes = (bytes: Uint8Array): CanonicalJson =>
   captureCanonicalJson(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown);
 
+interface OwnerSessionOwnership {
+  readonly acquisition: Promise<void>;
+  session: RuntimeOwnerSession | undefined;
+  release: Promise<void> | undefined;
+  releaseRejected: boolean;
+}
+
+interface AcquiredOwnerSession {
+  readonly ownership: OwnerSessionOwnership;
+  readonly session: RuntimeOwnerSession;
+}
+
 export class LocalOperationClient {
   readonly #ownerSessions: RuntimeOwnerSessionPort;
   readonly #lifecycle = new AbortController();
   readonly #active = new Set<Promise<void>>();
-  readonly #sessions = new Set<RuntimeOwnerSession>();
+  readonly #sessions = new Set<OwnerSessionOwnership>();
   #state: "open" | "closing" | "closed" = "open";
   #closePromise: Promise<void> | undefined;
 
@@ -81,10 +93,14 @@ export class LocalOperationClient {
         failure: createApplicationFailure(binding.contract.errorRegistry, "runtime_state_unavailable"),
       });
     }
-    const execution = this.#invoke(binding, inputValue, callerSignal);
+    let start!: () => void;
+    const execution = new Promise<LocalOperationResult<Success>>((resolve, reject) => {
+      start = () => { void this.#invoke(binding, inputValue, callerSignal).then(resolve, reject); };
+    });
     let settlement!: Promise<void>;
     settlement = execution.then(() => undefined, () => undefined).finally(() => this.#active.delete(settlement));
     this.#active.add(settlement);
+    start();
     return execution;
   }
 
@@ -107,15 +123,18 @@ export class LocalOperationClient {
     catch {
       return { ok: false, failure: createApplicationFailure(binding.contract.errorRegistry, "invalid_input") };
     }
-    let session: RuntimeOwnerSession;
-    try { session = await this.#openSession(); }
+    let acquired: AcquiredOwnerSession;
+    try { acquired = await this.#openSession(); }
     catch (error) { return this.#requestFailure(binding, error); }
+    const { session } = acquired;
     try {
       const sent = await session.send({
         ...binding.actionRequest(input, operationId),
         maximumResponseBytes: internalResponseLimitBytes,
         responseDeadlineMilliseconds: responseObservationMilliseconds,
-      }, callerSignal);
+      }, callerSignal === undefined
+        ? this.#lifecycle.signal
+        : AbortSignal.any([callerSignal, this.#lifecycle.signal]));
       if (sent.status === "request_not_sent") {
         return this.#requestFailure(binding, sent.reason === "request_aborted"
           ? new DOMException("Request aborted.", "AbortError")
@@ -133,9 +152,9 @@ export class LocalOperationClient {
       if (binding.action === "read") {
         return { ok: false, failure: createApplicationFailure(binding.contract.errorRegistry, "runtime_state_unavailable") };
       }
-      return await this.#recover(binding, input, operationId as OperationId, session);
+      return await this.#recover(binding, input, operationId as OperationId, acquired);
     } finally {
-      this.#releaseSession(session);
+      await this.#releaseAfterInvocation(acquired.ownership);
     }
   }
 
@@ -173,7 +192,7 @@ export class LocalOperationClient {
     binding: LocalOperationBinding<Input, Success>,
     input: Input,
     operationId: OperationId,
-    originalSession: RuntimeOwnerSession,
+    original: AcquiredOwnerSession,
   ): Promise<LocalOperationResult<Success>> {
     const observation = binding.recoveryObservation;
     if (observation === undefined) {
@@ -197,22 +216,22 @@ export class LocalOperationClient {
     } catch {
       return createDeliveryUnknown(binding.action as OperationDeliveryAction, operationId);
     }
-    const identity = originalSession.identity;
-    let session = originalSession;
+    const identity = original.session.identity;
+    let acquired = original;
     let replacement = false;
-    if (!session.usable) {
+    if (!acquired.session.usable) {
       try {
-        session = await this.#openSession();
+        acquired = await this.#openSession();
         replacement = true;
       }
       catch { return createDeliveryUnknown(binding.action as OperationDeliveryAction, operationId); }
-      if (!sameOwner(identity, session.identity)) {
-        this.#releaseSession(session);
+      if (!sameOwner(identity, acquired.session.identity)) {
+        await this.#releaseAfterInvocation(acquired.ownership);
         return createDeliveryUnknown(binding.action as OperationDeliveryAction, operationId);
       }
     }
     try {
-      const read = await session.send({
+      const read = await acquired.session.send({
         ...targetRequest,
         maximumResponseBytes: internalResponseLimitBytes,
         responseDeadlineMilliseconds: recoveryReadMilliseconds,
@@ -233,23 +252,94 @@ export class LocalOperationClient {
         return createDeliveryUnknown(binding.action as OperationDeliveryAction, operationId);
       }
     } finally {
-      if (replacement) this.#releaseSession(session);
+      if (replacement) await this.#releaseAfterInvocation(acquired.ownership);
     }
   }
 
-  async #openSession(): Promise<RuntimeOwnerSession> {
-    const opened = await this.#ownerSessions.openOwnerSession(this.#lifecycle.signal);
-    if (this.#state !== "open") {
-      opened.close();
-      throw new DOMException("Request aborted.", "AbortError");
+  async #openSession(): Promise<AcquiredOwnerSession> {
+    if (this.#state !== "open") throw new DOMException("Request aborted.", "AbortError");
+    let resolveAcquisition!: () => void;
+    let rejectAcquisition!: (reason?: unknown) => void;
+    const acquisition = new Promise<void>((resolve, reject) => {
+      resolveAcquisition = resolve;
+      rejectAcquisition = reject;
+    });
+    const ownership: OwnerSessionOwnership = {
+      acquisition,
+      session: undefined,
+      release: undefined,
+      releaseRejected: false,
+    };
+    this.#sessions.add(ownership);
+    try {
+      const opening = this.#ownerSessions.openOwnerSession(this.#lifecycle.signal);
+      void Promise.resolve(opening).then(
+        (session) => {
+          ownership.session = session;
+          resolveAcquisition();
+        },
+        rejectAcquisition,
+      );
+    } catch (error) {
+      rejectAcquisition(error);
     }
-    this.#sessions.add(opened);
-    return opened;
+    try {
+      await acquisition;
+    } catch (error) {
+      this.#sessions.delete(ownership);
+      throw error;
+    }
+    const session = ownership.session;
+    if (session === undefined) throw new TypeError("Owner session acquisition did not publish a session.");
+    if (this.#state !== "open") throw new DOMException("Request aborted.", "AbortError");
+    return { ownership, session };
   }
 
-  #releaseSession(session: RuntimeOwnerSession): void {
-    session.close();
-    this.#sessions.delete(session);
+  #releaseSession(ownership: OwnerSessionOwnership, retryRejected: boolean): Promise<void> {
+    if (
+      ownership.release !== undefined &&
+      (!ownership.releaseRejected || !retryRejected)
+    ) return ownership.release;
+    const session = ownership.session;
+    if (session === undefined) return Promise.reject(
+      new TypeError("Owner session release started before acquisition settled."),
+    );
+    let run!: () => void;
+    const effect = new Promise<void>((resolve, reject) => {
+      run = () => {
+        try {
+          session.close();
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      };
+    });
+    const release = effect.then(
+      () => { this.#sessions.delete(ownership); },
+      (reason: unknown) => {
+        ownership.releaseRejected = true;
+        throw reason;
+      },
+    );
+    ownership.release = release;
+    ownership.releaseRejected = false;
+    run();
+    return release;
+  }
+
+  async #releaseAfterInvocation(ownership: OwnerSessionOwnership): Promise<void> {
+    try {
+      await this.#releaseSession(ownership, false);
+    } catch {
+      this.#failClosed();
+    }
+  }
+
+  #failClosed(): void {
+    if (this.#state !== "open") return;
+    this.#state = "closing";
+    this.#lifecycle.abort();
   }
 
   #requestFailure<Input, Success>(
@@ -277,14 +367,46 @@ export class LocalOperationClient {
 
   close(): Promise<void> {
     if (this.#closePromise !== undefined) return this.#closePromise;
-    this.#state = "closing";
-    this.#lifecycle.abort();
-    for (const session of this.#sessions) session.close();
-    this.#sessions.clear();
-    const closing = Promise.allSettled([...this.#active]).then(() => {
-      this.#state = "closed";
+    let start!: () => void;
+    const closing = new Promise<void>((resolve, reject) => {
+      start = () => { void this.#performClose().then(resolve, reject); };
     });
     this.#closePromise = closing;
+    this.#state = "closing";
+    void closing.then(
+      () => undefined,
+      () => {
+        if (this.#state !== "closed" && this.#closePromise === closing) {
+          this.#closePromise = undefined;
+        }
+      },
+    );
+    start();
     return closing;
+  }
+
+  async #performClose(): Promise<void> {
+    this.#lifecycle.abort();
+    await Promise.allSettled([...this.#sessions].map(({ acquisition }) => acquisition));
+    const owned = [...this.#sessions].filter(
+      (ownership): ownership is OwnerSessionOwnership & { session: RuntimeOwnerSession } =>
+        ownership.session !== undefined,
+    );
+    const releases = await Promise.allSettled(
+      owned.map((ownership) => this.#releaseSession(ownership, true)),
+    );
+    await Promise.allSettled([...this.#active]);
+    const failures: unknown[] = [];
+    for (const release of releases) {
+      if (release.status === "rejected") failures.push(release.reason);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "Local operation session cleanup failed.");
+    }
+    if (this.#sessions.size !== 0 || this.#active.size !== 0) {
+      throw new Error("Local operation client cleanup did not release all ownership.");
+    }
+    this.#state = "closed";
   }
 }

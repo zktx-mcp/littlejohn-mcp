@@ -72,6 +72,7 @@ const review = parseWalletReview({
     fixedEvidence: { sessionSourceIds: [] },
   }),
 });
+const reviewed = Object.freeze({ status: "review" as const, review });
 
 const action = Object.freeze({ review, initiatedBy: "mcp_app" as const });
 const operation = parseWalletManagementOperation({
@@ -115,11 +116,12 @@ const session = (input: Readonly<{
   identity?: RuntimeOwnerSessionIdentity;
   usable?: () => boolean;
   send(request: RuntimeOwnerSessionRequest, signal?: AbortSignal): Promise<RuntimeOwnerSendResult>;
+  close?: () => void;
 }>): RuntimeOwnerSession => Object.freeze({
   identity: input.identity ?? ownerIdentity(),
   get usable(): boolean { return input.usable?.() ?? true; },
   send: input.send,
-  close: () => undefined,
+  close: input.close ?? (() => undefined),
 });
 
 const ownerSessions = (...sessions: RuntimeOwnerSession[]): RuntimeOwnerSessionPort => {
@@ -350,5 +352,259 @@ describe("local operation delivery", () => {
       { operationId },
     )).toMatchObject({ ok: false, failure: { error: { code: "internal_error" } } });
     await client.close();
+  });
+});
+
+const settle = <Value>(promise: Promise<Value>) => promise.then(
+  (value) => Object.freeze({ status: "fulfilled" as const, value }),
+  (reason: unknown) => Object.freeze({ status: "rejected" as const, reason }),
+);
+
+const pendingAfterOneTurn = async (promise: Promise<unknown>) => await Promise.race([
+  settle(promise),
+  new Promise<Readonly<{ status: "pending" }>>((resolve) => {
+    setImmediate(() => resolve(Object.freeze({ status: "pending" })));
+  }),
+]);
+
+describe("local operation cleanup ownership", () => {
+  it("owns a pending acquisition before close and releases its late session without sending", async () => {
+    let resolveOpen!: (value: RuntimeOwnerSession) => void;
+    const opening = new Promise<RuntimeOwnerSession>((resolve) => { resolveOpen = resolve; });
+    let sends = 0;
+    let closes = 0;
+    let acquisitionSignal: AbortSignal | undefined;
+    const client = new LocalOperationClient({
+      ownerSessions: Object.freeze({
+        openOwnerSession(signal?: AbortSignal): Promise<RuntimeOwnerSession> {
+          acquisitionSignal = signal;
+          return opening;
+        },
+      }),
+    });
+    const invocation = client.invoke(
+      operationInterfaceBindings.walletReview.identity,
+      { kind: "connect" },
+    );
+
+    const closing = client.close();
+    expect(client.close()).toBe(closing);
+    expect(acquisitionSignal?.aborted).toBe(true);
+    expect(await pendingAfterOneTurn(closing)).toEqual({ status: "pending" });
+
+    resolveOpen(session({
+      async send() {
+        sends += 1;
+        return received(review);
+      },
+      close: () => { closes += 1; },
+    }));
+
+    await expect(closing).resolves.toBeUndefined();
+    expect(sends).toBe(0);
+    expect(closes).toBe(1);
+    await expect(invocation).resolves.toMatchObject({
+      ok: false,
+      failure: { error: { code: "request_aborted" } },
+    });
+    expect(client.close()).toBe(closing);
+    await expect(client.invoke(
+      operationInterfaceBindings.walletReview.identity,
+      { kind: "connect" },
+    )).resolves.toMatchObject({
+      ok: false,
+      failure: { error: { code: "runtime_state_unavailable" } },
+    });
+  });
+
+  it("retains a late session whose first release rejects and retries only that session", async () => {
+    let resolveOpen!: (value: RuntimeOwnerSession) => void;
+    const opening = new Promise<RuntimeOwnerSession>((resolve) => { resolveOpen = resolve; });
+    let closes = 0;
+    const client = new LocalOperationClient({
+      ownerSessions: Object.freeze({ openOwnerSession: () => opening }),
+    });
+    const invocation = client.invoke(
+      operationInterfaceBindings.walletReview.identity,
+      { kind: "connect" },
+    );
+    const first = client.close();
+    resolveOpen(session({
+      async send() { throw new Error("A late session must not send."); },
+      close: () => {
+        closes += 1;
+        if (closes === 1) throw undefined;
+      },
+    }));
+
+    expect(await settle(first)).toEqual({ status: "rejected", reason: undefined });
+    await expect(invocation).resolves.toMatchObject({
+      ok: false,
+      failure: { error: { code: "request_aborted" } },
+    });
+    expect(closes).toBe(1);
+
+    const retry = client.close();
+    expect(retry).not.toBe(first);
+    await expect(retry).resolves.toBeUndefined();
+    expect(closes).toBe(2);
+    expect(client.close()).toBe(retry);
+  });
+
+  it("attempts independent sessions once, preserves ordered failures, and retries exact unresolved identities", async () => {
+    const childFailure = new AggregateError([], "child close failure");
+    const closeOrder: string[] = [];
+    const closeCalls = new Map<string, number>();
+    const resolveSends = new Map<string, (value: RuntimeOwnerSendResult) => void>();
+    let sendsStarted = 0;
+    let resolveAllSendsStarted!: () => void;
+    const allSendsStarted = new Promise<void>((resolve) => { resolveAllSendsStarted = resolve; });
+    let client!: LocalOperationClient;
+    let reentrantClose: Promise<void> | undefined;
+    const makeSession = (name: string, failure?: unknown): RuntimeOwnerSession => session({
+      async send() {
+        sendsStarted += 1;
+        if (sendsStarted === 3) resolveAllSendsStarted();
+        return await new Promise<RuntimeOwnerSendResult>((resolve) => {
+          resolveSends.set(name, resolve);
+        });
+      },
+      close: () => {
+        closeOrder.push(name);
+        const calls = (closeCalls.get(name) ?? 0) + 1;
+        closeCalls.set(name, calls);
+        if (calls === 1) resolveSends.get(name)?.(received(reviewed));
+        if (name === "second" && reentrantClose === undefined) {
+          reentrantClose = client.close();
+          expect(client.close()).toBe(reentrantClose);
+        }
+        if (calls === 1 && name !== "second") throw failure;
+      },
+    });
+    client = new LocalOperationClient({
+      ownerSessions: ownerSessions(
+        makeSession("first", undefined),
+        makeSession("second"),
+        makeSession("third", childFailure),
+      ),
+    });
+    const invocations = [0, 1, 2].map(() => client.invoke(
+      operationInterfaceBindings.walletReview.identity,
+      { kind: "connect" },
+    ));
+    await allSendsStarted;
+
+    const first = client.close();
+    expect(client.close()).toBe(first);
+    const firstResult = await settle(first);
+    expect(firstResult.status).toBe("rejected");
+    if (firstResult.status === "rejected") {
+      expect(firstResult.reason).toBeInstanceOf(AggregateError);
+      expect((firstResult.reason as AggregateError).errors).toEqual([undefined, childFailure]);
+    }
+    expect(reentrantClose).toBe(first);
+    expect(closeOrder).toEqual(["first", "second", "third"]);
+    for (const invocation of invocations) {
+      await expect(invocation).resolves.toEqual({ ok: true, value: reviewed });
+    }
+
+    const retry = client.close();
+    await expect(retry).resolves.toBeUndefined();
+    expect(closeOrder).toEqual(["first", "second", "third", "first", "third"]);
+    expect(client.close()).toBe(retry);
+  });
+
+  it("preserves an admitted result while fail-closed abort reentry publishes one cleanup attempt", async () => {
+    const releaseFailure = new Error("session release failed");
+    let closes = 0;
+    let opens = 0;
+    let client!: LocalOperationClient;
+    let reentrantClose: Promise<void> | undefined;
+    let concurrentClose: Promise<void> | undefined;
+    const owned = session({
+      async send() { return received(reviewed); },
+      close: () => {
+        closes += 1;
+        if (closes === 1) throw releaseFailure;
+      },
+    });
+    client = new LocalOperationClient({
+      ownerSessions: Object.freeze({
+        async openOwnerSession(signal?: AbortSignal): Promise<RuntimeOwnerSession> {
+          opens += 1;
+          signal?.addEventListener("abort", () => {
+            reentrantClose = client.close();
+            concurrentClose = client.close();
+          }, { once: true });
+          return owned;
+        },
+      }),
+    });
+
+    await expect(client.invoke(
+      operationInterfaceBindings.walletReview.identity,
+      { kind: "connect" },
+    )).resolves.toEqual({ ok: true, value: reviewed });
+    expect(opens).toBe(1);
+    expect(reentrantClose).toBeDefined();
+    expect(concurrentClose).toBe(reentrantClose);
+    await expect(reentrantClose).resolves.toBeUndefined();
+    expect(closes).toBe(2);
+
+    await expect(client.invoke(
+      operationInterfaceBindings.walletReview.identity,
+      { kind: "connect" },
+    )).resolves.toMatchObject({
+      ok: false,
+      failure: { error: { code: "runtime_state_unavailable" } },
+    });
+    expect(opens).toBe(1);
+    expect(client.close()).toBe(reentrantClose);
+  });
+
+  it("aborts an admitted send but does not fulfill close before the invocation settles", async () => {
+    let sendSignal: AbortSignal | undefined;
+    let resolveSend!: (value: RuntimeOwnerSendResult) => void;
+    let resolveSendStarted!: () => void;
+    const sendStarted = new Promise<void>((resolve) => { resolveSendStarted = resolve; });
+    let closes = 0;
+    let client!: LocalOperationClient;
+    let reentrantClose: Promise<void> | undefined;
+    client = new LocalOperationClient({
+      ownerSessions: Object.freeze({
+        async openOwnerSession(signal?: AbortSignal): Promise<RuntimeOwnerSession> {
+          signal?.addEventListener("abort", () => {
+            reentrantClose = client.close();
+          }, { once: true });
+          return session({
+            send: async (_request, sendSignalInput) => {
+              sendSignal = sendSignalInput;
+              resolveSendStarted();
+              return await new Promise<RuntimeOwnerSendResult>((resolve) => { resolveSend = resolve; });
+            },
+            close: () => { closes += 1; },
+          });
+        },
+      }),
+    });
+    const invocation = client.invoke(
+      operationInterfaceBindings.walletReview.identity,
+      { kind: "connect" },
+    );
+    await sendStarted;
+
+    const closing = client.close();
+    expect(reentrantClose).toBe(closing);
+    expect(sendSignal?.aborted).toBe(true);
+    expect(await pendingAfterOneTurn(closing)).toEqual({ status: "pending" });
+    expect(closes).toBe(1);
+
+    resolveSend(Object.freeze({ status: "request_not_sent", reason: "request_aborted" }));
+    await expect(invocation).resolves.toMatchObject({
+      ok: false,
+      failure: { error: { code: "request_aborted" } },
+    });
+    await expect(closing).resolves.toBeUndefined();
+    expect(closes).toBe(1);
   });
 });

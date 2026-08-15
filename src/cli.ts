@@ -66,8 +66,6 @@ import {
 } from "./runtime/index.js";
 import {
   isProcessTerminalRequiredError,
-  runtimeProcessTerminal,
-  runtimeReleased,
   type RuntimeShutdownOutcome,
 } from "./runtime/shutdown.js";
 import { getRuntimeOperationFailure } from "./runtime/errors.js";
@@ -127,7 +125,7 @@ export interface CliDependencies {
 
 export interface CliRunResult {
   readonly exitCode: number;
-  readonly shutdown: RuntimeShutdownOutcome;
+  readonly processDisposition: "natural_exit" | "process_exit_required";
 }
 
 type CliProcessEvent = "exit" | "SIGINT" | "SIGTERM" | "SIGHUP";
@@ -733,10 +731,14 @@ const startRuntimeForCommand = async (
   signal: AbortSignal,
 ): Promise<
   | Readonly<{ readonly kind: "started" }>
-  | Readonly<{ readonly kind: "stopped"; readonly shutdown: RuntimeShutdownOutcome }>
+  | Readonly<{
+      readonly kind: "stopped";
+      readonly stop: PromiseObservation<RuntimeShutdownOutcome>;
+      readonly start?: PromiseObservation<void>;
+    }>
 > => {
   if (signal.aborted) {
-    return Object.freeze({ kind: "stopped", shutdown: await runtime.stop() });
+    return Object.freeze({ kind: "stopped", stop: await observePromise(runtime.stop()) });
   }
   const starting = runtime.start();
   const decision = await raceWithInterrupt(() => starting, signal);
@@ -745,13 +747,11 @@ const startRuntimeForCommand = async (
   }
 
   const stopping = runtime.stop();
-  const [startResult, stopResult] = await Promise.allSettled([starting, stopping]);
-  if (stopResult.status === "rejected") throw stopResult.reason;
-  if (
-    startResult.status === "rejected" &&
-    getRuntimeOperationFailure(startResult.reason)?.error.code !== "request_aborted"
-  ) throw startResult.reason;
-  return Object.freeze({ kind: "stopped", shutdown: stopResult.value });
+  const [start, stop] = await Promise.all([
+    observePromise(starting),
+    observePromise(stopping),
+  ]);
+  return Object.freeze({ kind: "stopped", start, stop });
 };
 
 const reportFailure = (
@@ -823,15 +823,15 @@ export const runCli = async (
   let readExitCode: number | undefined;
   let tokenExitCode: number | undefined;
   let marketExitCode: number | undefined;
-  let runtimeStopped = false;
-  let shutdown: RuntimeShutdownOutcome = runtimeReleased;
+  let runtimeStopAttempted = false;
+  let processDisposition: CliRunResult["processDisposition"] = "natural_exit";
   let invalidRpcConfigurationFailure: Error | undefined;
   let startupFailure: RuntimeStateResetRequiredError | undefined;
   let failure: ApplicationFailure | undefined;
   let deliveryUnknown: DeliveryUnknown | undefined;
   const retainFailure = (error: unknown): void => {
     if (isProcessTerminalRequiredError(error)) {
-      shutdown = runtimeProcessTerminal;
+      processDisposition = "process_exit_required";
       if (error.primaryFailure !== undefined) retainFailure(error.primaryFailure);
       return;
     }
@@ -848,6 +848,29 @@ export const runCli = async (
   };
   const retainMcpLifecycleFailure = (): void => {
     failure ??= createApplicationFailure(tokenCatalogErrorRegistry, "internal_error");
+  };
+  const hasAdmittedFailure = (): boolean =>
+    invalidRpcConfigurationFailure !== undefined ||
+    startupFailure !== undefined ||
+    deliveryUnknown !== undefined ||
+    failure !== undefined ||
+    (readExitCode !== undefined && readExitCode !== 0) ||
+    (tokenExitCode !== undefined && tokenExitCode !== 0) ||
+    (marketExitCode !== undefined && marketExitCode !== 0);
+  const retainDependentCleanupFailure = (): void => {
+    processDisposition = "process_exit_required";
+    if (!hasAdmittedFailure()) retainMcpLifecycleFailure();
+  };
+  const retainRuntimeStop = (result: PromiseObservation<RuntimeShutdownOutcome>): void => {
+    runtimeStopAttempted = true;
+    if (result.status === "rejected") {
+      processDisposition = "process_exit_required";
+      retainFailure(result.reason);
+      return;
+    }
+    processDisposition = result.value.kind === "released"
+      ? "natural_exit"
+      : "process_exit_required";
   };
   try {
     if (
@@ -888,9 +911,16 @@ export const runCli = async (
         invalidRpcConfigurationFailure = configurationFailure;
       }
       if (runtime !== undefined) {
+        processDisposition = "process_exit_required";
         const startResult = await startRuntimeForCommand(runtime, dependencies.terminal.interruptSignal);
-        runtimeStopped = startResult.kind === "stopped";
-        if (startResult.kind === "stopped") shutdown = startResult.shutdown;
+        if (startResult.kind === "stopped") {
+          retainRuntimeStop(startResult.stop);
+          if (
+            startResult.stop.status === "fulfilled" &&
+            startResult.start?.status === "rejected" &&
+            getRuntimeOperationFailure(startResult.start.reason)?.error.code !== "request_aborted"
+          ) retainFailure(startResult.start.reason);
+        }
         if (startResult.kind === "started" && !dependencies.terminal.interruptSignal.aborted) {
           if (mcpMode) {
             mcp = dependencies.createMcp(runtime);
@@ -954,6 +984,7 @@ export const runCli = async (
   } catch (error) {
     retainFailure(error);
   } finally {
+    let dependentReleased = true;
     if (mcp !== undefined) {
       const released = observePromise(mcp.close());
       const [terminal, release] = await Promise.all([
@@ -961,17 +992,21 @@ export const runCli = async (
         released,
         ...(mcpStart === undefined ? [] : [mcpStart]),
       ]);
-      if (terminal.status === "rejected" || release.status === "rejected") {
-        retainMcpLifecycleFailure();
+      if (terminal.status === "rejected") retainMcpLifecycleFailure();
+      if (release.status === "rejected") {
+        dependentReleased = false;
+        retainDependentCleanupFailure();
       }
     }
     if (operationClient !== undefined) {
       try { await operationClient.close(); }
-      catch (error) { retainFailure(error); }
+      catch {
+        dependentReleased = false;
+        retainDependentCleanupFailure();
+      }
     }
-    if (runtime !== undefined && !runtimeStopped) {
-      try { shutdown = await runtime.stop(); }
-      catch (error) { retainFailure(error); }
+    if (runtime !== undefined && !runtimeStopAttempted && dependentReleased) {
+      retainRuntimeStop(await observePromise(runtime.stop()));
     }
     try { dependencies.terminal.dispose(); }
     catch (error) { retainFailure(error); }
@@ -1017,7 +1052,7 @@ export const runCli = async (
       exitCode = tokenCatalogInterfaceErrorMappings.get("internal_error").cliExitCode;
     }
   }
-  return Object.freeze({ exitCode, shutdown });
+  return Object.freeze({ exitCode, processDisposition });
 };
 
 const terminationSignals = Object.freeze(["SIGINT", "SIGTERM", "SIGHUP"] as const);
@@ -1225,7 +1260,7 @@ const isDirectExecution = (): boolean => {
 
 if (isDirectExecution()) {
   void runCli(process.argv.slice(2), createDefaultDependencies()).then((result) => {
-    if (result.shutdown.kind === "process_terminal") process.exit(result.exitCode);
+    if (result.processDisposition === "process_exit_required") process.exit(result.exitCode);
     else process.exitCode = result.exitCode;
   });
 }
