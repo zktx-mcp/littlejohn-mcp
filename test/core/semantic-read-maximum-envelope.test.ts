@@ -597,11 +597,22 @@ const maximumStockTokenExecutionSeries = (
     if (coverage === undefined) throw new TypeError("Maximum execution candle lacks coverage.");
     const blockNumber = (BigInt(coverage.fromBlock) +
       BigInt((intervalStart - Date.parse(coverage.fromTimestamp)) / 60_000)).toString();
-    const source = {
+    const blockHex = BigInt(blockNumber).toString(16).padStart(64, "0");
+    const blockHash = `0x${blockHex}`;
+    const transactionHash = (transactionIndex: number) =>
+      `0x${transactionIndex.toString(16).padStart(16, "0")}${blockHex.slice(-48)}`;
+    const firstSource = {
       blockNumber,
-      blockHash: `0x${"ff".repeat(32)}`,
+      blockHash,
+      transactionIndex: Number.MAX_SAFE_INTEGER - 1,
+      transactionHash: transactionHash(Number.MAX_SAFE_INTEGER - 1),
+      logIndex: Number.MAX_SAFE_INTEGER - 1,
+    };
+    const lastSource = {
+      blockNumber,
+      blockHash,
       transactionIndex: Number.MAX_SAFE_INTEGER,
-      transactionHash: `0x${"ee".repeat(32)}`,
+      transactionHash: transactionHash(Number.MAX_SAFE_INTEGER),
       logIndex: Number.MAX_SAFE_INTEGER,
     };
     const exact = { numerator: maximumNumerator, denominator: maximumDenominator };
@@ -618,8 +629,8 @@ const maximumStockTokenExecutionSeries = (
       tokenVolumeRaw: maximumVolume,
       quoteVolumeRaw: maximumVolume,
       tradeCount: Number.MAX_SAFE_INTEGER,
-      firstSource: source,
-      lastSource: source,
+      firstSource,
+      lastSource,
     };
   });
   return stockTokenExecutionSeriesSchema.parse({
@@ -630,14 +641,21 @@ const maximumStockTokenExecutionSeries = (
       finality: stockTokenExecutionIndexRegistry.chain.finalityTag,
       poolManager: stockTokenExecutionIndexRegistry.deployment.poolManager,
       poolId: asset.poolId,
-      quoteToken: stockTokenExecutionIndexRegistry.deployment.quoteToken,
+      quoteToken: {
+        address: asset.pair.quoteAsset.address,
+        decimals: asset.pair.quoteAsset.decimals,
+        symbol: "USDG",
+      },
     },
     artifact: {
       contractVersion: "1",
-      groupId: stockTokenExecutionIndexRegistry.groups[0]!.groupId,
+      pairId: asset.poolId,
       sequence: Number.MAX_SAFE_INTEGER,
       coveredUntilTimestamp: interval.requestedEnd,
       stateSha256: "f".repeat(64),
+      months: [...new Set(intervals.map((entry) => entry.fromTimestamp.slice(0, 7)))].map(
+        (month, index) => ({ month, sha256: (index + 1).toString(16).padStart(64, "0") }),
+      ),
       days: intervals.map((entry, index) => ({
         day: entry.fromTimestamp.slice(0, 10),
         sha256: index.toString(16).padStart(64, "0"),
@@ -798,7 +816,6 @@ const maximumStockTokenMarketSuccess = (withExecution: boolean) => {
           stockTokenHistoryInterval(request.window, block.blockTimestamp),
         )
       : unavailableStockTokenExecutionSeries({
-          token: member.contractAddress,
           ...stockTokenHistoryInterval(request.window, block.blockTimestamp),
         }, findStockTokenExecutionIndexAsset(member.contractAddress) === undefined
           ? "asset_not_indexed"

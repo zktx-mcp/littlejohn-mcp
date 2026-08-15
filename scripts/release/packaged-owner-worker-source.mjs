@@ -16,7 +16,7 @@ import { createChainOwnerApplication } from ${packageModule("chain/application.j
 import { createInterfaceOwnerApplication } from ${packageModule("interfaces/application.js")};
 import { createSourcifyContractSourceVerification } from ${packageModule("intelligence/sourcify.js")};
 import {
-  findStockTokenExecutionIndexAsset,
+  findStockTokenExecutionIndexAssetByPairId,
   stockTokenExecutionIndexRegistry,
   stockTokenExecutionSeriesSchema,
   unavailableStockTokenExecutionSeries,
@@ -50,7 +50,7 @@ const sessionExpiry = () => Math.floor(Date.parse(now()) / 1000) + 7 * 24 * 60 *
 const stockTokenExecutionIndex = Object.freeze({
   read: async (input, signal) => {
     if (signal?.aborted === true) throw signal.reason;
-    const asset = findStockTokenExecutionIndexAsset(input.token);
+    const asset = findStockTokenExecutionIndexAssetByPairId(input.pairId);
     if (asset === undefined) {
       return unavailableStockTokenExecutionSeries(input, "asset_not_indexed");
     }
@@ -97,14 +97,19 @@ const stockTokenExecutionIndex = Object.freeze({
         finality: stockTokenExecutionIndexRegistry.chain.finalityTag,
         poolManager: stockTokenExecutionIndexRegistry.deployment.poolManager,
         poolId: asset.poolId,
-        quoteToken: stockTokenExecutionIndexRegistry.deployment.quoteToken,
+        quoteToken: {
+          address: asset.pair.quoteAsset.address,
+          decimals: asset.pair.quoteAsset.decimals,
+          symbol: "USDG",
+        },
       },
       artifact: {
         contractVersion: "1",
-        groupId: stockTokenExecutionIndexRegistry.groups[0].groupId,
+        pairId: asset.poolId,
         sequence: 1,
         coveredUntilTimestamp: coverageEnd,
         stateSha256: "31".repeat(32),
+        months: [{ month: coverageStart.slice(0, 7), sha256: "30".repeat(32) }],
         days: [{ day: coverageStart.slice(0, 10), sha256: "32".repeat(32) }],
       },
       freshness: "current",

@@ -20,7 +20,7 @@ const executionIndexRegistryTarget = resolve(
 );
 const executionIndexRegistryCandidate = `${executionIndexRegistryTarget}.candidate`;
 const executionIndexRegistrySha256 =
-  "364a9c99b1f38175e6dd0f566168e024c721dc0532b2c08bdc53488a908de062";
+  "e8db13d976fd5b5a0c0f4e37546b3f20952cd52e8d71251db6e9bd00cb769826";
 const maximumSourceBytes = 1_048_576;
 const maximumSourceMembers = 512;
 const robinhoodSourceUri = "https://api.robinhood.com/rhj/assets";

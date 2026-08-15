@@ -59,6 +59,10 @@ import {
   type StockTokenMarketInput,
   type StockTokenMarketResult,
 } from "./stock-token-market.js";
+import {
+  findStockTokenExecutionIndexAsset,
+  unavailableStockTokenExecutionSeries,
+} from "./stock-token-execution-index.js";
 import { ReferenceFeedSynchronizationOwner } from "./synchronization.js";
 
 type CapturedWallet = Readonly<{
@@ -248,11 +252,16 @@ export class ReferenceMarketApplication implements ReferenceMarketApplicationPor
         });
         if (reference.status === "unavailable") return reference.result;
         const interval = stockTokenHistoryInterval(request.window, reference.block.blockTimestamp);
-        const execution = await this.#dependencies.stockTokenExecutionIndex.read({
-          token: resolution.officialAsset.member.contractAddress,
-          requestedStart: interval.requestedStart,
-          requestedEnd: interval.requestedEnd,
-        }, activeSignal);
+        const executionAsset = findStockTokenExecutionIndexAsset(
+          resolution.officialAsset.member.contractAddress,
+        );
+        const execution = executionAsset === undefined
+          ? unavailableStockTokenExecutionSeries(interval, "asset_not_indexed")
+          : await this.#dependencies.stockTokenExecutionIndex.read({
+              pairId: executionAsset.poolId,
+              requestedStart: interval.requestedStart,
+              requestedEnd: interval.requestedEnd,
+            }, activeSignal);
         return createAvailableStockTokenMarketResult({
           request,
           resolution,

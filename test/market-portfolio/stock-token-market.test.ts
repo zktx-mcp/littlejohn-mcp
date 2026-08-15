@@ -47,6 +47,7 @@ import type {
 } from "../../src/runtime/reference-market-storage.js";
 import { unavailableExecutionIndex } from "./execution-index-fixture.js";
 import {
+  findStockTokenExecutionIndexAsset,
   unavailableStockTokenExecutionSeries,
   type StockTokenExecutionIndexReadPort,
 } from "../../src/market-portfolio/stock-token-execution-index.js";
@@ -264,9 +265,13 @@ describe("Stock Token market ownership", () => {
     });
     expect(fixture.readStockTokenAtBlock).toHaveBeenCalledTimes(1);
     expect(fixture.readHistoryAtBlock).toHaveBeenCalledTimes(1);
-    expect(fixture.readExecutionIndex).toHaveBeenCalledWith({
-      token: dispositionFor("AAPL").asset.deployments.find((entry) => entry.chainId === 4663)!
+    const executionAsset = findStockTokenExecutionIndexAsset(
+      dispositionFor("AAPL").asset.deployments.find((entry) => entry.chainId === 4663)!
         .contractAddress,
+    );
+    expect(executionAsset).toBeDefined();
+    expect(fixture.readExecutionIndex).toHaveBeenCalledWith({
+      pairId: executionAsset!.poolId,
       requestedStart: "2026-08-11T13:30:00.000Z",
       requestedEnd: block.blockTimestamp,
     }, expect.any(AbortSignal));

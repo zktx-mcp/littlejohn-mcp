@@ -900,14 +900,17 @@ adapter.
 
 Stock Token market reads additionally consume one provider-neutral execution
 index port after the canonical Chainlink read. The port admits one exact
-versioned state and its digest-bound day artifacts, selects only candles for
-the registry-owned token and pool, and returns their source coverage and
-availability without exposing provider identities. The current GitHub adapter
-is stateless and owns only bounded artifact carriage. Runtime contains no Swap
-log reader, PoolKey derivation, cursor, repair process, candle builder, or local
-execution-history store. An unavailable, stale, inconsistent, retained-out, or
-capacity-limited execution series leaves the independently admitted Chainlink
-reference result unchanged.
+versioned pair state and its digest-bound pair-month and pair-day artifacts,
+retains the public half-open request interval, and selects only fully contained
+one-minute candles for the registry-owned Pool ID. It returns source coverage
+and availability without exposing provider identities or storage partitions.
+The current GitHub adapter is stateless and owns only bounded artifact carriage;
+its response-size, asset-list, concurrency, and deadline values are private
+operational guards that cannot change the provider-neutral result or evidence
+meaning. Runtime contains no Swap log reader, PoolKey derivation, cursor, repair
+process, candle builder, or local execution-history store. An unavailable,
+stale, inconsistent, retained-out, or capacity-limited execution series leaves
+the independently admitted Chainlink reference result unchanged.
 
 Each latest, history, or Stock Token market read enters one chain invocation,
 resolves one opaque canonical block, and performs every dependent feed,
