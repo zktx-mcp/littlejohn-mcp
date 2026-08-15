@@ -9,12 +9,17 @@ export type {
 } from "./application.js";
 
 export {
+  createStdioMcp,
   createMcpServer,
   mcpToolNames,
   parseMcpToolName,
-  startStdioMcp,
 } from "./mcp.js";
-export type { StdioMcpHandle } from "./mcp.js";
+export type {
+  McpServerRuntimePort,
+  StdioMcpOwner,
+} from "./mcp.js";
+export { loadMcpAppResource } from "./mcp-app/server.js";
+export type { McpAppResource } from "./mcp-app/server.js";
 
 export { parseReadCliCommand, runReadCliCommand } from "./cli-read.js";
 export type { ReadCliCommand, ReadCliOutputPort } from "./cli-read.js";

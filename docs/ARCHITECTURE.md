@@ -32,14 +32,20 @@ separate authority classes. The loopback endpoint serves no user interface,
 browser session, Cookie credential, or CSRF authority.
 
 A no-argument package process exposes one stdio MCP connection while sharing or
-taking over that HTTP owner. On an admitted MCP Apps connection, registered read
-and Review tools retain one content-addressed input/result snapshot and attach
-one self-contained App resource without changing their MCP text or structured
-result. App-only controls and interactive CLI commands independently send the
-same admitted Reviews to the same domain owners and read the same exact durable
-operations. The standard transport is primary. Implemented Host adapters are
-limited to current App association, immutable snapshot delivery, and the
-measured Codex View operation-result carriage path.
+taking over that HTTP owner. It constructs the complete server from the Runtime
+snapshot store, admitted packaged App resource, and one explicit local-operation
+client, then publishes the connection owner before starting stdio. Input end or
+close terminates that owner, which closes the SDK server and adopted transport
+before its local-operation client. On an admitted MCP Apps connection,
+registered read and Review tools retain one content-addressed input/result
+snapshot and attach one self-contained App resource without changing their MCP
+text or structured result. Connection admission, rather than missing
+construction inputs, selects ordinary or App presentation. App-only controls
+and interactive CLI commands independently send the same admitted Reviews to
+the same domain owners and read the same exact
+durable operations. The standard transport is primary. Implemented Host
+adapters are limited to current App association, immutable snapshot delivery,
+and the measured Codex View operation-result carriage path.
 Canonical binding catalogs and role registries own exact MCP names, native HTTP
 resources, CLI commands, parsing, and availability. The closed App presentation
 registry owns its implemented contract set. Help text, route coverage,
@@ -189,8 +195,8 @@ The current external integration classification is:
 | External identity | Class | Product role and semantic SoT | Required adapter and configuration owner | Composition boundary |
 | --- | --- | --- | --- | --- |
 | Ethereum JSON-RPC endpoint | Standard chain transport | `docs/PRODUCT_POLICY.md` owns chain identity; `chain` owns RPC methods, normalization, limits, and failures | `runtime` owns default selection, exact admitted URI bytes, and source identity; `src/chain/rpc-transport-target.ts` owns HTTPS target admission; `chain` owns the bounded requester | The chain application constructs the requester from the exact admitted URI and passes only chain-read ports to features |
-| Model Context Protocol | Binding product transport | The official MCP specification owns JSON-RPC transport meaning; this document's interface contract model and the canonical binding owners own Little John tool meaning | `src/interfaces/mcp.ts` owns official SDK server and stdio transport adaptation; role registries own their exact tool bindings | Interface composition constructs one MCP server from canonical bindings; replacing SDK details preserves the complete MCP identity and tool contracts |
-| Model Context Protocol Apps | Binding product transport | The official MCP Apps specification owns resource and View transport meaning; Little John's canonical contracts own product results and this document owns presentation lifecycle | `src/interfaces/mcp-app` owns the self-contained resource, descriptor and chunk transport, View bridge, renderers, and narrow Host adapters; Runtime owns the immutable snapshot store | MCP composition attaches presentation only to contracts in the closed registry; replacing a Host adapter preserves the standard transport and every canonical result, while replacing the extension requires an accepted integration change |
+| Model Context Protocol | Binding product transport | The official MCP specification owns JSON-RPC transport meaning; this document's interface contract model and the canonical binding owners own Little John tool meaning | `src/interfaces/mcp.ts` owns official SDK server and stdio transport adaptation; role registries own their exact tool bindings | Interface composition supplies the complete Runtime server port, packaged resource, and explicit local-operation client, and publishes one stdio owner before connection; replacing SDK details preserves the complete MCP identity, tool contracts, EOF termination, and cleanup order |
+| Model Context Protocol Apps | Binding product transport | The official MCP Apps specification owns resource and View transport meaning; Little John's canonical contracts own product results and this document owns presentation lifecycle | `src/interfaces/mcp-app` owns the self-contained resource, descriptor and chunk transport, View bridge, renderers, and narrow Host adapters; Runtime owns the immutable snapshot store | MCP composition always supplies the Runtime store and admitted packaged resource; connection admission, rather than missing construction inputs, selects ordinary or App presentation, and replacing a Host adapter preserves the standard transport and every canonical result while replacing the extension requires an accepted integration change |
 | Codex MCP App Host | Replaceable implementation provider | The MCP Apps integration requirements below own the provider-neutral Host role and the exact current Codex transport boundary | Local Codex configuration owns Host enablement; the Codex adapters under `src/interfaces/mcp-app` own only the measured missing transport facts defined below | The local stdio MCP connection and sandboxed View enter the common MCP Apps process; another Host may replace Codex only by satisfying that complete unchanged process |
 | Claude MCP App Host | Replaceable implementation provider | The MCP Apps integration requirements below own the provider-neutral Host role and the exact current Claude transport boundary | Local Claude configuration owns Host enablement; the Claude adapter under `src/interfaces/mcp-app` owns only the measured missing transport fact defined below | The local stdio MCP connection and sandboxed View enter the common MCP Apps process; another Host may replace Claude only by satisfying that complete unchanged process |
 | WalletConnect | Binding product transport | `docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture | `wallet` owns SDK adaptation, project-ID validation, required namespace settings, metadata, SDK options, lifecycle, and provider defaults | The wallet application factory constructs one `WalletConnectClientPort` from opaque configuration received through runtime composition; other modules receive wallet product ports |

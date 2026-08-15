@@ -20,11 +20,12 @@ import {
 import { createChainOwnerApplication } from "./chain/application.js";
 import {
   createInterfaceOwnerApplication,
+  createStdioMcp,
   cliHelpText,
+  loadMcpAppResource,
   LocalOperationClient,
   parseReadCliCommand,
   runReadCliCommand,
-  startStdioMcp,
   walletConnectionInterface,
   type DeliveryUnknown,
   type ReadCliCommand,
@@ -32,7 +33,8 @@ import {
   referenceMarketCliCommandRequiresInteractiveTerminal,
   runReferenceMarketCliCommand,
   type ReferenceMarketCliCommand,
-  type StdioMcpHandle,
+  type McpServerRuntimePort,
+  type StdioMcpOwner,
 } from "./interfaces/index.js";
 import {
   constrainInterfaceFailure,
@@ -61,9 +63,6 @@ import {
   runtimeInterfaceErrorMappings,
   runtimeStateResetRequiredCode,
   type RuntimeStateResetRequiredError,
-  type RuntimeDispatchRequest,
-  type RuntimeDispatchResponse,
-  type RuntimeOwnerSession,
 } from "./runtime/index.js";
 import {
   isProcessTerminalRequiredError,
@@ -98,11 +97,9 @@ import {
 
 type WalletConnectionSuccess = CapabilitySuccess<WalletConnectionData>;
 
-export interface CliRuntimePort {
+export interface CliRuntimePort extends McpServerRuntimePort {
   readonly ownerState: LocalRuntime["ownerState"];
   start(): Promise<void>;
-  dispatchRuntimeRequest(request: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse>;
-  openOwnerSession(signal?: AbortSignal): Promise<RuntimeOwnerSession>;
   stop(): Promise<RuntimeShutdownOutcome>;
 }
 
@@ -124,7 +121,7 @@ export interface CliDependencies {
   readonly createRuntime: () => Promise<CliRuntimePort>;
   readonly terminal: CliTerminalPort;
   readonly waitForPoll: () => Promise<void>;
-  readonly startMcp?: (runtime: CliRuntimePort) => Promise<StdioMcpHandle>;
+  readonly createMcp: (runtime: CliRuntimePort) => StdioMcpOwner;
   readonly settleOutput?: () => Promise<void>;
 }
 
@@ -472,6 +469,16 @@ type InterruptRace<Result> =
   | { readonly kind: "completed"; readonly result: Result }
   | { readonly kind: "interrupted" };
 
+type PromiseObservation<Value> =
+  | Readonly<{ readonly status: "fulfilled"; readonly value: Value }>
+  | Readonly<{ readonly status: "rejected"; readonly reason: unknown }>;
+
+const observePromise = <Value>(promise: Promise<Value>): Promise<PromiseObservation<Value>> =>
+  promise.then(
+    (value) => Object.freeze({ status: "fulfilled" as const, value }),
+    (reason: unknown) => Object.freeze({ status: "rejected" as const, reason }),
+  );
+
 const raceWithInterrupt = async <Result>(
   startWork: () => Promise<Result>,
   signal: AbortSignal,
@@ -810,7 +817,9 @@ export const runCli = async (
   const mcpMode = argumentsInput.length === 0;
   let runtime: CliRuntimePort | undefined;
   let operationClient: LocalOperationClient | undefined;
-  let mcp: StdioMcpHandle | undefined;
+  let mcp: StdioMcpOwner | undefined;
+  let mcpClosed: Promise<PromiseObservation<void>> | undefined;
+  let mcpStart: Promise<PromiseObservation<void>> | undefined;
   let readExitCode: number | undefined;
   let tokenExitCode: number | undefined;
   let marketExitCode: number | undefined;
@@ -836,6 +845,9 @@ export const runCli = async (
       return;
     }
     failure ??= normalizeCliFailure(error);
+  };
+  const retainMcpLifecycleFailure = (): void => {
+    failure ??= createApplicationFailure(tokenCatalogErrorRegistry, "internal_error");
   };
   try {
     if (
@@ -881,11 +893,23 @@ export const runCli = async (
         if (startResult.kind === "stopped") shutdown = startResult.shutdown;
         if (startResult.kind === "started" && !dependencies.terminal.interruptSignal.aborted) {
           if (mcpMode) {
-            if (dependencies.startMcp === undefined) throw new WalletOperationError("internal_error");
-            mcp = await dependencies.startMcp(runtime);
-            const decision = await raceWithInterrupt(() => mcp?.closed ?? Promise.resolve(),
-              dependencies.terminal.interruptSignal);
-            if (decision.kind === "interrupted") await mcp.close();
+            mcp = dependencies.createMcp(runtime);
+            const closedObservation = observePromise(mcp.closed);
+            mcpClosed = closedObservation;
+            const startObservation = observePromise(mcp.start());
+            mcpStart = startObservation;
+            const startDecision = await raceWithInterrupt(
+              () => startObservation,
+              dependencies.terminal.interruptSignal,
+            );
+            if (startDecision.kind === "completed") {
+              if (startDecision.result.status === "fulfilled") {
+                await raceWithInterrupt(
+                  () => closedObservation,
+                  dependencies.terminal.interruptSignal,
+                );
+              }
+            }
           } else if (readCommand !== undefined) {
             operationClient = new LocalOperationClient({
               ownerSessions: runtime,
@@ -931,8 +955,15 @@ export const runCli = async (
     retainFailure(error);
   } finally {
     if (mcp !== undefined) {
-      try { await mcp.close(); }
-      catch (error) { retainFailure(error); }
+      const released = observePromise(mcp.close());
+      const [terminal, release] = await Promise.all([
+        mcpClosed ?? observePromise(mcp.closed),
+        released,
+        ...(mcpStart === undefined ? [] : [mcpStart]),
+      ]);
+      if (terminal.status === "rejected" || release.status === "rejected") {
+        retainMcpLifecycleFailure();
+      }
     }
     if (operationClient !== undefined) {
       try { await operationClient.close(); }
@@ -1174,10 +1205,11 @@ const createDefaultDependencies = (): CliDependencies => {
     }),
     terminal,
     waitForPoll: () => new Promise<void>((resolvePoll) => { setTimeout(resolvePoll, 500); }),
-    startMcp: (runtime: CliRuntimePort) => startStdioMcp(
+    createMcp: (runtime: CliRuntimePort) => createStdioMcp(
       runtime,
       process.stdin,
       terminal.outputOwner.mcpOutput,
+      loadMcpAppResource(),
     ),
     settleOutput: () => terminal.outputOwner.settle(),
   });

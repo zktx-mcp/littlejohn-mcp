@@ -365,19 +365,16 @@ export class McpAppPresentationService {
 
 export const createMcpAppPresentationService = (
   server: Server,
-  store: PresentationSnapshotStore | undefined,
-  resource: McpAppResource | undefined,
+  store: PresentationSnapshotStore,
+  resource: McpAppResource,
 ): Readonly<{
-  service?: McpAppPresentationService;
+  service: McpAppPresentationService;
   connection(): McpAppConnection;
 }> => {
-  const service = store === undefined || resource === undefined
-    ? undefined
-    : new McpAppPresentationService(store, resource);
+  const service = new McpAppPresentationService(store, resource);
   return Object.freeze({
-    ...(service === undefined ? {} : { service }),
-    connection: (): McpAppConnection => service === undefined
-      ? Object.freeze({ status: "ordinary" })
-      : admitMcpAppConnection(server.getClientCapabilities(), server.getClientVersion()),
+    service,
+    connection: (): McpAppConnection =>
+      admitMcpAppConnection(server.getClientCapabilities(), server.getClientVersion()),
   });
 };

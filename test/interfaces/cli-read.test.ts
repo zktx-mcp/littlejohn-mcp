@@ -67,6 +67,9 @@ class FakeRuntime implements CliRuntimePort {
   constructor(response: RuntimeDispatchResponse) { this.#response = response; }
   async start(): Promise<void> { this.startCount += 1; }
   async stop() { this.stopCount += 1; return runtimeReleased; }
+  presentationSnapshotStore(): never {
+    throw new Error("Read CLI must not request the MCP snapshot store.");
+  }
   openOwnerSession(signal?: AbortSignal) { return openTestOwnerSession(this, signal); }
   async dispatchRuntimeRequest(request: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse> {
     this.requests.push(request);
@@ -565,6 +568,7 @@ describe("read CLI", () => {
       createRuntime: async () => runtime,
       terminal,
       waitForPoll: async () => undefined,
+      createMcp: () => { throw new Error("Read CLI must not create MCP."); },
     })).toBe(0);
     expect(terminal.output).toEqual([`${canonicalJsonStringify(success)}\n`]);
     expect(terminal.errors).toEqual([]);

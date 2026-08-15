@@ -28,6 +28,7 @@ const expectedChainId = "eip155:4663";
 const expectedWalletAddress = "0x1111111111111111111111111111111111111111";
 const requestTimeoutMs = 30_000;
 const childShutdownTimeoutMs = 5_000;
+const mcpEndOfInputExitTimeoutMs = 2_000;
 const pollIntervalMs = 25;
 const packagedCliTtyLauncher = [
   'Object.defineProperty(process.stdin, "isTTY", { value: true });',
@@ -318,15 +319,20 @@ class RawMcpClient {
     this.nextId = 1;
     this.pending = new Map();
     this.stderr = "";
-    let buffer = "";
+    this.stdoutTail = "";
+    this.closeOutcome = new Promise((resolveClose) => {
+      this.child.once("close", (code, signal) => {
+        resolveClose(Object.freeze({ code, signal }));
+      });
+    });
     this.child.stdout.setEncoding("utf8");
     this.child.stdout.on("data", (chunk) => {
-      buffer += chunk;
+      this.stdoutTail += chunk;
       for (;;) {
-        const newline = buffer.indexOf("\n");
+        const newline = this.stdoutTail.indexOf("\n");
         if (newline === -1) break;
-        const line = buffer.slice(0, newline).replace(/\r$/u, "");
-        buffer = buffer.slice(newline + 1);
+        const line = this.stdoutTail.slice(0, newline).replace(/\r$/u, "");
+        this.stdoutTail = this.stdoutTail.slice(newline + 1);
         if (line.length === 0) continue;
         let message;
         try { message = JSON.parse(line); }
@@ -443,6 +449,27 @@ class RawMcpClient {
     return result.contents[0];
   }
 
+  async closeInputAndWaitForTermination() {
+    if (this.pending.size !== 0 || this.stdoutTail.length !== 0) {
+      throw new TypeError("Packaged MCP input cannot close with pending protocol work.");
+    }
+    const startedAt = performance.now();
+    this.child.stdin.end();
+    const outcome = await waitForPromise(
+      this.closeOutcome,
+      mcpEndOfInputExitTimeoutMs,
+      "Packaged MCP end-of-input termination",
+    );
+    if (
+      outcome.code !== 0 ||
+      outcome.signal !== null ||
+      this.stdoutTail.length !== 0 ||
+      performance.now() - startedAt > mcpEndOfInputExitTimeoutMs
+    ) {
+      throw new TypeError("Packaged MCP did not terminate cleanly after end-of-input.");
+    }
+  }
+
   async close() {
     await this.ownership.terminate();
   }
@@ -470,6 +497,27 @@ const startNpxMcp = async (prepared, environment, appConnection = false) => {
     () => client.initialize(),
     requestTimeoutMs,
     "Packaged MCP initialization",
+  );
+  return client;
+};
+
+const startInstalledMcp = async (prepared, environment) => {
+  const child = spawn(process.execPath, [resolve(
+    prepared.installRoot,
+    prepared.packageIdentity.installRelativePath,
+    "dist/cli.js",
+  )], {
+    cwd: prepared.installRoot,
+    env: environment,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const ownership = ownChildProcess(child, "Installed MCP process", childShutdownTimeoutMs);
+  const client = new RawMcpClient(ownership, prepared.packageIdentity);
+  await initializeOwnedChild(
+    ownership,
+    () => client.initialize(),
+    requestTimeoutMs,
+    "Installed MCP initialization",
   );
   return client;
 };
@@ -1255,6 +1303,21 @@ const assertFixedPortReleased = async () => {
     server.close((error) => error === undefined ? resolveClose() : rejectClose(error));
   });
   await closing;
+};
+
+const assertFixedPortOwned = async () => {
+  const server = createServer();
+  /** @type {Promise<void>} */
+  const owned = new Promise((resolveOwned, rejectOwned) => {
+    server.once("error", (error) => {
+      if (Object.getOwnPropertyDescriptor(error, "code")?.value === "EADDRINUSE") resolveOwned();
+      else rejectOwned(error);
+    });
+    server.listen(46630, "127.0.0.1", () => {
+      server.close(() => rejectOwned(new TypeError("The fixed port has no owner.")));
+    });
+  });
+  await owned;
 };
 
 const assertPackagedPersistence = (inspection, runtimeIdentity, expectedOwner) => {
@@ -2079,6 +2142,17 @@ export const verifyPackagedIntegration = async (prepared) => {
       processId: deferred.processId,
       acquiredAt: takeoverAcquiredAt,
     });
+    await assertFixedPortReleased();
+    const endOfInputMcp = await startInstalledMcp(prepared, environment);
+    mcpClients.push(endOfInputMcp);
+    const endOfInputStatus = await endOfInputMcp.callTool("read_get_chain_status");
+    if (endOfInputStatus.structuredContent?.data?.chainId !== expectedChainId) {
+      throw new TypeError("Installed MCP end-of-input proof did not complete its request.");
+    }
+    await assertFixedPortOwned();
+    await endOfInputMcp.closeInputAndWaitForTermination();
+    mcpClients.splice(mcpClients.indexOf(endOfInputMcp), 1);
+    await assertFixedPortReleased();
     fakeRpc.assertNoUnexpectedMethods();
     const methods = fakeRpc.calls.map((call) => call.method);
     if ([
@@ -2094,7 +2168,6 @@ export const verifyPackagedIntegration = async (prepared) => {
       throw new TypeError("Packaged integration did not exercise the bounded RPC path.");
     }
     await fakeRpc.close();
-    await assertFixedPortReleased();
   } finally {
     await Promise.allSettled(mcpClients.splice(0).map((client) => client.close()));
     await Promise.allSettled(workers.map((worker) => worker.stop()));

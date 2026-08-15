@@ -126,6 +126,10 @@ class FakeRuntime implements CliRuntimePort {
 
   async start(): Promise<void> { this.startCount += 1; }
 
+  presentationSnapshotStore(): never {
+    throw new Error("Wallet CLI must not request the MCP snapshot store.");
+  }
+
   async dispatchRuntimeRequest(request: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse> {
     this.requests.push(Object.freeze({ ...request }));
     return await this.#handle(request);
@@ -188,6 +192,7 @@ const dependencies = (
   createRuntime: async () => runtime,
   terminal: terminal.terminal,
   waitForPoll: async () => undefined,
+  createMcp: () => { throw new Error("Wallet CLI must not create MCP."); },
 });
 
 const bodyOf = (request: RuntimeDispatchRequest): CanonicalJson | undefined =>

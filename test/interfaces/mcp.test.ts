@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -20,9 +21,13 @@ import {
 } from "../../src/interfaces/index.js";
 import { resolveLocalOperationIdentity } from "../../src/interfaces/local-operation.js";
 import {
+  createMcpAppResource,
+} from "../../src/interfaces/mcp-app/server.js";
+import {
   createMcpServer,
   createMcpToolRegistry,
   type McpRuntimePort,
+  type McpServerRuntimePort,
 } from "../../src/interfaces/mcp.js";
 import { referenceMarketInterfaceBindings } from "../../src/interfaces/identities.js";
 import {
@@ -32,11 +37,20 @@ import {
 import { referenceWatchlistReviewRequestSchema } from "../../src/market-portfolio/index.js";
 import { tokenSelectionReviewRequestSchema } from "../../src/token-catalog/index.js";
 import type { RuntimeDispatchRequest, RuntimeDispatchResponse } from "../../src/runtime/index.js";
+import type { PresentationSnapshotStore } from "../../src/runtime/presentation-snapshot.js";
 import { toProblemDetails } from "../../src/runtime/index.js";
 import { openTestOwnerSession } from "./owner-session-harness.js";
 import { stockTokenMarketUnmappedFixture } from "./stock-token-market-fixture.js";
 
-class FakeRuntime implements McpRuntimePort {
+const unusedSnapshotStore: PresentationSnapshotStore = Object.freeze({
+  prepare: () => { throw new Error("Ordinary MCP must not prepare a snapshot."); },
+  commit: () => { throw new Error("Ordinary MCP must not commit a snapshot."); },
+  read: () => { throw new Error("Ordinary MCP must not read a snapshot."); },
+  readResultChunk: () => { throw new Error("Ordinary MCP must not read a snapshot chunk."); },
+});
+const testAppResource = createMcpAppResource("<!doctype html><title>Little John test</title>");
+
+class FakeRuntime implements McpServerRuntimePort {
   readonly requests: RuntimeDispatchRequest[] = [];
   handler: (request: RuntimeDispatchRequest) => RuntimeDispatchResponse | Promise<RuntimeDispatchResponse>;
 
@@ -52,6 +66,8 @@ class FakeRuntime implements McpRuntimePort {
   openOwnerSession(signal?: AbortSignal) {
     return openTestOwnerSession(this, signal);
   }
+
+  presentationSnapshotStore(): PresentationSnapshotStore { return unusedSnapshotStore; }
 }
 
 interface ConnectedMcp {
@@ -65,10 +81,13 @@ afterEach(async () => {
   await Promise.all(openConnections.splice(0).map((connection) => connection.close()));
 });
 
-const connectOrdinary = async (runtime: McpRuntimePort): Promise<ConnectedMcp> => {
+const connectMcp = async (
+  runtime: McpServerRuntimePort,
+  capabilities: ClientCapabilities,
+): Promise<ConnectedMcp> => {
   const operationClient = new LocalOperationClient({ ownerSessions: runtime });
-  const server = createMcpServer(runtime, operationClient);
-  const client = new Client({ name: "littlejohn-test", version: "1.0.0" }, { capabilities: {} });
+  const server = createMcpServer(runtime, operationClient, testAppResource);
+  const client = new Client({ name: "littlejohn-test", version: "1.0.0" }, { capabilities });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   const connection = Object.freeze({
@@ -80,6 +99,17 @@ const connectOrdinary = async (runtime: McpRuntimePort): Promise<ConnectedMcp> =
   openConnections.push(connection);
   return connection;
 };
+
+const connectOrdinary = (runtime: McpServerRuntimePort): Promise<ConnectedMcp> =>
+  connectMcp(runtime, {});
+
+const connectApp = (runtime: McpServerRuntimePort): Promise<ConnectedMcp> => connectMcp(runtime, {
+  extensions: {
+    "io.modelcontextprotocol/ui": {
+      mimeTypes: ["text/html;profile=mcp-app"],
+    },
+  },
+});
 
 describe("MCP binding projection", () => {
   it("publishes a strict JSON Schema input contract for every declared tool", async () => {
@@ -224,7 +254,7 @@ describe("MCP binding projection", () => {
     }
   });
 
-  it("keeps an ordinary MCP connection read-only and omits App operation and presentation tools", async () => {
+  it("keeps an ordinary MCP connection read-only and rejects App-only tools and resources", async () => {
     const runtime = new FakeRuntime();
     const local = new LocalOperationClient({ ownerSessions: runtime });
     const expected = createMcpToolRegistry(runtime, local).values()
@@ -236,9 +266,12 @@ describe("MCP binding projection", () => {
 
     const { client } = await connectOrdinary(runtime);
     const listed = await client.listTools();
+    const resources = await client.listResources();
     const names = listed.tools.map((tool) => tool.name).sort();
 
     expect(names).toEqual(expected);
+    expect(resources.resources).toEqual([]);
+    await expect(client.readResource({ uri: testAppResource.uri })).rejects.toThrow();
     expect(names.some((name) => operationInterfaceBindingList
       .some((binding) => binding.mcp.name === name))).toBe(false);
     expect(names.some((name) => name.startsWith("presentation_"))).toBe(false);
@@ -246,6 +279,19 @@ describe("MCP binding projection", () => {
       expect(tool.annotations?.readOnlyHint).toBe(true);
       expect(tool.annotations?.destructiveHint).toBe(false);
     }
+  });
+
+  it("selects App resources only from admitted connection capability", async () => {
+    const { client } = await connectApp(new FakeRuntime());
+    const resources = await client.listResources();
+    expect(resources.resources).toEqual([expect.objectContaining({
+      uri: testAppResource.uri,
+      mimeType: "text/html;profile=mcp-app",
+    })]);
+    const tools = await client.listTools();
+    expect(tools.tools.map((tool) => tool.name)).toContain("presentation_get_snapshot");
+    expect(tools.tools.some((tool) => operationInterfaceBindingList
+      .some((binding) => binding.mcp.name === tool.name))).toBe(true);
   });
 
   it("preserves package identity and a canonical public-read failure on the surviving MCP surface", async () => {

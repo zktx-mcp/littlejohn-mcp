@@ -149,6 +149,7 @@ describe("CLI interface identity", () => {
       },
       terminal,
       waitForPoll: async () => undefined,
+      createMcp: () => { throw new Error("Help must not create MCP."); },
     })).toBe(0);
     expect(runtimeCreations).toBe(0);
     expect(terminal.output).toEqual([cliHelpText]);

@@ -104,7 +104,6 @@ import { presentationContractRegistry } from "./mcp-app/registry.js";
 import {
   appToolMetadata,
   createMcpAppPresentationService,
-  loadMcpAppResource,
   type McpAppPresentationService,
   type McpAppResource,
 } from "./mcp-app/server.js";
@@ -182,8 +181,10 @@ interface McpDeliveryRecoveryDescriptor {
   project(delivery: DeliveryUnknown): CanonicalJson;
 }
 
-export interface McpRuntimePort extends RuntimeDispatchPort, RuntimeOwnerSessionPort {
-  presentationSnapshotStore?(): PresentationSnapshotStore;
+export interface McpRuntimePort extends RuntimeDispatchPort, RuntimeOwnerSessionPort {}
+
+export interface McpServerRuntimePort extends McpRuntimePort {
+  presentationSnapshotStore(): PresentationSnapshotStore;
 }
 
 type McpObjectSchema = Tool["inputSchema"] | NonNullable<Tool["outputSchema"]>;
@@ -846,18 +847,28 @@ const attachOperationToolResultDescriptor = (
   });
 };
 
+const requestAbortedToolResult = (
+  definition: McpToolDefinition,
+  normalizedInput: unknown,
+): CallToolResult => attachOperationToolResultDescriptor(
+  definition,
+  normalizedInput,
+  constrainedToolResult(definition, {
+    ok: false,
+    failure: createInterfaceFailure("request_aborted"),
+  }),
+);
+
 export const createMcpServer = (
-  runtime: McpRuntimePort,
-  client = new LocalOperationClient({ ownerSessions: runtime }),
-  appResource?: McpAppResource,
+  runtime: McpServerRuntimePort,
+  client: LocalOperationClient,
+  appResource: McpAppResource,
 ): Server => {
-  const snapshotStore = appResource === undefined
-    ? undefined
-    : runtime.presentationSnapshotStore?.();
+  const snapshotStore = runtime.presentationSnapshotStore();
   const server = new Server(mcpServerIdentity, {
     capabilities: {
       tools: {},
-      ...(snapshotStore === undefined ? {} : { resources: {} }),
+      resources: {},
     },
     instructions: "Read Robinhood Chain data, inspect token contracts, and manage account token selections and Robinhood Wallet operations without establishing token safety or official status and without signing or transaction authority.",
   });
@@ -873,14 +884,12 @@ export const createMcpServer = (
       ) {
         return [];
       }
-      const metadata = app.service !== undefined
-        ? appToolMetadata(
-            connection,
-            app.service.resource,
-            definition.visibility,
-            definition.createsView,
-          )
-        : undefined;
+      const metadata = appToolMetadata(
+        connection,
+        app.service.resource,
+        definition.visibility,
+        definition.createsView,
+      );
       return [{
         name: definition.name,
         description: definition.description,
@@ -893,35 +902,33 @@ export const createMcpServer = (
   }));
 
   const presentationService = app.service;
-  if (presentationService !== undefined) {
-    server.setRequestHandler(ListResourcesRequestSchema, async () => ({
-      resources: app.connection().status === "ordinary" ? [] : [{
-        uri: presentationService.resource.uri,
-        name: "Little John presentation",
-        title: "Little John",
-        description: "Self-contained result, Review, and operation presentation.",
-        mimeType: "text/html;profile=mcp-app",
-        size: presentationService.resource.utf8Bytes,
-        _meta: {
-          ui: {
-            prefersBorder: true,
-            csp: {
-              connectDomains: [],
-              resourceDomains: [],
-              frameDomains: [],
-              baseUriDomains: [],
-            },
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: app.connection().status === "ordinary" ? [] : [{
+      uri: presentationService.resource.uri,
+      name: "Little John presentation",
+      title: "Little John",
+      description: "Self-contained result, Review, and operation presentation.",
+      mimeType: "text/html;profile=mcp-app",
+      size: presentationService.resource.utf8Bytes,
+      _meta: {
+        ui: {
+          prefersBorder: true,
+          csp: {
+            connectDomains: [],
+            resourceDomains: [],
+            frameDomains: [],
+            baseUriDomains: [],
           },
         },
-      }],
-    }));
-    server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-      if (app.connection().status === "ordinary") {
-        throw new TypeError("MCP App resources are unavailable on this connection.");
-      }
-      return { contents: [presentationService.readResource(request.params.uri)] };
-    });
-  }
+      },
+    }],
+  }));
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    if (app.connection().status === "ordinary") {
+      throw new TypeError("MCP App resources are unavailable on this connection.");
+    }
+    return { contents: [presentationService.readResource(request.params.uri)] };
+  });
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     let definition: McpToolDefinition;
@@ -948,19 +955,13 @@ export const createMcpServer = (
       });
     }
     if (extra.signal.aborted) {
-      return attachOperationToolResultDescriptor(
-        definition,
-        input,
-        constrainedToolResult(definition, {
-          ok: false,
-          failure: createInterfaceFailure("request_aborted"),
-        }),
-      );
+      return requestAbortedToolResult(definition, input);
     }
     try {
       const invoked = await definition.invoke(input, extra.signal);
+      if (extra.signal.aborted) return requestAbortedToolResult(definition, input);
       if (
-        definition.presentationTool === "get_snapshot" && presentationService !== undefined &&
+        definition.presentationTool === "get_snapshot" &&
         !isDeliveryUnknown(invoked) && invoked.ok
       ) {
         return presentationService.getSnapshotResult(
@@ -976,7 +977,7 @@ export const createMcpServer = (
         ),
       );
       if (
-        connection.status === "app" && presentationService !== undefined &&
+        connection.status === "app" &&
         definition.presentationContract !== undefined &&
         !isDeliveryUnknown(invoked) && invoked.ok
       ) {
@@ -1002,34 +1003,313 @@ export const createMcpServer = (
       );
     }
   });
-  server.onclose = () => { void client.close(); };
   return server;
 };
 
-export interface StdioMcpHandle {
+export interface StdioMcpOwner {
   readonly closed: Promise<void>;
+  start(): Promise<void>;
   close(): Promise<void>;
 }
 
-export const startStdioMcp = async (
-  runtime: McpRuntimePort,
+type PromiseSettlement<Value> =
+  | Readonly<{ readonly status: "fulfilled"; readonly value: Value }>
+  | Readonly<{ readonly status: "rejected"; readonly reason: unknown }>;
+
+const observePromise = <Value>(promise: Promise<Value>): Promise<PromiseSettlement<Value>> =>
+  promise.then(
+    (value) => Object.freeze({ status: "fulfilled" as const, value }),
+    (reason: unknown) => Object.freeze({ status: "rejected" as const, reason }),
+  );
+
+const observeOperation = async <Value>(
+  operation: () => Value | Promise<Value>,
+): Promise<PromiseSettlement<Value>> => {
+  try { return await observePromise(Promise.resolve(operation())); }
+  catch (reason) { return Object.freeze({ status: "rejected", reason }); }
+};
+
+type McpTerminal =
+  | Readonly<{ readonly status: "clean" }>
+  | Readonly<{ readonly status: "failed"; readonly reason: unknown }>;
+
+type CleanupResult =
+  | Readonly<{ readonly status: "fulfilled" }>
+  | Readonly<{ readonly status: "rejected"; readonly reasons: readonly unknown[] }>;
+
+interface CleanupAttempt {
+  readonly result: Promise<CleanupResult>;
+  readonly publicResult: Promise<void>;
+}
+
+const rejectOrdered = (reasons: readonly unknown[], message: string): never => {
+  if (reasons.length === 1) throw reasons[0];
+  throw new AggregateError(reasons, message);
+};
+
+class StdioMcpLifecycle implements StdioMcpOwner {
+  readonly closed: Promise<void>;
+
+  readonly #input: Readable;
+  readonly #output: Writable;
+  readonly #server: Server;
+  readonly #client: LocalOperationClient;
+  readonly #resolveClosed: () => void;
+  readonly #rejectClosed: (reason?: unknown) => void;
+  readonly #closedStartError = new Error("The MCP stdio owner is already closed.");
+
+  #terminal: McpTerminal | undefined;
+  #closedSettled = false;
+  #startPromise: Promise<void> | undefined;
+  #activeCleanup: CleanupAttempt | undefined;
+  #firstCleanup: CleanupAttempt | undefined;
+  #released: Promise<void> | undefined;
+  #serverOwned = true;
+  #clientOwned = true;
+  #inputErrorOwned = false;
+  #inputEndOwned = false;
+  #inputCloseOwned = false;
+  #pendingServerError: Readonly<{ readonly reason: unknown }> | undefined;
+
+  readonly #onInputError = (reason: unknown): void => {
+    this.#selectTerminal(Object.freeze({ status: "failed", reason }));
+  };
+
+  readonly #onInputEnd = (): void => {
+    this.#selectTerminal(Object.freeze({ status: "clean" }));
+  };
+
+  readonly #onInputClose = (): void => {
+    this.#selectTerminal(Object.freeze({ status: "clean" }));
+  };
+
+  readonly #onServerError = (reason: unknown): void => {
+    const pending = Object.freeze({ reason });
+    this.#pendingServerError = pending;
+    queueMicrotask(() => {
+      if (this.#pendingServerError === pending) this.#pendingServerError = undefined;
+    });
+  };
+
+  readonly #onServerClose = (): void => {
+    const pending = this.#pendingServerError;
+    this.#pendingServerError = undefined;
+    this.#selectTerminal(pending === undefined
+      ? Object.freeze({ status: "clean" })
+      : Object.freeze({ status: "failed", reason: pending.reason }));
+  };
+
+  constructor(
+    input: Readable,
+    output: Writable,
+    server: Server,
+    client: LocalOperationClient,
+  ) {
+    this.#input = input;
+    this.#output = output;
+    this.#server = server;
+    this.#client = client;
+    let resolveClosed!: () => void;
+    let rejectClosed!: (reason?: unknown) => void;
+    this.closed = new Promise<void>((resolve, reject) => {
+      resolveClosed = resolve;
+      rejectClosed = reject;
+    });
+    this.#resolveClosed = resolveClosed;
+    this.#rejectClosed = rejectClosed;
+    void this.closed.catch(() => undefined);
+  }
+
+  start(): Promise<void> {
+    if (this.#startPromise !== undefined) return this.#startPromise;
+    let resolveStart!: () => void;
+    let rejectStart!: (reason?: unknown) => void;
+    const starting = new Promise<void>((resolve, reject) => {
+      resolveStart = resolve;
+      rejectStart = reject;
+    });
+    this.#startPromise = starting;
+    void starting.catch(() => undefined);
+    queueMicrotask(() => {
+      void this.#performStart().then(resolveStart, rejectStart);
+    });
+    return starting;
+  }
+
+  close(): Promise<void> {
+    if (this.#released !== undefined) return this.#released;
+    if (this.#terminal === undefined) {
+      this.#selectTerminal(Object.freeze({ status: "clean" }));
+    }
+    return (this.#activeCleanup ?? this.#requestCleanup()).publicResult;
+  }
+
+  async #performStart(): Promise<void> {
+    if (this.#terminal !== undefined) {
+      await observePromise(this.closed);
+      throw this.#closedStartError;
+    }
+    try {
+      this.#server.onerror = this.#onServerError;
+      this.#server.onclose = this.#onServerClose;
+
+      this.#inputErrorOwned = true;
+      this.#input.on("error", this.#onInputError);
+      if (this.#selectExistingInputTerminal()) return await this.#followSelectedTerminal();
+
+      this.#inputEndOwned = true;
+      this.#input.on("end", this.#onInputEnd);
+      if (this.#selectExistingInputTerminal()) return await this.#followSelectedTerminal();
+
+      this.#inputCloseOwned = true;
+      this.#input.on("close", this.#onInputClose);
+      if (this.#selectExistingInputTerminal()) return await this.#followSelectedTerminal();
+
+      const transport = new StdioServerTransport(this.#input, this.#output);
+      const connected = await observePromise(this.#server.connect(transport));
+      if (this.#terminal !== undefined) return await this.#followSelectedTerminal();
+      if (connected.status === "rejected") {
+        this.#selectTerminal(Object.freeze({ status: "failed", reason: connected.reason }));
+        return await this.#followSelectedTerminal();
+      }
+    } catch (reason) {
+      if (this.#terminal === undefined) {
+        this.#selectTerminal(Object.freeze({ status: "failed", reason }));
+      }
+      return await this.#followSelectedTerminal();
+    }
+  }
+
+  async #followSelectedTerminal(): Promise<void> {
+    const terminal = this.#terminal;
+    if (terminal === undefined) throw new Error("MCP terminal state is unavailable.");
+    await this.closed;
+  }
+
+  #selectExistingInputTerminal(): boolean {
+    const inputError = this.#input.errored;
+    if (inputError !== null) {
+      this.#selectTerminal(Object.freeze({ status: "failed", reason: inputError }));
+      return true;
+    }
+    if (this.#input.readableEnded || this.#input.closed || this.#input.destroyed) {
+      this.#selectTerminal(Object.freeze({ status: "clean" }));
+      return true;
+    }
+    return this.#terminal !== undefined;
+  }
+
+  #selectTerminal(terminal: McpTerminal): void {
+    if (this.#terminal !== undefined) return;
+    this.#terminal = terminal;
+    const attempt = this.#requestCleanup();
+    this.#firstCleanup = attempt;
+  }
+
+  #requestCleanup(): CleanupAttempt {
+    if (this.#released !== undefined) {
+      return Object.freeze({
+        result: Promise.resolve(Object.freeze({ status: "fulfilled" as const })),
+        publicResult: this.#released,
+      });
+    }
+    if (this.#activeCleanup !== undefined) return this.#activeCleanup;
+
+    let resolveResult!: (result: CleanupResult) => void;
+    const result = new Promise<CleanupResult>((resolve) => { resolveResult = resolve; });
+    const publicResult = result.then((settled) => {
+      if (settled.status === "rejected") {
+        rejectOrdered(settled.reasons, "MCP stdio cleanup failed.");
+      }
+    });
+    void publicResult.catch(() => undefined);
+    const attempt = Object.freeze({ result, publicResult });
+    this.#activeCleanup = attempt;
+    queueMicrotask(() => {
+      const finish = (settled: CleanupResult): void => {
+        resolveResult(settled);
+        if (this.#firstCleanup === attempt) this.#settleClosed(settled);
+        if (settled.status === "fulfilled") this.#released = publicResult;
+        if (this.#activeCleanup === attempt) this.#activeCleanup = undefined;
+      };
+      void this.#performCleanup().then(
+        finish,
+        (reason: unknown) => finish(Object.freeze({
+          status: "rejected",
+          reasons: Object.freeze([reason]),
+        })),
+      );
+    });
+    return attempt;
+  }
+
+  async #performCleanup(): Promise<CleanupResult> {
+    const reasons: unknown[] = [];
+    this.#removeInputObserver("error", this.#onInputError, "error", reasons);
+    this.#removeInputObserver("end", this.#onInputEnd, "end", reasons);
+    this.#removeInputObserver("close", this.#onInputClose, "close", reasons);
+
+    this.#pendingServerError = undefined;
+    delete this.#server.onerror;
+    delete this.#server.onclose;
+    if (this.#serverOwned) {
+      const server = await observeOperation(() => this.#server.close());
+      if (server.status === "fulfilled") this.#serverOwned = false;
+      else reasons.push(server.reason);
+    }
+    if (!this.#serverOwned && this.#clientOwned) {
+      const client = await observeOperation(() => this.#client.close());
+      if (client.status === "fulfilled") this.#clientOwned = false;
+      else reasons.push(client.reason);
+    }
+    return reasons.length === 0
+      ? Object.freeze({ status: "fulfilled" })
+      : Object.freeze({ status: "rejected", reasons: Object.freeze(reasons) });
+  }
+
+  #removeInputObserver(
+    event: "error" | "end" | "close",
+    listener: Parameters<Readable["off"]>[1],
+    kind: "error" | "end" | "close",
+    reasons: unknown[],
+  ): void {
+    const owned = kind === "error"
+      ? this.#inputErrorOwned
+      : kind === "end"
+        ? this.#inputEndOwned
+        : this.#inputCloseOwned;
+    if (!owned) return;
+    try {
+      this.#input.off(event, listener);
+      if (kind === "error") this.#inputErrorOwned = false;
+      else if (kind === "end") this.#inputEndOwned = false;
+      else this.#inputCloseOwned = false;
+    } catch (reason) {
+      reasons.push(reason);
+    }
+  }
+
+  #settleClosed(cleanup: CleanupResult): void {
+    if (this.#closedSettled) return;
+    this.#closedSettled = true;
+    const terminal = this.#terminal;
+    const reasons = [
+      ...(terminal?.status === "failed" ? [terminal.reason] : []),
+      ...(cleanup.status === "rejected" ? cleanup.reasons : []),
+    ];
+    if (reasons.length === 0) this.#resolveClosed();
+    else if (reasons.length === 1) this.#rejectClosed(reasons[0]);
+    else this.#rejectClosed(new AggregateError(reasons, "MCP stdio lifecycle failed."));
+  }
+}
+
+export const createStdioMcp = (
+  runtime: McpServerRuntimePort,
   input: Readable,
   output: Writable,
-): Promise<StdioMcpHandle> => {
+  appResource: McpAppResource,
+): StdioMcpOwner => {
   const client = new LocalOperationClient({ ownerSessions: runtime });
-  const server = createMcpServer(runtime, client, loadMcpAppResource());
-  let resolveClosed!: () => void;
-  const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
-  server.onclose = () => { void client.close().finally(resolveClosed); };
-  await server.connect(new StdioServerTransport(input, output));
-  return Object.freeze({
-    closed,
-    close: async (): Promise<void> => {
-      const results = await Promise.allSettled([server.close(), client.close()]);
-      resolveClosed();
-      const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
-      if (failures.length === 1) throw failures[0];
-      if (failures.length > 1) throw new AggregateError(failures, "MCP server and operation client cleanup failed.");
-    },
-  });
+  const server = createMcpServer(runtime, client, appResource);
+  return Object.freeze(new StdioMcpLifecycle(input, output, server, client));
 };
