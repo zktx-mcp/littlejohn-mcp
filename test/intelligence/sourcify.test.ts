@@ -47,6 +47,14 @@ afterEach(() => {
 });
 
 describe("Sourcify source verification adapter", () => {
+  it("treats only undefined Fetch input as omitted", () => {
+    expect(() => createSourcifyContractSourceVerification({
+      clock: clock(),
+      fetch: null as unknown as typeof fetch,
+    })).toThrow(TypeError);
+    expect(() => createSourcifyContractSourceVerification({ clock: clock() })).not.toThrow();
+  });
+
   it("constructs the fixed request and admits exact, non-exact, and exact no-record results", async () => {
     const seen: string[] = [];
     const values = [
@@ -645,6 +653,164 @@ describe("Sourcify source verification adapter", () => {
     });
     await expect(adapter.port.inspect(request())).resolves.toMatchObject({ status: "unavailable" });
     expect(cancelled).toBe(true);
+  });
+
+  it("releases a late response slot without waiting for cancellation completion", async () => {
+    vi.useFakeTimers();
+    const responseResolvers: Array<(response: Response) => void> = [];
+    let cancellationStarted = false;
+    let fetchCalls = 0;
+    const fetchImplementation = vi.fn<typeof fetch>(async () => {
+      fetchCalls += 1;
+      if (fetchCalls <= 4) {
+        return await new Promise<Response>((resolve) => responseResolvers.push(resolve));
+      }
+      return jsonResponse({ ...identity, runtimeMatch: "match" });
+    });
+    const adapter = createSourcifyContractSourceVerification({
+      clock: clock(),
+      fetch: fetchImplementation,
+    });
+    const timedOut = Array.from({ length: 4 }, () => adapter.port.inspect(request()));
+    await vi.advanceTimersByTimeAsync(10_000);
+    for (const result of timedOut) {
+      await expect(result).resolves.toMatchObject({ status: "unavailable" });
+    }
+    await expect(adapter.port.inspect(request())).resolves.toMatchObject({
+      status: "unavailable",
+    });
+    expect(fetchImplementation).toHaveBeenCalledTimes(4);
+
+    const lateBody = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancellationStarted = true;
+        return new Promise<void>(() => undefined);
+      },
+    });
+    responseResolvers[0]?.(new Response(lateBody, {
+      headers: { "content-type": "application/json" },
+    }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cancellationStarted).toBe(true);
+
+    await expect(adapter.port.inspect(request())).resolves.toMatchObject({
+      status: "non_exact_match",
+    });
+    expect(fetchImplementation).toHaveBeenCalledTimes(5);
+
+    for (const resolve of responseResolvers.slice(1)) {
+      resolve(jsonResponse({ ...identity, runtimeMatch: "match" }));
+    }
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
+  it("settles early response discard without waiting for cancellation completion", async () => {
+    vi.useFakeTimers();
+    let fetchCalls = 0;
+    let cancellationCalls = 0;
+    const fetchImplementation = vi.fn<typeof fetch>(async () => {
+      fetchCalls += 1;
+      const body = new ReadableStream<Uint8Array>({
+        cancel() {
+          cancellationCalls += 1;
+          return new Promise<void>(() => undefined);
+        },
+      });
+      return fetchCalls % 2 === 0
+        ? new Response(body, {
+            status: 200,
+            headers: { "content-type": "text/plain" },
+          })
+        : new Response(body, {
+            status: 503,
+            headers: { "content-type": "application/json" },
+          });
+    });
+    const adapter = createSourcifyContractSourceVerification({
+      clock: clock(),
+      fetch: fetchImplementation,
+    });
+    const firstFour = Array.from(
+      { length: 4 },
+      () => adapter.port.inspect(request()),
+    );
+    let firstFourSettled = false;
+    void Promise.all(firstFour).then(() => { firstFourSettled = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(firstFourSettled).toBe(true);
+    const results = [
+      ...await Promise.all(firstFour),
+      await adapter.port.inspect(request()),
+    ];
+
+    expect(results.map((result) => result.status)).toEqual([
+      "unavailable",
+      "inconsistent",
+      "unavailable",
+      "inconsistent",
+      "unavailable",
+    ]);
+    expect(fetchImplementation).toHaveBeenCalledTimes(5);
+    expect(cancellationCalls).toBe(5);
+  });
+
+  it("releases a cancelled reader lock and slot before cancellation completion", async () => {
+    let bodyReadStarted = false;
+    let cancellationStarted = false;
+    let fetchCalls = 0;
+    const pendingResponseResolvers: Array<(response: Response) => void> = [];
+    const body = new ReadableStream<Uint8Array>({
+      pull() {
+        bodyReadStarted = true;
+        return new Promise<void>(() => undefined);
+      },
+      cancel() {
+        cancellationStarted = true;
+        return new Promise<void>(() => undefined);
+      },
+    });
+    const adapter = createSourcifyContractSourceVerification({
+      clock: clock(),
+      fetch: async () => {
+        fetchCalls += 1;
+        if (fetchCalls === 1) {
+          return new Response(body, {
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (fetchCalls <= 4) {
+          return await new Promise<Response>((resolve) => pendingResponseResolvers.push(resolve));
+        }
+        return jsonResponse({ ...identity, runtimeMatch: "match" });
+      },
+    });
+    const controller = new AbortController();
+    const interrupted = adapter.port.inspect(request(controller.signal));
+    await vi.waitFor(() => expect(bodyReadStarted).toBe(true));
+    const retained = Array.from({ length: 3 }, () => adapter.port.inspect(request()));
+    expect(fetchCalls).toBe(4);
+    await expect(adapter.port.inspect(request())).resolves.toMatchObject({
+      status: "unavailable",
+    });
+    expect(fetchCalls).toBe(4);
+
+    controller.abort();
+    await expect(interrupted).rejects.toMatchObject({ name: "AbortError" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(cancellationStarted).toBe(true);
+    expect(body.locked).toBe(false);
+
+    await expect(adapter.port.inspect(request())).resolves.toMatchObject({
+      status: "non_exact_match",
+    });
+    expect(fetchCalls).toBe(5);
+
+    for (const resolve of pendingResponseResolvers) {
+      resolve(jsonResponse({ ...identity, runtimeMatch: "match" }));
+    }
+    for (const result of retained) {
+      await expect(result).resolves.toMatchObject({ status: "non_exact_match" });
+    }
   });
 
   it("uses one exact public URI for each requested proxy address", async () => {

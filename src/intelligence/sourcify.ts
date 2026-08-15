@@ -484,6 +484,11 @@ const requestReference = (
   return Object.freeze(reference);
 };
 
+const cancelResponseBody = (response: Response): void => {
+  if (response.body === null) return;
+  void response.body.cancel().catch(() => undefined);
+};
+
 const readResponseBody = async (
   response: Response,
   signal: AbortSignal,
@@ -493,11 +498,14 @@ const readResponseBody = async (
   | Readonly<{ readonly status: "unavailable" }>
 > => {
   if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
-    await response.body?.cancel().catch(() => undefined);
+    cancelResponseBody(response);
     return Object.freeze({ status: "inconsistent" });
   }
   if (response.body === null) return Object.freeze({ status: "inconsistent" });
-  if (signal.aborted) throw signal.reason;
+  if (signal.aborted) {
+    cancelResponseBody(response);
+    throw signal.reason;
+  }
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let byteLength = 0;
@@ -531,11 +539,7 @@ const readResponseBody = async (
     failure = error;
   } finally {
     if (!completed) {
-      try {
-        await reader.cancel(failure);
-      } catch {
-        // Preserve the response failure while consuming cleanup rejection.
-      }
+      void reader.cancel(failure).catch(() => undefined);
     }
     reader.releaseLock();
     removeAbortListener();
@@ -762,7 +766,7 @@ export const createSourcifyContractSourceVerification = (input: {
   readonly port: ContractSourceVerificationPort;
   readonly observationAuthorityRegistration: ObservationAuthorityRegistration;
 }> => {
-  const fetchImplementation = input.fetch ?? fetch;
+  const fetchImplementation = input.fetch === undefined ? fetch : input.fetch;
   if (typeof fetchImplementation !== "function") {
     throw new TypeError("Sourcify fetch implementation is unavailable.");
   }
@@ -819,7 +823,7 @@ export const createSourcifyContractSourceVerification = (input: {
           headers: Object.freeze({ accept: "application/json" }),
         });
         if (response.status !== 200 && response.status !== 404) {
-          await response.body?.cancel().catch(() => undefined);
+          cancelResponseBody(response);
           return unavailable();
         }
         const body = await readResponseBody(response, requestSignal);
