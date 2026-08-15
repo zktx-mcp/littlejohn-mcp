@@ -269,9 +269,12 @@ The admitted PoolManager deployment, complete PoolKey, exact Pool ID, and
 finalized `Swap` event positions identify the executed-trade source. One exact
 one-minute candle establishes only the admitted executions in that pool during
 that minute, quoted in USDG. A missing candle inside admitted continuous block
-coverage establishes only that the index admitted no matching `Swap` event for
-that pool and interval. It does not establish exchange activity, underlying
-equity activity, another pool's activity, liquidity, or trade availability.
+coverage establishes only that the index admitted no `Swap` with two non-zero,
+opposite-sign pool balance deltas for that pool and interval. Continuous
+coverage may still contain a validated `Swap` with a zero balance delta, which
+supplies no exchange ratio and contributes no candle. A missing candle does not
+establish exchange activity, underlying equity activity, another pool's
+activity, liquidity, or trade availability.
 
 The versioned pair-state, pair-month, and pair-day data files retain finalized
 source coverage, exact candle values, raw token and USDG volumes, trade count,
