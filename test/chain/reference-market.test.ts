@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 
 import {
   createReferenceMarketCallEncoder,
@@ -11,7 +11,10 @@ import {
   resolveConfiguredCanonicalBlock,
   type CanonicalBlock,
 } from "../../src/chain/canonical-block.js";
-import { getChainOperationFailure } from "../../src/chain/errors.js";
+import {
+  ChainOperationError,
+  getChainOperationFailure,
+} from "../../src/chain/errors.js";
 import { createChainInvocationLifecycle } from "../../src/chain/invocation-lifecycle.js";
 import type { ChainInvocationContext } from "../../src/chain/invocation-lifecycle.js";
 import {
@@ -224,8 +227,9 @@ class StockTokenRequester implements RpcRequester {
   }
 }
 
-const createObservationContext = () => {
-  const clock = createCanonicalClock(() => readObservedAt);
+const createObservationContext = (
+  clock = createCanonicalClock(() => readObservedAt),
+) => {
   return Object.freeze({
     clock,
     observationAuthority: createObservationAuthority({
@@ -242,9 +246,11 @@ const createObservationContext = () => {
   });
 };
 
-const createPort = (rpc: RpcRequester) => {
+const createPort = (
+  rpc: RpcRequester,
+  observationContext = createObservationContext(),
+) => {
   const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
-  const observationContext = createObservationContext();
   const port = createReferenceMarketChainReadPort({
     rpc,
     encoder: createReferenceMarketCallEncoder(),
@@ -304,6 +310,32 @@ const createPort = (rpc: RpcRequester) => {
 };
 
 describe("reference market chain reads", () => {
+  it("fixes the history failure type to record-or-absence", () => {
+    expectTypeOf<ReferenceHistoryTraversal["failure"]>().toEqualTypeOf<
+      Readonly<{ readonly reason: unknown }> | undefined
+    >();
+  });
+
+  it("records a history rejection whose reason is undefined", async () => {
+    const active = createPort({
+      async request() { throw undefined; },
+    });
+    const result = await active.readHistory({
+      feedId: "eth_usd",
+      latestRoundId: compositeRoundId(1n, 3n),
+      knownObservations: [],
+      backfillPhaseId: "1",
+      backfillNextRoundId: compositeRoundId(1n, 2n),
+      backfillStatus: null,
+      retentionCutoffRoundId: null,
+      stopAtOrBeforeUnixSeconds: "1",
+    });
+    expect(result.failure).not.toBeUndefined();
+    expect(result.failure?.reason).toBeUndefined();
+    expect(Object.isFrozen(result.failure)).toBe(true);
+    await active.lifecycle.close();
+  });
+
   it("uses the reviewed standard-proxy selectors and canonical uint80 encoding", () => {
     const encoder = createReferenceMarketCallEncoder();
     expect(encoder.description()).toBe("0x7284e416");
@@ -337,14 +369,90 @@ describe("reference market chain reads", () => {
     }]);
     await active.lifecycle.close();
 
-    const future = createPort(new LatestRequester(true));
+    let futureCaptureClockReads = 0;
+    const futureClock = createCanonicalClock(() => {
+      futureCaptureClockReads += 1;
+      return readObservedAt;
+    });
+    const future = createPort(
+      new LatestRequester(true),
+      createObservationContext(futureClock),
+    );
     try {
       await future.latest(["eth_usd"]);
       throw new Error("Expected future evidence rejection.");
     } catch (error) {
       expect(getChainOperationFailure(error)?.error.code).toBe("source_inconsistent");
     }
+    expect(futureCaptureClockReads).toBe(0);
     await future.lifecycle.close();
+  });
+
+  it("keeps local capture provenance outside chain failure identity at every entry path", async () => {
+    const cause = new ChainOperationError("source_unavailable");
+    const failingObservationContext = () => {
+      const clock = createCanonicalClock(() => { throw cause; });
+      return createObservationContext(clock);
+    };
+    const expectLocalCaptureFailure = (error: unknown): void => {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error & { readonly cause?: unknown }).cause).toBe(cause);
+      expect(getChainOperationFailure(error)).toBeUndefined();
+      expect(Object.isFrozen(error)).toBe(true);
+    };
+
+    const latest = createPort(new LatestRequester(), failingObservationContext());
+    const latestFailure = await latest.latestAtIssuedBlock(["eth_usd"])
+      .then(() => undefined, (error: unknown) => error);
+    expectLocalCaptureFailure(latestFailure);
+    await latest.lifecycle.close();
+
+    const history = createPort({
+      async request(_method, params) {
+        const data = (params[0] as { readonly data: string }).data;
+        const roundId = BigInt(`0x${data.slice(-64)}`);
+        return encodedRound(roundId, 300_000_000_000n);
+      },
+    }, failingObservationContext());
+    const historyResult = await history.readHistory({
+      feedId: "eth_usd",
+      latestRoundId: compositeRoundId(1n, 3n),
+      knownObservations: [],
+      backfillPhaseId: "1",
+      backfillNextRoundId: compositeRoundId(1n, 2n),
+      backfillStatus: null,
+      retentionCutoffRoundId: null,
+      stopAtOrBeforeUnixSeconds: "1",
+    });
+    expect(Object.isFrozen(historyResult.failure)).toBe(true);
+    expectLocalCaptureFailure(historyResult.failure?.reason);
+    await history.lifecycle.close();
+
+    const stockToken = createPort(
+      new StockTokenRequester(false),
+      failingObservationContext(),
+    );
+    const stockTokenFailure = await stockToken.stockToken({
+      member: aaplMember,
+      feedId: aaplFeed.feedId,
+    }).then(() => undefined, (error: unknown) => error);
+    expectLocalCaptureFailure(stockTokenFailure);
+    await stockToken.lifecycle.close();
+  });
+
+  it("keeps a backwards canonical-clock failure local after provider admission", async () => {
+    let now = "2026-07-22T00:00:06.000Z";
+    const clock = createCanonicalClock(() => now);
+    clock.now();
+    now = readObservedAt;
+    const active = createPort(new LatestRequester(), createObservationContext(clock));
+    const failure = await active.latestAtIssuedBlock(["eth_usd"])
+      .then(() => undefined, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error & { readonly cause?: unknown }).cause)
+      .toEqual(new TypeError("Canonical clock moved backwards."));
+    expect(getChainOperationFailure(failure)).toBeUndefined();
+    await active.lifecycle.close();
   });
 
   it("rejects zero composite-round components at latest, pointer, cutoff, and history admission", async () => {
@@ -1105,7 +1213,8 @@ describe("reference market chain reads", () => {
       phaseBoundaryObserved: false,
       malformedRoundObserved: false,
     });
-    expect(getChainOperationFailure(unavailableResult.failure)?.error.code)
+    expect(Object.isFrozen(unavailableResult.failure)).toBe(true);
+    expect(getChainOperationFailure(unavailableResult.failure?.reason)?.error.code)
       .toBe("chain_response_unavailable");
     await unavailable.lifecycle.close();
 
@@ -1134,7 +1243,8 @@ describe("reference market chain reads", () => {
       backfillNextRoundId: compositeRoundId(1n, 3n),
       backfillStatus: null,
     });
-    expect(getChainOperationFailure(stoppedMidSegmentResult.failure)?.error.code)
+    expect(Object.isFrozen(stoppedMidSegmentResult.failure)).toBe(true);
+    expect(getChainOperationFailure(stoppedMidSegmentResult.failure?.reason)?.error.code)
       .toBe("chain_response_unavailable");
     await stoppedMidSegment.lifecycle.close();
   });

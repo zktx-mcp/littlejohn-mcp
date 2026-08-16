@@ -1,6 +1,7 @@
 import type {
   CanonicalBlock,
   ChainInvocationContext,
+  ReferenceHistoryTraversal,
   ReferenceMarketChainReadPort,
 } from "../chain/index.js";
 import {
@@ -44,6 +45,13 @@ export interface ReferenceFeedSynchronizationResult {
   readonly snapshot: ReferenceFeedCacheSnapshot;
   readonly report: ReferenceHistoryTraversalReport;
 }
+
+type HistoryReadSettlement =
+  | Readonly<{
+      readonly status: "fulfilled";
+      readonly value: Awaited<ReturnType<ReferenceMarketChainReadPort["readHistoryAtBlock"]>>;
+    }>
+  | Readonly<{ readonly status: "rejected"; readonly reason: unknown }>;
 
 const unixSeconds = (timestamp: string): bigint => BigInt(Math.floor(Date.parse(timestamp) / 1_000));
 
@@ -172,14 +180,14 @@ export class ReferenceFeedSynchronizationOwner {
     let backfillPhaseId = current.backfillPhaseId;
     let backfillNextRoundId = current.backfillNextRoundId;
     let backfillStatus = current.backfillStatus;
-    let stoppedByFailure: unknown;
+    let stoppedByFailure: ReferenceHistoryTraversal["failure"];
     let phaseBoundaryObserved = current.backfillStatus === "phase_boundary";
     let malformedRoundObserved = current.backfillStatus === "malformed";
     const coverageTarget = job.requestedStartUnixSeconds - BigInt(feed.heartbeatSeconds);
 
-    let results;
+    let settlement: HistoryReadSettlement;
     try {
-      results = await this.#chain.readHistoryAtBlock({
+      const value = await this.#chain.readHistoryAtBlock({
         feedId,
         latestRoundId: job.latest.fact.roundId,
         knownObservations: current.observations,
@@ -190,16 +198,20 @@ export class ReferenceFeedSynchronizationOwner {
         stopAtOrBeforeUnixSeconds: coverageTarget.toString(10),
         block: job.block,
       }, job.context);
+      settlement = Object.freeze({ status: "fulfilled", value });
     } catch (error) {
+      let reason: unknown;
       if (this.#owner.signal.aborted) {
-        stoppedByFailure = new ReferenceMarketOperationError("runtime_state_unavailable");
+        reason = new ReferenceMarketOperationError("runtime_state_unavailable");
       } else if (job.context.signal.aborted) {
-        stoppedByFailure = new ReferenceMarketOperationError("request_aborted");
+        reason = new ReferenceMarketOperationError("request_aborted");
       } else {
-        stoppedByFailure = error;
+        reason = error;
       }
+      settlement = Object.freeze({ status: "rejected", reason });
     }
-    if (results !== undefined) {
+    if (settlement.status === "fulfilled") {
+      const results = settlement.value;
       observations = Object.freeze([job.latest, ...results.observations]);
       backfillPhaseId = results.backfillPhaseId;
       backfillNextRoundId = results.backfillNextRoundId;
@@ -207,6 +219,8 @@ export class ReferenceFeedSynchronizationOwner {
       phaseBoundaryObserved ||= results.phaseBoundaryObserved;
       malformedRoundObserved ||= results.malformedRoundObserved;
       stoppedByFailure = results.failure;
+    } else {
+      stoppedByFailure = Object.freeze({ reason: settlement.reason });
     }
 
     const committed = this.#store.commitFeed({
@@ -223,8 +237,8 @@ export class ReferenceFeedSynchronizationOwner {
     if (current.integrityStatus === "conflict") {
       throw new ReferenceMarketOperationError("source_inconsistent");
     }
-    if (stoppedByFailure !== undefined && !isBoundedSourceStop(stoppedByFailure)) {
-      throw stoppedByFailure;
+    if (stoppedByFailure !== undefined && !isBoundedSourceStop(stoppedByFailure.reason)) {
+      throw stoppedByFailure.reason;
     }
     const traversal = referenceFeedTraversalStateSchema.parse({
       backfillPhaseId: current.backfillPhaseId,

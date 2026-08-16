@@ -71,6 +71,10 @@ type CapturedWallet = Readonly<{
   sessionSourceId: string;
 }>;
 
+type ReadSettlement<Value> =
+  | Readonly<{ readonly status: "fulfilled"; readonly value: Value }>
+  | Readonly<{ readonly status: "rejected"; readonly reason: unknown }>;
+
 const sameAccount = (left: EvmAccountIdentity, right: EvmAccountIdentity): boolean =>
   left.chainId === right.chainId && left.address === right.address;
 
@@ -168,7 +172,7 @@ export class ReferenceMarketApplication implements ReferenceMarketApplicationPor
         const reports = new Map<ReferenceFeedId, ReferenceHistoryTraversalReport>();
         for (const feedId of pair.contract.sourceIds) {
           const source = latest.find((observation) => observation.fact.feedId === feedId);
-          if (source === undefined) throw new ReferenceMarketOperationError("source_inconsistent");
+          if (source === undefined) throw new TypeError("Reference market latest read is incomplete.");
           const synchronized = await this.#synchronization.synchronize({
             feedId,
             block,
@@ -464,14 +468,21 @@ export class ReferenceMarketApplication implements ReferenceMarketApplicationPor
         : AbortSignal.any([callerSignal, this.#owner.signal]);
       const initialCancellation = terminalCancellation(callerSignal, this.#owner.signal);
       if (initialCancellation !== undefined) return parseFailure(contract, initialCancellation);
-      let success: Success | undefined;
-      let failure: unknown;
-      try { success = await operation(request, interruptSignal); }
-      catch (error) { failure = error; }
+      let readSettlement: ReadSettlement<Success>;
+      try {
+        readSettlement = Object.freeze({
+          status: "fulfilled",
+          value: await operation(request, interruptSignal),
+        });
+      } catch (reason) {
+        readSettlement = Object.freeze({ status: "rejected", reason });
+      }
       const cancellation = terminalCancellation(callerSignal, this.#owner.signal);
       if (cancellation !== undefined) return parseFailure(contract, cancellation);
-      if (failure !== undefined) return parseFailure(contract, failure);
-      try { return contract.parsePublicSuccess(request, success as Success); }
+      if (readSettlement.status === "rejected") {
+        return parseFailure(contract, readSettlement.reason);
+      }
+      try { return contract.parsePublicSuccess(request, readSettlement.value); }
       catch (error) { return parseFailure(contract, error); }
     })();
     let settlement!: Promise<void>;

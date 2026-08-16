@@ -1,10 +1,17 @@
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+
+import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  createReferenceMarketCallEncoder,
+  createReferenceMarketChainReadPort,
   createChainInvocationLifecycle,
   resolveConfiguredCanonicalBlock,
   type ReferenceMarketChainReadPort,
 } from "../../src/chain/index.js";
+import { ChainOperationError } from "../../src/chain/errors.js";
 import type {
   ChainRpcMethod,
   ChainRpcRequestMap,
@@ -26,6 +33,7 @@ import {
   sourceReferenceSchema,
   walletConnectionCapability,
   type ApplicationFailure,
+  type CanonicalClock,
   type ChainAnchor,
   type ReferenceFeedId,
   type ReferenceHistoryTraversalReport,
@@ -62,6 +70,12 @@ const account = evmAccountIdentitySchema.parse({
 });
 const connectionRevision = parseRuntimeRevision("1");
 const rpcConfigurationDigest = "A".repeat(43);
+const abiWord = (value: bigint): string => value.toString(16).padStart(64, "0");
+const encodedText = (value: string): string => {
+  const bytes = Buffer.from(value, "utf8");
+  const padding = (32 - bytes.length % 32) % 32;
+  return `0x${abiWord(32n)}${abiWord(BigInt(bytes.length))}${bytes.toString("hex")}${"0".repeat(padding * 2)}`;
+};
 const walletConnection = parseCapabilityDataAt(walletConnectionCapability, {
   status: "connected",
   ...account,
@@ -133,6 +147,65 @@ const latestUsdg = observation({
   answer: "100008000",
   updatedAt: "2026-07-21T23:55:00.000Z",
 });
+const encodedLatestEthRound = (): string => `0x${[
+  latestEth.fact.roundId,
+  latestEth.fact.answer,
+  latestEth.fact.startedAtUnixSeconds,
+  latestEth.fact.updatedAtUnixSeconds,
+  latestEth.fact.answeredInRound,
+].map((value) => abiWord(BigInt(value))).join("")}`;
+
+type FixtureChainFactory = (input: Readonly<{
+  lifecycle: ReturnType<typeof createChainInvocationLifecycle>;
+  clock: CanonicalClock;
+}>) => ReferenceMarketChainReadPort;
+
+const createBackwardsClockChain: FixtureChainFactory = ({ lifecycle, clock }) => {
+  const feed = referenceMarketManifest.feeds[0]!;
+  const encoder = createReferenceMarketCallEncoder();
+  clock.now();
+  const rpc: RpcRequester = {
+    async request<Method extends ChainRpcMethod>(
+      method: Method,
+      params: ChainRpcRequestMap[Method],
+    ): Promise<unknown> {
+      if (method === "eth_chainId") return "0x1237";
+      if (method === "eth_getBlockByNumber") {
+        return {
+          number: `0x${BigInt(block.blockNumber).toString(16)}`,
+          hash: block.blockHash,
+          timestamp: `0x${BigInt(Math.floor(Date.parse(block.blockTimestamp) / 1_000)).toString(16)}`,
+        };
+      }
+      if (method === "eth_getCode") return "0x6000";
+      if (method !== "eth_call") throw new Error(`Unexpected fixture RPC method: ${method}`);
+      const call = params[0] as { readonly to: string; readonly data: string };
+      if (call.to !== feed.standardProxy) throw new Error(`Unexpected reference feed: ${call.to}`);
+      if (call.data === encoder.description()) return encodedText(feed.expectedDescription);
+      if (call.data === encoder.decimals()) return `0x${abiWord(BigInt(feed.decimals))}`;
+      if (call.data === encoder.latestRoundData()) return encodedLatestEthRound();
+      throw new Error(`Unexpected reference feed call: ${call.data}`);
+    },
+  };
+  return createReferenceMarketChainReadPort({
+    rpc,
+    encoder,
+    chainId: account.chainId,
+    lifecycle,
+    clock,
+    observationAuthority: createObservationAuthority({
+      clock,
+      sourceClass: "chain_rpc",
+      owner: "user_configured",
+      reference: sourceReferenceSchema.parse({
+        kind: "configured_rpc",
+        sourceId: `rpc:${rpcConfigurationDigest}`,
+        publicOrigin: "https://rpc.example",
+        configurationDigest: rpcConfigurationDigest,
+      }),
+    }),
+  });
+};
 
 const success = <Value>(value: Value | ApplicationFailure): Value => {
   if (typeof value === "object" && value !== null && "ok" in value && value.ok === false) {
@@ -190,9 +263,137 @@ const cancellationScenarios = Object.freeze([
   },
 ] as const);
 
-const fixture = () => {
+const readSettlementStructureViolations = (sourceText: string): readonly string[] => {
+  const source = ts.createSourceFile(
+    "application.ts",
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const compact = (node: ts.Node): string => node.getText(source).replace(/\s+/gu, "");
+  const application = source.statements.find((statement): statement is ts.ClassDeclaration =>
+    ts.isClassDeclaration(statement) && statement.name?.text === "ReferenceMarketApplication");
+  const runRead = application?.members.find((member): member is ts.MethodDeclaration =>
+    ts.isMethodDeclaration(member) && member.name.getText(source) === "#runRead");
+  if (runRead?.body === undefined) return ["run_read"];
+
+  const nodes: ts.Node[] = [];
+  const visit = (node: ts.Node): void => {
+    nodes.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(runRead.body);
+  const declarations = nodes.filter((node): node is ts.VariableDeclaration =>
+    ts.isVariableDeclaration(node) &&
+    node.type !== undefined &&
+    compact(node.type) === "ReadSettlement<Success>");
+  if (
+    declarations.length !== 1 ||
+    !ts.isIdentifier(declarations[0]!.name) ||
+    declarations[0]!.initializer !== undefined ||
+    declarations[0]!.exclamationToken !== undefined
+  ) return ["settlement_declaration"];
+  const settlementName = declarations[0]!.name.text;
+  const assignments = nodes.filter((node): node is ts.BinaryExpression =>
+    ts.isBinaryExpression(node) &&
+    node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    ts.isIdentifier(node.left) &&
+    node.left.text === settlementName);
+  const stateLiteral = (assignment: ts.BinaryExpression): ts.ObjectLiteralExpression | undefined => {
+    const expression = assignment.right;
+    if (ts.isObjectLiteralExpression(expression)) return expression;
+    if (
+      ts.isCallExpression(expression) &&
+      ts.isPropertyAccessExpression(expression.expression) &&
+      expression.expression.expression.getText(source) === "Object" &&
+      expression.expression.name.text === "freeze" &&
+      expression.arguments.length === 1 &&
+      ts.isObjectLiteralExpression(expression.arguments[0]!)
+    ) return expression.arguments[0];
+    return undefined;
+  };
+  const propertyValue = (
+    literal: ts.ObjectLiteralExpression,
+    name: string,
+  ): ts.Expression | undefined => {
+    const property = literal.properties.find((candidate) => candidate.name?.getText(source) === name);
+    if (property === undefined) return undefined;
+    if (ts.isPropertyAssignment(property)) return property.initializer;
+    return ts.isShorthandPropertyAssignment(property) ? property.name : undefined;
+  };
+  const states = assignments.map((assignment) => ({
+    assignment,
+    literal: stateLiteral(assignment),
+  }));
+  const fulfilled = states.find(({ literal }) => {
+    const status = literal === undefined ? undefined : propertyValue(literal, "status");
+    return status !== undefined && ts.isStringLiteral(status) && status.text === "fulfilled";
+  });
+  const rejected = states.find(({ literal }) => {
+    const status = literal === undefined ? undefined : propertyValue(literal, "status");
+    return status !== undefined && ts.isStringLiteral(status) && status.text === "rejected";
+  });
+  if (
+    assignments.length !== 2 ||
+    fulfilled?.literal === undefined ||
+    rejected?.literal === undefined ||
+    fulfilled.literal.properties.length !== 2 ||
+    rejected.literal.properties.length !== 2
+  ) return ["settlement_creation"];
+  const fulfilledValue = propertyValue(fulfilled.literal, "value");
+  const rejectedReason = propertyValue(rejected.literal, "reason");
+  const fulfilledTry = nodes.find((node): node is ts.TryStatement =>
+    ts.isTryStatement(node) && node.tryBlock.pos <= fulfilled.assignment.pos &&
+    fulfilled.assignment.end <= node.tryBlock.end);
+  const rejectedCatch = nodes.find((node): node is ts.CatchClause =>
+    ts.isCatchClause(node) && node.block.pos <= rejected.assignment.pos &&
+    rejected.assignment.end <= node.block.end);
+  if (
+    fulfilledTry?.catchClause !== rejectedCatch ||
+    !ts.isAwaitExpression(fulfilledValue!) ||
+    !ts.isCallExpression(fulfilledValue.expression) ||
+    !ts.isIdentifier(fulfilledValue.expression.expression) ||
+    fulfilledValue.expression.expression.text !== "operation" ||
+    rejectedCatch?.variableDeclaration === undefined ||
+    !ts.isIdentifier(rejectedCatch.variableDeclaration.name) ||
+    !ts.isIdentifier(rejectedReason!) ||
+    rejectedReason.text !== rejectedCatch.variableDeclaration.name.text
+  ) return ["settlement_origin"];
+  const properties = nodes.filter((node): node is ts.PropertyAccessExpression =>
+    ts.isPropertyAccessExpression(node) &&
+    ts.isIdentifier(node.expression) &&
+    node.expression.text === settlementName);
+  const statusUses = properties.filter((property) => property.name.text === "status");
+  const valueUses = properties.filter((property) => property.name.text === "value");
+  const reasonUses = properties.filter((property) => property.name.text === "reason");
+  const valueCall = valueUses[0]?.parent;
+  const reasonCall = reasonUses[0]?.parent;
+  const valueIsDirectSuccess =
+    valueUses.length === 1 &&
+    valueCall !== undefined &&
+    ts.isCallExpression(valueCall) &&
+    valueCall.arguments[1] === valueUses[0] &&
+    ts.isPropertyAccessExpression(valueCall.expression) &&
+    valueCall.expression.name.text === "parsePublicSuccess";
+  const reasonIsDirectFailure =
+    reasonUses.length === 1 &&
+    reasonCall !== undefined &&
+    ts.isCallExpression(reasonCall) &&
+    reasonCall.arguments[1] === reasonUses[0] &&
+    ts.isIdentifier(reasonCall.expression) &&
+    reasonCall.expression.text === "parseFailure";
+  return statusUses.length > 0 &&
+    valueIsDirectSuccess &&
+    reasonIsDirectFailure
+    ? []
+    : ["settlement_projection"];
+};
+const fixture = (createChain?: FixtureChainFactory) => {
   const chainOwner = new AbortController();
   const lifecycle = createChainInvocationLifecycle(chainOwner.signal);
+  let currentTime = "2026-07-22T00:07:00.000Z";
+  const clock = createCanonicalClock(() => currentTime);
   const rpc: RpcRequester = {
     async request<Method extends ChainRpcMethod>(
       method: Method,
@@ -315,7 +516,7 @@ const fixture = () => {
     throw new Error("Stock Token reads are not expected in this fixture.");
   };
   let historyReadCalls = 0;
-  const chain: ReferenceMarketChainReadPort = {
+  const chain: ReferenceMarketChainReadPort = createChain?.({ lifecycle, clock }) ?? {
     resolveCurrentBlock: (context) => resolveConfiguredCanonicalBlock({
       rpc,
       chainId: account.chainId,
@@ -329,8 +530,6 @@ const fixture = () => {
     },
     readStockTokenAtBlock: (input, context) => stockTokenRead(input, context),
   };
-  let currentTime = "2026-07-22T00:07:00.000Z";
-  const clock = createCanonicalClock(() => currentTime);
   const topicDigest = "A".repeat(43);
   const sessionSourceId = `wallet-session:${topicDigest}`;
   const sessionSource = Object.freeze({
@@ -389,6 +588,115 @@ const fixture = () => {
 };
 
 describe("reference-market application", () => {
+  it("keeps the read reducer discriminated before public success parsing", async () => {
+    const source = await readFile(
+      resolve(import.meta.dirname, "../../src/market-portfolio/application.ts"),
+      "utf8",
+    );
+    expect(readSettlementStructureViolations(source)).toEqual([]);
+
+    const previousReducer = String.raw`
+      type ReadSettlement<Value> =
+        | Readonly<{ readonly status: "fulfilled"; readonly value: Value }>
+        | Readonly<{ readonly status: "rejected"; readonly reason: unknown }>;
+      class ReferenceMarketApplication {
+        async #runRead<Success>(
+          contract: { parsePublicSuccess(request: unknown, value: Success): unknown },
+          operation: () => Promise<Success>,
+        ) {
+          const request = undefined;
+          let success: Success | undefined;
+          let failure: unknown;
+          try { success = await operation(); }
+          catch (error) { failure = error; }
+          if (failure !== undefined) return parseFailure(contract, failure);
+          return contract.parsePublicSuccess(request, success as Success);
+        }
+      }
+    `;
+    expect(readSettlementStructureViolations(previousReducer)).toContain(
+      "settlement_declaration",
+    );
+  });
+
+  it("does not recover a provider failure from a local error cause", async () => {
+    const context = fixture();
+    const cause = new ChainOperationError("source_unavailable");
+    const localFailure = Object.freeze(new Error("Local observation capture failed.", { cause }));
+    context.setLatestRead(async () => { throw localFailure; });
+
+    await expect(context.application.price({
+      pairId: referenceMarketManifest.pairs[0]!.pairId,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "internal_error" },
+    });
+    await context.close();
+  });
+
+  it("maps the chain read owner's capture failure to the canonical internal result", async () => {
+    const context = fixture(createBackwardsClockChain);
+    context.setNow("2026-07-22T00:06:59.000Z");
+
+    await expect(context.application.price({
+      pairId: referenceMarketManifest.pairs[0]!.pairId,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "internal_error" },
+    });
+    await context.close();
+  });
+
+  it("keeps an incomplete latest-port result local", async () => {
+    const context = fixture();
+    context.setLatest([]);
+
+    await expect(context.application.history({
+      pairId: referenceMarketManifest.pairs[0]!.pairId,
+      window: "1d",
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "internal_error" },
+    });
+    await context.close();
+  });
+
+  it("keeps undefined history failures observed through the public result", async () => {
+    const cases = [{
+      name: "direct rejection",
+      read: (async () => { throw undefined; }) as ReferenceMarketChainReadPort["readHistoryAtBlock"],
+    }, {
+      name: "traversal failure record",
+      read: (async () => Object.freeze({
+        observations: Object.freeze([]),
+        backfillPhaseId: "1",
+        backfillNextRoundId: null,
+        backfillStatus: "phase_boundary" as const,
+        phaseBoundaryObserved: true,
+        malformedRoundObserved: false,
+        failure: Object.freeze({ reason: undefined }),
+      })) as ReferenceMarketChainReadPort["readHistoryAtBlock"],
+    }] as const;
+
+    for (const scenario of cases) {
+      const context = fixture();
+      context.setHistoryRead(scenario.read);
+      await expect(context.application.history({
+        pairId: referenceMarketManifest.pairs[0]!.pairId,
+        window: "1d",
+      }), scenario.name).resolves.toMatchObject({
+        ok: false,
+        error: { code: "internal_error" },
+      });
+      expect(context.counts(), scenario.name).toEqual({
+        feedReadCalls: 1,
+        feedCommitCalls: 1,
+        historyReadCalls: 1,
+      });
+      await context.close();
+    }
+  });
+
   it("returns a current derived price only while both latest sources are fresh", async () => {
     const context = fixture();
     const pairId = referenceMarketManifest.pairs[2]!.pairId;

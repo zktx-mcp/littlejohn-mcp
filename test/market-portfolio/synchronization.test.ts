@@ -10,7 +10,10 @@ import {
   type ChainInvocationContext,
   type ChainInvocationLifecycle,
 } from "../../src/chain/invocation-lifecycle.js";
-import { getChainOperationFailure } from "../../src/chain/errors.js";
+import {
+  ChainOperationError,
+  getChainOperationFailure,
+} from "../../src/chain/errors.js";
 import {
   chainAnchorSchema,
   createCanonicalClock,
@@ -165,8 +168,90 @@ const traversal = (): ReferenceHistoryTraversal => Object.freeze({
   malformedRoundObserved: false,
   failure: undefined,
 });
+const anyRejectedReason = Symbol("any_rejected_reason");
 
 describe("reference feed synchronization ownership", () => {
+  it("keeps recorded failure occurrence independent from payload and provenance", async () => {
+    const sourceShapedCause = new ChainOperationError("source_unavailable");
+    const localFailure = Object.freeze(new Error("Local observation capture failed.", {
+      cause: sourceShapedCause,
+    }));
+    const cases = [{
+      name: "direct rejection",
+      read: (async () => { throw undefined; }) as ReferenceMarketChainReadPort["readHistoryAtBlock"],
+      expectedCommits: 1,
+      expectedFailure: undefined,
+    }, {
+      name: "local failure with a source-shaped cause",
+      read: (async () => Object.freeze({
+        ...traversal(),
+        failure: Object.freeze({ reason: localFailure }),
+      })) as ReferenceMarketChainReadPort["readHistoryAtBlock"],
+      expectedCommits: 1,
+      expectedFailure: localFailure,
+    }, {
+      name: "traversal failure record",
+      read: (async () => Object.freeze({
+        ...traversal(),
+        failure: Object.freeze({ reason: undefined }),
+      })) as ReferenceMarketChainReadPort["readHistoryAtBlock"],
+      expectedCommits: 1,
+      expectedFailure: undefined,
+    }, {
+      name: "nonconforming fulfillment",
+      read: (async () => undefined as never) as ReferenceMarketChainReadPort["readHistoryAtBlock"],
+      expectedCommits: 0,
+      expectedFailure: anyRejectedReason,
+    }] as const;
+
+    for (const scenario of cases) {
+      const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
+      const store = storeFixture();
+      let commits = 0;
+      const trackedStore: ReferenceMarketStore = Object.freeze({
+        ...store,
+        commitFeed(input: ReferenceFeedCacheCommit) {
+          commits += 1;
+          return store.commitFeed(input);
+        },
+      });
+      const owner = new ReferenceFeedSynchronizationOwner({
+        chain: {
+          resolveCurrentBlock: async () => { throw new Error("Unexpected block resolution."); },
+          readLatestAtBlock: async () => [],
+          readStockTokenAtBlock: unexpectedStockTokenRead,
+          readHistoryAtBlock: scenario.read,
+        },
+        store: trackedStore,
+        clock: createCanonicalClock(() => "2026-07-22T15:07:34.000Z"),
+      });
+      const outcome = await synchronize(lifecycle, owner, {
+        feedId: "eth_usd",
+        requestedStartUnixSeconds: 1n,
+        latest: observation(2n),
+      }).then(
+        (value) => ({ status: "fulfilled" as const, value }),
+        (reason: unknown) => ({ status: "rejected" as const, reason }),
+      );
+      expect(outcome.status, scenario.name).toBe("rejected");
+      if (outcome.status === "rejected") {
+        if (scenario.expectedFailure === anyRejectedReason) {
+          expect(getChainOperationFailure(outcome.reason), scenario.name).toBeUndefined();
+          expect(getReferenceMarketOperationFailure(outcome.reason), scenario.name).toBeUndefined();
+        } else {
+          expect(outcome.reason, scenario.name).toBe(scenario.expectedFailure);
+        }
+      }
+      expect(commits, scenario.name).toBe(scenario.expectedCommits);
+      expect(
+        trackedStore.readFeed("eth_usd").observations.map((entry) => entry.fact.roundId),
+        scenario.name,
+      ).toEqual(scenario.expectedCommits === 0 ? [] : [observation(2n).fact.roundId]);
+      await owner.close();
+      await lifecycle.close();
+    }
+  });
+
   it("serializes one feed in FIFO order while a queued caller can cancel independently", async () => {
     const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
     const starts: string[] = [];

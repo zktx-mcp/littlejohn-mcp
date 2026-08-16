@@ -45,7 +45,6 @@ import {
 import {
   admitChainReadFailure,
   ChainOperationError,
-  getChainOperationFailure,
 } from "./errors.js";
 import {
   type ChainInvocationContext,
@@ -123,7 +122,7 @@ export interface ReferenceHistoryTraversal {
   readonly backfillStatus: ReferenceFeedTraversalStatus;
   readonly phaseBoundaryObserved: boolean;
   readonly malformedRoundObserved: boolean;
-  readonly failure: unknown | undefined;
+  readonly failure: Readonly<{ readonly reason: unknown }> | undefined;
 }
 
 export interface ReferenceMarketChainReadPort {
@@ -181,6 +180,15 @@ interface Dependencies {
   readonly lifecycle: ChainInvocationLifecycle;
   readonly clock: CanonicalClock;
   readonly observationAuthority: ObservationAuthority;
+}
+
+class ReferenceObservationCaptureError extends Error {
+  override readonly name = "ReferenceObservationCaptureError";
+
+  constructor(cause: unknown) {
+    super("Reference observation capture failed.", { cause });
+    Object.freeze(this);
+  }
 }
 
 const normalizeFailure = (error: unknown, callerSignal: AbortSignal): never => {
@@ -290,8 +298,7 @@ const captureObservation = (
       block,
     });
   } catch (error) {
-    if (getChainOperationFailure(error) !== undefined) throw error;
-    throw new ChainOperationError("source_inconsistent");
+    throw new ReferenceObservationCaptureError(error);
   }
 };
 
@@ -315,6 +322,7 @@ const readLatestFeedCandidate = async (
     if (isRpcExecutionRevertedError(error)) throw new ChainOperationError("source_inconsistent");
     throw error;
   }
+  let fact: ReferenceRoundFact;
   try {
     const code = normalizeRpcRuntimeCode(results[0]);
     if (code.status !== "present" || decodeDescription(results[1]) !== feed.expectedDescription ||
@@ -323,11 +331,11 @@ const readLatestFeedCandidate = async (
     }
     const candidate = parseRoundCandidate(feedId, results[3], block);
     if (candidate.status === "malformed") return null;
-    return captureObservation(dependencies, candidate.fact, block);
-  } catch (error) {
-    if (getChainOperationFailure(error) !== undefined) throw error;
+    fact = candidate.fact;
+  } catch {
     throw new ChainOperationError("source_inconsistent");
   }
+  return captureObservation(dependencies, fact, block);
 };
 
 const readLatestFeed = async (
@@ -627,7 +635,7 @@ export const createReferenceMarketChainReadPort = (dependencies: Dependencies): 
       let probes = 0;
       let phaseBoundaryObserved = traversal.backfillStatus === "phase_boundary";
       let malformedRoundObserved = traversal.backfillStatus === "malformed";
-      let failure: unknown | undefined;
+      let failure: ReferenceHistoryTraversal["failure"];
 
       const readSegment = async (segment: ReferenceHistoryWorkSegment): Promise<Readonly<{
         nextRoundId: string | null;
@@ -756,7 +764,7 @@ export const createReferenceMarketChainReadPort = (dependencies: Dependencies): 
           });
         }
       } catch (error) {
-        failure = normalizedFailure(error, signal);
+        failure = Object.freeze({ reason: normalizedFailure(error, signal) });
       }
 
       return Object.freeze({
