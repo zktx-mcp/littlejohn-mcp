@@ -56,7 +56,7 @@ describe("CLI interface identity", () => {
       {
         domain: "read",
         command: "assets",
-        argumentSyntax: "[--limit <1..5>] [--cursor <token-address>] [--json]",
+        argumentSyntax: "[--limit <1..5>] [--cursor <cursor-json>] [--json]",
       },
       {
         domain: "read",
@@ -117,7 +117,7 @@ describe("CLI interface identity", () => {
       "  littlejohn market stock-token-market <symbol> [--window <1d|7d|30d>] [--json]",
       "  littlejohn market watchlist [--json]",
       "  littlejohn market watchlist-operation <operation-id> [--json]",
-      "  littlejohn read assets [--limit <1..5>] [--cursor <token-address>] [--json]",
+      "  littlejohn read assets [--limit <1..5>] [--cursor <cursor-json>] [--json]",
       "  littlejohn read balance (--address <address> | --active) --native <true|false> [--token <address>]... --block <latest|block-number> [--json]",
       "  littlejohn read chain-status [--json]",
       "  littlejohn read contract <address> --block <latest|block-number> [--json]",

@@ -6,11 +6,15 @@ import { z } from "zod";
 import {
   accountAssetApplicationContracts,
   accountAssetClassificationSchema,
+  accountAssetCursorSchema,
   filterAccountAssetOfficialCandidates,
   accountAssetOverviewQueryContract,
   contractAccountAssetSchema,
   createAccountAssetAmount,
 } from "../../src/account-assets/contracts.js";
+import {
+  defaultStockTokenCount,
+} from "../../src/registry/default-stock-token-contract.js";
 import {
   officialAssetCandidateSchema,
   officialAssetSourceDefinition,
@@ -170,6 +174,13 @@ const canonicalOutputSchema = (schema: z.ZodType): string =>
     io: "output",
   }))) as CanonicalJson);
 
+const canonicalInputSchema = (schema: z.ZodType): string =>
+  canonicalJsonStringify(JSON.parse(JSON.stringify(z.toJSONSchema(schema, {
+    target: "draft-2020-12",
+    unrepresentable: "throw",
+    io: "input",
+  }))) as CanonicalJson);
+
 const sha256 = (value: string): string =>
   createHash("sha256").update(value, "utf8").digest("hex");
 
@@ -219,6 +230,30 @@ describe("account asset contracts", () => {
       const canonical = canonicalOutputSchema(schema);
       expect(Buffer.byteLength(canonical, "utf8")).toBe(expectedBytes);
       expect(sha256(canonical)).toBe(expectedDigest);
+    }
+
+    const cursorInput = canonicalInputSchema(accountAssetCursorSchema);
+    expect(Buffer.byteLength(cursorInput, "utf8")).toBe(2_784);
+    expect(sha256(cursorInput)).toBe(
+      "b9a5e50eaaed93e675e6f13d8239580d0d6beccacffe9498bf99899d816bbce3",
+    );
+  });
+
+  it("consumes one default rank domain in both official snapshot states", () => {
+    const revisions = [currentViewRevision, viewRevision] as const;
+    for (const revisionInput of revisions) {
+      expect(accountAssetCursorSchema.safeParse({
+        group: "default",
+        rank: defaultStockTokenCount - 1,
+        ...revisionInput,
+        address: tokenAddress,
+      }).success).toBe(true);
+      expect(accountAssetCursorSchema.safeParse({
+        group: "default",
+        rank: defaultStockTokenCount,
+        ...revisionInput,
+        address: tokenAddress,
+      }).success).toBe(false);
     }
   });
 

@@ -212,9 +212,10 @@ const parseAssets = (tokens: readonly string[]): ReadCliCommand => {
   const limit = exactFlag(parsed, "--limit");
   const cursor = exactFlag(parsed, "--cursor");
   try {
+    const decodedCursor: unknown = cursor === undefined ? undefined : JSON.parse(cursor);
     const input = accountAssetApplicationContracts.collection.parseInput({
       ...(limit === undefined ? {} : { limit: Number(limit) }),
-      ...(cursor === undefined ? {} : { cursor }),
+      ...(cursor === undefined ? {} : { cursor: decodedCursor }),
     });
     return Object.freeze({
       kind: "assets",
@@ -361,7 +362,9 @@ const assetsHuman = (result: AccountAssetCollectionSuccess): string => {
       `  Balance: ${quantity(entry.quantity)}`,
     ].join("\n")),
     ...(view.nextCursor === null ? [] : [
-      `Next cursor: ${canonicalJsonStringify(view.nextCursor as unknown as CanonicalJson)}`,
+      `Next cursor JSON: ${canonicalJsonStringify(view.nextCursor as unknown as CanonicalJson)}`,
+      "Pass this JSON as one --cursor argument; quote or escape it for your shell.",
+      "POSIX shells: enclose the JSON in single quotes.",
     ]),
   ].join("\n");
 };

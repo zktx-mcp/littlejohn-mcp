@@ -26,3 +26,4 @@ export type {
   StockFactoryClassificationUnavailableReason,
   StockFactoryVerification,
 } from "./official-asset-contract.js";
+export { defaultStockTokenRankSchema } from "./default-stock-token-contract.js";

@@ -393,7 +393,7 @@ export const accountAssetInterfaceBindings = Object.freeze({
     cli: Object.freeze({
       domain: "read",
       command: "assets",
-      argumentSyntax: "[--limit <1..5>] [--cursor <token-address>] [--json]",
+      argumentSyntax: "[--limit <1..5>] [--cursor <cursor-json>] [--json]",
     }),
   }),
   exact: Object.freeze({

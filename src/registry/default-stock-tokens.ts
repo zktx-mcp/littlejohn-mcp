@@ -6,15 +6,16 @@ import {
   hash32Schema,
   productChainId,
 } from "../core/index.js";
+import { defaultStockTokenCount } from "./default-stock-token-contract.js";
 
 const defaultStockTokenEntrySchema = z.object({
   assetUid: hash32Schema,
   contractAddress: evmAddressSchema,
 }).strict();
 
-const defaultStockTokenManifestSchema = z.object({
+export const defaultStockTokenManifestSchema = z.object({
   chainId: z.literal(productChainId),
-  assets: z.array(defaultStockTokenEntrySchema).min(1).max(5),
+  assets: z.array(defaultStockTokenEntrySchema).length(defaultStockTokenCount),
 }).strict().superRefine((value, context) => {
   const uids = value.assets.map((asset) => asset.assetUid);
   const addresses = value.assets.map((asset) => asset.contractAddress);

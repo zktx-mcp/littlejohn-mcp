@@ -14,6 +14,7 @@ import {
   createProductSourceProgram,
   createPackageImportPolicy,
   directCodeExecutionViolations,
+  inspectModuleImports,
   inspectSourceFile,
   loadPackageManifest,
   moduleImportPolicyViolations,
@@ -865,6 +866,18 @@ const registryServerEntryModule =
   resolve(sourceRoot, "registry/index.ts");
 const registryClientEntryModule =
   resolve(sourceRoot, "registry/client.ts");
+const defaultStockTokenContractModule =
+  resolve(sourceRoot, "registry/default-stock-token-contract.ts");
+const defaultStockTokenManifestModule =
+  resolve(sourceRoot, "registry/default-stock-tokens.ts");
+const accountAssetContractsModule =
+  resolve(sourceRoot, "account-assets/contracts.ts");
+const accountAssetApplicationModule =
+  resolve(sourceRoot, "account-assets/application.ts");
+const mcpAppViewEntryModule =
+  resolve(sourceRoot, "interfaces/mcp-app/view/main.ts");
+const mcpAppRenderersModule =
+  resolve(sourceRoot, "interfaces/mcp-app/view/renderers.ts");
 
 interface ExternalIntegrationAuthorityRule {
   readonly module: string;
@@ -1253,6 +1266,11 @@ const sourcifyAdapterExports = Object.freeze([
   "createSourcifyContractSourceVerification",
 ] as const);
 
+const defaultStockTokenContractExports = Object.freeze([
+  "defaultStockTokenCount",
+  "defaultStockTokenRankSchema",
+] as const);
+
 const registryServerEntryExports = Object.freeze([
   "CommittedOfficialAssetSnapshot",
   "DefaultStockTokenManifest",
@@ -1316,6 +1334,7 @@ const registryClientEntryExports = Object.freeze([
   "StockFactoryClassificationUnavailableReason",
   "StockFactoryVerification",
   "committedOfficialAssetSnapshotSchema",
+  "defaultStockTokenRankSchema",
   "officialAssetCandidateSchema",
   "officialAssetSnapshotEvidenceSchema",
   "officialAssetSnapshotRevisionSchema",
@@ -1365,6 +1384,410 @@ const exactModuleExportViolations = (
   }
   if (new Set(actual).size !== actual.length) violations.push("duplicate_export");
   return violations;
+};
+
+const productCodeSourcePattern = /\.[cm]?[jt]sx?$/u;
+
+const defaultStockTokenClientGraphViolations = (
+  program: ts.Program,
+  productFiles: ReadonlySet<string>,
+  root: string,
+): readonly string[] => {
+  const normalizedRoot = resolve(root);
+  const violations: string[] = [];
+  const visited = new Set<string>();
+  const pending = [normalizedRoot];
+  const resolutionHost: ts.ModuleResolutionHost = {
+    directoryExists: ts.sys.directoryExists,
+    fileExists: (file) => {
+      const normalized = resolve(file);
+      return productFiles.has(normalized) || program.getSourceFile(normalized) !== undefined ||
+        ts.sys.fileExists(file);
+    },
+    getCurrentDirectory: () => repositoryRoot,
+    getDirectories: ts.sys.getDirectories,
+    readFile: (file) => program.getSourceFile(resolve(file))?.text ?? ts.sys.readFile(file),
+    ...(ts.sys.realpath === undefined ? {} : { realpath: ts.sys.realpath }),
+  };
+
+  while (pending.length > 0) {
+    const file = pending.shift();
+    if (file === undefined || visited.has(file)) continue;
+    visited.add(file);
+    if (!productCodeSourcePattern.test(file)) continue;
+    const sourceFile = program.getSourceFile(file);
+    if (sourceFile === undefined) {
+      violations.push(`${sourceName(normalizedRoot)}:missing_source:${sourceName(file)}`);
+      continue;
+    }
+    for (const reference of inspectModuleImports(sourceFile.text, file)) {
+      if (!reference.runtime) continue;
+      if (reference.specifier === undefined) {
+        violations.push(`${sourceName(file)}:nonliteral_runtime_load`);
+        continue;
+      }
+      if (!reference.specifier.startsWith(".")) continue;
+      const directTarget = resolve(fileURLToPath(new URL(reference.specifier, pathToFileURL(file))));
+      const target = reference.specifier.endsWith(".css")
+        ? directTarget
+        : ts.resolveModuleName(
+            reference.specifier,
+            file,
+            program.getCompilerOptions(),
+            resolutionHost,
+          ).resolvedModule?.resolvedFileName;
+      const normalizedTarget = target === undefined ? undefined : resolve(target);
+      if (normalizedTarget === undefined || !productFiles.has(normalizedTarget)) {
+        violations.push(`${sourceName(file)}:unresolved_runtime_load:${reference.specifier}`);
+        continue;
+      }
+      if (!visited.has(normalizedTarget)) pending.push(normalizedTarget);
+    }
+  }
+
+  if (!visited.has(defaultStockTokenContractModule)) {
+    violations.push(`${sourceName(normalizedRoot)}:missing_default_contract`);
+  }
+  if (visited.has(defaultStockTokenManifestModule)) {
+    violations.push(`${sourceName(normalizedRoot)}:server_manifest_reachable`);
+  }
+  return violations.sort();
+};
+
+const topLevelVariableDeclaration = (
+  sourceFile: ts.SourceFile,
+  name: string,
+): ts.VariableDeclaration | undefined => {
+  for (const statement of sourceFile.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (ts.isIdentifier(declaration.name) && declaration.name.text === name) {
+        return declaration;
+      }
+    }
+  }
+  return undefined;
+};
+
+const defaultStockTokenSymbolViolations = (
+  program: ts.Program,
+  productCodeFiles: ReadonlySet<string>,
+): readonly string[] => {
+  const checker = program.getTypeChecker();
+  const countSymbol = moduleExportSymbol(
+    program,
+    checker,
+    defaultStockTokenContractModule,
+    "defaultStockTokenCount",
+  );
+  const rankSymbol = moduleExportSymbol(
+    program,
+    checker,
+    defaultStockTokenContractModule,
+    "defaultStockTokenRankSchema",
+  );
+  const manifestSchemaSymbol = moduleExportSymbol(
+    program,
+    checker,
+    defaultStockTokenManifestModule,
+    "defaultStockTokenManifestSchema",
+  );
+  const contractSource = program.getSourceFile(defaultStockTokenContractModule);
+  const manifestSource = program.getSourceFile(defaultStockTokenManifestModule);
+  const accountSource = program.getSourceFile(accountAssetContractsModule);
+  const rankDeclaration = contractSource === undefined
+    ? undefined
+    : topLevelVariableDeclaration(contractSource, "defaultStockTokenRankSchema");
+  const manifestDeclaration = manifestSource === undefined
+    ? undefined
+    : topLevelVariableDeclaration(manifestSource, "defaultStockTokenManifestSchema");
+  const cursorShapeDeclaration = accountSource === undefined
+    ? undefined
+    : topLevelVariableDeclaration(accountSource, "defaultCursorShape");
+  const declarationSymbol = (declaration: ts.VariableDeclaration | undefined) =>
+    declaration === undefined || !ts.isIdentifier(declaration.name)
+      ? undefined
+      : resolvedSymbol(checker, checker.getSymbolAtLocation(declaration.name));
+  const rankDeclarationSymbol = declarationSymbol(rankDeclaration);
+  const manifestDeclarationSymbol = declarationSymbol(manifestDeclaration);
+  const cursorShapeSymbol = declarationSymbol(cursorShapeDeclaration);
+  if (
+    countSymbol === undefined || rankSymbol === undefined ||
+    manifestSchemaSymbol === undefined || cursorShapeSymbol === undefined ||
+    rankDeclarationSymbol !== rankSymbol || manifestDeclarationSymbol !== manifestSchemaSymbol
+  ) {
+    return ["default_stock_token_contract_symbols_missing"];
+  }
+
+  const rankMaximumCountNode = (() => {
+    const initializer = rankDeclaration?.initializer;
+    if (
+      initializer === undefined || !ts.isCallExpression(initializer) ||
+      !ts.isPropertyAccessExpression(initializer.expression) ||
+      initializer.expression.name.text !== "max" || initializer.arguments.length !== 1
+    ) return undefined;
+    const maximum = initializer.arguments[0];
+    return maximum !== undefined && ts.isBinaryExpression(maximum) &&
+      maximum.operatorToken.kind === ts.SyntaxKind.MinusToken &&
+      ts.isIdentifier(maximum.left) && ts.isNumericLiteral(maximum.right) &&
+      maximum.right.text === "1"
+      ? maximum.left
+      : undefined;
+  })();
+  const manifestLengthCountNode = (() => {
+    const initializer = manifestDeclaration?.initializer;
+    if (
+      initializer === undefined || !ts.isCallExpression(initializer) ||
+      !ts.isPropertyAccessExpression(initializer.expression) ||
+      initializer.expression.name.text !== "superRefine"
+    ) return undefined;
+    const strictCall = initializer.expression.expression;
+    if (
+      !ts.isCallExpression(strictCall) ||
+      !ts.isPropertyAccessExpression(strictCall.expression) ||
+      strictCall.expression.name.text !== "strict"
+    ) return undefined;
+    const objectCall = strictCall.expression.expression;
+    if (
+      !ts.isCallExpression(objectCall) ||
+      !ts.isPropertyAccessExpression(objectCall.expression) ||
+      objectCall.expression.getText(manifestSource) !== "z.object"
+    ) return undefined;
+    const shape = objectCall.arguments[0];
+    if (shape === undefined || !ts.isObjectLiteralExpression(shape)) return undefined;
+    const assets = shape.properties.filter((property): property is ts.PropertyAssignment =>
+      ts.isPropertyAssignment(property) && ts.isIdentifier(property.name) &&
+      property.name.text === "assets");
+    if (assets.length !== 1) return undefined;
+    const lengthCall = assets[0]!.initializer;
+    if (
+      !ts.isCallExpression(lengthCall) ||
+      !ts.isPropertyAccessExpression(lengthCall.expression) ||
+      lengthCall.expression.name.text !== "length" || lengthCall.arguments.length !== 1
+    ) return undefined;
+    const length = lengthCall.arguments[0];
+    return length !== undefined && ts.isIdentifier(length) ? length : undefined;
+  })();
+  const cursorRankNode = (() => {
+    const initializer = cursorShapeDeclaration?.initializer;
+    if (initializer === undefined || !ts.isObjectLiteralExpression(initializer)) return undefined;
+    const ranks = initializer.properties.filter((property): property is ts.PropertyAssignment =>
+      ts.isPropertyAssignment(property) && ts.isIdentifier(property.name) &&
+      property.name.text === "rank");
+    if (ranks.length !== 1) return undefined;
+    const rank = ranks[0]!.initializer;
+    return ts.isIdentifier(rank) ? rank : undefined;
+  })();
+
+  const violations: string[] = [];
+  const countFiles = new Set<string>();
+  const rankFiles = new Set<string>();
+  let manifestLengthUses = 0;
+  let rankMaximumUses = 0;
+  let cursorRankUses = 0;
+
+  for (const sourceFile of program.getSourceFiles()) {
+    const file = resolve(sourceFile.fileName);
+    if (!productCodeFiles.has(file)) continue;
+    const visit = (node: ts.Node): void => {
+      if (ts.isIdentifier(node)) {
+        const symbol = resolvedSymbol(checker, checker.getSymbolAtLocation(node));
+        if (symbol === countSymbol) {
+          countFiles.add(file);
+          if (file === defaultStockTokenContractModule) {
+            if (ts.isVariableDeclaration(node.parent) && node.parent.name === node) {
+              // The exported owner declaration.
+            } else if (node === rankMaximumCountNode) rankMaximumUses += 1;
+            else violations.push(`${sourceName(file)}:unexpected_count_use`);
+          } else if (file === defaultStockTokenManifestModule) {
+            if (
+              ts.isImportSpecifier(node.parent) &&
+              node.parent.name === node &&
+              node.parent.propertyName === undefined &&
+              node.text === "defaultStockTokenCount"
+            ) {
+              // The exact import binding.
+            } else if (node === manifestLengthCountNode) manifestLengthUses += 1;
+            else violations.push(`${sourceName(file)}:unexpected_count_use`);
+          } else violations.push(`${sourceName(file)}:count_reference`);
+        }
+        if (symbol === rankSymbol) {
+          rankFiles.add(file);
+          if (file === defaultStockTokenContractModule) {
+            if (!(ts.isVariableDeclaration(node.parent) && node.parent.name === node)) {
+              violations.push(`${sourceName(file)}:unexpected_rank_use`);
+            }
+          } else if (file === registryClientEntryModule) {
+            if (!ts.isExportSpecifier(node.parent)) {
+              violations.push(`${sourceName(file)}:unexpected_rank_use`);
+            }
+          } else if (file === accountAssetContractsModule) {
+            if (ts.isImportSpecifier(node.parent)) {
+              // The exact client-entry import binding.
+            } else if (node === cursorRankNode) cursorRankUses += 1;
+            else violations.push(`${sourceName(file)}:unexpected_rank_use`);
+          } else violations.push(`${sourceName(file)}:rank_reference`);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
+
+  const exactFiles = (actual: ReadonlySet<string>, expected: readonly string[]): boolean =>
+    actual.size === expected.length && expected.every((file) => actual.has(file));
+  if (!exactFiles(countFiles, [defaultStockTokenContractModule, defaultStockTokenManifestModule])) {
+    violations.push(`count_files:${[...countFiles].map(sourceName).sort().join(",")}`);
+  }
+  if (!exactFiles(rankFiles, [
+    accountAssetContractsModule,
+    defaultStockTokenContractModule,
+    registryClientEntryModule,
+  ])) violations.push(`rank_files:${[...rankFiles].map(sourceName).sort().join(",")}`);
+  if (manifestLengthUses !== 1) violations.push(`manifest_length_uses:${manifestLengthUses}`);
+  if (rankMaximumUses !== 1) violations.push(`rank_maximum_uses:${rankMaximumUses}`);
+  if (cursorRankUses !== 1) violations.push(`cursor_rank_uses:${cursorRankUses}`);
+  return violations.sort();
+};
+
+const defaultCursorStructureViolations = (program: ts.Program): readonly string[] => {
+  const parsed = program.getSourceFile(accountAssetContractsModule);
+  if (parsed === undefined) return ["account_asset_contracts_source_missing"];
+  const checker = program.getTypeChecker();
+  const declaration = (name: string): ts.VariableDeclaration | undefined =>
+    topLevelVariableDeclaration(parsed, name);
+  const declarationSymbol = (name: string): ts.Symbol | undefined => {
+    const owner = declaration(name);
+    return owner === undefined || !ts.isIdentifier(owner.name)
+      ? undefined
+      : resolvedSymbol(checker, checker.getSymbolAtLocation(owner.name));
+  };
+  const spreadNames = new Map<ts.Symbol, string>();
+  for (const [name, label] of [
+    ["defaultCursorShape", "...defaultCursorShape"],
+    ["currentOfficialSnapshotRevisionShape", "...currentOfficialSnapshotRevisionShape"],
+    ["unavailableOfficialSnapshotRevisionShape", "...unavailableOfficialSnapshotRevisionShape"],
+    ["cursorIdentityShape", "...cursorIdentityShape"],
+  ] as const) {
+    const symbol = declarationSymbol(name);
+    if (symbol === undefined) return [`${name}:owner_missing`];
+    spreadNames.set(symbol, label);
+  }
+  const rankSymbol = moduleExportSymbol(
+    program,
+    checker,
+    defaultStockTokenContractModule,
+    "defaultStockTokenRankSchema",
+  );
+  const propertyName = (property: ts.ObjectLiteralElementLike): string => {
+    if (ts.isSpreadAssignment(property)) {
+      const symbol = ts.isIdentifier(property.expression)
+        ? resolvedSymbol(checker, checker.getSymbolAtLocation(property.expression))
+        : undefined;
+      return symbol === undefined ? "...invalid" : spreadNames.get(symbol) ?? "...invalid";
+    }
+    if (
+      (ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) &&
+      (ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name))
+    ) return property.name.text;
+    return "invalid";
+  };
+  const strictJsonObject = (node: ts.Expression): ts.ObjectLiteralExpression | undefined => {
+    if (
+      !ts.isCallExpression(node) ||
+      !ts.isPropertyAccessExpression(node.expression) ||
+      node.expression.name.text !== "strict" ||
+      !ts.isCallExpression(node.expression.expression) ||
+      !ts.isIdentifier(node.expression.expression.expression) ||
+      node.expression.expression.expression.text !== "jsonObject"
+    ) return undefined;
+    const input = node.expression.expression.arguments[0];
+    return input !== undefined && ts.isObjectLiteralExpression(input) ? input : undefined;
+  };
+
+  const violations: string[] = [];
+  const base = declaration("defaultCursorShape")?.initializer;
+  if (base === undefined || !ts.isObjectLiteralExpression(base)) {
+    violations.push("default_cursor_shape_missing");
+  } else {
+    if (base.properties.map(propertyName).join(",") !== "group,rank") {
+      violations.push("default_cursor_shape_members");
+    }
+    const [group, rank] = base.properties;
+    if (
+      group === undefined || !ts.isPropertyAssignment(group) ||
+      !ts.isCallExpression(group.initializer) ||
+      !ts.isPropertyAccessExpression(group.initializer.expression) ||
+      group.initializer.expression.getText(parsed) !== "z.literal" ||
+      group.initializer.arguments[0]?.getText(parsed) !== '"default"'
+    ) violations.push("default_cursor_group");
+    if (
+      rank === undefined || !ts.isPropertyAssignment(rank) ||
+      !ts.isIdentifier(rank.initializer) ||
+      resolvedSymbol(checker, checker.getSymbolAtLocation(rank.initializer)) !== rankSymbol
+    ) violations.push("default_cursor_rank");
+  }
+
+  const cursor = declaration("accountAssetCursorSchema")?.initializer;
+  const branches = cursor !== undefined && ts.isCallExpression(cursor) &&
+    ts.isPropertyAccessExpression(cursor.expression) &&
+    cursor.expression.getText(parsed) === "z.union" &&
+    cursor.arguments[0] !== undefined && ts.isArrayLiteralExpression(cursor.arguments[0])
+    ? cursor.arguments[0].elements
+    : undefined;
+  if (branches === undefined || branches.length !== 4) {
+    violations.push("account_asset_cursor_union");
+  } else {
+    const expected = [
+      "...defaultCursorShape,...currentOfficialSnapshotRevisionShape,...cursorIdentityShape",
+      "...defaultCursorShape,...unavailableOfficialSnapshotRevisionShape,...cursorIdentityShape",
+    ].sort();
+    const actual = branches.flatMap((branch) => {
+      const object = strictJsonObject(branch);
+      if (object === undefined) return [];
+      const names = object.properties.map(propertyName);
+      return names.includes("...defaultCursorShape") ? [names.join(",")] : [];
+    }).sort();
+    if (actual.length !== expected.length ||
+      expected.some((signature, index) => actual[index] !== signature)) {
+      violations.push("default_cursor_branches");
+    }
+  }
+  return violations.sort();
+};
+
+interface DefaultStockTokenArchitectureFixture {
+  readonly canonicalProgram: ts.Program;
+  readonly productCodeFiles: ReadonlySet<string>;
+  readonly productFiles: ReadonlySet<string>;
+}
+
+let defaultStockTokenArchitectureFixture:
+  Promise<DefaultStockTokenArchitectureFixture> | undefined;
+
+const loadDefaultStockTokenArchitectureFixture = () => {
+  defaultStockTokenArchitectureFixture ??= (async () => {
+    const productFiles = new Set(
+      (await collectProductSourceFiles(repositoryRoot)).map((file) => resolve(file)),
+    );
+    const productCodeFiles = new Set(
+      [...productFiles].filter((file) => productCodeSourcePattern.test(file)),
+    );
+    return Object.freeze({
+      canonicalProgram: createProductSourceProgram([...productCodeFiles]),
+      productCodeFiles,
+      productFiles,
+    });
+  })();
+  return defaultStockTokenArchitectureFixture;
+};
+
+const requiredProgramSource = (program: ts.Program, file: string): string => {
+  const sourceFile = program.getSourceFile(file);
+  if (sourceFile === undefined) {
+    throw new TypeError(`Product TypeScript program is missing ${sourceName(file)}.`);
+  }
+  return sourceFile.text;
 };
 
 const exactExternalIntegrationExportRules = new Map<string, Readonly<{
@@ -1746,6 +2169,231 @@ const externalIntegrationAuthorityViolations = (
 };
 
 describe("runtime architecture boundary", () => {
+  it("keeps one client-safe default Stock Token count and rank contract", async () => {
+    const { canonicalProgram: program, productCodeFiles, productFiles } =
+      await loadDefaultStockTokenArchitectureFixture();
+    const contractSource = requiredProgramSource(program, defaultStockTokenContractModule);
+    const registryServerSource = requiredProgramSource(program, registryServerEntryModule);
+    const registryClientSource = requiredProgramSource(program, registryClientEntryModule);
+
+    expect(exactModuleExportViolations(
+      contractSource,
+      defaultStockTokenContractModule,
+      defaultStockTokenContractExports,
+      false,
+    )).toEqual([]);
+    expect(exactModuleExportViolations(
+      registryServerSource,
+      registryServerEntryModule,
+      registryServerEntryExports,
+      true,
+    )).toEqual([]);
+    expect(exactModuleExportViolations(
+      registryClientSource,
+      registryClientEntryModule,
+      registryClientEntryExports,
+      true,
+    )).toEqual([]);
+    expect(defaultStockTokenSymbolViolations(program, productCodeFiles)).toEqual([]);
+    expect(defaultCursorStructureViolations(program)).toEqual([]);
+    expect(defaultStockTokenClientGraphViolations(
+      program,
+      productFiles,
+      registryClientEntryModule,
+    )).toEqual([]);
+    expect(defaultStockTokenClientGraphViolations(
+      program,
+      productFiles,
+      mcpAppViewEntryModule,
+    )).toEqual([]);
+  }, 20_000);
+
+  it("rejects default Stock Token ownership and client-graph bypasses", async () => {
+    const { canonicalProgram, productCodeFiles, productFiles } =
+      await loadDefaultStockTokenArchitectureFixture();
+    const contractSource = requiredProgramSource(
+      canonicalProgram,
+      defaultStockTokenContractModule,
+    );
+    const manifestSource = requiredProgramSource(
+      canonicalProgram,
+      defaultStockTokenManifestModule,
+    );
+    const registryClientSource = requiredProgramSource(canonicalProgram, registryClientEntryModule);
+    const accountSource = requiredProgramSource(canonicalProgram, accountAssetContractsModule);
+    const applicationSource = requiredProgramSource(canonicalProgram, accountAssetApplicationModule);
+    const rendererSource = requiredProgramSource(canonicalProgram, mcpAppRenderersModule);
+    const replaceUnique = (
+      source: string,
+      target: string,
+      replacement: string,
+      label: string,
+    ): string => {
+      if (source.split(target).length !== 2) {
+        throw new TypeError(`Default Stock Token ${label} mutation target is not unique.`);
+      }
+      return source.replace(target, replacement);
+    };
+
+    expect(exactModuleExportViolations(
+      `${contractSource}\nexport const leakedDefaultLimit = 5;\n`,
+      defaultStockTokenContractModule,
+      defaultStockTokenContractExports,
+      false,
+    )).toContain("unexpected_export:leakedDefaultLimit");
+
+    const countLeakProgram = createProductSourceProgram(
+      [...productCodeFiles],
+      new Map([[accountAssetApplicationModule, `${applicationSource}
+import { defaultStockTokenCount } from "../registry/default-stock-token-contract.js";
+void defaultStockTokenCount;
+`]]),
+      canonicalProgram,
+    );
+    expect(defaultStockTokenSymbolViolations(countLeakProgram, productCodeFiles))
+      .toContain("account-assets/application.ts:count_reference");
+
+    const cursorMarker = [
+      "    ...defaultCursorShape,",
+      "    ...currentOfficialSnapshotRevisionShape,",
+    ].join("\n");
+    const overridingCursor = replaceUnique(accountSource, cursorMarker, [
+      "    ...defaultCursorShape,",
+      "    rank: defaultStockTokenRankSchema,",
+      "    ...currentOfficialSnapshotRevisionShape,",
+    ].join("\n"), "cursor override");
+    const overridingCursorProgram = createProductSourceProgram(
+      [...productCodeFiles],
+      new Map([[accountAssetContractsModule, overridingCursor]]),
+      canonicalProgram,
+    );
+    expect(defaultCursorStructureViolations(overridingCursorProgram))
+      .toContain("default_cursor_branches");
+
+    const rankOwner = [
+      "export const defaultStockTokenRankSchema = z.number()",
+      "  .int()",
+      "  .min(0)",
+      "  .max(defaultStockTokenCount - 1);",
+    ].join("\n");
+    const duplicateRankOwner = [
+      "if (false) {",
+      "  const defaultStockTokenRankSchema = z.number()",
+      "    .int()",
+      "    .min(0)",
+      "    .max(defaultStockTokenCount - 1);",
+      "  void defaultStockTokenRankSchema;",
+      "}",
+      "",
+      "export const defaultStockTokenRankSchema = z.number()",
+      "  .int()",
+      "  .min(0)",
+      "  .max(4);",
+    ].join("\n");
+    const literalManifestLength = replaceUnique(
+      manifestSource,
+      "  assets: z.array(defaultStockTokenEntrySchema).length(defaultStockTokenCount),",
+      "  assets: z.array(defaultStockTokenEntrySchema).length(5),",
+      "manifest length",
+    );
+    const duplicateManifestOwner = replaceUnique(
+      literalManifestLength,
+      "export const defaultStockTokenManifestSchema = z.object({",
+      [
+        "if (false) {",
+        "  const defaultStockTokenManifestSchema = z.object({",
+        "    assets: z.array(defaultStockTokenEntrySchema).length(defaultStockTokenCount),",
+        "  });",
+        "  void defaultStockTokenManifestSchema;",
+        "}",
+        "",
+        "export const defaultStockTokenManifestSchema = z.object({",
+      ].join("\n"),
+      "manifest owner",
+    );
+    const cursorOwner = [
+      "const defaultCursorShape = {",
+      '  group: z.literal("default"),',
+      "  rank: defaultStockTokenRankSchema,",
+      "};",
+    ].join("\n");
+    const duplicateCursorOwner = [
+      "if (false) {",
+      "  const defaultCursorShape = {",
+      '    group: z.literal("default"),',
+      "    rank: defaultStockTokenRankSchema,",
+      "  };",
+      "  void defaultCursorShape;",
+      "}",
+      "",
+      "const defaultCursorShape = {",
+      '  group: z.literal("default"),',
+      "  rank: z.number().int().min(0).max(4),",
+      "};",
+    ].join("\n");
+    const duplicateOwnerProgram = createProductSourceProgram(
+      [...productCodeFiles],
+      new Map([
+        [defaultStockTokenContractModule, replaceUnique(
+          contractSource,
+          rankOwner,
+          duplicateRankOwner,
+          "rank owner",
+        )],
+        [defaultStockTokenManifestModule, duplicateManifestOwner],
+        [accountAssetContractsModule, replaceUnique(
+          accountSource,
+          cursorOwner,
+          duplicateCursorOwner,
+          "cursor owner",
+        )],
+      ]),
+      canonicalProgram,
+    );
+    const duplicateOwnerViolations = defaultStockTokenSymbolViolations(
+      duplicateOwnerProgram,
+      productCodeFiles,
+    );
+    expect(duplicateOwnerViolations)
+      .toContain("registry/default-stock-token-contract.ts:unexpected_count_use");
+    expect(duplicateOwnerViolations)
+      .toContain("registry/default-stock-tokens.ts:unexpected_count_use");
+    expect(duplicateOwnerViolations)
+      .toContain("account-assets/contracts.ts:unexpected_rank_use");
+    expect(defaultCursorStructureViolations(duplicateOwnerProgram))
+      .toContain("default_cursor_rank");
+
+    const clientLeakProgram = createProductSourceProgram(
+      [...productCodeFiles],
+      new Map([[registryClientEntryModule, `${registryClientSource}
+export { defaultStockTokenManifest } from "./default-stock-tokens.js";
+void import("./" + "default-stock-tokens.js");
+`]]),
+      canonicalProgram,
+    );
+    const clientLeak = defaultStockTokenClientGraphViolations(
+      clientLeakProgram,
+      productFiles,
+      registryClientEntryModule,
+    );
+    expect(clientLeak).toContain("registry/client.ts:nonliteral_runtime_load");
+    expect(clientLeak).toContain("registry/client.ts:server_manifest_reachable");
+
+    const appLeakProgram = createProductSourceProgram(
+      [...productCodeFiles],
+      new Map([[mcpAppRenderersModule, `${rendererSource}
+import { defaultStockTokenManifest } from "../../../registry/default-stock-tokens.js";
+void defaultStockTokenManifest;
+`]]),
+      canonicalProgram,
+    );
+    expect(defaultStockTokenClientGraphViolations(
+      appLeakProgram,
+      productFiles,
+      mcpAppViewEntryModule,
+    )).toContain("interfaces/mcp-app/view/main.ts:server_manifest_reachable");
+  }, 20_000);
+
   it("enforces current package and exact dynamic-execution owners", async () => {
     const policy = await loadPackagePolicy();
     const violations: string[] = [];

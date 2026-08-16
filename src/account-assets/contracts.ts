@@ -30,6 +30,7 @@ import {
   tokenSelectionSetRevisionSchema,
 } from "../token-catalog/client.js";
 import {
+  defaultStockTokenRankSchema,
   officialAssetCandidateSchema,
   officialAssetSourceClassificationUnavailableReasonSchema,
   officialAssetSourceDefinition,
@@ -72,16 +73,18 @@ export type AccountAssetViewRevision = z.infer<typeof accountAssetViewRevisionSc
 const cursorIdentityShape = {
   address: evmAddressSchema,
 };
+const defaultCursorShape = {
+  group: z.literal("default"),
+  rank: defaultStockTokenRankSchema,
+};
 export const accountAssetCursorSchema = z.union([
   jsonObject({
-    group: z.literal("default"),
-    rank: z.number().int().min(0).max(4),
+    ...defaultCursorShape,
     ...currentOfficialSnapshotRevisionShape,
     ...cursorIdentityShape,
   }).strict(),
   jsonObject({
-    group: z.literal("default"),
-    rank: z.number().int().min(0).max(4),
+    ...defaultCursorShape,
     ...unavailableOfficialSnapshotRevisionShape,
     ...cursorIdentityShape,
   }).strict(),

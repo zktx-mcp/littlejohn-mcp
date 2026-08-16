@@ -27,7 +27,11 @@ import {
   type CliTerminalPort,
 } from "../../src/cli.js";
 import { runtimeReleased } from "../../src/runtime/shutdown.js";
-import { accountAssetApplicationContracts } from "../../src/account-assets/index.js";
+import {
+  accountAssetApplicationContracts,
+  accountAssetInterfaceErrorMappings,
+  createAccountAssetFailure,
+} from "../../src/account-assets/index.js";
 
 const runCli = async (...input: Parameters<typeof runCliResult>): Promise<number> =>
   (await runCliResult(...input)).exitCode;
@@ -35,7 +39,10 @@ import {
   uniswapV2FactoryAddress,
   uniswapV2QuoteInputSchema,
 } from "../../src/protocols/uniswap-v2/index.js";
-import { officialAssetSourceDefinition } from "../../src/registry/index.js";
+import {
+  defaultStockTokenManifest,
+  officialAssetSourceDefinition,
+} from "../../src/registry/index.js";
 import {
   ScriptedRpc,
   createChainHandlerHarness,
@@ -51,6 +58,14 @@ const tokenA = `0x${"22".repeat(20)}`;
 const tokenB = `0x${"33".repeat(20)}`;
 const transactionHash = `0x${"44".repeat(32)}`;
 const blockHash = `0x${"55".repeat(32)}`;
+const representativeAccountAssetCursor = Object.freeze({
+  group: "default" as const,
+  rank: defaultStockTokenManifest.assets.length - 1,
+  officialSnapshotStatus: "current" as const,
+  officialSnapshotRevision: Buffer.alloc(16, 6).toString("base64url"),
+  selectionSetRevision: Buffer.alloc(16, 7).toString("base64url"),
+  address: defaultStockTokenManifest.assets.at(-1)!.contractAddress,
+});
 let encoder: Erc20CallEncoder;
 const harnesses: ChainHandlerHarness[] = [];
 
@@ -187,6 +202,11 @@ const terminalityUnresolvedContractSuccess = async (): Promise<CanonicalJson> =>
 describe("read CLI", () => {
   it("accepts only the fixed grammar and delegates semantic canonicalization to the capability contract", () => {
     expect(parseReadCliCommand(["read", "chain-status"])).toEqual({ kind: "chain_status", json: false });
+    expect(parseReadCliCommand(["read", "assets"])).toEqual({
+      kind: "assets",
+      json: false,
+      input: { limit: 5 },
+    });
     expect(parseReadCliCommand(["read", "transaction", transactionHash, "--json"]))
       .toMatchObject({ kind: "transaction", json: true, input: { transactionHash } });
     expect(parseReadCliCommand([
@@ -246,6 +266,16 @@ describe("read CLI", () => {
       ["read", "balance", "--active", "--native", "false", "--block", "latest"],
       ["read", "balance", "--active", "--native", "true", "--block", "latest", "--token", tokenA, "--token", tokenA],
       ["read", "contract", address, "--block", "01"],
+      ["read", "assets", "--cursor", representativeAccountAssetCursor.address],
+      [
+        "read",
+        "assets",
+        "--cursor",
+        canonicalJsonStringify({
+          ...representativeAccountAssetCursor,
+          rank: defaultStockTokenManifest.assets.length,
+        }),
+      ],
       [
         "uniswap-v2", "quote-exact-input", "--factory", uniswapV2FactoryAddress,
         "--token-in", tokenA, "--token-out", tokenB, "--block", "latest",
@@ -269,11 +299,21 @@ describe("read CLI", () => {
     for (const command of invalid) expect(() => parseReadCliCommand(command)).toThrow();
   });
 
-  it("uses the account-asset human projection for an unidentified selected token", async () => {
+  it("renders and reaccepts an account-asset cursor without changing JSON output", async () => {
     const chainId = "eip155:4663";
     const observedAt = "2026-07-21T00:00:00.000Z";
+    const viewRevision = Object.freeze({
+      officialSnapshotStatus: "current" as const,
+      officialSnapshotRevision: Buffer.alloc(16, 1).toString("base64url"),
+      selectionSetRevision: Buffer.alloc(16, 2).toString("base64url"),
+    });
+    const nextCursor = Object.freeze({
+      group: "other" as const,
+      ...viewRevision,
+      address: tokenA,
+    });
     const collection = accountAssetApplicationContracts.collection.parsePublicSuccess(
-      { limit: 5, cursor: null },
+      { limit: 1, cursor: null },
       {
         account: { chainId, address },
         block: {
@@ -282,11 +322,7 @@ describe("read CLI", () => {
           blockHash,
           blockTimestamp: observedAt,
         },
-        viewRevision: {
-          officialSnapshotStatus: "current",
-          officialSnapshotRevision: Buffer.alloc(16, 1).toString("base64url"),
-          selectionSetRevision: Buffer.alloc(16, 2).toString("base64url"),
-        },
+        viewRevision,
         native: {
           kind: "native",
           asset: { kind: "native", chainId },
@@ -338,7 +374,7 @@ describe("read CLI", () => {
             },
           },
         }],
-        nextCursor: null,
+        nextCursor,
       },
     );
     const output = outputPort();
@@ -347,13 +383,85 @@ describe("read CLI", () => {
         status: 200,
         body: captureCanonicalJson(collection),
       })),
-      parseReadCliCommand(["read", "assets"]),
+      parseReadCliCommand(["read", "assets", "--limit", "1"]),
       output,
     )).toBe(0);
     const text = output.output.join("");
     expect(text).toContain(`Token: ${tokenA}`);
     expect(text).toContain("Classification: Custom ERC-20");
     expect(text).not.toContain("Token: Stock Token");
+    const cursorJson = canonicalJsonStringify(nextCursor as unknown as CanonicalJson);
+    const cursorLine = text.split("\n").find((line) => line.startsWith("Next cursor JSON: "));
+    expect(cursorLine).toBe(`Next cursor JSON: ${cursorJson}`);
+    expect(text).toContain(
+      "Pass this JSON as one --cursor argument; quote or escape it for your shell.\n",
+    );
+    expect(text).toContain("POSIX shells: enclose the JSON in single quotes.\n");
+    const emittedCursorJson = cursorLine?.slice("Next cursor JSON: ".length);
+    if (emittedCursorJson === undefined) throw new TypeError("Expected a cursor JSON line.");
+    expect(parseReadCliCommand([
+      "read",
+      "assets",
+      "--limit",
+      "1",
+      "--cursor",
+      emittedCursorJson,
+    ])).toEqual({
+      kind: "assets",
+      json: false,
+      input: { limit: 1, cursor: nextCursor },
+    });
+
+    const jsonOutput = outputPort();
+    expect(await runReadCliCommand(
+      new FakeRuntime(Object.freeze({
+        status: 200,
+        body: captureCanonicalJson(collection),
+      })),
+      parseReadCliCommand(["read", "assets", "--limit", "1", "--json"]),
+      jsonOutput,
+    )).toBe(0);
+    expect(jsonOutput.output).toEqual([
+      `${canonicalJsonStringify(collection as unknown as CanonicalJson)}\n`,
+    ]);
+    expect(jsonOutput.errors).toEqual([]);
+  });
+
+  it("preserves an admitted structured cursor through the Runtime request", async () => {
+    const cursorJson = canonicalJsonStringify(
+      representativeAccountAssetCursor as unknown as CanonicalJson,
+    );
+    const command = parseReadCliCommand([
+      "read",
+      "assets",
+      "--limit",
+      "1",
+      "--cursor",
+      cursorJson,
+    ]);
+    expect(command).toEqual({
+      kind: "assets",
+      json: false,
+      input: { limit: 1, cursor: representativeAccountAssetCursor },
+    });
+
+    const failure = createAccountAssetFailure("state_conflict");
+    const problem = toProblemDetails(failure, accountAssetInterfaceErrorMappings);
+    const runtime = new FakeRuntime(Object.freeze({
+      status: problem.status,
+      body: problem as unknown as CanonicalJson,
+    }));
+    const output = outputPort();
+    expect(await runReadCliCommand(runtime, command, output)).toBe(
+      accountAssetInterfaceErrorMappings.get("state_conflict").cliExitCode,
+    );
+    expect(output.output).toEqual([]);
+    expect(output.errors).toEqual([`${failure.error.code}: ${failure.error.message}\n`]);
+    expect(runtime.requests).toHaveLength(1);
+    expect(runtime.requests[0]?.body).toEqual({
+      limit: 1,
+      cursor: representativeAccountAssetCursor,
+    });
   });
 
   it("dispatches a canonical read with the caller signal and emits the unchanged JSON result", async () => {
