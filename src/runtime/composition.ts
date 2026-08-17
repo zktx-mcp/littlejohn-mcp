@@ -1075,7 +1075,7 @@ export class LocalRuntime {
       const referenceMarketStage: ReferenceMarketOwnerApplicationStage<ActiveWallet> | undefined =
         accountAssetStage === undefined
           ? undefined
-          : ({ routes }, wallet, chain, supportManifest, officialAssets) =>
+          : ({ routes, startupResources }, wallet, chain, supportManifest, officialAssets) =>
             createReferenceMarketApplicationFactory({
               routes,
               supportManifest,
@@ -1086,6 +1086,7 @@ export class LocalRuntime {
               officialAssets,
               stockTokenExecutionIndex,
               clock,
+              startupResources,
             });
       const interfaceStage: InterfaceOwnerApplicationStage<ActiveWallet, WalletOperations> | undefined =
         interfaceApplicationFactory === undefined

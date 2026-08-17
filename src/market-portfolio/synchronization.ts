@@ -145,14 +145,25 @@ export class ReferenceFeedSynchronizationOwner {
       const [job] = this.#pending.splice(index, 1);
       if (job === undefined) return;
       this.#activeFeedIds.add(job.feedId);
+      let resolveExecution!: (result: ReferenceFeedSynchronizationResult) => void;
+      let rejectExecution!: (reason: unknown) => void;
+      const execution = new Promise<ReferenceFeedSynchronizationResult>((resolve, reject) => {
+        resolveExecution = resolve;
+        rejectExecution = reject;
+      });
       let settlement!: Promise<void>;
-      settlement = this.#run(job.feedId, job).then(job.resolve, job.reject).finally(() => {
+      settlement = execution.then(job.resolve, job.reject).finally(() => {
         job.removeAbortListener?.();
         this.#activeFeedIds.delete(job.feedId);
         this.#activeSettlements.delete(settlement);
         this.#pump();
       });
       this.#activeSettlements.add(settlement);
+      void settlement.then(
+        () => undefined,
+        () => undefined,
+      );
+      void this.#run(job.feedId, job).then(resolveExecution, rejectExecution);
     }
   }
 
@@ -266,15 +277,23 @@ export class ReferenceFeedSynchronizationOwner {
 
   close(): Promise<void> {
     if (this.#closePromise !== undefined) return this.#closePromise;
+    let resolveClose!: () => void;
+    const publishedClose = new Promise<void>((resolve) => {
+      resolveClose = resolve;
+    });
+    this.#closePromise = publishedClose;
     this.#state = "closing";
+    const admitted = [...this.#activeSettlements];
+    const queued = this.#pending.splice(0);
     this.#owner.abort();
-    for (const job of this.#pending.splice(0)) {
+    for (const job of queued) {
       job.removeAbortListener?.();
       job.reject(new ReferenceMarketOperationError("runtime_state_unavailable"));
     }
-    this.#closePromise = Promise.allSettled([...this.#activeSettlements]).then(() => {
+    void Promise.allSettled(admitted).then(() => {
       this.#state = "closed";
+      resolveClose();
     });
-    return this.#closePromise;
+    return publishedClose;
   }
 }

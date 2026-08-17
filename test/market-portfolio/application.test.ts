@@ -4,7 +4,9 @@ import { resolve } from "node:path";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 
+import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
 import {
+  extendChainSupportManifest,
   createReferenceMarketCallEncoder,
   createReferenceMarketChainReadPort,
   createChainInvocationLifecycle,
@@ -41,6 +43,7 @@ import {
   type ReferenceWatchlistSuccess,
 } from "../../src/core/index.js";
 import { ReferenceMarketApplication } from "../../src/market-portfolio/application.js";
+import { createReferenceMarketApplicationFactory } from "../../src/market-portfolio/application-factory.js";
 import { unavailableExecutionIndex } from "./execution-index-fixture.js";
 import { createReferenceHistory } from "../../src/market-portfolio/candles.js";
 import {
@@ -50,13 +53,21 @@ import {
   referenceMarketErrorRegistry,
   type ReferenceWatchlistOperation,
 } from "../../src/market-portfolio/contracts.js";
+import { ReferenceMarketOperationError } from "../../src/market-portfolio/errors.js";
+import type { ReferenceMarketApplicationDependencies } from "../../src/market-portfolio/ports.js";
+import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
+import type { RuntimeRouteRegistry } from "../../src/runtime/http-routing.js";
 import type {
   ReferenceFeedCacheCommit,
   ReferenceFeedCacheSnapshot,
   ReferenceMarketStore,
 } from "../../src/runtime/reference-market-storage.js";
+import { createResourceOwnershipScope } from "../../src/runtime/resource-ownership.js";
 import { parseRuntimeRevision } from "../../src/runtime/runtime-identity.js";
+import { createInitialRuntimeSupportManifest } from "../../src/runtime/support-manifest.js";
 import { tokenCatalogErrorRegistry } from "../../src/token-catalog/error-registry.js";
+import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
+import { extendWalletSupportManifest } from "../../src/wallet/application.js";
 
 const block = chainAnchorSchema.parse({
   chainId: "eip155:4663",
@@ -547,7 +558,7 @@ const fixture = (createChain?: FixtureChainFactory) => {
       }),
     }),
   });
-  const application = new ReferenceMarketApplication({
+  const dependencies = Object.freeze({
     chain,
     chainInvocations: lifecycle,
     store,
@@ -565,9 +576,11 @@ const fixture = (createChain?: FixtureChainFactory) => {
     }),
     stockTokenExecutionIndex: unavailableExecutionIndex,
     clock,
-  });
+  }) satisfies ReferenceMarketApplicationDependencies;
+  const application = new ReferenceMarketApplication(dependencies);
   return {
     application,
+    dependencies,
     async close() {
       await application.close();
       await lifecycle.close();
@@ -584,6 +597,34 @@ const fixture = (createChain?: FixtureChainFactory) => {
       feedCommitCalls,
       historyReadCalls,
     }),
+  };
+};
+
+const accountAssetSupportManifest = extendAccountAssetSupportManifest(
+  extendTokenCatalogSupportManifest(
+    extendChainSupportManifest(
+      extendWalletSupportManifest(
+        createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
+      ),
+    ),
+  ),
+);
+
+const startupOwnerFixture = () => {
+  const scope = createResourceOwnershipScope();
+  let registrations = 0;
+  let registeredResource: Parameters<typeof scope.resources.register>[0] | undefined;
+  return {
+    scope,
+    resources: Object.freeze({
+      register(resource: Parameters<typeof scope.resources.register>[0]) {
+        registrations += 1;
+        registeredResource = resource;
+        return scope.resources.register(resource);
+      },
+    }),
+    get registrations() { return registrations; },
+    get registeredResource() { return registeredResource; },
   };
 };
 
@@ -804,29 +845,55 @@ describe("reference-market application", () => {
     await expired.close();
   });
 
-  it("aborts and drains an active price read before close settles", async () => {
-    const context = fixture();
-    let observedAbort = false;
-    context.setLatestRead(async (_feedIds, signal) => {
-      if (signal.aborted) {
-        observedAbort = true;
-        throw new DOMException("Aborted.", "AbortError");
-      }
-      return await new Promise((_resolve, reject) => {
-        signal.addEventListener("abort", () => {
-          observedAbort = true;
-          reject(new DOMException("Aborted.", "AbortError"));
+  it("publishes a read and close before synchronous dependency reentry", async () => {
+    const releaseEffect = deferred();
+    let blockReads = 0;
+    let effectClose: Promise<void> | undefined;
+    let abortClose: Promise<void> | undefined;
+    let context!: ReturnType<typeof fixture>;
+    context = fixture(() => ({
+      resolveCurrentBlock: async (invocation) => {
+        blockReads += 1;
+        invocation.signal.addEventListener("abort", () => {
+          abortClose = context.application.close();
         }, { once: true });
-      });
-    });
+        effectClose = context.application.close();
+        await releaseEffect.promise;
+        return Object.freeze({ anchor: block });
+      },
+      readLatestAtBlock: async (feedIds) => feedIds.map((feedId) =>
+        [latestEth, latestUsdg].find((entry) => entry.fact.feedId === feedId)!),
+      readHistoryAtBlock: async () => { throw new Error("History reads are not expected."); },
+      readStockTokenAtBlock: async () => { throw new Error("Stock Token reads are not expected."); },
+    }));
     const active = context.application.price({ pairId: referenceMarketManifest.pairs[0]!.pairId });
-    const closing = context.close();
+    if (effectClose === undefined) throw new TypeError("Reference close was not started by the read.");
+    expect(abortClose).toBe(effectClose);
+    expect(context.application.close()).toBe(effectClose);
+
+    let closeSettled = false;
+    void effectClose.then(
+      () => { closeSettled = true; },
+      () => { closeSettled = true; },
+    );
+    await new Promise<void>((resolveTurn) => { setImmediate(resolveTurn); });
+    expect(closeSettled).toBe(false);
+    await expect(context.application.price({
+      pairId: referenceMarketManifest.pairs[0]!.pairId,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "runtime_state_unavailable" },
+    });
+    expect(blockReads).toBe(1);
+
+    releaseEffect.resolve();
     await expect(active).resolves.toMatchObject({
       ok: false,
       error: { code: "runtime_state_unavailable" },
     });
-    await closing;
-    expect(observedAbort).toBe(true);
+    await effectClose;
+    expect(closeSettled).toBe(true);
+    await context.close();
   });
 
   for (const scenario of cancellationScenarios) {
@@ -1373,5 +1440,52 @@ describe("reference-market application", () => {
       openBucket: true,
       closeSourcePointers: [{ feedId: "eth_usd", roundId: truncatedPoint.fact.roundId }],
     });
+  });
+});
+
+describe("reference-market application factory", () => {
+  it("shares its in-flight close and releases successful startup ownership", async () => {
+    const context = fixture();
+    const startup = startupOwnerFixture();
+    const routes = Object.freeze({}) as RuntimeRouteRegistry;
+    const application = await createReferenceMarketApplicationFactory({
+      ...context.dependencies,
+      routes,
+      supportManifest: accountAssetSupportManifest,
+      startupResources: startup.resources,
+    });
+    expect(startup.registrations).toBe(1);
+    expect(startup.scope.empty).toBe(true);
+    expect(application.routes).toBe(routes);
+
+    const closing = application.close();
+    expect(application.close()).toBe(closing);
+    let admissionFailure: unknown;
+    try {
+      application.price({ pairId: referenceMarketManifest.pairs[0]!.pairId });
+    } catch (error) {
+      admissionFailure = error;
+    }
+    expect(admissionFailure).toBeInstanceOf(ReferenceMarketOperationError);
+    expect((admissionFailure as ReferenceMarketOperationError).failure.error.code)
+      .toBe("runtime_state_unavailable");
+    await closing;
+    await context.close();
+  });
+
+  it("releases startup ownership after successful rollback", async () => {
+    const context = fixture();
+    const startup = startupOwnerFixture();
+    const startupFailure = createReferenceMarketApplicationFactory({
+      ...context.dependencies,
+      routes: Object.freeze({}) as RuntimeRouteRegistry,
+      supportManifest: Object.freeze({}) as never,
+      startupResources: startup.resources,
+    });
+    expect(startup.registrations).toBe(1);
+    expect(startup.registeredResource).toMatchObject({ sealed: true, size: 1 });
+    await expect(startupFailure).rejects.toThrow();
+    expect(startup.scope.empty).toBe(true);
+    await context.close();
   });
 });

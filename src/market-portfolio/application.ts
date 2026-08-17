@@ -453,7 +453,19 @@ export class ReferenceMarketApplication implements ReferenceMarketApplicationPor
         new ReferenceMarketOperationError("runtime_state_unavailable"),
       ));
     }
-    const execution = (async (): Promise<Success | ApplicationFailure> => {
+    let resolveExecution!: (
+      result: Success | ApplicationFailure | PromiseLike<Success | ApplicationFailure>
+    ) => void;
+    let rejectExecution!: (reason: unknown) => void;
+    const execution = new Promise<Success | ApplicationFailure>((resolve, reject) => {
+      resolveExecution = resolve;
+      rejectExecution = reject;
+    });
+    let settlement!: Promise<void>;
+    settlement = execution.then(() => undefined, () => undefined)
+      .finally(() => this.#active.delete(settlement));
+    this.#active.add(settlement);
+    void (async (): Promise<Success | ApplicationFailure> => {
       let request: Input;
       try { request = contract.parseInput(input); }
       catch {
@@ -484,11 +496,7 @@ export class ReferenceMarketApplication implements ReferenceMarketApplicationPor
       }
       try { return contract.parsePublicSuccess(request, readSettlement.value); }
       catch (error) { return parseFailure(contract, error); }
-    })();
-    let settlement!: Promise<void>;
-    settlement = execution.then(() => undefined, () => undefined)
-      .finally(() => this.#active.delete(settlement));
-    this.#active.add(settlement);
+    })().then(resolveExecution, rejectExecution);
     return execution;
   }
 
@@ -526,11 +534,21 @@ export class ReferenceMarketApplication implements ReferenceMarketApplicationPor
 
   close(): Promise<void> {
     if (this.#closePromise !== undefined) return this.#closePromise;
+    let resolveClose!: () => void;
+    let rejectClose!: (reason: unknown) => void;
+    const publishedClose = new Promise<void>((resolve, reject) => {
+      resolveClose = resolve;
+      rejectClose = reject;
+    });
+    this.#closePromise = publishedClose;
     this.#state = "closing";
-    this.#owner.abort();
-    this.#closePromise = this.#synchronization.close()
-      .then(() => Promise.allSettled([...this.#active]))
-      .then(() => { this.#state = "closed"; });
-    return this.#closePromise;
+    const admitted = [...this.#active];
+    void (async () => {
+      this.#owner.abort();
+      await this.#synchronization.close();
+      await Promise.allSettled(admitted);
+      this.#state = "closed";
+    })().then(resolveClose, rejectClose);
+    return publishedClose;
   }
 }

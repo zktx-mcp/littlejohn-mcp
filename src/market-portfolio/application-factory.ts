@@ -1,4 +1,8 @@
 import type { RuntimeRouteRegistry } from "../runtime/http-routing.js";
+import {
+  createResourceOwnershipScope,
+  type OwnedResourceRegistry,
+} from "../runtime/resource-ownership.js";
 import type {
   AccountAssetRuntimeSupportManifest,
   ReferenceMarketRuntimeSupportManifest,
@@ -20,20 +24,22 @@ export interface ReferenceMarketOwnerApplication extends ReferenceMarketApplicat
 export interface ReferenceMarketApplicationFactoryInput extends ReferenceMarketApplicationDependencies {
   readonly routes: RuntimeRouteRegistry;
   readonly supportManifest: AccountAssetRuntimeSupportManifest;
+  readonly startupResources: OwnedResourceRegistry;
 }
 
 export const createReferenceMarketApplicationFactory = async (
   input: ReferenceMarketApplicationFactoryInput,
 ): Promise<ReferenceMarketOwnerApplication> => {
+  const lifecycle = createResourceOwnershipScope();
+  const lifecycleOwnership = input.startupResources.register(lifecycle);
   let state: "starting" | "open" | "closing" | "closed" = "starting";
-  const application = new ReferenceMarketApplication(input);
   let activeClose: Promise<void> | undefined;
   const close = (): Promise<void> => {
     if (state === "closed") return Promise.resolve();
     if (activeClose !== undefined) return activeClose;
     state = "closing";
     let tracked!: Promise<void>;
-    tracked = application.close().then(() => {
+    tracked = lifecycle.close().then(() => {
       state = "closed";
     }).finally(() => {
       if (activeClose === tracked) activeClose = undefined;
@@ -45,11 +51,10 @@ export const createReferenceMarketApplicationFactory = async (
     if (state !== "open") throw new ReferenceMarketOperationError("runtime_state_unavailable");
   };
   try {
-    const supportManifest = extendReferenceMarketSupportManifest(input.supportManifest);
-    state = "open";
-    return Object.freeze({
-      routes: input.routes,
-      supportManifest,
+    const application = new ReferenceMarketApplication(input);
+    lifecycle.resources.register(application);
+    lifecycle.seal();
+    const referenceMarkets = Object.freeze({
       price(request: Parameters<ReferenceMarketApplicationPort["price"]>[0], signal?: AbortSignal) {
         assertOpen();
         return application.price(request, signal);
@@ -90,10 +95,23 @@ export const createReferenceMarketApplicationFactory = async (
         assertOpen();
         return application.getWatchlistOperation(request, signal);
       },
+    }) satisfies ReferenceMarketApplicationPort;
+    const supportManifest = extendReferenceMarketSupportManifest(input.supportManifest);
+    const result = Object.freeze({
+      routes: input.routes,
+      supportManifest,
+      ...referenceMarkets,
       close,
     });
+    state = "open";
+    lifecycleOwnership.transfer();
+    return result;
   } catch (startupError) {
-    try { await close(); }
+    if (!lifecycle.sealed) lifecycle.seal();
+    try {
+      await close();
+      lifecycleOwnership.transfer();
+    }
     catch (cleanupError) {
       throw new AggregateError(
         [startupError, cleanupError],

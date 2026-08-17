@@ -370,6 +370,60 @@ describe("reference feed synchronization ownership", () => {
     await lifecycle.close();
   });
 
+  it("publishes an active job before synchronous chain reentry and drains it", async () => {
+    const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
+    const readStarted = deferred<void>();
+    const releaseRead = deferred<ReferenceHistoryTraversal>();
+    let reads = 0;
+    let effectClose: Promise<void> | undefined;
+    let owner!: ReferenceFeedSynchronizationOwner;
+    owner = new ReferenceFeedSynchronizationOwner({
+      chain: {
+        resolveCurrentBlock: async () => { throw new Error("Unexpected block resolution."); },
+        readLatestAtBlock: async () => [],
+        readStockTokenAtBlock: unexpectedStockTokenRead,
+        readHistoryAtBlock: async () => {
+          reads += 1;
+          effectClose = owner.close();
+          readStarted.resolve();
+          return await releaseRead.promise;
+        },
+      },
+      store: storeFixture(),
+      clock: createCanonicalClock(() => "2026-07-22T15:07:34.000Z"),
+    });
+
+    const active = synchronize(lifecycle, owner, {
+      feedId: "eth_usd",
+      requestedStartUnixSeconds: 1n,
+      latest: observation(2n),
+    });
+    await readStarted.promise;
+    if (effectClose === undefined) throw new TypeError("Synchronization close was not started.");
+    expect(owner.close()).toBe(effectClose);
+
+    let closeSettled = false;
+    void effectClose.then(
+      () => { closeSettled = true; },
+      () => { closeSettled = true; },
+    );
+    await new Promise<void>((resolveTurn) => { setImmediate(resolveTurn); });
+    expect(closeSettled).toBe(false);
+    expect(reads).toBe(1);
+    await expect(synchronize(lifecycle, owner, {
+      feedId: "eth_usd",
+      requestedStartUnixSeconds: 1n,
+      latest: observation(1n),
+    })).rejects.toSatisfy((error: unknown) =>
+      getReferenceMarketOperationFailure(error)?.error.code === "runtime_state_unavailable");
+
+    releaseRead.resolve(traversal());
+    await expect(active).resolves.toMatchObject({ snapshot: { feedId: "eth_usd" } });
+    await effectClose;
+    expect(closeSettled).toBe(true);
+    await lifecycle.close();
+  });
+
   it("drains an aborted active read before close resolves and rejects later work", async () => {
     const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
     let committed = false;
