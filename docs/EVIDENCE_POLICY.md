@@ -232,6 +232,15 @@ observation establishes only the reported reference value and its exact source
 position. It remains distinct from directory freshness, execution price, trade
 volume, valuation, safety, recommendation, and transaction support.
 
+A Reference Market source failure is supported only by an admitted pinned Chain
+source or response failure, a verified deployment, feed, or round mismatch, a
+reverted required read, or malformed provider-returned code or ABI data. Caller
+cancellation, local request capacity, owner closure, clock, observation-authority
+dependency, canonical evidence construction, persistence, or unknown local
+runtime failure is not Reference Market source evidence. It terminates the
+operation as its admitted local or internal failure and cannot establish source
+inconsistency, source unavailability, source absence, or history coverage.
+
 A mapped Stock Token observation additionally reads the token's exact
 `oraclePaused()` Boolean and its StockFactory membership at the same canonical
 block. The pause value and round age are separate facts. A paused or old valid
