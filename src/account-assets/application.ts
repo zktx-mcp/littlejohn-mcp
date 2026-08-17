@@ -557,7 +557,18 @@ export const createAccountAssetApplication = (
       return Promise.resolve(contract.parseFailure(createAccountAssetFailure("runtime_state_unavailable")));
     }
     const signal = AbortSignal.any([caller, ownerAbort.signal]);
-    const invocation = (async () => {
+    let resolveInvocation!: (
+      value: Success | ApplicationFailure | PromiseLike<Success | ApplicationFailure>,
+    ) => void;
+    let rejectInvocation!: (reason?: unknown) => void;
+    const invocation = new Promise<Success | ApplicationFailure>((resolve, reject) => {
+      resolveInvocation = resolve;
+      rejectInvocation = reject;
+    });
+    active.add(invocation);
+    const clearInvocation = (): void => { active.delete(invocation); };
+    void invocation.then(clearInvocation, clearInvocation);
+    void (async () => {
       try {
         ensureNotAborted(caller, ownerAbort.signal);
         const success = await effect(request, signal);
@@ -570,9 +581,7 @@ export const createAccountAssetApplication = (
         }
         return normalizeFailure(contract, error);
       }
-    })();
-    active.add(invocation);
-    void invocation.finally(() => active.delete(invocation));
+    })().then(resolveInvocation, rejectInvocation);
     return invocation;
   };
 
@@ -798,12 +807,21 @@ export const createAccountAssetApplication = (
     ...application,
     close(): Promise<void> {
       if (closePromise !== undefined) return closePromise;
+      let resolveClose!: () => void;
+      const publishedClose = new Promise<void>((resolve) => {
+        resolveClose = resolve;
+      });
+      closePromise = publishedClose;
       state = "closing";
+      const admitted = [...active];
       admittedOfficialView = undefined;
       ownerAbort.abort();
       dependencies.signal.removeEventListener("abort", abortFromParent);
-      closePromise = Promise.allSettled([...active]).then(() => { state = "closed"; });
-      return closePromise;
+      void Promise.allSettled(admitted).then(() => {
+        state = "closed";
+        resolveClose();
+      });
+      return publishedClose;
     },
   });
 };

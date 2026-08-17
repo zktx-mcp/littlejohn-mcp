@@ -1058,7 +1058,7 @@ export class LocalRuntime {
       const accountAssetStage: AccountAssetOwnerApplicationStage<ActiveWallet> | undefined =
         tokenCatalogStage === undefined
           ? undefined
-          : ({ routes, signal }, wallet, chain, tokenCatalog) =>
+          : ({ routes, signal, startupResources }, wallet, chain, tokenCatalog) =>
             createAccountAssetApplicationFactory({
               routes,
               supportManifest: tokenCatalog.supportManifest,
@@ -1070,6 +1070,7 @@ export class LocalRuntime {
               chainReads: chain.accountAssetReads,
               clock,
               signal,
+              startupResources,
             });
       const referenceMarketStage: ReferenceMarketOwnerApplicationStage<ActiveWallet> | undefined =
         accountAssetStage === undefined

@@ -1,6 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createAccountAssetApplication } from "../../src/account-assets/application.js";
+import { createAccountAssetApplicationFactory } from "../../src/account-assets/application-factory.js";
+import { AccountAssetOperationError } from "../../src/account-assets/errors.js";
+import { accountAssetControlRoutes } from "../../src/account-assets/http-contract.js";
+import type { AccountAssetReadProcessDependencies } from "../../src/account-assets/ports.js";
 import {
   chainAnchorSchema,
   createCanonicalClock,
@@ -16,6 +24,7 @@ import {
 } from "../../src/core/index.js";
 import {
   createChainInvocationLifecycle,
+  extendChainSupportManifest,
   readConfiguredCanonicalBlock,
   resolveConfiguredCanonicalBlock,
   type AccountAssetChainReadPort,
@@ -40,12 +49,26 @@ import {
   officialAssetMemberSetDigest,
 } from "../../src/registry/official-asset-contract.js";
 import {
+  createControlCredentialVerifier,
+  loadOrCreateControlCredential,
+} from "../../src/runtime/control-credential.js";
+import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
+import { createRuntimeRouteRegistry } from "../../src/runtime/http-routing.js";
+import { runtimePaths } from "../../src/runtime/paths.js";
+import { createResourceOwnershipScope } from "../../src/runtime/resource-ownership.js";
+import { createInitialRuntimeSupportManifest } from "../../src/runtime/support-manifest.js";
+import {
+  extendTokenCatalogSupportManifest,
+} from "../../src/token-catalog/support.js";
+import {
   tokenSelectionDetailSchema,
   tokenSelectionSetRevisionSchema,
   type AccountTokenSelectionStore,
   type TokenSelectionDetail,
   type TokenSelectionState,
 } from "../../src/token-catalog/index.js";
+import { tokenCatalogInterfaceErrorMappings } from "../../src/token-catalog/errors.js";
+import { extendWalletSupportManifest } from "../../src/wallet/application.js";
 
 const chainId = parseEvmChainId("eip155:4663");
 const accountAddress = parseEvmAddressInput(`0x${"34".repeat(20)}`);
@@ -92,6 +115,12 @@ const selectionSetRevision = tokenSelectionSetRevisionSchema.parse(
   Buffer.alloc(16, 8).toString("base64url"),
 );
 const account = Object.freeze({ chainId, address: accountAddress });
+const testDirectories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(testDirectories.splice(0).map((directory) =>
+    rm(directory, { recursive: true, force: true })));
+});
 
 const deferred = () => {
   let resolve!: () => void;
@@ -205,6 +234,7 @@ const fixture = (options: Readonly<{
   ) => readonly StockFactoryVerificationResult[];
   beforeCollectionReturn?: (signal: AbortSignal) => void | Promise<void>;
   beforeExactReturn?: (signal: AbortSignal) => void | Promise<void>;
+  beforeOfficialSynchronizeReturn?: (signal: AbortSignal) => void | Promise<void>;
 }> = {}) => {
   let sourceAvailable = options.sourceAvailable ?? true;
   let sourceFailureCode = options.sourceFailureCode ?? "source_unavailable";
@@ -219,12 +249,14 @@ const fixture = (options: Readonly<{
     updatedAt: at,
   };
   let initializationCalls = 0;
+  let walletCaptures = 0;
   let sessionSourceId = "wallet-session:test";
   let officialSnapshot: CommittedOfficialAssetSnapshot = snapshot;
   let blockIndex = 0;
   let afterVerification = options.afterVerification;
   let beforeCollectionReturn = options.beforeCollectionReturn;
   let beforeExactReturn = options.beforeExactReturn;
+  const beforeOfficialSynchronizeReturn = options.beforeOfficialSynchronizeReturn;
   const selections: AccountTokenSelectionStore = Object.freeze({
     getState: () => state,
     getForAccount: ({ account: requested, asset }: Parameters<AccountTokenSelectionStore["getForAccount"]>[0]) => requested.chainId === account.chainId &&
@@ -371,23 +403,29 @@ const fixture = (options: Readonly<{
       return result;
     },
   });
-  const application = createAccountAssetApplication({
+  const dependencies = Object.freeze({
     activeWallet: Object.freeze({
-      capture: () => Object.freeze({
-        connection: currentConnection,
-        connectionRevision: parseUnsignedDecimal("1"),
-        sessionSource: { sourceId: sessionSourceId } as never,
-      }),
+      capture: () => {
+        walletCaptures += 1;
+        return Object.freeze({
+          connection: currentConnection,
+          connectionRevision: parseUnsignedDecimal("1"),
+          sessionSource: { sourceId: sessionSourceId } as never,
+        });
+      },
     }),
     selections,
     officialAssets: Object.freeze({
-      synchronize: async () => sourceAvailable
-        ? Object.freeze({ status: "current" as const, snapshot: officialSnapshot })
-        : Object.freeze({
-            status: "unavailable" as const,
-            storedRevision: officialSnapshot.revision,
-            reason: sourceFailureCode,
-          }),
+      synchronize: async (signal: AbortSignal) => {
+        await beforeOfficialSynchronizeReturn?.(signal);
+        return sourceAvailable
+          ? Object.freeze({ status: "current" as const, snapshot: officialSnapshot })
+          : Object.freeze({
+              status: "unavailable" as const,
+              storedRevision: officialSnapshot.revision,
+              reason: sourceFailureCode,
+            });
+      },
       readStored: () => officialSnapshot,
       close: async () => undefined,
     }),
@@ -396,14 +434,17 @@ const fixture = (options: Readonly<{
     chainReads,
     clock: createCanonicalClock(() => at),
     signal: owner.signal,
-  });
+  }) satisfies AccountAssetReadProcessDependencies;
+  const application = createAccountAssetApplication(dependencies);
   return {
     application,
+    dependencies,
     async close() {
       await application.close();
       await lifecycle.close();
     },
     get state() { return state; },
+    get walletCaptures() { return walletCaptures; },
     setState(next: TokenSelectionState) { state = next; },
     get initializationCalls() { return initializationCalls; },
     setSessionSourceId(next: string) { sessionSourceId = next; },
@@ -421,7 +462,97 @@ const fixture = (options: Readonly<{
   };
 };
 
+const tokenCatalogSupportManifest = extendTokenCatalogSupportManifest(
+  extendChainSupportManifest(
+    extendWalletSupportManifest(
+      createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain),
+    ),
+  ),
+);
+
+const accountFactoryRoutes = async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "littlejohn-account-assets-factory-"));
+  testDirectories.push(directory);
+  const paths = runtimePaths(directory);
+  const authority = await loadOrCreateControlCredential(directory, paths.controlCredential);
+  return createRuntimeRouteRegistry({
+    controlVerifier: createControlCredentialVerifier(authority),
+    errorMappings: tokenCatalogInterfaceErrorMappings,
+  });
+};
+
+const startupOwnerFixture = () => {
+  const scope = createResourceOwnershipScope();
+  let registrations = 0;
+  let registeredResource: Parameters<typeof scope.resources.register>[0] | undefined;
+  return {
+    scope,
+    resources: Object.freeze({
+      register(resource: Parameters<typeof scope.resources.register>[0]) {
+        registrations += 1;
+        registeredResource = resource;
+        return scope.resources.register(resource);
+      },
+    }),
+    get registrations() { return registrations; },
+    get registeredResource() { return registeredResource; },
+  };
+};
+
 describe("account asset read process", () => {
+  it("publishes admitted work and close before synchronous dependency reentry", async () => {
+    const effectGate = deferred();
+    let effectClose: Promise<void> | undefined;
+    let abortClose: Promise<void> | undefined;
+    let abortObserved = false;
+    let synchronizationCalls = 0;
+    let test!: ReturnType<typeof fixture>;
+    test = fixture({
+      beforeOfficialSynchronizeReturn: (signal) => {
+        synchronizationCalls += 1;
+        signal.addEventListener("abort", () => {
+          abortObserved = true;
+          abortClose = test.application.close();
+        }, { once: true });
+        effectClose = test.application.close();
+        return effectGate.promise;
+      },
+    });
+
+    const read = test.application.list({});
+    if (effectClose === undefined) throw new TypeError("Account close was not started by the effect.");
+    expect(abortObserved).toBe(true);
+    expect(abortClose).toBe(effectClose);
+    expect(test.application.close()).toBe(effectClose);
+
+    let closeSettled = false;
+    void effectClose.then(
+      () => { closeSettled = true; },
+      () => { closeSettled = true; },
+    );
+    await new Promise<void>((resolveTurn) => { setImmediate(resolveTurn); });
+    expect(closeSettled).toBe(false);
+    await expect(test.application.list({})).resolves.toMatchObject({
+      ok: false,
+      error: { code: "runtime_state_unavailable" },
+    });
+    expect(synchronizationCalls).toBe(1);
+
+    effectGate.resolve();
+    await expect(read).resolves.toMatchObject({
+      ok: false,
+      error: { code: "runtime_state_unavailable" },
+    });
+    await effectClose;
+    expect(closeSettled).toBe(true);
+    await expect(test.application.getOverview({})).resolves.toMatchObject({
+      ok: false,
+      error: { code: "runtime_state_unavailable" },
+    });
+    expect(synchronizationCalls).toBe(1);
+    await test.close();
+  });
+
   it("orders defaults before custom selections and binds classifications to one current block", async () => {
     const test = fixture();
     const result = await test.application.list({ limit: 5 });
@@ -1014,5 +1145,59 @@ describe("account asset read process", () => {
     });
     expect(vi.getTimerCount()).toBe(0);
     await test.close();
+  });
+});
+
+describe("account asset application factory", () => {
+  it("shares its in-flight close and releases successful startup ownership", async () => {
+    const readFixture = fixture();
+    const startup = startupOwnerFixture();
+    const application = await createAccountAssetApplicationFactory({
+      ...readFixture.dependencies,
+      routes: await accountFactoryRoutes(),
+      supportManifest: tokenCatalogSupportManifest,
+      startupResources: startup.resources,
+    });
+    expect(startup.registrations).toBe(1);
+    expect(startup.scope.empty).toBe(true);
+
+    const closing = application.close();
+    expect(application.close()).toBe(closing);
+    let admissionFailure: unknown;
+    try { application.list({}); }
+    catch (error) { admissionFailure = error; }
+    expect(admissionFailure).toBeInstanceOf(AccountAssetOperationError);
+    expect((admissionFailure as AccountAssetOperationError).failure.error.code)
+      .toBe("runtime_state_unavailable");
+    const route = application.routes.match("POST", accountAssetControlRoutes.queries);
+    if (route.status !== "matched") throw new TypeError("Account route is unavailable.");
+    await route.route.handler({
+      params: route.params,
+      query: "",
+      body: { limit: 5 },
+      signal: new AbortController().signal,
+    }).then(
+      () => undefined,
+      () => undefined,
+    );
+    expect(readFixture.walletCaptures).toBe(0);
+    await closing;
+    await readFixture.close();
+  });
+
+  it("releases startup ownership after successful rollback", async () => {
+    const readFixture = fixture();
+    const startup = startupOwnerFixture();
+    const startupFailure = createAccountAssetApplicationFactory({
+      ...readFixture.dependencies,
+      routes: await accountFactoryRoutes(),
+      supportManifest: Object.freeze({}) as never,
+      startupResources: startup.resources,
+    });
+    expect(startup.registrations).toBe(1);
+    expect(startup.registeredResource).toMatchObject({ sealed: true, size: 1 });
+    await expect(startupFailure).rejects.toThrow();
+    expect(startup.scope.empty).toBe(true);
+    await readFixture.close();
   });
 });
