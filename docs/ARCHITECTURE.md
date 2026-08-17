@@ -1053,16 +1053,18 @@ an effect-specific disconnected reason. An unchanged stable empty observation
 preserves an already admitted disconnected reason; absence alone cannot replace
 that causal fact or advance the connection revision.
 
-Shutdown rejects new commands and contains the admitted effect before detaching
-product callbacks and closing in-memory wallet authority. Once WalletConnect
-SDK initialization has begun, the public SDK boundary cannot prove that relay,
-heartbeat, provider, expiry, or persistence work has stopped using injected
-storage. The runtime therefore makes process-terminal ownership sticky: it
-does not publish a final connection projection, seal or close injected storage,
-or claim an aggregate `SignClient` close. It retains the inseparable SDK and
-storage owner set until operating-system teardown. A successor process restores
-the SDK and obtains a new healthy stable observation before publishing wallet
-authority.
+Shutdown rejects new commands, requests containment of an admitted Connect
+effect through its durable cancellation path, and immediately closes in-memory
+wallet authority before waiting a bounded interval for any admitted effect. It
+then detaches product callbacks and invokes client-wide containment. Once
+WalletConnect SDK initialization has begun, the public SDK boundary cannot
+prove that relay, heartbeat, provider, expiry, or persistence work has stopped
+using injected storage. The runtime therefore makes process-terminal ownership
+sticky: it does not publish a final connection projection, seal or close
+injected storage, or claim an aggregate `SignClient` close. It retains the
+inseparable SDK and storage owner set until operating-system teardown. A
+successor process restores the SDK and obtains a new healthy stable observation
+before publishing wallet authority.
 
 Both stores live under the Little John application-data directory rather than
 the repository or client storage. Little John restricts their filesystem

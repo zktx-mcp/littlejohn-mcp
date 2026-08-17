@@ -996,20 +996,37 @@ class WalletConnectConnectionAttempt {
     if (this.#admissionState !== "published") {
       return Promise.reject(clientError("local_admission"));
     }
-    const cancellation = this.#requestContainment().then((contained) =>
-      this.#settle(contained
-        ? Object.freeze({ status: "cancelled" as const })
-        : Object.freeze({ status: "failed" as const, failure: "sdk" as const })),
-    );
+    let resolveCancellation!: (outcome: WalletConnectAttemptOutcome) => void;
+    let rejectCancellation!: (reason: unknown) => void;
+    const cancellation = new Promise<WalletConnectAttemptOutcome>((resolve, reject) => {
+      resolveCancellation = resolve;
+      rejectCancellation = reject;
+    });
     this.#cancellation = cancellation;
+    void (async (): Promise<void> => {
+      try {
+        const contained = await this.#requestContainment();
+        resolveCancellation(this.#settle(contained
+          ? Object.freeze({ status: "cancelled" as const })
+          : Object.freeze({ status: "failed" as const, failure: "sdk" as const })));
+      } catch (error) {
+        rejectCancellation(error);
+      }
+    })();
     return cancellation;
   }
 
   #requestContainment(): Promise<boolean> {
     if (this.#containment !== undefined) return this.#containment;
     this.#cancellationRequested = true;
-    const containment = this.#performContainment();
+    let resolveContainment!: (contained: boolean) => void;
+    let rejectContainment!: (reason: unknown) => void;
+    const containment = new Promise<boolean>((resolve, reject) => {
+      resolveContainment = resolve;
+      rejectContainment = reject;
+    });
     this.#containment = containment;
+    void this.#performContainment().then(resolveContainment, rejectContainment);
     return containment;
   }
 

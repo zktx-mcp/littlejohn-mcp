@@ -152,6 +152,7 @@ class FakeSdk implements WalletConnectSdkPort {
   listProposalFailure: unknown;
   listSessionFailure: unknown;
   onListSessions: (() => void) | undefined;
+  onExpireProposal: (() => void) | undefined;
   pairingDisconnectFailure: unknown;
   expireProposalFailure: unknown;
   connectionResult: unknown = undefined;
@@ -197,6 +198,7 @@ class FakeSdk implements WalletConnectSdkPort {
   expireProposal(id: number): void {
     this.log.push(`expire:${id}`);
     this.expiredProposalIds.push(id);
+    this.onExpireProposal?.();
     if (this.expireProposalFailure !== undefined) throw this.expireProposalFailure;
     this.proposals = this.proposals.filter((candidate) => {
       try { return Reflect.get(candidate as object, "id") !== id; }
@@ -475,6 +477,31 @@ describe("WalletConnect public adapter boundary", () => {
     await expect(cancellation).resolves.toEqual({ status: "cancelled" });
     await expect(attempt.wait()).resolves.toEqual({ status: "cancelled" });
     expect(created.sdk.sessionDisconnects).toEqual([sessionTopic]);
+    await containCreatedClient(created);
+  });
+
+  it("publishes one in-flight cancellation before proposal cleanup can reenter", async () => {
+    const sdk = new FakeSdk();
+    const created = await createClient({ sdk });
+    const attempt = await created.acquisition.client.startConnection();
+    let reenteredCancellation: Promise<unknown> | undefined;
+    sdk.onExpireProposal = () => {
+      sdk.onExpireProposal = undefined;
+      reenteredCancellation = attempt.cancel();
+    };
+
+    const cancellation = attempt.cancel();
+
+    if (reenteredCancellation === undefined) {
+      throw new TypeError("Proposal expiry did not reenter cancellation synchronously.");
+    }
+    expect(reenteredCancellation).toBe(cancellation);
+    expect(sdk.expiredProposalIds).toEqual([1]);
+
+    sdk.approval.reject(new Error("proposal expired"));
+    await expect(cancellation).resolves.toEqual({ status: "cancelled" });
+    expect(sdk.expiredProposalIds).toEqual([1]);
+    expect(sdk.pairingDisconnects).toEqual([pairingTopic]);
     await containCreatedClient(created);
   });
 

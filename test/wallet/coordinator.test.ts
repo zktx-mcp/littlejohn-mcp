@@ -63,12 +63,17 @@ const qr = parseWalletQrMatrix({
 interface Deferred<Value> {
   readonly promise: Promise<Value>;
   resolve(value: Value): void;
+  reject(error: unknown): void;
 }
 
 const deferred = <Value>(): Deferred<Value> => {
-  let settle!: (value: Value) => void;
-  const promise = new Promise<Value>((resolve) => { settle = resolve; });
-  return Object.freeze({ promise, resolve: settle });
+  let resolve!: (value: Value) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<Value>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return Object.freeze({ promise, resolve, reject });
 };
 
 class FakeConnectionAttempt implements WalletConnectConnectionAttemptPort {
@@ -105,6 +110,8 @@ class FakeWalletConnectClient implements WalletConnectClientPort {
   readonly disconnectedSourceIds: string[] = [];
   readonly events: string[];
   containmentCount = 0;
+  containCalls = 0;
+  onContain: (() => Promise<void>) | undefined;
   #listener: ((event: WalletConnectClientEvent) => void) | undefined;
 
   constructor(events: string[]) { this.events = events; }
@@ -166,7 +173,11 @@ class FakeWalletConnectClient implements WalletConnectClientPort {
 
   emit(event: WalletConnectClientEvent): void { this.#listener?.(event); }
 
-  async contain(): Promise<void> { this.events.push("sdk:contain"); }
+  contain(): Promise<void> {
+    this.events.push("sdk:contain");
+    this.containCalls += 1;
+    return this.onContain?.() ?? Promise.resolve();
+  }
 
   setObservation(
     sessions: readonly WalletConnectSessionSnapshot[],
@@ -580,6 +591,62 @@ describe("WalletCoordinator final durable operation ownership", () => {
     expect(client.attempts).toHaveLength(0);
     expect(events).not.toContain("sdk:start_connection");
     expect(client.containmentCount).toBe(1);
+  });
+
+  it("publishes one retryable close before client containment can reenter", async () => {
+    const subject = await createSubject();
+    const firstContainment = deferred<void>();
+    const retryContainment = deferred<void>();
+    let reenteredClose: Promise<void> | undefined;
+    subject.client.onContain = () => {
+      if (subject.client.containCalls === 1) {
+        reenteredClose = subject.coordinator.close();
+        return firstContainment.promise;
+      }
+      if (subject.client.containCalls === 2) return retryContainment.promise;
+      throw new TypeError("Unexpected client containment attempt.");
+    };
+
+    const closing = subject.coordinator.close();
+
+    if (reenteredClose === undefined) {
+      throw new TypeError("Client containment did not reenter close synchronously.");
+    }
+    expect(reenteredClose).toBe(closing);
+    expect(subject.client.containCalls).toBe(1);
+    let closeSettled = false;
+    void closing.then(
+      () => { closeSettled = true; },
+      () => { closeSettled = true; },
+    );
+    await drain();
+    expect(closeSettled).toBe(false);
+
+    const containmentFailure = new Error("client containment failed");
+    let retry: Promise<void> | undefined;
+    const failureObserved = closing.then(
+      () => { throw new TypeError("Client containment unexpectedly succeeded."); },
+      (error: unknown) => {
+        expect(error).toBe(containmentFailure);
+        retry = subject.coordinator.close();
+      },
+    );
+    firstContainment.reject(containmentFailure);
+    await failureObserved;
+
+    if (retry === undefined) throw new TypeError("Coordinator close retry was not observed.");
+    expect(retry).not.toBe(closing);
+    expect(subject.client.containCalls).toBe(2);
+    let retrySettled = false;
+    void retry.then(
+      () => { retrySettled = true; },
+      () => { retrySettled = true; },
+    );
+    await drain();
+    expect(retrySettled).toBe(false);
+
+    retryContainment.resolve(undefined);
+    await expect(retry).resolves.toBeUndefined();
   });
 
   it("keeps disconnect Review pure, then commits before one exact SDK deletion", async () => {

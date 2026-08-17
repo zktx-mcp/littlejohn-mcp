@@ -493,14 +493,26 @@ export class WalletCoordinator implements WalletCoordinatorPort {
     if (this.#closed) return Promise.resolve();
     if (this.#closeWork !== undefined) return this.#closeWork;
     this.#closing = true;
-    const work = this.#performClose().then(() => {
-      this.#closed = true;
-      this.#operations.clear();
-    }).finally(() => {
-      if (this.#closeWork === work) this.#closeWork = undefined;
+    let resolveClose!: () => void;
+    let rejectClose!: (reason: unknown) => void;
+    const closeWork = new Promise<void>((resolve, reject) => {
+      resolveClose = resolve;
+      rejectClose = reject;
     });
-    this.#closeWork = work;
-    return work;
+    this.#closeWork = closeWork;
+    void this.#performClose().then(
+      () => {
+        this.#closed = true;
+        this.#operations.clear();
+        if (this.#closeWork === closeWork) this.#closeWork = undefined;
+        resolveClose();
+      },
+      (error: unknown) => {
+        if (this.#closeWork === closeWork) this.#closeWork = undefined;
+        rejectClose(error);
+      },
+    );
+    return closeWork;
   }
 
   async #decide(input: WalletDirectAction): Promise<WalletManagementOperation> {
