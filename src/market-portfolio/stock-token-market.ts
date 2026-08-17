@@ -19,12 +19,12 @@ import {
   referenceHistoryWindowDefinitions,
   referenceHistoryWindowSchema,
   referenceMarketLimits,
+  referenceMarketWarningsFor,
   referenceRoundObservationSchema,
   stockTokenCatalogAssetSchema,
   stockTokenCatalogDispositionSchema,
   stockTokenCatalogEvidence,
   stockTokenCatalogEvidenceSchema,
-  stockTokenMarketBaseWarnings,
   stockTokenMarketLimitationCodes,
   stockTokenMarketLimitationCodeSchema,
   stockTokenMarketWarningCodes,
@@ -176,6 +176,11 @@ export const stockTokenHistorySchema = z.discriminatedUnion("status", [
 ]);
 export type StockTokenHistory = z.infer<typeof stockTokenHistorySchema>;
 
+const stockTokenMarketUnavailableHistoryWarnings = referenceMarketWarningsFor({
+  result: "stock_token",
+  historyStatus: "unavailable",
+});
+
 const stockTokenResultCommon = {
   symbol: canonicalStockTokenSymbolSchema,
   window: referenceHistoryWindowSchema,
@@ -198,7 +203,7 @@ const availableStockTokenMarketResultSchema = jsonObject({
   history: stockTokenHistorySchema,
   execution: stockTokenExecutionSeriesSchema,
   warnings: z.array(z.enum(stockTokenMarketWarningCodes))
-    .min(stockTokenMarketBaseWarnings.length)
+    .min(stockTokenMarketUnavailableHistoryWarnings.length)
     .max(stockTokenMarketWarningCodes.length),
   limitations: z.array(stockTokenMarketLimitationCodeSchema)
     .max(stockTokenMarketLimitationCodes.length),
@@ -311,11 +316,10 @@ const validateAvailableResult = (
     ...(value.oraclePaused.value ? ["oracle_paused" as const] : []),
     ...(!sourceIsFresh ? ["observation_not_fresh" as const] : []),
   ];
-  const expectedPartialWarning = value.history.status === "partial";
-  const expectedWarnings = [
-    ...stockTokenMarketBaseWarnings,
-    ...(expectedPartialWarning ? ["partial_history" as const] : []),
-  ];
+  const expectedWarnings = referenceMarketWarningsFor({
+    result: "stock_token",
+    historyStatus: value.history.status,
+  });
   const maximumCandles = referenceHistoryWindowDefinitions[value.window].maximumBuckets;
   const candleFeedIds = value.history.candles.flatMap((candle) => [
     ...candle.openSourcePointers,
@@ -607,6 +611,9 @@ export const createAvailableStockTokenMarketResult = (input: Readonly<{
     input.block.blockTimestamp,
   );
   const historyAvailable = input.series.candles.length > 0;
+  const historyStatus: StockTokenHistory["status"] = historyAvailable
+    ? "partial"
+    : "unavailable";
   const limitationSet = new Set<StockTokenMarketLimitationCode>([
     "source_history_not_exhaustive",
     ...(input.read.oraclePaused ? ["oracle_paused" as const] : []),
@@ -651,10 +658,7 @@ export const createAvailableStockTokenMarketResult = (input: Readonly<{
           sourceObservations: [],
         },
     execution: input.execution,
-    warnings: [
-      ...stockTokenMarketBaseWarnings,
-      ...(historyAvailable ? ["partial_history" as const] : []),
-    ],
+    warnings: referenceMarketWarningsFor({ result: "stock_token", historyStatus }),
     limitations,
   });
 };

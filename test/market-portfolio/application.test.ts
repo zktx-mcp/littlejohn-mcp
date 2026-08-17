@@ -1150,7 +1150,13 @@ describe("reference-market application", () => {
     expect(history.coverage.emptyBucketStarts).toHaveLength(94);
     expect(history.coverage.emptyBucketStarts[0]).toBe("2026-07-21T00:15:00.000Z");
     expect(history.coverage.emptyBucketStarts).not.toContain(history.coverage.requestedStart);
-    expect(history.warnings).toContain("partial_history");
+    expect(history.warnings).toEqual([
+      "reference_price_not_trade_price",
+      "source_listing_not_revalidated",
+      "sequencer_status_unavailable",
+      "no_trade_volume",
+      "partial_history",
+    ]);
     const final = history.candles.at(-1)!;
     expect(final.openedAt).toBe("2026-07-22T00:00:00.000Z");
     expect(final.closeSourceSkewSeconds).toBe("420");
@@ -1310,7 +1316,12 @@ describe("reference-market application", () => {
       sourceObservations: [],
     });
     expect(history.coverage.emptyBucketStarts).toHaveLength(96);
-    expect(history.warnings).not.toContain("partial_history");
+    expect(history.warnings).toEqual([
+      "reference_price_not_trade_price",
+      "source_listing_not_revalidated",
+      "sequencer_status_unavailable",
+      "no_trade_volume",
+    ]);
   });
 
   it("keeps observed buckets while exposing a local retention limitation", () => {

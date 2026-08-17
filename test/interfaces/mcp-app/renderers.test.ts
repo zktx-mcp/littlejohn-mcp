@@ -7,9 +7,9 @@ import {
   chainAnchorSchema,
   createExactRational,
   referenceHistorySuccessSchema,
-  referenceHistoryWarnings,
   referenceMarketManifest,
   referenceMarketMappingEvidence,
+  referenceMarketWarningsFor,
   referenceRoundObservationSchema,
 } from "../../../src/core/client.js";
 import { referenceMarketApplicationContracts } from
@@ -102,7 +102,7 @@ const history = referenceHistorySuccessSchema.parse({
     closeSourceSkewSeconds: "0",
   }],
   sourceObservations: [observation],
-  warnings: [...referenceHistoryWarnings, "partial_history"],
+  warnings: referenceMarketWarningsFor({ result: "history", historyStatus: "partial" }),
 });
 
 describe("MCP App typed read renderers", () => {

@@ -6,7 +6,7 @@ import {
   referenceCandleSchema,
   referenceHistoryWindowDefinitions,
   referenceHistorySuccessSchema,
-  referenceHistoryWarnings,
+  referenceMarketWarningsFor,
   referenceMarketMappingEvidence,
   type ChainAnchor,
   type ExactRational,
@@ -255,7 +255,7 @@ export const createReferenceHistory = (input: Readonly<{
       },
       candles: [],
       sourceObservations: [],
-      warnings: referenceHistoryWarnings,
+      warnings: referenceMarketWarningsFor({ result: "history", historyStatus: "unavailable" }),
     });
   }
   return referenceHistorySuccessSchema.parse({
@@ -273,6 +273,6 @@ export const createReferenceHistory = (input: Readonly<{
     },
     candles: series.candles,
     sourceObservations: series.sourceObservations,
-    warnings: [...referenceHistoryWarnings, "partial_history"],
+    warnings: referenceMarketWarningsFor({ result: "history", historyStatus: "partial" }),
   });
 };

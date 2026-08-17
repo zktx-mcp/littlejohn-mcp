@@ -263,6 +263,16 @@ describe("Stock Token market ownership", () => {
       execution: { status: "unavailable", reason: "index_unavailable" },
       limitations: expect.arrayContaining(["source_history_not_exhaustive", "phase_boundary"]),
     });
+    if (!("status" in result) || result.status !== "available") {
+      throw new Error("Expected an available Stock Token result.");
+    }
+    expect(result.warnings).toEqual([
+      "reference_price_not_trade_price",
+      "source_listing_not_revalidated",
+      "sequencer_status_unavailable",
+      "no_trade_volume",
+      "partial_history",
+    ]);
     expect(fixture.readStockTokenAtBlock).toHaveBeenCalledTimes(1);
     expect(fixture.readHistoryAtBlock).toHaveBeenCalledTimes(1);
     const executionAsset = findStockTokenExecutionIndexAsset(

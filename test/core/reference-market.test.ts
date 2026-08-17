@@ -20,19 +20,20 @@ import {
   referenceHistorySuccessSchema,
   referenceHistoryWindowDefinitions,
   referenceHistoryWindowSchema,
-  referenceHistoryWarnings,
   referenceCompositeRoundIdSchema,
   referenceMarketLimits,
   referenceMarketMappingEvidence,
   referenceMarketMappingEvidenceSchema,
   referenceMarketManifest,
   referenceMarketManifestSchema,
+  referenceMarketWarningsFor,
   referencePairManifestEntrySchema,
   referencePairIds,
   referencePriceInputSchema,
   referencePriceSuccessSchema,
   referencePriceWarnings,
   referenceRoundObservationSchema,
+  stockTokenMarketWarningCodes,
   stockTokenReferenceMarketCatalog,
   referenceWatchlistInputSchema,
   referenceWatchlistMutationInputSchema,
@@ -647,6 +648,33 @@ describe("reference market core contract", () => {
     }).success).toBe(false);
   });
 
+  it("derives every final warning sequence from the ordered warning contract", () => {
+    const price = [
+      "reference_price_not_trade_price",
+      "source_listing_not_revalidated",
+      "sequencer_status_unavailable",
+    ];
+    const historyUnavailable = [...price, "no_trade_volume"];
+    const historyPartial = [...historyUnavailable, "partial_history"];
+    const sequences = [
+      referenceMarketWarningsFor({ result: "price" }),
+      referenceMarketWarningsFor({ result: "history", historyStatus: "unavailable" }),
+      referenceMarketWarningsFor({ result: "history", historyStatus: "partial" }),
+      referenceMarketWarningsFor({ result: "stock_token", historyStatus: "unavailable" }),
+      referenceMarketWarningsFor({ result: "stock_token", historyStatus: "partial" }),
+    ];
+    expect(sequences).toEqual([
+      price,
+      historyUnavailable,
+      historyPartial,
+      historyUnavailable,
+      historyPartial,
+    ]);
+    expect(stockTokenMarketWarningCodes).toEqual(historyPartial);
+    expect(sequences.every(Object.isFrozen)).toBe(true);
+    expect(Object.isFrozen(stockTokenMarketWarningCodes)).toBe(true);
+  });
+
   it("binds history coverage and every OHLC point to the selected pair sources", () => {
     const historyEth = observation({
       feedId: "eth_usd",
@@ -697,7 +725,7 @@ describe("reference market core contract", () => {
       },
       candles: [candle],
       sourceObservations: [historyEth, historyUsdg],
-      warnings: [...referenceHistoryWarnings, "partial_history"],
+      warnings: referenceMarketWarningsFor({ result: "history", historyStatus: "partial" }),
     };
     expect(referenceHistorySuccessSchema.safeParse(partial).success).toBe(true);
     expect(referenceHistorySuccessSchema.safeParse({
@@ -707,7 +735,7 @@ describe("reference market core contract", () => {
         ...partial.coverage,
         status: "complete",
       },
-      warnings: referenceHistoryWarnings,
+      warnings: referenceMarketWarningsFor({ result: "history", historyStatus: "unavailable" }),
     }).success).toBe(false);
     expect(referenceHistorySuccessSchema.safeParse({
       ...partial,
@@ -765,7 +793,7 @@ describe("reference market core contract", () => {
     }).success).toBe(false);
     expect(referenceHistorySuccessSchema.safeParse({
       ...partial,
-      warnings: referenceHistoryWarnings,
+      warnings: referenceMarketWarningsFor({ result: "history", historyStatus: "unavailable" }),
     }).success).toBe(false);
   });
 

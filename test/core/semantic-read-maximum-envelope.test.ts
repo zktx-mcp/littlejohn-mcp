@@ -23,9 +23,9 @@ import {
   parseUnsignedDecimal,
   parseUtcTimestamp,
   referenceHistoryWindowDefinitions,
-  referenceHistoryWarnings,
   referenceMarketManifest,
   referenceMarketMappingEvidence,
+  referenceMarketWarningsFor,
   referenceRoundObservationSchema,
   stockTokenReferenceMarketCatalog,
   referenceWatchlistRevisionSchema,
@@ -978,7 +978,7 @@ export const verifyMaximumReferenceMarketEnvelopes = (): void => {
     },
     candles,
     sourceObservations,
-    warnings: [...referenceHistoryWarnings, "partial_history"],
+    warnings: referenceMarketWarningsFor({ result: "history", historyStatus: "partial" }),
   });
   const watchlist = referenceMarketApplicationContracts.watchlist.parsePublicSuccess({}, {
     account: { chainId: "eip155:4663", address: `0x${"ff".repeat(20)}` },

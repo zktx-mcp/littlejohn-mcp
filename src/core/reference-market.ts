@@ -798,24 +798,42 @@ const referenceMarketWarningCodes =
 export const referenceMarketWarningCodeSchema = z.enum(referenceMarketWarningCodes);
 export type ReferenceMarketWarningCode = z.infer<typeof referenceMarketWarningCodeSchema>;
 
-const warningCodesFor = (
-  result: "price" | "history" | "stock_token",
+type ReferenceMarketWarningContext =
+  | { readonly result: "price" }
+  | {
+      readonly result: "history" | "stock_token";
+      readonly historyStatus: "partial" | "unavailable";
+    };
+
+const applicableWarningCodesFor = (
+  result: ReferenceMarketWarningContext["result"],
 ): readonly ReferenceMarketWarningCode[] => Object.freeze(
   referenceMarketWarningDefinitions
     .filter((definition) =>
       (definition.appliesTo as readonly string[]).includes(result))
     .map((definition) => definition.code),
 );
-export const referencePriceWarnings = warningCodesFor("price");
-export const referenceHistoryWarnings = Object.freeze(
-  warningCodesFor("history").filter((code) => code !== "partial_history"),
-);
-export const stockTokenMarketBaseWarnings = Object.freeze(
-  warningCodesFor("stock_token").filter((code) => code !== "partial_history"),
-);
-export const stockTokenMarketWarningCodes = Object.freeze(
-  warningCodesFor("stock_token"),
-);
+
+export const referenceMarketWarningsFor = (
+  context: ReferenceMarketWarningContext,
+): readonly ReferenceMarketWarningCode[] => {
+  const includePartialHistory = context.result !== "price" && context.historyStatus === "partial";
+  return Object.freeze(
+    applicableWarningCodesFor(context.result)
+      .filter((code) => code !== "partial_history" || includePartialHistory),
+  );
+};
+
+export const referencePriceWarnings = referenceMarketWarningsFor({ result: "price" });
+const referenceHistoryUnavailableWarnings = referenceMarketWarningsFor({
+  result: "history",
+  historyStatus: "unavailable",
+});
+const referenceHistoryPartialWarnings = referenceMarketWarningsFor({
+  result: "history",
+  historyStatus: "partial",
+});
+export const stockTokenMarketWarningCodes = applicableWarningCodesFor("stock_token");
 
 export const stockTokenMarketLimitationDefinitions = deepFreezeValue([
   {
@@ -1319,8 +1337,8 @@ const historyCommon = {
   candles: z.array(referenceCandleSchema).max(maximumReferenceHistoryWindowDefinition.maximumBuckets),
   sourceObservations: z.array(referenceRoundObservationSchema)
     .max(referenceMarketLimits.historySourceObservations),
-  warnings: z.array(referenceMarketWarningCodeSchema).min(referenceHistoryWarnings.length)
-    .max(referenceHistoryWarnings.length + 1),
+  warnings: z.array(referenceMarketWarningCodeSchema).min(referenceHistoryUnavailableWarnings.length)
+    .max(referenceHistoryPartialWarnings.length),
 };
 export const referenceHistorySuccessSchema = z.discriminatedUnion("status", [
   jsonObject({
@@ -1458,9 +1476,10 @@ export const referenceHistorySuccessSchema = z.discriminatedUnion("status", [
   if (value.candles.some((candle, index) => candle.openBucket && index !== value.candles.length - 1)) {
     context.addIssue({ code: "custom", message: "Only the final reference candle may be open." });
   }
-  const expectedWarnings = value.status === "partial"
-    ? [...referenceHistoryWarnings, "partial_history"]
-    : referenceHistoryWarnings;
+  const expectedWarnings = referenceMarketWarningsFor({
+    result: "history",
+    historyStatus: value.status,
+  });
   if (!exactSequence(value.warnings, expectedWarnings)) {
     context.addIssue({ code: "custom", message: "Reference history warnings are inconsistent." });
   }
