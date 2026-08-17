@@ -48,7 +48,7 @@ const createSessionSource = (
   });
 };
 
-const createState = async () => {
+const createState = async (chainReads?: TokenAdditionChainReadPort) => {
   const directory = await mkdtemp(resolve(tmpdir(), "littlejohn-token-operation-"));
   directories.push(directory);
   await ensureOwnerOnlyDirectory(directory);
@@ -90,7 +90,7 @@ const createState = async () => {
   );
   const chainInputs: Array<Parameters<TokenAdditionChainReadPort["inspectAndVerifyOfficial"]>[0]> = [];
   const inspections: TokenInspectionSuccess[] = [];
-  const additionChainReads: TokenAdditionChainReadPort = Object.freeze({
+  const additionChainReads: TokenAdditionChainReadPort = chainReads ?? Object.freeze({
     async inspectAndVerifyOfficial(
       input: Parameters<TokenAdditionChainReadPort["inspectAndVerifyOfficial"]>[0],
     ) {
@@ -237,6 +237,66 @@ describe("token selection durable operations", () => {
       .toEqual({ count: 0 });
     check.close();
     await state.coordinator.close();
+    state.database.close();
+  });
+});
+
+describe("token catalog coordinator lifecycle", () => {
+  it("publishes close before abort reentry and drains the admitted call", async () => {
+    const operationFailure = new Error("chain dependency stopped");
+    let releaseChainRead!: () => void;
+    let markChainReadStarted!: () => void;
+    const chainReadGate = new Promise<void>((resolveGate) => { releaseChainRead = resolveGate; });
+    const chainReadStarted = new Promise<void>((resolveStarted) => {
+      markChainReadStarted = resolveStarted;
+    });
+    let coordinator!: TokenCatalogCoordinator;
+    let reenteredClose!: Promise<void>;
+    let chainCalls = 0;
+    let operationAbortObserved = false;
+    const chainReads: TokenAdditionChainReadPort = Object.freeze({
+      async inspectAndVerifyOfficial(
+        _input: Parameters<TokenAdditionChainReadPort["inspectAndVerifyOfficial"]>[0],
+        signal: AbortSignal,
+      ): Promise<never> {
+        chainCalls += 1;
+        signal.addEventListener("abort", () => {
+          operationAbortObserved = true;
+          reenteredClose = coordinator.close();
+        }, { once: true });
+        markChainReadStarted();
+        await chainReadGate;
+        throw operationFailure;
+      },
+    });
+    const state = await createState(chainReads);
+    coordinator = state.coordinator;
+    const operation = coordinator.review({ kind: "add", asset });
+    await chainReadStarted;
+
+    let closeSettled = false;
+    const closing = coordinator.close();
+    void closing.then(
+      () => { closeSettled = true; },
+      () => { closeSettled = true; },
+    );
+    expect(operationAbortObserved).toBe(true);
+    expect(reenteredClose).toBe(closing);
+    expect(coordinator.close()).toBe(closing);
+    expect(chainCalls).toBe(1);
+    await new Promise<void>((resolveTurn) => { setImmediate(resolveTurn); });
+    expect(closeSettled).toBe(false);
+    await expect(coordinator.review({ kind: "add", asset })).rejects.toSatisfy(
+      (error: unknown) => failureCode(error) === "runtime_state_unavailable",
+    );
+
+    releaseChainRead();
+    await expect(operation).rejects.toSatisfy(
+      (error: unknown) => failureCode(error) === "internal_error",
+    );
+    await expect(closing).resolves.toBeUndefined();
+    expect(closeSettled).toBe(true);
+    expect(coordinator.close()).toBe(closing);
     state.database.close();
   });
 });

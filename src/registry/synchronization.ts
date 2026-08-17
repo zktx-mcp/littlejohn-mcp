@@ -62,6 +62,7 @@ export const createOfficialAssetSynchronization = (
   if (dependencies.signal.aborted) ownerAbort.abort();
   else dependencies.signal.addEventListener("abort", abortForOwner, { once: true });
   let active: Promise<OfficialAssetSynchronizationResult> | undefined;
+  let closePromise: Promise<void> | undefined;
   let closed = false;
 
   const run = async (): Promise<OfficialAssetSynchronizationResult> => {
@@ -90,6 +91,22 @@ export const createOfficialAssetSynchronization = (
     });
   };
 
+  const startRun = (): Promise<OfficialAssetSynchronizationResult> => {
+    let resolveRun!: (result: OfficialAssetSynchronizationResult) => void;
+    let rejectRun!: (reason: unknown) => void;
+    const shared = new Promise<OfficialAssetSynchronizationResult>((resolve, reject) => {
+      resolveRun = resolve;
+      rejectRun = reject;
+    });
+    active = shared;
+    const clearActive = (): void => {
+      if (active === shared) active = undefined;
+    };
+    void shared.then(clearActive, clearActive);
+    void run().then(resolveRun, rejectRun);
+    return shared;
+  };
+
   return Object.freeze({
     async synchronize(signal: AbortSignal): Promise<OfficialAssetSynchronizationResult> {
       if (closed || ownerAbort.signal.aborted) {
@@ -99,14 +116,7 @@ export const createOfficialAssetSynchronization = (
           reason: "runtime_state_unavailable" as const,
         });
       }
-      const shared = active ?? run();
-      if (active === undefined) {
-        active = shared;
-        void shared.then(
-          () => { if (active === shared) active = undefined; },
-          () => { if (active === shared) active = undefined; },
-        );
-      }
+      const shared = active ?? startRun();
       const waited = await waitForCaller(shared, signal);
       if (waited.status === "completed") return waited.value;
       return Object.freeze({
@@ -117,11 +127,21 @@ export const createOfficialAssetSynchronization = (
     },
     readStored: () => dependencies.store.readSnapshot(),
     close(): Promise<void> {
-      if (closed) return active?.then(() => undefined) ?? Promise.resolve();
+      if (closePromise !== undefined) return closePromise;
+      let resolveClose!: () => void;
+      let rejectClose!: (reason: unknown) => void;
+      closePromise = new Promise<void>((resolve, reject) => {
+        resolveClose = resolve;
+        rejectClose = reject;
+      });
       closed = true;
-      ownerAbort.abort();
-      dependencies.signal.removeEventListener("abort", abortForOwner);
-      return active?.then(() => undefined) ?? Promise.resolve();
+      const admitted = active;
+      void (async (): Promise<void> => {
+        ownerAbort.abort();
+        dependencies.signal.removeEventListener("abort", abortForOwner);
+        if (admitted !== undefined) await Promise.allSettled([admitted]);
+      })().then(resolveClose, rejectClose);
+      return closePromise;
     },
   });
 };

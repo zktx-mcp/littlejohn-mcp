@@ -512,6 +512,16 @@ reader does not implement a weaker result parser.
 
 ## Runtime Lifecycle
 
+- Before starting an effect that can synchronously reenter its lifecycle owner,
+  the owner records the exact admitted-work completion and attaches its success
+  and rejection handlers. Before starting abort, queue rejection, or cleanup
+  that can synchronously reenter the owner, the owner blocks new admission and
+  records the cleanup completion. Reentrant and concurrent close calls share
+  that completion.
+- Draining admitted work waits for fulfillment or rejection without treating
+  the work's rejection as a cleanup failure; failure of an owned cleanup
+  operation remains a cleanup failure. These rules do not merge owner-specific
+  operation, failure, retry, or terminal meaning.
 - Runtime admits RPC configuration before resolving the application-data path
   or acquiring filesystem, database, requester, or network resources. The
   private invalid-RPC-configuration failure is recognized only at Runtime

@@ -5,6 +5,7 @@ import {
   officialAssetSnapshotRevisionSchema,
   type CommittedOfficialAssetSnapshot,
   type OfficialAssetSnapshotStore,
+  type OfficialAssetSynchronizationResult,
 } from "../../src/registry/index.js";
 import {
   createRobinhoodOfficialAssetSourceClient,
@@ -71,6 +72,70 @@ describe("official asset synchronization", () => {
     ]);
     expect(replaceSnapshot).toHaveBeenCalledTimes(1);
     await synchronization.close();
+  });
+
+  it("publishes shared work and close before synchronous lifecycle reentry", async () => {
+    const sourceFailure = new Error("source read failed");
+    let rejectSource!: (reason: unknown) => void;
+    const sourceResult = new Promise<never>((_resolve, reject) => {
+      rejectSource = reject;
+    });
+    const stoppedCaller = new AbortController();
+    stoppedCaller.abort();
+    let synchronization!: ReturnType<typeof createOfficialAssetSynchronization>;
+    let reenteredRead!: Promise<OfficialAssetSynchronizationResult>;
+    let reenteredClose!: Promise<void>;
+    let sourceReads = 0;
+    let ownerAbortObserved = false;
+    const source: RobinhoodOfficialAssetSourceClient = Object.freeze({
+      read(signal: AbortSignal) {
+        sourceReads += 1;
+        signal.addEventListener("abort", () => {
+          ownerAbortObserved = true;
+          reenteredClose = synchronization.close();
+        }, { once: true });
+        if (sourceReads === 1) {
+          reenteredRead = synchronization.synchronize(new AbortController().signal);
+        }
+        return sourceResult;
+      },
+    });
+    synchronization = createOfficialAssetSynchronization({
+      source,
+      store: Object.freeze({ readSnapshot: () => undefined, replaceSnapshot: vi.fn() }),
+      signal: new AbortController().signal,
+    });
+
+    const stopped = synchronization.synchronize(stoppedCaller.signal);
+    expect(sourceReads).toBe(1);
+    await expect(stopped).resolves.toEqual({
+      status: "unavailable",
+      storedRevision: null,
+      reason: "request_aborted",
+    });
+
+    let closeSettled = false;
+    const closing = synchronization.close();
+    void closing.then(
+      () => { closeSettled = true; },
+      () => { closeSettled = true; },
+    );
+    expect(ownerAbortObserved).toBe(true);
+    expect(reenteredClose).toBe(closing);
+    expect(synchronization.close()).toBe(closing);
+    await new Promise<void>((resolveTurn) => { setImmediate(resolveTurn); });
+    expect(closeSettled).toBe(false);
+
+    rejectSource(sourceFailure);
+    await expect(reenteredRead).rejects.toBe(sourceFailure);
+    await expect(closing).resolves.toBeUndefined();
+    expect(closeSettled).toBe(true);
+    expect(synchronization.close()).toBe(closing);
+    await expect(synchronization.synchronize(new AbortController().signal)).resolves.toEqual({
+      status: "unavailable",
+      storedRevision: null,
+      reason: "runtime_state_unavailable",
+    });
   });
 
   it("preserves the prior revision when a source read fails", async () => {

@@ -282,14 +282,22 @@ export class TokenCatalogCoordinator implements TokenCatalogOperationCoordinator
 
   close(): Promise<void> {
     if (this.#closePromise !== undefined) return this.#closePromise;
-    this.#lifecycleState = "closing";
-    for (const controller of this.#controllers) controller.abort();
-    const closePromise = Promise.resolve().then(async () => {
-      await Promise.allSettled([...this.#activeCalls]);
-      this.#controllers.clear();
-      this.#lifecycleState = "closed";
+    let resolveClose!: () => void;
+    let rejectClose!: (reason: unknown) => void;
+    const closePromise = new Promise<void>((resolve, reject) => {
+      resolveClose = resolve;
+      rejectClose = reject;
     });
     this.#closePromise = closePromise;
+    this.#lifecycleState = "closing";
+    const controllers = [...this.#controllers];
+    const activeCalls = [...this.#activeCalls];
+    void (async (): Promise<void> => {
+      for (const controller of controllers) controller.abort();
+      await Promise.allSettled(activeCalls);
+      this.#controllers.clear();
+      this.#lifecycleState = "closed";
+    })().then(resolveClose, rejectClose);
     return closePromise;
   }
 
