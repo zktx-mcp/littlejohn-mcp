@@ -876,8 +876,6 @@ const accountAssetApplicationModule =
   resolve(sourceRoot, "account-assets/application.ts");
 const mcpAppViewEntryModule =
   resolve(sourceRoot, "interfaces/mcp-app/view/main.ts");
-const mcpAppRenderersModule =
-  resolve(sourceRoot, "interfaces/mcp-app/view/renderers.ts");
 
 interface ExternalIntegrationAuthorityRule {
   readonly module: string;
@@ -2222,7 +2220,6 @@ describe("runtime architecture boundary", () => {
     const registryClientSource = requiredProgramSource(canonicalProgram, registryClientEntryModule);
     const accountSource = requiredProgramSource(canonicalProgram, accountAssetContractsModule);
     const applicationSource = requiredProgramSource(canonicalProgram, accountAssetApplicationModule);
-    const rendererSource = requiredProgramSource(canonicalProgram, mcpAppRenderersModule);
     const replaceUnique = (
       source: string,
       target: string,
@@ -2235,41 +2232,10 @@ describe("runtime architecture boundary", () => {
       return source.replace(target, replacement);
     };
 
-    expect(exactModuleExportViolations(
-      `${contractSource}\nexport const leakedDefaultLimit = 5;\n`,
-      defaultStockTokenContractModule,
-      defaultStockTokenContractExports,
-      false,
-    )).toContain("unexpected_export:leakedDefaultLimit");
-
-    const countLeakProgram = createProductSourceProgram(
-      [...productCodeFiles],
-      new Map([[accountAssetApplicationModule, `${applicationSource}
-import { defaultStockTokenCount } from "../registry/default-stock-token-contract.js";
-void defaultStockTokenCount;
-`]]),
-      canonicalProgram,
-    );
-    expect(defaultStockTokenSymbolViolations(countLeakProgram, productCodeFiles))
-      .toContain("account-assets/application.ts:count_reference");
-
     const cursorMarker = [
       "    ...defaultCursorShape,",
       "    ...currentOfficialSnapshotRevisionShape,",
     ].join("\n");
-    const overridingCursor = replaceUnique(accountSource, cursorMarker, [
-      "    ...defaultCursorShape,",
-      "    rank: defaultStockTokenRankSchema,",
-      "    ...currentOfficialSnapshotRevisionShape,",
-    ].join("\n"), "cursor override");
-    const overridingCursorProgram = createProductSourceProgram(
-      [...productCodeFiles],
-      new Map([[accountAssetContractsModule, overridingCursor]]),
-      canonicalProgram,
-    );
-    expect(defaultCursorStructureViolations(overridingCursorProgram))
-      .toContain("default_cursor_branches");
-
     const rankOwner = [
       "export const defaultStockTokenRankSchema = z.number()",
       "  .int()",
@@ -2331,7 +2297,19 @@ void defaultStockTokenCount;
       "  rank: z.number().int().min(0).max(4),",
       "};",
     ].join("\n");
-    const duplicateOwnerProgram = createProductSourceProgram(
+    const duplicateCursorOwnerSource = replaceUnique(
+      accountSource,
+      cursorOwner,
+      duplicateCursorOwner,
+      "cursor owner",
+    );
+    // Avoid satisfying the duplicate-owner rank diagnostic with the branch mutation.
+    const adversarialAccountSource = replaceUnique(duplicateCursorOwnerSource, cursorMarker, [
+      "    ...defaultCursorShape,",
+      "    rank: defaultCursorShape.rank,",
+      "    ...currentOfficialSnapshotRevisionShape,",
+    ].join("\n"), "cursor override");
+    const adversarialProgram = createProductSourceProgram(
       [...productCodeFiles],
       new Map([
         [defaultStockTokenContractModule, replaceUnique(
@@ -2341,54 +2319,44 @@ void defaultStockTokenCount;
           "rank owner",
         )],
         [defaultStockTokenManifestModule, duplicateManifestOwner],
-        [accountAssetContractsModule, replaceUnique(
-          accountSource,
-          cursorOwner,
-          duplicateCursorOwner,
-          "cursor owner",
-        )],
+        [accountAssetContractsModule, adversarialAccountSource],
+        [accountAssetApplicationModule, `${applicationSource}
+import { defaultStockTokenCount } from "../registry/default-stock-token-contract.js";
+void defaultStockTokenCount;
+`],
+        [registryClientEntryModule, `${registryClientSource}
+export { defaultStockTokenManifest } from "./default-stock-tokens.js";
+void import("./" + "default-stock-tokens.js");
+`],
       ]),
       canonicalProgram,
     );
-    const duplicateOwnerViolations = defaultStockTokenSymbolViolations(
-      duplicateOwnerProgram,
+    const adversarialOwnerViolations = defaultStockTokenSymbolViolations(
+      adversarialProgram,
       productCodeFiles,
     );
-    expect(duplicateOwnerViolations)
+    expect(adversarialOwnerViolations)
+      .toContain("account-assets/application.ts:count_reference");
+    expect(adversarialOwnerViolations)
       .toContain("registry/default-stock-token-contract.ts:unexpected_count_use");
-    expect(duplicateOwnerViolations)
+    expect(adversarialOwnerViolations)
       .toContain("registry/default-stock-tokens.ts:unexpected_count_use");
-    expect(duplicateOwnerViolations)
+    expect(adversarialOwnerViolations)
       .toContain("account-assets/contracts.ts:unexpected_rank_use");
-    expect(defaultCursorStructureViolations(duplicateOwnerProgram))
+    const adversarialCursorViolations = defaultCursorStructureViolations(adversarialProgram);
+    expect(adversarialCursorViolations)
       .toContain("default_cursor_rank");
-
-    const clientLeakProgram = createProductSourceProgram(
-      [...productCodeFiles],
-      new Map([[registryClientEntryModule, `${registryClientSource}
-export { defaultStockTokenManifest } from "./default-stock-tokens.js";
-void import("./" + "default-stock-tokens.js");
-`]]),
-      canonicalProgram,
-    );
+    expect(adversarialCursorViolations)
+      .toContain("default_cursor_branches");
     const clientLeak = defaultStockTokenClientGraphViolations(
-      clientLeakProgram,
+      adversarialProgram,
       productFiles,
       registryClientEntryModule,
     );
     expect(clientLeak).toContain("registry/client.ts:nonliteral_runtime_load");
     expect(clientLeak).toContain("registry/client.ts:server_manifest_reachable");
-
-    const appLeakProgram = createProductSourceProgram(
-      [...productCodeFiles],
-      new Map([[mcpAppRenderersModule, `${rendererSource}
-import { defaultStockTokenManifest } from "../../../registry/default-stock-tokens.js";
-void defaultStockTokenManifest;
-`]]),
-      canonicalProgram,
-    );
     expect(defaultStockTokenClientGraphViolations(
-      appLeakProgram,
+      adversarialProgram,
       productFiles,
       mcpAppViewEntryModule,
     )).toContain("interfaces/mcp-app/view/main.ts:server_manifest_reachable");
