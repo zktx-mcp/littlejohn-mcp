@@ -20,6 +20,11 @@ const defineOrderedVocabulary = <
   const Values extends readonly [string, ...string[]],
 >(...values: Values): Readonly<Values> => Object.freeze(values);
 
+export const evidenceObservationCountLimit = 128 as const;
+export const evidenceConclusionCountLimit = 64 as const;
+export const evidenceReplayFactRequirementCountLimit = 128 as const;
+export const evidenceWarningCountLimit = 64 as const;
+
 export const sourceReferenceKinds = defineOrderedVocabulary(
   "public",
   "configured_rpc",
@@ -341,7 +346,7 @@ export const createEvidenceSchemaSet = () => {
       status: z.enum(freshnessStatuses),
       ruleId: freshnessRuleId,
       evaluatedAt: primitive.utcTimestamp,
-      observationIds: z.array(observationId).min(1).max(128),
+      observationIds: z.array(observationId).min(1).max(evidenceObservationCountLimit),
     })
     .strict()
     .superRefine((value, context) => {
@@ -357,7 +362,7 @@ export const createEvidenceSchemaSet = () => {
       id: primitive.fixedIdentifier,
       status: z.enum(conclusionStatuses),
       reason: factOutcome,
-      observationIds: z.array(observationId).min(1).max(128),
+      observationIds: z.array(observationId).min(1).max(evidenceObservationCountLimit),
       freshness,
     })
     .strict()
@@ -375,9 +380,9 @@ export const createEvidenceSchemaSet = () => {
 
   const coverage = jsonObject({
       status: z.enum(coverageStatuses),
-      established: z.array(primitive.fixedIdentifier).max(64),
-      notApplicable: z.array(primitive.fixedIdentifier).max(64),
-      unavailable: z.array(primitive.fixedIdentifier).max(64),
+      established: z.array(primitive.fixedIdentifier).max(evidenceConclusionCountLimit),
+      notApplicable: z.array(primitive.fixedIdentifier).max(evidenceConclusionCountLimit),
+      unavailable: z.array(primitive.fixedIdentifier).max(evidenceConclusionCountLimit),
     })
     .strict()
     .superRefine((value, context) => {
@@ -400,7 +405,7 @@ export const createEvidenceSchemaSet = () => {
   const warning = jsonObject({
       code: warningCode,
       message: primitive.warningMessage,
-      observationIds: z.array(observationId).min(1).max(128),
+      observationIds: z.array(observationId).min(1).max(evidenceObservationCountLimit),
     })
     .strict()
     .superRefine((value, context) => {

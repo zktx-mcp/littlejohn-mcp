@@ -15,6 +15,10 @@ import { canonicalJsonArrayLengthLimit } from "./canonical-json-limits.js";
 import {
   createEvidenceSchemaSet,
   createEvidenceSummary,
+  evidenceConclusionCountLimit,
+  evidenceObservationCountLimit,
+  evidenceReplayFactRequirementCountLimit,
+  evidenceWarningCountLimit,
   factOutcomeDefinitions,
   freshnessRuleDefinitions,
   invocationSourceIdentity,
@@ -409,7 +413,7 @@ export const createEvidenceReplayDefinition = (input: {
   const conclusions = parseBoundedArray(
     input.conclusions,
     1,
-    64,
+    evidenceConclusionCountLimit,
     "Evidence replay conclusion declarations are invalid.",
   );
   const matcherInput = conclusions.map(compileConclusionMatcher);
@@ -907,7 +911,7 @@ const requiredConclusionDeclarations = (
   const declarations = parseBoundedArray(
     [...definitionValue.fixedConclusions, ...dynamic],
     1,
-    64,
+    evidenceConclusionCountLimit,
     "Required conclusion declarations are invalid.",
   );
   return Object.freeze([...declarations].sort((left, right) =>
@@ -955,7 +959,7 @@ export const createEvidenceReplayLayout = (
   const targets = parseBoundedArray(
     targetsInput,
     1,
-    128,
+    evidenceObservationCountLimit,
     "Evidence replay layout targets are invalid.",
   ).map((target) => observationTargetDeclarationState(definition, target));
   const declarationScopes = new Set(
@@ -1391,7 +1395,7 @@ const validateDefinitionStructure = (
   const requirements = parseBoundedArray(
     requirementsInput,
     1,
-    128,
+    evidenceReplayFactRequirementCountLimit,
     "Evidence fact requirements are invalid.",
   );
   if (new Set(requirements.map((requirement) => requirement.fact)).size !== requirements.length) {
@@ -1406,13 +1410,13 @@ const validateDefinitionStructure = (
     const slots = parseBoundedArray(
       requirement.observationSlots,
       0,
-      128,
+      evidenceObservationCountLimit,
       "Fact observation slots are invalid.",
     );
     const requiredSlots = parseBoundedArray(
       requirement.requiredObservationSlots,
       0,
-      128,
+      evidenceObservationCountLimit,
       "Required fact observation slots are invalid.",
     );
     if (new Set(slots).size !== slots.length || new Set(requiredSlots).size !== requiredSlots.length) {
@@ -1467,7 +1471,7 @@ const prepareObservationExpectations = (
   const expectations = parseBoundedArray(
     expectationsInput,
     0,
-    128,
+    evidenceObservationCountLimit,
     "Observation expectations are invalid.",
   );
   const result = new Map<
@@ -1727,7 +1731,7 @@ export const replayPublicEvidence = (input: EvidenceReplayDeclaration & {
   const drafts = parseBoundedArray(
     input.conclusionDrafts,
     1,
-    64,
+    evidenceConclusionCountLimit,
     "Conclusion drafts are invalid.",
   );
   const conclusions = drafts.map((draft): Conclusion => {
@@ -1736,7 +1740,7 @@ export const replayPublicEvidence = (input: EvidenceReplayDeclaration & {
     const evidenceFacts = parseBoundedArray(
       draft.evidenceFacts,
       1,
-      128,
+      evidenceReplayFactRequirementCountLimit,
       "Conclusion evidence facts are invalid.",
     );
     if (new Set(evidenceFacts).size !== evidenceFacts.length) {
@@ -1785,7 +1789,7 @@ export const replayPublicEvidence = (input: EvidenceReplayDeclaration & {
   const warningRequirements = parseBoundedArray(
     input.warningRequirements,
     0,
-    64,
+    evidenceWarningCountLimit,
     "Warning requirements are invalid.",
   );
   const warningInputs = warningRequirements.map((candidate) => {
@@ -1794,7 +1798,7 @@ export const replayPublicEvidence = (input: EvidenceReplayDeclaration & {
     const factDeclarations = parseBoundedArray(
       candidate.facts,
       1,
-      128,
+      evidenceReplayFactRequirementCountLimit,
       "Warning fact evidence is invalid.",
     );
     if (new Set(factDeclarations).size !== factDeclarations.length) {

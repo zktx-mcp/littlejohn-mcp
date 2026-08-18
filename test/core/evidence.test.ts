@@ -1,3 +1,5 @@
+import { Buffer } from "node:buffer";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -25,6 +27,11 @@ const validEvidenceSource = () => ({
   reference: { kind: "public" as const, sourceId: "rpc_test", uri: "https://rpc.example/" },
   recordDigest: "A".repeat(43),
 });
+
+const orderedObservationIds = (count: number) => Array.from(
+  { length: count },
+  (_, index) => `obs:${Buffer.alloc(32, index).toString("base64url")}`,
+).sort();
 
 describe("evidence identity", () => {
   it("binds source identifiers to keyed digests without exposing private values", () => {
@@ -289,5 +296,40 @@ describe("evidence identity", () => {
       notApplicable: [],
       unavailable: ["a"],
     }).success).toBe(true);
+  });
+
+  it("enforces distinct observation and conclusion count boundaries", () => {
+    const maximumObservationIds = orderedObservationIds(128);
+    const excessiveObservationIds = orderedObservationIds(129);
+    const freshness = {
+      status: "fresh",
+      ruleId: "validated_input_current",
+      evaluatedAt: "2026-07-12T10:16:02.000Z",
+    } as const;
+    expect(freshnessSchema.safeParse({
+      ...freshness,
+      observationIds: maximumObservationIds,
+    }).success).toBe(true);
+    expect(freshnessSchema.safeParse({
+      ...freshness,
+      observationIds: excessiveObservationIds,
+    }).success).toBe(false);
+
+    const conclusionIds = Array.from(
+      { length: 65 },
+      (_, index) => `conclusion_${String(index).padStart(2, "0")}`,
+    );
+    expect(coverageSchema.safeParse({
+      status: "complete",
+      established: conclusionIds.slice(0, 64),
+      notApplicable: [],
+      unavailable: [],
+    }).success).toBe(true);
+    expect(coverageSchema.safeParse({
+      status: "complete",
+      established: conclusionIds,
+      notApplicable: [],
+      unavailable: [],
+    }).success).toBe(false);
   });
 });

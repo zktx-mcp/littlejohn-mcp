@@ -161,6 +161,60 @@ present and bound to the same asset and observation identity.
 - JSON integers remain strings and never pass through a JavaScript numeric
   parser.
 
+## Core Text, Evidence, And Read Admission Limits
+
+Core text and identifier schemas apply these stable product admissions:
+
+| Boundary | Maximum | Unit |
+| --- | ---: | --- |
+| fixed identifier | `64` | printable ASCII characters |
+| snake-case code | `64` | ASCII characters |
+| general single-line text | `512` | Unicode code points |
+| warning message | `256` | Unicode code points |
+| capability identifier | `64` | ASCII characters including its one dot |
+
+The fixed identifier, snake-case code, and capability identifier are separate
+contracts even though their current maxima are equal.
+
+Canonical evidence applies these separate stable product admissions:
+
+| Boundary | Maximum |
+| --- | ---: |
+| evidence observations | `128` |
+| evidence conclusions | `64` |
+| replay fact requirements | `128` |
+| evidence warnings | `64` |
+
+Observation projections consume the observation maximum. Conclusion
+declarations, drafts, results, and coverage partitions consume the conclusion
+maximum. Admitted fact requirements and their supporting-fact subsets consume
+the fact-requirement maximum. Warning requirements and results consume the
+warning maximum. Equal values do not merge these contracts. Canonical JSON
+arrays, observation claims, observation-target roles, and replay references
+retain their separate owners.
+
+Canonical semantic reads apply these stable product admissions:
+
+| Boundary | Maximum | Unit |
+| --- | ---: | --- |
+| runtime code | `262,144` | decoded bytes |
+| transaction calldata | `2,097,152` | decoded bytes |
+| transaction receipt | `4,096` | logs |
+| transaction access list | `1,024` | entries |
+| transaction access-list storage keys | `4,096` | total occurrences |
+| account token request or result | `50` | token addresses |
+
+These are canonical read-contract limits, not Ethereum maxima, provider
+guarantees, measured maxima, or private adapter tuning. Changing one changes
+public admission and requires an accepted contract and Numeric Policy change.
+An oversized value fails admission and is not truncated into a partial result.
+
+`readCapabilityLimits.transactionLogTopics` directly applies the EVM maximum
+of four topics per log. `readCapabilityLimits.transactionType` directly
+applies the EIP-2718 range owned by [Transaction Type And
+Fees](#transaction-type-and-fees) and does not define a second range. These
+standard-derived values are not product tuning.
+
 ## Transaction Type And Fees
 
 - An [EIP-2718 transaction type](https://eips.ethereum.org/EIPS/eip-2718) is a

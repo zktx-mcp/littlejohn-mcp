@@ -1,13 +1,14 @@
 import { z } from "zod";
 
-import { isStrictlyOrderedUnique } from "./evidence.js";
+import {
+  evidenceObservationCountLimit,
+  isStrictlyOrderedUnique,
+  observationIdSchema,
+} from "./evidence.js";
 import { evmChainIdSchema } from "./identities.js";
 import { deepFreezeValue } from "./immutability.js";
 import { guardJsonSchema, jsonObject } from "./json-object.js";
-import {
-  createPrimitiveSchemaSet,
-  prefixedCanonicalBase64UrlSchema,
-} from "./primitives.js";
+import { createPrimitiveSchemaSet } from "./primitives.js";
 
 export const maximumTokenDecimals = 255;
 export const scaledUiAmountScale = "1000000000000000000" as const;
@@ -160,7 +161,7 @@ export const canonicalUnsignedDecimalMaximumPattern = (maximum: number): string 
 
 export const createAmountSchemaSet = () => {
   const primitives = createPrimitiveSchemaSet();
-  const observationId = prefixedCanonicalBase64UrlSchema("obs:", 32).brand("ObservationId");
+  const observationId = observationIdSchema;
   const nativeAssetIdentity = jsonObject({
     kind: z.literal("native"),
     chainId: evmChainIdSchema,
@@ -179,7 +180,7 @@ export const createAmountSchemaSet = () => {
     .brand("UnsignedDecimal");
   const orderedObservationIds = (minimum: number) => z.array(observationId)
     .min(minimum)
-    .max(128)
+    .max(evidenceObservationCountLimit)
     .superRefine((value, context) => {
       if (!isStrictlyOrderedUnique(value)) {
         context.addIssue({ code: "custom", message: "Decimals observations must be unique and ordered." });

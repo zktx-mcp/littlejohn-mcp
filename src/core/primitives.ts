@@ -137,6 +137,10 @@ const hexWord32Pattern = /^0x[0-9a-f]{64}$/;
 const hexBytesPattern = /^0x(?:[0-9a-f]{2})*$/;
 const fixedIdentifierPattern = /^[\x21-\x7e]+$/;
 const snakeCaseCodePattern = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
+const fixedIdentifierAsciiLengthLimit = 64 as const;
+const snakeCaseCodeAsciiLengthLimit = 64 as const;
+const generalSingleLineTextCodePointLimit = 512 as const;
+const warningMessageCodePointLimit = 256 as const;
 
 const leapYearPattern = "(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:0[48]|[2468][048]|[13579][26])00)";
 const utcTimestampPattern = new RegExp(
@@ -165,22 +169,28 @@ export const createPrimitiveSchemaSet = () => {
     .brand("UtcTimestamp");
   const fixedIdentifier = z.string()
     .min(1)
-    .max(64)
+    .max(fixedIdentifierAsciiLengthLimit)
     .regex(fixedIdentifierPattern, "Expected printable ASCII without spaces.")
     .refine(isSafeSingleLineText, "Expected safe single-line text.")
     .brand("FixedIdentifier");
   const snakeCaseCode = z.string()
     .min(1)
-    .max(64)
+    .max(snakeCaseCodeAsciiLengthLimit)
     .regex(snakeCaseCodePattern, "Expected a lowercase snake-case code.")
     .brand("SnakeCaseCode");
   const generalSingleLineText = z.string()
     .min(1)
-    .refine((value) => codePointLength(value) <= 512, "Text exceeds 512 Unicode code points.")
+    .refine(
+      (value) => codePointLength(value) <= generalSingleLineTextCodePointLimit,
+      `Text exceeds ${generalSingleLineTextCodePointLimit} Unicode code points.`,
+    )
     .refine(isSafeSingleLineText, "Expected safe single-line text.");
   const warningMessage = z.string()
     .min(1)
-    .refine((value) => codePointLength(value) <= 256, "Warning exceeds 256 Unicode code points.")
+    .refine(
+      (value) => codePointLength(value) <= warningMessageCodePointLimit,
+      `Warning exceeds ${warningMessageCodePointLimit} Unicode code points.`,
+    )
     .refine(isSafeSingleLineText, "Expected safe single-line text.");
   const blockSelector = z.discriminatedUnion("kind", [
     jsonObject({ kind: z.literal("latest") }).strict(),

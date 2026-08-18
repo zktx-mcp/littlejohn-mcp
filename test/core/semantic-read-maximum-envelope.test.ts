@@ -1000,6 +1000,20 @@ export const verifyMaximumReferenceMarketEnvelopes = (): void => {
 };
 
 describe("semantic read maximum envelope", () => {
+  it("fixes every semantic-read field at its independent contract value", () => {
+    expect(readCapabilityLimits).toEqual({
+      runtimeCodeBytes: 262_144,
+      transactionCalldataBytes: 2_097_152,
+      transactionLogTopics: 4,
+      transactionReceiptLogs: 4_096,
+      transactionAccessListEntries: 1_024,
+      transactionAccessListStorageKeyOccurrences: 4_096,
+      transactionType: 127,
+      accountTokenAddresses: 50,
+    });
+    expect(Object.isFrozen(readCapabilityLimits)).toBe(true);
+  });
+
   it("validates all six maximum result shapes and the one-byte aggregate boundary", async () => {
     await verifySemanticReadMaximumEnvelopes();
   }, 30_000);

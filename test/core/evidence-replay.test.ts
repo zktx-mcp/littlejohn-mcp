@@ -277,6 +277,106 @@ describe("public evidence replay", () => {
     })).toThrow("incomplete or undeclared");
   });
 
+  it("enforces separate replay conclusion, observation, and fact capacities", () => {
+    const conclusionDeclarations = Array.from(
+      { length: 65 },
+      (_, index) => createExactConclusionIdentityDeclaration(
+        `bounded_conclusion_${String(index).padStart(2, "0")}`,
+      ),
+    );
+    expect(() => createEvidenceReplayDefinition({
+      capabilityId: "test.excessive_conclusions",
+      conclusions: conclusionDeclarations,
+      warningCodes: [],
+    })).toThrow("conclusion declarations");
+    expect(() => createEvidenceReplayDefinition({
+      capabilityId: "test.maximum_conclusions",
+      conclusions: conclusionDeclarations.slice(0, 64),
+      warningCodes: [],
+    })).not.toThrow();
+
+    const layoutConclusion = createExactConclusionIdentityDeclaration("layout_observed");
+    const layoutDefinition = createEvidenceReplayDefinition({
+      capabilityId: "test.layout_limit",
+      conclusions: [layoutConclusion],
+      warningCodes: [],
+    });
+    const layoutTargets = Array.from({ length: 129 }, (_, index) => {
+      const suffix = String(index).padStart(3, "0");
+      const layoutFact = createEvidenceFactIdentityDeclaration(
+        layoutDefinition,
+        `layout_fact_${suffix}`,
+      );
+      return createEvidenceObservationTargetDeclaration(layoutDefinition, {
+        slotId: `layout_slot_${suffix}`,
+        fact: layoutFact,
+        kind: "source",
+        purpose: "layout_limit",
+        sourceClass: "chain_rpc",
+        roles: { value: "value" },
+      });
+    });
+    expect(() => createEvidenceReplayLayout(layoutDefinition, layoutTargets))
+      .toThrow("layout targets");
+    expect(() => createEvidenceReplayLayout(layoutDefinition, layoutTargets.slice(0, 128)))
+      .not.toThrow();
+
+    const factLimitConclusion = createExactConclusionIdentityDeclaration("fact_limit_observed");
+    const {
+      localDefinition,
+      supportFact,
+      layout,
+      bound,
+      claims,
+      source,
+    } = createValidatedReplayFixture(
+      "test.fact_limit",
+      [factLimitConclusion],
+      { value: "safe" },
+    );
+    const extraFacts = Array.from({ length: 128 }, (_, index) =>
+      createEvidenceFactIdentityDeclaration(
+        localDefinition,
+        `unused_fact_${String(index).padStart(3, "0")}`,
+      ));
+    const factRequirements = [{
+      fact: supportFact,
+      observationSlots: [bound.slot],
+      requiredObservationSlots: [bound.slot],
+      minimumObservationCount: 1,
+      outcome: "validated_input" as const,
+    }, ...extraFacts.map((extraFact) => ({
+      fact: extraFact,
+      observationSlots: [],
+      requiredObservationSlots: [],
+      minimumObservationCount: 0,
+      outcome: "not_requested" as const,
+    }))];
+    const replayInput = {
+      definition: localDefinition,
+      layout,
+      observationExpectations: [{ slot: bound.slot, claims }],
+      observationReferences: [],
+      conclusionDrafts: [{
+        conclusion: factLimitConclusion,
+        outcomeFact: supportFact,
+        evidenceFacts: [supportFact],
+        freshnessRuleId: "validated_input_current" as const,
+      }],
+      warningRequirements: [],
+      evaluatedAt,
+      sources: [source],
+    };
+    expect(() => replayPublicEvidence({
+      ...replayInput,
+      factRequirements,
+    })).toThrow("fact requirements");
+    expect(replayPublicEvidence({
+      ...replayInput,
+      factRequirements: factRequirements.slice(0, 128),
+    }).conclusions).toHaveLength(1);
+  });
+
   it("requires separate admitted evidence for a slotless none-authority outcome", () => {
     const localConclusion = createExactConclusionIdentityDeclaration("required_observation");
     const {

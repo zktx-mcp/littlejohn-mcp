@@ -1,9 +1,11 @@
+import { z } from "zod";
 import { describe, expect, it } from "vitest";
 
 import {
   accountBalanceCapability,
   capabilityIdSchema,
   contractInspectCapability,
+  createCapabilitySuccessSchema,
   erc20TransferTopic0,
   parseCapabilityInput,
   parseCapabilityDataAt,
@@ -37,6 +39,7 @@ describe("capability schemas", () => {
       "account.balance",
       "wallet.connection",
       "wallet.cancel_operation",
+      `chain.${"a".repeat(58)}`,
     ]) expect(capabilityIdSchema.safeParse(capabilityId).success).toBe(true);
 
     for (const capabilityId of [
@@ -52,6 +55,81 @@ describe("capability schemas", () => {
       "1chain.status",
       `chain.${"a".repeat(59)}`,
     ]) expect(capabilityIdSchema.safeParse(capabilityId).success).toBe(false);
+  });
+
+  it("enforces the canonical capability evidence capacities", () => {
+    const boundaryCapabilityId = capabilityIdSchema.parse("test.boundary");
+    const schema = createCapabilitySuccessSchema(boundaryCapabilityId, "1", z.null());
+    const source = {
+      observationId,
+      invocationId: `inv:${"A".repeat(43)}`,
+      sourceClass: "validated_input",
+      owner: "boundary",
+      purpose: "boundary",
+      observedAt: "2026-07-12T10:16:02.000Z",
+      reference: { kind: "validated_input", sourceId: "input:test.boundary" },
+      recordDigest: "A".repeat(43),
+    };
+    const freshness = {
+      status: "fresh",
+      ruleId: "validated_input_current",
+      evaluatedAt: "2026-07-12T10:16:02.000Z",
+      observationIds: [observationId],
+    };
+    const conclusion = {
+      id: "boundary",
+      status: "established",
+      reason: "validated_input",
+      observationIds: [observationId],
+      freshness,
+    };
+    const warning = {
+      code: "partial_result",
+      message: "Some requested results are unavailable.",
+      observationIds: [observationId],
+    };
+    const success = (sources: unknown[], conclusions: unknown[], warnings: unknown[]) => ({
+      ok: true,
+      meta: {
+        capabilityId: boundaryCapabilityId,
+        contractVersion: "1",
+        chainId: "eip155:4663",
+        evaluatedAt: "2026-07-12T10:16:02.000Z",
+      },
+      data: null,
+      evidence: {
+        sources,
+        conclusions,
+        coverage: {
+          status: "complete",
+          established: ["boundary"],
+          notApplicable: [],
+          unavailable: [],
+        },
+      },
+      warnings,
+    });
+
+    expect(schema.safeParse(success(
+      Array.from({ length: 128 }, () => source),
+      Array.from({ length: 64 }, () => conclusion),
+      Array.from({ length: 64 }, () => warning),
+    )).success).toBe(true);
+    expect(schema.safeParse(success(
+      Array.from({ length: 129 }, () => source),
+      [],
+      [],
+    )).success).toBe(false);
+    expect(schema.safeParse(success(
+      [],
+      Array.from({ length: 65 }, () => conclusion),
+      [],
+    )).success).toBe(false);
+    expect(schema.safeParse(success(
+      [],
+      [],
+      Array.from({ length: 65 }, () => warning),
+    )).success).toBe(false);
   });
 
   it("rejects unknown fields at nested boundaries", () => {
@@ -122,6 +200,41 @@ describe("capability schemas", () => {
     expect(parseCapabilityInput(accountBalanceCapability, { ...base, tokens: [address2, address1] }).tokens).toEqual([address1, address2]);
     expect(safeParseCapabilityInput(accountBalanceCapability, { ...base, tokens: [address1, address1] }).success).toBe(false);
     expect(safeParseCapabilityInput(accountBalanceCapability, { ...base, tokens: [] }).success).toBe(false);
+    const tokenAddresses = Array.from(
+      { length: 51 },
+      (_, index) => `0x${String(index + 1).padStart(40, "0")}`,
+    );
+    expect(safeParseCapabilityInput(accountBalanceCapability, {
+      ...base,
+      tokens: tokenAddresses.slice(0, 50),
+    }).success).toBe(true);
+    expect(safeParseCapabilityInput(accountBalanceCapability, {
+      ...base,
+      tokens: tokenAddresses,
+    }).success).toBe(false);
+
+    const tokenResults = tokenAddresses.map((address) => ({
+      asset: { kind: "erc20", chainId: "eip155:4663", address },
+      result: { status: "unavailable", errorCode: "source_unavailable" },
+    }));
+    const balanceData = {
+      account: address1,
+      block: {
+        chainId: "eip155:4663",
+        blockNumber: "1",
+        blockHash: `0x${"a".repeat(64)}`,
+        blockTimestamp: "2026-07-12T10:16:02.000Z",
+      },
+      native: { status: "not_requested" },
+    };
+    expect(safeParseCapabilityData(accountBalanceCapability, {
+      ...balanceData,
+      tokens: tokenResults.slice(0, 50),
+    }).success).toBe(true);
+    expect(safeParseCapabilityData(accountBalanceCapability, {
+      ...balanceData,
+      tokens: tokenResults,
+    }).success).toBe(false);
   });
 
   it("normalizes human-entered EVM addresses before invoking a capability", () => {

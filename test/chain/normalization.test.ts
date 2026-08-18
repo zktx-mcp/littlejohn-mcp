@@ -153,6 +153,8 @@ describe("RPC normalization", () => {
       byteLength: "2",
       codeHash: "0x65b043cdd93fde12ee6629de2d9ce786ba7d5b4c514afecea4d1b4b2c740087c",
     });
+    expect(normalizeRpcRuntimeCode(`0x${"00".repeat(262_144)}`))
+      .toMatchObject({ status: "present", byteLength: "262144" });
     expect(() => normalizeRpcRuntimeCode(`0x${"00".repeat(262_145)}`)).toThrow(TypeError);
   });
 
@@ -201,6 +203,9 @@ describe("RPC normalization", () => {
         { address: addressA, storageKeys: [] },
       ],
     });
+    expect(normalizeRpcTransaction({ ...includedTransaction(), type: "0x7f" }).type).toBe("127");
+    expect(() => normalizeRpcTransaction({ ...includedTransaction(), type: "0x80" }))
+      .toThrow(TypeError);
   });
 
   it("round-trips every uint256 quantity and ABI word without precision loss", () => {
@@ -353,11 +358,65 @@ describe("RPC normalization", () => {
   });
 
   it("enforces calldata, log-count, and aggregate access-list limits", () => {
+    expect(normalizeRpcTransaction({
+      ...includedTransaction(),
+      input: `0x${"00".repeat(2_097_152)}`,
+    }).input).toHaveLength(2_097_152 * 2 + 2);
     expect(() => normalizeRpcTransaction({
       ...includedTransaction(),
       input: `0x${"00".repeat(2_097_153)}`,
     })).toThrow(TypeError);
-    expect(() => normalizeRpcReceipt(receipt(new Array(4_097).fill(receiptLog())))).toThrow(TypeError);
+
+    const topics = Array.from(
+      { length: 5 },
+      (_, index) => `0x${index.toString(16).padStart(64, "0")}`,
+    );
+    expect(normalizeRpcReceipt(receipt([{
+      ...receiptLog(),
+      topics: topics.slice(0, 4),
+    }])).logs[0]?.topics).toHaveLength(4);
+    expect(() => normalizeRpcReceipt(receipt([{
+      ...receiptLog(),
+      topics,
+    }]))).toThrow(TypeError);
+
+    const maximumLogs = Array.from(
+      { length: 4_096 },
+      (_, index) => receiptLog(`0x${index.toString(16)}`),
+    );
+    expect(normalizeRpcReceipt(receipt(maximumLogs)).logs).toHaveLength(4_096);
+    expect(() => normalizeRpcReceipt(receipt([
+      ...maximumLogs,
+      receiptLog("0x1000"),
+    ])))
+      .toThrow(TypeError);
+
+    const maximumAccessList = Array.from(
+      { length: 1_024 },
+      () => ({ address: addressA, storageKeys: [] }),
+    );
+    const normalizedMaximumAccessList = normalizeRpcAccessList(
+      maximumAccessList,
+      parseUnsignedDecimal("1"),
+    );
+    if (normalizedMaximumAccessList.kind !== "entries") {
+      throw new TypeError("Expected an admitted access list.");
+    }
+    expect(normalizedMaximumAccessList.entries).toHaveLength(1_024);
+    expect(() => normalizeRpcAccessList([
+      ...maximumAccessList,
+      { address: addressB, storageKeys: [] },
+    ], parseUnsignedDecimal("1"))).toThrow(TypeError);
+
+    const maximumStorageKeys = new Array(4_096).fill(`0x${"1".repeat(64)}`);
+    const normalizedMaximumStorageKeys = normalizeRpcAccessList([{
+      address: addressA,
+      storageKeys: maximumStorageKeys,
+    }], parseUnsignedDecimal("1"));
+    if (normalizedMaximumStorageKeys.kind !== "entries") {
+      throw new TypeError("Expected admitted storage keys.");
+    }
+    expect(normalizedMaximumStorageKeys.entries[0]?.storageKeys).toHaveLength(4_096);
     expect(() => normalizeRpcAccessList([
       { address: addressA, storageKeys: new Array(4_097).fill(`0x${"1".repeat(64)}`) },
     ], parseUnsignedDecimal("1"))).toThrow(TypeError);

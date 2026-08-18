@@ -2,6 +2,9 @@ import { z, type ZodType } from "zod";
 
 import {
   createEvidenceSchemaSet,
+  evidenceConclusionCountLimit,
+  evidenceObservationCountLimit,
+  evidenceWarningCountLimit,
   type Conclusion,
   type Coverage,
   type EvidenceSource,
@@ -30,10 +33,12 @@ export const maximumSuccessUtf8Bytes = 8_388_607 as const;
 export const capabilityIdPatternSource =
   "[a-z][a-z0-9]*(?:_[a-z0-9]+)*\\.[a-z][a-z0-9]*(?:_[a-z0-9]+)*";
 
+const capabilityIdAsciiLengthLimit = 64 as const;
+
 export const createCapabilityIdSchema = () => z
   .string()
   .min(1)
-  .max(64)
+  .max(capabilityIdAsciiLengthLimit)
   .regex(new RegExp("^" + capabilityIdPatternSource + "$"))
   .brand("CapabilityId");
 
@@ -71,11 +76,11 @@ export const createCapabilitySuccessSchema = <Data>(
   }).strict(),
   data: dataSchema,
   evidence: jsonObject({
-    sources: z.array(contractEvidence.evidenceSource).max(128),
-    conclusions: z.array(contractEvidence.conclusion).max(64),
+    sources: z.array(contractEvidence.evidenceSource).max(evidenceObservationCountLimit),
+    conclusions: z.array(contractEvidence.conclusion).max(evidenceConclusionCountLimit),
     coverage: contractEvidence.coverage,
   }).strict(),
-  warnings: z.array(contractEvidence.warning).max(64),
+  warnings: z.array(contractEvidence.warning).max(evidenceWarningCountLimit),
 }).strict();
 
 export const assertCapabilitySuccessChainScope = <Data>(

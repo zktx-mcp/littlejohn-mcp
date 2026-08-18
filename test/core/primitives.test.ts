@@ -13,6 +13,8 @@ import {
   evmAccountIdentitySchema,
   evmChainIdSchema,
   evmContractIdentitySchema,
+  fixedIdentifierSchema,
+  generalSingleLineTextSchema,
   deriveCaip10Account,
   parseCaip10EvmAccount,
   parseEvmAccountIdentity,
@@ -21,8 +23,10 @@ import {
   hexBytesSchema,
   isSafeSingleLineText,
   isWellFormedText,
+  snakeCaseCodeSchema,
   unsignedDecimalSchema,
   utcTimestampSchema,
+  warningMessageSchema,
   chainAnchorSchema,
 } from "../../src/core/index.js";
 import { guardJsonSchema } from "../../src/core/json-object.js";
@@ -244,6 +248,19 @@ describe("canonical primitives", () => {
     expect(() => canonicalJsonStringify({ value: high })).toThrow("ill-formed Unicode");
     expect(() => canonicalJsonStringify({ [low]: "value" })).toThrow("ill-formed Unicode keys");
     expect(canonicalJsonStringify({ value: "safe text 😀" })).toBe('{"value":"safe text 😀"}');
+  });
+
+  it("enforces each text boundary in its declared unit", () => {
+    expect(fixedIdentifierSchema.safeParse("a".repeat(64)).success).toBe(true);
+    expect(fixedIdentifierSchema.safeParse("a".repeat(65)).success).toBe(false);
+    expect(snakeCaseCodeSchema.safeParse("a".repeat(64)).success).toBe(true);
+    expect(snakeCaseCodeSchema.safeParse("a".repeat(65)).success).toBe(false);
+
+    const astralCharacter = "😀";
+    expect(generalSingleLineTextSchema.safeParse(astralCharacter.repeat(512)).success).toBe(true);
+    expect(generalSingleLineTextSchema.safeParse(astralCharacter.repeat(513)).success).toBe(false);
+    expect(warningMessageSchema.safeParse(astralCharacter.repeat(256)).success).toBe(true);
+    expect(warningMessageSchema.safeParse(astralCharacter.repeat(257)).success).toBe(false);
   });
 
   it("canonicalizes key order independently of insertion order", () => {
