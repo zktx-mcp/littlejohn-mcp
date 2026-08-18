@@ -42,6 +42,7 @@ import {
   type ObservationClaim,
 } from "./evidence-replay.js";
 import {
+  applicationFailureIssueLimit,
   assertApplicationErrorRegistry,
   createApplicationFailure,
   fieldIssuesFromInputError,
@@ -123,7 +124,7 @@ const handlerEnvelopeSchema = z.discriminatedUnion("status", [
   jsonObject({
     status: z.literal("failure"),
     code: executionPrimitiveSchemas.snakeCaseCode,
-    issues: z.array(executionEvidenceSchemas.fieldIssue).max(64),
+    issues: z.array(executionEvidenceSchemas.fieldIssue).max(applicationFailureIssueLimit),
   }).strict(),
 ]);
 

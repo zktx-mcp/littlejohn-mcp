@@ -8,6 +8,7 @@ import {
   assertDirectApplicationErrorRegistryExtension,
   coreErrorRegistry,
   createApplicationFailure,
+  fieldIssueSchema,
   readCapabilityRegistry,
   type CanonicalJson,
 } from "../../src/core/index.js";
@@ -569,6 +570,25 @@ describe("interface error authority", () => {
       ...failure,
       error: { ...failure.error, message: "forged provider detail" },
     })).toThrow("authority");
+  });
+
+  it("preserves the exact canonical issue array through Problem Details admission", () => {
+    const issues = Array.from({ length: 65 }, (_, index) => fieldIssueSchema.parse({
+      path: `/fields/${String(index).padStart(2, "0")}`,
+      code: "invalid_value",
+      message: "The field value is invalid.",
+    }));
+    const failure = createApplicationFailure(
+      runtimeErrorRegistry,
+      "invalid_host",
+      [...issues].reverse(),
+    );
+    const problem = toProblemDetails(failure);
+
+    expect(failure.error.issues).toEqual(issues.slice(0, 64));
+    expect(problem.issues).toEqual(failure.error.issues);
+    expect(problemDetailsSchema.parse(problem)).toEqual(problem);
+    expect(problemDetailsSchema.safeParse({ ...problem, issues }).success).toBe(false);
   });
 
   it("extends mappings only through the exact direct application-error lineage", () => {

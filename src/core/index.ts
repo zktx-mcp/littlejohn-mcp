@@ -374,6 +374,7 @@ export type {
 export {
   ApplicationErrorRegistry,
   applicationErrorDefinitionSchema,
+  applicationFailureIssueLimit,
   applicationFailureSchema,
   applicationFailureSchemaFor,
   assertDirectApplicationErrorRegistryExtension,

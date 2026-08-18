@@ -1177,6 +1177,38 @@ describe("capability binding authority", () => {
     if (!undeclaredResult.ok) expect(undeclaredResult.error.code).toBe("internal_error");
   });
 
+  it("admits raw handler issues only through the canonical array boundary", async () => {
+    const harness = createCapabilityHarness();
+    const issue = {
+      path: "",
+      code: "invalid_value",
+      message: "The field value is invalid.",
+    } as const;
+    const invokeWithIssueCount = (count: number) => invokeBinding(
+      chainStatusCapability,
+      bindForHarness(chainStatusCapability, harness, async () => ({
+        status: "failure",
+        code: "invalid_input",
+        issues: Array.from({ length: count }, () => issue),
+      })),
+      {},
+    );
+
+    const admitted = await invokeWithIssueCount(64);
+    expect(admitted.ok).toBe(false);
+    if (!admitted.ok) {
+      expect(admitted.error.code).toBe("invalid_input");
+      expect(admitted.error.issues).toEqual([issue]);
+    }
+
+    const oversized = await invokeWithIssueCount(65);
+    expect(oversized.ok).toBe(false);
+    if (!oversized.ok) {
+      expect(oversized.error.code).toBe("internal_error");
+      expect(oversized.error.issues).toEqual([]);
+    }
+  });
+
   it("bounds high-cardinality input issues without rejecting the invocation promise", async () => {
     const harness = createCapabilityHarness();
     const binding = bindForHarness(accountBalanceCapability, harness, async () => {

@@ -10,6 +10,8 @@ import { deepFreezeValue } from "./immutability.js";
 import { guardJsonSchema, jsonObject } from "./json-object.js";
 import { compareCodePointSequences, createPrimitiveSchemaSet } from "./primitives.js";
 
+export const applicationFailureIssueLimit = 64 as const;
+
 export const errorCategories = Object.freeze([
   "input",
   "transport",
@@ -35,7 +37,9 @@ const createApplicationErrorSchemaSet = () => {
     .strict();
   const applicationFailure = jsonObject({
       ok: z.literal(false),
-      error: applicationErrorDefinition.extend({ issues: z.array(evidence.fieldIssue).max(64) }).strict(),
+      error: applicationErrorDefinition.extend({
+        issues: z.array(evidence.fieldIssue).max(applicationFailureIssueLimit),
+      }).strict(),
     })
     .strict();
   return Object.freeze({
@@ -136,7 +140,7 @@ export const applicationFailureSchemaFor = (
         category: z.literal(definition.category),
         message: z.literal(definition.message),
         retryable: z.literal(definition.retryable),
-        issues: z.array(publicSchemas.fieldIssue).max(64),
+        issues: z.array(publicSchemas.fieldIssue).max(applicationFailureIssueLimit),
       }).strict(),
     }).strict();
   });
@@ -190,7 +194,7 @@ export const createApplicationFailure = (
       return previous === undefined ||
         previous.path !== issue.path || previous.code !== issue.code || previous.message !== issue.message;
     })
-    .slice(0, 64);
+    .slice(0, applicationFailureIssueLimit);
   const parsed = authorityApplicationFailureSchema.parse({
     ok: false,
     error: { ...definition, issues: canonicalIssues },

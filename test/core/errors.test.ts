@@ -7,6 +7,7 @@ import {
   assertDirectApplicationErrorRegistryExtension,
   coreErrorRegistry,
   createApplicationFailure,
+  fieldIssueSchema,
 } from "../../src/core/index.js";
 
 describe("application error authority", () => {
@@ -94,5 +95,34 @@ describe("application error authority", () => {
       ["internal_error", "internal_error"],
     )).toThrow("codes");
     expect(() => applicationFailureSchemaFor(coreErrorRegistry, ["unknown_error"])).toThrow("Unknown");
+  });
+
+  it("owns canonical issue ordering, deduplication, and the exact array boundary", () => {
+    const issues = Array.from({ length: 65 }, (_, index) => fieldIssueSchema.parse({
+      path: `/fields/${String(index).padStart(2, "0")}`,
+      code: "invalid_value",
+      message: "The field value is invalid.",
+    }));
+    const first = issues[0];
+    if (first === undefined) throw new TypeError("Issue fixture is empty.");
+    const failure = createApplicationFailure(
+      coreErrorRegistry,
+      "invalid_input",
+      [...issues].reverse().concat(first),
+    );
+    const expectedIssues = issues.slice(0, 64);
+    const exactSchema = applicationFailureSchemaFor(coreErrorRegistry, ["invalid_input"]);
+
+    expect(failure.error.issues).toEqual(expectedIssues);
+    expect(failure.error.issues).toHaveLength(64);
+    expect(applicationFailureSchema.parse(failure)).toEqual(failure);
+    expect(exactSchema.parse(failure)).toEqual(failure);
+
+    const oversized = {
+      ...failure,
+      error: { ...failure.error, issues },
+    };
+    expect(applicationFailureSchema.safeParse(oversized).success).toBe(false);
+    expect(exactSchema.safeParse(oversized).success).toBe(false);
   });
 });

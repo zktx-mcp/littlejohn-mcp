@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   ApplicationErrorRegistry,
+  applicationFailureIssueLimit,
   assertDirectApplicationErrorRegistryExtension,
   canonicalJsonStringify,
   captureCanonicalJson,
@@ -62,7 +63,7 @@ const createInterfaceSchemaSet = () => {
     code: snakeCaseCodeSchema,
     detail: generalSingleLineTextSchema,
     retryable: z.boolean(),
-    issues: z.array(fieldIssueSchema).max(64),
+    issues: z.array(fieldIssueSchema).max(applicationFailureIssueLimit),
   }).strict();
   return Object.freeze({ interfaceMapping, problemDetails });
 };
