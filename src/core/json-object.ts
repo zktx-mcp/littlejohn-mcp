@@ -1,11 +1,16 @@
 import { z, type ZodRawShape } from "zod";
 
+import {
+  canonicalJsonArrayLengthLimit,
+  canonicalJsonNestingDepthLimit,
+} from "./canonical-json-limits.js";
+
 const rejectedJsonObject = Symbol("rejectedJsonObject");
-const maximumJsonDepth = 64;
-const maximumJsonArrayLength = 8_192;
 
 const captureJsonInput = (input: unknown, active: WeakSet<object>, depth: number): unknown => {
-  if (depth > maximumJsonDepth) throw new TypeError("JSON input nesting is excessive.");
+  if (depth > canonicalJsonNestingDepthLimit) {
+    throw new TypeError("JSON input nesting is excessive.");
+  }
   if (typeof input !== "object" || input === null) return input;
   if (active.has(input)) throw new TypeError("JSON input cannot contain a cycle.");
   let descriptors: Record<PropertyKey, PropertyDescriptor>;
@@ -25,7 +30,7 @@ const captureJsonInput = (input: unknown, active: WeakSet<object>, depth: number
         typeof length !== "number" ||
         !Number.isSafeInteger(length) ||
         length < 0 ||
-        length > maximumJsonArrayLength
+        length > canonicalJsonArrayLengthLimit
       ) throw new TypeError("JSON array length is invalid.");
       const permitted = new Set<PropertyKey>(["length"]);
       const output: unknown[] = [];

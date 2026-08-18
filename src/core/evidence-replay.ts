@@ -11,6 +11,7 @@ import {
   captureCanonicalJson,
   type CanonicalJson,
 } from "./canonical-json.js";
+import { canonicalJsonArrayLengthLimit } from "./canonical-json-limits.js";
 import {
   createEvidenceSchemaSet,
   createEvidenceSummary,
@@ -44,6 +45,8 @@ import {
 const replayPrimitives = createPrimitiveSchemaSet();
 const replayAmounts = createAmountSchemaSet();
 const replayEvidence = createEvidenceSchemaSet();
+const evidenceObservationTargetRoleCountLimit = 8_192 as const;
+const evidenceReplayReferenceCountLimit = 8_192 as const;
 
 declare const evidenceFactIdentityDeclarationType: unique symbol;
 export interface EvidenceFactIdentityDeclaration {
@@ -688,7 +691,8 @@ export const createEvidenceObservationTargetDeclaration = <
     }
     return [key, identity] as const;
   });
-  if (roleEntries.length === 0 || roleEntries.length > 8_192 ||
+  if (roleEntries.length === 0 ||
+      roleEntries.length > evidenceObservationTargetRoleCountLimit ||
       (input.kind === "validated_input" && roleEntries.length !== 1)) {
     throw new TypeError("Evidence observation target claim roles are invalid.");
   }
@@ -1208,7 +1212,7 @@ export const captureEvidenceObservationClaims = (
   const claims = parseBoundedArray(
     claimsInput,
     1,
-    8_192,
+    canonicalJsonArrayLengthLimit,
     "An observation requires bounded claims.",
   ).map((claim) => {
     const projection = claimProjection(definition, layout, slot, claim);
@@ -1557,7 +1561,7 @@ const assertPublicEvidenceClosure = (
   const references = parseBoundedArray(
     referencesInput,
     0,
-    8_192,
+    evidenceReplayReferenceCountLimit,
     "Public observation references are invalid.",
   );
   const identities = new Set<string>();

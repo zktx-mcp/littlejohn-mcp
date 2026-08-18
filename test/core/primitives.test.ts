@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { describe, expect, it } from "vitest";
 import fc from "fast-check";
 
@@ -24,6 +25,7 @@ import {
   utcTimestampSchema,
   chainAnchorSchema,
 } from "../../src/core/index.js";
+import { guardJsonSchema } from "../../src/core/json-object.js";
 
 describe("canonical primitives", () => {
   it("accepts only canonical unsigned decimal strings", () => {
@@ -302,10 +304,27 @@ describe("canonical primitives", () => {
     expect(captureCanonicalJson({ b: 2, a: 1 })).toEqual({ a: 1, b: 2 });
   });
 
-  it("applies the same nesting boundary to capture and serialization", () => {
-    let value: unknown = null;
-    for (let index = 0; index < 66; index += 1) value = { nested: value };
-    expect(() => captureCanonicalJson(value)).toThrow("nesting");
-    expect(() => canonicalJsonStringify(value as never)).toThrow("nesting");
+  it("applies one structural boundary to canonical capture and guarded JSON input", () => {
+    const nestedValue = (depth: number): unknown => {
+      let value: unknown = null;
+      for (let index = 0; index < depth; index += 1) value = { nested: value };
+      return value;
+    };
+    const guardedJson = guardJsonSchema(z.json());
+    const maximumDepth = nestedValue(64);
+    const excessiveDepth = nestedValue(65);
+
+    expect(() => captureCanonicalJson(maximumDepth)).not.toThrow();
+    expect(guardedJson.safeParse(maximumDepth).success).toBe(true);
+    expect(() => captureCanonicalJson(excessiveDepth)).toThrow("nesting");
+    expect(guardedJson.safeParse(excessiveDepth).success).toBe(false);
+    expect(() => canonicalJsonStringify(excessiveDepth as never)).toThrow("nesting");
+
+    const maximumArray = Array.from({ length: 8_192 }, () => null);
+    const excessiveArray = Array.from({ length: 8_193 }, () => null);
+    expect(captureCanonicalJson(maximumArray)).toHaveLength(8_192);
+    expect(guardedJson.parse(maximumArray)).toHaveLength(8_192);
+    expect(() => captureCanonicalJson(excessiveArray)).toThrow("array length");
+    expect(guardedJson.safeParse(excessiveArray).success).toBe(false);
   });
 });

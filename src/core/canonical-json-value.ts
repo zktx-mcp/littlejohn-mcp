@@ -1,3 +1,7 @@
+import {
+  canonicalJsonArrayLengthLimit,
+  canonicalJsonNestingDepthLimit,
+} from "./canonical-json-limits.js";
 import { compareCodePointSequences, isWellFormedText } from "./primitives.js";
 
 export type CanonicalJson =
@@ -8,11 +12,8 @@ export type CanonicalJson =
   | CanonicalJson[]
   | { readonly [key: string]: CanonicalJson };
 
-const maximumCanonicalDepth = 64;
-const maximumCanonicalArrayLength = 8_192;
-
 const capture = (input: unknown, depth: number): CanonicalJson => {
-  if (depth > maximumCanonicalDepth) {
+  if (depth > canonicalJsonNestingDepthLimit) {
     throw new TypeError("Canonical JSON nesting exceeds the supported depth.");
   }
   if (input === null || typeof input === "boolean") return input;
@@ -36,7 +37,7 @@ const capture = (input: unknown, depth: number): CanonicalJson => {
       typeof length !== "number" ||
       !Number.isSafeInteger(length) ||
       length < 0 ||
-      length > maximumCanonicalArrayLength
+      length > canonicalJsonArrayLengthLimit
     ) throw new TypeError("Canonical JSON rejects an invalid or excessive array length.");
     const permitted = new Set<string>(["length"]);
     const output: CanonicalJson[] = [];
