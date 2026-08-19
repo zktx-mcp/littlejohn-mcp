@@ -215,6 +215,31 @@ applies the EIP-2718 range owned by [Transaction Type And
 Fees](#transaction-type-and-fees) and does not define a second range. These
 standard-derived values are not product tuning.
 
+## Chain Invocation And RPC Limits
+
+Chain transport applies these current numeric boundaries:
+
+| Boundary | Current value | Unit | Class and failure | Change meaning |
+| --- | ---: | --- | --- | --- |
+| exact RPC transport target | `4,096` | UTF-8 bytes | stable configuration admission; invalid input throws `TypeError` before publication or external work | changes the admitted endpoint envelope and requires target-security and Runtime-configuration review |
+| per-request deadline | default and maximum `10,000`; supplied safe integer `1..10,000` | milliseconds | private transport deadline; expiry is `chain_response_unavailable` and caller abort remains `request_aborted` | changes external-resource lifetime and failure timing without changing product-data meaning |
+| response body after HTTP content decoding | `8,388,608` | bytes | private transport resource guard; declared or streamed overflow is `source_inconsistent` before copying or parsing the overflowing byte | changes admitted provider bytes, memory use, and the derived block-hash maximum |
+| active external RPC requests | `16` | requests per process | private process capacity shared by requester instances; excess admission is `runtime_busy` before `fetch` | changes process resource use, overload behavior, and each direct scheduler ceiling |
+| JSON-RPC batch | `1..32` | calls per external request | private transport capacity; invalid cardinality throws `TypeError` before external work | changes provider compatibility and every relational consumer, but not an equal Core or feature-private limit |
+| block transaction hashes | `121,574` | hash occurrences | derived normalization bound `floor((8,388,608 - 1) / 69)` for one canonical JSON hash array | cannot change independently of the response-byte boundary and canonical-array formula |
+| whole Chain invocation | `90,000` | milliseconds | stable application terminal boundary; deadline is `chain_response_unavailable` | changes terminal timing for every Chain capability and requires close-and-drain review |
+
+Target admission, request deadline, response bytes, process concurrency, batch
+cardinality, and whole-invocation termination remain separate contracts. The
+whole-invocation deadline is neither the sum nor the configuration of request
+deadlines. Equal feature, Core, provider, local-HTTP, or release values do not
+share these owners. The block-transaction maximum derives only from the
+response-byte boundary and the canonical JSON array formula.
+
+Changing one boundary requires review of its failure meaning, direct consumers,
+and derived projections. It does not authorize a provider or endpoint change,
+merge an equal-valued limit, or reinterpret a feature-private capacity.
+
 ## Transaction Type And Fees
 
 - An [EIP-2718 transaction type](https://eips.ethereum.org/EIPS/eip-2718) is a

@@ -502,6 +502,33 @@ and structural reasoning does not replace boundary checks. A counterexample
 that exposes an incomplete or incorrect correctness model must update that
 model and its checks.
 
+- A negative or rejection check proves its target guard only when weakening or
+  removing that guard makes the fixture succeed or changes a directly observed
+  outcome. Keep every adjacent parser, schema, uniqueness rule, ordering rule,
+  and other independent admission valid so a later failure cannot satisfy the
+  same expectation.
+- An intentional error-precedence check is a distinct case. Its fixture may
+  make multiple failures applicable only when the declared winner is the
+  directly observed outcome and changing the precedence changes that outcome.
+  It does not justify ambiguous attribution in another negative check.
+- An aggregate-limit counterexample uses at least two parts that are admitted
+  independently and exceed the limit only together. When a prohibited
+  implementation could retain a bounded prefix, truncate a part, or drop the
+  overflowing part, every applicable retained or dropped form remains valid
+  downstream input.
+- A resource-bounding query or projection requires direct evidence that the
+  consumed rows or bytes are bounded before materialization. A later generic
+  rejection does not prove that resource bound.
+- When one invariant logically entails another and no meaningful independent
+  behavioral counterexample exists without a test-only production seam, record
+  the implication and verify the relationship structurally. Do not fabricate a
+  case or make a generated projection verify its own source.
+- A production constant, generic helper, or mutation framework does not prove
+  causal attribution. A polling timeout, hanging variant, unhandled rejection,
+  leaked promise or resource, or later generic failure is not a direct test
+  failure for the claimed invariant. Observe the intended outcome and settle
+  and clean up all admitted work.
+
 - Test quantity, branch quantity, and exhaustive parameter enumeration are not
   proof of correctness. Choose checks for the distinct invariants they can
   falsify, not to increase counts or enumerate combinations without a

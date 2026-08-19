@@ -6,7 +6,12 @@ import {
   rpcQuantityToUnsignedDecimal,
   unsignedDecimalToRpcQuantity,
 } from "./normalization.js";
-import { rpcResponseByteLimit } from "./limits.js";
+import {
+  rpcBatchCallLimit,
+  rpcConcurrencyLimit,
+  rpcRequestTimeoutMs,
+  rpcResponseByteLimit,
+} from "./limits.js";
 import { admitRpcTransportTarget } from "./rpc-transport-target.js";
 
 type RpcQuantity = `0x${string}`;
@@ -25,10 +30,6 @@ export const canonicalBlockReference = (
   blockHash,
   requireCanonical: true,
 }) as RpcCanonicalBlockReference;
-
-export const rpcRequestTimeoutMs = 10_000;
-export { rpcResponseByteLimit } from "./limits.js";
-export const rpcConcurrencyLimit = 16;
 
 export type ChainRpcErrorCode =
   | "chain_response_unavailable"
@@ -117,8 +118,6 @@ export type ChainRpcCall = {
     params: ChainRpcRequestMap[Method];
   }>;
 }[ChainRpcMethod];
-
-export const rpcBatchCallLimit = 32;
 
 type RpcFetch = typeof fetch;
 
@@ -368,10 +367,15 @@ const cancelBody = (response: Response): void => {
   void response.body.cancel().catch(() => undefined);
 };
 
+const rpcResponseByteLimitDigitCount = rpcResponseByteLimit.toString(10).length;
+
 const parseContentLength = (response: Response): number | undefined => {
   const value = response.headers.get("content-length");
   if (value === null) return undefined;
-  if (!/^(0|[1-9][0-9]*)$/u.test(value) || value.length > 16) {
+  if (
+    !/^(0|[1-9][0-9]*)$/u.test(value) ||
+    value.length > rpcResponseByteLimitDigitCount
+  ) {
     cancelBody(response);
     throw new ChainRpcError("source_inconsistent");
   }

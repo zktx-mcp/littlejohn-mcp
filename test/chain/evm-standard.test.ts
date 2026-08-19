@@ -14,7 +14,7 @@ import {
   encodeStockTokenOraclePausedCall,
   hashEvmBytes,
 } from "../../src/chain/evm-standard.js";
-import { rpcResponseByteLimit } from "../../src/chain/rpc.js";
+import { rpcResponseByteLimit } from "../../src/chain/limits.js";
 import {
   erc20ApprovalTopic0,
   erc20TransferTopic0,

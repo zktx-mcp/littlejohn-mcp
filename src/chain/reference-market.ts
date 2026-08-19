@@ -50,12 +50,12 @@ import {
   type ChainInvocationContext,
   type ChainInvocationLifecycle,
 } from "./invocation-lifecycle.js";
+import { rpcConcurrencyLimit } from "./limits.js";
 import { normalizeRpcBytes, normalizeRpcRuntimeCode } from "./normalization.js";
 import { createOfficialAssetChainReadPort } from "./official-assets.js";
 import {
   isRpcBatchRejectedError,
   isRpcExecutionRevertedError,
-  rpcConcurrencyLimit,
   type ChainRpcCall,
   type RpcCanonicalBlockReference,
   type RpcRequester,

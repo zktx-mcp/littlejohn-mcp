@@ -25,9 +25,9 @@ import {
   normalizeRpcBytes,
   normalizeRpcRuntimeCode,
 } from "./normalization.js";
+import { rpcBatchCallLimit } from "./limits.js";
 import {
   isRpcExecutionRevertedError,
-  rpcBatchCallLimit,
   type RpcCanonicalBlockReference,
   type RpcRequester,
 } from "./rpc.js";

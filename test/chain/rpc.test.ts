@@ -7,11 +7,9 @@ import {
   isRpcBatchRejectedError,
   isRpcExecutionRevertedError,
   normalizeChainRpcError,
-  rpcConcurrencyLimit,
-  rpcRequestTimeoutMs,
-  rpcResponseByteLimit,
   type RpcRequester,
 } from "../../src/chain/rpc.js";
+import { rpcConcurrencyLimit } from "../../src/chain/limits.js";
 import { parseEvmAddress, parseHash32, parseHexBytes } from "../../src/core/index.js";
 
 const stateAddress = parseEvmAddress(`0x${"a".repeat(40)}`);
@@ -69,6 +67,7 @@ const expectExecutionRevert = async (promise: Promise<unknown>): Promise<unknown
 
 describe("bounded RPC requester", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -152,6 +151,47 @@ describe("bounded RPC requester", () => {
     expect(results[1]?.status).toBe("rejected");
     if (results[1]?.status !== "rejected") throw new TypeError("Expected a rejected batch item.");
     expect(isRpcExecutionRevertedError(results[1].reason)).toBe(true);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("admits thirty-two ordered calls and rejects other batch cardinalities before fetch", async () => {
+    const observedBatchSizes: number[] = [];
+    const fetchFn = vi.fn(fetchOf(async (_input, init) => {
+      if (typeof init?.body !== "string") throw new TypeError("Expected a string request body.");
+      const requests = JSON.parse(init.body) as JsonRpcRequest[];
+      observedBatchSizes.push(requests.length);
+      return new Response(JSON.stringify(requests.map((request, index) => ({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: `result-${index}`,
+      })).reverse()));
+    }));
+    const requester = createBoundedRpcRequester({ url: "https://rpc.example", fetch: fetchFn });
+    if (requester.requestBatch === undefined) throw new TypeError("Expected batch support.");
+    const exactBatch = Array.from({ length: 32 }, () => ({
+      method: "eth_chainId" as const,
+      params: [] as const,
+    }));
+
+    await expect(requester.requestBatch(
+      exactBatch,
+      new AbortController().signal,
+    )).resolves.toEqual(Array.from({ length: 32 }, (_, index) => ({
+      status: "fulfilled",
+      value: `result-${index}`,
+    })));
+    await expect(requester.requestBatch(
+      [],
+      new AbortController().signal,
+    )).rejects.toThrow("RPC batch size is invalid.");
+    await expect(requester.requestBatch(
+      Array.from({ length: 33 }, () => ({
+        method: "eth_chainId" as const,
+        params: [] as const,
+      })),
+      new AbortController().signal,
+    )).rejects.toThrow("RPC batch size is invalid.");
+    expect(observedBatchSizes).toEqual([32]);
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
@@ -285,21 +325,39 @@ describe("bounded RPC requester", () => {
     ));
     const first = createBoundedRpcRequester({ url: "https://rpc-one.example", fetch: fetchFn });
     const second = createBoundedRpcRequester({ url: "https://rpc-two.example", fetch: fetchFn });
-    const active = Array.from({ length: rpcConcurrencyLimit }, (_, index) =>
-      (index % 2 === 0 ? first : second).request("eth_chainId", [], new AbortController().signal)
+    const active = Array.from({ length: 16 }, (_, index) =>
+      (index % 2 === 0 ? first : second)
+        .request("eth_chainId", [], new AbortController().signal)
     );
-    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(rpcConcurrencyLimit));
+    const observedActive = Promise.allSettled(active);
+    let observedSeventeenth: Promise<readonly PromiseSettledResult<unknown>[]> | undefined;
+    let activeOutcomes: readonly PromiseSettledResult<unknown>[] = [];
 
-    await expectCode(
-      second.request("eth_chainId", [], new AbortController().signal),
-      "runtime_busy",
-    );
-    expect(fetchFn).toHaveBeenCalledTimes(rpcConcurrencyLimit);
+    try {
+      expect(fetchFn).toHaveBeenCalledTimes(16);
+      observedSeventeenth = Promise.allSettled([
+        second.request("eth_chainId", [], new AbortController().signal),
+      ]);
+      expect(fetchFn).toHaveBeenCalledTimes(16);
 
-    for (const completion of completions) completion.resolve(resultResponse(completion.init, "0x1237"));
-    await expect(Promise.all(active)).resolves.toEqual(
-      Array.from({ length: rpcConcurrencyLimit }, () => "0x1237"),
-    );
+      const [outcome] = await observedSeventeenth;
+      if (outcome === undefined) throw new TypeError("Expected capacity outcome.");
+      expect(outcome.status).toBe("rejected");
+      if (outcome.status !== "rejected") throw new TypeError("Expected capacity rejection.");
+      expect(outcome.reason).toBeInstanceOf(ChainRpcError);
+      expect(outcome.reason).toMatchObject({ code: "runtime_busy" });
+    } finally {
+      for (const completion of completions) {
+        completion.resolve(resultResponse(completion.init, "0x1237"));
+      }
+      activeOutcomes = await observedActive;
+      if (observedSeventeenth !== undefined) await observedSeventeenth;
+    }
+
+    expect(activeOutcomes).toEqual(Array.from({ length: 16 }, () => ({
+      status: "fulfilled",
+      value: "0x1237",
+    })));
   });
 
   it("releases every acquired request resource when local setup fails", async () => {
@@ -315,8 +373,10 @@ describe("bounded RPC requester", () => {
         }
       });
       const pending = requester.request("eth_chainId", [], callerSignal);
+      const observed = Promise.allSettled([pending]);
       vi.unstubAllGlobals();
-      await expect(pending).rejects.toBe(failure);
+      const [outcome] = await observed;
+      expect(outcome).toEqual({ status: "rejected", reason: failure });
     }
 
     {
@@ -327,10 +387,16 @@ describe("bounded RPC requester", () => {
       const removeListener = vi.spyOn(AbortSignal.prototype, "removeEventListener")
         .mockImplementation(() => undefined);
       const pending = requester.request("eth_chainId", [], callerSignal);
-      expect(addListener).toHaveBeenCalledTimes(1);
-      expect(removeListener).not.toHaveBeenCalled();
-      vi.restoreAllMocks();
-      await expect(pending).rejects.toBe(failure);
+      const observed = Promise.allSettled([pending]);
+      let outcome: PromiseSettledResult<unknown> | undefined;
+      try {
+        expect(addListener).toHaveBeenCalledTimes(1);
+        expect(removeListener).not.toHaveBeenCalled();
+      } finally {
+        vi.restoreAllMocks();
+        [outcome] = await observed;
+      }
+      expect(outcome).toEqual({ status: "rejected", reason: failure });
     }
 
     {
@@ -340,11 +406,17 @@ describe("bounded RPC requester", () => {
       const removeListener = vi.spyOn(AbortSignal.prototype, "removeEventListener");
       vi.stubGlobal("setTimeout", vi.fn(() => { throw failure; }));
       const pending = requester.request("eth_chainId", [], callerSignal);
-      expect(addListener).toHaveBeenCalledTimes(1);
-      expect(removeListener).toHaveBeenCalledTimes(1);
-      vi.unstubAllGlobals();
-      vi.restoreAllMocks();
-      await expect(pending).rejects.toBe(failure);
+      const observed = Promise.allSettled([pending]);
+      let outcome: PromiseSettledResult<unknown> | undefined;
+      try {
+        expect(addListener).toHaveBeenCalledTimes(1);
+        expect(removeListener).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+        [outcome] = await observed;
+      }
+      expect(outcome).toEqual({ status: "rejected", reason: failure });
     }
 
     {
@@ -357,13 +429,19 @@ describe("bounded RPC requester", () => {
       vi.stubGlobal("setTimeout", vi.fn(() => fakeTimeout));
       vi.stubGlobal("clearTimeout", clearTimeoutFn);
       const pending = requester.request("eth_chainId", [], callerSignal);
-      expect(addListener).toHaveBeenCalledTimes(1);
-      expect(removeListener).toHaveBeenCalledTimes(1);
-      expect(clearTimeoutFn).toHaveBeenCalledTimes(1);
-      expect(clearTimeoutFn).toHaveBeenCalledWith(fakeTimeout);
-      vi.unstubAllGlobals();
-      vi.restoreAllMocks();
-      await expect(pending).rejects.toBe(failure);
+      const observed = Promise.allSettled([pending]);
+      let outcome: PromiseSettledResult<unknown> | undefined;
+      try {
+        expect(addListener).toHaveBeenCalledTimes(1);
+        expect(removeListener).toHaveBeenCalledTimes(1);
+        expect(clearTimeoutFn).toHaveBeenCalledTimes(1);
+        expect(clearTimeoutFn).toHaveBeenCalledWith(fakeTimeout);
+      } finally {
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+        [outcome] = await observed;
+      }
+      expect(outcome).toEqual({ status: "rejected", reason: failure });
     }
 
     expect(setupFetch).not.toHaveBeenCalled();
@@ -379,16 +457,34 @@ describe("bounded RPC requester", () => {
     const active = Array.from({ length: rpcConcurrencyLimit }, () =>
       capacityRequester.request("eth_chainId", [], new AbortController().signal)
     );
-    await vi.waitFor(() => expect(capacityFetch).toHaveBeenCalledTimes(rpcConcurrencyLimit));
-    await expectCode(
-      capacityRequester.request("eth_chainId", [], new AbortController().signal),
-      "runtime_busy",
-    );
+    const observedActive = Promise.allSettled(active);
+    let observedExcess: Promise<readonly PromiseSettledResult<unknown>[]> | undefined;
+    let activeOutcomes: readonly PromiseSettledResult<unknown>[] = [];
 
-    for (const completion of completions) completion.resolve(resultResponse(completion.init, "0x1237"));
-    await expect(Promise.all(active)).resolves.toEqual(
-      Array.from({ length: rpcConcurrencyLimit }, () => "0x1237"),
-    );
+    try {
+      expect(capacityFetch).toHaveBeenCalledTimes(rpcConcurrencyLimit);
+      observedExcess = Promise.allSettled([
+        capacityRequester.request("eth_chainId", [], new AbortController().signal),
+      ]);
+      expect(capacityFetch).toHaveBeenCalledTimes(rpcConcurrencyLimit);
+      const [outcome] = await observedExcess;
+      if (outcome === undefined) throw new TypeError("Expected capacity outcome.");
+      expect(outcome.status).toBe("rejected");
+      if (outcome.status !== "rejected") throw new TypeError("Expected capacity rejection.");
+      expect(outcome.reason).toBeInstanceOf(ChainRpcError);
+      expect(outcome.reason).toMatchObject({ code: "runtime_busy" });
+    } finally {
+      for (const completion of completions) {
+        completion.resolve(resultResponse(completion.init, "0x1237"));
+      }
+      activeOutcomes = await observedActive;
+      if (observedExcess !== undefined) await observedExcess;
+    }
+
+    expect(activeOutcomes).toEqual(Array.from({ length: rpcConcurrencyLimit }, () => ({
+      status: "fulfilled",
+      value: "0x1237",
+    })));
   });
 
   it("does not call fetch for an already aborted request", async () => {
@@ -403,12 +499,20 @@ describe("bounded RPC requester", () => {
 
   it("propagates in-flight cancellation and returns no late result", async () => {
     let fetchSignal: AbortSignal | undefined;
+    let settleFetch: (() => void) | undefined;
     const fetchFn = vi.fn(fetchOf(async (_input, init) => {
       fetchSignal = init?.signal ?? undefined;
       return await new Promise<Response>((_resolve, reject) => {
+        let settled = false;
+        const rejectProvider = (): void => {
+          if (settled) return;
+          settled = true;
+          reject(new Error("provider cancellation detail"));
+        };
+        settleFetch = rejectProvider;
         fetchSignal?.addEventListener(
           "abort",
-          () => reject(new Error("provider cancellation detail")),
+          rejectProvider,
           { once: true },
         );
       });
@@ -416,105 +520,258 @@ describe("bounded RPC requester", () => {
     const requester = createBoundedRpcRequester({ url: "https://rpc.example", fetch: fetchFn });
     const controller = new AbortController();
     const pending = requester.request("eth_chainId", [], controller.signal);
-    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
-    controller.abort();
+    const observed = pending.then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (reason: unknown) => ({ status: "rejected" as const, reason }),
+    );
+    let outcome: Awaited<typeof observed> | undefined;
 
-    const error = await expectCode(pending, "request_aborted");
-    expect(fetchSignal?.aborted).toBe(true);
-    expect(error.message).not.toContain("provider cancellation detail");
+    try {
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+      controller.abort();
+      expect(fetchSignal?.aborted).toBe(true);
+      outcome = await observed;
+    } finally {
+      settleFetch?.();
+      controller.abort();
+      await observed;
+    }
+
+    expect(outcome?.status).toBe("rejected");
+    if (outcome?.status !== "rejected") throw new TypeError("Expected caller cancellation.");
+    expect(outcome.reason).toBeInstanceOf(ChainRpcError);
+    expect(outcome.reason).toMatchObject({ code: "request_aborted" });
+    expect((outcome.reason as ChainRpcError).message)
+      .not.toContain("provider cancellation detail");
   });
 
-  it("maps the request deadline to an incomplete-response error and forwards abort", async () => {
+  it("applies the default request deadline at exactly ten thousand milliseconds", async () => {
+    vi.useFakeTimers();
     let fetchSignal: AbortSignal | undefined;
+    let settleFetch: (() => void) | undefined;
     const fetchFn = vi.fn(fetchOf(async (_input, init) => {
       fetchSignal = init?.signal ?? undefined;
       return await new Promise<Response>((_resolve, reject) => {
+        let settled = false;
+        const rejectProvider = (): void => {
+          if (settled) return;
+          settled = true;
+          reject(new Error("secret provider timeout text"));
+        };
+        settleFetch = rejectProvider;
         fetchSignal?.addEventListener(
           "abort",
-          () => reject(new Error("secret provider timeout text")),
+          rejectProvider,
           { once: true },
         );
       });
     }));
-    const requester = createBoundedRpcRequester({
-      url: "https://rpc.example",
-      fetch: fetchFn,
-      timeoutMs: 5,
-    });
-
-    const error = await expectCode(
-      requester.request("eth_chainId", [], new AbortController().signal),
-      "chain_response_unavailable",
+    const requester = createBoundedRpcRequester({ url: "https://rpc.example", fetch: fetchFn });
+    const caller = new AbortController();
+    const addCallerListener = vi.spyOn(caller.signal, "addEventListener");
+    const removeCallerListener = vi.spyOn(caller.signal, "removeEventListener");
+    const pending = requester.request("eth_chainId", [], caller.signal);
+    const observed = pending.then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (reason: unknown) => ({ status: "rejected" as const, reason }),
     );
-    expect(fetchSignal?.aborted).toBe(true);
-    expect(error.message).not.toContain("secret provider timeout text");
-    expect(fetchFn).toHaveBeenCalledTimes(1);
+    let requestSettled = false;
+    void observed.then(() => { requestSettled = true; });
+    let outcome: Awaited<typeof observed> | undefined;
+
+    try {
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+      expect(addCallerListener).toHaveBeenCalledTimes(1);
+      expect(fetchSignal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(fetchSignal?.aborted).toBe(false);
+      expect(requestSettled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetchSignal?.aborted).toBe(true);
+      outcome = await observed;
+      expect(requestSettled).toBe(true);
+    } finally {
+      settleFetch?.();
+      caller.abort();
+      await observed;
+    }
+
+    expect(outcome?.status).toBe("rejected");
+    if (outcome?.status !== "rejected") throw new TypeError("Expected request timeout.");
+    expect(outcome.reason).toBeInstanceOf(ChainRpcError);
+    if (!(outcome.reason instanceof ChainRpcError)) {
+      throw new TypeError("Expected a Chain RPC timeout.");
+    }
+    expect(outcome.reason).toMatchObject({ code: "chain_response_unavailable" });
+    expect(outcome.reason.message).not.toContain("secret provider timeout text");
+    expect(removeCallerListener).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+
+    const capacityFetch = vi.fn(fetchOf(async (_input, init) =>
+      resultResponse(init, "0x1237")
+    ));
+    const capacityRequester = createBoundedRpcRequester({
+      url: "https://rpc.example",
+      fetch: capacityFetch,
+    });
+    const afterTimeout = Array.from({ length: 16 }, () =>
+      capacityRequester.request("eth_chainId", [], new AbortController().signal)
+    );
+    const afterTimeoutOutcomes = await Promise.allSettled(afterTimeout);
+    expect(afterTimeoutOutcomes).toEqual(Array.from({ length: 16 }, () => ({
+      status: "fulfilled",
+      value: "0x1237",
+    })));
+    expect(capacityFetch).toHaveBeenCalledTimes(16);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("aborts and cancels an open response body when the caller ends the request", async () => {
     let bodyCancelled = false;
-    const response = new Response(new ReadableStream<Uint8Array>({
+    let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+    let releaseBodyPull!: () => void;
+    const bodyPull = new Promise<void>((resolve) => { releaseBodyPull = resolve; });
+    let bodyPullStarted = false;
+    const body = new ReadableStream<Uint8Array>({
       start(controller) {
+        bodyController = controller;
         controller.enqueue(new TextEncoder().encode("{\"jsonrpc\":\"2.0\","));
+      },
+      pull() {
+        bodyPullStarted = true;
+        return bodyPull;
       },
       cancel() {
         bodyCancelled = true;
-        return new Promise<void>(() => undefined);
       },
-    }));
+    });
+    const response = new Response(body);
+    const cancelReader = vi.spyOn(ReadableStreamDefaultReader.prototype, "cancel");
     const fetchFn = vi.fn(fetchOf(async () => response));
     const requester = createBoundedRpcRequester({ url: "https://rpc.example", fetch: fetchFn });
     const controller = new AbortController();
     const pending = requester.request("eth_chainId", [], controller.signal);
-    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
-    controller.abort();
+    const observed = pending.then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (reason: unknown) => ({ status: "rejected" as const, reason }),
+    );
+    let outcome: Awaited<typeof observed> | undefined;
 
-    await expectCode(pending, "request_aborted");
-    await vi.waitFor(() => expect(bodyCancelled).toBe(true));
+    try {
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(bodyPullStarted).toBe(true);
+      controller.abort();
+      bodyController.enqueue(new Uint8Array());
+      releaseBodyPull();
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(bodyCancelled).toBe(true);
+      expect(cancelReader).toHaveBeenCalledTimes(1);
+      const cancellation = cancelReader.mock.results[0]?.value;
+      if (cancellation === undefined) throw new TypeError("Expected body cancellation.");
+      await cancellation;
+      expect(bodyCancelled).toBe(true);
+      outcome = await observed;
+    } finally {
+      controller.abort();
+      releaseBodyPull();
+      if (!bodyCancelled) bodyController.close();
+      await observed;
+    }
+
+    expect(outcome?.status).toBe("rejected");
+    if (outcome?.status !== "rejected") throw new TypeError("Expected caller cancellation.");
+    expect(outcome.reason).toBeInstanceOf(ChainRpcError);
+    expect(outcome.reason).toMatchObject({ code: "request_aborted" });
   });
 
-  it("accepts an exactly 8 MiB response and rejects the next byte before parsing", async () => {
+  it("admits the exact aggregate response limit and rejects one valid byte more", async () => {
     let invocation = 0;
+    const cancelReader = vi.spyOn(ReadableStreamDefaultReader.prototype, "cancel");
     const fetchFn = vi.fn(fetchOf(async (_input, init) => {
       invocation += 1;
+      const currentInvocation = invocation;
       const request = requestFrom(init);
       const prefix = `{"jsonrpc":"2.0","id":"${request.id}","result":"`;
       const suffix = `"}`;
-      const padding = rpcResponseByteLimit - Buffer.byteLength(prefix) - Buffer.byteLength(suffix);
-      if (invocation === 1) {
-        const body = `${prefix}${"x".repeat(padding)}${suffix}`;
-        expect(Buffer.byteLength(body)).toBe(rpcResponseByteLimit);
-        return new Response(body);
-      }
-      const chunks = new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(new Uint8Array(rpcResponseByteLimit));
-          controller.enqueue(new Uint8Array(1));
+      const result = "x".repeat(
+        8_388_607 - Buffer.byteLength(prefix) - Buffer.byteLength(suffix),
+      );
+      const firstText = `${prefix}${result}${suffix}`;
+      const secondText = currentInvocation === 1 ? " " : "  ";
+      const exactPrefixText = `${firstText} `;
+      const completeText = `${firstText}  `;
+      const expected = { jsonrpc: "2.0", id: request.id, result };
+      expect(Buffer.byteLength(firstText)).toBe(8_388_607);
+      expect(Buffer.byteLength(exactPrefixText)).toBe(8_388_608);
+      expect(Buffer.byteLength(completeText)).toBe(8_388_609);
+      expect(JSON.parse(firstText)).toEqual(expected);
+      expect(JSON.parse(exactPrefixText)).toEqual(expected);
+      expect(JSON.parse(completeText)).toEqual(expected);
+
+      const encoder = new TextEncoder();
+      const first = encoder.encode(firstText);
+      const second = encoder.encode(secondText);
+      expect(first.byteLength).toBeLessThan(8_388_608);
+      expect(second.byteLength).toBeLessThan(8_388_608);
+      let part = 0;
+      return new Response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (part === 0) {
+            part += 1;
+            controller.enqueue(first);
+            return;
+          }
+          if (part === 1) {
+            part += 1;
+            controller.enqueue(second);
+            if (currentInvocation === 1) controller.close();
+            return;
+          }
           controller.close();
         },
-      });
-      return new Response(chunks);
+      }));
     }));
     const requester = createBoundedRpcRequester({ url: "https://rpc.example", fetch: fetchFn });
 
     const result = await requester.request("eth_chainId", [], new AbortController().signal);
     expect(result).toBe("x".repeat((result as string).length));
     expect(Buffer.byteLength(result as string)).toBeGreaterThan(8_000_000);
+    expect(cancelReader).not.toHaveBeenCalled();
+    cancelReader.mockClear();
     await expectCode(
       requester.request("eth_chainId", [], new AbortController().signal),
       "source_inconsistent",
     );
+    expect(cancelReader).toHaveBeenCalledTimes(1);
   }, 20_000);
 
-  it("rejects an oversized declared content length without consuming the body", async () => {
-    let cancelled = false;
-    const body = new ReadableStream<Uint8Array>({
-      cancel() {
-        cancelled = true;
-      },
+  it("rejects oversized declared length before acquiring a valid body reader", async () => {
+    const getReader = vi.spyOn(ReadableStream.prototype, "getReader");
+    const fetchFn = fetchOf(async (_input, init) => {
+      const request = requestFrom(init);
+      return new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: "0x1237",
+      }), {
+        headers: { "content-length": "8388609" },
+      });
     });
+    const requester = createBoundedRpcRequester({ url: "https://rpc.example", fetch: fetchFn });
+
+    await expectCode(
+      requester.request("eth_chainId", [], new AbortController().signal),
+      "source_inconsistent",
+    );
+    expect(getReader).not.toHaveBeenCalled();
+  });
+
+  it("cancels a pending body rejected by oversized declared content length", async () => {
+    const body = new ReadableStream<Uint8Array>();
+    const cancel = vi.spyOn(body, "cancel");
     const fetchFn = fetchOf(async () => new Response(body, {
-      headers: { "content-length": String(rpcResponseByteLimit + 1) },
+      headers: { "content-length": "8388609" },
     }));
     const requester = createBoundedRpcRequester({ url: "https://rpc.example", fetch: fetchFn });
 
@@ -522,7 +779,7 @@ describe("bounded RPC requester", () => {
       requester.request("eth_chainId", [], new AbortController().signal),
       "source_inconsistent",
     );
-    await vi.waitFor(() => expect(cancelled).toBe(true));
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 
   it("bounds response storage even when the provider emits many empty and tiny chunks", async () => {
@@ -779,14 +1036,34 @@ describe("bounded RPC requester", () => {
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
-  it("keeps the production limits fixed and rejects a longer timeout", () => {
-    expect(rpcRequestTimeoutMs).toBe(10_000);
-    expect(rpcResponseByteLimit).toBe(8 * 1_024 * 1_024);
-    expect(rpcConcurrencyLimit).toBe(16);
-    expect(() => createBoundedRpcRequester({
+  it("admits the exact timeout setting and rejects every value outside its contract", async () => {
+    const fetchFn = vi.fn(fetchOf(async (_input, init) => resultResponse(init, "0x1237")));
+    const createWithUnknownTimeout = createBoundedRpcRequester as unknown as (options: {
+      readonly url: string;
+      readonly fetch: typeof globalThis.fetch;
+      readonly timeoutMs: unknown;
+    }) => RpcRequester;
+
+    for (const timeoutMs of [10_001, 0, 1.5, Number.NaN, "10000"] as const) {
+      expect(() => createWithUnknownTimeout({
+        url: "https://rpc.example",
+        fetch: fetchFn,
+        timeoutMs,
+      })).toThrow("RPC timeout is invalid.");
+    }
+    expect(fetchFn).not.toHaveBeenCalled();
+
+    const requester = createBoundedRpcRequester({
       url: "https://rpc.example",
-      timeoutMs: rpcRequestTimeoutMs + 1,
-    })).toThrow("RPC timeout is invalid.");
+      fetch: fetchFn,
+      timeoutMs: 10_000,
+    });
+    await expect(requester.request(
+      "eth_chainId",
+      [],
+      new AbortController().signal,
+    )).resolves.toBe("0x1237");
+    expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 });
 

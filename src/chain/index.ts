@@ -63,12 +63,14 @@ export type {
   TokenStandardObservationResult,
 } from "./token-standards.js";
 export {
-  createBoundedRpcRequester,
-  isRpcBatchRejectedError,
   rpcBatchCallLimit,
   rpcConcurrencyLimit,
   rpcRequestTimeoutMs,
   rpcResponseByteLimit,
+} from "./limits.js";
+export {
+  createBoundedRpcRequester,
+  isRpcBatchRejectedError,
 } from "./rpc.js";
 export type { ChainRpcCall, RpcRequester } from "./rpc.js";
 export { createTokenInspectionService } from "./token-inspection.js";

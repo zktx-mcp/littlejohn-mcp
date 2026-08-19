@@ -73,31 +73,53 @@ describe("chain invocation lifecycle", () => {
       effectDone = true;
       return "late result";
     });
+    const observedInvocation = Promise.allSettled([invocation]);
     const concurrentClose = lifecycle.close();
-
-    expect(reentrantClose).toBe(initiatingClose);
-    expect(concurrentClose).toBe(initiatingClose);
-    expect(abortedBeforeAwait).toBe(true);
-    expect(removeListener).toHaveBeenCalledTimes(1);
-
+    const observedCloses = Promise.allSettled([
+      initiatingClose,
+      reentrantClose,
+      concurrentClose,
+    ]);
     let closeSettled = false;
-    void initiatingClose.then(
+    const observedInitiatingClose = initiatingClose.then(
       () => { closeSettled = true; },
       () => { closeSettled = true; },
     );
-    await new Promise<void>((resolve) => { setImmediate(resolve); });
-    expect(closeSettled).toBe(false);
-    expect(effectDone).toBe(false);
+    let invocationOutcome: PromiseSettledResult<string> | undefined;
+    let closeOutcomes: readonly PromiseSettledResult<void>[] = [];
 
-    releaseEffect();
-    let failure: unknown;
-    try { await invocation; }
-    catch (error) { failure = error; }
-    expect(getChainInvocationStopReason(failure)).toBe("application_closed");
-    await expect(initiatingClose).resolves.toBeUndefined();
-    expect(effectDone).toBe(true);
-    expect(lifecycle.close()).toBe(initiatingClose);
-    expect(removeListener).toHaveBeenCalledTimes(1);
+    try {
+      expect(reentrantClose).toBe(initiatingClose);
+      expect(concurrentClose).toBe(initiatingClose);
+      expect(abortedBeforeAwait).toBe(true);
+      expect(removeListener).toHaveBeenCalledTimes(1);
+
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(closeSettled).toBe(false);
+      expect(effectDone).toBe(false);
+
+      releaseEffect();
+      [invocationOutcome] = await observedInvocation;
+      expect(invocationOutcome?.status).toBe("rejected");
+      if (invocationOutcome?.status !== "rejected") {
+        throw new TypeError("Expected application-close rejection.");
+      }
+      expect(getChainInvocationStopReason(invocationOutcome.reason)).toBe("application_closed");
+      closeOutcomes = await observedCloses;
+      await observedInitiatingClose;
+      expect(closeOutcomes).toEqual(Array.from({ length: 3 }, () => ({
+        status: "fulfilled",
+        value: undefined,
+      })));
+      expect(effectDone).toBe(true);
+      expect(lifecycle.close()).toBe(initiatingClose);
+      expect(removeListener).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseEffect?.();
+      await observedInvocation;
+      await observedCloses;
+      await observedInitiatingClose;
+    }
   });
 
   it("joins an exact nested signal under one deadline and drain, then rejects foreign and stale context use", async () => {
@@ -105,71 +127,112 @@ describe("chain invocation lifecycle", () => {
     const owner = new AbortController();
     const lifecycle = createChainInvocationLifecycle(owner.signal);
     const foreignLifecycle = createChainInvocationLifecycle(new AbortController().signal);
-    let publishContexts!: (contexts: Readonly<{
+    let contexts: Readonly<{
       outer: ChainInvocationContext;
       inner: ChainInvocationContext;
-    }>) => void;
-    const contextsReady = new Promise<Readonly<{
-      outer: ChainInvocationContext;
-      inner: ChainInvocationContext;
-    }>>((resolveContexts) => { publishContexts = resolveContexts; });
+    }> | undefined;
     let releaseNested!: () => void;
     const nestedPending = new Promise<void>((resolveNested) => { releaseNested = resolveNested; });
 
     const invocation = lifecycle.run(new AbortController().signal, async (outer) => {
       lifecycle.assertActiveContext(outer);
       return await lifecycle.run(outer.signal, async (inner) => {
-        publishContexts({ outer, inner });
+        contexts = { outer, inner };
         await nestedPending;
         return "joined";
       });
     });
-    const contexts = await contextsReady;
+    const observedInvocation = Promise.allSettled([invocation]);
+    let observedClosing: Promise<readonly PromiseSettledResult<void>[]> | undefined;
+    let observedCloseSettlement: Promise<void> | undefined;
 
-    expect(contexts.inner).toBe(contexts.outer);
-    expect(vi.getTimerCount()).toBe(1);
-    expect(() => foreignLifecycle.assertActiveContext(contexts.outer))
-      .toThrowError(/another lifecycle/u);
+    try {
+      await Promise.resolve();
+      expect(contexts).toBeDefined();
+      if (contexts === undefined) throw new TypeError("Expected nested invocation contexts.");
+      const publishedContexts = contexts;
 
-    let closeSettled = false;
-    const closing = lifecycle.close().then(() => { closeSettled = true; });
-    await Promise.resolve();
-    expect(contexts.outer.signal.aborted).toBe(true);
-    expect(closeSettled).toBe(false);
+      expect(publishedContexts.inner).toBe(publishedContexts.outer);
+      expect(vi.getTimerCount()).toBe(1);
+      expect(() => foreignLifecycle.assertActiveContext(publishedContexts.outer))
+        .toThrowError(/another lifecycle/u);
 
-    let lateJoinInvoked = false;
-    await expect(lifecycle.run(contexts.outer.signal, async () => {
-      lateJoinInvoked = true;
-    })).rejects.toThrowError(/cannot be joined/u);
-    expect(lateJoinInvoked).toBe(false);
+      let closeSettled = false;
+      const closing = lifecycle.close();
+      observedClosing = Promise.allSettled([closing]);
+      observedCloseSettlement = observedClosing.then(() => { closeSettled = true; });
+      await Promise.resolve();
+      expect(publishedContexts.outer.signal.aborted).toBe(true);
+      expect(closeSettled).toBe(false);
 
-    releaseNested();
-    let failure: unknown;
-    try { await invocation; }
-    catch (error) { failure = error; }
-    expect(getChainInvocationStopReason(failure)).toBe("application_closed");
-    await expect(closing).resolves.toBeUndefined();
-    expect(vi.getTimerCount()).toBe(0);
-    expect(() => lifecycle.assertActiveContext(contexts.outer))
-      .toThrowError(/not active/u);
-    await foreignLifecycle.close();
+      let lateJoinInvoked = false;
+      await expect(lifecycle.run(publishedContexts.outer.signal, async () => {
+        lateJoinInvoked = true;
+      })).rejects.toThrowError(/cannot be joined/u);
+      expect(lateJoinInvoked).toBe(false);
+
+      releaseNested();
+      const [invocationOutcome] = await observedInvocation;
+      expect(invocationOutcome?.status).toBe("rejected");
+      if (invocationOutcome?.status !== "rejected") {
+        throw new TypeError("Expected application-close rejection.");
+      }
+      expect(getChainInvocationStopReason(invocationOutcome.reason)).toBe("application_closed");
+      const [closeOutcome] = await observedClosing;
+      await observedCloseSettlement;
+      expect(closeOutcome).toEqual({ status: "fulfilled", value: undefined });
+      expect(vi.getTimerCount()).toBe(0);
+      expect(() => lifecycle.assertActiveContext(publishedContexts.outer))
+        .toThrowError(/not active/u);
+    } finally {
+      releaseNested?.();
+      await Promise.all([
+        observedInvocation,
+        observedClosing ?? Promise.resolve([]),
+        observedCloseSettlement ?? Promise.resolve(),
+        Promise.allSettled([lifecycle.close(), foreignLifecycle.close()]),
+      ]);
+    }
   });
 
   it("owns the whole-invocation deadline and rejects a late result", async () => {
     vi.useFakeTimers();
     const owner = new AbortController();
     const lifecycle = createChainInvocationLifecycle(owner.signal);
+    let context!: ChainInvocationContext;
     let resolveLate!: (value: string) => void;
-    const invocation = lifecycle.run(new AbortController().signal, async () =>
-      new Promise<string>((resolve) => { resolveLate = resolve; }));
-    await vi.advanceTimersByTimeAsync(chainInvocationDeadlineMs);
-    resolveLate("late result");
-    let failure: unknown;
-    try { await invocation; }
-    catch (error) { failure = error; }
-    expect(getChainInvocationStopReason(failure)).toBe("deadline_reached");
-    expect(getChainOperationFailure(failure)?.error.code).toBe("chain_response_unavailable");
-    await lifecycle.close();
+    const invocation = lifecycle.run(new AbortController().signal, async (activeContext) => {
+      context = activeContext;
+      return await new Promise<string>((resolve) => { resolveLate = resolve; });
+    });
+    const observed = invocation.then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (reason: unknown) => ({ status: "rejected" as const, reason }),
+    );
+    let invocationSettled = false;
+    void observed.then(() => { invocationSettled = true; });
+
+    try {
+      await vi.advanceTimersByTimeAsync(89_999);
+      expect(context.signal.aborted).toBe(false);
+      expect(invocationSettled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(context.signal.aborted).toBe(true);
+      expect(invocationSettled).toBe(false);
+
+      resolveLate("late result");
+      const outcome = await observed;
+      expect(invocationSettled).toBe(true);
+      expect(outcome.status).toBe("rejected");
+      if (outcome.status !== "rejected") throw new TypeError("Expected a rejected invocation.");
+      expect(getChainInvocationStopReason(outcome.reason)).toBe("deadline_reached");
+      expect(getChainOperationFailure(outcome.reason)?.error.code)
+        .toBe("chain_response_unavailable");
+    } finally {
+      resolveLate?.("cleanup");
+      await observed;
+      await lifecycle.close();
+    }
   });
 
   it("keeps application close ahead of an already-reached invocation deadline", async () => {

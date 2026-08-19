@@ -1,4 +1,5 @@
-const rpcUrlByteLimit = 4_096;
+import { rpcTransportTargetByteLimit } from "./limits.js";
+
 const rawControlPattern = /[\u0000-\u001f\u007f]/u;
 const rpcUrlErrorMessage = "RPC URL is invalid.";
 
@@ -33,7 +34,7 @@ export const admitRpcTransportTarget = (input: unknown): RpcTransportTarget => {
   const exactUtf8 = utf8Encoder.encode(input);
   if (
     exactUtf8.length === 0 ||
-    exactUtf8.length > rpcUrlByteLimit ||
+    exactUtf8.length > rpcTransportTargetByteLimit ||
     utf8Decoder.decode(exactUtf8) !== input ||
     input.includes("#") ||
     rawControlPattern.test(input)

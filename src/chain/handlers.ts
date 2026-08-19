@@ -74,9 +74,9 @@ import {
   type NormalizedRpcReceipt,
   type NormalizedRpcTransaction,
 } from "./normalization.js";
+import { rpcConcurrencyLimit } from "./limits.js";
 import {
   isRpcExecutionRevertedError,
-  rpcConcurrencyLimit,
   type RpcCanonicalBlockReference,
   type RpcRequester,
 } from "./rpc.js";

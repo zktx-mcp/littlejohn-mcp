@@ -27,6 +27,14 @@ describe("RPC transport target admission", () => {
     expect(target).not.toHaveProperty("authorization");
   });
 
+  it("rejects a shorter JavaScript string whose UTF-8 encoding exceeds the limit", () => {
+    const multibyteOverLimitUrl = `${baseUrl}${"é".repeat(2_038)}a`;
+    expect(multibyteOverLimitUrl.length).toBeLessThan(4_096);
+    expect(Buffer.byteLength(multibyteOverLimitUrl, "utf8")).toBe(4_097);
+    expect(() => admitRpcTransportTarget(multibyteOverLimitUrl))
+      .toThrow("RPC URL is invalid.");
+  });
+
   it.each([
     ["username only", "https://user@rpc.example/", "user:"],
     ["password only", "https://:password@rpc.example/", ":password"],
