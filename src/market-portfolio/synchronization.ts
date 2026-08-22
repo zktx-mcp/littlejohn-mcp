@@ -26,8 +26,8 @@ import type {
   ReferenceMarketStore,
 } from "../runtime/reference-market-storage.js";
 import {
-  getReferenceMarketOperationFailure,
-  ReferenceMarketOperationError,
+  getMarketPortfolioOperationFailure,
+  MarketPortfolioOperationError,
 } from "./errors.js";
 
 interface SynchronizationJob {
@@ -63,7 +63,7 @@ const boundedSourceStopCodes = Object.freeze([
 
 const isBoundedSourceStop = (error: unknown): boolean => {
   const code = (
-    getChainOperationFailure(error) ?? getReferenceMarketOperationFailure(error)
+    getChainOperationFailure(error) ?? getMarketPortfolioOperationFailure(error)
   )?.error.code;
   return code !== undefined && boundedSourceStopCodes.some((candidate) => candidate === code);
 };
@@ -98,19 +98,19 @@ export class ReferenceFeedSynchronizationOwner {
     context: ChainInvocationContext;
   }>): Promise<ReferenceFeedSynchronizationResult> {
     if (this.#state !== "open") {
-      return Promise.reject(new ReferenceMarketOperationError("runtime_state_unavailable"));
+      return Promise.reject(new MarketPortfolioOperationError("runtime_state_unavailable"));
     }
     if (input.context.signal.aborted) {
-      return Promise.reject(new ReferenceMarketOperationError("request_aborted"));
+      return Promise.reject(new MarketPortfolioOperationError("request_aborted"));
     }
     if (!this.#feedIds.has(input.feedId) || input.latest.fact.feedId !== input.feedId) {
-      return Promise.reject(new ReferenceMarketOperationError("invalid_input"));
+      return Promise.reject(new MarketPortfolioOperationError("invalid_input"));
     }
     if (
       this.#pending.length + this.#activeSettlements.size >=
         referenceMarketLimits.synchronizationJobs
     ) {
-      return Promise.reject(new ReferenceMarketOperationError("runtime_busy"));
+      return Promise.reject(new MarketPortfolioOperationError("runtime_busy"));
     }
     return new Promise<ReferenceFeedSynchronizationResult>((resolve, reject) => {
       const job: SynchronizationJob = {
@@ -127,7 +127,7 @@ export class ReferenceFeedSynchronizationOwner {
         if (index < 0) return;
         this.#pending.splice(index, 1);
         job.removeAbortListener?.();
-        reject(new ReferenceMarketOperationError("request_aborted"));
+        reject(new MarketPortfolioOperationError("request_aborted"));
         this.#pump();
       };
       input.context.signal.addEventListener("abort", abortQueued, { once: true });
@@ -170,19 +170,19 @@ export class ReferenceFeedSynchronizationOwner {
   async #run(feedId: ReferenceFeedId, job: SynchronizationJob): Promise<ReferenceFeedSynchronizationResult> {
     const signal = job.context.signal;
     if (signal.aborted) {
-      throw new ReferenceMarketOperationError(
+      throw new MarketPortfolioOperationError(
         this.#owner.signal.aborted ? "runtime_state_unavailable" : "request_aborted",
       );
     }
     let current = this.#store.readFeed(feedId);
     if (current.integrityStatus === "conflict") {
-      throw new ReferenceMarketOperationError("source_inconsistent");
+      throw new MarketPortfolioOperationError("source_inconsistent");
     }
     if (
       current.retentionCutoffRoundId !== null &&
       BigInt(job.latest.fact.roundId) <= BigInt(current.retentionCutoffRoundId)
     ) {
-      throw new ReferenceMarketOperationError("source_inconsistent");
+      throw new MarketPortfolioOperationError("state_conflict");
     }
     const feed = findReferenceFeed(feedId);
     const retainAfter = unixSeconds(job.block.anchor.blockTimestamp) -
@@ -213,9 +213,9 @@ export class ReferenceFeedSynchronizationOwner {
     } catch (error) {
       let reason: unknown;
       if (this.#owner.signal.aborted) {
-        reason = new ReferenceMarketOperationError("runtime_state_unavailable");
+        reason = new MarketPortfolioOperationError("runtime_state_unavailable");
       } else if (job.context.signal.aborted) {
-        reason = new ReferenceMarketOperationError("request_aborted");
+        reason = new MarketPortfolioOperationError("request_aborted");
       } else {
         reason = error;
       }
@@ -246,7 +246,7 @@ export class ReferenceFeedSynchronizationOwner {
     });
     current = committed;
     if (current.integrityStatus === "conflict") {
-      throw new ReferenceMarketOperationError("source_inconsistent");
+      throw new MarketPortfolioOperationError("source_inconsistent");
     }
     if (stoppedByFailure !== undefined && !isBoundedSourceStop(stoppedByFailure.reason)) {
       throw stoppedByFailure.reason;
@@ -288,7 +288,7 @@ export class ReferenceFeedSynchronizationOwner {
     this.#owner.abort();
     for (const job of queued) {
       job.removeAbortListener?.();
-      job.reject(new ReferenceMarketOperationError("runtime_state_unavailable"));
+      job.reject(new MarketPortfolioOperationError("runtime_state_unavailable"));
     }
     void Promise.allSettled(admitted).then(() => {
       this.#state = "closed";

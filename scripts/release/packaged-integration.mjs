@@ -1877,23 +1877,28 @@ export const verifyPackagedIntegration = async (prepared) => {
       stockTokenContent.symbol !== fakeRpc.stockTokenMarket.symbol ||
       stockTokenContent.officialAsset?.member?.contractAddress !==
         fakeRpc.stockTokenMarket.tokenAddress ||
-      stockTokenContent.price?.status !== "current" ||
-      independentCanonicalJson(stockTokenContent.price?.value) !==
+      stockTokenContent.reference?.status !== "available" ||
+      stockTokenContent.reference.price?.status !== "current" ||
+      independentCanonicalJson(stockTokenContent.reference.price?.value) !==
         independentCanonicalJson(fakeRpc.stockTokenMarket.value) ||
-      stockTokenContent.price?.source?.fact?.feedId !== fakeRpc.stockTokenMarket.feedId ||
+      stockTokenContent.reference.price?.source?.fact?.feedId !== fakeRpc.stockTokenMarket.feedId ||
       stockTokenContent.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
-      stockTokenContent.oraclePaused?.value !== false ||
-      stockTokenContent.history?.status !== "partial" ||
-      !Array.isArray(stockTokenContent.history?.candles) ||
-      stockTokenContent.history.candles.length === 0 ||
+      stockTokenContent.reference.oraclePaused?.value !== false ||
+      stockTokenContent.reference.history?.status !== "partial" ||
+      !Array.isArray(stockTokenContent.reference.history?.candles) ||
+      stockTokenContent.reference.history.candles.length === 0 ||
       stockTokenContent.execution?.status !== "available" ||
       stockTokenContent.execution.source?.quoteToken?.symbol !== "USDG" ||
       stockTokenContent.execution.coverage?.status !== "partial" ||
+      stockTokenContent.execution.detail?.status !== "complete" ||
+      stockTokenContent.execution.detail?.observedCandleCount !== 3 ||
       !Array.isArray(stockTokenContent.execution.candles) ||
       stockTokenContent.execution.candles.length !== 3 ||
       stockTokenContent.execution.candles.some((candle) =>
         candle.token !== fakeRpc.stockTokenMarket.tokenAddress ||
         Date.parse(candle.intervalEnd) - Date.parse(candle.intervalStart) !== 60_000) ||
+      ["mapping", "oraclePaused", "price", "history", "warnings", "limitations"]
+        .some((field) => Object.hasOwn(stockTokenContent, field)) ||
       independentCanonicalJson(stockTokenContent.execution).toLowerCase().includes("github")
     ) throw new TypeError("Packaged Stock Token market result is invalid.");
     const stockTokenCli = await runCommand(process.execPath, [

@@ -16,7 +16,7 @@ import {
 import {
   extendProtocolRuntimeSupportManifest,
   type ProtocolRuntimeSupportManifest,
-  type ReferenceMarketRuntimeSupportManifest,
+  type MarketPortfolioRuntimeSupportManifest,
 } from "../../src/runtime/support-manifest.js";
 import {
   createChainInvocationLifecycle,
@@ -288,7 +288,7 @@ export const createUniswapV2DirectQuoteSuccess = (
 };
 
 export const extendUniswapV2ProtocolHarnessManifest = (
-  parent: ReferenceMarketRuntimeSupportManifest,
+  parent: MarketPortfolioRuntimeSupportManifest,
 ): ProtocolRuntimeSupportManifest => extendProtocolRuntimeSupportManifest(
   parent,
   readProtocolSupportExtension(uniswapV2ProtocolHarnessSupportExtension()),

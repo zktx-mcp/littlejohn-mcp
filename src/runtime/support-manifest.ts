@@ -237,7 +237,7 @@ type ManifestScope =
   | "chain"
   | "token_catalog"
   | "account_assets"
-  | "reference_market"
+  | "market_portfolio"
   | "protocols"
   | "interfaces";
 declare const runtimeSupportManifestType: unique symbol;
@@ -252,7 +252,7 @@ export type ChainRuntimeSupportManifest = RuntimeSupportManifest<"chain">;
 export type ProtocolRuntimeSupportManifest = RuntimeSupportManifest<"protocols">;
 export type TokenCatalogRuntimeSupportManifest = RuntimeSupportManifest<"token_catalog">;
 export type AccountAssetRuntimeSupportManifest = RuntimeSupportManifest<"account_assets">;
-export type ReferenceMarketRuntimeSupportManifest = RuntimeSupportManifest<"reference_market">;
+export type MarketPortfolioRuntimeSupportManifest = RuntimeSupportManifest<"market_portfolio">;
 export type InterfaceRuntimeSupportManifest = RuntimeSupportManifest<"interfaces">;
 
 interface ManifestState {
@@ -440,19 +440,19 @@ export const assertChainRuntimeSupportManifestExtension = (
 ): void => assertScopedChild(parent, "wallet", extension, "chain");
 
 export const assertProtocolRuntimeSupportManifestExtension = (
-  parent: ReferenceMarketRuntimeSupportManifest,
+  parent: MarketPortfolioRuntimeSupportManifest,
   extension: ProtocolRuntimeSupportManifest,
-): void => assertScopedChild(parent, "reference_market", extension, "protocols");
+): void => assertScopedChild(parent, "market_portfolio", extension, "protocols");
 
 export const assertInterfaceRuntimeSupportManifestExtension = (
   parent: ProtocolRuntimeSupportManifest,
   extension: InterfaceRuntimeSupportManifest,
 ): void => assertScopedChild(parent, "protocols", extension, "interfaces");
 
-export const assertReferenceMarketRuntimeSupportManifestExtension = (
+export const assertMarketPortfolioRuntimeSupportManifestExtension = (
   parent: AccountAssetRuntimeSupportManifest,
-  extension: ReferenceMarketRuntimeSupportManifest,
-): void => assertScopedChild(parent, "account_assets", extension, "reference_market");
+  extension: MarketPortfolioRuntimeSupportManifest,
+): void => assertScopedChild(parent, "account_assets", extension, "market_portfolio");
 
 export const assertAccountAssetRuntimeSupportManifestExtension = (
   parent: TokenCatalogRuntimeSupportManifest,
@@ -493,11 +493,11 @@ export const extendChainRuntimeSupportManifest = (
 };
 
 export const extendProtocolRuntimeSupportManifest = (
-  parent: ReferenceMarketRuntimeSupportManifest,
+  parent: MarketPortfolioRuntimeSupportManifest,
   extensionInput: RuntimeProtocolSupportManifestExtensionInput,
 ): ProtocolRuntimeSupportManifest => {
   const parentState = manifestState(parent);
-  if (parentState.scope !== "reference_market") {
+  if (parentState.scope !== "market_portfolio") {
     throw new TypeError("Protocol support requires the completed application manifest.");
   }
   const extension = createManifest("protocols", {
@@ -541,19 +541,19 @@ export const extendInterfaceRuntimeSupportManifest = (
   return extension;
 };
 
-export const extendReferenceMarketRuntimeSupportManifest = (
+export const extendMarketPortfolioRuntimeSupportManifest = (
   parent: AccountAssetRuntimeSupportManifest,
   extensionInput: RuntimeSupportManifestExtensionInput,
-): ReferenceMarketRuntimeSupportManifest => {
+): MarketPortfolioRuntimeSupportManifest => {
   const parentState = manifestState(parent);
   if (parentState.scope !== "account_assets") {
-    throw new TypeError("Reference market support requires the account assets manifest.");
+    throw new TypeError("Market portfolio support requires the account assets manifest.");
   }
-  const extension = createManifest("reference_market", {
+  const extension = createManifest("market_portfolio", {
     ...parentState.snapshot,
     capabilities: applyCapabilityExtension(parentState.snapshot, extensionInput),
-  }, parent) as ReferenceMarketRuntimeSupportManifest;
-  assertReferenceMarketRuntimeSupportManifestExtension(parent, extension);
+  }, parent) as MarketPortfolioRuntimeSupportManifest;
+  assertMarketPortfolioRuntimeSupportManifestExtension(parent, extension);
   return extension;
 };
 

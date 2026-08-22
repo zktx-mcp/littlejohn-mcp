@@ -20,7 +20,7 @@ import {
   createStdioMcp,
   type McpServerRuntimePort,
 } from "../../src/interfaces/mcp.js";
-import { referenceMarketInterfaceBindings } from "../../src/interfaces/identities.js";
+import { marketPortfolioInterfaceBindings } from "../../src/interfaces/identities.js";
 import type { PresentationSnapshotStore } from "../../src/runtime/presentation-snapshot.js";
 import {
   RuntimeOperationError,
@@ -473,7 +473,7 @@ describe("MCP stdio lifecycle ownership", () => {
     const owner = createStdioMcp(new HeldRuntime(store), input, output, appResource);
     const client = await connectClient(owner, input, output);
     const call = client.callTool({
-      name: referenceMarketInterfaceBindings.stockTokenMarket.mcp.name,
+      name: marketPortfolioInterfaceBindings.stockTokenMarket.mcp.name,
       arguments: { symbol: "P" },
     });
     void call.catch(() => undefined);

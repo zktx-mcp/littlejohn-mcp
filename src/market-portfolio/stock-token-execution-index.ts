@@ -10,9 +10,9 @@ import {
   isWellFormedText,
   jsonObject,
   keccak256FromHex,
+  maximumMarketTimeWindowMilliseconds,
   productChainId,
   productChainNumericId,
-  referenceHistoryWindowDefinitions,
   sha256Bytes,
   unsignedDecimalSchema,
   utcTimestampSchema,
@@ -627,13 +627,14 @@ export type StockTokenExecutionIndexUnavailableReason = z.infer<typeof stockToke
 export const stockTokenExecutionCoverageLimitationSchema = z.enum([
   "before_published_coverage",
   "after_published_coverage",
-  "stale_index",
-  "candle_capacity",
 ]);
 export type StockTokenExecutionCoverageLimitation = z.infer<typeof stockTokenExecutionCoverageLimitationSchema>;
+export const stockTokenExecutionDetailLimitationSchema = z.literal("candle_capacity");
+export type StockTokenExecutionDetailLimitation = z.infer<
+  typeof stockTokenExecutionDetailLimitationSchema
+>;
 
-const executionRequestWindowMilliseconds =
-  referenceHistoryWindowDefinitions["30d"].windowMilliseconds;
+const executionRequestWindowMilliseconds = maximumMarketTimeWindowMilliseconds;
 const utcDayMilliseconds = 86_400_000;
 const shortestUtcMonthMilliseconds = 28 * utcDayMilliseconds;
 export const stockTokenExecutionSeriesLimits = Object.freeze({
@@ -683,7 +684,11 @@ const executionSeriesAvailableSchema = jsonObject({
       .min(1).max(stockTokenExecutionSeriesLimits.coverageIntervals),
     limitations: z.array(stockTokenExecutionCoverageLimitationSchema)
       .max(stockTokenExecutionCoverageLimitationSchema.options.length),
+  }).strict(),
+  detail: jsonObject({
+    status: z.enum(["complete", "limited"]),
     observedCandleCount: z.number().int().nonnegative().max(stockTokenExecutionSeriesLimits.observedCandles),
+    limitations: z.array(stockTokenExecutionDetailLimitationSchema).max(1),
   }).strict(),
   candles: z.array(stockTokenExecutionCandleSchema).max(stockTokenExecutionSeriesLimits.candles),
 }).strict();
@@ -715,13 +720,26 @@ export const stockTokenExecutionSeriesSchema = executionSeriesUnionSchema.superR
     value.source.quoteToken.address !== asset.pair.quoteAsset.address ||
     value.source.quoteToken.decimals !== asset.pair.quoteAsset.decimals
   ) context.addIssue({ code: "custom", message: "Execution series source differs from its pair." });
+  const projectionLengthsMatch = value.artifact.days.length === value.coverage.intervals.length;
   if (
     value.artifact.months.some((entry, index) => index > 0 &&
       entry.month <= value.artifact.months[index - 1]!.month) ||
     value.artifact.days.some((entry, index) => index > 0 &&
       entry.day <= value.artifact.days[index - 1]!.day) ||
-    value.artifact.days.length !== value.coverage.intervals.length
+    !projectionLengthsMatch
   ) context.addIssue({ code: "custom", message: "Execution series artifact projection is inconsistent." });
+  if (!projectionLengthsMatch) return;
+  for (let index = 0; index < value.coverage.intervals.length; index += 1) {
+    const day = value.artifact.days[index]!;
+    const interval = value.coverage.intervals[index]!;
+    const dayStart = `${day.day}T00:00:00.000Z`;
+    const dayUntil = new Date(Date.parse(dayStart) + utcDayMilliseconds).toISOString();
+    if (
+      interval.fromTimestamp < dayStart || interval.untilTimestamp > dayUntil ||
+      interval.untilTimestamp <= value.requestedStart || interval.fromTimestamp >= value.requestedEnd ||
+      interval.untilTimestamp > value.artifact.coveredUntilTimestamp
+    ) context.addIssue({ code: "custom", message: "Execution series artifact coverage is inconsistent." });
+  }
   for (let index = 1; index < value.coverage.intervals.length; index += 1) {
     const previous = value.coverage.intervals[index - 1]!;
     const current = value.coverage.intervals[index]!;
@@ -761,19 +779,17 @@ export const stockTokenExecutionSeriesSchema = executionSeriesUnionSchema.superR
   }
   const stale = Date.parse(value.requestedEnd) - Date.parse(value.artifact.coveredUntilTimestamp) >
     stockTokenExecutionSeriesLimits.freshnessMilliseconds;
-  if (stale) expected.add("stale_index");
-  if (value.coverage.observedCandleCount > stockTokenExecutionSeriesLimits.candles) {
-    expected.add("candle_capacity");
-  }
   const ordered = stockTokenExecutionCoverageLimitationSchema.options.filter((limitation) =>
     expected.has(limitation));
+  const detailLimited = value.detail.observedCandleCount > stockTokenExecutionSeriesLimits.candles;
   if (
     value.freshness !== (stale ? "stale" : "current") ||
     value.coverage.limitations.join("\0") !== ordered.join("\0") ||
-    value.coverage.status !== (ordered.some((limitation) => limitation !== "stale_index")
-      ? "partial" : "complete") ||
-    (value.coverage.observedCandleCount <= stockTokenExecutionSeriesLimits.candles
-      ? value.coverage.observedCandleCount !== value.candles.length
+    value.coverage.status !== (ordered.length === 0 ? "complete" : "partial") ||
+    value.detail.status !== (detailLimited ? "limited" : "complete") ||
+    value.detail.limitations.join("\0") !== (detailLimited ? "candle_capacity" : "") ||
+    (value.detail.observedCandleCount <= stockTokenExecutionSeriesLimits.candles
+      ? value.detail.observedCandleCount !== value.candles.length
       : value.candles.length !== stockTokenExecutionSeriesLimits.candles)
   ) context.addIssue({ code: "custom", message: "Execution series derived state is inconsistent." });
 });
@@ -922,8 +938,6 @@ export const createStockTokenExecutionSeries = (input: Readonly<{
   const limitations = new Set<StockTokenExecutionCoverageLimitation>();
   if (stateIntersectionFrom > request.requestedStart) limitations.add("before_published_coverage");
   if (stateIntersectionUntil < request.requestedEnd) limitations.add("after_published_coverage");
-  if (stale) limitations.add("stale_index");
-  if (capacityLimited) limitations.add("candle_capacity");
   const orderedLimitations = limitationOrder.filter((limitation) => limitations.has(limitation));
   const quote = asset.pair.quoteAsset;
   return deepFreezeValue(stockTokenExecutionSeriesSchema.parse({
@@ -948,10 +962,14 @@ export const createStockTokenExecutionSeries = (input: Readonly<{
     },
     freshness: stale ? "stale" : "current",
     coverage: {
-      status: orderedLimitations.some((limitation) => limitation !== "stale_index") ? "partial" : "complete",
+      status: orderedLimitations.length === 0 ? "complete" : "partial",
       intervals,
       limitations: orderedLimitations,
+    },
+    detail: {
+      status: capacityLimited ? "limited" : "complete",
       observedCandleCount: allCandles.length,
+      limitations: capacityLimited ? ["candle_capacity"] : [],
     },
     candles,
   }));

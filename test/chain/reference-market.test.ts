@@ -177,6 +177,7 @@ const aaplMember = assertOfficialAssetSourceMember({
 
 class StockTokenRequester implements RpcRequester {
   readonly references: unknown[] = [];
+  readonly targets: string[] = [];
 
   constructor(
     private readonly paused: boolean,
@@ -194,6 +195,7 @@ class StockTokenRequester implements RpcRequester {
     }
     this.references.push(params[params.length - 1]);
     const address = params[0] as string;
+    if (typeof address === "string") this.targets.push(address);
     if (method === "eth_getStorageAt") {
       return `0x${"0".repeat(24)}${stockFactoryAdmissionManifest.implementationAddress.slice(2)}`;
     }
@@ -206,6 +208,7 @@ class StockTokenRequester implements RpcRequester {
     }
     if (method !== "eth_call") throw new Error(`Unexpected RPC method: ${method}`);
     const call = params[0] as { readonly to: string; readonly data: string };
+    this.targets.push(call.to);
     if (call.to === stockFactoryAdmissionManifest.proxyAddress) {
       return `0x${"0".repeat(24)}${aaplMember.contractAddress.slice(2)}`;
     }
@@ -301,10 +304,10 @@ const createPort = (
         port.readHistoryAtBlock({ ...input, block }, context));
     },
     stockToken(
-      input: Omit<Parameters<ReferenceMarketChainReadPort["readStockTokenAtBlock"]>[0], "block">,
+      input: Omit<Parameters<ReferenceMarketChainReadPort["readStockTokenReferenceAtBlock"]>[0], "block">,
     ) {
       return runAtBlock((block, context) =>
-        port.readStockTokenAtBlock({ ...input, block }, context));
+        port.readStockTokenReferenceAtBlock({ ...input, block }, context));
     },
   };
 };
@@ -1350,7 +1353,7 @@ describe("reference market chain reads", () => {
     await active.lifecycle.close();
   });
 
-  it("admits StockFactory, pause state, and latest feed at one exact block", async () => {
+  it("admits pause state and the latest reference observation at one exact block", async () => {
     const requester = new StockTokenRequester(true);
     const active = createPort(requester);
     await expect(active.stockToken({
@@ -1359,14 +1362,11 @@ describe("reference market chain reads", () => {
     })).resolves.toMatchObject({
       status: "observed",
       oraclePaused: true,
-      stockFactory: {
-        assetUid: aaplMember.assetUid,
-        contractAddress: aaplMember.contractAddress,
-        block: currentBlock,
-      },
       latest: { fact: { feedId: aaplFeed.feedId } },
     });
     expect(requester.references.length).toBeGreaterThan(0);
+    expect(requester.targets).not.toContain(stockFactoryAdmissionManifest.proxyAddress);
+    expect(requester.targets).not.toContain(stockFactoryAdmissionManifest.implementationAddress);
     for (const reference of requester.references) {
       expect(reference).toEqual({ blockHash, requireCanonical: true });
     }
@@ -1380,7 +1380,8 @@ describe("reference market chain reads", () => {
       member: aaplMember,
       feedId: aaplFeed.feedId,
     })).resolves.toMatchObject({
-      status: "market_observation_unavailable",
+      status: "unavailable",
+      reason: "no_valid_observation",
       oraclePaused: false,
     });
     await expect(active.stockToken({ member: aaplMember, feedId: "eth_usd" })).rejects.toThrow();

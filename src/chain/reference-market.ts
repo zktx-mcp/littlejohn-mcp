@@ -26,10 +26,7 @@ import {
 } from "../core/index.js";
 import {
   assertOfficialAssetSourceMember,
-  stockFactoryVerificationSchema,
   type OfficialAssetSourceMember,
-  type StockFactoryVerification,
-  type StockFactoryVerificationResult,
 } from "../registry/official-asset-contract.js";
 import {
   decodeAbiBooleanResult,
@@ -52,7 +49,6 @@ import {
 } from "./invocation-lifecycle.js";
 import { rpcConcurrencyLimit } from "./limits.js";
 import { normalizeRpcBytes, normalizeRpcRuntimeCode } from "./normalization.js";
-import { createOfficialAssetChainReadPort } from "./official-assets.js";
 import {
   isRpcBatchRejectedError,
   isRpcExecutionRevertedError,
@@ -146,29 +142,24 @@ export interface ReferenceMarketChainReadPort {
     }>,
     context: ChainInvocationContext,
   ): Promise<ReferenceHistoryTraversal>;
-  readonly readStockTokenAtBlock: (
+  readonly readStockTokenReferenceAtBlock: (
     input: Readonly<{
       member: OfficialAssetSourceMember;
       feedId: ReferenceFeedId;
       block: CanonicalBlock;
     }>,
     context: ChainInvocationContext,
-  ) => Promise<StockTokenChainRead>;
+  ) => Promise<StockTokenReferenceChainRead>;
 }
 
-export type StockTokenChainRead =
+export type StockTokenReferenceChainRead =
   | Readonly<{
-      status: "stock_factory_unavailable";
-      stockFactory: Extract<StockFactoryVerificationResult, { readonly status: "unavailable" }>;
-    }>
-  | Readonly<{
-      status: "market_observation_unavailable";
-      stockFactory: StockFactoryVerification;
+      status: "unavailable";
+      reason: "no_valid_observation";
       oraclePaused: boolean;
     }>
   | Readonly<{
       status: "observed";
-      stockFactory: StockFactoryVerification;
       oraclePaused: boolean;
       latest: ReferenceRoundObservation;
     }>;
@@ -500,11 +491,6 @@ export const createReferenceMarketChainReadPort = (dependencies: Dependencies): 
     typeof dependencies.encoder?.getRoundData !== "function" ||
     typeof dependencies.lifecycle?.run !== "function"
   ) throw new TypeError("Reference market chain dependencies are invalid.");
-  const officialAssetReads = createOfficialAssetChainReadPort({
-    rpc: dependencies.rpc,
-    chainId: dependencies.chainId,
-    lifecycle: dependencies.lifecycle,
-  });
   const port: ReferenceMarketChainReadPort = {
     async resolveCurrentBlock(context: ChainInvocationContext): Promise<CanonicalBlock> {
       dependencies.lifecycle.assertActiveContext(context);
@@ -777,7 +763,7 @@ export const createReferenceMarketChainReadPort = (dependencies: Dependencies): 
         failure,
       });
     },
-    async readStockTokenAtBlock(input, context) {
+    async readStockTokenReferenceAtBlock(input, context) {
       dependencies.lifecycle.assertActiveContext(context);
       const block = requireBlock(dependencies.chainId, input.block, context);
       const member = assertOfficialAssetSourceMember(input.member);
@@ -793,15 +779,6 @@ export const createReferenceMarketChainReadPort = (dependencies: Dependencies): 
         throw new TypeError("Stock Token feed does not match the official asset.");
       }
       try {
-        const stockFactory = await officialAssetReads.verifyAtBlock(
-          member,
-          input.block,
-          context,
-        );
-        if (stockFactory.status === "unavailable") {
-          return Object.freeze({ status: "stock_factory_unavailable", stockFactory });
-        }
-        const admittedStockFactory = stockFactoryVerificationSchema.parse(stockFactory.verification);
         const oraclePaused = await readStockTokenOraclePause(
           dependencies,
           member,
@@ -817,14 +794,13 @@ export const createReferenceMarketChainReadPort = (dependencies: Dependencies): 
         );
         if (latest === null) {
           return Object.freeze({
-            status: "market_observation_unavailable" as const,
-            stockFactory: admittedStockFactory,
+            status: "unavailable" as const,
+            reason: "no_valid_observation" as const,
             oraclePaused,
           });
         }
         return Object.freeze({
           status: "observed",
-          stockFactory: admittedStockFactory,
           oraclePaused,
           latest,
         });

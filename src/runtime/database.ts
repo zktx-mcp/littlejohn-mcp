@@ -99,7 +99,7 @@ import {
   referenceWatchlistDirectActionSchema,
   type ReferenceWatchlistOperation,
 } from "../market-portfolio/contracts.js";
-import { ReferenceMarketOperationError } from "../market-portfolio/errors.js";
+import { MarketPortfolioOperationError } from "../market-portfolio/errors.js";
 import type {
   AccountTokenSelectionReadPort,
   AccountTokenSelectionStore,
@@ -2695,7 +2695,7 @@ export class ProductDatabase {
           return existing;
         }
         if (Date.parse(completedAt) >= Date.parse(action.review.actionExpiresAt)) {
-          throw new ReferenceMarketOperationError("watchlist_review_expired");
+          throw new MarketPortfolioOperationError("watchlist_review_expired");
         }
         this.assertCurrentWalletConnection(account, expectedConnectionRevision);
         const current = readReferenceWatchlistRaw(this.#database, profile.profileId, account);
@@ -2825,7 +2825,7 @@ export class ProductDatabase {
         return decodeReferenceWatchlistOperationRow(storedRows[0], profile.profileId);
       });
     } catch (error) {
-      if (error instanceof ReferenceMarketOperationError) throw error;
+      if (error instanceof MarketPortfolioOperationError) throw error;
       throw storageError(error);
     }
   }

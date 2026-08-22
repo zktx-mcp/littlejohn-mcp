@@ -2,6 +2,7 @@ import {
   compareExactRationals,
   deriveReferencePairValue,
   findReferenceFeed,
+  marketTimeWindowDefinitions,
   parseUtcTimestamp,
   referenceCandleSchema,
   referenceHistoryWindowDefinitions,
@@ -14,7 +15,7 @@ import {
   type ReferenceFeedId,
   type ReferenceHistorySuccess,
   type ReferenceHistoryTraversalReport,
-  type ReferenceHistoryWindow,
+  type MarketTimeWindow,
   type ReferencePairManifestEntry,
   type ReferenceRoundObservation,
   type UtcTimestamp,
@@ -120,12 +121,13 @@ export interface ReferenceCandleSeries {
 
 const createCandleSeries = (input: Readonly<{
   points: readonly PricePoint[];
-  window: ReferenceHistoryWindow;
+  window: MarketTimeWindow;
   block: ChainAnchor;
 }>): ReferenceCandleSeries => {
   const requestedEnd = Date.parse(input.block.blockTimestamp);
   const windowDefinition = referenceHistoryWindowDefinitions[input.window];
-  const requestedStart = requestedEnd - windowDefinition.windowMilliseconds;
+  const requestedStart = requestedEnd -
+    marketTimeWindowDefinitions[input.window].durationMilliseconds;
   const bucketSize = windowDefinition.bucketMilliseconds;
   const firstBucket = Math.ceil(requestedStart / bucketSize) * bucketSize;
   const candles: ReferenceCandle[] = [];
@@ -187,13 +189,14 @@ const createCandleSeries = (input: Readonly<{
 
 export const createDirectReferenceCandleSeries = (input: Readonly<{
   feedId: ReferenceFeedId;
-  window: ReferenceHistoryWindow;
+  window: MarketTimeWindow;
   block: ChainAnchor;
   snapshot: ReferenceFeedCacheSnapshot;
 }>): ReferenceCandleSeries => {
   const requestedEnd = Date.parse(input.block.blockTimestamp);
   const windowDefinition = referenceHistoryWindowDefinitions[input.window];
-  const requestedStart = requestedEnd - windowDefinition.windowMilliseconds;
+  const requestedStart = requestedEnd -
+    marketTimeWindowDefinitions[input.window].durationMilliseconds;
   const firstBucket = Math.ceil(requestedStart / windowDefinition.bucketMilliseconds) *
     windowDefinition.bucketMilliseconds;
   return createCandleSeries({
@@ -205,14 +208,15 @@ export const createDirectReferenceCandleSeries = (input: Readonly<{
 
 export const createReferenceHistory = (input: Readonly<{
   pair: ReferencePairManifestEntry;
-  window: ReferenceHistoryWindow;
+  window: MarketTimeWindow;
   block: ChainAnchor;
   snapshots: ReadonlyMap<ReferenceFeedId, ReferenceFeedCacheSnapshot>;
   reports: ReadonlyMap<ReferenceFeedId, ReferenceHistoryTraversalReport>;
 }>): ReferenceHistorySuccess => {
   const requestedEnd = Date.parse(input.block.blockTimestamp);
   const windowDefinition = referenceHistoryWindowDefinitions[input.window];
-  const requestedStart = requestedEnd - windowDefinition.windowMilliseconds;
+  const requestedStart = requestedEnd -
+    marketTimeWindowDefinitions[input.window].durationMilliseconds;
   const firstBucket = Math.ceil(requestedStart / windowDefinition.bucketMilliseconds) *
     windowDefinition.bucketMilliseconds;
   const series = createCandleSeries({

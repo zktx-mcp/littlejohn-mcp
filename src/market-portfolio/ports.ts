@@ -1,5 +1,6 @@
 import type {
   ChainInvocationPort,
+  OfficialAssetChainReadPort,
   ReferenceMarketChainReadPort,
 } from "../chain/index.js";
 import type {
@@ -27,7 +28,7 @@ import type {
 } from "./stock-token-market.js";
 import type { StockTokenExecutionIndexReadPort } from "./stock-token-execution-index.js";
 
-export interface ReferenceMarketApplicationPort {
+export interface MarketPortfolioApplicationPort {
   price(input: ReferencePriceInput, signal?: AbortSignal): Promise<ReferencePriceSuccess | ApplicationFailure>;
   history(input: ReferenceHistoryInput, signal?: AbortSignal): Promise<ReferenceHistorySuccess | ApplicationFailure>;
   stockTokenMarket(
@@ -49,12 +50,13 @@ export interface ReferenceMarketApplicationPort {
   ): Promise<ReferenceWatchlistOperation | ApplicationFailure>;
 }
 
-export interface ReferenceMarketApplicationDependencies {
+export interface MarketPortfolioApplicationDependencies {
   readonly chainInvocations: ChainInvocationPort;
   readonly chain: ReferenceMarketChainReadPort;
   readonly store: ReferenceMarketStore;
   readonly activeWallet: ActiveWalletReadPort;
   readonly officialAssets: OfficialAssetSynchronizationPort;
+  readonly officialAssetReads: OfficialAssetChainReadPort;
   readonly stockTokenExecutionIndex: StockTokenExecutionIndexReadPort;
   readonly clock: CanonicalClock;
 }

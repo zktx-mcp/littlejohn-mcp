@@ -11,7 +11,7 @@ import {
   type ReadCapabilityDefinition,
 } from "../../core/client.js";
 import { accountAssetApplicationContracts } from "../../account-assets/client.js";
-import { referenceMarketApplicationContracts } from "../../market-portfolio/contracts.js";
+import { marketPortfolioApplicationContracts } from "../../market-portfolio/contracts.js";
 import {
   tokenCatalogApplicationContracts,
   tokenInspectCapability,
@@ -93,32 +93,32 @@ export const presentationContracts = Object.freeze({
   ),
   contractAnalysis: capabilityEntry(contractInspectCapability, "Contract analysis"),
   referenceHistory: applicationEntry(
-    referenceMarketApplicationContracts.history,
+    marketPortfolioApplicationContracts.history,
     "immutable_result",
     "Reference price history",
   ),
   referencePrice: applicationEntry(
-    referenceMarketApplicationContracts.price,
+    marketPortfolioApplicationContracts.price,
     "immutable_result",
     "Reference price",
   ),
   stockTokenMarket: applicationEntry(
-    referenceMarketApplicationContracts.stockTokenMarket,
+    marketPortfolioApplicationContracts.stockTokenMarket,
     "immutable_result",
     "Stock Token market",
   ),
   referenceWatchlist: applicationEntry(
-    referenceMarketApplicationContracts.watchlist,
+    marketPortfolioApplicationContracts.watchlist,
     "immutable_result",
     "Reference watchlist",
   ),
   referenceWatchlistOperation: applicationEntry(
-    referenceMarketApplicationContracts.operation,
+    marketPortfolioApplicationContracts.operation,
     "operation",
     "Reference watchlist change",
   ),
   referenceWatchlistReview: applicationEntry(
-    referenceMarketApplicationContracts.watchlistChangeReview,
+    marketPortfolioApplicationContracts.watchlistChangeReview,
     "review",
     "Reference watchlist change",
   ),

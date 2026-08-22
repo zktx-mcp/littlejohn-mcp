@@ -99,5 +99,5 @@ export type {
   ReferenceHistoryTraversal,
   ReferenceMarketCallEncoder,
   ReferenceMarketChainReadPort,
-  StockTokenChainRead,
+  StockTokenReferenceChainRead,
 } from "./reference-market.js";

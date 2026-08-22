@@ -1,4 +1,10 @@
 export {
+  marketTimeWindowDefinitions,
+  marketTimeWindowSchema,
+  maximumMarketTimeWindowMilliseconds,
+} from "./market-time-window.js";
+export type { MarketTimeWindow } from "./market-time-window.js";
+export {
   assetIdentitySchema,
   canonicalAmountSchema,
   decimalsStateSchema,
@@ -157,7 +163,6 @@ export {
   referenceHistoryTraversalReportSchema,
   referenceHistoryRetentionMilliseconds,
   referenceHistoryWindowDefinitions,
-  referenceHistoryWindowSchema,
   referenceMarketLimits,
   referenceMarketMappingEvidence,
   referenceMarketMappingEvidenceSchema,
@@ -221,7 +226,6 @@ export type {
   ReferenceHistoryLimitationCode,
   ReferenceHistorySuccess,
   ReferenceHistoryTraversalReport,
-  ReferenceHistoryWindow,
   ReferenceHistoryWorkPlan,
   ReferenceHistoryWorkSegment,
   ReferenceMarketManifest,

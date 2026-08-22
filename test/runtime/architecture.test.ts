@@ -3305,10 +3305,16 @@ void import("./" + "default-stock-tokens.js");
 
     expect(declarationIdentifiers("referenceMarketMappingEvidenceSchema"))
       .toContain("referenceMarketMappingEvidenceDefinition");
-    expect(declarationIdentifiers("referenceHistoryWindowSchema"))
-      .toContain("referenceHistoryWindowIds");
     expect(declarationIdentifiers("referenceHistoryWindowDefinitions"))
       .toContain("referenceHistoryWindowDefinitionRecord");
+    const timeWindowOwner = await parseSource(resolve(sourceRoot, "core/market-time-window.ts"));
+    const marketTimeWindowSchemaDeclaration = sourceDescendants(timeWindowOwner)
+      .find((node): node is ts.VariableDeclaration =>
+        ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) &&
+        node.name.text === "marketTimeWindowSchema");
+    expect(marketTimeWindowSchemaDeclaration).toBeDefined();
+    expect(marketTimeWindowSchemaDeclaration?.getText(timeWindowOwner))
+      .toContain("marketTimeWindowDefinitionEntries");
     const historyProjection = sourceDescendants(owner).find((node): node is ts.ForOfStatement =>
       ts.isForOfStatement(node) &&
       node.expression.getText(owner) === "referenceHistoryWindowDefinitionEntries");
@@ -3985,13 +3991,13 @@ void createEscapedRuntimeStateResetRequiredError;
     expect(composition).not.toContain("createTokenCatalogConsumerPorts(");
   });
 
-  it("passes only the cumulative support manifest into the reference-market stage", async () => {
+  it("passes only the cumulative support manifest into the market-portfolio stage", async () => {
     const file = resolve("src/runtime/composition.ts");
     const source = await readFile(file, "utf8");
     const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
     let stageType: ts.TypeAliasDeclaration | undefined;
     const visit = (node: ts.Node): void => {
-      if (ts.isTypeAliasDeclaration(node) && node.name.text === "ReferenceMarketOwnerApplicationStage") {
+      if (ts.isTypeAliasDeclaration(node) && node.name.text === "MarketPortfolioOwnerApplicationStage") {
         stageType = node;
       }
       ts.forEachChild(node, visit);
@@ -4001,6 +4007,41 @@ void createEscapedRuntimeStateResetRequiredError;
     if (stageType === undefined || !ts.isFunctionTypeNode(stageType.type)) return;
     expect(stageType.type.parameters[3]?.type?.getText(parsed)).toBe("AccountAssetRuntimeSupportManifest");
     expect(stageType.getText(parsed)).not.toContain("AccountAssetOwnerHandoff");
+  });
+
+  it("removes the unreleased shared reference-owner names and combined Stock Token read path", async () => {
+    const productSources = await collectProductSourceFiles(repositoryRoot);
+    const sources = await Promise.all(productSources.map(async (file) => ({
+      file,
+      source: await readFile(file, "utf8"),
+    })));
+    for (const obsolete of [
+      "ReferenceMarketApplication",
+      "ReferenceMarketApplicationPort",
+      "ReferenceMarketApplicationDependencies",
+      "ReferenceMarketOwnerApplication",
+      "ReferenceMarketOperationError",
+      "referenceMarketApplicationContracts",
+      "referenceMarketErrorRegistry",
+      "reportReferenceMarketFailure",
+      "readStockTokenAtBlock",
+      "StockTokenChainRead",
+      "resolveStockTokenMarketAsset",
+      "stockTokenHistoryInterval",
+      "stale_index",
+    ]) {
+      expect(sources.filter((entry) => entry.source.includes(obsolete)), obsolete).toEqual([]);
+    }
+    expect(productSources).not.toContain(resolve(sourceRoot, "interfaces/reference-market-cli.ts"));
+    expect(productSources).not.toContain(resolve(sourceRoot, "interfaces/reference-market-http.ts"));
+    expect(await readFile(resolve(sourceRoot, "chain/reference-market.ts"), "utf8"))
+      .not.toContain("createOfficialAssetChainReadPort");
+    const executionIndex = await readFile(
+      resolve(sourceRoot, "market-portfolio/stock-token-execution-index.ts"),
+      "utf8",
+    );
+    expect(executionIndex).toContain("maximumMarketTimeWindowMilliseconds");
+    expect(executionIndex).not.toContain("referenceHistoryWindowDefinitions");
   });
 
   it("keeps chain invocation, opaque-block, observation, and token-inspection authority in their exact owners", async () => {

@@ -15,7 +15,7 @@ import {
   declaredMcpToolNames,
   interfaceReadCapabilityRegistry,
   readInterfaceIdentities,
-  referenceMarketInterfaceBindingList,
+  marketPortfolioInterfaceBindingList,
   tokenCatalogInterfaceBindingList,
 } from "../../src/interfaces/identities.js";
 import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
@@ -33,10 +33,10 @@ import { createControlCredentialVerifier, loadOrCreateControlCredential } from "
 import { createRuntimeRouteRegistry } from "../../src/runtime/http-routing.js";
 import { runtimePaths } from "../../src/runtime/paths.js";
 import {
-  referenceMarketApplicationContracts,
-  referenceMarketErrorRegistry,
-  referenceMarketInterfaceErrorMappings,
-  type ReferenceMarketApplicationPort,
+  marketPortfolioApplicationContracts,
+  marketPortfolioErrorRegistry,
+  marketPortfolioInterfaceErrorMappings,
+  type MarketPortfolioApplicationPort,
 } from "../../src/market-portfolio/index.js";
 import {
   tokenCatalogApplicationContracts,
@@ -72,7 +72,7 @@ const routeRegistry = async () => {
     }),
     wallet: Object.freeze({}) as WalletManagementPort,
     token: Object.freeze({}) as TokenCatalogManagementApplicationPort,
-    market: Object.freeze({}) as ReferenceMarketApplicationPort,
+    markets: Object.freeze({}) as MarketPortfolioApplicationPort,
   });
 };
 
@@ -100,10 +100,10 @@ describe("operation interface binding authority", () => {
       expect(binding.responseAuthority.applicationErrors).toBe(tokenCatalogErrorRegistry);
       expect(binding.responseAuthority.interfaceMappings).toBe(accountAssetInterfaceErrorMappings);
     }
-    for (const binding of referenceMarketInterfaceBindingList) {
-      expect(binding.contract).toBe(referenceMarketApplicationContracts[binding.action]);
-      expect(binding.responseAuthority.applicationErrors).toBe(referenceMarketErrorRegistry);
-      expect(binding.responseAuthority.interfaceMappings).toBe(referenceMarketInterfaceErrorMappings);
+    for (const binding of marketPortfolioInterfaceBindingList) {
+      expect(binding.contract).toBe(marketPortfolioApplicationContracts[binding.action]);
+      expect(binding.responseAuthority.applicationErrors).toBe(marketPortfolioErrorRegistry);
+      expect(binding.responseAuthority.interfaceMappings).toBe(marketPortfolioInterfaceErrorMappings);
     }
     expect(tokenCatalogInterfaceBindingList.map((binding) => binding.contract)).toEqual([
       tokenCatalogApplicationContracts.selection,
@@ -112,7 +112,7 @@ describe("operation interface binding authority", () => {
 
     for (const binding of [
       ...accountAssetInterfaceBindingList,
-      ...referenceMarketInterfaceBindingList,
+      ...marketPortfolioInterfaceBindingList,
       ...tokenCatalogInterfaceBindingList,
     ]) {
       if (binding.mcp !== undefined) {

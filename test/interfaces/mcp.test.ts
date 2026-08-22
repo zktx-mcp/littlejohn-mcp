@@ -29,10 +29,10 @@ import {
   type McpRuntimePort,
   type McpServerRuntimePort,
 } from "../../src/interfaces/mcp.js";
-import { referenceMarketInterfaceBindings } from "../../src/interfaces/identities.js";
+import { marketPortfolioInterfaceBindings } from "../../src/interfaces/identities.js";
 import {
-  createReferenceMarketFailure,
-  referenceMarketInterfaceErrorMappings,
+  createMarketPortfolioFailure,
+  marketPortfolioInterfaceErrorMappings,
 } from "../../src/market-portfolio/errors.js";
 import { referenceWatchlistReviewRequestSchema } from "../../src/market-portfolio/index.js";
 import { tokenSelectionReviewRequestSchema } from "../../src/token-catalog/index.js";
@@ -299,17 +299,17 @@ describe("MCP binding projection", () => {
       readonly name: string;
       readonly version: string;
     };
-    const unavailable = createReferenceMarketFailure("source_unavailable");
+    const unavailable = createMarketPortfolioFailure("source_unavailable");
     const runtime = new FakeRuntime(() => ({
       status: 503,
-      body: captureCanonicalJson(toProblemDetails(unavailable, referenceMarketInterfaceErrorMappings)),
+      body: captureCanonicalJson(toProblemDetails(unavailable, marketPortfolioInterfaceErrorMappings)),
     }));
     const { client } = await connectOrdinary(runtime);
 
     expect(client.getServerVersion()).toEqual({ name: manifest.name, version: manifest.version });
     const pairId = referenceMarketManifest.pairs[0]!.pairId;
     const result = await client.callTool({
-      name: referenceMarketInterfaceBindings.price.mcp.name,
+      name: marketPortfolioInterfaceBindings.price.mcp.name,
       arguments: { pairId },
     });
 
@@ -318,7 +318,7 @@ describe("MCP binding projection", () => {
     expect(runtime.requests).toEqual([{
       requestClass: "public_read",
       method: "POST",
-      path: referenceMarketInterfaceBindings.price.http.path,
+      path: marketPortfolioInterfaceBindings.price.http.path,
       body: { pairId },
       signal: expect.any(AbortSignal),
     }]);
@@ -329,7 +329,7 @@ describe("MCP binding projection", () => {
     const runtime = new FakeRuntime(() => ({ status: 200, body: captureCanonicalJson(value) }));
     const { client } = await connectOrdinary(runtime);
     const result = await client.callTool({
-      name: referenceMarketInterfaceBindings.stockTokenMarket.mcp.name,
+      name: marketPortfolioInterfaceBindings.stockTokenMarket.mcp.name,
       arguments: { symbol: "p" },
     });
 
@@ -342,7 +342,7 @@ describe("MCP binding projection", () => {
     expect(runtime.requests).toEqual([{
       requestClass: "public_read",
       method: "POST",
-      path: referenceMarketInterfaceBindings.stockTokenMarket.http.path,
+      path: marketPortfolioInterfaceBindings.stockTokenMarket.http.path,
       body: { symbol: "P", window: "1d" },
       signal: expect.any(AbortSignal),
     }]);

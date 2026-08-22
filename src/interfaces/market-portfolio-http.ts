@@ -4,12 +4,12 @@ import {
   type ApplicationFailure,
 } from "../core/index.js";
 import {
-  createReferenceMarketFailure,
-  normalizeReferenceMarketError,
-  referenceMarketApplicationContracts,
-  referenceMarketInterfaceErrorMappings,
-  type ReferenceMarketApplicationContract,
-  type ReferenceMarketApplicationPort,
+  createMarketPortfolioFailure,
+  normalizeMarketPortfolioError,
+  marketPortfolioApplicationContracts,
+  marketPortfolioInterfaceErrorMappings,
+  type MarketPortfolioApplicationContract,
+  type MarketPortfolioApplicationPort,
 } from "../market-portfolio/index.js";
 import type {
   RouteContext,
@@ -24,16 +24,16 @@ import {
   type RuntimeDispatchPort,
 } from "./http-client.js";
 import {
-  referenceMarketInterfaceBindings,
-  type ReferenceMarketInterfaceBinding,
+  marketPortfolioInterfaceBindings,
+  type MarketPortfolioInterfaceBinding,
 } from "./identities.js";
 
 const success = (body: unknown): RouteResult => ({ ok: true, body: captureCanonicalJson(body) });
 const failure = (value: ApplicationFailure): RouteResult => ({ ok: false, failure: value });
 
-export const dispatchReferenceMarketRead = async (
+export const dispatchMarketPortfolioRead = async (
   runtime: RuntimeDispatchPort,
-  binding: ReferenceMarketInterfaceBinding,
+  binding: MarketPortfolioInterfaceBinding,
   value: unknown,
   signal?: AbortSignal,
 ): Promise<InterfaceInvocationResult> => {
@@ -43,7 +43,7 @@ export const dispatchReferenceMarketRead = async (
     binding.action !== "stockTokenMarket" &&
     binding.action !== "watchlist"
   ) {
-    throw new TypeError("Reference market binding is not a read.");
+    throw new TypeError("Market portfolio binding is not a read.");
   }
   const admission = admitApplicationInput(binding.contract, value);
   if (!admission.ok) return admission;
@@ -62,25 +62,25 @@ export const dispatchReferenceMarketRead = async (
       value: captureCanonicalJson(binding.contract.parsePublicSuccess(input, result.value)),
     };
   } catch {
-    return { ok: false, failure: createReferenceMarketFailure("internal_error") };
+    return { ok: false, failure: createMarketPortfolioFailure("internal_error") };
   }
 };
 
-export const referenceMarketApplicationResult = <Input, Success>(
-  contract: ReferenceMarketApplicationContract<Input, Success>,
+export const marketPortfolioApplicationResult = <Input, Success>(
+  contract: MarketPortfolioApplicationContract<Input, Success>,
   request: unknown,
   value: unknown,
 ): RouteResult => {
   try { return success(contract.parsePublicSuccess(request, value)); }
   catch {
     try { return failure(contract.parseFailure(value)); }
-    catch { return failure(normalizeReferenceMarketError(value).failure); }
+    catch { return failure(normalizeMarketPortfolioError(value).failure); }
   }
 };
 
 const readRoute = <Input, Success>(input: Readonly<{
   path: string;
-  contract: ReferenceMarketApplicationContract<Input, Success>;
+  contract: MarketPortfolioApplicationContract<Input, Success>;
   invoke(request: Input, signal: AbortSignal): Promise<Success | ApplicationFailure>;
 }>): RouteDefinition => Object.freeze({
   method: "POST",
@@ -91,38 +91,38 @@ const readRoute = <Input, Success>(input: Readonly<{
     const admission = admitApplicationInput(input.contract, context.body);
     if (!admission.ok) return failure(admission.failure);
     const result = await input.invoke(admission.value, context.signal);
-    return referenceMarketApplicationResult(input.contract, admission.value, result);
+    return marketPortfolioApplicationResult(input.contract, admission.value, result);
   },
 });
 
-const publicReadDefinitions = (application: ReferenceMarketApplicationPort): readonly RouteDefinition[] =>
+const publicReadDefinitions = (application: MarketPortfolioApplicationPort): readonly RouteDefinition[] =>
   Object.freeze([
     readRoute({
-      path: referenceMarketInterfaceBindings.price.http.path,
-      contract: referenceMarketInterfaceBindings.price.contract,
+      path: marketPortfolioInterfaceBindings.price.http.path,
+      contract: marketPortfolioInterfaceBindings.price.contract,
       invoke: (request, signal) => application.price(request, signal),
     }),
     readRoute({
-      path: referenceMarketInterfaceBindings.history.http.path,
-      contract: referenceMarketInterfaceBindings.history.contract,
+      path: marketPortfolioInterfaceBindings.history.http.path,
+      contract: marketPortfolioInterfaceBindings.history.contract,
       invoke: (request, signal) => application.history(request, signal),
     }),
     readRoute({
-      path: referenceMarketInterfaceBindings.stockTokenMarket.http.path,
-      contract: referenceMarketInterfaceBindings.stockTokenMarket.contract,
+      path: marketPortfolioInterfaceBindings.stockTokenMarket.http.path,
+      contract: marketPortfolioInterfaceBindings.stockTokenMarket.contract,
       invoke: (request, signal) => application.stockTokenMarket(request, signal),
     }),
     readRoute({
-      path: referenceMarketInterfaceBindings.watchlist.http.path,
-      contract: referenceMarketApplicationContracts.watchlist,
+      path: marketPortfolioInterfaceBindings.watchlist.http.path,
+      contract: marketPortfolioApplicationContracts.watchlist,
       invoke: (request, signal) => application.watchlist(request, signal),
     }),
   ]);
 
-export const extendReferenceMarketInterfaceRoutes = (input: Readonly<{
+export const extendMarketPortfolioInterfaceRoutes = (input: Readonly<{
   routes: RuntimeRouteRegistry;
-  referenceMarkets: ReferenceMarketApplicationPort;
+  markets: MarketPortfolioApplicationPort;
 }>): RuntimeRouteRegistry => input.routes.extend(
-  publicReadDefinitions(input.referenceMarkets),
-  referenceMarketInterfaceErrorMappings,
+  publicReadDefinitions(input.markets),
+  marketPortfolioInterfaceErrorMappings,
 );

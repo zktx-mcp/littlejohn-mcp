@@ -1,11 +1,11 @@
 import {
-  ReferenceMarketOperationError,
-  type ReferenceMarketApplicationPort,
+  MarketPortfolioOperationError,
+  type MarketPortfolioApplicationPort,
 } from "../../src/market-portfolio/index.js";
 
-const unavailable = () => new ReferenceMarketOperationError("wallet_not_connected").failure;
+const unavailable = () => new MarketPortfolioOperationError("wallet_not_connected").failure;
 
-export const referenceMarketInterfaceHarnessPort = (): ReferenceMarketApplicationPort => Object.freeze({
+export const marketPortfolioInterfaceHarnessPort = (): MarketPortfolioApplicationPort => Object.freeze({
   price: async () => unavailable(),
   history: async () => unavailable(),
   stockTokenMarket: async () => unavailable(),

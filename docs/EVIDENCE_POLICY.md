@@ -217,13 +217,23 @@ evidence once and do not infer a new directory observation from an onchain
 read.
 
 A Stock Token market result first consumes the registry owner's complete
-current official-asset observation. Symbol is only a selector. The result uses
-the exact current asset UID, chain deployment, and contract address to select
-one generated disposition, and verifies the same member through StockFactory
-at the result block. A current official member absent from the generated
-catalog, or whose identity no longer equals its generated entry, is an outdated
-catalog outcome rather than an inferred mapping. An absent, ambiguous,
-unmapped, outdated, or unverifiable member produces no current market claim.
+current official-asset observation. Symbol is only a selector. The selected
+member is verified through StockFactory at one canonical result block before
+either market source is admitted. An absent or ambiguous official member, or a
+member that StockFactory cannot verify at that block, prevents the complete
+Stock Token market result. Chainlink mapping is not part of official-member or
+StockFactory identity.
+
+After those common identity checks succeed, the Chainlink reference outcome and
+the Stock Token/USDG execution outcome are admitted independently as sibling
+results. The exact current asset UID, chain deployment, and contract address
+select the generated Chainlink disposition only for the reference sibling. A
+current official member absent from that catalog, or whose identity no longer
+equals its generated entry, is an outdated reference-catalog outcome rather
+than an inferred mapping. An unmapped, outdated, unavailable, or inconsistent
+Chainlink outcome cannot establish a reference observation and cannot prevent,
+replace, or weaken an execution outcome. An execution-source outcome cannot
+prevent, replace, or weaken an independently admitted reference observation.
 
 Each runtime reference-price observation separately reads the fixed proxy at one
 canonical Robinhood Chain block and validates deployed code, description,
@@ -241,12 +251,25 @@ runtime failure is not Reference Market source evidence. It terminates the
 operation as its admitted local or internal failure and cannot establish source
 inconsistency, source unavailability, source absence, or history coverage.
 
-A mapped Stock Token observation additionally reads the token's exact
-`oraclePaused()` Boolean and its StockFactory membership at the same canonical
-block. The pause value and round age are separate facts. A paused or old valid
-round may support only a last-observed value. A missing or malformed pause
-response cannot be replaced by a clock inference, market-hours inference, or a
-different price source.
+After the Stock Token market common identity checks succeed, local capacity
+that prevents only the reference sibling from being admitted produces that
+sibling's `runtime_busy` outcome and does not prevent the independently admitted
+execution sibling. This outcome establishes no source fact and does not name a
+particular local component. Local capacity before the common identity checks and
+local capacity in a standalone Reference Market read remain whole-operation
+failures. A persisted integrity conflict supported by different admitted
+immutable facts for the same round identity is inconsistent source evidence. A
+latest identity at or below a local retention cutoff is instead a local
+`state_conflict`; the cutoff supplies no source-history, finality, or
+reorganization-survival evidence.
+
+A mapped Stock Token reference observation additionally reads the token's exact
+`oraclePaused()` Boolean at the common canonical block. StockFactory membership
+has already been admitted by the common identity check and is not re-read by
+the reference adapter. The pause value and round age are separate facts. A
+paused or old valid round may support only a last-observed value. A missing or
+malformed pause response cannot be replaced by a clock inference, market-hours
+inference, a different price source, or the execution sibling.
 
 A feed round's `updatedAt` is a source fact, not Little John's observation time.
 Round read evidence records the actual canonical-clock read time, the configured
@@ -290,13 +313,24 @@ source coverage, exact candle values, raw token and USDG volumes, trade count,
 first and last contributing `Swap` positions, and byte digests. The canonical
 result's `artifact` member identifies the admitted pair state by generation and
 digest and the selected pair-month and pair-day files by period and digest. The
+selected pair-day identities and coverage intervals are one-to-one projections
+of those same admitted files. Each interval stays within its named UTC day,
+intersects the requested interval, and ends no later than the pair state's
+published coverage. A stale available execution result therefore also has the
+`after_published_coverage` source-coverage limitation; this implication does
+not merge the separately derived freshness and coverage states. The
 index read never reconstructs a candle from a chart, Chainlink history, or a
 provider response. GitHub Releases currently stores the files but has no
 market-fact authority; repository, release, asset, URL, and credential fields
 do not enter the canonical result. Provider unavailability, stale publication,
 retention, integrity failure, or result capacity remains an explicit execution
 history outcome and cannot weaken or replace an independently admitted
-Chainlink reference value.
+Chainlink reference value. Continuous published-source coverage, artifact
+freshness, and detailed-candle result capacity are separate evidence states.
+The `candle_capacity` limitation describes only loss from the returned detailed
+one-minute list after all admitted source candles were counted. It does not
+change continuous source coverage, imply missing source data, or make a current
+artifact stale.
 
 ## Identity And Trust
 

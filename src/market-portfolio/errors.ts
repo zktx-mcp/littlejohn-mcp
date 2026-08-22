@@ -6,54 +6,54 @@ import {
 import { getRuntimeOperationFailure } from "../runtime/errors.js";
 import { getTokenCatalogOperationFailure } from "../token-catalog/operation-error.js";
 import { tokenCatalogInterfaceErrorMappings } from "../token-catalog/errors.js";
-import { referenceMarketErrorRegistry } from "./contracts.js";
-import { referenceMarketInterfaceErrorMappingDefinitions } from "./error-definitions.js";
+import { marketPortfolioErrorRegistry } from "./contracts.js";
+import { marketPortfolioInterfaceErrorMappingDefinitions } from "./error-definitions.js";
 
-export const referenceMarketInterfaceErrorMappings = tokenCatalogInterfaceErrorMappings.extend(
-  referenceMarketErrorRegistry,
-  referenceMarketInterfaceErrorMappingDefinitions,
+export const marketPortfolioInterfaceErrorMappings = tokenCatalogInterfaceErrorMappings.extend(
+  marketPortfolioErrorRegistry,
+  marketPortfolioInterfaceErrorMappingDefinitions,
 );
 
-export { referenceMarketErrorRegistry } from "./contracts.js";
+export { marketPortfolioErrorRegistry } from "./contracts.js";
 
-export const createReferenceMarketFailure = (code: string): ApplicationFailure =>
-  createApplicationFailure(referenceMarketErrorRegistry, code);
+export const createMarketPortfolioFailure = (code: string): ApplicationFailure =>
+  createApplicationFailure(marketPortfolioErrorRegistry, code);
 
 const operationFailures = new WeakMap<object, ApplicationFailure>();
 
-export class ReferenceMarketOperationError extends Error {
+export class MarketPortfolioOperationError extends Error {
   readonly failure: ApplicationFailure;
 
   constructor(codeOrFailure: string | ApplicationFailure) {
     const failure = typeof codeOrFailure === "string"
-      ? createReferenceMarketFailure(codeOrFailure)
+      ? createMarketPortfolioFailure(codeOrFailure)
       : codeOrFailure;
-    const definition = referenceMarketErrorRegistry.get(failure.error.code);
+    const definition = marketPortfolioErrorRegistry.get(failure.error.code);
     if (
       failure.ok !== false ||
       failure.error.category !== definition.category ||
       failure.error.message !== definition.message ||
       failure.error.retryable !== definition.retryable
     ) {
-      throw new TypeError("Reference market application failure is not canonical.");
+      throw new TypeError("Market portfolio application failure is not canonical.");
     }
     super(failure.error.message);
-    this.name = "ReferenceMarketOperationError";
+    this.name = "MarketPortfolioOperationError";
     this.failure = failure;
     operationFailures.set(this, failure);
     Object.freeze(this);
   }
 }
 
-export const getReferenceMarketOperationFailure = (error: unknown): ApplicationFailure | undefined =>
+export const getMarketPortfolioOperationFailure = (error: unknown): ApplicationFailure | undefined =>
   typeof error === "object" && error !== null ? operationFailures.get(error) : undefined;
 
-export const normalizeReferenceMarketError = (error: unknown): ReferenceMarketOperationError => {
-  if (getReferenceMarketOperationFailure(error) !== undefined) return error as ReferenceMarketOperationError;
+export const normalizeMarketPortfolioError = (error: unknown): MarketPortfolioOperationError => {
+  if (getMarketPortfolioOperationFailure(error) !== undefined) return error as MarketPortfolioOperationError;
   const inherited = getChainOperationFailure(error) ??
     getRuntimeOperationFailure(error) ??
     getTokenCatalogOperationFailure(error);
-  return new ReferenceMarketOperationError(
-    inherited ?? createReferenceMarketFailure("internal_error"),
+  return new MarketPortfolioOperationError(
+    inherited ?? createMarketPortfolioFailure("internal_error"),
   );
 };

@@ -12,7 +12,7 @@ import {
 } from "../../src/interfaces/support.js";
 import { operationInterfaceBindingList } from "../../src/interfaces/operation-bindings.js";
 import { presentationContractRegistry } from "../../src/interfaces/mcp-app/registry.js";
-import { extendReferenceMarketSupportManifest } from "../../src/market-portfolio/support.js";
+import { extendMarketPortfolioSupportManifest } from "../../src/market-portfolio/support.js";
 import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
 import {
   createInitialRuntimeSupportManifest,
@@ -28,7 +28,7 @@ describe("interface Current Support projection", () => {
   const initialManifest = () => createInitialRuntimeSupportManifest(readRuntimeConfiguration({}).chain);
   const finalManifest = () => extendInterfaceSupportManifest(
     extendUniswapV2ProtocolHarnessManifest(
-      extendReferenceMarketSupportManifest(extendAccountAssetSupportManifest(
+      extendMarketPortfolioSupportManifest(extendAccountAssetSupportManifest(
         extendTokenCatalogSupportManifest(
           extendChainSupportManifest(extendWalletSupportManifest(initialManifest())),
         ),

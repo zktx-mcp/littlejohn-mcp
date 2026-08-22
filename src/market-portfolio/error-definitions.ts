@@ -1,4 +1,4 @@
-export const referenceMarketErrorDefinitions = Object.freeze([
+export const marketPortfolioErrorDefinitions = Object.freeze([
   {
     code: "watchlist_pair_already_saved",
     category: "state",
@@ -37,7 +37,7 @@ export const referenceMarketErrorDefinitions = Object.freeze([
   },
 ] as const);
 
-export const referenceMarketInterfaceErrorMappingDefinitions = Object.freeze([
+export const marketPortfolioInterfaceErrorMappingDefinitions = Object.freeze([
   { code: "watchlist_pair_already_saved", httpStatus: 409, problemTitle: "Pair already saved", cliExitCode: 5 },
   { code: "watchlist_full", httpStatus: 409, problemTitle: "Watchlist full", cliExitCode: 5 },
   { code: "watchlist_pair_not_found", httpStatus: 409, problemTitle: "Pair not saved", cliExitCode: 5 },

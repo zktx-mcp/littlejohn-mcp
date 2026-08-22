@@ -1,6 +1,6 @@
 import {
-  referenceMarketApplicationContracts,
-  type AnyReferenceMarketApplicationContract,
+  marketPortfolioApplicationContracts,
+  type AnyMarketPortfolioApplicationContract,
 } from "../market-portfolio/contracts.js";
 import {
   tokenCatalogApplicationContracts,
@@ -32,7 +32,7 @@ export interface OperationCliIdentity {
 export type OperationApplicationContract =
   | AnyWalletManagementContract
   | AnyTokenCatalogApplicationContract
-  | AnyReferenceMarketApplicationContract;
+  | AnyMarketPortfolioApplicationContract;
 
 export interface OperationToolContract {
   readonly action: "review" | "decide" | "get_operation" | "cancel_operation";
@@ -104,7 +104,7 @@ const tokenOperation = tool({
 
 const watchlistOperation = tool({
   action: "get_operation",
-  contract: referenceMarketApplicationContracts.operation,
+  contract: marketPortfolioApplicationContracts.operation,
   mcp: {
     name: "market_get_watchlist_operation",
     description: "Read one exact durable reference-watchlist operation.",
@@ -207,7 +207,7 @@ export const operationToolContracts = Object.freeze({
   tokenOperation,
   watchlistReview: tool({
     action: "review",
-    contract: referenceMarketApplicationContracts.watchlistChangeReview,
+    contract: marketPortfolioApplicationContracts.watchlistChangeReview,
     mcp: {
       name: "market_get_watchlist_change_review",
       description: "Create one immutable reference-watchlist change Review.",
@@ -218,7 +218,7 @@ export const operationToolContracts = Object.freeze({
   }),
   watchlistAdd: tool({
     action: "decide",
-    contract: referenceMarketApplicationContracts.add,
+    contract: marketPortfolioApplicationContracts.add,
     mcp: {
       name: "market_add_watchlist_pair",
       description: "Accept one exact reference-watchlist addition Review.",
@@ -231,7 +231,7 @@ export const operationToolContracts = Object.freeze({
   }),
   watchlistRemove: tool({
     action: "decide",
-    contract: referenceMarketApplicationContracts.remove,
+    contract: marketPortfolioApplicationContracts.remove,
     mcp: {
       name: "market_remove_watchlist_pair",
       description: "Accept one exact reference-watchlist removal Review.",
@@ -244,7 +244,7 @@ export const operationToolContracts = Object.freeze({
   }),
   watchlistReorder: tool({
     action: "decide",
-    contract: referenceMarketApplicationContracts.reorder,
+    contract: marketPortfolioApplicationContracts.reorder,
     mcp: {
       name: "market_reorder_watchlist_pairs",
       description: "Accept one exact reference-watchlist reorder Review.",

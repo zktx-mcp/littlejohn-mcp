@@ -29,10 +29,10 @@ import {
   walletConnectionInterface,
   type DeliveryUnknown,
   type ReadCliCommand,
-  parseReferenceMarketCliCommand,
-  referenceMarketCliCommandRequiresInteractiveTerminal,
-  runReferenceMarketCliCommand,
-  type ReferenceMarketCliCommand,
+  parseMarketPortfolioCliCommand,
+  marketPortfolioCliCommandRequiresInteractiveTerminal,
+  runMarketPortfolioCliCommand,
+  type MarketPortfolioCliCommand,
   type McpServerRuntimePort,
   type StdioMcpOwner,
 } from "./interfaces/index.js";
@@ -813,7 +813,7 @@ export const runCli = async (
   let command: CliCommand | undefined;
   let readCommand: ReadCliCommand | undefined;
   let tokenCommand: TokenCliCommand | undefined;
-  let marketCommand: ReferenceMarketCliCommand | undefined;
+  let marketCommand: MarketPortfolioCliCommand | undefined;
   const mcpMode = argumentsInput.length === 0;
   let runtime: CliRuntimePort | undefined;
   let operationClient: LocalOperationClient | undefined;
@@ -883,7 +883,7 @@ export const runCli = async (
       try { tokenCommand = parseTokenCliCommand(argumentsInput); }
       catch { throw new WalletOperationError("invalid_input"); }
     } else if (!mcpMode && argumentsInput[0] === "market") {
-      try { marketCommand = parseReferenceMarketCliCommand(argumentsInput); }
+      try { marketCommand = parseMarketPortfolioCliCommand(argumentsInput); }
       catch { throw new WalletOperationError("invalid_input"); }
     } else if (!mcpMode) command = parseCommand(argumentsInput);
     if (command !== undefined &&
@@ -896,7 +896,7 @@ export const runCli = async (
       throw new WalletOperationError("interactive_terminal_required");
     }
     if (marketCommand !== undefined &&
-      referenceMarketCliCommandRequiresInteractiveTerminal(marketCommand) &&
+      marketPortfolioCliCommandRequiresInteractiveTerminal(marketCommand) &&
       (!dependencies.terminal.inputIsTTY || !dependencies.terminal.outputIsTTY)) {
       throw new WalletOperationError("interactive_terminal_required");
     }
@@ -965,7 +965,7 @@ export const runCli = async (
             }));
           } else if (marketCommand !== undefined) {
             operationClient = new LocalOperationClient({ ownerSessions: runtime });
-            marketExitCode = await runReferenceMarketCliCommand(
+            marketExitCode = await runMarketPortfolioCliCommand(
               runtime,
               operationClient,
               marketCommand,

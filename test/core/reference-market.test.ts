@@ -8,6 +8,10 @@ import {
   type CanonicalJson,
 } from "../../src/core/canonical-json.js";
 import {
+  marketTimeWindowDefinitions,
+  marketTimeWindowSchema,
+} from "../../src/core/market-time-window.js";
+import {
   createExactRational,
   createReferenceHistoryWorkPlan,
   deriveReferencePairValue,
@@ -19,7 +23,6 @@ import {
   referenceHistoryInputSchema,
   referenceHistorySuccessSchema,
   referenceHistoryWindowDefinitions,
-  referenceHistoryWindowSchema,
   referenceCompositeRoundIdSchema,
   referenceMarketLimits,
   referenceMarketMappingEvidence,
@@ -160,20 +163,22 @@ const expectedGenericReferenceMarketManifest = {
 
 const expectedReferenceHistoryWindowDefinitions = {
   "1d": {
-    windowMilliseconds: 24 * 60 * 60 * 1_000,
     bucketMilliseconds: 15 * 60 * 1_000,
     maximumBuckets: 96,
   },
   "7d": {
-    windowMilliseconds: 7 * 24 * 60 * 60 * 1_000,
     bucketMilliseconds: 60 * 60 * 1_000,
     maximumBuckets: 168,
   },
   "30d": {
-    windowMilliseconds: 30 * 24 * 60 * 60 * 1_000,
     bucketMilliseconds: 4 * 60 * 60 * 1_000,
     maximumBuckets: 180,
   },
+} as const;
+const expectedMarketTimeWindowDefinitions = {
+  "1d": { durationMilliseconds: 24 * 60 * 60 * 1_000 },
+  "7d": { durationMilliseconds: 7 * 24 * 60 * 60 * 1_000 },
+  "30d": { durationMilliseconds: 30 * 24 * 60 * 60 * 1_000 },
 } as const;
 
 const canonicalSchema = (
@@ -412,6 +417,7 @@ describe("reference market core contract", () => {
     expect(referenceHistoryWindowDefinitions).toEqual(
       expectedReferenceHistoryWindowDefinitions,
     );
+    expect(marketTimeWindowDefinitions).toEqual(expectedMarketTimeWindowDefinitions);
     expect(referenceMarketLimits).toMatchObject({
       feedCount: 34,
       pairCount: 3,
@@ -447,12 +453,12 @@ describe("reference market core contract", () => {
         pairEntry: canonicalSchema(referencePairManifestEntrySchema, "output"),
         mappingEvidence: canonicalSchema(referenceMarketMappingEvidenceSchema, "output"),
         manifest: canonicalSchema(referenceMarketManifestSchema, "output"),
-        historyWindow: canonicalSchema(referenceHistoryWindowSchema, "input"),
+        marketTimeWindow: canonicalSchema(marketTimeWindowSchema, "input"),
       },
     } as unknown as CanonicalJson);
-    expect(Buffer.byteLength(ownerProjection, "utf8")).toBe(34_219);
+    expect(Buffer.byteLength(ownerProjection, "utf8")).toBe(34_222);
     expect(sha256(ownerProjection)).toBe(
-      "eac19431d799dd9208200fa247e94e0686166c3eb3cd1da0ae1e16610d350864",
+      "8f3d3215f581a98183aeb636c82be44b68ba0221b3414b1d0d126a29a2f922f6",
     );
 
     const publicContractProjection = canonicalBytes({

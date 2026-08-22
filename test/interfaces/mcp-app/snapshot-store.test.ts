@@ -14,6 +14,8 @@ import {
 } from "../../../src/core/index.js";
 import { ProductDatabase } from "../../../src/runtime/database.js";
 import { presentationSnapshotLimits } from "../../../src/runtime/presentation-snapshot.js";
+import { marketPortfolioApplicationContracts } from "../../../src/market-portfolio/contracts.js";
+import { stockTokenMarketAvailableFixture } from "../stock-token-market-fixture.js";
 
 const openedAt = parseUtcTimestamp("2026-08-12T00:00:00.000Z");
 const directories: string[] = [];
@@ -68,6 +70,33 @@ const availableValue = <Value>(
 };
 
 describe("presentation snapshot store", () => {
+  it("reloads the exact admitted Stock Token source siblings without a market read port", async () => {
+    const opened = await openDatabase();
+    const input = marketPortfolioApplicationContracts.stockTokenMarket.parseInput({
+      symbol: "AAPL",
+      window: "1d",
+    });
+    const result = marketPortfolioApplicationContracts.stockTokenMarket.parsePublicSuccess(
+      input,
+      stockTokenMarketAvailableFixture(),
+    );
+    const canonicalResult = captureCanonicalJson(result);
+    const committed = availableValue(opened.database.presentationSnapshotStore().commit({
+      contractId: marketPortfolioApplicationContracts.stockTokenMarket.capabilityId,
+      contractVersion: marketPortfolioApplicationContracts.stockTokenMarket.contractVersion,
+      normalizedInput: captureCanonicalJson(input),
+      admittedResult: canonicalResult,
+    }));
+
+    opened.database.close();
+    productDatabase = await ProductDatabase.open(opened.path, openedAt);
+    const reloaded = availableValue(productDatabase.presentationSnapshotStore().read(committed.snapshotId));
+    expect(new TextDecoder("utf-8", { fatal: true }).decode(reloaded.resultBytes))
+      .toBe(canonicalJsonStringify(canonicalResult));
+    expect(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(reloaded.resultBytes)))
+      .toEqual(canonicalResult);
+  });
+
   it("binds an exact admitted pair, reuses it, and reads the same identities after restart", async () => {
     const opened = await openDatabase();
     const store = opened.database.presentationSnapshotStore();

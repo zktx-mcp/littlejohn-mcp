@@ -1,8 +1,8 @@
-import { referenceMarketCapabilityIds } from "./contracts.js";
+import { marketPortfolioCapabilityIds } from "./contracts.js";
 import {
-  extendReferenceMarketRuntimeSupportManifest,
+  extendMarketPortfolioRuntimeSupportManifest,
   type AccountAssetRuntimeSupportManifest,
-  type ReferenceMarketRuntimeSupportManifest,
+  type MarketPortfolioRuntimeSupportManifest,
 } from "../runtime/support-manifest.js";
 
 const internalAvailability = Object.freeze({
@@ -13,10 +13,10 @@ const internalAvailability = Object.freeze({
   cli: "unavailable" as const,
 });
 
-export const extendReferenceMarketSupportManifest = (
+export const extendMarketPortfolioSupportManifest = (
   parent: AccountAssetRuntimeSupportManifest,
-): ReferenceMarketRuntimeSupportManifest => extendReferenceMarketRuntimeSupportManifest(parent, {
-  registrations: referenceMarketCapabilityIds.map((capabilityId) => ({
+): MarketPortfolioRuntimeSupportManifest => extendMarketPortfolioRuntimeSupportManifest(parent, {
+  registrations: marketPortfolioCapabilityIds.map((capabilityId) => ({
     capabilityId,
     availability: internalAvailability,
   })),

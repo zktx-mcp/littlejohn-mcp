@@ -51,9 +51,12 @@ import {
   type PresentationContractResult,
 } from "../registry.js";
 import {
-  stockTokenExecutionLimitationLabel,
+  stockTokenExecutionCoverageLimitationLabel,
+  stockTokenExecutionDetailLimitationLabel,
   stockTokenExecutionUnavailableReasonLabel,
+  stockTokenMarketLabel,
   stockTokenMarketUnavailableReasonLabel,
+  stockTokenReferenceUnavailableReasonLabel,
 } from "../../stock-token-market-presentation.js";
 
 type ContractInspectionResult = CapabilitySuccess<ContractInspectData>;
@@ -70,12 +73,18 @@ const element = <Tag extends keyof HTMLElementTagNameMap>(
   return node;
 };
 
-type SummaryField = readonly [label: string, value: string, status?: "current" | "stale" | "partial" | "unavailable"];
+type EvidenceStatus = "current" | "stale" | "partial" | "unavailable";
 
-const appendField = (list: HTMLDListElement, [label, value, status]: SummaryField): void => {
+type SummaryField = readonly [label: string, value: string, evidenceRole?: EvidenceStatus];
+
+const appendField = (list: HTMLDListElement, [label, value, evidenceRole]: SummaryField): void => {
   list.append(
     element("dt", "field-label", label),
-    element("dd", status === undefined ? "field-value" : `field-value status-${status}`, value),
+    element(
+      "dd",
+      evidenceRole === undefined ? "field-value" : `field-value status-${evidenceRole}`,
+      value,
+    ),
   );
 };
 
@@ -317,8 +326,6 @@ const historyChart = (input: ExactCandleSeries, label: string): HTMLElement => {
   figure.append(priceRange);
   return figure;
 };
-
-type EvidenceStatus = "current" | "stale" | "partial" | "unavailable";
 
 const statusFor = (status: EvidenceStatus): EvidenceStatus => status;
 
@@ -656,12 +663,11 @@ const renderStockTokenMarket = (value: StockTokenMarketResult): DocumentFragment
   if (value.status === "unavailable") {
     const officialAssetFields: readonly SummaryField[] = "officialAsset" in value
       ? [
-          ["Name", value.officialAsset.member.sourceName ?? value.symbol],
           ["Contract", value.officialAsset.member.contractAddress],
         ]
       : [];
     output.append(summary([
-      ["Stock Token", value.symbol],
+      ["Stock Token", stockTokenMarketLabel(value)],
       ...officialAssetFields,
       ["Status", "Unavailable", "unavailable"],
       ["Window", value.window],
@@ -670,19 +676,17 @@ const renderStockTokenMarket = (value: StockTokenMarketResult): DocumentFragment
     return output;
   }
 
-  const label = value.officialAsset.member.sourceName ?? value.mapping.disposition.asset.name;
-  const priceStatus = value.price.status === "current" ? "Current" : "Last observed";
+  const label = stockTokenMarketLabel(value);
   output.append(summary([
-    ["Stock Token", `${label} · ${value.symbol}`],
-    ["Reference value (USD)", exactRationalText(value.price.value)],
-    ["Reference status", priceStatus, value.price.status === "current" ? "current" : "stale"],
-    ["Observed at", value.price.source.readEvidence.observedAt],
+    ["Stock Token", label],
+    ["Status", "Available"],
     ["Window", value.window],
+    ["Contract", value.officialAsset.member.contractAddress],
   ]));
   output.append(element(
     "p",
     "supporting-copy",
-    "The Chainlink USD reference value and Uniswap V4 USDG executions are separate and are not converted or merged.",
+    "The oracle reference value denominated in USD and Uniswap V4 USDG executions are separate and are not converted or merged.",
   ));
 
   output.append(element("h2", "section-title", "Executed trades in USDG"));
@@ -693,15 +697,17 @@ const renderStockTokenMarket = (value: StockTokenMarketResult): DocumentFragment
     ]));
   } else {
     const latestExecution = value.execution.candles.at(-1);
-    const executionStatus = value.execution.freshness === "stale"
-      ? "stale" as const
-      : value.execution.coverage.status === "partial" ? "partial" as const : "current" as const;
     const executionSeries = executionCandleSeries(value.execution);
+    const coverageField: SummaryField = value.execution.coverage.status === "complete"
+      ? ["Source coverage", "Complete"]
+      : ["Source coverage", "Partial", "partial"];
     output.append(summary([
-      ["Status", value.execution.freshness === "stale" ? "Stale" :
-        value.execution.coverage.status === "partial" ? "Partial coverage" : "Current",
-      executionStatus],
-      ["One-minute candles", String(value.execution.candles.length)],
+      ["Freshness", value.execution.freshness === "current" ? "Current" : "Stale",
+        value.execution.freshness],
+      coverageField,
+      ["Detailed rows", value.execution.detail.status === "complete" ? "Complete" : "Limited"],
+      ["Observed one-minute candles", String(value.execution.detail.observedCandleCount)],
+      ["Returned one-minute candles", String(value.execution.candles.length)],
       ["Latest exact close", latestExecution === undefined
         ? "No executed trade in the covered period"
         : `${exactRationalText(latestExecution.close)} USDG`],
@@ -717,25 +723,57 @@ const renderStockTokenMarket = (value: StockTokenMarketResult): DocumentFragment
     }
   }
 
-  output.append(element("h2", "section-title", "Chainlink reference history in USD"));
-  const referenceSeries = referenceCandleSeries(value.history);
-  output.append(summary([
-    ["Status", value.history.status === "partial" ? "Partial history" : "Unavailable",
-      value.history.status],
-    ["Observed candles", String(value.history.candles.length)],
-  ]));
-  output.append(historyChart(referenceSeries, `${label} Chainlink reference history in USD`));
-  if (referenceSeries.candles.length > 0) {
-    output.append(deferredDisclosure("Exact reference candles", () => [
-      historyValues(referenceSeries.candles, "Exact Chainlink reference candle values in USD"),
+  output.append(element("h2", "section-title", "USD-denominated oracle reference"));
+  if (value.reference.status === "unavailable") {
+    output.append(summary([
+      ["Status", "Unavailable", "unavailable"],
+      ["Reason", stockTokenReferenceUnavailableReasonLabel(value.reference.reason)],
     ]));
+  } else {
+    const referenceStatusField: SummaryField = value.reference.price.status === "current"
+      ? ["Reference status", "Current", "current"]
+      : value.reference.limitations.includes("observation_not_fresh")
+        ? ["Reference status", "Last observed", "stale"]
+        : ["Reference status", "Last observed"];
+    output.append(summary([
+      ["Oracle reference value denominated in USD", exactRationalText(value.reference.price.value)],
+      referenceStatusField,
+      ["Observed at", value.reference.price.source.readEvidence.observedAt],
+      ["History", value.reference.history.status === "partial" ? "Partial" : "Unavailable",
+        value.reference.history.status],
+      ["Observed candles", String(value.reference.history.candles.length)],
+    ]));
+    const referenceSeries = referenceCandleSeries(value.reference.history);
+    output.append(historyChart(
+      referenceSeries,
+      `${label} USD-denominated oracle reference history`,
+    ));
+    if (referenceSeries.candles.length > 0) {
+      output.append(deferredDisclosure("Exact oracle reference candles", () => [
+        historyValues(
+          referenceSeries.candles,
+          "Exact USD-denominated oracle reference candle values",
+        ),
+      ]));
+    }
   }
 
-  const warnings = value.warnings.map(referenceWarningLabel);
+  const warnings = value.reference.status === "available"
+    ? value.reference.warnings.map(referenceWarningLabel)
+    : [];
   const limitations = [
-    ...value.limitations.map(stockTokenLimitationLabel),
+    ...(value.reference.status === "available"
+      ? value.reference.limitations.map(stockTokenLimitationLabel)
+      : []),
     ...(value.execution.status === "available"
-      ? value.execution.coverage.limitations.map(stockTokenExecutionLimitationLabel)
+      ? [
+          ...value.execution.coverage.limitations.map(
+            stockTokenExecutionCoverageLimitationLabel,
+          ),
+          ...value.execution.detail.limitations.map(
+            stockTokenExecutionDetailLimitationLabel,
+          ),
+        ]
       : []),
   ];
   const diagnosticSections = [

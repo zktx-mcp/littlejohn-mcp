@@ -19,10 +19,10 @@ import {
 } from "../../src/chain/errors.js";
 import { interfaceReadCapabilityRegistry } from "../../src/interfaces/identities.js";
 import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
-import { extendReferenceMarketSupportManifest } from "../../src/market-portfolio/support.js";
+import { extendMarketPortfolioSupportManifest } from "../../src/market-portfolio/support.js";
 import {
-  referenceMarketErrorRegistry,
-  referenceMarketInterfaceErrorMappings,
+  marketPortfolioErrorRegistry,
+  marketPortfolioInterfaceErrorMappings,
 } from "../../src/market-portfolio/errors.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import { ownerIdentitySchema } from "../../src/runtime/runtime-identity.js";
@@ -267,8 +267,8 @@ describe("runtime support manifest authority", () => {
     const accountAssets = extendAccountAssetSupportManifest(
       extendTokenCatalogSupportManifest(chain),
     );
-    const referenceMarkets = extendReferenceMarketSupportManifest(accountAssets);
-    const protocols = extendUniswapV2ProtocolHarnessManifest(referenceMarkets);
+    const marketPortfolio = extendMarketPortfolioSupportManifest(accountAssets);
+    const protocols = extendUniswapV2ProtocolHarnessManifest(marketPortfolio);
     const protocolSnapshot = readRuntimeSupportManifest(protocols);
     expect(protocolSnapshot.protocols).toEqual([{
       protocolId: uniswapV2PackageDescriptor.protocolId,
@@ -390,8 +390,8 @@ describe("runtime support manifest authority", () => {
     const accountAssets = extendAccountAssetSupportManifest(
       extendTokenCatalogSupportManifest(chain),
     );
-    const referenceMarkets = extendReferenceMarketSupportManifest(accountAssets);
-    const protocols = extendUniswapV2ProtocolHarnessManifest(referenceMarkets);
+    const marketPortfolio = extendMarketPortfolioSupportManifest(accountAssets);
+    const protocols = extendUniswapV2ProtocolHarnessManifest(marketPortfolio);
     const interfaces = extendInterfaceRuntimeSupportManifest(protocols, {
       registrations: [],
       presentations: [],
@@ -462,9 +462,9 @@ describe("interface error authority", () => {
       [chainErrorRegistry, tokenCatalogErrorRegistry, chainInterfaceErrorMappings, tokenCatalogInterfaceErrorMappings],
       [
         tokenCatalogErrorRegistry,
-        referenceMarketErrorRegistry,
+        marketPortfolioErrorRegistry,
         tokenCatalogInterfaceErrorMappings,
-        referenceMarketInterfaceErrorMappings,
+        marketPortfolioInterfaceErrorMappings,
       ],
       [
         chainErrorRegistry,
@@ -520,7 +520,7 @@ describe("interface error authority", () => {
       walletErrorRegistry,
       chainErrorRegistry,
       tokenCatalogErrorRegistry,
-      referenceMarketErrorRegistry,
+      marketPortfolioErrorRegistry,
       uniswapV2ErrorRegistry,
     ]) {
       expect(registry.values().some(({ code }) => code === runtimeStateResetRequiredCode as string)).toBe(false);
@@ -531,7 +531,7 @@ describe("interface error authority", () => {
       chainInterfaceErrorMappings,
       tokenCatalogInterfaceErrorMappings,
       accountAssetInterfaceErrorMappings,
-      referenceMarketInterfaceErrorMappings,
+      marketPortfolioInterfaceErrorMappings,
       uniswapV2InterfaceErrorMappings,
     ]) {
       expect(mappings.values().some(({ code }) => code === runtimeStateResetRequiredCode as string)).toBe(false);

@@ -111,6 +111,12 @@ export {
 export type { SupportLevel } from "./support-level.js";
 export { keccak256FromHex } from "./keccak256.js";
 export {
+  marketTimeWindowDefinitions,
+  marketTimeWindowSchema,
+  maximumMarketTimeWindowMilliseconds,
+} from "./market-time-window.js";
+export type { MarketTimeWindow } from "./market-time-window.js";
+export {
   canonicalUsdgAddress,
   compareExactRationals,
   createExactRational,
@@ -132,7 +138,6 @@ export {
   referenceHistorySuccessSchema,
   referenceHistoryRetentionMilliseconds,
   referenceHistoryWindowDefinitions,
-  referenceHistoryWindowSchema,
   referenceMarketLimits,
   referenceMarketMappingEvidence,
   referenceMarketMappingEvidenceSchema,
@@ -185,7 +190,6 @@ export type {
   ReferenceHistoryLimitationCode,
   ReferenceHistorySuccess,
   ReferenceHistoryTraversalReport,
-  ReferenceHistoryWindow,
   ReferenceMarketManifest,
   ReferenceMarketMappingEvidence,
   ReferenceMarketWarningCode,

@@ -6,9 +6,12 @@ import { z } from "zod";
 
 import {
   createChainInvocationLifecycle,
+  type ChainInvocationContext,
+  type ChainInvocationPort,
   type ReferenceHistoryTraversal,
   type ReferenceMarketChainReadPort,
 } from "../../src/chain/index.js";
+import { ChainOperationError } from "../../src/chain/errors.js";
 import {
   chainAnchorSchema,
   createCanonicalClock,
@@ -20,10 +23,10 @@ import {
   type ReferenceFeedId,
   type ReferenceRoundObservation,
 } from "../../src/core/index.js";
-import { ReferenceMarketApplication } from "../../src/market-portfolio/application.js";
+import { MarketPortfolioApplication } from "../../src/market-portfolio/application.js";
 import {
   parseStockTokenMarketResult,
-  resolveStockTokenMarketAsset,
+  resolveStockTokenOfficialAsset,
   stockTokenMarketInputSchema,
   stockTokenMarketResultSchema,
 } from "../../src/market-portfolio/stock-token-market.js";
@@ -35,6 +38,7 @@ import {
   stockFactoryVerificationSchema,
   type CommittedOfficialAssetSnapshot,
   type OfficialAssetSourceMember,
+  type OfficialAssetSourceUnavailableReason,
 } from "../../src/registry/index.js";
 import {
   officialAssetCandidateListDigest,
@@ -45,11 +49,12 @@ import type {
   ReferenceFeedCacheSnapshot,
   ReferenceMarketStore,
 } from "../../src/runtime/reference-market-storage.js";
-import { unavailableExecutionIndex } from "./execution-index-fixture.js";
 import {
   findStockTokenExecutionIndexAsset,
   unavailableStockTokenExecutionSeries,
+  type StockTokenExecutionIndexUnavailableReason,
   type StockTokenExecutionIndexReadPort,
+  type StockTokenExecutionSeries,
 } from "../../src/market-portfolio/stock-token-execution-index.js";
 
 const block = chainAnchorSchema.parse({
@@ -87,11 +92,27 @@ const snapshotFor = (symbol: string): CommittedOfficialAssetSnapshot => {
     memberSetDigest: officialAssetMemberSetDigest(members),
     candidateListDigest: officialAssetCandidateListDigest(members),
     chainId: block.chainId,
-    members,
+    members: [...members],
     revision,
     updatedAt: observedAt,
   });
 };
+
+const snapshotWithMembers = (
+  members: readonly OfficialAssetSourceMember[],
+): CommittedOfficialAssetSnapshot => {
+  const base = snapshotFor("AAPL");
+  const ordered = [...members].sort((left, right) =>
+    left.assetUid < right.assetUid ? -1 : left.assetUid > right.assetUid ? 1 : 0);
+  return assertCommittedOfficialAssetSnapshot({
+    ...base,
+    members: ordered,
+    memberSetDigest: officialAssetMemberSetDigest(ordered),
+    candidateListDigest: officialAssetCandidateListDigest(ordered),
+  });
+};
+const snapshotWithMember = (member: OfficialAssetSourceMember): CommittedOfficialAssetSnapshot =>
+  snapshotWithMembers([member]);
 
 const observation = (
   feedId: ReferenceFeedId,
@@ -131,8 +152,12 @@ const observation = (
   });
 };
 
-const storeFixture = (): ReferenceMarketStore => {
-  const snapshots = new Map<ReferenceFeedId, ReferenceFeedCacheSnapshot>();
+const storeFixture = (
+  initial: readonly ReferenceFeedCacheSnapshot[] = [],
+): ReferenceMarketStore => {
+  const snapshots = new Map<ReferenceFeedId, ReferenceFeedCacheSnapshot>(
+    initial.map((snapshot) => [snapshot.feedId, snapshot]),
+  );
   const empty = (feedId: ReferenceFeedId): ReferenceFeedCacheSnapshot => Object.freeze({
     feedId,
     revision: null,
@@ -169,15 +194,39 @@ const storeFixture = (): ReferenceMarketStore => {
   });
 };
 
+const referenceSnapshot = (input: Readonly<{
+  feedId: ReferenceFeedId;
+  observations: readonly ReferenceRoundObservation[];
+  retentionCutoffRoundId?: string;
+  integrityStatus?: "conflict";
+}>): ReferenceFeedCacheSnapshot => Object.freeze({
+  feedId: input.feedId,
+  revision: "AQEBAQEBAQEBAQEBAQEBAQ",
+  observations: Object.freeze([...input.observations]),
+  backfillPhaseId: "1",
+  backfillNextRoundId: null,
+  retentionCutoffRoundId: input.retentionCutoffRoundId ?? null,
+  integrityStatus: input.integrityStatus ?? null,
+  backfillStatus: input.retentionCutoffRoundId === undefined ? null : "retention_boundary",
+});
+
 const availableApplication = (options: Readonly<{
   oraclePaused?: boolean;
   latestUpdatedAt?: string;
   olderUpdatedAt?: string;
+  officialSnapshot?: CommittedOfficialAssetSnapshot;
+  executionReason?: StockTokenExecutionIndexUnavailableReason;
+  stockFactoryUnavailable?: boolean;
+  referenceRead?: ReferenceMarketChainReadPort["readStockTokenReferenceAtBlock"];
+  executionRead?: StockTokenExecutionIndexReadPort["read"];
+  officialSourceFailure?: OfficialAssetSourceUnavailableReason;
+  referenceSnapshot?: ReferenceFeedCacheSnapshot;
+  chainInvocations?: ChainInvocationPort;
 }> = {}) => {
   const disposition = dispositionFor("AAPL");
   if (disposition.mapping.status !== "mapped") throw new Error("AAPL must be mapped.");
   const feed = disposition.mapping.feed;
-  const snapshot = snapshotFor("AAPL");
+  const snapshot = options.officialSnapshot ?? snapshotFor("AAPL");
   const member = snapshot.members[0]!;
   const latest = observation(
     feed.feedId,
@@ -199,13 +248,13 @@ const availableApplication = (options: Readonly<{
     implementationCodeHash: stockFactoryAdmissionManifest.implementationCodeHash,
     tokenCodeHash: parseHash32(`0x${"22".repeat(32)}`),
   });
-  const readStockTokenAtBlock = vi.fn<ReferenceMarketChainReadPort["readStockTokenAtBlock"]>(
-    async (input) => {
+  const readStockTokenReferenceAtBlock = vi.fn<ReferenceMarketChainReadPort["readStockTokenReferenceAtBlock"]>(
+    async (input, context) => {
+      if (options.referenceRead !== undefined) return options.referenceRead(input, context);
       expect(input).toMatchObject({ member, feedId: feed.feedId });
       expect(input.block.anchor).toEqual(block);
       return Object.freeze({
         status: "observed",
-        stockFactory,
         oraclePaused: options.oraclePaused ?? false,
         latest,
       });
@@ -223,20 +272,45 @@ const availableApplication = (options: Readonly<{
   const chain: ReferenceMarketChainReadPort = Object.freeze({
     resolveCurrentBlock: async () => Object.freeze({ anchor: block }),
     readLatestAtBlock: async () => { throw new Error("Generic latest read is not expected."); },
-    readStockTokenAtBlock,
+    readStockTokenReferenceAtBlock,
     readHistoryAtBlock,
   });
-  const readExecutionIndex = vi.fn<StockTokenExecutionIndexReadPort["read"]>(async (input) =>
-    unavailableStockTokenExecutionSeries(input, "index_unavailable"));
+  const readExecutionIndex = vi.fn<StockTokenExecutionIndexReadPort["read"]>(
+    options.executionRead ?? (async (input) =>
+      unavailableStockTokenExecutionSeries(input, options.executionReason ?? "index_unavailable")),
+  );
+  const verifyAtBlock = vi.fn(async () => options.stockFactoryUnavailable
+    ? Object.freeze({
+        status: "unavailable" as const,
+        member,
+        reason: "source_unavailable" as const,
+      })
+    : Object.freeze({
+        status: "verified" as const,
+        member,
+        verification: stockFactory,
+      }));
   const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
-  const application = new ReferenceMarketApplication({
-    chainInvocations: lifecycle,
+  const application = new MarketPortfolioApplication({
+    chainInvocations: options.chainInvocations ?? lifecycle,
     chain,
-    store: storeFixture(),
+    store: storeFixture(options.referenceSnapshot === undefined
+      ? []
+      : [options.referenceSnapshot]),
     officialAssets: Object.freeze({
-      synchronize: async () => Object.freeze({ status: "current" as const, snapshot }),
+      synchronize: async () => options.officialSourceFailure !== undefined
+        ? Object.freeze({
+            status: "unavailable" as const,
+            storedRevision: snapshot.revision,
+            reason: options.officialSourceFailure,
+          })
+        : Object.freeze({ status: "current" as const, snapshot }),
       readStored: () => snapshot,
       close: async () => undefined,
+    }),
+    officialAssetReads: Object.freeze({
+      verifyAtBlock,
+      verifyManyAtBlock: async () => { throw new Error("Batch verification is not expected."); },
     }),
     activeWallet: Object.freeze({ capture: () => { throw new Error("Wallet is not required."); } }),
     stockTokenExecutionIndex: Object.freeze({ read: readExecutionIndex }),
@@ -245,35 +319,45 @@ const availableApplication = (options: Readonly<{
   return {
     application,
     lifecycle,
-    readStockTokenAtBlock,
+    readStockTokenReferenceAtBlock,
     readHistoryAtBlock,
     readExecutionIndex,
+    verifyAtBlock,
   };
 };
 
 describe("Stock Token market ownership", () => {
-  it("joins official identity, feed, block, synchronization, current value, and candles once", async () => {
+  it("returns independent reference and execution results under one verified asset and block", async () => {
     const fixture = availableApplication();
     const result = await fixture.application.stockTokenMarket({ symbol: "aapl", window: "1d" });
     expect(result).toMatchObject({
       status: "available",
       symbol: "AAPL",
-      price: { status: "current" },
-      history: { status: "partial" },
+      reference: {
+        status: "available",
+        price: { status: "current" },
+        history: { status: "partial" },
+        limitations: expect.arrayContaining(["source_history_not_exhaustive", "phase_boundary"]),
+      },
       execution: { status: "unavailable", reason: "index_unavailable" },
-      limitations: expect.arrayContaining(["source_history_not_exhaustive", "phase_boundary"]),
     });
     if (!("status" in result) || result.status !== "available") {
       throw new Error("Expected an available Stock Token result.");
     }
-    expect(result.warnings).toEqual([
+    if (result.reference.status !== "available") throw new Error("Expected reference data.");
+    expect(result.reference.warnings).toEqual([
       "reference_price_not_trade_price",
       "source_listing_not_revalidated",
       "sequencer_status_unavailable",
       "no_trade_volume",
       "partial_history",
     ]);
-    expect(fixture.readStockTokenAtBlock).toHaveBeenCalledTimes(1);
+    expect(fixture.readStockTokenReferenceAtBlock).toHaveBeenCalledTimes(1);
+    expect(fixture.verifyAtBlock).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceSymbol: "AAPL" }),
+      { anchor: block },
+      expect.any(Object),
+    );
     expect(fixture.readHistoryAtBlock).toHaveBeenCalledTimes(1);
     const executionAsset = findStockTokenExecutionIndexAsset(
       dispositionFor("AAPL").asset.deployments.find((entry) => entry.chainId === 4663)!
@@ -289,16 +373,321 @@ describe("Stock Token market ownership", () => {
     await fixture.lifecycle.close();
   });
 
-  it("returns an unmapped official asset without entering the chain boundary", async () => {
+  it("blocks both source branches when the official asset selector is missing or ambiguous", async () => {
+    const missing = availableApplication();
+    await expect(missing.application.stockTokenMarket({ symbol: "MSFT", window: "1d" }))
+      .resolves.toMatchObject({ status: "unavailable", reason: "official_asset_not_found" });
+    expect(missing.readStockTokenReferenceAtBlock).not.toHaveBeenCalled();
+    expect(missing.readExecutionIndex).not.toHaveBeenCalled();
+    await missing.application.close();
+    await missing.lifecycle.close();
+
+    const aapl = snapshotFor("AAPL").members[0]!;
+    const second = snapshotFor("MSFT").members[0]!;
+    const ambiguous = availableApplication({
+      officialSnapshot: snapshotWithMembers([
+        aapl,
+        { ...second, sourceName: "Second AAPL", sourceSymbol: "AAPL" },
+      ]),
+    });
+    await expect(ambiguous.application.stockTokenMarket({ symbol: "AAPL", window: "1d" }))
+      .resolves.toMatchObject({ status: "unavailable", reason: "official_asset_symbol_ambiguous" });
+    expect(ambiguous.readStockTokenReferenceAtBlock).not.toHaveBeenCalled();
+    expect(ambiguous.readExecutionIndex).not.toHaveBeenCalled();
+    await ambiguous.application.close();
+    await ambiguous.lifecycle.close();
+  });
+
+  it("blocks both source branches when same-block StockFactory identity is unavailable", async () => {
+    const fixture = availableApplication({ stockFactoryUnavailable: true });
+    await expect(fixture.application.stockTokenMarket({ symbol: "AAPL", window: "1d" }))
+      .resolves.toMatchObject({
+        status: "unavailable",
+        reason: "stock_factory_unavailable",
+        stockFactory: { status: "unavailable", reason: "source_unavailable" },
+      });
+    expect(fixture.readStockTokenReferenceAtBlock).not.toHaveBeenCalled();
+    expect(fixture.readExecutionIndex).not.toHaveBeenCalled();
+    await fixture.application.close();
+    await fixture.lifecycle.close();
+  });
+
+  it("keeps execution independent from an admitted reference-only failure", async () => {
+    let admittedExecution: StockTokenExecutionSeries | undefined;
+    const fixture = availableApplication({
+      referenceRead: async () => { throw new ChainOperationError("source_unavailable"); },
+      executionRead: async (input) => {
+        admittedExecution = unavailableStockTokenExecutionSeries(input, "index_unavailable");
+        return admittedExecution;
+      },
+    });
+    const result = await fixture.application.stockTokenMarket({ symbol: "AAPL", window: "1d" });
+    expect(result).toMatchObject({
+      status: "available",
+      reference: { status: "unavailable", reason: "source_unavailable" },
+      execution: { status: "unavailable", reason: "index_unavailable" },
+    });
+    if (!("status" in result) || result.status !== "available") {
+      throw new Error("Expected an available result.");
+    }
+    expect(Object.keys(result.reference).sort()).toEqual(["reason", "status"]);
+    expect(result.execution).toEqual(admittedExecution);
+    expect(fixture.readExecutionIndex).toHaveBeenCalledTimes(1);
+    await fixture.application.close();
+    await fixture.lifecycle.close();
+  });
+
+  it("keeps an admitted immutable-round conflict inside the reference sibling", async () => {
+    const disposition = dispositionFor("AAPL");
+    if (disposition.mapping.status !== "mapped") throw new Error("AAPL must be mapped.");
+    const fixture = availableApplication({
+      referenceSnapshot: referenceSnapshot({
+        feedId: disposition.mapping.feed.feedId,
+        observations: [observation(
+          disposition.mapping.feed.feedId,
+          2n,
+          "2026-08-12T12:55:00.000Z",
+        )],
+        integrityStatus: "conflict",
+      }),
+    });
+    await expect(fixture.application.stockTokenMarket({ symbol: "AAPL", window: "1d" }))
+      .resolves.toMatchObject({
+        status: "available",
+        reference: { status: "unavailable", reason: "source_inconsistent" },
+        execution: { status: "unavailable", reason: "index_unavailable" },
+      });
+    expect(fixture.readExecutionIndex).toHaveBeenCalledTimes(1);
+    await fixture.application.close();
+    await fixture.lifecycle.close();
+  });
+
+  it("preserves retention regression as a whole-operation state conflict", async () => {
+    const disposition = dispositionFor("AAPL");
+    if (disposition.mapping.status !== "mapped") throw new Error("AAPL must be mapped.");
+    const feedId = disposition.mapping.feed.feedId;
+    const cutoffRoundId = ((1n << 64n) | 3n).toString(10);
+    const fixture = availableApplication({
+      referenceSnapshot: referenceSnapshot({
+        feedId,
+        observations: [observation(feedId, 4n, "2026-08-12T13:26:00.000Z")],
+        retentionCutoffRoundId: cutoffRoundId,
+      }),
+    });
+    await expect(fixture.application.stockTokenMarket({ symbol: "AAPL", window: "1d" }))
+      .resolves.toMatchObject({ ok: false, error: { code: "state_conflict" } });
+    expect(fixture.readExecutionIndex).toHaveBeenCalledTimes(1);
+    await fixture.application.close();
+    await fixture.lifecycle.close();
+  });
+
+  it("does not reclassify a common rate limit as a reference-only outcome", async () => {
+    const fixture = availableApplication({ officialSourceFailure: "rate_limited" });
+    await expect(fixture.application.stockTokenMarket({ symbol: "AAPL", window: "1d" }))
+      .resolves.toMatchObject({ ok: false, error: { code: "rate_limited" } });
+    expect(fixture.readStockTokenReferenceAtBlock).not.toHaveBeenCalled();
+    expect(fixture.readExecutionIndex).not.toHaveBeenCalled();
+    await fixture.application.close();
+    await fixture.lifecycle.close();
+  });
+
+  it.each([
+    "index_unavailable",
+    "index_inconsistent",
+    "outside_published_coverage",
+  ] as const)("keeps the available reference independent from the execution-only %s outcome", async (reason) => {
+    const fixture = availableApplication({ executionReason: reason });
+    const result = await fixture.application.stockTokenMarket({ symbol: "AAPL", window: "1d" });
+    expect(result).toMatchObject({
+      status: "available",
+      reference: { status: "available", price: { status: "current" } },
+      execution: { status: "unavailable", reason },
+    });
+    expect(fixture.readStockTokenReferenceAtBlock).toHaveBeenCalledTimes(1);
+    expect(fixture.readExecutionIndex).toHaveBeenCalledTimes(1);
+    await fixture.application.close();
+    await fixture.lifecycle.close();
+  });
+
+  it("keeps execution independent from an admitted missing reference observation", async () => {
+    const fixture = availableApplication({
+      referenceRead: async () => Object.freeze({
+        status: "unavailable" as const,
+        reason: "no_valid_observation" as const,
+        oraclePaused: false,
+      }),
+    });
+    const result = await fixture.application.stockTokenMarket({ symbol: "AAPL", window: "1d" });
+    expect(result).toMatchObject({
+      status: "available",
+      reference: {
+        status: "unavailable",
+        reason: "no_valid_observation",
+        oraclePaused: { value: false },
+      },
+      execution: { status: "unavailable", reason: "index_unavailable" },
+    });
+    expect(fixture.readExecutionIndex).toHaveBeenCalledTimes(1);
+    await fixture.application.close();
+    await fixture.lifecycle.close();
+  });
+
+  it("aborts and settles both source tasks before owner close completes", async () => {
+    let markReferenceStarted!: () => void;
+    let markExecutionStarted!: () => void;
+    const referenceStarted = new Promise<void>((resolve) => { markReferenceStarted = resolve; });
+    const executionStarted = new Promise<void>((resolve) => { markExecutionStarted = resolve; });
+    let referenceAborted = false;
+    let executionAborted = false;
+    const fixture = availableApplication({
+      referenceRead: async (_input, context) => {
+        markReferenceStarted();
+        return await new Promise<never>((_resolve, reject) => {
+          context.signal.addEventListener("abort", () => {
+            referenceAborted = true;
+            reject(new ChainOperationError("request_aborted"));
+          }, { once: true });
+        });
+      },
+      executionRead: async (_input, signal) => {
+        markExecutionStarted();
+        if (signal === undefined) throw new TypeError("Execution signal is required.");
+        return await new Promise<never>((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            executionAborted = true;
+            reject(new ChainOperationError("request_aborted"));
+          }, { once: true });
+        });
+      },
+    });
+    const active = fixture.application.stockTokenMarket({ symbol: "AAPL", window: "1d" });
+    await Promise.all([referenceStarted, executionStarted]);
+    const closing = fixture.application.close();
+    await expect(active).resolves.toMatchObject({
+      ok: false,
+      error: { code: "runtime_state_unavailable" },
+    });
+    await closing;
+    expect(referenceAborted).toBe(true);
+    expect(executionAborted).toBe(true);
+    await fixture.lifecycle.close();
+  });
+
+  it("passes the complete invocation signal to both source siblings", async () => {
+    const invocation = new AbortController();
+    let outerSignal: AbortSignal | undefined;
+    let referenceSignal: AbortSignal | undefined;
+    let executionSignal: AbortSignal | undefined;
+    const chainInvocations = Object.freeze({
+      run: async <Result>(
+        signal: AbortSignal,
+        effect: (context: ChainInvocationContext) => Promise<Result>,
+      ): Promise<Result> => {
+        outerSignal = signal;
+        return await effect(Object.freeze({ signal: invocation.signal }));
+      },
+    }) satisfies ChainInvocationPort;
+    const fixture = availableApplication({
+      chainInvocations,
+      referenceRead: async (_input, context) => {
+        referenceSignal = context.signal;
+        return Object.freeze({
+          status: "unavailable" as const,
+          reason: "no_valid_observation" as const,
+          oraclePaused: false,
+        });
+      },
+      executionRead: async (input, signal) => {
+        executionSignal = signal;
+        return unavailableStockTokenExecutionSeries(input, "index_unavailable");
+      },
+    });
+    await expect(fixture.application.stockTokenMarket({ symbol: "AAPL", window: "1d" }))
+      .resolves.toMatchObject({ status: "available" });
+    expect(outerSignal).toBeDefined();
+    expect(outerSignal).not.toBe(invocation.signal);
+    expect(referenceSignal).toBe(invocation.signal);
+    expect(executionSignal).toBe(invocation.signal);
+    await fixture.application.close();
+    await fixture.lifecycle.close();
+  });
+
+  it("settles started reference work when the execution port throws before returning a promise", async () => {
+    let markReferenceStarted!: () => void;
+    let releaseReference!: () => void;
+    const referenceStarted = new Promise<void>((resolve) => { markReferenceStarted = resolve; });
+    const referenceRelease = new Promise<void>((resolve) => { releaseReference = resolve; });
+    const fixture = availableApplication({
+      referenceRead: async () => {
+        markReferenceStarted();
+        await referenceRelease;
+        throw new ChainOperationError("source_unavailable");
+      },
+      executionRead: () => {
+        throw new Error("Synchronous execution adapter failure.");
+      },
+    });
+    const active = fixture.application.stockTokenMarket({ symbol: "AAPL", window: "1d" });
+    await referenceStarted;
+    let settled = false;
+    void active.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    releaseReference();
+    await expect(active).resolves.toMatchObject({
+      ok: false,
+      error: { code: "internal_error" },
+    });
+    await fixture.application.close();
+    await fixture.lifecycle.close();
+  });
+
+  it("keeps execution independent from an outdated reference catalog identity", async () => {
+    const indexed = snapshotFor("AAPL").members[0]!;
+    const unknownMember: OfficialAssetSourceMember = {
+      ...indexed,
+      assetUid: parseHash32(`0x${"77".repeat(32)}`),
+    };
+    const fixture = availableApplication({ officialSnapshot: snapshotWithMember(unknownMember) });
+    const result = await fixture.application.stockTokenMarket({ symbol: "AAPL", window: "1d" });
+    expect(result).toMatchObject({
+      status: "available",
+      reference: { status: "unavailable", reason: "mapping_catalog_outdated" },
+      execution: { status: "unavailable", reason: "index_unavailable" },
+    });
+    expect(fixture.readStockTokenReferenceAtBlock).not.toHaveBeenCalled();
+    expect(fixture.readExecutionIndex).toHaveBeenCalledTimes(1);
+    expect(() => stockTokenMarketResultSchema.parse({
+      ...result,
+      reference: { status: "unavailable", reason: "source_unavailable" },
+    })).toThrow();
+    await fixture.application.close();
+    await fixture.lifecycle.close();
+  });
+
+  it("keeps the common result available when the official asset has no Chainlink mapping", async () => {
     const snapshot = snapshotFor("P");
+    const member = snapshot.members[0]!;
+    const stockFactory = stockFactoryVerificationSchema.parse({
+      assetUid: member.assetUid,
+      contractAddress: member.contractAddress,
+      block,
+      proxyAddress: stockFactoryAdmissionManifest.proxyAddress,
+      proxyCodeHash: stockFactoryAdmissionManifest.proxyCodeHash,
+      implementationAddress: stockFactoryAdmissionManifest.implementationAddress,
+      implementationCodeHash: stockFactoryAdmissionManifest.implementationCodeHash,
+      tokenCodeHash: parseHash32(`0x${"22".repeat(32)}`),
+    });
     const chain = {
-      resolveCurrentBlock: vi.fn(),
+      resolveCurrentBlock: vi.fn(async () => Object.freeze({ anchor: block })),
       readLatestAtBlock: vi.fn(),
-      readStockTokenAtBlock: vi.fn(),
+      readStockTokenReferenceAtBlock: vi.fn(),
       readHistoryAtBlock: vi.fn(),
     } satisfies ReferenceMarketChainReadPort;
     const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
-    const application = new ReferenceMarketApplication({
+    const execution = vi.fn<StockTokenExecutionIndexReadPort["read"]>(async (input) =>
+      unavailableStockTokenExecutionSeries(input, "index_unavailable"));
+    const application = new MarketPortfolioApplication({
       chainInvocations: lifecycle,
       chain,
       store: storeFixture(),
@@ -307,13 +696,34 @@ describe("Stock Token market ownership", () => {
         readStored: () => snapshot,
         close: async () => undefined,
       }),
+      officialAssetReads: Object.freeze({
+        verifyAtBlock: async () => Object.freeze({
+          status: "verified" as const,
+          member,
+          verification: stockFactory,
+        }),
+        verifyManyAtBlock: async () => { throw new Error("Batch verification is not expected."); },
+      }),
       activeWallet: Object.freeze({ capture: () => { throw new Error("Wallet is not required."); } }),
-      stockTokenExecutionIndex: unavailableExecutionIndex,
+      stockTokenExecutionIndex: Object.freeze({ read: execution }),
       clock: createCanonicalClock(() => block.blockTimestamp),
     });
-    await expect(application.stockTokenMarket({ symbol: "p", window: "1d" }))
-      .resolves.toMatchObject({ status: "unavailable", reason: "mapping_unavailable" });
-    expect(chain.resolveCurrentBlock).not.toHaveBeenCalled();
+    const result = await application.stockTokenMarket({ symbol: "p", window: "1d" });
+    expect(result).toMatchObject({
+      status: "available",
+      reference: { status: "unavailable", reason: "mapping_unavailable" },
+      execution: { status: "unavailable", reason: "asset_not_indexed" },
+    });
+    if (!("status" in result) || result.status !== "available") {
+      throw new Error("Expected an available unmapped Stock Token result.");
+    }
+    expect(() => stockTokenMarketResultSchema.parse({
+      ...result,
+      reference: { status: "unavailable", reason: "source_unavailable" },
+    })).toThrow();
+    expect(chain.resolveCurrentBlock).toHaveBeenCalledTimes(1);
+    expect(chain.readStockTokenReferenceAtBlock).not.toHaveBeenCalled();
+    expect(execution).not.toHaveBeenCalled();
     await application.close();
     await lifecycle.close();
   });
@@ -346,37 +756,50 @@ describe("Stock Token market ownership", () => {
     }
     expect(result).toMatchObject({
       status: "available",
-      price: { status: "last_observed" },
-      limitations: expect.arrayContaining([limitation]),
+      reference: {
+        status: "available",
+        price: { status: "last_observed" },
+        limitations: expect.arrayContaining([limitation]),
+      },
     });
-    expect(result.limitations).not.toContain(absentLimitation);
+    if (result.reference.status !== "available") throw new Error("Expected reference data.");
+    expect(result.reference.limitations).not.toContain(absentLimitation);
     await available.application.close();
     await available.lifecycle.close();
   });
 
   it("rejects a result admitted for a different normalized selector", () => {
-    const result = resolveStockTokenMarketAsset({ symbol: "P", window: "1d" }, snapshotFor("P"));
+    const result = resolveStockTokenOfficialAsset({ symbol: "P", window: "1d" }, snapshotFor("P"));
     expect(() => parseStockTokenMarketResult({ symbol: "AAPL", window: "1d" }, result)).toThrow();
   });
 
-  it("rejects mapped and unavailable dispositions that are not exact catalog members", async () => {
+  it("rejects a mapped disposition that is not the exact catalog member", async () => {
     const fixture = availableApplication();
     const available = await fixture.application.stockTokenMarket({ symbol: "AAPL", window: "1d" });
     if (!("status" in available) || available.status !== "available") {
       throw new Error("Expected an available Stock Token result.");
     }
-    const mappedDisposition = available.mapping.disposition;
+    if (available.reference.status !== "available") throw new Error("Expected mapped reference data.");
+    const availableReference = available.reference;
+    const mappedDisposition = availableReference.mapping.disposition;
+    expect(() => stockTokenMarketResultSchema.parse({
+      ...available,
+      price: availableReference.price,
+    })).toThrow();
     expect(() => parseStockTokenMarketResult({ symbol: "AAPL", window: "1d" }, {
       ...available,
-      mapping: {
-        ...available.mapping,
-        disposition: {
-          ...mappedDisposition,
-          mapping: {
-            ...mappedDisposition.mapping,
-            feed: {
-              ...mappedDisposition.mapping.feed,
-              sourceRow: mappedDisposition.mapping.feed.sourceRow + 1,
+      reference: {
+        ...availableReference,
+        mapping: {
+          ...availableReference.mapping,
+          disposition: {
+            ...mappedDisposition,
+            mapping: {
+              ...mappedDisposition.mapping,
+              feed: {
+                ...mappedDisposition.mapping.feed,
+                sourceRow: mappedDisposition.mapping.feed.sourceRow + 1,
+              },
             },
           },
         },
@@ -384,18 +807,6 @@ describe("Stock Token market ownership", () => {
     })).toThrow();
     await fixture.application.close();
     await fixture.lifecycle.close();
-
-    const unavailable = resolveStockTokenMarketAsset({ symbol: "P", window: "1d" }, snapshotFor("P"));
-    if (unavailable.status !== "unavailable" || unavailable.reason !== "mapping_unavailable") {
-      throw new Error("Expected an unavailable Stock Token mapping.");
-    }
-    expect(() => parseStockTokenMarketResult({ symbol: "P", window: "1d" }, {
-      ...unavailable,
-      disposition: {
-        ...unavailable.disposition,
-        mapping: { status: "unmapped", reason: "feed_non_usd" },
-      },
-    })).toThrow();
   });
 
   it("projects strict public input and result schemas from the canonical owner", () => {

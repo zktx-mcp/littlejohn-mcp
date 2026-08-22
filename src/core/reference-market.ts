@@ -11,6 +11,12 @@ import {
   type ObservationAuthority,
 } from "./invocation.js";
 import { jsonObject } from "./json-object.js";
+import {
+  marketTimeWindowDefinitions,
+  marketTimeWindowSchema,
+  maximumMarketTimeWindowMilliseconds,
+  type MarketTimeWindow,
+} from "./market-time-window.js";
 import { productChainId, productChainNumericId } from "./product-identity.js";
 import { stockTokenReferenceMarketGeneratedCatalog } from
   "./stock-token-reference-market.generated.js";
@@ -55,42 +61,33 @@ const literalTupleSchema = <
 const referenceHistoryWindowDefinitionEntries = deepFreezeValue([
   {
     window: "1d",
-    windowMilliseconds: 24 * 60 * 60 * 1_000,
     bucketMilliseconds: 15 * 60 * 1_000,
     maximumBuckets: 96,
   },
   {
     window: "7d",
-    windowMilliseconds: 7 * 24 * 60 * 60 * 1_000,
     bucketMilliseconds: 60 * 60 * 1_000,
     maximumBuckets: 168,
   },
   {
     window: "30d",
-    windowMilliseconds: 30 * 24 * 60 * 60 * 1_000,
     bucketMilliseconds: 4 * 60 * 60 * 1_000,
     maximumBuckets: 180,
   },
 ] as const);
-const referenceHistoryWindowIds =
-  definitionValues(referenceHistoryWindowDefinitionEntries, "window");
 const maximumReferenceHistoryWindowDefinition =
   referenceHistoryWindowDefinitionEntries[referenceHistoryWindowDefinitionEntries.length - 1]!;
 
-export const referenceHistoryWindowSchema = z.enum(referenceHistoryWindowIds);
-export type ReferenceHistoryWindow = z.infer<typeof referenceHistoryWindowSchema>;
 type ReferenceHistoryWindowDefinition = Readonly<{
-  windowMilliseconds: number;
   bucketMilliseconds: number;
   maximumBuckets: number;
 }>;
 const referenceHistoryWindowDefinitionRecord =
-  {} as Record<ReferenceHistoryWindow, ReferenceHistoryWindowDefinition>;
+  {} as Record<MarketTimeWindow, ReferenceHistoryWindowDefinition>;
 const referenceHistoryCandleBucketRecord =
-  {} as Record<ReferenceHistoryWindow, number>;
+  {} as Record<MarketTimeWindow, number>;
 for (const definition of referenceHistoryWindowDefinitionEntries) {
   referenceHistoryWindowDefinitionRecord[definition.window] = Object.freeze({
-    windowMilliseconds: definition.windowMilliseconds,
     bucketMilliseconds: definition.bucketMilliseconds,
     maximumBuckets: definition.maximumBuckets,
   });
@@ -99,8 +96,7 @@ for (const definition of referenceHistoryWindowDefinitionEntries) {
 export const referenceHistoryWindowDefinitions =
   Object.freeze(referenceHistoryWindowDefinitionRecord);
 const referenceHistoryCandleBuckets = Object.freeze(referenceHistoryCandleBucketRecord);
-export const referenceHistoryRetentionMilliseconds =
-  maximumReferenceHistoryWindowDefinition.windowMilliseconds;
+export const referenceHistoryRetentionMilliseconds = maximumMarketTimeWindowMilliseconds;
 
 const maximumReferencePairSources = 2 as const;
 
@@ -1220,7 +1216,7 @@ export type ReferencePriceSuccess = z.infer<typeof referencePriceSuccessSchema>;
 
 export const referenceHistoryInputSchema = jsonObject({
   pairId: referenceSupportedPairIdSchema,
-  window: referenceHistoryWindowSchema,
+  window: marketTimeWindowSchema,
 }).strict();
 export type ReferenceHistoryInput = z.infer<typeof referenceHistoryInputSchema>;
 
@@ -1330,7 +1326,7 @@ export type ReferenceHistoryCoverage = z.infer<typeof referenceHistoryCoverageSc
 
 const historyCommon = {
   pair: referencePairManifestEntrySchema,
-  window: referenceHistoryWindowSchema,
+  window: marketTimeWindowSchema,
   block: chainAnchorSchema,
   mappingEvidence: referenceMarketMappingEvidenceSchema,
   coverage: referenceHistoryCoverageSchema,
@@ -1368,9 +1364,10 @@ export const referenceHistorySuccessSchema = z.discriminatedUnion("status", [
   const requestedStart = Date.parse(value.coverage.requestedStart);
   const requestedEnd = Date.parse(value.coverage.requestedEnd);
   const windowDefinition = referenceHistoryWindowDefinitions[value.window];
+  const timeWindowDefinition = marketTimeWindowDefinitions[value.window];
   if (
     value.coverage.requestedEnd !== value.block.blockTimestamp ||
-    requestedEnd - requestedStart !== windowDefinition.windowMilliseconds ||
+    requestedEnd - requestedStart !== timeWindowDefinition.durationMilliseconds ||
     value.coverage.emptyBucketStarts.length > referenceMarketLimits.candleBuckets[value.window]
   ) {
     context.addIssue({ code: "custom", message: "Reference history window does not match its block anchor." });

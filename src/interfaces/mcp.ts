@@ -7,8 +7,8 @@ import {
   type AnyAccountAssetApplicationContract,
 } from "../account-assets/index.js";
 import {
-  referenceMarketErrorRegistry,
-  type AnyReferenceMarketApplicationContract,
+  marketPortfolioErrorRegistry,
+  type AnyMarketPortfolioApplicationContract,
 } from "../market-portfolio/index.js";
 import {
   CallToolRequestSchema,
@@ -60,14 +60,14 @@ import {
   declaredMcpToolNames,
   interfaceReadCapabilityRegistry,
   readInterfaceIdentities,
-  referenceMarketInterfaceBindingList,
+  marketPortfolioInterfaceBindingList,
   tokenCatalogInterfaceBindings,
   tokenLocalReadIdentities,
   type TokenCatalogInterfaceBinding,
   type AccountAssetInterfaceBinding,
   type InterfaceToolAnnotations,
   type ReadInterfaceIdentity,
-  type ReferenceMarketInterfaceBinding,
+  type MarketPortfolioInterfaceBinding,
 } from "./identities.js";
 import { LocalOperationClient } from "./operation-client.js";
 import {
@@ -76,7 +76,7 @@ import {
   type DeliveryUnknown,
 } from "./operation-delivery.js";
 import { interfaceCapabilityCatalogSchema } from "./support.js";
-import { dispatchReferenceMarketRead } from "./reference-market-http.js";
+import { dispatchMarketPortfolioRead } from "./market-portfolio-http.js";
 import {
   resolveLocalOperationIdentity,
 } from "./local-operation.js";
@@ -330,7 +330,7 @@ const capabilityOutputSchema = (
 
 type InterfaceApplicationContract =
   | AnyAccountAssetApplicationContract
-  | AnyReferenceMarketApplicationContract
+  | AnyMarketPortfolioApplicationContract
   | AnyWalletManagementContract
   | AnyTokenCatalogApplicationContract;
 
@@ -602,21 +602,21 @@ const accountAssetTool = (
 }, presentationContractRegistry.forContract(binding.contract) === undefined
   ? undefined : binding.contract);
 
-const referenceMarketTool = (
+const marketPortfolioTool = (
   runtime: RuntimeDispatchPort,
-  binding: ReferenceMarketInterfaceBinding,
+  binding: MarketPortfolioInterfaceBinding,
 ): McpToolDefinition => definePresentedTool({
     name: parseMcpToolName(binding.mcp.name),
     description: binding.mcp.description,
     inputSchema: contractInputSchema(binding.contract),
-    outputSchema: contractOutputSchema(binding.contract, referenceMarketErrorRegistry),
+    outputSchema: contractOutputSchema(binding.contract, marketPortfolioErrorRegistry),
     failureCodes: binding.contract.failureCodes,
     annotations: annotations(binding.mcp.annotations),
     visibility: ["model"],
     createsView: presentationContractRegistry.forContract(binding.contract) !== undefined,
     parseInput: (value: unknown): unknown => validateLocalToolInput(binding.contract.parseInput, value),
     invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
-      const result = await dispatchReferenceMarketRead(runtime, binding, value, signal);
+      const result = await dispatchMarketPortfolioRead(runtime, binding, value, signal);
       return "status" in result || !result.ok ? result : success(result.value);
     },
   }, presentationContractRegistry.forContract(binding.contract) === undefined
@@ -701,7 +701,7 @@ const createToolDefinitions = (
   ...accountAssetInterfaceBindingList
     .filter((binding) => binding.mcp !== undefined)
     .map((binding) => accountAssetTool(client, binding)),
-  ...referenceMarketInterfaceBindingList.map((binding) => referenceMarketTool(runtime, binding)),
+  ...marketPortfolioInterfaceBindingList.map((binding) => marketPortfolioTool(runtime, binding)),
   Object.freeze({
     name: parseMcpToolName(capabilityCatalogInterface.mcp.name),
     description: capabilityCatalogInterface.mcp.description,

@@ -24,14 +24,14 @@ export type { McpAppResource } from "./mcp-app/server.js";
 export { parseReadCliCommand, runReadCliCommand } from "./cli-read.js";
 export type { ReadCliCommand, ReadCliOutputPort } from "./cli-read.js";
 export {
-  parseReferenceMarketCliCommand,
-  referenceMarketCliCommandRequiresInteractiveTerminal,
-  runReferenceMarketCliCommand,
-} from "./reference-market-cli.js";
+  parseMarketPortfolioCliCommand,
+  marketPortfolioCliCommandRequiresInteractiveTerminal,
+  runMarketPortfolioCliCommand,
+} from "./market-portfolio-cli.js";
 export type {
-  ReferenceMarketCliCommand,
-  ReferenceMarketCliOutputPort,
-} from "./reference-market-cli.js";
+  MarketPortfolioCliCommand,
+  MarketPortfolioCliOutputPort,
+} from "./market-portfolio-cli.js";
 
 export {
   accountAssetInterfaceBindingList,
@@ -42,9 +42,9 @@ export {
   declaredMcpToolNames,
   interfaceReadCapabilityRegistry,
   readInterfaceIdentities,
-  referenceMarketInterfaceBindingList,
-  referenceMarketInterfaceBindings,
-  referenceMarketPublicRoutes,
+  marketPortfolioInterfaceBindingList,
+  marketPortfolioInterfaceBindings,
+  marketPortfolioPublicRoutes,
   tokenCatalogInterfaceBindingList,
   tokenCatalogInterfaceBindings,
   tokenLocalReadIdentities,
@@ -56,7 +56,7 @@ export type {
   AccountAssetInterfaceBinding,
   CliInterfaceIdentity,
   ReadInterfaceIdentity,
-  ReferenceMarketInterfaceBinding,
+  MarketPortfolioInterfaceBinding,
 } from "./identities.js";
 
 export {

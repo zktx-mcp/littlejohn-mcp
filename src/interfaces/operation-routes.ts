@@ -5,11 +5,11 @@ import {
   type CanonicalJson,
 } from "../core/index.js";
 import {
-  referenceMarketApplicationContracts,
-  referenceMarketInterfaceErrorMappings,
-  ReferenceMarketOperationError,
-  type AnyReferenceMarketApplicationContract,
-  type ReferenceMarketApplicationPort,
+  marketPortfolioApplicationContracts,
+  marketPortfolioInterfaceErrorMappings,
+  MarketPortfolioOperationError,
+  type AnyMarketPortfolioApplicationContract,
+  type MarketPortfolioApplicationPort,
 } from "../market-portfolio/index.js";
 import type {
   RouteContext,
@@ -59,7 +59,7 @@ const nestedReviewKind = (value: unknown): CanonicalJson | undefined => {
 };
 
 const applicationResult = (
-  contract: AnyTokenCatalogApplicationContract | AnyReferenceMarketApplicationContract,
+  contract: AnyTokenCatalogApplicationContract | AnyMarketPortfolioApplicationContract,
   request: unknown,
   value: unknown,
   invalidFailure: ApplicationFailure,
@@ -211,7 +211,7 @@ const tokenRoutes = (
 ]);
 
 const watchlistRoutes = (
-  market: ReferenceMarketApplicationPort,
+  markets: MarketPortfolioApplicationPort,
 ): readonly RouteDefinition[] => Object.freeze([
   {
     method: "POST",
@@ -219,14 +219,14 @@ const watchlistRoutes = (
     pathPattern: operationControlResources.referenceWatchlist.reviews,
     successStatus: 200,
     handler: async (context) => {
-      const contract = referenceMarketApplicationContracts.watchlistChangeReview;
+      const contract = marketPortfolioApplicationContracts.watchlistChangeReview;
       const admission = admitApplicationInput(contract, context.body);
       if (!admission.ok) return failure(admission.failure);
       return applicationResult(
         contract,
         admission.value,
-        await market.reviewWatchlistChange(admission.value, context.signal),
-        new ReferenceMarketOperationError("internal_error").failure,
+        await markets.reviewWatchlistChange(admission.value, context.signal),
+        new MarketPortfolioOperationError("internal_error").failure,
       );
     },
   },
@@ -239,20 +239,20 @@ const watchlistRoutes = (
       const captured = captureCanonicalJson(context.body);
       const kind = nestedReviewKind(captured);
       const contract = kind === "add"
-        ? referenceMarketApplicationContracts.add
+        ? marketPortfolioApplicationContracts.add
         : kind === "remove"
-          ? referenceMarketApplicationContracts.remove
+          ? marketPortfolioApplicationContracts.remove
           : kind === "reorder"
-            ? referenceMarketApplicationContracts.reorder
+            ? marketPortfolioApplicationContracts.reorder
             : undefined;
-      if (contract === undefined) return failure(new ReferenceMarketOperationError("invalid_input").failure);
+      if (contract === undefined) return failure(new MarketPortfolioOperationError("invalid_input").failure);
       const admission = admitApplicationInput(contract, captured as never);
       if (!admission.ok) return failure(admission.failure);
       return applicationResult(
         contract,
         admission.value,
-        await market.decideWatchlistChange(admission.value, context.signal),
-        new ReferenceMarketOperationError("internal_error").failure,
+        await markets.decideWatchlistChange(admission.value, context.signal),
+        new MarketPortfolioOperationError("internal_error").failure,
       );
     },
   },
@@ -262,14 +262,14 @@ const watchlistRoutes = (
     pathPattern: operationControlResources.referenceWatchlist.operationPattern,
     successStatus: 200,
     handler: async (context) => {
-      const contract = referenceMarketApplicationContracts.operation;
+      const contract = marketPortfolioApplicationContracts.operation;
       const admission = admitApplicationInput(contract, { operationId: operationId(context) });
       if (!admission.ok) return failure(admission.failure);
       return applicationResult(
         contract,
         admission.value,
-        await market.getWatchlistOperation(admission.value, context.signal),
-        new ReferenceMarketOperationError("internal_error").failure,
+        await markets.getWatchlistOperation(admission.value, context.signal),
+        new MarketPortfolioOperationError("internal_error").failure,
       );
     },
   },
@@ -279,9 +279,9 @@ export const extendOperationRoutes = (input: Readonly<{
   routes: RuntimeRouteRegistry;
   wallet: WalletManagementPort;
   token: TokenCatalogManagementApplicationPort;
-  market: ReferenceMarketApplicationPort;
+  markets: MarketPortfolioApplicationPort;
 }>): RuntimeRouteRegistry => {
   const wallet = input.routes.extend(walletRoutes(input.wallet), walletInterfaceErrorMappings);
   const token = wallet.extend(tokenRoutes(input.token), tokenCatalogInterfaceErrorMappings);
-  return token.extend(watchlistRoutes(input.market), referenceMarketInterfaceErrorMappings);
+  return token.extend(watchlistRoutes(input.markets), marketPortfolioInterfaceErrorMappings);
 };

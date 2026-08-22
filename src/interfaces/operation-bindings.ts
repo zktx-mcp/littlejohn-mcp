@@ -5,8 +5,8 @@ import {
   type OperationId,
 } from "../core/index.js";
 import {
-  referenceMarketApplicationContracts,
-  referenceMarketInterfaceErrorMappings,
+  marketPortfolioApplicationContracts,
+  marketPortfolioInterfaceErrorMappings,
   type ReferenceWatchlistOperation,
 } from "../market-portfolio/index.js";
 import {
@@ -270,28 +270,28 @@ const tokenDecisionIdentity = <Kind extends "add" | "remove">(kind: Kind) => {
 };
 
 const watchlistOperationIdentity = createLocalOperationIdentity<
-  ReturnType<typeof referenceMarketApplicationContracts.operation.parseInput>,
+  ReturnType<typeof marketPortfolioApplicationContracts.operation.parseInput>,
   ReferenceWatchlistOperation
 >({
   action: "read",
-  contract: referenceMarketApplicationContracts.operation.applicationContract,
-  errorMappings: referenceMarketInterfaceErrorMappings,
+  contract: marketPortfolioApplicationContracts.operation.applicationContract,
+  errorMappings: marketPortfolioInterfaceErrorMappings,
   operationId: operationIdFromInput,
   actionRequest: (_input, operationId) => ({
     method: "GET",
     path: operationControlResources.referenceWatchlist.operation(operationId),
   }),
   parseActionResponse: (input, _operationId, value) =>
-    referenceMarketApplicationContracts.operation.parsePublicSuccess(input, value),
+    marketPortfolioApplicationContracts.operation.parsePublicSuccess(input, value),
 });
 
 const watchlistReviewIdentity = createLocalOperationIdentity<
-  ReturnType<typeof referenceMarketApplicationContracts.watchlistChangeReview.parseInput>,
-  ReturnType<typeof referenceMarketApplicationContracts.watchlistChangeReview.parsePublicSuccess>
+  ReturnType<typeof marketPortfolioApplicationContracts.watchlistChangeReview.parseInput>,
+  ReturnType<typeof marketPortfolioApplicationContracts.watchlistChangeReview.parsePublicSuccess>
 >({
   action: "read",
-  contract: referenceMarketApplicationContracts.watchlistChangeReview.applicationContract,
-  errorMappings: referenceMarketInterfaceErrorMappings,
+  contract: marketPortfolioApplicationContracts.watchlistChangeReview.applicationContract,
+  errorMappings: marketPortfolioInterfaceErrorMappings,
   operationId: () => undefined,
   actionRequest: (input) => ({
     method: "POST",
@@ -299,24 +299,24 @@ const watchlistReviewIdentity = createLocalOperationIdentity<
     body: captureCanonicalJson(input as unknown as CanonicalJson),
   }),
   parseActionResponse: (input, _operationId, value) =>
-    referenceMarketApplicationContracts.watchlistChangeReview.parsePublicSuccess(input, value),
+    marketPortfolioApplicationContracts.watchlistChangeReview.parsePublicSuccess(input, value),
 });
 
 const watchlistDecisionIdentity = <Kind extends "add" | "remove" | "reorder">(
   kind: Kind,
 ) => {
   const contract = kind === "add"
-    ? referenceMarketApplicationContracts.add
+    ? marketPortfolioApplicationContracts.add
     : kind === "remove"
-      ? referenceMarketApplicationContracts.remove
-      : referenceMarketApplicationContracts.reorder;
+      ? marketPortfolioApplicationContracts.remove
+      : marketPortfolioApplicationContracts.reorder;
   return createLocalOperationIdentity<
     ReturnType<typeof contract.parseInput>,
     ReturnType<typeof contract.parsePublicSuccess>
   >({
     action: "decide",
     contract: contract.applicationContract,
-    errorMappings: referenceMarketInterfaceErrorMappings,
+    errorMappings: marketPortfolioInterfaceErrorMappings,
     operationId: operationIdFromReview,
     actionRequest: (input) => ({
       method: "POST",

@@ -16,15 +16,18 @@ import {
   formatReferenceHistoryForCli,
   formatReferencePriceForCli,
   formatStockTokenMarketForCli,
-  parseReferenceMarketCliCommand,
-  referenceMarketCliCommandRequiresInteractiveTerminal,
-  runReferenceMarketCliCommand,
-} from "../../src/interfaces/reference-market-cli.js";
+  parseMarketPortfolioCliCommand,
+  marketPortfolioCliCommandRequiresInteractiveTerminal,
+  runMarketPortfolioCliCommand,
+} from "../../src/interfaces/market-portfolio-cli.js";
 import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
 import type { ReferenceFeedCacheSnapshot } from "../../src/runtime/reference-market-storage.js";
 import { createReferenceHistory } from "../../src/market-portfolio/candles.js";
+import { stockTokenMarketResultSchema } from
+  "../../src/market-portfolio/stock-token-market.js";
 import {
   stockTokenMarketAvailableFixture,
+  stockTokenMarketReferenceUnavailableFixture,
   stockTokenMarketUnmappedFixture,
 } from "./stock-token-market-fixture.js";
 
@@ -88,37 +91,37 @@ const history = createReferenceHistory({
   reports: new Map([[feed.feedId, traversalReport]]),
 });
 
-describe("reference-market interface boundary", () => {
+describe("market-portfolio interface boundary", () => {
   it("accepts only the fixed CLI grammar and delegates identities to the canonical schemas", () => {
     const pairId = referenceMarketManifest.pairs[0]!.pairId;
-    expect(parseReferenceMarketCliCommand(["market", "price", pairId])).toMatchObject({
+    expect(parseMarketPortfolioCliCommand(["market", "price", pairId])).toMatchObject({
       kind: "price", json: false, input: { pairId },
     });
-    expect(parseReferenceMarketCliCommand(["market", "history", pairId, "--window", "30d", "--json"]))
+    expect(parseMarketPortfolioCliCommand(["market", "history", pairId, "--window", "30d", "--json"]))
       .toMatchObject({ kind: "history", json: true, input: { pairId, window: "30d" } });
-    expect(parseReferenceMarketCliCommand(["market", "stock-token-market", "aapl"]))
+    expect(parseMarketPortfolioCliCommand(["market", "stock-token-market", "aapl"]))
       .toMatchObject({
         kind: "stockTokenMarket", json: false, input: { symbol: "AAPL", window: "1d" },
       });
-    expect(parseReferenceMarketCliCommand([
+    expect(parseMarketPortfolioCliCommand([
       "market", "stock-token-market", "AAPL", "--window", "7d", "--json",
     ])).toMatchObject({
       kind: "stockTokenMarket", json: true, input: { symbol: "AAPL", window: "7d" },
     });
-    expect(parseReferenceMarketCliCommand([
+    expect(parseMarketPortfolioCliCommand([
       "market", "add-pair", pairId, "--revision", "AAAAAAAAAAAAAAAAAAAAAA",
     ])).toMatchObject({ kind: "add", input: { pairId, expectedRevision: "AAAAAAAAAAAAAAAAAAAAAA" } });
-    const operation = parseReferenceMarketCliCommand([
+    const operation = parseMarketPortfolioCliCommand([
       "market", "watchlist-operation", Buffer.alloc(32, 23).toString("base64url"), "--json",
     ]);
     expect(operation).toMatchObject({ kind: "operation", json: true });
-    expect(referenceMarketCliCommandRequiresInteractiveTerminal(operation)).toBe(false);
-    expect(referenceMarketCliCommandRequiresInteractiveTerminal(parseReferenceMarketCliCommand([
+    expect(marketPortfolioCliCommandRequiresInteractiveTerminal(operation)).toBe(false);
+    expect(marketPortfolioCliCommandRequiresInteractiveTerminal(parseMarketPortfolioCliCommand([
       "market", "add-pair", pairId, "--revision", "AAAAAAAAAAAAAAAAAAAAAA",
     ]))).toBe(true);
-    expect(() => parseReferenceMarketCliCommand(["market", "add-pair", pairId])).toThrow();
-    expect(() => parseReferenceMarketCliCommand(["market", "history", pairId, "--window", "90d"])).toThrow();
-    expect(() => parseReferenceMarketCliCommand([
+    expect(() => parseMarketPortfolioCliCommand(["market", "add-pair", pairId])).toThrow();
+    expect(() => parseMarketPortfolioCliCommand(["market", "history", pairId, "--window", "90d"])).toThrow();
+    expect(() => parseMarketPortfolioCliCommand([
       "market", "stock-token-market", "AAPL", "--revision", "AAAAAAAAAAAAAAAAAAAAAA",
     ])).toThrow();
   });
@@ -177,18 +180,23 @@ describe("reference-market interface boundary", () => {
 
   it("projects the canonical Stock Token result without inventing price or history facts", () => {
     const available = stockTokenMarketAvailableFixture();
+    if (available.status !== "available") throw new TypeError("The mapped fixture is unavailable.");
     const output = formatStockTokenMarketForCli(available);
     expect(output).toContain("Stock Token: Apple • Robinhood Token · AAPL");
-    expect(output).toContain("Reference status: current");
-    expect(output).toContain("Reference value (USD): 925/4");
-    expect(output).toContain("Reference observed at: 2026-08-12T13:30:00.000Z");
-    expect(output).toContain("Chainlink reference history: partial");
-    expect(output).toContain("Executed trades (USDG): partial");
-    expect(output).toContain("Execution one-minute candles: 3");
+    expect(output).toContain("Oracle reference status: current");
+    expect(output).toContain("Oracle reference value denominated in USD: 925/4");
+    expect(output).toContain("Oracle reference observed at: 2026-08-12T13:30:00.000Z");
+    expect(output).toContain("USD-denominated oracle reference history: partial");
+    expect(output).toContain("Executed trades (USDG): available");
+    expect(output).toContain("Execution freshness: current");
+    expect(output).toContain("Execution source coverage: partial");
+    expect(output).toContain("Execution detail: complete");
+    expect(output).toContain("Observed execution one-minute candles: 3");
+    expect(output).toContain("Returned execution one-minute candles: 3");
     expect(output).toContain("Latest execution close: 927/4 USDG");
-    expect(output).toContain("Execution limitation: Published execution history starts");
-    expect(output).toContain("Limitation: Round traversal cannot prove");
-    expect(output).toContain("Warning: The value is a reference value");
+    expect(output).toContain("Execution coverage limitation: Published execution history starts");
+    expect(output).toContain("Oracle reference limitation: Round traversal cannot prove");
+    expect(output).toContain("Oracle reference warning: The value is a reference value");
     expect(output).not.toContain("source_history_not_exhaustive");
     expect(output).not.toContain("Oracle paused: no");
 
@@ -197,15 +205,36 @@ describe("reference-market interface boundary", () => {
       throw new TypeError("The unmapped fixture omitted its official asset.");
     }
     const unavailable = formatStockTokenMarketForCli(unavailableValue);
-    expect(unavailable).toContain("Stock Token: P");
-    expect(unavailable).toContain(`Name: ${unavailableValue.officialAsset.member.sourceName}`);
+    expect(unavailable).toContain(
+      `Stock Token: ${unavailableValue.officialAsset.member.sourceName} · P`,
+    );
     expect(unavailable).toContain(
       `Contract: ${unavailableValue.officialAsset.member.contractAddress}`,
     );
-    expect(unavailable).toContain("Status: unavailable");
+    expect(unavailable).toContain("Oracle reference value denominated in USD: unavailable");
     expect(unavailable).toContain(
-      "Reason: The admitted catalog has no reference feed for this Stock Token.",
+      "Oracle reference reason: The admitted catalog has no reference feed for this Stock Token.",
     );
+
+    const availableWithoutSourceName = structuredClone(available);
+    delete availableWithoutSourceName.officialAsset.member.sourceName;
+    const referenceUnavailableWithoutSourceName = structuredClone(
+      stockTokenMarketReferenceUnavailableFixture(),
+    );
+    if (referenceUnavailableWithoutSourceName.status !== "available") {
+      throw new TypeError("The reference-unavailable fixture is unavailable.");
+    }
+    delete referenceUnavailableWithoutSourceName.officialAsset.member.sourceName;
+    const sourceIndependentOutputs = [
+      stockTokenMarketResultSchema.parse(availableWithoutSourceName),
+      stockTokenMarketResultSchema.parse(referenceUnavailableWithoutSourceName),
+    ].map(formatStockTokenMarketForCli);
+    expect(sourceIndependentOutputs).toEqual([
+      expect.stringContaining("Stock Token: AAPL\n"),
+      expect.stringContaining("Stock Token: AAPL\n"),
+    ]);
+    expect(sourceIndependentOutputs.every((candidate) =>
+      !candidate.includes("Apple • Robinhood Token"))).toBe(true);
   });
 
   it("dispatches CLI text and JSON through the one Stock Token interface binding", async () => {
@@ -234,10 +263,10 @@ describe("reference-market interface boundary", () => {
       readLine: async (): Promise<never> => { throw new TypeError("No prompt is expected."); },
     });
     try {
-      expect(await runReferenceMarketCliCommand(
+      expect(await runMarketPortfolioCliCommand(
         runtime,
         operationClient,
-        parseReferenceMarketCliCommand(["market", "stock-token-market", "p", "--json"]),
+        parseMarketPortfolioCliCommand(["market", "stock-token-market", "p", "--json"]),
         output,
       )).toBe(0);
       expect(writes).toEqual([

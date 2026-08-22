@@ -12,7 +12,7 @@ import {
   parseUtcTimestamp,
   referenceMarketManifest,
 } from "../../../src/core/index.js";
-import { referenceMarketApplicationContracts } from "../../../src/market-portfolio/contracts.js";
+import { marketPortfolioApplicationContracts } from "../../../src/market-portfolio/contracts.js";
 import {
   tokenCatalogApplicationContracts,
   tokenSelectionDetailSchema,
@@ -48,8 +48,8 @@ const openStore = async (): Promise<PresentationSnapshotStore> => {
   return database.presentationSnapshotStore();
 };
 
-const input = referenceMarketApplicationContracts.watchlist.parseInput({});
-const watchlist = referenceMarketApplicationContracts.watchlist.parsePublicSuccess(input, {
+const input = marketPortfolioApplicationContracts.watchlist.parseInput({});
+const watchlist = marketPortfolioApplicationContracts.watchlist.parsePublicSuccess(input, {
   account: {
     chainId: "eip155:4663",
     address: "0x1111111111111111111111111111111111111111",
@@ -113,7 +113,7 @@ describe("MCP App presentation process", () => {
       createMcpAppResource("<!doctype html><main>Little John</main>"),
     );
     const presented = service.present(
-      referenceMarketApplicationContracts.watchlist,
+      marketPortfolioApplicationContracts.watchlist,
       input,
       watchlist,
       ordinaryResult(),
@@ -151,7 +151,7 @@ describe("MCP App presentation process", () => {
     );
     const ordinary = ordinaryResult();
     const presented = service.present(
-      referenceMarketApplicationContracts.watchlist,
+      marketPortfolioApplicationContracts.watchlist,
       input,
       watchlist,
       ordinary,
@@ -234,7 +234,7 @@ describe("MCP App presentation process", () => {
       createMcpAppResource("<!doctype html><main>Little John</main>"),
     );
     const presented = service.present(
-      referenceMarketApplicationContracts.watchlist,
+      marketPortfolioApplicationContracts.watchlist,
       input,
       watchlist,
       ordinaryResult(),
@@ -310,7 +310,7 @@ describe("MCP App presentation process", () => {
       createMcpAppResource("<!doctype html><main>Little John</main>"),
     );
     const creating = service.present(
-      referenceMarketApplicationContracts.watchlist,
+      marketPortfolioApplicationContracts.watchlist,
       input,
       watchlist,
       ordinaryResult(),

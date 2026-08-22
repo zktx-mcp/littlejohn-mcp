@@ -12,8 +12,11 @@ import {
 import { createDirectReferenceCandleSeries } from "../../src/market-portfolio/candles.js";
 import {
   createAvailableStockTokenMarketResult,
-  resolveStockTokenMarketAsset,
-  stockTokenHistoryInterval,
+  createAvailableStockTokenReferenceResult,
+  createUnavailableStockTokenReferenceFromFailure,
+  resolveStockTokenOfficialAsset,
+  resolveStockTokenReferenceMapping,
+  stockTokenMarketInterval,
   type StockTokenMarketResult,
 } from "../../src/market-portfolio/stock-token-market.js";
 import {
@@ -117,8 +120,10 @@ export const stockTokenMarketAvailableFixture = (): StockTokenMarketResult => {
   const request = { symbol: "AAPL", window: "1d" } as const;
   const disposition = dispositionFor(request.symbol);
   if (disposition.mapping.status !== "mapped") throw new TypeError("AAPL fixture is not mapped.");
-  const resolution = resolveStockTokenMarketAsset(request, snapshotFor(request.symbol));
-  if (resolution.status !== "mapped") throw new TypeError("AAPL fixture did not resolve.");
+  const resolution = resolveStockTokenOfficialAsset(request, snapshotFor(request.symbol));
+  if (resolution.status !== "resolved") throw new TypeError("AAPL fixture did not resolve.");
+  const referenceMapping = resolveStockTokenReferenceMapping(resolution.officialAsset);
+  if (referenceMapping.status !== "mapped") throw new TypeError("AAPL fixture is not mapped.");
   const latest = observation(disposition.mapping.feed.feedId, 3n, "2026-08-12T13:25:00.000Z");
   const older = observation(disposition.mapping.feed.feedId, 2n, "2026-08-12T12:55:00.000Z");
   const snapshot: ReferenceFeedCacheSnapshot = Object.freeze({
@@ -132,7 +137,7 @@ export const stockTokenMarketAvailableFixture = (): StockTokenMarketResult => {
     backfillStatus: "phase_boundary",
   });
   const member = resolution.officialAsset.member;
-  const interval = stockTokenHistoryInterval(request.window, stockTokenMarketFixtureBlock.blockTimestamp);
+  const interval = stockTokenMarketInterval(request.window, stockTokenMarketFixtureBlock.blockTimestamp);
   const executionAsset = findStockTokenExecutionIndexAsset(member.contractAddress);
   if (executionAsset === undefined) throw new TypeError("AAPL execution fixture is not indexed.");
   const executionCandles = ([
@@ -201,7 +206,11 @@ export const stockTokenMarketAvailableFixture = (): StockTokenMarketResult => {
         untilTimestamp: interval.requestedEnd,
       }],
       limitations: ["before_published_coverage"],
+    },
+    detail: {
+      status: "complete",
       observedCandleCount: executionCandles.length,
+      limitations: [],
     },
     candles: executionCandles,
   });
@@ -221,18 +230,16 @@ export const stockTokenMarketAvailableFixture = (): StockTokenMarketResult => {
     block: stockTokenMarketFixtureBlock,
     snapshot,
   });
-  return createAvailableStockTokenMarketResult({
-    request,
-    resolution,
+  const reference = createAvailableStockTokenReferenceResult({
+    resolution: referenceMapping,
+    officialAsset: resolution.officialAsset,
     block: stockTokenMarketFixtureBlock,
     read: Object.freeze({
       status: "observed" as const,
-      stockFactory,
       oraclePaused: false,
       latest,
     }),
     series,
-    execution,
     snapshot,
     report: Object.freeze({
       remainingContinuation: false,
@@ -240,6 +247,14 @@ export const stockTokenMarketAvailableFixture = (): StockTokenMarketResult => {
       phaseBoundaryObserved: true,
       malformedRoundObserved: false,
     }),
+  });
+  return createAvailableStockTokenMarketResult({
+    request,
+    resolution,
+    block: stockTokenMarketFixtureBlock,
+    stockFactory,
+    reference,
+    execution,
   });
 };
 
@@ -249,50 +264,66 @@ export const stockTokenMarketExecutionUnavailableFixture = (): StockTokenMarketR
   return createAvailableStockTokenMarketResult({
     request: { symbol: value.symbol, window: value.window },
     resolution: {
-      status: "mapped",
+      status: "resolved",
       officialAsset: value.officialAsset,
-      mapping: value.mapping,
     },
     block: value.block,
-    read: {
-      status: "observed",
-      stockFactory: value.stockFactory,
-      oraclePaused: value.oraclePaused.value,
-      latest: value.price.source,
-    },
-    series: {
-      coverage: value.history.coverage,
-      candles: value.history.candles,
-      sourceObservations: value.history.sourceObservations,
-    },
+    stockFactory: value.stockFactory,
+    reference: value.reference,
     execution: unavailableStockTokenExecutionSeries({
-      requestedStart: value.history.coverage.requestedStart,
-      requestedEnd: value.history.coverage.requestedEnd,
+      requestedStart: value.execution.requestedStart,
+      requestedEnd: value.execution.requestedEnd,
     }, "index_unavailable"),
-    snapshot: {
-      feedId: value.mapping.disposition.mapping.feed.feedId,
-      revision: null,
-      observations: value.history.sourceObservations,
-      backfillPhaseId: null,
-      backfillNextRoundId: null,
-      retentionCutoffRoundId: null,
-      integrityStatus: null,
-      backfillStatus: "phase_boundary",
-    },
-    report: {
-      remainingContinuation: false,
-      remainingGap: false,
-      phaseBoundaryObserved: true,
-      malformedRoundObserved: false,
-    },
+  });
+};
+
+export const stockTokenMarketReferenceUnavailableFixture = (): StockTokenMarketResult => {
+  const value = stockTokenMarketAvailableFixture();
+  if (value.status !== "available" || value.execution.status !== "available") {
+    throw new TypeError("Stock Token execution fixture is unavailable.");
+  }
+  const referenceResolution = resolveStockTokenReferenceMapping(value.officialAsset);
+  if (referenceResolution.status !== "mapped") {
+    throw new TypeError("Stock Token reference fixture is not mapped.");
+  }
+  return createAvailableStockTokenMarketResult({
+    request: { symbol: value.symbol, window: value.window },
+    resolution: { status: "resolved", officialAsset: value.officialAsset },
+    block: value.block,
+    stockFactory: value.stockFactory,
+    reference: createUnavailableStockTokenReferenceFromFailure({
+      resolution: referenceResolution,
+      officialAsset: value.officialAsset,
+      reason: "source_unavailable",
+    }),
+    execution: value.execution,
   });
 };
 
 export const stockTokenMarketUnmappedFixture = (): StockTokenMarketResult => {
-  const resolution = resolveStockTokenMarketAsset(
-    { symbol: "P", window: "1d" },
-    snapshotFor("P"),
-  );
-  if (resolution.status === "mapped") throw new TypeError("P fixture unexpectedly resolved.");
-  return resolution;
+  const request = { symbol: "P", window: "1d" } as const;
+  const resolution = resolveStockTokenOfficialAsset(request, snapshotFor(request.symbol));
+  if (resolution.status !== "resolved") throw new TypeError("P fixture did not resolve.");
+  const reference = resolveStockTokenReferenceMapping(resolution.officialAsset);
+  if (reference.status !== "unavailable") throw new TypeError("P fixture unexpectedly mapped.");
+  const member = resolution.officialAsset.member;
+  const stockFactory = stockFactoryVerificationSchema.parse({
+    assetUid: member.assetUid,
+    contractAddress: member.contractAddress,
+    block: stockTokenMarketFixtureBlock,
+    proxyAddress: stockFactoryAdmissionManifest.proxyAddress,
+    proxyCodeHash: stockFactoryAdmissionManifest.proxyCodeHash,
+    implementationAddress: stockFactoryAdmissionManifest.implementationAddress,
+    implementationCodeHash: stockFactoryAdmissionManifest.implementationCodeHash,
+    tokenCodeHash: parseHash32(`0x${"22".repeat(32)}`),
+  });
+  const interval = stockTokenMarketInterval(request.window, stockTokenMarketFixtureBlock.blockTimestamp);
+  return createAvailableStockTokenMarketResult({
+    request,
+    resolution,
+    block: stockTokenMarketFixtureBlock,
+    stockFactory,
+    reference,
+    execution: unavailableStockTokenExecutionSeries(interval, "asset_not_indexed"),
+  });
 };

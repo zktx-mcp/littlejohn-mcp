@@ -1,6 +1,6 @@
 import { z, type ZodType } from "zod";
 
-import type { StockTokenChainRead } from "../chain/index.js";
+import type { StockTokenReferenceChainRead } from "../chain/index.js";
 import {
   canonicalJsonStringify,
   canonicalSha256,
@@ -13,11 +13,12 @@ import {
   hash32Schema,
   isReferenceObservationFresh,
   jsonObject,
+  marketTimeWindowDefinitions,
+  marketTimeWindowSchema,
   productChainId,
   productChainNumericId,
   referenceCandleSchema,
   referenceHistoryWindowDefinitions,
-  referenceHistoryWindowSchema,
   referenceMarketLimits,
   referenceMarketWarningsFor,
   referenceRoundObservationSchema,
@@ -28,12 +29,11 @@ import {
   stockTokenMarketLimitationCodes,
   stockTokenMarketLimitationCodeSchema,
   stockTokenMarketWarningCodes,
-  stockTokenReferenceMarketCatalog,
   utcTimestampSchema,
   type CanonicalJson,
   type ChainAnchor,
+  type MarketTimeWindow,
   type ReferenceHistoryTraversalReport,
-  type ReferenceHistoryWindow,
   type StockTokenCatalogDisposition,
   type StockTokenMarketLimitationCode,
 } from "../core/client.js";
@@ -47,12 +47,10 @@ import {
   type OfficialAssetSnapshotEvidence,
   type OfficialAssetSourceMember,
   type StockFactoryVerification,
+  type StockFactoryVerificationResult,
 } from "../registry/official-asset-contract.js";
 import type { ReferenceFeedCacheSnapshot } from "../runtime/reference-market-storage.js";
-import {
-  createDirectReferenceCandleSeries,
-  type ReferenceCandleSeries,
-} from "./candles.js";
+import { createDirectReferenceCandleSeries, type ReferenceCandleSeries } from "./candles.js";
 import {
   findStockTokenExecutionIndexAsset,
   stockTokenExecutionSeriesSchema,
@@ -60,19 +58,15 @@ import {
 } from "./stock-token-execution-index.js";
 
 const canonicalStockTokenSymbolSchema = z.string()
-  .min(1)
-  .max(32)
-  .regex(/^[A-Z0-9][A-Z0-9.-]*$/u);
+  .min(1).max(32).regex(/^[A-Z0-9][A-Z0-9.-]*$/u);
 const requestedStockTokenSymbolSchema = z.string()
-  .min(1)
-  .max(32)
-  .regex(/^[A-Za-z0-9][A-Za-z0-9.-]*$/u)
+  .min(1).max(32).regex(/^[A-Za-z0-9][A-Za-z0-9.-]*$/u)
   .transform((value) => value.toUpperCase())
   .pipe(canonicalStockTokenSymbolSchema);
 
 export const stockTokenMarketInputSchema = jsonObject({
   symbol: requestedStockTokenSymbolSchema,
-  window: referenceHistoryWindowSchema.default("1d"),
+  window: marketTimeWindowSchema.default("1d"),
 }).strict();
 export type StockTokenMarketInput = z.infer<typeof stockTokenMarketInputSchema>;
 
@@ -80,8 +74,7 @@ export const stockTokenOfficialAssetFactSchema = jsonObject({
   member: officialAssetSourceMemberSchema,
   snapshot: officialAssetSnapshotEvidenceSchema,
 }).strict();
-export type StockTokenOfficialAssetFact =
-  z.infer<typeof stockTokenOfficialAssetFactSchema>;
+export type StockTokenOfficialAssetFact = z.infer<typeof stockTokenOfficialAssetFactSchema>;
 
 type MappedStockTokenCatalogDisposition = Extract<
   StockTokenCatalogDisposition,
@@ -92,18 +85,14 @@ type UnmappedStockTokenCatalogDisposition = Extract<
   { readonly mapping: { readonly status: "unmapped" } }
 >;
 
-export const mappedStockTokenCatalogDispositionSchema =
-  stockTokenCatalogDispositionSchema.refine(
-    (value): value is MappedStockTokenCatalogDisposition =>
-      value.mapping.status === "mapped",
-    "Expected a mapped Stock Token catalog disposition.",
-  ) as ZodType<MappedStockTokenCatalogDisposition>;
-export const unmappedStockTokenCatalogDispositionSchema =
-  stockTokenCatalogDispositionSchema.refine(
-    (value): value is UnmappedStockTokenCatalogDisposition =>
-      value.mapping.status === "unmapped",
-    "Expected an unmapped Stock Token catalog disposition.",
-  ) as ZodType<UnmappedStockTokenCatalogDisposition>;
+export const mappedStockTokenCatalogDispositionSchema = stockTokenCatalogDispositionSchema.refine(
+  (value): value is MappedStockTokenCatalogDisposition => value.mapping.status === "mapped",
+  "Expected a mapped Stock Token catalog disposition.",
+) as ZodType<MappedStockTokenCatalogDisposition>;
+export const unmappedStockTokenCatalogDispositionSchema = stockTokenCatalogDispositionSchema.refine(
+  (value): value is UnmappedStockTokenCatalogDisposition => value.mapping.status === "unmapped",
+  "Expected an unmapped Stock Token catalog disposition.",
+) as ZodType<UnmappedStockTokenCatalogDisposition>;
 
 export const stockTokenMappingFactSchema = jsonObject({
   catalog: stockTokenCatalogEvidenceSchema,
@@ -115,8 +104,9 @@ export const stockTokenOraclePauseObservationSchema = jsonObject({
   tokenAddress: officialAssetSourceMemberSchema.shape.contractAddress,
   value: z.boolean(),
 }).strict();
-export type StockTokenOraclePauseObservation =
-  z.infer<typeof stockTokenOraclePauseObservationSchema>;
+export type StockTokenOraclePauseObservation = z.infer<
+  typeof stockTokenOraclePauseObservationSchema
+>;
 
 const stockTokenPriceCommon = {
   value: exactRationalSchema,
@@ -145,9 +135,7 @@ export const stockTokenHistoryCoverageSchema = jsonObject({
       const time = Date.parse(entry);
       return time < start || time >= end;
     })
-  ) {
-    context.addIssue({ code: "custom", message: "Stock Token history coverage is invalid." });
-  }
+  ) context.addIssue({ code: "custom", message: "Stock Token history coverage is invalid." });
 });
 export type StockTokenHistoryCoverage = z.infer<typeof stockTokenHistoryCoverageSchema>;
 
@@ -181,9 +169,70 @@ const stockTokenMarketUnavailableHistoryWarnings = referenceMarketWarningsFor({
   historyStatus: "unavailable",
 });
 
+const availableStockTokenReferenceResultSchema = jsonObject({
+  status: z.literal("available"),
+  mapping: stockTokenMappingFactSchema,
+  oraclePaused: stockTokenOraclePauseObservationSchema,
+  price: stockTokenPriceSchema,
+  history: stockTokenHistorySchema,
+  warnings: z.array(z.enum(stockTokenMarketWarningCodes))
+    .min(stockTokenMarketUnavailableHistoryWarnings.length)
+    .max(stockTokenMarketWarningCodes.length),
+  limitations: z.array(stockTokenMarketLimitationCodeSchema)
+    .max(stockTokenMarketLimitationCodes.length),
+}).strict();
+
+export const stockTokenReferenceAdmissionFailureReasonSchema = z.enum([
+  "chain_response_unavailable",
+  "rate_limited",
+  "source_unavailable",
+  "source_inconsistent",
+  "runtime_busy",
+]);
+export type StockTokenReferenceAdmissionFailureReason = z.infer<
+  typeof stockTokenReferenceAdmissionFailureReasonSchema
+>;
+
+const unavailableStockTokenReferenceResultSchema = z.discriminatedUnion("reason", [
+  jsonObject({
+    status: z.literal("unavailable"),
+    reason: z.literal("mapping_unavailable"),
+    catalog: stockTokenCatalogEvidenceSchema,
+    disposition: unmappedStockTokenCatalogDispositionSchema,
+  }).strict(),
+  jsonObject({
+    status: z.literal("unavailable"),
+    reason: z.literal("mapping_catalog_outdated"),
+    catalog: stockTokenCatalogEvidenceSchema,
+    conflict: z.discriminatedUnion("status", [
+      jsonObject({ status: z.literal("uid_absent") }).strict(),
+      jsonObject({
+        status: z.literal("identity_mismatch"),
+        generatedAsset: stockTokenCatalogAssetSchema,
+      }).strict(),
+    ]),
+  }).strict(),
+  jsonObject({
+    status: z.literal("unavailable"),
+    reason: z.literal("no_valid_observation"),
+    mapping: stockTokenMappingFactSchema,
+    oraclePaused: stockTokenOraclePauseObservationSchema,
+  }).strict(),
+  jsonObject({
+    status: z.literal("unavailable"),
+    reason: stockTokenReferenceAdmissionFailureReasonSchema,
+  }).strict(),
+]);
+
+export const stockTokenReferenceResultSchema = z.discriminatedUnion("status", [
+  availableStockTokenReferenceResultSchema,
+  unavailableStockTokenReferenceResultSchema,
+]);
+export type StockTokenReferenceResult = z.infer<typeof stockTokenReferenceResultSchema>;
+
 const stockTokenResultCommon = {
   symbol: canonicalStockTokenSymbolSchema,
-  window: referenceHistoryWindowSchema,
+  window: marketTimeWindowSchema,
 } as const;
 const unavailableStockFactoryVerificationSchema = stockFactoryVerificationResultSchema.refine(
   (value): value is Extract<typeof value, { readonly status: "unavailable" }> =>
@@ -195,18 +244,10 @@ const availableStockTokenMarketResultSchema = jsonObject({
   status: z.literal("available"),
   ...stockTokenResultCommon,
   officialAsset: stockTokenOfficialAssetFactSchema,
-  mapping: stockTokenMappingFactSchema,
   block: chainAnchorSchema,
   stockFactory: stockFactoryVerificationSchema,
-  oraclePaused: stockTokenOraclePauseObservationSchema,
-  price: stockTokenPriceSchema,
-  history: stockTokenHistorySchema,
+  reference: stockTokenReferenceResultSchema,
   execution: stockTokenExecutionSeriesSchema,
-  warnings: z.array(z.enum(stockTokenMarketWarningCodes))
-    .min(stockTokenMarketUnavailableHistoryWarnings.length)
-    .max(stockTokenMarketWarningCodes.length),
-  limitations: z.array(stockTokenMarketLimitationCodeSchema)
-    .max(stockTokenMarketLimitationCodes.length),
 }).strict();
 
 const unavailableStockTokenMarketResultSchema = z.discriminatedUnion("reason", [
@@ -225,58 +266,21 @@ const unavailableStockTokenMarketResultSchema = z.discriminatedUnion("reason", [
   }).strict(),
   jsonObject({
     status: z.literal("unavailable"),
-    reason: z.literal("mapping_unavailable"),
-    ...stockTokenResultCommon,
-    officialAsset: stockTokenOfficialAssetFactSchema,
-    catalog: stockTokenCatalogEvidenceSchema,
-    disposition: unmappedStockTokenCatalogDispositionSchema,
-  }).strict(),
-  jsonObject({
-    status: z.literal("unavailable"),
-    reason: z.literal("mapping_catalog_outdated"),
-    ...stockTokenResultCommon,
-    officialAsset: stockTokenOfficialAssetFactSchema,
-    catalog: stockTokenCatalogEvidenceSchema,
-    conflict: z.discriminatedUnion("status", [
-      jsonObject({ status: z.literal("uid_absent") }).strict(),
-      jsonObject({
-        status: z.literal("identity_mismatch"),
-        generatedAsset: stockTokenCatalogAssetSchema,
-      }).strict(),
-    ]),
-  }).strict(),
-  jsonObject({
-    status: z.literal("unavailable"),
     reason: z.literal("stock_factory_unavailable"),
     ...stockTokenResultCommon,
     officialAsset: stockTokenOfficialAssetFactSchema,
-    mapping: stockTokenMappingFactSchema,
     block: chainAnchorSchema,
     stockFactory: unavailableStockFactoryVerificationSchema,
-  }).strict(),
-  jsonObject({
-    status: z.literal("unavailable"),
-    reason: z.literal("market_observation_unavailable"),
-    ...stockTokenResultCommon,
-    officialAsset: stockTokenOfficialAssetFactSchema,
-    mapping: stockTokenMappingFactSchema,
-    block: chainAnchorSchema,
-    stockFactory: stockFactoryVerificationSchema,
-    oraclePaused: stockTokenOraclePauseObservationSchema,
-    observationReason: z.literal("no_valid_observation"),
   }).strict(),
 ]);
 
 const sameCanonicalValue = (left: unknown, right: unknown): boolean =>
   canonicalJsonStringify(left as CanonicalJson) === canonicalJsonStringify(right as CanonicalJson);
-const exactOrderedSubset = <Value>(
-  values: readonly Value[],
-  ownerOrder: readonly Value[],
-): boolean => new Set(values).size === values.length &&
+const exactOrderedSubset = <Value>(values: readonly Value[], ownerOrder: readonly Value[]): boolean =>
+  new Set(values).size === values.length &&
   values.every((value) => ownerOrder.includes(value)) &&
   values.every((value, index) => index === 0 ||
     ownerOrder.indexOf(values[index - 1]!) < ownerOrder.indexOf(value));
-
 const catalogMatches = (catalog: unknown): boolean =>
   canonicalSha256(catalog as CanonicalJson) ===
     canonicalSha256(stockTokenCatalogEvidence as unknown as CanonicalJson);
@@ -293,25 +297,24 @@ const officialAssetMatchesDisposition = (
     (disposition.mapping.status !== "mapped" ||
       disposition.mapping.selectedDeployment.contractAddress === member.contractAddress);
 };
-const isExactCatalogDisposition = (
-  disposition: StockTokenCatalogDisposition,
-): boolean => {
+const isExactCatalogDisposition = (disposition: StockTokenCatalogDisposition): boolean => {
   const current = findStockTokenCatalogDisposition(disposition.asset.assetUid);
   return current !== undefined && sameCanonicalValue(current, disposition);
 };
 
-const validateAvailableResult = (
-  value: z.infer<typeof availableStockTokenMarketResultSchema>,
+const validateAvailableReference = (
+  value: z.infer<typeof availableStockTokenReferenceResultSchema>,
+  member: OfficialAssetSourceMember,
+  window: MarketTimeWindow,
+  block: ChainAnchor,
   context: z.core.$RefinementCtx,
 ): void => {
   const disposition = value.mapping.disposition;
-  const member = value.officialAsset.member;
   const feedId = disposition.mapping.feed.feedId;
   const source = value.price.source;
-  const sourceIsFresh = isReferenceObservationFresh(source, value.block.blockTimestamp);
+  const sourceIsFresh = isReferenceObservationFresh(source, block.blockTimestamp);
   const expectedPriceStatus = !value.oraclePaused.value && sourceIsFresh
-    ? "current"
-    : "last_observed";
+    ? "current" : "last_observed";
   const expectedObservableLimitations = [
     ...(value.oraclePaused.value ? ["oracle_paused" as const] : []),
     ...(!sourceIsFresh ? ["observation_not_fresh" as const] : []),
@@ -320,19 +323,17 @@ const validateAvailableResult = (
     result: "stock_token",
     historyStatus: value.history.status,
   });
-  const maximumCandles = referenceHistoryWindowDefinitions[value.window].maximumBuckets;
   const candleFeedIds = value.history.candles.flatMap((candle) => [
     ...candle.openSourcePointers,
     ...candle.highSourcePointers,
     ...candle.lowSourcePointers,
     ...candle.closeSourcePointers,
   ]).map((pointer) => pointer.feedId);
-  const interval = stockTokenHistoryInterval(value.window, value.block.blockTimestamp);
-  const executionAsset = findStockTokenExecutionIndexAsset(member.contractAddress);
+  const interval = stockTokenMarketInterval(window, block.blockTimestamp);
   const expectedSeries = createDirectReferenceCandleSeries({
     feedId,
-    window: value.window,
-    block: value.block,
+    window,
+    block,
     snapshot: {
       feedId,
       revision: null,
@@ -345,31 +346,18 @@ const validateAvailableResult = (
     },
   });
   if (
-    value.symbol !== member.sourceSymbol ||
     !isExactCatalogDisposition(disposition) ||
     !officialAssetMatchesDisposition(member, disposition) ||
     !catalogMatches(value.mapping.catalog) ||
-    value.block.chainId !== productChainId ||
-    value.block.chainId !== value.stockFactory.block.chainId ||
-    canonicalSha256(value.block) !== canonicalSha256(value.stockFactory.block) ||
-    value.stockFactory.assetUid !== member.assetUid ||
-    value.stockFactory.contractAddress !== member.contractAddress ||
     value.oraclePaused.tokenAddress !== member.contractAddress ||
     source.fact.feedId !== feedId ||
-    canonicalSha256(source.readEvidence.block) !== canonicalSha256(value.block) ||
+    canonicalSha256(source.readEvidence.block) !== canonicalSha256(block) ||
     value.price.status !== expectedPriceStatus ||
     !sameCanonicalValue(value.price.value, source.fact.value) ||
-    value.history.candles.length > maximumCandles ||
+    value.history.candles.length > referenceHistoryWindowDefinitions[window].maximumBuckets ||
     value.history.coverage.requestedStart !== interval.requestedStart ||
     value.history.coverage.requestedEnd !== interval.requestedEnd ||
-    value.execution.requestedStart !== interval.requestedStart ||
-    value.execution.requestedEnd !== interval.requestedEnd ||
-    (value.execution.status === "available" &&
-      (executionAsset === undefined || value.execution.source.poolId !== executionAsset.poolId)) ||
-    (value.execution.status === "unavailable" &&
-      ((value.execution.reason === "asset_not_indexed") !== (executionAsset === undefined))) ||
-    value.history.sourceObservations.some((observation) =>
-      observation.fact.feedId !== feedId) ||
+    value.history.sourceObservations.some((observation) => observation.fact.feedId !== feedId) ||
     !sameCanonicalValue(value.history.coverage, expectedSeries.coverage) ||
     !sameCanonicalValue(value.history.candles, expectedSeries.candles) ||
     !sameCanonicalValue(value.history.sourceObservations, expectedSeries.sourceObservations) ||
@@ -381,8 +369,84 @@ const validateAvailableResult = (
     value.limitations.includes("observation_not_fresh") !== !sourceIsFresh ||
     value.limitations.includes("empty_history") !== (value.history.status === "unavailable") ||
     !sameCanonicalValue(value.warnings, expectedWarnings)
-  ) {
-    context.addIssue({ code: "custom", message: "Stock Token market result is inconsistent." });
+  ) context.addIssue({ code: "custom", message: "Stock Token reference result is inconsistent." });
+};
+
+const validateUnavailableReference = (
+  value: z.infer<typeof unavailableStockTokenReferenceResultSchema>,
+  member: OfficialAssetSourceMember,
+  expectedResolution: StockTokenReferenceMappingResolution,
+  context: z.core.$RefinementCtx,
+): void => {
+  if (value.reason === "mapping_unavailable") {
+    if (
+      expectedResolution.status === "mapped" ||
+      !sameCanonicalValue(value, expectedResolution) ||
+      !catalogMatches(value.catalog) ||
+      !isExactCatalogDisposition(value.disposition) ||
+      !officialAssetMatchesDisposition(member, value.disposition)
+    ) context.addIssue({ code: "custom", message: "Stock Token unavailable mapping is inconsistent." });
+    return;
+  }
+  if (value.reason === "mapping_catalog_outdated") {
+    const current = findStockTokenCatalogDisposition(member.assetUid);
+    if (
+      expectedResolution.status === "mapped" ||
+      !sameCanonicalValue(value, expectedResolution) ||
+      !catalogMatches(value.catalog) ||
+      (value.conflict.status === "uid_absent" && current !== undefined) ||
+      (value.conflict.status === "identity_mismatch" &&
+        (current === undefined ||
+          !sameCanonicalValue(current.asset, value.conflict.generatedAsset) ||
+          officialAssetMatchesDisposition(member, current)))
+    ) context.addIssue({ code: "custom", message: "Stock Token mapping conflict is invalid." });
+    return;
+  }
+  if (expectedResolution.status !== "mapped") {
+    context.addIssue({ code: "custom", message: "Stock Token reference admission requires a mapped asset." });
+    return;
+  }
+  if (value.reason === "no_valid_observation") {
+    const disposition = value.mapping.disposition;
+    if (
+      !catalogMatches(value.mapping.catalog) ||
+      !isExactCatalogDisposition(disposition) ||
+      !officialAssetMatchesDisposition(member, disposition) ||
+      value.oraclePaused.tokenAddress !== member.contractAddress
+    ) context.addIssue({ code: "custom", message: "Stock Token reference absence is inconsistent." });
+  }
+};
+
+const validateAvailableResult = (
+  value: z.infer<typeof availableStockTokenMarketResultSchema>,
+  context: z.core.$RefinementCtx,
+): void => {
+  const member = value.officialAsset.member;
+  const interval = stockTokenMarketInterval(value.window, value.block.blockTimestamp);
+  const executionAsset = findStockTokenExecutionIndexAsset(member.contractAddress);
+  const expectedReferenceResolution = resolveStockTokenReferenceMapping(value.officialAsset);
+  if (
+    value.symbol !== member.sourceSymbol ||
+    value.block.chainId !== productChainId ||
+    value.block.chainId !== value.stockFactory.block.chainId ||
+    canonicalSha256(value.block) !== canonicalSha256(value.stockFactory.block) ||
+    value.stockFactory.assetUid !== member.assetUid ||
+    value.stockFactory.contractAddress !== member.contractAddress ||
+    value.execution.requestedStart !== interval.requestedStart ||
+    value.execution.requestedEnd !== interval.requestedEnd ||
+    (value.execution.status === "available" &&
+      (executionAsset === undefined || value.execution.source.poolId !== executionAsset.poolId)) ||
+    (value.execution.status === "unavailable" &&
+      ((value.execution.reason === "asset_not_indexed") !== (executionAsset === undefined)))
+  ) context.addIssue({ code: "custom", message: "Stock Token market result is inconsistent." });
+  if (value.reference.status === "available") {
+    if (
+      expectedReferenceResolution.status !== "mapped" ||
+      !sameCanonicalValue(value.reference.mapping, expectedReferenceResolution.mapping)
+    ) context.addIssue({ code: "custom", message: "Stock Token reference mapping is inconsistent." });
+    validateAvailableReference(value.reference, member, value.window, value.block, context);
+  } else {
+    validateUnavailableReference(value.reference, member, expectedReferenceResolution, context);
   }
 };
 
@@ -399,57 +463,12 @@ const validateUnavailableResult = (
     return;
   }
   if (value.reason === "official_asset_not_found") return;
-  if (!catalogMatches(value.reason === "mapping_unavailable" ||
-    value.reason === "mapping_catalog_outdated" ? value.catalog : value.mapping.catalog)) {
-    context.addIssue({ code: "custom", message: "Stock Token catalog evidence is invalid." });
-    return;
-  }
   const member = value.officialAsset.member;
-  if (value.symbol !== member.sourceSymbol) {
-    context.addIssue({ code: "custom", message: "Stock Token selector is inconsistent." });
-    return;
-  }
-  if (value.reason === "mapping_unavailable") {
-    if (
-      !isExactCatalogDisposition(value.disposition) ||
-      !officialAssetMatchesDisposition(member, value.disposition)
-    ) {
-      context.addIssue({ code: "custom", message: "Stock Token unavailable mapping is inconsistent." });
-    }
-    return;
-  }
-  if (value.reason === "mapping_catalog_outdated") {
-    const current = findStockTokenCatalogDisposition(member.assetUid);
-    if (
-      (value.conflict.status === "uid_absent" && current !== undefined) ||
-      (value.conflict.status === "identity_mismatch" &&
-        (current === undefined ||
-          sameCanonicalValue(current.asset, value.conflict.generatedAsset) === false ||
-          officialAssetMatchesDisposition(member, current)))
-    ) context.addIssue({ code: "custom", message: "Stock Token mapping conflict is invalid." });
-    return;
-  }
-  const disposition = value.mapping.disposition;
   if (
-    !isExactCatalogDisposition(disposition) ||
-    !officialAssetMatchesDisposition(member, disposition) ||
-    value.block.chainId !== productChainId
-  ) {
-    context.addIssue({ code: "custom", message: "Stock Token unavailable result is inconsistent." });
-    return;
-  }
-  if (value.reason === "stock_factory_unavailable") {
-    if (!sameCanonicalValue(value.stockFactory.member, member)) {
-      context.addIssue({ code: "custom", message: "StockFactory unavailable member is inconsistent." });
-    }
-    return;
-  }
-  if (
-    value.stockFactory.assetUid !== member.assetUid ||
-    value.stockFactory.contractAddress !== member.contractAddress ||
-    canonicalSha256(value.stockFactory.block) !== canonicalSha256(value.block) ||
-    value.oraclePaused.tokenAddress !== member.contractAddress
-  ) context.addIssue({ code: "custom", message: "Stock Token observation failure is inconsistent." });
+    value.symbol !== member.sourceSymbol ||
+    value.block.chainId !== productChainId ||
+    !sameCanonicalValue(value.stockFactory.member, member)
+  ) context.addIssue({ code: "custom", message: "StockFactory unavailable result is inconsistent." });
 };
 
 export const stockTokenMarketResultSchema = z.union([
@@ -471,30 +490,21 @@ const snapshotEvidence = (
   }));
 };
 
-export type StockTokenMarketAssetResolution =
-  | Readonly<{
-      status: "mapped";
-      officialAsset: StockTokenOfficialAssetFact;
-      mapping: StockTokenMappingFact;
-    }>
+export type StockTokenOfficialAssetResolution =
+  | Readonly<{ status: "resolved"; officialAsset: StockTokenOfficialAssetFact }>
   | Extract<StockTokenMarketResult, {
       readonly status: "unavailable";
-      readonly reason:
-        | "official_asset_not_found"
-        | "official_asset_symbol_ambiguous"
-        | "mapping_unavailable"
-        | "mapping_catalog_outdated";
+      readonly reason: "official_asset_not_found" | "official_asset_symbol_ambiguous";
     }>;
-
-export type MappedStockTokenMarketAssetResolution = Extract<
-  StockTokenMarketAssetResolution,
-  { readonly status: "mapped" }
+export type ResolvedStockTokenOfficialAsset = Extract<
+  StockTokenOfficialAssetResolution,
+  { readonly status: "resolved" }
 >;
 
-export const resolveStockTokenMarketAsset = (
+export const resolveStockTokenOfficialAsset = (
   inputValue: unknown,
   snapshotInput: CommittedOfficialAssetSnapshot,
-): StockTokenMarketAssetResolution => {
+): StockTokenOfficialAssetResolution => {
   const input = stockTokenMarketInputSchema.parse(captureCanonicalJson(inputValue));
   const snapshot = committedOfficialAssetSnapshotSchema.parse(snapshotInput);
   const evidence = snapshotEvidence(snapshot);
@@ -515,20 +525,36 @@ export const resolveStockTokenMarketAsset = (
       symbol: input.symbol,
       window: input.window,
       snapshot: evidence,
-      candidateAssetUids: candidates.map((member) => member.assetUid)
-        .sort(compareCodePointSequences),
+      candidateAssetUids: candidates.map((member) => member.assetUid).sort(compareCodePointSequences),
     });
   }
-  const member = candidates[0]!;
-  const officialAsset = deepFreezeValue({ member, snapshot: evidence });
+  return deepFreezeValue({
+    status: "resolved",
+    officialAsset: { member: candidates[0]!, snapshot: evidence },
+  });
+};
+
+export type StockTokenReferenceMappingResolution =
+  | Readonly<{ status: "mapped"; mapping: StockTokenMappingFact }>
+  | Extract<StockTokenReferenceResult, {
+      readonly status: "unavailable";
+      readonly reason: "mapping_unavailable" | "mapping_catalog_outdated";
+    }>;
+export type MappedStockTokenReferenceResolution = Extract<
+  StockTokenReferenceMappingResolution,
+  { readonly status: "mapped" }
+>;
+
+export const resolveStockTokenReferenceMapping = (
+  officialAssetInput: StockTokenOfficialAssetFact,
+): StockTokenReferenceMappingResolution => {
+  const officialAsset = stockTokenOfficialAssetFactSchema.parse(officialAssetInput);
+  const member = officialAsset.member;
   const disposition = findStockTokenCatalogDisposition(member.assetUid);
   if (disposition === undefined) {
     return deepFreezeValue({
       status: "unavailable",
       reason: "mapping_catalog_outdated",
-      symbol: input.symbol,
-      window: input.window,
-      officialAsset,
       catalog: stockTokenCatalogEvidence,
       conflict: { status: "uid_absent" },
     });
@@ -537,83 +563,84 @@ export const resolveStockTokenMarketAsset = (
     return deepFreezeValue({
       status: "unavailable",
       reason: "mapping_catalog_outdated",
-      symbol: input.symbol,
-      window: input.window,
-      officialAsset,
       catalog: stockTokenCatalogEvidence,
       conflict: { status: "identity_mismatch", generatedAsset: disposition.asset },
     });
   }
   if (disposition.mapping.status === "unmapped") {
-    const unavailableDisposition =
-      unmappedStockTokenCatalogDispositionSchema.parse(disposition);
     return deepFreezeValue({
       status: "unavailable",
       reason: "mapping_unavailable",
-      symbol: input.symbol,
-      window: input.window,
-      officialAsset,
       catalog: stockTokenCatalogEvidence,
-      disposition: unavailableDisposition,
+      disposition: unmappedStockTokenCatalogDispositionSchema.parse(disposition),
     });
   }
-  const mappedDisposition = mappedStockTokenCatalogDispositionSchema.parse(disposition);
   return deepFreezeValue({
     status: "mapped",
-    officialAsset,
-    mapping: { catalog: stockTokenCatalogEvidence, disposition: mappedDisposition },
+    mapping: {
+      catalog: stockTokenCatalogEvidence,
+      disposition: mappedStockTokenCatalogDispositionSchema.parse(disposition),
+    },
   });
 };
 
-export const createStockTokenMarketUnavailableAfterChainRead = (input: Readonly<{
+export const createStockTokenMarketUnavailableAfterStockFactoryRead = (input: Readonly<{
   request: StockTokenMarketInput;
-  resolution: MappedStockTokenMarketAssetResolution;
+  resolution: ResolvedStockTokenOfficialAsset;
   block: ChainAnchor;
-  read: Exclude<StockTokenChainRead, { readonly status: "observed" }>;
-}>): StockTokenMarketResult => {
-  const common = {
-    status: "unavailable" as const,
-    symbol: input.request.symbol,
-    window: input.request.window,
-    officialAsset: input.resolution.officialAsset,
-    mapping: input.resolution.mapping,
-    block: input.block,
-    stockFactory: input.read.stockFactory,
-  };
-  return parseStockTokenMarketResult(input.request, input.read.status === "stock_factory_unavailable"
-    ? {
-        ...common,
-        reason: "stock_factory_unavailable",
-      }
-    : {
-        ...common,
-        reason: "market_observation_unavailable",
-        oraclePaused: {
-          tokenAddress: input.resolution.officialAsset.member.contractAddress,
-          value: input.read.oraclePaused,
-        },
-        observationReason: "no_valid_observation",
-      });
+  stockFactory: Extract<StockFactoryVerificationResult, { readonly status: "unavailable" }>;
+}>): StockTokenMarketResult => parseStockTokenMarketResult(input.request, {
+  status: "unavailable",
+  reason: "stock_factory_unavailable",
+  symbol: input.request.symbol,
+  window: input.request.window,
+  officialAsset: input.resolution.officialAsset,
+  block: input.block,
+  stockFactory: input.stockFactory,
+});
+
+export const createUnavailableStockTokenReferenceAfterRead = (input: Readonly<{
+  resolution: MappedStockTokenReferenceResolution;
+  officialAsset: StockTokenOfficialAssetFact;
+  read: Extract<StockTokenReferenceChainRead, { readonly status: "unavailable" }>;
+}>): StockTokenReferenceResult => deepFreezeValue(stockTokenReferenceResultSchema.parse({
+  status: "unavailable",
+  reason: input.read.reason,
+  mapping: input.resolution.mapping,
+  oraclePaused: {
+    tokenAddress: input.officialAsset.member.contractAddress,
+    value: input.read.oraclePaused,
+  },
+}));
+
+export const createUnavailableStockTokenReferenceFromFailure = (input: Readonly<{
+  resolution: MappedStockTokenReferenceResolution;
+  officialAsset: StockTokenOfficialAssetFact;
+  reason: StockTokenReferenceAdmissionFailureReason;
+}>): StockTokenReferenceResult => {
+  const expectedResolution = resolveStockTokenReferenceMapping(input.officialAsset);
+  if (
+    expectedResolution.status !== "mapped" ||
+    !sameCanonicalValue(input.resolution, expectedResolution)
+  ) throw new TypeError("Stock Token reference failure requires the exact mapped asset.");
+  return deepFreezeValue(stockTokenReferenceResultSchema.parse({
+    status: "unavailable",
+    reason: input.reason,
+  }));
 };
 
-export const createAvailableStockTokenMarketResult = (input: Readonly<{
-  request: StockTokenMarketInput;
-  resolution: MappedStockTokenMarketAssetResolution;
+export const createAvailableStockTokenReferenceResult = (input: Readonly<{
+  resolution: MappedStockTokenReferenceResolution;
+  officialAsset: StockTokenOfficialAssetFact;
   block: ChainAnchor;
-  read: Extract<StockTokenChainRead, { readonly status: "observed" }>;
+  read: Extract<StockTokenReferenceChainRead, { readonly status: "observed" }>;
   series: ReferenceCandleSeries;
   snapshot: ReferenceFeedCacheSnapshot;
   report: ReferenceHistoryTraversalReport;
-  execution: StockTokenExecutionSeries;
-}>): StockTokenMarketResult => {
-  const sourceIsFresh = isReferenceObservationFresh(
-    input.read.latest,
-    input.block.blockTimestamp,
-  );
+}>): StockTokenReferenceResult => {
+  const sourceIsFresh = isReferenceObservationFresh(input.read.latest, input.block.blockTimestamp);
   const historyAvailable = input.series.candles.length > 0;
-  const historyStatus: StockTokenHistory["status"] = historyAvailable
-    ? "partial"
-    : "unavailable";
+  const historyStatus: StockTokenHistory["status"] = historyAvailable ? "partial" : "unavailable";
   const limitationSet = new Set<StockTokenMarketLimitationCode>([
     "source_history_not_exhaustive",
     ...(input.read.oraclePaused ? ["oracle_paused" as const] : []),
@@ -626,16 +653,11 @@ export const createAvailableStockTokenMarketResult = (input: Readonly<{
     ...(!historyAvailable ? ["empty_history" as const] : []),
   ]);
   const limitations = stockTokenMarketLimitationCodes.filter((code) => limitationSet.has(code));
-  return parseStockTokenMarketResult(input.request, {
+  return deepFreezeValue(stockTokenReferenceResultSchema.parse({
     status: "available",
-    symbol: input.request.symbol,
-    window: input.request.window,
-    officialAsset: input.resolution.officialAsset,
     mapping: input.resolution.mapping,
-    block: input.block,
-    stockFactory: input.read.stockFactory as StockFactoryVerification,
     oraclePaused: {
-      tokenAddress: input.resolution.officialAsset.member.contractAddress,
+      tokenAddress: input.officialAsset.member.contractAddress,
       value: input.read.oraclePaused,
     },
     price: {
@@ -657,11 +679,28 @@ export const createAvailableStockTokenMarketResult = (input: Readonly<{
           candles: [],
           sourceObservations: [],
         },
-    execution: input.execution,
     warnings: referenceMarketWarningsFor({ result: "stock_token", historyStatus }),
     limitations,
-  });
+  }));
 };
+
+export const createAvailableStockTokenMarketResult = (input: Readonly<{
+  request: StockTokenMarketInput;
+  resolution: ResolvedStockTokenOfficialAsset;
+  block: ChainAnchor;
+  stockFactory: StockFactoryVerification;
+  reference: StockTokenReferenceResult;
+  execution: StockTokenExecutionSeries;
+}>): StockTokenMarketResult => parseStockTokenMarketResult(input.request, {
+  status: "available",
+  symbol: input.request.symbol,
+  window: input.request.window,
+  officialAsset: input.resolution.officialAsset,
+  block: input.block,
+  stockFactory: input.stockFactory,
+  reference: input.reference,
+  execution: input.execution,
+});
 
 export const parseStockTokenMarketResult = (
   inputValue: unknown,
@@ -675,15 +714,20 @@ export const parseStockTokenMarketResult = (
   return deepFreezeValue(result);
 };
 
-export const stockTokenHistoryInterval = (
-  window: ReferenceHistoryWindow,
+export const stockTokenMarketInterval = (
+  window: MarketTimeWindow,
   blockTimestamp: string,
-): Readonly<{ requestedStart: string; requestedEnd: string }> => {
+): StockTokenMarketInterval => {
   const requestedEnd = Date.parse(blockTimestamp);
   return Object.freeze({
     requestedStart: new Date(
-      requestedEnd - referenceHistoryWindowDefinitions[window].windowMilliseconds,
+      requestedEnd - marketTimeWindowDefinitions[window].durationMilliseconds,
     ).toISOString(),
     requestedEnd: new Date(requestedEnd).toISOString(),
   });
 };
+
+export type StockTokenMarketInterval = Readonly<{
+  requestedStart: string;
+  requestedEnd: string;
+}>;

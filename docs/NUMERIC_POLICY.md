@@ -339,9 +339,14 @@ merge an equal-valued limit, or reinterpret a feature-private capacity.
   the candidate time and requires each selected observation to be within its
   feed heartbeat. It never fills from the future, interpolates, averages, or
   substitutes a midpoint.
-- The `1d`, `7d`, and `30d` windows use UTC buckets of 15 minutes, 1 hour, and 4
-  hours respectively. Each candle's open and close are the first and last exact
-  points in its bucket; high and low use exact rational comparison. A natural
+- The neutral `1d`, `7d`, and `30d` market request durations are exactly 24
+  hours, 7 days, and 30 days. A consumer applies only its own numeric
+  representation rules after receiving that duration. Chainlink reference
+  buckets do not define an execution interval, resolution, or capacity.
+- Reference history applies UTC buckets of 15 minutes, 1 hour, and 4 hours to
+  the `1d`, `7d`, and `30d` durations respectively. Each candle's open and
+  close are the first and last exact points in its bucket; high and low use
+  exact rational comparison. A natural
   bucket `[openedAt, naturalEnd)` is closed when `naturalEnd` is not later than
   the canonical block time and excludes a point exactly at `naturalEnd`. Only a
   bucket truncated by a block time before `naturalEnd` is open, and it includes
@@ -352,19 +357,25 @@ merge an equal-valued limit, or reinterpret a feature-private capacity.
   admitted point appears in that bucket; neither a candle nor an empty bucket
   proves exhaustive source history. Every candle has no trade volume.
 - One Stock Token market result keeps two numeric series separate. Its
-  Chainlink Total Return Value and reference history are denominated in USD and
-  retain the direct-feed rules above. Its Uniswap V4 executed-trade history is
+  Chainlink Total Return Value is an oracle reference value denominated in USD;
+  that value and its reference history retain the direct-feed rules above. They
+  are not a Stock Token/USD trading pair. The Uniswap V4 execution series is
   denominated in USDG and contains exact one-minute OHLC values, raw Stock
   Token and USDG volumes, and trade count derived by the admitted index from
   exact `Swap` events. Little John does not convert USDG to USD, compare the two
   series as equal units, merge their candles, interpolate a missing interval,
   or derive either series from the other.
 - The Chainlink reference chart admits at most 180 candles and 720 distinct
-  source observations. The execution chart admits at most the most recent
-  3,072 exact one-minute candles from the requested interval and reports any
-  earlier result-capacity loss. A valid current or last-observed reference
-  value can coexist with partial, stale, unavailable, retained-out, or
-  capacity-limited execution history; neither outcome changes the other.
+  source observations. The execution result admits at most the most recent
+  3,072 exact one-minute candles from the requested interval. Its detail state
+  reports the exact pre-slice candle count and only the loss caused by that
+  returned-list capacity. Source coverage is derived only from admitted
+  continuous coverage intervals. Artifact freshness is derived only from the
+  artifact coverage timestamp. Detail capacity, source coverage, and artifact
+  freshness cannot change or stand in for one another. A valid current or
+  last-observed reference value can coexist with partial, stale, unavailable,
+  retained-out, or capacity-limited execution history; neither outcome changes
+  the other.
 - Human-interface chart coordinates may use only the non-authoritative
   floating-point projection allowed by [`Charts`](#charts). Exact rational
   OHLC values remain visible beside that projection and are the only values

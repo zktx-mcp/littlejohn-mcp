@@ -25,8 +25,7 @@ import {
   type ReferenceRoundObservation,
 } from "../../src/core/index.js";
 import {
-  getReferenceMarketOperationFailure,
-  ReferenceMarketOperationError,
+  getMarketPortfolioOperationFailure,
 } from "../../src/market-portfolio/errors.js";
 import { ReferenceFeedSynchronizationOwner } from "../../src/market-portfolio/synchronization.js";
 import type {
@@ -72,7 +71,7 @@ const synchronize = (
   context,
 }));
 
-const unexpectedStockTokenRead: ReferenceMarketChainReadPort["readStockTokenAtBlock"] =
+const unexpectedStockTokenRead: ReferenceMarketChainReadPort["readStockTokenReferenceAtBlock"] =
   async () => { throw new Error("Stock Token reads are outside synchronization tests."); };
 
 const observation = (
@@ -219,7 +218,7 @@ describe("reference feed synchronization ownership", () => {
         chain: {
           resolveCurrentBlock: async () => { throw new Error("Unexpected block resolution."); },
           readLatestAtBlock: async () => [],
-          readStockTokenAtBlock: unexpectedStockTokenRead,
+          readStockTokenReferenceAtBlock: unexpectedStockTokenRead,
           readHistoryAtBlock: scenario.read,
         },
         store: trackedStore,
@@ -237,7 +236,7 @@ describe("reference feed synchronization ownership", () => {
       if (outcome.status === "rejected") {
         if (scenario.expectedFailure === anyRejectedReason) {
           expect(getChainOperationFailure(outcome.reason), scenario.name).toBeUndefined();
-          expect(getReferenceMarketOperationFailure(outcome.reason), scenario.name).toBeUndefined();
+          expect(getMarketPortfolioOperationFailure(outcome.reason), scenario.name).toBeUndefined();
         } else {
           expect(outcome.reason, scenario.name).toBe(scenario.expectedFailure);
         }
@@ -259,7 +258,7 @@ describe("reference feed synchronization ownership", () => {
     const chain: ReferenceMarketChainReadPort = {
       resolveCurrentBlock: async () => { throw new Error("Unexpected block resolution."); },
       readLatestAtBlock: async () => [],
-      readStockTokenAtBlock: unexpectedStockTokenRead,
+      readStockTokenReferenceAtBlock: unexpectedStockTokenRead,
       readHistoryAtBlock: async (input) => {
         starts.push(input.latestRoundId);
         const result = deferred<ReferenceHistoryTraversal>();
@@ -311,7 +310,7 @@ describe("reference feed synchronization ownership", () => {
     const chain: ReferenceMarketChainReadPort = {
       resolveCurrentBlock: async () => { throw new Error("Unexpected block resolution."); },
       readLatestAtBlock: async () => [],
-      readStockTokenAtBlock: unexpectedStockTokenRead,
+      readStockTokenReferenceAtBlock: unexpectedStockTokenRead,
       readHistoryAtBlock: async (input) => {
         starts.push(input.feedId);
         const gate = activeReads[starts.length - 1];
@@ -349,7 +348,7 @@ describe("reference feed synchronization ownership", () => {
       requestedStartUnixSeconds: 1n,
       latest: observation(60n),
     })).rejects.toSatisfy((error: unknown) =>
-      getReferenceMarketOperationFailure(error)?.error.code === "runtime_busy");
+      getMarketPortfolioOperationFailure(error)?.error.code === "runtime_busy");
 
     controllers[7]!.abort();
     await expect(queued[7]).rejects.toSatisfy((error: unknown) =>
@@ -381,7 +380,7 @@ describe("reference feed synchronization ownership", () => {
       chain: {
         resolveCurrentBlock: async () => { throw new Error("Unexpected block resolution."); },
         readLatestAtBlock: async () => [],
-        readStockTokenAtBlock: unexpectedStockTokenRead,
+        readStockTokenReferenceAtBlock: unexpectedStockTokenRead,
         readHistoryAtBlock: async () => {
           reads += 1;
           effectClose = owner.close();
@@ -415,7 +414,7 @@ describe("reference feed synchronization ownership", () => {
       requestedStartUnixSeconds: 1n,
       latest: observation(1n),
     })).rejects.toSatisfy((error: unknown) =>
-      getReferenceMarketOperationFailure(error)?.error.code === "runtime_state_unavailable");
+      getMarketPortfolioOperationFailure(error)?.error.code === "runtime_state_unavailable");
 
     releaseRead.resolve(traversal());
     await expect(active).resolves.toMatchObject({ snapshot: { feedId: "eth_usd" } });
@@ -433,7 +432,7 @@ describe("reference feed synchronization ownership", () => {
     const chain: ReferenceMarketChainReadPort = {
       resolveCurrentBlock: async () => { throw new Error("Unexpected block resolution."); },
       readLatestAtBlock: async () => [],
-      readStockTokenAtBlock: unexpectedStockTokenRead,
+      readStockTokenReferenceAtBlock: unexpectedStockTokenRead,
       readHistoryAtBlock: async (_input, context) => {
         readStarted.resolve();
         return await new Promise((_resolve, reject) => context.signal.addEventListener("abort", () => {
@@ -471,11 +470,18 @@ describe("reference feed synchronization ownership", () => {
       feedId: "eth_usd", requestedStartUnixSeconds: 1n,
       latest: observation(1n),
     })).rejects.toSatisfy((error: unknown) =>
-      getReferenceMarketOperationFailure(error)?.error.code === "runtime_state_unavailable");
+      getMarketPortfolioOperationFailure(error)?.error.code === "runtime_state_unavailable");
     await lifecycle.close();
   });
 
-  it("retains a malformed continuation when its explicit re-probe stops transiently", async () => {
+  it.each([
+    ["response unavailability", () => new ChainOperationError("chain_response_unavailable")],
+    ["a Chain rate limit", () => new ChainOperationError("rate_limited")],
+    ["source unavailability", () => new ChainOperationError("source_unavailable")],
+  ] as const)("retains a malformed continuation when its explicit re-probe stops on %s", async (
+    _condition,
+    sourceFailure,
+  ) => {
     const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
     const backfillNextRoundId = ((1n << 64n) | 3n).toString(10);
     const malformed: ReferenceFeedCacheSnapshot = Object.freeze({
@@ -492,9 +498,9 @@ describe("reference feed synchronization ownership", () => {
     const chain: ReferenceMarketChainReadPort = {
       resolveCurrentBlock: async () => { throw new Error("Unexpected block resolution."); },
       readLatestAtBlock: async () => [],
-      readStockTokenAtBlock: unexpectedStockTokenRead,
+      readStockTokenReferenceAtBlock: unexpectedStockTokenRead,
       readHistoryAtBlock: async () => {
-        throw new ReferenceMarketOperationError("source_unavailable");
+        throw sourceFailure();
       },
     };
     const owner = new ReferenceFeedSynchronizationOwner({
@@ -536,7 +542,7 @@ describe("reference feed synchronization ownership", () => {
     const chain: ReferenceMarketChainReadPort = {
       resolveCurrentBlock: async () => { throw new Error("Unexpected block resolution."); },
       readLatestAtBlock: async () => [],
-      readStockTokenAtBlock: unexpectedStockTokenRead,
+      readStockTokenReferenceAtBlock: unexpectedStockTokenRead,
       readHistoryAtBlock: async (input) => {
         received = input;
         return Object.freeze({
@@ -600,7 +606,7 @@ describe("reference feed synchronization ownership", () => {
     const chain: ReferenceMarketChainReadPort = {
       resolveCurrentBlock: async () => { throw new Error("Unexpected block resolution."); },
       readLatestAtBlock: async () => [],
-      readStockTokenAtBlock: unexpectedStockTokenRead,
+      readStockTokenReferenceAtBlock: unexpectedStockTokenRead,
       readHistoryAtBlock: async (input) => {
         received = input;
         return Object.freeze({
@@ -659,7 +665,7 @@ describe("reference feed synchronization ownership", () => {
       chain: {
         resolveCurrentBlock: async () => { throw new Error("Unexpected block resolution."); },
         readLatestAtBlock: async () => [],
-        readStockTokenAtBlock: unexpectedStockTokenRead,
+        readStockTokenReferenceAtBlock: unexpectedStockTokenRead,
         readHistoryAtBlock: async () => {
           historyReads += 1;
           return traversal();
@@ -673,7 +679,7 @@ describe("reference feed synchronization ownership", () => {
       requestedStartUnixSeconds: 1n,
       latest: observation(2n),
     })).rejects.toSatisfy((error: unknown) =>
-      getReferenceMarketOperationFailure(error)?.error.code === "source_inconsistent");
+      getMarketPortfolioOperationFailure(error)?.error.code === "state_conflict");
     expect(historyReads).toBe(0);
     await owner.close();
     await lifecycle.close();

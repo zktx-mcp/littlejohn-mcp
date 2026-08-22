@@ -1,6 +1,6 @@
 import type { AccountAssetApplicationPort } from "../account-assets/index.js";
 import type { CapabilityBinding } from "../core/index.js";
-import type { ReferenceMarketApplicationPort } from "../market-portfolio/index.js";
+import type { MarketPortfolioApplicationPort } from "../market-portfolio/index.js";
 import type { uniswapV2QuoteCapability } from "../protocols/uniswap-v2/index.js";
 import type {
   ChainReadCapabilityPort,
@@ -20,7 +20,7 @@ import {
 import type { WalletManagementPort } from "../wallet/contracts.js";
 import { extendPublicInterfaceRoutes } from "./http-routes.js";
 import { extendOperationRoutes } from "./operation-routes.js";
-import { extendReferenceMarketInterfaceRoutes } from "./reference-market-http.js";
+import { extendMarketPortfolioInterfaceRoutes } from "./market-portfolio-http.js";
 import { extendInterfaceSupportManifest } from "./support.js";
 
 export interface InterfaceOwnerApplicationContext
@@ -32,7 +32,7 @@ export interface InterfaceOwnerApplicationContext
   readonly uniswapV2Quote: CapabilityBinding<typeof uniswapV2QuoteCapability>;
   readonly tokenInspection: TokenCatalogInspectionPort;
   readonly accountAssets: AccountAssetApplicationPort;
-  readonly referenceMarkets: ReferenceMarketApplicationPort;
+  readonly markets: MarketPortfolioApplicationPort;
 }
 
 export interface InterfaceOwnerApplication extends HttpOwnerApplication {
@@ -59,15 +59,15 @@ export const createInterfaceOwnerApplicationFactory = (): InterfaceOwnerApplicat
       inspection: context.tokenInspection,
       queries: context.tokenCatalogQueries,
     });
-    const referenceMarketRoutes = extendReferenceMarketInterfaceRoutes({
+    const marketPortfolioRoutes = extendMarketPortfolioInterfaceRoutes({
       routes: tokenRoutes,
-      referenceMarkets: context.referenceMarkets,
+      markets: context.markets,
     });
     const routes = extendOperationRoutes({
-      routes: referenceMarketRoutes,
+      routes: marketPortfolioRoutes,
       wallet: context.walletOperations,
       token: context.tokenCatalogManagement,
-      market: context.referenceMarkets,
+      markets: context.markets,
     });
     return Object.freeze({
       routes,

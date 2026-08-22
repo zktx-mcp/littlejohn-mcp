@@ -202,7 +202,7 @@ The current external integration classification is:
 | WalletConnect | Binding product transport | `docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture | `wallet` owns SDK adaptation, project-ID validation, required namespace settings, metadata, SDK options, lifecycle, and provider defaults | The wallet application factory constructs one `WalletConnectClientPort` from opaque configuration received through runtime composition; other modules receive wallet product ports |
 | Robinhood official-asset API | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority; `officialAssetSourceDefinition` and the registry source contract own the exact source identity, normalized observed-or-unavailable read result, evidence, and storage ports | `src/registry/official-assets.ts` owns request and response admission, endpoint consumption, transport behavior, deadlines, and operational limits | Runtime composition constructs one source client; registry synchronization consumes its value result and the product-owned store without an exception translation layer; replacing the membership source changes the binding evidence authority |
 | Robinhood StockFactory | Binding source authority | `docs/EVIDENCE_POLICY.md` owns the independent UID-to-token-address proof meaning; `stockFactoryAdmissionManifest` and the registry verification contract own the admitted deployment identity and identity-bearing verification result | `src/registry/stock-factory.ts` owns StockFactory call and identity verification behind the pinned-block `OfficialAssetChainReadPort` in `src/chain/official-assets.ts`; common RPC configuration remains with the chain transport | The chain application constructs the port and preserves the same result contract for single and batch reads used by account-assets and token inspection; changing verification internals preserves the admitted identity, while changing the deployment or source owner changes the manifest and evidence authority |
-| Chainlink Data Feeds | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority and evidence meaning; `referenceMarketManifest` owns the three generic pair mappings and `stockTokenReferenceMarketCatalog` owns the generated Stock Token mappings; `docs/NUMERIC_POLICY.md` owns reference-price, cross-price, and candle meaning; `market-portfolio` and the canonical reference-market application contracts own admitted price and history result lifecycles | `src/chain/reference-market.ts` owns Data Feed call encoding, round admission, response validation, and batch fallback behind `ReferenceMarketChainReadPort`; common RPC configuration remains with the chain transport | The chain application constructs the port and runtime composition passes it to `market-portfolio`; changing a mapping changes its owning manifest or generated catalog, and replacing Chainlink with another source owner requires an accepted evidence or product-policy change |
+| Chainlink Data Feeds | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority and evidence meaning; `referenceMarketManifest` owns the three generic pair mappings and `stockTokenReferenceMarketCatalog` owns the generated Stock Token mappings; `docs/NUMERIC_POLICY.md` owns reference-price, cross-price, and candle meaning; `market-portfolio` and its canonical application contracts own admitted price and history result lifecycles | `src/chain/reference-market.ts` owns Data Feed call encoding, round admission, response validation, and batch fallback behind `ReferenceMarketChainReadPort`; common RPC configuration remains with the chain transport | The chain application constructs the port and runtime composition passes it to `market-portfolio`; changing a mapping changes its owning manifest or generated catalog, and replacing Chainlink with another source owner requires an accepted evidence or product-policy change |
 | Robinhood Uniswap V4 PoolManager events | Binding source authority | `docs/EVIDENCE_POLICY.md` owns executed-trade evidence meaning; `stockTokenExecutionIndexRegistry` owns the exact PoolManager, PoolKey, Pool ID, USDG, finality, and event identity; `docs/NUMERIC_POLICY.md` owns exact execution-candle meaning | The separate project index owns bounded finalized log collection, exact decoding, cursor, repair, one-minute candle construction, and pair-state, pair-month, and pair-day file publication; Little John has no log reader or candle builder | Little John consumes only the versioned provider-neutral execution-index data; changing collection internals preserves its exact contract, while changing the deployment, pool identity, event, quote asset, or numeric construction changes the binding source contract and does not imply Uniswap transaction support |
 | GitHub Releases Stock Token execution-index data | Replaceable implementation provider | `market-portfolio` owns `StockTokenExecutionIndexReadPort`, pair-state, pair-month, and pair-day file admission, the normalized series, availability outcomes, limits, and lifecycle; finalized PoolManager events remain the semantic source | `src/market-portfolio/github-stock-token-execution-index.ts` privately owns the repository, release and asset requests, response admission, deadlines, byte limits, and concurrency | Runtime composition constructs one adapter and passes only the provider-neutral read port; another store may replace GitHub only by returning the unchanged admitted files and result contract |
 | Sourcify API v2 | Replaceable implementation provider | `intelligence` owns `ContractSourceVerificationPort`, its normalized results and failures, evidence requirements, and lifecycle | `src/intelligence/sourcify.ts` owns the origin, path, request and response admission, deadline, response-size and concurrency limits, cleanup, and provider identity | Runtime composition constructs one Sourcify adapter and passes only `ContractSourceVerificationPort` to the shared contract-analysis process |
@@ -563,7 +563,7 @@ reader does not implement a weaker result parser.
   composition supplies the stage owner and complete dependencies, consumes the
   complete application, and does not construct token-catalog internals.
 - Fixed-owner shutdown blocks new work, aborts and drains active work, and
-  closes interface, reference-market, account-assets, token-catalog, and chain
+  closes interface, market-portfolio, account-assets, token-catalog, and chain
   applications in dependency-reverse order before containing wallet product
   authority. Before WalletConnect SDK initialization begins, the runtime can
   release wallet resources, close product SQLite, release the database lease,
@@ -901,26 +901,56 @@ selection revision, or official-member partition. A failed official
 synchronization preserves the last committed snapshot and never changes
 account choices.
 
-The reference-market application is the sole owner of latest reference prices,
-Stock Token market results, bounded reference-history synchronization, exact
-cross construction, reference-feed candle aggregation, and account watchlists.
+The market-portfolio application is the sole shared owner of latest reference
+prices, Stock Token market results, bounded reference-history synchronization,
+exact cross construction, reference-feed candle aggregation, and account
+watchlists. Reference-only ports, stores, schemas, manifests, and
+synchronization retain reference-specific ownership. Shared application
+contracts, runtime handoffs, interface bindings, and routed consumer ports use
+market-portfolio ownership.
 One canonical feed registry owns feed identities. The fixed generic pair
 registry addresses only its three admitted pair identities; generated Stock
 Token feed membership does not make a feed addressable through a generic pair
 or watchlist contract.
 
+Core owns one neutral `1d`, `7d`, and `30d` request-duration contract. The
+reference-history owner applies reference bucket definitions separately. The
+Stock Token market owner fixes one half-open request interval from the neutral
+duration and its canonical result block. An execution consumer cannot import a
+reference bucket to determine that interval.
+
 The generated Stock Token mapping catalog is an offline product-data artifact.
 One maintainer generator consumes two complete retained source responses,
 validates every source member and disposition, and atomically publishes the
 complete generated file. Runtime, build, and release code never refreshes the
-directory. Runtime symbol resolution consumes only the registry owner's
-complete current official-asset observation and the generated disposition. It
-has no directory client, mapping override, alias table, or second Robinhood
-adapter.
+directory. Runtime official-asset symbol resolution consumes only the registry
+owner's complete current official-asset observation. The generated disposition
+is resolved afterward and only by the Chainlink reference sibling. Runtime has
+no directory client, mapping override, alias table, or second Robinhood adapter.
 
-Stock Token market reads additionally consume one provider-neutral execution
-index port after the canonical Chainlink read. The port admits one exact
-versioned pair-state file and its digest-bound pair-month and pair-day files,
+One Stock Token market read resolves an official member, one opaque canonical
+block, and same-block StockFactory verification as common gates. After those
+gates succeed, it settles a Chainlink reference sibling and a provider-neutral
+Stock Token/USDG execution sibling independently. The reference chain port owns
+only same-block oracle-pause and latest-feed admission for that sibling; it does
+not construct or repeat the official-asset StockFactory port. An admitted
+source-specific unavailable outcome remains inside its sibling. Caller
+cancellation, owner closure, and an unadmitted local failure terminate the whole
+read after both started source tasks settle and clean up.
+
+`readStockTokenReference` owns the ordered Stock Token reference-sibling
+operation from mapping resolution through direct observation, history
+synchronization, reference-candle construction, and canonical sibling
+construction. `MarketPortfolioApplication` owns only the common gates, the
+reference and execution start, complete settlement, and whole-operation
+outcome. `ReferenceFeedSynchronizationOwner` continues to own scheduling,
+cache, persistence, and bounded history traversal and never constructs a Stock
+Token sibling. Both started sibling operations receive the same complete Chain
+invocation signal; the execution-index adapter's private deadline remains a
+nested provider guard rather than the whole-operation lifecycle.
+
+The provider-neutral execution-index port admits one exact versioned pair-state
+file and its digest-bound pair-month and pair-day files,
 retains the public half-open request interval, and selects only fully contained
 one-minute candles for the registry-owned Pool ID. It returns source coverage
 and availability without exposing provider identities or storage partitions.
@@ -929,13 +959,21 @@ metadata and execution-index file reads; its response-size, asset-list,
 concurrency, and deadline values are private
 operational guards that cannot change the provider-neutral result or evidence
 meaning. Runtime contains no Swap log reader, PoolKey derivation, cursor, repair
-process, candle builder, or local execution-history store. An unavailable,
-stale, inconsistent, retained-out, or capacity-limited execution series leaves
-the independently admitted Chainlink reference result unchanged.
+process, candle builder, or local execution-history store.
 
-Each latest, history, or Stock Token market read enters one chain invocation,
-resolves one opaque canonical block, and performs every dependent feed,
-StockFactory, and oracle-pause read through that exact authority. One shared
+The canonical Stock Token result carries common identity and block facts once,
+then the complete `reference` and `execution` siblings without flattening or
+reconstruction. Application, MCP, HTTP, CLI JSON, presentation admission, and
+the exact presentation-snapshot store hand off that admitted result losslessly.
+Snapshot replay reads only the stored canonical input and result and has no
+chain, Chainlink, execution-index, or aggregation port.
+
+Each latest, history, or Stock Token market read enters one chain invocation
+and resolves one opaque canonical block. Latest and history reads perform their
+dependent feed work through that exact authority. A Stock Token market read
+performs the common StockFactory verification and any mapped reference feed and
+oracle-pause reads through that authority; its execution sibling retains its
+separate finalized-index source coverage. One shared
 history scheduler admits at most `32` active-or-queued jobs across all feed
 identities, runs at most `2` jobs concurrently and at most one for a given
 feed, and preserves FIFO admission. Each job retains the canonical limits of
@@ -962,6 +1000,10 @@ A retryable source or transport stop retains completed segments and returns the
 bounded committed snapshot with its remaining work explicit; cancellation,
 application closure, inconsistent source evidence, and internal failure remain
 failures.
+Different admitted immutable facts for one round identity set the persistent
+reference integrity conflict owned by the evidence policy. A latest round that
+regresses to the locally retained-out domain is a local state conflict instead;
+the retention cutoff cannot establish inconsistent source evidence.
 Candles and empty-bucket starts partition only the represented UTC buckets and
 never prove that the source had no other updates. Stored read evidence retains
 its original block and read time instead of being rewritten under a later
@@ -1375,8 +1417,9 @@ state may optimize display but are not replay authority.
 - Fixed reference history may render accessible semantic HTML and SVG from its
   exact admitted candles and empty intervals. It never performs another price
   or history read and never treats chart coordinates as canonical values.
-- A Stock Token market card renders the admitted Chainlink USD reference
-  series and Uniswap V4 USDG execution series as separate labeled charts
+- A Stock Token market card renders the admitted oracle reference series
+  denominated in USD and the Uniswap V4 Stock Token/USDG execution series as
+  separate labeled charts
   through the same exact-candle projection. It never converts, merges,
   interpolates, refreshes, or reconstructs either series. Exact values remain
   available in an on-demand local disclosure, while provider diagnostics and

@@ -43,7 +43,7 @@ import {
   type ReferenceWatchlistSuccess,
 } from "../core/client.js";
 import { tokenCatalogErrorRegistry } from "../token-catalog/error-registry.js";
-import { referenceMarketErrorDefinitions } from "./error-definitions.js";
+import { marketPortfolioErrorDefinitions } from "./error-definitions.js";
 import {
   parseStockTokenMarketResult,
   stockTokenMarketInputSchema,
@@ -52,14 +52,14 @@ import {
   type StockTokenMarketResult,
 } from "./stock-token-market.js";
 
-export const referenceMarketErrorRegistry =
-  tokenCatalogErrorRegistry.extend(referenceMarketErrorDefinitions);
+export const marketPortfolioErrorRegistry =
+  tokenCatalogErrorRegistry.extend(marketPortfolioErrorDefinitions);
 assertDirectApplicationErrorRegistryExtension(
   tokenCatalogErrorRegistry,
-  referenceMarketErrorRegistry,
+  marketPortfolioErrorRegistry,
 );
 
-export const referenceMarketCapabilities = Object.freeze({
+export const marketPortfolioCapabilities = Object.freeze({
   add: "market.add_watchlist_pair",
   history: "market.reference_history",
   operation: "market.watchlist_operation",
@@ -70,15 +70,15 @@ export const referenceMarketCapabilities = Object.freeze({
   stockTokenMarket: "market.stock_token_market",
   watchlist: "market.watchlist",
 } as const);
-export type ReferenceMarketCapabilityId =
-  (typeof referenceMarketCapabilities)[keyof typeof referenceMarketCapabilities];
-export const referenceMarketCapabilityIds: readonly ReferenceMarketCapabilityId[] = Object.freeze(
-  Object.values(referenceMarketCapabilities).sort(),
+export type MarketPortfolioCapabilityId =
+  (typeof marketPortfolioCapabilities)[keyof typeof marketPortfolioCapabilities];
+export const marketPortfolioCapabilityIds: readonly MarketPortfolioCapabilityId[] = Object.freeze(
+  Object.values(marketPortfolioCapabilities).sort(),
 );
-export type ReferenceMarketMutationCapabilityId =
-  | typeof referenceMarketCapabilities.add
-  | typeof referenceMarketCapabilities.remove
-  | typeof referenceMarketCapabilities.reorder;
+export type MarketPortfolioMutationCapabilityId =
+  | typeof marketPortfolioCapabilities.add
+  | typeof marketPortfolioCapabilities.remove
+  | typeof marketPortfolioCapabilities.reorder;
 
 export const referenceWatchlistOperationKinds = Object.freeze([
   "add",
@@ -95,10 +95,10 @@ export const referenceWatchlistOperationLimits = Object.freeze({
   reviewActionMilliseconds: 300_000,
 });
 
-export interface ReferenceMarketApplicationContract<
+export interface MarketPortfolioApplicationContract<
   Input,
   Success,
-  CapabilityId extends ReferenceMarketCapabilityId = ReferenceMarketCapabilityId,
+  CapabilityId extends MarketPortfolioCapabilityId = MarketPortfolioCapabilityId,
   Context = Record<string, never>,
 > {
   readonly capabilityId: CapabilityId;
@@ -114,10 +114,10 @@ export interface ReferenceMarketApplicationContract<
   normalizeFailure(value: unknown): ReturnType<ApplicationContract<Input, Context, Success>["normalizeFailure"]>;
 }
 
-const defineReferenceMarketContract = <
+const defineMarketPortfolioContract = <
   Input,
   Success,
-  CapabilityId extends ReferenceMarketCapabilityId,
+  CapabilityId extends MarketPortfolioCapabilityId,
   Context = Record<string, never>,
 >(options: Readonly<{
   capabilityId: CapabilityId;
@@ -128,14 +128,14 @@ const defineReferenceMarketContract = <
   internalContextSchema?: ZodType<Context>;
   validatePublicSuccess?: (input: Input, success: Success) => void;
   validateBoundSuccess?: (input: Input, context: Context, success: Success) => void;
-}>): ReferenceMarketApplicationContract<Input, Success, CapabilityId, Context> => {
+}>): MarketPortfolioApplicationContract<Input, Success, CapabilityId, Context> => {
   capabilityIdSchema.parse(options.capabilityId);
   const applicationContract = defineApplicationContract({
     contractVersion: options.contractVersion,
     inputSchema: options.inputSchema,
     successSchema: options.successSchema,
     internalContextSchema: options.internalContextSchema ?? jsonObject({}).strict() as ZodType<Context>,
-    errorRegistry: referenceMarketErrorRegistry,
+    errorRegistry: marketPortfolioErrorRegistry,
     failureCodes: options.failureCodes,
     ...(options.validatePublicSuccess === undefined
       ? {}
@@ -513,6 +513,7 @@ export const stockTokenMarketFailureCodes = Object.freeze([
   "runtime_state_unavailable",
   "source_inconsistent",
   "source_unavailable",
+  "state_conflict",
 ] as const);
 const watchlistReadFailures = referenceWatchlistMutationCommonFailureCodes;
 const reviewFailures = Object.freeze([
@@ -531,13 +532,13 @@ const operationFailures = Object.freeze([
   "watchlist_operation_not_found",
 ]);
 
-export const referenceMarketApplicationContracts = Object.freeze({
-  price: defineReferenceMarketContract<
+export const marketPortfolioApplicationContracts = Object.freeze({
+  price: defineMarketPortfolioContract<
     ReferencePriceInput,
     ReferencePriceSuccess,
-    typeof referenceMarketCapabilities.price
+    typeof marketPortfolioCapabilities.price
   >({
-    capabilityId: referenceMarketCapabilities.price,
+    capabilityId: marketPortfolioCapabilities.price,
     contractVersion: "1",
     inputSchema: referencePriceInputSchema,
     successSchema: referencePriceSuccessSchema,
@@ -548,12 +549,12 @@ export const referenceMarketApplicationContracts = Object.freeze({
       }
     },
   }),
-  history: defineReferenceMarketContract<
+  history: defineMarketPortfolioContract<
     ReferenceHistoryInput,
     ReferenceHistorySuccess,
-    typeof referenceMarketCapabilities.history
+    typeof marketPortfolioCapabilities.history
   >({
-    capabilityId: referenceMarketCapabilities.history,
+    capabilityId: marketPortfolioCapabilities.history,
     contractVersion: "1",
     inputSchema: referenceHistoryInputSchema,
     successSchema: referenceHistorySuccessSchema,
@@ -564,12 +565,12 @@ export const referenceMarketApplicationContracts = Object.freeze({
       }
     },
   }),
-  stockTokenMarket: defineReferenceMarketContract<
+  stockTokenMarket: defineMarketPortfolioContract<
     StockTokenMarketInput,
     StockTokenMarketResult,
-    typeof referenceMarketCapabilities.stockTokenMarket
+    typeof marketPortfolioCapabilities.stockTokenMarket
   >({
-    capabilityId: referenceMarketCapabilities.stockTokenMarket,
+    capabilityId: marketPortfolioCapabilities.stockTokenMarket,
     contractVersion: "1",
     inputSchema: stockTokenMarketInputSchema,
     successSchema: stockTokenMarketResultSchema,
@@ -578,23 +579,23 @@ export const referenceMarketApplicationContracts = Object.freeze({
       parseStockTokenMarketResult(input, success);
     },
   }),
-  watchlist: defineReferenceMarketContract<
+  watchlist: defineMarketPortfolioContract<
     Record<string, never>,
     ReferenceWatchlistSuccess,
-    typeof referenceMarketCapabilities.watchlist
+    typeof marketPortfolioCapabilities.watchlist
   >({
-    capabilityId: referenceMarketCapabilities.watchlist,
+    capabilityId: marketPortfolioCapabilities.watchlist,
     contractVersion: "1",
     inputSchema: referenceWatchlistInputSchema,
     successSchema: referenceWatchlistSuccessSchema,
     failureCodes: watchlistReadFailures,
   }),
-  watchlistChangeReview: defineReferenceMarketContract<
+  watchlistChangeReview: defineMarketPortfolioContract<
   ReferenceWatchlistReviewRequest,
   ReferenceWatchlistReviewResult,
-  typeof referenceMarketCapabilities.review
+  typeof marketPortfolioCapabilities.review
   >({
-    capabilityId: referenceMarketCapabilities.review,
+    capabilityId: marketPortfolioCapabilities.review,
     contractVersion: "1",
     inputSchema: referenceWatchlistReviewRequestSchema,
     successSchema: referenceWatchlistReviewResultSchema,
@@ -611,32 +612,32 @@ export const referenceMarketApplicationContracts = Object.freeze({
       ) throw new TypeError("Reference watchlist Review does not match its request.");
     },
   }),
-  add: defineReferenceMarketContract({
-    capabilityId: referenceMarketCapabilities.add,
+  add: defineMarketPortfolioContract({
+    capabilityId: marketPortfolioCapabilities.add,
     contractVersion: "1",
     inputSchema: actionSchemaForKind("add"),
     successSchema: operationSchemaForKind("add"),
     failureCodes: actionFailures,
     validatePublicSuccess: validateActionOperation,
   }),
-  remove: defineReferenceMarketContract({
-    capabilityId: referenceMarketCapabilities.remove,
+  remove: defineMarketPortfolioContract({
+    capabilityId: marketPortfolioCapabilities.remove,
     contractVersion: "1",
     inputSchema: actionSchemaForKind("remove"),
     successSchema: operationSchemaForKind("remove"),
     failureCodes: actionFailures,
     validatePublicSuccess: validateActionOperation,
   }),
-  reorder: defineReferenceMarketContract({
-    capabilityId: referenceMarketCapabilities.reorder,
+  reorder: defineMarketPortfolioContract({
+    capabilityId: marketPortfolioCapabilities.reorder,
     contractVersion: "1",
     inputSchema: actionSchemaForKind("reorder"),
     successSchema: operationSchemaForKind("reorder"),
     failureCodes: actionFailures,
     validatePublicSuccess: validateActionOperation,
   }),
-  operation: defineReferenceMarketContract({
-    capabilityId: referenceMarketCapabilities.operation,
+  operation: defineMarketPortfolioContract({
+    capabilityId: marketPortfolioCapabilities.operation,
     contractVersion: "1",
     inputSchema: referenceWatchlistOperationInputSchema,
     successSchema: referenceWatchlistOperationSchema,
@@ -649,5 +650,5 @@ export const referenceMarketApplicationContracts = Object.freeze({
   }),
 });
 
-export type AnyReferenceMarketApplicationContract =
-  (typeof referenceMarketApplicationContracts)[keyof typeof referenceMarketApplicationContracts];
+export type AnyMarketPortfolioApplicationContract =
+  (typeof marketPortfolioApplicationContracts)[keyof typeof marketPortfolioApplicationContracts];

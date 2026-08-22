@@ -5,31 +5,31 @@ import {
 } from "../runtime/resource-ownership.js";
 import type {
   AccountAssetRuntimeSupportManifest,
-  ReferenceMarketRuntimeSupportManifest,
+  MarketPortfolioRuntimeSupportManifest,
 } from "../runtime/support-manifest.js";
-import { ReferenceMarketApplication } from "./application.js";
-import { ReferenceMarketOperationError } from "./errors.js";
+import { MarketPortfolioApplication } from "./application.js";
+import { MarketPortfolioOperationError } from "./errors.js";
 import type {
-  ReferenceMarketApplicationDependencies,
-  ReferenceMarketApplicationPort,
+  MarketPortfolioApplicationDependencies,
+  MarketPortfolioApplicationPort,
 } from "./ports.js";
-import { extendReferenceMarketSupportManifest } from "./support.js";
+import { extendMarketPortfolioSupportManifest } from "./support.js";
 
-export interface ReferenceMarketOwnerApplication extends ReferenceMarketApplicationPort {
+export interface MarketPortfolioOwnerApplication extends MarketPortfolioApplicationPort {
   readonly routes: RuntimeRouteRegistry;
-  readonly supportManifest: ReferenceMarketRuntimeSupportManifest;
+  readonly supportManifest: MarketPortfolioRuntimeSupportManifest;
   close(): Promise<void>;
 }
 
-export interface ReferenceMarketApplicationFactoryInput extends ReferenceMarketApplicationDependencies {
+export interface MarketPortfolioApplicationFactoryInput extends MarketPortfolioApplicationDependencies {
   readonly routes: RuntimeRouteRegistry;
   readonly supportManifest: AccountAssetRuntimeSupportManifest;
   readonly startupResources: OwnedResourceRegistry;
 }
 
-export const createReferenceMarketApplicationFactory = async (
-  input: ReferenceMarketApplicationFactoryInput,
-): Promise<ReferenceMarketOwnerApplication> => {
+export const createMarketPortfolioApplicationFactory = async (
+  input: MarketPortfolioApplicationFactoryInput,
+): Promise<MarketPortfolioOwnerApplication> => {
   const lifecycle = createResourceOwnershipScope();
   const lifecycleOwnership = input.startupResources.register(lifecycle);
   let state: "starting" | "open" | "closing" | "closed" = "starting";
@@ -48,59 +48,59 @@ export const createReferenceMarketApplicationFactory = async (
     return tracked;
   };
   const assertOpen = (): void => {
-    if (state !== "open") throw new ReferenceMarketOperationError("runtime_state_unavailable");
+    if (state !== "open") throw new MarketPortfolioOperationError("runtime_state_unavailable");
   };
   try {
-    const application = new ReferenceMarketApplication(input);
+    const application = new MarketPortfolioApplication(input);
     lifecycle.resources.register(application);
     lifecycle.seal();
-    const referenceMarkets = Object.freeze({
-      price(request: Parameters<ReferenceMarketApplicationPort["price"]>[0], signal?: AbortSignal) {
+    const markets = Object.freeze({
+      price(request: Parameters<MarketPortfolioApplicationPort["price"]>[0], signal?: AbortSignal) {
         assertOpen();
         return application.price(request, signal);
       },
-      history(request: Parameters<ReferenceMarketApplicationPort["history"]>[0], signal?: AbortSignal) {
+      history(request: Parameters<MarketPortfolioApplicationPort["history"]>[0], signal?: AbortSignal) {
         assertOpen();
         return application.history(request, signal);
       },
       stockTokenMarket(
-        request: Parameters<ReferenceMarketApplicationPort["stockTokenMarket"]>[0],
+        request: Parameters<MarketPortfolioApplicationPort["stockTokenMarket"]>[0],
         signal?: AbortSignal,
       ) {
         assertOpen();
         return application.stockTokenMarket(request, signal);
       },
-      watchlist(request: Parameters<ReferenceMarketApplicationPort["watchlist"]>[0], signal?: AbortSignal) {
+      watchlist(request: Parameters<MarketPortfolioApplicationPort["watchlist"]>[0], signal?: AbortSignal) {
         assertOpen();
         return application.watchlist(request, signal);
       },
       reviewWatchlistChange(
-        request: Parameters<ReferenceMarketApplicationPort["reviewWatchlistChange"]>[0],
+        request: Parameters<MarketPortfolioApplicationPort["reviewWatchlistChange"]>[0],
         signal?: AbortSignal,
       ) {
         assertOpen();
         return application.reviewWatchlistChange(request, signal);
       },
       decideWatchlistChange(
-        request: Parameters<ReferenceMarketApplicationPort["decideWatchlistChange"]>[0],
+        request: Parameters<MarketPortfolioApplicationPort["decideWatchlistChange"]>[0],
         signal?: AbortSignal,
       ) {
         assertOpen();
         return application.decideWatchlistChange(request, signal);
       },
       getWatchlistOperation(
-        request: Parameters<ReferenceMarketApplicationPort["getWatchlistOperation"]>[0],
+        request: Parameters<MarketPortfolioApplicationPort["getWatchlistOperation"]>[0],
         signal?: AbortSignal,
       ) {
         assertOpen();
         return application.getWatchlistOperation(request, signal);
       },
-    }) satisfies ReferenceMarketApplicationPort;
-    const supportManifest = extendReferenceMarketSupportManifest(input.supportManifest);
+    }) satisfies MarketPortfolioApplicationPort;
+    const supportManifest = extendMarketPortfolioSupportManifest(input.supportManifest);
     const result = Object.freeze({
       routes: input.routes,
       supportManifest,
-      ...referenceMarkets,
+      ...markets,
       close,
     });
     state = "open";
@@ -115,7 +115,7 @@ export const createReferenceMarketApplicationFactory = async (
     catch (cleanupError) {
       throw new AggregateError(
         [startupError, cleanupError],
-        "Reference market startup and cleanup failed.",
+        "Market portfolio startup and cleanup failed.",
       );
     }
     throw startupError;

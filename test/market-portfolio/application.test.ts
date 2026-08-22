@@ -42,19 +42,19 @@ import {
   type ReferenceRoundObservation,
   type ReferenceWatchlistSuccess,
 } from "../../src/core/index.js";
-import { ReferenceMarketApplication } from "../../src/market-portfolio/application.js";
-import { createReferenceMarketApplicationFactory } from "../../src/market-portfolio/application-factory.js";
+import { MarketPortfolioApplication } from "../../src/market-portfolio/application.js";
+import { createMarketPortfolioApplicationFactory } from "../../src/market-portfolio/application-factory.js";
 import { unavailableExecutionIndex } from "./execution-index-fixture.js";
 import { createReferenceHistory } from "../../src/market-portfolio/candles.js";
 import {
   createReferenceWatchlistReviewProjection,
   parseReferenceWatchlistOperation,
-  referenceMarketApplicationContracts,
-  referenceMarketErrorRegistry,
+  marketPortfolioApplicationContracts,
+  marketPortfolioErrorRegistry,
   type ReferenceWatchlistOperation,
 } from "../../src/market-portfolio/contracts.js";
-import { ReferenceMarketOperationError } from "../../src/market-portfolio/errors.js";
-import type { ReferenceMarketApplicationDependencies } from "../../src/market-portfolio/ports.js";
+import { MarketPortfolioOperationError } from "../../src/market-portfolio/errors.js";
+import type { MarketPortfolioApplicationDependencies } from "../../src/market-portfolio/ports.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import type { RuntimeRouteRegistry } from "../../src/runtime/http-routing.js";
 import type {
@@ -95,14 +95,14 @@ const walletConnection = parseCapabilityDataAt(walletConnectionCapability, {
   expiresAt: "2026-07-23T00:07:00.000Z",
 }, parseUtcTimestamp("2026-07-22T00:07:00.000Z"));
 
-describe("reference market contract authority", () => {
+describe("market portfolio contract authority", () => {
   it("uses one token-catalog-parented registry and one contract graph", () => {
     expect(() => assertDirectApplicationErrorRegistryExtension(
       tokenCatalogErrorRegistry,
-      referenceMarketErrorRegistry,
+      marketPortfolioErrorRegistry,
     )).not.toThrow();
-    for (const contract of Object.values(referenceMarketApplicationContracts)) {
-      expect(contract.applicationContract.errorRegistry).toBe(referenceMarketErrorRegistry);
+    for (const contract of Object.values(marketPortfolioApplicationContracts)) {
+      expect(contract.applicationContract.errorRegistry).toBe(marketPortfolioErrorRegistry);
       expect(contract.contractVersion).toBe(contract.applicationContract.contractVersion);
       expect(contract.contractVersion).toBe("1");
     }
@@ -284,7 +284,7 @@ const readSettlementStructureViolations = (sourceText: string): readonly string[
   );
   const compact = (node: ts.Node): string => node.getText(source).replace(/\s+/gu, "");
   const application = source.statements.find((statement): statement is ts.ClassDeclaration =>
-    ts.isClassDeclaration(statement) && statement.name?.text === "ReferenceMarketApplication");
+    ts.isClassDeclaration(statement) && statement.name?.text === "MarketPortfolioApplication");
   const runRead = application?.members.find((member): member is ts.MethodDeclaration =>
     ts.isMethodDeclaration(member) && member.name.getText(source) === "#runRead");
   if (runRead?.body === undefined) return ["run_read"];
@@ -523,7 +523,7 @@ const fixture = (createChain?: FixtureChainFactory) => {
     malformedRoundObserved: false,
     failure: undefined,
   });
-  let stockTokenRead: ReferenceMarketChainReadPort["readStockTokenAtBlock"] = async () => {
+  let stockTokenRead: ReferenceMarketChainReadPort["readStockTokenReferenceAtBlock"] = async () => {
     throw new Error("Stock Token reads are not expected in this fixture.");
   };
   let historyReadCalls = 0;
@@ -539,7 +539,7 @@ const fixture = (createChain?: FixtureChainFactory) => {
       historyReadCalls += 1;
       return historyRead(input, context);
     },
-    readStockTokenAtBlock: (input, context) => stockTokenRead(input, context),
+    readStockTokenReferenceAtBlock: (input, context) => stockTokenRead(input, context),
   };
   const topicDigest = "A".repeat(43);
   const sessionSourceId = `wallet-session:${topicDigest}`;
@@ -574,10 +574,14 @@ const fixture = (createChain?: FixtureChainFactory) => {
       readStored: () => undefined,
       close: async () => undefined,
     }),
+    officialAssetReads: Object.freeze({
+      verifyAtBlock: async () => { throw new Error("Stock Token verification is not expected."); },
+      verifyManyAtBlock: async () => { throw new Error("Stock Token verification is not expected."); },
+    }),
     stockTokenExecutionIndex: unavailableExecutionIndex,
     clock,
-  }) satisfies ReferenceMarketApplicationDependencies;
-  const application = new ReferenceMarketApplication(dependencies);
+  }) satisfies MarketPortfolioApplicationDependencies;
+  const application = new MarketPortfolioApplication(dependencies);
   return {
     application,
     dependencies,
@@ -628,7 +632,7 @@ const startupOwnerFixture = () => {
   };
 };
 
-describe("reference-market application", () => {
+describe("market-portfolio application", () => {
   it("keeps the read reducer discriminated before public success parsing", async () => {
     const source = await readFile(
       resolve(import.meta.dirname, "../../src/market-portfolio/application.ts"),
@@ -640,7 +644,7 @@ describe("reference-market application", () => {
       type ReadSettlement<Value> =
         | Readonly<{ readonly status: "fulfilled"; readonly value: Value }>
         | Readonly<{ readonly status: "rejected"; readonly reason: unknown }>;
-      class ReferenceMarketApplication {
+      class MarketPortfolioApplication {
         async #runRead<Success>(
           contract: { parsePublicSuccess(request: unknown, value: Success): unknown },
           operation: () => Promise<Success>,
@@ -864,7 +868,7 @@ describe("reference-market application", () => {
       readLatestAtBlock: async (feedIds) => feedIds.map((feedId) =>
         [latestEth, latestUsdg].find((entry) => entry.fact.feedId === feedId)!),
       readHistoryAtBlock: async () => { throw new Error("History reads are not expected."); },
-      readStockTokenAtBlock: async () => { throw new Error("Stock Token reads are not expected."); },
+      readStockTokenReferenceAtBlock: async () => { throw new Error("Stock Token reads are not expected."); },
     }));
     const active = context.application.price({ pairId: referenceMarketManifest.pairs[0]!.pairId });
     if (effectClose === undefined) throw new TypeError("Reference close was not started by the read.");
@@ -1454,12 +1458,12 @@ describe("reference-market application", () => {
   });
 });
 
-describe("reference-market application factory", () => {
+describe("market-portfolio application factory", () => {
   it("shares its in-flight close and releases successful startup ownership", async () => {
     const context = fixture();
     const startup = startupOwnerFixture();
     const routes = Object.freeze({}) as RuntimeRouteRegistry;
-    const application = await createReferenceMarketApplicationFactory({
+    const application = await createMarketPortfolioApplicationFactory({
       ...context.dependencies,
       routes,
       supportManifest: accountAssetSupportManifest,
@@ -1477,8 +1481,8 @@ describe("reference-market application factory", () => {
     } catch (error) {
       admissionFailure = error;
     }
-    expect(admissionFailure).toBeInstanceOf(ReferenceMarketOperationError);
-    expect((admissionFailure as ReferenceMarketOperationError).failure.error.code)
+    expect(admissionFailure).toBeInstanceOf(MarketPortfolioOperationError);
+    expect((admissionFailure as MarketPortfolioOperationError).failure.error.code)
       .toBe("runtime_state_unavailable");
     await closing;
     await context.close();
@@ -1487,7 +1491,7 @@ describe("reference-market application factory", () => {
   it("releases startup ownership after successful rollback", async () => {
     const context = fixture();
     const startup = startupOwnerFixture();
-    const startupFailure = createReferenceMarketApplicationFactory({
+    const startupFailure = createMarketPortfolioApplicationFactory({
       ...context.dependencies,
       routes: Object.freeze({}) as RuntimeRouteRegistry,
       supportManifest: Object.freeze({}) as never,

@@ -21,7 +21,7 @@ import {
   walletConnectionCapability,
   type ApplicationFailure,
 } from "../../src/core/index.js";
-import { ReferenceMarketApplication } from "../../src/market-portfolio/application.js";
+import { MarketPortfolioApplication } from "../../src/market-portfolio/application.js";
 import type { ReferenceWatchlistOperation } from "../../src/market-portfolio/contracts.js";
 import { ProductDatabase } from "../../src/runtime/database.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
@@ -93,11 +93,11 @@ const createState = async () => {
     resolveCurrentBlock: unavailable,
     readLatestAtBlock: unavailable,
     readHistoryAtBlock: unavailable,
-    readStockTokenAtBlock: unavailable,
+    readStockTokenReferenceAtBlock: unavailable,
   });
   const createApplication = () => {
     const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
-    const application = new ReferenceMarketApplication({
+    const application = new MarketPortfolioApplication({
       chain,
       chainInvocations: lifecycle,
       store: database.referenceMarketStore(),
@@ -106,6 +106,10 @@ const createState = async () => {
         synchronize: async () => { throw new Error("Official asset reads are not expected."); },
         readStored: () => undefined,
         close: async () => undefined,
+      }),
+      officialAssetReads: Object.freeze({
+        verifyAtBlock: unavailable,
+        verifyManyAtBlock: unavailable,
       }),
       stockTokenExecutionIndex: unavailableExecutionIndex,
       clock,

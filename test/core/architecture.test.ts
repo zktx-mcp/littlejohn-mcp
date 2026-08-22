@@ -79,11 +79,11 @@ const applicationErrorRegistryConstructionRules = Object.freeze([
   },
   {
     ownerFile: resolve("src/market-portfolio/contracts.ts"),
-    registryName: "referenceMarketErrorRegistry",
+    registryName: "marketPortfolioErrorRegistry",
     parentFile: resolve("src/token-catalog/error-registry.ts"),
     parentName: "tokenCatalogErrorRegistry",
     definitionsFile: resolve("src/market-portfolio/error-definitions.ts"),
-    definitionsName: "referenceMarketErrorDefinitions",
+    definitionsName: "marketPortfolioErrorDefinitions",
   },
   {
     ownerFile: resolve("src/protocols/uniswap-v2/errors.ts"),

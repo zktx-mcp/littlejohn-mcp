@@ -12,7 +12,7 @@ import {
   referenceMarketWarningsFor,
   referenceRoundObservationSchema,
 } from "../../../src/core/client.js";
-import { referenceMarketApplicationContracts } from
+import { marketPortfolioApplicationContracts } from
   "../../../src/market-portfolio/contracts.js";
 import { presentationContractRegistry, presentationContracts } from
   "../../../src/interfaces/mcp-app/registry.js";
@@ -21,6 +21,7 @@ import { renderOperation, renderPresentation } from
 import {
   stockTokenMarketAvailableFixture,
   stockTokenMarketExecutionUnavailableFixture,
+  stockTokenMarketReferenceUnavailableFixture,
   stockTokenMarketUnmappedFixture,
 } from "../stock-token-market-fixture.js";
 
@@ -105,10 +106,22 @@ const history = referenceHistorySuccessSchema.parse({
   warnings: referenceMarketWarningsFor({ result: "history", historyStatus: "partial" }),
 });
 
+const summaryFields = (list: Element | null, description: string): ReadonlyMap<string, HTMLElement> => {
+  if (!(list instanceof HTMLDListElement)) throw new TypeError(`Missing ${description} summary.`);
+  const labels = [...list.querySelectorAll("dt")];
+  const values = [...list.querySelectorAll("dd")];
+  return new Map(labels.map((label, index) => [label.textContent ?? "", values[index]!]));
+};
+
+const summaryFieldsAfter = (card: HTMLElement, heading: string): ReadonlyMap<string, HTMLElement> => {
+  const section = [...card.querySelectorAll("h2")].find((candidate) => candidate.textContent === heading);
+  return summaryFields(section?.nextElementSibling ?? null, heading);
+};
+
 describe("MCP App typed read renderers", () => {
   it("renders admitted fixed history as one accessible exact-value projection", () => {
     const entry = presentationContractRegistry.forContract(
-      referenceMarketApplicationContracts.history,
+      marketPortfolioApplicationContracts.history,
     );
     if (entry === undefined) throw new TypeError("History presentation is not registered.");
     const admitted = entry.parseResult(
@@ -164,21 +177,37 @@ describe("MCP App typed read renderers", () => {
     expect(card.textContent).toContain("Apple • Robinhood Token · AAPL");
     expect(card.textContent).toContain("925 / 4");
     expect(card.textContent).toContain("2026-08-12T13:30:00.000Z");
-    expect(card.textContent).toContain("Reference value (USD)");
+    expect(card.textContent).toContain("Oracle reference value denominated in USD");
     expect(card.textContent).toContain("Executed trades in USDG");
     expect(card.textContent).toContain("Latest exact close927 / 4 USDG");
-    expect(card.textContent).toContain("Chainlink reference history in USD");
+    expect(card.textContent).toContain("USD-denominated oracle reference history");
+    const marketFields = summaryFields(card.querySelector("dl"), "Stock Token market");
+    expect(marketFields.get("Status")?.textContent).toBe("Available");
+    expect(marketFields.get("Status")?.className).toBe("field-value");
+    const executionFields = summaryFieldsAfter(card, "Executed trades in USDG");
+    expect([...executionFields.keys()]).not.toContain("Status");
+    expect(executionFields.get("Freshness")?.textContent).toBe("Current");
+    expect(executionFields.get("Freshness")?.classList.contains("status-current")).toBe(true);
+    expect(executionFields.get("Source coverage")?.textContent).toBe("Partial");
+    expect(executionFields.get("Source coverage")?.classList.contains("status-partial")).toBe(true);
+    expect(executionFields.get("Detailed rows")?.textContent).toBe("Complete");
+    expect(executionFields.get("Detailed rows")?.className).toBe("field-value");
+    expect(executionFields.get("Observed one-minute candles")?.textContent).toBe("3");
+    expect(executionFields.get("Returned one-minute candles")?.textContent).toBe("3");
     const chartLabels = [...card.querySelectorAll('svg[role="img"]')]
       .map((chart) => chart.getAttribute("aria-label"));
     expect(chartLabels).toEqual([
-      expect.stringContaining("Apple • Robinhood Token executed trades in USDG"),
-      expect.stringContaining("Apple • Robinhood Token Chainlink reference history in USD"),
+      expect.stringContaining("Apple • Robinhood Token · AAPL executed trades in USDG"),
+      expect.stringContaining(
+        "Apple • Robinhood Token · AAPL USD-denominated oracle reference history",
+      ),
     ]);
     const executionCandles = availableValue.execution.status === "available"
       ? availableValue.execution.candles
       : [];
     expect(card.querySelectorAll(".candle-mark")).toHaveLength(
-      executionCandles.length + availableValue.history.candles.length,
+      executionCandles.length + (availableValue.reference.status === "available"
+        ? availableValue.reference.history.candles.length : 0),
     );
     expect(card.querySelector("path, polyline")).toBeNull();
     for (const figure of card.querySelectorAll("figure")) {
@@ -201,7 +230,7 @@ describe("MCP App typed read renderers", () => {
     expect([...card.querySelectorAll("details")].map((details) =>
       details.querySelector("summary")?.textContent)).toEqual([
       "Exact executed-trade candles",
-      "Exact reference candles",
+      "Exact oracle reference candles",
       "Data limitations",
     ]);
     expect([...card.querySelectorAll("details")].every((details) => !details.open)).toBe(true);
@@ -223,8 +252,9 @@ describe("MCP App typed read renderers", () => {
       entry,
       entry.parseResult(unavailableInput, unavailableValue),
     );
-    expect(unavailable.textContent).toContain("Stock TokenP");
-    expect(unavailable.textContent).toContain(`Name${unavailableValue.officialAsset.member.sourceName}`);
+    expect(unavailable.textContent).toContain(
+      `Stock Token${unavailableValue.officialAsset.member.sourceName} · P`,
+    );
     expect(unavailable.textContent).toContain(
       unavailableValue.officialAsset.member.contractAddress,
     );
@@ -242,12 +272,54 @@ describe("MCP App typed read renderers", () => {
       entry.parseResult(entry.parseInput({ symbol: "AAPL", window: "1d" }), value),
     );
 
-    expect(card.textContent).toContain("Reference value (USD)925 / 4");
+    expect(card.textContent).toContain("Oracle reference value denominated in USD925 / 4");
     expect(card.textContent).toContain("Executed trades in USDGStatusUnavailable");
     expect(card.textContent).toContain("Executed-trade history is temporarily unavailable.");
     expect(card.querySelectorAll('svg[role="img"]')).toHaveLength(1);
     expect(card.querySelector('svg[role="img"]')?.getAttribute("aria-label"))
-      .toContain("Chainlink reference history in USD");
+      .toContain("USD-denominated oracle reference history");
+  });
+
+  it("assigns reference freshness roles from the canonical freshness limitation", () => {
+    const entry = presentationContracts.stockTokenMarket;
+    const value = stockTokenMarketAvailableFixture();
+    if (value.status !== "available" || value.reference.status !== "available") {
+      throw new TypeError("The mapped fixture reference is unavailable.");
+    }
+    const paused = entry.parseResult(entry.parseInput({ symbol: "AAPL", window: "1d" }), {
+      ...value,
+      reference: {
+        ...value.reference,
+        oraclePaused: { ...value.reference.oraclePaused, value: true },
+        price: { ...value.reference.price, status: "last_observed" },
+        limitations: ["oracle_paused", ...value.reference.limitations],
+      },
+    });
+    const card = renderPresentation(entry, paused);
+    const referenceFields = summaryFieldsAfter(card, "USD-denominated oracle reference");
+
+    expect(referenceFields.get("Reference status")?.textContent).toBe("Last observed");
+    expect(referenceFields.get("Reference status")?.className).toBe("field-value");
+    expect(card.textContent).toContain(
+      "The token contract reported that its oracle is paused at the result block.",
+    );
+  });
+
+  it("preserves admitted execution history when the oracle reference is unavailable", () => {
+    const entry = presentationContracts.stockTokenMarket;
+    const value = stockTokenMarketReferenceUnavailableFixture();
+    const card = renderPresentation(
+      entry,
+      entry.parseResult(entry.parseInput({ symbol: "AAPL", window: "1d" }), value),
+    );
+
+    expect(card.textContent).toContain("Executed trades in USDG");
+    expect(card.textContent).toContain("Latest exact close927 / 4 USDG");
+    expect(card.textContent).toContain("USD-denominated oracle referenceStatusUnavailable");
+    expect(card.textContent).toContain("The oracle reference source was unavailable.");
+    expect(card.querySelectorAll('svg[role="img"]')).toHaveLength(1);
+    expect(card.querySelector('svg[role="img"]')?.getAttribute("aria-label"))
+      .toContain("executed trades in USDG");
   });
 
   it("uses the closed presentation registry as the only View-process classifier", () => {

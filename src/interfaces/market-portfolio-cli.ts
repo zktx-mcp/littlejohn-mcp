@@ -13,40 +13,43 @@ import {
   type SourceReference,
 } from "../core/index.js";
 import {
-  createReferenceMarketFailure,
-  referenceMarketApplicationContracts,
-  referenceMarketInterfaceErrorMappings,
+  createMarketPortfolioFailure,
+  marketPortfolioApplicationContracts,
+  marketPortfolioInterfaceErrorMappings,
   type ReferenceWatchlistOperation,
   type ReferenceWatchlistReview,
   type StockTokenMarketResult,
 } from "../market-portfolio/index.js";
 import {
-  referenceMarketInterfaceBindings,
+  marketPortfolioInterfaceBindings,
 } from "./identities.js";
 import { deliveryUnknownCliExitCode } from "./delivery-exit.js";
 import { LocalOperationClient } from "./operation-client.js";
 import { runAtomicCliDecision } from "./cli-operation.js";
 import { operationInterfaceBindings } from "./operation-bindings.js";
-import { dispatchReferenceMarketRead } from "./reference-market-http.js";
+import { dispatchMarketPortfolioRead } from "./market-portfolio-http.js";
 import type { RuntimeDispatchPort } from "./http-client.js";
 import {
-  stockTokenExecutionLimitationLabel,
+  stockTokenExecutionCoverageLimitationLabel,
+  stockTokenExecutionDetailLimitationLabel,
+  stockTokenReferenceUnavailableReasonLabel,
   stockTokenExecutionUnavailableReasonLabel,
+  stockTokenMarketLabel,
   stockTokenMarketUnavailableReasonLabel,
 } from "./stock-token-market-presentation.js";
 
-type ReferenceMarketCliBase = { readonly json: boolean };
-export type ReferenceMarketCliCommand =
-  | (ReferenceMarketCliBase & { readonly kind: "price"; readonly input: ReturnType<typeof referenceMarketApplicationContracts.price.parseInput> })
-  | (ReferenceMarketCliBase & { readonly kind: "history"; readonly input: ReturnType<typeof referenceMarketApplicationContracts.history.parseInput> })
-  | (ReferenceMarketCliBase & { readonly kind: "stockTokenMarket"; readonly input: ReturnType<typeof referenceMarketApplicationContracts.stockTokenMarket.parseInput> })
-  | (ReferenceMarketCliBase & { readonly kind: "watchlist"; readonly input: Record<string, never> })
-  | (ReferenceMarketCliBase & { readonly kind: "add"; readonly input: ReturnType<typeof referenceMarketApplicationContracts.watchlistChangeReview.parseInput> })
-  | (ReferenceMarketCliBase & { readonly kind: "remove"; readonly input: ReturnType<typeof referenceMarketApplicationContracts.watchlistChangeReview.parseInput> })
-  | (ReferenceMarketCliBase & { readonly kind: "reorder"; readonly input: ReturnType<typeof referenceMarketApplicationContracts.watchlistChangeReview.parseInput> })
-  | (ReferenceMarketCliBase & { readonly kind: "operation"; readonly operationId: OperationId });
+type MarketPortfolioCliBase = { readonly json: boolean };
+export type MarketPortfolioCliCommand =
+  | (MarketPortfolioCliBase & { readonly kind: "price"; readonly input: ReturnType<typeof marketPortfolioApplicationContracts.price.parseInput> })
+  | (MarketPortfolioCliBase & { readonly kind: "history"; readonly input: ReturnType<typeof marketPortfolioApplicationContracts.history.parseInput> })
+  | (MarketPortfolioCliBase & { readonly kind: "stockTokenMarket"; readonly input: ReturnType<typeof marketPortfolioApplicationContracts.stockTokenMarket.parseInput> })
+  | (MarketPortfolioCliBase & { readonly kind: "watchlist"; readonly input: Record<string, never> })
+  | (MarketPortfolioCliBase & { readonly kind: "add"; readonly input: ReturnType<typeof marketPortfolioApplicationContracts.watchlistChangeReview.parseInput> })
+  | (MarketPortfolioCliBase & { readonly kind: "remove"; readonly input: ReturnType<typeof marketPortfolioApplicationContracts.watchlistChangeReview.parseInput> })
+  | (MarketPortfolioCliBase & { readonly kind: "reorder"; readonly input: ReturnType<typeof marketPortfolioApplicationContracts.watchlistChangeReview.parseInput> })
+  | (MarketPortfolioCliBase & { readonly kind: "operation"; readonly operationId: OperationId });
 
-export interface ReferenceMarketCliOutputPort {
+export interface MarketPortfolioCliOutputPort {
   readonly inputIsTTY: boolean;
   readonly outputIsTTY: boolean;
   readonly interruptSignal: AbortSignal;
@@ -55,11 +58,11 @@ export interface ReferenceMarketCliOutputPort {
   readLine(prompt: string): Promise<string>;
 }
 
-export const referenceMarketCliCommandRequiresInteractiveTerminal = (
-  command: ReferenceMarketCliCommand,
+export const marketPortfolioCliCommandRequiresInteractiveTerminal = (
+  command: MarketPortfolioCliCommand,
 ): boolean => command.kind === "add" || command.kind === "remove" || command.kind === "reorder";
 
-const invalidInput = (): never => { throw new TypeError("Reference market CLI input is invalid."); };
+const invalidInput = (): never => { throw new TypeError("Market portfolio CLI input is invalid."); };
 
 const parseArguments = (tokens: readonly string[]): Readonly<{
   json: boolean;
@@ -102,40 +105,40 @@ const parseArguments = (tokens: readonly string[]): Readonly<{
   });
 };
 
-export const parseReferenceMarketCliCommand = (
+export const parseMarketPortfolioCliCommand = (
   argumentsInput: readonly string[],
-): ReferenceMarketCliCommand => {
+): MarketPortfolioCliCommand => {
   const [domain, command, ...tokens] = argumentsInput;
   if (domain !== "market" || command === undefined) return invalidInput();
   const parsed = parseArguments(tokens);
   try {
-    if (command === referenceMarketInterfaceBindings.price.cli.command &&
+    if (command === marketPortfolioInterfaceBindings.price.cli.command &&
       parsed.positionals.length === 1 && parsed.window === undefined && parsed.revision === undefined) {
       return Object.freeze({
         kind: "price", json: parsed.json,
-        input: referenceMarketApplicationContracts.price.parseInput({ pairId: parsed.positionals[0] }),
+        input: marketPortfolioApplicationContracts.price.parseInput({ pairId: parsed.positionals[0] }),
       });
     }
-    if (command === referenceMarketInterfaceBindings.history.cli.command &&
+    if (command === marketPortfolioInterfaceBindings.history.cli.command &&
       parsed.positionals.length === 1 && parsed.window !== undefined && parsed.revision === undefined) {
       return Object.freeze({
         kind: "history", json: parsed.json,
-        input: referenceMarketApplicationContracts.history.parseInput({
+        input: marketPortfolioApplicationContracts.history.parseInput({
           pairId: parsed.positionals[0], window: parsed.window,
         }),
       });
     }
-    if (command === referenceMarketInterfaceBindings.stockTokenMarket.cli.command &&
+    if (command === marketPortfolioInterfaceBindings.stockTokenMarket.cli.command &&
       parsed.positionals.length === 1 && parsed.revision === undefined) {
       return Object.freeze({
         kind: "stockTokenMarket", json: parsed.json,
-        input: referenceMarketApplicationContracts.stockTokenMarket.parseInput({
+        input: marketPortfolioApplicationContracts.stockTokenMarket.parseInput({
           symbol: parsed.positionals[0],
           ...(parsed.window === undefined ? {} : { window: parsed.window }),
         }),
       });
     }
-    if (command === referenceMarketInterfaceBindings.watchlist.cli.command &&
+    if (command === marketPortfolioInterfaceBindings.watchlist.cli.command &&
       parsed.positionals.length === 0 && parsed.window === undefined && parsed.revision === undefined) {
       return Object.freeze({ kind: "watchlist", json: parsed.json, input: Object.freeze({}) });
     }
@@ -149,25 +152,25 @@ export const parseReferenceMarketCliCommand = (
       return Object.freeze({
         kind,
         json: false,
-        input: referenceMarketApplicationContracts.watchlistChangeReview.parseInput({
+        input: marketPortfolioApplicationContracts.watchlistChangeReview.parseInput({
           kind,
           pairId: parsed.positionals[0],
           expectedRevision: parsed.revision,
         }),
-      }) as ReferenceMarketCliCommand;
+      }) as MarketPortfolioCliCommand;
     }
     if (command === operationInterfaceBindings.watchlistReorder.cli?.command &&
       !parsed.json && parsed.revision !== undefined && parsed.window === undefined) {
       return Object.freeze({
         kind: "reorder", json: false,
-        input: referenceMarketApplicationContracts.watchlistChangeReview.parseInput({
+        input: marketPortfolioApplicationContracts.watchlistChangeReview.parseInput({
           kind: "reorder", pairIds: parsed.positionals, expectedRevision: parsed.revision,
         }),
       });
     }
     if (command === operationInterfaceBindings.watchlistOperation.cli?.command &&
       parsed.positionals.length === 1 && parsed.revision === undefined && parsed.window === undefined) {
-      const input = referenceMarketApplicationContracts.operation.parseInput({
+      const input = marketPortfolioApplicationContracts.operation.parseInput({
         operationId: parsed.positionals[0],
       });
       return Object.freeze({
@@ -252,7 +255,7 @@ const stockTokenLimitationMeanings = new Map(
 
 const requireMeaning = (meanings: ReadonlyMap<string, string>, code: string): string => {
   const meaning = meanings.get(code);
-  if (meaning === undefined) throw new TypeError("Reference-market meaning is not registered.");
+  if (meaning === undefined) throw new TypeError("Market presentation meaning is not registered.");
   return meaning;
 };
 
@@ -287,15 +290,15 @@ export const formatReferenceHistoryForCli = (result: ReferenceHistorySuccess): s
 ].join("\n");
 
 export const formatStockTokenMarketForCli = (result: StockTokenMarketResult): string => {
+  const label = stockTokenMarketLabel(result);
   const common = [
-    `Stock Token: ${result.symbol}`,
+    `Stock Token: ${label}`,
     `Window: ${result.window}`,
     `Status: ${result.status}`,
   ];
   if (result.status === "unavailable") {
     const officialAsset = "officialAsset" in result
       ? [
-          `Name: ${result.officialAsset.member.sourceName ?? result.symbol}`,
           `Contract: ${result.officialAsset.member.contractAddress}`,
         ]
       : [];
@@ -314,10 +317,12 @@ export const formatStockTokenMarketForCli = (result: StockTokenMarketResult): st
         `Execution reason: ${stockTokenExecutionUnavailableReasonLabel(result.execution.reason)}`,
       ]
     : [
-        `Executed trades (USDG): ${result.execution.freshness === "stale"
-          ? "stale"
-          : result.execution.coverage.status}`,
-        `Execution one-minute candles: ${result.execution.candles.length}`,
+        "Executed trades (USDG): available",
+        `Execution freshness: ${result.execution.freshness}`,
+        `Execution source coverage: ${result.execution.coverage.status}`,
+        `Execution detail: ${result.execution.detail.status}`,
+        `Observed execution one-minute candles: ${result.execution.detail.observedCandleCount}`,
+        `Returned execution one-minute candles: ${result.execution.candles.length}`,
         ...(latestExecution === undefined
           ? ["Latest execution close: no executed trade in the covered period"]
           : [
@@ -325,22 +330,32 @@ export const formatStockTokenMarketForCli = (result: StockTokenMarketResult): st
               `Latest execution candle: ${latestExecution.intervalEnd}`,
             ]),
         ...result.execution.coverage.limitations.map((limitation) =>
-          `Execution limitation: ${stockTokenExecutionLimitationLabel(limitation)}`),
+          `Execution coverage limitation: ${stockTokenExecutionCoverageLimitationLabel(limitation)}`),
+        ...result.execution.detail.limitations.map((limitation) =>
+          `Execution detail limitation: ${stockTokenExecutionDetailLimitationLabel(limitation)}`),
+      ];
+  const reference = result.reference.status === "unavailable"
+    ? [
+        "Oracle reference value denominated in USD: unavailable",
+        `Oracle reference reason: ${stockTokenReferenceUnavailableReasonLabel(result.reference.reason)}`,
+      ]
+    : [
+        `Oracle reference value denominated in USD: ${rational(result.reference.price.value)}`,
+        `Oracle reference status: ${result.reference.price.status}`,
+        `Oracle reference observed at: ${result.reference.price.source.readEvidence.observedAt}`,
+        `USD-denominated oracle reference history: ${result.reference.history.status}`,
+        `Oracle reference candles: ${result.reference.history.candles.length}`,
+        ...(result.reference.oraclePaused.value ? ["Oracle paused: yes"] : []),
+        ...result.reference.warnings.map((code) =>
+          `Oracle reference warning: ${requireMeaning(referenceWarningMeanings, code)}`),
+        ...result.reference.limitations.map((code) =>
+          `Oracle reference limitation: ${requireMeaning(stockTokenLimitationMeanings, code)}`),
       ];
   return [
-    `Stock Token: ${result.officialAsset.member.sourceName ?? result.mapping.disposition.asset.name} · ${result.symbol}`,
+    `Stock Token: ${label}`,
     `Window: ${result.window}`,
-    `Reference value (USD): ${rational(result.price.value)}`,
-    `Reference status: ${result.price.status}`,
-    `Reference observed at: ${result.price.source.readEvidence.observedAt}`,
-    `Chainlink reference history: ${result.history.status}`,
-    `Reference candles: ${result.history.candles.length}`,
+    ...reference,
     ...execution,
-    ...(result.oraclePaused.value ? ["Oracle paused: yes"] : []),
-    ...result.warnings.map((code) =>
-      `Warning: ${requireMeaning(referenceWarningMeanings, code)}`),
-    ...result.limitations.map((code) =>
-      `Limitation: ${requireMeaning(stockTokenLimitationMeanings, code)}`),
     `Contract: ${result.officialAsset.member.contractAddress}`,
   ].join("\n");
 };
@@ -382,28 +397,28 @@ const watchlistOperationHuman = (operation: ReferenceWatchlistOperation): string
   watchlistHuman(operation.result.watchlist),
 ].join("\n");
 
-const reportReferenceMarketFailure = (
-  output: ReferenceMarketCliOutputPort,
+const reportMarketPortfolioFailure = (
+  output: MarketPortfolioCliOutputPort,
   failure: Readonly<{ error: { code: string; message: string } }>,
   json: boolean,
 ): number => {
   if (json) output.writeOutput(`${canonicalJsonStringify(failure as unknown as CanonicalJson)}\n`);
   else output.writeError(`${failure.error.code}: ${failure.error.message}\n`);
-  return referenceMarketInterfaceErrorMappings.get(failure.error.code).cliExitCode;
+  return marketPortfolioInterfaceErrorMappings.get(failure.error.code).cliExitCode;
 };
 
-export const runReferenceMarketCliCommand = async (
+export const runMarketPortfolioCliCommand = async (
   runtime: RuntimeDispatchPort,
   operationClient: LocalOperationClient,
-  command: ReferenceMarketCliCommand,
-  output: ReferenceMarketCliOutputPort,
+  command: MarketPortfolioCliCommand,
+  output: MarketPortfolioCliOutputPort,
   signal?: AbortSignal,
 ): Promise<number> => {
   if (command.kind === "add" || command.kind === "remove" || command.kind === "reorder") {
     if (!output.inputIsTTY || !output.outputIsTTY) {
-      return reportReferenceMarketFailure(
+      return reportMarketPortfolioFailure(
         output,
-        createReferenceMarketFailure("interactive_terminal_required"),
+        createMarketPortfolioFailure("interactive_terminal_required"),
         false,
       );
     }
@@ -433,11 +448,11 @@ export const runReferenceMarketCliCommand = async (
       ].join("\n"));
       return deliveryUnknownCliExitCode;
     }
-    return reportReferenceMarketFailure(output, decided.failure, false);
+    return reportMarketPortfolioFailure(output, decided.failure, false);
   }
 
   if (command.kind === "operation") {
-    const input = referenceMarketApplicationContracts.operation.parseInput({
+    const input = marketPortfolioApplicationContracts.operation.parseInput({
       operationId: command.operationId,
     });
     const result = await operationClient.invoke(
@@ -450,7 +465,7 @@ export const runReferenceMarketCliCommand = async (
         output.writeError("delivery_unknown: Exact read did not complete.\n");
         return deliveryUnknownCliExitCode;
       }
-      return reportReferenceMarketFailure(output, result.failure, command.json);
+      return reportMarketPortfolioFailure(output, result.failure, command.json);
     }
     output.writeOutput(command.json
       ? `${canonicalJsonStringify(result.value as unknown as CanonicalJson)}\n`
@@ -459,20 +474,20 @@ export const runReferenceMarketCliCommand = async (
   }
 
   const readBinding = command.kind === "price"
-    ? referenceMarketInterfaceBindings.price
+    ? marketPortfolioInterfaceBindings.price
     : command.kind === "history"
-      ? referenceMarketInterfaceBindings.history
+      ? marketPortfolioInterfaceBindings.history
       : command.kind === "stockTokenMarket"
-        ? referenceMarketInterfaceBindings.stockTokenMarket
-        : referenceMarketInterfaceBindings.watchlist;
-  const result = await dispatchReferenceMarketRead(runtime, readBinding, command.input, signal);
+        ? marketPortfolioInterfaceBindings.stockTokenMarket
+        : marketPortfolioInterfaceBindings.watchlist;
+  const result = await dispatchMarketPortfolioRead(runtime, readBinding, command.input, signal);
   if ("status" in result) {
     if (command.json) output.writeOutput(`${canonicalJsonStringify(result as unknown as CanonicalJson)}\n`);
-    else output.writeError("delivery_unknown: The reference-market result is unavailable after sending began.\n");
+    else output.writeError("delivery_unknown: The market result is unavailable after sending began.\n");
     return deliveryUnknownCliExitCode;
   }
   if (!result.ok) {
-    return reportReferenceMarketFailure(output, result.failure, command.json);
+    return reportMarketPortfolioFailure(output, result.failure, command.json);
   }
   const value = result.value;
   output.writeOutput(command.json

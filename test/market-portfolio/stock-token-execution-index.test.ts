@@ -153,11 +153,120 @@ describe("pair-based Stock Token execution index contract", () => {
     });
     expect(result.status).toBe("available");
     if (result.status !== "available") return;
-    expect(result.coverage.observedCandleCount).toBe(4_320);
-    expect(result.coverage.limitations).toContain("candle_capacity");
+    expect(result.freshness).toBe("current");
+    expect(result.coverage.status).toBe("complete");
+    expect(result.coverage.limitations).toEqual([]);
+    expect(result.detail.observedCandleCount).toBe(4_320);
+    expect(result.detail).toMatchObject({
+      status: "limited",
+      limitations: ["candle_capacity"],
+    });
     expect(result.candles).toHaveLength(stockTokenExecutionSeriesLimits.candles);
     expect(result.candles[0]?.intervalStart).toBe("2026-08-11T20:48:00.000Z");
     expect(result.candles.at(-1)?.intervalEnd).toBe("2026-08-14T00:00:00.000Z");
+
+    expect(() => stockTokenExecutionSeriesSchema.parse({
+      ...result,
+      artifact: { ...result.artifact, coveredUntilTimestamp: result.requestedStart },
+      freshness: "stale",
+    })).toThrow();
+
+    const stale = createStockTokenExecutionSeries({
+      request: {
+        pairId: asset.poolId,
+        requestedStart: "2026-08-11T00:00:00.000Z",
+        requestedEnd: "2026-08-14T14:34:00.000Z",
+      },
+      asset,
+      state: fixture.state,
+      stateSha256: fixture.stateEncoded.jsonSha256,
+      months: [{ reference: august.reference, month: august.month, sha256: august.encoded.jsonSha256 }],
+      days: fixture.days.filter((entry) =>
+        entry.day.day >= "2026-08-11" && entry.day.day <= "2026-08-14").map((entry) => ({
+        reference: entry.reference,
+        day: entry.day,
+        sha256: entry.encoded.jsonSha256,
+      })),
+    });
+    if (stale.status !== "available") throw new TypeError("Expected stale execution history.");
+    expect(stale.freshness).toBe("stale");
+    expect(stale.coverage).toMatchObject({
+      status: "partial",
+      limitations: ["after_published_coverage"],
+    });
+    expect(stale.detail).toEqual(result.detail);
+
+    const firstCoverage = result.coverage.intervals[0]!;
+    const partial = stockTokenExecutionSeriesSchema.parse({
+      ...result,
+      coverage: {
+        status: "partial",
+        intervals: [{
+          ...firstCoverage,
+          fromTimestamp: "2026-08-11T00:01:00.000Z",
+        }, ...result.coverage.intervals.slice(1)],
+        limitations: ["before_published_coverage"],
+      },
+    });
+    if (partial.status !== "available") throw new TypeError("Expected partial execution history.");
+    expect(partial.freshness).toBe(result.freshness);
+    expect(partial.detail).toEqual(result.detail);
+
+    expect(() => stockTokenExecutionSeriesSchema.parse({
+      ...result,
+      artifact: {
+        ...result.artifact,
+        days: result.artifact.days.map((entry, index) => index === 0
+          ? { ...entry, day: "2026-08-10" }
+          : entry),
+      },
+    })).toThrow();
+
+    const firstInterval = result.coverage.intervals[0]!;
+    const splitTimestamp = new Date(
+      (Date.parse(firstInterval.fromTimestamp) + Date.parse(firstInterval.untilTimestamp)) / 2,
+    ).toISOString();
+    const splitBlock = String(
+      (BigInt(firstInterval.fromBlock) + BigInt(firstInterval.untilBlock)) / 2n,
+    );
+    const mismatchedProjection = stockTokenExecutionSeriesSchema.safeParse({
+      ...result,
+      coverage: {
+        ...result.coverage,
+        intervals: [
+          { ...firstInterval, untilBlock: splitBlock, untilTimestamp: splitTimestamp },
+          { ...firstInterval, fromBlock: splitBlock, fromTimestamp: splitTimestamp },
+          ...result.coverage.intervals.slice(1),
+        ],
+      },
+    });
+    expect(mismatchedProjection.success).toBe(false);
+
+    expect(() => stockTokenExecutionSeriesSchema.parse({
+      ...result,
+      requestedStart: "2026-08-10T00:00:00.000Z",
+      requestedEnd: "2026-08-11T00:00:00.000Z",
+      coverage: { ...result.coverage, status: "partial", limitations: ["before_published_coverage"] },
+      detail: { status: "complete", observedCandleCount: 0, limitations: [] },
+      candles: [],
+    })).toThrow();
+
+    expect(() => stockTokenExecutionSeriesSchema.parse({
+      ...result,
+      coverage: { ...result.coverage, limitations: ["before_published_coverage"] },
+    })).toThrow();
+    expect(() => stockTokenExecutionSeriesSchema.parse({
+      ...result,
+      detail: { status: "complete", observedCandleCount: 4_320, limitations: [] },
+    })).toThrow();
+    expect(() => stockTokenExecutionSeriesSchema.parse({
+      ...result,
+      coverage: { ...result.coverage, limitations: ["candle_capacity"] },
+    })).toThrow();
+    expect(() => stockTokenExecutionSeriesSchema.parse({
+      ...result,
+      coverage: { ...result.coverage, limitations: ["stale_index"] },
+    })).toThrow();
   });
 
   it("admits the maximum three pair-month and 31 pair-day inputs without changing public endpoints", () => {

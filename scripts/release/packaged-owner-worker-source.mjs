@@ -122,7 +122,11 @@ const stockTokenExecutionIndex = Object.freeze({
           untilTimestamp: coverageEnd,
         }],
         limitations: ["before_published_coverage", "after_published_coverage"],
+      },
+      detail: {
+        status: "complete",
         observedCandleCount: candles.length,
+        limitations: [],
       },
       candles,
     });
