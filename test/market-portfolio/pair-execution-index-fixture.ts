@@ -48,13 +48,15 @@ const reference = (
 
 const hash = (value: number): `0x${string}` =>
   `0x${value.toString(16).padStart(64, "0")}`;
-const candle = (start: string, block: number) => stockTokenExecutionArtifactCandleSchema.parse({
+const candle = (start: string, block: number) => {
+  const open = 300 + block % 7;
+  return stockTokenExecutionArtifactCandleSchema.parse({
   intervalStart: start,
   intervalEnd: new Date(Date.parse(start) + 60_000).toISOString(),
-  open: { numerator: "301", denominator: "1" },
-  high: { numerator: "302", denominator: "1" },
-  low: { numerator: "300", denominator: "1" },
-  close: { numerator: "603", denominator: "2" },
+  open: { numerator: open.toString(), denominator: "1" },
+  high: { numerator: (open + 1).toString(), denominator: "1" },
+  low: { numerator: (open - 1).toString(), denominator: "1" },
+  close: { numerator: (open * 2 + 1).toString(), denominator: "2" },
   baseVolumeRaw: "1000000000000000000",
   quoteVolumeRaw: "301500000",
   tradeCount: 1,
@@ -73,6 +75,7 @@ const candle = (start: string, block: number) => stockTokenExecutionArtifactCand
     logIndex: 0,
   },
 });
+};
 
 export interface PairDayFixture {
   readonly reference: StockTokenExecutionArtifactReference;

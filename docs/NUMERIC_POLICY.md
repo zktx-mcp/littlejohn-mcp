@@ -365,6 +365,32 @@ merge an equal-valued limit, or reinterpret a feature-private capacity.
   exact `Swap` events. Little John does not convert USDG to USD, compare the two
   series as equal units, merge their candles, interpolate a missing interval,
   or derive either series from the other.
+- The execution display interval is owned independently from reference-history
+  buckets. `1d` uses natural 15-minute intervals, `7d` uses natural 1-hour
+  intervals, and `30d` uses natural 4-hour intervals. Every Unix-epoch-aligned
+  interval intersecting the half-open request is represented. Aligned requests
+  contain exactly `96`, `168`, or `180` positions; an unaligned request contains
+  at most `97`, `169`, or `181`. The position time key is its natural interval
+  start. Represented bounds are the exact intersection with the request.
+- The execution-index owner builds the display series from every admitted
+  one-minute candle wholly inside the request before it limits the separate
+  detailed list. One source candle belongs to exactly one containing natural
+  interval and is never split or prorated. For a non-empty position, open and
+  close come from the first and last contributing candles, high and low use
+  exact rational comparison, and Stock Token raw volume, USDG raw volume, and
+  trade count are summed together over that identical source set. Observed and
+  `Swap` source bounds enclose the same set.
+- Display raw volumes are canonical unsigned decimal strings bounded by
+  `240 × (10^78 − 1)`. Display trade count is a canonical unsigned decimal
+  string bounded by `240 × Number.MAX_SAFE_INTEGER`, exactly
+  `2,161,727,821,137,837,840`. It is never converted back to a JSON number.
+  Quote volume retains USDG decimals and token volume retains Stock Token
+  decimals; neither raw integer is converted in canonical JSON.
+- A Canvas renderer may derive only finite ephemeral price values and
+  `quoteVolumeRaw / 10^quoteToken.decimals` from that completed display series.
+  It labels the volume projection as approximate USDG. These approximations are
+  never serialized, stored, compared as financial values, or used to rebuild an
+  exact field.
 - The Chainlink reference chart admits at most 180 candles and 720 distinct
   source observations. The execution result admits at most the most recent
   3,072 exact one-minute candles from the requested interval. Its detail state
@@ -376,6 +402,10 @@ merge an equal-valued limit, or reinterpret a feature-private capacity.
   last-observed reference value can coexist with partial, stale, unavailable,
   retained-out, or capacity-limited execution history; neither outcome changes
   the other.
+- The completed execution display series retains its request window, exact
+  bounds, pair and asset units, positions, gaps, and aggregates in canonical
+  JSON. Snapshot reload renders that admitted value without re-reading source
+  artifacts or aggregating either the display series or detailed candles.
 - Human-interface chart coordinates may use only the non-authoritative
   floating-point projection allowed by [`Charts`](#charts). Exact rational
   OHLC values remain visible beside that projection and are the only values

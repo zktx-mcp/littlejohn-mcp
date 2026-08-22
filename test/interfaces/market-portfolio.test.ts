@@ -185,7 +185,7 @@ describe("market-portfolio interface boundary", () => {
     expect(output).toContain("Stock Token: Apple • Robinhood Token · AAPL");
     expect(output).toContain("Oracle reference status: current");
     expect(output).toContain("Oracle reference value denominated in USD: 925/4");
-    expect(output).toContain("Oracle reference observed at: 2026-08-12T13:30:00.000Z");
+    expect(output).toContain("Oracle reference observed at: 2026-08-12T13:37:23.000Z");
     expect(output).toContain("USD-denominated oracle reference history: partial");
     expect(output).toContain("Executed trades (USDG): available");
     expect(output).toContain("Execution freshness: current");
@@ -193,7 +193,9 @@ describe("market-portfolio interface boundary", () => {
     expect(output).toContain("Execution detail: complete");
     expect(output).toContain("Observed execution one-minute candles: 3");
     expect(output).toContain("Returned execution one-minute candles: 3");
-    expect(output).toContain("Latest execution close: 927/4 USDG");
+    expect(output).toContain("Execution display positions: 97");
+    expect(output).toContain("Latest returned one-minute execution close: 927/4 USDG");
+    expect(output).toContain("Latest returned one-minute execution candle: 2026-08-12T13:37:00.000Z");
     expect(output).toContain("Execution coverage limitation: Published execution history starts");
     expect(output).toContain("Oracle reference limitation: Round traversal cannot prove");
     expect(output).toContain("Oracle reference warning: The value is a reference value");

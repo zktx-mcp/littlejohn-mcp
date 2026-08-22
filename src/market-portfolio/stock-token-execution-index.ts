@@ -10,6 +10,8 @@ import {
   isWellFormedText,
   jsonObject,
   keccak256FromHex,
+  marketTimeWindowDefinitions,
+  marketTimeWindowSchema,
   maximumMarketTimeWindowMilliseconds,
   productChainId,
   productChainNumericId,
@@ -17,6 +19,7 @@ import {
   unsignedDecimalSchema,
   utcTimestampSchema,
   type EvmAddress,
+  type MarketTimeWindow,
 } from "../core/index.js";
 import {
   stockTokenExecutionIndexRegistryJson,
@@ -52,6 +55,34 @@ const boundedUnsignedDecimalSchema = unsignedDecimalSchema.refine(
   "Unsigned decimal exceeds the supported integer width.",
 );
 const positiveSafeIntegerSchema = z.number().int().positive().safe();
+
+export const stockTokenExecutionDisplayWindowDefinitions = deepFreezeValue({
+  "1d": { intervalMilliseconds: 15 * 60_000, fullPositionCount: 96, maximumPositionCount: 97 },
+  "7d": { intervalMilliseconds: 60 * 60_000, fullPositionCount: 168, maximumPositionCount: 169 },
+  "30d": { intervalMilliseconds: 4 * 60 * 60_000, fullPositionCount: 180, maximumPositionCount: 181 },
+} satisfies Readonly<Record<MarketTimeWindow, Readonly<{
+  intervalMilliseconds: number;
+  fullPositionCount: number;
+  maximumPositionCount: number;
+}>>>);
+
+const maximumDisplaySourceCandlesPerPosition = 240n;
+const maximumSourceCandleInteger = 10n ** 78n - 1n;
+const maximumDisplayVolumeRaw = maximumDisplaySourceCandlesPerPosition * maximumSourceCandleInteger;
+const maximumDisplayTradeCount = maximumDisplaySourceCandlesPerPosition * BigInt(Number.MAX_SAFE_INTEGER);
+const unsignedDecimalAtMost = (value: string, maximum: bigint): boolean => {
+  const maximumText = maximum.toString();
+  return value.length < maximumText.length ||
+    (value.length === maximumText.length && value <= maximumText);
+};
+const displayVolumeRawSchema = unsignedDecimalSchema.refine(
+  (value) => value !== "0" && unsignedDecimalAtMost(value, maximumDisplayVolumeRaw),
+  "Display aggregate volume exceeds its source-derived maximum.",
+);
+const displayTradeCountSchema = unsignedDecimalSchema.refine(
+  (value) => value !== "0" && unsignedDecimalAtMost(value, maximumDisplayTradeCount),
+  "Display aggregate trade count exceeds its source-derived maximum.",
+);
 
 export const canonicalStockTokenExecutionIndexJson = (value: unknown, depth = 0): string => {
   if (depth > 32) throw new TypeError("Execution-index artifact nesting is excessive.");
@@ -366,6 +397,38 @@ const candleCoreShape = {
   lastSource: stockTokenExecutionSwapPositionSchema,
 } as const;
 
+type ExactOhlc = Readonly<{
+  open: z.infer<typeof exactRationalSchema>;
+  high: z.infer<typeof exactRationalSchema>;
+  low: z.infer<typeof exactRationalSchema>;
+  close: z.infer<typeof exactRationalSchema>;
+}>;
+
+const invalidExactOhlc = (value: ExactOhlc): boolean =>
+  compareExactRationals(value.high, value.open) < 0 ||
+  compareExactRationals(value.high, value.close) < 0 ||
+  compareExactRationals(value.low, value.open) > 0 ||
+  compareExactRationals(value.low, value.close) > 0 ||
+  compareExactRationals(value.high, value.low) < 0;
+
+const invalidSwapBoundaryRange = (
+  first: StockTokenExecutionSwapPosition,
+  last: StockTokenExecutionSwapPosition,
+  singleTrade: boolean,
+): boolean => {
+  const swapOrder = compareSwapPositions(first, last);
+  const sameSwap = sameSwapPosition(first, last);
+  const sameBlock = first.blockNumber === last.blockNumber;
+  const sameTransaction = sameBlock && first.transactionIndex === last.transactionIndex;
+  return swapOrder > 0 ||
+    (sameBlock && first.blockHash !== last.blockHash) ||
+    (!sameBlock && first.blockHash === last.blockHash) ||
+    (sameTransaction && first.transactionHash !== last.transactionHash) ||
+    (!sameTransaction && first.transactionHash === last.transactionHash) ||
+    (sameBlock && swapOrder < 0 && first.logIndex >= last.logIndex) ||
+    singleTrade !== sameSwap;
+};
+
 const validateCandle = (
   value: Readonly<z.infer<ReturnType<typeof jsonObject<typeof candleCoreShape>>>> & {
     readonly firstSource: StockTokenExecutionSwapPosition;
@@ -373,25 +436,10 @@ const validateCandle = (
   },
   context: z.RefinementCtx,
 ): void => {
-  const swapOrder = compareSwapPositions(value.firstSource, value.lastSource);
-  const sameSwap = sameSwapPosition(value.firstSource, value.lastSource);
-  const sameBlock = value.firstSource.blockNumber === value.lastSource.blockNumber;
-  const sameTransaction = sameBlock &&
-    value.firstSource.transactionIndex === value.lastSource.transactionIndex;
   if (
     Date.parse(value.intervalEnd) - Date.parse(value.intervalStart) !== 60_000 ||
-    compareExactRationals(value.high, value.open) < 0 ||
-    compareExactRationals(value.high, value.close) < 0 ||
-    compareExactRationals(value.low, value.open) > 0 ||
-    compareExactRationals(value.low, value.close) > 0 ||
-    compareExactRationals(value.high, value.low) < 0 ||
-    swapOrder > 0 ||
-    (sameBlock && value.firstSource.blockHash !== value.lastSource.blockHash) ||
-    (!sameBlock && value.firstSource.blockHash === value.lastSource.blockHash) ||
-    (sameTransaction && value.firstSource.transactionHash !== value.lastSource.transactionHash) ||
-    (!sameTransaction && value.firstSource.transactionHash === value.lastSource.transactionHash) ||
-    (sameBlock && swapOrder < 0 && value.firstSource.logIndex >= value.lastSource.logIndex) ||
-    (value.tradeCount === 1) !== sameSwap
+    invalidExactOhlc(value) ||
+    invalidSwapBoundaryRange(value.firstSource, value.lastSource, value.tradeCount === 1)
   ) context.addIssue({ code: "custom", message: "Execution candle semantics are invalid." });
 };
 
@@ -424,6 +472,187 @@ export const stockTokenExecutionCoverageIntervalSchema = jsonObject({
   ) context.addIssue({ code: "custom", message: "Execution coverage interval is invalid." });
 });
 export type StockTokenExecutionCoverageInterval = z.infer<typeof stockTokenExecutionCoverageIntervalSchema>;
+
+const executionDisplaySourceSchema = jsonObject({
+  chainId: z.literal(productChainId),
+  finality: z.literal("finalized"),
+  poolManager: evmAddressSchema,
+  poolId: hash32Schema,
+  token: jsonObject({
+    address: evmAddressSchema,
+    decimals: z.number().int().nonnegative().max(255),
+    symbol: executionIndexAssetSchema.shape.symbol,
+  }).strict(),
+  quoteToken: executionIndexQuoteTokenSchema,
+}).strict();
+
+const executionDisplayCandleObjectSchema = jsonObject({
+  open: exactRationalSchema,
+  high: exactRationalSchema,
+  low: exactRationalSchema,
+  close: exactRationalSchema,
+  tokenVolumeRaw: displayVolumeRawSchema,
+  quoteVolumeRaw: displayVolumeRawSchema,
+  tradeCount: displayTradeCountSchema,
+  firstSource: stockTokenExecutionSwapPositionSchema,
+  lastSource: stockTokenExecutionSwapPositionSchema,
+  observedStart: minuteTimestampSchema,
+  observedEnd: minuteTimestampSchema,
+}).strict();
+export const stockTokenExecutionDisplayCandleSchema = executionDisplayCandleObjectSchema.superRefine(
+  (value, context) => {
+    const maximumSourceCandleCount = BigInt(
+      (Date.parse(value.observedEnd) - Date.parse(value.observedStart)) / 60_000,
+    );
+    if (
+      value.observedStart >= value.observedEnd ||
+      invalidExactOhlc(value) ||
+      invalidSwapBoundaryRange(value.firstSource, value.lastSource, value.tradeCount === "1") ||
+      !unsignedDecimalAtMost(
+        value.tokenVolumeRaw,
+        maximumSourceCandleCount * maximumSourceCandleInteger,
+      ) ||
+      !unsignedDecimalAtMost(
+        value.quoteVolumeRaw,
+        maximumSourceCandleCount * maximumSourceCandleInteger,
+      ) ||
+      !unsignedDecimalAtMost(
+        value.tradeCount,
+        maximumSourceCandleCount * BigInt(Number.MAX_SAFE_INTEGER),
+      )
+    ) context.addIssue({ code: "custom", message: "Execution display candle semantics are invalid." });
+  },
+);
+export type StockTokenExecutionDisplayCandle = z.infer<
+  typeof stockTokenExecutionDisplayCandleSchema
+>;
+
+export const stockTokenExecutionDisplayPositionCoverageSchema = z.enum([
+  "complete",
+  "partial",
+  "unavailable",
+]);
+export type StockTokenExecutionDisplayPositionCoverage = z.infer<
+  typeof stockTokenExecutionDisplayPositionCoverageSchema
+>;
+
+const executionDisplayPositionSchema = jsonObject({
+  intervalStart: minuteTimestampSchema,
+  intervalEnd: minuteTimestampSchema,
+  representedStart: utcTimestampSchema,
+  representedEnd: utcTimestampSchema,
+  coverage: stockTokenExecutionDisplayPositionCoverageSchema,
+  candle: stockTokenExecutionDisplayCandleSchema.nullable(),
+}).strict();
+export type StockTokenExecutionDisplayPosition = z.infer<typeof executionDisplayPositionSchema>;
+
+interface ExecutionDisplayPositionFrame {
+  readonly intervalStart: string;
+  readonly intervalEnd: string;
+  readonly representedStart: string;
+  readonly representedEnd: string;
+}
+
+const executionDisplayPositionFrames = (
+  window: MarketTimeWindow,
+  requestedStart: string,
+  requestedEnd: string,
+): readonly ExecutionDisplayPositionFrame[] => {
+  const definition = stockTokenExecutionDisplayWindowDefinitions[window];
+  const requestedStartTime = Date.parse(requestedStart);
+  const requestedEndTime = Date.parse(requestedEnd);
+  let intervalStart = Math.floor(requestedStartTime / definition.intervalMilliseconds) *
+    definition.intervalMilliseconds;
+  const frames: ExecutionDisplayPositionFrame[] = [];
+  while (intervalStart < requestedEndTime) {
+    const intervalEnd = intervalStart + definition.intervalMilliseconds;
+    frames.push({
+      intervalStart: new Date(intervalStart).toISOString(),
+      intervalEnd: new Date(intervalEnd).toISOString(),
+      representedStart: new Date(Math.max(intervalStart, requestedStartTime)).toISOString(),
+      representedEnd: new Date(Math.min(intervalEnd, requestedEndTime)).toISOString(),
+    });
+    intervalStart = intervalEnd;
+  }
+  return frames;
+};
+
+const executionDisplaySeriesObjectSchema = jsonObject({
+  window: marketTimeWindowSchema,
+  requestedStart: utcTimestampSchema,
+  requestedEnd: utcTimestampSchema,
+  source: executionDisplaySourceSchema,
+  positions: z.array(executionDisplayPositionSchema)
+    .min(stockTokenExecutionDisplayWindowDefinitions["1d"].fullPositionCount)
+    .max(stockTokenExecutionDisplayWindowDefinitions["30d"].maximumPositionCount),
+}).strict();
+export const stockTokenExecutionDisplaySeriesSchema = executionDisplaySeriesObjectSchema.superRefine(
+  (value, context) => {
+    const definition = stockTokenExecutionDisplayWindowDefinitions[value.window];
+    if (
+      Date.parse(value.requestedEnd) - Date.parse(value.requestedStart) !==
+        marketTimeWindowDefinitions[value.window].durationMilliseconds
+    ) {
+      context.addIssue({ code: "custom", message: "Execution display request does not match its window." });
+      return;
+    }
+    const asset = findStockTokenExecutionIndexAssetByPairId(value.source.poolId);
+    if (
+      asset === undefined || value.source.chainId !== asset.pair.chainId ||
+      value.source.finality !== asset.pair.finality ||
+      value.source.poolManager !== asset.pair.poolManager ||
+      value.source.token.address !== asset.token ||
+      value.source.token.decimals !== asset.tokenDecimals ||
+      value.source.token.symbol !== asset.symbol ||
+      value.source.quoteToken.address !== asset.pair.quoteAsset.address ||
+      value.source.quoteToken.decimals !== asset.pair.quoteAsset.decimals
+    ) context.addIssue({ code: "custom", message: "Execution display source differs from its pair." });
+    const expected = executionDisplayPositionFrames(
+      value.window,
+      value.requestedStart,
+      value.requestedEnd,
+    );
+    if (
+      expected.length > definition.maximumPositionCount ||
+      value.positions.length !== expected.length
+    ) {
+      context.addIssue({ code: "custom", message: "Execution display position count is invalid." });
+      return;
+    }
+    let previousCandle: StockTokenExecutionDisplayCandle | undefined;
+    const identities = createSwapPositionIdentityState();
+    for (let index = 0; index < value.positions.length; index += 1) {
+      const position = value.positions[index]!;
+      const frame = expected[index]!;
+      if (
+        position.intervalStart !== frame.intervalStart ||
+        position.intervalEnd !== frame.intervalEnd ||
+        position.representedStart !== frame.representedStart ||
+        position.representedEnd !== frame.representedEnd ||
+        (position.coverage === "unavailable" && position.candle !== null)
+      ) context.addIssue({ code: "custom", message: "Execution display position is inconsistent." });
+      const candle = position.candle;
+      if (candle === null) continue;
+      if (
+        candle.observedStart < position.representedStart ||
+        candle.observedEnd > position.representedEnd ||
+        (previousCandle !== undefined && (
+          candle.observedStart <= previousCandle.observedStart ||
+          compareSwapPositions(previousCandle.lastSource, candle.firstSource) >= 0
+        ))
+      ) context.addIssue({ code: "custom", message: "Execution display candle membership is invalid." });
+      for (const source of [candle.firstSource, candle.lastSource]) {
+        if (recordSwapPositionIdentity(identities, source)) {
+          context.addIssue({ code: "custom", message: "Execution display Swap positions conflict." });
+        }
+      }
+      previousCandle = candle;
+    }
+  },
+);
+export type StockTokenExecutionDisplaySeries = z.infer<
+  typeof stockTokenExecutionDisplaySeriesSchema
+>;
 
 export const stockTokenExecutionArtifactReferenceSchema = jsonObject({
   coverage: stockTokenExecutionCoverageIntervalSchema,
@@ -641,6 +870,7 @@ export const stockTokenExecutionSeriesLimits = Object.freeze({
   candles: 3_072,
   coverageIntervals: Math.ceil(executionRequestWindowMilliseconds / utcDayMilliseconds) + 1,
   dayArtifacts: Math.ceil(executionRequestWindowMilliseconds / utcDayMilliseconds) + 1,
+  displayPositions: stockTokenExecutionDisplayWindowDefinitions["30d"].maximumPositionCount,
   monthArtifacts: Math.ceil(executionRequestWindowMilliseconds / shortestUtcMonthMilliseconds) + 1,
   observedCandles: executionRequestWindowMilliseconds / 60_000,
   requestWindowMilliseconds: executionRequestWindowMilliseconds,
@@ -690,12 +920,39 @@ const executionSeriesAvailableSchema = jsonObject({
     observedCandleCount: z.number().int().nonnegative().max(stockTokenExecutionSeriesLimits.observedCandles),
     limitations: z.array(stockTokenExecutionDetailLimitationSchema).max(1),
   }).strict(),
+  displaySeries: stockTokenExecutionDisplaySeriesSchema,
   candles: z.array(stockTokenExecutionCandleSchema).max(stockTokenExecutionSeriesLimits.candles),
 }).strict();
 const executionSeriesUnionSchema = z.discriminatedUnion("status", [
   executionSeriesUnavailableSchema,
   executionSeriesAvailableSchema,
 ]);
+
+const displayCoverageForFrame = (
+  intervals: readonly StockTokenExecutionCoverageInterval[],
+  representedStart: string,
+  representedEnd: string,
+): StockTokenExecutionDisplayPositionCoverage => {
+  const representedStartTime = Date.parse(representedStart);
+  const representedEndTime = Date.parse(representedEnd);
+  let cursor = representedStartTime;
+  let overlapsCoverage = false;
+  let hasGap = false;
+  for (const interval of intervals) {
+    const overlapStart = Math.max(representedStartTime, Date.parse(interval.fromTimestamp));
+    const overlapEnd = Math.min(representedEndTime, Date.parse(interval.untilTimestamp));
+    if (overlapStart >= overlapEnd) continue;
+    overlapsCoverage = true;
+    if (overlapStart > cursor) hasGap = true;
+    cursor = Math.max(cursor, overlapEnd);
+  }
+  if (!overlapsCoverage) return "unavailable";
+  const sourceMinuteBoundaries = representedStartTime % 60_000 === 0 &&
+    representedEndTime % 60_000 === 0;
+  return sourceMinuteBoundaries && !hasGap && cursor >= representedEndTime
+    ? "complete" : "partial";
+};
+
 export const stockTokenExecutionSeriesSchema = executionSeriesUnionSchema.superRefine((value, context) => {
   if (value.requestedStart >= value.requestedEnd) {
     context.addIssue({ code: "custom", message: "Execution series request interval is invalid." });
@@ -720,6 +977,21 @@ export const stockTokenExecutionSeriesSchema = executionSeriesUnionSchema.superR
     value.source.quoteToken.address !== asset.pair.quoteAsset.address ||
     value.source.quoteToken.decimals !== asset.pair.quoteAsset.decimals
   ) context.addIssue({ code: "custom", message: "Execution series source differs from its pair." });
+  const display = value.displaySeries;
+  if (
+    display.requestedStart !== value.requestedStart ||
+    display.requestedEnd !== value.requestedEnd ||
+    display.source.chainId !== value.source.chainId ||
+    display.source.finality !== value.source.finality ||
+    display.source.poolManager !== value.source.poolManager ||
+    display.source.poolId !== value.source.poolId ||
+    display.source.quoteToken.address !== value.source.quoteToken.address ||
+    display.source.quoteToken.decimals !== value.source.quoteToken.decimals ||
+    display.source.quoteToken.symbol !== value.source.quoteToken.symbol ||
+    asset === undefined || display.source.token.address !== asset.token ||
+    display.source.token.decimals !== asset.tokenDecimals ||
+    display.source.token.symbol !== asset.symbol
+  ) context.addIssue({ code: "custom", message: "Execution display series differs from its owner." });
   const projectionLengthsMatch = value.artifact.days.length === value.coverage.intervals.length;
   if (
     value.artifact.months.some((entry, index) => index > 0 &&
@@ -747,8 +1019,38 @@ export const stockTokenExecutionSeriesSchema = executionSeriesUnionSchema.superR
       context.addIssue({ code: "custom", message: "Execution series coverage is not continuous." });
     }
   }
-  let previousCandle: StockTokenExecutionCandle | undefined;
   const seriesIdentities = createSwapPositionIdentityState();
+  const displayCandlePositionIndexes = new Set<number>();
+  for (let index = 0; index < display.positions.length; index += 1) {
+    const position = display.positions[index]!;
+    const expectedCoverage = displayCoverageForFrame(
+      value.coverage.intervals,
+      position.representedStart,
+      position.representedEnd,
+    );
+    if (
+      position.coverage !== expectedCoverage ||
+      (expectedCoverage === "unavailable" && position.candle !== null)
+    ) context.addIssue({ code: "custom", message: "Execution display coverage is inconsistent." });
+    const aggregate = position.candle;
+    if (aggregate === null) continue;
+    displayCandlePositionIndexes.add(index);
+    const covered = value.coverage.intervals.some((interval) =>
+      aggregate.observedStart >= interval.fromTimestamp &&
+      aggregate.observedEnd <= interval.untilTimestamp &&
+      BigInt(aggregate.firstSource.blockNumber) >= BigInt(interval.fromBlock) &&
+      BigInt(aggregate.lastSource.blockNumber) < BigInt(interval.untilBlock));
+    const firstIdentityConflict = recordSwapPositionIdentity(seriesIdentities, aggregate.firstSource);
+    const lastIdentityConflict = recordSwapPositionIdentity(seriesIdentities, aggregate.lastSource);
+    if (!covered || firstIdentityConflict || lastIdentityConflict) {
+      context.addIssue({ code: "custom", message: "Execution display source is inconsistent." });
+    }
+  }
+  let previousCandle: StockTokenExecutionCandle | undefined;
+  const detailedPositionBounds = new Map<number, {
+    first: StockTokenExecutionCandle;
+    last: StockTokenExecutionCandle;
+  }>();
   for (const candle of value.candles) {
     const covered = value.coverage.intervals.some((interval) =>
       candle.intervalStart >= interval.fromTimestamp && candle.intervalEnd <= interval.untilTimestamp &&
@@ -768,6 +1070,20 @@ export const stockTokenExecutionSeriesSchema = executionSeriesUnionSchema.superR
     if (firstIdentityConflict || lastIdentityConflict) {
       context.addIssue({ code: "custom", message: "Execution series Swap positions conflict." });
     }
+    const positionIndex = display.positions.findIndex((candidate) =>
+      candle.intervalStart >= candidate.intervalStart && candle.intervalStart < candidate.intervalEnd);
+    const aggregate = positionIndex < 0 ? undefined : display.positions[positionIndex]?.candle;
+    if (
+      positionIndex < 0 || aggregate === null || aggregate === undefined ||
+      candle.intervalStart < aggregate.observedStart || candle.intervalEnd > aggregate.observedEnd ||
+      compareSwapPositions(aggregate.firstSource, candle.firstSource) > 0 ||
+      compareSwapPositions(aggregate.lastSource, candle.lastSource) < 0
+    ) context.addIssue({ code: "custom", message: "Execution detail and display series disagree." });
+    else {
+      const bounds = detailedPositionBounds.get(positionIndex);
+      if (bounds === undefined) detailedPositionBounds.set(positionIndex, { first: candle, last: candle });
+      else bounds.last = candle;
+    }
     previousCandle = candle;
   }
   const expected = new Set<StockTokenExecutionCoverageLimitation>();
@@ -782,12 +1098,45 @@ export const stockTokenExecutionSeriesSchema = executionSeriesUnionSchema.superR
   const ordered = stockTokenExecutionCoverageLimitationSchema.options.filter((limitation) =>
     expected.has(limitation));
   const detailLimited = value.detail.observedCandleCount > stockTokenExecutionSeriesLimits.candles;
+  const displayHasCandle = display.positions.some((position) => position.candle !== null);
+  const maximumObservedCandleCount = value.coverage.intervals.reduce((total, interval) => {
+    const intersectionStart = Math.max(Date.parse(value.requestedStart), Date.parse(interval.fromTimestamp));
+    const intersectionEnd = Math.min(Date.parse(value.requestedEnd), Date.parse(interval.untilTimestamp));
+    const firstCompleteMinuteStart = Math.ceil(intersectionStart / 60_000) * 60_000;
+    return total + Math.max(0, Math.floor((intersectionEnd - firstCompleteMinuteStart) / 60_000));
+  }, 0);
+  const firstDetailedPositionIndex = detailedPositionBounds.size === 0
+    ? undefined : Math.min(...detailedPositionBounds.keys());
+  const returnedSuffixWitnessesDisplay = value.detail.status === "complete"
+    ? [...displayCandlePositionIndexes].every((index) => detailedPositionBounds.has(index))
+    : firstDetailedPositionIndex !== undefined &&
+      [...displayCandlePositionIndexes].every((index) =>
+        index < firstDetailedPositionIndex || detailedPositionBounds.has(index));
+  const returnedSuffixBoundariesAgree = [...detailedPositionBounds].every(([index, bounds]) => {
+    const aggregate = display.positions[index]?.candle;
+    if (
+      aggregate === null || aggregate === undefined ||
+      aggregate.observedEnd !== bounds.last.intervalEnd ||
+      !sameSwapPosition(aggregate.lastSource, bounds.last.lastSource)
+    ) return false;
+    const fullyReturnedPosition = value.detail.status === "complete" ||
+      (firstDetailedPositionIndex !== undefined && index > firstDetailedPositionIndex);
+    return !fullyReturnedPosition || (
+      aggregate.observedStart === bounds.first.intervalStart &&
+      sameSwapPosition(aggregate.firstSource, bounds.first.firstSource)
+    );
+  });
   if (
     value.freshness !== (stale ? "stale" : "current") ||
     value.coverage.limitations.join("\0") !== ordered.join("\0") ||
     value.coverage.status !== (ordered.length === 0 ? "complete" : "partial") ||
     value.detail.status !== (detailLimited ? "limited" : "complete") ||
     value.detail.limitations.join("\0") !== (detailLimited ? "candle_capacity" : "") ||
+    displayHasCandle !== (value.detail.observedCandleCount > 0) ||
+    value.detail.observedCandleCount > maximumObservedCandleCount ||
+    displayCandlePositionIndexes.size > value.detail.observedCandleCount ||
+    !returnedSuffixWitnessesDisplay ||
+    !returnedSuffixBoundariesAgree ||
     (value.detail.observedCandleCount <= stockTokenExecutionSeriesLimits.candles
       ? value.detail.observedCandleCount !== value.candles.length
       : value.candles.length !== stockTokenExecutionSeriesLimits.candles)
@@ -797,6 +1146,7 @@ export type StockTokenExecutionSeries = z.infer<typeof stockTokenExecutionSeries
 
 export interface StockTokenExecutionIndexReadInput {
   readonly pairId: string;
+  readonly window: MarketTimeWindow;
   readonly requestedStart: string;
   readonly requestedEnd: string;
 }
@@ -813,6 +1163,129 @@ const overlaps = (coverage: StockTokenExecutionCoverageInterval, from: string, u
   coverage.untilTimestamp > from && coverage.fromTimestamp < until;
 const limitationOrder = stockTokenExecutionCoverageLimitationSchema.options;
 
+interface ExecutionDisplayAggregateState {
+  readonly open: z.infer<typeof exactRationalSchema>;
+  high: z.infer<typeof exactRationalSchema>;
+  low: z.infer<typeof exactRationalSchema>;
+  close: z.infer<typeof exactRationalSchema>;
+  readonly firstSource: StockTokenExecutionSwapPosition;
+  lastSource: StockTokenExecutionSwapPosition;
+  readonly observedStart: string;
+  observedEnd: string;
+  quoteVolumeRaw: bigint;
+  sourceCandleCount: number;
+  tokenVolumeRaw: bigint;
+  tradeCount: bigint;
+}
+
+const createExecutionDisplaySeries = (input: Readonly<{
+  request: StockTokenExecutionIndexReadInput;
+  asset: StockTokenExecutionIndexAsset;
+  intervals: readonly StockTokenExecutionCoverageInterval[];
+  candles: readonly StockTokenExecutionCandle[];
+}>): StockTokenExecutionDisplaySeries => {
+  const frames = executionDisplayPositionFrames(
+    input.request.window,
+    input.request.requestedStart,
+    input.request.requestedEnd,
+  );
+  const definition = stockTokenExecutionDisplayWindowDefinitions[input.request.window];
+  if (frames.length > definition.maximumPositionCount || frames.length === 0) {
+    throw new TypeError("Execution display position count exceeds its window bound.");
+  }
+  const firstIntervalStart = Date.parse(frames[0]!.intervalStart);
+  const aggregates = new Array<ExecutionDisplayAggregateState | undefined>(frames.length);
+  for (const candle of input.candles) {
+    const candleStart = Date.parse(candle.intervalStart);
+    const index = Math.floor(
+      (candleStart - firstIntervalStart) / definition.intervalMilliseconds,
+    );
+    const frame = frames[index];
+    if (
+      frame === undefined || candle.intervalStart < frame.intervalStart ||
+      candle.intervalEnd > frame.intervalEnd
+    ) throw new TypeError("Execution candle does not belong to one display position.");
+    const aggregate = aggregates[index];
+    if (aggregate === undefined) {
+      aggregates[index] = {
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        tokenVolumeRaw: BigInt(candle.tokenVolumeRaw),
+        quoteVolumeRaw: BigInt(candle.quoteVolumeRaw),
+        tradeCount: BigInt(candle.tradeCount),
+        firstSource: candle.firstSource,
+        lastSource: candle.lastSource,
+        observedStart: candle.intervalStart,
+        observedEnd: candle.intervalEnd,
+        sourceCandleCount: 1,
+      };
+      continue;
+    }
+    if (
+      candle.intervalStart <= aggregate.observedStart ||
+      compareSwapPositions(aggregate.lastSource, candle.firstSource) >= 0
+    ) throw new TypeError("Execution display source candle sequence is invalid.");
+    if (compareExactRationals(candle.high, aggregate.high) > 0) aggregate.high = candle.high;
+    if (compareExactRationals(candle.low, aggregate.low) < 0) aggregate.low = candle.low;
+    aggregate.close = candle.close;
+    aggregate.tokenVolumeRaw += BigInt(candle.tokenVolumeRaw);
+    aggregate.quoteVolumeRaw += BigInt(candle.quoteVolumeRaw);
+    aggregate.tradeCount += BigInt(candle.tradeCount);
+    aggregate.lastSource = candle.lastSource;
+    aggregate.observedEnd = candle.intervalEnd;
+    aggregate.sourceCandleCount += 1;
+  }
+  const maximumSourceCandles = definition.intervalMilliseconds / 60_000;
+  const positions = frames.map((frame, index) => {
+    const aggregate = aggregates[index];
+    if (aggregate !== undefined && aggregate.sourceCandleCount > maximumSourceCandles) {
+      throw new TypeError("Execution display position contains too many source candles.");
+    }
+    return {
+      ...frame,
+      coverage: displayCoverageForFrame(
+        input.intervals,
+        frame.representedStart,
+        frame.representedEnd,
+      ),
+      candle: aggregate === undefined ? null : {
+        open: aggregate.open,
+        high: aggregate.high,
+        low: aggregate.low,
+        close: aggregate.close,
+        tokenVolumeRaw: aggregate.tokenVolumeRaw.toString(),
+        quoteVolumeRaw: aggregate.quoteVolumeRaw.toString(),
+        tradeCount: aggregate.tradeCount.toString(),
+        firstSource: aggregate.firstSource,
+        lastSource: aggregate.lastSource,
+        observedStart: aggregate.observedStart,
+        observedEnd: aggregate.observedEnd,
+      },
+    };
+  });
+  const quote = input.asset.pair.quoteAsset;
+  return deepFreezeValue(stockTokenExecutionDisplaySeriesSchema.parse({
+    window: input.request.window,
+    requestedStart: input.request.requestedStart,
+    requestedEnd: input.request.requestedEnd,
+    source: {
+      chainId: input.asset.pair.chainId,
+      finality: input.asset.pair.finality,
+      poolManager: input.asset.pair.poolManager,
+      poolId: input.asset.poolId,
+      token: {
+        address: input.asset.token,
+        decimals: input.asset.tokenDecimals,
+        symbol: input.asset.symbol,
+      },
+      quoteToken: { address: quote.address, decimals: quote.decimals, symbol: "USDG" },
+    },
+    positions,
+  }));
+};
+
 export const createStockTokenExecutionSeries = (input: Readonly<{
   request: StockTokenExecutionIndexReadInput;
   asset: StockTokenExecutionIndexAsset;
@@ -828,10 +1301,15 @@ export const createStockTokenExecutionSeries = (input: Readonly<{
   }
   const request = {
     pairId: hash32Schema.parse(input.request.pairId),
+    window: marketTimeWindowSchema.parse(input.request.window),
     requestedStart: utcTimestampSchema.parse(input.request.requestedStart),
     requestedEnd: utcTimestampSchema.parse(input.request.requestedEnd),
   };
-  if (request.pairId !== asset.poolId || request.requestedStart >= request.requestedEnd) {
+  if (
+    request.pairId !== asset.poolId || request.requestedStart >= request.requestedEnd ||
+    Date.parse(request.requestedEnd) - Date.parse(request.requestedStart) !==
+      marketTimeWindowDefinitions[request.window].durationMilliseconds
+  ) {
     throw new TypeError("Execution-index request identity or interval is invalid.");
   }
   const state = stockTokenExecutionIndexStateSchema.parse(input.state);
@@ -931,6 +1409,12 @@ export const createStockTokenExecutionSeries = (input: Readonly<{
         tokenVolumeRaw: baseVolumeRaw,
       });
     });
+  const displaySeries = createExecutionDisplaySeries({
+    request,
+    asset,
+    intervals,
+    candles: allCandles,
+  });
   const capacityLimited = allCandles.length > stockTokenExecutionSeriesLimits.candles;
   const candles = capacityLimited ? allCandles.slice(-stockTokenExecutionSeriesLimits.candles) : allCandles;
   const stale = Date.parse(request.requestedEnd) - Date.parse(state.coverage.untilTimestamp) >
@@ -971,6 +1455,7 @@ export const createStockTokenExecutionSeries = (input: Readonly<{
       observedCandleCount: allCandles.length,
       limitations: capacityLimited ? ["candle_capacity"] : [],
     },
+    displaySeries,
     candles,
   }));
 };

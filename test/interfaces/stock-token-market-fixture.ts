@@ -21,6 +21,7 @@ import {
 } from "../../src/market-portfolio/stock-token-market.js";
 import {
   findStockTokenExecutionIndexAsset,
+  stockTokenExecutionDisplayWindowDefinitions,
   stockTokenExecutionIndexRegistry,
   stockTokenExecutionSeriesSchema,
   unavailableStockTokenExecutionSeries,
@@ -46,7 +47,7 @@ export const stockTokenMarketFixtureBlock = chainAnchorSchema.parse({
   chainId: "eip155:4663",
   blockNumber: "34307195",
   blockHash: `0x${"39".repeat(32)}`,
-  blockTimestamp: "2026-08-12T13:30:00.000Z",
+  blockTimestamp: "2026-08-12T13:37:23.000Z",
 });
 
 const dispositionFor = (symbol: string) => {
@@ -141,9 +142,9 @@ export const stockTokenMarketAvailableFixture = (): StockTokenMarketResult => {
   const executionAsset = findStockTokenExecutionIndexAsset(member.contractAddress);
   if (executionAsset === undefined) throw new TypeError("AAPL execution fixture is not indexed.");
   const executionCandles = ([
-    ["2026-08-12T13:25:00.000Z", "2026-08-12T13:26:00.000Z", "925", "4", 34307190],
-    ["2026-08-12T13:26:00.000Z", "2026-08-12T13:27:00.000Z", "463", "2", 34307191],
-    ["2026-08-12T13:27:00.000Z", "2026-08-12T13:28:00.000Z", "927", "4", 34307192],
+    ["2026-08-12T13:34:00.000Z", "2026-08-12T13:35:00.000Z", "925", "4", 34307190],
+    ["2026-08-12T13:35:00.000Z", "2026-08-12T13:36:00.000Z", "463", "2", 34307191],
+    ["2026-08-12T13:36:00.000Z", "2026-08-12T13:37:00.000Z", "927", "4", 34307192],
   ] as const).map(([intervalStart, intervalEnd, numerator, denominator, blockNumber], index) => ({
     symbol: executionAsset.symbol,
     token: executionAsset.token,
@@ -172,6 +173,54 @@ export const stockTokenMarketAvailableFixture = (): StockTokenMarketResult => {
       logIndex: 0,
     },
   }));
+  const displayDefinition = stockTokenExecutionDisplayWindowDefinitions[request.window];
+  const coverageStart = "2026-08-12T13:00:00.000Z";
+  const coverageEnd = "2026-08-12T13:37:00.000Z";
+  const firstDisplayStart = Math.floor(
+    Date.parse(interval.requestedStart) / displayDefinition.intervalMilliseconds,
+  ) * displayDefinition.intervalMilliseconds;
+  const displayPositionCount = Math.ceil(
+    (Date.parse(interval.requestedEnd) - firstDisplayStart) / displayDefinition.intervalMilliseconds,
+  );
+  const displayPositions = Array.from({ length: displayPositionCount }, (_, index) => {
+    const intervalStart = firstDisplayStart + index * displayDefinition.intervalMilliseconds;
+    const intervalEnd = intervalStart + displayDefinition.intervalMilliseconds;
+    const intervalStartText = new Date(intervalStart).toISOString();
+    const intervalEndText = new Date(intervalEnd).toISOString();
+    const representedStart = Math.max(intervalStart, Date.parse(interval.requestedStart));
+    const representedEnd = Math.min(intervalEnd, Date.parse(interval.requestedEnd));
+    const overlapStart = Math.max(representedStart, Date.parse(coverageStart));
+    const overlapEnd = Math.min(representedEnd, Date.parse(coverageEnd));
+    const coverage = overlapStart >= overlapEnd
+      ? "unavailable"
+      : overlapStart === representedStart && overlapEnd === representedEnd &&
+          representedStart % 60_000 === 0 && representedEnd % 60_000 === 0
+        ? "complete"
+        : "partial";
+    const candle = intervalStartText === "2026-08-12T13:30:00.000Z"
+      ? {
+          open: executionCandles[0]!.open,
+          high: executionCandles[2]!.high,
+          low: executionCandles[0]!.low,
+          close: executionCandles[2]!.close,
+          tokenVolumeRaw: "3003",
+          quoteVolumeRaw: "6003",
+          tradeCount: "3",
+          firstSource: executionCandles[0]!.firstSource,
+          lastSource: executionCandles[2]!.lastSource,
+          observedStart: executionCandles[0]!.intervalStart,
+          observedEnd: executionCandles[2]!.intervalEnd,
+        }
+      : null;
+    return {
+      intervalStart: intervalStartText,
+      intervalEnd: intervalEndText,
+      representedStart: new Date(representedStart).toISOString(),
+      representedEnd: new Date(representedEnd).toISOString(),
+      coverage,
+      candle,
+    };
+  });
   const execution = stockTokenExecutionSeriesSchema.parse({
     status: "available",
     requestedStart: interval.requestedStart,
@@ -191,7 +240,7 @@ export const stockTokenMarketAvailableFixture = (): StockTokenMarketResult => {
       contractVersion: "1",
       pairId: executionAsset.poolId,
       sequence: 2,
-      coveredUntilTimestamp: interval.requestedEnd,
+      coveredUntilTimestamp: coverageEnd,
       stateSha256: "31".repeat(32),
       months: [{ month: "2026-08", sha256: "30".repeat(32) }],
       days: [{ day: "2026-08-12", sha256: "32".repeat(32) }],
@@ -203,14 +252,36 @@ export const stockTokenMarketAvailableFixture = (): StockTokenMarketResult => {
         fromBlock: "34307000",
         fromTimestamp: "2026-08-12T13:00:00.000Z",
         untilBlock: "34307196",
-        untilTimestamp: interval.requestedEnd,
+        untilTimestamp: coverageEnd,
       }],
-      limitations: ["before_published_coverage"],
+      limitations: ["before_published_coverage", "after_published_coverage"],
     },
     detail: {
       status: "complete",
       observedCandleCount: executionCandles.length,
       limitations: [],
+    },
+    displaySeries: {
+      window: request.window,
+      requestedStart: interval.requestedStart,
+      requestedEnd: interval.requestedEnd,
+      source: {
+        chainId: stockTokenExecutionIndexRegistry.chain.chainId,
+        finality: stockTokenExecutionIndexRegistry.chain.finalityTag,
+        poolManager: stockTokenExecutionIndexRegistry.deployment.poolManager,
+        poolId: executionAsset.poolId,
+        token: {
+          address: executionAsset.token,
+          decimals: executionAsset.tokenDecimals,
+          symbol: executionAsset.symbol,
+        },
+        quoteToken: {
+          address: executionAsset.pair.quoteAsset.address,
+          decimals: executionAsset.pair.quoteAsset.decimals,
+          symbol: "USDG",
+        },
+      },
+      positions: displayPositions,
     },
     candles: executionCandles,
   });

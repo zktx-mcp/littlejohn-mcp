@@ -1,5 +1,8 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 
 import { beforeAll, describe, expect, it } from "vitest";
 
@@ -8,6 +11,7 @@ import type { ChainRpcMethod, ChainRpcRequestMap } from "../../src/chain/rpc.js"
 import {
   accountBalanceCapability,
   canonicalJsonStringify,
+  captureCanonicalJson,
   chainAnchorSchema,
   chainStatusCapability,
   contractAnalysisSchema,
@@ -46,12 +50,14 @@ import {
 } from "../../src/core/index.js";
 import {
   findStockTokenExecutionIndexAsset,
+  stockTokenExecutionDisplayWindowDefinitions,
   stockTokenExecutionIndexRegistry,
   stockTokenExecutionSeriesLimits,
   stockTokenExecutionSeriesSchema,
   unavailableStockTokenExecutionSeries,
 } from
   "../../src/market-portfolio/stock-token-execution-index.js";
+import { ProductDatabase } from "../../src/runtime/database.js";
 import { stockTokenMarketInterval } from
   "../../src/market-portfolio/stock-token-market.js";
 import {
@@ -636,6 +642,62 @@ const maximumStockTokenExecutionSeries = (
       lastSource,
     };
   });
+  const displayDefinition = stockTokenExecutionDisplayWindowDefinitions["30d"];
+  const firstDisplayStart = Math.floor(requestedStart / displayDefinition.intervalMilliseconds) *
+    displayDefinition.intervalMilliseconds;
+  const sourcePosition = (timestamp: number, last: boolean) => {
+    const coverage = intervals.find((candidate) =>
+      timestamp >= Date.parse(candidate.fromTimestamp) &&
+      timestamp < Date.parse(candidate.untilTimestamp));
+    if (coverage === undefined) throw new TypeError("Maximum display source lacks coverage.");
+    const blockNumber = (BigInt(coverage.fromBlock) +
+      BigInt((timestamp - Date.parse(coverage.fromTimestamp)) / 60_000)).toString();
+    const blockHex = BigInt(blockNumber).toString(16).padStart(64, "0");
+    const transactionIndex = last ? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER - 1;
+    return {
+      blockNumber,
+      blockHash: `0x${blockHex}`,
+      transactionIndex,
+      transactionHash: `0x${transactionIndex.toString(16).padStart(16, "0")}${blockHex.slice(-48)}`,
+      logIndex: transactionIndex,
+    };
+  };
+  const displayPositions = Array.from({
+    length: displayDefinition.maximumPositionCount,
+  }, (_, index) => {
+    const intervalStart = firstDisplayStart + index * displayDefinition.intervalMilliseconds;
+    const intervalEnd = intervalStart + displayDefinition.intervalMilliseconds;
+    const representedStart = Math.max(intervalStart, requestedStart);
+    const representedEnd = Math.min(intervalEnd, requestedEnd);
+    if (representedStart >= representedEnd) {
+      throw new TypeError("Maximum display position does not intersect its request.");
+    }
+    const sourceCandleCount = (representedEnd - representedStart) / 60_000;
+    if (!Number.isInteger(sourceCandleCount) || sourceCandleCount < 1) {
+      throw new TypeError("Maximum display position lacks a complete source minute.");
+    }
+    const exact = { numerator: maximumNumerator, denominator: maximumDenominator };
+    return {
+      intervalStart: new Date(intervalStart).toISOString(),
+      intervalEnd: new Date(intervalEnd).toISOString(),
+      representedStart: new Date(representedStart).toISOString(),
+      representedEnd: new Date(representedEnd).toISOString(),
+      coverage: "complete",
+      candle: {
+        open: exact,
+        high: exact,
+        low: exact,
+        close: exact,
+        tokenVolumeRaw: (BigInt(maximumVolume) * BigInt(sourceCandleCount)).toString(),
+        quoteVolumeRaw: (BigInt(maximumVolume) * BigInt(sourceCandleCount)).toString(),
+        tradeCount: (BigInt(Number.MAX_SAFE_INTEGER) * BigInt(sourceCandleCount)).toString(),
+        firstSource: sourcePosition(representedStart, false),
+        lastSource: sourcePosition(representedEnd - 60_000, true),
+        observedStart: new Date(representedStart).toISOString(),
+        observedEnd: new Date(representedEnd).toISOString(),
+      },
+    };
+  });
   return stockTokenExecutionSeriesSchema.parse({
     status: "available",
     ...interval,
@@ -674,6 +736,23 @@ const maximumStockTokenExecutionSeries = (
       status: "limited",
       observedCandleCount: 43_200,
       limitations: ["candle_capacity"],
+    },
+    displaySeries: {
+      window: "30d",
+      ...interval,
+      source: {
+        chainId: stockTokenExecutionIndexRegistry.chain.chainId,
+        finality: stockTokenExecutionIndexRegistry.chain.finalityTag,
+        poolManager: stockTokenExecutionIndexRegistry.deployment.poolManager,
+        poolId: asset.poolId,
+        token: { address: asset.token, decimals: asset.tokenDecimals, symbol: asset.symbol },
+        quoteToken: {
+          address: asset.pair.quoteAsset.address,
+          decimals: asset.pair.quoteAsset.decimals,
+          symbol: "USDG",
+        },
+      },
+      positions: displayPositions,
     },
     candles,
   });
@@ -722,7 +801,7 @@ const maximumStockTokenMarketSuccess = (withExecution: boolean) => {
     blockNumber: maximumUint256,
     blockHash: `0x${"ff".repeat(32)}`,
     blockTimestamp: withExecution
-      ? "9999-12-30T12:00:00.000Z"
+      ? "9999-12-30T12:01:00.000Z"
       : "9999-12-31T23:59:59.999Z",
   });
   const window = referenceHistoryWindowDefinitions["30d"];
@@ -844,7 +923,9 @@ const maximumStockTokenMarketSuccess = (withExecution: boolean) => {
   return marketPortfolioApplicationContracts.stockTokenMarket.parsePublicSuccess(request, result);
 };
 
-export const verifyMaximumReferenceMarketEnvelopes = (): void => {
+export const verifyMaximumReferenceMarketEnvelopes = (): ReturnType<
+  typeof maximumStockTokenMarketSuccess
+> => {
   const pair = referenceMarketManifest.pairs[2]!;
   const latestUnixSeconds = "253402300799";
   const maximumRoundId = (2n ** 80n - 1n).toString(10);
@@ -1010,6 +1091,7 @@ export const verifyMaximumReferenceMarketEnvelopes = (): void => {
   for (const contract of Object.values(marketPortfolioApplicationContracts)) {
     expect(contract.failureCodes.filter((code) => code === "result_too_large")).toHaveLength(1);
   }
+  return stockTokenMarketWithExecution;
 };
 
 describe("semantic read maximum envelope", () => {
@@ -1046,7 +1128,45 @@ describe("semantic read maximum envelope", () => {
     }
   });
 
-  it("proves maximum reference-market successes against their actual transport boundaries", () => {
-    verifyMaximumReferenceMarketEnvelopes();
+  it("proves maximum reference-market successes against their transport and snapshot boundaries", async () => {
+    const maximumStockTokenResult = verifyMaximumReferenceMarketEnvelopes();
+    expect(maximumStockTokenResult.status).toBe("available");
+    if (maximumStockTokenResult.status !== "available") {
+      throw new TypeError("Maximum Stock Token fixture is unavailable.");
+    }
+    expect(maximumStockTokenResult.execution.status).toBe("available");
+    if (maximumStockTokenResult.execution.status !== "available") {
+      throw new TypeError("Maximum Stock Token execution fixture is unavailable.");
+    }
+    expect(maximumStockTokenResult.execution.candles).toHaveLength(3_072);
+    expect(maximumStockTokenResult.execution.displaySeries.positions).toHaveLength(181);
+
+    const directory = await mkdtemp(resolve(tmpdir(), "littlejohn-maximum-presentation-"));
+    const path = resolve(directory, "runtime.sqlite3");
+    let database: ProductDatabase | undefined;
+    try {
+      database = await ProductDatabase.open(path, parseUtcTimestamp("2026-08-22T00:00:00.000Z"));
+      const input = marketPortfolioApplicationContracts.stockTokenMarket.parseInput({
+        symbol: maximumStockTokenResult.symbol,
+        window: maximumStockTokenResult.window,
+      });
+      const canonicalResult = captureCanonicalJson(maximumStockTokenResult);
+      const committed = database.presentationSnapshotStore().commit({
+        contractId: marketPortfolioApplicationContracts.stockTokenMarket.capabilityId,
+        contractVersion: marketPortfolioApplicationContracts.stockTokenMarket.contractVersion,
+        normalizedInput: captureCanonicalJson(input),
+        admittedResult: canonicalResult,
+      });
+      expect(committed.status).toBe("available");
+      if (committed.status !== "available") throw new TypeError("Maximum snapshot was not admitted.");
+      const reloaded = database.presentationSnapshotStore().read(committed.value.snapshotId);
+      expect(reloaded.status).toBe("available");
+      if (reloaded.status !== "available") throw new TypeError("Maximum snapshot was not reloaded.");
+      expect(new TextDecoder("utf-8", { fatal: true }).decode(reloaded.value.resultBytes))
+        .toBe(canonicalJsonStringify(canonicalResult));
+    } finally {
+      database?.close();
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

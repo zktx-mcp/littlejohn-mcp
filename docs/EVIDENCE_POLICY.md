@@ -332,6 +332,19 @@ one-minute list after all admitted source candles were counted. It does not
 change continuous source coverage, imply missing source data, or make a current
 artifact stale.
 
+An available execution result also contains one fixed display position for
+every natural UTC interval that intersects the exact requested interval. A
+position is `complete` only when its whole represented half-open interval is
+inside continuous admitted execution coverage and both represented bounds are
+source-minute boundaries. It is `unavailable` only when that represented
+interval has no overlap with admitted execution coverage. Every other position
+is `partial`. A position without an aggregate establishes no admitted
+qualifying `Swap` only when its coverage is `complete`; an empty `partial` or
+`unavailable` position does not establish trade absence. An aggregate and its
+price, Stock Token volume, USDG volume, trade count, observed bounds, and source
+bounds all derive from the same admitted one-minute candle set. Detailed-list
+capacity does not change any display position or its coverage.
+
 ## Identity And Trust
 
 - Asset identity is defined only in `docs/NUMERIC_POLICY.md#token-identity-and-decimals`.

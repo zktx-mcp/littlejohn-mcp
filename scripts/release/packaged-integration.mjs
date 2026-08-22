@@ -1872,6 +1872,9 @@ export const verifyPackagedIntegration = async (prepared) => {
       stockTokenMarket,
       "Packaged Stock Token market",
     );
+    const executionDisplayCandles = Array.isArray(stockTokenContent.execution?.displaySeries?.positions)
+      ? stockTokenContent.execution.displaySeries.positions.filter((position) => position.candle !== null)
+      : [];
     if (
       stockTokenContent.status !== "available" ||
       stockTokenContent.symbol !== fakeRpc.stockTokenMarket.symbol ||
@@ -1892,6 +1895,20 @@ export const verifyPackagedIntegration = async (prepared) => {
       stockTokenContent.execution.coverage?.status !== "partial" ||
       stockTokenContent.execution.detail?.status !== "complete" ||
       stockTokenContent.execution.detail?.observedCandleCount !== 3 ||
+      stockTokenContent.execution.displaySeries?.window !== "1d" ||
+      stockTokenContent.execution.displaySeries?.source?.token?.address !==
+        fakeRpc.stockTokenMarket.tokenAddress ||
+      stockTokenContent.execution.displaySeries?.source?.quoteToken?.symbol !== "USDG" ||
+      !Array.isArray(stockTokenContent.execution.displaySeries?.positions) ||
+      stockTokenContent.execution.displaySeries.positions.length !== 97 ||
+      executionDisplayCandles.length !== 2 ||
+      executionDisplayCandles[0]?.candle?.high?.numerator !== "463" ||
+      executionDisplayCandles[0]?.candle?.high?.denominator !== "1" ||
+      executionDisplayCandles[0]?.candle?.low?.numerator !== "925" ||
+      executionDisplayCandles[0]?.candle?.low?.denominator !== "4" ||
+      executionDisplayCandles[0]?.candle?.tokenVolumeRaw !== "2001" ||
+      executionDisplayCandles[0]?.candle?.quoteVolumeRaw !== "4001" ||
+      executionDisplayCandles[0]?.candle?.tradeCount !== "2" ||
       !Array.isArray(stockTokenContent.execution.candles) ||
       stockTokenContent.execution.candles.length !== 3 ||
       stockTokenContent.execution.candles.some((candle) =>

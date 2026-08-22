@@ -323,11 +323,12 @@ export const formatStockTokenMarketForCli = (result: StockTokenMarketResult): st
         `Execution detail: ${result.execution.detail.status}`,
         `Observed execution one-minute candles: ${result.execution.detail.observedCandleCount}`,
         `Returned execution one-minute candles: ${result.execution.candles.length}`,
+        `Execution display positions: ${result.execution.displaySeries.positions.length}`,
         ...(latestExecution === undefined
-          ? ["Latest execution close: no executed trade in the covered period"]
+          ? ["Latest returned one-minute execution close: no executed trade in the covered period"]
           : [
-              `Latest execution close: ${rational(latestExecution.close)} USDG`,
-              `Latest execution candle: ${latestExecution.intervalEnd}`,
+              `Latest returned one-minute execution close: ${rational(latestExecution.close)} USDG`,
+              `Latest returned one-minute execution candle: ${latestExecution.intervalEnd}`,
             ]),
         ...result.execution.coverage.limitations.map((limitation) =>
           `Execution coverage limitation: ${stockTokenExecutionCoverageLimitationLabel(limitation)}`),

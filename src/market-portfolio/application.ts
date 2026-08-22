@@ -241,6 +241,7 @@ export class MarketPortfolioApplication implements MarketPortfolioApplicationPor
             ? unavailableStockTokenExecutionSeries(interval, "asset_not_indexed")
             : await this.#dependencies.stockTokenExecutionIndex.read({
                 pairId: executionAsset.poolId,
+                window: request.window,
                 requestedStart: interval.requestedStart,
                 requestedEnd: interval.requestedEnd,
               }, context.signal))();

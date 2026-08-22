@@ -96,8 +96,9 @@ describe("pair-based Stock Token execution index contract", () => {
     const result = createStockTokenExecutionSeries({
       request: {
         pairId: asset.poolId,
-        requestedStart: "2026-07-31T23:58:30.000Z",
-        requestedEnd: "2026-08-01T00:01:30.000Z",
+        window: "1d",
+        requestedStart: "2026-07-31T12:01:30.000Z",
+        requestedEnd: "2026-08-01T12:01:30.000Z",
       },
       asset,
       state: fixture.state,
@@ -124,21 +125,203 @@ describe("pair-based Stock Token execution index contract", () => {
       candles: [
         { intervalStart: "2026-07-31T23:59:00.000Z", tokenVolumeRaw: "1000000000000000000" },
         { intervalStart: "2026-08-01T00:00:00.000Z", tokenVolumeRaw: "1000000000000000000" },
+        { intervalStart: "2026-08-01T00:01:00.000Z", tokenVolumeRaw: "1000000000000000000" },
       ],
     });
     expect(JSON.stringify(result)).not.toContain("group");
     expect(JSON.stringify(result)).not.toContain("baseVolumeRaw");
+    if (result.status !== "available") throw new TypeError("Expected available execution history.");
+    expect(result.displaySeries).toMatchObject({
+      window: "1d",
+      requestedStart: "2026-07-31T12:01:30.000Z",
+      requestedEnd: "2026-08-01T12:01:30.000Z",
+      source: {
+        poolId: asset.poolId,
+        token: { address: asset.token, decimals: asset.tokenDecimals, symbol: asset.symbol },
+        quoteToken: { symbol: "USDG" },
+      },
+    });
+    expect(result.displaySeries.positions).toHaveLength(97);
+    expect(result.displaySeries.positions[0]).toMatchObject({
+      intervalStart: "2026-07-31T12:00:00.000Z",
+      representedStart: "2026-07-31T12:01:30.000Z",
+      coverage: "unavailable",
+      candle: null,
+    });
+    expect(result.displaySeries.positions.at(-1)).toMatchObject({
+      intervalStart: "2026-08-01T12:00:00.000Z",
+      representedEnd: "2026-08-01T12:01:30.000Z",
+      coverage: "partial",
+      candle: null,
+    });
+    const observedPositions = result.displaySeries.positions.filter((position) => position.candle !== null);
+    expect(observedPositions).toHaveLength(2);
+    expect(observedPositions[0]).toMatchObject({
+      intervalStart: "2026-07-31T23:45:00.000Z",
+      coverage: "partial",
+      candle: {
+        tokenVolumeRaw: "1000000000000000000",
+        quoteVolumeRaw: "301500000",
+        tradeCount: "1",
+        observedStart: "2026-07-31T23:59:00.000Z",
+        observedEnd: "2026-08-01T00:00:00.000Z",
+      },
+    });
+    expect(observedPositions[1]).toMatchObject({
+      intervalStart: "2026-08-01T00:00:00.000Z",
+      coverage: "complete",
+      candle: {
+        open: { numerator: "306", denominator: "1" },
+        high: { numerator: "307", denominator: "1" },
+        low: { numerator: "299", denominator: "1" },
+        close: { numerator: "601", denominator: "2" },
+        tokenVolumeRaw: "2000000000000000000",
+        quoteVolumeRaw: "603000000",
+        tradeCount: "2",
+        firstSource: { blockNumber: "36010001" },
+        lastSource: { blockNumber: "36010002" },
+        observedStart: "2026-08-01T00:00:00.000Z",
+        observedEnd: "2026-08-01T00:02:00.000Z",
+      },
+    });
+
+    const aggregateIndex = result.displaySeries.positions.indexOf(observedPositions[1]!);
+    const aboveMaximumVolume = (240n * (10n ** 78n - 1n) + 1n).toString();
+    const replaceAggregate = (candle: Record<string, unknown>) => ({
+      ...result,
+      displaySeries: {
+        ...result.displaySeries,
+        positions: result.displaySeries.positions.map((position, index) => index === aggregateIndex
+          ? { ...position, candle: { ...position.candle!, ...candle } }
+          : position),
+      },
+    });
+    expect(() => stockTokenExecutionSeriesSchema.parse({
+      ...replaceAggregate({ quoteVolumeRaw: aboveMaximumVolume }),
+    })).toThrow();
+    const aboveObservedSpanVolume = (2n * (10n ** 78n - 1n) + 1n).toString();
+    expect(() => stockTokenExecutionSeriesSchema.parse(
+      replaceAggregate({ quoteVolumeRaw: aboveObservedSpanVolume }),
+    )).toThrow();
+    const aboveMaximumTradeCount = (240n * BigInt(Number.MAX_SAFE_INTEGER) + 1n).toString();
+    expect(() => stockTokenExecutionSeriesSchema.parse(
+      replaceAggregate({ tradeCount: aboveMaximumTradeCount }),
+    )).toThrow();
+    expect(() => stockTokenExecutionSeriesSchema.safeParse(
+      replaceAggregate({ tradeCount: "not-a-number" }),
+    )).not.toThrow();
+    expect(() => stockTokenExecutionSeriesSchema.parse({
+      ...result,
+      displaySeries: {
+        ...result.displaySeries,
+        source: {
+          ...result.displaySeries.source,
+          token: {
+            ...result.displaySeries.source.token,
+            decimals: result.displaySeries.source.token.decimals + 1,
+          },
+        },
+      },
+    })).toThrow();
+    expect(() => stockTokenExecutionSeriesSchema.parse(replaceAggregate({
+      firstSource: {
+        ...observedPositions[1]!.candle!.firstSource,
+        blockHash: `0x${"ef".repeat(32)}`,
+      },
+    }))).toThrow();
+    expect(() => stockTokenExecutionSeriesSchema.parse(replaceAggregate({
+      firstSource: {
+        ...observedPositions[1]!.candle!.firstSource,
+        blockNumber: "36009999",
+        blockHash: `0x${"ed".repeat(32)}`,
+        transactionHash: `0x${"ec".repeat(32)}`,
+      },
+    }))).toThrow();
+    expect(() => stockTokenExecutionSeriesSchema.parse(replaceAggregate({
+      firstSource: {
+        ...observedPositions[1]!.candle!.firstSource,
+        blockNumber: "36010000",
+        blockHash: `0x${"e9".repeat(32)}`,
+        transactionHash: `0x${"e8".repeat(32)}`,
+      },
+    }))).toThrow();
+    const unwitnessedPositionIndex = result.displaySeries.positions.findIndex((position) =>
+      position.intervalStart === "2026-08-01T00:15:00.000Z");
+    expect(unwitnessedPositionIndex).toBeGreaterThan(aggregateIndex);
+    expect(() => stockTokenExecutionSeriesSchema.parse({
+      ...result,
+      displaySeries: {
+        ...result.displaySeries,
+        positions: result.displaySeries.positions.map((position, index) => index === unwitnessedPositionIndex
+          ? {
+              ...position,
+              candle: {
+                ...observedPositions[1]!.candle!,
+                firstSource: {
+                  blockNumber: "36010003",
+                  blockHash: `0x${"e1".repeat(32)}`,
+                  transactionIndex: 0,
+                  transactionHash: `0x${"e2".repeat(32)}`,
+                  logIndex: 0,
+                },
+                lastSource: {
+                  blockNumber: "36010004",
+                  blockHash: `0x${"e3".repeat(32)}`,
+                  transactionIndex: 0,
+                  transactionHash: `0x${"e4".repeat(32)}`,
+                  logIndex: 0,
+                },
+                observedStart: "2026-08-01T00:15:00.000Z",
+                observedEnd: "2026-08-01T00:17:00.000Z",
+              },
+            }
+          : position),
+      },
+    })).toThrow();
+    const aligned = createStockTokenExecutionSeries({
+      request: {
+        pairId: asset.poolId,
+        window: "1d",
+        requestedStart: "2026-07-31T12:00:00.000Z",
+        requestedEnd: "2026-08-01T12:00:00.000Z",
+      },
+      asset,
+      state: fixture.state,
+      stateSha256: fixture.stateEncoded.jsonSha256,
+      months: fixture.months.map((entry) => ({
+        reference: entry.reference,
+        month: entry.month,
+        sha256: entry.encoded.jsonSha256,
+      })),
+      days: [fixture.days[0]!, fixture.days[1]!].map((entry) => ({
+        reference: entry.reference,
+        day: entry.day,
+        sha256: entry.encoded.jsonSha256,
+      })),
+    });
+    if (aligned.status !== "available") throw new TypeError("Expected aligned execution history.");
+    expect(aligned.displaySeries.positions).toHaveLength(96);
+    expect(() => stockTokenExecutionSeriesSchema.parse({
+      ...result,
+      displaySeries: {
+        ...result.displaySeries,
+        positions: result.displaySeries.positions.map((position, index) => index === 1
+          ? { ...position, intervalStart: result.displaySeries.positions[0]!.intervalStart }
+          : position),
+      },
+    })).toThrow();
   });
 
   it("applies the canonical candle capacity only after all requested days are merged", () => {
     const fixture = buildFixture(new Set(["2026-08-11", "2026-08-12", "2026-08-13"]));
     const august = fixture.months[1]!;
     const requestedDays = fixture.days.filter((entry) =>
-      entry.day.day >= "2026-08-11" && entry.day.day <= "2026-08-13");
+      entry.day.day >= "2026-08-07" && entry.day.day <= "2026-08-13");
     const result = createStockTokenExecutionSeries({
       request: {
         pairId: asset.poolId,
-        requestedStart: "2026-08-11T00:00:00.000Z",
+        window: "7d",
+        requestedStart: "2026-08-07T00:00:00.000Z",
         requestedEnd: "2026-08-14T00:00:00.000Z",
       },
       asset,
@@ -164,6 +347,61 @@ describe("pair-based Stock Token execution index contract", () => {
     expect(result.candles).toHaveLength(stockTokenExecutionSeriesLimits.candles);
     expect(result.candles[0]?.intervalStart).toBe("2026-08-11T20:48:00.000Z");
     expect(result.candles.at(-1)?.intervalEnd).toBe("2026-08-14T00:00:00.000Z");
+    expect(result.displaySeries.positions).toHaveLength(168);
+    expect(result.displaySeries.positions[0]).toMatchObject({
+      intervalStart: "2026-08-07T00:00:00.000Z",
+      coverage: "complete",
+      candle: null,
+    });
+    const earlyDisplay = result.displaySeries.positions.find((position) =>
+      position.intervalStart === "2026-08-11T00:00:00.000Z");
+    expect(earlyDisplay).toMatchObject({
+      coverage: "complete",
+      candle: {
+        open: { numerator: "304", denominator: "1" },
+        high: { numerator: "307", denominator: "1" },
+        low: { numerator: "299", denominator: "1" },
+        close: { numerator: "601", denominator: "2" },
+        tokenVolumeRaw: "60000000000000000000",
+        quoteVolumeRaw: "18090000000",
+        tradeCount: "60",
+        firstSource: { blockNumber: "36110001" },
+        lastSource: { blockNumber: "36110060" },
+        observedStart: "2026-08-11T00:00:00.000Z",
+        observedEnd: "2026-08-11T01:00:00.000Z",
+      },
+    });
+    expect(Date.parse(earlyDisplay!.candle!.observedStart)).toBeLessThan(
+      Date.parse(result.candles[0]!.intervalStart),
+    );
+    const latestDisplayIndex = result.displaySeries.positions.findLastIndex((position) =>
+      position.candle !== null);
+    const latestDisplay = result.displaySeries.positions[latestDisplayIndex]!;
+    expect(latestDisplay.candle?.lastSource).toEqual(result.candles.at(-1)?.lastSource);
+    expect(() => stockTokenExecutionSeriesSchema.parse({
+      ...result,
+      displaySeries: {
+        ...result.displaySeries,
+        positions: result.displaySeries.positions.map((position, index) => index === latestDisplayIndex
+          ? {
+              ...position,
+              candle: {
+                ...position.candle!,
+                lastSource: {
+                  ...position.candle!.lastSource,
+                  blockNumber: (BigInt(position.candle!.lastSource.blockNumber) + 1n).toString(),
+                  blockHash: `0x${"d9".repeat(32)}`,
+                  transactionHash: `0x${"d8".repeat(32)}`,
+                },
+              },
+            }
+          : position),
+      },
+    })).toThrow();
+    expect(stockTokenExecutionSeriesSchema.safeParse({
+      ...result,
+      detail: { ...result.detail, observedCandleCount: 43_200 },
+    }).success).toBe(false);
 
     expect(() => stockTokenExecutionSeriesSchema.parse({
       ...result,
@@ -174,7 +412,8 @@ describe("pair-based Stock Token execution index contract", () => {
     const stale = createStockTokenExecutionSeries({
       request: {
         pairId: asset.poolId,
-        requestedStart: "2026-08-11T00:00:00.000Z",
+        window: "7d",
+        requestedStart: "2026-08-07T14:34:00.000Z",
         requestedEnd: "2026-08-14T14:34:00.000Z",
       },
       asset,
@@ -182,7 +421,7 @@ describe("pair-based Stock Token execution index contract", () => {
       stateSha256: fixture.stateEncoded.jsonSha256,
       months: [{ reference: august.reference, month: august.month, sha256: august.encoded.jsonSha256 }],
       days: fixture.days.filter((entry) =>
-        entry.day.day >= "2026-08-11" && entry.day.day <= "2026-08-14").map((entry) => ({
+        entry.day.day >= "2026-08-07" && entry.day.day <= "2026-08-14").map((entry) => ({
         reference: entry.reference,
         day: entry.day,
         sha256: entry.encoded.jsonSha256,
@@ -194,18 +433,36 @@ describe("pair-based Stock Token execution index contract", () => {
       status: "partial",
       limitations: ["after_published_coverage"],
     });
+    expect(stale.displaySeries.positions).toHaveLength(169);
     expect(stale.detail).toEqual(result.detail);
 
     const firstCoverage = result.coverage.intervals[0]!;
+    expect(stockTokenExecutionSeriesSchema.safeParse({
+      ...result,
+      coverage: {
+        status: "partial",
+        intervals: [{
+          ...firstCoverage,
+          fromTimestamp: "2026-08-07T00:01:00.000Z",
+        }, ...result.coverage.intervals.slice(1)],
+        limitations: ["before_published_coverage"],
+      },
+    }).success).toBe(false);
     const partial = stockTokenExecutionSeriesSchema.parse({
       ...result,
       coverage: {
         status: "partial",
         intervals: [{
           ...firstCoverage,
-          fromTimestamp: "2026-08-11T00:01:00.000Z",
+          fromTimestamp: "2026-08-07T00:01:00.000Z",
         }, ...result.coverage.intervals.slice(1)],
         limitations: ["before_published_coverage"],
+      },
+      displaySeries: {
+        ...result.displaySeries,
+        positions: result.displaySeries.positions.map((position, index) => index === 0
+          ? { ...position, coverage: "partial" }
+          : position),
       },
     });
     if (partial.status !== "available") throw new TypeError("Expected partial execution history.");
@@ -267,6 +524,14 @@ describe("pair-based Stock Token execution index contract", () => {
       ...result,
       coverage: { ...result.coverage, limitations: ["stale_index"] },
     })).toThrow();
+    let emptyCoverageAdmission: ReturnType<typeof stockTokenExecutionSeriesSchema.safeParse> | undefined;
+    expect(() => {
+      emptyCoverageAdmission = stockTokenExecutionSeriesSchema.safeParse({
+        ...result,
+        coverage: { ...result.coverage, intervals: [] },
+      });
+    }).not.toThrow();
+    expect(emptyCoverageAdmission?.success).toBe(false);
   });
 
   it("admits the maximum three pair-month and 31 pair-day inputs without changing public endpoints", () => {
@@ -279,7 +544,7 @@ describe("pair-based Stock Token execution index contract", () => {
       entry.day.coverage.untilTimestamp > requestedStart &&
       entry.day.coverage.fromTimestamp < requestedEnd);
     const result = createStockTokenExecutionSeries({
-      request: { pairId: asset.poolId, requestedStart, requestedEnd },
+      request: { pairId: asset.poolId, window: "30d", requestedStart, requestedEnd },
       asset,
       state: fixture.state,
       stateSha256: fixture.stateEncoded.jsonSha256,
@@ -305,6 +570,35 @@ describe("pair-based Stock Token execution index contract", () => {
     if (result.status !== "available") throw new TypeError("Expected available execution history.");
     expect(result.artifact.days).toHaveLength(31);
     expect(result.coverage.intervals).toHaveLength(31);
+    expect(result.displaySeries.positions).toHaveLength(181);
+    expect(result.displaySeries.positions.every((position) => position.candle === null)).toBe(true);
+    expect(result.displaySeries.positions[0]?.coverage).toBe("partial");
+    expect(result.displaySeries.positions.at(-1)?.coverage).toBe("partial");
+    const alignedStart = "2027-01-31T12:00:00.000Z";
+    const alignedEnd = "2027-03-02T12:00:00.000Z";
+    const aligned = createStockTokenExecutionSeries({
+      request: {
+        pairId: asset.poolId,
+        window: "30d",
+        requestedStart: alignedStart,
+        requestedEnd: alignedEnd,
+      },
+      asset,
+      state: fixture.state,
+      stateSha256: fixture.stateEncoded.jsonSha256,
+      months: months.map((entry) => ({
+        reference: entry.reference,
+        month: entry.month,
+        sha256: entry.encoded.jsonSha256,
+      })),
+      days: days.map((entry) => ({
+        reference: entry.reference,
+        day: entry.day,
+        sha256: entry.encoded.jsonSha256,
+      })),
+    });
+    if (aligned.status !== "available") throw new TypeError("Expected aligned execution history.");
+    expect(aligned.displaySeries.positions).toHaveLength(180);
   });
 
   it("rejects a broken owner reference and a candle outside its day coverage", () => {
@@ -345,8 +639,9 @@ describe("pair-based Stock Token execution index contract", () => {
     const result = createStockTokenExecutionSeries({
       request: {
         pairId: asset.poolId,
-        requestedStart: "2026-07-31T23:58:30.000Z",
-        requestedEnd: "2026-08-01T00:01:30.000Z",
+        window: "1d",
+        requestedStart: "2026-07-31T12:01:30.000Z",
+        requestedEnd: "2026-08-01T12:01:30.000Z",
       },
       asset,
       state: fixture.state,

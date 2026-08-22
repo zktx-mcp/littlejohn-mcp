@@ -176,10 +176,10 @@ describe("MCP App typed read renderers", () => {
     expect(card.querySelector("h1")?.textContent).toBe("Stock Token market");
     expect(card.textContent).toContain("Apple • Robinhood Token · AAPL");
     expect(card.textContent).toContain("925 / 4");
-    expect(card.textContent).toContain("2026-08-12T13:30:00.000Z");
+    expect(card.textContent).toContain("2026-08-12T13:37:23.000Z");
     expect(card.textContent).toContain("Oracle reference value denominated in USD");
     expect(card.textContent).toContain("Executed trades in USDG");
-    expect(card.textContent).toContain("Latest exact close927 / 4 USDG");
+    expect(card.textContent).toContain("Latest returned one-minute close927 / 4 USDG");
     expect(card.textContent).toContain("USD-denominated oracle reference history");
     const marketFields = summaryFields(card.querySelector("dl"), "Stock Token market");
     expect(marketFields.get("Status")?.textContent).toBe("Available");
@@ -194,6 +194,7 @@ describe("MCP App typed read renderers", () => {
     expect(executionFields.get("Detailed rows")?.className).toBe("field-value");
     expect(executionFields.get("Observed one-minute candles")?.textContent).toBe("3");
     expect(executionFields.get("Returned one-minute candles")?.textContent).toBe("3");
+    expect(executionFields.get("Display positions")?.textContent).toBe("97");
     const chartLabels = [...card.querySelectorAll('svg[role="img"]')]
       .map((chart) => chart.getAttribute("aria-label"));
     expect(chartLabels).toEqual([
@@ -203,7 +204,7 @@ describe("MCP App typed read renderers", () => {
       ),
     ]);
     const executionCandles = availableValue.execution.status === "available"
-      ? availableValue.execution.candles
+      ? availableValue.execution.displaySeries.positions.filter((position) => position.candle !== null)
       : [];
     expect(card.querySelectorAll(".candle-mark")).toHaveLength(
       executionCandles.length + (availableValue.reference.status === "available"
@@ -217,23 +218,55 @@ describe("MCP App typed read renderers", () => {
       const [requestedStart, requestedEnd] = [...figure.querySelectorAll(".chart-time-range span")]
         .map((node) => Date.parse(node.textContent ?? ""));
       for (const mark of figure.querySelectorAll(".candle-mark")) {
-        const openedAt = Date.parse(mark.getAttribute("data-opened-at") ?? "");
-        const closedAt = Date.parse(mark.getAttribute("data-closed-at") ?? "");
-        const expectedRatio = ((openedAt + closedAt) / 2 - requestedStart!) /
+        const representedStart = Date.parse(mark.getAttribute("data-represented-start") ?? "");
+        const representedEnd = Date.parse(mark.getAttribute("data-represented-end") ?? "");
+        const expectedRatio = ((representedStart + representedEnd) / 2 - requestedStart!) /
           (requestedEnd! - requestedStart!);
         const actualRatio = (Number(mark.getAttribute("data-chart-x")) - plotLeft) / plotWidth;
         expect(actualRatio).toBeCloseTo(expectedRatio, 10);
       }
     }
+    const executionMark = card.querySelector("figure .candle-mark");
+    expect(executionMark?.getAttribute("data-opened-at")).toBe("2026-08-12T13:30:00.000Z");
+    expect(executionMark?.getAttribute("data-closed-at")).toBe("2026-08-12T13:45:00.000Z");
+    expect(executionMark?.getAttribute("data-represented-end")).toBe("2026-08-12T13:37:23.000Z");
     expect([...card.querySelectorAll(".chart-caption")].every((caption) =>
       !caption.textContent?.includes("empty intervals"))).toBe(true);
     expect([...card.querySelectorAll("details")].map((details) =>
       details.querySelector("summary")?.textContent)).toEqual([
-      "Exact executed-trade candles",
+      "Exact executed-trade display candles",
       "Exact oracle reference candles",
       "Data limitations",
     ]);
     expect([...card.querySelectorAll("details")].every((details) => !details.open)).toBe(true);
+    const executionDetails = card.querySelector("details");
+    if (executionDetails === null) throw new TypeError("Execution exact-value disclosure is unavailable.");
+    executionDetails.open = true;
+    executionDetails.dispatchEvent(new Event("toggle"));
+    const executionTable = executionDetails.querySelector("table");
+    if (executionTable === null) throw new TypeError("Execution exact-value table is unavailable.");
+    expect([...executionTable.querySelectorAll("th")].map((heading) => heading.textContent)).toEqual([
+      "Natural interval start",
+      "Natural interval end",
+      "Represented start",
+      "Represented end",
+      "Position coverage",
+      "Open",
+      "High",
+      "Low",
+      "Close",
+    ]);
+    expect([...executionTable.querySelectorAll("tbody td")].map((cell) => cell.textContent)).toEqual([
+      "2026-08-12T13:30:00.000Z",
+      "2026-08-12T13:45:00.000Z",
+      "2026-08-12T13:30:00.000Z",
+      "2026-08-12T13:37:23.000Z",
+      "Partial",
+      "925 / 4",
+      "927 / 4",
+      "925 / 4",
+      "927 / 4",
+    ]);
     expect(card.textContent).toContain(
       "Reference-round candles contain no trade-volume observation.",
     );
@@ -314,7 +347,7 @@ describe("MCP App typed read renderers", () => {
     );
 
     expect(card.textContent).toContain("Executed trades in USDG");
-    expect(card.textContent).toContain("Latest exact close927 / 4 USDG");
+    expect(card.textContent).toContain("Latest returned one-minute close927 / 4 USDG");
     expect(card.textContent).toContain("USD-denominated oracle referenceStatusUnavailable");
     expect(card.textContent).toContain("The oracle reference source was unavailable.");
     expect(card.querySelectorAll('svg[role="img"]')).toHaveLength(1);

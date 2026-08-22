@@ -435,7 +435,8 @@ const validateAvailableResult = (
     value.execution.requestedStart !== interval.requestedStart ||
     value.execution.requestedEnd !== interval.requestedEnd ||
     (value.execution.status === "available" &&
-      (executionAsset === undefined || value.execution.source.poolId !== executionAsset.poolId)) ||
+      (executionAsset === undefined || value.execution.source.poolId !== executionAsset.poolId ||
+        value.execution.displaySeries.window !== value.window)) ||
     (value.execution.status === "unavailable" &&
       ((value.execution.reason === "asset_not_indexed") !== (executionAsset === undefined)))
   ) context.addIssue({ code: "custom", message: "Stock Token market result is inconsistent." });

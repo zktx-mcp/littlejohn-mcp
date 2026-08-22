@@ -11,14 +11,21 @@ export const renderPackagedOwnerWorkerSource = (packageInstallRelativePath) => {
   return String.raw`
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { gzipSync } from "node:zlib";
 
 import { createChainOwnerApplication } from ${packageModule("chain/application.js")};
+import { sha256Bytes } from ${packageModule("core/index.js")};
 import { createInterfaceOwnerApplication } from ${packageModule("interfaces/application.js")};
 import { createSourcifyContractSourceVerification } from ${packageModule("intelligence/sourcify.js")};
 import {
+  canonicalStockTokenExecutionIndexJson,
+  createStockTokenExecutionSeries,
   findStockTokenExecutionIndexAssetByPairId,
-  stockTokenExecutionIndexRegistry,
-  stockTokenExecutionSeriesSchema,
+  stockTokenExecutionIndexDaySchema,
+  stockTokenExecutionIndexMonthSchema,
+  stockTokenExecutionIndexStateSchema,
+  stockTokenExecutionPairDayLogicalId,
+  stockTokenExecutionPairMonthLogicalId,
   unavailableStockTokenExecutionSeries,
 } from ${packageModule("market-portfolio/stock-token-execution-index.js")};
 import {
@@ -47,6 +54,27 @@ const sessionStoreKey = "littlejohn.release.fixture.sessions";
 const now = () => readFileSync(clockPath, "utf8").trim();
 const sessionExpiry = () => Math.floor(Date.parse(now()) / 1000) + 7 * 24 * 60 * 60;
 
+const encodeExecutionArtifact = (value) => {
+  const json = new TextEncoder().encode(canonicalStockTokenExecutionIndexJson(value));
+  const gzip = gzipSync(json, { level: 9 });
+  return Object.freeze({
+    gzipBytes: gzip.byteLength,
+    gzipSha256: sha256Bytes(gzip),
+    jsonBytes: json.byteLength,
+    jsonSha256: sha256Bytes(json),
+  });
+};
+
+const executionArtifactReference = (logicalId, sequence, coverage, encoded) => Object.freeze({
+  logicalId,
+  sequence,
+  coverage,
+  jsonBytes: encoded.jsonBytes,
+  jsonSha256: encoded.jsonSha256,
+  gzipBytes: encoded.gzipBytes,
+  gzipSha256: encoded.gzipSha256,
+});
+
 const stockTokenExecutionIndex = Object.freeze({
   read: async (input, signal) => {
     if (signal?.aborted === true) throw signal.reason;
@@ -54,13 +82,26 @@ const stockTokenExecutionIndex = Object.freeze({
     if (asset === undefined) {
       return unavailableStockTokenExecutionSeries(input, "asset_not_indexed");
     }
+    const sequence = 1;
     const requestedEnd = Date.parse(input.requestedEnd);
     const coverageEnd = new Date(Math.floor(requestedEnd / 60_000) * 60_000).toISOString();
-    const coverageStart = new Date(Date.parse(coverageEnd) - 10 * 60_000).toISOString();
+    const activationBlock = BigInt(asset.pair.activation.blockNumber);
+    const coverage = Object.freeze({
+      fromBlock: asset.pair.activation.blockNumber,
+      fromTimestamp: asset.pair.activation.timestamp,
+      untilBlock: (activationBlock + 300n).toString(),
+      untilTimestamp: coverageEnd,
+    });
+    if (
+      coverage.fromTimestamp.slice(0, 10) !== coverage.untilTimestamp.slice(0, 10) ||
+      coverage.fromTimestamp >= coverage.untilTimestamp
+    ) throw new TypeError("Release execution fixture coverage is invalid.");
     const candleStarts = [7, 5, 2].map((minutes) =>
       new Date(Date.parse(coverageEnd) - minutes * 60_000).toISOString());
+    const denominators = ["4", "1", "4"];
+    const numerators = ["925", "463", "927"];
     const candles = candleStarts.map((intervalStart, index) => {
-      const blockNumber = String(34307190 + index);
+      const blockNumber = (activationBlock + 159n + BigInt(index)).toString();
       const byte = String(40 + index).padStart(2, "0");
       const transactionByte = String(50 + index).padStart(2, "0");
       const source = Object.freeze({
@@ -70,65 +111,71 @@ const stockTokenExecutionIndex = Object.freeze({
         transactionHash: "0x" + transactionByte.repeat(32),
         logIndex: 0,
       });
-      const numerator = String(925 + index * 2);
+      const exact = Object.freeze({ numerator: numerators[index], denominator: denominators[index] });
       return Object.freeze({
-        symbol: asset.symbol,
-        token: asset.token,
-        poolId: asset.poolId,
         intervalStart,
         intervalEnd: new Date(Date.parse(intervalStart) + 60_000).toISOString(),
-        open: { numerator, denominator: "4" },
-        high: { numerator, denominator: "4" },
-        low: { numerator, denominator: "4" },
-        close: { numerator, denominator: "4" },
-        tokenVolumeRaw: String(1_000 + index),
+        open: exact,
+        high: exact,
+        low: exact,
+        close: exact,
+        baseVolumeRaw: String(1_000 + index),
         quoteVolumeRaw: String(2_000 + index),
         tradeCount: 1,
         firstSource: source,
         lastSource: source,
       });
     });
-    return stockTokenExecutionSeriesSchema.parse({
-      status: "available",
-      requestedStart: input.requestedStart,
-      requestedEnd: input.requestedEnd,
-      source: {
-        chainId: stockTokenExecutionIndexRegistry.chain.chainId,
-        finality: stockTokenExecutionIndexRegistry.chain.finalityTag,
-        poolManager: stockTokenExecutionIndexRegistry.deployment.poolManager,
-        poolId: asset.poolId,
-        quoteToken: {
-          address: asset.pair.quoteAsset.address,
-          decimals: asset.pair.quoteAsset.decimals,
-          symbol: "USDG",
-        },
-      },
-      artifact: {
-        contractVersion: "1",
-        pairId: asset.poolId,
-        sequence: 1,
-        coveredUntilTimestamp: coverageEnd,
-        stateSha256: "31".repeat(32),
-        months: [{ month: coverageStart.slice(0, 7), sha256: "30".repeat(32) }],
-        days: [{ day: coverageStart.slice(0, 10), sha256: "32".repeat(32) }],
-      },
-      freshness: "current",
-      coverage: {
-        status: "partial",
-        intervals: [{
-          fromBlock: "34307100",
-          fromTimestamp: coverageStart,
-          untilBlock: "34307200",
-          untilTimestamp: coverageEnd,
-        }],
-        limitations: ["before_published_coverage", "after_published_coverage"],
-      },
-      detail: {
-        status: "complete",
-        observedCandleCount: candles.length,
-        limitations: [],
-      },
+    const dayKey = coverage.fromTimestamp.slice(0, 10);
+    const day = stockTokenExecutionIndexDaySchema.parse({
       candles,
+      contractVersion: "1",
+      coverage,
+      day: dayKey,
+      kind: "pair_candle_day",
+      pair: asset.pair,
+      sequence,
+    });
+    const encodedDay = encodeExecutionArtifact(day);
+    const dayReference = executionArtifactReference(
+      stockTokenExecutionPairDayLogicalId(asset.poolId, dayKey),
+      sequence,
+      coverage,
+      encodedDay,
+    );
+    const monthKey = coverage.fromTimestamp.slice(0, 7);
+    const month = stockTokenExecutionIndexMonthSchema.parse({
+      contractVersion: "1",
+      coverage,
+      days: [dayReference],
+      kind: "pair_candle_month",
+      month: monthKey,
+      pair: asset.pair,
+      sequence,
+    });
+    const encodedMonth = encodeExecutionArtifact(month);
+    const monthReference = executionArtifactReference(
+      stockTokenExecutionPairMonthLogicalId(asset.poolId, monthKey),
+      sequence,
+      coverage,
+      encodedMonth,
+    );
+    const state = stockTokenExecutionIndexStateSchema.parse({
+      contractVersion: "1",
+      coverage,
+      kind: "pair_candle_state",
+      months: [monthReference],
+      pair: asset.pair,
+      sequence,
+    });
+    const encodedState = encodeExecutionArtifact(state);
+    return createStockTokenExecutionSeries({
+      request: input,
+      asset,
+      state,
+      stateSha256: encodedState.jsonSha256,
+      months: [{ reference: monthReference, month, sha256: encodedMonth.jsonSha256 }],
+      days: [{ reference: dayReference, day, sha256: encodedDay.jsonSha256 }],
     });
   },
 });

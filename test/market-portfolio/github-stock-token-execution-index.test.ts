@@ -103,8 +103,9 @@ const fetchFixture = (
 
 const request = Object.freeze({
   pairId: asset.poolId,
-  requestedStart: "2026-07-31T23:58:30.000Z",
-  requestedEnd: "2026-08-01T00:01:30.000Z",
+  window: "1d" as const,
+  requestedStart: "2026-07-31T12:01:30.000Z",
+  requestedEnd: "2026-08-01T12:01:30.000Z",
 });
 
 describe("GitHub pair execution-index reads", () => {
@@ -121,6 +122,7 @@ describe("GitHub pair execution-index reads", () => {
       candles: [
         { intervalStart: "2026-07-31T23:59:00.000Z" },
         { intervalStart: "2026-08-01T00:00:00.000Z" },
+        { intervalStart: "2026-08-01T00:01:00.000Z" },
       ],
     });
     const targets = fetchImplementation.mock.calls.map(([input]) => String(input));
@@ -143,9 +145,17 @@ describe("GitHub pair execution-index reads", () => {
     const selected = fetchFixture(undefined, fixture);
     const requestedStart = "2027-01-31T12:00:30.000Z";
     const requestedEnd = "2027-03-02T12:00:30.000Z";
+    const invalidFetch = vi.fn<typeof fetch>();
+    await expect(createGitHubStockTokenExecutionIndex({ fetchImplementation: invalidFetch }).read({
+      pairId: asset.poolId,
+      window: "7d",
+      requestedStart,
+      requestedEnd,
+    })).rejects.toBeInstanceOf(TypeError);
+    expect(invalidFetch).not.toHaveBeenCalled();
     const result = await createGitHubStockTokenExecutionIndex({
       fetchImplementation: selected.fetchImplementation,
-    }).read({ pairId: asset.poolId, requestedStart, requestedEnd });
+    }).read({ pairId: asset.poolId, window: "30d", requestedStart, requestedEnd });
 
     expect(result).toMatchObject({
       status: "available",
@@ -169,7 +179,7 @@ describe("GitHub pair execution-index reads", () => {
     const requestedEnd = "2026-08-13T00:00:30.000Z";
     const result = await createGitHubStockTokenExecutionIndex({
       fetchImplementation: selected.fetchImplementation,
-    }).read({ pairId: asset.poolId, requestedStart, requestedEnd });
+    }).read({ pairId: asset.poolId, window: "7d", requestedStart, requestedEnd });
     expect(result).toMatchObject({ status: "available", requestedStart, requestedEnd });
     if (result.status !== "available") throw new TypeError("Expected available execution history.");
     expect(result.artifact.months).toEqual([expect.objectContaining({ month: "2026-08" })]);
@@ -181,11 +191,11 @@ describe("GitHub pair execution-index reads", () => {
 
   it("reports admitted partial coverage without treating a partial boundary minute as missing", async () => {
     const selected = fetchFixture();
-    const requestedStart = "2026-07-31T23:57:30.000Z";
-    const requestedEnd = "2026-08-01T00:01:30.000Z";
+    const requestedStart = request.requestedStart;
+    const requestedEnd = request.requestedEnd;
     const result = await createGitHubStockTokenExecutionIndex({
       fetchImplementation: selected.fetchImplementation,
-    }).read({ pairId: asset.poolId, requestedStart, requestedEnd });
+    }).read({ pairId: asset.poolId, window: "1d", requestedStart, requestedEnd });
     expect(result).toMatchObject({
       status: "available",
       requestedStart,
@@ -197,6 +207,7 @@ describe("GitHub pair execution-index reads", () => {
       candles: [
         { intervalStart: "2026-07-31T23:59:00.000Z" },
         { intervalStart: "2026-08-01T00:00:00.000Z" },
+        { intervalStart: "2026-08-01T00:01:00.000Z" },
       ],
     });
   });

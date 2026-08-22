@@ -36,7 +36,7 @@ import type {
   ReferenceWatchlistOperation,
   ReferenceWatchlistReviewResult,
 } from "../../../market-portfolio/contracts.js";
-import type { StockTokenExecutionCandle } from
+import type { StockTokenExecutionDisplaySeries } from
   "../../../market-portfolio/stock-token-execution-index.js";
 import type { StockTokenMarketResult } from "../../../market-portfolio/stock-token-market.js";
 import type {
@@ -182,6 +182,8 @@ const svgRectangle = (
 interface ExactCandle {
   readonly openedAt: string;
   readonly closedAt: string;
+  readonly representedStart: string;
+  readonly representedEnd: string;
   readonly open: ExactRational;
   readonly high: ExactRational;
   readonly low: ExactRational;
@@ -198,24 +200,26 @@ const referenceCandleSeries = (value: Readonly<{
   candles: readonly ReferenceCandle[];
   coverage: Readonly<{ requestedStart: string; requestedEnd: string }>;
 }>): ExactCandleSeries => Object.freeze({
-  candles: value.candles,
+  candles: value.candles.map((candle) => Object.freeze({
+    ...candle,
+    representedStart: candle.openedAt,
+    representedEnd: candle.closedAt,
+  })),
   requestedStart: value.coverage.requestedStart,
   requestedEnd: value.coverage.requestedEnd,
 });
 
-const executionCandleSeries = (value: Readonly<{
-  candles: readonly StockTokenExecutionCandle[];
-  requestedStart: string;
-  requestedEnd: string;
-}>): ExactCandleSeries => Object.freeze({
-  candles: value.candles.map((candle) => Object.freeze({
-    openedAt: candle.intervalStart,
-    closedAt: candle.intervalEnd,
-    open: candle.open,
-    high: candle.high,
-    low: candle.low,
-    close: candle.close,
-  })),
+const executionCandleSeries = (value: StockTokenExecutionDisplaySeries): ExactCandleSeries => Object.freeze({
+  candles: value.positions.flatMap((position) => position.candle === null ? [] : [Object.freeze({
+    openedAt: position.intervalStart,
+    closedAt: position.intervalEnd,
+    representedStart: position.representedStart,
+    representedEnd: position.representedEnd,
+    open: position.candle.open,
+    high: position.candle.high,
+    low: position.candle.low,
+    close: position.candle.close,
+  })]),
   requestedStart: value.requestedStart,
   requestedEnd: value.requestedEnd,
 });
@@ -230,6 +234,8 @@ const historyChart = (input: ExactCandleSeries, label: string): HTMLElement => {
   const candles = input.candles.map((candle) => Object.freeze({
     openedAt: candle.openedAt,
     closedAt: candle.closedAt,
+    representedStart: candle.representedStart,
+    representedEnd: candle.representedEnd,
     exactHigh: candle.high,
     exactLow: candle.low,
     open: rational(candle.open),
@@ -289,14 +295,21 @@ const historyChart = (input: ExactCandleSeries, label: string): HTMLElement => {
   for (const candle of candles) {
     const openedAt = Date.parse(candle.openedAt);
     const closedAt = Date.parse(candle.closedAt);
+    const representedStart = Date.parse(candle.representedStart);
+    const representedEnd = Date.parse(candle.representedEnd);
     if (
       !Number.isFinite(openedAt) ||
       !Number.isFinite(closedAt) ||
-      openedAt < requestedStart ||
+      !Number.isFinite(representedStart) ||
+      !Number.isFinite(representedEnd) ||
       closedAt <= openedAt ||
-      closedAt > requestedEnd
+      representedStart < requestedStart ||
+      representedEnd <= representedStart ||
+      representedEnd > requestedEnd ||
+      representedStart < openedAt ||
+      representedEnd > closedAt
     ) throw new TypeError("Chart candle time is invalid.");
-    const midpoint = openedAt + (closedAt - openedAt) / 2;
+    const midpoint = representedStart + (representedEnd - representedStart) / 2;
     const x = plotLeft + (midpoint - requestedStart) / (requestedEnd - requestedStart) * plotWidth;
     const highY = valueTop + scaledY(candle.high, minimum, maximum, valueHeight);
     const lowY = valueTop + scaledY(candle.low, minimum, maximum, valueHeight);
@@ -307,6 +320,8 @@ const historyChart = (input: ExactCandleSeries, label: string): HTMLElement => {
     mark.setAttribute("data-chart-x", String(x));
     mark.setAttribute("data-opened-at", candle.openedAt);
     mark.setAttribute("data-closed-at", candle.closedAt);
+    mark.setAttribute("data-represented-start", candle.representedStart);
+    mark.setAttribute("data-represented-end", candle.representedEnd);
     if (compareRational(candle.low, candle.high) === 0) {
       mark.append(svgCircle(x, openY, 4, "candle-point"));
     } else {
@@ -512,34 +527,70 @@ const appendCapabilityContext = <Data>(
   appendNotices(output, "Limitations", limitations);
 };
 
-const historyValues = (
-  candles: readonly ExactCandle[],
-  captionText = "Exact candle values",
+const exactValueTable = (
+  captionText: string,
+  headings: readonly string[],
+  rows: readonly (readonly string[])[],
 ): HTMLTableElement => {
   const table = element("table", "history-values");
   const caption = element("caption", "section-title", captionText);
   const head = element("thead");
   const headingRow = element("tr");
-  for (const label of ["Opened", "Closed", "Open", "High", "Low", "Close"] as const) {
-    headingRow.append(element("th", undefined, label));
-  }
+  for (const label of headings) headingRow.append(element("th", undefined, label));
   head.append(headingRow);
   const body = element("tbody");
-  for (const candle of candles) {
+  for (const values of rows) {
     const row = element("tr");
-    for (const value of [
-      candle.openedAt,
-      candle.closedAt,
-      exactRationalText(candle.open),
-      exactRationalText(candle.high),
-      exactRationalText(candle.low),
-      exactRationalText(candle.close),
-    ]) row.append(element("td", "exact-cell", value));
+    for (const value of values) row.append(element("td", "exact-cell", value));
     body.append(row);
   }
   table.append(caption, head, body);
   return table;
 };
+
+const historyValues = (
+  candles: readonly ExactCandle[],
+  captionText = "Exact candle values",
+): HTMLTableElement => exactValueTable(
+  captionText,
+  ["Opened", "Closed", "Open", "High", "Low", "Close"],
+  candles.map((candle) => [
+    candle.openedAt,
+    candle.closedAt,
+    exactRationalText(candle.open),
+    exactRationalText(candle.high),
+    exactRationalText(candle.low),
+    exactRationalText(candle.close),
+  ]),
+);
+
+const executionHistoryValues = (
+  series: StockTokenExecutionDisplaySeries,
+): HTMLTableElement => exactValueTable(
+  "Exact executed-trade display candle values in USDG",
+  [
+    "Natural interval start",
+    "Natural interval end",
+    "Represented start",
+    "Represented end",
+    "Position coverage",
+    "Open",
+    "High",
+    "Low",
+    "Close",
+  ],
+  series.positions.flatMap((position) => position.candle === null ? [] : [[
+    position.intervalStart,
+    position.intervalEnd,
+    position.representedStart,
+    position.representedEnd,
+    coverageLabels[position.coverage],
+    exactRationalText(position.candle.open),
+    exactRationalText(position.candle.high),
+    exactRationalText(position.candle.low),
+    exactRationalText(position.candle.close),
+  ]]),
+);
 
 const renderAccountAssets = (value: AccountAssetCollectionSuccess): DocumentFragment => {
   const view = projectAccountAssetCollectionView(value);
@@ -697,7 +748,8 @@ const renderStockTokenMarket = (value: StockTokenMarketResult): DocumentFragment
     ]));
   } else {
     const latestExecution = value.execution.candles.at(-1);
-    const executionSeries = executionCandleSeries(value.execution);
+    const executionDisplaySeries = value.execution.displaySeries;
+    const executionSeries = executionCandleSeries(executionDisplaySeries);
     const coverageField: SummaryField = value.execution.coverage.status === "complete"
       ? ["Source coverage", "Complete"]
       : ["Source coverage", "Partial", "partial"];
@@ -708,17 +760,18 @@ const renderStockTokenMarket = (value: StockTokenMarketResult): DocumentFragment
       ["Detailed rows", value.execution.detail.status === "complete" ? "Complete" : "Limited"],
       ["Observed one-minute candles", String(value.execution.detail.observedCandleCount)],
       ["Returned one-minute candles", String(value.execution.candles.length)],
-      ["Latest exact close", latestExecution === undefined
+      ["Display positions", String(value.execution.displaySeries.positions.length)],
+      ["Latest returned one-minute close", latestExecution === undefined
         ? "No executed trade in the covered period"
         : `${exactRationalText(latestExecution.close)} USDG`],
       ...(latestExecution === undefined
         ? []
-        : [["Latest candle", latestExecution.intervalEnd] as const]),
+        : [["Latest returned one-minute candle", latestExecution.intervalEnd] as const]),
     ]));
     output.append(historyChart(executionSeries, `${label} executed trades in USDG`));
     if (executionSeries.candles.length > 0) {
-      output.append(deferredDisclosure("Exact executed-trade candles", () => [
-        historyValues(executionSeries.candles, "Exact executed-trade candle values in USDG"),
+      output.append(deferredDisclosure("Exact executed-trade display candles", () => [
+        executionHistoryValues(executionDisplaySeries),
       ]));
     }
   }

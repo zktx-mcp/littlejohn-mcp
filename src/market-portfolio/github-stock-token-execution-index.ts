@@ -6,6 +6,8 @@ import {
   deepFreezeValue,
   hash32Schema,
   jsonObject,
+  marketTimeWindowDefinitions,
+  marketTimeWindowSchema,
   utcTimestampSchema,
 } from "../core/index.js";
 import {
@@ -51,6 +53,7 @@ const githubReleaseAssetSchema = jsonObject({
 const githubReleaseAssetListSchema = z.array(githubReleaseAssetSchema).max(100);
 const inputSchema = jsonObject({
   pairId: hash32Schema,
+  window: marketTimeWindowSchema,
   requestedStart: utcTimestampSchema,
   requestedEnd: utcTimestampSchema,
 }).strict();
@@ -398,7 +401,7 @@ export const createGitHubStockTokenExecutionIndex = (
     const requestedEnd = Date.parse(input.requestedEnd);
     if (
       requestedStart >= requestedEnd ||
-      requestedEnd - requestedStart > stockTokenExecutionSeriesLimits.requestWindowMilliseconds
+      requestedEnd - requestedStart !== marketTimeWindowDefinitions[input.window].durationMilliseconds
     ) throw new TypeError("Stock Token execution-index request interval is invalid.");
     const asset = findStockTokenExecutionIndexAssetByPairId(input.pairId);
     if (asset === undefined) return unavailableStockTokenExecutionSeries(input, "asset_not_indexed");

@@ -366,6 +366,7 @@ describe("Stock Token market ownership", () => {
     expect(executionAsset).toBeDefined();
     expect(fixture.readExecutionIndex).toHaveBeenCalledWith({
       pairId: executionAsset!.poolId,
+      window: "1d",
       requestedStart: "2026-08-11T13:30:00.000Z",
       requestedEnd: block.blockTimestamp,
     }, expect.any(AbortSignal));
