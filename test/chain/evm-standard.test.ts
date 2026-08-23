@@ -11,7 +11,6 @@ import {
   decodeErc20DecimalsResult,
   decodeErc20TextResult,
   decodeErc20TotalSupplyResult,
-  encodeStockTokenOraclePausedCall,
   hashEvmBytes,
 } from "../../src/chain/evm-standard.js";
 import { rpcResponseByteLimit } from "../../src/chain/limits.js";
@@ -64,7 +63,6 @@ describe("standard EVM boundary", () => {
     );
     expect(createStockFactoryCallEncoder().tokenAddress(hash32Schema.parse(`0x${"1".repeat(64)}`)))
       .toBe(`0x97bb3ce9${"1".repeat(64)}`);
-    expect(encodeStockTokenOraclePausedCall()).toBe("0x7706ba52");
     expect(decodeAbiBooleanResult(word(1n))).toBe(true);
     expect(decodeAbiBooleanResult(word(0n))).toBe(false);
     expect(decodeAbiAddressResult(hexBytesSchema.parse(

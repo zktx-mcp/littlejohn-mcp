@@ -10,7 +10,7 @@ export const presentationSnapshotUnavailableReasons = Object.freeze([
 export const presentationSnapshotLimits = Object.freeze({
   inputBytes: 65_536,
   resultBytes: 8_388_607,
-  resultChunkBytes: 65_536,
+  resultChunkBytes: 262_144,
   rows: 16_384,
   aggregateBytes: 536_870_912,
 } as const);

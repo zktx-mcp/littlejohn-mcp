@@ -32,10 +32,10 @@
   },
   "scripts": {
     "clean": "node scripts/clean.mjs",
-    "generate:stock-token-reference-market": "node scripts/generate-stock-token-reference-market.mjs",
+    "generate:stock-token-trade-history-registry": "node scripts/generate-stock-token-trade-history-registry.mjs",
     "build": "npm run clean && tsc -p tsconfig.build.json && tsc -p tsconfig.mcp-app.json --noEmit && vite build --config vite.mcp-app.config.ts",
     "lint": "eslint \"src/interfaces/mcp-app/**/*.ts\" \"test/interfaces/mcp-app/**/*.ts\"",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.mcp-app.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.mcp-app.json --noEmit && tsc -p tsconfig.mcp-app-test.json --noEmit",
     "test": "vitest run",
     "release:check": "node scripts/release-check.mjs"
   },
@@ -60,6 +60,7 @@
     "eslint": "10.8.0",
     "fast-check": "4.9.0",
     "jsdom": "28.1.0",
+    "lightweight-charts": "5.2.1",
     "tsx": "4.23.0",
     "typescript": "6.0.3",
     "vite": "8.1.4",

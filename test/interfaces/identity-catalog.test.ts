@@ -15,7 +15,7 @@ import {
   declaredMcpToolNames,
   interfaceReadCapabilityRegistry,
   readInterfaceIdentities,
-  marketPortfolioInterfaceBindingList,
+  stockTokenTradeHistoryInterfaceBindingList,
   tokenCatalogInterfaceBindingList,
 } from "../../src/interfaces/identities.js";
 import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
@@ -33,11 +33,10 @@ import { createControlCredentialVerifier, loadOrCreateControlCredential } from "
 import { createRuntimeRouteRegistry } from "../../src/runtime/http-routing.js";
 import { runtimePaths } from "../../src/runtime/paths.js";
 import {
-  marketPortfolioApplicationContracts,
-  marketPortfolioErrorRegistry,
-  marketPortfolioInterfaceErrorMappings,
-  type MarketPortfolioApplicationPort,
-} from "../../src/market-portfolio/index.js";
+  stockTokenTradeHistoryApplicationContract,
+  stockTokenTradeHistoryErrorRegistry,
+  stockTokenTradeHistoryInterfaceErrorMappings,
+} from "../../src/stock-token-trade-history/index.js";
 import {
   tokenCatalogApplicationContracts,
   tokenCatalogErrorRegistry,
@@ -72,7 +71,6 @@ const routeRegistry = async () => {
     }),
     wallet: Object.freeze({}) as WalletManagementPort,
     token: Object.freeze({}) as TokenCatalogManagementApplicationPort,
-    markets: Object.freeze({}) as MarketPortfolioApplicationPort,
   });
 };
 
@@ -100,10 +98,11 @@ describe("operation interface binding authority", () => {
       expect(binding.responseAuthority.applicationErrors).toBe(tokenCatalogErrorRegistry);
       expect(binding.responseAuthority.interfaceMappings).toBe(accountAssetInterfaceErrorMappings);
     }
-    for (const binding of marketPortfolioInterfaceBindingList) {
-      expect(binding.contract).toBe(marketPortfolioApplicationContracts[binding.action]);
-      expect(binding.responseAuthority.applicationErrors).toBe(marketPortfolioErrorRegistry);
-      expect(binding.responseAuthority.interfaceMappings).toBe(marketPortfolioInterfaceErrorMappings);
+    for (const binding of stockTokenTradeHistoryInterfaceBindingList) {
+      expect(binding.contract).toBe(stockTokenTradeHistoryApplicationContract);
+      expect(binding.responseAuthority.applicationErrors).toBe(stockTokenTradeHistoryErrorRegistry);
+      expect(binding.responseAuthority.interfaceMappings)
+        .toBe(stockTokenTradeHistoryInterfaceErrorMappings);
     }
     expect(tokenCatalogInterfaceBindingList.map((binding) => binding.contract)).toEqual([
       tokenCatalogApplicationContracts.selection,
@@ -112,7 +111,7 @@ describe("operation interface binding authority", () => {
 
     for (const binding of [
       ...accountAssetInterfaceBindingList,
-      ...marketPortfolioInterfaceBindingList,
+      ...stockTokenTradeHistoryInterfaceBindingList,
       ...tokenCatalogInterfaceBindingList,
     ]) {
       if (binding.mcp !== undefined) {
@@ -139,11 +138,6 @@ describe("operation interface binding authority", () => {
       "tokenAdd",
       "tokenRemove",
       "tokenOperation",
-      "watchlistReview",
-      "watchlistAdd",
-      "watchlistRemove",
-      "watchlistReorder",
-      "watchlistOperation",
     ]);
 
     const expectedMcpNames = operationInterfaceBindingList.map((binding) => binding.mcp.name);
@@ -183,9 +177,9 @@ describe("operation interface binding authority", () => {
     const exactReads = operationInterfaceBindingList.filter((binding) => binding.action === "get_operation");
     const cancellations = operationInterfaceBindingList.filter((binding) => binding.action === "cancel_operation");
 
-    expect(reviews).toHaveLength(3);
-    expect(decisions).toHaveLength(7);
-    expect(exactReads).toHaveLength(3);
+    expect(reviews).toHaveLength(2);
+    expect(decisions).toHaveLength(4);
+    expect(exactReads).toHaveLength(2);
     expect(cancellations).toEqual([operationInterfaceBindings.walletCancel]);
 
     for (const review of reviews) {
@@ -230,9 +224,6 @@ describe("operation interface binding authority", () => {
       ["POST", "/api/v1/internal/control/token-selection/change-reviews", "none"],
       ["POST", "/api/v1/internal/control/token-selection/decisions", "declared_control"],
       ["GET", `/api/v1/internal/control/token-selection/operations/${operationId}`, "none"],
-      ["POST", "/api/v1/internal/control/reference-watchlist/change-reviews", "none"],
-      ["POST", "/api/v1/internal/control/reference-watchlist/decisions", "declared_control"],
-      ["GET", `/api/v1/internal/control/reference-watchlist/operations/${operationId}`, "none"],
     ] as const;
 
     expect([
@@ -244,9 +235,6 @@ describe("operation interface binding authority", () => {
       operationControlResources.tokenSelection.reviews,
       operationControlResources.tokenSelection.decisions,
       operationControlResources.tokenSelection.operation(operationId),
-      operationControlResources.referenceWatchlist.reviews,
-      operationControlResources.referenceWatchlist.decisions,
-      operationControlResources.referenceWatchlist.operation(operationId),
     ]).toEqual(expected.map((entry) => entry[1]));
 
     for (const [method, path, mutation] of expected) {

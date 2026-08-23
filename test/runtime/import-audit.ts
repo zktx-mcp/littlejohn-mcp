@@ -91,6 +91,7 @@ export const buildPackageSourceRoots = Object.freeze({
     "src/interfaces/mcp-app/view/main.ts",
     "scripts/release/packaged-integration.mjs",
   ],
+  "lightweight-charts": ["src/interfaces/mcp-app/view/trade-history-chart.ts"],
 } satisfies Readonly<Record<string, readonly string[]>>);
 
 interface SourceContext {

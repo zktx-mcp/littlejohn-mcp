@@ -6,8 +6,8 @@ import {
 } from "../../src/core/numeric-display.js";
 import {
   createExactRational,
-  referenceMarketLimits,
-} from "../../src/core/reference-market.js";
+  exactRationalMaximumDigits,
+} from "../../src/core/exact-rational.js";
 
 describe("numeric display", () => {
   it("formats exact and rounded values with one declared significant-digit rule", () => {
@@ -110,14 +110,14 @@ describe("numeric display", () => {
   });
 
   it("preserves tiny positive values and rejects malformed rational objects", () => {
-    const maximumComponent = "9".repeat(referenceMarketLimits.exactRationalDigits);
+    const maximumComponent = "9".repeat(exactRationalMaximumDigits);
     expect(formatRationalForDisplay({
       numerator: "1",
       denominator: maximumComponent,
     })).toMatchObject({
       relation: "approximately",
       notation: "scientific",
-      exponent: -(referenceMarketLimits.exactRationalDigits),
+      exponent: -exactRationalMaximumDigits,
     });
     expect(formatRationalForDisplay({
       numerator: "1",
@@ -135,7 +135,7 @@ describe("numeric display", () => {
       { numerator: "2", denominator: "4" },
       { numerator: "0", denominator: "2" },
       { numerator: "1".repeat(
-        referenceMarketLimits.exactRationalDigits + 256,
+        exactRationalMaximumDigits + 256,
       ), denominator: "1" },
     ]) {
       expect(() => formatRationalForDisplay(value)).toThrow(TypeError);

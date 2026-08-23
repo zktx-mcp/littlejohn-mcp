@@ -5,11 +5,6 @@ import {
   type OperationId,
 } from "../core/index.js";
 import {
-  marketPortfolioApplicationContracts,
-  marketPortfolioInterfaceErrorMappings,
-  type ReferenceWatchlistOperation,
-} from "../market-portfolio/index.js";
-import {
   tokenCatalogApplicationContracts,
   tokenCatalogInterfaceErrorMappings,
   type TokenCatalogOperation,
@@ -80,13 +75,6 @@ export const operationControlResources = Object.freeze({
     operationPattern: `${controlRoot}/token-selection/operations/{operationId}`,
     operation: (operationId: unknown) =>
       exactOperationPath(`${controlRoot}/token-selection/operations`, operationId),
-  }),
-  referenceWatchlist: Object.freeze({
-    reviews: `${controlRoot}/reference-watchlist/change-reviews`,
-    decisions: `${controlRoot}/reference-watchlist/decisions`,
-    operationPattern: `${controlRoot}/reference-watchlist/operations/{operationId}`,
-    operation: (operationId: unknown) =>
-      exactOperationPath(`${controlRoot}/reference-watchlist/operations`, operationId),
   }),
 });
 
@@ -269,70 +257,6 @@ const tokenDecisionIdentity = <Kind extends "add" | "remove">(kind: Kind) => {
   });
 };
 
-const watchlistOperationIdentity = createLocalOperationIdentity<
-  ReturnType<typeof marketPortfolioApplicationContracts.operation.parseInput>,
-  ReferenceWatchlistOperation
->({
-  action: "read",
-  contract: marketPortfolioApplicationContracts.operation.applicationContract,
-  errorMappings: marketPortfolioInterfaceErrorMappings,
-  operationId: operationIdFromInput,
-  actionRequest: (_input, operationId) => ({
-    method: "GET",
-    path: operationControlResources.referenceWatchlist.operation(operationId),
-  }),
-  parseActionResponse: (input, _operationId, value) =>
-    marketPortfolioApplicationContracts.operation.parsePublicSuccess(input, value),
-});
-
-const watchlistReviewIdentity = createLocalOperationIdentity<
-  ReturnType<typeof marketPortfolioApplicationContracts.watchlistChangeReview.parseInput>,
-  ReturnType<typeof marketPortfolioApplicationContracts.watchlistChangeReview.parsePublicSuccess>
->({
-  action: "read",
-  contract: marketPortfolioApplicationContracts.watchlistChangeReview.applicationContract,
-  errorMappings: marketPortfolioInterfaceErrorMappings,
-  operationId: () => undefined,
-  actionRequest: (input) => ({
-    method: "POST",
-    path: operationControlResources.referenceWatchlist.reviews,
-    body: captureCanonicalJson(input as unknown as CanonicalJson),
-  }),
-  parseActionResponse: (input, _operationId, value) =>
-    marketPortfolioApplicationContracts.watchlistChangeReview.parsePublicSuccess(input, value),
-});
-
-const watchlistDecisionIdentity = <Kind extends "add" | "remove" | "reorder">(
-  kind: Kind,
-) => {
-  const contract = kind === "add"
-    ? marketPortfolioApplicationContracts.add
-    : kind === "remove"
-      ? marketPortfolioApplicationContracts.remove
-      : marketPortfolioApplicationContracts.reorder;
-  return createLocalOperationIdentity<
-    ReturnType<typeof contract.parseInput>,
-    ReturnType<typeof contract.parsePublicSuccess>
-  >({
-    action: "decide",
-    contract: contract.applicationContract,
-    errorMappings: marketPortfolioInterfaceErrorMappings,
-    operationId: operationIdFromReview,
-    actionRequest: (input) => ({
-      method: "POST",
-      path: operationControlResources.referenceWatchlist.decisions,
-      body: captureCanonicalJson(input as unknown as CanonicalJson),
-    }),
-    parseActionResponse: (input, _operationId, value) =>
-      contract.parsePublicSuccess(input as never, value as never),
-    recoveryObservation: createLocalOperationRecoveryObservation(
-      watchlistOperationIdentity,
-      (input, _operationId, operation) =>
-        contract.parsePublicSuccess(input as never, operation as never),
-    ),
-  });
-};
-
 const binding = <const Tool extends OperationToolContract, Input, Success>(
   tool: Tool,
   identity: LocalOperationIdentity<Input, Success>,
@@ -353,10 +277,6 @@ const walletOperation = binding(
 const tokenOperation = binding(
   operationToolContracts.tokenOperation,
   tokenOperationIdentity,
-);
-const watchlistOperation = binding(
-  operationToolContracts.watchlistOperation,
-  watchlistOperationIdentity,
 );
 
 export const operationInterfaceBindings = Object.freeze({
@@ -389,23 +309,6 @@ export const operationInterfaceBindings = Object.freeze({
     tokenOperation,
   ),
   tokenOperation,
-  watchlistReview: binding(operationToolContracts.watchlistReview, watchlistReviewIdentity),
-  watchlistAdd: binding(
-    operationToolContracts.watchlistAdd,
-    watchlistDecisionIdentity("add"),
-    watchlistOperation,
-  ),
-  watchlistRemove: binding(
-    operationToolContracts.watchlistRemove,
-    watchlistDecisionIdentity("remove"),
-    watchlistOperation,
-  ),
-  watchlistReorder: binding(
-    operationToolContracts.watchlistReorder,
-    watchlistDecisionIdentity("reorder"),
-    watchlistOperation,
-  ),
-  watchlistOperation,
 } satisfies Readonly<Record<string, OperationInterfaceBinding>>);
 
 export const operationInterfaceBindingList: readonly OperationInterfaceBinding[] = Object.freeze(

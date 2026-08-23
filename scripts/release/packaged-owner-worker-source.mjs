@@ -18,16 +18,16 @@ import { sha256Bytes } from ${packageModule("core/index.js")};
 import { createInterfaceOwnerApplication } from ${packageModule("interfaces/application.js")};
 import { createSourcifyContractSourceVerification } from ${packageModule("intelligence/sourcify.js")};
 import {
-  canonicalStockTokenExecutionIndexJson,
-  createStockTokenExecutionSeries,
-  findStockTokenExecutionIndexAssetByPairId,
-  stockTokenExecutionIndexDaySchema,
-  stockTokenExecutionIndexMonthSchema,
-  stockTokenExecutionIndexStateSchema,
-  stockTokenExecutionPairDayLogicalId,
-  stockTokenExecutionPairMonthLogicalId,
-  unavailableStockTokenExecutionSeries,
-} from ${packageModule("market-portfolio/stock-token-execution-index.js")};
+  serializeStockTokenTradeHistoryFileJson,
+  createStockTokenTradeHistoryData,
+  findStockTokenTradeHistoryAssetByPairId,
+  stockTokenTradeHistoryDaySchema,
+  stockTokenTradeHistoryMonthSchema,
+  stockTokenTradeHistoryStateSchema,
+  stockTokenTradePairDayLogicalId,
+  stockTokenTradePairMonthLogicalId,
+  unavailableStockTokenTradeHistoryData,
+} from ${packageModule("stock-token-trade-history/stock-token-trade-history-data.js")};
 import {
   createRobinhoodOfficialAssetSourceClient,
   officialAssetSourceDefinition,
@@ -54,8 +54,8 @@ const sessionStoreKey = "littlejohn.release.fixture.sessions";
 const now = () => readFileSync(clockPath, "utf8").trim();
 const sessionExpiry = () => Math.floor(Date.parse(now()) / 1000) + 7 * 24 * 60 * 60;
 
-const encodeExecutionArtifact = (value) => {
-  const json = new TextEncoder().encode(canonicalStockTokenExecutionIndexJson(value));
+const encodeTradeHistoryFile = (value) => {
+  const json = new TextEncoder().encode(serializeStockTokenTradeHistoryFileJson(value));
   const gzip = gzipSync(json, { level: 9 });
   return Object.freeze({
     gzipBytes: gzip.byteLength,
@@ -65,7 +65,7 @@ const encodeExecutionArtifact = (value) => {
   });
 };
 
-const executionArtifactReference = (logicalId, sequence, coverage, encoded) => Object.freeze({
+const tradeHistoryFileReference = (logicalId, sequence, coverage, encoded) => Object.freeze({
   logicalId,
   sequence,
   coverage,
@@ -75,35 +75,42 @@ const executionArtifactReference = (logicalId, sequence, coverage, encoded) => O
   gzipSha256: encoded.gzipSha256,
 });
 
-const stockTokenExecutionIndex = Object.freeze({
+const stockTokenTradeHistory = Object.freeze({
   read: async (input, signal) => {
     if (signal?.aborted === true) throw signal.reason;
-    const asset = findStockTokenExecutionIndexAssetByPairId(input.pairId);
+    const asset = findStockTokenTradeHistoryAssetByPairId(input.pairId);
     if (asset === undefined) {
-      return unavailableStockTokenExecutionSeries(input, "asset_not_indexed");
+      return unavailableStockTokenTradeHistoryData(input, "asset_not_supported");
     }
     const sequence = 1;
     const requestedEnd = Date.parse(input.requestedEnd);
     const coverageEnd = new Date(Math.floor(requestedEnd / 60_000) * 60_000).toISOString();
     const activationBlock = BigInt(asset.pair.activation.blockNumber);
+    const candleOffsets = input.window === "7d"
+      ? Array.from({ length: 180 }, (_, index) => 180 - index)
+      : [7, 5, 2];
     const coverage = Object.freeze({
       fromBlock: asset.pair.activation.blockNumber,
       fromTimestamp: asset.pair.activation.timestamp,
-      untilBlock: (activationBlock + 300n).toString(),
+      untilBlock: (activationBlock + 159n + BigInt(candleOffsets.length)).toString(),
       untilTimestamp: coverageEnd,
     });
     if (
       coverage.fromTimestamp.slice(0, 10) !== coverage.untilTimestamp.slice(0, 10) ||
       coverage.fromTimestamp >= coverage.untilTimestamp
-    ) throw new TypeError("Release execution fixture coverage is invalid.");
-    const candleStarts = [7, 5, 2].map((minutes) =>
+    ) throw new TypeError("Release trade-history fixture coverage is invalid.");
+    const candleStarts = candleOffsets.map((minutes) =>
       new Date(Date.parse(coverageEnd) - minutes * 60_000).toISOString());
     const denominators = ["4", "1", "4"];
     const numerators = ["925", "463", "927"];
     const candles = candleStarts.map((intervalStart, index) => {
       const blockNumber = (activationBlock + 159n + BigInt(index)).toString();
-      const byte = String(40 + index).padStart(2, "0");
-      const transactionByte = String(50 + index).padStart(2, "0");
+      const byte = input.window === "7d"
+        ? ((40 + index) % 256).toString(16).padStart(2, "0")
+        : String(40 + index).padStart(2, "0");
+      const transactionByte = input.window === "7d"
+        ? ((50 + index) % 256).toString(16).padStart(2, "0")
+        : String(50 + index).padStart(2, "0");
       const source = Object.freeze({
         blockNumber,
         blockHash: "0x" + byte.repeat(32),
@@ -111,7 +118,13 @@ const stockTokenExecutionIndex = Object.freeze({
         transactionHash: "0x" + transactionByte.repeat(32),
         logIndex: 0,
       });
-      const exact = Object.freeze({ numerator: numerators[index], denominator: denominators[index] });
+      const denominator = input.window === "7d"
+        ? index % 2 === 0 ? "4" : "1"
+        : denominators[index];
+      const numerator = input.window === "7d"
+        ? denominator === "4" ? String(925 + index % 12) : String(232 + index % 3)
+        : numerators[index];
+      const exact = Object.freeze({ numerator, denominator });
       return Object.freeze({
         intervalStart,
         intervalEnd: new Date(Date.parse(intervalStart) + 60_000).toISOString(),
@@ -127,7 +140,7 @@ const stockTokenExecutionIndex = Object.freeze({
       });
     });
     const dayKey = coverage.fromTimestamp.slice(0, 10);
-    const day = stockTokenExecutionIndexDaySchema.parse({
+    const day = stockTokenTradeHistoryDaySchema.parse({
       candles,
       contractVersion: "1",
       coverage,
@@ -136,15 +149,15 @@ const stockTokenExecutionIndex = Object.freeze({
       pair: asset.pair,
       sequence,
     });
-    const encodedDay = encodeExecutionArtifact(day);
-    const dayReference = executionArtifactReference(
-      stockTokenExecutionPairDayLogicalId(asset.poolId, dayKey),
+    const encodedDay = encodeTradeHistoryFile(day);
+    const dayReference = tradeHistoryFileReference(
+      stockTokenTradePairDayLogicalId(asset.poolId, dayKey),
       sequence,
       coverage,
       encodedDay,
     );
     const monthKey = coverage.fromTimestamp.slice(0, 7);
-    const month = stockTokenExecutionIndexMonthSchema.parse({
+    const month = stockTokenTradeHistoryMonthSchema.parse({
       contractVersion: "1",
       coverage,
       days: [dayReference],
@@ -153,14 +166,14 @@ const stockTokenExecutionIndex = Object.freeze({
       pair: asset.pair,
       sequence,
     });
-    const encodedMonth = encodeExecutionArtifact(month);
-    const monthReference = executionArtifactReference(
-      stockTokenExecutionPairMonthLogicalId(asset.poolId, monthKey),
+    const encodedMonth = encodeTradeHistoryFile(month);
+    const monthReference = tradeHistoryFileReference(
+      stockTokenTradePairMonthLogicalId(asset.poolId, monthKey),
       sequence,
       coverage,
       encodedMonth,
     );
-    const state = stockTokenExecutionIndexStateSchema.parse({
+    const state = stockTokenTradeHistoryStateSchema.parse({
       contractVersion: "1",
       coverage,
       kind: "pair_candle_state",
@@ -168,8 +181,8 @@ const stockTokenExecutionIndex = Object.freeze({
       pair: asset.pair,
       sequence,
     });
-    const encodedState = encodeExecutionArtifact(state);
-    return createStockTokenExecutionSeries({
+    const encodedState = encodeTradeHistoryFile(state);
+    return createStockTokenTradeHistoryData({
       request: input,
       asset,
       state,
@@ -467,7 +480,7 @@ const runtime = await LocalRuntime.create({
       return fetch(assetSourceUrl, init);
     },
   }),
-  stockTokenExecutionIndex,
+  stockTokenTradeHistory,
   contractSourceVerificationFactory: createContractSourceVerification,
   walletApplicationFactory: createWalletOwnerApplicationFactory(createFakeClient),
   chainApplicationFactory: createChainOwnerApplication,

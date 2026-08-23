@@ -19,11 +19,12 @@ import {
 } from "../../src/chain/errors.js";
 import { interfaceReadCapabilityRegistry } from "../../src/interfaces/identities.js";
 import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
-import { extendMarketPortfolioSupportManifest } from "../../src/market-portfolio/support.js";
+import { extendStockTokenTradeHistorySupportManifest } from
+  "../../src/stock-token-trade-history/support.js";
 import {
-  marketPortfolioErrorRegistry,
-  marketPortfolioInterfaceErrorMappings,
-} from "../../src/market-portfolio/errors.js";
+  stockTokenTradeHistoryErrorRegistry,
+  stockTokenTradeHistoryInterfaceErrorMappings,
+} from "../../src/stock-token-trade-history/errors.js";
 import { readRuntimeConfiguration } from "../../src/runtime/configuration.js";
 import { ownerIdentitySchema } from "../../src/runtime/runtime-identity.js";
 import {
@@ -267,8 +268,8 @@ describe("runtime support manifest authority", () => {
     const accountAssets = extendAccountAssetSupportManifest(
       extendTokenCatalogSupportManifest(chain),
     );
-    const marketPortfolio = extendMarketPortfolioSupportManifest(accountAssets);
-    const protocols = extendUniswapV2ProtocolHarnessManifest(marketPortfolio);
+    const tradeHistory = extendStockTokenTradeHistorySupportManifest(accountAssets);
+    const protocols = extendUniswapV2ProtocolHarnessManifest(tradeHistory);
     const protocolSnapshot = readRuntimeSupportManifest(protocols);
     expect(protocolSnapshot.protocols).toEqual([{
       protocolId: uniswapV2PackageDescriptor.protocolId,
@@ -390,8 +391,8 @@ describe("runtime support manifest authority", () => {
     const accountAssets = extendAccountAssetSupportManifest(
       extendTokenCatalogSupportManifest(chain),
     );
-    const marketPortfolio = extendMarketPortfolioSupportManifest(accountAssets);
-    const protocols = extendUniswapV2ProtocolHarnessManifest(marketPortfolio);
+    const tradeHistory = extendStockTokenTradeHistorySupportManifest(accountAssets);
+    const protocols = extendUniswapV2ProtocolHarnessManifest(tradeHistory);
     const interfaces = extendInterfaceRuntimeSupportManifest(protocols, {
       registrations: [],
       presentations: [],
@@ -455,17 +456,11 @@ describe("runtime support manifest authority", () => {
 });
 
 describe("interface error authority", () => {
-  it("uses one exact application and mapping lineage with two declared branches", () => {
+  it("uses one exact application and mapping authority with two declared branches", () => {
     for (const [parentErrors, childErrors, parentMappings, childMappings] of [
       [runtimeErrorRegistry, walletErrorRegistry, runtimeInterfaceErrorMappings, walletInterfaceErrorMappings],
       [walletErrorRegistry, chainErrorRegistry, walletInterfaceErrorMappings, chainInterfaceErrorMappings],
       [chainErrorRegistry, tokenCatalogErrorRegistry, chainInterfaceErrorMappings, tokenCatalogInterfaceErrorMappings],
-      [
-        tokenCatalogErrorRegistry,
-        marketPortfolioErrorRegistry,
-        tokenCatalogInterfaceErrorMappings,
-        marketPortfolioInterfaceErrorMappings,
-      ],
       [
         chainErrorRegistry,
         uniswapV2ErrorRegistry,
@@ -478,6 +473,8 @@ describe("interface error authority", () => {
       expect(() => assertDirectInterfaceErrorMappingRegistryExtension(parentMappings, childMappings))
         .not.toThrow();
     }
+    expect(stockTokenTradeHistoryErrorRegistry).toBe(tokenCatalogErrorRegistry);
+    expect(stockTokenTradeHistoryInterfaceErrorMappings).toBe(tokenCatalogInterfaceErrorMappings);
   });
 
   it("matches the complete WU2 error projection fixed by the accepted plan", () => {
@@ -520,7 +517,7 @@ describe("interface error authority", () => {
       walletErrorRegistry,
       chainErrorRegistry,
       tokenCatalogErrorRegistry,
-      marketPortfolioErrorRegistry,
+      stockTokenTradeHistoryErrorRegistry,
       uniswapV2ErrorRegistry,
     ]) {
       expect(registry.values().some(({ code }) => code === runtimeStateResetRequiredCode as string)).toBe(false);
@@ -531,7 +528,7 @@ describe("interface error authority", () => {
       chainInterfaceErrorMappings,
       tokenCatalogInterfaceErrorMappings,
       accountAssetInterfaceErrorMappings,
-      marketPortfolioInterfaceErrorMappings,
+      stockTokenTradeHistoryInterfaceErrorMappings,
       uniswapV2InterfaceErrorMappings,
     ]) {
       expect(mappings.values().some(({ code }) => code === runtimeStateResetRequiredCode as string)).toBe(false);

@@ -21,12 +21,11 @@ import {
   type AnyAccountAssetApplicationContract,
 } from "../account-assets/index.js";
 import {
-  marketPortfolioApplicationContracts,
-  marketPortfolioCapabilities,
-  marketPortfolioErrorRegistry,
-  marketPortfolioInterfaceErrorMappings,
-  type AnyMarketPortfolioApplicationContract,
-} from "../market-portfolio/index.js";
+  stockTokenTradeHistoryApplicationContract,
+  stockTokenTradeHistoryCapabilityId,
+  stockTokenTradeHistoryErrorRegistry,
+  stockTokenTradeHistoryInterfaceErrorMappings,
+} from "../stock-token-trade-history/index.js";
 import {
   uniswapV2ErrorRegistry,
   uniswapV2InterfaceErrorMappings,
@@ -61,12 +60,8 @@ export const publicInspectionPaths = Object.freeze({
   tokenQueries: "/api/v1/token-inspections",
 } as const);
 
-export const marketPortfolioPublicRoutes = Object.freeze({
-  priceQueries: "/api/v1/reference-markets/price-queries",
-  historyQueries: "/api/v1/reference-markets/history-queries",
-  stockTokenMarketQueries: "/api/v1/stock-token-markets/queries",
-  watchlistQueries: "/api/v1/reference-market-watchlist/queries",
-} as const);
+export const stockTokenTradeHistoryPublicRoute =
+  "/api/v1/stock-token-trade-history-queries" as const;
 
 export const uniswapV2PublicRoutes = Object.freeze({
   exactInputQuotes: "/api/v1/uniswap-v2-exact-input-quotes",
@@ -109,9 +104,9 @@ const accountAssetResponseAuthority = Object.freeze({
   applicationErrors: tokenCatalogErrorRegistry,
   interfaceMappings: accountAssetInterfaceErrorMappings,
 });
-const marketPortfolioResponseAuthority = Object.freeze({
-  applicationErrors: marketPortfolioErrorRegistry,
-  interfaceMappings: marketPortfolioInterfaceErrorMappings,
+const stockTokenTradeHistoryResponseAuthority = Object.freeze({
+  applicationErrors: stockTokenTradeHistoryErrorRegistry,
+  interfaceMappings: stockTokenTradeHistoryInterfaceErrorMappings,
 });
 const uniswapV2ResponseAuthority = Object.freeze({
   applicationErrors: uniswapV2ErrorRegistry,
@@ -271,9 +266,9 @@ export const capabilityCatalogInterface = Object.freeze({
   responseAuthority: chainResponseAuthority,
 });
 
-export interface MarketPortfolioInterfaceBinding {
-  readonly action: "price" | "history" | "stockTokenMarket" | "watchlist";
-  readonly contract: AnyMarketPortfolioApplicationContract;
+export interface StockTokenTradeHistoryInterfaceBinding {
+  readonly action: "get";
+  readonly contract: typeof stockTokenTradeHistoryApplicationContract;
   readonly responseAuthority: CanonicalDispatchAuthority;
   readonly http: Readonly<{ method: "POST"; path: string }>;
   readonly mcp: Readonly<{
@@ -284,11 +279,11 @@ export interface MarketPortfolioInterfaceBinding {
   readonly cli: Readonly<CliInterfaceIdentity>;
 }
 
-const marketPortfolioBinding = <const Binding extends MarketPortfolioInterfaceBinding>(
+const stockTokenTradeHistoryBinding = <const Binding extends StockTokenTradeHistoryInterfaceBinding>(
   input: Binding,
 ): Readonly<Binding> => {
-  if (input.contract.capabilityId !== marketPortfolioCapabilities[input.action]) {
-    throw new TypeError("Market portfolio interface action and contract are inconsistent.");
+  if (input.contract.capabilityId !== stockTokenTradeHistoryCapabilityId) {
+    throw new TypeError("Stock Token trade-history interface action and contract are inconsistent.");
   }
   return Object.freeze({
     ...input,
@@ -300,71 +295,27 @@ const marketPortfolioBinding = <const Binding extends MarketPortfolioInterfaceBi
   }) as Readonly<Binding>;
 };
 
-export const marketPortfolioInterfaceBindings = Object.freeze({
-  price: marketPortfolioBinding({
-    action: "price",
-    contract: marketPortfolioApplicationContracts.price,
-    responseAuthority: marketPortfolioResponseAuthority,
-    http: { method: "POST", path: marketPortfolioPublicRoutes.priceQueries },
+export const stockTokenTradeHistoryInterfaceBinding = stockTokenTradeHistoryBinding({
+    action: "get",
+    contract: stockTokenTradeHistoryApplicationContract,
+    responseAuthority: stockTokenTradeHistoryResponseAuthority,
+    http: { method: "POST", path: stockTokenTradeHistoryPublicRoute },
     mcp: {
-      name: "market_get_reference_price",
-      description: "Read one Chainlink reference price on Robinhood Chain.",
-      annotations: readAnnotations(true),
-    },
-    cli: { domain: "market", command: "price", argumentSyntax: "<pair-id> [--json]" },
-  }),
-  history: marketPortfolioBinding({
-    action: "history",
-    contract: marketPortfolioApplicationContracts.history,
-    responseAuthority: marketPortfolioResponseAuthority,
-    http: { method: "POST", path: marketPortfolioPublicRoutes.historyQueries },
-    mcp: {
-      name: "market_get_reference_history",
-      description: "Read exact Chainlink reference-price candles on Robinhood Chain.",
+      name: "market_get_stock_token_trade_history",
+      description: "Read finalized Stock Token/USDG trades for one requested period.",
       annotations: readAnnotations(true),
     },
     cli: {
       domain: "market",
-      command: "history",
-      argumentSyntax: "<pair-id> --window <1d|7d|30d> [--json]",
-    },
-  }),
-  stockTokenMarket: marketPortfolioBinding({
-    action: "stockTokenMarket",
-    contract: marketPortfolioApplicationContracts.stockTokenMarket,
-    responseAuthority: marketPortfolioResponseAuthority,
-    http: { method: "POST", path: marketPortfolioPublicRoutes.stockTokenMarketQueries },
-    mcp: {
-      name: "market_get_stock_token_market",
-      description: "Read one official Stock Token's independent USD-denominated oracle reference and USDG execution history.",
-      annotations: readAnnotations(true),
-    },
-    cli: {
-      domain: "market",
-      command: "stock-token-market",
+      command: "stock-token-trade-history",
       argumentSyntax: "<symbol> [--window <1d|7d|30d>] [--json]",
     },
-  }),
-  watchlist: marketPortfolioBinding({
-    action: "watchlist",
-    contract: marketPortfolioApplicationContracts.watchlist,
-    responseAuthority: marketPortfolioResponseAuthority,
-    http: { method: "POST", path: marketPortfolioPublicRoutes.watchlistQueries },
-    mcp: {
-      name: "market_get_watchlist",
-      description: "Read the current wallet account's reference-pair watchlist.",
-      annotations: readAnnotations(false),
-    },
-    cli: { domain: "market", command: "watchlist", argumentSyntax: "[--json]" },
-  }),
-});
+  });
 
-export const marketPortfolioInterfaceBindingList: readonly MarketPortfolioInterfaceBinding[] =
-  Object.freeze(Object.values(marketPortfolioInterfaceBindings)
-    .sort((left, right) => compareCodePointSequences(
-      left.contract.capabilityId,
-      right.contract.capabilityId,
-    )));
+export const stockTokenTradeHistoryInterfaceBindingList:
+  readonly StockTokenTradeHistoryInterfaceBinding[] = Object.freeze([
+    stockTokenTradeHistoryInterfaceBinding,
+  ]);
 
 export interface AccountAssetInterfaceBinding {
   readonly action: "list" | "get";
@@ -522,7 +473,7 @@ export const accountAssetLocalOperationIdentities = Object.freeze({
 export const declaredCliCommandIdentities: readonly CliInterfaceIdentity[] = Object.freeze([
   ...accountAssetInterfaceBindingList.flatMap((entry) => entry.cli === undefined ? [] : [entry.cli]),
   ...readInterfaceIdentities.map((entry) => entry.cli),
-  ...marketPortfolioInterfaceBindingList.map((entry) => entry.cli),
+  ...stockTokenTradeHistoryInterfaceBindingList.map((entry) => entry.cli),
   ...tokenCatalogInterfaceBindingList.map((entry) => entry.cli),
   ...operationCliCommandIdentities,
 ].sort((left, right) => compareCodePointSequences(
@@ -547,7 +498,7 @@ export const cliHelpText = [
 export const declaredMcpToolNames = Object.freeze([
   ...accountAssetInterfaceBindingList.flatMap((entry) => entry.mcp === undefined ? [] : [entry.mcp.name]),
   ...readInterfaceIdentities.map((entry) => entry.mcp.name),
-  ...marketPortfolioInterfaceBindingList.map((entry) => entry.mcp.name),
+  ...stockTokenTradeHistoryInterfaceBindingList.map((entry) => entry.mcp.name),
   ...tokenCatalogInterfaceBindingList.map((entry) => entry.mcp.name),
   capabilityCatalogInterface.mcp.name,
   ...Object.values(presentationMcpTools),

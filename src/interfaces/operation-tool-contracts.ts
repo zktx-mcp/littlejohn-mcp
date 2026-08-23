@@ -1,8 +1,4 @@
 import {
-  marketPortfolioApplicationContracts,
-  type AnyMarketPortfolioApplicationContract,
-} from "../market-portfolio/contracts.js";
-import {
   tokenCatalogApplicationContracts,
   type AnyTokenCatalogApplicationContract,
 } from "../token-catalog/contract-schema.js";
@@ -24,15 +20,14 @@ export type OperationToolVisibility =
   | readonly ["model", "app"];
 
 export interface OperationCliIdentity {
-  readonly domain: "market" | "token" | "wallet";
+  readonly domain: "token" | "wallet";
   readonly command: string;
   readonly argumentSyntax: string;
 }
 
 export type OperationApplicationContract =
   | AnyWalletManagementContract
-  | AnyTokenCatalogApplicationContract
-  | AnyMarketPortfolioApplicationContract;
+  | AnyTokenCatalogApplicationContract;
 
 export interface OperationToolContract {
   readonly action: "review" | "decide" | "get_operation" | "cancel_operation";
@@ -100,19 +95,6 @@ const tokenOperation = tool({
     createsView: false,
   },
   cli: { domain: "token", command: "operation", argumentSyntax: "<operation-id> [--json]" },
-} satisfies OperationToolContract);
-
-const watchlistOperation = tool({
-  action: "get_operation",
-  contract: marketPortfolioApplicationContracts.operation,
-  mcp: {
-    name: "market_get_watchlist_operation",
-    description: "Read one exact durable reference-watchlist operation.",
-    annotations: readAnnotations,
-    visibility: ["model", "app"],
-    createsView: false,
-  },
-  cli: { domain: "market", command: "watchlist-operation", argumentSyntax: "<operation-id> [--json]" },
 } satisfies OperationToolContract);
 
 export const operationToolContracts = Object.freeze({
@@ -205,57 +187,6 @@ export const operationToolContracts = Object.freeze({
     recoveryOperation: tokenOperation,
   }),
   tokenOperation,
-  watchlistReview: tool({
-    action: "review",
-    contract: marketPortfolioApplicationContracts.watchlistChangeReview,
-    mcp: {
-      name: "market_get_watchlist_change_review",
-      description: "Create one immutable reference-watchlist change Review.",
-      annotations: reviewAnnotations,
-      visibility: ["model"],
-      createsView: true,
-    },
-  }),
-  watchlistAdd: tool({
-    action: "decide",
-    contract: marketPortfolioApplicationContracts.add,
-    mcp: {
-      name: "market_add_watchlist_pair",
-      description: "Accept one exact reference-watchlist addition Review.",
-      annotations: decisionAnnotations(false, false),
-      visibility: ["app"],
-      createsView: false,
-    },
-    cli: { domain: "market", command: "add-pair", argumentSyntax: "<pair-id> --revision <revision>" },
-    recoveryOperation: watchlistOperation,
-  }),
-  watchlistRemove: tool({
-    action: "decide",
-    contract: marketPortfolioApplicationContracts.remove,
-    mcp: {
-      name: "market_remove_watchlist_pair",
-      description: "Accept one exact reference-watchlist removal Review.",
-      annotations: decisionAnnotations(true, false),
-      visibility: ["app"],
-      createsView: false,
-    },
-    cli: { domain: "market", command: "remove-pair", argumentSyntax: "<pair-id> --revision <revision>" },
-    recoveryOperation: watchlistOperation,
-  }),
-  watchlistReorder: tool({
-    action: "decide",
-    contract: marketPortfolioApplicationContracts.reorder,
-    mcp: {
-      name: "market_reorder_watchlist_pairs",
-      description: "Accept one exact reference-watchlist reorder Review.",
-      annotations: decisionAnnotations(false, false),
-      visibility: ["app"],
-      createsView: false,
-    },
-    cli: { domain: "market", command: "reorder-pairs", argumentSyntax: "<pair-id>... --revision <revision>" },
-    recoveryOperation: watchlistOperation,
-  }),
-  watchlistOperation,
 } satisfies Readonly<Record<string, OperationToolContract>>);
 
 export const operationToolContractList: readonly OperationToolContract[] = Object.freeze(

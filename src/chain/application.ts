@@ -20,6 +20,7 @@ import type { HttpOwnerApplication } from "../runtime/http-owner.js";
 import type { ActiveWalletReadPort } from "../wallet/coordinator.js";
 import { createErc20CallEncoder, type Erc20CallEncoder } from "./evm-standard.js";
 import { createAccountAssetChainReadPort } from "./account-assets.js";
+import { createCurrentBlockReadPort } from "./canonical-block.js";
 import { createChainReadService } from "./handlers.js";
 import {
   createChainInvocationLifecycle,
@@ -30,10 +31,6 @@ import {
   createPinnedEvmReadPort,
   type PinnedEvmReadPort,
 } from "./protocol-reads.js";
-import {
-  createReferenceMarketCallEncoder,
-  createReferenceMarketChainReadPort,
-} from "./reference-market.js";
 import { createBoundedRpcRequester, type RpcRequester } from "./rpc.js";
 import { createTokenInspectionService } from "./token-inspection.js";
 
@@ -56,7 +53,7 @@ export interface ChainOwnerApplication extends HttpOwnerApplication {
   readonly tokenAdditionReads: TokenAdditionChainReadPort;
   readonly officialAssetReads: ReturnType<typeof createOfficialAssetChainReadPort>;
   readonly accountAssetReads: ReturnType<typeof createAccountAssetChainReadPort>;
-  readonly referenceMarketReads: ReturnType<typeof createReferenceMarketChainReadPort>;
+  readonly currentBlockReads: ReturnType<typeof createCurrentBlockReadPort>;
   readonly protocolReads: PinnedEvmReadPort;
 }
 
@@ -105,7 +102,7 @@ export const createChainOwnerApplicationFactory = (
     let officialAssetReads: ReturnType<typeof createOfficialAssetChainReadPort>;
     let tokenInspection: ReturnType<typeof createTokenInspectionService>;
     let accountAssetReads: ReturnType<typeof createAccountAssetChainReadPort>;
-    let referenceMarketReads: ReturnType<typeof createReferenceMarketChainReadPort>;
+    let currentBlockReads: ReturnType<typeof createCurrentBlockReadPort>;
     let protocolReads: PinnedEvmReadPort;
     try {
       service = createChainReadService({ context, rpc, encoder, lifecycle });
@@ -127,13 +124,10 @@ export const createChainOwnerApplicationFactory = (
         chainId: context.chain.configuration.chain.chainId,
         lifecycle,
       });
-      referenceMarketReads = createReferenceMarketChainReadPort({
+      currentBlockReads = createCurrentBlockReadPort({
         rpc,
-        encoder: createReferenceMarketCallEncoder(),
         chainId: context.chain.configuration.chain.chainId,
         lifecycle,
-        clock: context.chain.capabilityAuthority.clock,
-        observationAuthority: context.chain.sourceAuthority.observationAuthority,
       });
       protocolReads = createPinnedEvmReadPort({
         rpc,
@@ -156,7 +150,7 @@ export const createChainOwnerApplicationFactory = (
       tokenAdditionReads: tokenInspection.additionReads,
       officialAssetReads,
       accountAssetReads,
-      referenceMarketReads,
+      currentBlockReads,
       protocolReads,
       close: () => lifecycle.close(),
     });

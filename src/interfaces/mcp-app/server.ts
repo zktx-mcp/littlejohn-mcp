@@ -172,6 +172,17 @@ const withSnapshot = (
       _meta: { ...result._meta, [presentationSnapshotMetadataKey]: resource },
     };
 
+const snapshotHandoff = (
+  resource: PresentationSnapshotResource,
+): CallToolResult => Object.freeze({
+  content: [snapshotLink(resource)],
+  _meta: Object.freeze({ [presentationSnapshotMetadataKey]: resource }),
+});
+
+export type McpAppPresentationHandoff =
+  | Readonly<{ status: "available"; result: CallToolResult }>
+  | PresentationUnavailable;
+
 const reAdmitRecord = (record: PresentationSnapshotRecord): Readonly<{
   entry: PresentationContractEntry;
   normalizedInput: CanonicalJson;
@@ -182,7 +193,7 @@ const reAdmitRecord = (record: PresentationSnapshotRecord): Readonly<{
     record.contractId,
     record.contractVersion,
   );
-  const normalizedInput = entry.parseInput(readCanonicalBytes(record.inputBytes));
+  const normalizedInput = entry.parseNormalizedInput(readCanonicalBytes(record.inputBytes));
   const admittedResult = entry.parseResult(
     normalizedInput,
     readCanonicalBytes(record.resultBytes),
@@ -213,17 +224,16 @@ export class McpAppPresentationService {
     contract: object,
     input: unknown,
     result: unknown,
-    ordinaryResult: CallToolResult,
-  ): CallToolResult {
+  ): McpAppPresentationHandoff {
     const entry = presentationContractRegistry.forContract(contract);
-    if (entry === undefined) return ordinaryResult;
+    if (entry === undefined) return createPresentationUnavailable("snapshot_inconsistent");
     let normalizedInput: CanonicalJson;
     let admittedResult: CanonicalJson;
     try {
       normalizedInput = entry.parseInput(input);
       admittedResult = entry.parseResult(normalizedInput, result);
     } catch {
-      return withSnapshot(ordinaryResult, createPresentationUnavailable("snapshot_inconsistent"));
+      return createPresentationUnavailable("snapshot_inconsistent");
     }
     let candidate: ReturnType<PresentationSnapshotStore["prepare"]>;
     try {
@@ -234,14 +244,14 @@ export class McpAppPresentationService {
         admittedResult,
       });
     } catch {
-      return withSnapshot(ordinaryResult, createPresentationUnavailable("runtime_unavailable"));
+      return createPresentationUnavailable("runtime_unavailable");
     }
     if (candidate.status === "unavailable") {
-      return withSnapshot(ordinaryResult, createPresentationUnavailable(candidate.reason));
+      return createPresentationUnavailable(candidate.reason);
     }
     try { boundedResource(candidate.value, normalizedInput); }
     catch {
-      return withSnapshot(ordinaryResult, createPresentationUnavailable("capacity_exceeded"));
+      return createPresentationUnavailable("capacity_exceeded");
     }
     let committed: ReturnType<PresentationSnapshotStore["commit"]>;
     try {
@@ -252,15 +262,18 @@ export class McpAppPresentationService {
         admittedResult,
       });
     } catch {
-      return withSnapshot(ordinaryResult, createPresentationUnavailable("runtime_unavailable"));
+      return createPresentationUnavailable("runtime_unavailable");
     }
     if (committed.status === "unavailable") {
-      return withSnapshot(ordinaryResult, createPresentationUnavailable(committed.reason));
+      return createPresentationUnavailable(committed.reason);
     }
     if (!exactRecord(candidate.value, committed.value)) {
-      return withSnapshot(ordinaryResult, createPresentationUnavailable("snapshot_inconsistent"));
+      return createPresentationUnavailable("snapshot_inconsistent");
     }
-    return withSnapshot(ordinaryResult, boundedResource(committed.value, normalizedInput));
+    return Object.freeze({
+      status: "available",
+      result: snapshotHandoff(boundedResource(committed.value, normalizedInput)),
+    });
   }
 
   #readAdmittedSnapshot(snapshotUri: unknown):

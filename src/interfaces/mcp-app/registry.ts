@@ -1,5 +1,4 @@
 import {
-  canonicalJsonStringify,
   captureCanonicalJson,
   contractInspectCapability,
   getCapabilityDefinitionSnapshot,
@@ -11,7 +10,7 @@ import {
   type ReadCapabilityDefinition,
 } from "../../core/client.js";
 import { accountAssetApplicationContracts } from "../../account-assets/client.js";
-import { marketPortfolioApplicationContracts } from "../../market-portfolio/contracts.js";
+import { stockTokenTradeHistoryApplicationContract } from "../../stock-token-trade-history/contracts.js";
 import {
   tokenCatalogApplicationContracts,
   tokenInspectCapability,
@@ -35,8 +34,8 @@ export interface PresentationContractEntry<Result = unknown> {
   readonly presentationKind: PresentationKind;
   readonly title: string;
   parseInput(value: unknown): CanonicalJson;
+  parseNormalizedInput(value: unknown): CanonicalJson;
   parseResult(input: unknown, value: unknown): CanonicalJson;
-  projectText(value: CanonicalJson): string;
 }
 
 export type PresentationContractResult<Entry> =
@@ -45,6 +44,9 @@ export type PresentationContractResult<Entry> =
 interface ApplicationPresentationContract<Input, Result> {
   readonly capabilityId: string;
   readonly contractVersion: "1";
+  readonly applicationContract: Readonly<{
+    parseNormalizedInput(value: unknown): Input;
+  }>;
   parseInput(value: unknown): Input;
   parsePublicSuccess(input: unknown, value: unknown): Result;
 }
@@ -61,9 +63,10 @@ const capabilityEntry = <Input, Data>(
     presentationKind: "immutable_result",
     title,
     parseInput: (value: unknown) => captureCanonicalJson(parseCapabilityInput(definition, value)),
+    parseNormalizedInput: (value: unknown) =>
+      captureCanonicalJson(parseCapabilityInput(definition, value)),
     parseResult: (input: unknown, value: unknown) =>
       captureCanonicalJson(parseCapabilitySuccess(definition, input, value)),
-    projectText: canonicalJsonStringify,
   });
 };
 
@@ -79,9 +82,10 @@ const applicationEntry = <Input, Result>(
     presentationKind,
     title,
     parseInput: (value: unknown) => captureCanonicalJson(contract.parseInput(value)),
+    parseNormalizedInput: (value: unknown) =>
+      captureCanonicalJson(contract.applicationContract.parseNormalizedInput(value)),
     parseResult: (input: unknown, value: unknown) =>
       captureCanonicalJson(contract.parsePublicSuccess(input, value)),
-    projectText: canonicalJsonStringify,
   });
 };
 
@@ -92,35 +96,10 @@ export const presentationContracts = Object.freeze({
     "Account assets",
   ),
   contractAnalysis: capabilityEntry(contractInspectCapability, "Contract analysis"),
-  referenceHistory: applicationEntry(
-    marketPortfolioApplicationContracts.history,
+  stockTokenTradeHistory: applicationEntry(
+    stockTokenTradeHistoryApplicationContract,
     "immutable_result",
-    "Reference price history",
-  ),
-  referencePrice: applicationEntry(
-    marketPortfolioApplicationContracts.price,
-    "immutable_result",
-    "Reference price",
-  ),
-  stockTokenMarket: applicationEntry(
-    marketPortfolioApplicationContracts.stockTokenMarket,
-    "immutable_result",
-    "Stock Token market",
-  ),
-  referenceWatchlist: applicationEntry(
-    marketPortfolioApplicationContracts.watchlist,
-    "immutable_result",
-    "Reference watchlist",
-  ),
-  referenceWatchlistOperation: applicationEntry(
-    marketPortfolioApplicationContracts.operation,
-    "operation",
-    "Reference watchlist change",
-  ),
-  referenceWatchlistReview: applicationEntry(
-    marketPortfolioApplicationContracts.watchlistChangeReview,
-    "review",
-    "Reference watchlist change",
+    "Stock Token trade history",
   ),
   tokenAnalysis: capabilityEntry(tokenInspectCapability, "Token analysis"),
   tokenSelection: applicationEntry(

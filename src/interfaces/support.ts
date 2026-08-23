@@ -21,10 +21,10 @@ import {
   interfaceReadCapabilityRegistry,
   accountAssetInterfaceBindingList,
   readInterfaceIdentities,
-  marketPortfolioInterfaceBindingList,
+  stockTokenTradeHistoryInterfaceBindingList,
   tokenCatalogInterfaceBindingList,
   type ReadInterfaceIdentity,
-  type MarketPortfolioInterfaceBinding,
+  type StockTokenTradeHistoryInterfaceBinding,
   type TokenCatalogInterfaceBinding,
   type AccountAssetInterfaceBinding,
 } from "./identities.js";
@@ -80,16 +80,11 @@ const operationBindingAvailability = (
   cli: binding.cli === undefined ? "unavailable" : "available",
 });
 
-const marketPortfolioBindingAvailability = (
-  binding: MarketPortfolioInterfaceBinding,
+const stockTokenTradeHistoryBindingAvailability = (
+  _binding: StockTokenTradeHistoryInterfaceBinding,
 ): CapabilityAvailabilityInput => createCapabilityAvailability({
   direct: "internal",
-  http: binding.action === "price" ||
-    binding.action === "history" ||
-    binding.action === "stockTokenMarket" ||
-    binding.action === "watchlist"
-    ? "available"
-    : "internal",
+  http: "available",
   mcp: "available",
   cli: "available",
 });
@@ -120,9 +115,9 @@ export const extendInterfaceSupportManifest = (
         capabilityId: identity.capabilityId,
         availability: readBindingAvailability(identity),
       })),
-    ...marketPortfolioInterfaceBindingList.map((binding) => ({
+    ...stockTokenTradeHistoryInterfaceBindingList.map((binding) => ({
       capabilityId: binding.contract.capabilityId,
-      availability: marketPortfolioBindingAvailability(binding),
+      availability: stockTokenTradeHistoryBindingAvailability(binding),
     })),
     ...tokenCatalogInterfaceBindingList.map((binding) => ({
       capabilityId: binding.contract.capabilityId,

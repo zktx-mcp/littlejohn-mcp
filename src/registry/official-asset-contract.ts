@@ -390,17 +390,21 @@ export const stockFactoryVerificationSchema = jsonObject({
 });
 export type StockFactoryVerification = z.infer<typeof stockFactoryVerificationSchema>;
 
+const verifiedStockFactoryResultSchema = jsonObject({
+  status: z.literal("verified"),
+  member: officialAssetSourceMemberSchema,
+  verification: stockFactoryVerificationSchema,
+}).strict();
+
+export const unavailableStockFactoryResultSchema = jsonObject({
+  status: z.literal("unavailable"),
+  member: officialAssetSourceMemberSchema,
+  reason: stockFactoryClassificationUnavailableReasonSchema,
+}).strict();
+
 export const stockFactoryVerificationResultSchema = z.discriminatedUnion("status", [
-  jsonObject({
-    status: z.literal("verified"),
-    member: officialAssetSourceMemberSchema,
-    verification: stockFactoryVerificationSchema,
-  }).strict(),
-  jsonObject({
-    status: z.literal("unavailable"),
-    member: officialAssetSourceMemberSchema,
-    reason: stockFactoryClassificationUnavailableReasonSchema,
-  }).strict(),
+  verifiedStockFactoryResultSchema,
+  unavailableStockFactoryResultSchema,
 ]).superRefine((value, context) => {
   if (
     value.status === "verified" &&

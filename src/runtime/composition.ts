@@ -5,12 +5,12 @@ import {
   type AccountAssetApplicationPort,
 } from "../account-assets/index.js";
 import {
-  createMarketPortfolioApplicationFactory,
-  createGitHubStockTokenExecutionIndex,
-  type MarketPortfolioApplicationPort,
-  type MarketPortfolioOwnerApplication,
-  type StockTokenExecutionIndexReadPort,
-} from "../market-portfolio/index.js";
+  createStockTokenTradeHistoryApplicationFactory,
+  createGitHubStockTokenTradeHistory,
+  type StockTokenTradeHistoryApplicationPort,
+  type StockTokenTradeHistoryOwnerApplication,
+  type StockTokenTradeHistoryReadPort,
+} from "../stock-token-trade-history/index.js";
 import {
   CapabilityBindingRegistry,
   CapabilityRegistry,
@@ -32,7 +32,7 @@ import {
   type ObservationAuthorityRegistration,
   type UtcTimestamp,
 } from "../core/index.js";
-import { marketPortfolioCapabilityIds } from "../market-portfolio/contracts.js";
+import { stockTokenTradeHistoryCapabilityIds } from "../stock-token-trade-history/contracts.js";
 import {
   createProtocolOwnerApplication,
   readProtocolSupportExtension,
@@ -52,10 +52,10 @@ import {
 } from "../registry/index.js";
 import type {
   AccountAssetChainReadPort,
+  CurrentBlockReadPort,
   ChainInvocationPort,
   OfficialAssetChainReadPort,
   PinnedEvmReadPort,
-  ReferenceMarketChainReadPort,
 } from "../chain/index.js";
 import type {
   ChainOwnerApplication,
@@ -128,7 +128,7 @@ import {
   assertAccountAssetRuntimeSupportManifestExtension,
   assertInterfaceRuntimeSupportManifestExtension,
   assertProtocolRuntimeSupportManifestExtension,
-  assertMarketPortfolioRuntimeSupportManifestExtension,
+  assertStockTokenTradeHistoryRuntimeSupportManifestExtension,
   assertTokenCatalogRuntimeSupportManifestExtension,
   assertWalletRuntimeSupportManifestExtension,
   createInitialRuntimeSupportManifest,
@@ -138,7 +138,7 @@ import {
   type AccountAssetRuntimeSupportManifest,
   type InitialRuntimeSupportManifest,
   type ProtocolRuntimeSupportManifest,
-  type MarketPortfolioRuntimeSupportManifest,
+  type StockTokenTradeHistoryRuntimeSupportManifest,
   type TokenCatalogRuntimeSupportManifest,
   type WalletRuntimeSupportManifest,
 } from "./support-manifest.js";
@@ -176,7 +176,7 @@ export interface ChainOwnerHandoff {
   readonly tokenAdditionReads: TokenAdditionChainReadPort;
   readonly officialAssetReads: OfficialAssetChainReadPort;
   readonly accountAssetReads: AccountAssetChainReadPort;
-  readonly referenceMarketReads: ReferenceMarketChainReadPort;
+  readonly currentBlockReads: CurrentBlockReadPort;
   readonly protocolReads: PinnedEvmReadPort;
 }
 
@@ -195,16 +195,16 @@ export interface AccountAssetOwnerHandoff {
   readonly accountAssets: AccountAssetApplicationPort;
 }
 
-export interface MarketPortfolioOwnerHandoff {
-  readonly supportManifest: MarketPortfolioRuntimeSupportManifest;
-  readonly marketPortfolio: MarketPortfolioApplicationPort;
+export interface StockTokenTradeHistoryOwnerHandoff {
+  readonly supportManifest: StockTokenTradeHistoryRuntimeSupportManifest;
+  readonly tradeHistory: StockTokenTradeHistoryApplicationPort;
 }
 
 interface LocalRuntimeBaseOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly now?: () => UtcTimestamp;
   readonly robinhoodOfficialAssetSourceClient?: RobinhoodOfficialAssetSourceClient;
-  readonly stockTokenExecutionIndex?: StockTokenExecutionIndexReadPort;
+  readonly stockTokenTradeHistory?: StockTokenTradeHistoryReadPort;
   readonly contractSourceVerificationFactory?: (
     clock: CanonicalClock,
   ) => Readonly<{
@@ -316,13 +316,13 @@ export type AccountAssetOwnerApplicationStage<ActiveWallet extends object> = (
   chain: ChainOwnerHandoff,
   tokenCatalog: TokenCatalogOwnerHandoff,
 ) => Promise<AccountAssetApplication> | AccountAssetApplication;
-export type MarketPortfolioOwnerApplicationStage<ActiveWallet extends object> = (
+export type StockTokenTradeHistoryOwnerApplicationStage<ActiveWallet extends object> = (
   context: RuntimeApplicationContext,
   wallet: WalletOwnerHandoff<ActiveWallet>,
   chain: ChainOwnerHandoff,
   supportManifest: AccountAssetRuntimeSupportManifest,
   officialAssets: OfficialAssetSynchronizationPort,
-) => Promise<MarketPortfolioOwnerApplication> | MarketPortfolioOwnerApplication;
+) => Promise<StockTokenTradeHistoryOwnerApplication> | StockTokenTradeHistoryOwnerApplication;
 export type InterfaceOwnerApplicationStage<
   ActiveWallet extends object,
   WalletOperations extends WalletManagementPort,
@@ -333,7 +333,7 @@ export type InterfaceOwnerApplicationStage<
   protocols: ProtocolOwnerHandoff,
   tokenCatalog: TokenCatalogOwnerHandoff,
   accountAssets: AccountAssetOwnerHandoff,
-  marketPortfolio: MarketPortfolioOwnerHandoff,
+  tradeHistory: StockTokenTradeHistoryOwnerHandoff,
   supportManifest: ProtocolRuntimeSupportManifest,
   walletOperations: WalletOperations,
 ) => Promise<InterfaceOwnerApplication> | InterfaceOwnerApplication;
@@ -349,7 +349,7 @@ export type OwnerApplicationStages<
       ProtocolOwnerApplicationStage<ActiveWallet>,
       TokenCatalogOwnerApplicationStage<ActiveWallet>,
       AccountAssetOwnerApplicationStage<ActiveWallet>,
-      MarketPortfolioOwnerApplicationStage<ActiveWallet>,
+      StockTokenTradeHistoryOwnerApplicationStage<ActiveWallet>,
     ]
   | readonly [
       WalletOwnerApplicationStage<ActiveWallet, WalletOperations>,
@@ -357,7 +357,7 @@ export type OwnerApplicationStages<
       ProtocolOwnerApplicationStage<ActiveWallet>,
       TokenCatalogOwnerApplicationStage<ActiveWallet>,
       AccountAssetOwnerApplicationStage<ActiveWallet>,
-      MarketPortfolioOwnerApplicationStage<ActiveWallet>,
+      StockTokenTradeHistoryOwnerApplicationStage<ActiveWallet>,
       InterfaceOwnerApplicationStage<ActiveWallet, WalletOperations>,
     ];
 
@@ -460,7 +460,7 @@ const assertCapabilityDirectSupport = (
   manifest: WalletRuntimeSupportManifest | ChainRuntimeSupportManifest |
     ProtocolRuntimeSupportManifest | TokenCatalogRuntimeSupportManifest |
     AccountAssetRuntimeSupportManifest |
-    MarketPortfolioRuntimeSupportManifest,
+    StockTokenTradeHistoryRuntimeSupportManifest,
   capabilityIds: readonly string[],
 ): void => {
   const snapshot = readRuntimeSupportManifest(manifest);
@@ -544,7 +544,7 @@ export const composeOwnerApplicationStages = async <
         const tokenAdditionReads = chainApplication.tokenAdditionReads;
         const officialAssetReads = chainApplication.officialAssetReads;
         const accountAssetReads = chainApplication.accountAssetReads;
-        const referenceMarketReads = chainApplication.referenceMarketReads;
+        const currentBlockReads = chainApplication.currentBlockReads;
         const protocolReads = chainApplication.protocolReads;
         if (
           typeof tokenAdditionReads !== "object" || tokenAdditionReads === null ||
@@ -561,17 +561,13 @@ export const composeOwnerApplicationStages = async <
         ) throw new TypeError("Official asset chain read authority is unavailable.");
         if (
           typeof accountAssetReads !== "object" || accountAssetReads === null ||
-          typeof accountAssetReads.resolveCurrentBlock !== "function" ||
           typeof accountAssetReads.readCollectionAtBlock !== "function" ||
           typeof accountAssetReads.readExactAtBlock !== "function"
         ) throw new TypeError("Account asset chain read authority is unavailable.");
         if (
-          typeof referenceMarketReads !== "object" || referenceMarketReads === null ||
-          typeof referenceMarketReads.resolveCurrentBlock !== "function" ||
-          typeof referenceMarketReads.readLatestAtBlock !== "function" ||
-          typeof referenceMarketReads.readHistoryAtBlock !== "function" ||
-          typeof referenceMarketReads.readStockTokenReferenceAtBlock !== "function"
-        ) throw new TypeError("Reference market chain read authority is unavailable.");
+          typeof currentBlockReads !== "object" || currentBlockReads === null ||
+          typeof currentBlockReads.resolveCurrentBlock !== "function"
+        ) throw new TypeError("Current-block read authority is unavailable.");
         if (
           typeof protocolReads !== "object" || protocolReads === null ||
           typeof protocolReads.resolveBlock !== "function" ||
@@ -594,7 +590,7 @@ export const composeOwnerApplicationStages = async <
             tokenAdditionReads,
             officialAssetReads,
             accountAssetReads,
-            referenceMarketReads,
+            currentBlockReads,
             protocolReads,
           }) satisfies ChainOwnerHandoff,
         });
@@ -726,62 +722,48 @@ export const composeOwnerApplicationStages = async <
       currentRoutes = accountAssetApplication.routes;
     }
 
-    const marketPortfolioStage = stages[5];
-    let marketPortfolioApplication: MarketPortfolioOwnerApplication | undefined;
-    let marketPortfolioHandoff: MarketPortfolioOwnerHandoff | undefined;
-    if (marketPortfolioStage !== undefined) {
+    const stockTokenTradeHistoryStage = stages[5];
+    let stockTokenTradeHistoryApplication: StockTokenTradeHistoryOwnerApplication | undefined;
+    let stockTokenTradeHistoryHandoff: StockTokenTradeHistoryOwnerHandoff | undefined;
+    if (stockTokenTradeHistoryStage !== undefined) {
       if (
         chain === undefined || chainHandoff === undefined ||
         tokenCatalogHandoff === undefined ||
         accountAssetApplication === undefined || accountAssetHandoff === undefined
-      ) throw new TypeError("Market portfolio dependencies are unavailable.");
-      const marketPortfolioRoutes = currentRoutes;
-      const marketPortfolioResult = await runApplicationStage(
+      ) throw new TypeError("Stock Token trade-history dependencies are unavailable.");
+      const stockTokenTradeHistoryRoutes = currentRoutes;
+      const stockTokenTradeHistoryResult = await runApplicationStage(
         dependentApplications,
-        (startupResources) => marketPortfolioStage(
-          { routes: marketPortfolioRoutes, signal: context.signal, startupResources },
+        (startupResources) => stockTokenTradeHistoryStage(
+          { routes: stockTokenTradeHistoryRoutes, signal: context.signal, startupResources },
           walletHandoff,
           chainHandoff,
           accountAssetApplication.supportManifest,
           tokenCatalogHandoff.officialAssets,
         ),
         (application) => {
-          assertRuntimeRouteRegistryDescendant(marketPortfolioRoutes, application.routes);
-          assertMarketPortfolioRuntimeSupportManifestExtension(
+          assertRuntimeRouteRegistryDescendant(stockTokenTradeHistoryRoutes, application.routes);
+          assertStockTokenTradeHistoryRuntimeSupportManifestExtension(
             accountAssetApplication.supportManifest,
             application.supportManifest,
           );
-          assertCapabilityDirectSupport(application.supportManifest, marketPortfolioCapabilityIds);
+          assertCapabilityDirectSupport(application.supportManifest, stockTokenTradeHistoryCapabilityIds);
           if (context.signal.aborted) throw new RuntimeOperationError("request_aborted");
-          const markets = Object.freeze({
-            price: (...args: Parameters<MarketPortfolioApplicationPort["price"]>) => application.price(...args),
-            history: (...args: Parameters<MarketPortfolioApplicationPort["history"]>) => application.history(...args),
-            stockTokenMarket: (
-              ...args: Parameters<MarketPortfolioApplicationPort["stockTokenMarket"]>
-            ) => application.stockTokenMarket(...args),
-            watchlist: (...args: Parameters<MarketPortfolioApplicationPort["watchlist"]>) => application.watchlist(...args),
-            reviewWatchlistChange: (
-              ...args: Parameters<MarketPortfolioApplicationPort["reviewWatchlistChange"]>
-            ) => application.reviewWatchlistChange(...args),
-            decideWatchlistChange: (
-              ...args: Parameters<MarketPortfolioApplicationPort["decideWatchlistChange"]>
-            ) => application.decideWatchlistChange(...args),
-            getWatchlistOperation: (
-              ...args: Parameters<MarketPortfolioApplicationPort["getWatchlistOperation"]>
-            ) => application.getWatchlistOperation(...args),
-          }) satisfies MarketPortfolioApplicationPort;
+          const tradeHistory = Object.freeze({
+            get: (...args: Parameters<StockTokenTradeHistoryApplicationPort["get"]>) => application.get(...args),
+          }) satisfies StockTokenTradeHistoryApplicationPort;
           return Object.freeze({
             application,
             handoff: Object.freeze({
               supportManifest: application.supportManifest,
-              marketPortfolio: markets,
-            }) satisfies MarketPortfolioOwnerHandoff,
+              tradeHistory,
+            }) satisfies StockTokenTradeHistoryOwnerHandoff,
           });
         },
       );
-      marketPortfolioApplication = marketPortfolioResult.application;
-      marketPortfolioHandoff = marketPortfolioResult.handoff;
-      currentRoutes = marketPortfolioApplication.routes;
+      stockTokenTradeHistoryApplication = stockTokenTradeHistoryResult.application;
+      stockTokenTradeHistoryHandoff = stockTokenTradeHistoryResult.handoff;
+      currentRoutes = stockTokenTradeHistoryApplication.routes;
     }
 
     const interfaceStage = stages[6];
@@ -791,13 +773,13 @@ export const composeOwnerApplicationStages = async <
         protocolApplication === undefined || protocolHandoff === undefined ||
         tokenCatalogApplication === undefined || tokenCatalogHandoff === undefined ||
         accountAssetApplication === undefined || accountAssetHandoff === undefined
-        || marketPortfolioApplication === undefined || marketPortfolioHandoff === undefined
+        || stockTokenTradeHistoryApplication === undefined || stockTokenTradeHistoryHandoff === undefined
       ) {
         throw new TypeError("Interface application dependencies are unavailable.");
       }
       const interfaceRoutes = currentRoutes;
       const protocolSupportManifest = extendProtocolRuntimeSupportManifest(
-        marketPortfolioHandoff.supportManifest,
+        stockTokenTradeHistoryHandoff.supportManifest,
         readProtocolSupportExtension(protocolHandoff.supportExtension),
       );
       const interfaceApplication = await runApplicationStage(
@@ -809,7 +791,7 @@ export const composeOwnerApplicationStages = async <
           protocolHandoff,
           tokenCatalogHandoff,
           accountAssetHandoff,
-          marketPortfolioHandoff,
+          stockTokenTradeHistoryHandoff,
           protocolSupportManifest,
           walletOperations,
         ),
@@ -934,8 +916,8 @@ export class LocalRuntime {
     const interfaceApplicationFactory = options.interfaceApplicationFactory;
     const robinhoodOfficialAssetSourceClient =
       options.robinhoodOfficialAssetSourceClient;
-    const stockTokenExecutionIndex = options.stockTokenExecutionIndex ??
-      createGitHubStockTokenExecutionIndex();
+    const stockTokenTradeHistory = options.stockTokenTradeHistory ??
+      createGitHubStockTokenTradeHistory();
     const contractSourceVerificationFactory =
       options.contractSourceVerificationFactory;
     if ((walletApplicationFactory === undefined && (chainApplicationFactory !== undefined || interfaceApplicationFactory !== undefined)) ||
@@ -1067,26 +1049,24 @@ export class LocalRuntime {
               officialAssets: tokenCatalog.officialAssets,
               chainInvocations: chain.invocations,
               officialAssetReads: chain.officialAssetReads,
+              currentBlockReads: chain.currentBlockReads,
               chainReads: chain.accountAssetReads,
               clock,
               signal,
               startupResources,
             });
-      const marketPortfolioStage: MarketPortfolioOwnerApplicationStage<ActiveWallet> | undefined =
+      const stockTokenTradeHistoryStage: StockTokenTradeHistoryOwnerApplicationStage<ActiveWallet> | undefined =
         accountAssetStage === undefined
           ? undefined
-          : ({ routes, startupResources }, wallet, chain, supportManifest, officialAssets) =>
-            createMarketPortfolioApplicationFactory({
+          : ({ routes, startupResources }, _wallet, chain, supportManifest, officialAssets) =>
+            createStockTokenTradeHistoryApplicationFactory({
               routes,
               supportManifest,
-              activeWallet: requireActiveWalletAuthority(wallet.activeWallet),
               chainInvocations: chain.invocations,
-              chain: chain.referenceMarketReads,
+              currentBlockReads: chain.currentBlockReads,
               officialAssetReads: chain.officialAssetReads,
-              store: database.referenceMarketStore(),
               officialAssets,
-              stockTokenExecutionIndex,
-              clock,
+              tradeHistoryReads: stockTokenTradeHistory,
               startupResources,
             });
       const interfaceStage: InterfaceOwnerApplicationStage<ActiveWallet, WalletOperations> | undefined =
@@ -1099,7 +1079,7 @@ export class LocalRuntime {
               protocols,
               tokenCatalog,
               accountAssets,
-              marketPortfolio,
+              tradeHistory,
               supportManifest,
               walletOperations,
             ) => interfaceApplicationFactory({
@@ -1113,7 +1093,7 @@ export class LocalRuntime {
                 chainReads: chain.chainReads,
                 tokenInspection: chain.tokenInspection,
                 accountAssets: accountAssets.accountAssets,
-                markets: marketPortfolio.marketPortfolio,
+                tradeHistory: tradeHistory.tradeHistory,
                 tokenCatalogQueries: tokenCatalog.tokenCatalogQueries,
                 tokenCatalogManagement: tokenCatalog.tokenCatalogManagement,
               });
@@ -1128,7 +1108,7 @@ export class LocalRuntime {
                 protocolStage as ProtocolOwnerApplicationStage<ActiveWallet>,
                 tokenCatalogStage as TokenCatalogOwnerApplicationStage<ActiveWallet>,
                 accountAssetStage as AccountAssetOwnerApplicationStage<ActiveWallet>,
-                marketPortfolioStage as MarketPortfolioOwnerApplicationStage<ActiveWallet>,
+                stockTokenTradeHistoryStage as StockTokenTradeHistoryOwnerApplicationStage<ActiveWallet>,
               ]
             : [
                 walletStage,
@@ -1136,7 +1116,7 @@ export class LocalRuntime {
                 protocolStage as ProtocolOwnerApplicationStage<ActiveWallet>,
                 tokenCatalogStage as TokenCatalogOwnerApplicationStage<ActiveWallet>,
                 accountAssetStage as AccountAssetOwnerApplicationStage<ActiveWallet>,
-                marketPortfolioStage as MarketPortfolioOwnerApplicationStage<ActiveWallet>,
+                stockTokenTradeHistoryStage as StockTokenTradeHistoryOwnerApplicationStage<ActiveWallet>,
                 interfaceStage,
               ];
       const applicationFactory = stages === undefined

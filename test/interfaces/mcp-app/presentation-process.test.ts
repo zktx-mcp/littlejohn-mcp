@@ -8,27 +8,31 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   canonicalJsonStringify,
   captureCanonicalJson,
-  initialReferenceWatchlistRevision,
   parseUtcTimestamp,
-  referenceMarketManifest,
 } from "../../../src/core/index.js";
-import { marketPortfolioApplicationContracts } from "../../../src/market-portfolio/contracts.js";
-import {
-  tokenCatalogApplicationContracts,
-  tokenSelectionDetailSchema,
-} from "../../../src/token-catalog/client.js";
 import {
   admitPresentationSnapshotResource,
   presentationSnapshotMetadataKey,
   type PresentationSnapshotResource,
 } from "../../../src/interfaces/mcp-app/contracts.js";
-import { McpAppPresentationService, createMcpAppResource } from
-  "../../../src/interfaces/mcp-app/server.js";
+import {
+  McpAppPresentationService,
+  createMcpAppResource,
+  type McpAppPresentationHandoff,
+} from "../../../src/interfaces/mcp-app/server.js";
 import { admitPresentationToolResult, type PresentationViewApp } from
   "../../../src/interfaces/mcp-app/view/lifecycle.js";
 import { ProductDatabase } from "../../../src/runtime/database.js";
 import type { PresentationSnapshotStore } from
   "../../../src/runtime/presentation-snapshot.js";
+import { stockTokenTradeHistoryApplicationContract } from
+  "../../../src/stock-token-trade-history/contracts.js";
+import {
+  tokenCatalogApplicationContracts,
+  tokenSelectionDetailSchema,
+} from "../../../src/token-catalog/client.js";
+import { stockTokenTradeHistoryAvailableFixture } from
+  "../stock-token-trade-history-fixture.js";
 
 const openedAt = parseUtcTimestamp("2026-08-12T00:00:00.000Z");
 const directories: string[] = [];
@@ -48,21 +52,27 @@ const openStore = async (): Promise<PresentationSnapshotStore> => {
   return database.presentationSnapshotStore();
 };
 
-const input = marketPortfolioApplicationContracts.watchlist.parseInput({});
-const watchlist = marketPortfolioApplicationContracts.watchlist.parsePublicSuccess(input, {
-  account: {
-    chainId: "eip155:4663",
-    address: "0x1111111111111111111111111111111111111111",
-  },
-  revision: initialReferenceWatchlistRevision,
-  entries: [referenceMarketManifest.pairs[0]],
+const input = stockTokenTradeHistoryApplicationContract.parseInput({
+  symbol: "AAPL",
+  window: "1d",
 });
-const canonicalWatchlist = captureCanonicalJson(watchlist);
+const tradeHistory = stockTokenTradeHistoryApplicationContract.parsePublicSuccess(
+  input,
+  stockTokenTradeHistoryAvailableFixture(),
+);
+const canonicalTradeHistory = captureCanonicalJson(tradeHistory);
 
 const ordinaryResult = (): CallToolResult => ({
-  structuredContent: canonicalWatchlist as Record<string, unknown>,
-  content: [{ type: "text", text: canonicalJsonStringify(canonicalWatchlist) }],
+  structuredContent: canonicalTradeHistory as Record<string, unknown>,
+  content: [{ type: "text", text: canonicalJsonStringify(canonicalTradeHistory) }],
 });
+
+const availableResult = (handoff: McpAppPresentationHandoff): CallToolResult => {
+  if (handoff.status !== "available") {
+    throw new TypeError(`Expected an available presentation, received ${handoff.reason}.`);
+  }
+  return handoff.result;
+};
 
 const snapshotResource = (result: CallToolResult): PresentationSnapshotResource =>
   admitPresentationSnapshotResource(result._meta?.[presentationSnapshotMetadataKey]);
@@ -92,8 +102,22 @@ const fakeApp = (options: Readonly<{
   },
 });
 
+const chunkTool = (
+  service: McpAppPresentationService,
+  observed?: { name: string; argumentsValue: Record<string, unknown> }[],
+) => async (name: string, argumentsValue: Record<string, unknown>): Promise<CallToolResult> => {
+  observed?.push({ name, argumentsValue });
+  return {
+    structuredContent: service.getResultChunk(
+      String(argumentsValue["snapshotId"]),
+      Number(argumentsValue["index"]),
+    ) as Record<string, unknown>,
+    content: [],
+  };
+};
+
 describe("MCP App presentation process", () => {
-  it("advertises one exact committed snapshot while preserving the ordinary result", async () => {
+  it("returns one bounded handoff to an exact committed snapshot", async () => {
     const store = await openStore();
     let reads = 0;
     const countedStore: PresentationSnapshotStore = Object.freeze({
@@ -112,18 +136,19 @@ describe("MCP App presentation process", () => {
       countedStore,
       createMcpAppResource("<!doctype html><main>Little John</main>"),
     );
-    const presented = service.present(
-      marketPortfolioApplicationContracts.watchlist,
+    const presented = availableResult(service.present(
+      stockTokenTradeHistoryApplicationContract,
       input,
-      watchlist,
-      ordinaryResult(),
-    );
+      tradeHistory,
+    ));
     const resource = snapshotResource(presented);
 
-    expect(presented.structuredContent).toEqual(canonicalWatchlist);
-    expect(presented.content[0]).toEqual(ordinaryResult().content[0]);
-    expect(presented.content.filter((item) => item.type === "resource_link"))
-      .toEqual([expect.objectContaining({ uri: resource.descriptor.snapshotUri })]);
+    expect(presented.structuredContent).toBeUndefined();
+    expect(presented.content).toEqual([
+      expect.objectContaining({ type: "resource_link", uri: resource.descriptor.snapshotUri }),
+    ]);
+    expect(canonicalJsonStringify(captureCanonicalJson(presented._meta)))
+      .not.toContain("candles");
 
     reads = 0;
     const replay = service.getSnapshotResult(resource.descriptor.snapshotUri);
@@ -134,11 +159,11 @@ describe("MCP App presentation process", () => {
       descriptor: resource.descriptor,
     });
     expect(canonicalJsonStringify(captureCanonicalJson(replay.structuredContent)))
-      .not.toContain("entries");
+      .not.toContain("candles");
     expect(snapshotResource(replay)).toEqual(resource);
   });
 
-  it("maps presentation ownership failures without changing the admitted MCP result", async () => {
+  it("returns no result handoff when snapshot ownership is unavailable", async () => {
     const unavailableStore: PresentationSnapshotStore = Object.freeze({
       prepare: () => { throw new Error("database unavailable"); },
       commit: () => { throw new Error("unexpected commit"); },
@@ -149,16 +174,11 @@ describe("MCP App presentation process", () => {
       unavailableStore,
       createMcpAppResource("<!doctype html><main>Little John</main>"),
     );
-    const ordinary = ordinaryResult();
-    const presented = service.present(
-      marketPortfolioApplicationContracts.watchlist,
+    expect(service.present(
+      stockTokenTradeHistoryApplicationContract,
       input,
-      watchlist,
-      ordinary,
-    );
-    expect(presented.content).toEqual(ordinary.content);
-    expect(presented.structuredContent).toEqual(ordinary.structuredContent);
-    expect(presented._meta?.[presentationSnapshotMetadataKey]).toEqual({
+      tradeHistory,
+    )).toEqual({
       kind: "presentation_unavailable",
       status: "unavailable",
       reason: "runtime_unavailable",
@@ -170,7 +190,7 @@ describe("MCP App presentation process", () => {
     });
   });
 
-  it("rejects a valid result correlated to a different normalized input before rendering", async () => {
+  it("rejects a valid result correlated to a different normalized input before snapshot commit", async () => {
     const store = await openStore();
     const service = new McpAppPresentationService(
       store,
@@ -181,10 +201,6 @@ describe("MCP App presentation process", () => {
       chainId: "eip155:4663" as const,
       address: "0x1111111111111111111111111111111111111111" as const,
     };
-    const differentAsset = {
-      ...requestedAsset,
-      address: "0x2222222222222222222222222222222222222222" as const,
-    };
     const normalizedInput = tokenCatalogApplicationContracts.selection.parseInput({
       asset: requestedAsset,
     });
@@ -194,7 +210,10 @@ describe("MCP App presentation process", () => {
           chainId: requestedAsset.chainId,
           address: "0x3333333333333333333333333333333333333333",
         },
-        asset: differentAsset,
+        asset: {
+          ...requestedAsset,
+          address: "0x2222222222222222222222222222222222222222",
+        },
         included: true,
         revision: "AAAAAAAAAAAAAAAAAAAAAA",
         createdAt: openedAt,
@@ -202,128 +221,135 @@ describe("MCP App presentation process", () => {
       },
       historicalInspection: null,
     });
-    const canonicalResult = captureCanonicalJson(mismatchedResult);
-    const ordinary: CallToolResult = {
-      structuredContent: canonicalResult as Record<string, unknown>,
-      content: [{ type: "text", text: canonicalJsonStringify(canonicalResult) }],
-    };
-    const presented = service.present(
+
+    expect(service.present(
       tokenCatalogApplicationContracts.selection,
       normalizedInput,
       mismatchedResult,
-      ordinary,
-    );
-
-    expect(presented.structuredContent).toEqual(ordinary.structuredContent);
-    expect(presented._meta?.[presentationSnapshotMetadataKey]).toEqual({
+    )).toEqual({
       kind: "presentation_unavailable",
       status: "unavailable",
       reason: "snapshot_inconsistent",
     });
-    await expect(admitPresentationToolResult(
-      fakeApp({ host: "standard-host" }),
-      presented,
-      new AbortController().signal,
-    )).rejects.toThrow("Presentation unavailable: snapshot_inconsistent");
   });
 
-  it("routes standard and measured Host transports into the same canonical admission", async () => {
+  it("re-admits an application input through its normalized-input contract", async () => {
     const store = await openStore();
     const service = new McpAppPresentationService(
       store,
       createMcpAppResource("<!doctype html><main>Little John</main>"),
     );
-    const presented = service.present(
-      marketPortfolioApplicationContracts.watchlist,
-      input,
-      watchlist,
-      ordinaryResult(),
+    const normalizedInput = tokenCatalogApplicationContracts.selections.parseInput({});
+    const selections = tokenCatalogApplicationContracts.selections.parsePublicSuccess(
+      normalizedInput,
+      { selections: [], nextCursor: null },
     );
+    const presented = availableResult(service.present(
+      tokenCatalogApplicationContracts.selections,
+      {},
+      selections,
+    ));
+    const resource = snapshotResource(presented);
+
+    expect(resource.normalizedInput).toEqual(normalizedInput);
+    expect(resource.normalizedInput).toEqual(expect.objectContaining({ cursor: null }));
+    expect(JSON.parse(service.readResource(resource.descriptor.snapshotUri).text)).toEqual(resource);
+
+    const admitted = await admitPresentationToolResult(fakeApp({
+      host: "standard-host",
+      serverTools: true,
+      callTool: chunkTool(service),
+    }), presented, new AbortController().signal);
+    expect(admitted.normalizedInput).toEqual(resource.normalizedInput);
+    expect(admitted.result).toEqual(selections);
+  });
+
+  it("routes standard and measured Host transports through snapshot chunks and canonical admission", async () => {
+    const store = await openStore();
+    const service = new McpAppPresentationService(
+      store,
+      createMcpAppResource("<!doctype html><main>Little John</main>"),
+    );
+    const presented = availableResult(service.present(
+      stockTokenTradeHistoryApplicationContract,
+      input,
+      tradeHistory,
+    ));
     const resource = snapshotResource(presented);
     const signal = new AbortController().signal;
+    const callTool = chunkTool(service);
 
-    const withoutPrivateMetadata: CallToolResult = {
-      content: presented.content,
-      structuredContent: presented.structuredContent,
-    };
     const standard = await admitPresentationToolResult(fakeApp({
       host: "standard-host",
       serverResources: true,
+      serverTools: true,
       readResource: async (uri) => ({ contents: [service.readResource(uri)] }),
-    }), withoutPrivateMetadata, signal);
+      callTool,
+    }), { content: presented.content }, signal);
 
-    const codexWrapped: CallToolResult = {
+    const codex = await admitPresentationToolResult(fakeApp({
+      host: "chatgpt",
+      serverTools: true,
+      callTool,
+    }), {
       ...presented,
       content: [{ type: "text", text: JSON.stringify({ content: presented.content }) }],
-    };
-    const codex = await admitPresentationToolResult(
-      fakeApp({ host: "chatgpt" }),
-      codexWrapped,
-      signal,
-    );
+    }, signal);
 
-    const claudeWithoutLink: CallToolResult = {
-      ...presented,
-      content: [presented.content[0]!],
-    };
-    const claude = await admitPresentationToolResult(
-      fakeApp({ host: "Claude" }),
-      claudeWithoutLink,
-      signal,
-    );
+    const claudeWithoutLink: CallToolResult = { ...presented, content: [] };
+    const claude = await admitPresentationToolResult(fakeApp({
+      host: "Claude",
+      serverTools: true,
+      callTool,
+    }), claudeWithoutLink, signal);
 
     const digest = resource.descriptor.snapshotId.slice("sha256:".length);
-    const claudeRemounted: CallToolResult = {
-      content: [
-        presented.content[0]!,
-        {
-          type: "text",
-          text: `[Resource link: presentation_snapshot_${digest}] ${resource.descriptor.snapshotUri} (Exact immutable presentation input and descriptor.)`,
-        },
-      ],
-      structuredContent: presented.structuredContent,
-    };
     const claudeAfterRemount = await admitPresentationToolResult(fakeApp({
       host: "Claude",
       serverResources: true,
+      serverTools: true,
       readResource: async (uri) => ({ contents: [service.readResource(uri)] }),
-    }), claudeRemounted, signal);
+      callTool,
+    }), {
+      content: [{
+        type: "text",
+        text: `[Resource link: presentation_snapshot_${digest}] ${resource.descriptor.snapshotUri} (Exact immutable presentation input and descriptor.)`,
+      }],
+    }, signal);
 
     for (const admitted of [standard, codex, claude, claudeAfterRemount]) {
-      expect(admitted.entry.contractId).toBe("market.watchlist");
+      expect(admitted.entry.contractId).toBe("market.stock_token_trade_history");
       expect(admitted.normalizedInput).toEqual(input);
-      expect(admitted.result).toEqual(canonicalWatchlist);
-      expect(admitted.source).toBe("creating_result");
+      expect(admitted.result).toEqual(canonicalTradeHistory);
     }
     await expect(admitPresentationToolResult(
       fakeApp({ host: "unknown-host" }),
       claudeWithoutLink,
       signal,
     )).rejects.toThrow("omitted its exact presentation resource");
-    expect(resource.descriptor.contractId).toBe("market.watchlist");
+    await expect(admitPresentationToolResult(
+      fakeApp({ host: "standard-host" }),
+      ordinaryResult(),
+      signal,
+    )).rejects.toThrow("contains a direct domain result");
   });
 
-  it("reconstructs one bounded replay from its exact reference and sequential chunks", async () => {
+  it("reconstructs a bounded replay reference through sequential chunks", async () => {
     const store = await openStore();
     const service = new McpAppPresentationService(
       store,
       createMcpAppResource("<!doctype html><main>Little John</main>"),
     );
-    const creating = service.present(
-      marketPortfolioApplicationContracts.watchlist,
+    const creating = availableResult(service.present(
+      stockTokenTradeHistoryApplicationContract,
       input,
-      watchlist,
-      ordinaryResult(),
-    );
+      tradeHistory,
+    ));
     const resource = snapshotResource(creating);
     const replay = service.getSnapshotResult(resource.descriptor.snapshotUri);
-    const replayWithoutTransientTransport: CallToolResult = {
-      structuredContent: replay.structuredContent,
-      content: [],
-    };
     const calls: { name: string; argumentsValue: Record<string, unknown> }[] = [];
     const resourceReads: string[] = [];
-    const app = fakeApp({
+    const admitted = await admitPresentationToolResult(fakeApp({
       host: "standard-host",
       serverResources: true,
       serverTools: true,
@@ -331,25 +357,13 @@ describe("MCP App presentation process", () => {
         resourceReads.push(uri);
         return { contents: [service.readResource(uri)] };
       },
-      callTool: async (name, argumentsValue) => {
-        calls.push({ name, argumentsValue });
-        return {
-          structuredContent: service.getResultChunk(
-            String(argumentsValue["snapshotId"]),
-            Number(argumentsValue["index"]),
-          ) as Record<string, unknown>,
-          content: [],
-        };
-      },
-    });
-    const admitted = await admitPresentationToolResult(
-      app,
-      replayWithoutTransientTransport,
-      new AbortController().signal,
-    );
+      callTool: chunkTool(service, calls),
+    }), {
+      structuredContent: replay.structuredContent,
+      content: [],
+    }, new AbortController().signal);
 
-    expect(admitted.source).toBe("exact_snapshot");
-    expect(admitted.result).toEqual(canonicalWatchlist);
+    expect(admitted.result).toEqual(canonicalTradeHistory);
     expect(resourceReads).toEqual([resource.descriptor.snapshotUri]);
     expect(calls).toEqual([{
       name: "presentation_get_snapshot_chunk",

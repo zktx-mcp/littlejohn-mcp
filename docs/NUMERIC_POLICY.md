@@ -281,8 +281,7 @@ merge an equal-valued limit, or reinterpret a feature-private capacity.
   value.
 - Missing, malformed, contradictory, or out-of-range multiplier evidence leaves
   the raw balance intact and produces no adjusted amount.
-- Oracle OHLC, DEX trade OHLCV, and wallet net flow remain separate data types.
-- Oracle candles contain no inferred trade volume.
+- Trade OHLCV and wallet net flow remain separate data types.
 - Wallet net flow is not market volume, P&L, or cost basis.
 - A quote is not a candle, fill, guaranteed price, or execution result.
 
@@ -310,106 +309,47 @@ merge an equal-valued limit, or reinterpret a feature-private capacity.
   `number`. This display value is not written back into the canonical quote.
 - SDK comparison never supplies, rounds, or replaces a canonical quote value.
 
-### Reference Market Values
+### Stock Token Trade History Values
 
-- A reference-market value is a positive reduced rational with base-10 string
-  `numerator` and `denominator`. It retains the exact pair identity, source
-  round identities, canonical chain block, actual read time, and freshness
-  result that produced it. A source round update time remains a distinct feed
-  fact and is never used as the read time.
-- A direct feed answer `answer` with `decimals` is exactly
-  `answer / 10^decimals`. A nonpositive answer, invalid round identity, future
-  update time, or malformed decimals produces no reference value.
-- A Robinhood Stock Token feed value is Chainlink's tokenized-equity Total
-  Return Value. It already applies the Stock Token multiplier. Little John does
-  not multiply it by the catalog multiplier, token decimals, or any other
-  multiplier again. Robinhood underlying-equity bid or ask, a DEX quote, a
-  trade, a fill, and a balance are different units and cannot replace it.
-- A Stock Token value is `current` only when its exact positive round is not in
-  the future, its age is within the mapped heartbeat, and the same-block token
-  `oraclePaused()` observation is `false`. A valid older or paused value is
-  `last_observed`. Pause and age are reported independently; a clock does not
-  infer weekends, holidays, exchange sessions, or trading halts.
-- ETH/USDG is exactly ETH/USD divided by USDG/USD. Its reduced rational is
-  `(ethAnswer * 10^usdgDecimals) / (usdgAnswer * 10^ethDecimals)`. Current cross
-  construction requires both source rounds to be fresh at the same canonical
-  block; one stale leg makes the current cross unavailable.
-- Historical cross construction considers each source update time. For that
-  time it selects the latest observation from each source that is not later than
-  the candidate time and requires each selected observation to be within its
-  feed heartbeat. It never fills from the future, interpolates, averages, or
-  substitutes a midpoint.
-- The neutral `1d`, `7d`, and `30d` market request durations are exactly 24
-  hours, 7 days, and 30 days. A consumer applies only its own numeric
-  representation rules after receiving that duration. Chainlink reference
-  buckets do not define an execution interval, resolution, or capacity.
-- Reference history applies UTC buckets of 15 minutes, 1 hour, and 4 hours to
-  the `1d`, `7d`, and `30d` durations respectively. Each candle's open and
-  close are the first and last exact points in its bucket; high and low use
-  exact rational comparison. A natural
-  bucket `[openedAt, naturalEnd)` is closed when `naturalEnd` is not later than
-  the canonical block time and excludes a point exactly at `naturalEnd`. Only a
-  bucket truncated by a block time before `naturalEnd` is open, and it includes
-  an admitted point exactly at that block time. The first represented bucket
-  begins at the first UTC bucket boundary not earlier than the requested start;
-  the unaligned prefix is not a bucket. Candle starts and empty-bucket starts
-  partition the represented bucket starts. An empty bucket means only that no
-  admitted point appears in that bucket; neither a candle nor an empty bucket
-  proves exhaustive source history. Every candle has no trade volume.
-- One Stock Token market result keeps two numeric series separate. Its
-  Chainlink Total Return Value is an oracle reference value denominated in USD;
-  that value and its reference history retain the direct-feed rules above. They
-  are not a Stock Token/USD trading pair. The Uniswap V4 execution series is
-  denominated in USDG and contains exact one-minute OHLC values, raw Stock
-  Token and USDG volumes, and trade count derived by the admitted index from
-  exact `Swap` events. Little John does not convert USDG to USD, compare the two
-  series as equal units, merge their candles, interpolate a missing interval,
-  or derive either series from the other.
-- The execution display interval is owned independently from reference-history
-  buckets. `1d` uses natural 15-minute intervals, `7d` uses natural 1-hour
-  intervals, and `30d` uses natural 4-hour intervals. Every Unix-epoch-aligned
+- The `1d`, `7d`, and `30d` trade-history request durations are exactly 24
+  hours, 7 days, and 30 days.
+- A Stock Token/USDG one-minute candle contains exact positive reduced rational
+  open, high, low, and close values, raw Stock Token and USDG volumes, trade
+  count, and first and last contributing finalized `Swap` positions. Its price
+  is Stock Token units quoted in USDG. These values derive together from the
+  same admitted source set and are never reconstructed from chart output.
+- The chart interval is 15 minutes for `1d`, 1 hour for `7d`, and 4 hours for
+  `30d`. Every Unix-epoch-aligned
   interval intersecting the half-open request is represented. Aligned requests
   contain exactly `96`, `168`, or `180` positions; an unaligned request contains
   at most `97`, `169`, or `181`. The position time key is its natural interval
   start. Represented bounds are the exact intersection with the request.
-- The execution-index owner builds the display series from every admitted
-  one-minute candle wholly inside the request before it limits the separate
-  detailed list. One source candle belongs to exactly one containing natural
-  interval and is never split or prorated. For a non-empty position, open and
-  close come from the first and last contributing candles, high and low use
-  exact rational comparison, and Stock Token raw volume, USDG raw volume, and
-  trade count are summed together over that identical source set. Observed and
-  `Swap` source bounds enclose the same set.
-- Display raw volumes are canonical unsigned decimal strings bounded by
-  `240 × (10^78 − 1)`. Display trade count is a canonical unsigned decimal
+- The trade-history owner builds the chart series from every admitted
+  one-minute candle wholly inside the request. One source candle belongs to
+  exactly one containing natural interval and is never split or prorated. For a
+  non-empty position, open and close come from the first and last contributing
+  candles, high and low use exact rational comparison, and Stock Token raw
+  volume, USDG raw volume, and trade count are summed together over that
+  identical source set. Observed and `Swap` source bounds enclose the same set.
+- Chart raw volumes are canonical unsigned decimal strings bounded by
+  `240 × (10^78 − 1)`. Chart trade count is a canonical unsigned decimal
   string bounded by `240 × Number.MAX_SAFE_INTEGER`, exactly
   `2,161,727,821,137,837,840`. It is never converted back to a JSON number.
   Quote volume retains USDG decimals and token volume retains Stock Token
   decimals; neither raw integer is converted in canonical JSON.
 - A Canvas renderer may derive only finite ephemeral price values and
-  `quoteVolumeRaw / 10^quoteToken.decimals` from that completed display series.
-  It labels the volume projection as approximate USDG. These approximations are
-  never serialized, stored, compared as financial values, or used to rebuild an
-  exact field.
-- The Chainlink reference chart admits at most 180 candles and 720 distinct
-  source observations. The execution result admits at most the most recent
-  3,072 exact one-minute candles from the requested interval. Its detail state
-  reports the exact pre-slice candle count and only the loss caused by that
-  returned-list capacity. Source coverage is derived only from admitted
-  continuous coverage intervals. Artifact freshness is derived only from the
-  artifact coverage timestamp. Detail capacity, source coverage, and artifact
-  freshness cannot change or stand in for one another. A valid current or
-  last-observed reference value can coexist with partial, stale, unavailable,
-  retained-out, or capacity-limited execution history; neither outcome changes
-  the other.
-- The completed execution display series retains its request window, exact
+  `quoteVolumeRaw / 10^quoteToken.decimals` from that completed chart series.
+  These approximations are never serialized, stored, compared as financial
+  values, or used to rebuild an exact field.
+- The completed chart series retains its request window, exact
   bounds, pair and asset units, positions, gaps, and aggregates in canonical
   JSON. Snapshot reload renders that admitted value without re-reading source
-  artifacts or aggregating either the display series or detailed candles.
+  files or aggregating the chart series.
 - Human-interface chart coordinates may use only the non-authoritative
-  floating-point projection allowed by [`Charts`](#charts). Exact rational
-  OHLC values remain visible beside that projection and are the only values
-  returned or stored.
+  floating-point projection allowed by [`Charts`](#charts). Exact chart times,
+  OHLC values, volumes, trade counts, coverage, and source bounds remain
+  available beside that projection and are the only returned or stored chart
+  values.
 
 ## Verification
 

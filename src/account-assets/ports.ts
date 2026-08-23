@@ -5,6 +5,7 @@ import type {
 import type {
   AccountAssetChainReadPort,
   ChainInvocationPort,
+  CurrentBlockReadPort,
   OfficialAssetChainReadPort,
 } from "../chain/index.js";
 import type { OfficialAssetSynchronizationPort } from "../registry/index.js";
@@ -40,6 +41,7 @@ export interface AccountAssetReadProcessDependencies {
   readonly officialAssets: OfficialAssetSynchronizationPort;
   readonly chainInvocations: ChainInvocationPort;
   readonly officialAssetReads: OfficialAssetChainReadPort;
+  readonly currentBlockReads: CurrentBlockReadPort;
   readonly chainReads: AccountAssetChainReadPort;
   readonly clock: CanonicalClock;
   readonly signal: AbortSignal;

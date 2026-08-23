@@ -1,21 +1,13 @@
 import {
   contractInspectCapability,
+  formatAmount,
   getCapabilityDefinitionSnapshot,
-  referenceMarketWarningDefinitions,
-  stockTokenMarketLimitationDefinitions,
   type CanonicalJson,
   type CapabilitySuccess,
   type ContractAnalysis,
   type ContractControlFailureReason,
   type ContractInspectData,
   type ExactRational,
-  type ReferenceCandle,
-  type ReferenceHistoryLimitationCode,
-  type ReferenceHistorySuccess,
-  type ReferenceMarketWarningCode,
-  type ReferencePriceSuccess,
-  type ReferenceWatchlistSuccess,
-  type StockTokenMarketLimitationCode,
   type WalletConnectionData,
 } from "../../../core/client.js";
 import {
@@ -32,13 +24,14 @@ import {
   type TokenSelectionListResult,
   type TokenSelectionReviewResult,
 } from "../../../token-catalog/client.js";
-import type {
-  ReferenceWatchlistOperation,
-  ReferenceWatchlistReviewResult,
-} from "../../../market-portfolio/contracts.js";
-import type { StockTokenExecutionDisplaySeries } from
-  "../../../market-portfolio/stock-token-execution-index.js";
-import type { StockTokenMarketResult } from "../../../market-portfolio/stock-token-market.js";
+import type { StockTokenTradeHistoryChart } from
+  "../../../stock-token-trade-history/stock-token-trade-history-data.js";
+import type { StockTokenTradeHistoryResult } from
+  "../../../stock-token-trade-history/stock-token-trade-history.js";
+import {
+  createTradeHistoryChartPresentation,
+  type TradeHistoryChartMountDescription,
+} from "./trade-history-chart.js";
 import type {
   WalletManagementOperation,
   WalletQrMatrix,
@@ -51,13 +44,12 @@ import {
   type PresentationContractResult,
 } from "../registry.js";
 import {
-  stockTokenExecutionCoverageLimitationLabel,
-  stockTokenExecutionDetailLimitationLabel,
-  stockTokenExecutionUnavailableReasonLabel,
-  stockTokenMarketLabel,
-  stockTokenMarketUnavailableReasonLabel,
-  stockTokenReferenceUnavailableReasonLabel,
-} from "../../stock-token-market-presentation.js";
+  stockTokenTradeCoverageLimitationLabel,
+  stockTokenTradeHistoryLabel,
+  stockTokenTradeHistoryNoTradeLabel,
+  stockTokenTradeHistoryUnavailableReasonLabel,
+  stockTokenTradeHistoryWindowLabel,
+} from "../../stock-token-trade-history-presentation.js";
 
 type ContractInspectionResult = CapabilitySuccess<ContractInspectData>;
 type WalletConnectionResult = CapabilitySuccess<WalletConnectionData>;
@@ -76,6 +68,10 @@ const element = <Tag extends keyof HTMLElementTagNameMap>(
 type EvidenceStatus = "current" | "stale" | "partial" | "unavailable";
 
 type SummaryField = readonly [label: string, value: string, evidenceRole?: EvidenceStatus];
+
+interface PresentationRenderContext {
+  registerTradeHistoryChart(description: TradeHistoryChartMountDescription): void;
+}
 
 const appendField = (list: HTMLDListElement, [label, value, evidenceRole]: SummaryField): void => {
   list.append(
@@ -97,288 +93,11 @@ const summary = (fields: readonly SummaryField[]): HTMLDListElement => {
 const exactRationalText = (value: ExactRational): string =>
   `${value.numerator} / ${value.denominator}`;
 
-interface Rational {
-  readonly numerator: bigint;
-  readonly denominator: bigint;
-}
-
-const rational = (value: ExactRational): Rational => {
-  const numerator = BigInt(value.numerator);
-  const denominator = BigInt(value.denominator);
-  if (denominator <= 0n) throw new TypeError("Chart denominator is invalid.");
-  return { numerator, denominator };
-};
-
-const compareRational = (left: Rational, right: Rational): number => {
-  const difference = left.numerator * right.denominator -
-    right.numerator * left.denominator;
-  return difference < 0n ? -1 : difference > 0n ? 1 : 0;
-};
-
-const scaledY = (
-  value: Rational,
-  minimum: Rational,
-  maximum: Rational,
-  height: number,
-): number => {
-  if (compareRational(minimum, maximum) === 0) return Math.floor(height / 2);
-  const differenceNumerator = value.numerator * minimum.denominator -
-    minimum.numerator * value.denominator;
-  const differenceDenominator = value.denominator * minimum.denominator;
-  const rangeNumerator = maximum.numerator * minimum.denominator -
-    minimum.numerator * maximum.denominator;
-  const rangeDenominator = maximum.denominator * minimum.denominator;
-  const scaled = differenceNumerator * rangeDenominator * BigInt(height) /
-    (differenceDenominator * rangeNumerator);
-  return height - Number(scaled);
-};
-
-const svgLine = (
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number,
-  className: string,
-): SVGLineElement => {
-  const node = document.createElementNS("http://www.w3.org/2000/svg", "line");
-  node.setAttribute("x1", String(x1));
-  node.setAttribute("y1", String(y1));
-  node.setAttribute("x2", String(x2));
-  node.setAttribute("y2", String(y2));
-  node.setAttribute("class", className);
-  return node;
-};
-
-const svgCircle = (
-  x: number,
-  y: number,
-  radius: number,
-  className: string,
-): SVGCircleElement => {
-  const node = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-  node.setAttribute("cx", String(x));
-  node.setAttribute("cy", String(y));
-  node.setAttribute("r", String(radius));
-  node.setAttribute("class", className);
-  return node;
-};
-
-const svgRectangle = (
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  className: string,
-): SVGRectElement => {
-  const node = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-  node.setAttribute("x", String(x));
-  node.setAttribute("y", String(y));
-  node.setAttribute("width", String(width));
-  node.setAttribute("height", String(height));
-  node.setAttribute("class", className);
-  return node;
-};
-
-interface ExactCandle {
-  readonly openedAt: string;
-  readonly closedAt: string;
-  readonly representedStart: string;
-  readonly representedEnd: string;
-  readonly open: ExactRational;
-  readonly high: ExactRational;
-  readonly low: ExactRational;
-  readonly close: ExactRational;
-}
-
-interface ExactCandleSeries {
-  readonly candles: readonly ExactCandle[];
-  readonly requestedStart: string;
-  readonly requestedEnd: string;
-}
-
-const referenceCandleSeries = (value: Readonly<{
-  candles: readonly ReferenceCandle[];
-  coverage: Readonly<{ requestedStart: string; requestedEnd: string }>;
-}>): ExactCandleSeries => Object.freeze({
-  candles: value.candles.map((candle) => Object.freeze({
-    ...candle,
-    representedStart: candle.openedAt,
-    representedEnd: candle.closedAt,
-  })),
-  requestedStart: value.coverage.requestedStart,
-  requestedEnd: value.coverage.requestedEnd,
-});
-
-const executionCandleSeries = (value: StockTokenExecutionDisplaySeries): ExactCandleSeries => Object.freeze({
-  candles: value.positions.flatMap((position) => position.candle === null ? [] : [Object.freeze({
-    openedAt: position.intervalStart,
-    closedAt: position.intervalEnd,
-    representedStart: position.representedStart,
-    representedEnd: position.representedEnd,
-    open: position.candle.open,
-    high: position.candle.high,
-    low: position.candle.low,
-    close: position.candle.close,
-  })]),
-  requestedStart: value.requestedStart,
-  requestedEnd: value.requestedEnd,
-});
-
-const historyChart = (input: ExactCandleSeries, label: string): HTMLElement => {
-  const requestedStart = Date.parse(input.requestedStart);
-  const requestedEnd = Date.parse(input.requestedEnd);
-  if (!Number.isFinite(requestedStart) || !Number.isFinite(requestedEnd) ||
-    requestedStart >= requestedEnd) {
-    throw new TypeError("Chart time range is invalid.");
-  }
-  const candles = input.candles.map((candle) => Object.freeze({
-    openedAt: candle.openedAt,
-    closedAt: candle.closedAt,
-    representedStart: candle.representedStart,
-    representedEnd: candle.representedEnd,
-    exactHigh: candle.high,
-    exactLow: candle.low,
-    open: rational(candle.open),
-    high: rational(candle.high),
-    low: rational(candle.low),
-    close: rational(candle.close),
-  }));
-  const figure = element("figure", "history-figure");
-  const caption = element(
-    "figcaption",
-    "chart-caption",
-    `${label} · ${candles.length} exact candles`,
-  );
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("class", "history-chart");
-  svg.setAttribute("viewBox", "0 0 640 210");
-  svg.setAttribute("role", "img");
-  svg.setAttribute(
-    "aria-label",
-    `${label}; ${candles.length} exact candles from ${input.requestedStart} to ${input.requestedEnd}; absent intervals are not filled and observations are not interpolated.`,
-  );
-  const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
-  title.textContent = `${label}; observed candles retain their actual time positions`;
-  const plotLeft = 24;
-  const plotRight = 616;
-  const plotTop = 12;
-  const plotHeight = 174;
-  const plotWidth = plotRight - plotLeft;
-  const valueTop = plotTop + 10;
-  const valueHeight = plotHeight - 20;
-  svg.append(
-    title,
-    svgRectangle(plotLeft, plotTop, plotWidth, plotHeight, "chart-frame"),
-    svgLine(plotLeft, plotTop + plotHeight / 2, plotRight, plotTop + plotHeight / 2, "chart-grid"),
-  );
-  const timeRange = element("div", "chart-time-range");
-  timeRange.append(
-    element("span", undefined, input.requestedStart),
-    element("span", undefined, input.requestedEnd),
-  );
-  figure.append(caption, svg, timeRange);
-  if (candles.length === 0) return figure;
-  let minimum = candles[0]!.low;
-  let maximum = candles[0]!.high;
-  let exactMinimum = candles[0]!.exactLow;
-  let exactMaximum = candles[0]!.exactHigh;
-  for (const candle of candles.slice(1)) {
-    if (compareRational(candle.low, minimum) < 0) {
-      minimum = candle.low;
-      exactMinimum = candle.exactLow;
-    }
-    if (compareRational(candle.high, maximum) > 0) {
-      maximum = candle.high;
-      exactMaximum = candle.exactHigh;
-    }
-  }
-  for (const candle of candles) {
-    const openedAt = Date.parse(candle.openedAt);
-    const closedAt = Date.parse(candle.closedAt);
-    const representedStart = Date.parse(candle.representedStart);
-    const representedEnd = Date.parse(candle.representedEnd);
-    if (
-      !Number.isFinite(openedAt) ||
-      !Number.isFinite(closedAt) ||
-      !Number.isFinite(representedStart) ||
-      !Number.isFinite(representedEnd) ||
-      closedAt <= openedAt ||
-      representedStart < requestedStart ||
-      representedEnd <= representedStart ||
-      representedEnd > requestedEnd ||
-      representedStart < openedAt ||
-      representedEnd > closedAt
-    ) throw new TypeError("Chart candle time is invalid.");
-    const midpoint = representedStart + (representedEnd - representedStart) / 2;
-    const x = plotLeft + (midpoint - requestedStart) / (requestedEnd - requestedStart) * plotWidth;
-    const highY = valueTop + scaledY(candle.high, minimum, maximum, valueHeight);
-    const lowY = valueTop + scaledY(candle.low, minimum, maximum, valueHeight);
-    const openY = valueTop + scaledY(candle.open, minimum, maximum, valueHeight);
-    const closeY = valueTop + scaledY(candle.close, minimum, maximum, valueHeight);
-    const mark = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    mark.setAttribute("class", "candle-mark");
-    mark.setAttribute("data-chart-x", String(x));
-    mark.setAttribute("data-opened-at", candle.openedAt);
-    mark.setAttribute("data-closed-at", candle.closedAt);
-    mark.setAttribute("data-represented-start", candle.representedStart);
-    mark.setAttribute("data-represented-end", candle.representedEnd);
-    if (compareRational(candle.low, candle.high) === 0) {
-      mark.append(svgCircle(x, openY, 4, "candle-point"));
-    } else {
-      mark.append(
-        svgLine(x, highY, x, lowY, "candle-range"),
-        svgLine(x - 5, openY, x, openY, "candle-open"),
-        svgLine(x, closeY, x + 5, closeY, "candle-close"),
-      );
-    }
-    svg.append(mark);
-  }
-  const priceRange = element(
-    "p",
-    "chart-price-range",
-    `Observed range ${exactRationalText(exactMinimum)} to ${exactRationalText(exactMaximum)}`,
-  );
-  figure.append(priceRange);
-  return figure;
-};
-
-const statusFor = (status: EvidenceStatus): EvidenceStatus => status;
-
 const coverageLabels = Object.freeze({
   complete: "Complete",
   partial: "Partial",
   unavailable: "Unavailable",
 } as const);
-
-const referenceStatusLabels = Object.freeze({
-  current: "Current",
-  stale: "Stale",
-  partial: "Partial history",
-  unavailable: "Unavailable",
-} as const);
-
-const semanticMeaning = <Code extends string>(
-  definitions: readonly Readonly<{ code: Code; meaning: string }>[],
-  code: Code,
-): string => {
-  const definition = definitions.find((candidate) => candidate.code === code);
-  if (definition === undefined) throw new TypeError("Presentation meaning is not registered.");
-  return definition.meaning;
-};
-
-const referenceWarningLabel = (code: ReferenceMarketWarningCode): string =>
-  semanticMeaning(referenceMarketWarningDefinitions, code);
-
-const stockTokenLimitationLabel = (code: StockTokenMarketLimitationCode): string =>
-  semanticMeaning(stockTokenMarketLimitationDefinitions, code);
-
-const referenceHistoryLimitationLabels = Object.freeze({
-  source_history_not_exhaustive: "The source history is not exhaustive.",
-  traversal_incomplete: "The source traversal did not reach the complete requested window.",
-  phase_boundary: "The history reached a source phase boundary.",
-  malformed_round: "A malformed source round limited the available history.",
-  retention_limited: "Source retention limits the available history.",
-} satisfies Readonly<Record<ReferenceHistoryLimitationCode, string>>);
 
 const contractControlFailureLabels = Object.freeze({
   deployment_unresolved: "The contract deployment is unresolved.",
@@ -459,6 +178,27 @@ const tokenScopeLimitations = getCapabilityDefinitionSnapshot(
   tokenInspectCapability,
 ).staticScopeExclusions.map((value) => value.message);
 
+const noticeList = (
+  heading: "Warnings" | "Limitations",
+  values: readonly string[],
+): HTMLUListElement => {
+  const list = element("ul", heading === "Warnings" ? "warning-list" : "limitation-list");
+  list.setAttribute("aria-label", heading);
+  for (const value of values) {
+    const item = element("li", heading === "Warnings" ? "warning-item" : "limitation-item");
+    item.append(
+      element(
+        "strong",
+        "notice-label",
+        heading === "Warnings" ? "Warning: " : "Limitation: ",
+      ),
+      document.createTextNode(value),
+    );
+    list.append(item);
+  }
+  return list;
+};
+
 const noticeSection = (
   heading: "Warnings" | "Limitations",
   values: readonly string[],
@@ -466,11 +206,7 @@ const noticeSection = (
   if (values.length === 0) return undefined;
   const region = element("section", heading === "Warnings" ? "warning-group" : "limitation-group");
   region.append(element("h2", "section-title", heading));
-  const list = element("ul", heading === "Warnings" ? "warning-list" : "limitation-list");
-  for (const value of values) {
-    list.append(element("li", heading === "Warnings" ? "warning-item" : "limitation-item", value));
-  }
-  region.append(list);
+  region.append(noticeList(heading, values));
   return region;
 };
 
@@ -548,48 +284,83 @@ const exactValueTable = (
   return table;
 };
 
-const historyValues = (
-  candles: readonly ExactCandle[],
-  captionText = "Exact candle values",
-): HTMLTableElement => exactValueTable(
-  captionText,
-  ["Opened", "Closed", "Open", "High", "Low", "Close"],
-  candles.map((candle) => [
-    candle.openedAt,
-    candle.closedAt,
-    exactRationalText(candle.open),
-    exactRationalText(candle.high),
-    exactRationalText(candle.low),
-    exactRationalText(candle.close),
-  ]),
-);
+const tradeHistoryCoverageMeaning = (
+  coverage: StockTokenTradeHistoryChart["positions"][number]["coverage"],
+  hasCandle: boolean,
+): string => {
+  if (coverage === "complete") return hasCandle
+    ? "Complete admitted source coverage."
+    : "Complete admitted coverage; no qualifying Swap occurred in this represented interval.";
+  if (coverage === "partial") return hasCandle
+    ? "Partial admitted source coverage."
+    : "Partial admitted coverage; trade absence is not established.";
+  return "Source coverage is unavailable; trade absence is not established.";
+};
 
-const executionHistoryValues = (
-  series: StockTokenExecutionDisplaySeries,
+const tradeHistoryDeveloperValues = (
+  series: StockTokenTradeHistoryChart,
 ): HTMLTableElement => exactValueTable(
-  "Exact executed-trade display candle values in USDG",
+  `Chart values and processing by display position from ${series.requestedStart} to ${series.requestedEnd} (exclusive)`,
   [
     "Natural interval start",
     "Natural interval end",
     "Represented start",
     "Represented end",
     "Position coverage",
-    "Open",
-    "High",
-    "Low",
-    "Close",
+    "Coverage meaning",
+    "Position state",
+    "Open in USDG",
+    "High in USDG",
+    "Low in USDG",
+    "Close in USDG",
+    "USDG volume",
+    `${series.source.token.symbol} volume`,
+    "Trade count",
+    "USDG volume raw",
+    `${series.source.token.symbol} volume raw`,
+    "Observed start",
+    "Observed end",
+    "Aggregation source",
   ],
-  series.positions.flatMap((position) => position.candle === null ? [] : [[
-    position.intervalStart,
-    position.intervalEnd,
-    position.representedStart,
-    position.representedEnd,
-    coverageLabels[position.coverage],
-    exactRationalText(position.candle.open),
-    exactRationalText(position.candle.high),
-    exactRationalText(position.candle.low),
-    exactRationalText(position.candle.close),
-  ]]),
+  series.positions.map((position) => {
+    const candle = position.candle;
+    const unavailable = "Not applicable";
+    return [
+      position.intervalStart,
+      position.intervalEnd,
+      position.representedStart,
+      position.representedEnd,
+      coverageLabels[position.coverage],
+      tradeHistoryCoverageMeaning(position.coverage, candle !== null),
+      candle === null
+        ? "Whitespace"
+        : "Candlestick and volume histogram",
+      candle === null ? unavailable : exactRationalText(candle.open),
+      candle === null ? unavailable : exactRationalText(candle.high),
+      candle === null ? unavailable : exactRationalText(candle.low),
+      candle === null ? unavailable : exactRationalText(candle.close),
+      candle === null
+        ? unavailable
+        : `${formatAmount(
+            candle.quoteVolumeRaw,
+            String(series.source.quoteToken.decimals),
+          )} ${series.source.quoteToken.symbol}`,
+      candle === null
+        ? unavailable
+        : `${formatAmount(
+            candle.tokenVolumeRaw,
+            String(series.source.token.decimals),
+          )} ${series.source.token.symbol}`,
+      candle === null ? unavailable : candle.tradeCount,
+      candle === null ? unavailable : candle.quoteVolumeRaw,
+      candle === null ? unavailable : candle.tokenVolumeRaw,
+      candle === null ? "Not observed" : candle.observedStart,
+      candle === null ? "Not observed" : candle.observedEnd,
+      candle === null
+        ? "No aggregate value was created."
+        : "OHLC, USDG volume, Stock Token volume, and trade count use the same admitted Swap set.",
+    ];
+  }),
 );
 
 const renderAccountAssets = (value: AccountAssetCollectionSuccess): DocumentFragment => {
@@ -668,192 +439,68 @@ const renderContractAnalysis = (result: ContractInspectionResult): DocumentFragm
   return output;
 };
 
-const renderReferencePrice = (value: ReferencePriceSuccess): DocumentFragment => {
-  const price = value.status === "current"
-    ? value.currentPrice
-    : value.status === "stale" ? value.lastObserved : undefined;
+const renderStockTokenTradeHistory = (
+  value: StockTokenTradeHistoryResult,
+  context: PresentationRenderContext,
+): DocumentFragment => {
   const output = document.createDocumentFragment();
+  const label = stockTokenTradeHistoryLabel(value);
   output.append(summary([
-    ["Pair", value.pair.label],
-    ["Status", referenceStatusLabels[value.status], statusFor(value.status)],
-    ["Exact value", price === undefined ? "Unavailable" : exactRationalText(price)],
-    ["Observed at", value.block.blockTimestamp],
-    ...(value.status === "unavailable"
-      ? [["Reason", "The required source observations are not all current."] as const]
-      : []),
+    ["Stock Token", label],
+    ["Requested period", stockTokenTradeHistoryWindowLabel(value.window)],
   ]));
-  appendWarnings(output, value.warnings.map(referenceWarningLabel));
-  return output;
-};
-
-const renderReferenceHistory = (value: ReferenceHistorySuccess): DocumentFragment => {
-  const label = value.pair.label;
-  const output = document.createDocumentFragment();
-  output.append(summary([
-    ["Pair", label],
-    ["Status", referenceStatusLabels[value.status], statusFor(value.status)],
-    ["Window", value.window],
-    ["Candles", String(value.candles.length)],
-  ]));
-  const series = referenceCandleSeries(value);
-  output.append(historyChart(series, `${label} reference history`));
-  if (value.candles.length > 0) {
-    output.append(deferredDisclosure("Exact candle values", () => [historyValues(series.candles)]));
-  }
-  appendWarnings(output, value.warnings.map(referenceWarningLabel));
-  appendNotices(
-    output,
-    "Limitations",
-    value.coverage.limitations.map((limitation) => referenceHistoryLimitationLabels[limitation]),
-  );
-  return output;
-};
-
-const renderStockTokenMarket = (value: StockTokenMarketResult): DocumentFragment => {
-  const output = document.createDocumentFragment();
+  output.append(element("h2", "section-title", "Trades in USDG"));
   if (value.status === "unavailable") {
-    const officialAssetFields: readonly SummaryField[] = "officialAsset" in value
-      ? [
-          ["Contract", value.officialAsset.member.contractAddress],
-        ]
-      : [];
     output.append(summary([
-      ["Stock Token", stockTokenMarketLabel(value)],
-      ...officialAssetFields,
       ["Status", "Unavailable", "unavailable"],
-      ["Window", value.window],
-      ["Reason", stockTokenMarketUnavailableReasonLabel(value.reason)],
+      ["Reason", stockTokenTradeHistoryUnavailableReasonLabel(value.reason)],
     ]));
+    if ("officialAsset" in value) {
+      output.append(disclosure("Token details", [summary([
+        ["Stock Token contract", value.officialAsset.member.contractAddress],
+      ])]));
+    }
     return output;
   }
 
-  const label = stockTokenMarketLabel(value);
-  output.append(summary([
-    ["Stock Token", label],
-    ["Status", "Available"],
-    ["Window", value.window],
-    ["Contract", value.officialAsset.member.contractAddress],
-  ]));
-  output.append(element(
-    "p",
-    "supporting-copy",
-    "The oracle reference value denominated in USD and Uniswap V4 USDG executions are separate and are not converted or merged.",
-  ));
-
-  output.append(element("h2", "section-title", "Executed trades in USDG"));
-  if (value.execution.status === "unavailable") {
-    output.append(summary([
-      ["Status", "Unavailable", "unavailable"],
-      ["Reason", stockTokenExecutionUnavailableReasonLabel(value.execution.reason)],
-    ]));
-  } else {
-    const latestExecution = value.execution.candles.at(-1);
-    const executionDisplaySeries = value.execution.displaySeries;
-    const executionSeries = executionCandleSeries(executionDisplaySeries);
-    const coverageField: SummaryField = value.execution.coverage.status === "complete"
-      ? ["Source coverage", "Complete"]
-      : ["Source coverage", "Partial", "partial"];
-    output.append(summary([
-      ["Freshness", value.execution.freshness === "current" ? "Current" : "Stale",
-        value.execution.freshness],
-      coverageField,
-      ["Detailed rows", value.execution.detail.status === "complete" ? "Complete" : "Limited"],
-      ["Observed one-minute candles", String(value.execution.detail.observedCandleCount)],
-      ["Returned one-minute candles", String(value.execution.candles.length)],
-      ["Display positions", String(value.execution.displaySeries.positions.length)],
-      ["Latest returned one-minute close", latestExecution === undefined
-        ? "No executed trade in the covered period"
-        : `${exactRationalText(latestExecution.close)} USDG`],
-      ...(latestExecution === undefined
-        ? []
-        : [["Latest returned one-minute candle", latestExecution.intervalEnd] as const]),
-    ]));
-    output.append(historyChart(executionSeries, `${label} executed trades in USDG`));
-    if (executionSeries.candles.length > 0) {
-      output.append(deferredDisclosure("Exact executed-trade display candles", () => [
-        executionHistoryValues(executionDisplaySeries),
-      ]));
-    }
+  const statusFields: SummaryField[] = [];
+  if (value.freshness === "stale") statusFields.push(["Freshness", "Stale", "stale"]);
+  if (value.coverage.status === "partial") {
+    statusFields.push(["Coverage", "Partial", "partial"]);
   }
-
-  output.append(element("h2", "section-title", "USD-denominated oracle reference"));
-  if (value.reference.status === "unavailable") {
-    output.append(summary([
-      ["Status", "Unavailable", "unavailable"],
-      ["Reason", stockTokenReferenceUnavailableReasonLabel(value.reference.reason)],
-    ]));
-  } else {
-    const referenceStatusField: SummaryField = value.reference.price.status === "current"
-      ? ["Reference status", "Current", "current"]
-      : value.reference.limitations.includes("observation_not_fresh")
-        ? ["Reference status", "Last observed", "stale"]
-        : ["Reference status", "Last observed"];
-    output.append(summary([
-      ["Oracle reference value denominated in USD", exactRationalText(value.reference.price.value)],
-      referenceStatusField,
-      ["Observed at", value.reference.price.source.readEvidence.observedAt],
-      ["History", value.reference.history.status === "partial" ? "Partial" : "Unavailable",
-        value.reference.history.status],
-      ["Observed candles", String(value.reference.history.candles.length)],
-    ]));
-    const referenceSeries = referenceCandleSeries(value.reference.history);
-    output.append(historyChart(
-      referenceSeries,
-      `${label} USD-denominated oracle reference history`,
+  if (statusFields.length > 0) output.append(summary(statusFields));
+  if (value.coverage.limitations.length > 0) {
+    output.append(noticeList(
+      "Limitations",
+      value.coverage.limitations.map(stockTokenTradeCoverageLimitationLabel),
     ));
-    if (referenceSeries.candles.length > 0) {
-      output.append(deferredDisclosure("Exact oracle reference candles", () => [
-        historyValues(
-          referenceSeries.candles,
-          "Exact USD-denominated oracle reference candle values",
-        ),
-      ]));
-    }
   }
+  const noTrade = stockTokenTradeHistoryNoTradeLabel(value);
+  if (noTrade !== undefined) output.append(element("p", "supporting-copy", noTrade));
 
-  const warnings = value.reference.status === "available"
-    ? value.reference.warnings.map(referenceWarningLabel)
-    : [];
-  const limitations = [
-    ...(value.reference.status === "available"
-      ? value.reference.limitations.map(stockTokenLimitationLabel)
-      : []),
-    ...(value.execution.status === "available"
-      ? [
-          ...value.execution.coverage.limitations.map(
-            stockTokenExecutionCoverageLimitationLabel,
-          ),
-          ...value.execution.detail.limitations.map(
-            stockTokenExecutionDetailLimitationLabel,
-          ),
-        ]
-      : []),
-  ];
-  const diagnosticSections = [
-    noticeSection("Warnings", warnings),
-    noticeSection("Limitations", limitations),
-  ].filter((section): section is HTMLElement => section !== undefined);
-  if (diagnosticSections.length > 0) {
-    output.append(disclosure("Data limitations", diagnosticSections));
-  }
-  return output;
-};
-
-const renderWatchlist = (value: ReferenceWatchlistSuccess): DocumentFragment => {
-  const output = document.createDocumentFragment();
-  output.append(summary([
-    ["Account", value.account.address],
-    ["Revision", value.revision],
-    ["Pairs", String(value.entries.length)],
+  const chart = createTradeHistoryChartPresentation(
+    value.chart,
+    `${label} trades in USDG`,
+  );
+  context.registerTradeHistoryChart(chart.mount);
+  output.append(chart.node);
+  output.append(disclosure("Token details", [summary([
+    ["Stock Token contract", value.officialAsset.member.contractAddress],
+    ["USDG contract", value.source.quoteToken.address],
+    ["Uniswap V4 PoolManager", value.source.poolManager],
+    ["Uniswap V4 Pool ID", value.source.poolId],
+  ])]));
+  output.append(deferredDisclosure("Developer details", () => [
+    summary([
+      ["Result block", value.block.blockNumber],
+      ["Chart positions", String(value.chart.positions.length)],
+      ["Source file sequence", String(value.sourceFiles.sequence)],
+      ["Source coverage ends", value.sourceFiles.coveredUntilTimestamp],
+    ]),
+    tradeHistoryDeveloperValues(value.chart),
   ]));
-  const list = element("ul", "item-list");
-  for (const entry of value.entries) {
-    list.append(element("li", "item", `${entry.label} · ${entry.pairId}`));
-  }
-  output.append(list);
   return output;
 };
-
 const renderTokenInspection = (result: TokenInspectionSuccess): DocumentFragment => {
   const value = result.data;
   const decimals = value.totalSupply.decimals.status === "available"
@@ -1015,34 +662,6 @@ const renderTokenSelectionReview = (value: TokenSelectionReviewResult): Document
   return output;
 };
 
-const watchlistDecisionLabel = (
-  kind: ReferenceWatchlistReviewResult["review"]["kind"],
-): string => kind === "add"
-  ? "Add this reference pair"
-  : kind === "remove"
-    ? "Remove this reference pair"
-    : "Use this reference-pair order";
-
-const renderReferenceWatchlistReview = (
-  value: ReferenceWatchlistReviewResult,
-): DocumentFragment => {
-  const review = value.review;
-  const target = review.kind === "reorder"
-    ? review.target.entries.map((entry) => entry.label).join(" → ")
-    : `${review.target.pair.label} · ${review.target.pair.pairId}`;
-  const output = document.createDocumentFragment();
-  output.append(summary([
-    ["Action", watchlistDecisionLabel(review.kind)],
-    ["Account", review.precondition.account.address],
-    ["Target", target],
-    ["Current revision", review.precondition.watchlistRevision],
-    ["Current pairs", String(review.precondition.currentEntries.length)],
-    ["Action deadline", review.actionExpiresAt],
-    ["Operation ID", review.operationId],
-  ]));
-  return output;
-};
-
 const renderWalletOperation = (operation: WalletManagementOperation): DocumentFragment => {
   const output = document.createDocumentFragment();
   const fields: SummaryField[] = [
@@ -1093,45 +712,27 @@ const renderTokenSelectionOperation = (operation: TokenCatalogOperation): Docume
   return output;
 };
 
-const renderReferenceWatchlistOperation = (
-  operation: ReferenceWatchlistOperation,
-): DocumentFragment => {
-  const output = document.createDocumentFragment();
-  output.append(summary([
-    ["Operation ID", operation.operationId],
-    ["Decision", watchlistDecisionLabel(operation.kind)],
-    ["Status", "Completed"],
-    ["Decision interface", decisionProvenanceLabels[operation.initiatedBy]],
-    ["Account", operation.result.watchlist.account.address],
-    ["Pairs", String(operation.result.watchlist.entries.length)],
-    ["Watchlist revision", operation.result.watchlist.revision],
-    ["Completed at", operation.completedAt],
-  ]));
-  return output;
-};
-
 interface PresentationRendererBinding {
   readonly entry: PresentationContractEntry;
-  render(value: CanonicalJson): DocumentFragment;
+  render(value: CanonicalJson, context: PresentationRenderContext): DocumentFragment;
 }
 
 const bindRenderer = <Entry extends PresentationContractEntry>(
   entry: Entry,
-  renderer: (value: PresentationContractResult<Entry>) => DocumentFragment,
+  renderer: (
+    value: PresentationContractResult<Entry>,
+    context: PresentationRenderContext,
+  ) => DocumentFragment,
 ): PresentationRendererBinding => Object.freeze({
   entry,
-  render: (value: CanonicalJson) => renderer(value as PresentationContractResult<Entry>),
+  render: (value: CanonicalJson, context: PresentationRenderContext) =>
+    renderer(value as PresentationContractResult<Entry>, context),
 });
 
 const rendererBindings = Object.freeze([
   bindRenderer(presentationContracts.accountAssets, renderAccountAssets),
   bindRenderer(presentationContracts.contractAnalysis, renderContractAnalysis),
-  bindRenderer(presentationContracts.referenceHistory, renderReferenceHistory),
-  bindRenderer(presentationContracts.referencePrice, renderReferencePrice),
-  bindRenderer(presentationContracts.stockTokenMarket, renderStockTokenMarket),
-  bindRenderer(presentationContracts.referenceWatchlist, renderWatchlist),
-  bindRenderer(presentationContracts.referenceWatchlistOperation, renderReferenceWatchlistOperation),
-  bindRenderer(presentationContracts.referenceWatchlistReview, renderReferenceWatchlistReview),
+  bindRenderer(presentationContracts.stockTokenTradeHistory, renderStockTokenTradeHistory),
   bindRenderer(presentationContracts.tokenAnalysis, renderTokenInspection),
   bindRenderer(presentationContracts.tokenSelection, renderTokenSelection),
   bindRenderer(presentationContracts.tokenSelectionOperation, renderTokenSelectionOperation),
@@ -1272,7 +873,11 @@ export const renderOperation = (
   const renderer = renderByEntry.get(entry);
   if (renderer === undefined) throw new TypeError("Operation renderer is not registered.");
   const region = element("div", "operation-result");
-  region.append(element("h2", "section-title", "Operation"), renderer(result));
+  region.append(element("h2", "section-title", "Operation"), renderer(result, {
+    registerTradeHistoryChart: () => {
+      throw new TypeError("An operation cannot register a trade-history chart.");
+    },
+  }));
   if (options.qr !== undefined) {
     const operation = result as unknown as WalletManagementOperation;
     region.append(renderQr(options.qr, operation.review.actionExpiresAt));
@@ -1284,29 +889,42 @@ export const renderOperation = (
   return Object.freeze({ node: region, cancel });
 };
 
+export interface RenderedPresentation {
+  readonly node: HTMLElement;
+  readonly tradeHistoryChart: TradeHistoryChartMountDescription | null;
+}
+
 export const renderPresentation = (
   entry: PresentationContractEntry,
   result: CanonicalJson,
-): HTMLElement => {
+): RenderedPresentation => {
   if (entry.presentationKind === "operation") {
     throw new TypeError("An operation cannot create a top-level presentation.");
   }
   const article = element("article", "card");
   const header = element("header", "card-header");
-  header.append(
-    element("p", "eyebrow", entry.presentationKind === "review" ? "Decision" : "Immutable result"),
-    element("h1", "title", entry.title),
-  );
+  if (entry.presentationKind === "review") {
+    header.append(element("p", "eyebrow", "Decision"));
+  }
+  header.append(element("h1", "title", entry.title));
   const renderer = renderByEntry.get(entry);
   if (renderer === undefined) throw new TypeError("Presentation renderer is not registered.");
-  article.append(header, renderer(result));
+  let tradeHistoryChart: TradeHistoryChartMountDescription | null = null;
+  article.append(header, renderer(result, {
+    registerTradeHistoryChart: (description) => {
+      if (tradeHistoryChart !== null) {
+        throw new TypeError("A presentation cannot register more than one trade-history chart.");
+      }
+      tradeHistoryChart = description;
+    },
+  }));
   if (entry.presentationKind === "review") {
     article.append(operationRegion(renderOperationMessage(
       "Operation",
       "Little John is reading the reserved operation ID.",
     )));
   }
-  return article;
+  return Object.freeze({ node: article, tradeHistoryChart });
 };
 
 export const renderPresentationFailure = (message: string): HTMLElement => {

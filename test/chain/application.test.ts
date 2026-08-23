@@ -841,7 +841,7 @@ describe("chain owner application", () => {
     await application.close();
   });
 
-  it("rejects a wrong configured RPC chain before either composite reader requests a block", async () => {
+  it("rejects a wrong configured RPC chain before the shared current-block reader requests a block", async () => {
     const requester = new FakeRequester(async (method) => {
       if (method === "eth_chainId") return "0x1";
       throw new Error(`Unexpected RPC method after a wrong chain ID: ${method}`);
@@ -854,14 +854,7 @@ describe("chain owner application", () => {
 
     await expect(application.invocations.run(
       new AbortController().signal,
-      (context) => application.accountAssetReads.resolveCurrentBlock(context),
-    )).rejects.toMatchObject({ failure: { error: { code: "source_inconsistent" } } });
-    expect(requester.calls.map(({ method }) => method)).toEqual(["eth_chainId"]);
-
-    requester.calls.splice(0);
-    await expect(application.invocations.run(
-      new AbortController().signal,
-      (context) => application.referenceMarketReads.resolveCurrentBlock(context),
+      (context) => application.currentBlockReads.resolveCurrentBlock(context),
     )).rejects.toMatchObject({ failure: { error: { code: "source_inconsistent" } } });
     expect(requester.calls.map(({ method }) => method)).toEqual(["eth_chainId"]);
 
@@ -1026,10 +1019,10 @@ describe("chain owner application", () => {
       "accountAssetReads",
       "chainReads",
       "close",
+      "currentBlockReads",
       "invocations",
       "officialAssetReads",
       "protocolReads",
-      "referenceMarketReads",
       "routes",
       "supportManifest",
       "tokenAdditionReads",

@@ -68,7 +68,6 @@ const admittedReview = Object.freeze({
   entry: presentationContracts.walletReview,
   normalizedInput: captureCanonicalJson({ kind: "connect" }),
   result: captureCanonicalJson(reviewResult),
-  source: "creating_result" as const,
 });
 const noDecisionResult = walletManagementContracts.review.parsePublicSuccess(
   { kind: "disconnect" },
@@ -82,7 +81,6 @@ const admittedNoDecision = Object.freeze({
   entry: presentationContracts.walletReview,
   normalizedInput: captureCanonicalJson({ kind: "disconnect" }),
   result: captureCanonicalJson(noDecisionResult),
-  source: "creating_result" as const,
 });
 
 const activeOperation = parseWalletManagementOperation({
@@ -114,11 +112,11 @@ const terminalOperation = parseWalletManagementOperation({
     },
   },
 });
-const qr = Object.freeze({
+const qr = {
   size: 21,
-  rows: Object.freeze(Array.from({ length: 21 }, (_, index) =>
-    index === 0 ? `1${"0".repeat(20)}` : "0".repeat(21))),
-});
+  rows: Array.from({ length: 21 }, (_, index) =>
+    index === 0 ? `1${"0".repeat(20)}` : "0".repeat(21)),
+};
 
 type ToolCall = Readonly<{ name: string; argumentsValue: Record<string, unknown> }>;
 
@@ -143,7 +141,7 @@ const app = (input: Readonly<{
 const article = (): HTMLElement => renderPresentation(
   presentationContracts.walletReview,
   admittedReview.result,
-);
+).node;
 
 const toolResult = (value: unknown, extra: Partial<CallToolResult> = {}): CallToolResult => ({
   content: [{
@@ -199,7 +197,7 @@ describe("MCP App operation lifecycle", () => {
     const card = renderPresentation(
       presentationContracts.walletReview,
       admittedNoDecision.result,
-    );
+    ).node;
 
     expect(await mountOperationReview(
       app({ serverTools: true, calls }),

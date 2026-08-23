@@ -3,11 +3,12 @@ import {
   validateConfiguredChain,
   type ConfiguredChainProof,
 } from "./configured-chain.js";
-import { ChainOperationError } from "./errors.js";
+import { admitChainReadFailure, ChainOperationError } from "./errors.js";
 import { blockSelectorToRpcTag, normalizeRpcBlockAnchor } from "./normalization.js";
 import {
   assertActiveChainInvocationContext,
   type ChainInvocationContext,
+  type ChainInvocationLifecycle,
 } from "./invocation-lifecycle.js";
 import {
   canonicalBlockReference,
@@ -27,6 +28,10 @@ interface CanonicalBlockState {
 }
 
 const canonicalBlockStates = new WeakMap<object, CanonicalBlockState>();
+
+export interface CurrentBlockReadPort {
+  resolveCurrentBlock(context: ChainInvocationContext): Promise<CanonicalBlock>;
+}
 
 export const resolveConfiguredCanonicalBlock = async (input: Readonly<{
   rpc: RpcRequester;
@@ -81,4 +86,35 @@ export const readConfiguredCanonicalBlock = (input: Readonly<{
     throw new TypeError("Configured canonical block authority is invalid.");
   }
   return state;
+};
+
+export const createCurrentBlockReadPort = (input: Readonly<{
+  rpc: RpcRequester;
+  chainId: EvmChainId;
+  lifecycle: ChainInvocationLifecycle;
+}>): CurrentBlockReadPort => {
+  if (
+    typeof input !== "object" || input === null ||
+    typeof input.rpc?.request !== "function" ||
+    typeof input.lifecycle?.assertActiveContext !== "function"
+  ) {
+    throw new TypeError("Current-block read dependencies are invalid.");
+  }
+  return Object.freeze({
+    async resolveCurrentBlock(context: ChainInvocationContext): Promise<CanonicalBlock> {
+      input.lifecycle.assertActiveContext(context);
+      try {
+        return await resolveConfiguredCanonicalBlock({
+          rpc: input.rpc,
+          chainId: input.chainId,
+          selector: { kind: "latest" },
+          context,
+        });
+      } catch (error) {
+        const failure = admitChainReadFailure(error, context.signal);
+        if (failure !== undefined) throw new ChainOperationError(failure);
+        throw error;
+      }
+    },
+  });
 };

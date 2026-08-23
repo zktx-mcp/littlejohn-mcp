@@ -1,7 +1,6 @@
 import { z } from "zod";
 
 import {
-  canonicalUsdgAddress,
   capabilityIdSchema,
   contractRuntimeCodeIdentitySchema,
   deepFreezeValue,
@@ -11,6 +10,7 @@ import {
   hash32Schema,
   jsonObject,
   productChainId,
+  productUsdgAsset,
 } from "../../core/client.js";
 import { officialAssetSourceDefinition } from "../../registry/client.js";
 import {
@@ -170,7 +170,7 @@ export const uniswapV2RouteAssets = deepFreezeValue([
   erc20AssetIdentitySchema.parse({
     kind: "erc20",
     chainId: productChainId,
-    address: canonicalUsdgAddress,
+    address: productUsdgAsset.address,
   }),
 ]);
 

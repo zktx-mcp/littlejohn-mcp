@@ -91,7 +91,7 @@ type _InterfaceContextKeys = Assert<Equal<
   keyof InterfaceOwnerApplicationContext,
   "routes" | "signal" | "startupResources" | "supportManifest" | "walletConnection" | "walletOperations" |
   "chainReads" | "uniswapV2Quote" | "tokenInspection" | "tokenCatalogQueries" | "tokenCatalogManagement" |
-  "accountAssets" | "markets"
+  "accountAssets" | "tradeHistory"
 >>;
 type _InterfaceWalletOperations = Assert<Equal<
   InterfaceOwnerApplicationContext["walletOperations"],
@@ -156,7 +156,7 @@ type _WalletHandoffActiveWallet = Assert<Equal<
 type _ChainHandoffKeys = Assert<Equal<
   keyof ChainOwnerHandoff,
   "supportManifest" | "invocations" | "chainReads" | "tokenInspection" | "tokenAdditionReads" |
-  "officialAssetReads" | "accountAssetReads" | "referenceMarketReads" | "protocolReads"
+  "officialAssetReads" | "accountAssetReads" | "currentBlockReads" | "protocolReads"
 >>;
 type _RuntimeHandleKeys = Assert<Equal<
   keyof LocalRuntime,
@@ -166,7 +166,7 @@ type _RuntimeHandleKeys = Assert<Equal<
 type _RuntimeOptionKeys = Assert<Equal<
   keyof LocalRuntimeOptions<TestActiveWallet, TestWalletOperations>,
   "environment" | "now" | "robinhoodOfficialAssetSourceClient" |
-    "stockTokenExecutionIndex" |
+    "stockTokenTradeHistory" |
     "contractSourceVerificationFactory" | "walletApplicationFactory" |
     "chainApplicationFactory" | "interfaceApplicationFactory"
 >>;

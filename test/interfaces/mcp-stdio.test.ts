@@ -20,7 +20,7 @@ import {
   createStdioMcp,
   type McpServerRuntimePort,
 } from "../../src/interfaces/mcp.js";
-import { marketPortfolioInterfaceBindings } from "../../src/interfaces/identities.js";
+import { stockTokenTradeHistoryInterfaceBinding } from "../../src/interfaces/identities.js";
 import type { PresentationSnapshotStore } from "../../src/runtime/presentation-snapshot.js";
 import {
   RuntimeOperationError,
@@ -46,7 +46,8 @@ import {
   tokenCatalogInterfaceErrorMappings,
 } from "../../src/token-catalog/errors.js";
 import { openTestOwnerSession } from "./owner-session-harness.js";
-import { stockTokenMarketUnmappedFixture } from "./stock-token-market-fixture.js";
+import { stockTokenTradeHistoryUnavailableFixture } from
+  "./stock-token-trade-history-fixture.js";
 
 const appResource = createMcpAppResource("<!doctype html><title>Little John test</title>");
 
@@ -473,8 +474,8 @@ describe("MCP stdio lifecycle ownership", () => {
     const owner = createStdioMcp(new HeldRuntime(store), input, output, appResource);
     const client = await connectClient(owner, input, output);
     const call = client.callTool({
-      name: marketPortfolioInterfaceBindings.stockTokenMarket.mcp.name,
-      arguments: { symbol: "P" },
+      name: stockTokenTradeHistoryInterfaceBinding.mcp.name,
+      arguments: { symbol: "AAPL" },
     });
     void call.catch(() => undefined);
     await dispatchStarted;
@@ -483,7 +484,7 @@ describe("MCP stdio lifecycle ownership", () => {
     expect(request.signal?.aborted).toBe(true);
     resolveDispatch(Object.freeze({
       status: 200,
-      body: captureCanonicalJson(stockTokenMarketUnmappedFixture()),
+      body: captureCanonicalJson(stockTokenTradeHistoryUnavailableFixture()),
     }));
     await new Promise<void>((resolveTurn) => { setImmediate(resolveTurn); });
     expect(store.prepareCalls).toBe(0);

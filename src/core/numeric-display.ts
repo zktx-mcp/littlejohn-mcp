@@ -5,13 +5,13 @@ import {
 import { deepFreezeValue } from "./immutability.js";
 import {
   exactRationalSchema,
-  referenceMarketLimits,
+  exactRationalMaximumDigits,
   type ExactRational,
-} from "./reference-market.js";
+} from "./exact-rational.js";
 
 const significantDigits = 8;
 const maximumRationalComponentDigits =
-  referenceMarketLimits.exactRationalDigits + maximumTokenDecimals;
+  exactRationalMaximumDigits + maximumTokenDecimals;
 const canonicalUnsignedDecimal = /^(?:0|[1-9][0-9]*)$/u;
 const tokenDecimalsPattern = new RegExp(
   canonicalUnsignedDecimalMaximumPattern(maximumTokenDecimals),

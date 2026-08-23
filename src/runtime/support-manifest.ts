@@ -237,7 +237,7 @@ type ManifestScope =
   | "chain"
   | "token_catalog"
   | "account_assets"
-  | "market_portfolio"
+  | "stock_token_trade_history"
   | "protocols"
   | "interfaces";
 declare const runtimeSupportManifestType: unique symbol;
@@ -252,7 +252,8 @@ export type ChainRuntimeSupportManifest = RuntimeSupportManifest<"chain">;
 export type ProtocolRuntimeSupportManifest = RuntimeSupportManifest<"protocols">;
 export type TokenCatalogRuntimeSupportManifest = RuntimeSupportManifest<"token_catalog">;
 export type AccountAssetRuntimeSupportManifest = RuntimeSupportManifest<"account_assets">;
-export type MarketPortfolioRuntimeSupportManifest = RuntimeSupportManifest<"market_portfolio">;
+export type StockTokenTradeHistoryRuntimeSupportManifest =
+  RuntimeSupportManifest<"stock_token_trade_history">;
 export type InterfaceRuntimeSupportManifest = RuntimeSupportManifest<"interfaces">;
 
 interface ManifestState {
@@ -440,19 +441,19 @@ export const assertChainRuntimeSupportManifestExtension = (
 ): void => assertScopedChild(parent, "wallet", extension, "chain");
 
 export const assertProtocolRuntimeSupportManifestExtension = (
-  parent: MarketPortfolioRuntimeSupportManifest,
+  parent: StockTokenTradeHistoryRuntimeSupportManifest,
   extension: ProtocolRuntimeSupportManifest,
-): void => assertScopedChild(parent, "market_portfolio", extension, "protocols");
+): void => assertScopedChild(parent, "stock_token_trade_history", extension, "protocols");
 
 export const assertInterfaceRuntimeSupportManifestExtension = (
   parent: ProtocolRuntimeSupportManifest,
   extension: InterfaceRuntimeSupportManifest,
 ): void => assertScopedChild(parent, "protocols", extension, "interfaces");
 
-export const assertMarketPortfolioRuntimeSupportManifestExtension = (
+export const assertStockTokenTradeHistoryRuntimeSupportManifestExtension = (
   parent: AccountAssetRuntimeSupportManifest,
-  extension: MarketPortfolioRuntimeSupportManifest,
-): void => assertScopedChild(parent, "account_assets", extension, "market_portfolio");
+  extension: StockTokenTradeHistoryRuntimeSupportManifest,
+): void => assertScopedChild(parent, "account_assets", extension, "stock_token_trade_history");
 
 export const assertAccountAssetRuntimeSupportManifestExtension = (
   parent: TokenCatalogRuntimeSupportManifest,
@@ -493,11 +494,11 @@ export const extendChainRuntimeSupportManifest = (
 };
 
 export const extendProtocolRuntimeSupportManifest = (
-  parent: MarketPortfolioRuntimeSupportManifest,
+  parent: StockTokenTradeHistoryRuntimeSupportManifest,
   extensionInput: RuntimeProtocolSupportManifestExtensionInput,
 ): ProtocolRuntimeSupportManifest => {
   const parentState = manifestState(parent);
-  if (parentState.scope !== "market_portfolio") {
+  if (parentState.scope !== "stock_token_trade_history") {
     throw new TypeError("Protocol support requires the completed application manifest.");
   }
   const extension = createManifest("protocols", {
@@ -541,19 +542,19 @@ export const extendInterfaceRuntimeSupportManifest = (
   return extension;
 };
 
-export const extendMarketPortfolioRuntimeSupportManifest = (
+export const extendStockTokenTradeHistoryRuntimeSupportManifest = (
   parent: AccountAssetRuntimeSupportManifest,
   extensionInput: RuntimeSupportManifestExtensionInput,
-): MarketPortfolioRuntimeSupportManifest => {
+): StockTokenTradeHistoryRuntimeSupportManifest => {
   const parentState = manifestState(parent);
   if (parentState.scope !== "account_assets") {
-    throw new TypeError("Market portfolio support requires the account assets manifest.");
+    throw new TypeError("Stock Token trade-history support requires the account assets manifest.");
   }
-  const extension = createManifest("market_portfolio", {
+  const extension = createManifest("stock_token_trade_history", {
     ...parentState.snapshot,
     capabilities: applyCapabilityExtension(parentState.snapshot, extensionInput),
-  }, parent) as MarketPortfolioRuntimeSupportManifest;
-  assertMarketPortfolioRuntimeSupportManifestExtension(parent, extension);
+  }, parent) as StockTokenTradeHistoryRuntimeSupportManifest;
+  assertStockTokenTradeHistoryRuntimeSupportManifestExtension(parent, extension);
   return extension;
 };
 

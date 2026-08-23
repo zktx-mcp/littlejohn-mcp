@@ -13,13 +13,12 @@ follows [Runtime Lifecycle](#runtime-lifecycle).
 The current runtime composes wallet connection and operation ownership, pinned
 chain reads, contract analysis with the current source-verification provider,
 official-asset synchronization and StockFactory admission, account token
-selection, account assets, reference prices and local reference history,
-Stock Token market results with admitted external execution artifacts,
-account-scoped reference-pair state, and the statically registered protocol
+selection, account assets, Stock Token trade history from admitted external
+data, and the statically registered protocol
 packages. Each feature owns its canonical application contracts and persistence
 ports. Wallet management persists its operation before an external effect;
-token-selection and reference-watchlist decisions atomically persist their
-local mutation and terminal operation. Exact terminal operations have no
+token-selection decisions atomically persist their local mutation and terminal
+operation. Exact terminal operations have no
 automatic eviction. This document records the current external-integration
 classification in
 [External Integration Model](#external-integration-model); exact support,
@@ -37,12 +36,14 @@ snapshot store, admitted packaged App resource, and one explicit local-operation
 client, then publishes the connection owner before starting stdio. Input end or
 close terminates that owner, which closes the SDK server and adopted transport
 before its local-operation client. On an admitted MCP Apps connection,
-registered read and Review tools retain one content-addressed input/result
-snapshot and attach one self-contained App resource without changing their MCP
-text or structured result. Connection admission, rather than missing
-construction inputs, selects ordinary or App presentation. App-only controls
-and interactive CLI commands independently send the same admitted Reviews to
-the same domain owners and read the same exact
+registered read and Review tools use the bounded immutable-presentation process
+defined by
+[Immutable Presentation Snapshot Ownership](#immutable-presentation-snapshot-ownership)
+and [MCP App View Lifecycle](#mcp-app-view-lifecycle). Connection admission,
+rather than missing construction inputs, selects ordinary or App presentation
+under `docs/PRODUCT_POLICY.md#capability-availability`. App-only controls and
+interactive CLI commands independently send the same admitted Reviews to the
+same domain owners and read the same exact
 durable operations. The standard transport is primary. Implemented Host
 adapters are limited to current App association, immutable snapshot delivery,
 and the measured Codex View operation-result carriage path.
@@ -96,9 +97,8 @@ This repository owns:
 - asset and deployment registries;
 - contract, calldata, transaction, and receipt analysis;
 - simulation and policy;
-- the fixed reference-feed manifest, exact reference prices and candles, Stock
-  Token market composition and execution-artifact admission, and account-scoped
-  reference-pair watchlists;
+- Stock Token trade-history source identities, data admission, and chart-series
+  construction;
 - protocol adapters;
 - WalletConnect handoff; and
 - receipt verification.
@@ -132,7 +132,7 @@ package verification does not replace manual host and wallet gates.
 | `registry` | Official-asset source admission, StockFactory identity, and ordered default Stock Tokens |
 | `intelligence` | ABI, source, contract, calldata, signature, and transaction analysis |
 | `security` | Deterministic policy, simulation coverage, warnings, blocks, and state deltas |
-| `market-portfolio` | Fixed-feed reference prices and candles, Stock Token market composition and execution-artifact admission, and account-scoped pair watchlists |
+| `stock-token-trade-history` | Official Stock Token selection, same-block StockFactory verification, trade-history data admission, and chart-series construction |
 | `protocols` | Protocol package contract and protocol-specific capabilities and action adapters |
 | `review` | Transaction intent, account binding, commitments, freshness, and transaction Review state |
 | `wallet` | WalletConnect sessions and exact reviewed-request handoff |
@@ -202,9 +202,8 @@ The current external integration classification is:
 | WalletConnect | Binding product transport | `docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture | `wallet` owns SDK adaptation, project-ID validation, required namespace settings, metadata, SDK options, lifecycle, and provider defaults | The wallet application factory constructs one `WalletConnectClientPort` from opaque configuration received through runtime composition; other modules receive wallet product ports |
 | Robinhood official-asset API | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority; `officialAssetSourceDefinition` and the registry source contract own the exact source identity, normalized observed-or-unavailable read result, evidence, and storage ports | `src/registry/official-assets.ts` owns request and response admission, endpoint consumption, transport behavior, deadlines, and operational limits | Runtime composition constructs one source client; registry synchronization consumes its value result and the product-owned store without an exception translation layer; replacing the membership source changes the binding evidence authority |
 | Robinhood StockFactory | Binding source authority | `docs/EVIDENCE_POLICY.md` owns the independent UID-to-token-address proof meaning; `stockFactoryAdmissionManifest` and the registry verification contract own the admitted deployment identity and identity-bearing verification result | `src/registry/stock-factory.ts` owns StockFactory call and identity verification behind the pinned-block `OfficialAssetChainReadPort` in `src/chain/official-assets.ts`; common RPC configuration remains with the chain transport | The chain application constructs the port and preserves the same result contract for single and batch reads used by account-assets and token inspection; changing verification internals preserves the admitted identity, while changing the deployment or source owner changes the manifest and evidence authority |
-| Chainlink Data Feeds | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority and evidence meaning; `referenceMarketManifest` owns the three generic pair mappings and `stockTokenReferenceMarketCatalog` owns the generated Stock Token mappings; `docs/NUMERIC_POLICY.md` owns reference-price, cross-price, and candle meaning; `market-portfolio` and its canonical application contracts own admitted price and history result lifecycles | `src/chain/reference-market.ts` owns Data Feed call encoding, round admission, response validation, and batch fallback behind `ReferenceMarketChainReadPort`; common RPC configuration remains with the chain transport | The chain application constructs the port and runtime composition passes it to `market-portfolio`; changing a mapping changes its owning manifest or generated catalog, and replacing Chainlink with another source owner requires an accepted evidence or product-policy change |
-| Robinhood Uniswap V4 PoolManager events | Binding source authority | `docs/EVIDENCE_POLICY.md` owns executed-trade evidence meaning; `stockTokenExecutionIndexRegistry` owns the exact PoolManager, PoolKey, Pool ID, USDG, finality, and event identity; `docs/NUMERIC_POLICY.md` owns exact execution-candle meaning | The separate project index owns bounded finalized log collection, exact decoding, cursor, repair, one-minute candle construction, and pair-state, pair-month, and pair-day file publication; Little John has no log reader or candle builder | Little John consumes only the versioned provider-neutral execution-index data; changing collection internals preserves its exact contract, while changing the deployment, pool identity, event, quote asset, or numeric construction changes the binding source contract and does not imply Uniswap transaction support |
-| GitHub Releases Stock Token execution-index data | Replaceable implementation provider | `market-portfolio` owns `StockTokenExecutionIndexReadPort`, pair-state, pair-month, and pair-day file admission, the normalized series, availability outcomes, limits, and lifecycle; finalized PoolManager events remain the semantic source | `src/market-portfolio/github-stock-token-execution-index.ts` privately owns the repository, release and asset requests, response admission, deadlines, byte limits, and concurrency | Runtime composition constructs one adapter and passes only the provider-neutral read port; another store may replace GitHub only by returning the unchanged admitted files and result contract |
+| Robinhood Uniswap V4 PoolManager events | Binding source authority | `docs/EVIDENCE_POLICY.md` owns trade evidence meaning; `stockTokenTradeHistoryRegistry` owns the exact PoolManager, PoolKey, Pool ID, USDG, finality, and event identity; `docs/NUMERIC_POLICY.md` owns exact trade-candle meaning | The separate collector owns bounded finalized log collection, exact decoding, cursor, repair, one-minute candle construction, and pair-state, pair-month, and pair-day file publication; Little John has no log reader or candle builder | Little John consumes only the versioned provider-neutral trade-history data; changing collection internals preserves its exact contract, while changing the deployment, pool identity, event, quote asset, or numeric construction changes the binding source contract and does not imply Uniswap transaction support |
+| GitHub Releases Stock Token trade-history data | Replaceable implementation provider | `stock-token-trade-history` owns `StockTokenTradeHistoryReadPort`, pair-state, pair-month, and pair-day file admission, the normalized result, availability outcomes, limits, and lifecycle; finalized PoolManager events remain the semantic source | `src/stock-token-trade-history/github-stock-token-trade-history.ts` privately owns the repository, release and asset requests, response admission, deadlines, byte limits, and concurrency | Runtime composition constructs one adapter and passes only the provider-neutral read port; another store may replace GitHub only by returning the unchanged admitted files and result contract |
 | Sourcify API v2 | Replaceable implementation provider | `intelligence` owns `ContractSourceVerificationPort`, its normalized results and failures, evidence requirements, and lifecycle | `src/intelligence/sourcify.ts` owns the origin, path, request and response admission, deadline, response-size and concurrency limits, cleanup, and provider identity | Runtime composition constructs one Sourcify adapter and passes only `ContractSourceVerificationPort` to the shared contract-analysis process |
 | Uniswap V2 | Binding protocol identity | `docs/PROTOCOL_ADAPTERS.md` and `src/protocols/uniswap-v2` own the exact V2 package, deployment records, native mapping, and capability registration; `docs/NUMERIC_POLICY.md` owns numeric meaning and `docs/EVIDENCE_POLICY.md` owns evidence meaning | `src/protocols/uniswap-v2/sdk.ts` owns the pinned Uniswap SDK loading and admission boundary; the package owns immutable deployment and route-asset records | Runtime composition constructs the statically registered V2 package once and passes only its canonical quote binding to interfaces |
 
@@ -224,9 +223,11 @@ result, Review, operation, and action meaning.
 `interfaces/mcp-app` owns the self-contained App resources, standard
 capability admission, presentation descriptors, exact snapshot transport,
 View bridge, typed renderers, and transport-only Host adapters. Runtime owns
-the immutable presentation-snapshot store. Existing MCP bindings attach App
-presentation to canonical tools without changing those tools' admitted text,
-structured result, failure, or availability meaning.
+the immutable presentation-snapshot store. Immutable presentation handoff,
+failure, and replay are owned by
+[Immutable Presentation Snapshot Ownership](#immutable-presentation-snapshot-ownership).
+View execution order and the separate direct operation-result transport are
+owned by [MCP App View Lifecycle](#mcp-app-view-lifecycle).
 
 Codex and Claude are replaceable MCP Apps Host providers. A connection uses
 the standard MCP Apps capability, nested metadata, resource, result, and
@@ -295,11 +296,10 @@ View-initiated action and exact-operation `structuredContent`. Its descriptor
 emission is deleted with the adapter when no remaining admitted transport path
 consumes it.
 
-An MCP connection that does not admit the App transport retains ordinary MCP
-text and structured results. It receives no App resource or App-only
-authority. A bridge that transports tools but not resources therefore cannot
-present an App on that connection. Product interface selection and
-non-fallback meaning are owned by
+An MCP connection that does not admit the App transport receives no App
+resource or App-only authority. A bridge that transports tools but not
+resources therefore cannot present an App on that connection. Product
+interface selection and non-fallback meaning are owned by
 `docs/PRODUCT_POLICY.md#product-scope`.
 
 Configuration values are classified independently from where the process reads
@@ -323,11 +323,12 @@ them:
   provider schemas, SDK options, or provider limits.
 
 WalletConnect is the current binding wallet transport. The Robinhood
-official-asset API, Robinhood StockFactory, and Chainlink Data Feeds are
-separate binding source identities with separate admission and replacement
-boundaries. A supported DeFi protocol is a binding protocol identity. Replacing
-any of those with a different external owner changes its owning product,
-evidence, or protocol contract; adapter isolation does not pretend otherwise.
+official-asset API, Robinhood StockFactory, and Robinhood Uniswap V4 PoolManager
+events are separate binding source identities with separate admission and
+replacement boundaries. A supported DeFi protocol is a binding protocol
+identity. Replacing any of those with a different external owner changes its
+owning product, evidence, or protocol contract; adapter isolation does not
+pretend otherwise.
 
 An externally operated service or vendor SDK enters the runtime through one
 product-role port owned by the module that needs the role. The role is named for
@@ -462,8 +463,8 @@ reader does not implement a weaker result parser.
   contract.
 - Machine-interface identity catalogs bind canonical contracts to their MCP,
   native HTTP, and CLI identities. A separate closed presentation registry
-  binds an exact canonical contract object to its canonical serializer and
-  parser, deterministic MCP text projection, typed MCP App renderer, and
+  binds an exact canonical contract object to its canonical parser, typed MCP
+  App renderer, and
   exactly one `presentationKind`: `immutable_result`, `review`, or `operation`.
   That field is the sole View-process classifier. Only `review` enters an
   operation lifecycle; `immutable_result` stops after immutable rendering, and
@@ -471,8 +472,8 @@ reader does not implement a weaker result parser.
   never reconstructs a contract from a string identifier and contains no
   generic JSON renderer, secondary process set, or Host-dependent
   classification.
-- MCP App presentation is connection-local metadata on a canonical MCP
-  result, not another canonical binding or support-manifest axis. The standard
+- MCP App presentation is a connection-local lossless transport projection of
+  a canonical result, not another canonical binding or support-manifest axis. The standard
   resource and View path and the exact Host adapters in
   [MCP Apps Integration Requirements](#mcp-apps-integration-requirements) are
   transport projections only.
@@ -563,7 +564,7 @@ reader does not implement a weaker result parser.
   composition supplies the stage owner and complete dependencies, consumes the
   complete application, and does not construct token-catalog internals.
 - Fixed-owner shutdown blocks new work, aborts and drains active work, and
-  closes interface, market-portfolio, account-assets, token-catalog, and chain
+  closes interface, stock-token-trade-history, account-assets, token-catalog, and chain
   applications in dependency-reverse order before containing wallet product
   authority. Before WalletConnect SDK initialization begins, the runtime can
   release wallet resources, close product SQLite, release the database lease,
@@ -822,10 +823,9 @@ carries the remaining six admitted values. No stored or live owner field acts
 as a runtime wire-version selector.
 
 The product schema persists local profile and runtime-owner identity, trusted
-chain configuration, admitted reference-feed history and synchronization
-state, official-asset snapshots, verified contracts and token inspections,
+chain configuration, official-asset snapshots, verified contracts and token inspections,
 durable wallet-account identity and the current secret-free connection
-projection, account watchlists, account token-selection state, immutable
+projection, account token-selection state, immutable
 presentation snapshots, and exact domain operations. The exact table names and
 their SQL relationships are read from the SQLite schema owner, not maintained
 as an independent documentation contract.
@@ -846,7 +846,7 @@ validated connected transition inserts or reuses its exact wallet-account row
 and replaces the projection in one transaction. A nonconnected transition
 changes only the projection and never deletes a wallet-account row.
 
-Wallet, token-selection, and reference-watchlist operations are durable exact
+Wallet and token-selection operations are durable exact
 resources under [Durable Operation Ownership](#durable-operation-ownership).
 Pairing URI and QR material remain owner-memory presentation state and never
 enter the canonical operation, product SQLite, or the WalletConnect public
@@ -901,123 +901,44 @@ selection revision, or official-member partition. A failed official
 synchronization preserves the last committed snapshot and never changes
 account choices.
 
-The market-portfolio application is the sole shared owner of latest reference
-prices, Stock Token market results, bounded reference-history synchronization,
-exact cross construction, reference-feed candle aggregation, and account
-watchlists. Reference-only ports, stores, schemas, manifests, and
-synchronization retain reference-specific ownership. Shared application
-contracts, runtime handoffs, interface bindings, and routed consumer ports use
-market-portfolio ownership.
-One canonical feed registry owns feed identities. The fixed generic pair
-registry addresses only its three admitted pair identities; generated Stock
-Token feed membership does not make a feed addressable through a generic pair
-or watchlist contract.
+The stock-token-trade-history application is the sole owner of Stock Token/USDG
+trade-history results. Core owns the neutral `1d`, `7d`, and `30d` request
+durations. The application fixes one half-open request interval from the chosen
+duration and its canonical result block. No provider, chart, or interface
+recalculates that interval.
 
-Core owns one neutral `1d`, `7d`, and `30d` request-duration contract. The
-reference-history owner applies reference bucket definitions separately. The
-Stock Token market owner fixes one half-open request interval from the neutral
-duration and its canonical result block. An execution consumer cannot import a
-reference bucket to determine that interval.
+One read consumes the registry owner's complete current official-asset
+observation, resolves one official member, enters one Chain invocation, resolves
+one opaque canonical block, and verifies that member through StockFactory at
+the same block. Only after those identity gates succeed does it read the
+provider-neutral trade-history data for the registered Stock Token/USDG Pool
+ID. Caller cancellation, application closure, and an unadmitted local failure
+terminate the whole read. The application aborts and drains active work before
+it closes.
 
-The generated Stock Token mapping catalog is an offline product-data artifact.
-One maintainer generator consumes two complete retained source responses,
-validates every source member and disposition, and atomically publishes the
-complete generated file. Runtime, build, and release code never refreshes the
-directory. Runtime official-asset symbol resolution consumes only the registry
-owner's complete current official-asset observation. The generated disposition
-is resolved afterward and only by the Chainlink reference sibling. Runtime has
-no directory client, mapping override, alias table, or second Robinhood adapter.
+The generated `stockTokenTradeHistoryRegistry` owns the exact supported token,
+USDG, PoolManager, PoolKey, Pool ID, finality, and `Swap` event identities. The
+provider-neutral `StockTokenTradeHistoryReadPort` admits one exact versioned
+pair-state file and its digest-bound pair-month and pair-day files, retains the
+public half-open request interval, and selects only fully contained one-minute
+candles for that Pool ID. It aggregates those candles once into the completed
+fixed-window chart and returns source coverage, freshness, and availability
+without exposing provider identities, storage partitions, or a second
+one-minute list.
 
-One Stock Token market read resolves an official member, one opaque canonical
-block, and same-block StockFactory verification as common gates. After those
-gates succeed, it settles a Chainlink reference sibling and a provider-neutral
-Stock Token/USDG execution sibling independently. The reference chain port owns
-only same-block oracle-pause and latest-feed admission for that sibling; it does
-not construct or repeat the official-asset StockFactory port. An admitted
-source-specific unavailable outcome remains inside its sibling. Caller
-cancellation, owner closure, and an unadmitted local failure terminate the whole
-read after both started source tasks settle and clean up.
-
-`readStockTokenReference` owns the ordered Stock Token reference-sibling
-operation from mapping resolution through direct observation, history
-synchronization, reference-candle construction, and canonical sibling
-construction. `MarketPortfolioApplication` owns only the common gates, the
-reference and execution start, complete settlement, and whole-operation
-outcome. `ReferenceFeedSynchronizationOwner` continues to own scheduling,
-cache, persistence, and bounded history traversal and never constructs a Stock
-Token sibling. Both started sibling operations receive the same complete Chain
-invocation signal; the execution-index adapter's private deadline remains a
-nested provider guard rather than the whole-operation lifecycle.
-
-The provider-neutral execution-index port admits one exact versioned pair-state
-file and its digest-bound pair-month and pair-day files,
-retains the public half-open request interval, and selects only fully contained
-one-minute candles for the registry-owned Pool ID. It returns source coverage
-and availability without exposing provider identities or storage partitions.
 The current GitHub adapter is stateless and owns only bounded GitHub Release
-metadata and execution-index file reads; its response-size, asset-list,
-concurrency, and deadline values are private
-operational guards that cannot change the provider-neutral result or evidence
-meaning. Runtime contains no Swap log reader, PoolKey derivation, cursor, repair
-process, candle builder, or local execution-history store.
+metadata and trade-history file reads. Its response-size, asset-list,
+concurrency, and deadline values are private operational guards that cannot
+change the provider-neutral result or evidence meaning. Runtime contains no
+`Swap` log reader, PoolKey derivation, cursor, repair process, candle builder,
+or local trade-history store.
 
-The canonical Stock Token result carries common identity and block facts once,
-then the complete `reference` and `execution` siblings without flattening or
-reconstruction. Application, MCP, HTTP, CLI JSON, presentation admission, and
-the exact presentation-snapshot store hand off that admitted result losslessly.
-Snapshot replay reads only the stored canonical input and result and has no
-chain, Chainlink, execution-index, or aggregation port.
-
-Each latest, history, or Stock Token market read enters one chain invocation
-and resolves one opaque canonical block. Latest and history reads perform their
-dependent feed work through that exact authority. A Stock Token market read
-performs the common StockFactory verification and any mapped reference feed and
-oracle-pause reads through that authority; its execution sibling retains its
-separate finalized-index source coverage. One shared
-history scheduler admits at most `32` active-or-queued jobs across all feed
-identities, runs at most `2` jobs concurrently and at most one for a given
-feed, and preserves FIFO admission. Each job retains the canonical limits of
-`1,024` probes and `32` provider calls per batch.
-
-History synchronization commits validated observations, exact backfill and
-continuation state, integrity state, aggregate retention, and every affected
-feed cutoff in one exclusive transaction. Age eviction removes only a wholly
-expired composite-identity prefix. Per-feed retention admits at most `16,384`
-rounds and aggregate retention admits at most `32,768` rounds without scaling
-with registry membership. Aggregate eviction repeatedly selects the earliest
-removable feed-prefix head, then feed ID and numeric round ID as deterministic
-ties. Every eviction advances one irreversible inclusive identity cutoff and
-never removes the greatest identity of a nonempty feed.
-Reads never traverse or admit an identity at or below it, and that cutoff never
-becomes source-time, source-absence, finality, or coverage evidence. The chain
-reader consumes one nonoverlapping work plan derived from the durable
-continuation, admitted identities, and cutoff. Synchronization derives the
-request report from the committed snapshot through the same planner. Remaining
-continuation, remaining gap, phase-boundary, malformed-round, and retention
-facts become explicit history limitations rather than completeness claims.
-One history segment publishes its observations and traversal position together.
-A retryable source or transport stop retains completed segments and returns the
-bounded committed snapshot with its remaining work explicit; cancellation,
-application closure, inconsistent source evidence, and internal failure remain
-failures.
-Different admitted immutable facts for one round identity set the persistent
-reference integrity conflict owned by the evidence policy. A latest round that
-regresses to the locally retained-out domain is a local state conflict instead;
-the retention cutoff cannot establish inconsistent source evidence.
-Candles and empty-bucket starts partition only the represented UTC buckets and
-never prove that the source had no other updates. Stored read evidence retains
-its original block and read time instead of being rewritten under a later
-request block. The synchronization owner rejects new work while closing,
-removes queued work without an RPC or commit, and drains active settlement.
-The application determines terminal cancellation once at the final projection:
-caller abort precedes application close, which precedes the chain deadline and
-other failures. Its composition stage consumes only the cumulative parent
-support manifest; it does not receive or depend on the account-assets
-application port. Watchlist reads capture and recapture the same live wallet
-session. Add, remove, and reorder commit only when the captured account,
-connection revision, and expected watchlist revision still match.
-Neither the round cache nor the watchlist stores a formatted price, chart
-coordinate, wallet balance, remote directory response, or arbitrary pair.
+The application, MCP, HTTP, CLI JSON, presentation admission, and immutable
+presentation-snapshot store hand off the admitted result losslessly. The result
+contains the exact requested bounds, source-file identities, continuous
+coverage, and completed chart series. Snapshot replay reads only the stored
+canonical input and result and has no chain, trade-history data, or aggregation
+port.
 
 The WalletConnect SDK private store is authoritative for:
 
@@ -1151,9 +1072,9 @@ base-10 integers. The strict descriptor has kind
 `presentation_snapshot_descriptor` and contains only that kind, snapshot URI,
 snapshot ID, contract ID and version, the input and result UTF-8 byte lengths
 and digests, result-chunk byte limit, and result-chunk count. The chunk byte
-limit is `65,536`; the chunk count is the ceiling of the result byte length
+limit is `262,144`; the chunk count is the ceiling of the result byte length
 divided by the limit. Chunk indexes are zero-based. Every non-final chunk is
-exactly `65,536` raw bytes and the final chunk is the remaining nonempty slice.
+exactly `262,144` raw bytes and the final chunk is the remaining nonempty slice.
 Result chunks cover `R` once, in order without overlap or gap.
 
 The strict `presentation_snapshot_resource` contains only that kind, the
@@ -1179,10 +1100,12 @@ invalid existing row advertises no new snapshot. No snapshot is automatically
 expired, evicted, reordered, or selected by insertion time. Only an explicit
 complete profile reset removes snapshots.
 
-Snapshot persistence failure never changes the already admitted domain result,
-ordinary MCP text or structured output, or CLI output. The affected App
-presentation reports `presentation_unavailable` and receives no durable-card
-claim. Its reason is exactly one of `capacity_exceeded`,
+Snapshot persistence failure never changes the already admitted domain result
+or an interface outside this App presentation process. During an initial App
+presented read or Review, preparation or commit failure returns the owning
+interface's existing `internal_error` and no presentation handoff. After a
+handoff exists, an App-only snapshot lookup or chunk read reports
+`presentation_unavailable`; its reason is exactly one of `capacity_exceeded`,
 `runtime_unavailable`, `snapshot_missing`, or `snapshot_inconsistent`.
 An input or result above its section bound, a snapshot resource above the
 internal response limit, or an insert above either retention bound is
@@ -1195,10 +1118,12 @@ or another snapshot lookup. An unrelated valid snapshot remains independently
 readable. Existing SQLite schema mismatch keeps the reset behavior defined by
 [Local Persistence Boundary](#local-persistence-boundary).
 
-The creating MCP result keeps its canonical structured result. After snapshot
-commit it also carries the exact snapshot resource in View-private metadata
-and one standard MCP resource link to `snapshotUri`. `resources/read` accepts
-only that canonical URI and returns the bounded snapshot resource, never `R`.
+After a successful model-visible App-presented read or Review admits and commits
+the snapshot, its initial result contains exactly one standard resource link to
+`snapshotUri` and the exact snapshot resource in View-private metadata. It
+contains no canonical result text or domain `structuredContent`.
+`resources/read` accepts only that canonical URI and returns the bounded
+snapshot resource, never `R`.
 `presentation_get_snapshot` is a pure model-visible tool that accepts only the
 exact URI, re-admits the retained input/result pair, and returns one strict
 `presentation_snapshot_reference` with the same link and descriptor; it copies
@@ -1214,18 +1139,17 @@ lookup.
 
 The View validates the snapshot resource, descriptor, and snapshot identity;
 canonically serializes and verifies the carried input; and parses that input
-through the registry entry. When the creating result carries a complete
-canonical structured result, the View canonically serializes it and verifies
-the descriptor's result length and digest. Otherwise it reconstructs the
-result through its exact sequential result chunks, decodes base64, joins raw
-bytes, verifies total length and digest, performs one fatal UTF-8 decode, and
-verifies canonical JSON. The same registry entry fully re-admits the correlated
+through the registry entry. It reconstructs the result through the exact
+sequential result chunks, decodes base64, joins raw bytes, verifies total length
+and digest, performs one fatal UTF-8 decode, and verifies canonical JSON. A
+direct domain `structuredContent` value is rejected by this immutable
+presentation process. The same registry entry fully re-admits the correlated
 result before renderer dispatch. JavaScript string indexes never own chunk
 boundaries.
 
 ## Durable Operation Ownership
 
-Wallet, token-selection, and reference-watchlist own separate operation stores
+Wallet and token-selection own separate operation stores
 and canonical contracts. They may share primitive operation IDs, canonical
 JSON capture, and SQLite transaction utilities, but no configurable operation
 framework owns their Review meaning, revalidation order, effects, failures,
@@ -1310,8 +1234,8 @@ retained or unavailable session produces `failed` without resend. Malformed,
 multiple, conflicting, or unbounded SDK collections make Wallet authority
 unavailable rather than fabricating cleanup or completion.
 
-Token-selection and reference-watchlist actions have no nonterminal state.
-Each owner revalidates its Review and atomically commits the domain mutation
+Token-selection actions have no nonterminal state. The owner revalidates its
+Review and atomically commits the domain mutation
 and immutable `completed` operation in one SQLite transaction. A rejected
 revalidation or failed transaction commits neither. Duplicate delivery
 returns the stored terminal operation and never repeats the mutation. Startup
@@ -1342,21 +1266,14 @@ Wallet observation. These flows share admission and terminal adoption but do
 not configure, reorder, or emulate one another. A renderer owns semantic DOM
 and SVG only and cannot make tool calls or configure lifecycle order.
 
-The immutable process admits one creating result or exact snapshot reference,
-selects the standard transport before an exact Host adapter, admits the linked
-snapshot resource, obtains and verifies the exact normalized input and canonical
-result, dispatches through the presentation registry, and renders without
+The immutable process consumes the handoff owned by
+[Immutable Presentation Snapshot Ownership](#immutable-presentation-snapshot-ownership),
+selects the standard transport before an exact Host adapter, dispatches the
+fully re-admitted result through the presentation registry, and renders without
 polling or a domain read. The registry-owned `presentationKind` then terminates
 an immutable result, starts the matching Review operation lifecycle, or rejects
-an operation as an invalid creating presentation.
-
-When the result carries the complete canonical structured result and
-snapshot resource, the View uses both directly. When the resource is absent,
-the View may read only the exact linked snapshot resource and only when View
-initialization reports `serverResources`. A View that has neither a complete
-resource nor `serverResources` fails that presentation without guessing a
-descriptor or reading domain state. After resource admission, missing result
-bytes are obtained only through the exact sequential snapshot-chunk path.
+an operation as an invalid creating presentation. This lifecycle defines no
+second immutable-result carrier, reconstruction path, or fallback.
 
 Both decision processes first admit the immutable Review and perform one
 immediate exact read of its reserved operation ID. `operation_not_found` means
@@ -1365,7 +1282,7 @@ when standard View initialization reports `serverTools`. An existing
 operation replaces only controls and operation status. It never refreshes the
 Review subject.
 
-The token-selection and reference-watchlist process disables its controls
+The token-selection process disables its controls
 before one direct action. That call returns either the atomically stored
 terminal operation or an owning failure. It performs no automatic observation
 and never repeats the action.
@@ -1401,32 +1318,23 @@ state may optimize display but are not replay authority.
 
 - Product interface access and selection are owned by
   `docs/PRODUCT_POLICY.md#product-scope`.
-- MCP keeps useful text and structured results whether App presentation is
-  available on the connection. App metadata never replaces the admitted MCP
-  result.
-- Immutable App renderers exist only for account assets, reference price,
-  fixed reference history, Stock Token market, reference-pair watchlist,
-  contract inspection, token inspection, Wallet connection, token selection,
-  and token-selection list.
+- Immutable App renderers exist only for account assets, Stock Token trade
+  history, contract inspection, token inspection, Wallet connection, token
+  selection, and token-selection list.
   Another canonical read remains MCP text and structured output plus CLI where
   declared; it does not enter a generic JSON View.
 - Each immutable card presents only the canonical result correlated with its
   creating normalized input or exact retained snapshot. It has no navigation
   shell, current-value refresh, global dashboard, local HTTP request, domain
   read, or client-storage recovery.
-- Fixed reference history may render accessible semantic HTML and SVG from its
-  exact admitted candles and empty intervals. It never performs another price
-  or history read and never treats chart coordinates as canonical values.
-- A Stock Token market card renders the admitted oracle reference series
-  denominated in USD and the Uniswap V4 Stock Token/USDG execution series as
-  separate labeled charts
-  through the same exact-candle projection. It never converts, merges,
-  interpolates, refreshes, or reconstructs either series. Exact values remain
-  available in an on-demand local disclosure, while provider diagnostics and
-  machine correlation fields remain in the canonical result.
+- A Stock Token trade-history card renders the admitted Stock Token/USDG price
+  candles and USDG volume on one shared time axis. It does not refresh,
+  aggregate, or reconstruct the admitted result. User-relevant identity,
+  period, freshness, coverage, and limitations precede the chart. Exact values
+  and empty-position meaning remain accessible with source identity and machine
+  correlation fields in the default-closed `Developer details` disclosure.
 - A decision card presents one immutable canonical Review for Wallet connection
-  or disconnection, token-selection addition or removal, or reference-watchlist
-  addition, removal, or reordering. `Decision` is the human presentation role;
+  or disconnection or token-selection addition or removal. `Decision` is the human presentation role;
   `Review` remains the domain artifact carried to the action owner. Constructing,
   displaying, dismissing, or displaying that Review again performs no domain
   mutation and occupies no operation slot.
@@ -1436,11 +1344,11 @@ state may optimize display but are not replay authority.
   current preconditions and fixed evidence anchors.
 - A model-visible handler is pure even when a Host incorrectly forwards a View
   call to it. No model-visible handler creates a Wallet request, domain
-  operation, token selection, watchlist mutation, transaction grant, or
+  operation, token selection, transaction grant, or
   external effect.
 - An active operation card observes only its exact Wallet operation under
   [MCP App View Lifecycle](#mcp-app-view-lifecycle). It never refreshes
-  account, market, asset, contract, Wallet, watchlist, or token-selection
+  account, trade history, asset, contract, Wallet, or token-selection
   facts.
 - QR appears only in App-private metadata for the exact active Wallet
   operation and in direct interactive CLI presentation. Product privacy and
@@ -1493,8 +1401,8 @@ state may optimize display but are not replay authority.
 - CLI consumes the same canonical results, immutable Reviews, durable
   operations, commitments, WalletConnect session, and receipt verification as
   MCP and MCP App. It never consumes App markup or presentation snapshots.
-- Wallet connection, Wallet cancellation, token-selection changes, watchlist
-  changes, and transaction confirmation require an interactive TTY.
+- Wallet connection, Wallet cancellation, token-selection changes, and
+  transaction confirmation require an interactive TTY.
 - CLI obtains the domain-owned immutable Review, presents it completely, and
   accepts only one exact case-insensitive `y` response. Decline, end of input,
   or interruption before the direct call creates no operation or mutation.
@@ -1509,10 +1417,11 @@ state may optimize display but are not replay authority.
   required token standards, and adjusted Stock Token amounts when the current
   multiplier is available. A read failure never relabels or rolls back a
   successful Wallet connection.
-- Reference price and history commands preserve canonical block, mapping
-  evidence, source references, round identity and times, status, coverage,
-  warnings, and unavailable reason. Watchlist commands consume the same Review
-  and atomic mutation owner as MCP App.
+- The Stock Token trade-history command presents its requested period,
+  material freshness and coverage limitations, latest exact fixed-interval
+  chart close, and the observed bounds of its contributing trades. Its JSON
+  mode returns the complete admitted result without re-reading or aggregating
+  data.
 - The Wallet owner converts a WalletConnect pairing URI to a QR matrix and
   discards the URI. CLI receives only the complete admitted matrix and never
   prints or serializes the raw URI.
@@ -1680,8 +1589,8 @@ native credential separation, Host adapter isolation and deletion conditions,
 snapshot identity,
 capacity, corruption, exact input/result reconstruction and full canonical
 re-admission,
-terminal observation stopping, request limits, token-selection and watchlist
-atomicity, account-assets continuity, reference-market evidence and history
-bounds, execution-artifact identity, digest, capacity, coverage, and
+terminal observation stopping, request limits, token-selection atomicity,
+account-assets continuity, trade-history source-file identity, digest,
+capacity, coverage, and
 source/provider separation, send-once delivery, owner takeover, and secret-leak
 boundaries.

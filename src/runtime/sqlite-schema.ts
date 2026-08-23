@@ -1,23 +1,13 @@
 import Database from "better-sqlite3";
 
 import {
-  productChainId,
   operationIdByteLength,
-  referenceFeedIntegrityStatuses,
-  referenceFeedTraversalStatuses,
-  referenceMarketLimits,
-  referenceMarketManifest,
-  referenceMarketManifestVersion,
   tokenDisplayTextLimits,
   walletConnectionStatusDefinitions,
 } from "../core/index.js";
 import {
   tokenCatalogContractLimits,
 } from "../token-catalog/contracts.js";
-import {
-  referenceWatchlistInitiators,
-  referenceWatchlistOperationKinds,
-} from "../market-portfolio/contracts.js";
 import {
   tokenCatalogInitiators,
   tokenCatalogOperationKinds,
@@ -146,9 +136,6 @@ export const canonicalSha256HexSqlCheck = (columnInput: string): string => {
 export const canonicalSelectionRevisionSqlCheck = (columnInput: string): string =>
   canonicalBase64UrlSqlCheck(columnInput, tokenCatalogContractLimits.selectionRevisionBytes);
 
-export const canonicalReferenceRevisionSqlCheck = (columnInput: string): string =>
-  canonicalBase64UrlSqlCheck(columnInput, referenceMarketLimits.revisionBytes);
-
 export const canonicalJsonObjectSqlCheck = (columnInput: string): string => {
   const column = sqlColumn(columnInput);
   return `(${canonicalSqlTextCheck(column)} AND length(CAST(${column} AS BLOB)) BETWEEN 2 AND 65536 AND ` +
@@ -156,16 +143,6 @@ export const canonicalJsonObjectSqlCheck = (columnInput: string): string => {
 };
 
 const walletStatuses = Object.freeze(Object.keys(walletConnectionStatusDefinitions));
-const [referenceMalformedStatus, referencePhaseBoundaryStatus, referenceRetentionBoundaryStatus] =
-  referenceFeedTraversalStatuses;
-if (
-  referenceMalformedStatus === undefined || referencePhaseBoundaryStatus === undefined ||
-  referenceRetentionBoundaryStatus === undefined
-) throw new TypeError("Reference feed traversal definitions are incomplete.");
-const referenceFeedIdentitySqlCheck = `manifest_version = ${referenceMarketManifestVersion} AND ` +
-  `chain_id = ${sqlString(productChainId)} AND (` + referenceMarketManifest.feeds.map((feed) =>
-    `(feed_id = ${sqlString(feed.feedId)} AND proxy_address = ${sqlString(feed.standardProxy)})`).join(" OR ") + `)`;
-
 export const currentSqliteSchemaSql = `CREATE TABLE local_profile (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   profile_id TEXT NOT NULL UNIQUE CHECK (${canonicalRuntimeIdentifierSqlCheck("profile_id")}),
@@ -217,71 +194,6 @@ CREATE TABLE runtime_owner (
 ) STRICT;
 CREATE TABLE chain (
   chain_id TEXT NOT NULL PRIMARY KEY CHECK (${canonicalEvmChainIdSqlCheck("chain_id")})
-) STRICT, WITHOUT ROWID;
-CREATE TABLE reference_feed_round (
-  manifest_version INTEGER NOT NULL CHECK (manifest_version = ${referenceMarketManifestVersion}),
-  chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
-  feed_id TEXT NOT NULL CHECK (feed_id IN (${sqlStringList(referenceMarketManifest.feeds.map((feed) => feed.feedId))})),
-  proxy_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("proxy_address")}),
-  phase_id TEXT NOT NULL CHECK (${canonicalUnsignedDecimalSqlCheck("phase_id")}),
-  aggregator_round_id TEXT NOT NULL CHECK (${canonicalUnsignedDecimalSqlCheck("aggregator_round_id")}),
-  round_id TEXT NOT NULL CHECK (${canonicalUnsignedDecimalSqlCheck("round_id")}),
-  answered_in_round TEXT NOT NULL CHECK (${canonicalUnsignedDecimalSqlCheck("answered_in_round")}),
-  answer TEXT NOT NULL CHECK (${canonicalUnsignedDecimalSqlCheck("answer")}),
-  started_at_unix_seconds TEXT NOT NULL CHECK (${canonicalUnsignedDecimalSqlCheck("started_at_unix_seconds")}),
-  updated_at_unix_seconds TEXT NOT NULL CHECK (${canonicalUnsignedDecimalSqlCheck("updated_at_unix_seconds")}),
-  read_evidence_json TEXT NOT NULL CHECK (${canonicalJsonObjectSqlCheck("read_evidence_json")}),
-  CHECK (${referenceFeedIdentitySqlCheck}),
-  PRIMARY KEY (manifest_version, chain_id, feed_id, proxy_address, phase_id, aggregator_round_id),
-  UNIQUE (manifest_version, chain_id, feed_id, proxy_address, round_id),
-  FOREIGN KEY (chain_id) REFERENCES chain(chain_id) ON UPDATE RESTRICT ON DELETE RESTRICT
-) STRICT, WITHOUT ROWID;
-CREATE INDEX reference_feed_round_time
-  ON reference_feed_round(manifest_version, chain_id, feed_id, proxy_address, updated_at_unix_seconds);
-CREATE TABLE reference_feed_sync_state (
-  manifest_version INTEGER NOT NULL CHECK (manifest_version = ${referenceMarketManifestVersion}),
-  chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
-  feed_id TEXT NOT NULL CHECK (feed_id IN (${sqlStringList(referenceMarketManifest.feeds.map((feed) => feed.feedId))})),
-  proxy_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("proxy_address")}),
-  revision TEXT NOT NULL CHECK (${canonicalReferenceRevisionSqlCheck("revision")}),
-  backfill_phase_id TEXT CHECK (
-    backfill_phase_id IS NULL OR
-      (${canonicalUnsignedDecimalSqlCheck("backfill_phase_id")} AND backfill_phase_id != '0')
-  ),
-  backfill_next_round_id TEXT CHECK (
-    backfill_next_round_id IS NULL OR ${canonicalUnsignedDecimalSqlCheck("backfill_next_round_id")}
-  ),
-  retention_cutoff_round_id TEXT CHECK (
-    retention_cutoff_round_id IS NULL OR ${canonicalUnsignedDecimalSqlCheck("retention_cutoff_round_id")}
-  ),
-  integrity_status TEXT CHECK (
-    integrity_status IS NULL OR integrity_status IN (${sqlStringList(referenceFeedIntegrityStatuses)})
-  ),
-  backfill_status TEXT CHECK (
-    backfill_status IS NULL OR backfill_status IN (${sqlStringList(referenceFeedTraversalStatuses)})
-  ),
-  updated_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("updated_at")}),
-  CHECK (
-    (backfill_phase_id IS NULL AND backfill_next_round_id IS NULL AND backfill_status IS NULL) OR
-    (backfill_phase_id IS NOT NULL AND (
-      (backfill_status IS NULL AND backfill_next_round_id IS NOT NULL) OR
-      (backfill_status = ${sqlString(referenceMalformedStatus)} AND backfill_next_round_id IS NOT NULL) OR
-      (backfill_status = ${sqlString(referencePhaseBoundaryStatus)} AND backfill_next_round_id IS NULL) OR
-      (backfill_status = ${sqlString(referenceRetentionBoundaryStatus)} AND
-        backfill_next_round_id IS NULL AND retention_cutoff_round_id IS NOT NULL)
-    ))
-  ),
-  CHECK (
-    backfill_next_round_id IS NULL OR retention_cutoff_round_id IS NULL OR
-    length(backfill_next_round_id) > length(retention_cutoff_round_id) OR
-    (
-      length(backfill_next_round_id) = length(retention_cutoff_round_id) AND
-      backfill_next_round_id > retention_cutoff_round_id
-    )
-  ),
-  CHECK (${referenceFeedIdentitySqlCheck}),
-  PRIMARY KEY (manifest_version, chain_id, feed_id, proxy_address),
-  FOREIGN KEY (chain_id) REFERENCES chain(chain_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 ) STRICT, WITHOUT ROWID;
 CREATE TABLE robinhood_asset_snapshot (
   chain_id TEXT NOT NULL PRIMARY KEY CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
@@ -335,50 +247,6 @@ CREATE TABLE wallet_account (
   PRIMARY KEY (profile_id, chain_id, wallet_address),
   FOREIGN KEY (profile_id) REFERENCES local_profile(profile_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   FOREIGN KEY (chain_id) REFERENCES chain(chain_id) ON UPDATE RESTRICT ON DELETE RESTRICT
-) STRICT, WITHOUT ROWID;
-CREATE TABLE reference_pair_watchlist_state (
-  profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),
-  chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
-  wallet_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("wallet_address")}),
-  revision TEXT NOT NULL CHECK (${canonicalReferenceRevisionSqlCheck("revision")}),
-  created_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("created_at")}),
-  updated_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("updated_at")}),
-  PRIMARY KEY (profile_id, chain_id, wallet_address),
-  FOREIGN KEY (profile_id, chain_id, wallet_address)
-    REFERENCES wallet_account(profile_id, chain_id, wallet_address)
-    ON UPDATE RESTRICT ON DELETE RESTRICT
-) STRICT, WITHOUT ROWID;
-CREATE TABLE reference_pair_watchlist_entry (
-  profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),
-  chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
-  wallet_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("wallet_address")}),
-  pair_id TEXT NOT NULL CHECK (${canonicalHash32SqlCheck("pair_id")}),
-  pair_json TEXT NOT NULL CHECK (${canonicalJsonObjectSqlCheck("pair_json")}),
-  position INTEGER NOT NULL CHECK (
-    position BETWEEN 0 AND ${referenceMarketLimits.watchlistEntries - 1}
-  ),
-  PRIMARY KEY (profile_id, chain_id, wallet_address, pair_id),
-  UNIQUE (profile_id, chain_id, wallet_address, position),
-  FOREIGN KEY (profile_id, chain_id, wallet_address)
-    REFERENCES reference_pair_watchlist_state(profile_id, chain_id, wallet_address)
-    ON UPDATE RESTRICT ON DELETE CASCADE
-) STRICT, WITHOUT ROWID;
-CREATE TABLE reference_watchlist_operation (
-  profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),
-  operation_id TEXT NOT NULL PRIMARY KEY CHECK (
-    ${canonicalBase64UrlSqlCheck("operation_id", operationIdByteLength)}
-  ),
-  kind TEXT NOT NULL CHECK (kind IN (${sqlStringList(referenceWatchlistOperationKinds)})),
-  initiated_by TEXT NOT NULL CHECK (initiated_by IN (${sqlStringList(referenceWatchlistInitiators)})),
-  review_digest TEXT NOT NULL CHECK (${canonicalHash32SqlCheck("review_digest")}),
-  chain_id TEXT NOT NULL CHECK (${canonicalEvmChainIdSqlCheck("chain_id")}),
-  wallet_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("wallet_address")}),
-  operation_json BLOB NOT NULL CHECK (
-    typeof(operation_json) = 'blob' AND
-    length(operation_json) BETWEEN 2 AND ${presentationSnapshotLimits.resultBytes}
-  ),
-  FOREIGN KEY (profile_id) REFERENCES local_profile(profile_id)
-    ON UPDATE RESTRICT ON DELETE RESTRICT
 ) STRICT, WITHOUT ROWID;
 CREATE TABLE wallet_token_selection_state (
   profile_id TEXT NOT NULL CHECK (${canonicalSqlTextCheck("profile_id")}),

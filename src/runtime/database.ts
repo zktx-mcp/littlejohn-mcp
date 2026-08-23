@@ -8,9 +8,7 @@ import Database from "better-sqlite3";
 import {
   canonicalJsonStringify,
   captureCanonicalJson,
-  canonicalBase64UrlSchema,
   compareCodePointSequences,
-  createExactRational,
   decodeCanonicalBase64Url,
   deepFreezeValue,
   erc20AssetIdentitySchema,
@@ -21,36 +19,12 @@ import {
   parseEvmContractIdentity,
   parseHash32,
   parseCapabilityDataAt,
-  productChainId,
-  parseReferenceCompositeRoundId,
   parseUtcTimestamp,
-  findReferenceFeed,
-  findReferencePair,
-  initialReferenceWatchlistRevision,
-  referenceFeedIntegrityStatusSchema,
-  referenceFeedIds,
-  referenceFeedIdSchema,
-  referenceFeedTraversalStateSchema,
-  referenceFeedTraversalStatusSchema,
-  referenceMarketLimits,
-  referenceMarketManifestVersion,
-  referencePairManifestEntrySchema,
-  referenceRoundObservationSchema,
-  referenceRoundReadEvidenceSchema,
-  referenceSupportedPairIdSchema,
-  referenceWatchlistRevisionSchema,
-  referenceWatchlistSuccessSchema,
   sha256Bytes,
   walletConnectionCapability,
   type CanonicalJson,
   type EvmAccountIdentity,
   type EvmChainId,
-  type ReferenceFeedId,
-  type ReferenceFeedIntegrityStatus,
-  type ReferenceFeedTraversalStatus,
-  type ReferencePairId,
-  type ReferenceRoundObservation,
-  type ReferenceWatchlistSuccess,
   type UtcTimestamp,
   type WalletConnectionData,
 } from "../core/index.js";
@@ -93,13 +67,6 @@ import {
   type TokenSelectionState,
 } from "../token-catalog/contracts.js";
 import { TokenCatalogOperationError } from "../token-catalog/operation-error.js";
-import {
-  createReferenceWatchlistReviewProjection,
-  parseReferenceWatchlistOperation,
-  referenceWatchlistDirectActionSchema,
-  type ReferenceWatchlistOperation,
-} from "../market-portfolio/contracts.js";
-import { MarketPortfolioOperationError } from "../market-portfolio/errors.js";
 import type {
   AccountTokenSelectionReadPort,
   AccountTokenSelectionStore,
@@ -157,12 +124,6 @@ import type {
   WalletConnectionRecord,
   WalletProjectionStore,
 } from "./wallet-projection.js";
-import type {
-  ReferenceFeedCacheCommit,
-  ReferenceFeedCacheSnapshot,
-  ReferenceMarketStore,
-  ReferenceWatchlistActionCommand,
-} from "./reference-market-storage.js";
 
 export interface LocalProfile {
   readonly profileId: ProfileId;
@@ -298,59 +259,6 @@ interface OfficialAssetMemberRow {
   readonly sourceName: string | null;
   readonly sourceSymbol: string | null;
 }
-interface ReferenceFeedRoundRow {
-  readonly manifestVersion: number;
-  readonly chainId: string;
-  readonly feedId: string;
-  readonly proxyAddress: string;
-  readonly phaseId: string;
-  readonly aggregatorRoundId: string;
-  readonly roundId: string;
-  readonly answeredInRound: string;
-  readonly answer: string;
-  readonly startedAtUnixSeconds: string;
-  readonly updatedAtUnixSeconds: string;
-  readonly readEvidenceJson: string;
-}
-interface ReferenceFeedSyncStateRow {
-  readonly manifestVersion: number;
-  readonly chainId: string;
-  readonly feedId: string;
-  readonly proxyAddress: string;
-  readonly revision: string;
-  readonly backfillPhaseId: string | null;
-  readonly backfillNextRoundId: string | null;
-  readonly retentionCutoffRoundId: string | null;
-  readonly integrityStatus: string | null;
-  readonly backfillStatus: string | null;
-  readonly updatedAt: string;
-}
-interface ReferenceWatchlistStateRow {
-  readonly profileId: string;
-  readonly chainId: string;
-  readonly walletAddress: string;
-  readonly revision: string;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-}
-interface ReferenceWatchlistEntryRow {
-  readonly profileId: string;
-  readonly chainId: string;
-  readonly walletAddress: string;
-  readonly pairId: string;
-  readonly pairJson: string;
-  readonly position: number;
-}
-interface ReferenceWatchlistOperationRow {
-  readonly profileId: string;
-  readonly operationId: string;
-  readonly kind: string;
-  readonly initiatedBy: string;
-  readonly reviewDigest: string;
-  readonly chainId: string;
-  readonly walletAddress: string;
-  readonly operationJson: Buffer;
-}
 export interface WalletAccountStorageRow {
   readonly profileId: string;
   readonly chainId: string;
@@ -407,11 +315,6 @@ const tokenSelectionOperationSelect = `SELECT profile_id AS profileId,
   review_digest AS reviewDigest, chain_id AS chainId,
   wallet_address AS walletAddress, token_address AS tokenAddress,
   operation_json AS operationJson FROM token_selection_operation`;
-const referenceWatchlistOperationSelect = `SELECT profile_id AS profileId,
-  operation_id AS operationId, kind, initiated_by AS initiatedBy,
-  review_digest AS reviewDigest, chain_id AS chainId,
-  wallet_address AS walletAddress, operation_json AS operationJson
-  FROM reference_watchlist_operation`;
 
 const decodeWalletOperationRow = (
   row: WalletOperationRow,
@@ -466,30 +369,6 @@ const decodeTokenSelectionOperationRow = (
   return operation;
 };
 
-const decodeReferenceWatchlistOperationRow = (
-  row: ReferenceWatchlistOperationRow,
-  expectedProfileId?: ProfileId,
-): ReferenceWatchlistOperation => {
-  const profileId = parseProfileId(row.profileId);
-  if (expectedProfileId !== undefined && profileId !== expectedProfileId) {
-    throw new Error("Stored reference watchlist operation profile is invalid.");
-  }
-  if (!Buffer.isBuffer(row.operationJson)) {
-    throw new Error("Stored reference watchlist operation bytes are invalid.");
-  }
-  const text = new TextDecoder("utf-8", { fatal: true }).decode(row.operationJson);
-  const operation = parseReferenceWatchlistOperation(JSON.parse(text) as unknown);
-  if (
-    canonicalJsonStringify(operation as unknown as CanonicalJson) !== text ||
-    operation.operationId !== row.operationId ||
-    operation.kind !== row.kind ||
-    operation.initiatedBy !== row.initiatedBy ||
-    operation.review.reviewDigest !== row.reviewDigest ||
-    operation.review.precondition.account.chainId !== row.chainId ||
-    operation.review.precondition.account.address !== row.walletAddress
-  ) throw new Error("Stored reference watchlist operation does not match its indexed identity.");
-  return operation;
-};
 
 const decodeTokenSelectionRecordRow = (
   row: TokenSelectionRecordRow,
@@ -936,280 +815,6 @@ const readTokenCatalogRows = (database: Database.Database): void => {
   readOfficialAssetSnapshotRaw(database);
 };
 
-const referenceCacheRevisionSchema = canonicalBase64UrlSchema(referenceMarketLimits.revisionBytes);
-const roundSelect = `SELECT manifest_version AS manifestVersion, chain_id AS chainId,
-  feed_id AS feedId, proxy_address AS proxyAddress, phase_id AS phaseId,
-  aggregator_round_id AS aggregatorRoundId, round_id AS roundId,
-  answered_in_round AS answeredInRound, answer,
-  started_at_unix_seconds AS startedAtUnixSeconds,
-  updated_at_unix_seconds AS updatedAtUnixSeconds,
-  read_evidence_json AS readEvidenceJson FROM reference_feed_round`;
-
-const decodeReferenceRoundRow = (row: ReferenceFeedRoundRow): ReferenceRoundObservation => {
-  const feedId = referenceFeedIdSchema.parse(row.feedId);
-  const feed = findReferenceFeed(feedId);
-  if (
-    row.manifestVersion !== referenceMarketManifestVersion ||
-    row.chainId !== productChainId ||
-    row.proxyAddress !== feed.standardProxy
-  ) throw new Error("Stored reference round identity is invalid.");
-  const roundIdentity = parseReferenceCompositeRoundId(row.roundId);
-  if (
-    roundIdentity.phaseId !== row.phaseId ||
-    roundIdentity.aggregatorRoundId !== row.aggregatorRoundId
-  ) {
-    throw new Error("Stored reference round decomposition is invalid.");
-  }
-  let rawReadEvidence: unknown;
-  try { rawReadEvidence = JSON.parse(row.readEvidenceJson); }
-  catch { throw new Error("Stored reference round read evidence is invalid."); }
-  const readEvidence = referenceRoundReadEvidenceSchema.parse(rawReadEvidence);
-  if (canonicalJsonStringify(readEvidence as unknown as CanonicalJson) !== row.readEvidenceJson) {
-    throw new Error("Stored reference round read evidence is not canonical.");
-  }
-  return referenceRoundObservationSchema.parse({
-    fact: {
-      manifestVersion: referenceMarketManifestVersion,
-      feedId,
-      proxyAddress: feed.standardProxy,
-      decimals: feed.decimals,
-      roundId: row.roundId,
-      answeredInRound: row.answeredInRound,
-      answer: row.answer,
-      startedAtUnixSeconds: row.startedAtUnixSeconds,
-      updatedAtUnixSeconds: row.updatedAtUnixSeconds,
-      value: createExactRational(BigInt(row.answer), 10n ** BigInt(feed.decimals)),
-    },
-    readEvidence,
-  });
-};
-
-const decodeReferenceIntegrityStatus = (value: string | null): ReferenceFeedIntegrityStatus => {
-  if (value === null) return null;
-  return referenceFeedIntegrityStatusSchema.parse(value);
-};
-
-const decodeReferenceBackfillStatus = (value: string | null): ReferenceFeedTraversalStatus => {
-  if (value === null) return null;
-  return referenceFeedTraversalStatusSchema.parse(value);
-};
-
-const referenceStateSelect = `SELECT manifest_version AS manifestVersion, chain_id AS chainId,
-  feed_id AS feedId, proxy_address AS proxyAddress, revision,
-  backfill_phase_id AS backfillPhaseId,
-  backfill_next_round_id AS backfillNextRoundId,
-  retention_cutoff_round_id AS retentionCutoffRoundId,
-  integrity_status AS integrityStatus, backfill_status AS backfillStatus, updated_at AS updatedAt
-  FROM reference_feed_sync_state`;
-
-const validateReferenceFeedStateRow = (
-  row: ReferenceFeedSyncStateRow,
-  expectedFeedId?: ReferenceFeedId,
-): void => {
-  const feedId = referenceFeedIdSchema.parse(row.feedId);
-  const feed = findReferenceFeed(feedId);
-  if (
-    row.manifestVersion !== referenceMarketManifestVersion ||
-    row.chainId !== productChainId || row.proxyAddress !== feed.standardProxy ||
-    (expectedFeedId !== undefined && feedId !== expectedFeedId)
-  ) throw new Error("Stored reference feed state identity is invalid.");
-  referenceCacheRevisionSchema.parse(row.revision);
-  const status = decodeReferenceBackfillStatus(row.backfillStatus);
-  referenceFeedTraversalStateSchema.parse({
-    backfillPhaseId: row.backfillPhaseId,
-    backfillNextRoundId: row.backfillNextRoundId,
-    retentionCutoffRoundId: row.retentionCutoffRoundId,
-    backfillStatus: status,
-  });
-  decodeReferenceIntegrityStatus(row.integrityStatus);
-  parseUtcTimestamp(row.updatedAt);
-};
-
-const readReferenceFeedRaw = (
-  database: Database.Database,
-  feedIdInput: ReferenceFeedId,
-): ReferenceFeedCacheSnapshot => {
-  const feedId = referenceFeedIdSchema.parse(feedIdInput);
-  const feed = findReferenceFeed(feedId);
-  const states = database.prepare(`${referenceStateSelect}
-    WHERE manifest_version = ? AND chain_id = ? AND feed_id = ? AND proxy_address = ?`)
-    .all(referenceMarketManifestVersion, productChainId, feedId, feed.standardProxy) as ReferenceFeedSyncStateRow[];
-  if (states.length > 1) throw new Error("Stored reference feed state is not unique.");
-  const state = states[0];
-  if (state !== undefined) {
-    validateReferenceFeedStateRow(state, feedId);
-  }
-  const rows = database.prepare(`${roundSelect}
-    WHERE manifest_version = ? AND chain_id = ? AND feed_id = ? AND proxy_address = ?
-    ORDER BY length(updated_at_unix_seconds), updated_at_unix_seconds,
-      length(round_id), round_id`)
-    .all(referenceMarketManifestVersion, productChainId, feedId, feed.standardProxy) as ReferenceFeedRoundRow[];
-  const observations = rows.map(decodeReferenceRoundRow);
-  const retentionCutoffRoundId = state?.retentionCutoffRoundId ?? null;
-  const integrityStatus = decodeReferenceIntegrityStatus(state?.integrityStatus ?? null);
-  if (state === undefined && rows.length !== 0) {
-    throw new Error("Stored reference feed rounds are orphaned.");
-  }
-  if (state !== undefined && rows.length === 0) {
-    throw new Error("Stored reference feed state has no current round.");
-  }
-  if (rows.length > referenceMarketLimits.historyRoundsPerFeed) {
-    throw new Error("Stored reference feed capacity is invalid.");
-  }
-  const rowsByRound = [...rows].sort((left, right) => {
-    const leftRound = BigInt(left.roundId);
-    const rightRound = BigInt(right.roundId);
-    return leftRound === rightRound ? 0 : leftRound < rightRound ? -1 : 1;
-  });
-  if (
-    retentionCutoffRoundId !== null &&
-    (rows.length === 0 || rowsByRound.some((row) =>
-      BigInt(row.roundId) <= BigInt(retentionCutoffRoundId)))
-  ) {
-    throw new Error("Stored reference feed retention boundary is invalid.");
-  }
-  const hasNonmonotonicUpdate = rowsByRound.some((row, index) => index > 0 &&
-    BigInt(row.updatedAtUnixSeconds) < BigInt(rowsByRound[index - 1]!.updatedAtUnixSeconds));
-  if (hasNonmonotonicUpdate && integrityStatus !== "conflict") {
-    throw new Error("Stored reference feed integrity state is invalid.");
-  }
-  return deepFreezeValue({
-    feedId,
-    revision: state?.revision ?? null,
-    observations,
-    backfillPhaseId: state?.backfillPhaseId ?? null,
-    backfillNextRoundId: state?.backfillNextRoundId ?? null,
-    retentionCutoffRoundId,
-    integrityStatus,
-    backfillStatus: decodeReferenceBackfillStatus(state?.backfillStatus ?? null),
-  });
-};
-
-const watchlistStateSelect = `SELECT profile_id AS profileId, chain_id AS chainId,
-  wallet_address AS walletAddress, revision, created_at AS createdAt, updated_at AS updatedAt
-  FROM reference_pair_watchlist_state`;
-const watchlistEntrySelect = `SELECT profile_id AS profileId, chain_id AS chainId,
-  wallet_address AS walletAddress, pair_id AS pairId, pair_json AS pairJson, position
-  FROM reference_pair_watchlist_entry`;
-
-const readReferenceWatchlistRaw = (
-  database: Database.Database,
-  profileId: ProfileId,
-  accountInput: EvmAccountIdentity,
-): ReferenceWatchlistSuccess => {
-  const account = evmAccountIdentitySchema.parse(accountInput);
-  const states = database.prepare(`${watchlistStateSelect}
-    WHERE profile_id = ? AND chain_id = ? AND wallet_address = ?`)
-    .all(profileId, account.chainId, account.address) as ReferenceWatchlistStateRow[];
-  if (states.length > 1) throw new Error("Stored reference watchlist state is not unique.");
-  const state = states[0];
-  const rows = database.prepare(`${watchlistEntrySelect}
-    WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? ORDER BY position`)
-    .all(profileId, account.chainId, account.address) as ReferenceWatchlistEntryRow[];
-  if (state === undefined && rows.length !== 0) throw new Error("Stored reference watchlist entries are orphaned.");
-  const entries = rows.map((row, index) => {
-    if (
-      row.profileId !== profileId || row.chainId !== account.chainId ||
-      row.walletAddress !== account.address || row.position !== index
-    ) throw new Error("Stored reference watchlist entry identity is invalid.");
-    const parsedJson = JSON.parse(row.pairJson) as unknown;
-    const pair = referencePairManifestEntrySchema.parse(parsedJson);
-    if (
-      pair.pairId !== row.pairId ||
-      canonicalJsonStringify(pair as unknown as CanonicalJson) !== row.pairJson
-    ) throw new Error("Stored reference watchlist pair is invalid.");
-    return pair;
-  });
-  if (state !== undefined) {
-    if (state.profileId !== profileId || state.chainId !== account.chainId ||
-      state.walletAddress !== account.address) {
-      throw new Error("Stored reference watchlist state identity is invalid.");
-    }
-    referenceWatchlistRevisionSchema.parse(state.revision);
-    parseUtcTimestamp(state.createdAt);
-    parseUtcTimestamp(state.updatedAt);
-  }
-  return deepFreezeValue(referenceWatchlistSuccessSchema.parse({
-    account,
-    revision: state?.revision ?? initialReferenceWatchlistRevision,
-    entries,
-  }));
-};
-
-const readReferenceMarketRows = (database: Database.Database): void => {
-  const capacity = database.prepare(`SELECT count(*) AS rowCount FROM reference_feed_round`)
-    .get() as { rowCount: number };
-  if (
-    !Number.isSafeInteger(capacity.rowCount) || capacity.rowCount < 0 ||
-    capacity.rowCount > referenceMarketLimits.historyRoundsAggregate
-  ) throw new Error("Stored reference history aggregate capacity is invalid.");
-  const allRounds = database.prepare(`${roundSelect}
-    ORDER BY manifest_version, chain_id, feed_id, proxy_address,
-      length(round_id), round_id`).iterate() as IterableIterator<ReferenceFeedRoundRow>;
-  for (const row of allRounds) decodeReferenceRoundRow(row);
-  const allStates = database.prepare(`${referenceStateSelect}
-    ORDER BY manifest_version, chain_id, feed_id, proxy_address`)
-    .iterate() as IterableIterator<ReferenceFeedSyncStateRow>;
-  for (const row of allStates) validateReferenceFeedStateRow(row);
-  for (const feedId of referenceFeedIds) readReferenceFeedRaw(database, feedId);
-  const profiles = database.prepare("SELECT profile_id AS profileId FROM local_profile")
-    .all() as Array<{ profileId: string }>;
-  for (const profileRow of profiles) {
-    const profileId = parseProfileId(profileRow.profileId);
-    const accounts = database.prepare(`SELECT profile_id AS profileId, chain_id AS chainId,
-      wallet_address AS walletAddress FROM reference_pair_watchlist_state
-      WHERE profile_id = ? ORDER BY chain_id, wallet_address`)
-      .all(profileId) as WalletAccountStorageRow[];
-    for (const row of accounts) readReferenceWatchlistRaw(database, profileId, decodeWalletAccountRecordKey(row).account);
-    const operations = database.prepare(`${referenceWatchlistOperationSelect}
-      WHERE profile_id = ? ORDER BY operation_id`)
-      .iterate(profileId) as IterableIterator<ReferenceWatchlistOperationRow>;
-    for (const row of operations) decodeReferenceWatchlistOperationRow(row, profileId);
-  }
-};
-
-const createReferenceRevision = (current: string | null): string => {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const revision = referenceWatchlistRevisionSchema.parse(
-      randomBytes(referenceMarketLimits.revisionBytes).toString("base64url"),
-    );
-    if (revision !== initialReferenceWatchlistRevision && revision !== current) return revision;
-  }
-  throw new Error("A distinct reference-market revision could not be generated.");
-};
-
-const advanceReferenceTraversalForCutoff = (input: Readonly<{
-  backfillPhaseId: string | null;
-  backfillNextRoundId: string | null;
-  backfillStatus: ReferenceFeedTraversalStatus;
-  retentionCutoffRoundId: string | null;
-}>): Readonly<{
-  backfillPhaseId: string | null;
-  backfillNextRoundId: string | null;
-  backfillStatus: ReferenceFeedTraversalStatus;
-}> => {
-  let { backfillPhaseId, backfillNextRoundId, backfillStatus } = input;
-  if (
-    input.retentionCutoffRoundId !== null && backfillNextRoundId !== null &&
-    BigInt(backfillNextRoundId) <= BigInt(input.retentionCutoffRoundId)
-  ) {
-    backfillPhaseId = parseReferenceCompositeRoundId(input.retentionCutoffRoundId).phaseId;
-    backfillNextRoundId = null;
-    backfillStatus = "retention_boundary";
-  } else if (
-    input.retentionCutoffRoundId !== null && backfillStatus === "retention_boundary"
-  ) {
-    backfillPhaseId = parseReferenceCompositeRoundId(input.retentionCutoffRoundId).phaseId;
-  }
-  referenceFeedTraversalStateSchema.parse({
-    backfillPhaseId,
-    backfillNextRoundId,
-    backfillStatus,
-    retentionCutoffRoundId: input.retentionCutoffRoundId,
-  });
-  return Object.freeze({ backfillPhaseId, backfillNextRoundId, backfillStatus });
-};
-
 const validateDatabaseState = (database: Database.Database): void => {
   readProfileRaw(database);
   readOwnerRaw(database);
@@ -1227,7 +832,6 @@ const validateDatabaseState = (database: Database.Database): void => {
   readContractRows(database, "token_contract");
   readWalletAccountRows(database);
   readTokenCatalogRows(database);
-  readReferenceMarketRows(database);
   readWalletRaw(database);
   if (database.prepare("PRAGMA foreign_key_check").all().length !== 0) {
     throw new Error("SQLite foreign-key state is invalid.");
@@ -1539,7 +1143,6 @@ export class ProductDatabase {
   readonly #tokenCatalogReadStore: TokenCatalogQueryStore;
   readonly #accountTokenSelectionStore: AccountTokenSelectionStore;
   readonly #tokenCatalogStore: TokenCatalogStore;
-  readonly #referenceMarketStore: ReferenceMarketStore;
   readonly #presentationSnapshotStore: PresentationSnapshotStore;
   #databaseClosed = false;
   #mainLeaseClosed = false;
@@ -1599,13 +1202,6 @@ export class ProductDatabase {
       readOperation: (operationId) => this.readTokenSelectionOperation(operationId),
       applySelectionChange: (input) => this.applyTokenSelectionChange(input),
     } satisfies TokenCatalogStore);
-    this.#referenceMarketStore = Object.freeze({
-      readFeed: (feedId) => this.readReferenceFeed(feedId),
-      commitFeed: (input) => this.commitReferenceFeed(input),
-      readWatchlist: (account) => this.readReferenceWatchlist(account),
-      readWatchlistOperation: (operationId) => this.readReferenceWatchlistOperation(operationId),
-      applyWatchlistChange: (input) => this.applyReferenceWatchlistChange(input),
-    } satisfies ReferenceMarketStore);
     this.#presentationSnapshotStore = Object.freeze({
       prepare: (input) => createPresentationSnapshot(input),
       commit: (input) => this.commitPresentationSnapshot(input),
@@ -1647,7 +1243,6 @@ export class ProductDatabase {
     return this.#accountTokenSelectionStore;
   }
   tokenCatalogStore(): TokenCatalogStore { return this.#tokenCatalogStore; }
-  referenceMarketStore(): ReferenceMarketStore { return this.#referenceMarketStore; }
   presentationSnapshotStore(): PresentationSnapshotStore { return this.#presentationSnapshotStore; }
 
   close(): void {
@@ -2363,471 +1958,6 @@ export class ProductDatabase {
         return deepFreezeValue({ state, selections });
       });
     } catch (error) { throw tokenCatalogStorageError(error); }
-  }
-
-  private readReferenceFeed(feedIdInput: ReferenceFeedId): ReferenceFeedCacheSnapshot {
-    try {
-      const feedId = referenceFeedIdSchema.parse(feedIdInput);
-      return this.#readWithIdentity(() => readReferenceFeedRaw(this.#database, feedId));
-    } catch (error) { throw storageError(error); }
-  }
-
-  private commitReferenceFeed(input: ReferenceFeedCacheCommit): ReferenceFeedCacheSnapshot {
-    try {
-      const feedId = referenceFeedIdSchema.parse(input.feedId);
-      const feed = findReferenceFeed(feedId);
-      const expectedRevision = input.expectedRevision === null
-        ? null
-        : referenceCacheRevisionSchema.parse(input.expectedRevision);
-      const observations = input.observations.map((observation) =>
-        referenceRoundObservationSchema.parse(observation));
-      const observationIdentities = observations.map((observation) =>
-        parseReferenceCompositeRoundId(observation.fact.roundId));
-      if (
-        observations.length > referenceMarketLimits.historyProbes + 1 ||
-        observations.some((observation) => observation.fact.feedId !== feedId) ||
-        (expectedRevision === null && observations.length === 0)
-      ) {
-        throw new RuntimeOperationError("state_conflict");
-      }
-      const backfillPhaseId = input.backfillPhaseId;
-      const backfillNextRoundId = input.backfillNextRoundId;
-      if (!/^[1-9][0-9]*$/u.test(input.retainAfterUnixSeconds) ||
-        BigInt(input.retainAfterUnixSeconds) > 253_402_300_799n) {
-        throw new TypeError("Reference history retention boundary is invalid.");
-      }
-      const backfillStatus = decodeReferenceBackfillStatus(input.backfillStatus);
-      const now = parseUtcTimestamp(input.now);
-      return this.#writeWithIdentity(() => {
-        const current = readReferenceFeedRaw(this.#database, feedId);
-        if (current.revision !== expectedRevision) throw new RuntimeOperationError("state_conflict");
-        if (current.integrityStatus === "conflict") return current;
-        const existingCutoff = current.retentionCutoffRoundId === null
-          ? null
-          : parseReferenceCompositeRoundId(current.retentionCutoffRoundId);
-        if (
-          existingCutoff !== null &&
-          observationIdentities.some((identity) => BigInt(identity.roundId) <= BigInt(existingCutoff.roundId))
-        ) {
-          throw new RuntimeOperationError("state_conflict");
-        }
-        referenceFeedTraversalStateSchema.parse({
-          backfillPhaseId,
-          backfillNextRoundId,
-          backfillStatus,
-          retentionCutoffRoundId: existingCutoff?.roundId ?? null,
-        });
-
-        let changed = current.revision === null;
-        let conflict = false;
-        const selectExisting = this.#database.prepare(`${roundSelect}
-          WHERE manifest_version = ? AND chain_id = ? AND feed_id = ? AND proxy_address = ?
-            AND phase_id = ? AND aggregator_round_id = ?`);
-        const insert = this.#database.prepare(`INSERT INTO reference_feed_round(
-          manifest_version, chain_id, feed_id, proxy_address, phase_id, aggregator_round_id,
-          round_id, answered_in_round, answer, started_at_unix_seconds, updated_at_unix_seconds,
-          read_evidence_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-        for (const [index, observation] of observations.entries()) {
-          const identity = observationIdentities[index]!;
-          const existingRows = selectExisting.all(
-            referenceMarketManifestVersion, productChainId, feedId, feed.standardProxy,
-            identity.phaseId, identity.aggregatorRoundId,
-          ) as ReferenceFeedRoundRow[];
-          if (existingRows.length > 1) throw new Error("Stored reference round is not unique.");
-          if (existingRows[0] !== undefined) {
-            const existing = decodeReferenceRoundRow(existingRows[0]);
-            if (canonicalJsonStringify(existing.fact as unknown as CanonicalJson) !==
-              canonicalJsonStringify(observation.fact as unknown as CanonicalJson)) conflict = true;
-            continue;
-          }
-          insert.run(
-            referenceMarketManifestVersion, productChainId, feedId, feed.standardProxy,
-            identity.phaseId, identity.aggregatorRoundId, identity.roundId,
-            observation.fact.answeredInRound, observation.fact.answer,
-            observation.fact.startedAtUnixSeconds, observation.fact.updatedAtUnixSeconds,
-            canonicalJsonStringify(observation.readEvidence as unknown as CanonicalJson),
-          );
-          changed = true;
-        }
-
-        const storedRows = this.#database.prepare(`${roundSelect}
-          WHERE manifest_version = ? AND chain_id = ? AND feed_id = ? AND proxy_address = ?
-          ORDER BY length(round_id), round_id`)
-          .all(referenceMarketManifestVersion, productChainId, feedId, feed.standardProxy) as ReferenceFeedRoundRow[];
-        if (
-          existingCutoff !== null &&
-          storedRows.some((row) => BigInt(row.roundId) <= BigInt(existingCutoff.roundId))
-        ) {
-          throw new Error("Stored reference round is at or below the retention cutoff.");
-        }
-        for (let index = 1; index < storedRows.length; index += 1) {
-          if (
-            BigInt(storedRows[index]!.updatedAtUnixSeconds) <
-            BigInt(storedRows[index - 1]!.updatedAtUnixSeconds)
-          ) {
-            conflict = true;
-            break;
-          }
-        }
-
-        let ageCandidate: ReferenceFeedRoundRow | undefined;
-        for (let index = 0; index < storedRows.length - 1; index += 1) {
-          const row = storedRows[index]!;
-          if (BigInt(row.updatedAtUnixSeconds) >= BigInt(input.retainAfterUnixSeconds)) break;
-          ageCandidate = row;
-        }
-        const capacityDeleteCount = Math.max(
-          0,
-          storedRows.length - referenceMarketLimits.historyRoundsPerFeed,
-        );
-        const capacityCandidate = capacityDeleteCount === 0
-          ? undefined
-          : storedRows[capacityDeleteCount - 1];
-        const cutoffCandidates = [
-          existingCutoff?.roundId,
-          ageCandidate?.roundId,
-          capacityCandidate?.roundId,
-        ].filter((value): value is string => value !== undefined);
-        const initialTargetCutoff = cutoffCandidates.length === 0
-          ? null
-          : cutoffCandidates.reduce((greatest, value) =>
-              BigInt(value) > BigInt(greatest) ? value : greatest);
-        const deleted = initialTargetCutoff === null
-          ? []
-          : storedRows.filter((row) => BigInt(row.roundId) <= BigInt(initialTargetCutoff));
-        const retained = initialTargetCutoff === null
-          ? storedRows
-          : storedRows.filter((row) => BigInt(row.roundId) > BigInt(initialTargetCutoff));
-        if (storedRows.length !== 0 && retained.length === 0) {
-          throw new Error("Reference feed retention removed the greatest current identity.");
-        }
-        const remove = this.#database.prepare(`DELETE FROM reference_feed_round
-          WHERE manifest_version = ? AND chain_id = ? AND feed_id = ? AND proxy_address = ?
-            AND phase_id = ? AND aggregator_round_id = ?`);
-        for (const row of deleted) {
-          remove.run(
-            referenceMarketManifestVersion, productChainId, feedId, feed.standardProxy,
-            row.phaseId, row.aggregatorRoundId,
-          );
-        }
-        if (deleted.length !== 0) changed = true;
-
-        const aggregateRows = this.#database.prepare(`${roundSelect}
-          WHERE manifest_version = ? AND chain_id = ?
-          ORDER BY feed_id, length(round_id), round_id`)
-          .all(referenceMarketManifestVersion, productChainId) as ReferenceFeedRoundRow[];
-        const retainedByFeed = new Map<ReferenceFeedId, ReferenceFeedRoundRow[]>();
-        for (const row of aggregateRows) {
-          const rowFeedId = referenceFeedIdSchema.parse(row.feedId);
-          const rows = retainedByFeed.get(rowFeedId) ?? [];
-          rows.push(row);
-          retainedByFeed.set(rowFeedId, rows);
-        }
-        const aggregateCutoffByFeed = new Map<ReferenceFeedId, string>();
-        let aggregateRowCount = aggregateRows.length;
-        while (aggregateRowCount > referenceMarketLimits.historyRoundsAggregate) {
-          const candidates = [...retainedByFeed.entries()]
-            .filter(([, rows]) => rows.length >= 2)
-            .map(([candidateFeedId, rows]) => ({ candidateFeedId, row: rows[0]! }))
-            .sort((left, right) => {
-              const leftTime = BigInt(left.row.updatedAtUnixSeconds);
-              const rightTime = BigInt(right.row.updatedAtUnixSeconds);
-              if (leftTime !== rightTime) return leftTime < rightTime ? -1 : 1;
-              const feedOrder = compareCodePointSequences(left.candidateFeedId, right.candidateFeedId);
-              if (feedOrder !== 0) return feedOrder;
-              const leftRound = BigInt(left.row.roundId);
-              const rightRound = BigInt(right.row.roundId);
-              return leftRound === rightRound ? 0 : leftRound < rightRound ? -1 : 1;
-            });
-          const selected = candidates[0];
-          if (selected === undefined) {
-            throw new Error("Reference history aggregate capacity cannot preserve one current identity per feed.");
-          }
-          const selectedFeed = findReferenceFeed(selected.candidateFeedId);
-          const removed = remove.run(
-            referenceMarketManifestVersion, productChainId, selected.candidateFeedId,
-            selectedFeed.standardProxy, selected.row.phaseId, selected.row.aggregatorRoundId,
-          );
-          if (removed.changes !== 1) {
-            throw new Error("Reference history aggregate eviction did not remove its exact prefix head.");
-          }
-          retainedByFeed.get(selected.candidateFeedId)!.shift();
-          aggregateCutoffByFeed.set(selected.candidateFeedId, selected.row.roundId);
-          aggregateRowCount -= 1;
-        }
-
-        const aggregateTargetCutoff = aggregateCutoffByFeed.get(feedId);
-        const finalRetentionCutoffRoundId = aggregateTargetCutoff === undefined ||
-          (initialTargetCutoff !== null && BigInt(initialTargetCutoff) > BigInt(aggregateTargetCutoff))
-          ? initialTargetCutoff
-          : aggregateTargetCutoff;
-        if (aggregateTargetCutoff !== undefined) changed = true;
-        const targetTraversal = advanceReferenceTraversalForCutoff({
-          backfillPhaseId,
-          backfillNextRoundId,
-          backfillStatus,
-          retentionCutoffRoundId: finalRetentionCutoffRoundId,
-        });
-        const finalIntegrity = conflict ? "conflict" : current.integrityStatus;
-        if (
-          current.backfillPhaseId !== targetTraversal.backfillPhaseId ||
-          current.backfillNextRoundId !== targetTraversal.backfillNextRoundId ||
-          current.integrityStatus !== finalIntegrity ||
-          current.backfillStatus !== targetTraversal.backfillStatus ||
-          current.retentionCutoffRoundId !== finalRetentionCutoffRoundId
-        ) changed = true;
-        if (!changed) return current;
-
-        const upsertState = this.#database.prepare(`INSERT INTO reference_feed_sync_state(
-          manifest_version, chain_id, feed_id, proxy_address, revision, backfill_phase_id,
-          backfill_next_round_id,
-          retention_cutoff_round_id, integrity_status, backfill_status, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(manifest_version, chain_id, feed_id, proxy_address) DO UPDATE SET
-          revision = excluded.revision, backfill_phase_id = excluded.backfill_phase_id,
-          backfill_next_round_id = excluded.backfill_next_round_id,
-          retention_cutoff_round_id = excluded.retention_cutoff_round_id,
-          integrity_status = excluded.integrity_status, backfill_status = excluded.backfill_status,
-          updated_at = excluded.updated_at`);
-        for (const [affectedFeedId, aggregateCutoff] of aggregateCutoffByFeed) {
-          if (affectedFeedId === feedId) continue;
-          const affected = readReferenceFeedRaw(this.#database, affectedFeedId);
-          const affectedCutoff = affected.retentionCutoffRoundId === null ||
-            BigInt(aggregateCutoff) > BigInt(affected.retentionCutoffRoundId)
-            ? aggregateCutoff
-            : affected.retentionCutoffRoundId;
-          const traversal = advanceReferenceTraversalForCutoff({
-            backfillPhaseId: affected.backfillPhaseId,
-            backfillNextRoundId: affected.backfillNextRoundId,
-            backfillStatus: affected.backfillStatus,
-            retentionCutoffRoundId: affectedCutoff,
-          });
-          const affectedFeed = findReferenceFeed(affectedFeedId);
-          upsertState.run(
-            referenceMarketManifestVersion, productChainId, affectedFeedId,
-            affectedFeed.standardProxy, createReferenceRevision(affected.revision),
-            traversal.backfillPhaseId, traversal.backfillNextRoundId, affectedCutoff,
-            affected.integrityStatus, traversal.backfillStatus, now,
-          );
-        }
-
-        const revision = createReferenceRevision(current.revision);
-        upsertState.run(
-          referenceMarketManifestVersion, productChainId, feedId, feed.standardProxy,
-          revision, targetTraversal.backfillPhaseId, targetTraversal.backfillNextRoundId,
-          finalRetentionCutoffRoundId, finalIntegrity, targetTraversal.backfillStatus, now,
-        );
-        const stored = readReferenceFeedRaw(this.#database, feedId);
-        if (
-          stored.revision !== revision || stored.integrityStatus !== finalIntegrity ||
-          stored.backfillPhaseId !== targetTraversal.backfillPhaseId ||
-          stored.backfillStatus !== targetTraversal.backfillStatus ||
-          stored.backfillNextRoundId !== targetTraversal.backfillNextRoundId ||
-          stored.retentionCutoffRoundId !== finalRetentionCutoffRoundId ||
-          stored.observations.length > referenceMarketLimits.historyRoundsPerFeed ||
-          (finalRetentionCutoffRoundId !== null && stored.observations.some((observation) =>
-            BigInt(observation.fact.roundId) <= BigInt(finalRetentionCutoffRoundId))) ||
-          aggregateRowCount > referenceMarketLimits.historyRoundsAggregate
-        ) {
-          throw new Error("Reference feed cache postcondition failed.");
-        }
-        return stored;
-      });
-    } catch (error) { throw storageError(error); }
-  }
-
-  private readReferenceWatchlist(accountInput: EvmAccountIdentity): ReferenceWatchlistSuccess {
-    try {
-      const account = evmAccountIdentitySchema.parse(accountInput);
-      return this.#readWithIdentity(() =>
-        readReferenceWatchlistRaw(this.#database, readProfileRaw(this.#database).profileId, account));
-    } catch (error) { throw storageError(error); }
-  }
-
-  private readReferenceWatchlistOperation(
-    operationIdInput: ReferenceWatchlistOperation["operationId"],
-  ): ReferenceWatchlistOperation | null {
-    try {
-      const operationId = operationIdSchema.parse(operationIdInput);
-      return this.#readWithIdentity(() => {
-        const profile = readProfileRaw(this.#database);
-        const rows = this.#database.prepare(`${referenceWatchlistOperationSelect}
-          WHERE profile_id = ? AND operation_id = ?`)
-          .all(profile.profileId, operationId) as ReferenceWatchlistOperationRow[];
-        if (rows.length === 0) return null;
-        if (rows.length !== 1 || rows[0] === undefined) {
-          throw new Error("Reference watchlist operation identity is not unique.");
-        }
-        return decodeReferenceWatchlistOperationRow(rows[0], profile.profileId);
-      });
-    } catch (error) { throw storageError(error); }
-  }
-
-  private applyReferenceWatchlistChange(
-    input: ReferenceWatchlistActionCommand,
-  ): ReferenceWatchlistOperation {
-    try {
-      const action = referenceWatchlistDirectActionSchema.parse(input.action);
-      const completedAt = parseUtcTimestamp(input.completedAt);
-      const account = evmAccountIdentitySchema.parse(action.review.precondition.account);
-      const expectedConnectionRevision = parseRuntimeRevision(
-        action.review.precondition.connectionRevision,
-      );
-      return this.#writeWithIdentity(() => {
-        const profile = readProfileRaw(this.#database);
-        const existingRows = this.#database.prepare(`${referenceWatchlistOperationSelect}
-          WHERE operation_id = ?`)
-          .all(action.review.operationId) as ReferenceWatchlistOperationRow[];
-        if (existingRows.length > 0) {
-          if (existingRows.length !== 1 || existingRows[0] === undefined) {
-            throw new Error("Reference watchlist operation identity is not unique.");
-          }
-          const existing = decodeReferenceWatchlistOperationRow(
-            existingRows[0],
-            profile.profileId,
-          );
-          if (
-            existing.kind !== action.review.kind ||
-            canonicalJsonStringify(existing.review as unknown as CanonicalJson) !==
-              canonicalJsonStringify(action.review as unknown as CanonicalJson)
-          ) throw new RuntimeOperationError("state_conflict");
-          return existing;
-        }
-        if (Date.parse(completedAt) >= Date.parse(action.review.actionExpiresAt)) {
-          throw new MarketPortfolioOperationError("watchlist_review_expired");
-        }
-        this.assertCurrentWalletConnection(account, expectedConnectionRevision);
-        const current = readReferenceWatchlistRaw(this.#database, profile.profileId, account);
-        if (
-          current.revision !== action.review.precondition.watchlistRevision ||
-          canonicalJsonStringify(current.entries as unknown as CanonicalJson) !==
-            canonicalJsonStringify(
-              action.review.precondition.currentEntries as unknown as CanonicalJson,
-            )
-        ) throw new RuntimeOperationError("state_conflict");
-        const projection = action.review.kind === "reorder"
-          ? createReferenceWatchlistReviewProjection({
-              kind: action.review.kind,
-              currentEntries: current.entries,
-              pairIds: action.review.target.entries.map((entry) => entry.pairId),
-            })
-          : createReferenceWatchlistReviewProjection({
-              kind: action.review.kind,
-              currentEntries: current.entries,
-              pairId: action.review.target.pair.pairId,
-            });
-        if (
-          projection.status !== "success" ||
-          canonicalJsonStringify({
-            target: action.review.target,
-            decision: action.review.decision,
-            fixedEvidence: action.review.fixedEvidence,
-          } as unknown as CanonicalJson) !== canonicalJsonStringify({
-            target: projection.status === "success" ? projection.projection.target : null,
-            decision: projection.status === "success" ? projection.projection.decision : null,
-            fixedEvidence: projection.status === "success"
-              ? projection.projection.fixedEvidence
-              : null,
-          } as unknown as CanonicalJson)
-        ) throw new RuntimeOperationError("state_conflict");
-        const nextIds = projection.projection.nextEntries.map((entry) => entry.pairId);
-        const currentIds = current.entries.map((entry) => entry.pairId);
-        const changed = nextIds.length !== currentIds.length ||
-          nextIds.some((pairId, index) => pairId !== currentIds[index]);
-        let stored = current;
-        if (changed) {
-          const revision = createReferenceRevision(current.revision);
-          const stateRows = this.#database.prepare(`${watchlistStateSelect}
-            WHERE profile_id = ? AND chain_id = ? AND wallet_address = ?`)
-            .all(profile.profileId, account.chainId, account.address) as ReferenceWatchlistStateRow[];
-          if (stateRows.length === 0) {
-            this.#database.prepare(`INSERT INTO reference_pair_watchlist_state(
-              profile_id, chain_id, wallet_address, revision, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?)`)
-              .run(profile.profileId, account.chainId, account.address, revision, completedAt, completedAt);
-          } else {
-            const update = this.#database.prepare(`UPDATE reference_pair_watchlist_state
-              SET revision = ?, updated_at = ?
-              WHERE profile_id = ? AND chain_id = ? AND wallet_address = ? AND revision = ?`)
-              .run(
-                revision,
-                completedAt,
-                profile.profileId,
-                account.chainId,
-                account.address,
-                current.revision,
-              );
-            if (update.changes !== 1) throw new RuntimeOperationError("state_conflict");
-          }
-          this.#database.prepare(`DELETE FROM reference_pair_watchlist_entry
-            WHERE profile_id = ? AND chain_id = ? AND wallet_address = ?`)
-            .run(profile.profileId, account.chainId, account.address);
-          const insert = this.#database.prepare(`INSERT INTO reference_pair_watchlist_entry(
-            profile_id, chain_id, wallet_address, pair_id, pair_json, position
-          ) VALUES (?, ?, ?, ?, ?, ?)`);
-          projection.projection.nextEntries.forEach((pair, position) => {
-            insert.run(
-              profile.profileId,
-              account.chainId,
-              account.address,
-              pair.pairId,
-              canonicalJsonStringify(pair as unknown as CanonicalJson),
-              position,
-            );
-          });
-          stored = readReferenceWatchlistRaw(this.#database, profile.profileId, account);
-          if (
-            stored.revision !== revision ||
-            canonicalJsonStringify(stored.entries as unknown as CanonicalJson) !==
-              canonicalJsonStringify(
-                projection.projection.nextEntries as unknown as CanonicalJson,
-              )
-          ) throw new Error("Reference watchlist persistence postcondition failed.");
-        }
-        const operation = parseReferenceWatchlistOperation({
-          contractVersion: "1",
-          domain: "reference_watchlist",
-          operationId: action.review.operationId,
-          kind: action.review.kind,
-          initiatedBy: action.initiatedBy,
-          review: action.review,
-          state: "completed",
-          completedAt,
-          result: {
-            outcome: action.review.kind === "add"
-              ? "watchlist_pair_added"
-              : action.review.kind === "remove"
-                ? "watchlist_pair_removed"
-                : "watchlist_pairs_reordered",
-            watchlist: stored,
-          },
-        });
-        this.#database.prepare(`INSERT INTO reference_watchlist_operation(
-          profile_id, operation_id, kind, initiated_by, review_digest,
-          chain_id, wallet_address, operation_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
-          profile.profileId,
-          operation.operationId,
-          operation.kind,
-          operation.initiatedBy,
-          operation.review.reviewDigest,
-          account.chainId,
-          account.address,
-          canonicalBytes(operation as unknown as CanonicalJson),
-        );
-        const storedRows = this.#database.prepare(`${referenceWatchlistOperationSelect}
-          WHERE profile_id = ? AND operation_id = ?`)
-          .all(profile.profileId, operation.operationId) as ReferenceWatchlistOperationRow[];
-        if (storedRows.length !== 1 || storedRows[0] === undefined) {
-          throw new Error("Reference watchlist operation persistence failed.");
-        }
-        return decodeReferenceWatchlistOperationRow(storedRows[0], profile.profileId);
-      });
-    } catch (error) {
-      if (error instanceof MarketPortfolioOperationError) throw error;
-      throw storageError(error);
-    }
   }
 
   private assertCurrentWalletConnection(

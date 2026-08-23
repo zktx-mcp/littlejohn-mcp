@@ -8,6 +8,7 @@ import {
   renderPresentationFailure,
   renderPresentationPending,
 } from "./renderers.js";
+import { createPresentationLifecycle } from "./presentation-lifecycle.js";
 import "./visual-tokens.css";
 
 const root = document.getElementById("app");
@@ -19,17 +20,17 @@ const app = new App(
   { autoResize: true, strict: true },
 );
 const controller = new AbortController();
+const presentation = createPresentationLifecycle(root, app);
 let connected = false;
 let pending: CallToolResult | undefined;
 let received = false;
 let settled = false;
 let processing = false;
 
-const replace = (node: HTMLElement): void => { root.replaceChildren(node); };
-
 const fail = (_error: unknown): void => {
+  if (controller.signal.aborted) return;
   settled = true;
-  replace(renderPresentationFailure(
+  presentation.replaceStatic(renderPresentationFailure(
     "Little John could not verify the data required to display this result.",
   ));
 };
@@ -45,10 +46,10 @@ const drain = async (): Promise<void> => {
     if (admitted.entry.presentationKind === "operation") {
       throw new TypeError("An operation cannot create a top-level presentation.");
     }
-    const article = renderPresentation(admitted.entry, admitted.result);
-    replace(article);
+    const rendered = renderPresentation(admitted.entry, admitted.result);
+    presentation.replace(rendered);
     if (admitted.entry.presentationKind === "review") {
-      const mounted = await mountOperationReview(app, admitted, article, controller.signal);
+      const mounted = await mountOperationReview(app, admitted, rendered.node, controller.signal);
       if (!mounted) throw new TypeError("Review lifecycle was not mounted.");
     }
     settled = true;
@@ -70,10 +71,11 @@ app.addEventListener("toolresult", (result) => {
 
 app.onteardown = async () => {
   controller.abort();
+  presentation.dispose();
   return {};
 };
 
-replace(renderPresentationPending());
+presentation.replaceStatic(renderPresentationPending());
 try {
   await app.connect();
   connected = true;

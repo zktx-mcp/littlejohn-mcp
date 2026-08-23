@@ -46,10 +46,7 @@ const expectedCapabilityIds = Object.freeze([
   "wallet.connection",
 ]);
 const expectedSemanticReadToolNames = Object.freeze([
-  "market_get_reference_history",
-  "market_get_reference_price",
-  "market_get_stock_token_market",
-  "market_get_watchlist",
+  "market_get_stock_token_trade_history",
   "read_get_account_balance",
   "read_get_chain_status",
   "read_inspect_contract",
@@ -60,10 +57,7 @@ const expectedSemanticReadToolNames = Object.freeze([
 ]);
 const expectedToolNames = Object.freeze([
   "account_list_assets",
-  "market_get_reference_history",
-  "market_get_reference_price",
-  "market_get_stock_token_market",
-  "market_get_watchlist",
+  "market_get_stock_token_trade_history",
   "read_get_account_balance",
   "read_get_chain_status",
   "read_inspect_contract",
@@ -77,11 +71,6 @@ const expectedToolNames = Object.freeze([
 ]);
 const expectedAppToolNames = Object.freeze([
   ...expectedToolNames,
-  "market_add_watchlist_pair",
-  "market_get_watchlist_change_review",
-  "market_get_watchlist_operation",
-  "market_remove_watchlist_pair",
-  "market_reorder_watchlist_pairs",
   "presentation_get_snapshot",
   "presentation_get_snapshot_chunk",
   "token_add_selection",
@@ -795,6 +784,80 @@ const callOperationTool = async (client, toolName, normalizedInput) => {
   return result;
 };
 
+const reconstructPackagedSnapshot = async (client, descriptor) => {
+  const chunks = [];
+  for (let index = 0; index < descriptor.resultChunkCount; index += 1) {
+    const chunk = await client.callTool("presentation_get_snapshot_chunk", {
+      snapshotId: descriptor.snapshotId,
+      index,
+    });
+    const chunkContent = chunk?.structuredContent;
+    if (
+      chunkContent?.kind !== "presentation_snapshot_chunk" ||
+      chunkContent.snapshotId !== descriptor.snapshotId ||
+      chunkContent.index !== index ||
+      typeof chunkContent.canonicalBase64 !== "string"
+    ) throw new TypeError("Packaged MCP App exact snapshot chunk is invalid.");
+    const bytes = Buffer.from(chunkContent.canonicalBase64, "base64");
+    const expectedLength = index + 1 === descriptor.resultChunkCount
+      ? descriptor.resultUtf8Bytes - descriptor.resultChunkBytes * index
+      : descriptor.resultChunkBytes;
+    if (bytes.length !== expectedLength) {
+      throw new TypeError("Packaged MCP App snapshot chunk length is invalid.");
+    }
+    chunks.push(bytes);
+  }
+  const bytes = Buffer.concat(chunks);
+  if (
+    bytes.length !== descriptor.resultUtf8Bytes ||
+    createHash("sha256").update(bytes).digest("hex") !== descriptor.resultSha256
+  ) throw new TypeError("Packaged MCP App snapshot bytes are invalid.");
+  const value = JSON.parse(bytes.toString("utf8"));
+  if (bytes.toString("utf8") !== independentCanonicalJson(value)) {
+    throw new TypeError("Packaged MCP App snapshot JSON is not canonical.");
+  }
+  return value;
+};
+
+const admitPackagedAppHandoff = async (client, result, label) => {
+  const text = result?.content?.filter((entry) => entry?.type === "text");
+  const links = result?.content?.filter((entry) => entry?.type === "resource_link");
+  const resource = result?._meta?.["littlejohn/presentation-snapshot"];
+  const descriptor = resource?.descriptor;
+  const link = links?.[0];
+  if (
+    text?.length !== 0 ||
+    result?.structuredContent !== undefined ||
+    links?.length !== 1 ||
+    link?.uri !== descriptor?.snapshotUri ||
+    resource?.kind !== "presentation_snapshot_resource"
+  ) throw new TypeError(`${label} snapshot handoff is invalid.`);
+  const exactResource = await client.readResource(link.uri);
+  if (
+    exactResource?.uri !== link.uri ||
+    exactResource?.mimeType !== "application/json" ||
+    exactResource?.text !== independentCanonicalJson(resource)
+  ) throw new TypeError(`${label} snapshot resource is invalid: ${independentCanonicalJson({
+    actualKind: (() => {
+      try { return JSON.parse(exactResource?.text)?.kind ?? null; }
+      catch { return null; }
+    })(),
+    actualReason: (() => {
+      try { return JSON.parse(exactResource?.text)?.reason ?? null; }
+      catch { return null; }
+    })(),
+    mimeType: exactResource?.mimeType ?? null,
+    sameText: exactResource?.text === independentCanonicalJson(resource),
+    sameUri: exactResource?.uri === link.uri,
+  })}`);
+  return Object.freeze({
+    descriptor,
+    link,
+    resource,
+    value: await reconstructPackagedSnapshot(client, descriptor),
+  });
+};
+
 const assertPackagedReviewWithoutServerTools = async (
   client,
   packagedHtml,
@@ -804,9 +867,14 @@ const assertPackagedReviewWithoutServerTools = async (
     "wallet_get_connection_change_review",
     { kind: "connect" },
   );
-  const review = reviewResult?.structuredContent?.review;
+  const reviewSnapshot = await admitPackagedAppHandoff(
+    client,
+    reviewResult,
+    "Packaged no-serverTools Wallet Review",
+  );
+  const review = reviewSnapshot.value?.review;
   if (
-    reviewResult?.structuredContent?.status !== "review" ||
+    reviewSnapshot.value?.status !== "review" ||
     review?.kind !== "connect" ||
     typeof review?.operationId !== "string"
   ) throw new TypeError("Packaged no-serverTools Wallet Review is invalid.");
@@ -900,12 +968,12 @@ const assertPackagedReviewWithoutServerTools = async (
     await bridge.sendToolResult(reviewResult);
     await waitFor(
       () => Promise.resolve(view.document.body.textContent),
-      (text) => text.includes("Direct controls unavailable"),
+      (text) => text.includes("Little John could not display this result"),
       "Packaged no-serverTools Review presentation",
     );
     const text = view.document.body.textContent;
     if (
-      !text.includes("Connect the external wallet") ||
+      text.includes("Connect the external wallet") ||
       view.document.querySelectorAll("button").length !== 0 ||
       viewToolCalls !== 0
     ) throw new TypeError("Packaged no-serverTools View exposed decision authority.");
@@ -930,7 +998,7 @@ const assertPackagedReviewWithoutServerTools = async (
   ) throw new TypeError("Packaged no-serverTools View created Wallet operation state.");
 };
 
-const assertPackagedReadApp = async (client, prepared) => {
+const assertPackagedReadApp = async (client, prepared, fakeRpc) => {
   const tools = await client.listTools();
   const names = tools.map((tool) => tool.name).sort();
   if (JSON.stringify(names) !== JSON.stringify([...expectedAppToolNames].sort())) {
@@ -970,28 +1038,28 @@ const assertPackagedReadApp = async (client, prepared) => {
     resourceUri !== `ui://littlejohn/presentation/${appDigest}.html`
   ) throw new TypeError("Packaged MCP App resource bytes are invalid.");
 
-  const creatingResult = await client.callTool("wallet_get_connection");
-  const text = creatingResult?.content?.filter((entry) => entry?.type === "text");
-  const links = creatingResult?.content?.filter((entry) => entry?.type === "resource_link");
-  const snapshotResource = creatingResult?._meta?.["littlejohn/presentation-snapshot"];
-  const descriptor = snapshotResource?.descriptor;
-  const link = links?.[0];
+  const creatingResult = await client.callTool("market_get_stock_token_trade_history", {
+    symbol: fakeRpc.stockTokenTradeHistory.symbol,
+    window: "7d",
+  });
+  const handoff = await admitPackagedAppHandoff(
+    client,
+    creatingResult,
+    "Packaged MCP App trade history",
+  );
+  const { descriptor, link, resource: snapshotResource } = handoff;
   if (
-    text?.length !== 1 ||
-    text[0]?.text !== independentCanonicalJson(creatingResult.structuredContent) ||
-    links?.length !== 1 ||
-    link?.uri !== descriptor?.snapshotUri ||
-    snapshotResource?.kind !== "presentation_snapshot_resource" ||
-    descriptor?.contractId !== "wallet.connection" ||
-    descriptor?.contractVersion !== "1"
-  ) throw new TypeError("Packaged MCP App creating result is invalid.");
-
-  const exactResource = await client.readResource(link.uri);
-  if (
-    exactResource?.uri !== link.uri ||
-    exactResource?.mimeType !== "application/json" ||
-    exactResource?.text !== independentCanonicalJson(snapshotResource)
-  ) throw new TypeError("Packaged MCP App exact snapshot resource is invalid.");
+    descriptor?.contractId !== "market.stock_token_trade_history" ||
+    descriptor?.contractVersion !== "1" ||
+    descriptor?.resultChunkCount !== 1 ||
+    JSON.stringify(creatingResult).includes("\"candles\"")
+  ) throw new TypeError(`Packaged MCP App snapshot handoff is invalid: ${independentCanonicalJson({
+    contractId: descriptor?.contractId ?? null,
+    contractVersion: descriptor?.contractVersion ?? null,
+    containsCandles: JSON.stringify(creatingResult).includes("\"candles\""),
+    resultChunkCount: descriptor?.resultChunkCount ?? null,
+    snapshotKind: snapshotResource?.kind ?? null,
+  })}`);
 
   const reference = await client.callTool("presentation_get_snapshot", {
     snapshotUri: link.uri,
@@ -1005,23 +1073,13 @@ const assertPackagedReadApp = async (client, prepared) => {
     Object.hasOwn(reference.structuredContent, "payload")
   ) throw new TypeError("Packaged MCP App exact snapshot reference is invalid.");
 
-  const chunk = await client.callTool("presentation_get_snapshot_chunk", {
-    snapshotId: descriptor.snapshotId,
-    index: 0,
-  });
-  const chunkContent = chunk?.structuredContent;
+  const reconstructed = handoff.value;
   if (
-    descriptor.resultChunkCount !== 1 ||
-    chunkContent?.kind !== "presentation_snapshot_chunk" ||
-    chunkContent.snapshotId !== descriptor.snapshotId ||
-    chunkContent.index !== 0 ||
-    typeof chunkContent.canonicalBase64 !== "string"
-  ) throw new TypeError("Packaged MCP App exact snapshot chunk is invalid.");
-  const resultBytes = Buffer.from(chunkContent.canonicalBase64, "base64");
-  if (
-    resultBytes.length !== descriptor.resultUtf8Bytes ||
-    createHash("sha256").update(resultBytes).digest("hex") !== descriptor.resultSha256 ||
-    resultBytes.toString("utf8") !== independentCanonicalJson(creatingResult.structuredContent)
+    reconstructed.status !== "available" ||
+    reconstructed.symbol !== fakeRpc.stockTokenTradeHistory.symbol ||
+    reconstructed.window !== "7d" ||
+    !Array.isArray(reconstructed.chart?.positions) ||
+    reconstructed.chart.positions.length !== 169
   ) throw new TypeError("Packaged MCP App snapshot reconstruction is invalid.");
 
   await assertPackagedReviewWithoutServerTools(
@@ -1240,17 +1298,6 @@ const findTokenSelection = (value, token, included) => {
   ) throw new TypeError("Packaged token selection page is invalid.");
   const selection = value.selections.find((entry) => entry?.asset?.address === token.address);
   return assertTokenSelection(selection, token, included);
-};
-
-const assertReferenceWatchlist = (value, expectedPairIds) => {
-  if (
-    value?.account?.chainId !== expectedChainId ||
-    value.account.address !== expectedWalletAddress ||
-    typeof value.revision !== "string" ||
-    !Array.isArray(value.entries) ||
-    JSON.stringify(value.entries.map((entry) => entry?.pairId)) !== JSON.stringify(expectedPairIds)
-  ) throw new TypeError("Packaged reference-market watchlist is invalid.");
-  return value;
 };
 
 const assertAccountAssetCollection = (value, fakeRpc, expectedTokens) => {
@@ -1478,7 +1525,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     ) throw new TypeError("Packaged MCP capability catalog is not the exact canonical set.");
     const appMcp = await startNpxMcp(prepared, environment, true);
     mcpClients.push(appMcp);
-    await assertPackagedReadApp(appMcp, prepared);
+    await assertPackagedReadApp(appMcp, prepared, fakeRpc);
     const chainStatus = await callSemanticRead(firstMcp, "read_get_chain_status");
     if (
       chainStatus.structuredContent?.data?.chainId !== expectedChainId ||
@@ -1720,7 +1767,11 @@ export const verifyPackagedIntegration = async (prepared) => {
 
     const walletReview = async (kind) => {
       const result = await appMcp.callTool("wallet_get_connection_change_review", { kind });
-      const value = result?.structuredContent;
+      const value = (await admitPackagedAppHandoff(
+        appMcp,
+        result,
+        "Packaged Wallet Review",
+      )).value;
       if (value?.status !== "review" || value.review?.kind !== kind) {
         throw new TypeError("Packaged Wallet Review is invalid.");
       }
@@ -1841,88 +1892,59 @@ export const verifyPackagedIntegration = async (prepared) => {
       JSON.stringify(firstConnectionData)
     ) throw new TypeError("Compatible MCP processes do not share one Wallet projection.");
 
-    const referencePair = fakeRpc.referenceMarkets.pairs[0];
-    if (referencePair === undefined) throw new TypeError("Release reference pair is unavailable.");
-    const referencePrice = await callSemanticRead(firstMcp, "market_get_reference_price", {
-      pairId: referencePair.pairId,
-    });
-    if (
-      referencePrice.structuredContent?.status !== "current" ||
-      referencePrice.structuredContent.pair?.pairId !== referencePair.pairId ||
-      referencePrice.structuredContent.block?.blockHash !==
-        fakeRpc.canonicalBlockReference.blockHash
-    ) throw new TypeError("Packaged reference price is invalid.");
-    const referenceHistory = await callSemanticRead(firstMcp, "market_get_reference_history", {
-      pairId: referencePair.pairId,
-      window: "1d",
-    });
-    if (
-      referenceHistory.structuredContent?.pair?.pairId !== referencePair.pairId ||
-      referenceHistory.structuredContent?.window !== "1d" ||
-      !Array.isArray(referenceHistory.structuredContent?.candles) ||
-      referenceHistory.structuredContent.candles.length === 0
-    ) throw new TypeError("Packaged reference history is invalid.");
-
-    const stockTokenMarket = await callSemanticRead(
+    const stockTokenTradeHistory = await callSemanticRead(
       firstMcp,
-      "market_get_stock_token_market",
-      { symbol: fakeRpc.stockTokenMarket.symbol, window: "1d" },
+      "market_get_stock_token_trade_history",
+      { symbol: fakeRpc.stockTokenTradeHistory.symbol, window: "1d" },
     );
     const stockTokenContent = canonicalSemanticToolContent(
-      stockTokenMarket,
-      "Packaged Stock Token market",
+      stockTokenTradeHistory,
+      "Packaged Stock Token trade history",
     );
-    const executionDisplayCandles = Array.isArray(stockTokenContent.execution?.displaySeries?.positions)
-      ? stockTokenContent.execution.displaySeries.positions.filter((position) => position.candle !== null)
+    const tradeHistoryChartCandles = Array.isArray(stockTokenContent.chart?.positions)
+      ? stockTokenContent.chart.positions.filter((position) => position.candle !== null)
       : [];
     if (
       stockTokenContent.status !== "available" ||
-      stockTokenContent.symbol !== fakeRpc.stockTokenMarket.symbol ||
+      stockTokenContent.symbol !== fakeRpc.stockTokenTradeHistory.symbol ||
       stockTokenContent.officialAsset?.member?.contractAddress !==
-        fakeRpc.stockTokenMarket.tokenAddress ||
-      stockTokenContent.reference?.status !== "available" ||
-      stockTokenContent.reference.price?.status !== "current" ||
-      independentCanonicalJson(stockTokenContent.reference.price?.value) !==
-        independentCanonicalJson(fakeRpc.stockTokenMarket.value) ||
-      stockTokenContent.reference.price?.source?.fact?.feedId !== fakeRpc.stockTokenMarket.feedId ||
+        fakeRpc.stockTokenTradeHistory.tokenAddress ||
       stockTokenContent.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
-      stockTokenContent.reference.oraclePaused?.value !== false ||
-      stockTokenContent.reference.history?.status !== "partial" ||
-      !Array.isArray(stockTokenContent.reference.history?.candles) ||
-      stockTokenContent.reference.history.candles.length === 0 ||
-      stockTokenContent.execution?.status !== "available" ||
-      stockTokenContent.execution.source?.quoteToken?.symbol !== "USDG" ||
-      stockTokenContent.execution.coverage?.status !== "partial" ||
-      stockTokenContent.execution.detail?.status !== "complete" ||
-      stockTokenContent.execution.detail?.observedCandleCount !== 3 ||
-      stockTokenContent.execution.displaySeries?.window !== "1d" ||
-      stockTokenContent.execution.displaySeries?.source?.token?.address !==
-        fakeRpc.stockTokenMarket.tokenAddress ||
-      stockTokenContent.execution.displaySeries?.source?.quoteToken?.symbol !== "USDG" ||
-      !Array.isArray(stockTokenContent.execution.displaySeries?.positions) ||
-      stockTokenContent.execution.displaySeries.positions.length !== 97 ||
-      executionDisplayCandles.length !== 2 ||
-      executionDisplayCandles[0]?.candle?.high?.numerator !== "463" ||
-      executionDisplayCandles[0]?.candle?.high?.denominator !== "1" ||
-      executionDisplayCandles[0]?.candle?.low?.numerator !== "925" ||
-      executionDisplayCandles[0]?.candle?.low?.denominator !== "4" ||
-      executionDisplayCandles[0]?.candle?.tokenVolumeRaw !== "2001" ||
-      executionDisplayCandles[0]?.candle?.quoteVolumeRaw !== "4001" ||
-      executionDisplayCandles[0]?.candle?.tradeCount !== "2" ||
-      !Array.isArray(stockTokenContent.execution.candles) ||
-      stockTokenContent.execution.candles.length !== 3 ||
-      stockTokenContent.execution.candles.some((candle) =>
-        candle.token !== fakeRpc.stockTokenMarket.tokenAddress ||
-        Date.parse(candle.intervalEnd) - Date.parse(candle.intervalStart) !== 60_000) ||
-      ["mapping", "oraclePaused", "price", "history", "warnings", "limitations"]
+      stockTokenContent.source?.quoteToken?.symbol !== "USDG" ||
+      stockTokenContent.coverage?.status !== "partial" ||
+      stockTokenContent.chart?.window !== "1d" ||
+      stockTokenContent.chart?.source?.token?.address !==
+        fakeRpc.stockTokenTradeHistory.tokenAddress ||
+      stockTokenContent.chart?.source?.quoteToken?.symbol !== "USDG" ||
+      !Array.isArray(stockTokenContent.chart?.positions) ||
+      stockTokenContent.chart.positions.length !== 97 ||
+      tradeHistoryChartCandles.length !== 2 ||
+      tradeHistoryChartCandles[0]?.candle?.high?.numerator !== "463" ||
+      tradeHistoryChartCandles[0]?.candle?.high?.denominator !== "1" ||
+      tradeHistoryChartCandles[0]?.candle?.low?.numerator !== "925" ||
+      tradeHistoryChartCandles[0]?.candle?.low?.denominator !== "4" ||
+      tradeHistoryChartCandles[0]?.candle?.tokenVolumeRaw !== "2001" ||
+      tradeHistoryChartCandles[0]?.candle?.quoteVolumeRaw !== "4001" ||
+      tradeHistoryChartCandles[0]?.candle?.tradeCount !== "2" ||
+      [
+        "candles",
+        "detail",
+        "reference",
+        "mapping",
+        "oraclePaused",
+        "price",
+        "history",
+        "warnings",
+        "execution",
+      ]
         .some((field) => Object.hasOwn(stockTokenContent, field)) ||
-      independentCanonicalJson(stockTokenContent.execution).toLowerCase().includes("github")
-    ) throw new TypeError("Packaged Stock Token market result is invalid.");
+      independentCanonicalJson(stockTokenContent).toLowerCase().includes("chainlink")
+    ) throw new TypeError("Packaged Stock Token trade-history result is invalid.");
     const stockTokenCli = await runCommand(process.execPath, [
       resolve(prepared.installedPackageRoot, "dist/cli.js"),
       "market",
-      "stock-token-market",
-      fakeRpc.stockTokenMarket.symbol,
+      "stock-token-trade-history",
+      fakeRpc.stockTokenTradeHistory.symbol,
       "--window",
       "1d",
       "--json",
@@ -1931,57 +1953,6 @@ export const verifyPackagedIntegration = async (prepared) => {
       independentCanonicalJson(JSON.parse(stockTokenCli.stdout.toString("utf8"))) !==
       independentCanonicalJson(stockTokenContent)
     ) throw new TypeError("Packaged Stock Token CLI changed the canonical result.");
-
-    const initialWatchlist = assertReferenceWatchlist(
-      (await callSemanticRead(firstMcp, "market_get_watchlist")).structuredContent,
-      [],
-    );
-    const watchlistAddReviewResult = await appMcp.callTool(
-      "market_get_watchlist_change_review",
-      {
-        kind: "add",
-        pairId: referencePair.pairId,
-        expectedRevision: initialWatchlist.revision,
-      },
-    );
-    const watchlistAddReview = watchlistAddReviewResult.structuredContent?.review;
-    const watchlistAdd = readToolOperation(await callOperationTool(
-      appMcp,
-      "market_add_watchlist_pair",
-      { review: watchlistAddReview, initiatedBy: "mcp_app" },
-    ));
-    if (
-      watchlistAdd.state !== "completed" ||
-      watchlistAdd.kind !== "add" ||
-      watchlistAdd.result?.watchlist?.entries?.[0]?.pairId !== referencePair.pairId
-    ) throw new TypeError("Packaged watchlist addition is invalid.");
-    const exactWatchlistAdd = readToolOperation(await callOperationTool(
-      appMcp,
-      "market_get_watchlist_operation",
-      { operationId: watchlistAdd.operationId },
-    ));
-    if (JSON.stringify(exactWatchlistAdd) !== JSON.stringify(watchlistAdd)) {
-      throw new TypeError("Packaged watchlist operation is not immutable.");
-    }
-    const watchlistRemoveReviewResult = await appMcp.callTool(
-      "market_get_watchlist_change_review",
-      {
-        kind: "remove",
-        pairId: referencePair.pairId,
-        expectedRevision: watchlistAdd.result.watchlist.revision,
-      },
-    );
-    const watchlistRemoveReview = watchlistRemoveReviewResult.structuredContent?.review;
-    const watchlistTerminal = readToolOperation(await callOperationTool(
-      appMcp,
-      "market_remove_watchlist_pair",
-      { review: watchlistRemoveReview, initiatedBy: "mcp_app" },
-    ));
-    if (
-      watchlistTerminal.state !== "completed" ||
-      watchlistTerminal.kind !== "remove" ||
-      watchlistTerminal.result?.watchlist?.entries?.length !== 0
-    ) throw new TypeError("Packaged watchlist removal is invalid.");
 
     const catalogAsset = tokenAsset(fakeRpc);
     const officialCandidateAsset = Object.freeze({
@@ -2020,7 +1991,11 @@ export const verifyPackagedIntegration = async (prepared) => {
       "token_get_selection_change_review",
       { kind: "add", asset: officialCandidateAsset },
     );
-    const tokenAddReview = tokenAddReviewResult.structuredContent?.review;
+    const tokenAddReview = (await admitPackagedAppHandoff(
+      appMcp,
+      tokenAddReviewResult,
+      "Packaged token-add Review",
+    )).value?.review;
     const tokenAdd = readToolOperation(await callOperationTool(
       appMcp,
       "token_add_selection",
@@ -2067,7 +2042,11 @@ export const verifyPackagedIntegration = async (prepared) => {
         expectedRevision: addedSelection.revision,
       },
     );
-    const tokenRemoveReview = tokenRemoveReviewResult.structuredContent?.review;
+    const tokenRemoveReview = (await admitPackagedAppHandoff(
+      appMcp,
+      tokenRemoveReviewResult,
+      "Packaged token-remove Review",
+    )).value?.review;
     const tokenTerminal = readToolOperation(await callOperationTool(
       appMcp,
       "token_remove_selection",
@@ -2100,11 +2079,6 @@ export const verifyPackagedIntegration = async (prepared) => {
         operationId: tokenTerminal.operationId,
         value: tokenTerminal,
       }),
-      Object.freeze({
-        tool: "market_get_watchlist_operation",
-        operationId: watchlistTerminal.operationId,
-        value: watchlistTerminal,
-      }),
     ]);
 
     await Promise.all(mcpClients.splice(0).map((client) => client.close()));
@@ -2136,15 +2110,12 @@ export const verifyPackagedIntegration = async (prepared) => {
         throw new TypeError("Packaged owner takeover changed a durable operation.");
       }
     }
-    assertReferenceWatchlist(
-      (await takeoverMcp.callTool("market_get_watchlist")).structuredContent,
-      [],
+    const restoredSelections = await admitPackagedAppHandoff(
+      takeoverMcp,
+      await takeoverMcp.callTool("token_list_selections"),
+      "Packaged restored token selections",
     );
-    findTokenSelection(
-      (await takeoverMcp.callTool("token_list_selections")).structuredContent,
-      fakeRpc.officialCandidate,
-      false,
-    );
+    findTokenSelection(restoredSelections.value, fakeRpc.officialCandidate, false);
     await takeoverMcp.close();
     mcpClients.splice(mcpClients.indexOf(takeoverMcp), 1);
 

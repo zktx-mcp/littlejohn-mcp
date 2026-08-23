@@ -4,13 +4,6 @@ import {
   type ApplicationFailure,
   type CanonicalJson,
 } from "../core/index.js";
-import {
-  marketPortfolioApplicationContracts,
-  marketPortfolioInterfaceErrorMappings,
-  MarketPortfolioOperationError,
-  type AnyMarketPortfolioApplicationContract,
-  type MarketPortfolioApplicationPort,
-} from "../market-portfolio/index.js";
 import type {
   RouteContext,
   RouteDefinition,
@@ -59,7 +52,7 @@ const nestedReviewKind = (value: unknown): CanonicalJson | undefined => {
 };
 
 const applicationResult = (
-  contract: AnyTokenCatalogApplicationContract | AnyMarketPortfolioApplicationContract,
+  contract: AnyTokenCatalogApplicationContract,
   request: unknown,
   value: unknown,
   invalidFailure: ApplicationFailure,
@@ -210,78 +203,11 @@ const tokenRoutes = (
   },
 ]);
 
-const watchlistRoutes = (
-  markets: MarketPortfolioApplicationPort,
-): readonly RouteDefinition[] => Object.freeze([
-  {
-    method: "POST",
-    mutation: "none",
-    pathPattern: operationControlResources.referenceWatchlist.reviews,
-    successStatus: 200,
-    handler: async (context) => {
-      const contract = marketPortfolioApplicationContracts.watchlistChangeReview;
-      const admission = admitApplicationInput(contract, context.body);
-      if (!admission.ok) return failure(admission.failure);
-      return applicationResult(
-        contract,
-        admission.value,
-        await markets.reviewWatchlistChange(admission.value, context.signal),
-        new MarketPortfolioOperationError("internal_error").failure,
-      );
-    },
-  },
-  {
-    method: "POST",
-    mutation: "declared_control",
-    pathPattern: operationControlResources.referenceWatchlist.decisions,
-    successStatus: 200,
-    handler: async (context) => {
-      const captured = captureCanonicalJson(context.body);
-      const kind = nestedReviewKind(captured);
-      const contract = kind === "add"
-        ? marketPortfolioApplicationContracts.add
-        : kind === "remove"
-          ? marketPortfolioApplicationContracts.remove
-          : kind === "reorder"
-            ? marketPortfolioApplicationContracts.reorder
-            : undefined;
-      if (contract === undefined) return failure(new MarketPortfolioOperationError("invalid_input").failure);
-      const admission = admitApplicationInput(contract, captured as never);
-      if (!admission.ok) return failure(admission.failure);
-      return applicationResult(
-        contract,
-        admission.value,
-        await markets.decideWatchlistChange(admission.value, context.signal),
-        new MarketPortfolioOperationError("internal_error").failure,
-      );
-    },
-  },
-  {
-    method: "GET",
-    mutation: "none",
-    pathPattern: operationControlResources.referenceWatchlist.operationPattern,
-    successStatus: 200,
-    handler: async (context) => {
-      const contract = marketPortfolioApplicationContracts.operation;
-      const admission = admitApplicationInput(contract, { operationId: operationId(context) });
-      if (!admission.ok) return failure(admission.failure);
-      return applicationResult(
-        contract,
-        admission.value,
-        await markets.getWatchlistOperation(admission.value, context.signal),
-        new MarketPortfolioOperationError("internal_error").failure,
-      );
-    },
-  },
-]);
-
 export const extendOperationRoutes = (input: Readonly<{
   routes: RuntimeRouteRegistry;
   wallet: WalletManagementPort;
   token: TokenCatalogManagementApplicationPort;
-  markets: MarketPortfolioApplicationPort;
 }>): RuntimeRouteRegistry => {
   const wallet = input.routes.extend(walletRoutes(input.wallet), walletInterfaceErrorMappings);
-  const token = wallet.extend(tokenRoutes(input.token), tokenCatalogInterfaceErrorMappings);
-  return token.extend(watchlistRoutes(input.markets), marketPortfolioInterfaceErrorMappings);
+  return wallet.extend(tokenRoutes(input.token), tokenCatalogInterfaceErrorMappings);
 };

@@ -25,6 +25,7 @@ export interface ApplicationContract<PublicInput, InternalContext, Success> {
   readonly successSchema: ZodType<Success>;
   readonly failureCodes: readonly string[];
   parseInput(value: unknown): PublicInput;
+  parseNormalizedInput(value: unknown): PublicInput;
   parsePublicSuccess(publicInput: unknown, value: unknown): Success;
   parseBoundSuccess(publicInput: unknown, internalContext: unknown, value: unknown): Success;
   parseFailure(value: unknown): ApplicationFailure;
@@ -98,13 +99,16 @@ export const defineApplicationContract = <PublicInput, InternalContext, Success>
   }
   for (const code of failureCodes) options.errorRegistry.get(code);
   const failureSchema = applicationFailureSchemaFor(options.errorRegistry, failureCodes);
+  const normalizedInputSchema = options.correlationInputSchema ?? options.inputSchema;
+
+  const parseNormalizedInput = (value: unknown): PublicInput =>
+    deepFreezeValue(normalizedInputSchema.parse(captureCanonicalJson(value)));
 
   const parsePublic = (publicInputValue: unknown, value: unknown): Readonly<{
     publicInput: PublicInput;
     success: Success;
   }> => {
-    const publicInput = (options.correlationInputSchema ?? options.inputSchema)
-      .parse(captureCanonicalJson(publicInputValue));
+    const publicInput = parseNormalizedInput(publicInputValue);
     const success = options.successSchema.parse(captureCanonicalJson(value));
     options.validatePublicSuccess?.(publicInput, success);
     return Object.freeze({ publicInput, success });
@@ -119,6 +123,7 @@ export const defineApplicationContract = <PublicInput, InternalContext, Success>
     parseInput(value: unknown): PublicInput {
       return deepFreezeValue(options.inputSchema.parse(captureCanonicalJson(value)));
     },
+    parseNormalizedInput,
     parsePublicSuccess(publicInputValue: unknown, value: unknown): Success {
       return deepFreezeValue(parsePublic(publicInputValue, value).success);
     },

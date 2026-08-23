@@ -10,11 +10,6 @@ import {
   type CanonicalJson,
 } from "../../../core/client.js";
 import type {
-  ReferenceWatchlistOperation,
-  ReferenceWatchlistReview,
-  ReferenceWatchlistReviewResult,
-} from "../../../market-portfolio/contracts.js";
-import type {
   TokenCatalogOperation,
   TokenSelectionReview,
   TokenSelectionReviewResult,
@@ -87,21 +82,11 @@ type ReviewContext =
       operationEntry: PresentationContractEntry;
       acceptLabel: string;
       destructive: boolean;
-    }>
-  | Readonly<{
-      domain: "reference_watchlist";
-      review: ReferenceWatchlistReview;
-      action: OperationToolContract;
-      exact: OperationToolContract;
-      operationEntry: PresentationContractEntry;
-      acceptLabel: string;
-      destructive: boolean;
     }>;
 
 type OperationValue =
   | WalletManagementOperation
-  | TokenCatalogOperation
-  | ReferenceWatchlistOperation;
+  | TokenCatalogOperation;
 
 type ToolOutcome =
   | Readonly<{ status: "success"; value: unknown; result: CallToolResult }>
@@ -242,27 +227,6 @@ const reviewContext = (admitted: AdmittedPresentation): ReviewContext | null | u
       exact: operationToolContracts.tokenOperation,
       operationEntry: requireOperationEntry(presentationContracts.tokenSelectionOperation),
       acceptLabel: result.review.kind === "add" ? "Add token selection" : "Remove token selection",
-      destructive: result.review.kind === "remove",
-    });
-  }
-  if (admitted.entry === presentationContracts.referenceWatchlistReview) {
-    const result = admitted.result as unknown as ReferenceWatchlistReviewResult;
-    const action = result.review.kind === "add"
-      ? operationToolContracts.watchlistAdd
-      : result.review.kind === "remove"
-        ? operationToolContracts.watchlistRemove
-        : operationToolContracts.watchlistReorder;
-    return Object.freeze({
-      domain: "reference_watchlist",
-      review: result.review,
-      action,
-      exact: operationToolContracts.watchlistOperation,
-      operationEntry: requireOperationEntry(presentationContracts.referenceWatchlistOperation),
-      acceptLabel: result.review.kind === "add"
-        ? "Add reference pair"
-        : result.review.kind === "remove"
-          ? "Remove reference pair"
-          : "Apply reference-pair order",
       destructive: result.review.kind === "remove",
     });
   }

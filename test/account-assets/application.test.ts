@@ -30,6 +30,7 @@ import {
   type AccountAssetChainReadPort,
   type CanonicalBlock,
   type ChainInvocationContext,
+  type CurrentBlockReadPort,
   type OfficialAssetChainReadPort,
 } from "../../src/chain/index.js";
 import { ChainOperationError } from "../../src/chain/errors.js";
@@ -354,13 +355,15 @@ const fixture = (options: Readonly<{
       return options.transformVerificationResults?.(members, results) ?? results;
     },
   });
-  const chainReads: AccountAssetChainReadPort = Object.freeze({
+  const currentBlockReads: CurrentBlockReadPort = Object.freeze({
     resolveCurrentBlock: async (
-      context: Parameters<AccountAssetChainReadPort["resolveCurrentBlock"]>[0],
+      context: Parameters<CurrentBlockReadPort["resolveCurrentBlock"]>[0],
     ) => {
       lifecycle.assertActiveContext(context);
       return issueBlock(options.blocks?.[blockIndex++] ?? block, context);
     },
+  });
+  const chainReads: AccountAssetChainReadPort = Object.freeze({
     readCollectionAtBlock: async (
       { account: requested, assets, block: requestedBlock }: Parameters<AccountAssetChainReadPort["readCollectionAtBlock"]>[0],
       context: Parameters<AccountAssetChainReadPort["readCollectionAtBlock"]>[1],
@@ -431,6 +434,7 @@ const fixture = (options: Readonly<{
     }),
     chainInvocations: lifecycle,
     officialAssetReads,
+    currentBlockReads,
     chainReads,
     clock: createCanonicalClock(() => at),
     signal: owner.signal,

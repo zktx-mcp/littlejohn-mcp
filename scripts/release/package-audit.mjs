@@ -39,6 +39,15 @@ const mcpSdkLicenseDigest =
   "5e13dbbc1d120fc2a03cecde7c91424ae2d7de11b63d58ded2f4431e261ee50d";
 const standardSchemaLicenseDigest =
   "653b779005a3a4d64a7288c940f7b9a0e8f0b1e0375f6aa6af9473caf131e564";
+const lightweightChartsNotice =
+  "TradingView Lightweight Charts™\n" +
+  "Copyright (с) 2025 TradingView, Inc. https://www.tradingview.com/";
+const lightweightChartsLicenseDigest =
+  "70c9d5382506dd184465425c08a99ad9bd6d9ac1313c252968ba0b585e5ef823";
+const lightweightChartsTslibLicenseDigest =
+  "210b19e543130388c68654b7497e967119ce17145f66ab7d85688fbd70f08751";
+const fancyCanvasLicenseDigest =
+  "52d2ba0c8f8f4532bd524358d679693ff3dd9e40c56fe0c0c63061ed0733aa18";
 const automaticallyPermittedLicenses = new Set([
   "0BSD",
   "MIT",
@@ -61,6 +70,21 @@ const fixedDistributionArtifacts = Object.freeze([
     path: "LICENSES/MCP-APPS-LICENSE.txt",
     licenseName: "MCP Apps",
     digest: mcpAppsLicenseDigest,
+  }),
+  Object.freeze({
+    path: "LICENSES/lightweight-charts-5.2.1-Apache-2.0.txt",
+    licenseName: "Lightweight Charts",
+    digest: lightweightChartsLicenseDigest,
+  }),
+  Object.freeze({
+    path: "LICENSES/lightweight-charts-5.2.1-tslib-0BSD.txt",
+    licenseName: "Lightweight Charts tslib portions",
+    digest: lightweightChartsTslibLicenseDigest,
+  }),
+  Object.freeze({
+    path: "LICENSES/fancy-canvas-2.1.0-MIT.txt",
+    licenseName: "fancy-canvas",
+    digest: fancyCanvasLicenseDigest,
   }),
 ]);
 const fixedDistributionPaths = Object.freeze(fixedDistributionArtifacts.map(({ path }) => path));
@@ -415,6 +439,134 @@ const assertInstalledMcpAppsClosure = async (
   }
 };
 
+const assertInstalledLightweightChartsClosure = async (
+  sourceRoot,
+  dependencyRoot,
+  sourceManifest,
+) => {
+  const dependencies = requiredObjectProperty(
+    sourceManifest,
+    "dependencies",
+    "Release dependency authority",
+  );
+  const developmentDependencies = requiredObjectProperty(
+    sourceManifest,
+    "devDependencies",
+    "Release development dependency authority",
+  );
+  if (
+    Object.getOwnPropertyDescriptor(dependencies, "lightweight-charts") !== undefined ||
+    requiredObjectProperty(
+      developmentDependencies,
+      "lightweight-charts",
+      "Lightweight Charts direct build dependency",
+    ) !== "5.2.1"
+  ) throw new TypeError("Lightweight Charts direct build dependency is not exact.");
+
+  const lockfile = await readJsonFile(resolve(sourceRoot, "package-lock.json"));
+  const packages = requiredObjectProperty(lockfile, "packages", "Release lockfile package graph");
+  const expectedPackages = Object.freeze([
+    Object.freeze({
+      path: "node_modules/lightweight-charts",
+      name: "lightweight-charts",
+      version: "5.2.1",
+      license: "Apache-2.0",
+      integrity:
+        "sha512-IVwoK1RLFiLPubaKIjNbtjWLnpPMqiABSrTay6whmNa8L1+19292VtHJ+BWyPUuLCwF0tcQlhEWd1CLB2a1nsQ==",
+    }),
+    Object.freeze({
+      path: "node_modules/fancy-canvas",
+      name: "fancy-canvas",
+      version: "2.1.0",
+      license: "MIT",
+      integrity:
+        "sha512-nifxXJ95JNLFR2NgRV4/MxVP45G9909wJTEKz5fg/TZS20JJZA6hfgRVh/bC9bwl2zBtBNcYPjiBE4njQHVBwQ==",
+    }),
+  ]);
+  for (const expected of expectedPackages) {
+    const locked = requiredObjectProperty(packages, expected.path, `${expected.name} lock entry`);
+    const installed = await readJsonFile(resolve(dependencyRoot, expected.path, "package.json"));
+    for (const field of ["name", "version", "license"]) {
+      if (
+        requiredObjectProperty(installed, field, `${expected.name} installed ${field}`) !==
+          expected[field]
+      ) throw new TypeError(`Chart closure identity is invalid: ${expected.name}`);
+    }
+    for (const field of ["version", "license", "integrity"]) {
+      if (
+        requiredObjectProperty(locked, field, `${expected.name} lock ${field}`) !== expected[field]
+      ) throw new TypeError(`Chart closure differs from the reviewed artifact: ${expected.name}`);
+    }
+    if (Object.getOwnPropertyDescriptor(locked, "dev")?.value !== true) {
+      throw new TypeError(`Chart closure dependency class is invalid: ${expected.name}`);
+    }
+    for (const source of [locked, installed]) {
+      for (const field of [
+        "peerDependencies",
+        "optionalDependencies",
+        "os",
+        "cpu",
+        "preinstall",
+        "install",
+        "postinstall",
+      ]) {
+        if (Object.getOwnPropertyDescriptor(source, field) !== undefined) {
+          throw new TypeError(`Chart closure boundary is invalid: ${expected.name}`);
+        }
+      }
+    }
+    if (
+      Object.getOwnPropertyDescriptor(locked, "optional") !== undefined ||
+      Object.getOwnPropertyDescriptor(locked, "hasInstallScript") !== undefined
+    ) throw new TypeError(`Chart closure lock boundary is invalid: ${expected.name}`);
+    const scripts = Object.getOwnPropertyDescriptor(installed, "scripts")?.value;
+    if (
+      typeof scripts === "object" && scripts !== null && !Array.isArray(scripts) &&
+      ["preinstall", "install", "postinstall"].some((name) =>
+        Object.getOwnPropertyDescriptor(scripts, name) !== undefined)
+    ) throw new TypeError(`Chart closure has an install lifecycle script: ${expected.name}`);
+  }
+
+  const chartLock = requiredObjectProperty(
+    packages,
+    "node_modules/lightweight-charts",
+    "Lightweight Charts lock entry",
+  );
+  const chartManifest = await readJsonFile(resolve(
+    dependencyRoot,
+    "node_modules/lightweight-charts/package.json",
+  ));
+  const expectedDependencies = { "fancy-canvas": "2.1.0" };
+  exactStringRecord(
+    requiredObjectProperty(chartLock, "dependencies", "Lightweight Charts lock dependencies"),
+    expectedDependencies,
+    "Lightweight Charts lock dependencies",
+  );
+  exactStringRecord(
+    requiredObjectProperty(chartManifest, "dependencies", "Lightweight Charts dependencies"),
+    expectedDependencies,
+    "Lightweight Charts dependencies",
+  );
+  const fancyManifest = await readJsonFile(resolve(
+    dependencyRoot,
+    "node_modules/fancy-canvas/package.json",
+  ));
+  if (Object.getOwnPropertyDescriptor(fancyManifest, "dependencies") !== undefined) {
+    throw new TypeError("fancy-canvas dependency closure is not empty.");
+  }
+  const entry = await lstat(resolve(
+    dependencyRoot,
+    "node_modules/lightweight-charts/dist/lightweight-charts.production.mjs",
+  ));
+  if (!entry.isFile() || entry.isSymbolicLink()) {
+    throw new TypeError("Lightweight Charts production entry is invalid.");
+  }
+  const license = await readFile(resolve(dependencyRoot, "node_modules/lightweight-charts/LICENSE"));
+  if (sha256(license) !== lightweightChartsLicenseDigest) {
+    throw new TypeError("Installed Lightweight Charts license is invalid.");
+  }
+};
+
 /** @type {typeof import("./package-audit.d.mts").parseReleasePackageIdentity} */
 export const parseReleasePackageIdentity = (value) => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -545,6 +697,16 @@ const assertDistributionArtifacts = async (sourceRoot, packageRoot) => {
   ) {
     throw new TypeError("Packaged MCP Apps notice is invalid.");
   }
+  if (
+    notice.split(lightweightChartsNotice).length !== 2 ||
+    notice.split("TradingView Lightweight Charts 5.2.1").length !== 2 ||
+    notice.split("fancy-canvas 2.1.0").length !== 2 ||
+    !notice.includes("https://github.com/tradingview/lightweight-charts/tree/v5.2.1") ||
+    !notice.includes("https://github.com/tradingview/fancy-canvas/tree/2.1.0") ||
+    !notice.includes("LICENSES/lightweight-charts-5.2.1-Apache-2.0.txt") ||
+    !notice.includes("LICENSES/lightweight-charts-5.2.1-tslib-0BSD.txt") ||
+    !notice.includes("LICENSES/fancy-canvas-2.1.0-MIT.txt")
+  ) throw new TypeError("Packaged chart dependency notices are invalid.");
 };
 
 const assertInstalledBinary = async (installRoot, packageRoot) => {
@@ -614,6 +776,7 @@ export const prepareReleasePackage = async (repositoryRoot) => {
     }
     await assertInstalledUniswapSdkClosure(sourceRoot, sourceRoot, sourceManifest);
     await assertInstalledMcpAppsClosure(sourceRoot, sourceRoot, sourceManifest);
+    await assertInstalledLightweightChartsClosure(sourceRoot, sourceRoot, sourceManifest);
     await runCommand(process.execPath, [
       resolve(sourceRoot, "node_modules/typescript/bin/tsc"),
       "-p",
@@ -668,6 +831,8 @@ export const prepareReleasePackage = async (repositoryRoot) => {
     await assertDistributionArtifacts(sourceRoot, installedPackageRoot);
     await assertInstalledBinary(installRoot, installedPackageRoot);
     await assertBuildDependencyAbsent(installRoot, "@modelcontextprotocol/ext-apps");
+    await assertBuildDependencyAbsent(installRoot, "lightweight-charts");
+    await assertBuildDependencyAbsent(installRoot, "fancy-canvas");
 
     if ((await readdir(npxRoot)).length !== 0) {
       throw new TypeError("Local tarball npx smoke must start from an empty directory.");

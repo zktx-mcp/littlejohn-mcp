@@ -41,18 +41,11 @@ const helpTerminal = (): CliTerminalPort & {
 describe("CLI interface identity", () => {
   it("owns the complete command identity and exact accepted syntax in one projection", () => {
     expect(declaredCliCommandIdentities).toEqual([
-      { domain: "market", command: "add-pair", argumentSyntax: "<pair-id> --revision <revision>" },
-      { domain: "market", command: "history", argumentSyntax: "<pair-id> --window <1d|7d|30d> [--json]" },
-      { domain: "market", command: "price", argumentSyntax: "<pair-id> [--json]" },
-      { domain: "market", command: "remove-pair", argumentSyntax: "<pair-id> --revision <revision>" },
-      { domain: "market", command: "reorder-pairs", argumentSyntax: "<pair-id>... --revision <revision>" },
       {
         domain: "market",
-        command: "stock-token-market",
+        command: "stock-token-trade-history",
         argumentSyntax: "<symbol> [--window <1d|7d|30d>] [--json]",
       },
-      { domain: "market", command: "watchlist", argumentSyntax: "[--json]" },
-      { domain: "market", command: "watchlist-operation", argumentSyntax: "<operation-id> [--json]" },
       {
         domain: "read",
         command: "assets",
@@ -109,14 +102,7 @@ describe("CLI interface identity", () => {
     ]);
     expect(cliHelpText).toBe([
       "Usage:",
-      "  littlejohn market add-pair <pair-id> --revision <revision>",
-      "  littlejohn market history <pair-id> --window <1d|7d|30d> [--json]",
-      "  littlejohn market price <pair-id> [--json]",
-      "  littlejohn market remove-pair <pair-id> --revision <revision>",
-      "  littlejohn market reorder-pairs <pair-id>... --revision <revision>",
-      "  littlejohn market stock-token-market <symbol> [--window <1d|7d|30d>] [--json]",
-      "  littlejohn market watchlist [--json]",
-      "  littlejohn market watchlist-operation <operation-id> [--json]",
+      "  littlejohn market stock-token-trade-history <symbol> [--window <1d|7d|30d>] [--json]",
       "  littlejohn read assets [--limit <1..5>] [--cursor <cursor-json>] [--json]",
       "  littlejohn read balance (--address <address> | --active) --native <true|false> [--token <address>]... --block <latest|block-number> [--json]",
       "  littlejohn read chain-status [--json]",

@@ -13,6 +13,7 @@ export {
   stockFactoryClassificationUnavailableReasons,
   stockFactoryClassificationUnavailableReasonSchema,
   stockFactoryVerificationSchema,
+  unavailableStockFactoryResultSchema,
 } from "./official-asset-contract.js";
 export type {
   CommittedOfficialAssetSnapshot,

@@ -28,23 +28,9 @@ export interface FakeRpcHandle {
     readonly blockHash: string;
     readonly requireCanonical: true;
   }>;
-  readonly referenceMarkets: Readonly<{
-    readonly feeds: readonly Readonly<{
-      readonly feedId: "eth_usd" | "usdg_usd";
-      readonly address: string;
-      readonly description: "ETH / USD" | "USDG / USD";
-      readonly decimals: string;
-      readonly answer: string;
-    }>[];
-    readonly pairs: readonly Readonly<{ readonly label: string; readonly pairId: string }>[];
-    readonly roundId: string;
-    readonly updatedAtUnixSeconds: string;
-  }>;
-  readonly stockTokenMarket: Readonly<{
+  readonly stockTokenTradeHistory: Readonly<{
     readonly symbol: "AAPL";
     readonly tokenAddress: string;
-    readonly feedId: string;
-    readonly value: Readonly<{ readonly numerator: "925"; readonly denominator: "4" }>;
   }>;
   readonly semanticReads: Readonly<{
     readonly account: Readonly<{

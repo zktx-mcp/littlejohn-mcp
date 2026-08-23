@@ -15,7 +15,6 @@ import type { Erc20CallEncoder } from "./evm-standard.js";
 import { decodeErc20BalanceOfResult, decodeErc20TotalSupplyResult } from "./evm-standard.js";
 import {
   readConfiguredCanonicalBlock,
-  resolveConfiguredCanonicalBlock,
   type CanonicalBlock,
 } from "./canonical-block.js";
 import { admitChainReadFailure, ChainOperationError } from "./errors.js";
@@ -62,7 +61,6 @@ export interface CurrentAccountAssetExactRead extends CurrentAccountTokenRead {
 }
 
 export interface AccountAssetChainReadPort {
-  resolveCurrentBlock(context: ChainInvocationContext): Promise<CanonicalBlock>;
   readCollectionAtBlock(input: Readonly<{
     account: EvmAccountIdentity;
     assets: readonly Erc20AssetIdentity[];
@@ -283,18 +281,6 @@ const readTokensInOrder = async (
 export const createAccountAssetChainReadPort = (
   dependencies: Dependencies,
 ): AccountAssetChainReadPort => Object.freeze({
-  async resolveCurrentBlock(context: ChainInvocationContext) {
-    dependencies.lifecycle.assertActiveContext(context);
-    try {
-      return await resolveConfiguredCanonicalBlock({
-        rpc: dependencies.rpc,
-        chainId: dependencies.chainId,
-        selector: { kind: "latest" },
-        context,
-      });
-    } catch (error) { return normalizeFailure(error, context.signal); }
-  },
-
   async readCollectionAtBlock(input: Readonly<{
     account: EvmAccountIdentity;
     assets: readonly Erc20AssetIdentity[];

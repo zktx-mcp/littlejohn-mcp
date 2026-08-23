@@ -32,10 +32,6 @@ import {
 } from "../../src/chain/invocation-lifecycle.js";
 import { createOfficialAssetChainReadPort } from "../../src/chain/official-assets.js";
 import {
-  createReferenceMarketCallEncoder,
-  createReferenceMarketChainReadPort,
-} from "../../src/chain/reference-market.js";
-import {
   ChainRpcError,
   type ChainRpcMethod,
   type ChainRpcRequestMap,
@@ -282,17 +278,6 @@ describe("shared chain read processes", () => {
     const stateRpc = new RecordingRpc(() => {
       throw new Error("A counterfeit block must fail before state RPC.");
     });
-    const clock = createCanonicalClock(() => "2026-07-20T00:00:00.000Z");
-    const observationAuthority = createObservationAuthority({
-      clock,
-      sourceClass: "chain_rpc",
-      owner: "user_configured",
-      reference: sourceReferenceSchema.parse({
-        kind: "public",
-        sourceId: "configured_chain_test",
-        uri: "https://rpc.example/",
-      }),
-    });
     const accountPort = createAccountAssetChainReadPort({
       rpc: stateRpc,
       encoder: await createErc20CallEncoder(),
@@ -303,14 +288,6 @@ describe("shared chain read processes", () => {
       rpc: stateRpc,
       chainId,
       lifecycle,
-    });
-    const referencePort = createReferenceMarketChainReadPort({
-      rpc: stateRpc,
-      encoder: createReferenceMarketCallEncoder(),
-      chainId,
-      lifecycle,
-      clock,
-      observationAuthority,
     });
     const account = evmAccountIdentitySchema.parse({
       chainId,
@@ -332,11 +309,6 @@ describe("shared chain read processes", () => {
         block: counterfeit,
       }, context)).rejects.toThrow(TypeError);
       await expect(officialPort.verifyManyAtBlock([], counterfeit, context)).rejects.toThrow(TypeError);
-      await expect(referencePort.readLatestAtBlock(
-        ["eth_usd"],
-        counterfeit,
-        context,
-      )).rejects.toThrow(TypeError);
     });
     expect(stateRpc.calls).toEqual([]);
     await lifecycle.close();

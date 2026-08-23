@@ -13,7 +13,7 @@ import {
 } from "./uniswap-v2-factory-fixture.mjs";
 
 const blockHash = `0x${"88".repeat(32)}`;
-const blockTimestamp = "0x6a7f23f8";
+const blockTimestamp = "0x6a7f5fbc";
 const blockNumber = "0x20000000000001";
 const maximumRequestBytes = 32 * 1024;
 const caCertificatePath = realpathSync(
@@ -41,47 +41,6 @@ const walletAddress = "0x1111111111111111111111111111111111111111";
 const alternateWalletAddress = "0x3333333333333333333333333333333333333333";
 const walletAddresses = Object.freeze([walletAddress, alternateWalletAddress]);
 const nativeBalanceRaw = "4200000000000000000";
-const referenceFeedRuntimeCode = "0x6001600055";
-const referenceRoundId = ((1n << 64n) | 1n).toString(10);
-const referenceUpdatedAt = (BigInt(blockTimestamp) - 300n).toString(10);
-const referenceFeeds = Object.freeze([
-  Object.freeze({
-    feedId: "eth_usd",
-    address: "0x78f3556b67e17df817d51ef5a990cdaf09e8d3a9",
-    description: "ETH / USD",
-    decimals: "8",
-    answer: "193384405462",
-  }),
-  Object.freeze({
-    feedId: "usdg_usd",
-    address: "0x61b7e5650328764b076a108eff5fa7282a1b9ad2",
-    description: "USDG / USD",
-    decimals: "8",
-    answer: "100008000",
-  }),
-]);
-const stockTokenReferenceFeed = Object.freeze({
-  feedId: "0x6b22a786baa607d76728168703a39ea9c99f2cd0",
-  address: "0x6b22a786baa607d76728168703a39ea9c99f2cd0",
-  description: "Robinhood AAPL / USD",
-  decimals: "8",
-  answer: "23125000000",
-});
-const rpcReferenceFeeds = Object.freeze([...referenceFeeds, stockTokenReferenceFeed]);
-const referencePairs = Object.freeze([
-  Object.freeze({
-    label: "ETH/USD",
-    pairId: "0x6ebd461b84c32591c68ca0c58037f2d7786040f83dd9a7d50808aab58280095d",
-  }),
-  Object.freeze({
-    label: "USDG/USD",
-    pairId: "0x27acae83c2b702463f8f36b08f01223412d582f316a281f439c84bdc0d7f3a59",
-  }),
-  Object.freeze({
-    label: "ETH/USDG",
-    pairId: "0xe7ff8704493555892931b237cde2c90e470d05c7350e0780fe3a2a7aa2d8666e",
-  }),
-]);
 const officialTokens = Object.freeze([
   {
     assetUid: "0x00000000000000000000000000000000c2425be3658540dd8e2424cbf3c5c649",
@@ -159,14 +118,6 @@ const uniswapV2ReservesResult = `0x${[
   "0",
 ].map((value) => BigInt(value).toString(16).padStart(64, "0")).join("")}`;
 
-const referenceRoundResult = (feed) => `0x${[
-  referenceRoundId,
-  feed.answer,
-  referenceUpdatedAt,
-  referenceUpdatedAt,
-  referenceRoundId,
-].map((value) => BigInt(value).toString(16).padStart(64, "0")).join("")}`;
-
 const textResult = (value) => {
   const bytes = Buffer.from(value, "utf8");
   const padding = Buffer.alloc((32 - (bytes.length % 32)) % 32);
@@ -176,13 +127,6 @@ const textResult = (value) => {
     bytes,
     padding,
   ].map((part) => part.toString("hex")).join("")}`;
-};
-
-const referenceCallResult = (feed, data) => {
-  if (data === "0x7284e416") return textResult(feed.description);
-  if (data === "0x313ce567") return uint256Result(feed.decimals);
-  if (data === "0xfeaf968c") return referenceRoundResult(feed);
-  return undefined;
 };
 
 const fakeTokens = Object.freeze(tokenAddresses.map((address) => {
@@ -389,9 +333,6 @@ const resultFor = (method, params) => {
   const token = typeof params[0] === "object" && params[0] !== null
     ? fakeTokens.find((candidate) => candidate.address === params[0].to)
     : fakeTokens.find((candidate) => candidate.address === params[0]);
-  const referenceFeed = typeof params[0] === "object" && params[0] !== null
-    ? rpcReferenceFeeds.find((candidate) => candidate.address === params[0].to)
-    : rpcReferenceFeeds.find((candidate) => candidate.address === params[0]);
   if (method === "eth_chainId" && params.length === 0) return "0x1237";
   if (
     method === "eth_getBlockByNumber" &&
@@ -427,7 +368,6 @@ const resultFor = (method, params) => {
     if (params[0] === inspectedContractAddress) return inspectedContractRuntimeCode;
     if (params[0] === uniswapV2FactoryAddress) return uniswapV2FactoryRuntimeCodeFixture;
     if (params[0] === uniswapV2PairAddress) return uniswapV2PairRuntimeCode;
-    if (referenceFeed !== undefined) return referenceFeedRuntimeCode;
     if (token !== undefined) return token.runtimeCode;
   }
   if (
@@ -466,7 +406,6 @@ const resultFor = (method, params) => {
         params[0].gas === "0x7530")) &&
     typeof params[0].data === "string" &&
     ((token !== undefined && callResult(token, params[0].data) !== undefined) ||
-      (referenceFeed !== undefined && referenceCallResult(referenceFeed, params[0].data) !== undefined) ||
       (params[0].to === stockFactoryProxyAddress &&
         factoryMappedAddress(params[0].data) !== undefined) ||
       (params[0].to === uniswapV2FactoryAddress &&
@@ -475,7 +414,6 @@ const resultFor = (method, params) => {
         uniswapV2PairCallResult(params[0].data) !== undefined))
   ) {
     if (token !== undefined) return callResult(token, params[0].data);
-    if (referenceFeed !== undefined) return referenceCallResult(referenceFeed, params[0].data);
     if (params[0].to === stockFactoryProxyAddress) {
       return factoryMappedAddress(params[0].data);
     }
@@ -595,17 +533,9 @@ export const startFakeRpc = async () => {
     officialCandidate: verifiedFakeOfficialCandidate,
     tokens: fakeTokens,
     canonicalBlockReference,
-    referenceMarkets: Object.freeze({
-      feeds: referenceFeeds,
-      pairs: referencePairs,
-      roundId: referenceRoundId,
-      updatedAtUnixSeconds: referenceUpdatedAt,
-    }),
-    stockTokenMarket: Object.freeze({
+    stockTokenTradeHistory: Object.freeze({
       symbol: "AAPL",
       tokenAddress: aaplOfficialToken.address,
-      feedId: stockTokenReferenceFeed.feedId,
-      value: Object.freeze({ numerator: "925", denominator: "4" }),
     }),
     semanticReads: Object.freeze({
       account: Object.freeze({

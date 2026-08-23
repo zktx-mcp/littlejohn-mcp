@@ -5,7 +5,6 @@ import { z } from "zod";
 
 import {
   canonicalJsonStringify,
-  referenceRoundReadEvidenceSchema,
   sourceReferenceSchema,
   type CanonicalJson,
 } from "../../src/core/index.js";
@@ -40,13 +39,5 @@ describe("shared evidence consumer boundaries", () => {
       "wallet_sdk",
       "validated_input",
     ]);
-  });
-
-  it("preserves the exact reference-round read-evidence output schema", () => {
-    const canonical = projectCanonicalOutputSchema(referenceRoundReadEvidenceSchema);
-    expect(Buffer.byteLength(canonical, "utf8")).toBe(2_770);
-    expect(sha256(canonical)).toBe(
-      "782a26558f5f73c08398f1ca42a5b197ce63db590db55f3d3c0cdc766cc13520",
-    );
   });
 });

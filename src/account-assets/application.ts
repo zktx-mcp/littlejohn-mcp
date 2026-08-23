@@ -598,7 +598,7 @@ export const createAccountAssetApplication = (
             ? await synchronizeOfficial(signal)
             : readAdmittedOfficialView(request.cursor!);
           return dependencies.chainInvocations.run(signal, async (context) => {
-            const block = await dependencies.chainReads.resolveCurrentBlock(context);
+            const block = await dependencies.currentBlockReads.resolveCurrentBlock(context);
             const retained = firstPage
               ? await initializeDefaults(dependencies, wallet, official, block, request.limit, context)
               : new Map<string, StockFactoryVerificationResult>();
@@ -655,7 +655,7 @@ export const createAccountAssetApplication = (
           const wallet = captureWallet(dependencies);
           const official = await synchronizeOfficial(signal);
           return dependencies.chainInvocations.run(signal, async (context) => {
-            const block = await dependencies.chainReads.resolveCurrentBlock(context);
+            const block = await dependencies.currentBlockReads.resolveCurrentBlock(context);
             const retained = await initializeDefaults(
               dependencies,
               wallet,
@@ -765,7 +765,7 @@ export const createAccountAssetApplication = (
           }
           const official = readAdmittedOfficialView(request.viewRevision);
           return dependencies.chainInvocations.run(signal, async (context) => {
-            const block = await dependencies.chainReads.resolveCurrentBlock(context);
+            const block = await dependencies.currentBlockReads.resolveCurrentBlock(context);
             const verification = await verifyVisibleMembers(
               dependencies,
               official,

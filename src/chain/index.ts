@@ -18,7 +18,6 @@ export {
   decodeAbiUint256Result,
   decodeErc20TextResult,
   decodeErc20TotalSupplyResult,
-  encodeStockTokenOraclePausedCall,
 } from "./evm-standard.js";
 export type {
   ContractAnalysisCallEncoder,
@@ -40,10 +39,11 @@ export type {
   ChainInvocationPort,
 } from "./invocation-lifecycle.js";
 export {
+  createCurrentBlockReadPort,
   readConfiguredCanonicalBlock,
   resolveConfiguredCanonicalBlock,
 } from "./canonical-block.js";
-export type { CanonicalBlock } from "./canonical-block.js";
+export type { CanonicalBlock, CurrentBlockReadPort } from "./canonical-block.js";
 export { validateConfiguredChain } from "./configured-chain.js";
 export {
   completeTokenStandardObservation,
@@ -85,19 +85,9 @@ export type {
   CurrentAccountAssetExactRead,
   CurrentAccountTokenRead,
 } from "./account-assets.js";
-export {
-  createReferenceMarketCallEncoder,
-  createReferenceMarketChainReadPort,
-} from "./reference-market.js";
 export type {
   PinnedEvmCallResult,
   PinnedEvmReadFailureCode,
   PinnedEvmReadPort,
 } from "./protocol-reads.js";
 export { normalizePinnedEvmReadFailure } from "./protocol-reads.js";
-export type {
-  ReferenceHistoryTraversal,
-  ReferenceMarketCallEncoder,
-  ReferenceMarketChainReadPort,
-  StockTokenReferenceChainRead,
-} from "./reference-market.js";

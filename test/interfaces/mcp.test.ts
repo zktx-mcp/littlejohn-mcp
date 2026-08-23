@@ -10,7 +10,6 @@ import {
   accountBalanceInputSchema,
   canonicalJsonStringify,
   captureCanonicalJson,
-  referenceMarketManifest,
 } from "../../src/core/index.js";
 import {
   createDeliveryUnknown,
@@ -29,18 +28,18 @@ import {
   type McpRuntimePort,
   type McpServerRuntimePort,
 } from "../../src/interfaces/mcp.js";
-import { marketPortfolioInterfaceBindings } from "../../src/interfaces/identities.js";
+import { stockTokenTradeHistoryInterfaceBinding } from "../../src/interfaces/identities.js";
 import {
-  createMarketPortfolioFailure,
-  marketPortfolioInterfaceErrorMappings,
-} from "../../src/market-portfolio/errors.js";
-import { referenceWatchlistReviewRequestSchema } from "../../src/market-portfolio/index.js";
+  createStockTokenTradeHistoryFailure,
+  stockTokenTradeHistoryInterfaceErrorMappings,
+} from "../../src/stock-token-trade-history/errors.js";
 import { tokenSelectionReviewRequestSchema } from "../../src/token-catalog/index.js";
 import type { RuntimeDispatchRequest, RuntimeDispatchResponse } from "../../src/runtime/index.js";
 import type { PresentationSnapshotStore } from "../../src/runtime/presentation-snapshot.js";
 import { toProblemDetails } from "../../src/runtime/index.js";
 import { openTestOwnerSession } from "./owner-session-harness.js";
-import { stockTokenMarketUnmappedFixture } from "./stock-token-market-fixture.js";
+import { stockTokenTradeHistoryUnavailableFixture } from
+  "./stock-token-trade-history-fixture.js";
 
 const unusedSnapshotStore: PresentationSnapshotStore = Object.freeze({
   prepare: () => { throw new Error("Ordinary MCP must not prepare a snapshot."); },
@@ -53,9 +52,14 @@ const testAppResource = createMcpAppResource("<!doctype html><title>Little John 
 class FakeRuntime implements McpServerRuntimePort {
   readonly requests: RuntimeDispatchRequest[] = [];
   handler: (request: RuntimeDispatchRequest) => RuntimeDispatchResponse | Promise<RuntimeDispatchResponse>;
+  readonly snapshotStore: PresentationSnapshotStore;
 
-  constructor(handler?: FakeRuntime["handler"]) {
+  constructor(
+    handler?: FakeRuntime["handler"],
+    snapshotStore: PresentationSnapshotStore = unusedSnapshotStore,
+  ) {
     this.handler = handler ?? (() => ({ status: 500, body: { ok: false } }));
+    this.snapshotStore = snapshotStore;
   }
 
   async dispatchRuntimeRequest(request: RuntimeDispatchRequest): Promise<RuntimeDispatchResponse> {
@@ -67,7 +71,7 @@ class FakeRuntime implements McpServerRuntimePort {
     return openTestOwnerSession(this, signal);
   }
 
-  presentationSnapshotStore(): PresentationSnapshotStore { return unusedSnapshotStore; }
+  presentationSnapshotStore(): PresentationSnapshotStore { return this.snapshotStore; }
 }
 
 interface ConnectedMcp {
@@ -211,19 +215,6 @@ describe("MCP binding projection", () => {
         expect(tokenSelectionReviewRequestSchema.safeParse(example.value).success).toBe(example.valid);
       }
 
-      const pairId = referenceMarketManifest.pairs[0]!.pairId;
-      const watchlist = registry.get("market_get_watchlist_change_review").inputSchema;
-      const watchlistValidate = new Ajv2020({ strict: true }).compile(watchlist as object);
-      for (const example of [
-        { value: { kind: "add", pairId, expectedRevision: revision }, valid: true },
-        { value: { kind: "remove", pairId, expectedRevision: revision }, valid: true },
-        { value: { kind: "reorder", pairIds: [pairId], expectedRevision: revision }, valid: true },
-        { value: { kind: "reorder", pairId, expectedRevision: revision }, valid: false },
-      ] as const) {
-        expect(watchlistValidate(example.value)).toBe(example.valid);
-        expect(referenceWatchlistReviewRequestSchema.safeParse(example.value).success).toBe(example.valid);
-      }
-
       const balance = registry.get("read_get_account_balance").inputSchema;
       const balanceValidate = new Ajv2020({ strict: true }).compile(balance as object);
       for (const example of [
@@ -299,18 +290,20 @@ describe("MCP binding projection", () => {
       readonly name: string;
       readonly version: string;
     };
-    const unavailable = createMarketPortfolioFailure("source_unavailable");
+    const unavailable = createStockTokenTradeHistoryFailure("source_unavailable");
     const runtime = new FakeRuntime(() => ({
       status: 503,
-      body: captureCanonicalJson(toProblemDetails(unavailable, marketPortfolioInterfaceErrorMappings)),
+      body: captureCanonicalJson(toProblemDetails(
+        unavailable,
+        stockTokenTradeHistoryInterfaceErrorMappings,
+      )),
     }));
     const { client } = await connectOrdinary(runtime);
 
     expect(client.getServerVersion()).toEqual({ name: manifest.name, version: manifest.version });
-    const pairId = referenceMarketManifest.pairs[0]!.pairId;
     const result = await client.callTool({
-      name: marketPortfolioInterfaceBindings.price.mcp.name,
-      arguments: { pairId },
+      name: stockTokenTradeHistoryInterfaceBinding.mcp.name,
+      arguments: { symbol: "AAPL" },
     });
 
     expect(result.isError).toBe(true);
@@ -318,19 +311,19 @@ describe("MCP binding projection", () => {
     expect(runtime.requests).toEqual([{
       requestClass: "public_read",
       method: "POST",
-      path: marketPortfolioInterfaceBindings.price.http.path,
-      body: { pairId },
+      path: stockTokenTradeHistoryInterfaceBinding.http.path,
+      body: { symbol: "AAPL", window: "1d" },
       signal: expect.any(AbortSignal),
     }]);
   });
 
   it("carries one admitted Stock Token result through MCP text and structured output", async () => {
-    const value = stockTokenMarketUnmappedFixture();
+    const value = stockTokenTradeHistoryUnavailableFixture();
     const runtime = new FakeRuntime(() => ({ status: 200, body: captureCanonicalJson(value) }));
     const { client } = await connectOrdinary(runtime);
     const result = await client.callTool({
-      name: marketPortfolioInterfaceBindings.stockTokenMarket.mcp.name,
-      arguments: { symbol: "p" },
+      name: stockTokenTradeHistoryInterfaceBinding.mcp.name,
+      arguments: { symbol: "aapl" },
     });
 
     expect(result.isError).not.toBe(true);
@@ -342,10 +335,41 @@ describe("MCP binding projection", () => {
     expect(runtime.requests).toEqual([{
       requestClass: "public_read",
       method: "POST",
-      path: marketPortfolioInterfaceBindings.stockTokenMarket.http.path,
-      body: { symbol: "P", window: "1d" },
+      path: stockTokenTradeHistoryInterfaceBinding.http.path,
+      body: { symbol: "AAPL", window: "1d" },
       signal: expect.any(AbortSignal),
     }]);
+  });
+
+  it("fails an App read closed when its presentation snapshot cannot be owned", async () => {
+    const value = stockTokenTradeHistoryUnavailableFixture();
+    const unavailableStore: PresentationSnapshotStore = Object.freeze({
+      prepare: () => { throw new Error("snapshot store unavailable"); },
+      commit: () => { throw new Error("unexpected snapshot commit"); },
+      read: () => { throw new Error("unexpected snapshot read"); },
+      readResultChunk: () => { throw new Error("unexpected snapshot chunk read"); },
+    });
+    const runtime = new FakeRuntime(
+      () => ({ status: 200, body: captureCanonicalJson(value) }),
+      unavailableStore,
+    );
+    const { client } = await connectApp(runtime);
+    const result = await client.callTool({
+      name: stockTokenTradeHistoryInterfaceBinding.mcp.name,
+      arguments: { symbol: "aapl" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      ok: false,
+      error: { code: "internal_error" },
+    });
+    expect(result.content).toEqual([{
+      type: "text",
+      text: canonicalJsonStringify(captureCanonicalJson(result.structuredContent)),
+    }]);
+    expect(result._meta?.["littlejohn/presentation-snapshot"]).toBeUndefined();
+    expect(runtime.requests).toHaveLength(1);
   });
 
   it("returns the owning invalid-input field path without repairing the value", async () => {

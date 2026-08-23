@@ -41,7 +41,6 @@ export interface AdmittedPresentation {
   readonly entry: PresentationContractEntry;
   readonly normalizedInput: CanonicalJson;
   readonly result: CanonicalJson;
-  readonly source: "creating_result" | "exact_snapshot";
 }
 
 export interface PresentationViewApp {
@@ -269,6 +268,9 @@ export const admitPresentationToolResult = async (
     structured["kind"] === "presentation_snapshot_reference"
       ? admitPresentationSnapshotReference(structured)
       : undefined;
+  if (structured !== undefined && reference === undefined) {
+    throw new TypeError("The App result contains a direct domain result.");
+  }
   const resource = await resourceForResult(app, result, reference, signal);
   const inputBytes = exactBytes(resource.normalizedInput);
   if (
@@ -276,23 +278,14 @@ export const admitPresentationToolResult = async (
     sha256Bytes(inputBytes) !== resource.descriptor.inputSha256
   ) throw new TypeError("Presentation input does not match its descriptor.");
 
-  let candidate: CanonicalJson;
-  let source: AdmittedPresentation["source"];
   if (reference !== undefined) {
     if (reference.snapshotUri !== resource.descriptor.snapshotUri ||
       canonicalJsonStringify(captureCanonicalJson(reference.descriptor)) !==
         canonicalJsonStringify(captureCanonicalJson(resource.descriptor))) {
       throw new TypeError("Presentation reference and resource differ.");
     }
-    candidate = await reconstructResult(app, resource, signal);
-    source = "exact_snapshot";
-  } else if (structured === undefined) {
-    candidate = await reconstructResult(app, resource, signal);
-    source = "exact_snapshot";
-  } else {
-    candidate = structured;
-    source = "creating_result";
   }
+  const candidate = await reconstructResult(app, resource, signal);
 
   const resultBytes = exactBytes(candidate);
   if (
@@ -303,11 +296,11 @@ export const admitPresentationToolResult = async (
     resource.descriptor.contractId,
     resource.descriptor.contractVersion,
   );
-  const normalizedInput = entry.parseInput(resource.normalizedInput);
+  const normalizedInput = entry.parseNormalizedInput(resource.normalizedInput);
   const admittedResult = entry.parseResult(normalizedInput, candidate);
   if (!sameBytes(exactBytes(normalizedInput), inputBytes) ||
     !sameBytes(exactBytes(admittedResult), resultBytes)) {
     throw new TypeError("Presentation pair changed during canonical re-admission.");
   }
-  return Object.freeze({ entry, normalizedInput, result: admittedResult, source });
+  return Object.freeze({ entry, normalizedInput, result: admittedResult });
 };

@@ -29,8 +29,6 @@ const sourceRoot = resolve(repositoryRoot, "src");
 const uniswapV2SdkFile = resolve(sourceRoot, "protocols/uniswap-v2/sdk.ts");
 const testRoot = resolve(repositoryRoot, "test");
 const coreRoot = resolve("src/core");
-const generatedStockTokenReferenceMarketModule =
-  resolve(coreRoot, "stock-token-reference-market.generated.ts");
 const tokenCatalogRoot = resolve(sourceRoot, "token-catalog");
 const interfaceConsumerRoots = Object.freeze([
   resolve(sourceRoot, "interfaces"),
@@ -51,8 +49,9 @@ const clientCoreConsumers = new Set([
   "interfaces/mcp-app/view/operation-lifecycle.ts",
   "interfaces/mcp-app/view/renderers.ts",
   "interfaces/operation-delivery.ts",
-  "market-portfolio/contracts.ts",
-  "market-portfolio/stock-token-market.ts",
+  "stock-token-trade-history/contracts.ts",
+  "stock-token-trade-history/stock-token-trade-history-data.ts",
+  "stock-token-trade-history/stock-token-trade-history.ts",
   "protocols/contracts.ts",
   "protocols/registry.ts",
   "protocols/uniswap-v2/contracts.ts",
@@ -937,11 +936,24 @@ const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRu
       symbol: "assertOfficialAssetSourceMember",
       importers: new Set([
         resolve(sourceRoot, "chain/official-assets.ts"),
-        resolve(sourceRoot, "chain/reference-market.ts"),
         robinhoodOfficialAssetAdapterModule,
         resolve(sourceRoot, "registry/stock-factory.ts"),
       ]),
       reexporters: new Set([registryServerEntryModule]),
+    },
+    {
+      module: robinhoodOfficialAssetSemanticContractModule,
+      symbol: "unavailableStockFactoryResultSchema",
+      importers: new Set<string>(),
+      reexporters: new Set([registryClientEntryModule]),
+    },
+    {
+      module: registryClientEntryModule,
+      symbol: "unavailableStockFactoryResultSchema",
+      importers: new Set([
+        resolve(sourceRoot, "stock-token-trade-history/stock-token-trade-history.ts"),
+      ]),
+      reexporters: new Set<string>(),
     },
     {
       module: robinhoodOfficialAssetSemanticContractModule,
@@ -1138,6 +1150,12 @@ const externalIntegrationResultEdges: readonly ExternalIntegrationResultEdge[] =
       sourceModule: robinhoodOfficialAssetSemanticContractModule,
       sourceSymbol: "assertStockFactoryVerificationResult",
     },
+    {
+      file: resolve(sourceRoot, "stock-token-trade-history/stock-token-trade-history.ts"),
+      exportName: "stockTokenTradeHistoryResultSchema",
+      sourceModule: registryClientEntryModule,
+      sourceSymbol: "unavailableStockFactoryResultSchema",
+    },
   ]);
 
 const sourceName = (file: string): string =>
@@ -1241,6 +1259,7 @@ const robinhoodOfficialAssetSemanticContractExports = Object.freeze([
   "stockFactoryClassificationUnavailableReasons",
   "stockFactoryVerificationResultSchema",
   "stockFactoryVerificationSchema",
+  "unavailableStockFactoryResultSchema",
 ] as const);
 
 const robinhoodOfficialAssetSourceContractExports = Object.freeze([
@@ -1346,6 +1365,7 @@ const registryClientEntryExports = Object.freeze([
   "stockFactoryClassificationUnavailableReasonSchema",
   "stockFactoryClassificationUnavailableReasons",
   "stockFactoryVerificationSchema",
+  "unavailableStockFactoryResultSchema",
 ] as const);
 
 const exactModuleExportViolations = (
@@ -2420,7 +2440,6 @@ void import("./" + "default-stock-tokens.js");
     const productChainLiteralOwners: string[] = [];
     const productChainNumericLiteralOwners: string[] = [];
     for (const file of await collectSourceFiles(sourceRoot)) {
-      if (file === generatedStockTokenReferenceMarketModule) continue;
       const name = relative(sourceRoot, file).split(sep).join("/");
       const source = await readFile(file, "utf8");
       const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
@@ -2606,7 +2625,6 @@ void import("./" + "default-stock-tokens.js");
     expect(sorted(finiteOwners.availability)).toEqual(["runtime/support-manifest.ts"]);
     expect(sorted(finiteOwners.supportLevels)).toEqual(["core/support-level.ts"]);
     expect(sorted(finiteOwners.interactionInterfaces)).toEqual([
-      "market-portfolio/contracts.ts",
       "token-catalog/state.ts",
       "wallet/operation-state.ts",
     ]);
@@ -2646,7 +2664,6 @@ void import("./" + "default-stock-tokens.js");
         .map((literal) => [literal, new Set<string>()]),
     );
     for (const file of await collectSourceFiles(sourceRoot)) {
-      if (file === generatedStockTokenReferenceMarketModule) continue;
       const name = relative(sourceRoot, file).split(sep).join("/");
       const source = await readFile(file, "utf8");
       const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
@@ -3105,265 +3122,55 @@ void import("./" + "default-stock-tokens.js");
     )).toContain("named_import:admitRobinhoodOfficialAssetSourceObservation");
   });
 
-  it("keeps every reference-market capability identifier in its contract owner", async () => {
-    const expected = new Set([
-      "market.reference_price",
-      "market.reference_history",
-      "market.watchlist",
-      "market.add_watchlist_pair",
-      "market.remove_watchlist_pair",
-      "market.reorder_watchlist_pairs",
-    ]);
-    const owners = new Map<string, Set<string>>();
+  it("keeps the Stock Token trade-history capability identifier in its contract owner", async () => {
+    const owners = new Set<string>();
     for (const file of await collectSourceFiles(sourceRoot)) {
       const name = relative(sourceRoot, file).split(sep).join("/");
-      const parsed = ts.createSourceFile(
-        file,
-        await readFile(file, "utf8"),
-        ts.ScriptTarget.Latest,
-        true,
-      );
+      const parsed = await parseSource(file);
       const visit = (node: ts.Node): void => {
-        if (ts.isStringLiteralLike(node) && expected.has(node.text)) {
-          const files = owners.get(node.text) ?? new Set<string>();
-          files.add(name);
-          owners.set(node.text, files);
+        if (ts.isStringLiteralLike(node) && node.text === "market.stock_token_trade_history") {
+          owners.add(name);
         }
         ts.forEachChild(node, visit);
       };
       visit(parsed);
     }
-    expect([...owners.keys()].sort()).toEqual([...expected].sort());
-    for (const files of owners.values()) expect([...files]).toEqual(["market-portfolio/contracts.ts"]);
+    expect([...owners]).toEqual(["stock-token-trade-history/contracts.ts"]);
   });
 
-  it("keeps the fixed reference-market manifest and process entry points in their single owners", async () => {
-    const fixedLiteralOwners = new Map<string, string>([
-      [
-        "https://docs.chain.link/data-feeds/price-feeds/addresses?network=robinhood",
-        "core/reference-market.ts",
-      ],
-      ["2026-07-23T02:00:12.000Z", "core/reference-market.ts"],
-      ["0x78f3556b67e17df817d51ef5a990cdaf09e8d3a9", "core/reference-market.ts"],
-      ["0x61b7e5650328764b076a108eff5fa7282a1b9ad2", "core/reference-market.ts"],
-      ["0x5fc5360d0400a0fd4f2af552add042d716f1d168", "core/reference-market.ts"],
-      ["ETH / USD", "core/reference-market.ts"],
-      ["USDG / USD", "core/reference-market.ts"],
-      ["ETH/USD", "core/reference-market.ts"],
-      ["USDG/USD", "core/reference-market.ts"],
-      ["ETH/USDG", "core/reference-market.ts"],
-      ["0x7284e416", "chain/reference-market.ts"],
-      ["0xfeaf968c", "chain/reference-market.ts"],
-      ["0x9a6fc8f5", "chain/reference-market.ts"],
+  it("keeps trade-history admission, aggregation, provider, and application entry points in their exact owners", async () => {
+    const expectedOwners = new Map<string, string>([
+      ["stockTokenTradeHistoryApplicationContract", "stock-token-trade-history/contracts.ts"],
+      ["stockTokenTradeHistoryChartWindowDefinitions", "stock-token-trade-history/stock-token-trade-history-data.ts"],
+      ["stockTokenTradeHistoryRegistry", "stock-token-trade-history/stock-token-trade-history-data.ts"],
+      ["createStockTokenTradeHistoryData", "stock-token-trade-history/stock-token-trade-history-data.ts"],
+      ["createGitHubStockTokenTradeHistory", "stock-token-trade-history/github-stock-token-trade-history.ts"],
+      ["StockTokenTradeHistoryApplication", "stock-token-trade-history/application.ts"],
     ]);
-    const fixedLiteralOccurrences = new Map(
-      [...fixedLiteralOwners.keys()].map((literal) => [literal, new Set<string>()]),
+    const observedOwners = new Map(
+      [...expectedOwners.keys()].map((name) => [name, new Set<string>()]),
     );
-    const declarationOwners = new Map<string, Set<string>>([
-      ["createReferenceMarketChainReadPort", new Set()],
-      ["createReferenceHistory", new Set()],
-    ]);
-    const heartbeatOwners = new Set<string>();
-    const canonicalWatchlistLimitConsumers = new Set<string>();
-    const referenceMarketSurfaceFiles: string[] = [];
-    const forbiddenLogReaders: string[] = [];
 
     for (const file of await collectSourceFiles(sourceRoot)) {
       const name = relative(sourceRoot, file).split(sep).join("/");
-      const parsed = ts.createSourceFile(
-        file,
-        await readFile(file, "utf8"),
-        ts.ScriptTarget.Latest,
-        true,
-      );
-      const referenceMarketRelated =
-        name.includes("reference-market") ||
-        name.startsWith("market-portfolio/") ||
-        parsed.text.includes("referenceMarket") ||
-        parsed.text.includes("ReferenceMarket");
-      if (referenceMarketRelated) {
-        referenceMarketSurfaceFiles.push(name);
-        if (parsed.text.includes("eth_getLogs")) forbiddenLogReaders.push(name);
-      }
+      const parsed = await parseSource(file);
       const visit = (node: ts.Node): void => {
-        if (ts.isStringLiteralLike(node)) {
-          fixedLiteralOccurrences.get(node.text)?.add(name);
-        }
-        if (
-          ts.isNumericLiteral(node) &&
-          node.getText(parsed).replaceAll("_", "") === "86400" &&
-          referenceMarketRelated &&
-          file !== generatedStockTokenReferenceMarketModule
-        ) {
-          heartbeatOwners.add(name);
-        }
-        if (
-          ts.isVariableDeclaration(node) &&
-          ts.isIdentifier(node.name) &&
-          declarationOwners.has(node.name.text)
-        ) {
-          declarationOwners.get(node.name.text)!.add(name);
-        }
-        if (
-          ts.isPropertyAccessExpression(node) &&
-          node.getText(parsed) === "referenceMarketLimits.watchlistEntries"
-        ) {
-          canonicalWatchlistLimitConsumers.add(name);
-        }
+        const declarationName =
+          (ts.isVariableDeclaration(node) || ts.isFunctionDeclaration(node) ||
+            ts.isClassDeclaration(node)) && node.name !== undefined &&
+            ts.isIdentifier(node.name)
+            ? node.name.text
+            : undefined;
+        if (declarationName !== undefined) observedOwners.get(declarationName)?.add(name);
         ts.forEachChild(node, visit);
       };
       visit(parsed);
     }
 
-    for (const [literal, expectedOwner] of fixedLiteralOwners) {
-      expect([...fixedLiteralOccurrences.get(literal)!], literal).toEqual([expectedOwner]);
+    for (const [name, owner] of expectedOwners) {
+      expect([...observedOwners.get(name)!], name).toEqual([owner]);
     }
-    expect([...heartbeatOwners]).toEqual(["core/reference-market.ts"]);
-    expect([...declarationOwners.get("createReferenceMarketChainReadPort")!])
-      .toEqual(["chain/reference-market.ts"]);
-    expect([...declarationOwners.get("createReferenceHistory")!])
-      .toEqual(["market-portfolio/candles.ts"]);
-    expect([...canonicalWatchlistLimitConsumers]).toEqual([
-      "core/reference-market.ts",
-      "market-portfolio/contracts.ts",
-      "runtime/sqlite-schema.ts",
-    ]);
-    expect(forbiddenLogReaders).toEqual([]);
-    expect(referenceMarketSurfaceFiles.filter((name) =>
-      /(?:^|[-/])(?:indexer|provider)(?:[-/.]|$)/u.test(name))).toEqual([]);
-
-    const owner = await parseSource(resolve(sourceRoot, "core/reference-market.ts"));
-    const declaration = (name: string): ts.VariableDeclaration | undefined =>
-      sourceDescendants(owner).find((node): node is ts.VariableDeclaration =>
-        ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name);
-    const declarationIdentifiers = (name: string): readonly string[] => {
-      const found = declaration(name);
-      if (found === undefined) throw new TypeError(`Missing declaration: ${name}`);
-      return sourceDescendants(found)
-        .filter((node): node is ts.Identifier => ts.isIdentifier(node))
-        .map((identifier) => identifier.text);
-    };
-    const containingDeclaration = (node: ts.Node): string | undefined => {
-      let current: ts.Node | undefined = node;
-      while (current !== undefined) {
-        if (ts.isVariableDeclaration(current) && ts.isIdentifier(current.name)) {
-          return current.name.text;
-        }
-        current = current.parent;
-      }
-      return undefined;
-    };
-
-    const definitionLiteralOwners = new Map<string, string>([
-      ["1d", "referenceHistoryWindowDefinitionEntries"],
-      ["7d", "referenceHistoryWindowDefinitionEntries"],
-      ["30d", "referenceHistoryWindowDefinitionEntries"],
-      [
-        "https://docs.chain.link/data-feeds/price-feeds/addresses?network=robinhood",
-        "referenceMarketMappingEvidenceDefinition",
-      ],
-      ["2026-07-23T02:00:12.000Z", "referenceMarketMappingEvidenceDefinition"],
-      ["all_other_networks_and_feeds", "referenceMarketMappingEvidenceDefinition"],
-      [
-        "feed_address_association_at_observation_time",
-        "referenceMarketMappingEvidenceDefinition",
-      ],
-      ["feed_description_at_observation_time", "referenceMarketMappingEvidenceDefinition"],
-      ["feed_decimals_at_observation_time", "referenceMarketMappingEvidenceDefinition"],
-      ["feed_heartbeat_at_observation_time", "referenceMarketMappingEvidenceDefinition"],
-      ["ongoing_directory_membership", "referenceMarketMappingEvidenceDefinition"],
-      ["proxy_correctness_after_observation", "referenceMarketMappingEvidenceDefinition"],
-      ["source_uptime", "referenceMarketMappingEvidenceDefinition"],
-      ["price_correctness", "referenceMarketMappingEvidenceDefinition"],
-      ["endorsement", "referenceMarketMappingEvidenceDefinition"],
-      ["trade_price", "referenceMarketMappingEvidenceDefinition"],
-      ["sequencer_status", "referenceMarketMappingEvidenceDefinition"],
-      ["legal_value", "referenceMarketMappingEvidenceDefinition"],
-      ["eth_usd", "genericReferenceFeedDefinitions"],
-      ["usdg_usd", "genericReferenceFeedDefinitions"],
-      ["0x78f3556b67e17df817d51ef5a990cdaf09e8d3a9", "genericReferenceFeedDefinitions"],
-      ["0x61b7e5650328764b076a108eff5fa7282a1b9ad2", "genericReferenceFeedDefinitions"],
-      ["ETH / USD", "genericReferenceFeedDefinitions"],
-      ["USDG / USD", "genericReferenceFeedDefinitions"],
-      ["ETH/USD", "referencePairDefinitions"],
-      ["USDG/USD", "referencePairDefinitions"],
-      ["ETH/USDG", "referencePairDefinitions"],
-    ]);
-    const actualDefinitionLiteralOwners = new Map(
-      [...definitionLiteralOwners.keys()].map((literal) => [literal, [] as string[]]),
-    );
-    for (const node of sourceDescendants(owner)) {
-      if (!ts.isStringLiteralLike(node)) continue;
-      const declarations = actualDefinitionLiteralOwners.get(node.text);
-      if (declarations !== undefined) {
-        declarations.push(containingDeclaration(node) ?? "<none>");
-      }
-    }
-    for (const [literal, expectedOwner] of definitionLiteralOwners) {
-      expect(actualDefinitionLiteralOwners.get(literal), literal).toEqual([expectedOwner]);
-    }
-
-    expect(declarationIdentifiers("referenceMarketMappingEvidenceSchema"))
-      .toContain("referenceMarketMappingEvidenceDefinition");
-    expect(declarationIdentifiers("referenceHistoryWindowDefinitions"))
-      .toContain("referenceHistoryWindowDefinitionRecord");
-    const timeWindowOwner = await parseSource(resolve(sourceRoot, "core/market-time-window.ts"));
-    const marketTimeWindowSchemaDeclaration = sourceDescendants(timeWindowOwner)
-      .find((node): node is ts.VariableDeclaration =>
-        ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) &&
-        node.name.text === "marketTimeWindowSchema");
-    expect(marketTimeWindowSchemaDeclaration).toBeDefined();
-    expect(marketTimeWindowSchemaDeclaration?.getText(timeWindowOwner))
-      .toContain("marketTimeWindowDefinitionEntries");
-    const historyProjection = sourceDescendants(owner).find((node): node is ts.ForOfStatement =>
-      ts.isForOfStatement(node) &&
-      node.expression.getText(owner) === "referenceHistoryWindowDefinitionEntries");
-    if (historyProjection === undefined) throw new TypeError("Missing history-window projection.");
-    const historyProjectionIdentifiers = sourceDescendants(historyProjection)
-      .filter((node): node is ts.Identifier => ts.isIdentifier(node))
-      .map((identifier) => identifier.text);
-    expect(historyProjectionIdentifiers).toEqual(expect.arrayContaining([
-      "referenceHistoryWindowDefinitionRecord",
-      "referenceHistoryCandleBucketRecord",
-    ]));
-    expect(declarationIdentifiers("referenceFeedIdSchema"))
-      .toEqual(expect.arrayContaining([
-        "referencePairSourceIdSchema",
-        "stockTokenReferenceFeedIdSchema",
-      ]));
-    expect(declarationIdentifiers("genericReferenceFeedManifestEntrySchema"))
-      .toEqual(expect.arrayContaining([
-        "genericReferenceFeedAssets",
-        "genericReferenceFeedDescriptions",
-      ]));
-    expect(declarationIdentifiers("stockTokenReferenceFeedManifestEntrySchema"))
-      .toContain("stockTokenReferenceFeedIdSchema");
-    expect(declarationIdentifiers("referenceFeedManifestEntrySchema"))
-      .toEqual(expect.arrayContaining([
-        "genericReferenceFeedManifestEntrySchema",
-        "stockTokenReferenceFeedManifestEntrySchema",
-        "referenceFeedDefinitionById",
-      ]));
-    expect(declarationIdentifiers("referencePairManifestEntrySchema"))
-      .toEqual(expect.arrayContaining(["referencePairLabels", "exactPairEntry"]));
-    expect(declarationIdentifiers("exactPairEntry")).toContain("canonicalPairEntryById");
-    expect(declarationIdentifiers("referenceMarketLimits"))
-      .toEqual(expect.arrayContaining([
-        "referenceHistoryCandleBuckets",
-        "referenceFeedDefinitions",
-        "referencePairDefinitions",
-      ]));
-    expect(declarationIdentifiers("referenceMarketManifestSchema"))
-      .toEqual(expect.arrayContaining(["referenceFeedIds", "referencePairIds"]));
-    expect(declarationIdentifiers("referenceMarketManifest"))
-      .toEqual(expect.arrayContaining(["referenceFeedDefinitions", "canonicalPairEntries"]));
-
-    expect(sourceDescendants(owner).some((node) =>
-      ts.isStringLiteralLike(node) &&
-      node.text.includes("eth_usd") &&
-      node.text.includes("usdg_usd"))).toBe(false);
   });
-
   it("requires interface and package consumers to enter the token catalog through their exact public handoff", async () => {
     const violations: string[] = [];
     for (const file of await collectProductSourceFiles(repositoryRoot)) {
@@ -3991,13 +3798,13 @@ void createEscapedRuntimeStateResetRequiredError;
     expect(composition).not.toContain("createTokenCatalogConsumerPorts(");
   });
 
-  it("passes only the cumulative support manifest into the market-portfolio stage", async () => {
+  it("passes only the cumulative support manifest into the Stock Token trade-history stage", async () => {
     const file = resolve("src/runtime/composition.ts");
     const source = await readFile(file, "utf8");
     const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
     let stageType: ts.TypeAliasDeclaration | undefined;
     const visit = (node: ts.Node): void => {
-      if (ts.isTypeAliasDeclaration(node) && node.name.text === "MarketPortfolioOwnerApplicationStage") {
+      if (ts.isTypeAliasDeclaration(node) && node.name.text === "StockTokenTradeHistoryOwnerApplicationStage") {
         stageType = node;
       }
       ts.forEachChild(node, visit);
@@ -4009,12 +3816,22 @@ void createEscapedRuntimeStateResetRequiredError;
     expect(stageType.getText(parsed)).not.toContain("AccountAssetOwnerHandoff");
   });
 
-  it("removes the unreleased shared reference-owner names and combined Stock Token read path", async () => {
+  it("removes Chainlink, mixed-market, and obsolete trade-history names from product code", async () => {
     const productSources = await collectProductSourceFiles(repositoryRoot);
     const sources = await Promise.all(productSources.map(async (file) => ({
       file,
       source: await readFile(file, "utf8"),
     })));
+    const chainlinkOccurrences = sources.filter((entry) =>
+      entry.source.toLowerCase().includes("chainlink"));
+    expect(chainlinkOccurrences.map((entry) =>
+      relative(repositoryRoot, entry.file).split(sep).join("/"))).toEqual([
+      "scripts/release/packaged-integration.mjs",
+    ]);
+    expect(chainlinkOccurrences[0]?.source.match(/chainlink/giu)).toHaveLength(1);
+    expect(chainlinkOccurrences[0]?.source).toContain(
+      'independentCanonicalJson(stockTokenContent).toLowerCase().includes("chainlink")',
+    );
     for (const obsolete of [
       "ReferenceMarketApplication",
       "ReferenceMarketApplicationPort",
@@ -4024,6 +3841,20 @@ void createEscapedRuntimeStateResetRequiredError;
       "referenceMarketApplicationContracts",
       "referenceMarketErrorRegistry",
       "reportReferenceMarketFailure",
+      "market.stock_token_market",
+      "market.reference_price",
+      "market.reference_history",
+      "market.watchlist",
+      "MarketPortfolio",
+      "marketPortfolio",
+      "StockTokenMarket",
+      "stockTokenMarket",
+      "ExecutionIndex",
+      "executionIndex",
+      "canonicalStockTokenTradeHistoryJson",
+      "encodeExecutionArtifact",
+      "executionArtifactReference",
+      "Release execution fixture",
       "readStockTokenAtBlock",
       "StockTokenChainRead",
       "resolveStockTokenMarketAsset",
@@ -4032,16 +3863,24 @@ void createEscapedRuntimeStateResetRequiredError;
     ]) {
       expect(sources.filter((entry) => entry.source.includes(obsolete)), obsolete).toEqual([]);
     }
-    expect(productSources).not.toContain(resolve(sourceRoot, "interfaces/reference-market-cli.ts"));
-    expect(productSources).not.toContain(resolve(sourceRoot, "interfaces/reference-market-http.ts"));
-    expect(await readFile(resolve(sourceRoot, "chain/reference-market.ts"), "utf8"))
-      .not.toContain("createOfficialAssetChainReadPort");
-    const executionIndex = await readFile(
-      resolve(sourceRoot, "market-portfolio/stock-token-execution-index.ts"),
+    const productPaths = productSources.map((file) =>
+      relative(sourceRoot, file).split(sep).join("/"));
+    for (const obsoletePath of [
+      "chain/reference-market.ts",
+      "core/reference-market.ts",
+      "interfaces/reference-market-cli.ts",
+      "interfaces/reference-market-http.ts",
+      "interfaces/market-portfolio-cli.ts",
+      "interfaces/market-portfolio-http.ts",
+      "interfaces/mcp-app/view/execution-chart.ts",
+    ]) expect(productPaths).not.toContain(obsoletePath);
+    expect(productPaths.some((path) => path.startsWith("market-portfolio/"))).toBe(false);
+    const tradeHistory = await readFile(
+      resolve(sourceRoot, "stock-token-trade-history/stock-token-trade-history-data.ts"),
       "utf8",
     );
-    expect(executionIndex).toContain("maximumMarketTimeWindowMilliseconds");
-    expect(executionIndex).not.toContain("referenceHistoryWindowDefinitions");
+    expect(tradeHistory).toContain("maximumMarketTimeWindowMilliseconds");
+    expect(tradeHistory).not.toContain("referenceHistoryWindowDefinitions");
   });
 
   it("keeps chain invocation, opaque-block, observation, and token-inspection authority in their exact owners", async () => {
@@ -4087,7 +3926,6 @@ void createEscapedRuntimeStateResetRequiredError;
     const atBlockPorts = [
       [resolve(sourceRoot, "chain/account-assets.ts"), "AccountAssetChainReadPort"],
       [resolve(sourceRoot, "chain/official-assets.ts"), "OfficialAssetChainReadPort"],
-      [resolve(sourceRoot, "chain/reference-market.ts"), "ReferenceMarketChainReadPort"],
     ] as const;
     const blockPortViolations: string[] = [];
     for (const [file, interfaceName] of atBlockPorts) {
@@ -4114,31 +3952,6 @@ void createEscapedRuntimeStateResetRequiredError;
       visit(parsed);
     }
     expect(blockPortViolations).toEqual([]);
-
-    const coreIndexFile = resolve(sourceRoot, "core/index.ts");
-    const coreIndexSource = await readFile(coreIndexFile, "utf8");
-    const coreIndex = ts.createSourceFile(
-      coreIndexFile,
-      coreIndexSource,
-      ts.ScriptTarget.Latest,
-      true,
-      ts.ScriptKind.TS,
-    );
-    const constructorDeclarations: string[] = [];
-    const inspectCoreIndex = (node: ts.Node): void => {
-      if (ts.isFunctionDeclaration(node) && node.name?.text === "captureReferenceRoundObservation") {
-        constructorDeclarations.push("function");
-      }
-      if (ts.isVariableDeclaration(node) &&
-        ts.isIdentifier(node.name) &&
-        node.name.text === "captureReferenceRoundObservation") {
-        constructorDeclarations.push("variable");
-      }
-      ts.forEachChild(node, inspectCoreIndex);
-    };
-    inspectCoreIndex(coreIndex);
-    expect(constructorDeclarations).toEqual([]);
-    expect(coreIndexSource).toContain("captureReferenceRoundObservation,");
 
     const coordinator = await readFile(resolve(sourceRoot, "token-catalog/coordinator.ts"), "utf8");
     for (const forbidden of [

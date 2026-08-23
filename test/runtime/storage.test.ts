@@ -30,8 +30,6 @@ import {
   parseCapabilityDataAt,
   parseUnsignedDecimal,
   parseUtcTimestamp,
-  referenceMarketLimits,
-  referenceMarketManifest,
   walletConnectionCapability,
 } from "../../src/core/index.js";
 import {
@@ -648,17 +646,17 @@ describe("application data and local credential", () => {
 
 describe("SQLite product state", () => {
   it("preserves the independent canonical SQLite schema bytes", () => {
-    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(41_431);
+    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(19_754);
     expect(createHash("sha256").update(currentSqliteSchemaSql, "utf8").digest("hex")).toBe(
-      "63076e1aab77633f1b05cf61a68c5f2478ce7d801bcc4154de79e04f09860729",
+      "d02936f17e70ce89a8e054da07ee6c78546eeeb716c3e2b4df931f175e9273ee",
     );
     const structure = JSON.stringify(deriveIndependentCurrentSqliteSchema());
     expect(createHash("sha256").update(structure, "utf8").digest("hex")).toBe(
-      "0e003cc6cdad7cdd76db8fbe06c2d296b23a024740b543d2669397d74b7d0f26",
+      "aca647a50eb19a43c915dd7da039334eaaa1a6cf416dbdc20446c22c224dbc27",
     );
   });
 
-  it("compares the complete current SQLite structure within reference-derived bounds", () => {
+  it("compares the complete current SQLite structure within independently derived bounds", () => {
     const openCurrent = (): Database.Database => {
       const database = new Database(":memory:");
       database.exec(currentSqliteSchemaSql);
@@ -685,7 +683,7 @@ describe("SQLite product state", () => {
       "CREATE VIEW additional_view AS SELECT 1 AS value",
       "CREATE TRIGGER additional_trigger AFTER UPDATE ON local_profile BEGIN SELECT 1; END",
       "CREATE INDEX additional_index ON local_profile(created_at)",
-      "DROP INDEX reference_feed_round_time",
+      "DROP INDEX wallet_operation_one_active",
       "DROP INDEX wallet_token_selection_token_fk; CREATE INDEX wallet_token_selection_token_fk ON wallet_token_selection(token_address)",
     ]) {
       const candidate = openCurrent();
@@ -978,21 +976,6 @@ describe("SQLite product state", () => {
     const inspection = new Database(path, { readonly: true });
     expect(inspection.pragma("user_version", { simple: true })).toBe(1);
     expect(readIndependentSqliteSchema(inspection)).toEqual(deriveIndependentCurrentSqliteSchema());
-    const referenceSyncColumns = inspection.pragma("table_xinfo(reference_feed_sync_state)") as
-      Array<{ name: string }>;
-    expect(referenceSyncColumns.map((column) => column.name)).toEqual([
-      "manifest_version",
-      "chain_id",
-      "feed_id",
-      "proxy_address",
-      "revision",
-      "backfill_phase_id",
-      "backfill_next_round_id",
-      "retention_cutoff_round_id",
-      "integrity_status",
-      "backfill_status",
-      "updated_at",
-    ]);
     const walletColumns = inspection.pragma("table_xinfo(current_wallet_connection)") as
       Array<{ name: string }>;
     expect(walletColumns.map((column) => column.name)).toEqual([
@@ -1010,12 +993,6 @@ describe("SQLite product state", () => {
       "session_count",
       "updated_at",
     ]);
-    const watchlistEntryDefinition = inspection.prepare(
-      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
-    ).get("reference_pair_watchlist_entry") as { sql: string };
-    expect(watchlistEntryDefinition.sql).toContain(
-      `position BETWEEN 0 AND ${referenceMarketLimits.watchlistEntries - 1}`,
-    );
     inspection.close();
     if (process.platform !== "win32") {
       expect((await stat(path)).mode & 0o777).toBe(0o600);
@@ -1082,11 +1059,6 @@ describe("SQLite product state", () => {
       { name: "current_wallet_connection", wr: 0, strict: 1 },
       { name: "local_profile", wr: 0, strict: 1 },
       { name: "presentation_snapshot", wr: 1, strict: 1 },
-      { name: "reference_feed_round", wr: 1, strict: 1 },
-      { name: "reference_feed_sync_state", wr: 1, strict: 1 },
-      { name: "reference_pair_watchlist_entry", wr: 1, strict: 1 },
-      { name: "reference_pair_watchlist_state", wr: 1, strict: 1 },
-      { name: "reference_watchlist_operation", wr: 1, strict: 1 },
       { name: "robinhood_asset", wr: 1, strict: 1 },
       { name: "robinhood_asset_snapshot", wr: 1, strict: 1 },
       { name: "runtime_owner", wr: 0, strict: 1 },
@@ -1100,10 +1072,6 @@ describe("SQLite product state", () => {
     ]);
     for (const table of [
       "runtime_owner",
-      "reference_feed_round",
-      "reference_feed_sync_state",
-      "reference_pair_watchlist_state",
-      "reference_watchlist_operation",
       "robinhood_asset_snapshot",
       "contract",
       "token_contract",
@@ -1129,33 +1097,6 @@ describe("SQLite product state", () => {
     }[];
     expect(officialAssetKeys).toEqual([
       expect.objectContaining({ on_update: "RESTRICT", on_delete: "CASCADE" }),
-    ]);
-    const referenceWatchlistEntryKeys = inspection.pragma("foreign_key_list(reference_pair_watchlist_entry)") as {
-      on_update: string;
-      on_delete: string;
-    }[];
-    expect(referenceWatchlistEntryKeys).toEqual([
-      expect.objectContaining({
-        table: "reference_pair_watchlist_state",
-        from: "profile_id",
-        to: "profile_id",
-        on_update: "RESTRICT",
-        on_delete: "CASCADE",
-      }),
-      expect.objectContaining({
-        table: "reference_pair_watchlist_state",
-        from: "chain_id",
-        to: "chain_id",
-        on_update: "RESTRICT",
-        on_delete: "CASCADE",
-      }),
-      expect.objectContaining({
-        table: "reference_pair_watchlist_state",
-        from: "wallet_address",
-        to: "wallet_address",
-        on_update: "RESTRICT",
-        on_delete: "CASCADE",
-      }),
     ]);
     expect(inspection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(inspection.prepare("PRAGMA integrity_check").all()).toEqual([{ integrity_check: "ok" }]);
@@ -1661,8 +1602,6 @@ describe("SQLite product state", () => {
     const tokenAddress = "0x2222222222222222222222222222222222222222";
     const selectionSetRevision = Buffer.alloc(16, 7).toString("base64url");
     const selectionRevision = Buffer.alloc(16, 8).toString("base64url");
-    const watchlistRevision = Buffer.alloc(16, 9).toString("base64url");
-    const watchlistPair = referenceMarketManifest.pairs[0]!;
 
     const initialized = await ProductDatabase.open(path, observedAt);
     initialized.configuredChainStore().insertConfiguredChainIfAbsent(configuredChainId);
@@ -1695,19 +1634,6 @@ describe("SQLite product state", () => {
         observedAt,
         observedAt,
       );
-    fixture.prepare(`INSERT INTO reference_pair_watchlist_state(
-      profile_id, chain_id, wallet_address, revision, created_at, updated_at
-    ) SELECT profile_id, ?, ?, ?, ?, ? FROM local_profile WHERE singleton = 1`)
-      .run(configuredChainId, address, watchlistRevision, observedAt, observedAt);
-    fixture.prepare(`INSERT INTO reference_pair_watchlist_entry(
-      profile_id, chain_id, wallet_address, pair_id, pair_json, position
-    ) SELECT profile_id, ?, ?, ?, ?, 0 FROM local_profile WHERE singleton = 1`)
-      .run(
-        configuredChainId,
-        address,
-        watchlistPair.pairId,
-        canonicalJsonStringify(watchlistPair),
-      );
     fixture.close();
     if (process.platform !== "win32") await chmod(path, 0o600);
 
@@ -1735,14 +1661,6 @@ describe("SQLite product state", () => {
     expect(inspection.prepare("SELECT revision, included FROM wallet_token_selection").get()).toEqual({
       revision: selectionRevision,
       included: 1,
-    });
-    expect(inspection.prepare("SELECT revision FROM reference_pair_watchlist_state").get()).toEqual({
-      revision: watchlistRevision,
-    });
-    expect(inspection.prepare(`SELECT pair_id AS pairId, position
-      FROM reference_pair_watchlist_entry`).get()).toEqual({
-      pairId: watchlistPair.pairId,
-      position: 0,
     });
     expect(inspection.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     inspection.close();

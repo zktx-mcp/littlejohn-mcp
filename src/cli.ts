@@ -29,10 +29,9 @@ import {
   walletConnectionInterface,
   type DeliveryUnknown,
   type ReadCliCommand,
-  parseMarketPortfolioCliCommand,
-  marketPortfolioCliCommandRequiresInteractiveTerminal,
-  runMarketPortfolioCliCommand,
-  type MarketPortfolioCliCommand,
+  parseStockTokenTradeHistoryCliCommand,
+  runStockTokenTradeHistoryCliCommand,
+  type StockTokenTradeHistoryCliCommand,
   type McpServerRuntimePort,
   type StdioMcpOwner,
 } from "./interfaces/index.js";
@@ -813,7 +812,7 @@ export const runCli = async (
   let command: CliCommand | undefined;
   let readCommand: ReadCliCommand | undefined;
   let tokenCommand: TokenCliCommand | undefined;
-  let marketCommand: MarketPortfolioCliCommand | undefined;
+  let marketCommand: StockTokenTradeHistoryCliCommand | undefined;
   const mcpMode = argumentsInput.length === 0;
   let runtime: CliRuntimePort | undefined;
   let operationClient: LocalOperationClient | undefined;
@@ -883,7 +882,7 @@ export const runCli = async (
       try { tokenCommand = parseTokenCliCommand(argumentsInput); }
       catch { throw new WalletOperationError("invalid_input"); }
     } else if (!mcpMode && argumentsInput[0] === "market") {
-      try { marketCommand = parseMarketPortfolioCliCommand(argumentsInput); }
+      try { marketCommand = parseStockTokenTradeHistoryCliCommand(argumentsInput); }
       catch { throw new WalletOperationError("invalid_input"); }
     } else if (!mcpMode) command = parseCommand(argumentsInput);
     if (command !== undefined &&
@@ -892,11 +891,6 @@ export const runCli = async (
       throw new WalletOperationError("interactive_terminal_required");
     }
     if (tokenCommand !== undefined && tokenCliCommandRequiresInteractiveTerminal(tokenCommand) &&
-      (!dependencies.terminal.inputIsTTY || !dependencies.terminal.outputIsTTY)) {
-      throw new WalletOperationError("interactive_terminal_required");
-    }
-    if (marketCommand !== undefined &&
-      marketPortfolioCliCommandRequiresInteractiveTerminal(marketCommand) &&
       (!dependencies.terminal.inputIsTTY || !dependencies.terminal.outputIsTTY)) {
       throw new WalletOperationError("interactive_terminal_required");
     }
@@ -964,10 +958,8 @@ export const runCli = async (
               readLine: (prompt: string) => dependencies.terminal.readLine(prompt),
             }));
           } else if (marketCommand !== undefined) {
-            operationClient = new LocalOperationClient({ ownerSessions: runtime });
-            marketExitCode = await runMarketPortfolioCliCommand(
+            marketExitCode = await runStockTokenTradeHistoryCliCommand(
               runtime,
-              operationClient,
               marketCommand,
               dependencies.terminal,
               dependencies.terminal.interruptSignal,

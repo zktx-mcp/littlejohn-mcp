@@ -17,23 +17,14 @@ import {
   contractAnalysisSchema,
   contractDeclaredFunctionCountLimit,
   contractInspectCapability,
-  createExactRational,
   getCapabilityDefinitionSnapshot,
   maximumEvmBalanceRaw,
   maximumSuccessUtf8Bytes,
-  marketTimeWindowDefinitions,
   parseEvmAddress,
   parseCapabilitySuccess,
   parseHash32,
   parseUnsignedDecimal,
   parseUtcTimestamp,
-  referenceHistoryWindowDefinitions,
-  referenceMarketManifest,
-  referenceMarketMappingEvidence,
-  referenceMarketWarningsFor,
-  referenceRoundObservationSchema,
-  stockTokenReferenceMarketCatalog,
-  referenceWatchlistRevisionSchema,
   readCapabilityLimits,
   tokenStandardObservationResultSchema,
   transactionInspectCapability,
@@ -49,32 +40,30 @@ import {
   type WalletConnectionData,
 } from "../../src/core/index.js";
 import {
-  findStockTokenExecutionIndexAsset,
-  stockTokenExecutionDisplayWindowDefinitions,
-  stockTokenExecutionIndexRegistry,
-  stockTokenExecutionSeriesLimits,
-  stockTokenExecutionSeriesSchema,
-  unavailableStockTokenExecutionSeries,
-} from
-  "../../src/market-portfolio/stock-token-execution-index.js";
+  createStockTokenTradeHistoryResult,
+  findStockTokenTradeHistoryAsset,
+  resolveStockTokenTradeHistoryOfficialAsset,
+  stockTokenTradeHistoryApplicationContract,
+  stockTokenTradeHistoryChartWindowDefinitions,
+  stockTokenTradeHistoryDataSchema,
+  stockTokenTradeHistoryInterval,
+  stockTokenTradeHistoryRegistry,
+} from "../../src/stock-token-trade-history/index.js";
+import {
+  admitPresentationSnapshotResource,
+  presentationSnapshotChunkSchema,
+  presentationSnapshotMetadataKey,
+} from "../../src/interfaces/mcp-app/contracts.js";
+import {
+  McpAppPresentationService,
+  createMcpAppResource,
+} from "../../src/interfaces/mcp-app/server.js";
 import { ProductDatabase } from "../../src/runtime/database.js";
-import { stockTokenMarketInterval } from
-  "../../src/market-portfolio/stock-token-market.js";
-import {
-  internalResponseLimitBytes,
-  publicReadResponseLimitBytes,
-} from "../../src/runtime/http-boundary.js";
-import { marketPortfolioApplicationContracts } from "../../src/market-portfolio/contracts.js";
-import { createDirectReferenceCandleSeries } from
-  "../../src/market-portfolio/candles.js";
-import {
-  createAvailableStockTokenMarketResult,
-  createAvailableStockTokenReferenceResult,
-  resolveStockTokenOfficialAsset,
-  resolveStockTokenReferenceMapping,
-} from "../../src/market-portfolio/stock-token-market.js";
+import { publicReadResponseLimitBytes } from "../../src/runtime/http-boundary.js";
+import { presentationSnapshotLimits } from "../../src/runtime/presentation-snapshot.js";
 import {
   assertCommittedOfficialAssetSnapshot,
+  defaultStockTokenManifest,
   officialAssetSnapshotRevisionSchema,
   officialAssetSourceDefinition,
   stockFactoryAdmissionManifest,
@@ -561,12 +550,12 @@ export const verifySemanticReadMaximumEnvelopes = async (): Promise<void> => {
   expect(included).toMatchObject({ ok: false, error: { code: "result_too_large" } });
 };
 
-const maximumStockTokenExecutionSeries = (
+const maximumStockTokenTradeHistoryData = (
   token: EvmAddress,
   interval: Readonly<{ requestedStart: string; requestedEnd: string }>,
 ) => {
-  const asset = findStockTokenExecutionIndexAsset(token);
-  if (asset === undefined) throw new TypeError("The maximum execution fixture must be indexed.");
+  const asset = findStockTokenTradeHistoryAsset(token);
+  if (asset === undefined) throw new TypeError("The maximum trade-history fixture must be registered.");
   const requestedStart = Date.parse(interval.requestedStart);
   const requestedEnd = Date.parse(interval.requestedEnd);
   const dayMilliseconds = 86_400_000;
@@ -593,63 +582,19 @@ const maximumStockTokenExecutionSeries = (
     cursor = dayEnd;
     nextBlock = untilBlock;
   }
+
   const maximumNumerator = "9".repeat(96);
   const maximumDenominator = `1${"0".repeat(95)}`;
   const maximumVolume = "9".repeat(78);
-  const firstCandleStart = requestedEnd -
-    stockTokenExecutionSeriesLimits.candles * 60_000;
-  const candles = Array.from({ length: stockTokenExecutionSeriesLimits.candles }, (_, index) => {
-    const intervalStart = firstCandleStart + index * 60_000;
-    const coverage = intervals.find((candidate) =>
-      intervalStart >= Date.parse(candidate.fromTimestamp) &&
-      intervalStart < Date.parse(candidate.untilTimestamp));
-    if (coverage === undefined) throw new TypeError("Maximum execution candle lacks coverage.");
-    const blockNumber = (BigInt(coverage.fromBlock) +
-      BigInt((intervalStart - Date.parse(coverage.fromTimestamp)) / 60_000)).toString();
-    const blockHex = BigInt(blockNumber).toString(16).padStart(64, "0");
-    const blockHash = `0x${blockHex}`;
-    const transactionHash = (transactionIndex: number) =>
-      `0x${transactionIndex.toString(16).padStart(16, "0")}${blockHex.slice(-48)}`;
-    const firstSource = {
-      blockNumber,
-      blockHash,
-      transactionIndex: Number.MAX_SAFE_INTEGER - 1,
-      transactionHash: transactionHash(Number.MAX_SAFE_INTEGER - 1),
-      logIndex: Number.MAX_SAFE_INTEGER - 1,
-    };
-    const lastSource = {
-      blockNumber,
-      blockHash,
-      transactionIndex: Number.MAX_SAFE_INTEGER,
-      transactionHash: transactionHash(Number.MAX_SAFE_INTEGER),
-      logIndex: Number.MAX_SAFE_INTEGER,
-    };
-    const exact = { numerator: maximumNumerator, denominator: maximumDenominator };
-    return {
-      symbol: asset.symbol,
-      token: asset.token,
-      poolId: asset.poolId,
-      intervalStart: new Date(intervalStart).toISOString(),
-      intervalEnd: new Date(intervalStart + 60_000).toISOString(),
-      open: exact,
-      high: exact,
-      low: exact,
-      close: exact,
-      tokenVolumeRaw: maximumVolume,
-      quoteVolumeRaw: maximumVolume,
-      tradeCount: Number.MAX_SAFE_INTEGER,
-      firstSource,
-      lastSource,
-    };
-  });
-  const displayDefinition = stockTokenExecutionDisplayWindowDefinitions["30d"];
-  const firstDisplayStart = Math.floor(requestedStart / displayDefinition.intervalMilliseconds) *
-    displayDefinition.intervalMilliseconds;
+
+  const chartDefinition = stockTokenTradeHistoryChartWindowDefinitions["30d"];
+  const firstPositionStart = Math.floor(requestedStart / chartDefinition.intervalMilliseconds) *
+    chartDefinition.intervalMilliseconds;
   const sourcePosition = (timestamp: number, last: boolean) => {
     const coverage = intervals.find((candidate) =>
       timestamp >= Date.parse(candidate.fromTimestamp) &&
       timestamp < Date.parse(candidate.untilTimestamp));
-    if (coverage === undefined) throw new TypeError("Maximum display source lacks coverage.");
+    if (coverage === undefined) throw new TypeError("Maximum chart source lacks coverage.");
     const blockNumber = (BigInt(coverage.fromBlock) +
       BigInt((timestamp - Date.parse(coverage.fromTimestamp)) / 60_000)).toString();
     const blockHex = BigInt(blockNumber).toString(16).padStart(64, "0");
@@ -658,53 +603,56 @@ const maximumStockTokenExecutionSeries = (
       blockNumber,
       blockHash: `0x${blockHex}`,
       transactionIndex,
-      transactionHash: `0x${transactionIndex.toString(16).padStart(16, "0")}${blockHex.slice(-48)}`,
+      transactionHash:
+        `0x${transactionIndex.toString(16).padStart(16, "0")}${blockHex.slice(-48)}`,
       logIndex: transactionIndex,
     };
   };
-  const displayPositions = Array.from({
-    length: displayDefinition.maximumPositionCount,
-  }, (_, index) => {
-    const intervalStart = firstDisplayStart + index * displayDefinition.intervalMilliseconds;
-    const intervalEnd = intervalStart + displayDefinition.intervalMilliseconds;
-    const representedStart = Math.max(intervalStart, requestedStart);
-    const representedEnd = Math.min(intervalEnd, requestedEnd);
-    if (representedStart >= representedEnd) {
-      throw new TypeError("Maximum display position does not intersect its request.");
-    }
-    const sourceCandleCount = (representedEnd - representedStart) / 60_000;
-    if (!Number.isInteger(sourceCandleCount) || sourceCandleCount < 1) {
-      throw new TypeError("Maximum display position lacks a complete source minute.");
-    }
-    const exact = { numerator: maximumNumerator, denominator: maximumDenominator };
-    return {
-      intervalStart: new Date(intervalStart).toISOString(),
-      intervalEnd: new Date(intervalEnd).toISOString(),
-      representedStart: new Date(representedStart).toISOString(),
-      representedEnd: new Date(representedEnd).toISOString(),
-      coverage: "complete",
-      candle: {
-        open: exact,
-        high: exact,
-        low: exact,
-        close: exact,
-        tokenVolumeRaw: (BigInt(maximumVolume) * BigInt(sourceCandleCount)).toString(),
-        quoteVolumeRaw: (BigInt(maximumVolume) * BigInt(sourceCandleCount)).toString(),
-        tradeCount: (BigInt(Number.MAX_SAFE_INTEGER) * BigInt(sourceCandleCount)).toString(),
-        firstSource: sourcePosition(representedStart, false),
-        lastSource: sourcePosition(representedEnd - 60_000, true),
-        observedStart: new Date(representedStart).toISOString(),
-        observedEnd: new Date(representedEnd).toISOString(),
-      },
-    };
-  });
-  return stockTokenExecutionSeriesSchema.parse({
+  const positions = Array.from(
+    { length: chartDefinition.maximumPositionCount },
+    (_, index) => {
+      const intervalStart = firstPositionStart + index * chartDefinition.intervalMilliseconds;
+      const intervalEnd = intervalStart + chartDefinition.intervalMilliseconds;
+      const representedStart = Math.max(intervalStart, requestedStart);
+      const representedEnd = Math.min(intervalEnd, requestedEnd);
+      if (representedStart >= representedEnd) {
+        throw new TypeError("Maximum chart position does not intersect its request.");
+      }
+      const sourceCandleCount = (representedEnd - representedStart) / 60_000;
+      if (!Number.isInteger(sourceCandleCount) || sourceCandleCount < 1) {
+        throw new TypeError("Maximum chart position lacks a complete source minute.");
+      }
+      const exact = { numerator: maximumNumerator, denominator: maximumDenominator };
+      return {
+        intervalStart: new Date(intervalStart).toISOString(),
+        intervalEnd: new Date(intervalEnd).toISOString(),
+        representedStart: new Date(representedStart).toISOString(),
+        representedEnd: new Date(representedEnd).toISOString(),
+        coverage: "complete" as const,
+        candle: {
+          open: exact,
+          high: exact,
+          low: exact,
+          close: exact,
+          tokenVolumeRaw: (BigInt(maximumVolume) * BigInt(sourceCandleCount)).toString(),
+          quoteVolumeRaw: (BigInt(maximumVolume) * BigInt(sourceCandleCount)).toString(),
+          tradeCount: (BigInt(Number.MAX_SAFE_INTEGER) * BigInt(sourceCandleCount)).toString(),
+          firstSource: sourcePosition(representedStart, false),
+          lastSource: sourcePosition(representedEnd - 60_000, true),
+          observedStart: new Date(representedStart).toISOString(),
+          observedEnd: new Date(representedEnd).toISOString(),
+        },
+      };
+    },
+  );
+
+  return stockTokenTradeHistoryDataSchema.parse({
     status: "available",
     ...interval,
     source: {
-      chainId: stockTokenExecutionIndexRegistry.chain.chainId,
-      finality: stockTokenExecutionIndexRegistry.chain.finalityTag,
-      poolManager: stockTokenExecutionIndexRegistry.deployment.poolManager,
+      chainId: stockTokenTradeHistoryRegistry.chain.chainId,
+      finality: stockTokenTradeHistoryRegistry.chain.finalityTag,
+      poolManager: stockTokenTradeHistoryRegistry.deployment.poolManager,
       poolId: asset.poolId,
       quoteToken: {
         address: asset.pair.quoteAsset.address,
@@ -712,7 +660,7 @@ const maximumStockTokenExecutionSeries = (
         symbol: "USDG",
       },
     },
-    artifact: {
+    sourceFiles: {
       contractVersion: "1",
       pairId: asset.poolId,
       sequence: Number.MAX_SAFE_INTEGER,
@@ -732,18 +680,13 @@ const maximumStockTokenExecutionSeries = (
       intervals,
       limitations: [],
     },
-    detail: {
-      status: "limited",
-      observedCandleCount: 43_200,
-      limitations: ["candle_capacity"],
-    },
-    displaySeries: {
+    chart: {
       window: "30d",
       ...interval,
       source: {
-        chainId: stockTokenExecutionIndexRegistry.chain.chainId,
-        finality: stockTokenExecutionIndexRegistry.chain.finalityTag,
-        poolManager: stockTokenExecutionIndexRegistry.deployment.poolManager,
+        chainId: stockTokenTradeHistoryRegistry.chain.chainId,
+        finality: stockTokenTradeHistoryRegistry.chain.finalityTag,
+        poolManager: stockTokenTradeHistoryRegistry.deployment.poolManager,
         poolId: asset.poolId,
         token: { address: asset.token, decimals: asset.tokenDecimals, symbol: asset.symbol },
         quoteToken: {
@@ -752,346 +695,76 @@ const maximumStockTokenExecutionSeries = (
           symbol: "USDG",
         },
       },
-      positions: displayPositions,
+      positions,
     },
-    candles,
   });
 };
 
-const maximumStockTokenMarketSuccess = (withExecution: boolean) => {
-  const mapped = stockTokenReferenceMarketCatalog.dispositions.filter((entry) =>
-    entry.mapping.status === "mapped" &&
-    (!withExecution || findStockTokenExecutionIndexAsset(
-      entry.mapping.selectedDeployment.contractAddress,
-    ) !== undefined));
-  const disposition = mapped.reduce((largest, entry) =>
-    Buffer.byteLength(independentCanonicalJson(entry), "utf8") >
-      Buffer.byteLength(independentCanonicalJson(largest), "utf8") ? entry : largest);
-  if (disposition.mapping.status !== "mapped") {
-    throw new TypeError("The maximum Stock Token fixture must be mapped.");
-  }
+const maximumStockTokenTradeHistoryResult = () => {
+  const asset = stockTokenTradeHistoryRegistry.pairs
+    .map(({ pair }) => pair.baseAsset.kind === "erc20"
+      ? findStockTokenTradeHistoryAsset(pair.baseAsset.address)
+      : undefined)
+    .find((candidate) => candidate !== undefined);
+  if (asset === undefined) throw new TypeError("A registered Stock Token is required.");
+  const official = defaultStockTokenManifest.assets.find(
+    (candidate) => candidate.contractAddress === asset.token,
+  );
+  if (official === undefined) throw new TypeError("The registered token lacks official identity.");
+
+  const block = chainAnchorSchema.parse({
+    chainId: stockTokenTradeHistoryRegistry.chain.chainId,
+    blockNumber: maximumUint256,
+    blockHash: `0x${"ff".repeat(32)}`,
+    blockTimestamp: "9999-12-30T12:01:00.000Z",
+  });
   const member = {
-    assetUid: disposition.asset.assetUid,
-    contractAddress: disposition.mapping.selectedDeployment.contractAddress,
-    sourceName: disposition.asset.name,
-    sourceSymbol: disposition.asset.symbol,
-  } as const;
-  const snapshotObservedAt = parseUtcTimestamp("9999-11-01T00:00:00.000Z");
-  const officialSnapshot = assertCommittedOfficialAssetSnapshot({
+    assetUid: official.assetUid,
+    contractAddress: asset.token,
+    sourceName: asset.name,
+    sourceSymbol: asset.symbol,
+  };
+  const observedAt = parseUtcTimestamp("9999-12-30T11:59:00.000Z");
+  const snapshot = assertCommittedOfficialAssetSnapshot({
     sourceUri: officialAssetSourceDefinition.sourceUri,
-    sourceObservedAt: snapshotObservedAt,
+    sourceObservedAt: observedAt,
     rawResponseDigest: parseHash32(`0x${"aa".repeat(32)}`),
     memberSetDigest: officialAssetMemberSetDigest([member]),
     candidateListDigest: officialAssetCandidateListDigest([member]),
-    chainId: tokenChainId,
+    chainId: block.chainId,
     members: [member],
     revision: officialAssetSnapshotRevisionSchema.parse(
       Buffer.alloc(16, 255).toString("base64url"),
     ),
-    updatedAt: snapshotObservedAt,
+    updatedAt: observedAt,
   });
-  const request = { symbol: member.sourceSymbol, window: "30d" as const };
-  const resolution = resolveStockTokenOfficialAsset(request, officialSnapshot);
-  if (resolution.status !== "resolved") throw new TypeError("The maximum Stock Token fixture did not resolve.");
-  const referenceMapping = resolveStockTokenReferenceMapping(resolution.officialAsset);
-  if (referenceMapping.status !== "mapped") throw new TypeError("The maximum Stock Token fixture did not resolve its mapping.");
-
-  const block = chainAnchorSchema.parse({
-    chainId: "eip155:4663",
-    blockNumber: maximumUint256,
-    blockHash: `0x${"ff".repeat(32)}`,
-    blockTimestamp: withExecution
-      ? "9999-12-30T12:01:00.000Z"
-      : "9999-12-31T23:59:59.999Z",
-  });
-  const window = referenceHistoryWindowDefinitions["30d"];
-  const requestedEnd = Date.parse(block.blockTimestamp);
-  const requestedStart = requestedEnd - marketTimeWindowDefinitions[request.window].durationMilliseconds;
-  const firstBucket = Math.ceil(requestedStart / window.bucketMilliseconds) *
-    window.bucketMilliseconds;
-  const maximumRoundId = 2n ** 80n - 1n;
-  const maximumAnswer = 2n ** 255n - 1n;
-  const feed = disposition.mapping.feed;
-  const observationsLength = window.maximumBuckets * 4;
-  const observations = Array.from(
-    { length: observationsLength },
-    (_, index) => {
-      const bucketIndex = Math.floor(index / 4);
-      const pointIndex = index % 4;
-      const updatedAt = firstBucket + bucketIndex * window.bucketMilliseconds +
-        (pointIndex + 1) * 1_000;
-      const updatedAtUnixSeconds = Math.floor(updatedAt / 1_000).toString(10);
-      const roundId = (maximumRoundId - BigInt(observationsLength - 1 - index)).toString(10);
-      const answer = [
-        maximumAnswer - 2n,
-        maximumAnswer,
-        maximumAnswer - 3n,
-        maximumAnswer - 1n,
-      ][pointIndex]!;
-      return referenceRoundObservationSchema.parse({
-        fact: {
-          manifestVersion: 1,
-          feedId: feed.feedId,
-          proxyAddress: feed.proxyAddress,
-          decimals: feed.decimals,
-          roundId,
-          answeredInRound: roundId,
-          answer: answer.toString(10),
-          startedAtUnixSeconds: updatedAtUnixSeconds,
-          updatedAtUnixSeconds,
-          value: createExactRational(answer, 10n ** BigInt(feed.decimals)),
-        },
-        readEvidence: {
-          observedAt: block.blockTimestamp,
-          sourceOwner: "user_configured",
-          sourceClass: "chain_rpc",
-          sourceReference: {
-            kind: "configured_rpc",
-            sourceId: `rpc:${"A".repeat(43)}`,
-            publicOrigin: "https://rpc.example",
-            configurationDigest: "A".repeat(43),
-          },
-          block,
-        },
-      });
-    },
-  );
-  const minimumRetainedRoundId = BigInt(observations[0]!.fact.roundId);
-  const cacheSnapshot = Object.freeze({
-    feedId: feed.feedId,
-    revision: Buffer.alloc(16, 255).toString("base64url"),
-    observations: Object.freeze(observations),
-    backfillPhaseId: null,
-    backfillNextRoundId: null,
-    retentionCutoffRoundId: (minimumRetainedRoundId - 1n).toString(10),
-    integrityStatus: null,
-    backfillStatus: null,
-  });
-  const series = createDirectReferenceCandleSeries({
-    feedId: feed.feedId,
-    window: request.window,
-    block,
-    snapshot: cacheSnapshot,
-  });
-  expect(series.candles).toHaveLength(180);
-  expect(series.sourceObservations).toHaveLength(720);
+  const request = { symbol: asset.symbol, window: "30d" as const };
+  const resolution = resolveStockTokenTradeHistoryOfficialAsset(request, snapshot);
+  if (resolution.status !== "resolved") throw new TypeError("Official Stock Token did not resolve.");
   const stockFactory = stockFactoryVerificationSchema.parse({
-    assetUid: member.assetUid,
-    contractAddress: member.contractAddress,
+    assetUid: official.assetUid,
+    contractAddress: asset.token,
     block,
     proxyAddress: stockFactoryAdmissionManifest.proxyAddress,
     proxyCodeHash: stockFactoryAdmissionManifest.proxyCodeHash,
     implementationAddress: stockFactoryAdmissionManifest.implementationAddress,
     implementationCodeHash: stockFactoryAdmissionManifest.implementationCodeHash,
-    tokenCodeHash: parseHash32(`0x${"ee".repeat(32)}`),
+    tokenCodeHash: parseHash32(`0x${"bb".repeat(32)}`),
   });
-  const reference = createAvailableStockTokenReferenceResult({
-    resolution: referenceMapping,
-    officialAsset: resolution.officialAsset,
-    block,
-    read: {
-      status: "observed",
-      oraclePaused: false,
-      latest: observations.at(-1)!,
-    },
-    series,
-    snapshot: cacheSnapshot,
-    report: {
-      remainingContinuation: true,
-      remainingGap: true,
-      phaseBoundaryObserved: true,
-      malformedRoundObserved: true,
-    },
-  });
-  const result = createAvailableStockTokenMarketResult({
+  const result = createStockTokenTradeHistoryResult({
     request,
     resolution,
     block,
     stockFactory,
-    reference,
-    execution: withExecution
-      ? maximumStockTokenExecutionSeries(
-          member.contractAddress,
-          stockTokenMarketInterval(request.window, block.blockTimestamp),
-        )
-      : unavailableStockTokenExecutionSeries({
-          ...stockTokenMarketInterval(request.window, block.blockTimestamp),
-        }, findStockTokenExecutionIndexAsset(member.contractAddress) === undefined
-          ? "asset_not_indexed"
-          : "index_unavailable"),
+    data: maximumStockTokenTradeHistoryData(
+      asset.token,
+      stockTokenTradeHistoryInterval(request.window, block.blockTimestamp),
+    ),
   });
-  return marketPortfolioApplicationContracts.stockTokenMarket.parsePublicSuccess(request, result);
-};
-
-export const verifyMaximumReferenceMarketEnvelopes = (): ReturnType<
-  typeof maximumStockTokenMarketSuccess
-> => {
-  const pair = referenceMarketManifest.pairs[2]!;
-  const latestUnixSeconds = "253402300799";
-  const maximumRoundId = (2n ** 80n - 1n).toString(10);
-  const maximumAnswer = 2n ** 255n - 1n;
-  const rpcConfigurationDigest = "A".repeat(43);
-  const maximumBlock = {
-    chainId: "eip155:4663",
-    blockNumber: maximumUint256,
-    blockHash: `0x${"ff".repeat(32)}`,
-    blockTimestamp: "9999-12-31T23:59:59.999Z",
-  } as const;
-  const observations = pair.contract.sourceIds.map((feedId, index) => {
-    const feed = referenceMarketManifest.feeds.find((entry) => entry.feedId === feedId)!;
-    const answer = index === 0 ? maximumAnswer : 1n;
-    return referenceRoundObservationSchema.parse({
-      fact: {
-        manifestVersion: 1,
-        feedId,
-        proxyAddress: feed.standardProxy,
-        decimals: feed.decimals,
-        roundId: (BigInt(maximumRoundId) - BigInt(index)).toString(10),
-        answeredInRound: (BigInt(maximumRoundId) - BigInt(index)).toString(10),
-        answer: answer.toString(10),
-        startedAtUnixSeconds: latestUnixSeconds,
-        updatedAtUnixSeconds: latestUnixSeconds,
-        value: {
-          numerator: index === 0 ? maximumAnswer.toString(10) : "1",
-          denominator: "100000000",
-        },
-      },
-      readEvidence: {
-        observedAt: "9999-12-31T23:59:59.999Z",
-        sourceOwner: "user_configured",
-        sourceClass: "chain_rpc",
-        sourceReference: {
-          kind: "configured_rpc",
-          sourceId: `rpc:${rpcConfigurationDigest}`,
-          publicOrigin: "https://rpc.example",
-          configurationDigest: rpcConfigurationDigest,
-        },
-        block: maximumBlock,
-      },
-    });
-  });
-  const priceInput = { pairId: pair.pairId };
-  const price = marketPortfolioApplicationContracts.price.parsePublicSuccess(priceInput, {
-    status: "current",
-    pair,
-    block: maximumBlock,
-    mappingEvidence: referenceMarketMappingEvidence,
-    sources: observations,
-    warnings: [
-      "reference_price_not_trade_price",
-      "source_listing_not_revalidated",
-      "sequencer_status_unavailable",
-    ],
-    currentPrice: { numerator: maximumAnswer.toString(10), denominator: "1" },
-  });
-
-  const requestedEnd = Date.parse("2026-08-01T00:00:00.000Z");
-  const bucketMilliseconds = 4 * 60 * 60 * 1_000;
-  const requestedStart = requestedEnd - 30 * 24 * 60 * 60 * 1_000;
-  const historyBlock = {
-    chainId: "eip155:4663",
-    blockNumber: maximumUint256,
-    blockHash: `0x${"ff".repeat(32)}`,
-    blockTimestamp: new Date(requestedEnd).toISOString(),
-  } as const;
-  const sourceObservations: ReturnType<typeof referenceRoundObservationSchema.parse>[] = [];
-  const maximumHistoryPointIndex = 180 * 4 - 1;
-  const candles = Array.from({ length: 180 }, (_, index) => {
-    const openedAt = requestedStart + index * bucketMilliseconds;
-    const closedAt = openedAt + bucketMilliseconds;
-    const pointers = Array.from({ length: 4 }, (_, pointIndex) => pair.contract.sourceIds.map((feedId, feedIndex) => {
-      const feed = referenceMarketManifest.feeds.find((entry) => entry.feedId === feedId)!;
-      const answer = feedIndex === 0 ? maximumAnswer : 1n;
-      const pointIndexWithinFeed = index * 4 + pointIndex;
-      const roundId = (BigInt(maximumRoundId) -
-        BigInt(maximumHistoryPointIndex - pointIndexWithinFeed)).toString(10);
-      const updatedAtUnixSeconds = Math.floor((openedAt + pointIndex * 1_000) / 1_000).toString(10);
-      sourceObservations.push(referenceRoundObservationSchema.parse({
-        fact: {
-          manifestVersion: 1,
-          feedId,
-          proxyAddress: feed.standardProxy,
-          decimals: feed.decimals,
-          roundId,
-          answeredInRound: roundId,
-          answer: answer.toString(10),
-          startedAtUnixSeconds: updatedAtUnixSeconds,
-          updatedAtUnixSeconds,
-          value: {
-            numerator: feedIndex === 0 ? maximumAnswer.toString(10) : "1",
-            denominator: "100000000",
-          },
-        },
-        readEvidence: {
-          observedAt: "2026-08-01T00:00:01.000Z",
-          sourceOwner: "user_configured",
-          sourceClass: "chain_rpc",
-          sourceReference: {
-            kind: "configured_rpc",
-            sourceId: `rpc:${rpcConfigurationDigest}`,
-            publicOrigin: "https://rpc.example",
-            configurationDigest: rpcConfigurationDigest,
-          },
-          block: historyBlock,
-        },
-      }));
-      return { feedId, roundId };
-    }));
-    const exact = { numerator: maximumAnswer.toString(10), denominator: "1" };
-    return {
-      openedAt: new Date(openedAt).toISOString(),
-      closedAt: new Date(closedAt).toISOString(),
-      openBucket: false,
-      open: exact,
-      high: exact,
-      low: exact,
-      close: exact,
-      openSourcePointers: pointers[0],
-      openSourceSkewSeconds: "0",
-      highSourcePointers: pointers[1],
-      highSourceSkewSeconds: "0",
-      lowSourcePointers: pointers[2],
-      lowSourceSkewSeconds: "0",
-      closeSourcePointers: pointers[3],
-      closeSourceSkewSeconds: "0",
-    };
-  });
-  const historyInput = { pairId: pair.pairId, window: "30d" as const };
-  const history = marketPortfolioApplicationContracts.history.parsePublicSuccess(historyInput, {
-    status: "partial",
-    pair,
-    window: "30d",
-    block: historyBlock,
-    mappingEvidence: referenceMarketMappingEvidence,
-    coverage: {
-      basis: "observed_rounds",
-      requestedStart: new Date(requestedStart).toISOString(),
-      requestedEnd: new Date(requestedEnd).toISOString(),
-      emptyBucketStarts: [],
-      limitations: ["source_history_not_exhaustive"],
-    },
-    candles,
-    sourceObservations,
-    warnings: referenceMarketWarningsFor({ result: "history", historyStatus: "partial" }),
-  });
-  const watchlist = marketPortfolioApplicationContracts.watchlist.parsePublicSuccess({}, {
-    account: { chainId: "eip155:4663", address: `0x${"ff".repeat(20)}` },
-    revision: referenceWatchlistRevisionSchema.parse(Buffer.alloc(16, 255).toString("base64url")),
-    entries: referenceMarketManifest.pairs,
-  });
-  const stockTokenMarket = maximumStockTokenMarketSuccess(false);
-  const stockTokenMarketWithExecution = maximumStockTokenMarketSuccess(true);
-
-  for (const success of [price, history, stockTokenMarket, stockTokenMarketWithExecution]) {
-    expect(canonicalUtf8Bytes(success)).toBeLessThanOrEqual(maximumSuccessUtf8Bytes);
-    expect(Buffer.byteLength(JSON.stringify(success), "utf8")).toBeLessThan(publicReadResponseLimitBytes);
-  }
-  expect(canonicalUtf8Bytes(watchlist)).toBeLessThan(internalResponseLimitBytes);
-  expect(Buffer.byteLength(JSON.stringify(watchlist), "utf8")).toBeLessThan(internalResponseLimitBytes);
-  for (const contract of Object.values(marketPortfolioApplicationContracts)) {
-    expect(contract.failureCodes.filter((code) => code === "result_too_large")).toHaveLength(1);
-  }
-  return stockTokenMarketWithExecution;
+  return {
+    request,
+    result: stockTokenTradeHistoryApplicationContract.parsePublicSuccess(request, result),
+  };
 };
 
 describe("semantic read maximum envelope", () => {
@@ -1109,11 +782,11 @@ describe("semantic read maximum envelope", () => {
     expect(Object.isFrozen(readCapabilityLimits)).toBe(true);
   });
 
-  it("validates all six maximum result shapes and the one-byte aggregate boundary", async () => {
+  it("validates all semantic-read maximum result shapes and the one-byte aggregate boundary", async () => {
     await verifySemanticReadMaximumEnvelopes();
   }, 30_000);
 
-  it("declares the aggregate failure on every semantic definition exactly once", () => {
+  it("declares the aggregate failure on every semantic read definition exactly once", () => {
     for (const definition of [
       accountBalanceCapability,
       chainStatusCapability,
@@ -1124,46 +797,96 @@ describe("semantic read maximum envelope", () => {
     ]) {
       const failureCodes = getCapabilityDefinitionSnapshot(definition).failureCodes;
       expect(failureCodes.filter((code) => code === "result_too_large")).toHaveLength(1);
-      expect(getCapabilityDefinitionSnapshot(definition).maximumSuccessUtf8Bytes).toBe(8_388_607);
+      expect(getCapabilityDefinitionSnapshot(definition).maximumSuccessUtf8Bytes).toBe(
+        maximumSuccessUtf8Bytes,
+      );
     }
   });
 
-  it("proves maximum reference-market successes against their transport and snapshot boundaries", async () => {
-    const maximumStockTokenResult = verifyMaximumReferenceMarketEnvelopes();
-    expect(maximumStockTokenResult.status).toBe("available");
-    if (maximumStockTokenResult.status !== "available") {
-      throw new TypeError("Maximum Stock Token fixture is unavailable.");
-    }
-    expect(maximumStockTokenResult.execution.status).toBe("available");
-    if (maximumStockTokenResult.execution.status !== "available") {
-      throw new TypeError("Maximum Stock Token execution fixture is unavailable.");
-    }
-    expect(maximumStockTokenResult.execution.candles).toHaveLength(3_072);
-    expect(maximumStockTokenResult.execution.displaySeries.positions).toHaveLength(181);
+  it("admits the maximum trade-history result through transport and exact App chunks", async () => {
+    const { request, result } = maximumStockTokenTradeHistoryResult();
+    expect(result.status).toBe("available");
+    if (result.status !== "available") throw new TypeError("Maximum trade history is unavailable.");
+    expect(Object.hasOwn(result, "candles")).toBe(false);
+    expect(Object.hasOwn(result, "detail")).toBe(false);
+    expect(result.chart.positions).toHaveLength(
+      stockTokenTradeHistoryChartWindowDefinitions["30d"].maximumPositionCount,
+    );
+    expect(canonicalUtf8Bytes(result)).toBe(403_301);
+    const canonicalResult = captureCanonicalJson(result);
+    const ordinaryMcpResult = {
+      structuredContent: canonicalResult,
+      content: [{ type: "text", text: canonicalJsonStringify(canonicalResult) }],
+    };
+    expect(canonicalUtf8Bytes(ordinaryMcpResult)).toBe(829_034);
+    expect(canonicalUtf8Bytes(ordinaryMcpResult)).toBeLessThan(1_048_576);
+    expect(canonicalUtf8Bytes(result)).toBeLessThanOrEqual(maximumSuccessUtf8Bytes);
+    expect(Buffer.byteLength(JSON.stringify(result), "utf8")).toBeLessThan(
+      publicReadResponseLimitBytes,
+    );
+    expect(
+      stockTokenTradeHistoryApplicationContract.failureCodes.filter(
+        (code) => code === "result_too_large",
+      ),
+    ).toHaveLength(1);
 
     const directory = await mkdtemp(resolve(tmpdir(), "littlejohn-maximum-presentation-"));
     const path = resolve(directory, "runtime.sqlite3");
     let database: ProductDatabase | undefined;
     try {
       database = await ProductDatabase.open(path, parseUtcTimestamp("2026-08-22T00:00:00.000Z"));
-      const input = marketPortfolioApplicationContracts.stockTokenMarket.parseInput({
-        symbol: maximumStockTokenResult.symbol,
-        window: maximumStockTokenResult.window,
-      });
-      const canonicalResult = captureCanonicalJson(maximumStockTokenResult);
-      const committed = database.presentationSnapshotStore().commit({
-        contractId: marketPortfolioApplicationContracts.stockTokenMarket.capabilityId,
-        contractVersion: marketPortfolioApplicationContracts.stockTokenMarket.contractVersion,
-        normalizedInput: captureCanonicalJson(input),
-        admittedResult: canonicalResult,
-      });
-      expect(committed.status).toBe("available");
-      if (committed.status !== "available") throw new TypeError("Maximum snapshot was not admitted.");
-      const reloaded = database.presentationSnapshotStore().read(committed.value.snapshotId);
+      const service = new McpAppPresentationService(
+        database.presentationSnapshotStore(),
+        createMcpAppResource("<!doctype html><main>Little John</main>"),
+      );
+      const handoff = service.present(
+        stockTokenTradeHistoryApplicationContract,
+        request,
+        result,
+      );
+      expect(handoff.status).toBe("available");
+      if (handoff.status !== "available") throw new TypeError("Maximum snapshot was not admitted.");
+      expect(handoff.result.structuredContent).toBeUndefined();
+      expect(handoff.result.content).toHaveLength(1);
+      expect(handoff.result.content[0]?.type).toBe("resource_link");
+      const resource = admitPresentationSnapshotResource(
+        handoff.result._meta?.[presentationSnapshotMetadataKey],
+      );
+      expect(resource.descriptor.resultChunkBytes).toBe(presentationSnapshotLimits.resultChunkBytes);
+      expect(resource.descriptor.resultChunkCount).toBe(2);
+      const reloaded = database.presentationSnapshotStore().read(resource.descriptor.snapshotId);
       expect(reloaded.status).toBe("available");
       if (reloaded.status !== "available") throw new TypeError("Maximum snapshot was not reloaded.");
       expect(new TextDecoder("utf-8", { fatal: true }).decode(reloaded.value.resultBytes))
         .toBe(canonicalJsonStringify(canonicalResult));
+
+      const chunks: Buffer[] = [];
+      for (let index = 0; index < resource.descriptor.resultChunkCount; index += 1) {
+        const chunk = presentationSnapshotChunkSchema.parse(service.getResultChunk(
+          resource.descriptor.snapshotId,
+          index,
+        ));
+        const canonicalChunk = captureCanonicalJson(chunk);
+        const chunkMcpResult = {
+          structuredContent: canonicalChunk,
+          content: [{ type: "text", text: canonicalJsonStringify(canonicalChunk) }],
+        };
+        if (index === 0) expect(canonicalUtf8Bytes(chunkMcpResult)).toBeLessThanOrEqual(699_444);
+        expect(canonicalUtf8Bytes(chunkMcpResult)).toBeLessThan(1_048_576);
+        expect(chunk.snapshotId).toBe(resource.descriptor.snapshotId);
+        expect(chunk.index).toBe(index);
+        const bytes = Buffer.from(chunk.canonicalBase64, "base64");
+        const expectedLength = index + 1 === resource.descriptor.resultChunkCount
+          ? resource.descriptor.resultUtf8Bytes - resource.descriptor.resultChunkBytes * index
+          : resource.descriptor.resultChunkBytes;
+        expect(bytes).toHaveLength(expectedLength);
+        chunks.push(bytes);
+      }
+      const reconstructed = Buffer.concat(chunks);
+      expect(reconstructed).toHaveLength(resource.descriptor.resultUtf8Bytes);
+      expect(createHash("sha256").update(reconstructed).digest("hex"))
+        .toBe(resource.descriptor.resultSha256);
+      expect(reconstructed.toString("utf8")).toBe(canonicalJsonStringify(canonicalResult));
     } finally {
       database?.close();
       await rm(directory, { recursive: true, force: true });

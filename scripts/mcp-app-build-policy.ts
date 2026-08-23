@@ -25,6 +25,7 @@ const allowedPackageImports = new Set([
   "@modelcontextprotocol/ext-apps",
   "@modelcontextprotocol/sdk/shared/protocol.js",
   "@modelcontextprotocol/sdk/types.js",
+  "lightweight-charts",
 ]);
 
 const sourceFiles = async (directory: string): Promise<readonly string[]> => {

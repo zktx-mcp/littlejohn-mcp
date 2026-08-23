@@ -38,4 +38,32 @@ describe("bundled interface distribution notices", () => {
     expect(notice.split(zod.trim())).toHaveLength(2);
     expect(notice).toContain(`Zod\n\n${zod.trim()}\n`);
   });
+
+  it("retains the reviewed chart closure licenses and required TradingView notice", async () => {
+    const [
+      installedChart,
+      retainedChart,
+      retainedFancyCanvas,
+      retainedTslib,
+      notice,
+    ] = await Promise.all([
+      readFile("node_modules/lightweight-charts/LICENSE"),
+      readFile("LICENSES/lightweight-charts-5.2.1-Apache-2.0.txt"),
+      readFile("LICENSES/fancy-canvas-2.1.0-MIT.txt"),
+      readFile("LICENSES/lightweight-charts-5.2.1-tslib-0BSD.txt"),
+      readFile("THIRD_PARTY_NOTICES.txt", "utf8"),
+    ]);
+    expect(retainedChart).toEqual(installedChart);
+    expect(createHash("sha256").update(retainedFancyCanvas).digest("hex"))
+      .toBe("52d2ba0c8f8f4532bd524358d679693ff3dd9e40c56fe0c0c63061ed0733aa18");
+    expect(createHash("sha256").update(retainedTslib).digest("hex"))
+      .toBe("210b19e543130388c68654b7497e967119ce17145f66ab7d85688fbd70f08751");
+    expect(notice.split(
+      "TradingView Lightweight Charts™\n" +
+      "Copyright (с) 2025 TradingView, Inc. https://www.tradingview.com/",
+    )).toHaveLength(2);
+    expect(notice).toContain("LICENSES/lightweight-charts-5.2.1-Apache-2.0.txt");
+    expect(notice).toContain("LICENSES/lightweight-charts-5.2.1-tslib-0BSD.txt");
+    expect(notice).toContain("LICENSES/fancy-canvas-2.1.0-MIT.txt");
+  });
 });

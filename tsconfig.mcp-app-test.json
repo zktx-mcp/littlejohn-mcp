@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.mcp-app.json",
+  "compilerOptions": {
+    "types": ["vite/client", "vitest/globals", "node"]
+  },
+  "include": ["test/interfaces/mcp-app/**/*.test.ts"]
+}

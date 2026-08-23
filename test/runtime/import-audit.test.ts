@@ -106,10 +106,16 @@ describe("module import audit", () => {
     const manifest = await loadPackageManifest();
     const policy = createPackageImportPolicy(manifest);
     expect(Object.keys(runtimePackageSourceRoots).sort()).toEqual(Object.keys(manifest.dependencies).sort());
-    expect(Object.keys(buildPackageSourceRoots)).toEqual(["@modelcontextprotocol/ext-apps"]);
+    expect(Object.keys(buildPackageSourceRoots).sort()).toEqual([
+      "@modelcontextprotocol/ext-apps",
+      "lightweight-charts",
+    ]);
     expect(policy.buildPackageOwners.get("@modelcontextprotocol/ext-apps")).toEqual(new Set([
       resolve("scripts/release/packaged-integration.mjs"),
       resolve("src/interfaces/mcp-app/view/main.ts"),
+    ]));
+    expect(policy.buildPackageOwners.get("lightweight-charts")).toEqual(new Set([
+      resolve("src/interfaces/mcp-app/view/trade-history-chart.ts"),
     ]));
     expect(policy.runtimePackageOwners.get("zod")).toEqual(new Set([resolve("src")]));
     expect(policy.runtimePackageOwners.get("@noble/hashes")).toEqual(new Set([resolve("src/core")]));

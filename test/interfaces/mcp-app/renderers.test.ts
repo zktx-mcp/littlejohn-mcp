@@ -2,382 +2,136 @@
 
 import { describe, expect, it } from "vitest";
 
-import {
-  captureCanonicalJson,
-  chainAnchorSchema,
-  createExactRational,
-  referenceHistorySuccessSchema,
-  referenceMarketManifest,
-  referenceMarketMappingEvidence,
-  referenceMarketWarningsFor,
-  referenceRoundObservationSchema,
-} from "../../../src/core/client.js";
-import { marketPortfolioApplicationContracts } from
-  "../../../src/market-portfolio/contracts.js";
 import { presentationContractRegistry, presentationContracts } from
   "../../../src/interfaces/mcp-app/registry.js";
-import { renderOperation, renderPresentation } from
+import { renderPresentation } from
   "../../../src/interfaces/mcp-app/view/renderers.js";
 import {
-  stockTokenMarketAvailableFixture,
-  stockTokenMarketExecutionUnavailableFixture,
-  stockTokenMarketReferenceUnavailableFixture,
-  stockTokenMarketUnmappedFixture,
-} from "../stock-token-market-fixture.js";
+  stockTokenTradeHistoryAvailableFixture,
+  stockTokenTradeHistoryUnavailableFixture,
+} from "../stock-token-trade-history-fixture.js";
 
-const pair = referenceMarketManifest.pairs[0]!;
-const feed = referenceMarketManifest.feeds[0]!;
-const block = chainAnchorSchema.parse({
-  chainId: "eip155:4663",
-  blockNumber: "42",
-  blockHash: `0x${"ab".repeat(32)}`,
-  blockTimestamp: "2026-07-22T00:07:00.000Z",
-});
-const observationTime = "2026-07-22T00:02:00.000Z";
-const observation = referenceRoundObservationSchema.parse({
-  fact: {
-    manifestVersion: 1,
-    feedId: feed.feedId,
-    proxyAddress: feed.standardProxy,
-    decimals: 8,
-    roundId: String((1n << 64n) | 1n),
-    answeredInRound: String((1n << 64n) | 1n),
-    answer: "193384405462",
-    startedAtUnixSeconds: String(Date.parse(observationTime) / 1_000),
-    updatedAtUnixSeconds: String(Date.parse(observationTime) / 1_000),
-    value: createExactRational(193384405462n, 100000000n),
-  },
-  readEvidence: {
-    observedAt: "2026-07-22T00:07:01.000Z",
-    sourceOwner: "user_configured",
-    sourceClass: "chain_rpc",
-    sourceReference: {
-      kind: "configured_rpc",
-      sourceId: `rpc:${"A".repeat(43)}`,
-      publicOrigin: "https://rpc.example",
-      configurationDigest: "A".repeat(43),
-    },
-    block,
-  },
-});
-const requestedStart = "2026-07-21T00:07:00.000Z";
-const firstBucket = Date.parse("2026-07-21T00:15:00.000Z");
-const finalBucket = Date.parse("2026-07-22T00:00:00.000Z");
-const bucketMilliseconds = 15 * 60 * 1_000;
-const emptyBucketStarts = Object.freeze(Array.from(
-  { length: (finalBucket - firstBucket) / bucketMilliseconds },
-  (_, index) => new Date(firstBucket + index * bucketMilliseconds).toISOString(),
-));
-const pointers = Object.freeze([{
-  feedId: observation.fact.feedId,
-  roundId: observation.fact.roundId,
-}]);
-const history = referenceHistorySuccessSchema.parse({
-  status: "partial",
-  pair,
-  window: "1d",
-  block,
-  mappingEvidence: referenceMarketMappingEvidence,
-  coverage: {
-    basis: "observed_rounds",
-    requestedStart,
-    requestedEnd: block.blockTimestamp,
-    emptyBucketStarts,
-    limitations: ["source_history_not_exhaustive"],
-  },
-  candles: [{
-    openedAt: new Date(finalBucket).toISOString(),
-    closedAt: block.blockTimestamp,
-    openBucket: true,
-    open: observation.fact.value,
-    high: observation.fact.value,
-    low: observation.fact.value,
-    close: observation.fact.value,
-    openSourcePointers: pointers,
-    openSourceSkewSeconds: "0",
-    highSourcePointers: pointers,
-    highSourceSkewSeconds: "0",
-    lowSourcePointers: pointers,
-    lowSourceSkewSeconds: "0",
-    closeSourcePointers: pointers,
-    closeSourceSkewSeconds: "0",
-  }],
-  sourceObservations: [observation],
-  warnings: referenceMarketWarningsFor({ result: "history", historyStatus: "partial" }),
-});
-
-const summaryFields = (list: Element | null, description: string): ReadonlyMap<string, HTMLElement> => {
-  if (!(list instanceof HTMLDListElement)) throw new TypeError(`Missing ${description} summary.`);
+const fields = (list: Element | null): ReadonlyMap<string, string> => {
+  if (!(list instanceof HTMLDListElement)) throw new TypeError("Summary is unavailable.");
   const labels = [...list.querySelectorAll("dt")];
   const values = [...list.querySelectorAll("dd")];
-  return new Map(labels.map((label, index) => [label.textContent ?? "", values[index]!]));
+  return new Map(labels.map((label, index) => [label.textContent ?? "", values[index]?.textContent ?? ""]));
 };
 
-const summaryFieldsAfter = (card: HTMLElement, heading: string): ReadonlyMap<string, HTMLElement> => {
-  const section = [...card.querySelectorAll("h2")].find((candidate) => candidate.textContent === heading);
-  return summaryFields(section?.nextElementSibling ?? null, heading);
-};
-
-describe("MCP App typed read renderers", () => {
-  it("renders admitted fixed history as one accessible exact-value projection", () => {
-    const entry = presentationContractRegistry.forContract(
-      marketPortfolioApplicationContracts.history,
-    );
-    if (entry === undefined) throw new TypeError("History presentation is not registered.");
-    const admitted = entry.parseResult(
-      entry.parseInput({ pairId: pair.pairId, window: "1d" }),
-      history,
-    );
-    const card = renderPresentation(entry, admitted);
-
-    expect(card.tagName).toBe("ARTICLE");
-    expect(card.querySelector("h1")?.textContent).toBe("Reference price history");
-    expect(card.querySelector('svg[role="img"]')?.getAttribute("aria-label"))
-      .toContain("1 exact candles");
-    expect(card.querySelector('svg[role="img"]')?.getAttribute("aria-label"))
-      .toContain("absent intervals are not filled");
-    expect(card.querySelectorAll(".candle-mark")).toHaveLength(history.candles.length);
-    expect(card.querySelectorAll(".candle-point")).toHaveLength(1);
-    expect(card.querySelector("path, polyline")).toBeNull();
-    expect(card.querySelector(".chart-time-range")?.textContent)
-      .toContain(history.coverage.requestedStart);
-    expect(card.querySelector(".chart-time-range")?.textContent)
-      .toContain(history.coverage.requestedEnd);
-    const exactValues = card.querySelector("details");
-    expect(card.querySelector("table")).toBeNull();
-    if (exactValues === null) throw new TypeError("Exact-value disclosure is unavailable.");
-    exactValues.open = true;
-    exactValues.dispatchEvent(new Event("toggle"));
-    expect(card.querySelector("table caption")?.textContent).toBe("Exact candle values");
-    expect([...card.querySelectorAll("tbody td")].map((cell) => cell.textContent))
-      .toContain(`${observation.fact.value.numerator} / ${observation.fact.value.denominator}`);
-    expect(card.querySelectorAll("button, input, select, textarea")).toHaveLength(0);
-    expect(card.querySelector(".operation-region")).toBeNull();
-    expect(card.textContent).toContain("Partial history");
-    expect(card.textContent).toContain("The source history is not exhaustive.");
-    expect(card.textContent).toContain(
-      "The value is a reference value, not an executable quote, trade, fill, or recommendation.",
-    );
-    expect(exactValues.open).toBe(true);
-    expect(card.querySelector("pre")).toBeNull();
-    expect(card.textContent).not.toContain("source_history_not_exhaustive");
-  });
-
-  it("renders mapped and unmapped Stock Token results through one typed exact-value view", () => {
-    const entry = presentationContracts.stockTokenMarket;
+describe("Stock Token trade-history presentation", () => {
+  it("shows user-facing trade facts and keeps exact processing data in developer details", () => {
+    const entry = presentationContracts.stockTokenTradeHistory;
     const input = entry.parseInput({ symbol: "AAPL", window: "1d" });
-    const availableValue = stockTokenMarketAvailableFixture();
-    if (availableValue.status !== "available") {
-      throw new TypeError("The mapped fixture is unavailable.");
-    }
-    const admitted = entry.parseResult(input, availableValue);
-    const card = renderPresentation(entry, admitted);
+    const value = stockTokenTradeHistoryAvailableFixture();
+    if (value.status !== "available") throw new TypeError("Trade-history fixture is unavailable.");
+    const admitted = entry.parseResult(input, value);
+    const rendered = renderPresentation(entry, admitted);
+    const card = rendered.node;
 
-    expect(card.querySelector("h1")?.textContent).toBe("Stock Token market");
-    expect(card.textContent).toContain("Apple • Robinhood Token · AAPL");
-    expect(card.textContent).toContain("925 / 4");
-    expect(card.textContent).toContain("2026-08-12T13:37:23.000Z");
-    expect(card.textContent).toContain("Oracle reference value denominated in USD");
-    expect(card.textContent).toContain("Executed trades in USDG");
-    expect(card.textContent).toContain("Latest returned one-minute close927 / 4 USDG");
-    expect(card.textContent).toContain("USD-denominated oracle reference history");
-    const marketFields = summaryFields(card.querySelector("dl"), "Stock Token market");
-    expect(marketFields.get("Status")?.textContent).toBe("Available");
-    expect(marketFields.get("Status")?.className).toBe("field-value");
-    const executionFields = summaryFieldsAfter(card, "Executed trades in USDG");
-    expect([...executionFields.keys()]).not.toContain("Status");
-    expect(executionFields.get("Freshness")?.textContent).toBe("Current");
-    expect(executionFields.get("Freshness")?.classList.contains("status-current")).toBe(true);
-    expect(executionFields.get("Source coverage")?.textContent).toBe("Partial");
-    expect(executionFields.get("Source coverage")?.classList.contains("status-partial")).toBe(true);
-    expect(executionFields.get("Detailed rows")?.textContent).toBe("Complete");
-    expect(executionFields.get("Detailed rows")?.className).toBe("field-value");
-    expect(executionFields.get("Observed one-minute candles")?.textContent).toBe("3");
-    expect(executionFields.get("Returned one-minute candles")?.textContent).toBe("3");
-    expect(executionFields.get("Display positions")?.textContent).toBe("97");
-    const chartLabels = [...card.querySelectorAll('svg[role="img"]')]
-      .map((chart) => chart.getAttribute("aria-label"));
-    expect(chartLabels).toEqual([
-      expect.stringContaining("Apple • Robinhood Token · AAPL executed trades in USDG"),
-      expect.stringContaining(
-        "Apple • Robinhood Token · AAPL USD-denominated oracle reference history",
-      ),
-    ]);
-    const executionCandles = availableValue.execution.status === "available"
-      ? availableValue.execution.displaySeries.positions.filter((position) => position.candle !== null)
-      : [];
-    expect(card.querySelectorAll(".candle-mark")).toHaveLength(
-      executionCandles.length + (availableValue.reference.status === "available"
-        ? availableValue.reference.history.candles.length : 0),
+    expect(card.querySelector("h1")?.textContent).toBe("Stock Token trade history");
+    expect(fields(card.querySelector("dl"))).toEqual(new Map([
+      ["Stock Token", "Apple • Robinhood Token · AAPL"],
+      ["Requested period", "1 day"],
+    ]));
+    expect(card.textContent).toContain("Trades in USDG");
+    expect(card.textContent).toContain("CoveragePartial");
+    expect(card.textContent).not.toContain("FreshnessCurrent");
+    expect(card.textContent).toContain(
+      "Published trade history starts after the requested period began.",
     );
-    expect(card.querySelector("path, polyline")).toBeNull();
-    for (const figure of card.querySelectorAll("figure")) {
-      const frame = figure.querySelector(".chart-frame");
-      const plotLeft = Number(frame?.getAttribute("x"));
-      const plotWidth = Number(frame?.getAttribute("width"));
-      const [requestedStart, requestedEnd] = [...figure.querySelectorAll(".chart-time-range span")]
-        .map((node) => Date.parse(node.textContent ?? ""));
-      for (const mark of figure.querySelectorAll(".candle-mark")) {
-        const representedStart = Date.parse(mark.getAttribute("data-represented-start") ?? "");
-        const representedEnd = Date.parse(mark.getAttribute("data-represented-end") ?? "");
-        const expectedRatio = ((representedStart + representedEnd) / 2 - requestedStart!) /
-          (requestedEnd! - requestedStart!);
-        const actualRatio = (Number(mark.getAttribute("data-chart-x")) - plotLeft) / plotWidth;
-        expect(actualRatio).toBeCloseTo(expectedRatio, 10);
-      }
-    }
-    const executionMark = card.querySelector("figure .candle-mark");
-    expect(executionMark?.getAttribute("data-opened-at")).toBe("2026-08-12T13:30:00.000Z");
-    expect(executionMark?.getAttribute("data-closed-at")).toBe("2026-08-12T13:45:00.000Z");
-    expect(executionMark?.getAttribute("data-represented-end")).toBe("2026-08-12T13:37:23.000Z");
-    expect([...card.querySelectorAll(".chart-caption")].every((caption) =>
-      !caption.textContent?.includes("empty intervals"))).toBe(true);
-    expect([...card.querySelectorAll("details")].map((details) =>
-      details.querySelector("summary")?.textContent)).toEqual([
-      "Exact executed-trade display candles",
-      "Exact oracle reference candles",
-      "Data limitations",
+    expect(card.textContent).not.toContain("Chainlink");
+    expect(card.textContent).not.toContain("oracle");
+    expect(card.textContent).not.toContain("Reference value");
+    expect(card.querySelector(".eyebrow")).toBeNull();
+    expect(rendered.tradeHistoryChart).not.toBeNull();
+    expect(card.querySelector('.trade-history-chart[role="img"]')?.getAttribute("aria-label"))
+      .toContain("Apple • Robinhood Token · AAPL trades in USDG");
+    expect(card.querySelector('.trade-history-chart[role="img"]')?.getAttribute("aria-label"))
+      .toContain("Developer details");
+
+    const disclosures = [...card.querySelectorAll("details")];
+    expect(disclosures.map((details) => details.querySelector("summary")?.textContent)).toEqual([
+      "Token details",
+      "Developer details",
     ]);
-    expect([...card.querySelectorAll("details")].every((details) => !details.open)).toBe(true);
-    const executionDetails = card.querySelector("details");
-    if (executionDetails === null) throw new TypeError("Execution exact-value disclosure is unavailable.");
-    executionDetails.open = true;
-    executionDetails.dispatchEvent(new Event("toggle"));
-    const executionTable = executionDetails.querySelector("table");
-    if (executionTable === null) throw new TypeError("Execution exact-value table is unavailable.");
-    expect([...executionTable.querySelectorAll("th")].map((heading) => heading.textContent)).toEqual([
+    expect(disclosures.every((details) => !details.open)).toBe(true);
+    expect(card.textContent).not.toContain("Exact chart data");
+
+    const token = disclosures[0]!;
+    expect(fields(token.querySelector("dl"))).toEqual(new Map<string, string>([
+      ["Stock Token contract", value.officialAsset.member.contractAddress],
+      ["USDG contract", value.source.quoteToken.address],
+      ["Uniswap V4 PoolManager", value.source.poolManager],
+      ["Uniswap V4 Pool ID", value.source.poolId],
+    ]));
+
+    const developer = disclosures[1]!;
+    developer.open = true;
+    developer.dispatchEvent(new Event("toggle"));
+    expect(developer.textContent).not.toContain(value.status === "available"
+      ? value.officialAsset.member.contractAddress : "");
+    expect(developer.textContent).not.toContain("One-minute trade candles");
+    expect(developer.textContent).toContain("Source file sequence");
+    expect(developer.querySelector("table caption")?.textContent).toContain(
+      "Chart values and processing by display position",
+    );
+    expect(developer.querySelectorAll("table")).toHaveLength(1);
+    expect(developer.querySelectorAll("tbody tr")).toHaveLength(97);
+    const headings = [...developer.querySelectorAll("th")].map((heading) => heading.textContent);
+    expect(headings).toEqual([
       "Natural interval start",
       "Natural interval end",
       "Represented start",
       "Represented end",
       "Position coverage",
-      "Open",
-      "High",
-      "Low",
-      "Close",
+      "Coverage meaning",
+      "Position state",
+      "Open in USDG",
+      "High in USDG",
+      "Low in USDG",
+      "Close in USDG",
+      "USDG volume",
+      "AAPL volume",
+      "Trade count",
+      "USDG volume raw",
+      "AAPL volume raw",
+      "Observed start",
+      "Observed end",
+      "Aggregation source",
     ]);
-    expect([...executionTable.querySelectorAll("tbody td")].map((cell) => cell.textContent)).toEqual([
-      "2026-08-12T13:30:00.000Z",
-      "2026-08-12T13:45:00.000Z",
-      "2026-08-12T13:30:00.000Z",
-      "2026-08-12T13:37:23.000Z",
-      "Partial",
-      "925 / 4",
-      "927 / 4",
-      "925 / 4",
-      "927 / 4",
-    ]);
-    expect(card.textContent).toContain(
-      "Reference-round candles contain no trade-volume observation.",
-    );
-    expect(card.textContent).toContain(
-      "Round traversal cannot prove that the provider published no additional rounds.",
-    );
-    expect(card.textContent).not.toContain("source_history_not_exhaustive");
-    expect(card.querySelectorAll("button, input, select, textarea")).toHaveLength(0);
-
-    const unavailableValue = stockTokenMarketUnmappedFixture();
-    if (!("officialAsset" in unavailableValue)) {
-      throw new TypeError("The unmapped fixture omitted its official asset.");
-    }
-    const unavailableInput = entry.parseInput({ symbol: "P", window: "1d" });
-    const unavailable = renderPresentation(
-      entry,
-      entry.parseResult(unavailableInput, unavailableValue),
-    );
-    expect(unavailable.textContent).toContain(
-      `Stock Token${unavailableValue.officialAsset.member.sourceName} · P`,
-    );
-    expect(unavailable.textContent).toContain(
-      unavailableValue.officialAsset.member.contractAddress,
-    );
-    expect(unavailable.textContent).toContain(
-      "The admitted catalog has no reference feed for this Stock Token.",
-    );
-    expect(unavailable.querySelector("svg, table")).toBeNull();
+    expect(new Set(headings).size).toBe(headings.length);
+    expect(developer.textContent).toContain("925 / 4");
+    expect(developer.textContent).toContain("0.006003 USDG");
+    expect(developer.textContent).toContain("6003");
   });
 
-  it("preserves the admitted reference result when execution history is unavailable", () => {
-    const entry = presentationContracts.stockTokenMarket;
-    const value = stockTokenMarketExecutionUnavailableFixture();
-    const card = renderPresentation(
-      entry,
-      entry.parseResult(entry.parseInput({ symbol: "AAPL", window: "1d" }), value),
+  it("states trade-history unavailability without reviving removed reference data", () => {
+    const entry = presentationContracts.stockTokenTradeHistory;
+    const admitted = entry.parseResult(
+      entry.parseInput({ symbol: "AAPL", window: "1d" }),
+      stockTokenTradeHistoryUnavailableFixture(),
     );
+    const rendered = renderPresentation(entry, admitted);
 
-    expect(card.textContent).toContain("Oracle reference value denominated in USD925 / 4");
-    expect(card.textContent).toContain("Executed trades in USDGStatusUnavailable");
-    expect(card.textContent).toContain("Executed-trade history is temporarily unavailable.");
-    expect(card.querySelectorAll('svg[role="img"]')).toHaveLength(1);
-    expect(card.querySelector('svg[role="img"]')?.getAttribute("aria-label"))
-      .toContain("USD-denominated oracle reference history");
+    expect(rendered.tradeHistoryChart).toBeNull();
+    expect(rendered.node.textContent).toContain("Trades in USDG");
+    expect(rendered.node.textContent).toContain("Unavailable");
+    expect(rendered.node.textContent).not.toMatch(/Chainlink|oracle|reference price/iu);
+    const details = [...rendered.node.querySelectorAll("details")];
+    expect(details.map((value) => value.querySelector("summary")?.textContent))
+      .toEqual(["Token details"]);
+    expect([...fields(details[0]?.querySelector("dl") ?? null).keys()])
+      .toEqual(["Stock Token contract"]);
   });
 
-  it("assigns reference freshness roles from the canonical freshness limitation", () => {
-    const entry = presentationContracts.stockTokenMarket;
-    const value = stockTokenMarketAvailableFixture();
-    if (value.status !== "available" || value.reference.status !== "available") {
-      throw new TypeError("The mapped fixture reference is unavailable.");
-    }
-    const paused = entry.parseResult(entry.parseInput({ symbol: "AAPL", window: "1d" }), {
-      ...value,
-      reference: {
-        ...value.reference,
-        oraclePaused: { ...value.reference.oraclePaused, value: true },
-        price: { ...value.reference.price, status: "last_observed" },
-        limitations: ["oracle_paused", ...value.reference.limitations],
-      },
-    });
-    const card = renderPresentation(entry, paused);
-    const referenceFields = summaryFieldsAfter(card, "USD-denominated oracle reference");
-
-    expect(referenceFields.get("Reference status")?.textContent).toBe("Last observed");
-    expect(referenceFields.get("Reference status")?.className).toBe("field-value");
-    expect(card.textContent).toContain(
-      "The token contract reported that its oracle is paused at the result block.",
+  it("keeps the closed presentation registry as the View classifier", () => {
+    expect(presentationContractRegistry.forContract(
+      presentationContracts.stockTokenTradeHistory.contract,
+    )).toBe(presentationContracts.stockTokenTradeHistory);
+    expect(presentationContractRegistry.values()).toContain(
+      presentationContracts.stockTokenTradeHistory,
     );
-  });
-
-  it("preserves admitted execution history when the oracle reference is unavailable", () => {
-    const entry = presentationContracts.stockTokenMarket;
-    const value = stockTokenMarketReferenceUnavailableFixture();
-    const card = renderPresentation(
-      entry,
-      entry.parseResult(entry.parseInput({ symbol: "AAPL", window: "1d" }), value),
-    );
-
-    expect(card.textContent).toContain("Executed trades in USDG");
-    expect(card.textContent).toContain("Latest returned one-minute close927 / 4 USDG");
-    expect(card.textContent).toContain("USD-denominated oracle referenceStatusUnavailable");
-    expect(card.textContent).toContain("The oracle reference source was unavailable.");
-    expect(card.querySelectorAll('svg[role="img"]')).toHaveLength(1);
-    expect(card.querySelector('svg[role="img"]')?.getAttribute("aria-label"))
-      .toContain("executed trades in USDG");
-  });
-
-  it("uses the closed presentation registry as the only View-process classifier", () => {
-    const reviews = presentationContractRegistry.values()
-      .filter((entry) => entry.presentationKind === "review");
-    const operations = presentationContractRegistry.values()
-      .filter((entry) => entry.presentationKind === "operation");
-
-    expect(reviews).toEqual([
-      presentationContracts.referenceWatchlistReview,
-      presentationContracts.tokenSelectionReview,
-      presentationContracts.walletReview,
-    ]);
-    expect(operations).toEqual([
-      presentationContracts.referenceWatchlistOperation,
-      presentationContracts.tokenSelectionOperation,
-      presentationContracts.walletOperation,
-    ]);
-    expect(() => renderPresentation(
-      presentationContracts.walletOperation,
-      captureCanonicalJson({}),
-    )).toThrow("operation cannot create a top-level presentation");
-    expect(() => renderOperation(
-      presentationContracts.referenceHistory,
-      captureCanonicalJson({}),
-    )).toThrow("not an operation");
+    expect(presentationContractRegistry.values().some((entry) =>
+      /reference|market portfolio/iu.test(entry.title))).toBe(false);
   });
 });
