@@ -1,8 +1,17 @@
 import { readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import type { ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import {
+  CallToolRequestSchema,
+  CallToolResultSchema,
+  ListToolsRequestSchema,
+  type ClientCapabilities,
+} from "@modelcontextprotocol/sdk/types.js";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -10,6 +19,7 @@ import {
   accountBalanceInputSchema,
   canonicalJsonStringify,
   captureCanonicalJson,
+  parseUtcTimestamp,
 } from "../../src/core/index.js";
 import {
   createDeliveryUnknown,
@@ -20,8 +30,14 @@ import {
 } from "../../src/interfaces/index.js";
 import { resolveLocalOperationIdentity } from "../../src/interfaces/local-operation.js";
 import {
-  createMcpAppResource,
-} from "../../src/interfaces/mcp-app/server.js";
+  admitMcpToolResultDeliveryError,
+  admitMcpToolResultForDelivery,
+} from "../../src/interfaces/mcp-result.js";
+import {
+  admitPresentationSnapshotResource,
+  presentationSnapshotMetadataKey,
+} from "../../src/interfaces/mcp-app/contracts.js";
+import { createMcpAppResource } from "../../src/interfaces/mcp-app/server.js";
 import {
   createMcpServer,
   createMcpToolRegistry,
@@ -34,11 +50,18 @@ import {
   stockTokenTradeHistoryInterfaceErrorMappings,
 } from "../../src/stock-token-trade-history/errors.js";
 import { tokenSelectionReviewRequestSchema } from "../../src/token-catalog/index.js";
-import type { RuntimeDispatchRequest, RuntimeDispatchResponse } from "../../src/runtime/index.js";
+import {
+  toProblemDetails,
+  type RuntimeDispatchRequest,
+  type RuntimeDispatchResponse,
+} from "../../src/runtime/index.js";
+import { ProductDatabase } from "../../src/runtime/database.js";
 import type { PresentationSnapshotStore } from "../../src/runtime/presentation-snapshot.js";
-import { toProblemDetails } from "../../src/runtime/index.js";
 import { openTestOwnerSession } from "./owner-session-harness.js";
-import { stockTokenTradeHistoryUnavailableFixture } from
+import {
+  stockTokenTradeHistoryAvailableFixture,
+  stockTokenTradeHistoryUnavailableFixture,
+} from
   "./stock-token-trade-history-fixture.js";
 
 const unusedSnapshotStore: PresentationSnapshotStore = Object.freeze({
@@ -80,9 +103,14 @@ interface ConnectedMcp {
 }
 
 const openConnections: ConnectedMcp[] = [];
+const openDatabases: ProductDatabase[] = [];
+const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
   await Promise.all(openConnections.splice(0).map((connection) => connection.close()));
+  for (const database of openDatabases.splice(0)) database.close();
+  await Promise.all(temporaryDirectories.splice(0).map((directory) =>
+    rm(directory, { recursive: true, force: true })));
 });
 
 const connectMcp = async (
@@ -116,6 +144,55 @@ const connectApp = (runtime: McpServerRuntimePort): Promise<ConnectedMcp> => con
 });
 
 describe("MCP binding projection", () => {
+  it("admits the bounded delivery error through an advertised SDK output schema", async () => {
+    const delivery = admitMcpToolResultForDelivery({
+      content: [{ type: "text", text: "x".repeat(1_048_576) }],
+    });
+    expect(delivery.status).toBe("too_large");
+    const server = new Server(
+      { name: "delivery-error-test", version: "1.0.0" },
+      { capabilities: { tools: {} } },
+    );
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: [{
+        name: "test_get_result",
+        inputSchema: { type: "object", additionalProperties: false },
+        outputSchema: {
+          type: "object",
+          properties: { ok: { const: true } },
+          required: ["ok"],
+          additionalProperties: false,
+        },
+      }],
+    }));
+    server.setRequestHandler(CallToolRequestSchema, async () => delivery.result);
+    const client = new Client(
+      { name: "delivery-error-client", version: "1.0.0" },
+      { capabilities: {} },
+    );
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      await client.listTools();
+      const result = CallToolResultSchema.parse(
+        await client.callTool({ name: "test_get_result", arguments: {} }),
+      );
+      expect(result).toEqual(delivery.result);
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toBeUndefined();
+      expect(admitMcpToolResultDeliveryError(result)).toEqual({
+        message:
+          "Little John could not deliver this MCP result because it exceeds the supported response size.",
+      });
+      expect(admitMcpToolResultDeliveryError({
+        ...result,
+        content: [{ type: "text", text: "different error" }],
+      })).toBeUndefined();
+    } finally {
+      await Promise.allSettled([client.close(), server.close()]);
+    }
+  });
+
   it("publishes a strict JSON Schema input contract for every declared tool", async () => {
     const runtime = new FakeRuntime();
     const client = new LocalOperationClient({ ownerSessions: runtime });
@@ -339,6 +416,48 @@ describe("MCP binding projection", () => {
       body: { symbol: "AAPL", window: "1d" },
       signal: expect.any(AbortSignal),
     }]);
+  });
+
+  it("returns one schema-valid canonical result and snapshot through an App connection", async () => {
+    const value = stockTokenTradeHistoryAvailableFixture();
+    const directory = await mkdtemp(resolve(tmpdir(), "littlejohn-mcp-app-success-"));
+    temporaryDirectories.push(directory);
+    const database = await ProductDatabase.open(
+      resolve(directory, "runtime.sqlite3"),
+      parseUtcTimestamp("2026-08-23T00:00:00.000Z"),
+    );
+    openDatabases.push(database);
+    const runtime = new FakeRuntime(
+      () => ({ status: 200, body: captureCanonicalJson(value) }),
+      database.presentationSnapshotStore(),
+    );
+    const { client } = await connectApp(runtime);
+    const listed = await client.listTools();
+    const tool = listed.tools.find((candidate) =>
+      candidate.name === stockTokenTradeHistoryInterfaceBinding.mcp.name);
+    if (tool?.outputSchema === undefined) throw new TypeError("Trade-history output schema missing.");
+
+    const result = CallToolResultSchema.parse(await client.callTool({
+      name: stockTokenTradeHistoryInterfaceBinding.mcp.name,
+      arguments: { symbol: "AAPL", window: "1d" },
+    }));
+    const admitted = captureCanonicalJson(result.structuredContent);
+    const validate = new Ajv2020({ strict: true, validateFormats: false })
+      .compile(tool.outputSchema);
+    expect(validate(admitted)).toBe(true);
+    const canonicalText = canonicalJsonStringify(admitted);
+    expect(result.content.filter((item) => item.type === "text" && item.text === canonicalText))
+      .toHaveLength(1);
+    expect(result.content.filter((item) => item.type === "resource_link")).toHaveLength(1);
+    const resource = admitPresentationSnapshotResource(
+      result._meta?.[presentationSnapshotMetadataKey],
+    );
+    expect(resource.descriptor.resultUtf8Bytes).toBe(Buffer.byteLength(canonicalText, "utf8"));
+    const stored = database.presentationSnapshotStore().read(resource.descriptor.snapshotId);
+    expect(stored.status).toBe("available");
+    if (stored.status !== "available") throw new TypeError("App snapshot was not committed.");
+    expect(Buffer.from(stored.value.resultBytes).toString("utf8")).toBe(canonicalText);
+    expect(runtime.requests).toHaveLength(1);
   });
 
   it("fails an App read closed when its presentation snapshot cannot be owned", async () => {

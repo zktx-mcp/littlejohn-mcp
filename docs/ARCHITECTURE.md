@@ -458,6 +458,19 @@ reader does not implement a weaker result parser.
   its branches. The server still admits the value through the unchanged owning
   parser. No Host adapter parses a JSON string as an input object or changes
   the owning contract's accepted value set.
+- The MCP result owner constructs every final `CallToolResult` after attaching
+  all Little John content and private metadata. A result is admitted only when
+  `JSON.stringify(result)` is at most `1,048,575` UTF-8 bytes, which keeps the
+  result itself strictly below the measured `1,048,576`-byte Host boundary.
+  Successful results with an output schema retain both conforming canonical
+  `structuredContent` and exactly one identical canonical JSON text item. An
+  oversized result becomes one bounded `isError` tool-execution result with a
+  plain-text delivery-size statement and no structured result, resource link,
+  snapshot metadata, operation metadata, or domain payload. This transport
+  error does not change the owning application failure contract or the
+  independent canonical capability-success bound. The request ID remains
+  client-owned, so Little John does not claim a universal byte bound for the
+  complete JSON-RPC response.
 - Compatible-process control resources are private owner IPC consumed by MCP and
   CLI adapters. They are not agent-facing URLs and do not redefine the MCP
   contract.
@@ -1118,10 +1131,21 @@ or another snapshot lookup. An unrelated valid snapshot remains independently
 readable. Existing SQLite schema mismatch keeps the reset behavior defined by
 [Local Persistence Boundary](#local-persistence-boundary).
 
+Initial App creation prepares the immutable record and constructs the complete
+MCP result, including the resource link and private snapshot resource, before
+the common MCP result admission. An oversized result returns the bounded MCP
+delivery error and commits no snapshot. Only an admitted complete result may
+commit; the committed record must equal the prepared record byte for byte, and
+no content, metadata, or size decision is added after that commit.
+
 After a successful model-visible App-presented read or Review admits and commits
-the snapshot, its initial result contains exactly one standard resource link to
-`snapshotUri` and the exact snapshot resource in View-private metadata. It
-contains no canonical result text or domain `structuredContent`.
+the snapshot, its initial result remains the owning tool's canonical MCP
+success: domain `structuredContent` that conforms to the advertised output
+schema and one exact canonical JSON text item. The presentation owner appends
+exactly one standard resource link to `snapshotUri` and the exact snapshot
+resource in View-private metadata. It re-admits and stores the value carried by
+that same canonical result; it never accepts a second raw domain value or
+replaces the tool success with a snapshot reference.
 `resources/read` accepts only that canonical URI and returns the bounded
 snapshot resource, never `R`.
 `presentation_get_snapshot` is a pure model-visible tool that accepts only the
@@ -1137,15 +1161,23 @@ Decoding and encoding again must reproduce the identical string. None of these
 owners exposes a current, latest, default, list, mount, or descriptor-free
 lookup.
 
-The View validates the snapshot resource, descriptor, and snapshot identity;
-canonically serializes and verifies the carried input; and parses that input
-through the registry entry. It reconstructs the result through the exact
-sequential result chunks, decodes base64, joins raw bytes, verifies total length
-and digest, performs one fatal UTF-8 decode, and verifies canonical JSON. A
-direct domain `structuredContent` value is rejected by this immutable
-presentation process. The same registry entry fully re-admits the correlated
-result before renderer dispatch. JavaScript string indexes never own chunk
-boundaries.
+For an initial creating result, the View requires the direct canonical domain
+`structuredContent`, its matching canonical JSON text, and the same-result
+private snapshot resource. It admits the standard resource link when the Host
+preserves it and otherwise only the measured Claude omission or flattened-link
+form defined above. It validates the resource, descriptor, snapshot identity,
+normalized input, carried result byte length and digest, and owning input/result
+admission before renderer dispatch. This path performs no snapshot-reference,
+resource-read, or result-chunk tool call.
+
+For immutable redisplay, the View requires the strict
+`presentation_snapshot_reference`, validates that it identifies the exact
+resource, and reconstructs the result through the exact sequential result
+chunks. It decodes Base64, joins raw bytes, verifies total length and digest,
+performs one fatal UTF-8 decode, verifies canonical JSON, and uses the same
+registry entry to re-admit the correlated result before renderer dispatch. The
+creating domain result and replay reference cannot substitute for one another.
+JavaScript string indexes never own chunk boundaries.
 
 ## Durable Operation Ownership
 
@@ -1266,14 +1298,26 @@ Wallet observation. These flows share admission and terminal adoption but do
 not configure, reorder, or emulate one another. A renderer owns semantic DOM
 and SVG only and cannot make tool calls or configure lifecycle order.
 
-The immutable process consumes the handoff owned by
-[Immutable Presentation Snapshot Ownership](#immutable-presentation-snapshot-ownership),
-selects the standard transport before an exact Host adapter, dispatches the
-fully re-admitted result through the presentation registry, and renders without
-polling or a domain read. The registry-owned `presentationKind` then terminates
-an immutable result, starts the matching Review operation lifecycle, or rejects
-an operation as an invalid creating presentation. This lifecycle defines no
-second immutable-result carrier, reconstruction path, or fallback.
+The View result ingress classifies an `isError` tool result before any snapshot,
+resource, or chunk admission, restores the standard result content through the
+measured Codex content adapter when required, and never treats that result as a
+failed domain-data verification. The exact common MCP delivery-size error
+retains its owned statement. Another tool error receives one generic, bounded
+statement because the shared View has no admitted owning contract identity with
+which to interpret that error payload. Neither path reads a resource, calls a
+tool, or renders raw error data.
+
+For a successful tool result, the immutable process consumes the handoff owned
+by [Immutable Presentation Snapshot Ownership](#immutable-presentation-snapshot-ownership),
+distinguishes the creating domain result from the replay reference by their
+owning tool contracts, selects the standard transport before an exact Host
+adapter, dispatches the fully re-admitted result through the presentation
+registry, and renders without polling or a domain read. Initial creation uses
+the result already carried by the domain tool; replay alone reconstructs the
+same retained result from exact chunks. The registry-owned `presentationKind`
+then terminates an immutable result, starts the matching Review operation
+lifecycle, or rejects an operation as an invalid creating presentation. This
+lifecycle defines no second product result or fallback.
 
 Both decision processes first admit the immutable Review and perform one
 immediate exact read of its reserved operation ID. `operation_not_found` means

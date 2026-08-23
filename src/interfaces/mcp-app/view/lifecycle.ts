@@ -14,6 +14,7 @@ import {
   sha256Bytes,
   type CanonicalJson,
 } from "../../../core/client.js";
+import { admitMcpToolResultDeliveryError } from "../../mcp-result.js";
 import {
   admitPresentationSnapshotReference,
   admitPresentationSnapshotResource,
@@ -42,6 +43,19 @@ export interface AdmittedPresentation {
   readonly normalizedInput: CanonicalJson;
   readonly result: CanonicalJson;
 }
+
+export type PresentationToolResultAdmission =
+  | Readonly<{
+      status: "presentation";
+      presentation: AdmittedPresentation;
+    }>
+  | Readonly<{
+      status: "tool_error";
+      message: string;
+    }>;
+
+const genericToolErrorMessage =
+  "The tool call ended with an error before a displayable result was available.";
 
 export interface PresentationViewApp {
   getHostCapabilities(): Readonly<{
@@ -137,6 +151,20 @@ const exactResourceLinks = (
   });
 };
 
+const admitDirectResultText = (
+  app: PresentationViewApp,
+  result: CallToolResult,
+  candidate: CanonicalJson,
+): void => {
+  const canonicalText = canonicalJsonStringify(candidate);
+  const matches = contentForResourceLink(app, result).filter(
+    (item) => item.type === "text" && item.text === canonicalText,
+  );
+  if (matches.length !== 1) {
+    throw new TypeError("The App result omitted its canonical result text.");
+  }
+};
+
 const privateSnapshotResource = (result: CallToolResult): PresentationSnapshotResource | undefined => {
   const value = result._meta?.[presentationSnapshotMetadataKey];
   if (value === undefined) return undefined;
@@ -166,16 +194,42 @@ const readExactSnapshotResource = async (
   return admitPresentationSnapshotResource(captured);
 };
 
-const resourceForResult = async (
+const directResourceForResult = (
   app: PresentationViewApp,
   result: CallToolResult,
-  reference: PresentationSnapshotReference | undefined,
+): PresentationSnapshotResource => {
+  const links = exactResourceLinks(app, result);
+  const privateResource = privateSnapshotResource(result);
+  if (links.length === 1 && links[0] !== undefined) {
+    if (privateResource === undefined) {
+      throw new TypeError("The direct result omitted its private presentation resource.");
+    }
+    if (privateResource.descriptor.snapshotUri !== links[0].uri) {
+      throw new TypeError("Presentation resource link and metadata differ.");
+    }
+    return privateResource;
+  }
+  if (links.length > 1) throw new TypeError("The result contains multiple presentation resources.");
+  if (privateResource !== undefined && app.getHostVersion()?.name === claudeViewHostName) {
+    // Claude local-agent-mode currently removes or flattens resource_link
+    // blocks before View delivery. Admit only the complete snapshot resource
+    // carried by this same result. Delete this adapter when Claude preserves
+    // the standard link; the link branch above then wins.
+    return privateResource;
+  }
+  throw new TypeError("The result omitted its exact presentation resource.");
+};
+
+const replayResourceForResult = async (
+  app: PresentationViewApp,
+  result: CallToolResult,
+  reference: PresentationSnapshotReference,
   signal: AbortSignal,
 ): Promise<PresentationSnapshotResource> => {
   const links = exactResourceLinks(app, result);
   const privateResource = privateSnapshotResource(result);
   if (links.length === 1 && links[0] !== undefined) {
-    if (reference !== undefined && reference.snapshotUri !== links[0].uri) {
+    if (reference.snapshotUri !== links[0].uri) {
       throw new TypeError("Presentation resource link and reference differ.");
     }
     if (privateResource !== undefined) {
@@ -188,20 +242,12 @@ const resourceForResult = async (
   }
   if (links.length > 1) throw new TypeError("The result contains multiple presentation resources.");
   if (privateResource !== undefined && app.getHostVersion()?.name === claudeViewHostName) {
-    // Claude local-agent-mode currently removes or flattens resource_link
-    // blocks before View delivery. Admit only the complete snapshot resource
-    // carried by this same result. Delete this adapter when Claude preserves
-    // the standard link; the link branch above then wins.
+    if (privateResource.descriptor.snapshotUri !== reference.snapshotUri) {
+      throw new TypeError("Presentation resource metadata and reference differ.");
+    }
     return privateResource;
   }
-  if (reference !== undefined) {
-    // A bounded replay result owns its exact snapshot URI. Host presentation
-    // state may omit the original result link and private metadata after a
-    // remount, but it cannot change which persisted snapshot this result names.
-    // Use the standard resource read and then re-admit the complete descriptor.
-    return readExactSnapshotResource(app, reference.snapshotUri, signal);
-  }
-  throw new TypeError("The result omitted its exact presentation resource.");
+  return readExactSnapshotResource(app, reference.snapshotUri, signal);
 };
 
 const reconstructResult = async (
@@ -254,7 +300,18 @@ export const admitPresentationToolResult = async (
   app: PresentationViewApp,
   result: CallToolResult,
   signal: AbortSignal,
-): Promise<AdmittedPresentation> => {
+): Promise<PresentationToolResultAdmission> => {
+  if (result.isError === true) {
+    const deliveryError = admitMcpToolResultDeliveryError(result) ??
+      admitMcpToolResultDeliveryError({
+        ...result,
+        content: [...contentForResourceLink(app, result)],
+      });
+    return Object.freeze({
+      status: "tool_error",
+      message: deliveryError?.message ?? genericToolErrorMessage,
+    });
+  }
   const privateValue = result._meta?.[presentationSnapshotMetadataKey];
   const unavailable = presentationUnavailableSchema.safeParse(privateValue);
   if (unavailable.success) {
@@ -268,24 +325,28 @@ export const admitPresentationToolResult = async (
     structured["kind"] === "presentation_snapshot_reference"
       ? admitPresentationSnapshotReference(structured)
       : undefined;
-  if (structured !== undefined && reference === undefined) {
-    throw new TypeError("The App result contains a direct domain result.");
-  }
-  const resource = await resourceForResult(app, result, reference, signal);
+  if (structured === undefined) throw new TypeError("The App result omitted its canonical result.");
+  const resource = reference === undefined
+    ? directResourceForResult(app, result)
+    : await replayResourceForResult(app, result, reference, signal);
   const inputBytes = exactBytes(resource.normalizedInput);
   if (
     inputBytes.length !== resource.descriptor.inputUtf8Bytes ||
     sha256Bytes(inputBytes) !== resource.descriptor.inputSha256
   ) throw new TypeError("Presentation input does not match its descriptor.");
 
+  let candidate: CanonicalJson;
   if (reference !== undefined) {
     if (reference.snapshotUri !== resource.descriptor.snapshotUri ||
       canonicalJsonStringify(captureCanonicalJson(reference.descriptor)) !==
         canonicalJsonStringify(captureCanonicalJson(resource.descriptor))) {
       throw new TypeError("Presentation reference and resource differ.");
     }
+    candidate = await reconstructResult(app, resource, signal);
+  } else {
+    candidate = structured;
+    admitDirectResultText(app, result, candidate);
   }
-  const candidate = await reconstructResult(app, resource, signal);
 
   const resultBytes = exactBytes(candidate);
   if (
@@ -302,5 +363,8 @@ export const admitPresentationToolResult = async (
     !sameBytes(exactBytes(admittedResult), resultBytes)) {
     throw new TypeError("Presentation pair changed during canonical re-admission.");
   }
-  return Object.freeze({ entry, normalizedInput, result: admittedResult });
+  return Object.freeze({
+    status: "presentation",
+    presentation: Object.freeze({ entry, normalizedInput, result: admittedResult }),
+  });
 };

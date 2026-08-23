@@ -9,6 +9,7 @@ import {
   canonicalJsonStringify,
   captureCanonicalJson,
   parseUtcTimestamp,
+  type CanonicalJson,
 } from "../../../src/core/index.js";
 import {
   admitPresentationSnapshotResource,
@@ -20,8 +21,13 @@ import {
   createMcpAppResource,
   type McpAppPresentationHandoff,
 } from "../../../src/interfaces/mcp-app/server.js";
-import { admitPresentationToolResult, type PresentationViewApp } from
+import {
+  admitPresentationToolResult,
+  type AdmittedPresentation,
+  type PresentationViewApp,
+} from
   "../../../src/interfaces/mcp-app/view/lifecycle.js";
+import { admitMcpToolResultForDelivery } from "../../../src/interfaces/mcp-result.js";
 import { ProductDatabase } from "../../../src/runtime/database.js";
 import type { PresentationSnapshotStore } from
   "../../../src/runtime/presentation-snapshot.js";
@@ -62,16 +68,18 @@ const tradeHistory = stockTokenTradeHistoryApplicationContract.parsePublicSucces
 );
 const canonicalTradeHistory = captureCanonicalJson(tradeHistory);
 
-const ordinaryResult = (): CallToolResult => ({
-  structuredContent: canonicalTradeHistory as Record<string, unknown>,
-  content: [{ type: "text", text: canonicalJsonStringify(canonicalTradeHistory) }],
+const canonicalResult = (value: CanonicalJson): CallToolResult => ({
+  structuredContent: value as Record<string, unknown>,
+  content: [{ type: "text", text: canonicalJsonStringify(value) }],
 });
+
+const ordinaryResult = (): CallToolResult => canonicalResult(canonicalTradeHistory);
 
 const availableResult = (handoff: McpAppPresentationHandoff): CallToolResult => {
   if (handoff.status !== "available") {
-    throw new TypeError(`Expected an available presentation, received ${handoff.reason}.`);
+    throw new TypeError(`Expected an available presentation, received ${handoff.status}.`);
   }
-  return handoff.result;
+  return handoff.delivery.result;
 };
 
 const snapshotResource = (result: CallToolResult): PresentationSnapshotResource =>
@@ -102,6 +110,18 @@ const fakeApp = (options: Readonly<{
   },
 });
 
+const admitPresentation = async (
+  app: PresentationViewApp,
+  result: CallToolResult,
+  signal: AbortSignal,
+): Promise<AdmittedPresentation> => {
+  const outcome = await admitPresentationToolResult(app, result, signal);
+  if (outcome.status !== "presentation") {
+    throw new TypeError("Expected a presentation result.");
+  }
+  return outcome.presentation;
+};
+
 const chunkTool = (
   service: McpAppPresentationService,
   observed?: { name: string; argumentsValue: Record<string, unknown> }[],
@@ -117,7 +137,7 @@ const chunkTool = (
 };
 
 describe("MCP App presentation process", () => {
-  it("returns one bounded handoff to an exact committed snapshot", async () => {
+  it("augments one canonical result with its exact committed snapshot", async () => {
     const store = await openStore();
     let reads = 0;
     const countedStore: PresentationSnapshotStore = Object.freeze({
@@ -139,12 +159,13 @@ describe("MCP App presentation process", () => {
     const presented = availableResult(service.present(
       stockTokenTradeHistoryApplicationContract,
       input,
-      tradeHistory,
+      ordinaryResult(),
     ));
     const resource = snapshotResource(presented);
 
-    expect(presented.structuredContent).toBeUndefined();
+    expect(presented.structuredContent).toEqual(canonicalTradeHistory);
     expect(presented.content).toEqual([
+      ordinaryResult().content[0],
       expect.objectContaining({ type: "resource_link", uri: resource.descriptor.snapshotUri }),
     ]);
     expect(canonicalJsonStringify(captureCanonicalJson(presented._meta)))
@@ -177,7 +198,7 @@ describe("MCP App presentation process", () => {
     expect(service.present(
       stockTokenTradeHistoryApplicationContract,
       input,
-      tradeHistory,
+      ordinaryResult(),
     )).toEqual({
       kind: "presentation_unavailable",
       status: "unavailable",
@@ -225,12 +246,46 @@ describe("MCP App presentation process", () => {
     expect(service.present(
       tokenCatalogApplicationContracts.selection,
       normalizedInput,
-      mismatchedResult,
+      canonicalResult(captureCanonicalJson(mismatchedResult)),
     )).toEqual({
       kind: "presentation_unavailable",
       status: "unavailable",
       reason: "snapshot_inconsistent",
     });
+  });
+
+  it("rejects mismatched canonical text before preparing a snapshot", async () => {
+    const store = await openStore();
+    let prepares = 0;
+    const countedStore: PresentationSnapshotStore = Object.freeze({
+      prepare: (value: Parameters<PresentationSnapshotStore["prepare"]>[0]) => {
+        prepares += 1;
+        return store.prepare(value);
+      },
+      commit: (value: Parameters<PresentationSnapshotStore["commit"]>[0]) =>
+        store.commit(value),
+      read: (snapshotId: Parameters<PresentationSnapshotStore["read"]>[0]) =>
+        store.read(snapshotId),
+      readResultChunk: (value: Parameters<PresentationSnapshotStore["readResultChunk"]>[0]) =>
+        store.readResultChunk(value),
+    });
+    const service = new McpAppPresentationService(
+      countedStore,
+      createMcpAppResource("<!doctype html><main>Little John</main>"),
+    );
+    const changed = ordinaryResult();
+    changed.content = [{ type: "text", text: "{}" }];
+
+    expect(service.present(
+      stockTokenTradeHistoryApplicationContract,
+      input,
+      changed,
+    )).toEqual({
+      kind: "presentation_unavailable",
+      status: "unavailable",
+      reason: "snapshot_inconsistent",
+    });
+    expect(prepares).toBe(0);
   });
 
   it("re-admits an application input through its normalized-input contract", async () => {
@@ -247,7 +302,7 @@ describe("MCP App presentation process", () => {
     const presented = availableResult(service.present(
       tokenCatalogApplicationContracts.selections,
       {},
-      selections,
+      canonicalResult(captureCanonicalJson(selections)),
     ));
     const resource = snapshotResource(presented);
 
@@ -255,7 +310,7 @@ describe("MCP App presentation process", () => {
     expect(resource.normalizedInput).toEqual(expect.objectContaining({ cursor: null }));
     expect(JSON.parse(service.readResource(resource.descriptor.snapshotUri).text)).toEqual(resource);
 
-    const admitted = await admitPresentationToolResult(fakeApp({
+    const admitted = await admitPresentation(fakeApp({
       host: "standard-host",
       serverTools: true,
       callTool: chunkTool(service),
@@ -264,7 +319,7 @@ describe("MCP App presentation process", () => {
     expect(admitted.result).toEqual(selections);
   });
 
-  it("routes standard and measured Host transports through snapshot chunks and canonical admission", async () => {
+  it("admits creating results directly and reconstructs only a measured Host replay", async () => {
     const store = await openStore();
     const service = new McpAppPresentationService(
       store,
@@ -273,21 +328,25 @@ describe("MCP App presentation process", () => {
     const presented = availableResult(service.present(
       stockTokenTradeHistoryApplicationContract,
       input,
-      tradeHistory,
+      ordinaryResult(),
     ));
     const resource = snapshotResource(presented);
     const signal = new AbortController().signal;
-    const callTool = chunkTool(service);
+    const calls: { name: string; argumentsValue: Record<string, unknown> }[] = [];
+    const resourceReads: string[] = [];
+    const callTool = chunkTool(service, calls);
 
-    const standard = await admitPresentationToolResult(fakeApp({
+    const standard = await admitPresentation(fakeApp({
       host: "standard-host",
       serverResources: true,
-      serverTools: true,
-      readResource: async (uri) => ({ contents: [service.readResource(uri)] }),
+      readResource: async (uri) => {
+        resourceReads.push(uri);
+        return { contents: [service.readResource(uri)] };
+      },
       callTool,
-    }), { content: presented.content }, signal);
+    }), presented, signal);
 
-    const codex = await admitPresentationToolResult(fakeApp({
+    const codex = await admitPresentation(fakeApp({
       host: "chatgpt",
       serverTools: true,
       callTool,
@@ -296,22 +355,46 @@ describe("MCP App presentation process", () => {
       content: [{ type: "text", text: JSON.stringify({ content: presented.content }) }],
     }, signal);
 
-    const claudeWithoutLink: CallToolResult = { ...presented, content: [] };
-    const claude = await admitPresentationToolResult(fakeApp({
+    const claudeWithoutLink: CallToolResult = {
+      ...presented,
+      content: presented.content.filter((item) => item.type === "text"),
+    };
+    const claude = await admitPresentation(fakeApp({
       host: "Claude",
       serverTools: true,
       callTool,
     }), claudeWithoutLink, signal);
+    expect(calls).toEqual([]);
+    expect(resourceReads).toEqual([]);
 
+    const withoutPrivateResource: CallToolResult = { ...presented, _meta: undefined };
+    await expect(admitPresentationToolResult(fakeApp({
+      host: "standard-host",
+      serverResources: true,
+      readResource: async (uri) => {
+        resourceReads.push(uri);
+        return { contents: [service.readResource(uri)] };
+      },
+    }), withoutPrivateResource, signal)).rejects.toThrow(
+      "omitted its private presentation resource",
+    );
+    expect(resourceReads).toEqual([]);
+
+    const replay = service.getSnapshotResult(resource.descriptor.snapshotUri);
+    const replayText = replay.content.find((item) => item.type === "text");
+    if (replayText === undefined || replayText.type !== "text") {
+      throw new TypeError("Replay canonical text is unavailable.");
+    }
     const digest = resource.descriptor.snapshotId.slice("sha256:".length);
-    const claudeAfterRemount = await admitPresentationToolResult(fakeApp({
+    const claudeAfterRemount = await admitPresentation(fakeApp({
       host: "Claude",
       serverResources: true,
       serverTools: true,
       readResource: async (uri) => ({ contents: [service.readResource(uri)] }),
       callTool,
     }), {
-      content: [{
+      structuredContent: replay.structuredContent,
+      content: [replayText, {
         type: "text",
         text: `[Resource link: presentation_snapshot_${digest}] ${resource.descriptor.snapshotUri} (Exact immutable presentation input and descriptor.)`,
       }],
@@ -322,6 +405,10 @@ describe("MCP App presentation process", () => {
       expect(admitted.normalizedInput).toEqual(input);
       expect(admitted.result).toEqual(canonicalTradeHistory);
     }
+    expect(calls).toEqual([{
+      name: "presentation_get_snapshot_chunk",
+      argumentsValue: { snapshotId: resource.descriptor.snapshotId, index: 0 },
+    }]);
     await expect(admitPresentationToolResult(
       fakeApp({ host: "unknown-host" }),
       claudeWithoutLink,
@@ -331,7 +418,32 @@ describe("MCP App presentation process", () => {
       fakeApp({ host: "standard-host" }),
       ordinaryResult(),
       signal,
-    )).rejects.toThrow("contains a direct domain result");
+    )).rejects.toThrow("omitted its exact presentation resource");
+  });
+
+  it("rejects a creating result whose canonical text differs from its structured result", async () => {
+    const store = await openStore();
+    const service = new McpAppPresentationService(
+      store,
+      createMcpAppResource("<!doctype html><main>Little John</main>"),
+    );
+    const presented = availableResult(service.present(
+      stockTokenTradeHistoryApplicationContract,
+      input,
+      ordinaryResult(),
+    ));
+    const changed = {
+      ...presented,
+      content: presented.content.map((item) => item.type === "text"
+        ? { ...item, text: "{}" }
+        : item),
+    };
+
+    await expect(admitPresentationToolResult(
+      fakeApp({ host: "standard-host" }),
+      changed,
+      new AbortController().signal,
+    )).rejects.toThrow("omitted its canonical result text");
   });
 
   it("reconstructs a bounded replay reference through sequential chunks", async () => {
@@ -343,13 +455,13 @@ describe("MCP App presentation process", () => {
     const creating = availableResult(service.present(
       stockTokenTradeHistoryApplicationContract,
       input,
-      tradeHistory,
+      ordinaryResult(),
     ));
     const resource = snapshotResource(creating);
     const replay = service.getSnapshotResult(resource.descriptor.snapshotUri);
     const calls: { name: string; argumentsValue: Record<string, unknown> }[] = [];
     const resourceReads: string[] = [];
-    const admitted = await admitPresentationToolResult(fakeApp({
+    const admitted = await admitPresentation(fakeApp({
       host: "standard-host",
       serverResources: true,
       serverTools: true,
@@ -369,5 +481,48 @@ describe("MCP App presentation process", () => {
       name: "presentation_get_snapshot_chunk",
       argumentsValue: { snapshotId: resource.descriptor.snapshotId, index: 0 },
     }]);
+  });
+
+  it("separates tool errors from presentation admission without another read", async () => {
+    const app = fakeApp({ host: "standard-host" });
+    const signal = new AbortController().signal;
+    const delivery = admitMcpToolResultForDelivery({
+      content: [{ type: "text", text: "x".repeat(1_048_576) }],
+    });
+    if (delivery.status !== "too_large") {
+      throw new TypeError("Expected the bounded MCP delivery error.");
+    }
+
+    expect(await admitPresentationToolResult(app, delivery.result, signal)).toEqual({
+      status: "tool_error",
+      message:
+        "Little John could not deliver this MCP result because it exceeds the supported response size.",
+    });
+    expect(await admitPresentationToolResult(fakeApp({ host: "chatgpt" }), {
+      ...delivery.result,
+      content: [{
+        type: "text",
+        text: JSON.stringify({ content: delivery.result.content }),
+      }],
+    }, signal)).toEqual({
+      status: "tool_error",
+      message:
+        "Little John could not deliver this MCP result because it exceeds the supported response size.",
+    });
+    expect(await admitPresentationToolResult(app, {
+      isError: true,
+      structuredContent: { untrusted: true },
+      content: [{ type: "text", text: "untrusted error detail" }],
+    }, signal)).toEqual({
+      status: "tool_error",
+      message: "The tool call ended with an error before a displayable result was available.",
+    });
+    expect(await admitPresentationToolResult(app, {
+      ...delivery.result,
+      content: [{ type: "text", text: "spoofed delivery error" }],
+    }, signal)).toEqual({
+      status: "tool_error",
+      message: "The tool call ended with an error before a displayable result was available.",
+    });
   });
 });

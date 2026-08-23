@@ -22,6 +22,10 @@ import type {
   PresentationSnapshotStore,
 } from "../../runtime/presentation-snapshot.js";
 import {
+  admitMcpToolResultForDelivery,
+  type McpToolResultDelivery,
+} from "../mcp-result.js";
+import {
   admitPresentationSnapshotReference,
   admitPresentationSnapshotResource,
   canonicalBase64FromBytes,
@@ -172,16 +176,36 @@ const withSnapshot = (
       _meta: { ...result._meta, [presentationSnapshotMetadataKey]: resource },
     };
 
-const snapshotHandoff = (
-  resource: PresentationSnapshotResource,
-): CallToolResult => Object.freeze({
-  content: [snapshotLink(resource)],
-  _meta: Object.freeze({ [presentationSnapshotMetadataKey]: resource }),
-});
-
 export type McpAppPresentationHandoff =
-  | Readonly<{ status: "available"; result: CallToolResult }>
+  | Readonly<{
+      status: "available";
+      delivery: Extract<McpToolResultDelivery, { status: "admitted" }>;
+    }>
+  | Readonly<{
+      status: "delivery_error";
+      delivery: Extract<McpToolResultDelivery, { status: "too_large" }>;
+    }>
   | PresentationUnavailable;
+
+const admitCanonicalToolSuccess = (
+  entry: PresentationContractEntry,
+  normalizedInput: CanonicalJson,
+  result: CallToolResult,
+): CanonicalJson => {
+  if (result.isError === true || result.structuredContent === undefined) {
+    throw new TypeError("Presentation requires a canonical successful tool result.");
+  }
+  const candidate = captureCanonicalJson(result.structuredContent);
+  const admitted = entry.parseResult(normalizedInput, candidate);
+  const canonicalText = canonicalJsonStringify(admitted);
+  if (
+    canonicalJsonStringify(candidate) !== canonicalText ||
+    result.content.length !== 1 ||
+    result.content[0]?.type !== "text" ||
+    result.content[0].text !== canonicalText
+  ) throw new TypeError("Presentation tool result is not one canonical result.");
+  return admitted;
+};
 
 const reAdmitRecord = (record: PresentationSnapshotRecord): Readonly<{
   entry: PresentationContractEntry;
@@ -223,7 +247,7 @@ export class McpAppPresentationService {
   present(
     contract: object,
     input: unknown,
-    result: unknown,
+    result: CallToolResult,
   ): McpAppPresentationHandoff {
     const entry = presentationContractRegistry.forContract(contract);
     if (entry === undefined) return createPresentationUnavailable("snapshot_inconsistent");
@@ -231,7 +255,7 @@ export class McpAppPresentationService {
     let admittedResult: CanonicalJson;
     try {
       normalizedInput = entry.parseInput(input);
-      admittedResult = entry.parseResult(normalizedInput, result);
+      admittedResult = admitCanonicalToolSuccess(entry, normalizedInput, result);
     } catch {
       return createPresentationUnavailable("snapshot_inconsistent");
     }
@@ -249,9 +273,14 @@ export class McpAppPresentationService {
     if (candidate.status === "unavailable") {
       return createPresentationUnavailable(candidate.reason);
     }
-    try { boundedResource(candidate.value, normalizedInput); }
+    let resource: PresentationSnapshotResource;
+    try { resource = boundedResource(candidate.value, normalizedInput); }
     catch {
       return createPresentationUnavailable("capacity_exceeded");
+    }
+    const delivery = admitMcpToolResultForDelivery(withSnapshot(result, resource));
+    if (delivery.status === "too_large") {
+      return Object.freeze({ status: "delivery_error", delivery });
     }
     let committed: ReturnType<PresentationSnapshotStore["commit"]>;
     try {
@@ -272,7 +301,7 @@ export class McpAppPresentationService {
     }
     return Object.freeze({
       status: "available",
-      result: snapshotHandoff(boundedResource(committed.value, normalizedInput)),
+      delivery,
     });
   }
 

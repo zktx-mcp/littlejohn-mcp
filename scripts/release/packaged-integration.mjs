@@ -414,8 +414,12 @@ class RawMcpClient {
     return result.tools;
   }
 
+  async callToolResult(name, arguments_ = {}) {
+    return await this.request("tools/call", { name, arguments: arguments_ });
+  }
+
   async callTool(name, arguments_ = {}) {
-    const result = await this.request("tools/call", { name, arguments: arguments_ });
+    const result = await this.callToolResult(name, arguments_);
     if (result?.isError === true) {
       throw new Error(`Packaged MCP tool failed: ${name}: ${JSON.stringify(result.structuredContent)}`);
     }
@@ -819,19 +823,28 @@ const reconstructPackagedSnapshot = async (client, descriptor) => {
   return value;
 };
 
-const admitPackagedAppHandoff = async (client, result, label) => {
-  const text = result?.content?.filter((entry) => entry?.type === "text");
-  const links = result?.content?.filter((entry) => entry?.type === "resource_link");
+const admitPackagedAppCreatingResult = async (client, result, label) => {
+  const content = result?.content;
   const resource = result?._meta?.["littlejohn/presentation-snapshot"];
   const descriptor = resource?.descriptor;
-  const link = links?.[0];
+  const text = content?.[0];
+  const link = content?.[1];
+  const value = result?.structuredContent;
+  const resultText = independentCanonicalJson(value);
+  const inputText = independentCanonicalJson(resource?.normalizedInput);
   if (
-    text?.length !== 0 ||
-    result?.structuredContent !== undefined ||
-    links?.length !== 1 ||
+    !Array.isArray(content) ||
+    content.length !== 2 ||
+    text?.type !== "text" ||
+    text.text !== resultText ||
+    link?.type !== "resource_link" ||
     link?.uri !== descriptor?.snapshotUri ||
-    resource?.kind !== "presentation_snapshot_resource"
-  ) throw new TypeError(`${label} snapshot handoff is invalid.`);
+    resource?.kind !== "presentation_snapshot_resource" ||
+    descriptor?.resultUtf8Bytes !== Buffer.byteLength(resultText, "utf8") ||
+    descriptor?.resultSha256 !== createHash("sha256").update(resultText, "utf8").digest("hex") ||
+    descriptor?.inputUtf8Bytes !== Buffer.byteLength(inputText, "utf8") ||
+    descriptor?.inputSha256 !== createHash("sha256").update(inputText, "utf8").digest("hex")
+  ) throw new TypeError(`${label} creating result is invalid.`);
   const exactResource = await client.readResource(link.uri);
   if (
     exactResource?.uri !== link.uri ||
@@ -854,7 +867,7 @@ const admitPackagedAppHandoff = async (client, result, label) => {
     descriptor,
     link,
     resource,
-    value: await reconstructPackagedSnapshot(client, descriptor),
+    value,
   });
 };
 
@@ -867,7 +880,7 @@ const assertPackagedReviewWithoutServerTools = async (
     "wallet_get_connection_change_review",
     { kind: "connect" },
   );
-  const reviewSnapshot = await admitPackagedAppHandoff(
+  const reviewSnapshot = await admitPackagedAppCreatingResult(
     client,
     reviewResult,
     "Packaged no-serverTools Wallet Review",
@@ -968,15 +981,16 @@ const assertPackagedReviewWithoutServerTools = async (
     await bridge.sendToolResult(reviewResult);
     await waitFor(
       () => Promise.resolve(view.document.body.textContent),
-      (text) => text.includes("Little John could not display this result"),
+      (text) => text.includes("Direct controls unavailable"),
       "Packaged no-serverTools Review presentation",
     );
     const text = view.document.body.textContent;
     if (
-      text.includes("Connect the external wallet") ||
+      !text.includes("Connect the external wallet") ||
+      text.includes("Little John could not display this result") ||
       view.document.querySelectorAll("button").length !== 0 ||
       viewToolCalls !== 0
-    ) throw new TypeError("Packaged no-serverTools View exposed decision authority.");
+    ) throw new TypeError("Packaged no-serverTools View lost the read-only Review boundary.");
   } finally {
     await bridge.close().catch(() => undefined);
     view.close();
@@ -1042,18 +1056,18 @@ const assertPackagedReadApp = async (client, prepared, fakeRpc) => {
     symbol: fakeRpc.stockTokenTradeHistory.symbol,
     window: "7d",
   });
-  const handoff = await admitPackagedAppHandoff(
+  const creating = await admitPackagedAppCreatingResult(
     client,
     creatingResult,
     "Packaged MCP App trade history",
   );
-  const { descriptor, link, resource: snapshotResource } = handoff;
+  const { descriptor, link, resource: snapshotResource } = creating;
   if (
     descriptor?.contractId !== "market.stock_token_trade_history" ||
     descriptor?.contractVersion !== "1" ||
     descriptor?.resultChunkCount !== 1 ||
     JSON.stringify(creatingResult).includes("\"candles\"")
-  ) throw new TypeError(`Packaged MCP App snapshot handoff is invalid: ${independentCanonicalJson({
+  ) throw new TypeError(`Packaged MCP App creating result is invalid: ${independentCanonicalJson({
     contractId: descriptor?.contractId ?? null,
     contractVersion: descriptor?.contractVersion ?? null,
     containsCandles: JSON.stringify(creatingResult).includes("\"candles\""),
@@ -1073,8 +1087,9 @@ const assertPackagedReadApp = async (client, prepared, fakeRpc) => {
     Object.hasOwn(reference.structuredContent, "payload")
   ) throw new TypeError("Packaged MCP App exact snapshot reference is invalid.");
 
-  const reconstructed = handoff.value;
+  const reconstructed = await reconstructPackagedSnapshot(client, descriptor);
   if (
+    independentCanonicalJson(reconstructed) !== independentCanonicalJson(creating.value) ||
     reconstructed.status !== "available" ||
     reconstructed.symbol !== fakeRpc.stockTokenTradeHistory.symbol ||
     reconstructed.window !== "7d" ||
@@ -1601,14 +1616,33 @@ export const verifyPackagedIntegration = async (prepared) => {
         throw new TypeError(`Packaged ${label} fixture exceeds the RPC source-response limit.`);
       }
     }
-    const transactionInspection = await callSemanticRead(firstMcp, "read_inspect_transaction", {
+    const transactionInput = {
       transactionHash: fakeRpc.semanticReads.transaction.transactionHash,
-    });
-    const transactionContent = canonicalSemanticToolContent(
-      transactionInspection,
-      "Packaged MCP transaction inspection",
+    };
+    const transactionMcpDelivery = await firstMcp.callToolResult(
+      "read_inspect_transaction",
+      transactionInput,
     );
-    assertPackagedClaimsDigests(transactionContent, "Packaged MCP transaction inspection");
+    invokedSemanticReadToolNames.add("read_inspect_transaction");
+    if (
+      transactionMcpDelivery?.isError !== true ||
+      transactionMcpDelivery.structuredContent !== undefined ||
+      transactionMcpDelivery._meta !== undefined ||
+      JSON.stringify(transactionMcpDelivery.content) !== JSON.stringify([{
+        type: "text",
+        text: "Little John could not deliver this MCP result because it exceeds the supported response size.",
+      }])
+    ) throw new TypeError("Packaged MCP transaction delivery boundary is invalid.");
+    const transactionContent = await jsonResponse(await fetch(
+      `${fixedOrigin}/api/v1/transaction-inspections`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(transactionInput),
+        redirect: "error",
+      },
+    ));
+    assertPackagedClaimsDigests(transactionContent, "Packaged HTTP transaction inspection");
     const receipt = transactionContent.data?.inclusion?.receipt;
     const transactionWarnings = transactionContent.warnings;
     const transactionBytes = Buffer.byteLength(JSON.stringify(transactionContent), "utf8");
@@ -1660,7 +1694,7 @@ export const verifyPackagedIntegration = async (prepared) => {
       transactionContent.evidence?.coverage?.status !== "complete" ||
       transactionBytes < 8_000_000 ||
       transactionBytes > 8_388_607
-    ) throw new TypeError("Packaged MCP transaction inspection is invalid.");
+    ) throw new TypeError("Packaged HTTP transaction inspection is invalid.");
 
     const quoteInput = uniswapV2QuoteInput(fakeRpc);
     const mcpUniswapV2Quote = await callSemanticRead(
@@ -1767,7 +1801,7 @@ export const verifyPackagedIntegration = async (prepared) => {
 
     const walletReview = async (kind) => {
       const result = await appMcp.callTool("wallet_get_connection_change_review", { kind });
-      const value = (await admitPackagedAppHandoff(
+      const value = (await admitPackagedAppCreatingResult(
         appMcp,
         result,
         "Packaged Wallet Review",
@@ -1991,7 +2025,7 @@ export const verifyPackagedIntegration = async (prepared) => {
       "token_get_selection_change_review",
       { kind: "add", asset: officialCandidateAsset },
     );
-    const tokenAddReview = (await admitPackagedAppHandoff(
+    const tokenAddReview = (await admitPackagedAppCreatingResult(
       appMcp,
       tokenAddReviewResult,
       "Packaged token-add Review",
@@ -2042,7 +2076,7 @@ export const verifyPackagedIntegration = async (prepared) => {
         expectedRevision: addedSelection.revision,
       },
     );
-    const tokenRemoveReview = (await admitPackagedAppHandoff(
+    const tokenRemoveReview = (await admitPackagedAppCreatingResult(
       appMcp,
       tokenRemoveReviewResult,
       "Packaged token-remove Review",
@@ -2110,7 +2144,7 @@ export const verifyPackagedIntegration = async (prepared) => {
         throw new TypeError("Packaged owner takeover changed a durable operation.");
       }
     }
-    const restoredSelections = await admitPackagedAppHandoff(
+    const restoredSelections = await admitPackagedAppCreatingResult(
       takeoverMcp,
       await takeoverMcp.callTool("token_list_selections"),
       "Packaged restored token selections",

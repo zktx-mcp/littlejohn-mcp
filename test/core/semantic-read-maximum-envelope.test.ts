@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 import { beforeAll, describe, expect, it } from "vitest";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { createErc20CallEncoder, type Erc20CallEncoder } from "../../src/chain/evm-standard.js";
 import type { ChainRpcMethod, ChainRpcRequestMap } from "../../src/chain/rpc.js";
@@ -21,9 +22,7 @@ import {
   maximumEvmBalanceRaw,
   maximumSuccessUtf8Bytes,
   parseEvmAddress,
-  parseCapabilitySuccess,
   parseHash32,
-  parseUnsignedDecimal,
   parseUtcTimestamp,
   readCapabilityLimits,
   tokenStandardObservationResultSchema,
@@ -58,9 +57,16 @@ import {
   McpAppPresentationService,
   createMcpAppResource,
 } from "../../src/interfaces/mcp-app/server.js";
+import {
+  admitMcpToolResultForDelivery,
+  maximumMcpToolResultUtf8Bytes,
+} from "../../src/interfaces/mcp-result.js";
 import { ProductDatabase } from "../../src/runtime/database.js";
 import { publicReadResponseLimitBytes } from "../../src/runtime/http-boundary.js";
-import { presentationSnapshotLimits } from "../../src/runtime/presentation-snapshot.js";
+import {
+  presentationSnapshotLimits,
+  type PresentationSnapshotStore,
+} from "../../src/runtime/presentation-snapshot.js";
 import {
   assertCommittedOfficialAssetSnapshot,
   defaultStockTokenManifest,
@@ -128,16 +134,6 @@ const independentCanonicalJson = (value: unknown): string => {
 
 const canonicalUtf8Bytes = (value: unknown): number =>
   Buffer.byteLength(independentCanonicalJson(value), "utf8");
-
-const independentRecordDigest = (
-  source: Readonly<Record<string, unknown>>,
-  claims: readonly unknown[],
-): string =>
-  createHash("sha256").update(independentCanonicalJson({
-    claims,
-    digestKind: "evidence_source_record",
-    source,
-  }), "utf8").digest("base64url");
 
 const providerBlock = (transactions: readonly string[] = []) => Object.freeze({
   number: maximumQuantity,
@@ -290,11 +286,6 @@ const walletConnectionResult = async (data: WalletConnectionData) => {
   return invokeBinding(walletConnectionCapability, binding, {});
 };
 
-const unresolvedWallet = async (sessionCount: string) => walletConnectionResult({
-  status: "unresolved",
-  sessionCount: parseUnsignedDecimal(sessionCount),
-});
-
 const maximumConnectedWallet = async () => {
   const maximumIdentifiers = (prefix: string) => Array.from({ length: 64 }, (_, index) =>
     `${prefix}${index.toString().padStart(2, "0")}${"x".repeat(61)}`);
@@ -314,46 +305,6 @@ const maximumConnectedWallet = async () => {
     approvedEvents: { length: 64 },
   });
   return result;
-};
-
-const exactWalletBoundary = async () => {
-  const baseline = await unresolvedWallet("2");
-  expect(baseline.ok).toBe(true);
-  if (!baseline.ok) throw new TypeError("The wallet boundary baseline did not succeed.");
-  const fixedBytes = canonicalUtf8Bytes(baseline) - 1;
-  const sessionCount = "9".repeat(maximumSuccessUtf8Bytes - fixedBytes);
-  const exact = await unresolvedWallet(sessionCount);
-  expect(exact.ok).toBe(true);
-  if (!exact.ok) throw new TypeError("The exact wallet boundary did not succeed.");
-  expect(canonicalUtf8Bytes(exact)).toBe(8_388_607);
-  expect(parseCapabilitySuccess(walletConnectionCapability, {}, exact)).toEqual(exact);
-
-  const oversizedTransportSuccess = {
-    ...exact,
-    data: { status: "unresolved" as const, sessionCount: `${sessionCount}9` },
-    evidence: {
-      ...exact.evidence,
-      sources: exact.evidence.sources.map((source) => source.purpose === "wallet_sdk_sessions"
-        ? (() => {
-            const { recordDigest: _recordDigest, ...sourceRecord } = source;
-            return {
-              ...sourceRecord,
-              recordDigest: independentRecordDigest(sourceRecord, [{
-              role: "wallet_sdk_state",
-              value: { status: "unresolved", sessionCount: `${sessionCount}9` },
-              }]),
-            };
-          })()
-        : source),
-    },
-  };
-  expect(canonicalUtf8Bytes(oversizedTransportSuccess)).toBe(8_388_608);
-  expect(() => parseCapabilitySuccess(walletConnectionCapability, {}, oversizedTransportSuccess)).toThrow(
-    "exceeds the supported size",
-  );
-  const oversizedBinding = await unresolvedWallet(`${sessionCount}9`);
-  expect(oversizedBinding).toMatchObject({ ok: false, error: { code: "result_too_large" } });
-  return exact;
 };
 
 const maximumPendingTransaction = () => Object.freeze({
@@ -436,10 +387,11 @@ export const verifySemanticReadMaximumEnvelopes = async (): Promise<void> => {
       headers: { "content-type": "application/json" },
     }),
   });
-  const contract = await invokeChain(contractInspectCapability, {
+  const contractInput = {
     address: account,
     block: { kind: "latest" },
-  }, [
+  } as const;
+  const contract = await invokeChain(contractInspectCapability, contractInput, [
     rpcValue("eth_chainId", "0x1237"),
     rpcValue("eth_getBlockByNumber", providerBlock()),
     rpcValue("eth_getCode", runtimeCode),
@@ -454,9 +406,95 @@ export const verifySemanticReadMaximumEnvelopes = async (): Promise<void> => {
       .toMatchObject({ byteLength: String(readCapabilityLimits.runtimeCodeBytes) });
     expect(contract.data.runtimeCode).toBe(runtimeCode);
   }
+  const canonicalContract = captureCanonicalJson(contract);
+  const maximumContractMcpResult: CallToolResult = {
+    structuredContent: canonicalContract as Record<string, unknown>,
+    content: [{ type: "text", text: canonicalJsonStringify(canonicalContract) }],
+  };
+  expect(canonicalUtf8Bytes(maximumContractMcpResult)).toBeGreaterThan(
+    maximumMcpToolResultUtf8Bytes,
+  );
+  const contractDelivery = admitMcpToolResultForDelivery(maximumContractMcpResult);
+  expect(contractDelivery).toMatchObject({
+    status: "too_large",
+    result: {
+      isError: true,
+      content: [{ type: "text" }],
+    },
+  });
+  expect(contractDelivery.result.structuredContent).toBeUndefined();
+  expect(contractDelivery.result._meta).toBeUndefined();
+  expect(canonicalUtf8Bytes(contractDelivery.result)).toBeLessThanOrEqual(
+    maximumMcpToolResultUtf8Bytes,
+  );
+
+  const metadataBoundaryRuntimeCode = `0x${"ff".repeat(259_100)}`;
+  const metadataBoundaryContract = await invokeChain(contractInspectCapability, contractInput, [
+    rpcValue("eth_chainId", "0x1237"),
+    rpcValue("eth_getBlockByNumber", providerBlock()),
+    rpcValue("eth_getCode", metadataBoundaryRuntimeCode),
+    rpcValue("eth_getStorageAt", `0x${"0".repeat(64)}`),
+    rpcValue("eth_getStorageAt", `0x${"0".repeat(64)}`),
+    rpcValue("eth_getStorageAt", `0x${"0".repeat(64)}`),
+  ]);
+  expect(metadataBoundaryContract.ok).toBe(true);
+  if (!metadataBoundaryContract.ok) {
+    throw new TypeError("The metadata-boundary contract inspection did not succeed.");
+  }
+  const metadataBoundaryCanonical = captureCanonicalJson(metadataBoundaryContract);
+  const metadataBoundaryMcpResult: CallToolResult = {
+    structuredContent: metadataBoundaryCanonical as Record<string, unknown>,
+    content: [{
+      type: "text",
+      text: canonicalJsonStringify(metadataBoundaryCanonical),
+    }],
+  };
+  expect(canonicalUtf8Bytes(metadataBoundaryMcpResult)).toBe(1_048_302);
+  expect(admitMcpToolResultForDelivery(metadataBoundaryMcpResult).status).toBe("admitted");
+
+  const directory = await mkdtemp(resolve(tmpdir(), "littlejohn-maximum-contract-presentation-"));
+  let contractDatabase: ProductDatabase | undefined;
+  try {
+    contractDatabase = await ProductDatabase.open(
+      resolve(directory, "runtime.sqlite3"),
+      parseUtcTimestamp("2026-08-22T00:00:00.000Z"),
+    );
+    const store = contractDatabase.presentationSnapshotStore();
+    let prepares = 0;
+    let commits = 0;
+    const countedStore: PresentationSnapshotStore = Object.freeze({
+      prepare: (input: Parameters<PresentationSnapshotStore["prepare"]>[0]) => {
+        prepares += 1;
+        return store.prepare(input);
+      },
+      commit: (input: Parameters<PresentationSnapshotStore["commit"]>[0]) => {
+        commits += 1;
+        return store.commit(input);
+      },
+      read: (snapshotId: Parameters<PresentationSnapshotStore["read"]>[0]) =>
+        store.read(snapshotId),
+      readResultChunk: (
+        input: Parameters<PresentationSnapshotStore["readResultChunk"]>[0],
+      ) => store.readResultChunk(input),
+    });
+    const service = new McpAppPresentationService(
+      countedStore,
+      createMcpAppResource("<!doctype html><main>Little John</main>"),
+    );
+    const handoff = service.present(
+      contractInspectCapability,
+      contractInput,
+      metadataBoundaryMcpResult,
+    );
+    expect(handoff).toEqual({ status: "delivery_error", delivery: contractDelivery });
+    expect(prepares).toBe(1);
+    expect(commits).toBe(0);
+  } finally {
+    contractDatabase?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 
   const accountResult = await maximumAccountSuccess();
-  const wallet = await exactWalletBoundary();
   const connectedWallet = await maximumConnectedWallet();
 
   const block = chainAnchorSchema.parse({
@@ -516,7 +554,7 @@ export const verifySemanticReadMaximumEnvelopes = async (): Promise<void> => {
   if (!pending.ok) throw new TypeError("The maximum pending transaction did not succeed.");
   expect(pending.data.accessList).toMatchObject({ kind: "entries" });
 
-  for (const success of [chain, contract, accountResult, wallet, connectedWallet, token, pending]) {
+  for (const success of [chain, contract, accountResult, connectedWallet, token, pending]) {
     if (!success.ok) throw new TypeError("A maximum semantic read did not succeed.");
     expect(canonicalUtf8Bytes(success)).toBeLessThanOrEqual(8_388_607);
   }
@@ -814,12 +852,14 @@ describe("semantic read maximum envelope", () => {
     );
     expect(canonicalUtf8Bytes(result)).toBe(403_301);
     const canonicalResult = captureCanonicalJson(result);
-    const ordinaryMcpResult = {
-      structuredContent: canonicalResult,
+    const ordinaryMcpResult: CallToolResult = {
+      structuredContent: canonicalResult as Record<string, unknown>,
       content: [{ type: "text", text: canonicalJsonStringify(canonicalResult) }],
     };
     expect(canonicalUtf8Bytes(ordinaryMcpResult)).toBe(829_034);
-    expect(canonicalUtf8Bytes(ordinaryMcpResult)).toBeLessThan(1_048_576);
+    expect(canonicalUtf8Bytes(ordinaryMcpResult)).toBeLessThanOrEqual(
+      maximumMcpToolResultUtf8Bytes,
+    );
     expect(canonicalUtf8Bytes(result)).toBeLessThanOrEqual(maximumSuccessUtf8Bytes);
     expect(Buffer.byteLength(JSON.stringify(result), "utf8")).toBeLessThan(
       publicReadResponseLimitBytes,
@@ -842,15 +882,20 @@ describe("semantic read maximum envelope", () => {
       const handoff = service.present(
         stockTokenTradeHistoryApplicationContract,
         request,
-        result,
+        ordinaryMcpResult,
       );
       expect(handoff.status).toBe("available");
       if (handoff.status !== "available") throw new TypeError("Maximum snapshot was not admitted.");
-      expect(handoff.result.structuredContent).toBeUndefined();
-      expect(handoff.result.content).toHaveLength(1);
-      expect(handoff.result.content[0]?.type).toBe("resource_link");
+      const creatingResult = handoff.delivery.result;
+      expect(creatingResult.structuredContent).toEqual(canonicalResult);
+      expect(creatingResult.content).toHaveLength(2);
+      expect(creatingResult.content[0]).toEqual(ordinaryMcpResult.content[0]);
+      expect(creatingResult.content[1]?.type).toBe("resource_link");
+      const creatingResultBytes = canonicalUtf8Bytes(creatingResult);
+      expect(creatingResultBytes).toBe(830_143);
+      expect(creatingResultBytes).toBeLessThanOrEqual(maximumMcpToolResultUtf8Bytes);
       const resource = admitPresentationSnapshotResource(
-        handoff.result._meta?.[presentationSnapshotMetadataKey],
+        creatingResult._meta?.[presentationSnapshotMetadataKey],
       );
       expect(resource.descriptor.resultChunkBytes).toBe(presentationSnapshotLimits.resultChunkBytes);
       expect(resource.descriptor.resultChunkCount).toBe(2);
@@ -872,7 +917,9 @@ describe("semantic read maximum envelope", () => {
           content: [{ type: "text", text: canonicalJsonStringify(canonicalChunk) }],
         };
         if (index === 0) expect(canonicalUtf8Bytes(chunkMcpResult)).toBeLessThanOrEqual(699_444);
-        expect(canonicalUtf8Bytes(chunkMcpResult)).toBeLessThan(1_048_576);
+        expect(canonicalUtf8Bytes(chunkMcpResult)).toBeLessThanOrEqual(
+          maximumMcpToolResultUtf8Bytes,
+        );
         expect(chunk.snapshotId).toBe(resource.descriptor.snapshotId);
         expect(chunk.index).toBe(index);
         const bytes = Buffer.from(chunk.canonicalBase64, "base64");

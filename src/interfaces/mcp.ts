@@ -100,6 +100,10 @@ import {
   walletOperationQrMetadataKey,
 } from "./mcp-app/contracts.js";
 import { projectMcpInputSchema } from "./mcp-input-schema.js";
+import {
+  admitMcpToolResultForDelivery,
+  type McpToolResultDelivery,
+} from "./mcp-result.js";
 import { presentationContractRegistry } from "./mcp-app/registry.js";
 import {
   appToolMetadata,
@@ -860,6 +864,9 @@ const requestAbortedToolResult = (
   }),
 );
 
+const completeMcpToolResult = (result: CallToolResult): McpToolResultDelivery =>
+  admitMcpToolResultForDelivery(result);
+
 export const createMcpServer = (
   runtime: McpServerRuntimePort,
   client: LocalOperationClient,
@@ -932,43 +939,56 @@ export const createMcpServer = (
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    const delivery = await (async (): Promise<McpToolResultDelivery> => {
     let definition: McpToolDefinition;
     try { definition = registry.get(request.params.name); }
     catch {
-      return toolResult({ ok: false, failure: createInterfaceFailure("invalid_input") });
+      return completeMcpToolResult(
+        toolResult({ ok: false, failure: createInterfaceFailure("invalid_input") }),
+      );
     }
     const connection = app.connection();
     if (
       connection.status === "ordinary" &&
       (definition.presentationTool !== undefined || definition.operationBinding !== undefined)
     ) {
-      return constrainedToolResult(definition, {
+      return completeMcpToolResult(constrainedToolResult(definition, {
         ok: false,
         failure: createInterfaceFailure("invalid_input"),
-      });
+      }));
     }
     let input: unknown;
     try { input = definition.parseInput(request.params.arguments ?? {}); }
     catch (error) {
-      return constrainedToolResult(definition, {
+      return completeMcpToolResult(constrainedToolResult(definition, {
         ok: false,
         failure: createInterfaceFailure("invalid_input", [...fieldIssuesFromInputError(error)]),
-      });
+      }));
     }
     if (extra.signal.aborted) {
-      return requestAbortedToolResult(definition, input);
+      return completeMcpToolResult(requestAbortedToolResult(definition, input));
     }
     try {
       const invoked = await definition.invoke(input, extra.signal);
-      if (extra.signal.aborted) return requestAbortedToolResult(definition, input);
+      if (extra.signal.aborted) {
+        return completeMcpToolResult(requestAbortedToolResult(definition, input));
+      }
       if (
         definition.presentationTool === "get_snapshot" &&
         !isDeliveryUnknown(invoked) && invoked.ok
       ) {
-        return presentationService.getSnapshotResult(
+        return completeMcpToolResult(presentationService.getSnapshotResult(
           presentationSnapshotInputSchema.parse(input).snapshotUri,
-        );
+        ));
       }
+      const canonicalResult = attachOperationToolResultDescriptor(
+        definition,
+        input,
+        attachPrivateMetadata(
+          constrainedToolResult(definition, invoked),
+          invoked,
+        ),
+      );
       if (
         connection.status === "app" &&
         definition.presentationContract !== undefined &&
@@ -977,43 +997,34 @@ export const createMcpServer = (
         const handoff = presentationService.present(
           definition.presentationContract,
           input,
-          invoked.value,
+          canonicalResult,
         );
-        if (handoff.status === "available") {
-          return attachOperationToolResultDescriptor(
-            definition,
-            input,
-            attachPrivateMetadata(handoff.result, invoked),
-          );
+        if (handoff.status === "available" || handoff.status === "delivery_error") {
+          return handoff.delivery;
         }
-        return attachOperationToolResultDescriptor(
+        return completeMcpToolResult(attachOperationToolResultDescriptor(
           definition,
           input,
           constrainedToolResult(definition, {
             ok: false,
             failure: createInterfaceFailure("internal_error"),
           }),
-        );
+        ));
       }
-      return attachOperationToolResultDescriptor(
-        definition,
-        input,
-        attachPrivateMetadata(
-          constrainedToolResult(definition, invoked),
-          invoked,
-        ),
-      );
+      return completeMcpToolResult(canonicalResult);
     }
     catch {
-      return attachOperationToolResultDescriptor(
+      return completeMcpToolResult(attachOperationToolResultDescriptor(
         definition,
         input,
         constrainedToolResult(definition, {
           ok: false,
           failure: createInterfaceFailure("internal_error"),
         }),
-      );
+      ));
     }
+    })();
+    return delivery.result;
   });
   return server;
 };

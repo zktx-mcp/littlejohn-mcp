@@ -41,8 +41,14 @@ const drain = async (): Promise<void> => {
   const result = pending;
   pending = undefined;
   try {
-    const admitted = await admitPresentationToolResult(app, result, controller.signal);
+    const outcome = await admitPresentationToolResult(app, result, controller.signal);
     if (controller.signal.aborted || settled) return;
+    if (outcome.status === "tool_error") {
+      settled = true;
+      presentation.replaceStatic(renderPresentationFailure(outcome.message));
+      return;
+    }
+    const admitted = outcome.presentation;
     if (admitted.entry.presentationKind === "operation") {
       throw new TypeError("An operation cannot create a top-level presentation.");
     }
