@@ -11,8 +11,8 @@ import {
   operationToolResultMetadataKey,
   type OperationToolResultDescriptor,
 } from "../contracts.js";
+import { codexViewHostName } from "./host-identities.js";
 
-const codexViewHostName = "chatgpt" as const;
 const callToolResultKeys = new Set(["_meta", "content", "isError", "structuredContent"]);
 
 type ResultEnvelope = Readonly<{

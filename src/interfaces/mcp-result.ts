@@ -59,9 +59,18 @@ export const admitMcpToolResultDeliveryError = (
     !Array.isArray(result.content) ||
     result.content.length !== 1
   ) return undefined;
-  const content = result.content[0];
-  return content !== undefined && content.type === "text" &&
-    exactKeys(content, ["text", "type"]) && content.text === deliveryTooLargeMessage
+  return admitMcpToolResultDeliveryErrorContent(result.content);
+};
+
+export const admitMcpToolResultDeliveryErrorContent = (
+  value: unknown,
+): AdmittedMcpToolResultDeliveryError | undefined => {
+  if (!Array.isArray(value) || value.length !== 1) return undefined;
+  const content = value[0] as unknown;
+  return typeof content === "object" && content !== null && !Array.isArray(content) &&
+    exactKeys(content, ["text", "type"]) &&
+    (content as Readonly<Record<string, unknown>>)["type"] === "text" &&
+    (content as Readonly<Record<string, unknown>>)["text"] === deliveryTooLargeMessage
     ? admittedDeliveryTooLargeError
     : undefined;
 };

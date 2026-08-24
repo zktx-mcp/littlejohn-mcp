@@ -31,6 +31,7 @@ import {
 import { resolveLocalOperationIdentity } from "../../src/interfaces/local-operation.js";
 import {
   admitMcpToolResultDeliveryError,
+  admitMcpToolResultDeliveryErrorContent,
   admitMcpToolResultForDelivery,
 } from "../../src/interfaces/mcp-result.js";
 import {
@@ -181,6 +182,10 @@ describe("MCP binding projection", () => {
       expect(result.isError).toBe(true);
       expect(result.structuredContent).toBeUndefined();
       expect(admitMcpToolResultDeliveryError(result)).toEqual({
+        message:
+          "Little John could not deliver this MCP result because it exceeds the supported response size.",
+      });
+      expect(admitMcpToolResultDeliveryErrorContent(result.content)).toEqual({
         message:
           "Little John could not deliver this MCP result because it exceeds the supported response size.",
       });

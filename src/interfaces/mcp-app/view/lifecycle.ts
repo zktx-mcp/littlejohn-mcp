@@ -14,7 +14,6 @@ import {
   sha256Bytes,
   type CanonicalJson,
 } from "../../../core/client.js";
-import { admitMcpToolResultDeliveryError } from "../../mcp-result.js";
 import {
   admitPresentationSnapshotReference,
   admitPresentationSnapshotResource,
@@ -32,9 +31,9 @@ import {
   presentationContractRegistry,
   type PresentationContractEntry,
 } from "../registry.js";
+import { admitCreatingToolError } from "./creating-tool-error.js";
+import { claudeViewHostName, codexViewHostName } from "./host-identities.js";
 
-const codexViewHostName = "chatgpt" as const;
-const claudeViewHostName = "Claude" as const;
 const claudeFlattenedSnapshotLinkPattern =
   /^\[Resource link: presentation_snapshot_([0-9a-f]{64})\] (littlejohn:\/\/presentation\/snapshots\/sha256\/([0-9a-f]{64})) \(Exact immutable presentation input and descriptor\.\)$/u;
 
@@ -53,9 +52,6 @@ export type PresentationToolResultAdmission =
       status: "tool_error";
       message: string;
     }>;
-
-const genericToolErrorMessage =
-  "The tool call ended with an error before a displayable result was available.";
 
 export interface PresentationViewApp {
   getHostCapabilities(): Readonly<{
@@ -149,20 +145,6 @@ const exactResourceLinks = (
       mimeType: presentationSnapshotResourceMimeType,
     }];
   });
-};
-
-const admitDirectResultText = (
-  app: PresentationViewApp,
-  result: CallToolResult,
-  candidate: CanonicalJson,
-): void => {
-  const canonicalText = canonicalJsonStringify(candidate);
-  const matches = contentForResourceLink(app, result).filter(
-    (item) => item.type === "text" && item.text === canonicalText,
-  );
-  if (matches.length !== 1) {
-    throw new TypeError("The App result omitted its canonical result text.");
-  }
 };
 
 const privateSnapshotResource = (result: CallToolResult): PresentationSnapshotResource | undefined => {
@@ -301,15 +283,11 @@ export const admitPresentationToolResult = async (
   result: CallToolResult,
   signal: AbortSignal,
 ): Promise<PresentationToolResultAdmission> => {
-  if (result.isError === true) {
-    const deliveryError = admitMcpToolResultDeliveryError(result) ??
-      admitMcpToolResultDeliveryError({
-        ...result,
-        content: [...contentForResourceLink(app, result)],
-      });
+  const toolError = admitCreatingToolError(app.getHostVersion()?.name, result);
+  if (toolError !== undefined) {
     return Object.freeze({
       status: "tool_error",
-      message: deliveryError?.message ?? genericToolErrorMessage,
+      message: toolError.message,
     });
   }
   const privateValue = result._meta?.[presentationSnapshotMetadataKey];
@@ -345,7 +323,6 @@ export const admitPresentationToolResult = async (
     candidate = await reconstructResult(app, resource, signal);
   } else {
     candidate = structured;
-    admitDirectResultText(app, result, candidate);
   }
 
   const resultBytes = exactBytes(candidate);

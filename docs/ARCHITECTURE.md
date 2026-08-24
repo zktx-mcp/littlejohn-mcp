@@ -46,7 +46,8 @@ interactive CLI commands independently send the same admitted Reviews to the
 same domain owners and read the same exact
 durable operations. The standard transport is primary. Implemented Host
 adapters are limited to current App association, immutable snapshot delivery,
-and the measured Codex View operation-result carriage path.
+the measured Codex creating-error carriage path, and the measured Codex View
+operation-result carriage path.
 Canonical binding catalogs and role registries own exact MCP names, native HTTP
 resources, CLI commands, parsing, and availability. The closed App presentation
 registry owns its implemented contract set. Help text, route coverage,
@@ -245,6 +246,14 @@ The admitted Host adapters are closed:
   capability;
 - the Codex View adapter unwraps only the measured single JSON text wrapper in
   exact `chatgpt` View Host identity;
+- the Codex creating-error adapter runs only after a creating result omits the
+  standard `isError` field in exact `chatgpt` View Host identity. It accepts
+  only the measured `content,structuredContent` canonical application-failure
+  form whose one exact canonical text equals the strict structured failure, or
+  the measured `content`-only form whose text is the exact common MCP
+  delivery-size error. It restores only error classification and rejoins the
+  common creating-result tool-error admission before any presentation resource
+  admission;
 - the Codex View operation-result adapter runs only after ordinary owning
   admission of `structuredContent` fails in exact `chatgpt` View Host identity.
   It admits only the canonical result text from the same `CallToolResult` when
@@ -253,10 +262,12 @@ The admitted Host adapters are closed:
   `structuredContent`; and
 - the Claude View adapter admits the strict same-result snapshot resource from
   View-private metadata when exact `Claude` View Host identity omits the
-  standard result resource link, or reverses only Claude's measured exact
-  flattened snapshot-link text when that is the sole redelivered link form.
-  The flattened name and URI must carry the same snapshot digest before the
-  result rejoins standard resource admission.
+  standard result resource link or replaces result `content` with its measured
+  file-offload statement, or reverses only Claude's measured exact flattened
+  snapshot-link text when that is the sole redelivered link form. The flattened
+  name and URI must carry the same snapshot digest before the result rejoins
+  standard resource admission. Compatibility content is never a View result
+  authority.
 
 Each adapter supplies only the missing transport fact and then enters the same
 descriptor, byte, digest, canonical-admission, lifecycle, and renderer owners.
@@ -1162,13 +1173,16 @@ owners exposes a current, latest, default, list, mount, or descriptor-free
 lookup.
 
 For an initial creating result, the View requires the direct canonical domain
-`structuredContent`, its matching canonical JSON text, and the same-result
-private snapshot resource. It admits the standard resource link when the Host
-preserves it and otherwise only the measured Claude omission or flattened-link
-form defined above. It validates the resource, descriptor, snapshot identity,
-normalized input, carried result byte length and digest, and owning input/result
-admission before renderer dispatch. This path performs no snapshot-reference,
-resource-read, or result-chunk tool call.
+`structuredContent` and the same-result private snapshot resource. Before Host
+delivery, the server has already required that structured value and its
+canonical compatibility text are identical. The View does not treat transformed
+compatibility content as another result oracle. It admits the standard resource
+link when the Host preserves it and otherwise only the measured Claude omission,
+file-offload, or flattened-link form defined above. It validates the resource,
+descriptor, snapshot identity, normalized input, carried result byte length and
+digest, exact reserialization, and owning input/result admission before renderer
+dispatch. This path performs no snapshot-reference, resource-read, or
+result-chunk tool call.
 
 For immutable redisplay, the View requires the strict
 `presentation_snapshot_reference`, validates that it identifies the exact
@@ -1298,14 +1312,21 @@ Wallet observation. These flows share admission and terminal adoption but do
 not configure, reorder, or emulate one another. A renderer owns semantic DOM
 and SVG only and cannot make tool calls or configure lifecycle order.
 
-The View result ingress classifies an `isError` tool result before any snapshot,
-resource, or chunk admission, restores the standard result content through the
-measured Codex content adapter when required, and never treats that result as a
-failed domain-data verification. The exact common MCP delivery-size error
-retains its owned statement. Another tool error receives one generic, bounded
-statement because the shared View has no admitted owning contract identity with
-which to interpret that error payload. Neither path reads a resource, calls a
-tool, or renders raw error data.
+The View result ingress applies one standard-first creating-result tool-error
+admission before any snapshot, resource, or chunk admission. An intact
+`isError: true` result enters directly. Exact `chatgpt` View Host identity may
+restore only the two measured creating-error forms defined under
+[MCP Apps Integration Requirements](#mcp-apps-integration-requirements).
+The exact common MCP delivery-size error retains its owned statement. A strict
+intact standard tool error receives one generic, bounded statement when it is
+not that exact delivery error. The measured Codex missing-field application
+form receives that same generic statement only when its structured value is a
+strict canonical application failure and its canonical text agrees. The shared
+View does not interpret that failure without its owning tool contract. A
+malformed, mismatched, broadened, explicit-false, or success-shaped missing-field
+result enters neither error form. Tool-error admission never treats an error as
+failed domain-data verification, reads a resource, calls a tool, or renders raw
+error data.
 
 For a successful tool result, the immutable process consumes the handoff owned
 by [Immutable Presentation Snapshot Ownership](#immutable-presentation-snapshot-ownership),
@@ -1377,6 +1398,9 @@ state may optimize display but are not replay authority.
   period, freshness, coverage, and limitations precede the chart. Exact values
   and empty-position meaning remain accessible with source identity and machine
   correlation fields in the default-closed `Developer details` disclosure.
+  The chart admits exactly one price pane and one volume pane; each pane's right
+  price scale omits an edge tick when its complete formatted label does not fit
+  inside that pane.
 - A decision card presents one immutable canonical Review for Wallet connection
   or disconnection or token-selection addition or removal. `Decision` is the human presentation role;
   `Review` remains the domain artifact carried to the action owner. Constructing,

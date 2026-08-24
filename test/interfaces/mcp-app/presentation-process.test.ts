@@ -39,6 +39,8 @@ import {
 } from "../../../src/token-catalog/client.js";
 import { stockTokenTradeHistoryAvailableFixture } from
   "../stock-token-trade-history-fixture.js";
+import { capturedCodexCreatingApplicationFailure } from
+  "./error-carriage-fixture.js";
 
 const openedAt = parseUtcTimestamp("2026-08-12T00:00:00.000Z");
 const directories: string[] = [];
@@ -364,6 +366,17 @@ describe("MCP App presentation process", () => {
       serverTools: true,
       callTool,
     }), claudeWithoutLink, signal);
+    const claudeContentLimited = await admitPresentation(fakeApp({
+      host: "Claude",
+      serverTools: true,
+      callTool,
+    }), {
+      ...presented,
+      content: [{
+        type: "text",
+        text: "Tool result too large for context; canonical content was offloaded by the Host.",
+      }],
+    }, signal);
     expect(calls).toEqual([]);
     expect(resourceReads).toEqual([]);
 
@@ -400,7 +413,7 @@ describe("MCP App presentation process", () => {
       }],
     }, signal);
 
-    for (const admitted of [standard, codex, claude, claudeAfterRemount]) {
+    for (const admitted of [standard, codex, claude, claudeContentLimited, claudeAfterRemount]) {
       expect(admitted.entry.contractId).toBe("market.stock_token_trade_history");
       expect(admitted.normalizedInput).toEqual(input);
       expect(admitted.result).toEqual(canonicalTradeHistory);
@@ -421,7 +434,7 @@ describe("MCP App presentation process", () => {
     )).rejects.toThrow("omitted its exact presentation resource");
   });
 
-  it("rejects a creating result whose canonical text differs from its structured result", async () => {
+  it("does not use compatibility text as direct View authority", async () => {
     const store = await openStore();
     const service = new McpAppPresentationService(
       store,
@@ -439,11 +452,24 @@ describe("MCP App presentation process", () => {
         : item),
     };
 
-    await expect(admitPresentationToolResult(
+    const admitted = await admitPresentation(
       fakeApp({ host: "standard-host" }),
       changed,
       new AbortController().signal,
-    )).rejects.toThrow("omitted its canonical result text");
+    );
+    expect(admitted.normalizedInput).toEqual(input);
+    expect(admitted.result).toEqual(canonicalTradeHistory);
+
+    await expect(admitPresentationToolResult(
+      fakeApp({ host: "standard-host" }),
+      { ...presented, structuredContent: undefined },
+      new AbortController().signal,
+    )).rejects.toThrow("omitted its canonical result");
+    await expect(admitPresentationToolResult(
+      fakeApp({ host: "standard-host" }),
+      { ...presented, structuredContent: { untrusted: true } },
+      new AbortController().signal,
+    )).rejects.toThrow("result does not match its descriptor");
   });
 
   it("reconstructs a bounded replay reference through sequential chunks", async () => {
@@ -498,17 +524,49 @@ describe("MCP App presentation process", () => {
       message:
         "Little John could not deliver this MCP result because it exceeds the supported response size.",
     });
-    expect(await admitPresentationToolResult(fakeApp({ host: "chatgpt" }), {
-      ...delivery.result,
-      content: [{
-        type: "text",
-        text: JSON.stringify({ content: delivery.result.content }),
-      }],
-    }, signal)).toEqual({
+    const { isError: _isError, ...capturedCodexDeliveryError } = delivery.result;
+    expect(await admitPresentationToolResult(
+      fakeApp({ host: "chatgpt" }),
+      capturedCodexDeliveryError,
+      signal,
+    )).toEqual({
       status: "tool_error",
       message:
         "Little John could not deliver this MCP result because it exceeds the supported response size.",
     });
+    for (const changed of [{
+      content: [{ type: "text" as const, text: "changed delivery error" }],
+    }, {
+      ...capturedCodexDeliveryError,
+      structuredContent: capturedCodexCreatingApplicationFailure.structuredContent,
+    }, {
+      ...capturedCodexDeliveryError,
+      isError: false,
+    }]) {
+      await expect(admitPresentationToolResult(
+        fakeApp({ host: "chatgpt" }),
+        changed,
+        signal,
+      )).rejects.toThrow();
+    }
+    expect(await admitPresentationToolResult(
+      fakeApp({ host: "chatgpt" }),
+      capturedCodexCreatingApplicationFailure,
+      signal,
+    )).toEqual({
+      status: "tool_error",
+      message: "The tool call ended with an error before a displayable result was available.",
+    });
+    await expect(admitPresentationToolResult(
+      fakeApp({ host: "standard-host" }),
+      capturedCodexCreatingApplicationFailure,
+      signal,
+    )).rejects.toThrow();
+    await expect(admitPresentationToolResult(
+      fakeApp({ host: "standard-host" }),
+      capturedCodexDeliveryError,
+      signal,
+    )).rejects.toThrow();
     expect(await admitPresentationToolResult(app, {
       isError: true,
       structuredContent: { untrusted: true },
@@ -524,5 +582,31 @@ describe("MCP App presentation process", () => {
       status: "tool_error",
       message: "The tool call ended with an error before a displayable result was available.",
     });
+    expect(await admitPresentationToolResult(fakeApp({ host: "Claude" }), {
+      content: capturedCodexCreatingApplicationFailure.content,
+      isError: true,
+    }, signal)).toEqual({
+      status: "tool_error",
+      message: "The tool call ended with an error before a displayable result was available.",
+    });
+    for (const changed of [{
+      ...capturedCodexCreatingApplicationFailure,
+      content: [{ type: "text" as const, text: "changed" }],
+    }, {
+      ...capturedCodexCreatingApplicationFailure,
+      structuredContent: { ok: true },
+    }, {
+      ...capturedCodexCreatingApplicationFailure,
+      _meta: { unexpected: true },
+    }, {
+      ...capturedCodexCreatingApplicationFailure,
+      isError: false,
+    }]) {
+      await expect(admitPresentationToolResult(
+        fakeApp({ host: "chatgpt" }),
+        changed,
+        signal,
+      )).rejects.toThrow();
+    }
   });
 });

@@ -14,6 +14,7 @@ export {
 export type { ApplicationFailure } from "./errors.js";
 export {
   ApplicationErrorRegistry,
+  applicationFailureSchema,
   applicationFailureSchemaFor,
   assertDirectApplicationErrorRegistryExtension,
   coreErrorRegistry,

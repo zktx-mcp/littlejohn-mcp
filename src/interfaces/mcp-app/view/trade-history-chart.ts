@@ -439,6 +439,9 @@ export const mountTradeHistoryChart = (
       if (panes.length !== 2 || panes[0] === undefined || panes[1] === undefined) {
         throw new TypeError("Trade-history chart pane layout is unavailable.");
       }
+      for (const pane of panes) {
+        pane.priceScale("right").applyOptions({ entireTextOnly: true });
+      }
       panes[0].setStretchFactor(7);
       panes[1].setStretchFactor(3);
       chart.timeScale().setVisibleLogicalRange(projection.visibleLogicalRange);

@@ -86,8 +86,10 @@ const host = (openLinks: boolean, calls: string[]): TradeHistoryChartHost => ({
 const chartApi = () => {
   const price = { setData: vi.fn() };
   const volume = { setData: vi.fn() };
-  const pane0 = { setStretchFactor: vi.fn() };
-  const pane1 = { setStretchFactor: vi.fn() };
+  const priceScale0 = { applyOptions: vi.fn() };
+  const priceScale1 = { applyOptions: vi.fn() };
+  const pane0 = { priceScale: vi.fn(() => priceScale0), setStretchFactor: vi.fn() };
+  const pane1 = { priceScale: vi.fn(() => priceScale1), setStretchFactor: vi.fn() };
   const timeScale = { setVisibleLogicalRange: vi.fn() };
   const chart = {
     addSeries: vi.fn()
@@ -97,7 +99,7 @@ const chartApi = () => {
     timeScale: vi.fn(() => timeScale),
     remove: vi.fn(),
   };
-  return { chart, price, volume, pane0, pane1, timeScale };
+  return { chart, price, volume, pane0, pane1, priceScale0, priceScale1, timeScale };
 };
 
 beforeEach(() => {
@@ -205,6 +207,14 @@ describe("Stock Token trade-history chart adapter", () => {
       value: 0.006003,
       color: "rgb(4, 4, 4)",
     });
+    expect(api.pane0.priceScale).toHaveBeenCalledTimes(1);
+    expect(api.pane0.priceScale).toHaveBeenCalledWith("right");
+    expect(api.priceScale0.applyOptions).toHaveBeenCalledTimes(1);
+    expect(api.priceScale0.applyOptions).toHaveBeenCalledWith({ entireTextOnly: true });
+    expect(api.pane1.priceScale).toHaveBeenCalledTimes(1);
+    expect(api.pane1.priceScale).toHaveBeenCalledWith("right");
+    expect(api.priceScale1.applyOptions).toHaveBeenCalledTimes(1);
+    expect(api.priceScale1.applyOptions).toHaveBeenCalledWith({ entireTextOnly: true });
     expect(api.pane0.setStretchFactor).toHaveBeenCalledWith(7);
     expect(api.pane1.setStretchFactor).toHaveBeenCalledWith(3);
     expect(api.timeScale.setVisibleLogicalRange).toHaveBeenCalledWith(
