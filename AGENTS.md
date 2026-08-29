@@ -220,6 +220,63 @@ the required correction changes an accepted plan.
   results.
 - Check final repository status and classify unexpected files.
 
+### Objective And Means Discipline
+
+- Every task has one accepted objective: the user outcome, required product
+  behavior, and complete dependent handoff. Architecture, abstractions,
+  refactors, schemas, tests, tools, documentation, metrics, workflows, review
+  artifacts, and work-unit machinery are means used to achieve that objective;
+  they are never independent task goals.
+- Preserve the complete accepted objective exactly throughout planning,
+  implementation, review, recovery, and completion. An agent must never weaken,
+  narrow, omit, reinterpret, rename, postpone, distort, or replace any part of
+  the objective or its success criteria to fit a chosen means, current code,
+  available evidence, schedule, budget, difficulty, or partial result.
+- A plan and every work-unit boundary must retain the original objective as the
+  final completion boundary. Splitting work, changing terminology, introducing
+  gates, or deferring a dependency does not authorize a smaller goal or allow a
+  partial outcome to be presented as completion.
+- When the accepted objective conflicts with policy, verified feasibility, or
+  an available means, stop at the exact conflict and report `blocked`. Preserve
+  the objective while presenting alternatives; do not resolve the conflict by
+  silently reducing or redefining what must be delivered.
+- Only an explicit user decision may replace an accepted objective. Record the
+  exact replacement and which original requirements it changes before dependent
+  planning or implementation resumes. Never infer objective reduction from
+  urgency, cost, difficulty, missing information, or acceptance of an
+  intermediate result.
+- Every planned work unit and every material action must identify the exact
+  objective requirement it serves and the dependent output that consumes it.
+  Work with no direct objective trace or dependent consumer is out of scope and
+  prohibited.
+- A means is complete when it satisfies every correctness, authority, safety,
+  lifecycle, failure, verification, and handoff condition required by the
+  objective. Once it is complete, additional work whose primary effect is to
+  improve, generalize, polish, expand, optimize, or make that means more
+  internally comprehensive is prohibited.
+- Do not replace progress toward the objective with framework completion,
+  abstraction refinement, broader configurability, speculative extensibility,
+  additional architectural layers, documentation expansion, metric
+  maximization, or more tests that establish no distinct required invariant.
+- Never redefine the task as completing or perfecting one of its means. Passing
+  a local test suite, finishing a subsystem, producing a plan, increasing
+  coverage, or making an internal structure elegant does not establish progress
+  when the required product outcome or downstream handoff remains unchanged.
+- This discipline never permits a surface patch or an incomplete necessary
+  means. A defect in correctness, security, authority, lifecycle, failure
+  behavior, verification, or handoff that can invalidate the objective must be
+  fixed at its owning boundary. Use the simplest complete means and stop when
+  that complete boundary is reached.
+- If improving a means would expand scope, change a public or owning contract,
+  alter the accepted architecture or plan, delay a dependency-valid next unit,
+  or consume effort without reducing objective risk, stop. Report it as a
+  separate observation or proposed task and obtain explicit user approval
+  before acting on it.
+- Reviews evaluate a means only for fitness and sufficiency for the accepted
+  objective. Do not block completion, demand redesign, or perform changes merely
+  because a means could be more reusable, exhaustive, modern, elegant, or
+  robust outside the objective's actual boundary.
+
 ### External Integration Work
 
 - Before adding or changing a hosted service, vendor SDK, protocol integration,
