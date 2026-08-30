@@ -351,6 +351,22 @@ merge an equal-valued limit, or reinterpret a feature-private capacity.
   available beside that projection and are the only returned or stored chart
   values.
 
+#### Internal Archive Source
+
+The internal archive source admits fixed stored resolutions `1m`, `15m`,
+`30m`, `1h`, `2h`, `4h`, `6h`, `12h`, `1d`, and `2d` with exact interval
+seconds `60`, `900`, `1,800`, `3,600`, `7,200`, `14,400`, `21,600`, `43,200`,
+`86,400`, and `172,800`. It accepts only non-`1m` month members. Stored candle
+prices remain positive reduced rationals; volumes and trade counts remain
+positive decimal integers. Digit widths are pre-screens only. Block and source
+coordinates are at most `2^256 - 1`; a Swap magnitude is at most `2^127`; one
+derived trade count is at most `sourceCandleCount × Number.MAX_SAFE_INTEGER`;
+and each raw volume is between that trade count and
+`tradeCount × 2^127`. A stored price is admitted only when its scale can be
+reversed to one positive base amount and one positive USDG amount that each fit
+the signed `int128` magnitude boundary under the admitted base decimals and
+fixed six USDG decimals.
+
 ## Verification
 
 An implemented numeric boundary requires audited golden vectors and

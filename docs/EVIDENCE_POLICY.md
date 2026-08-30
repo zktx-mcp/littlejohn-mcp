@@ -250,6 +250,17 @@ bounds all derive from the same admitted one-minute candle set. Source
 one-minute candles do not leave the trade-history data owner as a second public
 result.
 
+### Internal Archive Source
+
+The internal archive source consumes provider revision
+[`db2a56433a39701307353375217998373b50e02d`](https://github.com/stelis-dev/robinhood-stock-token-index/tree/db2a56433a39701307353375217998373b50e02d).
+It selects the greatest uploaded root and binds every selected state, month and
+resolution member to its physical membership, exact Range and content digests.
+Those three roles and their coverage remain distinct. Stored candles and their
+PoolId provenance pass through unchanged; an older root, packed-asset fallback,
+base-day member, `1m` reconstruction or cross-Pool join is never substituted.
+Provider transport facts do not enter the result.
+
 ## Identity And Trust
 
 - Asset identity is defined only in `docs/NUMERIC_POLICY.md#token-identity-and-decimals`.
