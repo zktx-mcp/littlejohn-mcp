@@ -602,7 +602,9 @@ describe("StockTokenTradeHistorySource", () => {
     expect(cause).toBeInstanceOf(AggregateError);
     expect((cause as AggregateError).errors[0]).toMatchObject({ name: "SourceTerminal" });
     expect((cause as AggregateError).errors[1]).toBe(cleanup);
-    await source.close();
+    const close = source.close();
+    await expect(close).rejects.toBe(failure);
+    expect(source.close()).toBe(close);
   });
 
   it("checks caller cancellation before publishing a source terminal", async () => {
@@ -682,5 +684,149 @@ describe("StockTokenTradeHistorySource", () => {
     await expect(source.read(request())).rejects.toMatchObject({
       name: "StockTokenTradeHistorySourceClosedError",
     });
+  });
+
+  it("registers a read before provider work can reenter close", async () => {
+    const fixture = createStockTokenTradeHistorySourceFixture();
+    let source!: ReturnType<typeof createStockTokenTradeHistorySource>;
+    let close!: Promise<void>;
+    let releaseCatalog!: () => void;
+    let entered!: () => void;
+    const readStarted = new Promise<void>((resolve) => { entered = resolve; });
+    const catalog = new Promise<Awaited<ReturnType<
+      StockTokenTradeHistoryProviderTransport["readCatalog"]
+    >>>((resolve) => {
+      releaseCatalog = () => resolve(Object.freeze({
+        status: "read" as const,
+        value: Object.freeze({
+          assets: Object.freeze([]),
+          overflow: false,
+          transferredBytes: 2,
+        }),
+      }));
+    });
+    source = createStockTokenTradeHistorySource({
+      transport: Object.freeze({
+        ...fixture.transport,
+        readCatalog() {
+          entered();
+          close = source.close();
+          return catalog;
+        },
+      }),
+    });
+
+    const read = source.read(request());
+    await readStarted;
+    let closeSettled = false;
+    void close.then(() => { closeSettled = true; });
+    await Promise.resolve();
+    const closeSettledBeforeRelease = closeSettled;
+
+    releaseCatalog();
+    const [readSettlement, closeSettlement] = await Promise.allSettled([read, close]);
+    expect(closeSettledBeforeRelease).toBe(false);
+    expect(readSettlement).toMatchObject({
+      status: "rejected",
+      reason: { name: "StockTokenTradeHistorySourceClosedError" },
+    });
+    expect(closeSettlement).toEqual({
+      status: "fulfilled",
+      value: undefined,
+    });
+  });
+
+  it("publishes one close completion before abort listeners can reenter", async () => {
+    const fixture = createStockTokenTradeHistorySourceFixture();
+    let source!: ReturnType<typeof createStockTokenTradeHistorySource>;
+    let reentrantClose: Promise<void> | undefined;
+    let entered!: () => void;
+    const readStarted = new Promise<void>((resolve) => { entered = resolve; });
+    let announceReentry!: () => void;
+    const reentered = new Promise<void>((resolve) => { announceReentry = resolve; });
+    source = createStockTokenTradeHistorySource({
+      transport: Object.freeze({
+        ...fixture.transport,
+        readCatalog(
+          _maximumResponseBytes: number,
+          _maximumTotalBytes: number,
+          _maximumAssets: number,
+          signal: AbortSignal,
+        ): ReturnType<StockTokenTradeHistoryProviderTransport["readCatalog"]> {
+          entered();
+          return new Promise((_, reject) => {
+            signal.addEventListener("abort", () => {
+              reentrantClose = source.close();
+              announceReentry();
+              reject(signal.reason);
+            }, { once: true });
+          });
+        },
+      }),
+    });
+
+    const read = source.read(request());
+    await readStarted;
+    const close = source.close();
+    await reentered;
+    const observedReentrantClose = reentrantClose;
+    const [readSettlement, closeSettlement, reentrantSettlement] = await Promise.allSettled([
+      read,
+      close,
+      observedReentrantClose ?? Promise.resolve(),
+    ]);
+    expect(observedReentrantClose).toBe(close);
+    expect(readSettlement).toMatchObject({
+      status: "rejected",
+      reason: { name: "StockTokenTradeHistorySourceClosedError" },
+    });
+    expect(closeSettlement).toEqual({
+      status: "fulfilled",
+      value: undefined,
+    });
+    expect(reentrantSettlement).toEqual({
+      status: "fulfilled",
+      value: undefined,
+    });
+  });
+
+  it("rejects close when an admitted read cannot complete provider cleanup", async () => {
+    const fixture = createStockTokenTradeHistorySourceFixture();
+    let entered!: () => void;
+    const readStarted = new Promise<void>((resolve) => { entered = resolve; });
+    const cleanup = new StockTokenTradeHistoryProviderCleanupError([new Error("cleanup failed")]);
+    const source = createStockTokenTradeHistorySource({
+      transport: Object.freeze({
+        ...fixture.transport,
+        readCatalog(
+          _maximumResponseBytes: number,
+          _maximumTotalBytes: number,
+          _maximumAssets: number,
+          signal: AbortSignal,
+        ): ReturnType<StockTokenTradeHistoryProviderTransport["readCatalog"]> {
+          entered();
+          return new Promise((_, reject) => {
+            signal.addEventListener("abort", () => reject(cleanup), { once: true });
+          });
+        },
+      }),
+    });
+
+    const read = source.read(request());
+    await readStarted;
+    const close = source.close();
+    const [readSettlement, closeSettlement] = await Promise.allSettled([read, close]);
+    expect(readSettlement.status).toBe("rejected");
+    expect(closeSettlement.status).toBe("rejected");
+    if (readSettlement.status !== "rejected" || closeSettlement.status !== "rejected") return;
+    expect(isStockTokenTradeHistoryProviderCleanupError(readSettlement.reason)).toBe(true);
+    expect(closeSettlement.reason).toBe(readSettlement.reason);
+    const cause = (readSettlement.reason as Error & { readonly cause?: unknown }).cause;
+    expect(cause).toBeInstanceOf(AggregateError);
+    expect((cause as AggregateError).errors[0]).toMatchObject({
+      name: "StockTokenTradeHistorySourceClosedError",
+    });
+    expect((cause as AggregateError).errors[1]).toBe(cleanup);
+    expect(source.close()).toBe(close);
   });
 });

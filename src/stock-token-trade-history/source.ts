@@ -560,7 +560,7 @@ export class StockTokenTradeHistorySource implements StockTokenTradeHistorySourc
     now: () => Date;
   }>;
   readonly #owner = new AbortController();
-  readonly #active = new Set<Promise<void>>();
+  readonly #active = new Set<Promise<StockTokenTradeHistoryProviderCleanupError | undefined>>();
   #closed = false;
   #closePromise: Promise<void> | undefined;
 
@@ -577,11 +577,24 @@ export class StockTokenTradeHistorySource implements StockTokenTradeHistorySourc
     signal?: AbortSignal,
   ): Promise<StockTokenTradeHistorySourceResult> {
     if (this.#closed) return Promise.reject(new StockTokenTradeHistorySourceClosedError());
-    const result = this.#read(input, signal);
-    let settlement!: Promise<void>;
-    settlement = result.then(() => undefined, () => undefined)
-      .finally(() => this.#active.delete(settlement));
+    let resolveResult!: (result: StockTokenTradeHistorySourceResult) => void;
+    let rejectResult!: (reason: unknown) => void;
+    const result = new Promise<StockTokenTradeHistorySourceResult>((resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
+    });
+    let settlement!: Promise<StockTokenTradeHistoryProviderCleanupError | undefined>;
+    settlement = result.then(
+      () => undefined,
+      (error: unknown) => isStockTokenTradeHistoryProviderCleanupError(error)
+        ? error
+        : undefined,
+    ).then((cleanupFailure) => {
+      if (cleanupFailure === undefined) this.#active.delete(settlement);
+      return cleanupFailure;
+    });
     this.#active.add(settlement);
+    void this.#read(input, signal).then(resolveResult, rejectResult);
     return result;
   }
 
@@ -1045,11 +1058,26 @@ export class StockTokenTradeHistorySource implements StockTokenTradeHistorySourc
 
   close(): Promise<void> {
     if (this.#closePromise !== undefined) return this.#closePromise;
+    let resolveClose!: () => void;
+    let rejectClose!: (reason: unknown) => void;
+    const close = new Promise<void>((resolve, reject) => {
+      resolveClose = resolve;
+      rejectClose = reject;
+    });
+    this.#closePromise = close;
     this.#closed = true;
-    this.#owner.abort();
     const active = [...this.#active];
-    this.#closePromise = Promise.allSettled(active).then(() => undefined);
-    return this.#closePromise;
+    void (async () => {
+      this.#owner.abort();
+      const cleanupFailures = (await Promise.all(active)).filter(
+        (failure): failure is StockTokenTradeHistoryProviderCleanupError => failure !== undefined,
+      );
+      if (cleanupFailures.length === 1) throw cleanupFailures[0];
+      if (cleanupFailures.length > 1) {
+        throw new StockTokenTradeHistoryProviderCleanupError(cleanupFailures);
+      }
+    })().then(resolveClose, rejectClose);
+    return close;
   }
 }
 
