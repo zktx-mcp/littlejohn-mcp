@@ -86,6 +86,7 @@ Evidence roles:
 
 - `current` means only that the owning freshness rule is satisfied.
 - `stale` means that the owning freshness rule is not satisfied.
+- `complete` means that the admitted result has complete declared coverage.
 - `partial` means that the admitted result has incomplete declared coverage.
 - `unavailable` means that the requested fact was not established.
 - `warning` names a caution that changes interpretation.
@@ -256,6 +257,13 @@ A graphic receives only the non-authoritative numeric projection permitted by
 `docs/NUMERIC_POLICY.md#charts`. Exact values and empty-interval meaning
 remain available in accessible text. A graphic cannot become the source for a
 later value or comparison.
+
+A Stock Token trade-history presentation always states archive freshness after
+archive work as `Current`, `Stale`, or `Unknown`, and states available coverage
+as `Complete` or `Partial`, before the chart. `Unknown` uses the unavailable
+semantic role without being relabelled as source absence. An unavailable result
+states its exact reason and reached scope. Positive states are explicit rather
+than represented by missing text.
 
 ## Motion
 

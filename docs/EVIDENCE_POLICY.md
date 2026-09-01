@@ -205,29 +205,13 @@ member that StockFactory cannot verify at that block, prevents an available
 trade-history result.
 
 The admitted PoolManager deployment, complete PoolKey, exact Pool ID, and
-finalized `Swap` event positions identify the trade source. The generated
-`stockTokenTradeHistoryRegistry` is the sole runtime owner of those identities
-for supported Stock Token/USDG pools. One exact one-minute candle establishes
-only the qualifying executions in its registered pool during that minute,
-quoted in USDG. A missing candle inside admitted continuous block coverage
-establishes only that no admitted `Swap` with two non-zero, opposite-sign pool
-balance deltas contributed a trade price during that minute. Continuous
-coverage may still contain a validated `Swap` with a zero balance delta, which
-supplies no exchange ratio and contributes no candle. A missing candle does not
-establish underlying-equity activity, another pool's activity, liquidity, or
-future trade availability.
-
-The versioned pair-state, pair-month, and pair-day files retain finalized source
-coverage, exact candle values, raw Stock Token and USDG volumes, trade count,
-first and last contributing `Swap` positions, and byte digests. The canonical
-result's `sourceFiles` member identifies the admitted pair state by generation
-and digest and the selected month and day files by period and digest. Selected
-day identities and coverage intervals are one-to-one projections of those same
-admitted files. Each interval stays within its named UTC day, intersects the
-requested interval, and ends no later than the pair state's published coverage.
-A stale available result therefore also has the `after_published_coverage`
-source-coverage limitation; this implication does not merge the separately
-derived freshness and coverage states.
+finalized `Swap` event positions identify the trade source. The archive source
+contract owns those identities, the resolution catalog and the selected source
+chain. A stored resolution candle establishes only the qualifying executions
+and exact derived values declared by that admitted candle inside its continuous
+PoolId coverage. A missing stored candle establishes trade absence only for a
+complete position. It does not establish underlying-equity activity, another
+pool's activity, liquidity, or future trade availability.
 
 GitHub Releases currently carries these files but has no trade-fact authority.
 Repository, release, asset, URL, and credential fields do not enter the
@@ -244,11 +228,10 @@ source-minute boundaries. It is `unavailable` only when that represented
 interval has no overlap with admitted coverage. Every other position is
 `partial`. A position without an aggregate establishes no admitted qualifying
 `Swap` only when its coverage is `complete`; an empty `partial` or
-`unavailable` position does not establish trade absence. An aggregate and its
-price, Stock Token volume, USDG volume, trade count, observed bounds, and source
-bounds all derive from the same admitted one-minute candle set. Source
-one-minute candles do not leave the trade-history data owner as a second public
-result.
+`unavailable` position does not establish trade absence. The price, Stock Token
+volume, USDG volume, trade count, observed bounds and source positions are the
+unchanged fields of one admitted stored-resolution candle. Little John does not
+reconstruct them from `1m` data or chart output.
 
 ### Internal Archive Source
 
@@ -260,6 +243,37 @@ Those three roles and their coverage remain distinct. Stored candles and their
 PoolId provenance pass through unchanged; an older root, packed-asset fallback,
 base-day member, `1m` reconstruction or cross-Pool join is never substituted.
 Provider transport facts do not enter the result.
+
+The canonical result's official-asset observation, same-block StockFactory
+verification, same-block token-decimals observation, archive member identities,
+freshness and request-clipped coverage are its capability evidence. Every
+interface and immutable replay consumes those same fields and does not create
+another evidence or market-data read.
+
+The capability evidence has exactly four ordered stages: official-asset Web
+API, StockFactory, token decimals and trade-history archive. The official stage
+is always completed for a successful canonical data result. A downstream stage
+that was not reached retains its declared observation slot as allowed but not
+required, has minimum observation count zero and concludes `not_requested`
+from the latest completed upstream observation. It never receives a fabricated
+observation.
+
+The decimals observation binds the selected token address and exact decimals
+value to the same canonical block as the StockFactory verification. The archive
+observation binds only the provider-neutral source facts retained by the
+canonical data branch. Catalog-root unavailability has no selected root and
+therefore has unknown archive freshness. Once a root is selected, archive
+freshness is the canonical result's single `current` or `stale` decision; the
+evidence rule consumes that decision and does not calculate another threshold.
+
+One feature-owned stage projection constructs both runtime observation claims
+and immutable replay expectations. A scope-specific unavailable branch retains
+the root or base identity actually admitted at that stage, and the archive claim
+binds those facts without inferring an omitted member. An available archive
+claim binds the compact source identities, exact required Pool facts, the two
+request-level coverage sequences and the completed positions. Per-member source
+coverage arrays remain internal source facts and are not reconstructed by
+evidence.
 
 ## Identity And Trust
 

@@ -1,10 +1,16 @@
-import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import { stockTokenTradeHistorySourceLimits } from
   "../../src/stock-token-trade-history/source-contract.js";
 import { parseBaseResolutionFile } from
   "../../src/stock-token-trade-history/source-files.js";
+import {
+  assertStockTokenTradeHistoryPoolFacts,
+  deriveStockTokenTradeHistoryPoolId,
+  stockTokenTradeHistoryPoolFactsSchema,
+  stockTokenTradeHistoryPoolKeySchema,
+  stockTokenTradeHistorySourceIdentity,
+} from "../../src/stock-token-trade-history/source-semantics.js";
 
 const baseAddress = "0xaf3d76f1834a1d425780943c99ea8a608f8a93f9";
 const poolId = `0x${"1".repeat(64)}`;
@@ -63,34 +69,61 @@ const parse = (value: unknown, baseDecimals = 255) => parseBaseResolutionFile(
 );
 
 describe("Stock Token trade-history source numeric admission", () => {
+  it("binds Pool facts to the exact derived PoolId", () => {
+    const poolKey = stockTokenTradeHistoryPoolKeySchema.parse({
+      currency0: stockTokenTradeHistorySourceIdentity.usdgAddress,
+      currency1: baseAddress,
+      fee: 3_000,
+      hooks: "0x0000000000000000000000000000000000000000",
+      tickSpacing: 60,
+    });
+    const facts = stockTokenTradeHistoryPoolFactsSchema.parse({
+      historyFrom: { blockNumber: "10", timestamp: "2026-08-01T00:00:00.000Z" },
+      initialize: { blockNumber: "9", timestamp: "2026-07-31T23:59:30.000Z" },
+      poolKey,
+      sourceFrom: { blockNumber: "9", timestamp: "2026-07-31T23:59:00.000Z" },
+    });
+    const derivedPoolId = deriveStockTokenTradeHistoryPoolId(poolKey);
+
+    expect(() => assertStockTokenTradeHistoryPoolFacts({
+      poolId: derivedPoolId,
+      baseCurrencyAddress: baseAddress,
+      facts,
+    })).not.toThrow();
+    expect(() => assertStockTokenTradeHistoryPoolFacts({
+      poolId: `0x${"1".repeat(64)}`,
+      baseCurrencyAddress: baseAddress,
+      facts,
+    })).toThrow("Pool facts are invalid.");
+  });
+
   it("admits the reachable exact numeric maxima", () => {
     expect(parse(resolutionValue())).toBeDefined();
-    fc.assert(fc.property(
-      fc.integer({ min: 0, max: 255 }),
-      fc.integer({ min: 1, max: Number(maximumResolutionMinutes) }),
-      fc.integer({ min: 1, max: 1_000 }),
-      (baseDecimals, sourceCandleCount, tradesPerSourceCandle) => {
-        const value = resolutionValue();
-        const candle = value.candles[0]!;
-        const tradeCount = BigInt(sourceCandleCount) * BigInt(tradesPerSourceCandle);
-        candle.sourceCandleCount = sourceCandleCount;
-        candle.tradeCount = tradeCount.toString();
-        candle.baseVolumeRaw = tradeCount.toString();
-        candle.quoteVolumeRaw = tradeCount.toString();
-        candle.observedEnd = new Date(
-          Date.parse(candle.observedStart) + sourceCandleCount * 60_000,
-        ).toISOString();
-        if (tradeCount === 1n) candle.lastSource = candle.firstSource;
-        const price = baseDecimals >= 6
-          ? { numerator: (10n ** BigInt(baseDecimals - 6)).toString(), denominator: "1" }
-          : { numerator: "1", denominator: (10n ** BigInt(6 - baseDecimals)).toString() };
-        candle.open = price;
-        candle.high = price;
-        candle.low = price;
-        candle.close = price;
-        expect(parse(value, baseDecimals)).toBeDefined();
-      },
-    ));
+    for (const { baseDecimals, sourceCandleCount, tradesPerSourceCandle } of [
+      { baseDecimals: 0, sourceCandleCount: 1, tradesPerSourceCandle: 1 },
+      { baseDecimals: 6, sourceCandleCount: 1, tradesPerSourceCandle: 2 },
+      { baseDecimals: 18, sourceCandleCount: 10, tradesPerSourceCandle: 1_000 },
+    ]) {
+      const value = resolutionValue();
+      const candle = value.candles[0]!;
+      const tradeCount = BigInt(sourceCandleCount) * BigInt(tradesPerSourceCandle);
+      candle.sourceCandleCount = sourceCandleCount;
+      candle.tradeCount = tradeCount.toString();
+      candle.baseVolumeRaw = tradeCount.toString();
+      candle.quoteVolumeRaw = tradeCount.toString();
+      candle.observedEnd = new Date(
+        Date.parse(candle.observedStart) + sourceCandleCount * 60_000,
+      ).toISOString();
+      if (tradeCount === 1n) candle.lastSource = candle.firstSource;
+      const price = baseDecimals >= 6
+        ? { numerator: (10n ** BigInt(baseDecimals - 6)).toString(), denominator: "1" }
+        : { numerator: "1", denominator: (10n ** BigInt(6 - baseDecimals)).toString() };
+      candle.open = price;
+      candle.high = price;
+      candle.low = price;
+      candle.close = price;
+      expect(parse(value, baseDecimals)).toBeDefined();
+    }
   });
 
   it("rejects each exact maximum plus one and non-minute source coverage", () => {

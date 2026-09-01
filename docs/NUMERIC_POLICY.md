@@ -311,37 +311,23 @@ merge an equal-valued limit, or reinterpret a feature-private capacity.
 
 ### Stock Token Trade History Values
 
-- The `1d`, `7d`, and `30d` trade-history request durations are exactly 24
-  hours, 7 days, and 30 days.
-- A Stock Token/USDG one-minute candle contains exact positive reduced rational
+- A trade-history period is `1..365` days, `1..52` weeks, `1..12` UTC calendar
+  months, or one UTC calendar year. Days and weeks are exact durations. Months
+  and years use UTC calendar subtraction with missing-day clamping.
+- A Stock Token/USDG stored candle contains exact positive reduced rational
   open, high, low, and close values, raw Stock Token and USDG volumes, trade
   count, and first and last contributing finalized `Swap` positions. Its price
   is Stock Token units quoted in USDG. These values derive together from the
   same admitted source set and are never reconstructed from chart output.
-- The chart interval is 15 minutes for `1d`, 1 hour for `7d`, and 4 hours for
-  `30d`. Every Unix-epoch-aligned
-  interval intersecting the half-open request is represented. Aligned requests
-  contain exactly `96`, `168`, or `180` positions; an unaligned request contains
-  at most `97`, `169`, or `181`. The position time key is its natural interval
-  start. Represented bounds are the exact intersection with the request.
-- The trade-history owner builds the chart series from every admitted
-  one-minute candle wholly inside the request. One source candle belongs to
-  exactly one containing natural interval and is never split or prorated. For a
-  non-empty position, open and close come from the first and last contributing
-  candles, high and low use exact rational comparison, and Stock Token raw
-  volume, USDG raw volume, and trade count are summed together over that
-  identical source set. Observed and `Swap` source bounds enclose the same set.
-- Chart raw volumes are canonical unsigned decimal strings bounded by
-  `240 × (10^78 − 1)`. Chart trade count is a canonical unsigned decimal
-  string bounded by `240 × Number.MAX_SAFE_INTEGER`, exactly
-  `2,161,727,821,137,837,840`. It is never converted back to a JSON number.
-  Quote volume retains USDG decimals and token volume retains Stock Token
-  decimals; neither raw integer is converted in canonical JSON.
+- Every Unix-epoch-aligned interval intersecting the half-open request is
+  represented. The finest stored non-`1m` resolution with at most `185` natural
+  positions is selected. Stored values are never split, prorated, resampled,
+  interpolated or aggregated again by Little John.
 - A Canvas renderer may derive only finite ephemeral price values and
   `quoteVolumeRaw / 10^quoteToken.decimals` from that completed chart series.
   These approximations are never serialized, stored, compared as financial
   values, or used to rebuild an exact field.
-- The completed chart series retains its request window, exact
+- The completed chart series retains its period, exact
   bounds, pair and asset units, positions, gaps, and aggregates in canonical
   JSON. Snapshot reload renders that admitted value without re-reading source
   files or aggregating the chart series.

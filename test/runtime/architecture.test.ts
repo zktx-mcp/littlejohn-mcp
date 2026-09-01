@@ -51,6 +51,7 @@ const clientCoreConsumers = new Set([
   "interfaces/mcp-app/view/renderers.ts",
   "interfaces/operation-delivery.ts",
   "stock-token-trade-history/contracts.ts",
+  "stock-token-trade-history/source-semantics.ts",
   "stock-token-trade-history/stock-token-trade-history-data.ts",
   "stock-token-trade-history/stock-token-trade-history.ts",
   "protocols/contracts.ts",

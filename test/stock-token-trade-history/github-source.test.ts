@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import { createGitHubStockTokenTradeHistoryTransport } from
   "../../src/stock-token-trade-history/github-source.js";
+import {
+  isStockTokenTradeHistoryProviderCleanupError,
+  type StockTokenTradeHistoryProviderCleanupError,
+} from "../../src/stock-token-trade-history/source-contract.js";
 
 const jsonResponse = (value: unknown, status = 200, headers: HeadersInit = {}): Response =>
   new Response(JSON.stringify(value), { status, headers });
@@ -201,6 +205,28 @@ describe("GitHub Stock Token trade-history transport", () => {
     });
     await expect(transport.readRoot("root.json.gz", 2, new AbortController().signal))
       .resolves.toEqual({ status: "capacity_exceeded" });
+  });
+
+  it("retains a provider outcome when discarding an oversized body fails", async () => {
+    const cleanupCause = new Error("cleanup failed");
+    const response = new Response(new ReadableStream<Uint8Array>({
+      cancel() { throw cleanupCause; },
+    }), {
+      status: 200,
+      headers: { "content-length": "3" },
+    });
+    const transport = createGitHubStockTokenTradeHistoryTransport({ fetch: async () => response });
+
+    const failure = await transport.readRoot(
+      "root.json.gz",
+      2,
+      new AbortController().signal,
+    ).then(() => undefined, (error: unknown) => error);
+    expect(isStockTokenTradeHistoryProviderCleanupError(failure)).toBe(true);
+    expect((failure as StockTokenTradeHistoryProviderCleanupError).primaryFailure)
+      .toEqual({ status: "capacity_exceeded" });
+    expect((failure as StockTokenTradeHistoryProviderCleanupError).cleanupFailures)
+      .toEqual([cleanupCause]);
   });
 
   it("reports an errored response body as provider unavailability and releases its reader", async () => {

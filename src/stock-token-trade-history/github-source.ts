@@ -9,31 +9,24 @@ import type {
   StockTokenTradeHistoryRangeFacts,
 } from "./source-contract.js";
 import {
-  stockTokenTradeHistorySourceContract,
   StockTokenTradeHistoryProviderCleanupError,
-  type StockTokenTradeHistorySourcePort,
 } from "./source-contract.js";
-import { createStockTokenTradeHistorySource } from "./source.js";
 
 const githubSourceSettings = Object.freeze({
   apiOrigin: "https://api.github.com",
   downloadOrigin: "https://github.com",
-  repository: stockTokenTradeHistorySourceContract.owner,
+  repository: "stelis-dev/robinhood-stock-token-index",
   catalogTag: "market-data-catalog",
   apiVersion: "2022-11-28",
   userAgent: "littlejohn-mcp",
   assetsPerPage: 100,
+  maximumRedirects: 5,
 } as const);
 
 type Fetch = typeof fetch;
 
 export interface GitHubStockTokenTradeHistoryTransportDependencies {
   readonly fetch?: Fetch;
-}
-
-export interface GitHubStockTokenTradeHistorySourceDependencies {
-  readonly fetch?: Fetch;
-  readonly now?: () => Date;
 }
 
 const abortReason = (signal: AbortSignal): unknown =>
@@ -43,18 +36,19 @@ const throwIfAborted = (signal: AbortSignal): void => {
   if (signal.aborted) throw abortReason(signal);
 };
 
-const discardBody = async (response: Response): Promise<void> => {
+const discardBody = async (response: Response, primaryFailure?: unknown): Promise<void> => {
   if (response.body === null) return;
   try {
     await response.body.cancel();
   } catch (error) {
-    throw new StockTokenTradeHistoryProviderCleanupError([error]);
+    throw new StockTokenTradeHistoryProviderCleanupError([error], primaryFailure);
   }
 };
 
 const closeReader = async (
   reader: ReadableStreamDefaultReader<Uint8Array>,
   cancel: boolean,
+  primaryFailure?: unknown,
 ): Promise<void> => {
   const failures: unknown[] = [];
   if (cancel) {
@@ -69,7 +63,9 @@ const closeReader = async (
   } catch (error) {
     failures.push(error);
   }
-  if (failures.length !== 0) throw new StockTokenTradeHistoryProviderCleanupError(failures);
+  if (failures.length !== 0) {
+    throw new StockTokenTradeHistoryProviderCleanupError(failures, primaryFailure);
+  }
 };
 
 type BoundedBodyResult =
@@ -84,29 +80,29 @@ const readBoundedBody = async (
 ): Promise<BoundedBodyResult> => {
   throwIfAborted(signal);
   const contentLength = response.headers.get("content-length");
+  let declaredLength: number | undefined;
   if (contentLength !== null) {
     if (!/^(?:0|[1-9][0-9]*)$/u.test(contentLength)) {
-      await discardBody(response);
-      return Object.freeze({ status: "unavailable" });
+      const result = Object.freeze({ status: "unavailable" as const });
+      await discardBody(response, result);
+      return result;
     }
     if (BigInt(contentLength) > BigInt(maximumBytes)) {
-      await discardBody(response);
-      return Object.freeze({ status: "capacity_exceeded" });
+      const result = Object.freeze({ status: "capacity_exceeded" as const });
+      await discardBody(response, result);
+      return result;
     }
+    declaredLength = Number(contentLength);
   }
   if (response.body === null) return Object.freeze({ status: "unavailable" });
   let reader: ReadableStreamDefaultReader<Uint8Array>;
   try {
     reader = response.body.getReader();
   } catch (error) {
-    try {
-      await discardBody(response);
-    } catch (cleanupError) {
-      throw new StockTokenTradeHistoryProviderCleanupError([error, cleanupError]);
-    }
+    await discardBody(response, error);
     throw error;
   }
-  const chunks: Uint8Array[] = [];
+  let bytes = new Uint8Array(Math.min(maximumBytes, declaredLength ?? 65_536));
   let total = 0;
   let cancelReader = true;
   let terminal: BoundedBodyResult | undefined;
@@ -131,35 +127,36 @@ const readBoundedBody = async (
         terminal = Object.freeze({ status: "unavailable" });
         break;
       }
-      total += part.value.byteLength;
-      if (total > maximumBytes) {
+      if (part.value.byteLength === 0) {
+        terminal = Object.freeze({ status: "unavailable" });
+        break;
+      }
+      const nextTotal = total + part.value.byteLength;
+      if (!Number.isSafeInteger(nextTotal) || nextTotal > maximumBytes) {
         terminal = Object.freeze({ status: "capacity_exceeded" });
         break;
       }
-      chunks.push(part.value);
+      if (nextTotal > bytes.byteLength) {
+        const nextCapacity = Math.min(
+          maximumBytes,
+          Math.max(nextTotal, Math.max(1, bytes.byteLength) * 2),
+        );
+        const grown = new Uint8Array(nextCapacity);
+        grown.set(bytes.subarray(0, total));
+        bytes = grown;
+      }
+      bytes.set(part.value, total);
+      total = nextTotal;
     }
   } catch (error) {
     primaryFailure = error;
   } finally {
-    try {
-      await closeReader(reader, cancelReader);
-    } catch (cleanupError) {
-      if (primaryFailure !== undefined) {
-        throw new StockTokenTradeHistoryProviderCleanupError([primaryFailure, cleanupError]);
-      }
-      throw cleanupError;
-    }
+    await closeReader(reader, cancelReader, primaryFailure ?? terminal);
   }
   if (primaryFailure !== undefined) throw primaryFailure;
   if (terminal !== undefined) return terminal;
   throwIfAborted(signal);
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return Object.freeze({ status: "read", bytes });
+  return Object.freeze({ status: "read", bytes: bytes.subarray(0, total) });
 };
 
 const rateLimited = (response: Response): boolean =>
@@ -239,10 +236,11 @@ const providerFailure = async <Value>(
 ): Promise<StockTokenTradeHistoryProviderOutcome<Value>> => {
   const absent = absentOnNotFound && response.status === 404;
   const limited = rateLimited(response);
-  await discardBody(response);
-  return Object.freeze({
+  const result = Object.freeze({
     status: absent ? "absent" : limited ? "rate_limited" : "unavailable",
   }) as StockTokenTradeHistoryProviderOutcome<Value>;
+  await discardBody(response, result);
+  return result;
 };
 
 const normalizedRedirect = (response: Response): string | undefined => {
@@ -278,11 +276,11 @@ const fetchDownload = async (
     if (response === undefined) return undefined;
     if (![301, 302, 303, 307, 308].includes(response.status)) return response;
     if (redirects >= maximumRedirects) {
-      await discardBody(response);
+      await discardBody(response, Object.freeze({ status: "unavailable" }));
       return undefined;
     }
     const next = normalizedRedirect(response);
-    await discardBody(response);
+    await discardBody(response, Object.freeze({ status: "unavailable" }));
     if (next === undefined) return undefined;
     current = next;
   }
@@ -404,7 +402,7 @@ export const createGitHubStockTokenTradeHistoryTransport = (
       fetchImplementation,
       downloadUrl(githubSourceSettings.catalogTag, name),
       downloadHeaders(),
-      stockTokenTradeHistorySourceContract.maximumRedirects,
+      githubSourceSettings.maximumRedirects,
       signal,
     );
     if (response === undefined) return Object.freeze({ status: "unavailable" });
@@ -435,13 +433,14 @@ export const createGitHubStockTokenTradeHistoryTransport = (
       fetchImplementation,
       downloadUrl(input.releaseTag, input.assetName),
       downloadHeaders(range),
-      stockTokenTradeHistorySourceContract.maximumRedirects,
+      githubSourceSettings.maximumRedirects,
       signal,
     );
     if (response === undefined) return Object.freeze({ status: "unavailable" });
     if (response.status === 200) {
-      await discardBody(response);
-      return Object.freeze({ status: "unavailable" });
+      const result = Object.freeze({ status: "unavailable" as const });
+      await discardBody(response, result);
+      return result;
     }
     if (response.status !== 206) return providerFailure(response, true);
     const body = await readBoundedBody(response, input.maximumBytes, signal);
@@ -457,15 +456,4 @@ export const createGitHubStockTokenTradeHistoryTransport = (
   };
 
   return Object.freeze({ readCatalog, readRoot, readMember });
-};
-
-export const createGitHubStockTokenTradeHistorySource = (
-  dependencies: GitHubStockTokenTradeHistorySourceDependencies,
-): StockTokenTradeHistorySourcePort => {
-  return createStockTokenTradeHistorySource({
-    transport: createGitHubStockTokenTradeHistoryTransport({
-      ...(dependencies.fetch === undefined ? {} : { fetch: dependencies.fetch }),
-    }),
-    ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
-  });
 };

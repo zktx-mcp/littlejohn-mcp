@@ -454,6 +454,21 @@ execution separately owns bindings, invocation identifiers, handler execution,
 and live observation recording. An interface, transport, or stored-result
 reader does not implement a weaker result parser.
 
+A capability definition may declare a positive safe complete-success byte
+maximum no greater than the Core default. Omission selects the unchanged Core
+default. The definition snapshot and schema projection carry the selected
+value, and produced and replayed successes enter the same post-evidence byte
+admission. A result above that owning maximum becomes canonical
+`result_too_large` before an interface receives it.
+
+A capability binding may supply one execution-owner port. When present, the
+owner encloses input admission, handler work, observation recording, evidence
+closure, complete-success validation, byte admission and final publication.
+The owner decides caller-before-owner stop precedence and supplies only the
+combined signal and terminal stop result; Core does not adopt the feature's
+source, Chain, deadline or cleanup meanings. Bindings that omit the port retain
+the current execution behavior.
+
 ## Interface Contract Model
 
 - Canonical semantic contract ownership and projection follow
@@ -926,39 +941,28 @@ synchronization preserves the last committed snapshot and never changes
 account choices.
 
 The stock-token-trade-history application is the sole owner of Stock Token/USDG
-trade-history results. Core owns the neutral `1d`, `7d`, and `30d` request
-durations. The application fixes one half-open request interval from the chosen
-duration and its canonical result block. No provider, chart, or interface
-recalculates that interval.
+trade-history results. Its period owner fixes one half-open request interval and
+the finest stored resolution with at most `185` positions from the canonical
+result block. No provider, chart, or interface recalculates them.
 
 One read consumes the registry owner's complete current official-asset
 observation, resolves one official member, enters one Chain invocation, resolves
-one opaque canonical block, and verifies that member through StockFactory at
-the same block. Only after those identity gates succeed does it read the
-provider-neutral trade-history data for the registered Stock Token/USDG Pool
-ID. Caller cancellation, application closure, and an unadmitted local failure
+one opaque canonical block, verifies that member through StockFactory, and
+reads ERC-20 decimals at the same block. Only after those identity gates succeed
+does it call the archive source once. Caller cancellation, application closure,
+and an unadmitted local failure
 terminate the whole read. The application aborts and drains active work before
 it closes.
 
-The generated `stockTokenTradeHistoryRegistry` owns the exact supported token,
-USDG, PoolManager, PoolKey, Pool ID, finality, and `Swap` event identities. The
-provider-neutral `StockTokenTradeHistoryReadPort` admits one exact versioned
-pair-state file and its digest-bound pair-month and pair-day files, retains the
-public half-open request interval, and selects only fully contained one-minute
-candles for that Pool ID. It aggregates those candles once into the completed
-fixed-window chart and returns source coverage, freshness, and availability
-without exposing provider identities, storage partitions, or a second
-one-minute list.
+The feature application execution owner registers the complete binding
+invocation before official synchronization or another dependent effect. It
+encloses Core input admission through final success publication, blocks new
+invocations before abort and shares one close completion while every admitted
+invocation drains. Runtime acquisition registers the archive source first and
+the application execution owner second. Reverse cleanup therefore drains the
+application before closing the source, with neither owner closing the other.
 
-The current GitHub adapter is stateless and owns only bounded GitHub Release
-metadata and trade-history file reads. Its response-size, asset-list,
-concurrency, and deadline values are private operational guards that cannot
-change the provider-neutral result or evidence meaning. Runtime contains no
-`Swap` log reader, PoolKey derivation, cursor, repair process, candle builder,
-or local trade-history store.
-
-The internal archive source remains uncomposed until the public
-capability replacement. It accepts a verified base address, exact request
+The archive source accepts a verified base address, exact request
 bounds, canonical block and one non-`1m` stored resolution. It pins the greatest
 catalog root, admits only the referenced base state, intersecting months and
 matching resolution members through exact Range reads, and returns one
@@ -967,6 +971,24 @@ The source contract owns its private operational settings; production consumers
 cannot override them. The GitHub adapter owns bounded catalog and Range
 transport and complete stream cleanup. It never downloads a complete packed
 asset or reads a base-day or `1m` member.
+
+The application intersects admitted coverage with the request and creates one
+position per natural stored-resolution interval. It does not aggregate source
+candles. Runtime contains no `Swap` log reader, PoolKey derivation, cursor,
+repair process, candle builder, pair registry or local trade-history store.
+
+The public result is a compact closed stage union. Before archive selection it
+retains only completed official, canonical-block, StockFactory and decimals
+stages. Catalog-root unavailability retains no invented source; selected-base
+unavailability additionally retains the selected root; selected-period
+unavailability additionally retains the selected base-state identity. An
+available result retains one request-level published-coverage sequence, one
+request-level selected-resolution coverage sequence, the exact selected member
+identities without their internal coverage arrays, the exact required Pool
+facts and the natural positions with stored candles unchanged. The public
+parser revalidates only relationships representable from those retained facts
+and never claims to revalidate physical Range membership or omitted file
+coverage.
 
 The application, MCP, HTTP, CLI JSON, presentation admission, and immutable
 presentation-snapshot store hand off the admitted result losslessly. The result
