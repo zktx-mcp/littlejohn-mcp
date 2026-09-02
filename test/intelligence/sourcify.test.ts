@@ -635,24 +635,75 @@ describe("Sourcify source verification adapter", () => {
     });
   });
 
-  it("cancels an oversized stream before releasing its active slot", async () => {
-    let cancelled = false;
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new Uint8Array(1_048_577));
-      },
-      cancel() {
-        cancelled = true;
-      },
-    });
+  it("admits the aggregate response limit and cancels one valid byte more", async () => {
+    const responseValue = {
+      ...identity,
+      runtimeMatch: "exact_match",
+      runtimeBytecode: { onchainBytecode: runtimeBytecode },
+      abi: [],
+    };
+    const serialized = JSON.stringify(responseValue);
+    const encoder = new TextEncoder();
+    const firstText = `${serialized}${" ".repeat(
+      1_048_575 - encoder.encode(serialized).byteLength,
+    )}`;
+    const exactText = `${firstText} `;
+    const oversizedText = `${firstText}  `;
+    expect(encoder.encode(firstText).byteLength).toBe(1_048_575);
+    expect(encoder.encode(exactText).byteLength).toBe(1_048_576);
+    expect(encoder.encode(oversizedText).byteLength).toBe(1_048_577);
+    expect(JSON.parse(firstText)).toEqual(responseValue);
+    expect(JSON.parse(exactText)).toEqual(responseValue);
+    expect(JSON.parse(oversizedText)).toEqual(responseValue);
+
+    let invocation = 0;
+    const cancellations: boolean[] = [];
+    const pulls: number[] = [];
     const adapter = createSourcifyContractSourceVerification({
       clock: clock(),
-      fetch: async () => new Response(body, {
-        headers: { "content-type": "application/json" },
-      }),
+      fetch: async () => {
+        const currentInvocation = invocation;
+        invocation += 1;
+        cancellations[currentInvocation] = false;
+        pulls[currentInvocation] = 0;
+        const first = encoder.encode(firstText);
+        const second = encoder.encode(currentInvocation === 0 ? " " : "  ");
+        expect(first.byteLength).toBeLessThan(1_048_576);
+        expect(second.byteLength).toBeLessThan(1_048_576);
+        let part = 0;
+        const body = new ReadableStream<Uint8Array>({
+          pull(controller) {
+            pulls[currentInvocation] = (pulls[currentInvocation] ?? 0) + 1;
+            if (part === 0) {
+              part += 1;
+              controller.enqueue(first);
+              return;
+            }
+            if (part === 1) {
+              part += 1;
+              controller.enqueue(second);
+              return;
+            }
+            controller.close();
+          },
+          cancel() {
+            cancellations[currentInvocation] = true;
+          },
+        }, { highWaterMark: 0 });
+        return new Response(body, {
+          headers: { "content-type": "application/json" },
+        });
+      },
     });
-    await expect(adapter.port.inspect(request())).resolves.toMatchObject({ status: "unavailable" });
-    expect(cancelled).toBe(true);
+    await expect(adapter.port.inspect(request())).resolves.toMatchObject({
+      status: "exact_match",
+    });
+    expect(cancellations).toEqual([false]);
+    await expect(adapter.port.inspect(request())).resolves.toMatchObject({
+      status: "unavailable",
+    });
+    expect(cancellations).toEqual([false, true]);
+    expect(pulls).toEqual([3, 2]);
   });
 
   it("releases a late response slot without waiting for cancellation completion", async () => {
