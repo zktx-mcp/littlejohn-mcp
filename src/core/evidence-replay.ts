@@ -616,6 +616,23 @@ const claimRoleDeclarationStates =
 const observationTargetDeclarationStates =
   new WeakMap<object, EvidenceObservationTargetDeclarationState>();
 
+const registerEvidenceClaimRoleDeclaration = (
+  slot: EvidenceObservationSlotDeclaration,
+  rolesByIdentity: Map<string, EvidenceClaimRoleDeclaration>,
+  identity: string,
+): EvidenceClaimRoleDeclaration => {
+  if (rolesByIdentity.has(identity)) {
+    throw new TypeError("Duplicate evidence claim role identity.");
+  }
+  if (rolesByIdentity.size >= evidenceObservationTargetRoleCountLimit) {
+    throw new TypeError("Evidence observation target claim-role capacity is exceeded.");
+  }
+  const role = Object.freeze({}) as EvidenceClaimRoleDeclaration;
+  claimRoleDeclarationStates.set(role, Object.freeze({ slot, identity }));
+  rolesByIdentity.set(identity, role);
+  return role;
+};
+
 const observationTargetDeclarationState = (
   definition: EvidenceReplayDefinition,
   target: EvidenceObservationTargetDeclaration,
@@ -696,7 +713,6 @@ export const createEvidenceObservationTargetDeclaration = <
     return [key, identity] as const;
   });
   if (roleEntries.length === 0 ||
-      roleEntries.length > evidenceObservationTargetRoleCountLimit ||
       (input.kind === "validated_input" && roleEntries.length !== 1)) {
     throw new TypeError("Evidence observation target claim roles are invalid.");
   }
@@ -755,10 +771,8 @@ export const createEvidenceObservationTargetDeclaration = <
     if (key === undefined || identity === undefined || Object.hasOwn(roles, key)) {
       throw new TypeError("Evidence claim-role declaration key is invalid.");
     }
-    const role = Object.freeze({}) as EvidenceClaimRoleDeclaration;
-    claimRoleDeclarationStates.set(role, Object.freeze({ slot, identity }));
+    const role = registerEvidenceClaimRoleDeclaration(slot, rolesByIdentity, identity);
     roles[key] = role;
-    rolesByIdentity.set(identity, role);
   }
   const target = Object.freeze({
     slot,
@@ -791,16 +805,11 @@ export const createEvidenceClaimRoleDeclaration = (
 ): EvidenceClaimRoleDeclaration => {
   const targetState = observationTargetDeclarationState(definition, target);
   const identity = replayPrimitives.fixedIdentifier.parse(identityInput);
-  if (targetState.rolesByIdentity.has(identity)) {
-    throw new TypeError("Duplicate evidence claim role identity.");
-  }
-  const role = Object.freeze({}) as EvidenceClaimRoleDeclaration;
-  claimRoleDeclarationStates.set(role, Object.freeze({
-    slot: targetState.slot,
+  return registerEvidenceClaimRoleDeclaration(
+    targetState.slot,
+    targetState.rolesByIdentity,
     identity,
-  }));
-  targetState.rolesByIdentity.set(identity, role);
-  return role;
+  );
 };
 
 const readConclusionIdentity = (

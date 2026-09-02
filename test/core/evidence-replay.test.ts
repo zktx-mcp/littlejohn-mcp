@@ -32,7 +32,7 @@ import {
 import type { CanonicalJson } from "../../src/core/canonical-json.js";
 import { evmAddressSchema } from "../../src/core/identities.js";
 import { productDisplayName } from "../../src/core/product-identity.js";
-import { parseUtcTimestamp } from "../../src/core/primitives.js";
+import { chainAnchorSchema, parseUtcTimestamp } from "../../src/core/primitives.js";
 
 const capabilityId = "test.replay";
 const evaluatedAt = parseUtcTimestamp("2026-07-24T00:00:00.000Z");
@@ -375,6 +375,231 @@ describe("public evidence replay", () => {
       ...replayInput,
       factRequirements: factRequirements.slice(0, 128),
     }).conclusions).toHaveLength(1);
+  });
+
+  it("enforces one claim-role capacity across static and dynamic registration", () => {
+    const localConclusion = createExactConclusionIdentityDeclaration("roles_observed");
+    const localDefinition = createEvidenceReplayDefinition({
+      capabilityId: "test.role_capacity",
+      conclusions: [localConclusion],
+      warningCodes: [],
+    });
+    const localFact = createEvidenceFactIdentityDeclaration(localDefinition, "roles");
+    const staticRoles = Object.fromEntries(Array.from({ length: 8_191 }, (_, index) => {
+      const identity = `role_${String(index).padStart(4, "0")}`;
+      return [identity, identity];
+    }));
+    expect(() => createEvidenceObservationTargetDeclaration(localDefinition, {
+      slotId: "excessive_roles",
+      fact: localFact,
+      kind: "source",
+      purpose: "role_capacity",
+      sourceClass: "chain_rpc",
+      roles: {
+        ...staticRoles,
+        role_8191: "role_8191",
+        role_8192: "role_8192",
+      },
+    })).toThrow("claim-role capacity");
+    const localTarget = createEvidenceObservationTargetDeclaration(localDefinition, {
+      slotId: "roles",
+      fact: localFact,
+      kind: "source",
+      purpose: "role_capacity",
+      sourceClass: "chain_rpc",
+      roles: staticRoles,
+    });
+    const finalRole = createEvidenceClaimRoleDeclaration(
+      localDefinition,
+      localTarget,
+      "role_8191",
+    );
+    expect(() => createEvidenceClaimRoleDeclaration(
+      localDefinition,
+      localTarget,
+      "role_8191",
+    )).toThrow("Duplicate");
+    expect(() => createEvidenceClaimRoleDeclaration(
+      localDefinition,
+      localTarget,
+      "role_8192",
+    )).toThrow("capacity");
+
+    const layout = createEvidenceReplayLayout(localDefinition, [localTarget]);
+    const binder = createEvidenceReplayBinder(localDefinition, layout);
+    const boundTarget = binder.bind(localTarget);
+    const boundRole = binder.bindRole(finalRole);
+    expect(captureEvidenceObservationClaims(
+      localDefinition,
+      layout,
+      boundTarget.slot,
+      [{ role: boundRole, value: "at_limit" }],
+    )).toEqual([{ role: boundRole, value: "at_limit" }]);
+  });
+
+  it("enforces replay-reference capacity independently across targets", () => {
+    const localConclusion = createExactConclusionIdentityDeclaration("references_observed");
+    const localDefinition = createEvidenceReplayDefinition({
+      capabilityId: "test.reference_capacity",
+      conclusions: [localConclusion],
+      warningCodes: [],
+    });
+    const firstFact = createEvidenceFactIdentityDeclaration(localDefinition, "first");
+    const secondFact = createEvidenceFactIdentityDeclaration(localDefinition, "second");
+    const firstRoles = Object.fromEntries(Array.from({ length: 8_192 }, (_, index) => {
+      const identity = `reference_${String(index).padStart(4, "0")}`;
+      return [identity, identity];
+    }));
+    const firstTarget = createEvidenceObservationTargetDeclaration(localDefinition, {
+      slotId: "first",
+      fact: firstFact,
+      kind: "source",
+      purpose: "reference_first",
+      sourceClass: "chain_rpc",
+      roles: firstRoles,
+    });
+    const secondTarget = createEvidenceObservationTargetDeclaration(localDefinition, {
+      slotId: "second",
+      fact: secondFact,
+      kind: "source",
+      purpose: "reference_second",
+      sourceClass: "chain_rpc",
+      roles: { value: "reference_extra" },
+    });
+    const layout = createEvidenceReplayLayout(localDefinition, [firstTarget, secondTarget]);
+    const binder = createEvidenceReplayBinder(localDefinition, layout);
+    const firstBound = binder.bind(firstTarget);
+    const secondBound = binder.bind(secondTarget);
+    const anchor = chainAnchorSchema.parse({
+      chainId: "eip155:4663",
+      blockNumber: "1",
+      blockHash: `0x${"1".repeat(64)}`,
+      blockTimestamp: evaluatedAt,
+    });
+    const firstClaims = Object.values(firstBound.roles).map((role, index) => ({
+      role,
+      value: String(index),
+      chainAnchor: anchor,
+    }));
+    const secondClaims = [{
+      role: secondBound.roles.value,
+      value: "extra",
+      chainAnchor: anchor,
+    }];
+    const reference = {
+      kind: "public" as const,
+      sourceId: "rpc_capacity",
+      uri: "https://rpc.example/",
+    };
+    const firstObservationId = createEvidenceObservationId(localDefinition, layout, {
+      slot: firstBound.slot,
+      sourceId: reference.sourceId,
+      observedAt: evaluatedAt,
+      chainAnchor: anchor,
+      invocationId,
+    });
+    const secondObservationId = createEvidenceObservationId(localDefinition, layout, {
+      slot: secondBound.slot,
+      sourceId: reference.sourceId,
+      observedAt: evaluatedAt,
+      chainAnchor: anchor,
+      invocationId,
+    });
+    const firstSourceRecord = evidenceSourceRecordSchema.parse({
+      observationId: firstObservationId,
+      invocationId,
+      sourceClass: "chain_rpc",
+      owner: "Capacity fixture RPC",
+      purpose: "reference_first",
+      observedAt: evaluatedAt,
+      reference,
+      chainAnchor: anchor,
+    });
+    const secondSourceRecord = evidenceSourceRecordSchema.parse({
+      observationId: secondObservationId,
+      invocationId,
+      sourceClass: "chain_rpc",
+      owner: "Capacity fixture RPC",
+      purpose: "reference_second",
+      observedAt: evaluatedAt,
+      reference,
+      chainAnchor: anchor,
+    });
+    const sources = [
+      evidenceSourceSchema.parse({
+        ...firstSourceRecord,
+        recordDigest: createEvidenceSourceRecordDigest(
+          localDefinition,
+          layout,
+          firstBound.slot,
+          firstSourceRecord,
+          firstClaims,
+        ),
+      }),
+      evidenceSourceSchema.parse({
+        ...secondSourceRecord,
+        recordDigest: createEvidenceSourceRecordDigest(
+          localDefinition,
+          layout,
+          secondBound.slot,
+          secondSourceRecord,
+          secondClaims,
+        ),
+      }),
+    ].sort((left, right) => left.observationId === right.observationId
+      ? 0
+      : left.observationId < right.observationId ? -1 : 1);
+    const references = Object.values(firstBound.roles).map((role) => ({
+      observationId: firstObservationId,
+      slot: firstBound.slot,
+      role,
+    }));
+    const replayInput = {
+      definition: localDefinition,
+      layout,
+      observationExpectations: [
+        { slot: firstBound.slot, claims: firstClaims },
+        { slot: secondBound.slot, claims: secondClaims },
+      ],
+      factRequirements: [
+        {
+          fact: firstFact,
+          observationSlots: [firstBound.slot],
+          requiredObservationSlots: [firstBound.slot],
+          minimumObservationCount: 1,
+          outcome: "observed" as const,
+        },
+        {
+          fact: secondFact,
+          observationSlots: [secondBound.slot],
+          requiredObservationSlots: [secondBound.slot],
+          minimumObservationCount: 1,
+          outcome: "observed" as const,
+        },
+      ],
+      conclusionDrafts: [{
+        conclusion: localConclusion,
+        outcomeFact: firstFact,
+        evidenceFacts: [firstFact, secondFact],
+        freshnessRuleId: "chain_anchor_exact" as const,
+      }],
+      warningRequirements: [],
+      evaluatedAt,
+      sources,
+    };
+
+    expect(replayPublicEvidence({
+      ...replayInput,
+      observationReferences: references,
+    }).conclusions).toHaveLength(1);
+    expect(() => replayPublicEvidence({
+      ...replayInput,
+      observationReferences: [...references, {
+        observationId: secondObservationId,
+        slot: secondBound.slot,
+        role: secondBound.roles.value,
+      }],
+    })).toThrow("Public observation references");
   });
 
   it("requires separate admitted evidence for a slotless none-authority outcome", () => {

@@ -184,14 +184,20 @@ Canonical evidence applies these separate stable product admissions:
 | evidence conclusions | `64` |
 | replay fact requirements | `128` |
 | evidence warnings | `64` |
+| observation-target roles | `8,192` |
+| public replay references | `8,192` |
 
 Observation projections consume the observation maximum. Conclusion
 declarations, drafts, results, and coverage partitions consume the conclusion
 maximum. Admitted fact requirements and their supporting-fact subsets consume
 the fact-requirement maximum. Warning requirements and results consume the
-warning maximum. Equal values do not merge these contracts. Canonical JSON
-arrays, observation claims, observation-target roles, and replay references
-retain their separate owners.
+warning maximum. Equal values do not merge these contracts. The observation
+target role maximum applies to the complete static and dynamic role set owned
+by one target. The public replay-reference maximum applies in aggregate across
+every target in one replay. Changing the first changes evidence-definition
+authoring capacity; changing the second changes public evidence-closure
+capacity. Canonical JSON arrays and observation claims retain their separate
+owners even when their current values equal one of these limits.
 
 Canonical semantic reads apply these stable product admissions:
 
