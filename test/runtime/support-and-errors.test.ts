@@ -52,6 +52,7 @@ import {
   composeCapabilityCatalog,
   extendChainRuntimeSupportManifest,
   extendInterfaceRuntimeSupportManifest,
+  extendProtocolRuntimeSupportManifest,
   extendWalletRuntimeSupportManifest,
   createInitialRuntimeSupportManifest,
   projectCurrentSupportDocument,
@@ -185,8 +186,8 @@ describe("runtime support manifest authority", () => {
     for (const [schema, bytes, digest] of [
       [
         runtimeSupportManifestSchema,
-        3_889,
-        "5f839eeba35fb03f0662cdbda3b91b2965d4d1aad57419d8130e4ed93bffecb4",
+        3_571,
+        "5906f145664755003afec2a2e246da9246c55e708688351a2c745a47793d1a21",
       ],
       [
         interfaceCapabilityCatalogSchema,
@@ -207,7 +208,8 @@ describe("runtime support manifest authority", () => {
 
   it("starts with only the five canonical read identities and official L0 evidence", () => {
     const snapshot = readRuntimeSupportManifest(initialRuntimeSupportManifest);
-    expect(snapshot.contractVersion).toBe("3");
+    expect(snapshot.contractVersion).toBe("4");
+    expect(snapshot.transactionActions).toEqual([]);
     expect(snapshot.presentations).toEqual([]);
     expect(snapshot.chains).toEqual([{
       chainId: "eip155:4663",
@@ -230,6 +232,105 @@ describe("runtime support manifest authority", () => {
     expect(snapshot.capabilities.every((entry) => entry.availability.overall === "unavailable")).toBe(true);
     expect(Object.isFrozen(snapshot)).toBe(true);
     expect(Object.isFrozen(snapshot.capabilities)).toBe(true);
+    expect(Object.isFrozen(snapshot.transactionActions)).toBe(true);
+  });
+
+  it("owns protocol and presentation capacities and admits no transaction action", () => {
+    const wallet = extendWalletRuntimeSupportManifest(
+      initialRuntimeSupportManifest,
+      walletExtensionInput,
+    );
+    const chain = extendChainRuntimeSupportManifest(wallet, chainExtensionInput);
+    const tradeHistory = extendStockTokenTradeHistorySupportManifest(
+      extendAccountAssetSupportManifest(extendTokenCatalogSupportManifest(chain)),
+    );
+    const protocolEntries = (count: number) => Object.freeze(Array.from(
+      { length: count },
+      (_, index) => Object.freeze({
+        protocolId: `test_protocol_${String(index).padStart(3, "0")}`,
+        supportLevel: uniswapV2PackageDescriptor.supportLevel,
+        identityEvidence: uniswapV2PackageDescriptor.identityEvidence,
+      }),
+    ));
+    const protocolAtLimit = extendProtocolRuntimeSupportManifest(tradeHistory, {
+      protocols: protocolEntries(128),
+      registrations: [{
+        capabilityId: "test_protocol_000.action",
+        availability: internal,
+      }],
+      changes: [],
+    });
+    expect(readRuntimeSupportManifest(protocolAtLimit).protocols).toHaveLength(128);
+
+    let protocolFailure: unknown;
+    try {
+      extendProtocolRuntimeSupportManifest(tradeHistory, {
+        protocols: protocolEntries(129),
+        registrations: [{
+          capabilityId: "test_protocol_000.action",
+          availability: internal,
+        }],
+        changes: [],
+      });
+    } catch (error) {
+      protocolFailure = error;
+    }
+    expect(protocolFailure).toBeInstanceOf(z.ZodError);
+    expect((protocolFailure as z.ZodError).issues).toEqual([
+      expect.objectContaining({ code: "too_big", maximum: 128 }),
+    ]);
+
+    const presentationEntries = (count: number) => Object.freeze(
+      Array.from({ length: count }, (_, index) => String(index + 1))
+        .sort()
+        .map((contractVersion) => Object.freeze({
+          contractId: "wallet.operation",
+          contractVersion,
+        })),
+    );
+    const interfaceAtLimit = extendInterfaceRuntimeSupportManifest(protocolAtLimit, {
+      registrations: [],
+      changes: [{
+        capabilityId: "wallet.operation",
+        availability: { ...cliAvailable, mcp: "available" },
+      }],
+      presentations: presentationEntries(256),
+    });
+    expect(readRuntimeSupportManifest(interfaceAtLimit).presentations).toHaveLength(256);
+
+    let presentationFailure: unknown;
+    try {
+      extendInterfaceRuntimeSupportManifest(protocolAtLimit, {
+        registrations: [],
+        changes: [{
+          capabilityId: "wallet.operation",
+          availability: { ...cliAvailable, mcp: "available" },
+        }],
+        presentations: presentationEntries(257),
+      });
+    } catch (error) {
+      presentationFailure = error;
+    }
+    expect(presentationFailure).toBeInstanceOf(z.ZodError);
+    expect((presentationFailure as z.ZodError).issues).toEqual([
+      expect.objectContaining({ code: "too_big", maximum: 256 }),
+    ]);
+
+    const initialSnapshot = readRuntimeSupportManifest(initialRuntimeSupportManifest);
+    expect(runtimeSupportManifestSchema.safeParse(initialSnapshot).success).toBe(true);
+    const actionAdmission = runtimeSupportManifestSchema.safeParse({
+      ...initialSnapshot,
+      transactionActions: [{
+        actionId: "test_action",
+        supportLevel: "L0_discovered",
+      }],
+    });
+    expect(actionAdmission.success).toBe(false);
+    if (!actionAdmission.success) {
+      expect(actionAdmission.error.issues).toEqual([
+        expect.objectContaining({ code: "too_big", maximum: 0 }),
+      ]);
+    }
   });
 
   it("rejects a structurally forged chain configuration before it enters support", () => {

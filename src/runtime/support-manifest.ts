@@ -29,7 +29,9 @@ import {
 } from "./configuration.js";
 import { guardRuntimeJsonSchema, parseRuntimeAuthority } from "./schema-authority.js";
 
-const runtimeSupportManifestContractVersion = "3" as const;
+const runtimeSupportManifestContractVersion = "4" as const;
+const runtimeProtocolSupportEntryLimit = 128 as const;
+const runtimePresentationSupportEntryLimit = 256 as const;
 
 const availabilityDefinitions = Object.freeze(["unavailable", "internal", "available"] as const);
 export type Availability = typeof availabilityDefinitions[number];
@@ -113,7 +115,7 @@ const createSupportSchemaSet = () => {
     identityEvidence: officialIdentityEvidenceSchema,
   }).strict();
   const protocolExtension = z.object({
-    protocols: z.array(protocolSupport),
+    protocols: z.array(protocolSupport).max(runtimeProtocolSupportEntryLimit),
     registrations: z.array(capabilityManifestEntry),
     changes: z.array(capabilityManifestEntry),
   }).strict().superRefine((value, context) => {
@@ -125,17 +127,13 @@ const createSupportSchemaSet = () => {
       context.addIssue({ code: "custom", message: "A protocol support extension cannot be empty." });
     }
   });
-  const transactionActionSupport = z.object({
-    actionId: fixedIdentifierSchema,
-    supportLevel: supportLevelSchema,
-  }).strict();
   const manifest = z.object({
     contractVersion: z.literal(runtimeSupportManifestContractVersion),
     chains: z.array(chainSupport).length(1),
-    protocols: z.array(protocolSupport).max(128),
-    transactionActions: z.array(transactionActionSupport).max(256),
+    protocols: z.array(protocolSupport).max(runtimeProtocolSupportEntryLimit),
+    transactionActions: z.tuple([]),
     capabilities: z.array(capabilityManifestEntry).min(initialReadCapabilityIds.length),
-    presentations: z.array(presentationManifestEntry).max(256),
+    presentations: z.array(presentationManifestEntry).max(runtimePresentationSupportEntryLimit),
   }).strict().superRefine((value, context) => {
     const ids = value.capabilities.map((entry) => entry.capabilityId);
     for (let index = 1; index < ids.length; index += 1) {
@@ -166,13 +164,11 @@ const createSupportSchemaSet = () => {
         break;
       }
     }
-    for (const entries of [value.protocols, value.transactionActions]) {
-      const ids = entries.map((entry) => "protocolId" in entry ? entry.protocolId : entry.actionId);
-      for (let index = 1; index < ids.length; index += 1) {
-        if (compareCodePointSequences(ids[index - 1] ?? "", ids[index] ?? "") >= 0) {
-          context.addIssue({ code: "custom", message: "Support entries must be unique and ordered." });
-          break;
-        }
+    const protocolIds = value.protocols.map((entry) => entry.protocolId);
+    for (let index = 1; index < protocolIds.length; index += 1) {
+      if (compareCodePointSequences(protocolIds[index - 1] ?? "", protocolIds[index] ?? "") >= 0) {
+        context.addIssue({ code: "custom", message: "Support entries must be unique and ordered." });
+        break;
       }
     }
   });
@@ -283,7 +279,6 @@ const freezeSnapshot = (input: unknown): RuntimeSupportManifestSnapshot => {
   }
   for (const entry of parsed.presentations) Object.freeze(entry);
   for (const entry of parsed.protocols) deepFreezeValue(entry);
-  for (const entry of parsed.transactionActions) Object.freeze(entry);
   Object.freeze(parsed.chains);
   Object.freeze(parsed.protocols);
   Object.freeze(parsed.transactionActions);
@@ -522,7 +517,8 @@ export const extendInterfaceRuntimeSupportManifest = (
     throw new TypeError("Interface support requires the protocol support manifest.");
   }
   const presentations = parseRuntimeAuthority(
-    z.array(authoritySchemas.presentationManifestEntry).max(256),
+    z.array(authoritySchemas.presentationManifestEntry)
+      .max(runtimePresentationSupportEntryLimit),
     extensionInput.presentations,
   );
   assertOrderedUnique(presentations.map((entry) => `${entry.contractId}\0${entry.contractVersion}`));
@@ -628,7 +624,6 @@ export const renderCurrentSupportSection = (manifest: RuntimeSupportManifest): s
       `  Exclusions: ${identifiers(evidence.exclusions)}.`,
     ];
   });
-  const transactionActions = snapshot.transactionActions.map((entry) => `\`${entry.actionId}\` (${displayLevel(entry.supportLevel)})`);
   const presentations = snapshot.presentations.map((entry) =>
     `\`${entry.contractId}@${entry.contractVersion}\``);
   return [
@@ -647,9 +642,7 @@ export const renderCurrentSupportSection = (manifest: RuntimeSupportManifest): s
     walletSupport.length === 0
       ? "- Implemented wallet support: none."
       : `- Implemented wallet support: ${walletSupport.join("; ")}.`,
-    transactionActions.length === 0
-      ? "- Implemented transaction actions: none."
-      : `- Implemented transaction actions: ${transactionActions.join(", ")}.`,
+    "- Implemented transaction actions: none.",
     presentations.length === 0
       ? "- Implemented MCP App presentation contracts: none."
       : `- Implemented MCP App presentation contracts: ${presentations.join(", ")}.`,

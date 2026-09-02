@@ -246,6 +246,23 @@ Changing one boundary requires review of its failure meaning, direct consumers,
 and derived projections. It does not authorize a provider or endpoint change,
 merge an equal-valued limit, or reinterpret a feature-private capacity.
 
+## Runtime Support Manifest Limits
+
+Runtime support-manifest construction applies these separate private
+admissions:
+
+| Boundary | Maximum | Unit | Failure | Change meaning |
+| --- | ---: | --- | --- | --- |
+| protocol-support entries | `128` | entries per final manifest | Runtime construction rejects the manifest before publishing a support projection | changes the versioned Runtime manifest schema and compiled protocol-registration capacity |
+| MCP App presentation-contract entries | `256` | entries per final manifest | Runtime construction rejects the manifest before publishing a support projection | changes the versioned Runtime manifest schema and compiled presentation-registration capacity |
+
+These values do not merge with each other, capability registration, protocol
+package registration, presentation contract registration, or the generic
+canonical-JSON array limit. Changing either value requires an accepted Numeric
+Policy change and a Runtime support-manifest contract-version change. It does
+not by itself change public `Current Support`; only a change to the admitted
+implemented entries or their availability changes that projection.
+
 ## Transaction Type And Fees
 
 - An [EIP-2718 transaction type](https://eips.ethereum.org/EIPS/eip-2718) is a
