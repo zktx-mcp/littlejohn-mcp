@@ -68,13 +68,20 @@ export {
   fixedHostHeader,
   fixedOrigin,
   fixedPort,
-  internalResponseLimitBytes,
   jsonContentType,
   noStoreCacheControl,
   problemJsonContentType,
+} from "./http-boundary.js";
+export {
+  internalResponseLimitBytes,
+  ownerDispatchAttemptLimit,
+  ownerTransportDeadlineMilliseconds,
   publicReadResponseLimitBytes,
   requestBodyLimitBytes,
-} from "./http-boundary.js";
+  requestTargetUtf16CodeUnitLimit,
+  routePathnameUtf16CodeUnitLimit,
+  routePathSegmentAsciiCharacterLimit,
+} from "./http-limits.js";
 export type { RuntimeHttpRequest } from "./http-boundary.js";
 export type {
   HttpOwnerStartupResourceRegistry,

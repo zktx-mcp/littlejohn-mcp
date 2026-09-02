@@ -8,12 +8,12 @@ import {
   type OperationId,
 } from "../core/index.js";
 import {
-  internalResponseLimitBytes,
   jsonContentType,
   noStoreCacheControl,
   problemJsonContentType,
   type RuntimeHttpRequest,
 } from "../runtime/http-boundary.js";
+import { internalResponseLimitBytes } from "../runtime/http-limits.js";
 import type {
   RuntimeOwnerSession,
   RuntimeOwnerSessionIdentity,

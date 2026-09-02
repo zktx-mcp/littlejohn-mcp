@@ -215,6 +215,13 @@ guarantees, measured maxima, or private adapter tuning. Changing one changes
 public admission and requires an accepted contract and Numeric Policy change.
 An oversized value fails admission and is not truncated into a partial result.
 
+One complete canonical capability success is at most `8,388,607` UTF-8 bytes,
+including its complete result object and excluding transport framing. Core
+rejects a larger success as `result_too_large` before any interface receives
+it. Changing this maximum changes every capability-definition projection and
+each transport envelope derived from it; it does not change an independently
+owned feature, presentation, persistence, provider, or MCP-result limit.
+
 `readCapabilityLimits.transactionLogTopics` directly applies the EVM maximum
 of four topics per log. `readCapabilityLimits.transactionType` directly
 applies the EIP-2718 range owned by [Transaction Type And
@@ -245,6 +252,27 @@ response-byte boundary and the canonical JSON array formula.
 Changing one boundary requires review of its failure meaning, direct consumers,
 and derived projections. It does not authorize a provider or endpoint change,
 merge an equal-valued limit, or reinterpret a feature-private capacity.
+
+## Local HTTP Limits
+
+The fixed loopback transport applies these current numeric boundaries:
+
+| Boundary | Current value | Unit | Failure | Change meaning |
+| --- | ---: | --- | --- | --- |
+| request body | `65,536` | raw HTTP body bytes | excess is `payload_too_large` before JSON parsing or handler work | changes every POST transport admission and canonical snapshot-input capacity |
+| internal response | `65,536` | encoded bytes in the owning response carrier | an oversized produced HTTP frame is `internal_error`; an oversized compatible-owner response retains its unavailable or delivery-unknown lifecycle; an oversized snapshot resource is `capacity_exceeded` | changes owner identity, compatible-process, control and snapshot-resource envelopes |
+| public-read HTTP response | `8,388,608` | bytes including one line feed | a conforming canonical capability success fits; an invalid oversized route result is not published | cannot change independently of the Core complete-success maximum or fixed framing |
+| complete request target | `4,096` | UTF-16 code units including query | excess is `invalid_input` for inbound HTTP and invalid dispatch input before transport | changes only target admission |
+| route pathname | `2,048` | UTF-16 code units | excess actual input is `route_not_found`; a definition whose minimum concrete pathname exceeds the limit is rejected before registration | changes route-definition and route-match admission together |
+| actual or literal route segment | `128` | ASCII characters | excess actual input is `route_not_found`; an over-limit literal definition is rejected before registration | changes literal-definition and parameter-value admission together; parameter names do not consume this value |
+| owner transport | `2,000` | milliseconds | expiry retains the owner unavailable, port-conflict, request-not-sent and send-began distinctions of its lifecycle | changes connection, identity-verification and pre-response dispatch timing, not response observation or recovery |
+| owner dispatch attempts | `2` | attempts per dispatch | exhaustion is `runtime_state_unavailable` | permits one initial attempt and at most one pre-connection demand-driven takeover retry; changing it changes contention and retry work without authorizing resend after connection or send began |
+
+The public-read response maximum is the Core complete-success maximum plus its
+one line-feed byte. Request, response, route, owner-session, snapshot,
+operation-observation and persistence limits remain separate contracts when
+their values are equal. Complete first-response observation and recovery retain
+their independently owned lifecycle bounds in `docs/ARCHITECTURE.md`.
 
 ## Runtime Support Manifest Limits
 

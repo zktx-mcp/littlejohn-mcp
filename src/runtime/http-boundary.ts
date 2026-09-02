@@ -1,16 +1,11 @@
-import {
-  maximumSuccessUtf8Bytes,
-  type CanonicalJson,
-} from "../core/index.js";
+import type { CanonicalJson } from "../core/index.js";
+import { requestTargetUtf16CodeUnitLimit } from "./http-limits.js";
 
 export const fixedHost = "127.0.0.1";
 export const fixedPort = 46630;
 export const fixedOrigin = `http://${fixedHost}:${fixedPort}`;
 export const fixedHostHeader = `${fixedHost}:${fixedPort}`;
 
-export const requestBodyLimitBytes = 65_536;
-export const internalResponseLimitBytes = 65_536;
-export const publicReadResponseLimitBytes = maximumSuccessUtf8Bytes + 1;
 export const jsonContentType = "application/json";
 export const problemJsonContentType = "application/problem+json";
 export const noStoreCacheControl = "no-store";
@@ -52,7 +47,7 @@ export const parseRequestTarget = (value: string | undefined): RequestTarget | u
     value.includes("#") ||
     value.includes("\r") ||
     value.includes("\n") ||
-    value.length > 4_096
+    value.length > requestTargetUtf16CodeUnitLimit
   ) return undefined;
   const queryIndex = value.indexOf("?");
   const pathname = queryIndex === -1 ? value : value.slice(0, queryIndex);

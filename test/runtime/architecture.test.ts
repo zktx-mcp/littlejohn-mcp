@@ -64,6 +64,7 @@ const clientCoreConsumers = new Set([
   "registry/official-asset-contract.ts",
   "runtime/error-definitions.ts",
   "runtime/error-registry.ts",
+  "runtime/http-limits.ts",
   "runtime/presentation-snapshot.ts",
   "token-catalog/contract-schema.ts",
   "token-catalog/error-registry.ts",
@@ -878,6 +879,9 @@ const accountAssetApplicationModule =
   resolve(sourceRoot, "account-assets/application.ts");
 const mcpAppViewEntryModule =
   resolve(sourceRoot, "interfaces/mcp-app/view/main.ts");
+const httpBoundaryModule = resolve(sourceRoot, "runtime/http-boundary.ts");
+const httpLimitsModule = resolve(sourceRoot, "runtime/http-limits.ts");
+const presentationSnapshotModule = resolve(sourceRoot, "runtime/presentation-snapshot.ts");
 
 interface ExternalIntegrationAuthorityRule {
   readonly module: string;
@@ -1435,11 +1439,16 @@ const exactModuleExportViolations = (
 
 const productCodeSourcePattern = /\.[cm]?[jt]sx?$/u;
 
-const defaultStockTokenClientGraphViolations = (
+interface ProductModuleGraph {
+  readonly visited: ReadonlySet<string>;
+  readonly violations: readonly string[];
+}
+
+const productModuleGraph = (
   program: ts.Program,
   productFiles: ReadonlySet<string>,
   root: string,
-): readonly string[] => {
+): ProductModuleGraph => {
   const normalizedRoot = resolve(root);
   const violations: string[] = [];
   const visited = new Set<string>();
@@ -1492,11 +1501,41 @@ const defaultStockTokenClientGraphViolations = (
     }
   }
 
-  if (!visited.has(defaultStockTokenContractModule)) {
+  return Object.freeze({
+    visited,
+    violations: Object.freeze(violations.sort()),
+  });
+};
+
+const defaultStockTokenClientGraphViolations = (
+  program: ts.Program,
+  productFiles: ReadonlySet<string>,
+  root: string,
+): readonly string[] => {
+  const normalizedRoot = resolve(root);
+  const graph = productModuleGraph(program, productFiles, normalizedRoot);
+  const violations = [...graph.violations];
+
+  if (!graph.visited.has(defaultStockTokenContractModule)) {
     violations.push(`${sourceName(normalizedRoot)}:missing_default_contract`);
   }
-  if (visited.has(defaultStockTokenManifestModule)) {
+  if (graph.visited.has(defaultStockTokenManifestModule)) {
     violations.push(`${sourceName(normalizedRoot)}:server_manifest_reachable`);
+  }
+  return violations.sort();
+};
+
+const mcpAppHttpLimitGraphViolations = (
+  program: ts.Program,
+  productFiles: ReadonlySet<string>,
+): readonly string[] => {
+  const graph = productModuleGraph(program, productFiles, mcpAppViewEntryModule);
+  const violations = [...graph.violations];
+  if (!graph.visited.has(httpLimitsModule)) {
+    violations.push(`${sourceName(mcpAppViewEntryModule)}:http_limits_unreachable`);
+  }
+  if (graph.visited.has(httpBoundaryModule)) {
+    violations.push(`${sourceName(mcpAppViewEntryModule)}:http_boundary_reachable`);
   }
   return violations.sort();
 };
@@ -2216,6 +2255,27 @@ const externalIntegrationAuthorityViolations = (
 };
 
 describe("runtime architecture boundary", () => {
+  it("keeps Local HTTP transport identities out of the MCP App graph", async () => {
+    const { canonicalProgram, productCodeFiles, productFiles } =
+      await loadDefaultStockTokenArchitectureFixture();
+    expect(mcpAppHttpLimitGraphViolations(canonicalProgram, productFiles)).toEqual([]);
+
+    const presentationSource = requiredProgramSource(
+      canonicalProgram,
+      presentationSnapshotModule,
+    );
+    const adversarialProgram = createProductSourceProgram(
+      [...productCodeFiles],
+      new Map([[
+        presentationSnapshotModule,
+        `${presentationSource}\nimport "./http-boundary.js";\n`,
+      ]]),
+      canonicalProgram,
+    );
+    expect(mcpAppHttpLimitGraphViolations(adversarialProgram, productFiles))
+      .toContain("interfaces/mcp-app/view/main.ts:http_boundary_reachable");
+  }, 20_000);
+
   it("keeps one client-safe default Stock Token count and rank contract", async () => {
     const { canonicalProgram: program, productCodeFiles, productFiles } =
       await loadDefaultStockTokenArchitectureFixture();

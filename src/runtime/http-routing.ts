@@ -33,6 +33,10 @@ import {
   type RouteMutation,
   type RouteSuccessStatus,
 } from "./http-boundary.js";
+import {
+  routePathnameUtf16CodeUnitLimit,
+  routePathSegmentAsciiCharacterLimit,
+} from "./http-limits.js";
 
 export type { RouteMethod };
 
@@ -119,7 +123,7 @@ const parseRouteSegments = (pathPattern: string): readonly RouteSegment[] => {
     throw new TypeError("Route path pattern is invalid.");
   }
   const parameterNames = new Set<string>();
-  return Object.freeze(pathPattern.slice(1).split("/").map((segment) => {
+  const segments = pathPattern.slice(1).split("/").map((segment): RouteSegment => {
     const parameter = /^\{([a-z][a-zA-Z0-9]*)\}$/.exec(segment);
     if (parameter !== null) {
       const name = parameter[1] as string;
@@ -127,9 +131,20 @@ const parseRouteSegments = (pathPattern: string): readonly RouteSegment[] => {
       parameterNames.add(name);
       return Object.freeze({ kind: "parameter" as const, name });
     }
-    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(segment)) throw new TypeError("Route literal is invalid.");
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(segment) ||
+      segment.length > routePathSegmentAsciiCharacterLimit) {
+      throw new TypeError("Route literal is invalid.");
+    }
     return Object.freeze({ kind: "literal" as const, value: segment });
-  }));
+  });
+  const minimumPathnameLength = segments.reduce(
+    (length, segment) => length + 1 + (segment.kind === "literal" ? segment.value.length : 1),
+    0,
+  );
+  if (minimumPathnameLength > routePathnameUtf16CodeUnitLimit) {
+    throw new TypeError("Route path pattern cannot fit the pathname limit.");
+  }
+  return Object.freeze(segments);
 };
 
 const requestClassForPath = (pathPattern: string): string => {
@@ -194,7 +209,7 @@ const assertUnambiguousRoutes = (routes: readonly CompiledRoute[]): void => {
 const matchSegments = (route: CompiledRoute, pathname: string): Readonly<Record<string, string>> | undefined => {
   if (
     !pathname.startsWith("/") ||
-    pathname.length > 2_048 ||
+    pathname.length > routePathnameUtf16CodeUnitLimit ||
     pathname.includes("//") ||
     (pathname.length > 1 && pathname.endsWith("/"))
   ) return undefined;
@@ -204,7 +219,8 @@ const matchSegments = (route: CompiledRoute, pathname: string): Readonly<Record<
   for (let index = 0; index < route.segments.length; index += 1) {
     const expected = route.segments[index];
     const actual = actualSegments[index];
-    if (expected === undefined || actual === undefined || actual.length === 0 || actual.length > 128 ||
+    if (expected === undefined || actual === undefined || actual.length === 0 ||
+      actual.length > routePathSegmentAsciiCharacterLimit ||
       actual === "." || actual === ".." || !/^[A-Za-z0-9._~:-]+$/.test(actual)) return undefined;
     if (expected.kind === "literal") {
       if (actual !== expected.value) return undefined;

@@ -18,7 +18,7 @@ import {
   tokenStandardObservationResultSchema,
   type CanonicalJson,
 } from "../../src/core/index.js";
-import { internalResponseLimitBytes } from "../../src/runtime/http-boundary.js";
+import { internalResponseLimitBytes } from "../../src/runtime/http-limits.js";
 import { officialAssetSnapshotRevisionSchema } from "../../src/registry/index.js";
 import {
   createTokenAdditionReviewProjection,

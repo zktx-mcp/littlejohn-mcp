@@ -16,7 +16,7 @@ import {
 } from "../../core/index.js";
 import {
   internalResponseLimitBytes,
-} from "../../runtime/http-boundary.js";
+} from "../../runtime/http-limits.js";
 import type {
   PresentationSnapshotRecord,
   PresentationSnapshotStore,

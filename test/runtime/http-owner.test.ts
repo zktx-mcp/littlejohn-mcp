@@ -46,9 +46,11 @@ import {
   fixedHost,
   fixedHostHeader,
   fixedPort,
+} from "../../src/runtime/http-boundary.js";
+import {
   internalResponseLimitBytes,
   publicReadResponseLimitBytes,
-} from "../../src/runtime/http-boundary.js";
+} from "../../src/runtime/http-limits.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
 
 const directories: string[] = [];
@@ -1427,6 +1429,59 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     })).toMatchObject({ status: 500, body: { code: "internal_error" } });
   });
 
+  it("enforces the exact byte-counted internal response limit", async () => {
+    const test = await fixture();
+    const responseBoundaryBytes = 65_536;
+    const envelopeBytes = Buffer.byteLength('{"value":""}\n');
+    const value = "x".repeat(responseBoundaryBytes - envelopeBytes);
+    const oversizedValue = `${value}x`;
+    expect(Buffer.byteLength(`${canonicalJsonStringify({ value })}\n`))
+      .toBe(responseBoundaryBytes);
+    expect(Buffer.byteLength(`${canonicalJsonStringify({ value: oversizedValue })}\n`))
+      .toBe(responseBoundaryBytes + 1);
+    const owner = createReleasedFixedHttpOwner({
+      ...fixedOwnerOptions(test),
+      applicationFactory: ({ routes }) => ({
+        routes: routes.extend([
+          {
+            method: "GET",
+            pathPattern: "/api/v1/internal/control/response-at-limit",
+            mutation: "none" as const,
+            successStatus: 200,
+            handler: async () => ({ ok: true as const, body: { value } }),
+          },
+          {
+            method: "GET",
+            pathPattern: "/api/v1/internal/control/response-over-limit",
+            mutation: "none" as const,
+            successStatus: 200,
+            handler: async () => ({ ok: true as const, body: { value: oversizedValue } }),
+          },
+        ]),
+        close: () => undefined,
+      }),
+    });
+    owners.push(owner);
+    await owner.start();
+    const authorization = await credentialAuthorization(test.paths.controlCredential);
+    const exact = await requestJson(
+      "/api/v1/internal/control/response-at-limit",
+      "GET",
+      { Authorization: authorization },
+    );
+    expect(exact).toEqual(expect.objectContaining({ status: 200, body: { value } }));
+    expect(exact.headers["content-length"]).toBe(String(responseBoundaryBytes));
+    const oversized = await requestJson(
+      "/api/v1/internal/control/response-over-limit",
+      "GET",
+      { Authorization: authorization },
+    );
+    expect(oversized).toEqual(expect.objectContaining({ status: 500, body: expect.objectContaining({
+      code: "internal_error",
+    }) }));
+    expect(Number(oversized.headers["content-length"])).toBeLessThan(responseBoundaryBytes);
+  });
+
   it("accepts standard formatted JSON while pinning the operation to the authenticated socket", async () => {
     const key = new Uint8Array(32).fill(16);
     const test = await fixture(key);
@@ -2200,11 +2255,21 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
     owners.push(owner);
     await owner.start();
     const authorization = await credentialAuthorization(test.paths.controlCredential);
+    const malformedBody = Buffer.concat([
+      Buffer.from('{"payload":"', "utf8"),
+      Buffer.from([0xff]),
+      Buffer.from('"}', "utf8"),
+    ]);
+    expect(JSON.parse(new TextDecoder().decode(malformedBody))).toEqual({ payload: "�" });
     const malformed = await requestJson(
       "/api/v1/internal/control/examples",
       "POST",
-      { Authorization: authorization, "Content-Type": "application/json", "Content-Length": "1" },
-      Buffer.from([0xff]),
+      {
+        Authorization: authorization,
+        "Content-Type": "application/json",
+        "Content-Length": String(malformedBody.length),
+      },
+      malformedBody,
     );
     expect(malformed).toMatchObject({ status: 400, body: { code: "invalid_json" } });
     expect(handlerCalls).toBe(0);
@@ -2217,6 +2282,63 @@ describe.sequential("fixed-port owner lifecycle and authenticated operations", (
       body,
     );
     expect(accepted).toMatchObject({ status: 201, body: { accepted: true } });
+    expect(handlerCalls).toBe(1);
+  });
+
+  it("admits an exact request body and rejects one valid JSON byte more", async () => {
+    const test = await fixture();
+    const requestBoundaryBytes = 65_536;
+    let handlerCalls = 0;
+    const owner = createReleasedFixedHttpOwner({
+      ...fixedOwnerOptions(test),
+      applicationFactory: ({ routes }) => ({
+        routes: routes.extend([{
+          method: "POST",
+          pathPattern: "/api/v1/internal/control/body-limit",
+          mutation: "declared_control" as const,
+          successStatus: 201,
+          handler: async () => {
+            handlerCalls += 1;
+            return { ok: true, body: { accepted: true } };
+          },
+        }]),
+        close: () => undefined,
+      }),
+    });
+    owners.push(owner);
+    await owner.start();
+    const authorization = await credentialAuthorization(test.paths.controlCredential);
+    const envelopeBytes = Buffer.byteLength('{"payload":""}', "utf8");
+    const exactBody = `{"payload":"${"x".repeat(requestBoundaryBytes - envelopeBytes)}"}`;
+    const oversizedBody = `${exactBody} `;
+    expect(Buffer.byteLength(exactBody)).toBe(requestBoundaryBytes);
+    expect(Buffer.byteLength(oversizedBody)).toBe(requestBoundaryBytes + 1);
+    expect(JSON.parse(oversizedBody)).toEqual(JSON.parse(exactBody));
+
+    expect(await requestJson(
+      "/api/v1/internal/control/body-limit",
+      "POST",
+      {
+        Authorization: authorization,
+        "Content-Type": "application/json",
+        "Content-Length": String(Buffer.byteLength(exactBody)),
+      },
+      exactBody,
+    )).toEqual(expect.objectContaining({ status: 201, body: { accepted: true } }));
+    expect(handlerCalls).toBe(1);
+
+    expect(await requestJson(
+      "/api/v1/internal/control/body-limit",
+      "POST",
+      {
+        Authorization: authorization,
+        "Content-Type": "application/json",
+        "Content-Length": String(Buffer.byteLength(oversizedBody)),
+      },
+      oversizedBody,
+    )).toEqual(expect.objectContaining({ status: 413, body: expect.objectContaining({
+      code: "payload_too_large",
+    }) }));
     expect(handlerCalls).toBe(1);
   });
 

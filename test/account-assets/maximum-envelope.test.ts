@@ -26,7 +26,7 @@ import {
 import {
   internalResponseLimitBytes,
   publicReadResponseLimitBytes,
-} from "../../src/runtime/http-boundary.js";
+} from "../../src/runtime/http-limits.js";
 
 const chainId = parseEvmChainId("eip155:4663");
 const accountAddress = parseEvmAddressInput(`0x${"34".repeat(20)}`);

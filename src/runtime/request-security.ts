@@ -4,12 +4,14 @@ import {
 } from "./control-credential.js";
 import {
   fixedHostHeader,
-  internalResponseLimitBytes,
   jsonContentType,
-  publicReadResponseLimitBytes,
-  requestBodyLimitBytes,
   type RouteMutation,
 } from "./http-boundary.js";
+import {
+  internalResponseLimitBytes,
+  publicReadResponseLimitBytes,
+  requestBodyLimitBytes,
+} from "./http-limits.js";
 
 export type SecurityFailureCode =
   | "invalid_host"

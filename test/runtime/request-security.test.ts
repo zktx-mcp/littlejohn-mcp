@@ -8,9 +8,15 @@ import { maximumSuccessUtf8Bytes } from "../../src/core/index.js";
 import {
   fixedHostHeader,
   jsonContentType,
+  parseRequestTarget,
+} from "../../src/runtime/http-boundary.js";
+import {
+  internalResponseLimitBytes,
+  ownerDispatchAttemptLimit,
+  ownerTransportDeadlineMilliseconds,
   publicReadResponseLimitBytes,
   requestBodyLimitBytes,
-} from "../../src/runtime/http-boundary.js";
+} from "../../src/runtime/http-limits.js";
 import {
   createControlCredentialVerifier,
   loadOrCreateControlCredential,
@@ -28,6 +34,7 @@ import {
   validateRequestSecurity,
   type RequestSecurityInput,
 } from "../../src/runtime/request-security.js";
+import { presentationSnapshotLimits } from "../../src/runtime/presentation-snapshot.js";
 
 const directories: string[] = [];
 
@@ -66,9 +73,30 @@ const request = (
 
 const success = async () => ({ ok: true as const, body: {} });
 
+const publicPathPatternWithLength = (targetLength: number): string => {
+  const segments = ["api", "v1"];
+  let length = "/api/v1".length;
+  while (length < targetLength) {
+    const segmentLength = Math.min(128, targetLength - length - 1);
+    if (segmentLength < 1) throw new TypeError("Path-pattern fixture length is invalid.");
+    segments.push("a".repeat(segmentLength));
+    length += segmentLength + 1;
+  }
+  const path = `/${segments.join("/")}`;
+  if (path.length !== targetLength) throw new TypeError("Path-pattern fixture is inexact.");
+  return path;
+};
+
 describe("fixed loopback HTTP authority", () => {
   it("derives the public response frame from the canonical success limit", () => {
+    expect(maximumSuccessUtf8Bytes).toBe(8_388_607);
+    expect(requestBodyLimitBytes).toBe(65_536);
+    expect(internalResponseLimitBytes).toBe(65_536);
+    expect(publicReadResponseLimitBytes).toBe(8_388_608);
     expect(publicReadResponseLimitBytes).toBe(maximumSuccessUtf8Bytes + 1);
+    expect(presentationSnapshotLimits.inputBytes).toBe(requestBodyLimitBytes);
+    expect(ownerTransportDeadlineMilliseconds).toBe(2_000);
+    expect(ownerDispatchAttemptLimit).toBe(2);
     expect(validateRequestEnvelopeSecurity({
       host: [fixedHostHeader],
       bodyLength: requestBodyLimitBytes,
@@ -77,6 +105,19 @@ describe("fixed loopback HTTP authority", () => {
       host: [fixedHostHeader],
       bodyLength: requestBodyLimitBytes + 1,
     })).toEqual({ ok: false, code: "payload_too_large" });
+  });
+
+  it("admits the exact request target and rejects one code unit more", () => {
+    const prefix = "/api/v1/example?";
+    const exact = `${prefix}${"x".repeat(4_096 - prefix.length)}`;
+    const oversized = `${exact}x`;
+    expect(exact.length).toBe(4_096);
+    expect(oversized.length).toBe(4_097);
+    expect(parseRequestTarget(exact)).toEqual({
+      pathname: "/api/v1/example",
+      query: exact.slice("/api/v1/example".length),
+    });
+    expect(parseRequestTarget(oversized)).toBeUndefined();
   });
 
   it("admits only fixed public, owner-identity, and Bearer-authenticated control requests", async () => {
@@ -206,5 +247,86 @@ describe("fixed loopback HTTP authority", () => {
       expect(canonical.params).toEqual({ itemId: "eip155:4663" });
     }
     expect(routes.match("GET", "/api/v1/items/eip155%3A4663").status).toBe("not_found");
+  });
+
+  it("closes route definitions over the concrete pathname and segment limits", async () => {
+    const { verifier } = await credentialFixture();
+    const definition = (pathPattern: string): RouteDefinition => ({
+      method: "GET",
+      mutation: "none",
+      pathPattern,
+      successStatus: 200,
+      handler: success,
+    });
+    const exactPathname = publicPathPatternWithLength(2_048);
+    const oversizedPathname = publicPathPatternWithLength(2_049);
+    const exactPathRoutes = createRuntimeRouteRegistry({ controlVerifier: verifier })
+      .extend([definition(exactPathname)]);
+    expect(exactPathRoutes.match("GET", exactPathname).status).toBe("matched");
+    expect(() => createRuntimeRouteRegistry({ controlVerifier: verifier })
+      .extend([definition(oversizedPathname)]))
+      .toThrow("cannot fit the pathname limit");
+
+    const exactLiteral = "a".repeat(128);
+    const oversizedLiteral = `${exactLiteral}a`;
+    const exactLiteralPath = `/api/v1/${exactLiteral}`;
+    const exactLiteralRoutes = createRuntimeRouteRegistry({ controlVerifier: verifier })
+      .extend([definition(exactLiteralPath)]);
+    expect(exactLiteralRoutes.match("GET", exactLiteralPath).status).toBe("matched");
+    expect(() => createRuntimeRouteRegistry({ controlVerifier: verifier })
+      .extend([definition(`/api/v1/${oversizedLiteral}`)]))
+      .toThrow("Route literal is invalid");
+
+    const parameterRoutes = createRuntimeRouteRegistry({ controlVerifier: verifier })
+      .extend([definition("/api/v1/items/{itemId}")]);
+    expect(parameterRoutes.match("GET", `/api/v1/items/${exactLiteral}`).status).toBe("matched");
+    expect(parameterRoutes.match("GET", `/api/v1/items/${oversizedLiteral}`).status)
+      .toBe("not_found");
+
+    const longParameterName = `p${"A".repeat(128)}`;
+    const longParameterRoutes = createRuntimeRouteRegistry({ controlVerifier: verifier })
+      .extend([definition(`/api/v1/items/{${longParameterName}}`)]);
+    const longParameterMatch = longParameterRoutes.match("GET", "/api/v1/items/x");
+    expect(longParameterMatch.status).toBe("matched");
+    if (longParameterMatch.status === "matched") {
+      expect(longParameterMatch.params).toEqual({ [longParameterName]: "x" });
+    }
+  });
+
+  it("rejects an oversized concrete pathname whose parameter segments remain valid", async () => {
+    const { verifier } = await credentialFixture();
+    const parameterNames = Array.from({ length: 16 }, (_, index) => `p${index}`);
+    const pathPattern = `/api/v1/${parameterNames.map((name) => `{${name}}`).join("/")}`;
+    const minimumPathname = `/api/v1/${parameterNames.map(() => "a").join("/")}`;
+    expect(minimumPathname.length).toBe(39);
+
+    const commonValues = Array.from({ length: 15 }, () => "a".repeat(128));
+    const exactValues = [...commonValues, "a".repeat(105)];
+    const oversizedValues = [...commonValues, "a".repeat(106)];
+    const exactPathname = `/api/v1/${exactValues.join("/")}`;
+    const oversizedPathname = `/api/v1/${oversizedValues.join("/")}`;
+    expect(exactPathname.length).toBe(2_048);
+    expect(oversizedPathname.length).toBe(2_049);
+    for (const value of oversizedValues) {
+      expect(value).toMatch(/^[A-Za-z0-9._~:-]+$/u);
+      expect(value.length).toBeGreaterThanOrEqual(1);
+      expect(value.length).toBeLessThanOrEqual(128);
+    }
+
+    const routes = createRuntimeRouteRegistry({ controlVerifier: verifier }).extend([{
+      method: "GET",
+      mutation: "none",
+      pathPattern,
+      successStatus: 200,
+      handler: success,
+    }]);
+    const exact = routes.match("GET", exactPathname);
+    expect(exact.status).toBe("matched");
+    if (exact.status === "matched") {
+      expect(exact.params).toEqual(Object.fromEntries(
+        parameterNames.map((name, index) => [name, exactValues[index]]),
+      ));
+    }
+    expect(routes.match("GET", oversizedPathname).status).toBe("not_found");
   });
 });

@@ -35,18 +35,22 @@ import {
   fixedHost,
   fixedHostHeader,
   fixedPort,
-  internalResponseLimitBytes,
   jsonContentType,
   noStoreCacheControl,
   parseRequestTarget,
   problemJsonContentType,
-  publicReadResponseLimitBytes,
-  requestBodyLimitBytes,
   routeMethods,
   runtimeIdentityPath,
   type RequestTarget,
   type RuntimeHttpRequest,
 } from "./http-boundary.js";
+import {
+  internalResponseLimitBytes,
+  ownerDispatchAttemptLimit,
+  ownerTransportDeadlineMilliseconds,
+  publicReadResponseLimitBytes,
+  requestBodyLimitBytes,
+} from "./http-limits.js";
 import {
   assertRuntimeRouteRegistryDescendant,
   createRuntimeRouteRegistry,
@@ -197,7 +201,6 @@ class OwnerRequestInterruptedError extends Error {
     super(reason);
   }
 }
-const ownerTransportDeadlineMilliseconds = 2_000;
 type RequestDeadlineBoundary = "response" | "dispatch" | "delivery";
 
 interface ResponsePacket {
@@ -755,7 +758,7 @@ export class FixedHttpOwner {
     try {
       await this.#admitRuntimeClient(active);
       registered = true;
-      for (let attempt = 0; attempt < 2; attempt += 1) {
+      for (let attempt = 0; attempt < ownerDispatchAttemptLimit; attempt += 1) {
         this.#assertActiveRuntimeDispatch(active);
         let connection: AuthenticatedOwnerConnection | undefined;
         try {
@@ -791,7 +794,11 @@ export class FixedHttpOwner {
             throw new RuntimeOperationError("request_aborted");
           }
           if (error instanceof PeerIncompatibleError) throw new RuntimeOperationError("port_conflict");
-          if (!(error instanceof PeerUnavailableError) || connection !== undefined || attempt !== 0) {
+          if (
+            !(error instanceof PeerUnavailableError) ||
+            connection !== undefined ||
+            attempt + 1 >= ownerDispatchAttemptLimit
+          ) {
             throw new RuntimeOperationError("runtime_state_unavailable");
           }
           await this.#serialize(async () => {

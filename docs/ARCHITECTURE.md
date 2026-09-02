@@ -1136,11 +1136,12 @@ canonical contract object to its immutable snapshot admission and typed
 presentation. It never reconstructs a contract from a string identifier. After the contract
 normalizes and admits input and admits its correlated result, the registry
 captures each value as canonical JSON and encodes it once as UTF-8. Canonical
-input is at most the unchanged `65,536`-byte compatible-process request bound;
-canonical result is at most the canonical capability-success bound of
-`8,388,607` bytes. Raw MCP or HTTP envelopes, headers, Host metadata, user
-messages, credentials, WalletConnect material, and signing material are not
-snapshot input.
+input consumes the Local HTTP request-body bound owned by
+`docs/NUMERIC_POLICY.md#local-http-limits`. A capability-backed result remains
+subject to its owning capability success admission. The separate presentation-
+result capacity is not a Core read-capability projection. Raw MCP or HTTP
+envelopes, headers, Host metadata, user messages, credentials, WalletConnect
+material, and signing material are not snapshot input.
 
 For canonical input bytes `I`, canonical result bytes `R`, contract ID `C`,
 and decimal contract version `V`:
@@ -1291,10 +1292,11 @@ Review. The domain owner performs this order:
 7. perform the domain's single conditional transition or return its owning
    failure with no operation and no effect.
 
-The complete Review and direct-action envelope remain within the unchanged
-`65,536`-byte compatible-process request limit. A Review contains a bounded
-decision projection rather than another capability's complete result. Domain
-contract modules own the exact fields and generated maximum envelope.
+The complete Review and direct-action envelope consume the Local HTTP request-
+body bound owned by `docs/NUMERIC_POLICY.md#local-http-limits`. A Review
+contains a bounded decision projection rather than another capability's
+complete result. Domain contract modules own the exact fields and generated
+maximum envelope.
 
 Every stored operation contains its operation ID, domain kind, informational
 `initiatedBy` value `cli` or `mcp_app`, immutable verified Review and digest,
@@ -1680,6 +1682,10 @@ IDs may appear only in the canonical contracts that declare them and never
 gain secret or authorization meaning from their placement.
 
 ## HTTP Boundary
+
+Request, response, target, route and owner-transport numeric boundaries are
+owned by `docs/NUMERIC_POLICY.md#local-http-limits`. This section owns their
+transport, authority and lifecycle meaning without copying those values.
 
 - The native loopback endpoint is `http://127.0.0.1:46630`; the server binds
   only to that host and port.

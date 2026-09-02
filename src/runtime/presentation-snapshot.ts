@@ -1,4 +1,5 @@
 import type { CanonicalJson } from "../core/client.js";
+import { requestBodyLimitBytes } from "./http-limits.js";
 
 export const presentationSnapshotUnavailableReasons = Object.freeze([
   "capacity_exceeded",
@@ -8,7 +9,7 @@ export const presentationSnapshotUnavailableReasons = Object.freeze([
 ] as const);
 
 export const presentationSnapshotLimits = Object.freeze({
-  inputBytes: 65_536,
+  inputBytes: requestBodyLimitBytes,
   resultBytes: 8_388_607,
   resultChunkBytes: 262_144,
   rows: 16_384,

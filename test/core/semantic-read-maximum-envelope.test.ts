@@ -45,7 +45,7 @@ import {
   maximumMcpToolResultUtf8Bytes,
 } from "../../src/interfaces/mcp-result.js";
 import { ProductDatabase } from "../../src/runtime/database.js";
-import { publicReadResponseLimitBytes } from "../../src/runtime/http-boundary.js";
+import { publicReadResponseLimitBytes } from "../../src/runtime/http-limits.js";
 import type { PresentationSnapshotStore } from "../../src/runtime/presentation-snapshot.js";
 import { tokenInspectCapability } from "../../src/token-catalog/contracts.js";
 import { createSourcifyContractSourceVerification } from "../../src/intelligence/sourcify.js";
