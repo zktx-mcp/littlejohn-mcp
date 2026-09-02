@@ -190,8 +190,8 @@ describe("runtime support manifest authority", () => {
       ],
       [
         interfaceCapabilityCatalogSchema,
-        3_252,
-        "b3a19ed7aed00970a01fa21daa06e1920a124d2c129844d8ae1daeaab4cfebe6",
+        3_276,
+        "727bf559034a44cfe83d9ea6a7c8eecab7a930a8da84fd24ba439c4b6844edc3",
       ],
       [
         ownerIdentitySchema,
@@ -269,6 +269,9 @@ describe("runtime support manifest authority", () => {
       extendTokenCatalogSupportManifest(chain),
     );
     const tradeHistory = extendStockTokenTradeHistorySupportManifest(accountAssets);
+    expect(readRuntimeSupportManifest(tradeHistory).capabilities
+      .find((entry) => entry.capabilityId === "market.stock_token_trade_history")?.availability)
+      .toEqual(internal);
     const protocols = extendUniswapV2ProtocolHarnessManifest(tradeHistory);
     const protocolSnapshot = readRuntimeSupportManifest(protocols);
     expect(protocolSnapshot.protocols).toEqual([{
@@ -308,6 +311,7 @@ describe("runtime support manifest authority", () => {
       "account.balance",
       "chain.status",
       "contract.inspect",
+      "market.stock_token_trade_history",
       "token.inspect",
       "transaction.inspect",
       "uniswap_v2.quote_exact_input",

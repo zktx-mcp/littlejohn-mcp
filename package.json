@@ -32,7 +32,6 @@
   },
   "scripts": {
     "clean": "node scripts/clean.mjs",
-    "generate:stock-token-trade-history-registry": "node scripts/generate-stock-token-trade-history-registry.mjs",
     "build": "npm run clean && tsc -p tsconfig.build.json && tsc -p tsconfig.mcp-app.json --noEmit && vite build --config vite.mcp-app.config.ts",
     "lint": "eslint \"src/interfaces/mcp-app/**/*.ts\" \"test/interfaces/mcp-app/**/*.ts\"",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.mcp-app.json --noEmit && tsc -p tsconfig.mcp-app-test.json --noEmit",

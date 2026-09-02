@@ -7,8 +7,9 @@ import type {
 import { stockTokenTradeHistorySourceIdentity } from
   "../../src/stock-token-trade-history/source-semantics.js";
 import sourceArtifacts from "./source-artifacts.json" with { type: "json" };
+import semanticSourceArtifacts from "./source-semantic-artifacts.json" with { type: "json" };
 
-const bytes = (base64: string): Uint8Array => new Uint8Array(Buffer.from(base64, "base64"));
+const bytes = (base64: string): Uint8Array => Buffer.from(base64, "base64");
 
 export interface StockTokenTradeHistorySourceFixture {
   readonly baseAddress: string;
@@ -17,13 +18,23 @@ export interface StockTokenTradeHistorySourceFixture {
   readonly transport: StockTokenTradeHistoryProviderTransport;
 }
 
-type SourceArtifactName = keyof typeof sourceArtifacts.artifacts;
+interface SourceArtifact {
+  readonly baseAddress: string;
+  readonly rootBase64: string;
+  readonly rootName: string;
+  readonly assets: readonly Readonly<{
+    readonly assetName: string;
+    readonly base64: string;
+  }>[];
+}
 
-const sourceFixture = (name: SourceArtifactName): StockTokenTradeHistorySourceFixture => {
-  if (sourceArtifacts.producerRevision !== stockTokenTradeHistorySourceIdentity.revision) {
+const sourceFixture = (
+  producerRevision: string,
+  artifact: SourceArtifact,
+): StockTokenTradeHistorySourceFixture => {
+  if (producerRevision !== stockTokenTradeHistorySourceIdentity.revision) {
     throw new TypeError("Stock Token trade-history source fixture revision is stale.");
   }
-  const artifact = sourceArtifacts.artifacts[name];
   const rootBytes = bytes(artifact.rootBase64);
   const assets = new Map(
     artifact.assets.map((asset) => [asset.assetName, bytes(asset.base64)] as const),
@@ -62,13 +73,43 @@ const sourceFixture = (name: SourceArtifactName): StockTokenTradeHistorySourceFi
 };
 
 export const createStockTokenTradeHistorySourceFixture =
-  (): StockTokenTradeHistorySourceFixture => sourceFixture("healthy");
+  (): StockTokenTradeHistorySourceFixture => sourceFixture(
+    sourceArtifacts.producerRevision,
+    sourceArtifacts.artifacts.healthy,
+  );
 
 export const createStockTokenTradeHistoryCoverageConflictFixture =
-  (): StockTokenTradeHistorySourceFixture => sourceFixture("coverageConflict");
+  (): StockTokenTradeHistorySourceFixture => sourceFixture(
+    sourceArtifacts.producerRevision,
+    sourceArtifacts.artifacts.coverageConflict,
+  );
 
 export const createStockTokenTradeHistoryDeclaredTooLargeFixture =
-  (): StockTokenTradeHistorySourceFixture => sourceFixture("declaredTooLarge");
+  (): StockTokenTradeHistorySourceFixture => sourceFixture(
+    sourceArtifacts.producerRevision,
+    sourceArtifacts.artifacts.declaredTooLarge,
+  );
 
 export const createStockTokenTradeHistoryMultiMonthSourceFixture =
-  (): StockTokenTradeHistorySourceFixture => sourceFixture("multiMonth");
+  (): StockTokenTradeHistorySourceFixture => sourceFixture(
+    sourceArtifacts.producerRevision,
+    sourceArtifacts.artifacts.multiMonth,
+  );
+
+export const createStockTokenTradeHistoryPositivePreviousOwnerFixture =
+  (): StockTokenTradeHistorySourceFixture => sourceFixture(
+    semanticSourceArtifacts.producerRevision,
+    semanticSourceArtifacts.artifacts.positivePreviousOwner,
+  );
+
+export const createStockTokenTradeHistoryIncompleteWithSwapFixture =
+  (): StockTokenTradeHistorySourceFixture => sourceFixture(
+    semanticSourceArtifacts.producerRevision,
+    semanticSourceArtifacts.artifacts.incompleteWithSwap,
+  );
+
+export const createStockTokenTradeHistoryCrossPoolFixture =
+  (): StockTokenTradeHistorySourceFixture => sourceFixture(
+    semanticSourceArtifacts.producerRevision,
+    semanticSourceArtifacts.artifacts.crossPool,
+  );

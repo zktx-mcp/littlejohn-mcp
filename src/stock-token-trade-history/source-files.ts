@@ -12,15 +12,16 @@ import {
   type StockTokenTradeHistorySourceLimits,
 } from "./source-contract.js";
 import {
-  assertStockTokenTradeHistoryPoolFacts,
+  assertStockTokenTradeHistoryPoolIdentity,
   assertStockTokenTradeHistoryStoredCandleSequence,
   parseStockTokenTradeHistoryMemberLogicalId,
   stockTokenTradeHistoryBaseDecimalsSchema,
   stockTokenTradeHistoryCollectionBoundarySchema,
   stockTokenTradeHistoryCoverageSegmentSchema,
+  stockTokenTradeHistoryInitializeBoundarySchema,
   stockTokenTradeHistoryLogicalId,
-  stockTokenTradeHistoryPoolFactsSchema,
   stockTokenTradeHistoryPoolIdSchema,
+  stockTokenTradeHistoryPoolKeySchema,
   stockTokenTradeHistorySourceIdentity,
   stockTokenTradeHistorySourceResolution,
   stockTokenTradeHistorySourceResolutionLabels,
@@ -28,7 +29,9 @@ import {
   stockTokenTradeHistoryStoredCandleSchema,
   stockTokenTradeHistoryStoredMemberIdentityShape,
   type StockTokenTradeHistoryCoverageSegment,
-  type StockTokenTradeHistoryPoolFacts,
+  type StockTokenTradeHistoryCollectionBoundary,
+  type StockTokenTradeHistoryInitializeBoundary,
+  type StockTokenTradeHistoryPoolKey,
   type StockTokenTradeHistorySelectedRoot,
   type StockTokenTradeHistorySourceResolution,
   type StockTokenTradeHistorySourceResolutionLabel,
@@ -186,7 +189,14 @@ export interface BaseStateFile {
   readonly decimals: number;
   readonly months: readonly StoredMemberReference[];
   readonly poolPeriods: readonly StockTokenTradeHistoryCoverageSegment[];
-  readonly pools: Readonly<Record<string, StockTokenTradeHistoryPoolFacts>>;
+  readonly pools: Readonly<Record<string, SourcePoolFacts>>;
+}
+
+export interface SourcePoolFacts {
+  readonly historyFrom: StockTokenTradeHistoryCollectionBoundary;
+  readonly sourceFrom: StockTokenTradeHistoryCollectionBoundary;
+  readonly initialize: StockTokenTradeHistoryInitializeBoundary;
+  readonly poolKey: StockTokenTradeHistoryPoolKey;
 }
 
 export interface BaseMonthFile {
@@ -269,12 +279,19 @@ const selectedRootFileSchema = jsonObject({
   usdgDecimals: z.literal(stockTokenTradeHistorySourceIdentity.usdgDecimals),
 }).strict();
 
+const sourcePoolFactsSchema = jsonObject({
+  historyFrom: stockTokenTradeHistoryCollectionBoundarySchema,
+  sourceFrom: stockTokenTradeHistoryCollectionBoundarySchema,
+  initialize: stockTokenTradeHistoryInitializeBoundarySchema,
+  poolKey: stockTokenTradeHistoryPoolKeySchema,
+}).strict();
+
 const baseStateFileSchema = jsonObject({
   baseCurrencyAddress: evmAddressSchema,
   decimals: stockTokenTradeHistoryBaseDecimalsSchema,
   months: z.array(storedMemberReferenceSchema).min(1),
   poolPeriods: z.array(stockTokenTradeHistoryCoverageSegmentSchema).min(1),
-  pools: z.record(stockTokenTradeHistoryPoolIdSchema, stockTokenTradeHistoryPoolFactsSchema),
+  pools: z.record(stockTokenTradeHistoryPoolIdSchema, sourcePoolFactsSchema),
 }).strict();
 
 const monthResolutionsSchema = jsonObject(Object.fromEntries(
@@ -411,10 +428,10 @@ export const parseBaseStateFile = (
   if (Object.keys(state.pools).length === 0) return sourceIntegrity();
   validateCoverageSequence(state.poolPeriods);
   for (const [poolId, facts] of Object.entries(state.pools)) {
-    assertSourceSemantics(() => assertStockTokenTradeHistoryPoolFacts({
+    assertSourceSemantics(() => assertStockTokenTradeHistoryPoolIdentity({
       poolId,
       baseCurrencyAddress: address,
-      facts,
+      poolKey: facts.poolKey,
     }));
     const owned = state.poolPeriods.filter((period) => period.poolId === poolId);
     if (owned.length === 0 ||

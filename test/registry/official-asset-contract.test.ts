@@ -7,13 +7,19 @@ import {
   canonicalJsonStringify,
   parseEvmAddressInput,
   parseHash32,
+  parseUtcTimestamp,
   type CanonicalJson,
 } from "../../src/core/index.js";
 import {
+  assertCommittedOfficialAssetSnapshot,
   assertStockFactoryVerificationResult,
+  officialAssetCandidateListDigest,
   officialAssetCandidateSchema,
+  officialAssetMemberSetDigest,
   officialAssetSnapshotEvidenceSchema,
+  officialAssetSnapshotRevisionSchema,
   officialAssetSourceDefinition,
+  projectOfficialAssetSnapshotEvidence,
   stockFactoryAdmissionManifest,
   stockFactoryVerificationResultSchema,
   stockFactoryVerificationSchema,
@@ -65,12 +71,46 @@ describe("official asset contract", () => {
     );
   });
 
+  it("projects one complete public evidence value from the admitted snapshot", () => {
+    const members = [{
+      assetUid: parseHash32(`0x${"33".repeat(32)}`),
+      contractAddress: parseEvmAddressInput(`0x${"44".repeat(20)}`),
+      sourceName: "Example Stock Token",
+      sourceSymbol: "EXT",
+    }];
+    const snapshot = assertCommittedOfficialAssetSnapshot({
+      sourceUri: officialAssetSourceDefinition.sourceUri,
+      sourceObservedAt: parseUtcTimestamp("2026-07-20T00:00:00.000Z"),
+      rawResponseDigest: parseHash32(`0x${"11".repeat(32)}`),
+      memberSetDigest: officialAssetMemberSetDigest(members),
+      candidateListDigest: officialAssetCandidateListDigest(members),
+      chainId: officialAssetSourceDefinition.chainId,
+      members,
+      revision: officialAssetSnapshotRevisionSchema.parse(
+        Buffer.alloc(16, 1).toString("base64url"),
+      ),
+      updatedAt: parseUtcTimestamp("2026-07-20T00:00:01.000Z"),
+    });
+
+    const evidence = projectOfficialAssetSnapshotEvidence(snapshot);
+    expect(evidence).toEqual({
+      sourceUri: snapshot.sourceUri,
+      sourceObservedAt: snapshot.sourceObservedAt,
+      rawResponseDigest: snapshot.rawResponseDigest,
+      memberSetDigest: snapshot.memberSetDigest,
+      candidateListDigest: snapshot.candidateListDigest,
+      revision: snapshot.revision,
+    });
+    expect(Object.isFrozen(evidence)).toBe(true);
+  });
+
   it("rejects foreign source evidence and forged fixed StockFactory identity", () => {
     expect(() => officialAssetSnapshotEvidenceSchema.parse({
       sourceUri: "https://example.invalid/assets",
       sourceObservedAt: "2026-07-20T00:00:00.000Z",
       rawResponseDigest: `0x${"11".repeat(32)}`,
       memberSetDigest: `0x${"22".repeat(32)}`,
+      candidateListDigest: `0x${"33".repeat(32)}`,
       revision: Buffer.alloc(16, 1).toString("base64url"),
     })).toThrow();
     expect(() => stockFactoryVerificationSchema.parse({

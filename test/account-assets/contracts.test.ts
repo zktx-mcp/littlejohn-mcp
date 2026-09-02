@@ -22,6 +22,7 @@ import {
 } from "../../src/registry/client.js";
 import {
   officialAssetCandidateListDigest,
+  officialAssetMemberSetDigest,
 } from "../../src/registry/official-asset-contract.js";
 import {
   calculateScaledUiAmount,
@@ -104,6 +105,24 @@ const availableCandidate = Object.freeze({
   sourceName: "Available",
   sourceSymbol: "AVL",
 });
+const partitionDigest = officialAssetCandidateListDigest([
+  {
+    assetUid: selectedCandidate.assetUid,
+    contractAddress: selectedCandidate.contractAddress,
+    sourceName: selectedCandidate.sourceName,
+    sourceSymbol: selectedCandidate.sourceSymbol,
+  },
+  {
+    assetUid: availableCandidate.assetUid,
+    contractAddress: availableCandidate.contractAddress,
+    sourceName: availableCandidate.sourceName,
+    sourceSymbol: availableCandidate.sourceSymbol,
+  },
+]);
+const partitionMemberSetDigest = officialAssetMemberSetDigest([
+  selectedCandidate,
+  availableCandidate,
+]);
 const currentViewRevision = Object.freeze({
   officialSnapshotStatus: "current" as const,
   officialSnapshotRevision: currentSnapshotRevision,
@@ -117,7 +136,8 @@ const currentContractAsset = Object.freeze({
       sourceUri: officialAssetSourceDefinition.sourceUri,
       sourceObservedAt: at,
       rawResponseDigest: `0x${"01".repeat(32)}`,
-      memberSetDigest: `0x${"02".repeat(32)}`,
+      memberSetDigest: partitionMemberSetDigest,
+      candidateListDigest: partitionDigest,
       revision: currentSnapshotRevision,
     },
     member: selectedCandidate,
@@ -133,20 +153,31 @@ const currentContractAsset = Object.freeze({
     },
   },
 });
-const partitionDigest = officialAssetCandidateListDigest([
-  {
-    assetUid: selectedCandidate.assetUid,
-    contractAddress: selectedCandidate.contractAddress,
-    sourceName: selectedCandidate.sourceName,
-    sourceSymbol: selectedCandidate.sourceSymbol,
+const secondAsset = Object.freeze({
+  kind: "erc20" as const,
+  chainId,
+  address: availableCandidate.contractAddress,
+});
+const secondContractAsset = Object.freeze({
+  ...currentContractAsset,
+  selection: {
+    ...currentContractAsset.selection,
+    asset: secondAsset,
   },
-  {
-    assetUid: availableCandidate.assetUid,
-    contractAddress: availableCandidate.contractAddress,
-    sourceName: availableCandidate.sourceName,
-    sourceSymbol: availableCandidate.sourceSymbol,
+  classification: {
+    ...currentContractAsset.classification,
+    member: availableCandidate,
+    verification: {
+      ...currentContractAsset.classification.verification,
+      assetUid: availableCandidate.assetUid,
+      contractAddress: availableCandidate.contractAddress,
+    },
   },
-]);
+  requiredStandards: {
+    ...currentContractAsset.requiredStandards,
+    asset: secondAsset,
+  },
+});
 const currentOverview = Object.freeze({
   account: selection.account,
   block,
@@ -203,28 +234,28 @@ describe("account asset contracts", () => {
       ],
       [
         accountAssetClassificationSchema,
-        5_734,
-        "b545ef4a9c379badd3a3ffbe615b387ebb47eccdc365c8732da5951019122a16",
+        6_007,
+        "ef81c01a614f6fd36d92057b9fc223e3c4a109a3a8450be5c8b790221be8bf7e",
       ],
       [
         contractAccountAssetSchema,
-        12_005,
-        "ddfc3d5c55da5a1a25b4acaa2f10f539bfb62f047045af356552b466fd7cdfb7",
+        12_278,
+        "e15f673ac41fac30f1d966ba807fde8f0656b734570be2c816ac02b23700188b",
       ],
       [
         accountAssetApplicationContracts.collection.successSchema,
-        17_436,
-        "304c5ec81cd0329c39d88bd31557375384c5d3669f26e724bc42db6b54b27087",
+        17_709,
+        "1a348281ed338c6a55de2910419b309191db5029c6b791811237e48b8c67d4f4",
       ],
       [
         accountAssetApplicationContracts.exact.successSchema,
-        17_162,
-        "e552032618038b9ea48f0f510a25757526a199ac9999907cbca59ac61198a018",
+        17_435,
+        "2f5d74214770e27d9859f4611047dadb085ee1365a6880776bf7ad74972dcd8f",
       ],
       [
         accountAssetOverviewQueryContract.successSchema,
-        15_936,
-        "5cd8ddbc2a4a9977b7cd0b1a89ac0f9a1446960aceb9be37e49d066632c3624c",
+        16_209,
+        "215bef81960f0bd0cc2459ded7aa2d6966c6b63b318dae3d8c2f0ce1cd206e85",
       ],
     ] as const) {
       const canonical = canonicalOutputSchema(schema);
@@ -301,6 +332,37 @@ describe("account asset contracts", () => {
     )).toThrow();
   });
 
+  it("binds every current collection classification to one official snapshot", () => {
+    const collection = {
+      account: selection.account,
+      block,
+      viewRevision: currentViewRevision,
+      native: currentOverview.native,
+      assets: [currentContractAsset, secondContractAsset],
+      nextCursor: null,
+    } as const;
+    expect(accountAssetApplicationContracts.collection.parsePublicSuccess(
+      { limit: 5, cursor: null },
+      collection,
+    ).assets).toHaveLength(2);
+    expect(() => accountAssetApplicationContracts.collection.parsePublicSuccess(
+      { limit: 5, cursor: null },
+      {
+        ...collection,
+        assets: [currentContractAsset, {
+          ...secondContractAsset,
+          classification: {
+            ...secondContractAsset.classification,
+            snapshot: {
+              ...secondContractAsset.classification.snapshot,
+              rawResponseDigest: `0x${"ff".repeat(32)}`,
+            },
+          },
+        }],
+      },
+    )).toThrow();
+  });
+
   it("rejects foreign official evidence and forged fixed factory identity at the public schema", () => {
     const currentRevision = Buffer.alloc(16, 3).toString("base64url");
     const official = {
@@ -310,6 +372,7 @@ describe("account asset contracts", () => {
         sourceObservedAt: at,
         rawResponseDigest: `0x${"01".repeat(32)}`,
         memberSetDigest: `0x${"02".repeat(32)}`,
+        candidateListDigest: `0x${"05".repeat(32)}`,
         revision: currentRevision,
       },
       member: {
@@ -618,6 +681,44 @@ describe("account asset contracts", () => {
     if (result.stockTokens.status !== "current") {
       throw new TypeError("Expected current Stock Tokens.");
     }
+    expect(() => accountAssetOverviewQueryContract.parsePublicSuccess({}, {
+      ...currentOverview,
+      stockTokens: {
+        ...currentOverview.stockTokens,
+        members: [{
+          status: "selected",
+          asset: {
+            ...currentContractAsset,
+            classification: {
+              ...currentContractAsset.classification,
+              snapshot: {
+                ...currentContractAsset.classification.snapshot,
+                candidateListDigest: `0x${"ff".repeat(32)}`,
+              },
+            },
+          },
+        }, currentOverview.stockTokens.members[1]],
+      },
+    })).toThrow();
+    expect(() => accountAssetOverviewQueryContract.parsePublicSuccess({}, {
+      ...currentOverview,
+      stockTokens: {
+        ...currentOverview.stockTokens,
+        members: [{
+          status: "selected",
+          asset: {
+            ...currentContractAsset,
+            classification: {
+              ...currentContractAsset.classification,
+              snapshot: {
+                ...currentContractAsset.classification.snapshot,
+                memberSetDigest: `0x${"ff".repeat(32)}`,
+              },
+            },
+          },
+        }, currentOverview.stockTokens.members[1]],
+      },
+    })).toThrow();
     expect(() => accountAssetOverviewQueryContract.parsePublicSuccess({}, {
       ...currentOverview,
       stockTokens: {

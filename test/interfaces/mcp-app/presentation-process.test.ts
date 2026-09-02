@@ -8,11 +8,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   canonicalJsonStringify,
   captureCanonicalJson,
+  parseCapabilityInput,
+  parseCapabilitySuccess,
   parseUtcTimestamp,
   type CanonicalJson,
 } from "../../../src/core/index.js";
 import {
   admitPresentationSnapshotResource,
+  createPresentationSnapshotResource,
   presentationSnapshotMetadataKey,
   type PresentationSnapshotResource,
 } from "../../../src/interfaces/mcp-app/contracts.js";
@@ -27,18 +30,31 @@ import {
   type PresentationViewApp,
 } from
   "../../../src/interfaces/mcp-app/view/lifecycle.js";
-import { admitMcpToolResultForDelivery } from "../../../src/interfaces/mcp-result.js";
+import {
+  admitMcpToolResultForDelivery,
+  maximumMcpToolResultUtf8Bytes,
+} from "../../../src/interfaces/mcp-result.js";
 import { ProductDatabase } from "../../../src/runtime/database.js";
 import type { PresentationSnapshotStore } from
   "../../../src/runtime/presentation-snapshot.js";
-import { stockTokenTradeHistoryApplicationContract } from
+import {
+  stockTokenTradeHistoryCapability,
+  stockTokenTradeHistoryMaximumSuccessUtf8Bytes,
+} from
   "../../../src/stock-token-trade-history/contracts.js";
+import {
+  stockTokenTradeHistoryHumanSummary,
+  stockTokenTradeHistoryHumanSummaryUtf8Bytes,
+} from
+  "../../../src/interfaces/stock-token-trade-history-presentation.js";
 import {
   tokenCatalogApplicationContracts,
   tokenSelectionDetailSchema,
 } from "../../../src/token-catalog/client.js";
 import { stockTokenTradeHistoryAvailableFixture } from
   "../stock-token-trade-history-fixture.js";
+import maximumTradeHistorySuccess from
+  "../../stock-token-trade-history/maximum-success.json" with { type: "json" };
 import { capturedCodexCreatingApplicationFailure } from
   "./error-carriage-fixture.js";
 
@@ -60,11 +76,12 @@ const openStore = async (): Promise<PresentationSnapshotStore> => {
   return database.presentationSnapshotStore();
 };
 
-const input = stockTokenTradeHistoryApplicationContract.parseInput({
+const input = parseCapabilityInput(stockTokenTradeHistoryCapability, {
   symbol: "AAPL",
-  window: "1d",
+  period: { count: 1, unit: "day" },
 });
-const tradeHistory = stockTokenTradeHistoryApplicationContract.parsePublicSuccess(
+const tradeHistory = parseCapabilitySuccess(
+  stockTokenTradeHistoryCapability,
   input,
   stockTokenTradeHistoryAvailableFixture(),
 );
@@ -139,6 +156,63 @@ const chunkTool = (
 };
 
 describe("MCP App presentation process", () => {
+  it("delivers the accepted trade-history Core maximum through the production App envelope", async () => {
+    const store = await openStore();
+    const service = new McpAppPresentationService(
+      store,
+      createMcpAppResource("<!doctype html><main>Little John</main>"),
+    );
+    const ordinaryPresented = availableResult(service.present(
+      stockTokenTradeHistoryCapability,
+      input,
+      ordinaryResult(),
+    ));
+    const linkTemplate = ordinaryPresented.content[1];
+    if (linkTemplate?.type !== "resource_link") {
+      throw new TypeError("Production App snapshot link is unavailable.");
+    }
+
+    const maximumInput = parseCapabilityInput(stockTokenTradeHistoryCapability, {
+      symbol: "A".repeat(32),
+      period: { count: 12, unit: "month" },
+    });
+    const maximumSuccess = parseCapabilitySuccess(
+      stockTokenTradeHistoryCapability,
+      maximumInput,
+      maximumTradeHistorySuccess,
+    );
+    const maximumValue = captureCanonicalJson(maximumSuccess);
+    const prepared = store.prepare({
+      contractId: "market.stock_token_trade_history",
+      contractVersion: "1",
+      normalizedInput: maximumInput,
+      admittedResult: maximumValue,
+    });
+    if (prepared.status !== "available") {
+      throw new TypeError("Maximum App envelope fixture was not prepared.");
+    }
+    const resource = createPresentationSnapshotResource(prepared.value, maximumInput);
+    const modelSummary = stockTokenTradeHistoryHumanSummary(maximumSuccess.data);
+    const creatingResult: CallToolResult = {
+      ...ordinaryPresented,
+      structuredContent: maximumValue as Record<string, unknown>,
+      content: [{ type: "text", text: modelSummary }, {
+        ...linkTemplate,
+        name: `presentation_snapshot_${resource.descriptor.snapshotId.slice("sha256:".length)}`,
+        uri: resource.descriptor.snapshotUri,
+      }],
+      _meta: { ...ordinaryPresented._meta, [presentationSnapshotMetadataKey]: resource },
+    };
+    const serializedBytes = new TextEncoder().encode(JSON.stringify(creatingResult)).length;
+
+    expect(new TextEncoder().encode(canonicalJsonStringify(maximumValue))).toHaveLength(595_952);
+    expect(595_952).toBeLessThanOrEqual(stockTokenTradeHistoryMaximumSuccessUtf8Bytes);
+    expect(new TextEncoder().encode(modelSummary).length)
+      .toBeLessThanOrEqual(stockTokenTradeHistoryHumanSummaryUtf8Bytes);
+    expect(serializedBytes).toBeLessThanOrEqual(maximumMcpToolResultUtf8Bytes);
+    expect(admitMcpToolResultForDelivery(creatingResult).status).toBe("admitted");
+  });
+
   it("augments one canonical result with its exact committed snapshot", async () => {
     const store = await openStore();
     let reads = 0;
@@ -159,7 +233,7 @@ describe("MCP App presentation process", () => {
       createMcpAppResource("<!doctype html><main>Little John</main>"),
     );
     const presented = availableResult(service.present(
-      stockTokenTradeHistoryApplicationContract,
+      stockTokenTradeHistoryCapability,
       input,
       ordinaryResult(),
     ));
@@ -198,7 +272,7 @@ describe("MCP App presentation process", () => {
       createMcpAppResource("<!doctype html><main>Little John</main>"),
     );
     expect(service.present(
-      stockTokenTradeHistoryApplicationContract,
+      stockTokenTradeHistoryCapability,
       input,
       ordinaryResult(),
     )).toEqual({
@@ -256,7 +330,7 @@ describe("MCP App presentation process", () => {
     });
   });
 
-  it("rejects mismatched canonical text before preparing a snapshot", async () => {
+  it("requires one nonempty model-visible text projection before preparing a snapshot", async () => {
     const store = await openStore();
     let prepares = 0;
     const countedStore: PresentationSnapshotStore = Object.freeze({
@@ -276,10 +350,10 @@ describe("MCP App presentation process", () => {
       createMcpAppResource("<!doctype html><main>Little John</main>"),
     );
     const changed = ordinaryResult();
-    changed.content = [{ type: "text", text: "{}" }];
+    changed.content = [{ type: "text", text: "" }];
 
     expect(service.present(
-      stockTokenTradeHistoryApplicationContract,
+      stockTokenTradeHistoryCapability,
       input,
       changed,
     )).toEqual({
@@ -328,7 +402,7 @@ describe("MCP App presentation process", () => {
       createMcpAppResource("<!doctype html><main>Little John</main>"),
     );
     const presented = availableResult(service.present(
-      stockTokenTradeHistoryApplicationContract,
+      stockTokenTradeHistoryCapability,
       input,
       ordinaryResult(),
     ));
@@ -441,7 +515,7 @@ describe("MCP App presentation process", () => {
       createMcpAppResource("<!doctype html><main>Little John</main>"),
     );
     const presented = availableResult(service.present(
-      stockTokenTradeHistoryApplicationContract,
+      stockTokenTradeHistoryCapability,
       input,
       ordinaryResult(),
     ));
@@ -479,7 +553,7 @@ describe("MCP App presentation process", () => {
       createMcpAppResource("<!doctype html><main>Little John</main>"),
     );
     const creating = availableResult(service.present(
-      stockTokenTradeHistoryApplicationContract,
+      stockTokenTradeHistoryCapability,
       input,
       ordinaryResult(),
     ));

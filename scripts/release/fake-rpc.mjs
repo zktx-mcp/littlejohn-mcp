@@ -13,7 +13,7 @@ import {
 } from "./uniswap-v2-factory-fixture.mjs";
 
 const blockHash = `0x${"88".repeat(32)}`;
-const blockTimestamp = "0x6a7f5fbc";
+const blockTimestamp = "0x6a8bebf0";
 const blockNumber = "0x20000000000001";
 const maximumRequestBytes = 32 * 1024;
 const caCertificatePath = realpathSync(

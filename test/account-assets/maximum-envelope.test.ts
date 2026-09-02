@@ -21,6 +21,7 @@ import {
 } from "../../src/registry/client.js";
 import {
   officialAssetCandidateListDigest,
+  officialAssetMemberSetDigest,
 } from "../../src/registry/official-asset-contract.js";
 import {
   internalResponseLimitBytes,
@@ -40,10 +41,20 @@ const snapshotRevision = Buffer.alloc(16, 1).toString("base64url");
 const selectionSetRevision = Buffer.alloc(16, 2).toString("base64url");
 const maximumText = "🧪".repeat(128);
 
-const maximumAssets = (count: number) =>
-  Array.from({ length: count }, (_, index) => {
+const maximumAssets = (count: number) => {
+  const members = Array.from({ length: count }, (_, index) => {
     const identity = (index + 1).toString(16);
-    const address = parseEvmAddressInput(`0x${identity.padStart(40, "0")}`);
+    return {
+      assetUid: parseHash32(`0x${identity.padStart(64, "0")}`),
+      contractAddress: parseEvmAddressInput(`0x${identity.padStart(40, "0")}`),
+      sourceName: maximumText,
+      sourceSymbol: maximumText,
+    };
+  });
+  const candidateListDigest = officialAssetCandidateListDigest(members);
+  const memberSetDigest = officialAssetMemberSetDigest(members);
+  return members.map((member, index) => {
+    const address = member.contractAddress;
     const asset = { kind: "erc20" as const, chainId, address };
     const currentMultiplier = maximumEvmBalanceRaw;
     return {
@@ -64,17 +75,13 @@ const maximumAssets = (count: number) =>
           sourceUri: officialAssetSourceDefinition.sourceUri,
           sourceObservedAt: at,
           rawResponseDigest: `0x${"11".repeat(32)}`,
-          memberSetDigest: `0x${"22".repeat(32)}`,
+          memberSetDigest,
+          candidateListDigest,
           revision: snapshotRevision,
         },
-        member: {
-          assetUid: parseHash32(`0x${identity.padStart(64, "0")}`),
-          contractAddress: address,
-          sourceName: maximumText,
-          sourceSymbol: maximumText,
-        },
+        member,
         verification: {
-          assetUid: parseHash32(`0x${identity.padStart(64, "0")}`),
+          assetUid: member.assetUid,
           contractAddress: address,
           block,
           proxyAddress: stockFactoryAdmissionManifest.proxyAddress,
@@ -99,6 +106,7 @@ const maximumAssets = (count: number) =>
       },
     };
   });
+};
 
 export const verifyMaximumAccountAssetEnvelope = (): number => {
   const assets = maximumAssets(accountAssetLimits.maximumPageSize);

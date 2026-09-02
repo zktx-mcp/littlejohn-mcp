@@ -31,7 +31,7 @@ const createCapabilityProjectionSchemaSet = () => {
   const capabilitySchemaProjection = jsonObject({
       capabilityId: createCapabilityIdSchema(),
       contractVersion: z.literal("1"),
-      maximumSuccessUtf8Bytes: z.literal(maximumSuccessUtf8Bytes),
+      maximumSuccessUtf8Bytes: z.number().int().positive().safe().max(maximumSuccessUtf8Bytes),
       input: projectedSchema,
       data: projectedSchema,
       success: projectedSchema,

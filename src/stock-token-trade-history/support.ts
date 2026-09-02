@@ -5,12 +5,12 @@ import {
 } from "../runtime/support-manifest.js";
 import { stockTokenTradeHistoryCapabilityIds } from "./contracts.js";
 
-const available = Object.freeze({
-  overall: "available" as const,
+const internalAvailability = Object.freeze({
+  overall: "internal" as const,
   direct: "internal" as const,
-  http: "available" as const,
-  mcp: "available" as const,
-  cli: "available" as const,
+  http: "unavailable" as const,
+  mcp: "unavailable" as const,
+  cli: "unavailable" as const,
 });
 
 export const extendStockTokenTradeHistorySupportManifest = (
@@ -19,7 +19,7 @@ export const extendStockTokenTradeHistorySupportManifest = (
   extendStockTokenTradeHistoryRuntimeSupportManifest(parent, {
     registrations: stockTokenTradeHistoryCapabilityIds.map((capabilityId) => ({
       capabilityId,
-      availability: available,
+      availability: internalAvailability,
     })),
     changes: [],
   });

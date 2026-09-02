@@ -1,10 +1,4 @@
 export {
-  marketTimeWindowDefinitions,
-  marketTimeWindowSchema,
-  maximumMarketTimeWindowMilliseconds,
-} from "./market-time-window.js";
-export type { MarketTimeWindow } from "./market-time-window.js";
-export {
   compareExactRationals,
   createExactRational,
   exactRationalMaximumDigits,
@@ -208,7 +202,6 @@ export type {
   CapabilityInput,
   DataValidationContext,
   IntrinsicDataValidationContext,
-  ReadCapabilityEvidence,
   ReadCapabilityDefinition,
   SuccessValidationContext,
 } from "./capability.js";
@@ -218,6 +211,7 @@ export {
 } from "./capability-execution.js";
 export type {
   CapabilityBinding,
+  CapabilityExecutionOwnerPort,
   ObservationWriter,
 } from "./capability-execution.js";
 export {

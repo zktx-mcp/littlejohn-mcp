@@ -10,6 +10,8 @@ import {
   transactionInspectCapability,
   walletConnectionCapability,
   type AnyReadCapabilityDefinition,
+  type CapabilityData,
+  type CapabilitySuccess,
 } from "../core/index.js";
 import { chainErrorRegistry, chainInterfaceErrorMappings } from "../chain/errors.js";
 import {
@@ -21,8 +23,7 @@ import {
   type AnyAccountAssetApplicationContract,
 } from "../account-assets/index.js";
 import {
-  stockTokenTradeHistoryApplicationContract,
-  stockTokenTradeHistoryCapabilityId,
+  stockTokenTradeHistoryCapability,
   stockTokenTradeHistoryErrorRegistry,
   stockTokenTradeHistoryInterfaceErrorMappings,
 } from "../stock-token-trade-history/index.js";
@@ -45,6 +46,8 @@ import {
 } from "../token-catalog/index.js";
 import { walletErrorRegistry, walletInterfaceErrorMappings } from "../wallet/errors.js";
 import type { CanonicalDispatchAuthority } from "./http-client.js";
+import { stockTokenTradeHistoryHumanSummary } from
+  "./stock-token-trade-history-presentation.js";
 import {
   createLocalOperationIdentity,
 } from "./local-operation.js";
@@ -75,8 +78,10 @@ export interface CliInterfaceIdentity {
   readonly argumentSyntax: string;
 }
 
-export interface ReadInterfaceIdentity {
-  readonly definition: AnyReadCapabilityDefinition;
+export interface ReadInterfaceIdentity<
+  Definition extends AnyReadCapabilityDefinition = AnyReadCapabilityDefinition,
+> {
+  readonly definition: Definition;
   readonly capabilityId: ReturnType<typeof getCapabilityDefinitionSnapshot>["capabilityId"];
   readonly http: Readonly<{ method: "GET" | "POST"; path: string }>;
   readonly mcp: Readonly<{
@@ -86,6 +91,9 @@ export interface ReadInterfaceIdentity {
   }>;
   readonly cli: Readonly<CliInterfaceIdentity>;
   readonly responseAuthority: CanonicalDispatchAuthority;
+  readonly projectSuccessText?: (
+    success: CapabilitySuccess<CapabilityData<Definition>>,
+  ) => string;
 }
 
 const chainResponseAuthority = Object.freeze({
@@ -128,7 +136,10 @@ const identity = <Definition extends AnyReadCapabilityDefinition>(input: {
   };
   readonly cli: ReadInterfaceIdentity["cli"];
   readonly responseAuthority: CanonicalDispatchAuthority;
-}): ReadInterfaceIdentity & { readonly definition: Definition } => Object.freeze({
+  readonly projectSuccessText?: (
+    success: CapabilitySuccess<CapabilityData<Definition>>,
+  ) => string;
+}): ReadInterfaceIdentity<Definition> => Object.freeze({
   definition: input.definition,
   capabilityId: getCapabilityDefinitionSnapshot(input.definition).capabilityId,
   http: Object.freeze(input.http),
@@ -139,6 +150,9 @@ const identity = <Definition extends AnyReadCapabilityDefinition>(input: {
   }),
   cli: Object.freeze(input.cli),
   responseAuthority: input.responseAuthority,
+  ...(input.projectSuccessText === undefined
+    ? {}
+    : { projectSuccessText: input.projectSuccessText }),
 });
 
 export const chainStatusInterface = identity({
@@ -241,10 +255,28 @@ export const uniswapV2QuoteInterface = identity({
   responseAuthority: uniswapV2ResponseAuthority,
 });
 
+export const stockTokenTradeHistoryInterface = identity({
+  definition: stockTokenTradeHistoryCapability,
+  http: { method: "POST", path: stockTokenTradeHistoryPublicRoute },
+  mcp: {
+    name: "market_get_stock_token_trade_history",
+    description: "Read finalized Stock Token/USDG trades for one requested period. A partial position with a candle retains the full stored natural interval and may include activity outside represented request bounds; only a complete position with no candle establishes no qualifying Swap.",
+    openWorldHint: true,
+  },
+  cli: {
+    domain: "market",
+    command: "stock-token-trade-history",
+    argumentSyntax: "<symbol> [--period <count> --unit <day|week|month|year>] [--json]",
+  },
+  responseAuthority: stockTokenTradeHistoryResponseAuthority,
+  projectSuccessText: (success) => stockTokenTradeHistoryHumanSummary(success.data),
+});
+
 export const readInterfaceIdentities = Object.freeze([
   accountBalanceInterface,
   chainStatusInterface,
   contractInspectInterface,
+  stockTokenTradeHistoryInterface,
   tokenInspectInterface,
   transactionInspectInterface,
   uniswapV2QuoteInterface,
@@ -265,57 +297,6 @@ export const capabilityCatalogInterface = Object.freeze({
   }),
   responseAuthority: chainResponseAuthority,
 });
-
-export interface StockTokenTradeHistoryInterfaceBinding {
-  readonly action: "get";
-  readonly contract: typeof stockTokenTradeHistoryApplicationContract;
-  readonly responseAuthority: CanonicalDispatchAuthority;
-  readonly http: Readonly<{ method: "POST"; path: string }>;
-  readonly mcp: Readonly<{
-    readonly name: string;
-    readonly description: string;
-    readonly annotations: InterfaceToolAnnotations;
-  }>;
-  readonly cli: Readonly<CliInterfaceIdentity>;
-}
-
-const stockTokenTradeHistoryBinding = <const Binding extends StockTokenTradeHistoryInterfaceBinding>(
-  input: Binding,
-): Readonly<Binding> => {
-  if (input.contract.capabilityId !== stockTokenTradeHistoryCapabilityId) {
-    throw new TypeError("Stock Token trade-history interface action and contract are inconsistent.");
-  }
-  return Object.freeze({
-    ...input,
-    contract: input.contract,
-    responseAuthority: input.responseAuthority,
-    http: Object.freeze(input.http),
-    mcp: Object.freeze(input.mcp),
-    cli: Object.freeze(input.cli),
-  }) as Readonly<Binding>;
-};
-
-export const stockTokenTradeHistoryInterfaceBinding = stockTokenTradeHistoryBinding({
-    action: "get",
-    contract: stockTokenTradeHistoryApplicationContract,
-    responseAuthority: stockTokenTradeHistoryResponseAuthority,
-    http: { method: "POST", path: stockTokenTradeHistoryPublicRoute },
-    mcp: {
-      name: "market_get_stock_token_trade_history",
-      description: "Read finalized Stock Token/USDG trades for one requested period.",
-      annotations: readAnnotations(true),
-    },
-    cli: {
-      domain: "market",
-      command: "stock-token-trade-history",
-      argumentSyntax: "<symbol> [--window <1d|7d|30d>] [--json]",
-    },
-  });
-
-export const stockTokenTradeHistoryInterfaceBindingList:
-  readonly StockTokenTradeHistoryInterfaceBinding[] = Object.freeze([
-    stockTokenTradeHistoryInterfaceBinding,
-  ]);
 
 export interface AccountAssetInterfaceBinding {
   readonly action: "list" | "get";
@@ -473,7 +454,6 @@ export const accountAssetLocalOperationIdentities = Object.freeze({
 export const declaredCliCommandIdentities: readonly CliInterfaceIdentity[] = Object.freeze([
   ...accountAssetInterfaceBindingList.flatMap((entry) => entry.cli === undefined ? [] : [entry.cli]),
   ...readInterfaceIdentities.map((entry) => entry.cli),
-  ...stockTokenTradeHistoryInterfaceBindingList.map((entry) => entry.cli),
   ...tokenCatalogInterfaceBindingList.map((entry) => entry.cli),
   ...operationCliCommandIdentities,
 ].sort((left, right) => compareCodePointSequences(
@@ -498,7 +478,6 @@ export const cliHelpText = [
 export const declaredMcpToolNames = Object.freeze([
   ...accountAssetInterfaceBindingList.flatMap((entry) => entry.mcp === undefined ? [] : [entry.mcp.name]),
   ...readInterfaceIdentities.map((entry) => entry.mcp.name),
-  ...stockTokenTradeHistoryInterfaceBindingList.map((entry) => entry.mcp.name),
   ...tokenCatalogInterfaceBindingList.map((entry) => entry.mcp.name),
   capabilityCatalogInterface.mcp.name,
   ...Object.values(presentationMcpTools),

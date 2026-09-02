@@ -51,9 +51,10 @@ const clientCoreConsumers = new Set([
   "interfaces/mcp-app/view/renderers.ts",
   "interfaces/operation-delivery.ts",
   "stock-token-trade-history/contracts.ts",
+  "stock-token-trade-history/capability-evidence.ts",
+  "stock-token-trade-history/period-contract.ts",
+  "stock-token-trade-history/result.ts",
   "stock-token-trade-history/source-semantics.ts",
-  "stock-token-trade-history/stock-token-trade-history-data.ts",
-  "stock-token-trade-history/stock-token-trade-history.ts",
   "protocols/contracts.ts",
   "protocols/registry.ts",
   "protocols/uniswap-v2/contracts.ts",
@@ -953,7 +954,7 @@ const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRu
       module: registryClientEntryModule,
       symbol: "unavailableStockFactoryResultSchema",
       importers: new Set([
-        resolve(sourceRoot, "stock-token-trade-history/stock-token-trade-history.ts"),
+        resolve(sourceRoot, "stock-token-trade-history/result.ts"),
       ]),
       reexporters: new Set<string>(),
     },
@@ -978,7 +979,10 @@ const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRu
     {
       module: robinhoodOfficialAssetSemanticContractModule,
       symbol: "officialAssetMemberSetDigest",
-      importers: new Set([robinhoodOfficialAssetAdapterModule]),
+      importers: new Set([
+        resolve(sourceRoot, "account-assets/contracts.ts"),
+        robinhoodOfficialAssetAdapterModule,
+      ]),
       reexporters: new Set<string>(),
     },
     {
@@ -989,6 +993,12 @@ const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRu
         robinhoodOfficialAssetAdapterModule,
       ]),
       reexporters: new Set<string>(),
+    },
+    {
+      module: robinhoodOfficialAssetSemanticContractModule,
+      symbol: "projectOfficialAssetSnapshotEvidence",
+      importers: new Set<string>(),
+      reexporters: new Set([registryServerEntryModule]),
     },
     {
       module: robinhoodOfficialAssetSourceContractModule,
@@ -1080,6 +1090,15 @@ const externalIntegrationAuthorityRules: readonly ExternalIntegrationAuthorityRu
     },
     {
       module: registryServerEntryModule,
+      symbol: "projectOfficialAssetSnapshotEvidence",
+      importers: new Set([
+        resolve(sourceRoot, "account-assets/application.ts"),
+        resolve(sourceRoot, "stock-token-trade-history/result-builder.ts"),
+      ]),
+      reexporters: new Set<string>(),
+    },
+    {
+      module: registryServerEntryModule,
       symbol: "assertRobinhoodOfficialAssetSourceObservation",
       importers: new Set([resolve(sourceRoot, "runtime/database.ts")]),
       reexporters: new Set<string>(),
@@ -1153,10 +1172,16 @@ const externalIntegrationResultEdges: readonly ExternalIntegrationResultEdge[] =
       sourceSymbol: "assertStockFactoryVerificationResult",
     },
     {
-      file: resolve(sourceRoot, "stock-token-trade-history/stock-token-trade-history.ts"),
-      exportName: "stockTokenTradeHistoryResultSchema",
+      file: resolve(sourceRoot, "stock-token-trade-history/result.ts"),
+      exportName: "stockTokenTradeHistoryDataSchema",
       sourceModule: registryClientEntryModule,
       sourceSymbol: "unavailableStockFactoryResultSchema",
+    },
+    {
+      file: resolve(sourceRoot, "stock-token-trade-history/result-builder.ts"),
+      exportName: "resolveStockTokenTradeHistoryOfficialAsset",
+      sourceModule: registryServerEntryModule,
+      sourceSymbol: "projectOfficialAssetSnapshotEvidence",
     },
   ]);
 
@@ -1256,6 +1281,7 @@ const robinhoodOfficialAssetSemanticContractExports = Object.freeze([
   "officialAssetSourceSnapshotSchema",
   "officialAssetSourceUnavailableReasonSchema",
   "officialAssetSourceUnavailableReasons",
+  "projectOfficialAssetSnapshotEvidence",
   "stockFactoryAdmissionManifest",
   "stockFactoryClassificationUnavailableReasonSchema",
   "stockFactoryClassificationUnavailableReasons",
@@ -1334,6 +1360,7 @@ const registryServerEntryExports = Object.freeze([
   "officialAssetSourceSnapshotSchema",
   "officialAssetSourceUnavailableReasonSchema",
   "officialAssetSourceUnavailableReasons",
+  "projectOfficialAssetSnapshotEvidence",
   "stockFactoryAdmissionManifest",
   "stockFactoryClassificationUnavailableReasonSchema",
   "stockFactoryClassificationUnavailableReasons",
@@ -3142,12 +3169,12 @@ void import("./" + "default-stock-tokens.js");
 
   it("keeps trade-history admission, aggregation, provider, and application entry points in their exact owners", async () => {
     const expectedOwners = new Map<string, string>([
-      ["stockTokenTradeHistoryApplicationContract", "stock-token-trade-history/contracts.ts"],
-      ["stockTokenTradeHistoryChartWindowDefinitions", "stock-token-trade-history/stock-token-trade-history-data.ts"],
-      ["stockTokenTradeHistoryRegistry", "stock-token-trade-history/stock-token-trade-history-data.ts"],
-      ["createStockTokenTradeHistoryData", "stock-token-trade-history/stock-token-trade-history-data.ts"],
-      ["createGitHubStockTokenTradeHistory", "stock-token-trade-history/github-stock-token-trade-history.ts"],
-      ["StockTokenTradeHistoryApplication", "stock-token-trade-history/application.ts"],
+      ["stockTokenTradeHistoryCapability", "stock-token-trade-history/contracts.ts"],
+      ["selectStockTokenTradeHistoryResolution", "stock-token-trade-history/source-semantics.ts"],
+      ["createStockTokenTradeHistoryArchiveResult", "stock-token-trade-history/result-builder.ts"],
+      ["createGitHubStockTokenTradeHistoryTransport", "stock-token-trade-history/github-source.ts"],
+      ["createStockTokenTradeHistoryApplication", "stock-token-trade-history/application.ts"],
+      ["createStockTokenTradeHistorySource", "stock-token-trade-history/source.ts"],
     ]);
     const observedOwners = new Map(
       [...expectedOwners.keys()].map((name) => [name, new Set<string>()]),
@@ -3862,6 +3889,8 @@ void createEscapedRuntimeStateResetRequiredError;
       "resolveStockTokenMarketAsset",
       "stockTokenHistoryInterval",
       "stale_index",
+      "maximumMarketTimeWindowMilliseconds",
+      "stockTokenTradeHistoryApplicationContract",
     ]) {
       expect(sources.filter((entry) => entry.source.includes(obsolete)), obsolete).toEqual([]);
     }
@@ -3875,14 +3904,15 @@ void createEscapedRuntimeStateResetRequiredError;
       "interfaces/market-portfolio-cli.ts",
       "interfaces/market-portfolio-http.ts",
       "interfaces/mcp-app/view/execution-chart.ts",
+      "core/market-time-window.ts",
+      "stock-token-trade-history/github-stock-token-trade-history.ts",
+      "stock-token-trade-history/stock-token-trade-history-data.ts",
+      "stock-token-trade-history/stock-token-trade-history-file.ts",
+      "stock-token-trade-history/stock-token-trade-history-registry.generated.ts",
+      "stock-token-trade-history/stock-token-trade-history-registry.json",
+      "stock-token-trade-history/stock-token-trade-history.ts",
     ]) expect(productPaths).not.toContain(obsoletePath);
     expect(productPaths.some((path) => path.startsWith("market-portfolio/"))).toBe(false);
-    const tradeHistory = await readFile(
-      resolve(sourceRoot, "stock-token-trade-history/stock-token-trade-history-data.ts"),
-      "utf8",
-    );
-    expect(tradeHistory).toContain("maximumMarketTimeWindowMilliseconds");
-    expect(tradeHistory).not.toContain("referenceHistoryWindowDefinitions");
   });
 
   it("keeps chain invocation, opaque-block, observation, and token-inspection authority in their exact owners", async () => {

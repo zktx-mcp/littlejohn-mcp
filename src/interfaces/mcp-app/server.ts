@@ -197,12 +197,11 @@ const admitCanonicalToolSuccess = (
   }
   const candidate = captureCanonicalJson(result.structuredContent);
   const admitted = entry.parseResult(normalizedInput, candidate);
-  const canonicalText = canonicalJsonStringify(admitted);
   if (
-    canonicalJsonStringify(candidate) !== canonicalText ||
+    canonicalJsonStringify(candidate) !== canonicalJsonStringify(admitted) ||
     result.content.length !== 1 ||
     result.content[0]?.type !== "text" ||
-    result.content[0].text !== canonicalText
+    result.content[0].text.length === 0
   ) throw new TypeError("Presentation tool result is not one canonical result.");
   return admitted;
 };

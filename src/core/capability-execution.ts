@@ -43,6 +43,7 @@ import {
 } from "./evidence-replay.js";
 import {
   applicationFailureIssueLimit,
+  applicationFailureSchemaFor,
   assertApplicationErrorRegistry,
   createApplicationFailure,
   fieldIssuesFromInputError,
@@ -355,6 +356,15 @@ export interface CapabilityBinding<Definition extends AnyReadCapabilityDefinitio
   readonly [capabilityBindingType]: Definition;
 }
 
+type AnyCapabilityExecutionResult = CapabilitySuccess<unknown> | ApplicationFailure;
+
+export interface CapabilityExecutionOwnerPort {
+  execute<Result extends AnyCapabilityExecutionResult>(
+    callerSignal: AbortSignal,
+    operation: (signal: AbortSignal) => Promise<Result>,
+  ): Promise<Result>;
+}
+
 type AnyCapabilityBinding = CapabilityBinding<AnyReadCapabilityDefinition>;
 
 interface BindingRecord<
@@ -364,6 +374,7 @@ interface BindingRecord<
   readonly definition: Definition;
   readonly errorRegistry: ApplicationErrorRegistry;
   readonly invocationAuthority: CapabilityInvocationAuthority;
+  readonly executionOwner?: CapabilityExecutionOwnerPort;
   readonly createInvocationPorts: (input: CapabilityInput<Definition>) => Ports;
   readonly handler: (
     input: CapabilityInput<Definition>,
@@ -383,6 +394,7 @@ const captureBindingRecord = <
       "definition",
       "errorRegistry",
       "invocationAuthority",
+      ...(descriptors.executionOwner === undefined ? [] : ["executionOwner"]),
       "createInvocationPorts",
       "handler",
     ] as const;
@@ -408,17 +420,27 @@ const captureBindingRecord = <
     const definition = descriptors.definition?.value as Definition;
     const errorRegistry = descriptors.errorRegistry?.value as ApplicationErrorRegistry;
     const invocationAuthority = descriptors.invocationAuthority?.value as CapabilityInvocationAuthority;
+    const executionOwner = descriptors.executionOwner?.value as CapabilityExecutionOwnerPort | undefined;
     const createInvocationPorts = descriptors.createInvocationPorts?.value as (
       input: CapabilityInput<Definition>
     ) => Ports;
     const handler = descriptors.handler?.value as BindingRecord<Definition, Ports>["handler"];
-    if (typeof createInvocationPorts !== "function" || typeof handler !== "function") {
+    if (
+      typeof createInvocationPorts !== "function" ||
+      typeof handler !== "function" ||
+      (executionOwner !== undefined && (
+        typeof executionOwner !== "object" ||
+        executionOwner === null ||
+        typeof executionOwner.execute !== "function"
+      ))
+    ) {
       throw new TypeError();
     }
     return Object.freeze({
       definition,
       errorRegistry,
       invocationAuthority,
+      ...(executionOwner === undefined ? {} : { executionOwner }),
       createInvocationPorts,
       handler,
     });
@@ -618,6 +640,40 @@ const executeCapabilityBinding = async <Definition extends AnyReadCapabilityDefi
   }
 };
 
+const executeOwnedCapabilityBinding = async <Definition extends AnyReadCapabilityDefinition>(
+  record: BindingRecord<Definition, InvocationBoundaryPorts>,
+  input: unknown,
+  signal: AbortSignal,
+): Promise<CapabilitySuccess<CapabilityData<Definition>> | ApplicationFailure> => {
+  const owner = record.executionOwner;
+  if (owner === undefined) return executeCapabilityBinding(record, input, signal);
+  let started = false;
+  let completed: CapabilitySuccess<CapabilityData<Definition>> | ApplicationFailure | undefined;
+  const operation = async (ownedSignal: AbortSignal) => {
+    if (started) throw new TypeError("Capability execution operation was started more than once.");
+    started = true;
+    completed = await executeCapabilityBinding(record, input, ownedSignal);
+    return completed;
+  };
+  let result: CapabilitySuccess<CapabilityData<Definition>> | ApplicationFailure;
+  try {
+    result = await owner.execute(signal, operation);
+  } catch {
+    return internalFailure(record.errorRegistry);
+  }
+  if (result.ok === false) {
+    const definition = readCapabilityExecutionDefinition(record.definition);
+    const failure = applicationFailureSchemaFor(
+      record.errorRegistry,
+      definition.failureCodes,
+    ).safeParse(result);
+    return failure.success ? failure.data : internalFailure(record.errorRegistry);
+  }
+  return completed !== undefined && result === completed
+    ? result
+    : internalFailure(record.errorRegistry);
+};
+
 export class CapabilityBindingRegistry {
   readonly #definitions: CapabilityRegistry;
   readonly #bindings: readonly AnyCapabilityBinding[];
@@ -666,7 +722,7 @@ export class CapabilityBindingRegistry {
     if (record === undefined || record.definition !== definition) {
       throw new TypeError("Capability binding is not registered for the exact definition.");
     }
-    return executeCapabilityBinding(record, input, call.signal) as Promise<
+    return executeOwnedCapabilityBinding(record, input, call.signal) as Promise<
       CapabilitySuccess<CapabilityData<Definition>> | ApplicationFailure
     >;
   }

@@ -166,7 +166,6 @@ type _RuntimeHandleKeys = Assert<Equal<
 type _RuntimeOptionKeys = Assert<Equal<
   keyof LocalRuntimeOptions<TestActiveWallet, TestWalletOperations>,
   "environment" | "now" | "robinhoodOfficialAssetSourceClient" |
-    "stockTokenTradeHistory" |
     "contractSourceVerificationFactory" | "walletApplicationFactory" |
     "chainApplicationFactory" | "interfaceApplicationFactory"
 >>;

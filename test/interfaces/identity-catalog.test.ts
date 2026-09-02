@@ -15,7 +15,7 @@ import {
   declaredMcpToolNames,
   interfaceReadCapabilityRegistry,
   readInterfaceIdentities,
-  stockTokenTradeHistoryInterfaceBindingList,
+  stockTokenTradeHistoryInterface,
   tokenCatalogInterfaceBindingList,
 } from "../../src/interfaces/identities.js";
 import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
@@ -33,7 +33,7 @@ import { createControlCredentialVerifier, loadOrCreateControlCredential } from "
 import { createRuntimeRouteRegistry } from "../../src/runtime/http-routing.js";
 import { runtimePaths } from "../../src/runtime/paths.js";
 import {
-  stockTokenTradeHistoryApplicationContract,
+  stockTokenTradeHistoryCapability,
   stockTokenTradeHistoryErrorRegistry,
   stockTokenTradeHistoryInterfaceErrorMappings,
 } from "../../src/stock-token-trade-history/index.js";
@@ -98,12 +98,11 @@ describe("operation interface binding authority", () => {
       expect(binding.responseAuthority.applicationErrors).toBe(tokenCatalogErrorRegistry);
       expect(binding.responseAuthority.interfaceMappings).toBe(accountAssetInterfaceErrorMappings);
     }
-    for (const binding of stockTokenTradeHistoryInterfaceBindingList) {
-      expect(binding.contract).toBe(stockTokenTradeHistoryApplicationContract);
-      expect(binding.responseAuthority.applicationErrors).toBe(stockTokenTradeHistoryErrorRegistry);
-      expect(binding.responseAuthority.interfaceMappings)
-        .toBe(stockTokenTradeHistoryInterfaceErrorMappings);
-    }
+    expect(stockTokenTradeHistoryInterface.definition).toBe(stockTokenTradeHistoryCapability);
+    expect(stockTokenTradeHistoryInterface.responseAuthority.applicationErrors)
+      .toBe(stockTokenTradeHistoryErrorRegistry);
+    expect(stockTokenTradeHistoryInterface.responseAuthority.interfaceMappings)
+      .toBe(stockTokenTradeHistoryInterfaceErrorMappings);
     expect(tokenCatalogInterfaceBindingList.map((binding) => binding.contract)).toEqual([
       tokenCatalogApplicationContracts.selection,
       tokenCatalogApplicationContracts.selections,
@@ -111,7 +110,6 @@ describe("operation interface binding authority", () => {
 
     for (const binding of [
       ...accountAssetInterfaceBindingList,
-      ...stockTokenTradeHistoryInterfaceBindingList,
       ...tokenCatalogInterfaceBindingList,
     ]) {
       if (binding.mcp !== undefined) {

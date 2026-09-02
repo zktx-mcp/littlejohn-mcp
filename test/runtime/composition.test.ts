@@ -7,9 +7,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AccountAssetOperationError } from "../../src/account-assets/errors.js";
 import { extendAccountAssetSupportManifest } from "../../src/account-assets/support.js";
 import {
-  StockTokenTradeHistoryOperationError,
   extendStockTokenTradeHistorySupportManifest,
-  type StockTokenTradeHistoryApplicationPort,
+  stockTokenTradeHistoryCapability,
+  stockTokenTradeHistoryErrorRegistry,
 } from "../../src/stock-token-trade-history/index.js";
 import type { AccountAssetApplicationPort } from "../../src/account-assets/ports.js";
 import {
@@ -180,9 +180,17 @@ const createTestAccountAssetStage = <ActiveWallet extends object>(
   close: async () => { close(); },
 });
 
-const tradeHistoryFailure = new StockTokenTradeHistoryOperationError("internal_error").failure;
-const testTradeHistory: StockTokenTradeHistoryApplicationPort = Object.freeze({
-  get: async () => tradeHistoryFailure,
+const testTradeHistory = Object.freeze({
+  binding: bindForHarness(
+    stockTokenTradeHistoryCapability,
+    createCapabilityHarness(),
+    async () => Object.freeze({
+      status: "failure" as const,
+      code: "internal_error",
+      issues: Object.freeze([]),
+    }),
+    stockTokenTradeHistoryErrorRegistry,
+  ),
 });
 
 const createTestTradeHistoryStage = <ActiveWallet extends object>(
@@ -530,7 +538,7 @@ describe("owner application composition", () => {
         expect(Reflect.ownKeys(accountAssets.accountAssets).sort())
           .toEqual(["get", "getOverview", "list"]);
         expect(Reflect.ownKeys(tradeHistory.tradeHistory).sort())
-          .toEqual(["get"]);
+          .toEqual(["binding"]);
         return {
           routes: interfaceRoutes,
           supportManifest: extendTestInterfaceSupportManifest(supportManifest),

@@ -5,9 +5,8 @@ import { stockTokenTradeHistorySourceLimits } from
 import { parseBaseResolutionFile } from
   "../../src/stock-token-trade-history/source-files.js";
 import {
-  assertStockTokenTradeHistoryPoolFacts,
+  assertStockTokenTradeHistoryPoolIdentity,
   deriveStockTokenTradeHistoryPoolId,
-  stockTokenTradeHistoryPoolFactsSchema,
   stockTokenTradeHistoryPoolKeySchema,
   stockTokenTradeHistorySourceIdentity,
 } from "../../src/stock-token-trade-history/source-semantics.js";
@@ -69,7 +68,7 @@ const parse = (value: unknown, baseDecimals = 255) => parseBaseResolutionFile(
 );
 
 describe("Stock Token trade-history source numeric admission", () => {
-  it("binds Pool facts to the exact derived PoolId", () => {
+  it("binds the complete PoolKey to the exact derived PoolId", () => {
     const poolKey = stockTokenTradeHistoryPoolKeySchema.parse({
       currency0: stockTokenTradeHistorySourceIdentity.usdgAddress,
       currency1: baseAddress,
@@ -77,24 +76,18 @@ describe("Stock Token trade-history source numeric admission", () => {
       hooks: "0x0000000000000000000000000000000000000000",
       tickSpacing: 60,
     });
-    const facts = stockTokenTradeHistoryPoolFactsSchema.parse({
-      historyFrom: { blockNumber: "10", timestamp: "2026-08-01T00:00:00.000Z" },
-      initialize: { blockNumber: "9", timestamp: "2026-07-31T23:59:30.000Z" },
-      poolKey,
-      sourceFrom: { blockNumber: "9", timestamp: "2026-07-31T23:59:00.000Z" },
-    });
     const derivedPoolId = deriveStockTokenTradeHistoryPoolId(poolKey);
 
-    expect(() => assertStockTokenTradeHistoryPoolFacts({
+    expect(() => assertStockTokenTradeHistoryPoolIdentity({
       poolId: derivedPoolId,
       baseCurrencyAddress: baseAddress,
-      facts,
+      poolKey,
     })).not.toThrow();
-    expect(() => assertStockTokenTradeHistoryPoolFacts({
+    expect(() => assertStockTokenTradeHistoryPoolIdentity({
       poolId: `0x${"1".repeat(64)}`,
       baseCurrencyAddress: baseAddress,
-      facts,
-    })).toThrow("Pool facts are invalid.");
+      poolKey,
+    })).toThrow("Pool identity is invalid.");
   });
 
   it("admits the reachable exact numeric maxima", () => {

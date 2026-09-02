@@ -7,10 +7,6 @@ import {
   type AnyAccountAssetApplicationContract,
 } from "../account-assets/index.js";
 import {
-  stockTokenTradeHistoryApplicationContract,
-  stockTokenTradeHistoryErrorRegistry,
-} from "../stock-token-trade-history/index.js";
-import {
   CallToolRequestSchema,
   ListResourcesRequestSchema,
   ListToolsRequestSchema,
@@ -60,14 +56,12 @@ import {
   declaredMcpToolNames,
   interfaceReadCapabilityRegistry,
   readInterfaceIdentities,
-  stockTokenTradeHistoryInterfaceBindingList,
   tokenCatalogInterfaceBindings,
   tokenLocalReadIdentities,
   type TokenCatalogInterfaceBinding,
   type AccountAssetInterfaceBinding,
   type InterfaceToolAnnotations,
   type ReadInterfaceIdentity,
-  type StockTokenTradeHistoryInterfaceBinding,
 } from "./identities.js";
 import { LocalOperationClient } from "./operation-client.js";
 import {
@@ -76,7 +70,6 @@ import {
   type DeliveryUnknown,
 } from "./operation-delivery.js";
 import { interfaceCapabilityCatalogSchema } from "./support.js";
-import { dispatchStockTokenTradeHistoryRead } from "./stock-token-trade-history-http.js";
 import {
   resolveLocalOperationIdentity,
 } from "./local-operation.js";
@@ -167,6 +160,7 @@ interface McpToolDefinition {
   readonly presentationContract?: object;
   readonly presentationTool?: "get_snapshot" | "get_snapshot_chunk";
   readonly operationBinding?: OperationInterfaceBinding;
+  readonly projectSuccessText?: (success: CanonicalJson) => string;
   readonly parseInput: (value: unknown) => unknown;
   readonly invoke: (input: unknown, signal: AbortSignal) => Promise<McpInvocationResult>;
 }
@@ -334,7 +328,6 @@ const capabilityOutputSchema = (
 
 type InterfaceApplicationContract =
   | AnyAccountAssetApplicationContract
-  | typeof stockTokenTradeHistoryApplicationContract
   | AnyWalletManagementContract
   | AnyTokenCatalogApplicationContract;
 
@@ -466,6 +459,12 @@ const readTool = (
     annotations: annotations(identity.mcp.annotations),
     visibility: ["model"],
     createsView: presented,
+    ...(identity.projectSuccessText === undefined
+      ? {}
+      : {
+          projectSuccessText: (success: CanonicalJson) =>
+            identity.projectSuccessText!(success as never),
+        }),
     parseInput: (value: unknown) => parseCapabilityInput(identity.definition, value),
     invoke: async (value: unknown, signal: AbortSignal) => {
       const result = await publicRead(
@@ -606,26 +605,6 @@ const accountAssetTool = (
 }, presentationContractRegistry.forContract(binding.contract) === undefined
   ? undefined : binding.contract);
 
-const stockTokenTradeHistoryTool = (
-  runtime: RuntimeDispatchPort,
-  binding: StockTokenTradeHistoryInterfaceBinding,
-): McpToolDefinition => definePresentedTool({
-    name: parseMcpToolName(binding.mcp.name),
-    description: binding.mcp.description,
-    inputSchema: contractInputSchema(binding.contract),
-    outputSchema: contractOutputSchema(binding.contract, stockTokenTradeHistoryErrorRegistry),
-    failureCodes: binding.contract.failureCodes,
-    annotations: annotations(binding.mcp.annotations),
-    visibility: ["model"],
-    createsView: presentationContractRegistry.forContract(binding.contract) !== undefined,
-    parseInput: (value: unknown): unknown => validateLocalToolInput(binding.contract.parseInput, value),
-    invoke: async (value: unknown, signal: AbortSignal): Promise<McpInvocationResult> => {
-      const result = await dispatchStockTokenTradeHistoryRead(runtime, binding, value, signal);
-      return "status" in result || !result.ok ? result : success(result.value);
-    },
-  }, presentationContractRegistry.forContract(binding.contract) === undefined
-    ? undefined : binding.contract);
-
 const presentationSnapshotInputSchema = z.object({
   snapshotUri: presentationSnapshotUriSchema,
 }).strict();
@@ -705,8 +684,6 @@ const createToolDefinitions = (
   ...accountAssetInterfaceBindingList
     .filter((binding) => binding.mcp !== undefined)
     .map((binding) => accountAssetTool(client, binding)),
-  ...stockTokenTradeHistoryInterfaceBindingList.map((binding) =>
-    stockTokenTradeHistoryTool(runtime, binding)),
   Object.freeze({
     name: parseMcpToolName(capabilityCatalogInterface.mcp.name),
     description: capabilityCatalogInterface.mcp.description,
@@ -776,20 +753,33 @@ export const createMcpToolRegistry = (
   createToolDefinitions(runtime, client, presentation),
 );
 
-const canonicalToolResult = (value: CanonicalJson, isError: boolean): CallToolResult => ({
+const canonicalToolResult = (
+  value: CanonicalJson,
+  isError: boolean,
+  successText?: string,
+): CallToolResult => ({
   ...(isError ? { isError: true } : {}),
   structuredContent: value as Record<string, unknown>,
-  content: [{ type: "text", text: canonicalJsonStringify(value) }],
+  content: [{ type: "text", text: successText ?? canonicalJsonStringify(value) }],
 });
 
-const toolResult = (result: McpInvocationResult): CallToolResult => {
+const toolResult = (
+  result: McpInvocationResult,
+  projectSuccessText?: (success: CanonicalJson) => string,
+): CallToolResult => {
   const deliveryUnknown = "status" in result;
   const value = deliveryUnknown
     ? result as unknown as CanonicalJson
     : result.ok
       ? result.value
       : result.failure as unknown as CanonicalJson;
-  return canonicalToolResult(value, deliveryUnknown || !result.ok);
+  return canonicalToolResult(
+    value,
+    deliveryUnknown || !result.ok,
+    !deliveryUnknown && result.ok && projectSuccessText !== undefined
+      ? projectSuccessText(value)
+      : undefined,
+  );
 };
 
 const internalToolResult = (definition: McpToolDefinition): CallToolResult => toolResult(
@@ -812,7 +802,10 @@ const constrainedToolResult = (
       return internalToolResult(definition);
     }
   }
-  return toolResult(constrainInterfaceFailure(result, definition.failureCodes));
+  return toolResult(
+    constrainInterfaceFailure(result, definition.failureCodes),
+    definition.projectSuccessText,
+  );
 };
 
 const attachPrivateMetadata = (

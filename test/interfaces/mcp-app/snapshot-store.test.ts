@@ -9,12 +9,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   canonicalJsonStringify,
   captureCanonicalJson,
+  getCapabilityDefinitionSnapshot,
+  parseCapabilityInput,
+  parseCapabilitySuccess,
   parseUtcTimestamp,
   type CanonicalJson,
 } from "../../../src/core/index.js";
 import { ProductDatabase } from "../../../src/runtime/database.js";
 import { presentationSnapshotLimits } from "../../../src/runtime/presentation-snapshot.js";
-import { stockTokenTradeHistoryApplicationContract } from
+import { stockTokenTradeHistoryCapability } from
   "../../../src/stock-token-trade-history/contracts.js";
 import { stockTokenTradeHistoryAvailableFixture } from
   "../stock-token-trade-history-fixture.js";
@@ -74,18 +77,20 @@ const availableValue = <Value>(
 describe("presentation snapshot store", () => {
   it("reloads the exact admitted Stock Token source siblings without a market read port", async () => {
     const opened = await openDatabase();
-    const input = stockTokenTradeHistoryApplicationContract.parseInput({
+    const input = parseCapabilityInput(stockTokenTradeHistoryCapability, {
       symbol: "AAPL",
-      window: "1d",
+      period: { count: 1, unit: "day" },
     });
-    const result = stockTokenTradeHistoryApplicationContract.parsePublicSuccess(
+    const result = parseCapabilitySuccess(
+      stockTokenTradeHistoryCapability,
       input,
       stockTokenTradeHistoryAvailableFixture(),
     );
+    const identity = getCapabilityDefinitionSnapshot(stockTokenTradeHistoryCapability);
     const canonicalResult = captureCanonicalJson(result);
     const committed = availableValue(opened.database.presentationSnapshotStore().commit({
-      contractId: stockTokenTradeHistoryApplicationContract.capabilityId,
-      contractVersion: stockTokenTradeHistoryApplicationContract.contractVersion,
+      contractId: identity.capabilityId,
+      contractVersion: identity.contractVersion,
       normalizedInput: captureCanonicalJson(input),
       admittedResult: canonicalResult,
     }));

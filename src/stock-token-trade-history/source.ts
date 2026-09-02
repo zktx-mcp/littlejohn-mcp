@@ -38,16 +38,21 @@ import {
   type StoredMemberReference,
 } from "./source-files.js";
 import {
+  admitStockTokenTradeHistorySourceResult,
   assertStockTokenTradeHistoryStoredCandleSequence,
+  coalesceStockTokenTradeHistoryCoverage,
+  deriveStockTokenTradeHistorySourceRequirements,
   stockTokenTradeHistoryLogicalId,
+  stockTokenTradeHistoryOwnerMonths,
   stockTokenTradeHistoryAvailableSourceSchema,
   stockTokenTradeHistoryUnavailableSourceSchema,
   type StockTokenTradeHistoryAvailableSource,
   type StockTokenTradeHistoryCoverageSegment,
-  type StockTokenTradeHistoryPoolFacts,
+  type StockTokenTradeHistoryPoolKey,
   type StockTokenTradeHistorySelectedBase,
-  type StockTokenTradeHistorySelectedOwnerMonth,
+  type StockTokenTradeHistorySelectedMember,
   type StockTokenTradeHistorySelectedRoot,
+  type StockTokenTradeHistorySourceRequirements,
   type StockTokenTradeHistorySourceReason,
   type StockTokenTradeHistorySourceResult,
   type StockTokenTradeHistorySourceScope,
@@ -72,6 +77,13 @@ class SourceLaterMemberAbort extends Error {
   constructor() {
     super("A later Stock Token trade-history member is no longer needed.");
     this.name = "SourceLaterMemberAbort";
+  }
+}
+
+class SourceDeadlineAbort extends Error {
+  constructor() {
+    super("The Stock Token trade-history source deadline elapsed.");
+    this.name = "SourceDeadlineAbort";
   }
 }
 
@@ -160,12 +172,12 @@ const mapConcurrently = async <Input, Output>(
         : [candidate];
     });
     const primary = primaryCandidates.find((error) =>
-      !(error instanceof SourceTerminal && error.origin === "deadline")) ?? primaryCandidates[0];
+      error instanceof SourceTerminal && error.origin === "deadline") ?? primaryCandidates[0];
     const cleanupFailures = cleanupErrors.flatMap((error) => error.cleanupFailures);
     throw new StockTokenTradeHistoryProviderCleanupError(cleanupFailures, primary);
   }
   const first = orderedFailures.find((error) =>
-    !(error instanceof SourceTerminal && error.origin === "deadline")) ?? orderedFailures[0];
+    error instanceof SourceTerminal && error.origin === "deadline") ?? orderedFailures[0];
   if (first !== undefined) throw first;
   return Object.freeze(outputs);
 };
@@ -180,16 +192,16 @@ const observedAt = (now: () => Date): UtcTimestamp => {
   );
 };
 
-const terminalResult = (
+const sourceTerminal = (
   reason: StockTokenTradeHistorySourceReason,
   scope: StockTokenTradeHistorySourceScope,
   state: SourceState,
   now: () => Date,
   origin: "source" | "deadline" = "source",
-): never => {
+): SourceTerminal => {
   const sourceObservedAt = observedAt(now);
   if (scope === "catalog_root") {
-    throw new SourceTerminal(deepFreezeValue(
+    return new SourceTerminal(deepFreezeValue(
       stockTokenTradeHistoryUnavailableSourceSchema.parse({
       status: "unavailable",
       reason,
@@ -202,7 +214,7 @@ const terminalResult = (
     throw new TypeError("Selected source scope has no admitted root.");
   }
   if (scope === "selected_base") {
-    throw new SourceTerminal(deepFreezeValue(
+    return new SourceTerminal(deepFreezeValue(
       stockTokenTradeHistoryUnavailableSourceSchema.parse({
       status: "unavailable",
       reason,
@@ -215,7 +227,7 @@ const terminalResult = (
   if (state.base === undefined) {
     throw new TypeError("Selected-period source scope has no admitted base.");
   }
-  throw new SourceTerminal(deepFreezeValue(
+  return new SourceTerminal(deepFreezeValue(
     stockTokenTradeHistoryUnavailableSourceSchema.parse({
     status: "unavailable",
     reason,
@@ -225,6 +237,16 @@ const terminalResult = (
     base: state.base,
     }),
   ), origin);
+};
+
+const terminalResult = (
+  reason: StockTokenTradeHistorySourceReason,
+  scope: StockTokenTradeHistorySourceScope,
+  state: SourceState,
+  now: () => Date,
+  origin: "source" | "deadline" = "source",
+): never => {
+  throw sourceTerminal(reason, scope, state, now, origin);
 };
 
 const reserveCounter = (
@@ -389,7 +411,10 @@ const validateStateAgainstRoot = (
       throw new StockTokenTradeHistorySourceIntegrityError();
     }
   }
-  const expectedMonths = ownerMonths(first.fromTimestamp, currentUntil.timestamp);
+  const expectedMonths = stockTokenTradeHistoryOwnerMonths(
+    first.fromTimestamp,
+    currentUntil.timestamp,
+  );
   const recordedMonths = state.months.map((reference) => reference.logicalId.slice(-7));
   if (expectedMonths.length !== recordedMonths.length ||
       expectedMonths.some((month, index) => month !== recordedMonths[index])) {
@@ -435,42 +460,6 @@ const nextOwnerMonth = (ownerMonth: string): string => {
   const next = new Date(`${ownerMonth}-01T00:00:00.000Z`);
   next.setUTCMonth(next.getUTCMonth() + 1);
   return next.toISOString().slice(0, 7);
-};
-
-const sameCoverageBoundary = (
-  leftTimestamp: string,
-  leftBlock: string,
-  rightTimestamp: string,
-  rightBlock: string,
-): boolean => leftTimestamp === rightTimestamp && leftBlock === rightBlock;
-
-const mergeAdjacentCoverage = (
-  coverage: readonly StockTokenTradeHistoryCoverageSegment[],
-): readonly StockTokenTradeHistoryCoverageSegment[] => {
-  validateCoverageSequence(coverage);
-  const merged: StockTokenTradeHistoryCoverageSegment[] = [];
-  for (const segment of coverage) {
-    const previous = merged.at(-1);
-    if (
-      previous !== undefined &&
-      previous.poolId === segment.poolId &&
-      sameCoverageBoundary(
-        previous.untilTimestamp,
-        previous.untilBlock,
-        segment.fromTimestamp,
-        segment.fromBlock,
-      )
-    ) {
-      merged[merged.length - 1] = Object.freeze({
-        ...previous,
-        untilTimestamp: segment.untilTimestamp,
-        untilBlock: segment.untilBlock,
-      });
-    } else {
-      merged.push(Object.freeze({ ...segment }));
-    }
-  }
-  return Object.freeze(merged);
 };
 
 const selectedMonthCoverage = (
@@ -523,120 +512,150 @@ const selectedMonthCoverage = (
   return Object.freeze(retained.map((segment) => Object.freeze({ ...segment })));
 };
 
-const selectedResolutionCoverage = (
-  stateCoverage: readonly StockTokenTradeHistoryCoverageSegment[],
-  monthCoverage: readonly StockTokenTradeHistoryCoverageSegment[],
-  resolutions: readonly BaseResolutionFile[],
-): readonly StockTokenTradeHistoryCoverageSegment[] => {
-  const firstMonth = monthCoverage[0];
-  const lastMonth = monthCoverage.at(-1);
-  if (firstMonth === undefined || lastMonth === undefined) {
+const sameStrings = (left: readonly string[], right: readonly string[]): boolean =>
+  left.length === right.length && left.every((value, index) => value === right[index]);
+
+const orderedSubset = (subset: readonly string[], superset: readonly string[]): boolean => {
+  let cursor = 0;
+  for (const value of subset) {
+    const index = superset.indexOf(value, cursor);
+    if (index < 0) return false;
+    cursor = index + 1;
+  }
+  return true;
+};
+
+const sameEligiblePositions = (
+  left: StockTokenTradeHistorySourceRequirements["eligiblePositions"],
+  right: StockTokenTradeHistorySourceRequirements["eligiblePositions"],
+): boolean => left.length === right.length && left.every((position, index) => {
+  const candidate = right[index];
+  return candidate !== undefined &&
+    position.naturalStart === candidate.naturalStart &&
+    position.naturalEnd === candidate.naturalEnd &&
+    position.representedStart === candidate.representedStart &&
+    position.representedEnd === candidate.representedEnd &&
+    position.ownerMonth === candidate.ownerMonth &&
+    position.poolId === candidate.poolId;
+});
+
+const assertSameRequirements = (
+  expected: StockTokenTradeHistorySourceRequirements,
+  actual: StockTokenTradeHistorySourceRequirements,
+): void => {
+  const expectedByStart = new Map(expected.eligiblePositions.map((position) =>
+    [position.naturalStart, position] as const));
+  if (
+    !orderedSubset(actual.coverageOwnerMonths, expected.coverageOwnerMonths) ||
+    !orderedSubset(actual.resolutionOwnerMonths, expected.resolutionOwnerMonths) ||
+    actual.eligiblePositions.some((position) => {
+      const candidate = expectedByStart.get(position.naturalStart);
+      return candidate === undefined || !sameEligiblePositions([position], [candidate]);
+    })
+  ) throw new StockTokenTradeHistorySourceIntegrityError();
+};
+
+const sourceRequirements = (
+  input: StockTokenTradeHistorySourceInput,
+  coverage: readonly StockTokenTradeHistoryCoverageSegment[],
+): StockTokenTradeHistorySourceRequirements => {
+  try {
+    return deriveStockTokenTradeHistorySourceRequirements(input, coverage);
+  } catch {
     throw new StockTokenTradeHistorySourceIntegrityError();
   }
-  const coveredMonths = new Set<number>();
-  for (const resolution of resolutions) {
-    coverageSubset(resolution.coverage, stateCoverage);
-    for (const sourceSegment of resolution.coverage) {
-      const beforeByTime = sourceSegment.untilTimestamp <= firstMonth.fromTimestamp;
-      const beforeByBlock = BigInt(sourceSegment.untilBlock) <= BigInt(firstMonth.fromBlock);
-      if (beforeByTime || beforeByBlock) {
-        if (beforeByTime !== beforeByBlock) {
-          throw new StockTokenTradeHistorySourceIntegrityError();
-        }
-        continue;
-      }
-      const afterByTime = sourceSegment.fromTimestamp >= lastMonth.untilTimestamp;
-      const afterByBlock = BigInt(sourceSegment.fromBlock) >= BigInt(lastMonth.untilBlock);
-      if (afterByTime || afterByBlock) {
-        if (afterByTime !== afterByBlock) {
-          throw new StockTokenTradeHistorySourceIntegrityError();
-        }
-        continue;
-      }
+};
+
+interface SelectedResolutionRead extends ReadMemberResult<BaseResolutionFile> {
+  readonly ownerMonth: string;
+}
+
+interface SelectedMonthRead extends ReadMemberResult<BaseMonthFile> {
+  readonly ownerMonth: string;
+}
+
+const selectResolutionCandles = (input: Readonly<{
+  sourceInput: StockTokenTradeHistorySourceInput;
+  stateCoverage: readonly StockTokenTradeHistoryCoverageSegment[];
+  requirements: StockTokenTradeHistorySourceRequirements;
+  months: readonly SelectedMonthRead[];
+  resolutions: readonly SelectedResolutionRead[];
+}>): readonly StockTokenTradeHistoryStoredCandle[] => {
+  if (!sameStrings(
+    input.resolutions.map((read) => read.ownerMonth),
+    input.requirements.resolutionOwnerMonths,
+  )) throw new StockTokenTradeHistorySourceIntegrityError();
+  const eligibleByStart = new Map(input.requirements.eligiblePositions.map((position) =>
+    [position.naturalStart, position] as const));
+  const requestByStart = new Map(input.requirements.request.positions.map((position) =>
+    [position.naturalStart, position] as const));
+  const selected: StockTokenTradeHistoryStoredCandle[] = [];
+  for (const resolution of input.resolutions) {
+    coverageSubset(resolution.value.coverage, input.stateCoverage);
+    const month = input.months.find((candidate) =>
+      candidate.ownerMonth === resolution.ownerMonth);
+    if (month === undefined) throw new StockTokenTradeHistorySourceIntegrityError();
+    let monthCoverage: readonly StockTokenTradeHistoryCoverageSegment[];
+    let resolutionCoverage: readonly StockTokenTradeHistoryCoverageSegment[];
+    try {
+      monthCoverage = coalesceStockTokenTradeHistoryCoverage(month.value.coverage);
+      resolutionCoverage = coalesceStockTokenTradeHistoryCoverage(resolution.value.coverage);
+    } catch {
+      throw new StockTokenTradeHistorySourceIntegrityError();
+    }
+    const firstMonthCoverage = monthCoverage[0];
+    const firstResolutionCoverage = resolutionCoverage.find((segment) =>
+      segment.untilTimestamp > `${resolution.ownerMonth}-01T00:00:00.000Z`);
+    if (
+      firstMonthCoverage === undefined ||
+      firstResolutionCoverage === undefined ||
+      firstResolutionCoverage.fromTimestamp !== firstMonthCoverage.fromTimestamp ||
+      firstResolutionCoverage.fromBlock !== firstMonthCoverage.fromBlock ||
+      monthCoverage.some((segment) => resolutionCoverage.filter((candidate) =>
+        candidate.poolId === segment.poolId &&
+        candidate.fromTimestamp <= segment.fromTimestamp &&
+        candidate.untilTimestamp >= segment.untilTimestamp &&
+        BigInt(candidate.fromBlock) <= BigInt(segment.fromBlock) &&
+        BigInt(candidate.untilBlock) >= BigInt(segment.untilBlock)).length !== 1)
+    ) throw new StockTokenTradeHistorySourceIntegrityError();
+    const eligible = input.requirements.eligiblePositions.filter((position) =>
+      position.ownerMonth === resolution.ownerMonth);
+    if (eligible.length === 0) throw new StockTokenTradeHistorySourceIntegrityError();
+    for (const position of eligible) {
+      const matches = resolution.value.coverage.filter((segment) =>
+        segment.poolId === position.poolId &&
+        segment.fromTimestamp <= position.naturalStart &&
+        segment.untilTimestamp >= position.naturalEnd);
+      if (matches.length !== 1) throw new StockTokenTradeHistorySourceIntegrityError();
+    }
+    for (const candle of resolution.value.candles) {
+      const requestPosition = requestByStart.get(candle.intervalStart);
+      if (requestPosition === undefined) continue;
+      const eligiblePosition = eligibleByStart.get(candle.intervalStart);
+      const matches = input.requirements.coverage.filter((segment) =>
+        segment.poolId === eligiblePosition?.poolId &&
+        segment.fromTimestamp <= candle.intervalStart &&
+        segment.untilTimestamp >= candle.intervalEnd &&
+        BigInt(segment.fromBlock) <= BigInt(candle.firstSource.blockNumber) &&
+        BigInt(segment.untilBlock) > BigInt(candle.lastSource.blockNumber));
       if (
-        sourceSegment.fromTimestamp < firstMonth.fromTimestamp &&
-          BigInt(sourceSegment.fromBlock) > BigInt(firstMonth.fromBlock) ||
-        sourceSegment.untilTimestamp > lastMonth.untilTimestamp &&
-          BigInt(sourceSegment.untilBlock) < BigInt(lastMonth.untilBlock)
+        eligiblePosition === undefined ||
+        eligiblePosition.ownerMonth !== resolution.ownerMonth ||
+        candle.intervalEnd !== requestPosition.naturalEnd ||
+        BigInt(candle.lastSource.blockNumber) >=
+          BigInt(input.sourceInput.canonicalBlock.blockNumber) ||
+        matches.length !== 1
       ) throw new StockTokenTradeHistorySourceIntegrityError();
-      const fromMonth = sourceSegment.fromTimestamp <= firstMonth.fromTimestamp
-        ? firstMonth
-        : monthCoverage.find((segment) => sameCoverageBoundary(
-            segment.fromTimestamp,
-            segment.fromBlock,
-            sourceSegment.fromTimestamp,
-            sourceSegment.fromBlock,
-          ));
-      const untilMonth = sourceSegment.untilTimestamp >= lastMonth.untilTimestamp
-        ? lastMonth
-        : monthCoverage.find((segment) => sameCoverageBoundary(
-            segment.untilTimestamp,
-            segment.untilBlock,
-            sourceSegment.untilTimestamp,
-            sourceSegment.untilBlock,
-          ));
-      if (fromMonth === undefined || untilMonth === undefined) {
-        throw new StockTokenTradeHistorySourceIntegrityError();
-      }
-      const fromIndex = monthCoverage.indexOf(fromMonth);
-      const untilIndex = monthCoverage.indexOf(untilMonth);
-      if (fromIndex < 0 || untilIndex < fromIndex) {
-        throw new StockTokenTradeHistorySourceIntegrityError();
-      }
-      const explanation = monthCoverage.slice(fromIndex, untilIndex + 1);
-      if (
-        explanation.some((segment) => segment.poolId !== sourceSegment.poolId) ||
-        !sameCoverageBoundary(
-          explanation[0]!.fromTimestamp,
-          explanation[0]!.fromBlock,
-          sourceSegment.fromTimestamp < firstMonth.fromTimestamp
-            ? firstMonth.fromTimestamp : sourceSegment.fromTimestamp,
-          sourceSegment.fromTimestamp < firstMonth.fromTimestamp
-            ? firstMonth.fromBlock : sourceSegment.fromBlock,
-        ) ||
-        !sameCoverageBoundary(
-          explanation.at(-1)!.untilTimestamp,
-          explanation.at(-1)!.untilBlock,
-          sourceSegment.untilTimestamp > lastMonth.untilTimestamp
-            ? lastMonth.untilTimestamp : sourceSegment.untilTimestamp,
-          sourceSegment.untilTimestamp > lastMonth.untilTimestamp
-            ? lastMonth.untilBlock : sourceSegment.untilBlock,
-        )
-      ) throw new StockTokenTradeHistorySourceIntegrityError();
-      for (let index = fromIndex; index <= untilIndex; index += 1) coveredMonths.add(index);
+      selected.push(candle);
     }
   }
-  if (coveredMonths.size !== monthCoverage.length) {
-    throw new StockTokenTradeHistorySourceIntegrityError();
-  }
-  return mergeAdjacentCoverage(monthCoverage);
-};
-
-const ownerMonths = (from: string, until: string): readonly string[] => {
-  const months: string[] = [];
-  const cursor = new Date(`${from.slice(0, 7)}-01T00:00:00.000Z`);
-  const last = new Date(Date.parse(until) - 1).toISOString().slice(0, 7);
-  while (true) {
-    const month = cursor.toISOString().slice(0, 7);
-    months.push(month);
-    if (month === last) return Object.freeze(months);
-    cursor.setUTCMonth(cursor.getUTCMonth() + 1);
-  }
-};
-
-const selectedCoverage = (
-  state: BaseStateFile,
-  input: StockTokenTradeHistorySourceInput,
-): readonly BaseStateFile["poolPeriods"][number][] => {
-  const anchorBlock = BigInt(input.canonicalBlock.blockNumber);
-  return Object.freeze(state.poolPeriods.flatMap((segment) => {
-    if (
-      segment.untilTimestamp <= input.requestedStart ||
-      segment.fromTimestamp >= input.requestedEnd ||
-      BigInt(segment.fromBlock) >= anchorBlock
-    ) return [];
-    return [segment];
-  }));
+  selected.sort((left, right) => left.intervalStart.localeCompare(right.intervalStart));
+  assertStockTokenTradeHistoryStoredCandleSequence({
+    candles: selected,
+    baseDecimals: input.sourceInput.baseCurrencyDecimals,
+    resolution: input.sourceInput.resolution,
+  });
+  return deepFreezeValue(selected);
 };
 
 const createSelectedRoot = (
@@ -699,19 +718,6 @@ const validateMemberReference = (
   return memberAsset(selectedAssetByLogicalId, reference);
 };
 
-const candleInsideSelectedCoverage = (
-  candle: StockTokenTradeHistoryStoredCandle,
-  coverage: readonly BaseStateFile["poolPeriods"][number][],
-  input: StockTokenTradeHistorySourceInput,
-): boolean => candle.intervalStart >= input.requestedStart &&
-  candle.intervalEnd <= input.requestedEnd &&
-  BigInt(candle.lastSource.blockNumber) < BigInt(input.canonicalBlock.blockNumber) &&
-  coverage.some((segment) =>
-    segment.fromTimestamp <= candle.intervalStart &&
-    segment.untilTimestamp >= candle.intervalEnd &&
-    BigInt(segment.fromBlock) <= BigInt(candle.firstSource.blockNumber) &&
-    BigInt(segment.untilBlock) > BigInt(candle.lastSource.blockNumber));
-
 const deadlineOrSignal = (
   caller: AbortSignal | undefined,
   owner: AbortSignal,
@@ -720,7 +726,7 @@ const deadlineOrSignal = (
   ? AbortSignal.any([owner, deadline])
   : AbortSignal.any([caller, owner, deadline]);
 
-export class StockTokenTradeHistorySource implements StockTokenTradeHistorySourcePort {
+class StockTokenTradeHistorySource implements StockTokenTradeHistorySourcePort {
   readonly #dependencies: Readonly<{
     transport: StockTokenTradeHistorySourceDependencies["transport"];
     limits: StockTokenTradeHistorySourceLimits;
@@ -774,16 +780,40 @@ export class StockTokenTradeHistorySource implements StockTokenTradeHistorySourc
     const state: SourceState = {};
     const counters: SourceCounters = { transport: 0, decoded: 0 };
     const deadline = new AbortController();
+    const deadlineReason = new SourceDeadlineAbort();
     const deadlineAt = performance.now() + limits.deadlineMilliseconds;
-    const timer = setTimeout(() => deadline.abort(), limits.deadlineMilliseconds);
+    const timer = setTimeout(
+      () => deadline.abort(deadlineReason),
+      limits.deadlineMilliseconds,
+    );
     const signal = deadlineOrSignal(
       callerSignal,
       this.#owner.signal,
       deadline.signal,
     );
+    const higherPriorityFailure = (): unknown | undefined => {
+      if (callerSignal?.aborted === true) return callerSignal.reason;
+      if (this.#owner.signal.aborted) return new StockTokenTradeHistorySourceClosedError();
+      return undefined;
+    };
+    const preserveCleanup = (
+      cleanupFailures: readonly unknown[],
+      createPrimary: () => unknown,
+    ): StockTokenTradeHistoryProviderCleanupError => {
+      let primary: unknown;
+      try {
+        primary = createPrimary();
+      } catch (error) {
+        primary = error;
+      }
+      return new StockTokenTradeHistoryProviderCleanupError(
+        cleanupFailures,
+        higherPriorityFailure() ?? primary,
+      );
+    };
     const interrupt = (scope: StockTokenTradeHistorySourceScope): void => {
-      if (callerSignal?.aborted === true) throw callerSignal.reason;
-      if (this.#owner.signal.aborted) throw new StockTokenTradeHistorySourceClosedError();
+      const higherPriority = higherPriorityFailure();
+      if (higherPriority !== undefined) throw higherPriority;
       if (deadline.signal.aborted || performance.now() >= deadlineAt) {
         terminalResult(
           "trade_history_unavailable",
@@ -855,7 +885,21 @@ export class StockTokenTradeHistorySource implements StockTokenTradeHistorySourc
           maximumBytes: compressedBytes,
         }, readSignal);
       } catch (error) {
-        if (isStockTokenTradeHistoryProviderCleanupError(error)) throw error;
+        if (isStockTokenTradeHistoryProviderCleanupError(error)) {
+          if (error.primaryFailure === deadlineReason) {
+            throw preserveCleanup(
+              error.cleanupFailures,
+              () => sourceTerminal(
+                "trade_history_unavailable",
+                scope,
+                state,
+                this.#dependencies.now,
+                "deadline",
+              ),
+            );
+          }
+          throw error;
+        }
         if (readSignal.aborted && readSignal.reason instanceof SourceLaterMemberAbort) {
           throw readSignal.reason;
         }
@@ -1036,13 +1080,17 @@ export class StockTokenTradeHistorySource implements StockTokenTradeHistorySourc
           return undefined;
         });
       }
-      const coverage = selectedCoverage(stateRead.value, input);
       state.base = deepFreezeValue({
         baseCurrencyAddress: input.baseCurrencyAddress,
         decimals: stateRead.value.decimals,
         state: stateRead.identity,
       });
-      if (coverage.length === 0) {
+      const stateRequirements = admit("selected_period", () =>
+        sourceRequirements(input, stateRead.value.poolPeriods));
+      if (
+        stateRequirements.coverage.length === 0 ||
+        !stateRequirements.requestedCoverageAvailable
+      ) {
         return terminalResult(
           "outside_published_coverage",
           "selected_period",
@@ -1050,18 +1098,7 @@ export class StockTokenTradeHistorySource implements StockTokenTradeHistorySourc
           this.#dependencies.now,
         );
       }
-
-      const firstCoverage = coverage[0]!;
-      const lastCoverage = coverage.at(-1)!;
-      const selectedMonths = ownerMonths(
-        firstCoverage.fromTimestamp > input.requestedStart
-          ? firstCoverage.fromTimestamp
-          : input.requestedStart,
-        lastCoverage.untilTimestamp < input.requestedEnd
-          ? lastCoverage.untilTimestamp
-          : input.requestedEnd,
-      );
-      if (selectedMonths.length > limits.stateMonths) {
+      if (stateRequirements.coverageOwnerMonths.length > limits.stateMonths) {
         return terminalResult(
           "trade_history_too_large",
           "selected_period",
@@ -1069,9 +1106,7 @@ export class StockTokenTradeHistorySource implements StockTokenTradeHistorySourc
           this.#dependencies.now,
         );
       }
-      const selectedCandles: StockTokenTradeHistoryStoredCandle[] = [];
-      const ownerMonthSelections: StockTokenTradeHistorySelectedOwnerMonth[] = [];
-      const monthReferences = selectedMonths.map((ownerMonth) => {
+      const monthReferences = stateRequirements.coverageOwnerMonths.map((ownerMonth) => {
         const monthLogicalId = stockTokenTradeHistoryLogicalId.month(
           input.baseCurrencyAddress,
           ownerMonth,
@@ -1105,13 +1140,44 @@ export class StockTokenTradeHistorySource implements StockTokenTradeHistorySourc
           AbortSignal.any([signal, memberSignal]),
         ),
       );
+      const selectedMonthReads: SelectedMonthRead[] = monthReads.map(
+        (read, index) => deepFreezeValue({
+          ownerMonth: stateRequirements.coverageOwnerMonths[index]!,
+          ...read,
+        }),
+      );
       const admittedMonthCoverage = admit("selected_period", () => selectedMonthCoverage(
         stateRead.value.poolPeriods,
-        selectedMonths,
+        stateRequirements.coverageOwnerMonths,
         monthReads.map((read) => read.value),
       ));
-      const resolutionReferences = monthReads.map((monthRead, index) => {
-        const ownerMonth = selectedMonths[index]!;
+      const monthRequirements = admit("selected_period", () =>
+        sourceRequirements(input, admittedMonthCoverage));
+      admit("selected_period", () => assertSameRequirements(stateRequirements, monthRequirements));
+      const requirements = monthRequirements;
+      if (requirements.coverage.length === 0 || !requirements.requestedCoverageAvailable) {
+        return terminalResult(
+          "outside_published_coverage",
+          "selected_period",
+          state,
+          this.#dependencies.now,
+        );
+      }
+      const monthMembers: StockTokenTradeHistorySelectedMember[] =
+        requirements.coverageOwnerMonths.map((ownerMonth) => {
+          const index = stateRequirements.coverageOwnerMonths.indexOf(ownerMonth);
+          const monthRead = monthReads[index];
+          if (index < 0 || monthRead === undefined) {
+            return terminalResult(
+              "trade_history_inconsistent",
+              "selected_period",
+              state,
+              this.#dependencies.now,
+            );
+          }
+          return deepFreezeValue({ ownerMonth, member: monthRead.identity });
+        });
+      for (const monthRead of monthReads) {
         for (const child of [
           ...monthRead.value.days,
           ...Object.values(monthRead.value.resolutions),
@@ -1120,6 +1186,18 @@ export class StockTokenTradeHistorySource implements StockTokenTradeHistorySourc
             memberAsset(rootAdmission.selectedAssetByLogicalId, child);
             return undefined;
           });
+        }
+      }
+      const resolutionReferences = requirements.resolutionOwnerMonths.map((ownerMonth) => {
+        const monthIndex = requirements.coverageOwnerMonths.indexOf(ownerMonth);
+        const monthRead = monthReads[monthIndex];
+        if (monthIndex < 0 || monthRead === undefined) {
+          return terminalResult(
+            "trade_history_inconsistent",
+            "selected_period",
+            state,
+            this.#dependencies.now,
+          );
         }
         const resolutionReference = monthRead.value.resolutions[input.resolution];
         const expectedResolutionId = stockTokenTradeHistoryLogicalId.resolution(
@@ -1136,68 +1214,45 @@ export class StockTokenTradeHistorySource implements StockTokenTradeHistorySourc
       const resolutionReads = await mapConcurrently(
         resolutionReferences,
         limits.concurrentMemberReads,
-        async ({ ownerMonth, reference, expectedResolutionId }, _index, memberSignal) => readMember(
-          rootAdmission.selectedAssetByLogicalId,
-          reference,
-          expectedResolutionId,
-          "selected_period",
-          (value) => parseBaseResolutionFile(
-            value,
-            input.baseCurrencyAddress,
-            input.baseCurrencyDecimals,
-            ownerMonth,
-            input.resolution,
-            limits,
-          ),
-          AbortSignal.any([signal, memberSignal]),
-        ),
-      );
-      const admittedResolutionCoverage = admit(
-        "selected_period",
-        () => selectedResolutionCoverage(
-          stateRead.value.poolPeriods,
-          admittedMonthCoverage,
-          resolutionReads.map((read) => read.value),
-        ),
-      );
-      for (const [index, resolutionRead] of resolutionReads.entries()) {
-        const monthRead = monthReads[index];
-        const ownerMonth = selectedMonths[index];
-        if (monthRead === undefined || ownerMonth === undefined) {
-          return terminalResult(
-            "trade_history_inconsistent",
+        async ({ ownerMonth, reference, expectedResolutionId }, _index, memberSignal) => {
+          const read = await readMember(
+            rootAdmission.selectedAssetByLogicalId,
+            reference,
+            expectedResolutionId,
             "selected_period",
-            state,
-            this.#dependencies.now,
+            (value) => parseBaseResolutionFile(
+              value,
+              input.baseCurrencyAddress,
+              input.baseCurrencyDecimals,
+              ownerMonth,
+              input.resolution,
+              limits,
+            ),
+            AbortSignal.any([signal, memberSignal]),
           );
-        }
-        for (const candle of resolutionRead.value.candles) {
-          if (candleInsideSelectedCoverage(candle, admittedResolutionCoverage, input)) {
-            const selected = candle as StockTokenTradeHistoryStoredCandle;
-            selectedCandles.push(selected);
-          }
-        }
-        ownerMonthSelections.push(deepFreezeValue({
-          ownerMonth,
-          monthMember: monthRead.identity,
-          resolutionMember: resolutionRead.identity,
-        }));
-      }
-      admit("selected_period", () => assertStockTokenTradeHistoryStoredCandleSequence({
-        candles: selectedCandles,
-        baseDecimals: input.baseCurrencyDecimals,
-        resolution: input.resolution,
+          return deepFreezeValue({ ownerMonth, ...read });
+        },
+      );
+      const selectedCandles = admit("selected_period", () => selectResolutionCandles({
+        sourceInput: input,
+        stateCoverage: stateRead.value.poolPeriods,
+        requirements,
+        months: selectedMonthReads,
+        resolutions: resolutionReads,
       }));
+      const resolutionMembers: StockTokenTradeHistorySelectedMember[] =
+        resolutionReads.map((read) => deepFreezeValue({
+          ownerMonth: read.ownerMonth,
+          member: read.identity,
+        }));
       const selectedBase = state.base;
       if (selectedBase === undefined) {
         throw new TypeError("Available trade-history source has no selected base.");
       }
-      const publishedCoverage = mergeAdjacentCoverage(admittedMonthCoverage);
-      const requiredPoolIds = new Set([
-        ...publishedCoverage.map((segment) => segment.poolId),
-        ...admittedResolutionCoverage.map((segment) => segment.poolId),
-      ]);
-      const pools: Record<string, StockTokenTradeHistoryPoolFacts> = {};
+      const requiredPoolIds = new Set(
+        requirements.coverage.map((segment) => segment.poolId),
+      );
+      const pools: Record<string, StockTokenTradeHistoryPoolKey> = {};
       for (const poolId of [...requiredPoolIds].sort()) {
         const facts = stateRead.value.pools[poolId];
         if (facts === undefined) {
@@ -1208,21 +1263,23 @@ export class StockTokenTradeHistorySource implements StockTokenTradeHistorySourc
             this.#dependencies.now,
           );
         }
-        pools[poolId] = facts;
+        pools[poolId] = facts.poolKey;
       }
       const result = deepFreezeValue(stockTokenTradeHistoryAvailableSourceSchema.parse({
         status: "available",
         observedAt: observedAt(this.#dependencies.now),
         root: rootAdmission.root,
         base: selectedBase,
-        publishedCoverage,
-        selectedResolutionCoverage: admittedResolutionCoverage,
+        coverage: requirements.coverage,
         pools,
-        ownerMonths: ownerMonthSelections,
+        coverageOwnerMonths: requirements.coverageOwnerMonths,
+        monthMembers,
+        resolutionMembers,
         candles: selectedCandles,
       })) as StockTokenTradeHistoryAvailableSource;
+      const admitted = admitStockTokenTradeHistorySourceResult(input, result);
       interrupt("selected_period");
-      return result;
+      return admitted;
     } catch (error) {
       if (isStockTokenTradeHistoryProviderCleanupError(error)) {
         if (callerSignal?.aborted === true) {
@@ -1238,49 +1295,48 @@ export class StockTokenTradeHistorySource implements StockTokenTradeHistorySourc
           );
         }
         if (
+          error.primaryFailure === deadlineReason ||
           error.primaryFailure === undefined &&
-          (deadline.signal.aborted || performance.now() >= deadlineAt)
+            (deadline.signal.aborted || performance.now() >= deadlineAt)
         ) {
-          try {
-            terminalResult(
+          const scope = state.base === undefined
+            ? state.root === undefined ? "catalog_root" : "selected_base"
+            : "selected_period";
+          throw preserveCleanup(
+            error.cleanupFailures,
+            () => sourceTerminal(
               "trade_history_unavailable",
-              state.base === undefined
-                ? state.root === undefined ? "catalog_root" : "selected_base"
-                : "selected_period",
+              scope,
               state,
               this.#dependencies.now,
               "deadline",
-            );
-          } catch (deadlinePrimary) {
-            if (deadlinePrimary instanceof SourceTerminal) {
-              throw new StockTokenTradeHistoryProviderCleanupError(
-                error.cleanupFailures,
-                deadlinePrimary,
-              );
-            }
-            throw deadlinePrimary;
-          }
+            ),
+          );
         }
         throw error;
       }
       if (callerSignal?.aborted === true) throw callerSignal.reason;
       if (this.#owner.signal.aborted) throw new StockTokenTradeHistorySourceClosedError();
-      if (error instanceof SourceTerminal) return error.result;
       if (deadline.signal.aborted || performance.now() >= deadlineAt) {
-        try {
-          terminalResult(
-            "trade_history_unavailable",
-            state.base === undefined
-              ? state.root === undefined ? "catalog_root" : "selected_base"
-              : "selected_period",
-            state,
-            this.#dependencies.now,
-            "deadline",
-          );
-        } catch (terminal) {
-          if (terminal instanceof SourceTerminal) return terminal.result;
-          throw terminal;
-        }
+        const scope = state.base === undefined
+          ? state.root === undefined ? "catalog_root" : "selected_base"
+          : "selected_period";
+        const deadlineTerminal = sourceTerminal(
+          "trade_history_unavailable",
+          scope,
+          state,
+          this.#dependencies.now,
+          "deadline",
+        );
+        const higherPriority = higherPriorityFailure();
+        if (higherPriority !== undefined) throw higherPriority;
+        return admitStockTokenTradeHistorySourceResult(
+          input,
+          deadlineTerminal.result,
+        );
+      }
+      if (error instanceof SourceTerminal) {
+        return admitStockTokenTradeHistorySourceResult(input, error.result);
       }
       throw error;
     } finally {

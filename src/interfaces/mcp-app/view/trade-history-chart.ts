@@ -13,15 +13,12 @@ import {
   type WhitespaceData,
 } from "lightweight-charts";
 
-import type { StockTokenTradeHistoryChart } from
-  "../../../stock-token-trade-history/stock-token-trade-history-data.js";
+import type { StockTokenTradeHistoryAvailableData } from
+  "../../../stock-token-trade-history/result.js";
 
 export const tradingViewUrl = "https://www.tradingview.com/";
 const tradingViewProductNotice = "TradingView Lightweight Charts™";
 const tradingViewCopyrightNotice = "Copyright (с) 2025 TradingView, Inc.";
-export const tradingViewNotice =
-  `${tradingViewProductNotice}\n${tradingViewCopyrightNotice} ${tradingViewUrl}`;
-
 type TradeHistoryPriceData = CandlestickData<UTCTimestamp> | WhitespaceData<UTCTimestamp>;
 type TradeHistoryVolumeData = HistogramData<UTCTimestamp> | WhitespaceData<UTCTimestamp>;
 
@@ -34,10 +31,12 @@ export interface TradeHistoryChartProjection {
 
 export interface TradeHistoryChartMountDescription {
   readonly container: HTMLElement;
+  readonly requestStartBoundary: HTMLElement;
+  readonly requestEndBoundary: HTMLElement;
   readonly chartStatus: HTMLElement;
   readonly openLink: HTMLButtonElement;
   readonly linkStatus: HTMLElement;
-  readonly series: StockTokenTradeHistoryChart;
+  readonly series: StockTokenTradeHistoryAvailableData;
 }
 
 export interface TradeHistoryChartPresentation {
@@ -96,7 +95,7 @@ const approximateRawUnits = (raw: string, decimals: number): number => {
 };
 
 const priceDirection = (value: NonNullable<
-  StockTokenTradeHistoryChart["positions"][number]["candle"]
+  StockTokenTradeHistoryAvailableData["positions"][number]["candle"]
 >): "up" | "down" => {
   const close = BigInt(value.close.numerator) * BigInt(value.open.denominator);
   const open = BigInt(value.open.numerator) * BigInt(value.close.denominator);
@@ -104,7 +103,7 @@ const priceDirection = (value: NonNullable<
 };
 
 export const projectTradeHistoryChart = (
-  series: StockTokenTradeHistoryChart,
+  series: StockTokenTradeHistoryAvailableData,
 ): TradeHistoryChartProjection => {
   const positions = series.positions;
   const first = positions[0];
@@ -112,15 +111,15 @@ export const projectTradeHistoryChart = (
   if (first === undefined || last === undefined) {
     throw new TypeError("Trade-history chart positions are unavailable.");
   }
-  const intervalDuration = Date.parse(first.intervalEnd) - Date.parse(first.intervalStart);
+  const intervalDuration = Date.parse(first.naturalEnd) - Date.parse(first.naturalStart);
   if (!Number.isSafeInteger(intervalDuration) || intervalDuration <= 0) {
     throw new TypeError("Trade-history chart interval is invalid.");
   }
   const leadingFraction = (
-    Date.parse(series.requestedStart) - Date.parse(first.intervalStart)
+    Date.parse(series.requestedStart) - Date.parse(first.naturalStart)
   ) / intervalDuration;
   const trailingFraction = (
-    Date.parse(series.requestedEnd) - Date.parse(last.intervalStart)
+    Date.parse(series.requestedEnd) - Date.parse(last.naturalStart)
   ) / intervalDuration;
   if (
     !Number.isFinite(leadingFraction) || !Number.isFinite(trailingFraction) ||
@@ -133,7 +132,7 @@ export const projectTradeHistoryChart = (
   const directions: ("up" | "down" | null)[] = [];
   let previousTime: number | undefined;
   for (const position of positions) {
-    const time = unixSeconds(position.intervalStart);
+    const time = unixSeconds(position.naturalStart);
     if (previousTime !== undefined && time <= previousTime) {
       throw new TypeError("Trade-history chart positions are not strictly ordered.");
     }
@@ -155,7 +154,7 @@ export const projectTradeHistoryChart = (
       time,
       value: approximateRawUnits(
         position.candle.quoteVolumeRaw,
-        series.source.quoteToken.decimals,
+        series.archive.root.usdgDecimals,
       ),
     }));
     directions.push(priceDirection(position.candle));
@@ -178,7 +177,7 @@ export const projectTradeHistoryChart = (
 };
 
 export const createTradeHistoryChartPresentation = (
-  series: StockTokenTradeHistoryChart,
+  series: StockTokenTradeHistoryAvailableData,
   label: string,
 ): TradeHistoryChartPresentation => {
   const figure = element("figure", "trade-history-chart-figure");
@@ -186,8 +185,14 @@ export const createTradeHistoryChartPresentation = (
   container.setAttribute("role", "img");
   container.setAttribute(
     "aria-label",
-    `${label}. Price candles above and USDG quote volume below share the requested time range. Exact values and gaps are available in Developer details.`,
+    `${label}. Price candles above and USDG quote volume below share the requested time range from ${series.requestedStart} inclusive to ${series.requestedEnd} exclusive. Dashed vertical boundaries mark those exact bounds. Partial candles remain complete stored natural intervals and may include activity outside represented request bounds. Exact values and gaps are available in Developer details.`,
   );
+  const requestStartBoundary = element("span", "chart-request-boundary chart-request-start");
+  requestStartBoundary.setAttribute("aria-hidden", "true");
+  requestStartBoundary.title = `Requested start: ${series.requestedStart}`;
+  const requestEndBoundary = element("span", "chart-request-boundary chart-request-end");
+  requestEndBoundary.setAttribute("aria-hidden", "true");
+  requestEndBoundary.title = `Requested end: ${series.requestedEnd}`;
   const chartStatus = element("p", "chart-status", "");
   chartStatus.setAttribute("role", "status");
   chartStatus.hidden = true;
@@ -212,7 +217,15 @@ export const createTradeHistoryChartPresentation = (
   figure.append(container, attribution, chartStatus, linkStatus);
   return Object.freeze({
     node: figure,
-    mount: Object.freeze({ container, chartStatus, openLink, linkStatus, series }),
+    mount: Object.freeze({
+      container,
+      requestStartBoundary,
+      requestEndBoundary,
+      chartStatus,
+      openLink,
+      linkStatus,
+      series,
+    }),
   });
 };
 
@@ -445,9 +458,15 @@ export const mountTradeHistoryChart = (
       panes[0].setStretchFactor(7);
       panes[1].setStretchFactor(3);
       chart.timeScale().setVisibleLogicalRange(projection.visibleLogicalRange);
+      description.container.append(
+        description.requestStartBoundary,
+        description.requestEndBoundary,
+      );
       description.chartStatus.textContent = "";
       description.chartStatus.hidden = true;
     } catch {
+      description.requestStartBoundary.remove();
+      description.requestEndBoundary.remove();
       removeChartOnce(chartState);
       showChartStatus(
         "Interactive chart unavailable because chart setup could not be completed. Exact values remain available in the table.",
@@ -462,6 +481,8 @@ export const mountTradeHistoryChart = (
       linkController.abort();
       description.openLink.removeEventListener("click", openTradingView);
       description.openLink.disabled = true;
+      description.requestStartBoundary.remove();
+      description.requestEndBoundary.remove();
       removeChartOnce(chartState);
     },
   });

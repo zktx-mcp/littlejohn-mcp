@@ -203,8 +203,8 @@ The current external integration classification is:
 | WalletConnect | Binding product transport | `docs/PRODUCT_POLICY.md` owns the wallet transport; this document owns session and handoff architecture | `wallet` owns SDK adaptation, project-ID validation, required namespace settings, metadata, SDK options, lifecycle, and provider defaults | The wallet application factory constructs one `WalletConnectClientPort` from opaque configuration received through runtime composition; other modules receive wallet product ports |
 | Robinhood official-asset API | Binding source authority | `docs/EVIDENCE_POLICY.md` owns source authority; `officialAssetSourceDefinition` and the registry source contract own the exact source identity, normalized observed-or-unavailable read result, evidence, and storage ports | `src/registry/official-assets.ts` owns request and response admission, endpoint consumption, transport behavior, deadlines, and operational limits | Runtime composition constructs one source client; registry synchronization consumes its value result and the product-owned store without an exception translation layer; replacing the membership source changes the binding evidence authority |
 | Robinhood StockFactory | Binding source authority | `docs/EVIDENCE_POLICY.md` owns the independent UID-to-token-address proof meaning; `stockFactoryAdmissionManifest` and the registry verification contract own the admitted deployment identity and identity-bearing verification result | `src/registry/stock-factory.ts` owns StockFactory call and identity verification behind the pinned-block `OfficialAssetChainReadPort` in `src/chain/official-assets.ts`; common RPC configuration remains with the chain transport | The chain application constructs the port and preserves the same result contract for single and batch reads used by account-assets and token inspection; changing verification internals preserves the admitted identity, while changing the deployment or source owner changes the manifest and evidence authority |
-| Robinhood Uniswap V4 PoolManager events | Binding source authority | `docs/EVIDENCE_POLICY.md` owns trade evidence meaning; `stockTokenTradeHistoryRegistry` owns the exact PoolManager, PoolKey, Pool ID, USDG, finality, and event identity; `docs/NUMERIC_POLICY.md` owns exact trade-candle meaning | The separate collector owns bounded finalized log collection, exact decoding, cursor, repair, one-minute candle construction, and pair-state, pair-month, and pair-day file publication; Little John has no log reader or candle builder | Little John consumes only the versioned provider-neutral trade-history data; changing collection internals preserves its exact contract, while changing the deployment, pool identity, event, quote asset, or numeric construction changes the binding source contract and does not imply Uniswap transaction support |
-| GitHub Releases Stock Token trade-history data | Replaceable implementation provider | `stock-token-trade-history` owns the active `StockTokenTradeHistoryReadPort` and the uncomposed final `StockTokenTradeHistorySourcePort`; the latter owns root and selected-member admission, source outcomes, limits and lifecycle while finalized PoolManager events remain the semantic source | `github-stock-token-trade-history.ts` owns the active whole-file adapter; `github-source.ts` owns bounded catalog and exact Range transport for the uncomposed source | Runtime still constructs only the active read port; the final source remains internal until the in-place capability replacement, and another carrier may replace GitHub only by returning the unchanged provider facts to its source process |
+| Robinhood Uniswap V4 PoolManager events | Binding source authority | `docs/EVIDENCE_POLICY.md` owns trade evidence meaning; `src/stock-token-trade-history/source-semantics.ts` owns the exact PoolManager, Swap event, PoolKey, Pool ID, USDG, finality, stored resolutions, and source revision; `docs/NUMERIC_POLICY.md` owns exact trade-candle meaning | The separate collector owns bounded finalized log collection, exact decoding, cursor, repair, one-minute candle construction, and archive publication; Little John has no log reader or candle builder | Little John consumes only the admitted provider-neutral archive result; changing collection internals preserves its exact contract, while changing the deployment, Pool identity, event, quote asset, revision, or numeric construction changes the binding source contract and does not imply Uniswap transaction support |
+| GitHub Releases Stock Token trade-history data | Replaceable implementation provider | `stock-token-trade-history` owns the provider-neutral `StockTokenTradeHistorySourcePort`, canonical capability, source outcomes, limits, lifecycle, and evidence projection while finalized PoolManager events remain the semantic source | `src/stock-token-trade-history/github-source.ts` owns bounded catalog pagination, uploaded-root filtering, exact Range transport, redirects, response admission, and stream cleanup | The feature application factory constructs one GitHub transport and one archive source, registers the source before the application execution owner, and exposes only the canonical capability binding; another carrier may replace GitHub only by returning the unchanged provider facts to the same source process |
 | Sourcify API v2 | Replaceable implementation provider | `intelligence` owns `ContractSourceVerificationPort`, its normalized results and failures, evidence requirements, and lifecycle | `src/intelligence/sourcify.ts` owns the origin, path, request and response admission, deadline, response-size and concurrency limits, cleanup, and provider identity | Runtime composition constructs one Sourcify adapter and passes only `ContractSourceVerificationPort` to the shared contract-analysis process |
 | Uniswap V2 | Binding protocol identity | `docs/PROTOCOL_ADAPTERS.md` and `src/protocols/uniswap-v2` own the exact V2 package, deployment records, native mapping, and capability registration; `docs/NUMERIC_POLICY.md` owns numeric meaning and `docs/EVIDENCE_POLICY.md` owns evidence meaning | `src/protocols/uniswap-v2/sdk.ts` owns the pinned Uniswap SDK loading and admission boundary; the package owns immutable deployment and route-asset records | Runtime composition constructs the statically registered V2 package once and passes only its canonical quote binding to interfaces |
 
@@ -478,6 +478,11 @@ the current execution behavior.
   [JSON-RPC tool surface](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
   through the official SDK. Little John does not define a second agent JSON-RPC
   protocol or duplicate MCP tool catalog.
+- For a model-visible tool, the MCP Host selects the tool and constructs its
+  arguments from the person's natural-language request. Little John's authority
+  begins when the owning parser admits that machine invocation. Prompt text is
+  not canonical input, evidence, snapshot identity, or authorization, and a
+  direct function call is only an internal protocol-verification method.
 - MCP input JSON Schema is a derived projection of the owning parser. A closed
   top-level discriminated object union publishes one closed object with common
   fields declared once and discriminator-specific requirements retained in
@@ -488,8 +493,11 @@ the current execution behavior.
   all Little John content and private metadata. A result is admitted only when
   `JSON.stringify(result)` is at most `1,048,575` UTF-8 bytes, which keeps the
   result itself strictly below the measured `1,048,576`-byte Host boundary.
-  Successful results with an output schema retain both conforming canonical
-  `structuredContent` and exactly one identical canonical JSON text item. An
+  Successful results with an output schema retain conforming canonical
+  `structuredContent` and exactly one bounded model-visible text item. The
+  registered interface may derive that text from the admitted success; an
+  interface without a projector retains the canonical JSON text. The text is
+  never a second result oracle or a reconstruction input. An
   oversized result becomes one bounded `isError` tool-execution result with a
   plain-text delivery-size statement and no structured result, resource link,
   snapshot metadata, operation metadata, or domain payload. This transport
@@ -962,40 +970,63 @@ invocation drains. Runtime acquisition registers the archive source first and
 the application execution owner second. Reverse cleanup therefore drains the
 application before closing the source, with neither owner closing the other.
 
-The archive source accepts a verified base address, exact request
-bounds, canonical block and one non-`1m` stored resolution. It pins the greatest
-catalog root, admits only the referenced base state, intersecting months and
-matching resolution members through exact Range reads, and returns one
-provider-neutral result that preserves the state, month and resolution roles.
+The archive source accepts a verified base address, exact request bounds,
+canonical block and the selected non-`1m` stored resolution. The shared
+interface-safe semantic owner revalidates that resolution as the finest one
+within `185` natural positions. The source pins the greatest catalog root and,
+after state admission, derives the calendar months touched by state coverage in
+the natural-position window and the natural-start owner months whose complete
+same-Pool intervals are aggregate-eligible. It Range-reads exactly those month
+members and eligible selected-resolution members; an unavailable or stale tail
+creates no member requirement.
+
+The server keeps state, month and resolution roles, raw Pool chronology and each
+raw coverage sequence internal. It retains producer boundaries while admitting
+each role, then coalesces adjacent same-Pool segments once only when timestamp
+and block boundaries are equal. It returns one provider-neutral result with the
+canonical block-bearing coverage segments intersecting the natural-position
+window, exact Pool keys, the coverage-owner month sequence, exact ordered month
+and resolution member identities, and unchanged selected candles. It never
+invents an outer block boundary.
 The source contract owns its private operational settings; production consumers
 cannot override them. The GitHub adapter owns bounded catalog and Range
 transport and complete stream cleanup. It never downloads a complete packed
 asset or reads a base-day or `1m` member.
 
-The application intersects admitted coverage with the request and creates one
-position per natural stored-resolution interval. It does not aggregate source
-candles. Runtime contains no `Swap` log reader, PoolKey derivation, cursor,
-repair process, candle builder, pair registry or local trade-history store.
+The application consumes SourcePort coverage once to derive the exact requested
+coverage range and one position per request-intersecting natural stored-
+resolution interval. It does not aggregate source candles. A request-cut
+position is partial but may retain its complete stored candle and Pool
+provenance. Only an interior full-natural same-Pool position with its exact
+resolution member admitted may use an empty candle as a no-trade claim. Raw
+coverage segmentation and unused Pool facts terminate at this projection.
+Runtime contains no `Swap` log reader, PoolKey derivation, cursor, repair
+process, candle builder, pair registry or local trade-history store.
 
 The public result is a compact closed stage union. Before archive selection it
 retains only completed official, canonical-block, StockFactory and decimals
 stages. Catalog-root unavailability retains no invented source; selected-base
 unavailability additionally retains the selected root; selected-period
 unavailability additionally retains the selected base-state identity. An
-available result retains one request-level published-coverage sequence, one
-request-level selected-resolution coverage sequence, the exact selected member
-identities without their internal coverage arrays, the exact required Pool
-facts and the natural positions with stored candles unchanged. The public
-parser revalidates only relationships representable from those retained facts
-and never claims to revalidate physical Range membership or omitted file
-coverage.
+available result retains exact requested coverage bounds and limitations,
+ordered month and resolution member identities without their internal coverage
+arrays, only the Pool keys referenced by its positions, and at most `185`
+natural positions with stored candles unchanged. The public parser revalidates
+only relationships representable from those retained facts: request and
+position bounds, requested coverage, PoolId to PoolKey, candle and source
+ordering, canonical-block bound, member roles and position-state combinations.
+Physical Range membership, natural-window coverage, unused Pool facts and
+source-position membership in omitted block-bearing coverage remain SourcePort
+admission facts and are never claimed as public replay checks.
 
-The application, MCP, HTTP, CLI JSON, presentation admission, and immutable
+The application, MCP, HTTP, CLI JSON, presentation admission and immutable
 presentation-snapshot store hand off the admitted result losslessly. The result
-contains the exact requested bounds, source-file identities, continuous
-coverage, and completed chart series. Snapshot replay reads only the stored
-canonical input and result and has no chain, trade-history data, or aggregation
-port.
+contains exact requested and natural bounds, source-file identities,
+requested coverage, limitations and complete position meanings.
+Model-visible and human text distinguish complete absence, partial unknown,
+unavailable coverage and request-cut candles that may include activity outside
+represented request bounds. Snapshot replay reads only the stored canonical
+input and result and has no chain, trade-history data or aggregation port.
 
 The WalletConnect SDK private store is authoritative for:
 
@@ -1185,7 +1216,8 @@ no content, metadata, or size decision is added after that commit.
 After a successful model-visible App-presented read or Review admits and commits
 the snapshot, its initial result remains the owning tool's canonical MCP
 success: domain `structuredContent` that conforms to the advertised output
-schema and one exact canonical JSON text item. The presentation owner appends
+schema and one bounded registered model-visible text projection. The
+presentation owner appends
 exactly one standard resource link to `snapshotUri` and the exact snapshot
 resource in View-private metadata. It re-admits and stores the value carried by
 that same canonical result; it never accepts a second raw domain value or
@@ -1207,9 +1239,10 @@ lookup.
 
 For an initial creating result, the View requires the direct canonical domain
 `structuredContent` and the same-result private snapshot resource. Before Host
-delivery, the server has already required that structured value and its
-canonical compatibility text are identical. The View does not treat transformed
-compatibility content as another result oracle. It admits the standard resource
+delivery, the server has already admitted the structured value through its
+owning parser and bounded the registered text projection. The View never treats
+that text or transformed compatibility content as another result oracle. It
+admits the standard resource
 link when the Host preserves it and otherwise only the measured Claude omission,
 file-offload, or flattened-link form defined above. It validates the resource,
 descriptor, snapshot identity, normalized input, carried result byte length and

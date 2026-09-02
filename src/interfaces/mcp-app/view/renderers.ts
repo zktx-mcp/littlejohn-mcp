@@ -7,7 +7,6 @@ import {
   type ContractAnalysis,
   type ContractControlFailureReason,
   type ContractInspectData,
-  type ExactRational,
   type WalletConnectionData,
 } from "../../../core/client.js";
 import {
@@ -24,10 +23,10 @@ import {
   type TokenSelectionListResult,
   type TokenSelectionReviewResult,
 } from "../../../token-catalog/client.js";
-import type { StockTokenTradeHistoryChart } from
-  "../../../stock-token-trade-history/stock-token-trade-history-data.js";
-import type { StockTokenTradeHistoryResult } from
-  "../../../stock-token-trade-history/stock-token-trade-history.js";
+import type {
+  StockTokenTradeHistoryAvailableData,
+  StockTokenTradeHistoryData,
+} from "../../../stock-token-trade-history/result.js";
 import {
   createTradeHistoryChartPresentation,
   type TradeHistoryChartMountDescription,
@@ -47,8 +46,12 @@ import {
   stockTokenTradeCoverageLimitationLabel,
   stockTokenTradeHistoryLabel,
   stockTokenTradeHistoryNoTradeLabel,
+  stockTokenTradeHistoryPeriodLabel,
+  stockTokenTradeHistoryRequestCutCandleWarning,
+  stockTokenTradeHistoryRequestedCoverageLabel,
+  stockTokenTradeHistoryResolutionLabel,
+  stockTokenTradeHistoryUnavailableReason,
   stockTokenTradeHistoryUnavailableReasonLabel,
-  stockTokenTradeHistoryWindowLabel,
 } from "../../stock-token-trade-history-presentation.js";
 
 type ContractInspectionResult = CapabilitySuccess<ContractInspectData>;
@@ -65,7 +68,7 @@ const element = <Tag extends keyof HTMLElementTagNameMap>(
   return node;
 };
 
-type EvidenceStatus = "current" | "stale" | "partial" | "unavailable";
+type EvidenceStatus = "current" | "stale" | "complete" | "partial" | "unavailable";
 
 type SummaryField = readonly [label: string, value: string, evidenceRole?: EvidenceStatus];
 
@@ -90,7 +93,10 @@ const summary = (fields: readonly SummaryField[]): HTMLDListElement => {
   return list;
 };
 
-const exactRationalText = (value: ExactRational): string =>
+const exactRationalText = (value: Readonly<{
+  readonly numerator: string;
+  readonly denominator: string;
+}>): string =>
   `${value.numerator} / ${value.denominator}`;
 
 const coverageLabels = Object.freeze({
@@ -285,20 +291,42 @@ const exactValueTable = (
 };
 
 const tradeHistoryCoverageMeaning = (
-  coverage: StockTokenTradeHistoryChart["positions"][number]["coverage"],
+  coverage: StockTokenTradeHistoryAvailableData["positions"][number]["coverage"],
   hasCandle: boolean,
 ): string => {
   if (coverage === "complete") return hasCandle
     ? "Complete admitted source coverage."
-    : "Complete admitted coverage; no qualifying Swap occurred in this represented interval.";
+    : "Complete admitted natural-interval coverage and exact resolution member; no qualifying Swap occurred.";
   if (coverage === "partial") return hasCandle
-    ? "Partial admitted source coverage."
+    ? "Partial request position with an unchanged full stored natural-interval candle; activity may lie outside represented request bounds."
     : "Partial admitted coverage; trade absence is not established.";
   return "Source coverage is unavailable; trade absence is not established.";
 };
 
+const tradeHistoryAggregationMeaning = (
+  position: StockTokenTradeHistoryAvailableData["positions"][number],
+): string => {
+  if (position.candle !== null) return position.coverage === "partial"
+    ? "The complete stored aggregate is retained without clipping to represented request bounds."
+    : "OHLC, USDG volume, Stock Token volume, and trade count use the same admitted Swap set.";
+  if (position.coverage === "complete") {
+    return "The exact resolution member was admitted and contained no aggregate for this eligible natural interval.";
+  }
+  return "No absence claim is made because complete aggregate eligibility was not established.";
+};
+
+const tradeHistorySourcePosition = (value: NonNullable<
+  StockTokenTradeHistoryAvailableData["positions"][number]["candle"]
+>["firstSource"]): string => [
+  `block ${value.blockNumber}`,
+  `block hash ${value.blockHash}`,
+  `transaction ${value.transactionHash}`,
+  `transaction index ${value.transactionIndex}`,
+  `log index ${value.logIndex}`,
+].join(" · ");
+
 const tradeHistoryDeveloperValues = (
-  series: StockTokenTradeHistoryChart,
+  series: StockTokenTradeHistoryAvailableData,
 ): HTMLTableElement => exactValueTable(
   `Chart values and processing by display position from ${series.requestedStart} to ${series.requestedEnd} (exclusive)`,
   [
@@ -308,30 +336,34 @@ const tradeHistoryDeveloperValues = (
     "Represented end",
     "Position coverage",
     "Coverage meaning",
+    "Pool ID",
     "Position state",
     "Open in USDG",
     "High in USDG",
     "Low in USDG",
     "Close in USDG",
     "USDG volume",
-    `${series.source.token.symbol} volume`,
+    `${series.symbol} volume`,
     "Trade count",
     "USDG volume raw",
-    `${series.source.token.symbol} volume raw`,
+    `${series.symbol} volume raw`,
     "Observed start",
     "Observed end",
+    "First source position",
+    "Last source position",
     "Aggregation source",
   ],
   series.positions.map((position) => {
     const candle = position.candle;
     const unavailable = "Not applicable";
     return [
-      position.intervalStart,
-      position.intervalEnd,
+      position.naturalStart,
+      position.naturalEnd,
       position.representedStart,
       position.representedEnd,
       coverageLabels[position.coverage],
       tradeHistoryCoverageMeaning(position.coverage, candle !== null),
+      position.poolId ?? "Not established",
       candle === null
         ? "Whitespace"
         : "Candlestick and volume histogram",
@@ -343,24 +375,52 @@ const tradeHistoryDeveloperValues = (
         ? unavailable
         : `${formatAmount(
             candle.quoteVolumeRaw,
-            String(series.source.quoteToken.decimals),
-          )} ${series.source.quoteToken.symbol}`,
+            String(series.archive.root.usdgDecimals),
+          )} USDG`,
       candle === null
         ? unavailable
         : `${formatAmount(
-            candle.tokenVolumeRaw,
-            String(series.source.token.decimals),
-          )} ${series.source.token.symbol}`,
+            candle.baseVolumeRaw,
+            String(series.tokenDecimals.value),
+          )} ${series.symbol}`,
       candle === null ? unavailable : candle.tradeCount,
       candle === null ? unavailable : candle.quoteVolumeRaw,
-      candle === null ? unavailable : candle.tokenVolumeRaw,
+      candle === null ? unavailable : candle.baseVolumeRaw,
       candle === null ? "Not observed" : candle.observedStart,
       candle === null ? "Not observed" : candle.observedEnd,
-      candle === null
-        ? "No aggregate value was created."
-        : "OHLC, USDG volume, Stock Token volume, and trade count use the same admitted Swap set.",
+      candle === null ? "Not observed" : tradeHistorySourcePosition(candle.firstSource),
+      candle === null ? "Not observed" : tradeHistorySourcePosition(candle.lastSource),
+      tradeHistoryAggregationMeaning(position),
     ];
   }),
+);
+
+const tradeHistoryEvidenceCorrelation = (
+  result: CapabilitySuccess<StockTokenTradeHistoryData>,
+): HTMLTableElement => exactValueTable(
+  "Evidence source correlation",
+  [
+    "Purpose",
+    "Source owner",
+    "Source class",
+    "Source reference",
+    "Observed at",
+    "Chain block",
+    "Invocation ID",
+    "Observation ID",
+    "Record digest",
+  ],
+  result.evidence.sources.map((source) => [
+    source.purpose,
+    source.owner,
+    source.sourceClass,
+    source.reference.kind === "public" ? source.reference.uri : source.reference.sourceId,
+    source.observedAt,
+    source.chainAnchor?.blockNumber ?? "Not applicable",
+    source.invocationId,
+    source.observationId,
+    source.recordDigest,
+  ]),
 );
 
 const renderAccountAssets = (value: AccountAssetCollectionSuccess): DocumentFragment => {
@@ -440,21 +500,40 @@ const renderContractAnalysis = (result: ContractInspectionResult): DocumentFragm
 };
 
 const renderStockTokenTradeHistory = (
-  value: StockTokenTradeHistoryResult,
+  result: CapabilitySuccess<StockTokenTradeHistoryData>,
   context: PresentationRenderContext,
 ): DocumentFragment => {
+  const value = result.data;
   const output = document.createDocumentFragment();
   const label = stockTokenTradeHistoryLabel(value);
   output.append(summary([
     ["Stock Token", label],
-    ["Requested period", stockTokenTradeHistoryWindowLabel(value.window)],
+    ["Requested period", stockTokenTradeHistoryPeriodLabel(value.period)],
   ]));
   output.append(element("h2", "section-title", "Trades in USDG"));
   if (value.status === "unavailable") {
+    const reason = stockTokenTradeHistoryUnavailableReason(value);
     output.append(summary([
       ["Status", "Unavailable", "unavailable"],
-      ["Reason", stockTokenTradeHistoryUnavailableReasonLabel(value.reason)],
+      ["Reason", stockTokenTradeHistoryUnavailableReasonLabel(reason)],
+      ...("archive" in value
+        ? [
+            [
+              "Freshness",
+              value.freshness === "unknown"
+                ? "Unknown"
+                : value.freshness === "current" ? "Current" : "Stale",
+              value.freshness === "unknown" ? "unavailable" : value.freshness,
+            ] as SummaryField,
+            ...(value.archive.scope === "catalog_root"
+              ? []
+              : [["Published through", value.archive.root.currentUntil.timestamp] as SummaryField]),
+          ]
+        : []),
     ]));
+    if ("archive" in value) {
+      output.append(summary([["Reached scope", value.archive.scope]]));
+    }
     if ("officialAsset" in value) {
       output.append(disclosure("Token details", [summary([
         ["Stock Token contract", value.officialAsset.member.contractAddress],
@@ -463,12 +542,13 @@ const renderStockTokenTradeHistory = (
     return output;
   }
 
-  const statusFields: SummaryField[] = [];
-  if (value.freshness === "stale") statusFields.push(["Freshness", "Stale", "stale"]);
-  if (value.coverage.status === "partial") {
-    statusFields.push(["Coverage", "Partial", "partial"]);
-  }
-  if (statusFields.length > 0) output.append(summary(statusFields));
+  output.append(summary([
+    ["Status", "Available", "current"],
+    ["Freshness", value.freshness === "current" ? "Current" : "Stale", value.freshness],
+    ["Published through", value.archive.root.currentUntil.timestamp],
+    ["Coverage", value.coverage.status === "complete" ? "Complete" : "Partial", value.coverage.status],
+    ["Requested coverage", stockTokenTradeHistoryRequestedCoverageLabel(value)],
+  ]));
   if (value.coverage.limitations.length > 0) {
     output.append(noticeList(
       "Limitations",
@@ -477,27 +557,40 @@ const renderStockTokenTradeHistory = (
   }
   const noTrade = stockTokenTradeHistoryNoTradeLabel(value);
   if (noTrade !== undefined) output.append(element("p", "supporting-copy", noTrade));
+  const requestCutWarning = stockTokenTradeHistoryRequestCutCandleWarning(value);
+  if (requestCutWarning !== undefined) {
+    output.append(noticeList("Warnings", [requestCutWarning]));
+  }
 
   const chart = createTradeHistoryChartPresentation(
-    value.chart,
+    value,
     `${label} trades in USDG`,
   );
   context.registerTradeHistoryChart(chart.mount);
   output.append(chart.node);
   output.append(disclosure("Token details", [summary([
     ["Stock Token contract", value.officialAsset.member.contractAddress],
-    ["USDG contract", value.source.quoteToken.address],
-    ["Uniswap V4 PoolManager", value.source.poolManager],
-    ["Uniswap V4 Pool ID", value.source.poolId],
+    ["USDG contract", value.archive.root.usdgAddress],
+    ["Uniswap V4 PoolManager", value.archive.root.poolManager],
+    ["Uniswap V4 Pool IDs", Object.keys(value.archive.pools).join(", ")],
   ])]));
   output.append(deferredDisclosure("Developer details", () => [
     summary([
+      ["Capability", result.meta.capabilityId],
+      ["Contract version", result.meta.contractVersion],
+      ["Evaluated at", result.meta.evaluatedAt],
+      ["Evidence coverage", coverageLabels[result.evidence.coverage.status],
+        result.evidence.coverage.status],
       ["Result block", value.block.blockNumber],
-      ["Chart positions", String(value.chart.positions.length)],
-      ["Source file sequence", String(value.sourceFiles.sequence)],
-      ["Source coverage ends", value.sourceFiles.coveredUntilTimestamp],
+      ["Stored resolution", `${value.resolution.label} (${stockTokenTradeHistoryResolutionLabel(
+        value.resolution.intervalSeconds,
+      )})`],
+      ["Chart positions", String(value.positions.length)],
+      ["Source publication sequence", String(value.archive.root.publicationSequence)],
+      ["Source coverage ends", value.archive.root.currentUntil.timestamp],
     ]),
-    tradeHistoryDeveloperValues(value.chart),
+    tradeHistoryDeveloperValues(value),
+    tradeHistoryEvidenceCorrelation(result),
   ]));
   return output;
 };

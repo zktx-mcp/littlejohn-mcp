@@ -4,7 +4,9 @@ import {
   applicationFailureSchemaFor,
   calculateScaledUiAmount,
   capabilityIdSchema,
+  canonicalJsonStringify,
   chainAnchorSchema,
+  captureCanonicalJson,
   defineApplicationContract,
   erc20AssetIdentitySchema,
   evmAccountIdentitySchema,
@@ -40,9 +42,13 @@ import {
   stockFactoryVerificationSchema,
   type OfficialAssetSourceClassificationUnavailableReason,
   type OfficialAssetCandidate,
+  type OfficialAssetSnapshotEvidence,
   type OfficialAssetSourceMember,
 } from "../registry/client.js";
-import { officialAssetCandidateListDigest } from "../registry/official-asset-contract.js";
+import {
+  officialAssetCandidateListDigest,
+  officialAssetMemberSetDigest,
+} from "../registry/official-asset-contract.js";
 import { tokenCatalogErrorRegistry } from "../token-catalog/error-registry.js";
 
 export const accountAssetLimits = Object.freeze({
@@ -147,6 +153,24 @@ const officialMemberForClassification = (
     ? classification.cause.member
     : null;
 };
+
+const officialSnapshotForClassification = (
+  classification: AccountAssetClassification,
+): OfficialAssetSnapshotEvidence | null => {
+  if (
+    classification.kind === "robinhood_stock_token" ||
+    classification.kind === "custom_erc20"
+  ) return classification.snapshot;
+  return classification.cause.kind === "stock_factory_verification_unavailable"
+    ? classification.cause.snapshot
+    : null;
+};
+
+const sameOfficialSnapshotEvidence = (
+  left: OfficialAssetSnapshotEvidence,
+  right: OfficialAssetSnapshotEvidence,
+): boolean => canonicalJsonStringify(captureCanonicalJson(left)) ===
+  canonicalJsonStringify(captureCanonicalJson(right));
 
 export const accountAssetAmountSchema = jsonObject({
   raw: unsignedDecimalSchema,
@@ -294,6 +318,10 @@ const collectionSuccessSchema = jsonObject({
   assets: z.array(contractAccountAssetSchema).max(accountAssetLimits.maximumPageSize),
   nextCursor: accountAssetCursorSchema.nullable(),
 }).strict().superRefine((value, context) => {
+  const snapshots = value.assets
+    .map((entry) => officialSnapshotForClassification(entry.classification))
+    .filter((snapshot): snapshot is OfficialAssetSnapshotEvidence => snapshot !== null);
+  const firstSnapshot = snapshots[0];
   if (
     value.block.chainId !== value.account.chainId ||
     value.native.asset.chainId !== value.account.chainId ||
@@ -302,6 +330,9 @@ const collectionSuccessSchema = jsonObject({
       entry.selection.account.address !== value.account.address ||
       !sameBlock(entry.requiredStandards.block, value.block) ||
       !classificationMatchesView(entry.classification, value.viewRevision, value.block)) ||
+    (firstSnapshot !== undefined && snapshots.some(
+      (snapshot) => !sameOfficialSnapshotEvidence(snapshot, firstSnapshot),
+    )) ||
     (value.nextCursor !== null && (
       !sameViewRevision(value.nextCursor, value.viewRevision) ||
       value.nextCursor.address !== value.assets.at(-1)?.selection.asset.address
@@ -371,6 +402,7 @@ const overviewSuccessSchema = jsonObject({
     return;
   }
   const digestMembers: OfficialAssetSourceMember[] = [];
+  const snapshots: OfficialAssetSnapshotEvidence[] = [];
   for (const entry of value.stockTokens.members) {
     const asset = entry.status === "selected" ? entry.asset : null;
     const classification = asset?.classification;
@@ -379,9 +411,13 @@ const overviewSuccessSchema = jsonObject({
       : classification === undefined
         ? null
         : officialMemberForClassification(classification);
+    const snapshot = classification === undefined
+      ? null
+      : officialSnapshotForClassification(classification);
     if (
       member === null ||
       (asset !== null && (
+        snapshot === null ||
         asset.selection.account.chainId !== value.account.chainId ||
         asset.selection.account.address !== value.account.address ||
         !sameBlock(asset.requiredStandards.block, value.block) ||
@@ -394,6 +430,7 @@ const overviewSuccessSchema = jsonObject({
       });
       return;
     }
+    if (snapshot !== null) snapshots.push(snapshot);
     digestMembers.push(Object.freeze({
       assetUid: member.assetUid,
       contractAddress: member.contractAddress,
@@ -401,10 +438,17 @@ const overviewSuccessSchema = jsonObject({
       ...(member.sourceSymbol === null ? {} : { sourceSymbol: member.sourceSymbol }),
     }));
   }
+  const candidateListDigest = officialAssetCandidateListDigest(digestMembers);
+  const memberSetDigest = officialAssetMemberSetDigest(digestMembers);
+  const firstSnapshot = snapshots[0];
   if (
     value.viewRevision.selectionSetRevision === null ||
-    officialAssetCandidateListDigest(digestMembers) !==
-      value.stockTokens.candidateListDigest
+    candidateListDigest !== value.stockTokens.candidateListDigest ||
+    snapshots.some((snapshot) =>
+      snapshot.candidateListDigest !== candidateListDigest ||
+      snapshot.memberSetDigest !== memberSetDigest ||
+      (firstSnapshot !== undefined &&
+        !sameOfficialSnapshotEvidence(snapshot, firstSnapshot)))
   ) {
     context.addIssue({
       code: "custom",

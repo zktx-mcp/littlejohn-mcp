@@ -260,10 +260,36 @@ later value or comparison.
 
 A Stock Token trade-history presentation always states archive freshness after
 archive work as `Current`, `Stale`, or `Unknown`, and states available coverage
-as `Complete` or `Partial`, before the chart. `Unknown` uses the unavailable
-semantic role without being relabelled as source absence. An unavailable result
-states its exact reason and reached scope. Positive states are explicit rather
-than represented by missing text.
+as `Complete` or `Partial`, before the chart. Requested coverage is the exact
+request intersection of admitted natural-position coverage; evidence outside
+the request is never described as requested-period coverage. The presentation
+states the published-through bound and every before/after coverage limitation
+that changes interpretation. `Unknown` uses the unavailable semantic role
+without being relabelled as source absence. An unavailable result states its
+exact reason and reached scope. Positive states are explicit rather than
+represented by missing text.
+
+A request-cut position is visibly `Partial` even when it carries a candle. The
+presentation states before the chart that this is the unchanged full stored
+natural candle and may include activity outside the represented request bounds.
+It never calls the candle clipped, recalculated, or request-only. Exact natural
+and represented bounds remain accessible without comparing chart geometry.
+
+An empty complete position states that no qualifying Swap occurred in that
+complete natural interval. An empty partial position states that trade absence
+was not established. An unavailable position states that published coverage is
+unavailable and also makes no absence claim. A whole-result no-trade sentence is
+permitted only when every position is complete and empty. These meanings are
+present in model-visible MCP text, CLI human output and accessible App text; a
+Host model is not expected to infer them from null fields or timestamp
+comparison.
+
+Developer details expose exact requested coverage, the admitted member
+identities, every position's natural and represented bounds, state, referenced
+Pool provenance, full candle interval and source positions. Raw natural-window
+coverage transitions remain server admission facts and are not reconstructed
+for presentation. Canvas, color and pointer interaction are never the only way
+to distinguish these facts.
 
 ## Motion
 

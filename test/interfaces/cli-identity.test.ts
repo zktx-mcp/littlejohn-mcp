@@ -44,7 +44,7 @@ describe("CLI interface identity", () => {
       {
         domain: "market",
         command: "stock-token-trade-history",
-        argumentSyntax: "<symbol> [--window <1d|7d|30d>] [--json]",
+        argumentSyntax: "<symbol> [--period <count> --unit <day|week|month|year>] [--json]",
       },
       {
         domain: "read",
@@ -102,7 +102,7 @@ describe("CLI interface identity", () => {
     ]);
     expect(cliHelpText).toBe([
       "Usage:",
-      "  littlejohn market stock-token-trade-history <symbol> [--window <1d|7d|30d>] [--json]",
+      "  littlejohn market stock-token-trade-history <symbol> [--period <count> --unit <day|week|month|year>] [--json]",
       "  littlejohn read assets [--limit <1..5>] [--cursor <cursor-json>] [--json]",
       "  littlejohn read balance (--address <address> | --active) --native <true|false> [--token <address>]... --block <latest|block-number> [--json]",
       "  littlejohn read chain-status [--json]",

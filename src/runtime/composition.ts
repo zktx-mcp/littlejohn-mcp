@@ -6,10 +6,9 @@ import {
 } from "../account-assets/index.js";
 import {
   createStockTokenTradeHistoryApplicationFactory,
-  createGitHubStockTokenTradeHistory,
-  type StockTokenTradeHistoryApplicationPort,
+  createStockTokenTradeHistoryObservationAuthorities,
   type StockTokenTradeHistoryOwnerApplication,
-  type StockTokenTradeHistoryReadPort,
+  type StockTokenTradeHistoryReadCapabilityPort,
 } from "../stock-token-trade-history/index.js";
 import {
   CapabilityBindingRegistry,
@@ -32,7 +31,10 @@ import {
   type ObservationAuthorityRegistration,
   type UtcTimestamp,
 } from "../core/index.js";
-import { stockTokenTradeHistoryCapabilityIds } from "../stock-token-trade-history/contracts.js";
+import {
+  stockTokenTradeHistoryCapability,
+  stockTokenTradeHistoryCapabilityIds,
+} from "../stock-token-trade-history/contracts.js";
 import {
   createProtocolOwnerApplication,
   readProtocolSupportExtension,
@@ -197,14 +199,13 @@ export interface AccountAssetOwnerHandoff {
 
 export interface StockTokenTradeHistoryOwnerHandoff {
   readonly supportManifest: StockTokenTradeHistoryRuntimeSupportManifest;
-  readonly tradeHistory: StockTokenTradeHistoryApplicationPort;
+  readonly tradeHistory: StockTokenTradeHistoryReadCapabilityPort;
 }
 
 interface LocalRuntimeBaseOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly now?: () => UtcTimestamp;
   readonly robinhoodOfficialAssetSourceClient?: RobinhoodOfficialAssetSourceClient;
-  readonly stockTokenTradeHistory?: StockTokenTradeHistoryReadPort;
   readonly contractSourceVerificationFactory?: (
     clock: CanonicalClock,
   ) => Readonly<{
@@ -386,6 +387,13 @@ const snapshotChainReads = (input: ChainReadCapabilityPort): ChainReadCapability
     contractInspect: input.contractInspect,
     transactionInspect: input.transactionInspect,
   });
+};
+
+const snapshotStockTokenTradeHistory = (
+  input: StockTokenTradeHistoryReadCapabilityPort,
+): StockTokenTradeHistoryReadCapabilityPort => {
+  assertBindingProvenance(stockTokenTradeHistoryCapability, input.binding);
+  return Object.freeze({ binding: input.binding });
 };
 
 const snapshotTokenInspection = (
@@ -749,9 +757,7 @@ export const composeOwnerApplicationStages = async <
           );
           assertCapabilityDirectSupport(application.supportManifest, stockTokenTradeHistoryCapabilityIds);
           if (context.signal.aborted) throw new RuntimeOperationError("request_aborted");
-          const tradeHistory = Object.freeze({
-            get: (...args: Parameters<StockTokenTradeHistoryApplicationPort["get"]>) => application.get(...args),
-          }) satisfies StockTokenTradeHistoryApplicationPort;
+          const tradeHistory = snapshotStockTokenTradeHistory(application);
           return Object.freeze({
             application,
             handoff: Object.freeze({
@@ -916,8 +922,6 @@ export class LocalRuntime {
     const interfaceApplicationFactory = options.interfaceApplicationFactory;
     const robinhoodOfficialAssetSourceClient =
       options.robinhoodOfficialAssetSourceClient;
-    const stockTokenTradeHistory = options.stockTokenTradeHistory ??
-      createGitHubStockTokenTradeHistory();
     const contractSourceVerificationFactory =
       options.contractSourceVerificationFactory;
     if ((walletApplicationFactory === undefined && (chainApplicationFactory !== undefined || interfaceApplicationFactory !== undefined)) ||
@@ -942,10 +946,14 @@ export class LocalRuntime {
         ? createSourcifyContractSourceVerification({ clock })
         : contractSourceVerificationFactory(clock);
       const walletSource = createWalletSourceAuthority({ credential, profileId: profile.profileId, clock });
+      const stockTokenTradeHistorySources =
+        createStockTokenTradeHistoryObservationAuthorities(clock);
       const chainPorts = Object.freeze({
         observations: new ObservationAuthorityRegistry(clock, [
           rpcSource.observationAuthority,
           contractSourceVerification.observationAuthorityRegistration,
+          stockTokenTradeHistorySources.officialAsset,
+          stockTokenTradeHistorySources.archive,
         ]),
       });
       const walletCapabilityAuthority: WalletCapabilityAuthorityPort = Object.freeze({
@@ -1065,8 +1073,13 @@ export class LocalRuntime {
               chainInvocations: chain.invocations,
               currentBlockReads: chain.currentBlockReads,
               officialAssetReads: chain.officialAssetReads,
+              protocolReads: chain.protocolReads,
               officialAssets,
-              tradeHistoryReads: stockTokenTradeHistory,
+              invocationAuthority,
+              invocationPorts: chainPorts,
+              officialAssetObservationAuthority: stockTokenTradeHistorySources.officialAsset,
+              archiveObservationAuthority: stockTokenTradeHistorySources.archive,
+              now: () => new Date(now()),
               startupResources,
             });
       const interfaceStage: InterfaceOwnerApplicationStage<ActiveWallet, WalletOperations> | undefined =

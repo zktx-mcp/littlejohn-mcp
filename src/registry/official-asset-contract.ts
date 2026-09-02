@@ -288,6 +288,7 @@ export const officialAssetSnapshotEvidenceSchema = jsonObject({
   sourceObservedAt: utcTimestampSchema,
   rawResponseDigest: hash32Schema,
   memberSetDigest: hash32Schema,
+  candidateListDigest: hash32Schema,
   revision: officialAssetSnapshotRevisionSchema,
 }).strict().superRefine((value, context) => {
   if (value.sourceUri !== officialAssetSourceDefinition.sourceUri) {
@@ -300,6 +301,20 @@ export const officialAssetSnapshotEvidenceSchema = jsonObject({
 export type OfficialAssetSnapshotEvidence = z.infer<
   typeof officialAssetSnapshotEvidenceSchema
 >;
+
+export const projectOfficialAssetSnapshotEvidence = (
+  snapshotInput: CommittedOfficialAssetSnapshot,
+): OfficialAssetSnapshotEvidence => {
+  const snapshot = assertCommittedOfficialAssetSnapshot(snapshotInput);
+  return deepFreezeValue(officialAssetSnapshotEvidenceSchema.parse({
+    sourceUri: snapshot.sourceUri,
+    sourceObservedAt: snapshot.sourceObservedAt,
+    rawResponseDigest: snapshot.rawResponseDigest,
+    memberSetDigest: snapshot.memberSetDigest,
+    candidateListDigest: snapshot.candidateListDigest,
+    revision: snapshot.revision,
+  }));
+};
 
 export const officialAssetSourceFailureDefinitions = deepFreezeValue([
   { code: "request_aborted", classificationReason: false },

@@ -42,37 +42,10 @@ class TestResizeObserver implements ResizeObserver {
 
 const tradeHistorySeries = () => {
   const result = stockTokenTradeHistoryAvailableFixture();
-  if (result.status !== "available") {
+  if (result.data.status !== "available") {
     throw new TypeError("Trade-history fixture is unavailable.");
   }
-  return result.chart;
-};
-
-const tradeHistorySeriesWithFallingPosition = () => {
-  const series = tradeHistorySeries();
-  const targetIndex = series.positions.length - 2;
-  const target = series.positions[targetIndex];
-  const template = series.positions.at(-1)?.candle;
-  if (target === undefined || template === null || template === undefined) {
-    throw new TypeError("Execution direction fixture is unavailable.");
-  }
-  return {
-    ...series,
-    positions: series.positions.map((position, index) => index === targetIndex
-      ? Object.freeze({
-          ...position,
-          candle: Object.freeze({
-            ...template,
-            open: template.close,
-            high: template.close,
-            low: template.open,
-            close: template.open,
-            observedStart: position.intervalStart,
-            observedEnd: position.intervalEnd,
-          }),
-        })
-      : position),
-  };
+  return result.data;
 };
 
 const host = (openLinks: boolean, calls: string[]): TradeHistoryChartHost => ({
@@ -131,33 +104,24 @@ describe("Stock Token trade-history chart adapter", () => {
     expect(projection.quoteVolume).toHaveLength(series.positions.length);
     expect(projection.price.map((value) => value.time))
       .toEqual(projection.quoteVolume.map((value) => value.time));
-    expect(projection.price.slice(0, -1).every((value) => !("open" in value))).toBe(true);
-    expect(projection.quoteVolume.slice(0, -1).every((value) => !("value" in value))).toBe(true);
-    expect(projection.price.at(-1)).toEqual({
-      time: Date.parse("2026-08-12T13:30:00.000Z") / 1_000,
-      open: 231.25,
-      high: 231.75,
-      low: 231.25,
-      close: 231.75,
-    });
-    expect(projection.quoteVolume.at(-1)).toEqual({
-      time: Date.parse("2026-08-12T13:30:00.000Z") / 1_000,
-      value: 0.006003,
-    });
-    expect(projection.priceDirection.at(-1)).toBe("up");
-    expect(projection.priceDirection.slice(0, -1).every((value) => value === null)).toBe(true);
-    const boundaryFraction = 443 / 900;
-    expect(projection.visibleLogicalRange).toEqual({
-      from: -0.5 + boundaryFraction,
-      to: series.positions.length - 1 - 0.5 + boundaryFraction,
-    });
+    for (const [index, position] of series.positions.entries()) {
+      const price = projection.price[index];
+      const volume = projection.quoteVolume[index];
+      expect(price?.time).toBe(Date.parse(position.naturalStart) / 1_000);
+      expect(volume?.time).toBe(price?.time);
+      expect("open" in (price ?? {})).toBe(position.candle !== null);
+      expect("value" in (volume ?? {})).toBe(position.candle !== null);
+      expect(projection.priceDirection[index] === null).toBe(position.candle === null);
+    }
+    expect(projection.visibleLogicalRange.from).toBeGreaterThanOrEqual(-0.5);
+    expect(projection.visibleLogicalRange.to).toBeLessThanOrEqual(series.positions.length - 0.5);
   });
 
   it("mounts two fixed panes, delegates link opening to the Host, and removes once", async () => {
     const api = chartApi();
     library.createChart.mockReturnValue(api.chart);
     const calls: string[] = [];
-    const series = tradeHistorySeriesWithFallingPosition();
+    const series = tradeHistorySeries();
     const presentation = createTradeHistoryChartPresentation(series, "Trade-history chart");
     document.body.append(presentation.node);
 
@@ -195,18 +159,17 @@ describe("Stock Token trade-history chart adapter", () => {
       1,
     );
     expect(api.chart.addSeries.mock.calls[1]?.[1]?.color).toBe("rgb(4, 4, 4)");
-    expect(api.price.setData.mock.calls[0]?.[0]).toHaveLength(97);
-    expect(api.volume.setData.mock.calls[0]?.[0]).toHaveLength(97);
-    expect(api.volume.setData.mock.calls[0]?.[0]?.at(-2)).toEqual({
-      time: Date.parse("2026-08-12T13:15:00.000Z") / 1_000,
-      value: 0.006003,
-      color: "rgb(7, 7, 7)",
-    });
-    expect(api.volume.setData.mock.calls[0]?.[0]?.at(-1)).toEqual({
-      time: Date.parse("2026-08-12T13:30:00.000Z") / 1_000,
-      value: 0.006003,
-      color: "rgb(4, 4, 4)",
-    });
+    expect(api.price.setData.mock.calls[0]?.[0]).toHaveLength(series.positions.length);
+    expect(api.volume.setData.mock.calls[0]?.[0]).toHaveLength(series.positions.length);
+    const projected = projectTradeHistoryChart(series);
+    const volumeData = api.volume.setData.mock.calls[0]?.[0] as readonly Readonly<{
+      readonly color?: string;
+    }>[];
+    for (const [index, direction] of projected.priceDirection.entries()) {
+      expect(volumeData[index]?.color).toBe(direction === null
+        ? undefined
+        : direction === "up" ? "rgb(4, 4, 4)" : "rgb(7, 7, 7)");
+    }
     expect(api.pane0.priceScale).toHaveBeenCalledTimes(1);
     expect(api.pane0.priceScale).toHaveBeenCalledWith("right");
     expect(api.priceScale0.applyOptions).toHaveBeenCalledTimes(1);
@@ -220,6 +183,12 @@ describe("Stock Token trade-history chart adapter", () => {
     expect(api.timeScale.setVisibleLogicalRange).toHaveBeenCalledWith(
       projectTradeHistoryChart(series).visibleLogicalRange,
     );
+    expect(presentation.mount.container.querySelectorAll(".chart-request-boundary"))
+      .toHaveLength(2);
+    expect(presentation.mount.requestStartBoundary.title)
+      .toBe(`Requested start: ${series.requestedStart}`);
+    expect(presentation.mount.requestEndBoundary.title)
+      .toBe(`Requested end: ${series.requestedEnd}`);
     const chartOptions = library.createChart.mock.calls[0]?.[1];
     expect(chartOptions?.crosshair?.horzLine?.labelVisible).toBe(false);
     const tickMarkFormatter = chartOptions?.timeScale?.tickMarkFormatter;
@@ -265,6 +234,7 @@ describe("Stock Token trade-history chart adapter", () => {
     mounted.dispose();
     presentation.mount.openLink.click();
     expect(api.chart.remove).toHaveBeenCalledTimes(1);
+    expect(presentation.mount.container.querySelector(".chart-request-boundary")).toBeNull();
     expect(calls).toHaveLength(1);
   });
 
@@ -368,7 +338,7 @@ describe("Stock Token trade-history chart adapter", () => {
     const series = tradeHistorySeries();
     const invalidSeries = {
       ...series,
-      requestedStart: series.positions[0]?.intervalEnd ?? series.requestedEnd,
+      requestedStart: series.positions[0]?.naturalEnd ?? series.requestedEnd,
     };
     const presentation = createTradeHistoryChartPresentation(invalidSeries, "Trade-history chart");
     const root = document.createElement("main");

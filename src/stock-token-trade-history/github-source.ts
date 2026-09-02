@@ -25,7 +25,7 @@ const githubSourceSettings = Object.freeze({
 
 type Fetch = typeof fetch;
 
-export interface GitHubStockTokenTradeHistoryTransportDependencies {
+interface GitHubStockTokenTradeHistoryTransportDependencies {
   readonly fetch?: Fetch;
 }
 
@@ -41,6 +41,7 @@ const discardBody = async (response: Response, primaryFailure?: unknown): Promis
   try {
     await response.body.cancel();
   } catch (error) {
+    if (error === primaryFailure) return;
     throw new StockTokenTradeHistoryProviderCleanupError([error], primaryFailure);
   }
 };
@@ -55,13 +56,13 @@ const closeReader = async (
     try {
       await reader.cancel();
     } catch (error) {
-      failures.push(error);
+      if (error !== primaryFailure) failures.push(error);
     }
   }
   try {
     reader.releaseLock();
   } catch (error) {
-    failures.push(error);
+    if (error !== primaryFailure) failures.push(error);
   }
   if (failures.length !== 0) {
     throw new StockTokenTradeHistoryProviderCleanupError(failures, primaryFailure);
@@ -78,7 +79,11 @@ const readBoundedBody = async (
   maximumBytes: number,
   signal: AbortSignal,
 ): Promise<BoundedBodyResult> => {
-  throwIfAborted(signal);
+  if (signal.aborted) {
+    const reason = abortReason(signal);
+    await discardBody(response, reason);
+    throw reason;
+  }
   const contentLength = response.headers.get("content-length");
   let declaredLength: number | undefined;
   if (contentLength !== null) {

@@ -40,6 +40,7 @@ describe("interface Current Support projection", () => {
     "account.balance",
     "chain.status",
     "contract.inspect",
+    "market.stock_token_trade_history",
     "token.inspect",
     "transaction.inspect",
     "uniswap_v2.quote_exact_input",

@@ -314,6 +314,10 @@ merge an equal-valued limit, or reinterpret a feature-private capacity.
 - A trade-history period is `1..365` days, `1..52` weeks, `1..12` UTC calendar
   months, or one UTC calendar year. Days and weeks are exact durations. Months
   and years use UTC calendar subtraction with missing-day clamping.
+- One canonical complete success is at most `600,000` UTF-8 bytes. Core rejects
+  a larger success as `result_too_large` before any interface. This is the
+  current initial product admission, not the physical maximum of an interface
+  serializer, a provider limit, a profile, or a version.
 - A Stock Token/USDG stored candle contains exact positive reduced rational
   open, high, low, and close values, raw Stock Token and USDG volumes, trade
   count, and first and last contributing finalized `Swap` positions. Its price

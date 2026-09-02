@@ -1,21 +1,25 @@
 import {
   capabilityIdSchema,
-  defineApplicationContract,
-  jsonObject,
+  defineReadCapability,
 } from "../core/client.js";
 import { tokenCatalogErrorRegistry } from "../token-catalog/error-registry.js";
+import { createStockTokenTradeHistoryEvidence } from "./capability-evidence.js";
+import { stockTokenTradeHistoryInputSchema } from "./period-contract.js";
 import {
-  parseStockTokenTradeHistoryResult,
-  stockTokenTradeHistoryInputSchema,
-  stockTokenTradeHistoryResultSchema,
-} from "./stock-token-trade-history.js";
+  assertStockTokenTradeHistoryDataAt,
+  assertStockTokenTradeHistoryIntrinsicData,
+  assertStockTokenTradeHistoryRequest,
+  stockTokenTradeHistoryDataSchema,
+} from "./result.js";
 
-export const stockTokenTradeHistoryCapabilityId = capabilityIdSchema.parse(
+const stockTokenTradeHistoryCapabilityId = capabilityIdSchema.parse(
   "market.stock_token_trade_history",
 );
 export const stockTokenTradeHistoryCapabilityIds = Object.freeze([
   stockTokenTradeHistoryCapabilityId,
 ]);
+
+export const stockTokenTradeHistoryMaximumSuccessUtf8Bytes = 600_000 as const;
 
 export const stockTokenTradeHistoryFailureCodes = Object.freeze([
   "chain_response_unavailable",
@@ -34,28 +38,31 @@ export const stockTokenTradeHistoryFailureCodes = Object.freeze([
 ] as const);
 
 export const stockTokenTradeHistoryErrorRegistry = tokenCatalogErrorRegistry;
+export const stockTokenTradeHistoryEvidence = createStockTokenTradeHistoryEvidence(
+  stockTokenTradeHistoryCapabilityId,
+);
 
-const applicationContract = defineApplicationContract({
+export const stockTokenTradeHistoryCapability = defineReadCapability({
+  capabilityId: stockTokenTradeHistoryCapabilityId,
   contractVersion: "1",
   inputSchema: stockTokenTradeHistoryInputSchema,
-  successSchema: stockTokenTradeHistoryResultSchema,
-  internalContextSchema: jsonObject({}).strict(),
-  errorRegistry: stockTokenTradeHistoryErrorRegistry,
+  dataSchema: stockTokenTradeHistoryDataSchema,
+  maximumSuccessUtf8Bytes: stockTokenTradeHistoryMaximumSuccessUtf8Bytes,
   failureCodes: stockTokenTradeHistoryFailureCodes,
-  validatePublicSuccess: (input, success) => {
-    parseStockTokenTradeHistoryResult(input, success);
+  evidence: stockTokenTradeHistoryEvidence,
+  validateIntrinsicData: (data, context) => {
+    for (const exclusion of stockTokenTradeHistoryEvidence.staticScopeExclusions) {
+      context.assertDeclaredScopeExclusion(exclusion);
+    }
+    assertStockTokenTradeHistoryIntrinsicData(data);
   },
-});
-
-export const stockTokenTradeHistoryApplicationContract = Object.freeze({
-  capabilityId: stockTokenTradeHistoryCapabilityId,
-  contractVersion: applicationContract.contractVersion,
-  applicationContract,
-  inputSchema: stockTokenTradeHistoryInputSchema,
-  successSchema: stockTokenTradeHistoryResultSchema,
-  failureCodes: applicationContract.failureCodes,
-  parseInput: applicationContract.parseInput,
-  parsePublicSuccess: applicationContract.parsePublicSuccess,
-  parseFailure: applicationContract.parseFailure,
-  normalizeFailure: applicationContract.normalizeFailure,
+  validateDataContext: (data, context) => {
+    assertStockTokenTradeHistoryDataAt(data, context.evaluatedAt);
+  },
+  validateSuccess: (data, context) => {
+    if ("block" in data && data.block.chainId !== context.chainId) {
+      throw new TypeError("Trade-history success chain scope is inconsistent.");
+    }
+  },
+  validateRequest: assertStockTokenTradeHistoryRequest,
 });

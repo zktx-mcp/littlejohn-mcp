@@ -15,6 +15,7 @@ export {
   officialAssetSourceSnapshotSchema,
   officialAssetSourceUnavailableReasons,
   officialAssetSourceUnavailableReasonSchema,
+  projectOfficialAssetSnapshotEvidence,
   stockFactoryAdmissionManifest,
   stockFactoryClassificationUnavailableReasons,
   stockFactoryClassificationUnavailableReasonSchema,

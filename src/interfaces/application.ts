@@ -1,6 +1,6 @@
 import type { AccountAssetApplicationPort } from "../account-assets/index.js";
 import type { CapabilityBinding } from "../core/index.js";
-import type { StockTokenTradeHistoryApplicationPort } from "../stock-token-trade-history/index.js";
+import type { StockTokenTradeHistoryReadCapabilityPort } from "../stock-token-trade-history/index.js";
 import type { uniswapV2QuoteCapability } from "../protocols/uniswap-v2/index.js";
 import type {
   ChainReadCapabilityPort,
@@ -20,7 +20,6 @@ import {
 import type { WalletManagementPort } from "../wallet/contracts.js";
 import { extendPublicInterfaceRoutes } from "./http-routes.js";
 import { extendOperationRoutes } from "./operation-routes.js";
-import { extendStockTokenTradeHistoryInterfaceRoutes } from "./stock-token-trade-history-http.js";
 import { extendInterfaceSupportManifest } from "./support.js";
 
 export interface InterfaceOwnerApplicationContext
@@ -32,7 +31,7 @@ export interface InterfaceOwnerApplicationContext
   readonly uniswapV2Quote: CapabilityBinding<typeof uniswapV2QuoteCapability>;
   readonly tokenInspection: TokenCatalogInspectionPort;
   readonly accountAssets: AccountAssetApplicationPort;
-  readonly tradeHistory: StockTokenTradeHistoryApplicationPort;
+  readonly tradeHistory: StockTokenTradeHistoryReadCapabilityPort;
 }
 
 export interface InterfaceOwnerApplication extends HttpOwnerApplication {
@@ -52,6 +51,7 @@ export const createInterfaceOwnerApplicationFactory = (): InterfaceOwnerApplicat
       walletConnection: context.walletConnection,
       tokenInspection: context.tokenInspection,
       uniswapV2Quote: context.uniswapV2Quote,
+      tradeHistory: context.tradeHistory,
       supportManifest,
     });
     const tokenRoutes = extendTokenCatalogQueryRoutes({
@@ -59,12 +59,8 @@ export const createInterfaceOwnerApplicationFactory = (): InterfaceOwnerApplicat
       inspection: context.tokenInspection,
       queries: context.tokenCatalogQueries,
     });
-    const tradeHistoryRoutes = extendStockTokenTradeHistoryInterfaceRoutes({
-      routes: tokenRoutes,
-      tradeHistory: context.tradeHistory,
-    });
     const routes = extendOperationRoutes({
-      routes: tradeHistoryRoutes,
+      routes: tokenRoutes,
       wallet: context.walletOperations,
       token: context.tokenCatalogManagement,
     });

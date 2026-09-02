@@ -14,9 +14,15 @@ import {
   type StockTokenTradeHistorySourceInput,
 } from "../../src/stock-token-trade-history/source-contract.js";
 import {
+  deriveStockTokenTradeHistoryPublicData,
+} from "../../src/stock-token-trade-history/source-semantics.js";
+import {
   createStockTokenTradeHistoryCoverageConflictFixture,
+  createStockTokenTradeHistoryCrossPoolFixture,
   createStockTokenTradeHistoryDeclaredTooLargeFixture,
+  createStockTokenTradeHistoryIncompleteWithSwapFixture,
   createStockTokenTradeHistoryMultiMonthSourceFixture,
+  createStockTokenTradeHistoryPositivePreviousOwnerFixture,
   createStockTokenTradeHistorySourceFixture,
 } from "./source-fixture.js";
 
@@ -67,6 +73,27 @@ describe("StockTokenTradeHistorySource", () => {
     });
   });
 
+  it("rejects a non-canonical resolution before provider work", async () => {
+    const fixture = createStockTokenTradeHistorySourceFixture();
+    let catalogReads = 0;
+    const source = createStockTokenTradeHistorySource({
+      transport: Object.freeze({
+        ...fixture.transport,
+        async readCatalog(
+          ...args: Parameters<StockTokenTradeHistoryProviderTransport["readCatalog"]>
+        ): ReturnType<StockTokenTradeHistoryProviderTransport["readCatalog"]> {
+          catalogReads += 1;
+          return fixture.transport.readCatalog(...args);
+        },
+      }),
+    });
+    await expect(source.read({ ...request(), resolution: "30m" })).rejects.toThrow(
+      "resolution is not canonical",
+    );
+    expect(catalogReads).toBe(0);
+    await source.close();
+  });
+
   it("returns one admitted source result without reading a day or full packed asset", async () => {
     const fixture = createStockTokenTradeHistorySourceFixture();
     const memberReads: Array<Readonly<{ assetName: string; from: number; until: number }>> = [];
@@ -85,7 +112,8 @@ describe("StockTokenTradeHistorySource", () => {
       now: () => new Date("2026-08-24T07:01:02.345Z"),
     });
 
-    const result = await source.read(request());
+    const sourceInput = request();
+    const result = await source.read(sourceInput);
     expect(result).toMatchObject({
       status: "available",
       observedAt: "2026-08-24T07:01:02.000Z",
@@ -93,18 +121,18 @@ describe("StockTokenTradeHistorySource", () => {
       base: {
         baseCurrencyAddress: fixture.baseAddress,
       },
-      publishedCoverage: [{
+      coverage: [{
         fromBlock: "50",
         fromTimestamp: "2026-08-01T00:00:00.000Z",
       }],
-      selectedResolutionCoverage: [{
-        fromBlock: "50",
-        fromTimestamp: "2026-08-01T00:00:00.000Z",
-      }],
-      ownerMonths: [{
+      coverageOwnerMonths: ["2026-08"],
+      monthMembers: [{
         ownerMonth: "2026-08",
-        monthMember: { logicalId: `base/${fixture.baseAddress}/month/2026-08` },
-        resolutionMember: { logicalId: `base/${fixture.baseAddress}/resolution/15m/2026-08` },
+        member: { logicalId: `base/${fixture.baseAddress}/month/2026-08` },
+      }],
+      resolutionMembers: [{
+        ownerMonth: "2026-08",
+        member: { logicalId: `base/${fixture.baseAddress}/resolution/15m/2026-08` },
       }],
       candles: [{
         intervalStart: "2026-08-24T06:45:00.000Z",
@@ -112,17 +140,35 @@ describe("StockTokenTradeHistorySource", () => {
         tradeCount: "2",
       }],
     });
-    expect("coverage" in result).toBe(false);
     expect("members" in result).toBe(false);
     if (result.status !== "available") throw new TypeError("Expected available source fixture.");
-    expect(result.publishedCoverage).toHaveLength(1);
-    expect(result.selectedResolutionCoverage).toHaveLength(1);
+    expect(result.coverage).toHaveLength(1);
+    const poolKey = Object.values(result.pools)[0]!;
+    expect(Object.keys(poolKey).sort()).toEqual([
+      "currency0", "currency1", "fee", "hooks", "tickSpacing",
+    ]);
     expect(memberReads).toHaveLength(3);
     expect(memberReads.every((read) => read.until > read.from)).toBe(true);
+    const publicData = deriveStockTokenTradeHistoryPublicData({
+      sourceInput,
+      coverage: result.coverage,
+      resolutionOwnerMonths: result.resolutionMembers.map((entry) => entry.ownerMonth),
+      candles: result.candles,
+    });
+    expect(publicData.positions[0]).toMatchObject({
+      coverage: "complete",
+      poolId: expect.any(String),
+      candle: null,
+    });
+    expect(publicData.positions.at(-1)).toMatchObject({
+      coverage: "complete",
+      poolId: expect.any(String),
+      candle: { tradeCount: "2" },
+    });
     await source.close();
   });
 
-  it("admits producer-valid overlapping resolution coverage across owner months", async () => {
+  it("keeps coverage and resolution member roles separate across owner months", async () => {
     const fixture = createStockTokenTradeHistoryMultiMonthSourceFixture();
     let memberReads = 0;
     const source = createStockTokenTradeHistorySource({
@@ -138,7 +184,7 @@ describe("StockTokenTradeHistorySource", () => {
       }),
     });
     const result = await source.read(request({
-      requestedStart: "2026-06-30T23:00:00.000Z",
+      requestedStart: "2025-07-01T01:00:00.000Z",
       requestedEnd: "2026-07-01T01:00:00.000Z",
       canonicalBlock: {
         chainId: "eip155:4663",
@@ -150,15 +196,174 @@ describe("StockTokenTradeHistorySource", () => {
     }));
 
     if (result.status !== "available") throw new TypeError("Expected available multi-month source.");
-    expect(result.publishedCoverage).toHaveLength(1);
-    expect(result.selectedResolutionCoverage).toHaveLength(1);
-    expect(result.ownerMonths.map((entry) => entry.ownerMonth)).toEqual(["2026-06", "2026-07"]);
+    expect(result.coverage).toHaveLength(1);
+    expect(result.coverageOwnerMonths).toEqual(["2026-06", "2026-07"]);
+    expect(result.monthMembers.map((entry) => entry.ownerMonth)).toEqual(["2026-06", "2026-07"]);
+    expect(result.resolutionMembers).toEqual([]);
     expect(result.candles).toHaveLength(0);
-    expect(new Set(result.ownerMonths.flatMap((entry) => [
-      entry.monthMember.logicalId,
-      entry.resolutionMember.logicalId,
-    ])).size).toBe(4);
-    expect(memberReads).toBe(5);
+    expect(new Set(result.monthMembers.map((entry) => entry.member.logicalId)).size).toBe(2);
+    expect(memberReads).toBe(3);
+    await source.close();
+  });
+
+  it("retains an unchanged candle when the request cuts its natural interval", async () => {
+    const fixture = createStockTokenTradeHistorySourceFixture();
+    const source = createStockTokenTradeHistorySource({ transport: fixture.transport });
+    const result = await source.read(request({
+      requestedStart: "2026-08-23T07:01:00.000Z",
+      requestedEnd: "2026-08-24T06:50:00.000Z",
+      canonicalBlock: {
+        chainId: "eip155:4663",
+        blockNumber: "100",
+        blockHash: `0x${"e".repeat(64)}`,
+        blockTimestamp: "2026-08-24T06:50:00.000Z",
+      },
+    }));
+    if (result.status !== "available") throw new TypeError("Expected available source fixture.");
+    expect(result.candles.map((candle) => [candle.intervalStart, candle.intervalEnd])).toEqual([
+      ["2026-08-24T06:45:00.000Z", "2026-08-24T07:00:00.000Z"],
+    ]);
+    expect(result.resolutionMembers.map((entry) => entry.ownerMonth)).toEqual(["2026-08"]);
+    await source.close();
+  });
+
+  it("reads the preceding resolution owner for a request-cut positive candle", async () => {
+    const fixture = createStockTokenTradeHistoryPositivePreviousOwnerFixture();
+    let memberReads = 0;
+    const source = createStockTokenTradeHistorySource({
+      transport: Object.freeze({
+        ...fixture.transport,
+        async readMember(
+          input: Parameters<StockTokenTradeHistoryProviderTransport["readMember"]>[0],
+          signal: AbortSignal,
+        ) {
+          memberReads += 1;
+          return fixture.transport.readMember(input, signal);
+        },
+      }),
+    });
+    const sourceInput = request({
+      requestedStart: "2026-09-01T00:01:00.000Z",
+      requestedEnd: "2027-09-01T00:01:00.000Z",
+      canonicalBlock: {
+        chainId: "eip155:4663",
+        blockNumber: "10000000",
+        blockHash: `0x${"8".repeat(64)}`,
+        blockTimestamp: "2027-09-01T00:01:00.000Z",
+      },
+      resolution: "2d",
+    });
+    const result = await source.read(sourceInput);
+    if (result.status !== "available") throw new TypeError("Expected positive edge source.");
+    expect(result.coverageOwnerMonths).toEqual(["2026-08", "2026-09"]);
+    expect(result.monthMembers.map((entry) => entry.ownerMonth)).toEqual([
+      "2026-08", "2026-09",
+    ]);
+    expect(result.resolutionMembers.map((entry) => entry.ownerMonth)).toEqual(["2026-08"]);
+    expect(result.candles.map((candle) => [candle.intervalStart, candle.intervalEnd])).toEqual([
+      ["2026-08-31T00:00:00.000Z", "2026-09-02T00:00:00.000Z"],
+    ]);
+    expect(memberReads).toBe(4);
+    const publicData = deriveStockTokenTradeHistoryPublicData({
+      sourceInput,
+      coverage: result.coverage,
+      resolutionOwnerMonths: result.resolutionMembers.map((entry) => entry.ownerMonth),
+      candles: result.candles,
+    });
+    expect(publicData.positions.find((position) => position.candle !== null)).toMatchObject({
+      coverage: "partial",
+      poolId: expect.any(String),
+      candle: { intervalStart: "2026-08-31T00:00:00.000Z" },
+    });
+    await source.close();
+  });
+
+  it("does not read a resolution member for incomplete coverage with a stored minute Swap", async () => {
+    const fixture = createStockTokenTradeHistoryIncompleteWithSwapFixture();
+    let memberReads = 0;
+    const source = createStockTokenTradeHistorySource({
+      transport: Object.freeze({
+        ...fixture.transport,
+        async readMember(
+          input: Parameters<StockTokenTradeHistoryProviderTransport["readMember"]>[0],
+          signal: AbortSignal,
+        ) {
+          memberReads += 1;
+          return fixture.transport.readMember(input, signal);
+        },
+      }),
+    });
+    const sourceInput = request({
+      requestedStart: "2026-09-01T00:01:00.000Z",
+      requestedEnd: "2027-09-01T00:01:00.000Z",
+      canonicalBlock: {
+        chainId: "eip155:4663",
+        blockNumber: "10000000",
+        blockHash: `0x${"8".repeat(64)}`,
+        blockTimestamp: "2027-09-01T00:01:00.000Z",
+      },
+      resolution: "2d",
+    });
+    const result = await source.read(sourceInput);
+    if (result.status !== "available") throw new TypeError("Expected incomplete source.");
+    expect(result.coverageOwnerMonths).toEqual(["2026-09"]);
+    expect(result.resolutionMembers).toEqual([]);
+    expect(result.candles).toEqual([]);
+    expect(memberReads).toBe(2);
+    const publicData = deriveStockTokenTradeHistoryPublicData({
+      sourceInput,
+      coverage: result.coverage,
+      resolutionOwnerMonths: [],
+      candles: [],
+    });
+    expect(publicData.positions.find((position) => position.coverage === "partial"))
+      .toMatchObject({ coverage: "partial", poolId: null, candle: null });
+    expect(publicData.positions.some((position) => position.coverage === "unavailable"))
+      .toBe(true);
+    await source.close();
+  });
+
+  it("does not read a resolution member across a covered Pool transition", async () => {
+    const fixture = createStockTokenTradeHistoryCrossPoolFixture();
+    let memberReads = 0;
+    const source = createStockTokenTradeHistorySource({
+      transport: Object.freeze({
+        ...fixture.transport,
+        async readMember(
+          input: Parameters<StockTokenTradeHistoryProviderTransport["readMember"]>[0],
+          signal: AbortSignal,
+        ) {
+          memberReads += 1;
+          return fixture.transport.readMember(input, signal);
+        },
+      }),
+    });
+    const sourceInput = request({
+      requestedStart: "2026-09-01T00:01:00.000Z",
+      requestedEnd: "2027-09-01T00:01:00.000Z",
+      canonicalBlock: {
+        chainId: "eip155:4663",
+        blockNumber: "10000000",
+        blockHash: `0x${"8".repeat(64)}`,
+        blockTimestamp: "2027-09-01T00:01:00.000Z",
+      },
+      resolution: "2d",
+    });
+    const result = await source.read(sourceInput);
+    if (result.status !== "available") throw new TypeError("Expected cross-Pool source.");
+    expect(result.coverage.map((segment) => segment.poolId)).toHaveLength(2);
+    expect(new Set(result.coverage.map((segment) => segment.poolId)).size).toBe(2);
+    expect(result.resolutionMembers).toEqual([]);
+    expect(result.candles).toEqual([]);
+    expect(memberReads).toBe(3);
+    const publicData = deriveStockTokenTradeHistoryPublicData({
+      sourceInput,
+      coverage: result.coverage,
+      resolutionOwnerMonths: [],
+      candles: [],
+    });
+    expect(publicData.positions.find((position) => position.coverage === "partial"))
+      .toMatchObject({ coverage: "partial", poolId: null, candle: null });
     await source.close();
   });
 
@@ -533,6 +738,7 @@ describe("StockTokenTradeHistorySource", () => {
 
     await expect(source.read(request({
       requestedStart: "2026-06-01T00:00:00.000Z",
+      resolution: "12h",
     }))).resolves.toMatchObject({
       status: "unavailable",
       reason: "trade_history_unavailable",
@@ -576,6 +782,7 @@ describe("StockTokenTradeHistorySource", () => {
 
     await expect(source.read(request({
       requestedStart: "2026-06-01T00:00:00.000Z",
+      resolution: "12h",
     }))).resolves.toMatchObject({
       status: "unavailable",
       reason: "trade_history_inconsistent",
@@ -609,6 +816,37 @@ describe("StockTokenTradeHistorySource", () => {
     await source.close();
   });
 
+  it("does not admit coverage whose proved block range starts at the canonical block", async () => {
+    const fixture = createStockTokenTradeHistorySourceFixture();
+    let memberReads = 0;
+    const source = createStockTokenTradeHistorySource({
+      transport: Object.freeze({
+        ...fixture.transport,
+        async readMember(
+          input: Parameters<StockTokenTradeHistoryProviderTransport["readMember"]>[0],
+          signal: AbortSignal,
+        ) {
+          memberReads += 1;
+          return fixture.transport.readMember(input, signal);
+        },
+      }),
+    });
+    await expect(source.read(request({
+      canonicalBlock: {
+        chainId: "eip155:4663",
+        blockNumber: "50",
+        blockHash: `0x${"5".repeat(64)}`,
+        blockTimestamp: "2026-08-24T07:00:00.000Z",
+      },
+    }))).resolves.toMatchObject({
+      status: "unavailable",
+      reason: "outside_published_coverage",
+      scope: "selected_period",
+    });
+    expect(memberReads).toBe(2);
+    await source.close();
+  });
+
   it("preserves cleanup failure from a stopped sibling with the canonical source terminal", async () => {
     const fixture = createStockTokenTradeHistorySourceFixture();
     let memberReads = 0;
@@ -637,6 +875,7 @@ describe("StockTokenTradeHistorySource", () => {
 
     const failure = await source.read(request({
       requestedStart: "2026-06-01T00:00:00.000Z",
+      resolution: "12h",
     })).then(() => undefined, (error: unknown) => error);
     expect(isStockTokenTradeHistoryProviderCleanupError(failure)).toBe(true);
     expect((failure as StockTokenTradeHistoryProviderCleanupError).primaryFailure)
@@ -695,6 +934,86 @@ describe("StockTokenTradeHistorySource", () => {
         scope: "catalog_root",
       });
       await source.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("replaces a raw deadline abort primary while preserving cleanup failure", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = createStockTokenTradeHistorySourceFixture();
+      const cleanupCause = new Error("deadline cleanup failed");
+      const source = createStockTokenTradeHistorySource({
+        transport: Object.freeze({
+          ...fixture.transport,
+          readCatalog(
+            _maximumResponseBytes: number,
+            _maximumTotalBytes: number,
+            _maximumAssets: number,
+            signal: AbortSignal,
+          ): ReturnType<StockTokenTradeHistoryProviderTransport["readCatalog"]> {
+            return new Promise((_, reject) => {
+              signal.addEventListener("abort", () => reject(
+                new StockTokenTradeHistoryProviderCleanupError([cleanupCause], signal.reason),
+              ), { once: true });
+            });
+          },
+        }),
+      });
+      const read = source.read(request());
+      await vi.advanceTimersByTimeAsync(stockTokenTradeHistorySourceLimits.deadlineMilliseconds);
+      const failure = await read.then(() => undefined, (error: unknown) => error);
+      expect(isStockTokenTradeHistoryProviderCleanupError(failure)).toBe(true);
+      expect((failure as StockTokenTradeHistoryProviderCleanupError).primaryFailure)
+        .toMatchObject({ name: "SourceTerminal" });
+      expect((failure as StockTokenTradeHistoryProviderCleanupError).cleanupFailures)
+        .toEqual([cleanupCause]);
+      const close = source.close();
+      await expect(close).rejects.toBe(failure);
+      expect(source.close()).toBe(close);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rechecks caller cancellation after constructing a deadline cleanup terminal", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = createStockTokenTradeHistorySourceFixture();
+      const cleanupCause = new Error("deadline cleanup failed");
+      const caller = new AbortController();
+      const callerReason = new Error("caller cancelled during terminal observation");
+      const source = createStockTokenTradeHistorySource({
+        transport: Object.freeze({
+          ...fixture.transport,
+          readCatalog(
+            _maximumResponseBytes: number,
+            _maximumTotalBytes: number,
+            _maximumAssets: number,
+            signal: AbortSignal,
+          ): ReturnType<StockTokenTradeHistoryProviderTransport["readCatalog"]> {
+            return new Promise((_, reject) => {
+              signal.addEventListener("abort", () => reject(
+                new StockTokenTradeHistoryProviderCleanupError([cleanupCause], signal.reason),
+              ), { once: true });
+            });
+          },
+        }),
+        now: () => {
+          caller.abort(callerReason);
+          return new Date("2026-08-24T07:01:00.000Z");
+        },
+      });
+      const read = source.read(request(), caller.signal);
+      await vi.advanceTimersByTimeAsync(stockTokenTradeHistorySourceLimits.deadlineMilliseconds);
+      const failure = await read.then(() => undefined, (error: unknown) => error);
+      expect(isStockTokenTradeHistoryProviderCleanupError(failure)).toBe(true);
+      expect((failure as StockTokenTradeHistoryProviderCleanupError).primaryFailure)
+        .toBe(callerReason);
+      expect((failure as StockTokenTradeHistoryProviderCleanupError).cleanupFailures)
+        .toEqual([cleanupCause]);
+      await expect(source.close()).rejects.toBe(failure);
     } finally {
       vi.useRealTimers();
     }
@@ -762,7 +1081,10 @@ describe("StockTokenTradeHistorySource", () => {
           },
         }),
       });
-      const read = source.read(request({ requestedStart: "2026-06-01T00:00:00.000Z" }));
+      const read = source.read(request({
+        requestedStart: "2026-06-01T00:00:00.000Z",
+        resolution: "12h",
+      }));
       await laterReadStarted;
       await vi.advanceTimersByTimeAsync(stockTokenTradeHistorySourceLimits.deadlineMilliseconds);
       releaseLater();

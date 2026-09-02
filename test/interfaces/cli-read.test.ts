@@ -348,6 +348,7 @@ describe("read CLI", () => {
               sourceObservedAt: observedAt,
               rawResponseDigest: blockHash,
               memberSetDigest: blockHash,
+              candidateListDigest: blockHash,
               revision: Buffer.alloc(16, 1).toString("base64url"),
             },
           },

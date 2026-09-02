@@ -1,3 +1,10 @@
+import {
+  createObservationAuthority,
+  sourceReferenceSchema,
+  type CanonicalClock,
+  type ObservationAuthority,
+} from "../core/index.js";
+import { officialAssetSourceDefinition } from "../registry/index.js";
 import type { RuntimeRouteRegistry } from "../runtime/http-routing.js";
 import {
   createResourceOwnershipScope,
@@ -7,13 +14,45 @@ import type {
   AccountAssetRuntimeSupportManifest,
   StockTokenTradeHistoryRuntimeSupportManifest,
 } from "../runtime/support-manifest.js";
-import { StockTokenTradeHistoryApplication } from "./application.js";
-import { StockTokenTradeHistoryOperationError } from "./errors.js";
+import { createStockTokenTradeHistoryApplication } from "./application.js";
+import { createGitHubStockTokenTradeHistoryTransport } from "./github-source.js";
 import type {
   StockTokenTradeHistoryApplicationDependencies,
   StockTokenTradeHistoryApplicationPort,
 } from "./ports.js";
+import { createStockTokenTradeHistorySource } from "./source.js";
+import { stockTokenTradeHistoryProducerAdmission } from "./source-contract.js";
 import { extendStockTokenTradeHistorySupportManifest } from "./support.js";
+
+export interface StockTokenTradeHistoryObservationAuthorities {
+  readonly officialAsset: ObservationAuthority;
+  readonly archive: ObservationAuthority;
+}
+
+export const createStockTokenTradeHistoryObservationAuthorities = (
+  clock: CanonicalClock,
+): StockTokenTradeHistoryObservationAuthorities => Object.freeze({
+  officialAsset: createObservationAuthority({
+    clock,
+    sourceClass: "web_api",
+    owner: "Robinhood",
+    reference: sourceReferenceSchema.parse({
+      kind: "public",
+      sourceId: "robinhood-official-assets",
+      uri: officialAssetSourceDefinition.sourceUri,
+    }),
+  }),
+  archive: createObservationAuthority({
+    clock,
+    sourceClass: "public_dataset",
+    owner: "stelis-dev",
+    reference: sourceReferenceSchema.parse({
+      kind: "public",
+      sourceId: "robinhood-stock-token-index",
+      uri: stockTokenTradeHistoryProducerAdmission.publicContractReference,
+    }),
+  }),
+});
 
 export interface StockTokenTradeHistoryOwnerApplication
   extends StockTokenTradeHistoryApplicationPort {
@@ -23,10 +62,11 @@ export interface StockTokenTradeHistoryOwnerApplication
 }
 
 export interface StockTokenTradeHistoryApplicationFactoryInput
-  extends StockTokenTradeHistoryApplicationDependencies {
+  extends Omit<StockTokenTradeHistoryApplicationDependencies, "source"> {
   readonly routes: RuntimeRouteRegistry;
   readonly supportManifest: AccountAssetRuntimeSupportManifest;
   readonly startupResources: OwnedResourceRegistry;
+  readonly now?: () => Date;
 }
 
 export const createStockTokenTradeHistoryApplicationFactory = async (
@@ -49,29 +89,30 @@ export const createStockTokenTradeHistoryApplicationFactory = async (
     activeClose = tracked;
     return tracked;
   };
-  const assertOpen = (): void => {
-    if (state !== "open") {
-      throw new StockTokenTradeHistoryOperationError("runtime_state_unavailable");
-    }
-  };
   try {
-    const application = new StockTokenTradeHistoryApplication(input);
+    const source = createStockTokenTradeHistorySource({
+      transport: createGitHubStockTokenTradeHistoryTransport({}),
+      ...(input.now === undefined ? {} : { now: input.now }),
+    });
+    lifecycle.resources.register(source);
+    const application = createStockTokenTradeHistoryApplication({
+      chainInvocations: input.chainInvocations,
+      currentBlockReads: input.currentBlockReads,
+      officialAssets: input.officialAssets,
+      officialAssetReads: input.officialAssetReads,
+      protocolReads: input.protocolReads,
+      source,
+      invocationAuthority: input.invocationAuthority,
+      invocationPorts: input.invocationPorts,
+      officialAssetObservationAuthority: input.officialAssetObservationAuthority,
+      archiveObservationAuthority: input.archiveObservationAuthority,
+    });
     lifecycle.resources.register(application);
     lifecycle.seal();
-    const tradeHistory = Object.freeze({
-      get(
-        request: Parameters<StockTokenTradeHistoryApplicationPort["get"]>[0],
-        signal?: AbortSignal,
-      ) {
-        assertOpen();
-        return application.get(request, signal);
-      },
-    }) satisfies StockTokenTradeHistoryApplicationPort;
-    const supportManifest = extendStockTokenTradeHistorySupportManifest(input.supportManifest);
     const result = Object.freeze({
       routes: input.routes,
-      supportManifest,
-      ...tradeHistory,
+      supportManifest: extendStockTokenTradeHistorySupportManifest(input.supportManifest),
+      binding: application.binding,
       close,
     });
     state = "open";

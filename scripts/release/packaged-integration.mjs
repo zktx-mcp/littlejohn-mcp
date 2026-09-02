@@ -40,6 +40,7 @@ const expectedCapabilityIds = Object.freeze([
   "account.balance",
   "chain.status",
   "contract.inspect",
+  "market.stock_token_trade_history",
   "token.inspect",
   "transaction.inspect",
   "uniswap_v2.quote_exact_input",
@@ -88,7 +89,7 @@ const exactPackagedToolSchemaNames = Object.freeze([
   "wallet_get_connection",
 ]);
 const expectedExactPackagedToolSchemaBundleSha256 =
-  "21ad6a6f65023f912c0f682b7cf02f76b53c0e78e153da6eb08f26e9d99796c3";
+  "04304f9eebfb5d7eb12ff445578b8a8cc9f686a98e5722f302798e5dfecb1d68";
 
 /** @type {typeof import("./packaged-integration.d.mts").assertPackagedMcpServerIdentity} */
 export const assertPackagedMcpServerIdentity = (result, expected) => {
@@ -742,15 +743,64 @@ const canonicalToolText = (toolResult) => {
   return content[0].text;
 };
 
-const canonicalSemanticToolContent = (toolResult, label) => {
+const canonicalSemanticToolContent = (toolResult, label, projectText) => {
   const structured = toolResult?.structuredContent;
   if (
     typeof structured !== "object" ||
     structured === null ||
     Array.isArray(structured) ||
-    canonicalToolText(toolResult) !== JSON.stringify(structured)
+    canonicalToolText(toolResult) !== (projectText === undefined
+      ? JSON.stringify(structured)
+      : projectText(structured))
   ) throw new TypeError(`${label} text and structured content differ.`);
   return structured;
+};
+
+const stockTokenTradeHistorySummary = (success) => {
+  const result = success?.data;
+  if (result?.status !== "available") {
+    throw new TypeError("Packaged Stock Token trade-history summary requires available data.");
+  }
+  const sourceName = result.officialAsset?.member?.sourceName;
+  const label = sourceName === undefined || sourceName === null || sourceName === result.symbol
+    ? result.symbol
+    : `${sourceName} · ${result.symbol}`;
+  const lines = [
+    "Stock Token trade history",
+    `Token: ${label}`,
+    `Requested period: ${result.period.count} ${result.period.unit}${result.period.count === 1 ? "" : "s"}`,
+    "Status: Available",
+    `Requested range: ${result.requestedStart} to ${result.requestedEnd}`,
+    `Freshness: ${result.freshness === "current" ? "Current" : "Stale"}`,
+    `Published through: ${result.archive.root.currentUntil.timestamp}`,
+    `Coverage: ${result.coverage.status === "complete" ? "Complete" : "Partial"}`,
+    `Requested coverage: ${result.coverage.fromTimestamp} to ${result.coverage.untilTimestamp}`,
+    `Resolution: ${result.resolution.label} (${result.resolution.intervalSeconds % 86_400 === 0
+      ? `${result.resolution.intervalSeconds / 86_400}-day`
+      : result.resolution.intervalSeconds % 3_600 === 0
+        ? `${result.resolution.intervalSeconds / 3_600}-hour`
+        : `${result.resolution.intervalSeconds / 60}-minute`})`,
+    ...result.coverage.limitations.map((limitation) => `Limitation: ${limitation ===
+        "before_published_coverage"
+      ? "Published trade history starts after the requested period began."
+      : "Published trade history ends before the requested period ended."}`),
+  ];
+  if (result.positions.some((position) =>
+    position.coverage === "partial" && position.candle !== null)) {
+    lines.push("Warning: A partial candle is the unchanged full stored natural interval and may include activity outside its represented request bounds.");
+  }
+  const latest = result.positions.findLast((position) => position.candle !== null)?.candle;
+  if (latest === undefined || latest === null) {
+    lines.push(result.positions.every((position) => position.coverage === "complete")
+      ? "No qualifying Stock Token/USDG trade occurred in the requested period."
+      : "Trade absence is not established for every requested position.");
+  } else {
+    lines.push(
+      `Latest chart close: ${latest.close.numerator} / ${latest.close.denominator} USDG`,
+      `Trades observed: ${latest.observedStart} to ${latest.observedEnd}`,
+    );
+  }
+  return lines.join("\n");
 };
 
 const assertOperationToolResultDescriptor = (toolResult, toolName, normalizedInput) => {
@@ -823,7 +873,7 @@ const reconstructPackagedSnapshot = async (client, descriptor) => {
   return value;
 };
 
-const admitPackagedAppCreatingResult = async (client, result, label) => {
+const admitPackagedAppCreatingResult = async (client, result, label, expectedText) => {
   const content = result?.content;
   const resource = result?._meta?.["littlejohn/presentation-snapshot"];
   const descriptor = resource?.descriptor;
@@ -836,7 +886,7 @@ const admitPackagedAppCreatingResult = async (client, result, label) => {
     !Array.isArray(content) ||
     content.length !== 2 ||
     text?.type !== "text" ||
-    text.text !== resultText ||
+    text.text !== (expectedText ?? resultText) ||
     link?.type !== "resource_link" ||
     link?.uri !== descriptor?.snapshotUri ||
     resource?.kind !== "presentation_snapshot_resource" ||
@@ -1054,12 +1104,13 @@ const assertPackagedReadApp = async (client, prepared, fakeRpc) => {
 
   const creatingResult = await client.callTool("market_get_stock_token_trade_history", {
     symbol: fakeRpc.stockTokenTradeHistory.symbol,
-    window: "7d",
+    period: { count: 7, unit: "day" },
   });
   const creating = await admitPackagedAppCreatingResult(
     client,
     creatingResult,
     "Packaged MCP App trade history",
+    stockTokenTradeHistorySummary(creatingResult.structuredContent),
   );
   const { descriptor, link, resource: snapshotResource } = creating;
   if (
@@ -1088,13 +1139,15 @@ const assertPackagedReadApp = async (client, prepared, fakeRpc) => {
   ) throw new TypeError("Packaged MCP App exact snapshot reference is invalid.");
 
   const reconstructed = await reconstructPackagedSnapshot(client, descriptor);
+  const reconstructedData = reconstructed.data;
   if (
     independentCanonicalJson(reconstructed) !== independentCanonicalJson(creating.value) ||
-    reconstructed.status !== "available" ||
-    reconstructed.symbol !== fakeRpc.stockTokenTradeHistory.symbol ||
-    reconstructed.window !== "7d" ||
-    !Array.isArray(reconstructed.chart?.positions) ||
-    reconstructed.chart.positions.length !== 169
+    reconstructedData?.status !== "available" ||
+    reconstructedData.symbol !== fakeRpc.stockTokenTradeHistory.symbol ||
+    reconstructedData.period?.count !== 7 ||
+    reconstructedData.period?.unit !== "day" ||
+    !Array.isArray(reconstructedData.positions) ||
+    reconstructedData.positions.length !== 168
   ) throw new TypeError("Packaged MCP App snapshot reconstruction is invalid.");
 
   await assertPackagedReviewWithoutServerTools(
@@ -1428,9 +1481,15 @@ export const verifyPackagedIntegration = async (prepared) => {
   const integrationRoot = resolve(prepared.workspace, "integration");
   const dataDirectory = resolve(integrationRoot, "state");
   const clockPath = resolve(integrationRoot, "clock.txt");
+  const tradeHistoryArtifactPath = resolve(integrationRoot, "trade-history-source-artifacts.json");
   const workerPath = resolve(prepared.installRoot, "release-owner-worker.mjs");
   await mkdir(integrationRoot, { recursive: true, mode: 0o700 });
   await writeFile(clockPath, `${new Date().toISOString()}\n`, { mode: 0o600 });
+  await writeFile(
+    tradeHistoryArtifactPath,
+    await readFile(new URL("../../test/stock-token-trade-history/source-artifacts.json", import.meta.url)),
+    { mode: 0o600 },
+  );
   await writeFile(
     workerPath,
     renderPackagedOwnerWorkerSource(prepared.packageIdentity.installRelativePath),
@@ -1442,6 +1501,7 @@ export const verifyPackagedIntegration = async (prepared) => {
     ...prepared.environment,
     LITTLEJOHN_DATA_DIR: dataDirectory,
     LITTLEJOHN_RELEASE_CLOCK: clockPath,
+    LITTLEJOHN_RELEASE_TRADE_HISTORY_ARTIFACT: tradeHistoryArtifactPath,
     LITTLEJOHN_WALLETCONNECT_PROJECT_ID: walletConnectProjectId,
   });
   const environment = fakeRpc.createChildEnvironment(verifierEnvironment);
@@ -1534,7 +1594,9 @@ export const verifyPackagedIntegration = async (prepared) => {
       catalog.structuredContent?.contractVersion !== "1" ||
       JSON.stringify(capabilityIds) !== JSON.stringify(expectedCapabilityIds) ||
       catalogEntries.some((entry) =>
-        entry?.maximumSuccessUtf8Bytes !== 8_388_607 ||
+        entry?.maximumSuccessUtf8Bytes !== (entry?.capabilityId === "market.stock_token_trade_history"
+          ? 600_000
+          : 8_388_607) ||
         !Array.isArray(entry?.failureCodes) ||
         entry.failureCodes.filter((code) => code === "result_too_large").length !== 1)
     ) throw new TypeError("Packaged MCP capability catalog is not the exact canonical set.");
@@ -1929,36 +1991,34 @@ export const verifyPackagedIntegration = async (prepared) => {
     const stockTokenTradeHistory = await callSemanticRead(
       firstMcp,
       "market_get_stock_token_trade_history",
-      { symbol: fakeRpc.stockTokenTradeHistory.symbol, window: "1d" },
+      { symbol: fakeRpc.stockTokenTradeHistory.symbol },
     );
     const stockTokenContent = canonicalSemanticToolContent(
       stockTokenTradeHistory,
       "Packaged Stock Token trade history",
+      stockTokenTradeHistorySummary,
     );
-    const tradeHistoryChartCandles = Array.isArray(stockTokenContent.chart?.positions)
-      ? stockTokenContent.chart.positions.filter((position) => position.candle !== null)
+    const stockTokenData = stockTokenContent.data;
+    const tradeHistoryChartCandles = Array.isArray(stockTokenData?.positions)
+      ? stockTokenData.positions.filter((position) => position.candle !== null)
       : [];
     if (
-      stockTokenContent.status !== "available" ||
-      stockTokenContent.symbol !== fakeRpc.stockTokenTradeHistory.symbol ||
-      stockTokenContent.officialAsset?.member?.contractAddress !==
+      stockTokenData?.status !== "available" ||
+      stockTokenData.symbol !== fakeRpc.stockTokenTradeHistory.symbol ||
+      stockTokenData.period?.count !== 1 ||
+      stockTokenData.period?.unit !== "day" ||
+      stockTokenData.officialAsset?.member?.contractAddress !==
         fakeRpc.stockTokenTradeHistory.tokenAddress ||
-      stockTokenContent.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
-      stockTokenContent.source?.quoteToken?.symbol !== "USDG" ||
-      stockTokenContent.coverage?.status !== "partial" ||
-      stockTokenContent.chart?.window !== "1d" ||
-      stockTokenContent.chart?.source?.token?.address !==
-        fakeRpc.stockTokenTradeHistory.tokenAddress ||
-      stockTokenContent.chart?.source?.quoteToken?.symbol !== "USDG" ||
-      !Array.isArray(stockTokenContent.chart?.positions) ||
-      stockTokenContent.chart.positions.length !== 97 ||
-      tradeHistoryChartCandles.length !== 2 ||
-      tradeHistoryChartCandles[0]?.candle?.high?.numerator !== "463" ||
-      tradeHistoryChartCandles[0]?.candle?.high?.denominator !== "1" ||
-      tradeHistoryChartCandles[0]?.candle?.low?.numerator !== "925" ||
-      tradeHistoryChartCandles[0]?.candle?.low?.denominator !== "4" ||
-      tradeHistoryChartCandles[0]?.candle?.tokenVolumeRaw !== "2001" ||
-      tradeHistoryChartCandles[0]?.candle?.quoteVolumeRaw !== "4001" ||
+      stockTokenData.block?.blockHash !== fakeRpc.canonicalBlockReference.blockHash ||
+      stockTokenData.coverage?.status !== "complete" ||
+      stockTokenData.resolution?.label !== "15m" ||
+      !Array.isArray(stockTokenData.positions) ||
+      stockTokenData.positions.length !== 96 ||
+      tradeHistoryChartCandles.length !== 1 ||
+      tradeHistoryChartCandles[0]?.candle?.high?.numerator !== "2" ||
+      tradeHistoryChartCandles[0]?.candle?.low?.numerator !== "1" ||
+      tradeHistoryChartCandles[0]?.candle?.baseVolumeRaw !== "2" ||
+      tradeHistoryChartCandles[0]?.candle?.quoteVolumeRaw !== "3" ||
       tradeHistoryChartCandles[0]?.candle?.tradeCount !== "2" ||
       [
         "candles",
@@ -1971,7 +2031,7 @@ export const verifyPackagedIntegration = async (prepared) => {
         "warnings",
         "execution",
       ]
-        .some((field) => Object.hasOwn(stockTokenContent, field)) ||
+        .some((field) => Object.hasOwn(stockTokenData, field)) ||
       independentCanonicalJson(stockTokenContent).toLowerCase().includes("chainlink")
     ) throw new TypeError("Packaged Stock Token trade-history result is invalid.");
     const stockTokenCli = await runCommand(process.execPath, [
@@ -1979,14 +2039,32 @@ export const verifyPackagedIntegration = async (prepared) => {
       "market",
       "stock-token-trade-history",
       fakeRpc.stockTokenTradeHistory.symbol,
-      "--window",
-      "1d",
       "--json",
     ], { cwd: prepared.installRoot, env: environment, output: "capture" });
+    const stockTokenCliContent = JSON.parse(stockTokenCli.stdout.toString("utf8"));
+    const conclusionMeaning = (content) => content?.evidence?.conclusions?.map((conclusion) => ({
+      id: conclusion.id,
+      status: conclusion.status,
+      reason: conclusion.reason,
+      freshness: {
+        evaluatedAt: conclusion.freshness?.evaluatedAt,
+        ruleId: conclusion.freshness?.ruleId,
+        status: conclusion.freshness?.status,
+      },
+    }));
     if (
-      independentCanonicalJson(JSON.parse(stockTokenCli.stdout.toString("utf8"))) !==
-      independentCanonicalJson(stockTokenContent)
-    ) throw new TypeError("Packaged Stock Token CLI changed the canonical result.");
+      stockTokenCliContent?.ok !== true ||
+      independentCanonicalJson(stockTokenCliContent.data) !== independentCanonicalJson(stockTokenData) ||
+      independentCanonicalJson(stockTokenCliContent.meta) !== independentCanonicalJson(stockTokenContent.meta) ||
+      independentCanonicalJson(stockTokenCliContent.warnings) !==
+        independentCanonicalJson(stockTokenContent.warnings) ||
+      independentCanonicalJson(stockTokenCliContent.evidence?.coverage) !==
+        independentCanonicalJson(stockTokenContent.evidence?.coverage) ||
+      independentCanonicalJson(conclusionMeaning(stockTokenCliContent)) !==
+        independentCanonicalJson(conclusionMeaning(stockTokenContent))
+    ) throw new TypeError("Packaged Stock Token CLI changed the admitted result meaning.");
+    assertPackagedClaimsDigests(stockTokenContent, "Packaged Stock Token trade history");
+    assertPackagedClaimsDigests(stockTokenCliContent, "Packaged Stock Token CLI trade history");
 
     const catalogAsset = tokenAsset(fakeRpc);
     const officialCandidateAsset = Object.freeze({

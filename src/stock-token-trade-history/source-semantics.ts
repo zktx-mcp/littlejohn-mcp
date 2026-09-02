@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import {
+  chainAnchorSchema,
   deepFreezeValue,
   evmAddressSchema,
   hash32Schema,
@@ -11,6 +12,7 @@ import {
   productUsdgAsset,
   uint256DecimalSchema,
   utcTimestampSchema,
+  type UtcTimestamp,
 } from "../core/client.js";
 
 export const stockTokenTradeHistorySourceIdentity = deepFreezeValue({
@@ -73,7 +75,7 @@ export const stockTokenTradeHistorySourceResolution = (
   return definition;
 };
 
-export const stockTokenTradeHistorySourceReasons = Object.freeze([
+const stockTokenTradeHistorySourceReasons = Object.freeze([
   "trade_history_unavailable",
   "trade_history_inconsistent",
   "trade_history_too_large",
@@ -82,7 +84,7 @@ export const stockTokenTradeHistorySourceReasons = Object.freeze([
 ] as const);
 export type StockTokenTradeHistorySourceReason =
   (typeof stockTokenTradeHistorySourceReasons)[number];
-export const stockTokenTradeHistorySourceScopes = Object.freeze([
+const stockTokenTradeHistorySourceScopes = Object.freeze([
   "catalog_root",
   "selected_base",
   "selected_period",
@@ -120,6 +122,144 @@ export const stockTokenTradeHistorySourceSemanticSchemas = Object.freeze({
   hexSha256,
 });
 
+export const stockTokenTradeHistoryPositionLimit = 185 as const;
+
+export interface StockTokenTradeHistoryNaturalPositionBounds {
+  readonly naturalStart: UtcTimestamp;
+  readonly naturalEnd: UtcTimestamp;
+  readonly representedStart: UtcTimestamp;
+  readonly representedEnd: UtcTimestamp;
+}
+
+export interface StockTokenTradeHistoryRequestIntervals {
+  readonly resolution: Readonly<{
+    readonly label: StockTokenTradeHistorySourceResolutionLabel;
+    readonly intervalSeconds: number;
+    readonly positionCount: number;
+  }>;
+  readonly naturalWindow: Readonly<{
+    readonly fromTimestamp: UtcTimestamp;
+    readonly untilTimestamp: UtcTimestamp;
+  }>;
+  readonly positions: readonly StockTokenTradeHistoryNaturalPositionBounds[];
+}
+
+export const stockTokenTradeHistoryNaturalPositionCount = (input: Readonly<{
+  readonly requestedStart: UtcTimestamp;
+  readonly requestedEnd: UtcTimestamp;
+  readonly intervalSeconds: number;
+}>): number => {
+  const requestedStart = Date.parse(wholeSecondTimestamp.parse(input.requestedStart));
+  const requestedEnd = Date.parse(wholeSecondTimestamp.parse(input.requestedEnd));
+  const intervalMilliseconds = input.intervalSeconds * 1_000;
+  if (
+    requestedStart >= requestedEnd ||
+    !Number.isSafeInteger(intervalMilliseconds) ||
+    intervalMilliseconds <= 0
+  ) throw new TypeError("Trade-history natural-position input is invalid.");
+  return Math.floor((requestedEnd - 1) / intervalMilliseconds) -
+    Math.floor(requestedStart / intervalMilliseconds) + 1;
+};
+
+export const selectStockTokenTradeHistoryResolution = (input: Readonly<{
+  readonly requestedStart: UtcTimestamp;
+  readonly requestedEnd: UtcTimestamp;
+}>): StockTokenTradeHistorySourceResolutionLabel => {
+  for (const label of stockTokenTradeHistorySourceResolutionLabels) {
+    const definition = stockTokenTradeHistorySourceResolution(label);
+    if (stockTokenTradeHistoryNaturalPositionCount({
+      ...input,
+      intervalSeconds: definition.intervalSeconds,
+    }) <= stockTokenTradeHistoryPositionLimit) return label;
+  }
+  throw new TypeError("Trade-history period has no admitted stored resolution.");
+};
+
+const positionTimestamp = (milliseconds: number): UtcTimestamp =>
+  wholeSecondTimestamp.parse(new Date(milliseconds).toISOString()) as UtcTimestamp;
+
+export const deriveStockTokenTradeHistoryRequestIntervals = (input: Readonly<{
+  readonly requestedStart: UtcTimestamp;
+  readonly requestedEnd: UtcTimestamp;
+}>): StockTokenTradeHistoryRequestIntervals => {
+  const requestedStart = wholeSecondTimestamp.parse(input.requestedStart) as UtcTimestamp;
+  const requestedEnd = wholeSecondTimestamp.parse(input.requestedEnd) as UtcTimestamp;
+  if (requestedStart >= requestedEnd) {
+    throw new TypeError("Trade-history request interval is invalid.");
+  }
+  const label = selectStockTokenTradeHistoryResolution({ requestedStart, requestedEnd });
+  const definition = stockTokenTradeHistorySourceResolution(label);
+  const intervalMilliseconds = definition.intervalSeconds * 1_000;
+  const firstStart = Math.floor(Date.parse(requestedStart) / intervalMilliseconds) *
+    intervalMilliseconds;
+  const positionCount = stockTokenTradeHistoryNaturalPositionCount({
+    requestedStart,
+    requestedEnd,
+    intervalSeconds: definition.intervalSeconds,
+  });
+  const positions = Array.from({ length: positionCount }, (_, index) => {
+    const naturalStart = positionTimestamp(firstStart + index * intervalMilliseconds);
+    const naturalEnd = positionTimestamp(firstStart + (index + 1) * intervalMilliseconds);
+    return deepFreezeValue({
+      naturalStart,
+      naturalEnd,
+      representedStart: naturalStart < requestedStart ? requestedStart : naturalStart,
+      representedEnd: naturalEnd > requestedEnd ? requestedEnd : naturalEnd,
+    });
+  });
+  const first = positions[0];
+  const last = positions.at(-1);
+  if (first === undefined || last === undefined) {
+    throw new TypeError("Trade-history request has no natural position.");
+  }
+  return deepFreezeValue({
+    resolution: {
+      label,
+      intervalSeconds: definition.intervalSeconds,
+      positionCount,
+    },
+    naturalWindow: {
+      fromTimestamp: first.naturalStart,
+      untilTimestamp: last.naturalEnd,
+    },
+    positions,
+  });
+};
+
+export const stockTokenTradeHistorySourceInputSchema = jsonObject({
+  baseCurrencyAddress: evmAddressSchema,
+  baseCurrencyDecimals: stockTokenTradeHistoryBaseDecimalsSchema,
+  requestedStart: wholeSecondTimestamp,
+  requestedEnd: wholeSecondTimestamp,
+  canonicalBlock: chainAnchorSchema,
+  resolution: z.enum(stockTokenTradeHistorySourceResolutionLabels),
+}).strict().superRefine((value, context) => {
+  if (
+    value.canonicalBlock.chainId !== productChainId ||
+    value.canonicalBlock.blockTimestamp !== value.requestedEnd ||
+    Date.parse(value.requestedStart) >= Date.parse(value.requestedEnd)
+  ) {
+    context.addIssue({ code: "custom", message: "Trade-history source request is inconsistent." });
+    return;
+  }
+  let canonicalResolution: StockTokenTradeHistorySourceResolutionLabel;
+  try {
+    canonicalResolution = selectStockTokenTradeHistoryResolution({
+      requestedStart: value.requestedStart as UtcTimestamp,
+      requestedEnd: value.requestedEnd as UtcTimestamp,
+    });
+  } catch {
+    context.addIssue({ code: "custom", message: "Trade-history source period is unsupported." });
+    return;
+  }
+  if (value.resolution !== canonicalResolution) {
+    context.addIssue({ code: "custom", message: "Trade-history source resolution is not canonical." });
+  }
+});
+export type StockTokenTradeHistorySourceInput = z.infer<
+  typeof stockTokenTradeHistorySourceInputSchema
+>;
+
 const maximumInt128Magnitude = 1n << 127n;
 const maximumMinuteTradeCount = BigInt(Number.MAX_SAFE_INTEGER);
 const maximumResolutionMinutes = BigInt(Math.max(
@@ -144,7 +284,7 @@ const gcd = (left: bigint, right: bigint): bigint => {
   return a;
 };
 
-export const stockTokenTradeHistoryRationalSchema = jsonObject({
+const stockTokenTradeHistoryRationalSchema = jsonObject({
   numerator: digits(maximumPriceNumerator.toString().length, true),
   denominator: digits(maximumPriceDenominator.toString().length, true),
 }).strict().superRefine((value, context) => {
@@ -152,9 +292,7 @@ export const stockTokenTradeHistoryRationalSchema = jsonObject({
     context.addIssue({ code: "custom", message: "Source rational is not reduced." });
   }
 });
-export type StockTokenTradeHistoryRational = z.infer<typeof stockTokenTradeHistoryRationalSchema>;
-
-export const stockTokenTradeHistorySwapPositionSchema = jsonObject({
+const stockTokenTradeHistorySwapPositionSchema = jsonObject({
   blockHash: hash32Schema,
   blockNumber: uint256DecimalSchema,
   transactionHash: hash32Schema,
@@ -191,7 +329,7 @@ export const stockTokenTradeHistoryStoredMemberIdentityShape = Object.freeze({
   gzipSha256: hexSha256,
   jsonSha256: hexSha256,
 });
-export const stockTokenTradeHistoryStoredMemberIdentitySchema = jsonObject(
+const stockTokenTradeHistoryStoredMemberIdentitySchema = jsonObject(
   stockTokenTradeHistoryStoredMemberIdentityShape,
 ).strict();
 export type StockTokenTradeHistoryStoredMemberIdentity = z.infer<
@@ -236,15 +374,6 @@ export const stockTokenTradeHistoryPoolKeySchema = jsonObject({
   hooks: evmAddressSchema,
 }).strict();
 export type StockTokenTradeHistoryPoolKey = z.infer<typeof stockTokenTradeHistoryPoolKeySchema>;
-export const stockTokenTradeHistoryPoolFactsSchema = jsonObject({
-  historyFrom: stockTokenTradeHistoryCollectionBoundarySchema,
-  sourceFrom: stockTokenTradeHistoryCollectionBoundarySchema,
-  initialize: stockTokenTradeHistoryInitializeBoundarySchema,
-  poolKey: stockTokenTradeHistoryPoolKeySchema,
-}).strict();
-export type StockTokenTradeHistoryPoolFacts = z.infer<
-  typeof stockTokenTradeHistoryPoolFactsSchema
->;
 
 const sourceTimestamp = stockTokenTradeHistorySourceSemanticSchemas.wholeSecondTimestamp;
 
@@ -270,13 +399,12 @@ export type StockTokenTradeHistorySelectedBase = z.infer<
   typeof stockTokenTradeHistorySelectedBaseSchema
 >;
 
-export const stockTokenTradeHistorySelectedOwnerMonthSchema = jsonObject({
+export const stockTokenTradeHistorySelectedMemberSchema = jsonObject({
   ownerMonth: utcMonth,
-  monthMember: stockTokenTradeHistoryStoredMemberIdentitySchema,
-  resolutionMember: stockTokenTradeHistoryStoredMemberIdentitySchema,
+  member: stockTokenTradeHistoryStoredMemberIdentitySchema,
 }).strict();
-export type StockTokenTradeHistorySelectedOwnerMonth = z.infer<
-  typeof stockTokenTradeHistorySelectedOwnerMonthSchema
+export type StockTokenTradeHistorySelectedMember = z.infer<
+  typeof stockTokenTradeHistorySelectedMemberSchema
 >;
 
 const sourceGeneralReasonSchema = z.enum([
@@ -284,7 +412,7 @@ const sourceGeneralReasonSchema = z.enum([
   "trade_history_inconsistent",
   "trade_history_too_large",
 ]);
-const sourcePoolsSchema = z.record(stockTokenTradeHistoryPoolIdSchema, stockTokenTradeHistoryPoolFactsSchema)
+const sourcePoolsSchema = z.record(stockTokenTradeHistoryPoolIdSchema, stockTokenTradeHistoryPoolKeySchema)
   .superRefine((value, context) => {
     if (Object.keys(value).length > stockTokenTradeHistorySourceShapeLimits.statePools) {
       context.addIssue({ code: "custom", message: "Source Pool facts exceed product capacity." });
@@ -317,13 +445,15 @@ export const stockTokenTradeHistoryAvailableSourceSchema = jsonObject({
   observedAt: sourceTimestamp,
   root: stockTokenTradeHistorySelectedRootSchema,
   base: stockTokenTradeHistorySelectedBaseSchema,
-  publishedCoverage: z.array(stockTokenTradeHistoryCoverageSegmentSchema)
-    .min(1).max(stockTokenTradeHistorySourceShapeLimits.statePoolPeriods),
-  selectedResolutionCoverage: z.array(stockTokenTradeHistoryCoverageSegmentSchema)
+  coverage: z.array(stockTokenTradeHistoryCoverageSegmentSchema)
     .min(1).max(stockTokenTradeHistorySourceShapeLimits.statePoolPeriods),
   pools: sourcePoolsSchema,
-  ownerMonths: z.array(stockTokenTradeHistorySelectedOwnerMonthSchema)
+  coverageOwnerMonths: z.array(utcMonth)
     .min(1).max(stockTokenTradeHistorySourceShapeLimits.stateMonths),
+  monthMembers: z.array(stockTokenTradeHistorySelectedMemberSchema)
+    .min(1).max(stockTokenTradeHistorySourceShapeLimits.stateMonths),
+  resolutionMembers: z.array(stockTokenTradeHistorySelectedMemberSchema)
+    .max(stockTokenTradeHistorySourceShapeLimits.stateMonths),
   candles: z.array(stockTokenTradeHistoryStoredCandleSchema)
     .max(
       stockTokenTradeHistorySourceShapeLimits.stateMonths *
@@ -343,7 +473,7 @@ export type StockTokenTradeHistoryUnavailableSource = z.infer<
   typeof stockTokenTradeHistoryUnavailableSourceSchema
 >;
 
-export const stockTokenTradeHistorySourceResultSchema = z.union([
+const stockTokenTradeHistorySourceResultSchema = z.union([
   stockTokenTradeHistoryAvailableSourceSchema,
   stockTokenTradeHistoryUnavailableSourceSchema,
 ]);
@@ -492,15 +622,14 @@ export const assertStockTokenTradeHistoryStoredCandleSequence = (input: Readonly
   }
 };
 
-export const assertStockTokenTradeHistoryPoolFacts = (input: Readonly<{
+export const assertStockTokenTradeHistoryPoolIdentity = (input: Readonly<{
   poolId: string;
   baseCurrencyAddress: string;
-  facts: StockTokenTradeHistoryPoolFacts;
+  poolKey: StockTokenTradeHistoryPoolKey;
 }>): void => {
   const poolId = stockTokenTradeHistoryPoolIdSchema.parse(input.poolId);
   const baseCurrencyAddress = evmAddressSchema.parse(input.baseCurrencyAddress);
-  const facts = stockTokenTradeHistoryPoolFactsSchema.parse(input.facts);
-  const key = facts.poolKey;
+  const key = stockTokenTradeHistoryPoolKeySchema.parse(input.poolKey);
   const baseIsCurrency0 = key.currency0 === baseCurrencyAddress;
   if (
     BigInt(key.currency0) >= BigInt(key.currency1) ||
@@ -508,7 +637,7 @@ export const assertStockTokenTradeHistoryPoolFacts = (input: Readonly<{
       key.currency1 === baseCurrencyAddress &&
       key.currency0 === stockTokenTradeHistorySourceIdentity.usdgAddress) ||
     deriveStockTokenTradeHistoryPoolId(key) !== poolId
-  ) throw new TypeError("Pool facts are invalid.");
+  ) throw new TypeError("Pool identity is invalid.");
 };
 
 const logicalId = (input: Readonly<{
@@ -566,7 +695,7 @@ export const parseStockTokenTradeHistoryMemberLogicalId = (value: string): Reado
   });
 };
 
-export const assertStockTokenTradeHistoryMemberIdentity = (input: Readonly<{
+const assertStockTokenTradeHistoryMemberIdentity = (input: Readonly<{
   member: StockTokenTradeHistoryStoredMemberIdentity;
   address: string;
   kind: "state" | "month" | "resolution";
@@ -577,4 +706,562 @@ export const assertStockTokenTradeHistoryMemberIdentity = (input: Readonly<{
   if (member.logicalId !== logicalId(input)) {
     throw new TypeError("Stored member identity role is invalid.");
   }
+};
+
+export const stockTokenTradeHistoryOwnerMonths = (
+  fromValue: string,
+  untilValue: string,
+): readonly string[] => {
+  const from = wholeSecondTimestamp.parse(fromValue);
+  const until = wholeSecondTimestamp.parse(untilValue);
+  if (from >= until) throw new TypeError("Trade-history owner-month range is invalid.");
+  const months: string[] = [];
+  const cursor = new Date(`${from.slice(0, 7)}-01T00:00:00.000Z`);
+  const last = new Date(Date.parse(until) - 1).toISOString().slice(0, 7);
+  while (true) {
+    const month = cursor.toISOString().slice(0, 7);
+    months.push(month);
+    if (month === last) return Object.freeze(months);
+    cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+  }
+};
+
+const sameCoverage = (
+  left: readonly StockTokenTradeHistoryCoverageSegment[],
+  right: readonly StockTokenTradeHistoryCoverageSegment[],
+): boolean => left.length === right.length && left.every((segment, index) => {
+  const candidate = right[index];
+  return candidate !== undefined &&
+    segment.fromBlock === candidate.fromBlock &&
+    segment.fromTimestamp === candidate.fromTimestamp &&
+    segment.poolId === candidate.poolId &&
+    segment.untilBlock === candidate.untilBlock &&
+    segment.untilTimestamp === candidate.untilTimestamp;
+});
+
+export const coalesceStockTokenTradeHistoryCoverage = (
+  coverageInput: readonly StockTokenTradeHistoryCoverageSegment[],
+): readonly StockTokenTradeHistoryCoverageSegment[] => {
+  const coverage = z.array(stockTokenTradeHistoryCoverageSegmentSchema)
+    .min(1).max(stockTokenTradeHistorySourceShapeLimits.statePoolPeriods)
+    .parse(coverageInput);
+  const output: StockTokenTradeHistoryCoverageSegment[] = [];
+  for (const segment of coverage) {
+    const previous = output.at(-1);
+    if (previous !== undefined && (
+      previous.untilTimestamp !== segment.fromTimestamp ||
+      previous.untilBlock !== segment.fromBlock
+    )) throw new TypeError("Trade-history source coverage is not continuous.");
+    if (previous !== undefined && previous.poolId === segment.poolId) {
+      output[output.length - 1] = deepFreezeValue({
+        ...previous,
+        untilBlock: segment.untilBlock,
+        untilTimestamp: segment.untilTimestamp,
+      });
+    } else output.push(deepFreezeValue({ ...segment }));
+  }
+  return deepFreezeValue(output);
+};
+
+export interface StockTokenTradeHistoryEligiblePosition
+  extends StockTokenTradeHistoryNaturalPositionBounds {
+  readonly ownerMonth: string;
+  readonly poolId: string;
+}
+
+export interface StockTokenTradeHistorySourceRequirements {
+  readonly request: StockTokenTradeHistoryRequestIntervals;
+  readonly coverage: readonly StockTokenTradeHistoryCoverageSegment[];
+  readonly requestedCoverageAvailable: boolean;
+  readonly coverageOwnerMonths: readonly string[];
+  readonly resolutionOwnerMonths: readonly string[];
+  readonly eligiblePositions: readonly StockTokenTradeHistoryEligiblePosition[];
+}
+
+export const deriveStockTokenTradeHistorySourceRequirements = (
+  inputValue: StockTokenTradeHistorySourceInput,
+  coverageInput: readonly StockTokenTradeHistoryCoverageSegment[],
+): StockTokenTradeHistorySourceRequirements => {
+  const input = stockTokenTradeHistorySourceInputSchema.parse(inputValue);
+  const request = deriveStockTokenTradeHistoryRequestIntervals({
+    requestedStart: input.requestedStart as UtcTimestamp,
+    requestedEnd: input.requestedEnd as UtcTimestamp,
+  });
+  const allCoverage = coalesceStockTokenTradeHistoryCoverage(coverageInput);
+  const canonicalBlock = BigInt(input.canonicalBlock.blockNumber);
+  const coverage = allCoverage.filter((segment) =>
+    segment.untilTimestamp > request.naturalWindow.fromTimestamp &&
+    segment.fromTimestamp < request.naturalWindow.untilTimestamp &&
+    BigInt(segment.fromBlock) < canonicalBlock);
+  const requestedCoverageAvailable = coverage.some((segment) =>
+    segment.untilTimestamp > input.requestedStart &&
+    segment.fromTimestamp < input.requestedEnd);
+  const coverageOwnerMonths: string[] = [];
+  for (const segment of coverage) {
+    const fromTimestamp = segment.fromTimestamp < request.naturalWindow.fromTimestamp
+      ? request.naturalWindow.fromTimestamp
+      : segment.fromTimestamp;
+    const untilTimestamp = segment.untilTimestamp > request.naturalWindow.untilTimestamp
+      ? request.naturalWindow.untilTimestamp
+      : segment.untilTimestamp;
+    for (const ownerMonth of stockTokenTradeHistoryOwnerMonths(fromTimestamp, untilTimestamp)) {
+      if (coverageOwnerMonths.at(-1) !== ownerMonth) coverageOwnerMonths.push(ownerMonth);
+    }
+  }
+  const eligiblePositions: StockTokenTradeHistoryEligiblePosition[] = [];
+  const resolutionOwnerMonths: string[] = [];
+  for (const position of request.positions) {
+    const matches = coverage.filter((segment) =>
+      segment.fromTimestamp <= position.naturalStart &&
+      segment.untilTimestamp >= position.naturalEnd);
+    if (matches.length !== 1) continue;
+    const ownerMonth = position.naturalStart.slice(0, 7);
+    eligiblePositions.push(deepFreezeValue({
+      ...position,
+      ownerMonth,
+      poolId: matches[0]!.poolId,
+    }));
+    if (resolutionOwnerMonths.at(-1) !== ownerMonth) resolutionOwnerMonths.push(ownerMonth);
+  }
+  return deepFreezeValue({
+    request,
+    coverage,
+    requestedCoverageAvailable,
+    coverageOwnerMonths,
+    resolutionOwnerMonths,
+    eligiblePositions,
+  });
+};
+
+const stockTokenTradeHistoryPublicCoverageSegmentSchema = jsonObject({
+  fromTimestamp: wholeSecondTimestamp,
+  poolId: stockTokenTradeHistoryPoolIdSchema,
+  untilTimestamp: wholeSecondTimestamp,
+}).strict().superRefine((value, context) => {
+  if (value.fromTimestamp >= value.untilTimestamp) {
+    context.addIssue({ code: "custom", message: "Trade-history public coverage is invalid." });
+  }
+});
+type StockTokenTradeHistoryPublicCoverageSegment = z.infer<
+  typeof stockTokenTradeHistoryPublicCoverageSegmentSchema
+>;
+
+const stockTokenTradeHistoryPublicCoverageSchema = z.array(
+  stockTokenTradeHistoryPublicCoverageSegmentSchema,
+).min(1).max(stockTokenTradeHistorySourceShapeLimits.statePoolPeriods)
+  .superRefine((value, context) => {
+    for (let index = 1; index < value.length; index += 1) {
+      if (
+        value[index - 1]!.untilTimestamp !== value[index]!.fromTimestamp ||
+        value[index - 1]!.poolId === value[index]!.poolId
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "Trade-history public coverage is not canonical.",
+        });
+        return;
+      }
+    }
+  });
+
+export const stockTokenTradeHistoryPositionCoverageStatuses = Object.freeze([
+  "complete",
+  "partial",
+  "unavailable",
+] as const);
+
+export const stockTokenTradeHistoryPositionSchema = jsonObject({
+  naturalStart: wholeSecondTimestamp,
+  naturalEnd: wholeSecondTimestamp,
+  representedStart: wholeSecondTimestamp,
+  representedEnd: wholeSecondTimestamp,
+  coverage: z.enum(stockTokenTradeHistoryPositionCoverageStatuses),
+  poolId: stockTokenTradeHistoryPoolIdSchema.nullable(),
+  candle: stockTokenTradeHistoryStoredCandleSchema.nullable(),
+}).strict().superRefine((value, context) => {
+  const complete = value.coverage === "complete" && value.poolId !== null;
+  const partial = value.coverage === "partial" && (
+    value.candle === null && value.poolId === null ||
+    value.candle !== null && value.poolId !== null
+  );
+  const unavailable = value.coverage === "unavailable" &&
+    value.candle === null && value.poolId === null;
+  if (
+    value.naturalStart >= value.naturalEnd ||
+    value.representedStart < value.naturalStart ||
+    value.representedEnd > value.naturalEnd ||
+    value.representedStart >= value.representedEnd ||
+    !(complete || partial || unavailable)
+  ) context.addIssue({ code: "custom", message: "Trade-history position is invalid." });
+});
+export type StockTokenTradeHistoryPosition = z.infer<
+  typeof stockTokenTradeHistoryPositionSchema
+>;
+
+export const stockTokenTradeHistoryCoverageLimitations = Object.freeze([
+  "before_published_coverage",
+  "after_published_coverage",
+] as const);
+
+export const stockTokenTradeHistoryCoverageSummarySchema = jsonObject({
+  status: z.enum(["complete", "partial"]),
+  limitations: z.array(z.enum(stockTokenTradeHistoryCoverageLimitations)).max(2),
+}).strict().superRefine((value, context) => {
+  const sequence = value.limitations.join("\0");
+  if (
+    ![
+      "",
+      "before_published_coverage",
+      "after_published_coverage",
+      "before_published_coverage\0after_published_coverage",
+    ].includes(sequence) ||
+    (value.status === "complete") !== (value.limitations.length === 0)
+  ) context.addIssue({ code: "custom", message: "Trade-history coverage summary is invalid." });
+});
+export type StockTokenTradeHistoryCoverageSummary = z.infer<
+  typeof stockTokenTradeHistoryCoverageSummarySchema
+>;
+
+export interface StockTokenTradeHistoryPublicDerivation {
+  readonly request: StockTokenTradeHistoryRequestIntervals;
+  readonly coverage: readonly StockTokenTradeHistoryPublicCoverageSegment[];
+  readonly requestedCoverage: readonly StockTokenTradeHistoryPublicCoverageSegment[];
+  readonly coverageOwnerMonths: readonly string[];
+  readonly resolutionOwnerMonths: readonly string[];
+  readonly coverageSummary: StockTokenTradeHistoryCoverageSummary;
+  readonly positions: readonly StockTokenTradeHistoryPosition[];
+}
+
+const projectCoverage = (input: Readonly<{
+  coverage: readonly Readonly<{
+    readonly fromTimestamp: string;
+    readonly poolId: string;
+    readonly untilTimestamp: string;
+  }>[];
+  fromTimestamp: UtcTimestamp;
+  untilTimestamp: UtcTimestamp;
+}>): readonly StockTokenTradeHistoryPublicCoverageSegment[] =>
+  deepFreezeValue(stockTokenTradeHistoryPublicCoverageSchema.parse(
+    input.coverage.flatMap((segment) => {
+      if (
+        segment.untilTimestamp <= input.fromTimestamp ||
+        segment.fromTimestamp >= input.untilTimestamp
+      ) return [];
+      return [{
+        fromTimestamp: segment.fromTimestamp < input.fromTimestamp
+          ? input.fromTimestamp
+          : segment.fromTimestamp,
+        poolId: segment.poolId,
+        untilTimestamp: segment.untilTimestamp > input.untilTimestamp
+          ? input.untilTimestamp
+          : segment.untilTimestamp,
+      }];
+    }),
+  ));
+
+const projectStockTokenTradeHistoryRequestedCoverage = (input: Readonly<{
+  readonly requestedStart: UtcTimestamp;
+  readonly requestedEnd: UtcTimestamp;
+  readonly coverage: readonly StockTokenTradeHistoryPublicCoverageSegment[];
+}>): readonly StockTokenTradeHistoryPublicCoverageSegment[] => projectCoverage({
+  coverage: input.coverage,
+  fromTimestamp: input.requestedStart,
+  untilTimestamp: input.requestedEnd,
+});
+
+const publicCoverageOwnerMonths = (input: Readonly<{
+  coverage: readonly StockTokenTradeHistoryPublicCoverageSegment[];
+}>): readonly string[] => {
+  const months: string[] = [];
+  for (const segment of input.coverage) {
+    for (const ownerMonth of stockTokenTradeHistoryOwnerMonths(
+      segment.fromTimestamp,
+      segment.untilTimestamp,
+    )) {
+      if (months.at(-1) !== ownerMonth) months.push(ownerMonth);
+    }
+  }
+  return deepFreezeValue(months);
+};
+
+export const deriveStockTokenTradeHistoryPublicData = (inputValue: Readonly<{
+  readonly sourceInput: StockTokenTradeHistorySourceInput;
+  readonly coverage: readonly Readonly<{
+    readonly fromTimestamp: string;
+    readonly poolId: string;
+    readonly untilTimestamp: string;
+  }>[];
+  readonly resolutionOwnerMonths: readonly string[];
+  readonly candles: readonly StockTokenTradeHistoryStoredCandle[];
+}>): StockTokenTradeHistoryPublicDerivation => {
+  const sourceInput = stockTokenTradeHistorySourceInputSchema.parse(inputValue.sourceInput);
+  const request = deriveStockTokenTradeHistoryRequestIntervals({
+    requestedStart: sourceInput.requestedStart as UtcTimestamp,
+    requestedEnd: sourceInput.requestedEnd as UtcTimestamp,
+  });
+  const coverage = projectCoverage({
+    coverage: inputValue.coverage,
+    fromTimestamp: request.naturalWindow.fromTimestamp,
+    untilTimestamp: request.naturalWindow.untilTimestamp,
+  });
+  const requestedCoverage = projectStockTokenTradeHistoryRequestedCoverage({
+    requestedStart: sourceInput.requestedStart as UtcTimestamp,
+    requestedEnd: sourceInput.requestedEnd as UtcTimestamp,
+    coverage,
+  });
+  const expectedResolutionOwnerMonths: string[] = [];
+  const containingByStart = new Map<string, StockTokenTradeHistoryPublicCoverageSegment>();
+  for (const position of request.positions) {
+    const containing = coverage.filter((segment) =>
+      segment.fromTimestamp <= position.naturalStart &&
+      segment.untilTimestamp >= position.naturalEnd);
+    if (containing.length !== 1) continue;
+    containingByStart.set(position.naturalStart, containing[0]!);
+    const ownerMonth = position.naturalStart.slice(0, 7);
+    if (expectedResolutionOwnerMonths.at(-1) !== ownerMonth) {
+      expectedResolutionOwnerMonths.push(ownerMonth);
+    }
+  }
+  if (
+    inputValue.resolutionOwnerMonths.length !== expectedResolutionOwnerMonths.length ||
+    inputValue.resolutionOwnerMonths.some((ownerMonth, index) =>
+      ownerMonth !== expectedResolutionOwnerMonths[index])
+  ) throw new TypeError("Trade-history public resolution owners are inconsistent.");
+
+  assertStockTokenTradeHistoryStoredCandleSequence({
+    candles: inputValue.candles,
+    baseDecimals: sourceInput.baseCurrencyDecimals,
+    resolution: sourceInput.resolution,
+  });
+  const candles = new Map<string, StockTokenTradeHistoryStoredCandle>();
+  for (const candle of inputValue.candles) {
+    if (candles.has(candle.intervalStart)) {
+      throw new TypeError("Trade-history source contains duplicate position candles.");
+    }
+    candles.set(candle.intervalStart, candle);
+  }
+  const positions = request.positions.map((position) => {
+    const overlaps = coverage.some((segment) =>
+      segment.untilTimestamp > position.representedStart &&
+      segment.fromTimestamp < position.representedEnd);
+    const containing = containingByStart.get(position.naturalStart);
+    const requestCut = position.representedStart !== position.naturalStart ||
+      position.representedEnd !== position.naturalEnd;
+    const candle = candles.get(position.naturalStart) ?? null;
+    if (candle !== null) {
+      if (
+        containing === undefined ||
+        candle.intervalEnd !== position.naturalEnd ||
+        BigInt(candle.lastSource.blockNumber) >= BigInt(sourceInput.canonicalBlock.blockNumber)
+      ) throw new TypeError("Trade-history candle has no eligible natural position.");
+      candles.delete(position.naturalStart);
+      return stockTokenTradeHistoryPositionSchema.parse({
+        ...position,
+        coverage: requestCut ? "partial" : "complete",
+        poolId: containing.poolId,
+        candle,
+      });
+    }
+    if (!overlaps) {
+      return stockTokenTradeHistoryPositionSchema.parse({
+        ...position,
+        coverage: "unavailable",
+        poolId: null,
+        candle: null,
+      });
+    }
+    if (!requestCut && containing !== undefined) {
+      return stockTokenTradeHistoryPositionSchema.parse({
+        ...position,
+        coverage: "complete",
+        poolId: containing.poolId,
+        candle: null,
+      });
+    }
+    return stockTokenTradeHistoryPositionSchema.parse({
+      ...position,
+      coverage: "partial",
+      poolId: null,
+      candle: null,
+    });
+  });
+  if (candles.size !== 0) {
+    throw new TypeError("Trade-history source candle has no request position.");
+  }
+  const limitations = [
+    ...(requestedCoverage[0]?.fromTimestamp !== sourceInput.requestedStart
+      ? ["before_published_coverage" as const]
+      : []),
+    ...(requestedCoverage.at(-1)?.untilTimestamp !== sourceInput.requestedEnd
+      ? ["after_published_coverage" as const]
+      : []),
+  ];
+  return deepFreezeValue({
+    request,
+    coverage,
+    requestedCoverage,
+    coverageOwnerMonths: publicCoverageOwnerMonths({ coverage }),
+    resolutionOwnerMonths: expectedResolutionOwnerMonths,
+    coverageSummary: stockTokenTradeHistoryCoverageSummarySchema.parse({
+      status: limitations.length === 0 ? "complete" : "partial",
+      limitations,
+    }),
+    positions,
+  });
+};
+
+export const assertStockTokenTradeHistorySelectedBaseIdentity = (input: Readonly<{
+  base: StockTokenTradeHistorySelectedBase;
+  baseCurrencyAddress: string;
+  baseCurrencyDecimals: number;
+}>): void => {
+  const base = stockTokenTradeHistorySelectedBaseSchema.parse(input.base);
+  const baseCurrencyAddress = evmAddressSchema.parse(input.baseCurrencyAddress);
+  const baseCurrencyDecimals = stockTokenTradeHistoryBaseDecimalsSchema.parse(
+    input.baseCurrencyDecimals,
+  );
+  if (
+    base.baseCurrencyAddress !== baseCurrencyAddress ||
+    base.decimals !== baseCurrencyDecimals
+  ) throw new TypeError("Trade-history selected base identity is inconsistent.");
+  assertStockTokenTradeHistoryMemberIdentity({
+    member: base.state,
+    address: baseCurrencyAddress,
+    kind: "state",
+  });
+};
+
+export const assertStockTokenTradeHistoryCoveragePoolKeys = (input: Readonly<{
+  coverage: readonly Readonly<{ readonly poolId: string }>[];
+  pools: Readonly<Record<string, StockTokenTradeHistoryPoolKey>>;
+  baseCurrencyAddress: string;
+}>): void => {
+  const requiredPoolIds = [...new Set(input.coverage.map((segment) =>
+    stockTokenTradeHistoryPoolIdSchema.parse(segment.poolId)))].sort();
+  const actualPoolIds = Object.keys(input.pools).sort();
+  if (
+    requiredPoolIds.length !== actualPoolIds.length ||
+    requiredPoolIds.some((poolId, index) => poolId !== actualPoolIds[index])
+  ) throw new TypeError("Trade-history Pool identities are incomplete.");
+  for (const poolId of requiredPoolIds) {
+    assertStockTokenTradeHistoryPoolIdentity({
+      poolId,
+      baseCurrencyAddress: input.baseCurrencyAddress,
+      poolKey: input.pools[poolId]!,
+    });
+  }
+};
+
+export const assertStockTokenTradeHistoryMemberIdentities = (input: Readonly<{
+  members: readonly StockTokenTradeHistorySelectedMember[];
+  expectedOwnerMonths: readonly string[];
+  baseCurrencyAddress: string;
+  kind: "month" | "resolution";
+  resolution: StockTokenTradeHistorySourceResolutionLabel;
+}>): void => {
+  if (
+    input.expectedOwnerMonths.length !== input.members.length ||
+    input.members.some((owner, index) => owner.ownerMonth !== input.expectedOwnerMonths[index])
+  ) throw new TypeError("Trade-history owner-month identities are incomplete.");
+  for (const ownerInput of input.members) {
+    const owner = stockTokenTradeHistorySelectedMemberSchema.parse(ownerInput);
+    assertStockTokenTradeHistoryMemberIdentity({
+      member: owner.member,
+      address: input.baseCurrencyAddress,
+      kind: input.kind,
+      month: owner.ownerMonth,
+      ...(input.kind === "resolution" ? { resolution: input.resolution } : {}),
+    });
+  }
+};
+
+export const admitStockTokenTradeHistorySourceResult = (
+  inputValue: StockTokenTradeHistorySourceInput,
+  resultValue: StockTokenTradeHistorySourceResult,
+): StockTokenTradeHistorySourceResult => {
+  const input = stockTokenTradeHistorySourceInputSchema.parse(inputValue);
+  const result = stockTokenTradeHistorySourceResultSchema.parse(resultValue);
+  if (result.status === "unavailable") {
+    if (result.scope === "selected_period") {
+      assertStockTokenTradeHistorySelectedBaseIdentity({
+        base: result.base,
+        baseCurrencyAddress: input.baseCurrencyAddress,
+        baseCurrencyDecimals: input.baseCurrencyDecimals,
+      });
+    }
+    return deepFreezeValue(result);
+  }
+
+  assertStockTokenTradeHistorySelectedBaseIdentity({
+    base: result.base,
+    baseCurrencyAddress: input.baseCurrencyAddress,
+    baseCurrencyDecimals: input.baseCurrencyDecimals,
+  });
+  const requirements = deriveStockTokenTradeHistorySourceRequirements(input, result.coverage);
+  const firstCoverage = result.coverage[0];
+  const lastCoverage = result.coverage.at(-1);
+  if (
+    firstCoverage === undefined ||
+    lastCoverage === undefined ||
+    !sameCoverage(result.coverage, requirements.coverage) ||
+    lastCoverage.untilTimestamp > result.root.currentUntil.timestamp ||
+    BigInt(lastCoverage.untilBlock) > BigInt(result.root.currentUntil.blockNumber)
+  ) throw new TypeError("Trade-history coverage is not the admitted natural-window sequence.");
+
+  assertStockTokenTradeHistoryCoveragePoolKeys({
+    coverage: result.coverage,
+    pools: result.pools,
+    baseCurrencyAddress: input.baseCurrencyAddress,
+  });
+
+  if (requirements.coverage.length === 0 || !requirements.requestedCoverageAvailable) {
+    throw new TypeError("Trade-history source coverage does not intersect its request.");
+  }
+  if (
+    result.coverageOwnerMonths.length !== requirements.coverageOwnerMonths.length ||
+    result.coverageOwnerMonths.some((ownerMonth, index) =>
+      ownerMonth !== requirements.coverageOwnerMonths[index])
+  ) throw new TypeError("Trade-history coverage-owner months are inconsistent.");
+  assertStockTokenTradeHistoryMemberIdentities({
+    members: result.monthMembers,
+    expectedOwnerMonths: requirements.coverageOwnerMonths,
+    baseCurrencyAddress: input.baseCurrencyAddress,
+    kind: "month",
+    resolution: input.resolution,
+  });
+  assertStockTokenTradeHistoryMemberIdentities({
+    members: result.resolutionMembers,
+    expectedOwnerMonths: requirements.resolutionOwnerMonths,
+    baseCurrencyAddress: input.baseCurrencyAddress,
+    kind: "resolution",
+    resolution: input.resolution,
+  });
+
+  assertStockTokenTradeHistoryStoredCandleSequence({
+    candles: result.candles,
+    baseDecimals: input.baseCurrencyDecimals,
+    resolution: input.resolution,
+  });
+  const eligibleByStart = new Map(requirements.eligiblePositions.map((position) =>
+    [position.naturalStart, position] as const));
+  const admittedResolutionOwners = new Set(
+    result.resolutionMembers.map((entry) => entry.ownerMonth),
+  );
+  for (const candle of result.candles) {
+    const position = eligibleByStart.get(candle.intervalStart);
+    const matches = result.coverage.filter((segment) =>
+      segment.poolId === position?.poolId &&
+      segment.fromTimestamp <= candle.intervalStart &&
+      segment.untilTimestamp >= candle.intervalEnd &&
+      BigInt(segment.fromBlock) <= BigInt(candle.firstSource.blockNumber) &&
+      BigInt(segment.untilBlock) > BigInt(candle.lastSource.blockNumber));
+    if (
+      position === undefined ||
+      candle.intervalEnd !== position.naturalEnd ||
+      !admittedResolutionOwners.has(position.ownerMonth) ||
+      BigInt(candle.lastSource.blockNumber) >= BigInt(input.canonicalBlock.blockNumber) ||
+      matches.length !== 1
+    ) throw new TypeError("Trade-history source candle is outside admitted coverage.");
+  }
+  return deepFreezeValue(result);
 };

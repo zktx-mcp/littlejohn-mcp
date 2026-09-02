@@ -88,6 +88,7 @@ export type CapabilityData<Definition> = Definition extends ReadCapabilityDefini
 interface InternalReadCapabilityDefinition<Input, Data> {
   readonly capabilityId: CapabilityId;
   readonly contractVersion: "1";
+  readonly maximumSuccessUtf8Bytes: number;
   readonly failureCodes: readonly SnakeCaseCode[];
   readonly conclusionIds: readonly string[];
   readonly replayDefinition: EvidenceReplayDefinition;
@@ -143,7 +144,7 @@ const canonicalUnique = (values: readonly string[]): readonly string[] => Object
 export interface CapabilityDefinitionSnapshot {
   readonly capabilityId: CapabilityId;
   readonly contractVersion: "1";
-  readonly maximumSuccessUtf8Bytes: typeof maximumSuccessUtf8Bytes;
+  readonly maximumSuccessUtf8Bytes: number;
   readonly failureCodes: readonly SnakeCaseCode[];
   readonly inputSchema: CanonicalJson;
   readonly dataSchema: CanonicalJson;
@@ -163,6 +164,7 @@ interface InternalDefinitionRecord<Input, Data> extends InternalReadCapabilityDe
 export interface CapabilityExecutionDefinition<Input, Data> {
   readonly capabilityId: CapabilityId;
   readonly contractVersion: "1";
+  readonly maximumSuccessUtf8Bytes: number;
   readonly failureCodes: readonly SnakeCaseCode[];
   readonly replayDefinition: EvidenceReplayDefinition;
   observationTargets(input: Input): readonly EvidenceObservationTargetDeclaration[];
@@ -315,7 +317,7 @@ const validateCapabilityResult = <Input, Data>(
   });
   if (
     utf8ByteLength(canonicalJsonStringify(captureCanonicalJson(validated))) >
-      maximumSuccessUtf8Bytes
+      record.maximumSuccessUtf8Bytes
   ) {
     return Object.freeze({ status: "result_too_large" });
   }
@@ -365,6 +367,7 @@ export const defineReadCapability = <Input, Data>(options: {
   readonly contractVersion: "1";
   readonly inputSchema: ZodType<Input>;
   readonly dataSchema: ZodType<Data>;
+  readonly maximumSuccessUtf8Bytes?: number;
   readonly normalizeInput?: (input: Input) => Input;
   readonly evidence: ReadCapabilityEvidence<Input, Data>;
   readonly validateIntrinsicData?: InternalReadCapabilityDefinition<Input, Data>["validateIntrinsicData"];
@@ -374,6 +377,12 @@ export const defineReadCapability = <Input, Data>(options: {
   readonly failureCodes: readonly string[];
 }) => {
   const capabilityId = capabilityIdAuthoritySchema.parse(options.capabilityId);
+  const completeSuccessMaximum = options.maximumSuccessUtf8Bytes ?? maximumSuccessUtf8Bytes;
+  if (
+    !Number.isSafeInteger(completeSuccessMaximum) ||
+    completeSuccessMaximum <= 0 ||
+    completeSuccessMaximum > maximumSuccessUtf8Bytes
+  ) throw new TypeError("Capability success byte maximum is invalid.");
   const failureCodeInput = options.failureCodes.map((code) => binderPrimitiveSchemas.snakeCaseCode.parse(code));
   const failureCodes = canonicalUnique(failureCodeInput) as readonly SnakeCaseCode[];
   if (failureCodes.length !== failureCodeInput.length) throw new TypeError("Duplicate capability failure code.");
@@ -456,7 +465,7 @@ export const defineReadCapability = <Input, Data>(options: {
   const snapshot = deepFreezeValue({
     capabilityId,
     contractVersion: options.contractVersion,
-    maximumSuccessUtf8Bytes,
+    maximumSuccessUtf8Bytes: completeSuccessMaximum,
     failureCodes,
     inputSchema: inputSchemaSnapshot,
     dataSchema: dataSchemaSnapshot,
@@ -468,6 +477,7 @@ export const defineReadCapability = <Input, Data>(options: {
   const internal: InternalDefinitionRecord<Input, Data> = Object.freeze({
     capabilityId,
     contractVersion: options.contractVersion,
+    maximumSuccessUtf8Bytes: completeSuccessMaximum,
     failureCodes,
     conclusionIds,
     replayDefinition,

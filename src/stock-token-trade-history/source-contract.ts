@@ -1,21 +1,21 @@
 import { z } from "zod";
 
 import {
-  chainAnchorSchema,
   deepFreezeValue,
-  evmAddressSchema,
   jsonObject,
-  productChainId,
   type UtcTimestamp,
 } from "../core/index.js";
 import {
-  stockTokenTradeHistoryBaseDecimalsSchema,
+  stockTokenTradeHistorySourceInputSchema,
   stockTokenTradeHistorySourceIdentity,
   stockTokenTradeHistorySourceShapeLimits,
-  stockTokenTradeHistorySourceResolutionLabels,
   stockTokenTradeHistorySourceSemanticSchemas,
+  type StockTokenTradeHistorySourceInput,
   type StockTokenTradeHistorySourceResult as SemanticSourceResult,
 } from "./source-semantics.js";
+
+export { stockTokenTradeHistorySourceInputSchema } from "./source-semantics.js";
+export type { StockTokenTradeHistorySourceInput } from "./source-semantics.js";
 
 export const stockTokenTradeHistoryProducerAdmission = deepFreezeValue({
   revision: stockTokenTradeHistorySourceIdentity.revision,
@@ -30,7 +30,7 @@ export const stockTokenTradeHistoryProducerAdmission = deepFreezeValue({
 const { positiveSafeInteger, wholeSecondTimestamp } =
   stockTokenTradeHistorySourceSemanticSchemas;
 
-export const stockTokenTradeHistorySourceLimitSchema = jsonObject({
+const stockTokenTradeHistorySourceLimitSchema = jsonObject({
   catalogResponseBytes: positiveSafeInteger,
   rootCompressedBytes: positiveSafeInteger,
   rootDecodedBytes: positiveSafeInteger,
@@ -70,25 +70,6 @@ export const stockTokenTradeHistorySourceLimits = deepFreezeValue(
     deadlineMilliseconds: 60_000,
   }),
 ) as StockTokenTradeHistorySourceLimits;
-
-export const stockTokenTradeHistorySourceInputSchema = jsonObject({
-  baseCurrencyAddress: evmAddressSchema,
-  baseCurrencyDecimals: stockTokenTradeHistoryBaseDecimalsSchema,
-  requestedStart: wholeSecondTimestamp,
-  requestedEnd: wholeSecondTimestamp,
-  canonicalBlock: chainAnchorSchema,
-  resolution: z.enum(stockTokenTradeHistorySourceResolutionLabels),
-}).strict().superRefine((value, context) => {
-  if (
-    value.canonicalBlock.chainId !== productChainId ||
-    value.canonicalBlock.blockTimestamp !== value.requestedEnd ||
-    Date.parse(value.requestedStart) >= Date.parse(value.requestedEnd)
-  ) context.addIssue({ code: "custom", message: "Trade-history source request is inconsistent." });
-});
-
-export type StockTokenTradeHistorySourceInput = z.infer<
-  typeof stockTokenTradeHistorySourceInputSchema
->;
 
 export type StockTokenTradeHistoryProviderOutcome<Value> =
   | Readonly<{ readonly status: "read"; readonly value: Value }>

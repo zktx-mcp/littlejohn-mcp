@@ -67,6 +67,16 @@ export const sourceClassDefinitions = deepFreezeValue({
     referenceKinds: ["public"],
     invocationReferenceCardinality: "single",
   },
+  web_api: {
+    external: true,
+    referenceKinds: ["public"],
+    invocationReferenceCardinality: "single",
+  },
+  public_dataset: {
+    external: true,
+    referenceKinds: ["public"],
+    invocationReferenceCardinality: "single",
+  },
   chain_rpc: {
     external: true,
     referenceKinds: ["public", "configured_rpc"],
@@ -137,6 +147,26 @@ export const factOutcomeDefinitions = deepFreezeValue({
 export const factOutcomes = definitionKeys(factOutcomeDefinitions);
 
 export const freshnessRuleDefinitions = deepFreezeValue({
+  official_asset_snapshot_current: {
+    status: "fresh",
+    sourceClasses: ["web_api"],
+    anchor: "any",
+  },
+  trade_history_archive_current: {
+    status: "fresh",
+    sourceClasses: ["public_dataset"],
+    anchor: "any",
+  },
+  trade_history_archive_stale: {
+    status: "stale",
+    sourceClasses: ["public_dataset"],
+    anchor: "any",
+  },
+  trade_history_archive_unavailable: {
+    status: "unknown",
+    sourceClasses: ["public_dataset"],
+    anchor: "any",
+  },
   chain_anchor_exact: {
     status: "fresh",
     sourceClasses: ["chain_rpc"],

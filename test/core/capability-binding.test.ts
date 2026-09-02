@@ -2085,6 +2085,7 @@ describe("capability binding authority", () => {
     const definition = defineReadCapability<{ value: string }, { value: string }>({
       capabilityId: "test.validated",
       contractVersion: "1",
+      maximumSuccessUtf8Bytes: 2_048,
       inputSchema: z.object({ value: z.string() }).strict(),
       dataSchema: z.object({ value: z.string() }).strict(),
       failureCodes: ["internal_error", "invalid_input", "result_too_large"],
@@ -2139,6 +2140,14 @@ describe("capability binding authority", () => {
         .toBe(`${productDisplayName} validated input`);
     }
     expect(dataMutationRejected).toBe(true);
+
+    const oversized = await invokeBinding(definition, binding, {
+      value: "x".repeat(2_048),
+    });
+    expect(oversized).toMatchObject({
+      ok: false,
+      error: { code: "result_too_large" },
+    });
   });
 
   it("binds dynamic conclusion identities to one typed address declaration", async () => {

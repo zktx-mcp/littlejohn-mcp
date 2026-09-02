@@ -12,8 +12,9 @@ import {
   defaultStockTokenRank,
   findOfficialAssetMember,
   officialAssetSourceDefinition,
-  officialAssetSnapshotEvidenceSchema,
+  projectOfficialAssetSnapshotEvidence,
   type CommittedOfficialAssetSnapshot,
+  type OfficialAssetSnapshotEvidence,
   type OfficialAssetSourceMember,
   type StockFactoryVerification,
   type StockFactoryVerificationResult,
@@ -65,6 +66,7 @@ type OfficialView =
   | Readonly<{
       status: "current";
       snapshot: CommittedOfficialAssetSnapshot;
+      evidence: OfficialAssetSnapshotEvidence;
     }>
   | Readonly<{
       status: "unavailable";
@@ -123,6 +125,7 @@ const synchronizeOfficialView = async (
     return Object.freeze({
       status: "current",
       snapshot: result.snapshot,
+      evidence: projectOfficialAssetSnapshotEvidence(result.snapshot),
     });
   }
   switch (result.reason) {
@@ -302,15 +305,6 @@ const pageSelections = (
   return Object.freeze({ entries, nextCursor });
 };
 
-const snapshotEvidence = (snapshot: CommittedOfficialAssetSnapshot) =>
-  Object.freeze(officialAssetSnapshotEvidenceSchema.parse({
-    sourceUri: snapshot.sourceUri,
-    sourceObservedAt: snapshot.sourceObservedAt,
-    rawResponseDigest: snapshot.rawResponseDigest,
-    memberSetDigest: snapshot.memberSetDigest,
-    revision: snapshot.revision,
-  }));
-
 const classification = (
   official: OfficialView,
   asset: TokenSelection["asset"],
@@ -328,7 +322,10 @@ const classification = (
   }
   const member = findOfficialAssetMember(official.snapshot, asset.address);
   if (member === undefined) {
-    return Object.freeze({ kind: "custom_erc20", snapshot: snapshotEvidence(official.snapshot) });
+    return Object.freeze({
+      kind: "custom_erc20",
+      snapshot: official.evidence,
+    });
   }
   if (result === undefined) throw new AccountAssetOperationError("internal_error");
   if (result.status !== "verified") {
@@ -336,7 +333,7 @@ const classification = (
       kind: "classification_unavailable",
       cause: Object.freeze({
         kind: "stock_factory_verification_unavailable",
-        snapshot: snapshotEvidence(official.snapshot),
+        snapshot: official.evidence,
         member: {
           assetUid: member.assetUid,
           contractAddress: member.contractAddress,
@@ -349,7 +346,7 @@ const classification = (
   }
   return Object.freeze({
     kind: "robinhood_stock_token",
-    snapshot: snapshotEvidence(official.snapshot),
+    snapshot: official.evidence,
     member: {
       assetUid: member.assetUid,
       contractAddress: member.contractAddress,

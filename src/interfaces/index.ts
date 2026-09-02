@@ -41,8 +41,6 @@ export {
   declaredMcpToolNames,
   interfaceReadCapabilityRegistry,
   readInterfaceIdentities,
-  stockTokenTradeHistoryInterfaceBinding,
-  stockTokenTradeHistoryInterfaceBindingList,
   stockTokenTradeHistoryPublicRoute,
   tokenCatalogInterfaceBindingList,
   tokenCatalogInterfaceBindings,
@@ -55,7 +53,6 @@ export type {
   AccountAssetInterfaceBinding,
   CliInterfaceIdentity,
   ReadInterfaceIdentity,
-  StockTokenTradeHistoryInterfaceBinding,
 } from "./identities.js";
 
 export {

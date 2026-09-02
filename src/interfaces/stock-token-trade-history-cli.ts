@@ -1,24 +1,28 @@
 import {
   canonicalJsonStringify,
+  captureCanonicalJson,
+  getCapabilityDefinitionSnapshot,
+  parseCapabilityInput,
+  parseCapabilitySuccess,
   type CanonicalJson,
+  type CapabilitySuccess,
 } from "../core/index.js";
 import {
+  stockTokenTradeHistoryCapability,
   stockTokenTradeHistoryInterfaceErrorMappings,
-  stockTokenTradeHistoryApplicationContract,
+  type StockTokenTradeHistoryData,
   type StockTokenTradeHistoryInput,
-  type StockTokenTradeHistoryResult,
 } from "../stock-token-trade-history/index.js";
 import { deliveryUnknownCliExitCode } from "./delivery-exit.js";
-import type { RuntimeDispatchPort } from "./http-client.js";
-import { stockTokenTradeHistoryInterfaceBinding } from "./identities.js";
-import { dispatchStockTokenTradeHistoryRead } from "./stock-token-trade-history-http.js";
 import {
-  stockTokenTradeHistoryChartIntervalLabel,
-  stockTokenTradeCoverageLimitationLabel,
-  stockTokenTradeHistoryLabel,
-  stockTokenTradeHistoryNoTradeLabel,
-  stockTokenTradeHistoryUnavailableReasonLabel,
-  stockTokenTradeHistoryWindowLabel,
+  constrainInterfaceFailure,
+  createInterfaceFailure,
+  dispatchCanonical,
+  type RuntimeDispatchPort,
+} from "./http-client.js";
+import { stockTokenTradeHistoryInterface } from "./identities.js";
+import {
+  stockTokenTradeHistoryHumanSummary,
 } from "./stock-token-trade-history-presentation.js";
 
 export type StockTokenTradeHistoryCliCommand = Readonly<{
@@ -36,16 +40,23 @@ const invalidInput = (): never => {
   throw new TypeError("Stock Token trade-history CLI input is invalid.");
 };
 
+const parseCount = (value: string | undefined): number => {
+  if (value === undefined || !/^[1-9][0-9]*$/u.test(value)) return invalidInput();
+  const count = Number(value);
+  return Number.isSafeInteger(count) ? count : invalidInput();
+};
+
 export const parseStockTokenTradeHistoryCliCommand = (
   argumentsInput: readonly string[],
 ): StockTokenTradeHistoryCliCommand => {
   const [domain, command, ...tokens] = argumentsInput;
   if (
-    domain !== stockTokenTradeHistoryInterfaceBinding.cli.domain ||
-    command !== stockTokenTradeHistoryInterfaceBinding.cli.command
+    domain !== stockTokenTradeHistoryInterface.cli.domain ||
+    command !== stockTokenTradeHistoryInterface.cli.command
   ) return invalidInput();
   let json = false;
-  let window: string | undefined;
+  let period: string | undefined;
+  let unit: string | undefined;
   const positionals: string[] = [];
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
@@ -54,24 +65,32 @@ export const parseStockTokenTradeHistoryCliCommand = (
       json = true;
       continue;
     }
-    if (token === "--window") {
+    if (token === "--period" || token === "--unit") {
       const value = tokens[index + 1];
-      if (window !== undefined || value === undefined || value.startsWith("--")) return invalidInput();
-      window = value;
+      if (value === undefined || value.startsWith("--")) return invalidInput();
+      if (token === "--period") {
+        if (period !== undefined) return invalidInput();
+        period = value;
+      } else {
+        if (unit !== undefined) return invalidInput();
+        unit = value;
+      }
       index += 1;
       continue;
     }
     if (token === undefined || token.startsWith("--")) return invalidInput();
     positionals.push(token);
   }
-  if (positionals.length !== 1) return invalidInput();
+  if (positionals.length !== 1 || (period === undefined) !== (unit === undefined)) {
+    return invalidInput();
+  }
   try {
     return Object.freeze({
       kind: "stock_token_trade_history",
       json,
-      input: stockTokenTradeHistoryApplicationContract.parseInput({
+      input: parseCapabilityInput(stockTokenTradeHistoryCapability, {
         symbol: positionals[0],
-        ...(window === undefined ? {} : { window }),
+        ...(period === undefined ? {} : { period: { count: parseCount(period), unit } }),
       }),
     });
   } catch {
@@ -79,40 +98,8 @@ export const parseStockTokenTradeHistoryCliCommand = (
   }
 };
 
-const humanResult = (result: StockTokenTradeHistoryResult): string => {
-  const lines = [
-    "Stock Token trade history",
-    `Token: ${stockTokenTradeHistoryLabel(result)}`,
-    `Requested period: ${stockTokenTradeHistoryWindowLabel(result.window)}`,
-  ];
-  if (result.status === "unavailable") {
-    lines.push(
-      "Status: Unavailable",
-      `Reason: ${stockTokenTradeHistoryUnavailableReasonLabel(result.reason)}`,
-    );
-    return lines.join("\n");
-  }
-  if (result.freshness === "stale") lines.push("Freshness: Stale");
-  if (result.coverage.status === "partial") lines.push("Coverage: Partial");
-  lines.push(...result.coverage.limitations.map((limitation) =>
-    `Limitation: ${stockTokenTradeCoverageLimitationLabel(limitation)}`));
-  const latestPosition = result.chart.positions.findLast((position) => position.candle !== null);
-  const latest = latestPosition?.candle;
-  if (latest === undefined || latest === null || latestPosition === undefined) {
-    const noTrade = stockTokenTradeHistoryNoTradeLabel(result);
-    if (noTrade === undefined) {
-      throw new TypeError("Trade-history result has no identifiable latest chart candle.");
-    }
-    lines.push(noTrade);
-  } else {
-    const interval = stockTokenTradeHistoryChartIntervalLabel(result.window);
-    lines.push(
-      `Latest ${interval} chart close: ${latest.close.numerator} / ${latest.close.denominator} USDG`,
-      `Trades observed: ${latest.observedStart} to ${latest.observedEnd}`,
-    );
-  }
-  return lines.join("\n");
-};
+const humanResult = (success: CapabilitySuccess<StockTokenTradeHistoryData>): string =>
+  stockTokenTradeHistoryHumanSummary(success.data);
 
 export const runStockTokenTradeHistoryCliCommand = async (
   runtime: RuntimeDispatchPort,
@@ -120,12 +107,14 @@ export const runStockTokenTradeHistoryCliCommand = async (
   output: StockTokenTradeHistoryCliOutputPort,
   signal?: AbortSignal,
 ): Promise<number> => {
-  const result = await dispatchStockTokenTradeHistoryRead(
-    runtime,
-    stockTokenTradeHistoryInterfaceBinding,
-    command.input,
-    signal,
-  );
+  const result = constrainInterfaceFailure(await dispatchCanonical(runtime, {
+    requestClass: "public_read",
+    method: "POST",
+    path: stockTokenTradeHistoryInterface.http.path,
+    body: captureCanonicalJson(command.input),
+    ...(signal === undefined ? {} : { signal }),
+  }, 200, stockTokenTradeHistoryInterface.responseAuthority),
+  getCapabilityDefinitionSnapshot(stockTokenTradeHistoryCapability).failureCodes);
   if ("status" in result) {
     if (command.json) output.writeOutput(`${canonicalJsonStringify(result as unknown as CanonicalJson)}\n`);
     else output.writeError("delivery_unknown: The trade-history result may be unavailable after sending began.\n");
@@ -136,7 +125,16 @@ export const runStockTokenTradeHistoryCliCommand = async (
     else output.writeError(`${result.failure.error.code}: ${result.failure.error.message}\n`);
     return stockTokenTradeHistoryInterfaceErrorMappings.get(result.failure.error.code).cliExitCode;
   }
-  const value = stockTokenTradeHistoryApplicationContract.parsePublicSuccess(command.input, result.value);
+  let value: CapabilitySuccess<StockTokenTradeHistoryData>;
+  try {
+    value = parseCapabilitySuccess(stockTokenTradeHistoryCapability, command.input, result.value);
+  } catch {
+    const failure = createInterfaceFailure("internal_error");
+    if (command.json) {
+      output.writeOutput(`${canonicalJsonStringify(failure as unknown as CanonicalJson)}\n`);
+    } else output.writeError(`${failure.error.code}: ${failure.error.message}\n`);
+    return stockTokenTradeHistoryInterfaceErrorMappings.get("internal_error").cliExitCode;
+  }
   output.writeOutput(command.json
     ? `${canonicalJsonStringify(value as unknown as CanonicalJson)}\n`
     : `${humanResult(value)}\n`);

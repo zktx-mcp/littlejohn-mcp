@@ -34,6 +34,10 @@ const readCapabilityConstructionRules = Object.freeze([
     ownerFile: resolve("src/protocols/uniswap-v2/contracts.ts"),
     capabilityName: "uniswapV2QuoteCapability",
   },
+  {
+    ownerFile: resolve("src/stock-token-trade-history/contracts.ts"),
+    capabilityName: "stockTokenTradeHistoryCapability",
+  },
 ] satisfies readonly ReadCapabilityConstructionRule[]);
 interface ApplicationErrorRegistryConstructionRule {
   readonly definitionsFile: string;
@@ -112,6 +116,7 @@ const semanticEvidenceAuthoringOwners = new Set([
   resolve("src/core/capability-evidence.ts"),
   resolve("src/token-catalog/contract-schema.ts"),
   resolve("src/protocols/uniswap-v2/evidence.ts"),
+  resolve("src/stock-token-trade-history/capability-evidence.ts"),
 ]);
 const semanticEvidenceAuthoringReexporter = resolve("src/core/client.ts");
 const evidenceReplayFacadeModules = new Set([
@@ -1458,7 +1463,7 @@ describe("core dependency boundary", () => {
     expect(Object.hasOwn(publicCore, "defineReadCapability")).toBe(true);
   });
 
-  it("permits exactly the seven canonical read capability constructions", async () => {
+  it("permits exactly the eight canonical read capability constructions", async () => {
     expect(canonicalReadCapabilityAuditViolations).toEqual([]);
     expect(canonicalProtectedModuleViolations).toEqual([]);
   });

@@ -104,6 +104,7 @@ const exactResultWithBalanceRelation = (
           sourceObservedAt: at,
           rawResponseDigest: hash,
           memberSetDigest: hash,
+          candidateListDigest: hash,
           revision,
         },
         member: {
@@ -287,6 +288,7 @@ describe("account asset human projection", () => {
                 sourceObservedAt: at,
                 rawResponseDigest: hash,
                 memberSetDigest: hash,
+                candidateListDigest: hash,
                 revision: currentRevision,
               },
               member: {

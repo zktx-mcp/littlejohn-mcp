@@ -11,23 +11,10 @@ export const renderPackagedOwnerWorkerSource = (packageInstallRelativePath) => {
   return String.raw`
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { gzipSync } from "node:zlib";
 
 import { createChainOwnerApplication } from ${packageModule("chain/application.js")};
-import { sha256Bytes } from ${packageModule("core/index.js")};
 import { createInterfaceOwnerApplication } from ${packageModule("interfaces/application.js")};
 import { createSourcifyContractSourceVerification } from ${packageModule("intelligence/sourcify.js")};
-import {
-  serializeStockTokenTradeHistoryFileJson,
-  createStockTokenTradeHistoryData,
-  findStockTokenTradeHistoryAssetByPairId,
-  stockTokenTradeHistoryDaySchema,
-  stockTokenTradeHistoryMonthSchema,
-  stockTokenTradeHistoryStateSchema,
-  stockTokenTradePairDayLogicalId,
-  stockTokenTradePairMonthLogicalId,
-  unavailableStockTokenTradeHistoryData,
-} from ${packageModule("stock-token-trade-history/stock-token-trade-history-data.js")};
 import {
   createRobinhoodOfficialAssetSourceClient,
   officialAssetSourceDefinition,
@@ -40,10 +27,12 @@ import { createWalletOwnerApplicationFactory } from ${packageModule("wallet/appl
 const dataDirectory = process.env.LITTLEJOHN_DATA_DIR;
 const clockPath = process.env.LITTLEJOHN_RELEASE_CLOCK;
 const assetSourceUrl = process.env.LITTLEJOHN_RELEASE_ASSET_SOURCE_URL;
+const tradeHistoryArtifactPath = process.env.LITTLEJOHN_RELEASE_TRADE_HISTORY_ARTIFACT;
 if (
   typeof dataDirectory !== "string" ||
   typeof clockPath !== "string" ||
-  typeof assetSourceUrl !== "string"
+  typeof assetSourceUrl !== "string" ||
+  typeof tradeHistoryArtifactPath !== "string"
 ) {
   throw new TypeError("Release worker environment is incomplete.");
 }
@@ -54,144 +43,64 @@ const sessionStoreKey = "littlejohn.release.fixture.sessions";
 const now = () => readFileSync(clockPath, "utf8").trim();
 const sessionExpiry = () => Math.floor(Date.parse(now()) / 1000) + 7 * 24 * 60 * 60;
 
-const encodeTradeHistoryFile = (value) => {
-  const json = new TextEncoder().encode(serializeStockTokenTradeHistoryFileJson(value));
-  const gzip = gzipSync(json, { level: 9 });
-  return Object.freeze({
-    gzipBytes: gzip.byteLength,
-    gzipSha256: sha256Bytes(gzip),
-    jsonBytes: json.byteLength,
-    jsonSha256: sha256Bytes(json),
-  });
-};
-
-const tradeHistoryFileReference = (logicalId, sequence, coverage, encoded) => Object.freeze({
-  logicalId,
-  sequence,
-  coverage,
-  jsonBytes: encoded.jsonBytes,
-  jsonSha256: encoded.jsonSha256,
-  gzipBytes: encoded.gzipBytes,
-  gzipSha256: encoded.gzipSha256,
-});
-
-const stockTokenTradeHistory = Object.freeze({
-  read: async (input, signal) => {
-    if (signal?.aborted === true) throw signal.reason;
-    const asset = findStockTokenTradeHistoryAssetByPairId(input.pairId);
-    if (asset === undefined) {
-      return unavailableStockTokenTradeHistoryData(input, "asset_not_supported");
+const tradeHistoryArtifact = JSON.parse(readFileSync(tradeHistoryArtifactPath, "utf8")).artifacts.healthy;
+const tradeHistoryBytes = (value) => Buffer.from(value, "base64");
+const tradeHistoryRoot = tradeHistoryBytes(tradeHistoryArtifact.rootBase64);
+const tradeHistoryAssets = new Map(tradeHistoryArtifact.assets.map((asset) => [
+  asset.assetName,
+  tradeHistoryBytes(asset.base64),
+]));
+const upstreamFetch = globalThis.fetch.bind(globalThis);
+globalThis.fetch = async (input, init) => {
+  if (typeof input !== "string") return upstreamFetch(input, init);
+  const url = new URL(input);
+  if (url.hostname === "api.github.com") {
+    if (url.pathname.endsWith("/releases/tags/market-data-catalog")) {
+      return new Response(JSON.stringify({ id: 1 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
     }
-    const sequence = 1;
-    const requestedEnd = Date.parse(input.requestedEnd);
-    const coverageEnd = new Date(Math.floor(requestedEnd / 60_000) * 60_000).toISOString();
-    const activationBlock = BigInt(asset.pair.activation.blockNumber);
-    const candleOffsets = input.window === "7d"
-      ? Array.from({ length: 180 }, (_, index) => 180 - index)
-      : [7, 5, 2];
-    const coverage = Object.freeze({
-      fromBlock: asset.pair.activation.blockNumber,
-      fromTimestamp: asset.pair.activation.timestamp,
-      untilBlock: (activationBlock + 159n + BigInt(candleOffsets.length)).toString(),
-      untilTimestamp: coverageEnd,
-    });
-    if (
-      coverage.fromTimestamp.slice(0, 10) !== coverage.untilTimestamp.slice(0, 10) ||
-      coverage.fromTimestamp >= coverage.untilTimestamp
-    ) throw new TypeError("Release trade-history fixture coverage is invalid.");
-    const candleStarts = candleOffsets.map((minutes) =>
-      new Date(Date.parse(coverageEnd) - minutes * 60_000).toISOString());
-    const denominators = ["4", "1", "4"];
-    const numerators = ["925", "463", "927"];
-    const candles = candleStarts.map((intervalStart, index) => {
-      const blockNumber = (activationBlock + 159n + BigInt(index)).toString();
-      const byte = input.window === "7d"
-        ? ((40 + index) % 256).toString(16).padStart(2, "0")
-        : String(40 + index).padStart(2, "0");
-      const transactionByte = input.window === "7d"
-        ? ((50 + index) % 256).toString(16).padStart(2, "0")
-        : String(50 + index).padStart(2, "0");
-      const source = Object.freeze({
-        blockNumber,
-        blockHash: "0x" + byte.repeat(32),
-        transactionIndex: 0,
-        transactionHash: "0x" + transactionByte.repeat(32),
-        logIndex: 0,
+    if (url.pathname.endsWith("/releases/1/assets")) {
+      const page = url.searchParams.get("page");
+      return new Response(JSON.stringify(page === "1" ? [{
+        name: tradeHistoryArtifact.rootName,
+        size: tradeHistoryRoot.byteLength,
+        state: "uploaded",
+      }] : []), {
+        status: 200,
+        headers: { "content-type": "application/json" },
       });
-      const denominator = input.window === "7d"
-        ? index % 2 === 0 ? "4" : "1"
-        : denominators[index];
-      const numerator = input.window === "7d"
-        ? denominator === "4" ? String(925 + index % 12) : String(232 + index % 3)
-        : numerators[index];
-      const exact = Object.freeze({ numerator, denominator });
-      return Object.freeze({
-        intervalStart,
-        intervalEnd: new Date(Date.parse(intervalStart) + 60_000).toISOString(),
-        open: exact,
-        high: exact,
-        low: exact,
-        close: exact,
-        baseVolumeRaw: String(1_000 + index),
-        quoteVolumeRaw: String(2_000 + index),
-        tradeCount: 1,
-        firstSource: source,
-        lastSource: source,
+    }
+    throw new TypeError("Release trade-history fixture received an unexpected GitHub API request.");
+  }
+  if (url.hostname === "github.com") {
+    const assetName = decodeURIComponent(url.pathname.split("/").at(-1) ?? "");
+    const bytes = assetName === tradeHistoryArtifact.rootName
+      ? tradeHistoryRoot
+      : tradeHistoryAssets.get(assetName);
+    if (bytes === undefined) return new Response(null, { status: 404 });
+    const range = new Headers(init?.headers).get("range");
+    if (range === null) {
+      return new Response(bytes, {
+        status: 200,
+        headers: { "content-length": String(bytes.byteLength) },
       });
+    }
+    const match = /^bytes=([0-9]+)-([0-9]+)$/u.exec(range);
+    if (match === null) throw new TypeError("Release trade-history fixture received an invalid Range.");
+    const from = Number(match[1]);
+    const until = Number(match[2]) + 1;
+    return new Response(bytes.subarray(from, until), {
+      status: 206,
+      headers: {
+        "content-length": String(until - from),
+        "content-range": "bytes " + from + "-" + (until - 1) + "/" + bytes.byteLength,
+      },
     });
-    const dayKey = coverage.fromTimestamp.slice(0, 10);
-    const day = stockTokenTradeHistoryDaySchema.parse({
-      candles,
-      contractVersion: "1",
-      coverage,
-      day: dayKey,
-      kind: "pair_candle_day",
-      pair: asset.pair,
-      sequence,
-    });
-    const encodedDay = encodeTradeHistoryFile(day);
-    const dayReference = tradeHistoryFileReference(
-      stockTokenTradePairDayLogicalId(asset.poolId, dayKey),
-      sequence,
-      coverage,
-      encodedDay,
-    );
-    const monthKey = coverage.fromTimestamp.slice(0, 7);
-    const month = stockTokenTradeHistoryMonthSchema.parse({
-      contractVersion: "1",
-      coverage,
-      days: [dayReference],
-      kind: "pair_candle_month",
-      month: monthKey,
-      pair: asset.pair,
-      sequence,
-    });
-    const encodedMonth = encodeTradeHistoryFile(month);
-    const monthReference = tradeHistoryFileReference(
-      stockTokenTradePairMonthLogicalId(asset.poolId, monthKey),
-      sequence,
-      coverage,
-      encodedMonth,
-    );
-    const state = stockTokenTradeHistoryStateSchema.parse({
-      contractVersion: "1",
-      coverage,
-      kind: "pair_candle_state",
-      months: [monthReference],
-      pair: asset.pair,
-      sequence,
-    });
-    const encodedState = encodeTradeHistoryFile(state);
-    return createStockTokenTradeHistoryData({
-      request: input,
-      asset,
-      state,
-      stateSha256: encodedState.jsonSha256,
-      months: [{ reference: monthReference, month, sha256: encodedMonth.jsonSha256 }],
-      days: [{ reference: dayReference, day, sha256: encodedDay.jsonSha256 }],
-    });
-  },
-});
+  }
+  return upstreamFetch(input, init);
+};
 
 const createContractSourceVerification = (clock) =>
   createSourcifyContractSourceVerification({
@@ -480,7 +389,6 @@ const runtime = await LocalRuntime.create({
       return fetch(assetSourceUrl, init);
     },
   }),
-  stockTokenTradeHistory,
   contractSourceVerificationFactory: createContractSourceVerification,
   walletApplicationFactory: createWalletOwnerApplicationFactory(createFakeClient),
   chainApplicationFactory: createChainOwnerApplication,

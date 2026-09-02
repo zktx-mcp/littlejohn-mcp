@@ -20,6 +20,10 @@ import {
 import { extendInterfaceSupportManifest } from "../../src/interfaces/support.js";
 import { extendStockTokenTradeHistorySupportManifest } from
   "../../src/stock-token-trade-history/support.js";
+import {
+  stockTokenTradeHistoryCapability,
+  stockTokenTradeHistoryErrorRegistry,
+} from "../../src/stock-token-trade-history/contracts.js";
 import { composeInterfaceCapabilityCatalog } from "../../src/interfaces/support.js";
 import { extendTokenCatalogSupportManifest } from "../../src/token-catalog/support.js";
 import {
@@ -90,6 +94,18 @@ const walletConnection = (
   });
 };
 
+const tradeHistory = () => {
+  const harness = createCapabilityHarness(() => "2026-07-15T06:00:00.000Z");
+  return Object.freeze({
+    binding: bindForHarness(
+      stockTokenTradeHistoryCapability,
+      harness,
+      async () => { throw new Error("Trade-history route invocation is not expected."); },
+      stockTokenTradeHistoryErrorRegistry,
+    ),
+  });
+};
+
 const baseRoutes = async (): Promise<RuntimeRouteRegistry> => {
   const directory = await mkdtemp(resolve(tmpdir(), "littlejohn-public-routes-"));
   directories.push(directory);
@@ -137,6 +153,7 @@ const createRoutes = async (walletData?: unknown): Promise<{
       walletConnection: walletConnection(walletData),
       tokenInspection: tokenCatalogInterfaceHarnessPorts().tokenInspection,
       uniswapV2Quote: uniswapV2QuoteHarnessBinding(),
+      tradeHistory: tradeHistory(),
       supportManifest: manifest,
     }),
   });
@@ -169,6 +186,7 @@ describe("public read HTTP routes", () => {
       ["POST", publicInterfaceRoutes.contractInspections],
       ["POST", publicInterfaceRoutes.tokenInspections],
       ["POST", publicInterfaceRoutes.transactionInspections],
+      ["POST", publicInterfaceRoutes.stockTokenTradeHistoryQueries],
       ["POST", publicInterfaceRoutes.uniswapV2ExactInputQuotes],
       ["GET", publicInterfaceRoutes.walletConnection],
     ] as const;

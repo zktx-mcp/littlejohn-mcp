@@ -13,7 +13,6 @@ import {
   declaredMcpToolNames,
   publicInspectionPaths,
   readInterfaceIdentities,
-  stockTokenTradeHistoryInterfaceBindingList,
   stockTokenTradeHistoryPublicRoute,
   uniswapV2PublicRoutes,
 } from "../../src/interfaces/identities.js";
@@ -89,7 +88,6 @@ const sourceOwnedPaths = Object.freeze([
     publicApiPathPrefix,
     runtimeIdentityPath,
     ...readInterfaceIdentities.map((identity) => identity.http.path),
-    ...stockTokenTradeHistoryInterfaceBindingList.map((binding) => binding.http.path),
     ...stringValues(accountAssetControlRoutes),
     ...stringValues(publicInspectionPaths),
     ...stringValues(publicInterfaceRoutes),

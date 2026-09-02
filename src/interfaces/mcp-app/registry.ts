@@ -10,7 +10,7 @@ import {
   type ReadCapabilityDefinition,
 } from "../../core/client.js";
 import { accountAssetApplicationContracts } from "../../account-assets/client.js";
-import { stockTokenTradeHistoryApplicationContract } from "../../stock-token-trade-history/contracts.js";
+import { stockTokenTradeHistoryCapability } from "../../stock-token-trade-history/contracts.js";
 import {
   tokenCatalogApplicationContracts,
   tokenInspectCapability,
@@ -96,9 +96,8 @@ export const presentationContracts = Object.freeze({
     "Account assets",
   ),
   contractAnalysis: capabilityEntry(contractInspectCapability, "Contract analysis"),
-  stockTokenTradeHistory: applicationEntry(
-    stockTokenTradeHistoryApplicationContract,
-    "immutable_result",
+  stockTokenTradeHistory: capabilityEntry(
+    stockTokenTradeHistoryCapability,
     "Stock Token trade history",
   ),
   tokenAnalysis: capabilityEntry(tokenInspectCapability, "Token analysis"),

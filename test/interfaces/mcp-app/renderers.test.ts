@@ -21,9 +21,10 @@ const fields = (list: Element | null): ReadonlyMap<string, string> => {
 describe("Stock Token trade-history presentation", () => {
   it("shows user-facing trade facts and keeps exact processing data in developer details", () => {
     const entry = presentationContracts.stockTokenTradeHistory;
-    const input = entry.parseInput({ symbol: "AAPL", window: "1d" });
+    const input = entry.parseInput({ symbol: "AAPL", period: { count: 1, unit: "day" } });
     const value = stockTokenTradeHistoryAvailableFixture();
-    if (value.status !== "available") throw new TypeError("Trade-history fixture is unavailable.");
+    if (value.data.status !== "available") throw new TypeError("Trade-history fixture is unavailable.");
+    const data = value.data;
     const admitted = entry.parseResult(input, value);
     const rendered = renderPresentation(entry, admitted);
     const card = rendered.node;
@@ -34,11 +35,24 @@ describe("Stock Token trade-history presentation", () => {
       ["Requested period", "1 day"],
     ]));
     expect(card.textContent).toContain("Trades in USDG");
-    expect(card.textContent).toContain("CoveragePartial");
-    expect(card.textContent).not.toContain("FreshnessCurrent");
+    expect(card.textContent).toContain("StatusAvailable");
     expect(card.textContent).toContain(
-      "Published trade history starts after the requested period began.",
+      `Freshness${data.freshness === "current" ? "Current" : "Stale"}`,
     );
+    expect(card.textContent).toContain(
+      `Coverage${data.coverage.status === "complete" ? "Complete" : "Partial"}`,
+    );
+    expect(card.textContent).toContain(
+      `Requested coverage${data.requestedStart} to ${data.requestedEnd}`,
+    );
+    expect(card.textContent).toContain(
+      `Published through${data.archive.root.currentUntil.timestamp}`,
+    );
+    for (const limitation of data.coverage.limitations) {
+      expect(card.textContent).toContain(limitation === "before_published_coverage"
+        ? "Published trade history starts after the requested period began."
+        : "Published trade history ends before the requested period ended.");
+    }
     expect(card.textContent).not.toContain("Chainlink");
     expect(card.textContent).not.toContain("oracle");
     expect(card.textContent).not.toContain("Reference value");
@@ -48,6 +62,8 @@ describe("Stock Token trade-history presentation", () => {
       .toContain("Apple • Robinhood Token · AAPL trades in USDG");
     expect(card.querySelector('.trade-history-chart[role="img"]')?.getAttribute("aria-label"))
       .toContain("Developer details");
+    expect(card.querySelector('.trade-history-chart[role="img"]')?.getAttribute("aria-label"))
+      .toContain(`${data.requestedStart} inclusive to ${data.requestedEnd} exclusive`);
 
     const disclosures = [...card.querySelectorAll("details")];
     expect(disclosures.map((details) => details.querySelector("summary")?.textContent)).toEqual([
@@ -59,25 +75,28 @@ describe("Stock Token trade-history presentation", () => {
 
     const token = disclosures[0]!;
     expect(fields(token.querySelector("dl"))).toEqual(new Map<string, string>([
-      ["Stock Token contract", value.officialAsset.member.contractAddress],
-      ["USDG contract", value.source.quoteToken.address],
-      ["Uniswap V4 PoolManager", value.source.poolManager],
-      ["Uniswap V4 Pool ID", value.source.poolId],
+      ["Stock Token contract", data.officialAsset.member.contractAddress],
+      ["USDG contract", "0x5fc5360d0400a0fd4f2af552add042d716f1d168"],
+      ["Uniswap V4 PoolManager", "0x8366a39cc670b4001a1121b8f6a443a643e40951"],
+      ["Uniswap V4 Pool IDs", Object.keys(data.archive.pools).join(", ")],
     ]));
 
     const developer = disclosures[1]!;
     developer.open = true;
     developer.dispatchEvent(new Event("toggle"));
-    expect(developer.textContent).not.toContain(value.status === "available"
-      ? value.officialAsset.member.contractAddress : "");
+    expect(developer.textContent).not.toContain(data.officialAsset.member.contractAddress);
     expect(developer.textContent).not.toContain("One-minute trade candles");
-    expect(developer.textContent).toContain("Source file sequence");
-    expect(developer.querySelector("table caption")?.textContent).toContain(
-      "Chart values and processing by display position",
-    );
-    expect(developer.querySelectorAll("table")).toHaveLength(1);
-    expect(developer.querySelectorAll("tbody tr")).toHaveLength(97);
-    const headings = [...developer.querySelectorAll("th")].map((heading) => heading.textContent);
+    expect(developer.textContent).toContain("Source publication sequence");
+    const tables = [...developer.querySelectorAll("table")];
+    expect(tables.map((table) => table.querySelector("caption")?.textContent)).toEqual([
+      expect.stringContaining("Chart values and processing by display position"),
+      "Evidence source correlation",
+    ]);
+    expect(tables).toHaveLength(2);
+    expect(tables[0]?.querySelectorAll("tbody tr")).toHaveLength(data.positions.length);
+    expect(tables[1]?.querySelectorAll("tbody tr")).toHaveLength(value.evidence.sources.length);
+    const headings = [...(tables[0]?.querySelectorAll("th") ?? [])]
+      .map((heading) => heading.textContent);
     expect(headings).toEqual([
       "Natural interval start",
       "Natural interval end",
@@ -85,6 +104,7 @@ describe("Stock Token trade-history presentation", () => {
       "Represented end",
       "Position coverage",
       "Coverage meaning",
+      "Pool ID",
       "Position state",
       "Open in USDG",
       "High in USDG",
@@ -97,18 +117,30 @@ describe("Stock Token trade-history presentation", () => {
       "AAPL volume raw",
       "Observed start",
       "Observed end",
+      "First source position",
+      "Last source position",
       "Aggregation source",
     ]);
     expect(new Set(headings).size).toBe(headings.length);
-    expect(developer.textContent).toContain("925 / 4");
-    expect(developer.textContent).toContain("0.006003 USDG");
-    expect(developer.textContent).toContain("6003");
+    const firstCandle = data.positions.find((position) => position.candle !== null)?.candle;
+    if (firstCandle === undefined || firstCandle === null) {
+      throw new TypeError("Trade-history fixture has no candle.");
+    }
+    expect(developer.textContent).toContain(
+      `${firstCandle.open.numerator} / ${firstCandle.open.denominator}`,
+    );
+    expect(developer.textContent).toContain(firstCandle.quoteVolumeRaw);
+    expect(developer.textContent).toContain(firstCandle.firstSource.blockHash);
+    expect(developer.textContent).toContain(firstCandle.firstSource.transactionHash);
+    expect(developer.textContent).toContain(value.evidence.sources[0]!.invocationId);
+    expect(developer.textContent).toContain(value.evidence.sources[0]!.observationId);
+    expect(developer.textContent).toContain(value.evidence.sources[0]!.recordDigest);
   });
 
   it("states trade-history unavailability without reviving removed reference data", () => {
     const entry = presentationContracts.stockTokenTradeHistory;
     const admitted = entry.parseResult(
-      entry.parseInput({ symbol: "AAPL", window: "1d" }),
+      entry.parseInput({ symbol: "AAPL", period: { count: 1, unit: "day" } }),
       stockTokenTradeHistoryUnavailableFixture(),
     );
     const rendered = renderPresentation(entry, admitted);

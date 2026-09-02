@@ -1,21 +1,22 @@
 import type {
-  ChainInvocationPort,
-  CurrentBlockReadPort,
-  OfficialAssetChainReadPort,
-} from "../chain/index.js";
-import type { ApplicationFailure } from "../core/index.js";
+  CapabilityBinding,
+  CapabilityInvocationAuthority,
+  InvocationBoundaryPorts,
+  ObservationAuthority,
+} from "../core/index.js";
+import type { ChainInvocationPort, CurrentBlockReadPort, OfficialAssetChainReadPort, PinnedEvmReadPort } from
+  "../chain/index.js";
 import type { OfficialAssetSynchronizationPort } from "../registry/index.js";
-import type {
-  StockTokenTradeHistoryInput,
-  StockTokenTradeHistoryResult,
-} from "./stock-token-trade-history.js";
-import type { StockTokenTradeHistoryReadPort } from "./stock-token-trade-history-data.js";
+import type { StockTokenTradeHistorySourcePort } from "./source-contract.js";
+import type { stockTokenTradeHistoryCapability } from "./contracts.js";
 
-export interface StockTokenTradeHistoryApplicationPort {
-  get(
-    input: StockTokenTradeHistoryInput,
-    signal?: AbortSignal,
-  ): Promise<StockTokenTradeHistoryResult | ApplicationFailure>;
+export interface StockTokenTradeHistoryReadCapabilityPort {
+  readonly binding: CapabilityBinding<typeof stockTokenTradeHistoryCapability>;
+}
+
+export interface StockTokenTradeHistoryApplicationPort
+  extends StockTokenTradeHistoryReadCapabilityPort {
+  close(): Promise<void>;
 }
 
 export interface StockTokenTradeHistoryApplicationDependencies {
@@ -23,5 +24,10 @@ export interface StockTokenTradeHistoryApplicationDependencies {
   readonly currentBlockReads: CurrentBlockReadPort;
   readonly officialAssets: OfficialAssetSynchronizationPort;
   readonly officialAssetReads: OfficialAssetChainReadPort;
-  readonly tradeHistoryReads: StockTokenTradeHistoryReadPort;
+  readonly protocolReads: PinnedEvmReadPort;
+  readonly source: StockTokenTradeHistorySourcePort;
+  readonly invocationAuthority: CapabilityInvocationAuthority;
+  readonly invocationPorts: InvocationBoundaryPorts;
+  readonly officialAssetObservationAuthority: ObservationAuthority;
+  readonly archiveObservationAuthority: ObservationAuthority;
 }

@@ -209,9 +209,14 @@ finalized `Swap` event positions identify the trade source. The archive source
 contract owns those identities, the resolution catalog and the selected source
 chain. A stored resolution candle establishes only the qualifying executions
 and exact derived values declared by that admitted candle inside its continuous
-PoolId coverage. A missing stored candle establishes trade absence only for a
-complete position. It does not establish underlying-equity activity, another
-pool's activity, liquidity, or future trade availability.
+PoolId coverage. Full-natural same-Pool coverage makes a stored aggregate
+eligible; it does not guarantee that a candle exists. Only after the exact
+owning resolution member is admitted does the absence of an eligible aggregate
+establish that no qualifying `Swap` occurred in that natural interval. A
+missing or unread member, incomplete natural coverage, or a natural interval
+crossing Pool coverage establishes no trade absence. None of these facts
+establishes underlying-equity activity, another pool's activity, liquidity, or
+future trade availability.
 
 GitHub Releases currently carries these files but has no trade-fact authority.
 Repository, release, asset, URL, and credential fields do not enter the
@@ -221,17 +226,25 @@ integrity failure, and result capacity remain explicit outcomes and never
 create a trade fact.
 
 An available result contains one fixed chart position for every natural UTC
-interval that intersects the exact requested interval. A position is
-`complete` only when its whole represented half-open interval is inside
-continuous admitted trade-history coverage and both represented bounds are
-source-minute boundaries. It is `unavailable` only when that represented
-interval has no overlap with admitted coverage. Every other position is
-`partial`. A position without an aggregate establishes no admitted qualifying
-`Swap` only when its coverage is `complete`; an empty `partial` or
-`unavailable` position does not establish trade absence. The price, Stock Token
-volume, USDG volume, trade count, observed bounds and source positions are the
-unchanged fields of one admitted stored-resolution candle. Little John does not
-reconstruct them from `1m` data or chart output.
+interval that intersects the exact requested interval. Its represented bounds
+are that natural interval's intersection with the request. A position is
+`complete` only when represented and natural bounds are equal, the complete
+natural interval is inside one continuous Pool coverage segment, and the exact
+owning resolution member was admitted. A complete position may carry its
+unchanged stored candle or be empty; only the empty complete form establishes
+qualifying-Swap absence and both forms retain the Pool ID.
+
+A request-cut position is always `partial`. It may carry an unchanged stored
+candle only when the complete natural candle and its source positions belong to
+one admitted Pool segment and precede the canonical block. That candle may
+include activity outside the represented request bounds and retains its Pool ID.
+An empty partial position has no Pool ID and does not establish trade absence.
+A position with no represented coverage overlap is `unavailable`, has no candle
+or Pool ID, and establishes no absence. A natural interval crossing Pools is
+partial and empty; Little John never joins its Pools. The price, Stock Token
+volume, USDG volume, trade count, observed bounds and source positions remain
+the unchanged fields of one admitted stored-resolution candle. Little John does
+not reconstruct them from `1m` data or chart output.
 
 ### Internal Archive Source
 
@@ -244,9 +257,28 @@ PoolId provenance pass through unchanged; an older root, packed-asset fallback,
 base-day member, `1m` reconstruction or cross-Pool join is never substituted.
 Provider transport facts do not enter the result.
 
+The server admits raw state, month and selected-resolution coverage as separate
+source roles and retains their producer boundaries internally. Month coverage
+establishes the archive extent. Each selected resolution member proves its
+aggregate-eligible natural intervals and candle set against admitted
+state/month coverage. The proof owner coalesces adjacent same-Pool segments once
+only when timestamp and block boundaries are equal and returns one canonical
+block-bearing SourcePort coverage sequence without inventing outer block
+boundaries.
+
+The server uses that sequence to determine each request-intersecting natural
+position, unchanged candle eligibility and exact Pool provenance. The public
+result and evidence retain only the requested coverage range, its limitations,
+the position sequence and the Pool keys those positions actually reference.
+Natural-window proof outside the request, raw source segmentation, unused Pool
+keys, block bounds and Pool chronology remain internal admission facts. A
+request-cut candle retains its complete natural bounds and Pool ID without
+copying the raw proof sequence that admitted it.
+
 The canonical result's official-asset observation, same-block StockFactory
 verification, same-block token-decimals observation, archive member identities,
-freshness and request-clipped coverage are its capability evidence. Every
+freshness, exact requested coverage, position states, referenced Pool keys and
+unchanged candles are its capability evidence. Every
 interface and immutable replay consumes those same fields and does not create
 another evidence or market-data read.
 
@@ -270,9 +302,10 @@ One feature-owned stage projection constructs both runtime observation claims
 and immutable replay expectations. A scope-specific unavailable branch retains
 the root or base identity actually admitted at that stage, and the archive claim
 binds those facts without inferring an omitted member. An available archive
-claim binds the compact source identities, exact required Pool facts, the two
-request-level coverage sequences and the completed positions. Per-member source
-coverage arrays remain internal source facts and are not reconstructed by
+claim binds the compact source identities, exact position-referenced Pool keys,
+requested coverage and the complete natural-position sequence. Raw natural-
+window coverage, unused Pool keys, per-member coverage arrays, block bounds and
+Pool chronology remain internal source facts and are not reconstructed by
 evidence.
 
 ## Identity And Trust

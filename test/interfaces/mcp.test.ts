@@ -45,7 +45,9 @@ import {
   type McpRuntimePort,
   type McpServerRuntimePort,
 } from "../../src/interfaces/mcp.js";
-import { stockTokenTradeHistoryInterfaceBinding } from "../../src/interfaces/identities.js";
+import { stockTokenTradeHistoryInterface } from "../../src/interfaces/identities.js";
+import { stockTokenTradeHistoryHumanSummary } from
+  "../../src/interfaces/stock-token-trade-history-presentation.js";
 import {
   createStockTokenTradeHistoryFailure,
   stockTokenTradeHistoryInterfaceErrorMappings,
@@ -384,7 +386,7 @@ describe("MCP binding projection", () => {
 
     expect(client.getServerVersion()).toEqual({ name: manifest.name, version: manifest.version });
     const result = await client.callTool({
-      name: stockTokenTradeHistoryInterfaceBinding.mcp.name,
+      name: stockTokenTradeHistoryInterface.mcp.name,
       arguments: { symbol: "AAPL" },
     });
 
@@ -393,8 +395,8 @@ describe("MCP binding projection", () => {
     expect(runtime.requests).toEqual([{
       requestClass: "public_read",
       method: "POST",
-      path: stockTokenTradeHistoryInterfaceBinding.http.path,
-      body: { symbol: "AAPL", window: "1d" },
+      path: stockTokenTradeHistoryInterface.http.path,
+      body: { symbol: "AAPL", period: { count: 1, unit: "day" } },
       signal: expect.any(AbortSignal),
     }]);
   });
@@ -404,7 +406,7 @@ describe("MCP binding projection", () => {
     const runtime = new FakeRuntime(() => ({ status: 200, body: captureCanonicalJson(value) }));
     const { client } = await connectOrdinary(runtime);
     const result = await client.callTool({
-      name: stockTokenTradeHistoryInterfaceBinding.mcp.name,
+      name: stockTokenTradeHistoryInterface.mcp.name,
       arguments: { symbol: "aapl" },
     });
 
@@ -412,13 +414,13 @@ describe("MCP binding projection", () => {
     expect(result.structuredContent).toEqual(value);
     expect(result.content).toEqual([{
       type: "text",
-      text: canonicalJsonStringify(captureCanonicalJson(value)),
+      text: stockTokenTradeHistoryHumanSummary(value.data),
     }]);
     expect(runtime.requests).toEqual([{
       requestClass: "public_read",
       method: "POST",
-      path: stockTokenTradeHistoryInterfaceBinding.http.path,
-      body: { symbol: "AAPL", window: "1d" },
+      path: stockTokenTradeHistoryInterface.http.path,
+      body: { symbol: "AAPL", period: { count: 1, unit: "day" } },
       signal: expect.any(AbortSignal),
     }]);
   });
@@ -439,19 +441,20 @@ describe("MCP binding projection", () => {
     const { client } = await connectApp(runtime);
     const listed = await client.listTools();
     const tool = listed.tools.find((candidate) =>
-      candidate.name === stockTokenTradeHistoryInterfaceBinding.mcp.name);
+      candidate.name === stockTokenTradeHistoryInterface.mcp.name);
     if (tool?.outputSchema === undefined) throw new TypeError("Trade-history output schema missing.");
 
     const result = CallToolResultSchema.parse(await client.callTool({
-      name: stockTokenTradeHistoryInterfaceBinding.mcp.name,
-      arguments: { symbol: "AAPL", window: "1d" },
+      name: stockTokenTradeHistoryInterface.mcp.name,
+      arguments: { symbol: "AAPL", period: { count: 1, unit: "day" } },
     }));
     const admitted = captureCanonicalJson(result.structuredContent);
     const validate = new Ajv2020({ strict: true, validateFormats: false })
       .compile(tool.outputSchema);
     expect(validate(admitted)).toBe(true);
     const canonicalText = canonicalJsonStringify(admitted);
-    expect(result.content.filter((item) => item.type === "text" && item.text === canonicalText))
+    expect(result.content.filter((item) =>
+      item.type === "text" && item.text === stockTokenTradeHistoryHumanSummary(value.data)))
       .toHaveLength(1);
     expect(result.content.filter((item) => item.type === "resource_link")).toHaveLength(1);
     const resource = admitPresentationSnapshotResource(
@@ -479,7 +482,7 @@ describe("MCP binding projection", () => {
     );
     const { client } = await connectApp(runtime);
     const result = await client.callTool({
-      name: stockTokenTradeHistoryInterfaceBinding.mcp.name,
+      name: stockTokenTradeHistoryInterface.mcp.name,
       arguments: { symbol: "aapl" },
     });
 

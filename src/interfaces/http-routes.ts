@@ -17,6 +17,10 @@ import type {
   WalletConnectionReadCapabilityPort,
 } from "../runtime/application-context.js";
 import type { TokenCatalogInspectionPort } from "../token-catalog/index.js";
+import {
+  stockTokenTradeHistoryInterfaceErrorMappings,
+  type StockTokenTradeHistoryReadCapabilityPort,
+} from "../stock-token-trade-history/index.js";
 import type { InterfaceRuntimeSupportManifest } from "../runtime/support-manifest.js";
 import type {
   RouteContext,
@@ -29,6 +33,7 @@ import {
   chainStatusInterface,
   contractInspectInterface,
   interfaceReadCapabilityRegistry,
+  stockTokenTradeHistoryInterface,
   tokenInspectInterface,
   transactionInspectInterface,
   type ReadInterfaceIdentity,
@@ -44,6 +49,7 @@ export const publicInterfaceRoutes = Object.freeze({
   contractInspections: contractInspectInterface.http.path,
   tokenInspections: tokenInspectInterface.http.path,
   transactionInspections: transactionInspectInterface.http.path,
+  stockTokenTradeHistoryQueries: stockTokenTradeHistoryInterface.http.path,
   uniswapV2ExactInputQuotes: uniswapV2QuoteInterface.http.path,
   walletConnection: walletConnectionInterface.http.path,
 });
@@ -80,6 +86,7 @@ export const extendPublicInterfaceRoutes = (input: {
   readonly walletConnection: WalletConnectionReadCapabilityPort;
   readonly tokenInspection: TokenCatalogInspectionPort;
   readonly uniswapV2Quote: UniswapV2QuoteApplication["binding"];
+  readonly tradeHistory: StockTokenTradeHistoryReadCapabilityPort;
   readonly supportManifest: InterfaceRuntimeSupportManifest;
 }): RuntimeRouteRegistry => {
   const bindings = new CapabilityBindingRegistry(interfaceReadCapabilityRegistry, [
@@ -88,6 +95,7 @@ export const extendPublicInterfaceRoutes = (input: {
     input.chainReads.contractInspect,
     input.tokenInspection,
     input.chainReads.transactionInspect,
+    input.tradeHistory.binding,
     input.uniswapV2Quote,
     input.walletConnection.connection,
   ]);
@@ -113,8 +121,12 @@ export const extendPublicInterfaceRoutes = (input: {
       handler: async () => success(catalog as unknown as CanonicalJson),
     },
   ], tokenCatalogInterfaceErrorMappings);
-  return tokenRoutes.extend(
+  const protocolRoutes = tokenRoutes.extend(
     readRoutes(bindings, [uniswapV2QuoteInterface]),
     uniswapV2InterfaceErrorMappings,
+  );
+  return protocolRoutes.extend(
+    readRoutes(bindings, [stockTokenTradeHistoryInterface]),
+    stockTokenTradeHistoryInterfaceErrorMappings,
   );
 };

@@ -1,202 +1,395 @@
+import { Buffer } from "node:buffer";
+
 import { describe, expect, it, vi } from "vitest";
 
-import { createChainInvocationLifecycle } from "../../src/chain/index.js";
 import {
+  createChainInvocationLifecycle,
+  type PinnedEvmCallResult,
+  type PinnedEvmReadPort,
+} from "../../src/chain/index.js";
+import {
+  CapabilityBindingRegistry,
+  CapabilityRegistry,
+  ObservationAuthorityRegistry,
+  chainAnchorSchema,
+  createCanonicalClock,
+  createCapabilityInvocationAuthority,
+  createObservationAuthority,
   parseEvmAddress,
   parseHash32,
+  parseUnsignedDecimal,
+  parseUtcTimestamp,
+  sourceReferenceSchema,
+  type UnsignedDecimal,
 } from "../../src/core/index.js";
 import {
   assertCommittedOfficialAssetSnapshot,
+  officialAssetSnapshotRevisionSchema,
+  officialAssetSourceDefinition,
+  stockFactoryAdmissionManifest,
   stockFactoryVerificationSchema,
+  type CommittedOfficialAssetSnapshot,
   type OfficialAssetSourceMember,
+  type StockFactoryVerificationResult,
 } from "../../src/registry/index.js";
 import {
   officialAssetCandidateListDigest,
   officialAssetMemberSetDigest,
 } from "../../src/registry/official-asset-contract.js";
-import { StockTokenTradeHistoryApplication } from
-  "../../src/stock-token-trade-history/application.js";
 import {
-  stockTokenTradeHistoryDataSchema,
-  unavailableStockTokenTradeHistoryData,
-  type StockTokenTradeHistoryData,
-  type StockTokenTradeHistoryReadPort,
-} from "../../src/stock-token-trade-history/stock-token-trade-history-data.js";
+  createStockTokenTradeHistoryApplication,
+  createStockTokenTradeHistoryObservationAuthorities,
+  stockTokenTradeHistoryCapability,
+} from "../../src/stock-token-trade-history/index.js";
+import { createStockTokenTradeHistorySource } from
+  "../../src/stock-token-trade-history/source.js";
+import type { StockTokenTradeHistorySourcePort } from
+  "../../src/stock-token-trade-history/source-contract.js";
 import {
-  stockTokenTradeHistoryAvailableFixture,
-} from "../interfaces/stock-token-trade-history-fixture.js";
+  createStockTokenTradeHistoryMultiMonthSourceFixture,
+  createStockTokenTradeHistorySourceFixture,
+} from "./source-fixture.js";
 
-const availableResult = stockTokenTradeHistoryAvailableFixture();
-if (availableResult.status !== "available") {
-  throw new TypeError("Expected an available Stock Token trade-history fixture.");
-}
-
-const availableData = stockTokenTradeHistoryDataSchema.parse({
-  status: availableResult.status,
-  requestedStart: availableResult.requestedStart,
-  requestedEnd: availableResult.requestedEnd,
-  source: availableResult.source,
-  sourceFiles: availableResult.sourceFiles,
-  freshness: availableResult.freshness,
-  coverage: availableResult.coverage,
-  chart: availableResult.chart,
+const block = chainAnchorSchema.parse({
+  chainId: "eip155:4663",
+  blockNumber: "100",
+  blockHash: `0x${"e".repeat(64)}`,
+  blockTimestamp: "2026-08-24T07:00:00.000Z",
 });
-
-const snapshotFor = (member: OfficialAssetSourceMember) => {
-  const evidence = availableResult.officialAsset.snapshot;
+const member: OfficialAssetSourceMember = Object.freeze({
+  assetUid: parseHash32(`0x${"7".repeat(64)}`),
+  contractAddress: parseEvmAddress("0xaf3d76f1834a1d425780943c99ea8a608f8a93f9"),
+  sourceName: "Apple • Robinhood Token",
+  sourceSymbol: "AAPL",
+});
+const snapshot = (
+  members: readonly OfficialAssetSourceMember[] = [member],
+): CommittedOfficialAssetSnapshot => {
+  const observedAt = parseUtcTimestamp("2026-08-24T06:59:00.000Z");
   return assertCommittedOfficialAssetSnapshot({
-    sourceUri: evidence.sourceUri,
-    sourceObservedAt: evidence.sourceObservedAt,
-    rawResponseDigest: evidence.rawResponseDigest,
-    memberSetDigest: officialAssetMemberSetDigest([member]),
-    candidateListDigest: officialAssetCandidateListDigest([member]),
-    chainId: availableResult.block.chainId,
-    members: [member],
-    revision: evidence.revision,
-    updatedAt: evidence.sourceObservedAt,
+    sourceUri: officialAssetSourceDefinition.sourceUri,
+    sourceObservedAt: observedAt,
+    rawResponseDigest: parseHash32(`0x${"1".repeat(64)}`),
+    memberSetDigest: officialAssetMemberSetDigest(members),
+    candidateListDigest: officialAssetCandidateListDigest(members),
+    chainId: block.chainId,
+    members: [...members],
+    revision: officialAssetSnapshotRevisionSchema.parse(
+      Buffer.alloc(16, 1).toString("base64url"),
+    ),
+    updatedAt: observedAt,
   });
 };
+const verification = stockFactoryVerificationSchema.parse({
+  assetUid: member.assetUid,
+  contractAddress: member.contractAddress,
+  block,
+  proxyAddress: stockFactoryAdmissionManifest.proxyAddress,
+  proxyCodeHash: stockFactoryAdmissionManifest.proxyCodeHash,
+  implementationAddress: stockFactoryAdmissionManifest.implementationAddress,
+  implementationCodeHash: stockFactoryAdmissionManifest.implementationCodeHash,
+  tokenCodeHash: parseHash32(`0x${"2".repeat(64)}`),
+});
 
-const fixture = (input: Readonly<{
-  member?: OfficialAssetSourceMember;
-  read?: StockTokenTradeHistoryReadPort["read"];
-}> = {}) => {
-  const member = input.member ?? availableResult.officialAsset.member;
-  const snapshot = snapshotFor(member);
-  const verification = stockFactoryVerificationSchema.parse({
-    ...availableResult.stockFactory,
-    assetUid: member.assetUid,
-    contractAddress: member.contractAddress,
+const unsupported = async (): Promise<never> => {
+  throw new Error("Unexpected application test port call.");
+};
+
+const createFixture = (input: Readonly<{
+  readonly source: StockTokenTradeHistorySourcePort;
+  readonly decimals?: PinnedEvmCallResult<UnsignedDecimal>;
+  readonly officialSnapshot?: CommittedOfficialAssetSnapshot;
+  readonly stockFactory?: StockFactoryVerificationResult;
+}>) => {
+  const clock = createCanonicalClock(() => parseUtcTimestamp("2026-08-24T07:00:01.000Z"));
+  const sources = createStockTokenTradeHistoryObservationAuthorities(clock);
+  const rpc = createObservationAuthority({
+    clock,
+    sourceClass: "chain_rpc",
+    owner: "Fixture RPC",
+    reference: sourceReferenceSchema.parse({
+      kind: "public",
+      sourceId: "fixture-rpc",
+      uri: "https://rpc.example/",
+    }),
   });
-  const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
-  const read = vi.fn<StockTokenTradeHistoryReadPort["read"]>(
-    input.read ?? (async () => availableData),
-  );
-  const resolveCurrentBlock = vi.fn(async () => Object.freeze({
-    anchor: availableResult.block,
+  const chain = createChainInvocationLifecycle(new AbortController().signal);
+  const readTokenDecimals = vi.fn(async () => input.decimals ?? Object.freeze({
+    status: "observed" as const,
+    value: parseUnsignedDecimal("18"),
   }));
-  const verifyAtBlock = vi.fn(async () => Object.freeze({
-    status: "verified" as const,
-    member,
-    verification,
-  }));
-  const application = new StockTokenTradeHistoryApplication({
-    chainInvocations: lifecycle,
-    currentBlockReads: Object.freeze({ resolveCurrentBlock }),
+  const protocolReads: PinnedEvmReadPort = Object.freeze({
+    observationAuthority: rpc,
+    resolveBlock: unsupported,
+    readRuntimeCode: unsupported,
+    call: unsupported,
+    readTokenDecimals,
+    inspectContract: unsupported,
+    recordConfiguredChain: () => { throw new Error("Unexpected configured-chain record."); },
+  });
+  const sourceRead = vi.fn((
+    ...args: Parameters<StockTokenTradeHistorySourcePort["read"]>
+  ) => input.source.read(...args));
+  const sourcePort: StockTokenTradeHistorySourcePort = Object.freeze({
+    read: sourceRead,
+    close: () => input.source.close(),
+  });
+  const currentBlockRead = vi.fn(async () => Object.freeze({ anchor: block }));
+  const officialSnapshot = input.officialSnapshot ?? snapshot();
+  const application = createStockTokenTradeHistoryApplication({
+    chainInvocations: chain,
+    currentBlockReads: Object.freeze({
+      resolveCurrentBlock: currentBlockRead,
+    }),
     officialAssets: Object.freeze({
-      synchronize: async () => Object.freeze({ status: "current" as const, snapshot }),
-      readStored: () => snapshot,
+      synchronize: async () => Object.freeze({ status: "current" as const, snapshot: officialSnapshot }),
+      readStored: () => officialSnapshot,
       close: async () => undefined,
     }),
     officialAssetReads: Object.freeze({
-      verifyAtBlock,
-      verifyManyAtBlock: async () => {
-        throw new Error("Batch verification is not part of Stock Token trade history.");
-      },
+      verifyAtBlock: async () => input.stockFactory ?? Object.freeze({
+        status: "verified" as const,
+        member,
+        verification,
+      }),
+      verifyManyAtBlock: unsupported,
     }),
-    tradeHistoryReads: Object.freeze({ read }),
+    protocolReads,
+    source: sourcePort,
+    invocationAuthority: createCapabilityInvocationAuthority(clock, block.chainId),
+    invocationPorts: Object.freeze({
+      observations: new ObservationAuthorityRegistry(clock, [
+        sources.officialAsset,
+        sources.archive,
+        rpc,
+      ]),
+    }),
+    officialAssetObservationAuthority: sources.officialAsset,
+    archiveObservationAuthority: sources.archive,
   });
-  return { application, lifecycle, read, resolveCurrentBlock, verifyAtBlock };
+  const bindings = new CapabilityBindingRegistry(
+    new CapabilityRegistry([stockTokenTradeHistoryCapability]),
+    [application.binding],
+  );
+  const invoke = (value: unknown, signal = new AbortController().signal) =>
+    bindings.invoke(stockTokenTradeHistoryCapability, value, { signal });
+  const close = async () => {
+    await application.close();
+    await sourcePort.close();
+    await chain.close();
+  };
+  return { application, close, currentBlockRead, invoke, readTokenDecimals, sourceRead };
 };
 
-const closeFixture = async (value: ReturnType<typeof fixture>): Promise<void> => {
-  await value.application.close();
-  await value.lifecycle.close();
+const admittedSource = () => {
+  const fixture = createStockTokenTradeHistorySourceFixture();
+  return createStockTokenTradeHistorySource({
+    transport: fixture.transport,
+    now: () => new Date("2026-08-24T07:00:00.000Z"),
+  });
+};
+
+const admittedMultiMonthSource = () => {
+  const fixture = createStockTokenTradeHistoryMultiMonthSourceFixture();
+  return createStockTokenTradeHistorySource({
+    transport: fixture.transport,
+    now: () => new Date("2026-08-24T07:00:00.000Z"),
+  });
 };
 
 describe("Stock Token trade-history application", () => {
-  it("returns the admitted trade history after one identity, block, and source-read sequence", async () => {
-    const value = fixture();
-    await expect(value.application.get({ symbol: "aapl", window: "1d" }))
-      .resolves.toEqual(availableResult);
-    expect(value.resolveCurrentBlock).toHaveBeenCalledTimes(1);
-    expect(value.verifyAtBlock).toHaveBeenCalledWith(
-      availableResult.officialAsset.member,
-      { anchor: availableResult.block },
-      expect.any(Object),
-    );
-    expect(value.read).toHaveBeenCalledWith({
-      pairId: availableResult.source.poolId,
-      window: "1d",
-      requestedStart: availableResult.requestedStart,
-      requestedEnd: availableResult.requestedEnd,
-    }, expect.any(AbortSignal));
-    await closeFixture(value);
+  it("returns proved official absence without entering Chain or archive work", async () => {
+    const fixture = createFixture({ source: admittedSource() });
+    try {
+      const result = await fixture.invoke({ symbol: "ZZZZ" });
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new TypeError("Expected an official-absence success.");
+      expect(result.data).toMatchObject({
+        status: "unavailable",
+        reason: "official_asset_not_found",
+        symbol: "ZZZZ",
+      });
+      expect(result.evidence.sources.map((entry) => entry.sourceClass)).toEqual(["web_api"]);
+      expect(result.evidence.conclusions.map((entry) => [entry.id, entry.status])).toEqual([
+        ["official_asset_snapshot_current", "established"],
+        ["stock_factory_verified", "not_applicable"],
+        ["token_decimals_observed", "not_applicable"],
+        ["trade_history_archive_observed", "not_applicable"],
+      ]);
+      expect(fixture.readTokenDecimals).not.toHaveBeenCalled();
+      expect(fixture.sourceRead).not.toHaveBeenCalled();
+    } finally {
+      await fixture.close();
+    }
   });
 
-  it("returns asset_not_supported without reading trade-history data", async () => {
-    const member: OfficialAssetSourceMember = {
-      assetUid: parseHash32(`0x${"77".repeat(32)}`),
+  it("retains the exact ambiguous official selector outcome without entering Chain work", async () => {
+    const otherMember: OfficialAssetSourceMember = Object.freeze({
+      assetUid: parseHash32(`0x${"8".repeat(64)}`),
       contractAddress: parseEvmAddress("0x1111111111111111111111111111111111111111"),
-      sourceName: "Unsupported Stock Token",
-      sourceSymbol: "OTHER",
-    };
-    const value = fixture({ member });
-    await expect(value.application.get({ symbol: "other", window: "7d" }))
-      .resolves.toMatchObject({ status: "unavailable", reason: "asset_not_supported" });
-    expect(value.read).not.toHaveBeenCalled();
-    await closeFixture(value);
-  });
-
-  it.each([
-    "trade_history_unavailable",
-    "trade_history_inconsistent",
-  ] as const)("preserves the provider-neutral %s result", async (reason) => {
-    const value = fixture({
-      read: async (request) => unavailableStockTokenTradeHistoryData(request, reason),
+      sourceName: "Another Apple Stock Token",
+      sourceSymbol: "AAPL",
     });
-    await expect(value.application.get({ symbol: "AAPL", window: "1d" }))
-      .resolves.toMatchObject({ status: "unavailable", reason });
-    expect(value.read).toHaveBeenCalledTimes(1);
-    await closeFixture(value);
+    const fixture = createFixture({
+      source: admittedSource(),
+      officialSnapshot: snapshot([member, otherMember]),
+    });
+    try {
+      const result = await fixture.invoke({ symbol: "AAPL" });
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new TypeError("Expected an ambiguous-official success.");
+      expect(result.data).toMatchObject({
+        status: "unavailable",
+        reason: "official_asset_symbol_ambiguous",
+        candidateAssetUids: [member.assetUid, otherMember.assetUid],
+      });
+      expect(result.evidence.sources.map((entry) => entry.sourceClass)).toEqual(["web_api"]);
+      expect(fixture.currentBlockRead).not.toHaveBeenCalled();
+      expect(fixture.sourceRead).not.toHaveBeenCalled();
+    } finally {
+      await fixture.close();
+    }
   });
 
-  it("reports caller cancellation after settling the active source read", async () => {
+  it("publishes a reached StockFactory failure and leaves later stages not requested", async () => {
+    const fixture = createFixture({
+      source: admittedSource(),
+      stockFactory: Object.freeze({
+        status: "unavailable",
+        member,
+        reason: "source_unavailable",
+      }),
+    });
+    try {
+      const result = await fixture.invoke({ symbol: "AAPL" });
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new TypeError("Expected a StockFactory-unavailable success.");
+      expect(result.data).toMatchObject({
+        status: "unavailable",
+        reason: "stock_factory_unavailable",
+      });
+      expect(result.evidence.conclusions.map((entry) => [entry.id, entry.status, entry.reason]))
+        .toEqual([
+          ["official_asset_snapshot_current", "established", "observed"],
+          ["stock_factory_verified", "unavailable", "source_failed"],
+          ["token_decimals_observed", "not_applicable", "not_requested"],
+          ["trade_history_archive_observed", "not_applicable", "not_requested"],
+        ]);
+      expect(fixture.readTokenDecimals).not.toHaveBeenCalled();
+      expect(fixture.sourceRead).not.toHaveBeenCalled();
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("binds one period through official identity, same-block decimals, WU1, evidence, and positions", async () => {
+    const fixture = createFixture({ source: admittedSource() });
+    try {
+      const result = await fixture.invoke({ symbol: "aapl", period: { count: 1, unit: "day" } });
+      expect(result.ok).toBe(true);
+      if (!result.ok || result.data.status !== "available") {
+        throw new TypeError("Expected an available trade-history success.");
+      }
+      expect(result.data.resolution).toMatchObject({ label: "15m", positionCount: 96 });
+      expect(result.evidence.conclusions.map((entry) => [entry.id, entry.status])).toEqual([
+        ["official_asset_snapshot_current", "established"],
+        ["stock_factory_verified", "established"],
+        ["token_decimals_observed", "established"],
+        ["trade_history_archive_observed", "established"],
+      ]);
+      expect(result.evidence.sources.map((entry) => entry.sourceClass).sort()).toEqual([
+        "chain_rpc", "chain_rpc", "public_dataset", "web_api",
+      ]);
+      expect(fixture.readTokenDecimals).toHaveBeenCalledTimes(1);
+      expect(fixture.sourceRead).toHaveBeenCalledTimes(1);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("carries a producer-valid multi-month archive through the one-year canonical result", async () => {
+    const fixture = createFixture({ source: admittedMultiMonthSource() });
+    try {
+      const result = await fixture.invoke({
+        symbol: "AAPL",
+        period: { count: 1, unit: "year" },
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok || result.data.status !== "available") {
+        throw new TypeError("Expected an available one-year trade-history success.");
+      }
+      expect(result.data.resolution).toMatchObject({ label: "2d" });
+      expect(result.data.resolution.positionCount).toBeLessThanOrEqual(185);
+      expect(result.data.archive.monthMembers.map((entry) => entry.ownerMonth))
+        .toEqual(["2026-06", "2026-07"]);
+      expect(result.data.archive.resolutionMembers).toEqual([]);
+      expect(result.data.coverage).toMatchObject({
+        status: "partial",
+        limitations: ["before_published_coverage", "after_published_coverage"],
+        fromTimestamp: expect.any(String),
+        untilTimestamp: expect.any(String),
+      });
+      expect(result.data.positions).toHaveLength(result.data.resolution.positionCount);
+      expect(result.data.positions.some((position) => position.coverage === "partial")).toBe(true);
+      expect(result.data.positions.some((position) => position.coverage === "unavailable")).toBe(true);
+      expect(fixture.sourceRead).toHaveBeenCalledTimes(1);
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("stops after the reached decimals observation when the same-block call reverts", async () => {
+    const fixture = createFixture({
+      source: admittedSource(),
+      decimals: Object.freeze({ status: "reverted" }),
+    });
+    try {
+      const result = await fixture.invoke({ symbol: "AAPL" });
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new TypeError("Expected a decimals-unavailable success.");
+      expect(result.data).toMatchObject({
+        status: "unavailable",
+        reason: "token_decimals_unavailable",
+        tokenDecimals: { status: "unavailable", reason: "call_reverted" },
+      });
+      expect(fixture.sourceRead).not.toHaveBeenCalled();
+      expect(result.evidence.sources.map((entry) => entry.sourceClass).sort())
+        .toEqual(["chain_rpc", "chain_rpc", "web_api"]);
+      expect(result.evidence.conclusions.at(-1)).toMatchObject({ status: "not_applicable" });
+    } finally {
+      await fixture.close();
+    }
+  });
+
+  it("registers the whole invocation before work and drains owner cancellation", async () => {
     let started!: () => void;
     const sourceStarted = new Promise<void>((resolve) => { started = resolve; });
-    const value = fixture({
-      read: async (_request, signal): Promise<StockTokenTradeHistoryData> => {
-        started();
-        return await new Promise<never>((_resolve, reject) => {
-          signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-        });
-      },
-    });
-    const caller = new AbortController();
-    const active = value.application.get({ symbol: "AAPL", window: "1d" }, caller.signal);
-    await sourceStarted;
-    caller.abort();
-    await expect(active).resolves.toMatchObject({
-      ok: false,
-      error: { code: "request_aborted" },
-    });
-    await closeFixture(value);
-  });
-
-  it("aborts and settles the active source read before owner close completes", async () => {
-    let started!: () => void;
-    const sourceStarted = new Promise<void>((resolve) => { started = resolve; });
-    let sourceAborted = false;
-    const value = fixture({
-      read: async (_request, signal): Promise<StockTokenTradeHistoryData> => {
+    let aborted = false;
+    const source: StockTokenTradeHistorySourcePort = Object.freeze({
+      async read(
+        _request: Parameters<StockTokenTradeHistorySourcePort["read"]>[0],
+        signal?: AbortSignal,
+      ) {
         started();
         return await new Promise<never>((_resolve, reject) => {
           signal?.addEventListener("abort", () => {
-            sourceAborted = true;
-            reject(new Error("aborted"));
+            aborted = true;
+            reject(new Error("source aborted"));
           }, { once: true });
         });
       },
+      close: async () => undefined,
     });
-    const active = value.application.get({ symbol: "AAPL", window: "1d" });
+    const fixture = createFixture({ source });
+    const active = fixture.invoke({ symbol: "AAPL" });
     await sourceStarted;
-    const closing = value.application.close();
+    const closing = fixture.application.close();
     await expect(active).resolves.toMatchObject({
       ok: false,
       error: { code: "runtime_state_unavailable" },
     });
     await closing;
-    expect(sourceAborted).toBe(true);
-    await value.lifecycle.close();
+    expect(aborted).toBe(true);
+    await fixture.close();
   });
 });

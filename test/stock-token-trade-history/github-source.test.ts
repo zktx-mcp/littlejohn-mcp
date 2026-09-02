@@ -271,6 +271,25 @@ describe("GitHub Stock Token trade-history transport", () => {
     reader.releaseLock();
   });
 
+  it("cancels an acquired response body when abort wins before reader acquisition", async () => {
+    let cancelled = false;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      cancel() { cancelled = true; },
+    }), { status: 200 });
+    const controller = new AbortController();
+    const reason = new Error("caller stopped before body admission");
+    const transport = createGitHubStockTokenTradeHistoryTransport({
+      fetch: async () => {
+        controller.abort(reason);
+        return response;
+      },
+    });
+
+    await expect(transport.readRoot("root.json.gz", 8, controller.signal))
+      .rejects.toBe(reason);
+    expect(cancelled).toBe(true);
+  });
+
   it("bounds catalog responses against the remaining aggregate before reading the next body", async () => {
     const releaseText = JSON.stringify({ id: 43 });
     const pageText = JSON.stringify([{
