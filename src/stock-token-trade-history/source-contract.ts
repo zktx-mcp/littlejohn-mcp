@@ -14,7 +14,6 @@ import {
   type StockTokenTradeHistorySourceResult as SemanticSourceResult,
 } from "./source-semantics.js";
 
-export { stockTokenTradeHistorySourceInputSchema } from "./source-semantics.js";
 export type { StockTokenTradeHistorySourceInput } from "./source-semantics.js";
 
 export const stockTokenTradeHistoryProducerAdmission = deepFreezeValue({

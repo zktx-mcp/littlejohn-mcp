@@ -533,7 +533,7 @@ const priceHasAdmittedSwapAmounts = (
     baseScaled / divisor <= maximumInt128Magnitude;
 };
 
-export const assertStockTokenTradeHistoryStoredCandle = (input: Readonly<{
+const assertStockTokenTradeHistoryStoredCandle = (input: Readonly<{
   candle: StockTokenTradeHistoryStoredCandle;
   baseDecimals: number;
   resolution: StockTokenTradeHistorySourceResolutionLabel;
@@ -864,7 +864,7 @@ const stockTokenTradeHistoryPublicCoverageSchema = z.array(
     }
   });
 
-export const stockTokenTradeHistoryPositionCoverageStatuses = Object.freeze([
+const stockTokenTradeHistoryPositionCoverageStatuses = Object.freeze([
   "complete",
   "partial",
   "unavailable",
@@ -898,7 +898,7 @@ export type StockTokenTradeHistoryPosition = z.infer<
   typeof stockTokenTradeHistoryPositionSchema
 >;
 
-export const stockTokenTradeHistoryCoverageLimitations = Object.freeze([
+const stockTokenTradeHistoryCoverageLimitations = Object.freeze([
   "before_published_coverage",
   "after_published_coverage",
 ] as const);

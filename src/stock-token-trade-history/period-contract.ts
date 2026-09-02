@@ -9,7 +9,6 @@ import {
 export {
   selectStockTokenTradeHistoryResolution,
   stockTokenTradeHistoryNaturalPositionCount,
-  stockTokenTradeHistoryPositionLimit,
 } from "./source-semantics.js";
 
 const count = (maximum: number) => z.number().int().positive().max(maximum);
@@ -24,7 +23,7 @@ export type StockTokenTradeHistoryPeriod = z.infer<
   typeof stockTokenTradeHistoryPeriodSchema
 >;
 
-export const defaultStockTokenTradeHistoryPeriod = deepFreezeValue({
+const defaultStockTokenTradeHistoryPeriod = deepFreezeValue({
   count: 1,
   unit: "day",
 } as const) satisfies StockTokenTradeHistoryPeriod;

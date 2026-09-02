@@ -35,17 +35,6 @@ type AvailableTradeHistory = Extract<
   { readonly status: "available" }
 >;
 
-export const stockTokenTradeHistoryHumanSummaryUtf8Bytes = 4_096 as const;
-const textEncoder = new TextEncoder();
-
-const boundedHumanSummary = (lines: readonly string[]): string => {
-  const summary = lines.join("\n");
-  if (textEncoder.encode(summary).length > stockTokenTradeHistoryHumanSummaryUtf8Bytes) {
-    throw new TypeError("Stock Token trade-history human summary exceeds its capacity.");
-  }
-  return summary;
-};
-
 export const stockTokenTradeHistoryLabel = (result: StockTokenTradeHistoryData): string => {
   const sourceName = "officialAsset" in result
     ? result.officialAsset.member.sourceName
@@ -127,7 +116,7 @@ export const stockTokenTradeHistoryHumanSummary = (
         lines.push(`Published through: ${result.archive.root.currentUntil.timestamp}`);
       }
     }
-    return boundedHumanSummary(lines);
+    return lines.join("\n");
   }
   lines.push(
     "Status: Available",
@@ -155,5 +144,5 @@ export const stockTokenTradeHistoryHumanSummary = (
       `Trades observed: ${latest.observedStart} to ${latest.observedEnd}`,
     );
   }
-  return boundedHumanSummary(lines);
+  return lines.join("\n");
 };

@@ -294,9 +294,14 @@ The decimals observation binds the selected token address and exact decimals
 value to the same canonical block as the StockFactory verification. The archive
 observation binds only the provider-neutral source facts retained by the
 canonical data branch. Catalog-root unavailability has no selected root and
-therefore has unknown archive freshness. Once a root is selected, archive
-freshness is the canonical result's single `current` or `stale` decision; the
-evidence rule consumes that decision and does not calculate another threshold.
+therefore has unknown archive freshness. Once a root is selected, the canonical
+result subtracts `archive.root.currentUntil.timestamp` from `requestedEnd`.
+Archive freshness is `current` when that difference is at most `1,800,000`
+milliseconds, including equality, and `stale` when it is greater. This
+classification describes only the admitted published-through boundary; it is
+not a provider availability, scheduling, completion-time, or service-level
+claim. The evidence rule consumes that single decision and does not calculate
+another threshold.
 
 One feature-owned stage projection constructs both runtime observation claims
 and immutable replay expectations. A scope-specific unavailable branch retains

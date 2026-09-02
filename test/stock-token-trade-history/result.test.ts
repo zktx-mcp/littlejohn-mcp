@@ -10,6 +10,7 @@ import {
   assertStockTokenTradeHistoryData,
   assertStockTokenTradeHistoryDataAt,
   createStockTokenTradeHistoryArchiveResult,
+  deriveStockTokenTradeHistoryArchiveFreshness,
   projectStockTokenTradeHistoryEvidenceStages,
   selectStockTokenTradeHistoryResolution,
   stockTokenTradeHistoryCapability,
@@ -74,6 +75,21 @@ describe("Stock Token trade-history period and result ownership", () => {
         intervalSeconds: stockTokenTradeHistorySourceResolution(selected).intervalSeconds,
       })).toBeLessThanOrEqual(185);
     }
+  });
+
+  it("applies the accepted archive freshness boundary exactly once", () => {
+    const currentUntil = parseUtcTimestamp("2026-08-24T06:00:00.000Z");
+    expect(deriveStockTokenTradeHistoryArchiveFreshness({
+      requestedEnd: parseUtcTimestamp("2026-08-24T06:30:00.000Z"),
+      currentUntil,
+    })).toBe("current");
+    expect(deriveStockTokenTradeHistoryArchiveFreshness({
+      requestedEnd: parseUtcTimestamp("2026-08-24T06:30:01.000Z"),
+      currentUntil,
+    })).toBe("stale");
+    expect(deriveStockTokenTradeHistoryArchiveFreshness({
+      requestedEnd: parseUtcTimestamp("2026-08-24T06:30:00.000Z"),
+    })).toBe("unknown");
   });
 
   it("rejects a freshness claim that does not follow the admitted root", () => {

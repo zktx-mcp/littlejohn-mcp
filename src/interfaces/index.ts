@@ -41,7 +41,6 @@ export {
   declaredMcpToolNames,
   interfaceReadCapabilityRegistry,
   readInterfaceIdentities,
-  stockTokenTradeHistoryPublicRoute,
   tokenCatalogInterfaceBindingList,
   tokenCatalogInterfaceBindings,
   tokenLocalReadIdentities,

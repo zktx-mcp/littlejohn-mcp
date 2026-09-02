@@ -44,7 +44,6 @@ import {
   "../../../src/stock-token-trade-history/contracts.js";
 import {
   stockTokenTradeHistoryHumanSummary,
-  stockTokenTradeHistoryHumanSummaryUtf8Bytes,
 } from
   "../../../src/interfaces/stock-token-trade-history-presentation.js";
 import {
@@ -207,8 +206,6 @@ describe("MCP App presentation process", () => {
 
     expect(new TextEncoder().encode(canonicalJsonStringify(maximumValue))).toHaveLength(595_952);
     expect(595_952).toBeLessThanOrEqual(stockTokenTradeHistoryMaximumSuccessUtf8Bytes);
-    expect(new TextEncoder().encode(modelSummary).length)
-      .toBeLessThanOrEqual(stockTokenTradeHistoryHumanSummaryUtf8Bytes);
     expect(serializedBytes).toBeLessThanOrEqual(maximumMcpToolResultUtf8Bytes);
     expect(admitMcpToolResultForDelivery(creatingResult).status).toBe("admitted");
   });
