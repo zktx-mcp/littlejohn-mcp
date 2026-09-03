@@ -901,6 +901,49 @@ describe("token catalog contracts", () => {
     expect(audit).toBeTypeOf("function");
   });
 
+  it("makes historical inspection part of addition only", async () => {
+    const addition = await createTokenOperation({ kind: "add" });
+    const removal = await createTokenOperation({ kind: "remove" });
+    expect(addition.result.selection.historicalInspection).not.toBeNull();
+    if (removal.kind !== "remove") throw new TypeError("Removal fixture kind changed.");
+    const absentInspection: null = removal.result.selection.historicalInspection;
+    expect(absentInspection).toBeNull();
+
+    expect(() => tokenCatalogOperationSchema.parse({
+      ...addition,
+      result: {
+        ...addition.result,
+        selection: { ...addition.result.selection, historicalInspection: null },
+      },
+    })).toThrow();
+    expect(() => tokenCatalogOperationSchema.parse({
+      ...removal,
+      result: {
+        ...removal.result,
+        selection: {
+          ...removal.result.selection,
+          historicalInspection: addition.result.selection.historicalInspection,
+        },
+      },
+    })).toThrow();
+
+    const operationSchema = tokenCatalogApplicationContracts.operation.successSchema;
+    const projected = new Ajv2020({ strict: true, formats: { uri: true, "date-time": true } })
+      .compile(JSON.parse(canonicalOutputSchema(operationSchema)));
+    expect(projected(addition)).toBe(true);
+    expect(projected(removal)).toBe(true);
+    expect(projected({
+      ...removal,
+      result: {
+        ...removal.result,
+        selection: {
+          ...removal.result.selection,
+          historicalInspection: addition.result.selection.historicalInspection,
+        },
+      },
+    })).toBe(false);
+  });
+
   it("binds completed selection results to the reviewed inspection and lifecycle", async () => {
     const add = await createTokenOperation({ kind: "add" });
     expect(tokenCatalogOperationSchema.parse(add)).toEqual(add);

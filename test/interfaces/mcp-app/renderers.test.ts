@@ -4,12 +4,13 @@ import { describe, expect, it } from "vitest";
 
 import { presentationContractRegistry, presentationContracts } from
   "../../../src/interfaces/mcp-app/registry.js";
-import { renderPresentation } from
+import { renderOperation, renderPresentation } from
   "../../../src/interfaces/mcp-app/view/renderers.js";
 import {
   stockTokenTradeHistoryAvailableFixture,
   stockTokenTradeHistoryUnavailableFixture,
 } from "../stock-token-trade-history-fixture.js";
+import { createTokenOperation } from "../../token-catalog/harness.js";
 
 const fields = (list: Element | null): ReadonlyMap<string, string> => {
   if (!(list instanceof HTMLDListElement)) throw new TypeError("Summary is unavailable.");
@@ -165,5 +166,32 @@ describe("Stock Token trade-history presentation", () => {
     );
     expect(presentationContractRegistry.values().some((entry) =>
       /reference|market portfolio/iu.test(entry.title))).toBe(false);
+  });
+});
+
+describe("Token selection operation presentation", () => {
+  it("renders a removal from its canonical selection without inspection data", async () => {
+    const entry = presentationContracts.tokenSelectionOperation;
+    const operation = await createTokenOperation({ kind: "remove" });
+    expect(operation.result.selection.historicalInspection).toBeNull();
+
+    const admitted = entry.parseResult(
+      entry.parseInput({ operationId: operation.operationId }),
+      operation,
+    );
+    const rendered = renderOperation(entry, admitted);
+
+    expect(fields(rendered.node.querySelector("dl"))).toEqual(new Map([
+      ["Operation ID", operation.operationId],
+      ["Decision", "Remove token selection"],
+      ["Status", "Completed"],
+      ["Decision interface", "MCP App"],
+      ["Account", operation.result.selection.selection.account.address],
+      ["Token", operation.result.selection.selection.asset.address],
+      ["Included", "No"],
+      ["Selection revision", operation.result.selection.selection.revision],
+      ["Completed at", operation.completedAt],
+    ]));
+    expect(rendered.node.querySelector("details")).toBeNull();
   });
 });

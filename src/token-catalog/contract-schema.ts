@@ -973,16 +973,28 @@ export const tokenOfficialSelectionEvidenceSchema = z.object({
 }).strict();
 export type TokenOfficialSelectionEvidence = z.infer<typeof tokenOfficialSelectionEvidenceSchema>;
 
-export const tokenSelectionDetailSchema = z.object({
+const tokenSelectionDetailShape = {
   selection: tokenSelectionSchema,
   historicalInspection: tokenInspectionSuccessSchema.nullable(),
-}).strict().superRefine((value, context) => {
+} as const;
+
+const validateTokenSelectionDetail = (
+  value: Readonly<{
+    selection: TokenSelection;
+    historicalInspection: TokenInspectionSuccess | null;
+  }>,
+  context: z.core.$RefinementCtx,
+): void => {
   const inspection = value.historicalInspection;
   if (inspection !== null && (
     value.selection.asset.chainId !== inspection.data.asset.chainId ||
     value.selection.asset.address !== inspection.data.asset.address
   )) context.addIssue({ code: "custom", message: "Historical selection inspection identity is invalid." });
-});
+};
+
+export const tokenSelectionDetailSchema = z.object(tokenSelectionDetailShape)
+  .strict()
+  .superRefine(validateTokenSelectionDetail);
 export type TokenSelectionDetail = z.infer<typeof tokenSelectionDetailSchema>;
 
 const sameAccount = (left: EvmAccountIdentity, right: EvmAccountIdentity): boolean =>
@@ -1201,14 +1213,38 @@ export const tokenSelectionDirectActionSchema = z.object({
 });
 export type TokenSelectionDirectAction = z.infer<typeof tokenSelectionDirectActionSchema>;
 
-const tokenSelectionOperationResultSchema = z.object({
-  outcome: z.enum(["selection_added", "selection_removed"]),
-  selectionSetRevision: tokenSelectionSetRevisionSchema,
-  selection: tokenSelectionDetailSchema,
-}).strict();
+const additionOperationSelectionDetailSchema = z.object({
+  ...tokenSelectionDetailShape,
+  historicalInspection: tokenInspectionSuccessSchema,
+}).strict().superRefine(validateTokenSelectionDetail);
+
+const removalOperationSelectionDetailSchema = z.object({
+  ...tokenSelectionDetailShape,
+  historicalInspection: z.null(),
+}).strict().superRefine(validateTokenSelectionDetail);
+
+const tokenSelectionOperationResultSchemas = Object.freeze({
+  add: z.object({
+    outcome: z.literal("selection_added"),
+    selectionSetRevision: tokenSelectionSetRevisionSchema,
+    selection: additionOperationSelectionDetailSchema,
+  }).strict(),
+  remove: z.object({
+    outcome: z.literal("selection_removed"),
+    selectionSetRevision: tokenSelectionSetRevisionSchema,
+    selection: removalOperationSelectionDetailSchema,
+  }).strict(),
+});
 export type TokenSelectionOperationResult = z.infer<
-  typeof tokenSelectionOperationResultSchema
+  (typeof tokenSelectionOperationResultSchemas)[keyof typeof tokenSelectionOperationResultSchemas]
 >;
+
+interface TokenSelectionOperationValidationValue {
+  readonly operationId: string;
+  readonly completedAt: string;
+  readonly review: TokenSelectionReview;
+  readonly result: TokenSelectionOperationResult;
+}
 
 const tokenSelectionOperationForKind = <Kind extends TokenCatalogOperationKind>(kind: Kind) =>
   z.object({
@@ -1220,8 +1256,9 @@ const tokenSelectionOperationForKind = <Kind extends TokenCatalogOperationKind>(
     review: kind === "add" ? additionReviewSchema : removalReviewSchema,
     state: z.literal("completed"),
     completedAt: utcTimestampSchema,
-    result: tokenSelectionOperationResultSchema,
-  }).strict().superRefine((operation, context) => {
+    result: tokenSelectionOperationResultSchemas[kind],
+  }).strict().superRefine((operationInput, context) => {
+    const operation = operationInput as unknown as TokenSelectionOperationValidationValue;
     const selection = operation.result.selection.selection;
     const previous = operation.review.precondition.previousSelection;
     if (
@@ -1236,8 +1273,7 @@ const tokenSelectionOperationForKind = <Kind extends TokenCatalogOperationKind>(
       (previous === null
         ? selection.createdAt !== operation.completedAt
         : selection.createdAt !== previous.createdAt) ||
-      operation.result.outcome !== (kind === "add" ? "selection_added" : "selection_removed") ||
-      (kind === "add" && operation.result.selection.historicalInspection === null)
+      operation.result.outcome !== (kind === "add" ? "selection_added" : "selection_removed")
     ) context.addIssue({ code: "custom", message: "Token selection operation is inconsistent." });
   });
 

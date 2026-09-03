@@ -394,7 +394,7 @@ export const createTokenOperation = async (options: Readonly<{
       selectionSetRevision: Buffer.alloc(16, 5).toString("base64url"),
       selection: {
         selection: completedSelection,
-        historicalInspection: inspection,
+        historicalInspection: options.kind === "add" ? inspection : null,
       },
     },
   });

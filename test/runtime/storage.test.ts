@@ -25,6 +25,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ObservationAuthorityRegistry,
   canonicalJsonStringify,
+  captureCanonicalJson,
   createCanonicalClock,
   parseEvmChainId,
   parseCapabilityDataAt,
@@ -76,9 +77,15 @@ import {
   currentSqliteSchemaSql,
   getRuntimeStateResetRequiredError,
   hasExactCurrentSqliteStructure,
+  persistedOperationJsonLimits,
   runtimeStateResetRequiredCode,
   runtimeStateResetRequiredMessage,
 } from "../../src/runtime/sqlite-schema.js";
+import {
+  parseWalletManagementOperation,
+  parseWalletReview,
+  walletReviewDigest,
+} from "../../src/wallet/contracts.js";
 import {
   createWalletConnectConfiguration,
 } from "../../src/wallet/walletconnect-configuration.js";
@@ -94,6 +101,58 @@ const observedAt = parseUtcTimestamp("2026-07-12T10:16:02.000Z");
 const configurationMac = Buffer.alloc(32, 3).toString("base64url");
 const configuredChainId = parseEvmChainId("eip155:4663");
 const alternateChainId = parseEvmChainId("eip155:1");
+
+const walletOperationAtBytes = (byteLength: number, operationByte: number) => {
+  const operationId = Buffer.alloc(32, operationByte).toString("base64url");
+  const create = (revision: string) => {
+    const reviewWithoutDigest = {
+      contractVersion: "1" as const,
+      domain: "wallet" as const,
+      operationId,
+      kind: "connect" as const,
+      createdAt: observedAt,
+      actionExpiresAt: "2026-07-12T10:21:02.000Z",
+      target: { chainId: configuredChainId },
+      decision: {
+        requiredMethods: ["eth_sendTransaction"] as const,
+        requiredEvents: ["accountsChanged", "chainChanged"] as const,
+      },
+      precondition: {
+        connectionRevision: revision,
+        connection: { status: "disconnected" as const, reason: "no_session" as const },
+      },
+      fixedEvidence: { sessionSourceIds: [] as const },
+    };
+    const review = parseWalletReview({
+      ...reviewWithoutDigest,
+      reviewDigest: walletReviewDigest(reviewWithoutDigest),
+    });
+    return parseWalletManagementOperation({
+      contractVersion: "1",
+      domain: "wallet",
+      operationId,
+      kind: "connect",
+      initiatedBy: "cli",
+      review,
+      state: "cancelled",
+      terminationTarget: null,
+      result: null,
+      failure: null,
+      peerRefusalCode: null,
+    });
+  };
+  const baseline = create("1");
+  const baselineBytes = Buffer.byteLength(
+    canonicalJsonStringify(captureCanonicalJson(baseline)),
+    "utf8",
+  );
+  const operation = create("9".repeat(1 + byteLength - baselineBytes));
+  expect(Buffer.byteLength(
+    canonicalJsonStringify(captureCanonicalJson(operation)),
+    "utf8",
+  )).toBe(byteLength);
+  return operation;
+};
 const publicationStagingPath = (
   databasePath: string,
   tokenByte: number,
@@ -646,14 +705,54 @@ describe("application data and local credential", () => {
 });
 
 describe("SQLite product state", () => {
+  it("admits Wallet operation bytes before materialization at the exact row boundary", async () => {
+    expect(persistedOperationJsonLimits).toMatchObject({ walletBytes: 65_535 });
+    const exact = walletOperationAtBytes(65_535, 41);
+    const oneOver = walletOperationAtBytes(65_536, 42);
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const initialized = await ProductDatabase.open(path, observedAt);
+    const profileId = initialized.ownerStore().readProfile().profileId;
+    initialized.close();
+
+    const raw = new Database(path);
+    const insert = raw.prepare(`INSERT INTO wallet_operation(
+      profile_id, operation_id, kind, initiated_by, review_digest,
+      connection_revision, state, created_at, action_expires_at, operation_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const parameters = (operation: typeof exact) => [
+      profileId,
+      operation.operationId,
+      operation.kind,
+      operation.initiatedBy,
+      operation.review.reviewDigest,
+      operation.review.precondition.connectionRevision,
+      operation.state,
+      operation.review.createdAt,
+      operation.review.actionExpiresAt,
+      Buffer.from(canonicalJsonStringify(captureCanonicalJson(operation)), "utf8"),
+    ] as const;
+    insert.run(...parameters(exact));
+    expect(() => insert.run(...parameters(oneOver))).toThrow(/CHECK constraint failed/u);
+    raw.pragma("ignore_check_constraints = ON");
+    insert.run(...parameters(oneOver));
+    raw.close();
+
+    await expectRuntimeCode(
+      ProductDatabase.open(path, observedAt),
+      "runtime_state_unavailable",
+    );
+  });
+
   it("preserves the independent canonical SQLite schema bytes", () => {
-    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(19_754);
+    expect(Buffer.byteLength(currentSqliteSchemaSql, "utf8")).toBe(19_750);
     expect(createHash("sha256").update(currentSqliteSchemaSql, "utf8").digest("hex")).toBe(
-      "d02936f17e70ce89a8e054da07ee6c78546eeeb716c3e2b4df931f175e9273ee",
+      "aef4610b70d520e80e5d716dc586e9842000e5627965997d72ee78ac11fd6e79",
     );
     const structure = JSON.stringify(deriveIndependentCurrentSqliteSchema());
     expect(createHash("sha256").update(structure, "utf8").digest("hex")).toBe(
-      "aca647a50eb19a43c915dd7da039334eaaa1a6cf416dbdc20446c22c224dbc27",
+      "efa7ad5f6760c217c4acff99e8e7152838051d0200ddc6f828ce71e16c3b471a",
     );
   });
 
@@ -1255,6 +1354,34 @@ describe("SQLite product state", () => {
     expect(await exactFileIdentity(path)).toEqual(beforeMain);
     expect((await readFile(path)).equals(beforeBytes)).toBe(true);
     expect(await sqliteDurableArtifactSnapshot(path)).toEqual(firstDurableArtifacts);
+  });
+
+  it("requires a complete reset for the previous operation-row capacities", async () => {
+    const directory = await temporaryDirectory();
+    await ensureOwnerOnlyDirectory(directory);
+    const path = runtimePaths(directory).database;
+    const initialized = await ProductDatabase.open(path, observedAt);
+    initialized.close();
+
+    const oldSchema = new Database(path);
+    oldSchema.unsafeMode(true);
+    oldSchema.exec("PRAGMA writable_schema = ON");
+    const changed = oldSchema.prepare(`UPDATE sqlite_schema
+      SET sql = replace(sql, 'length(operation_json) BETWEEN 2 AND 65535',
+        'length(operation_json) BETWEEN 2 AND 8388607')
+      WHERE type = 'table' AND name IN ('wallet_operation', 'token_selection_operation')`)
+      .run();
+    expect(changed.changes).toBe(2);
+    oldSchema.exec("PRAGMA writable_schema = OFF");
+    oldSchema.close();
+    if (process.platform !== "win32") await chmod(path, 0o600);
+    const before = await readFile(path);
+
+    await expectResetRequired(ProductDatabase.open(path, observedAt));
+    expect((await readFile(path)).equals(before)).toBe(true);
+    const preserved = new Database(path, { readonly: true });
+    expect(preserved.pragma("user_version", { simple: true })).toBe(1);
+    preserved.close();
   });
 
   it("resets only by replacing the complete isolated data directory", async () => {

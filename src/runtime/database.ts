@@ -115,6 +115,7 @@ import {
   currentSqliteSchemaSql,
   getRuntimeStateResetRequiredError,
   hasExactCurrentSqliteStructure,
+  persistedOperationJsonLimits,
 } from "./sqlite-schema.js";
 import {
   decodeWalletConnectionStorage,
@@ -214,6 +215,10 @@ interface TokenSelectionOperationRow {
   readonly walletAddress: string;
   readonly tokenAddress: string;
   readonly operationJson: Buffer;
+}
+interface OperationJsonSizeRow {
+  readonly storageClass: string;
+  readonly byteLength: number;
 }
 
 interface ChainRow { readonly chainId: string }
@@ -368,6 +373,52 @@ const decodeTokenSelectionOperationRow = (
     operation.review.target.asset.address !== row.tokenAddress
   ) throw new Error("Stored token selection operation does not match its indexed identity.");
   return operation;
+};
+
+const operationJsonTables = Object.freeze({
+  wallet: "wallet_operation",
+  tokenSelection: "token_selection_operation",
+} as const);
+type OperationJsonTable = typeof operationJsonTables[keyof typeof operationJsonTables];
+
+const preflightOperationJsonRows = (
+  database: Database.Database,
+  table: OperationJsonTable,
+  maximumBytes: number,
+): void => {
+  if (
+    !Object.values(operationJsonTables).includes(table) ||
+    !Number.isSafeInteger(maximumBytes) || maximumBytes < 2
+  ) throw new TypeError("Operation JSON preflight input is invalid.");
+  const rows = database.prepare(`SELECT typeof(operation_json) AS storageClass,
+    length(operation_json) AS byteLength FROM ${table} ORDER BY operation_id`)
+    .iterate() as IterableIterator<OperationJsonSizeRow>;
+  for (const row of rows) {
+    if (
+      row.storageClass !== "blob" ||
+      !Number.isSafeInteger(row.byteLength) ||
+      row.byteLength < 2 || row.byteLength > maximumBytes
+    ) throw new Error("Stored operation JSON size is invalid.");
+  }
+};
+
+const readOperationRows = (database: Database.Database): void => {
+  preflightOperationJsonRows(
+    database,
+    operationJsonTables.wallet,
+    persistedOperationJsonLimits.walletBytes,
+  );
+  preflightOperationJsonRows(
+    database,
+    operationJsonTables.tokenSelection,
+    persistedOperationJsonLimits.tokenSelectionBytes,
+  );
+  const walletRows = database.prepare(`${walletOperationSelect} ORDER BY operation_id`)
+    .iterate() as IterableIterator<WalletOperationRow>;
+  for (const row of walletRows) decodeWalletOperationRow(row);
+  const tokenRows = database.prepare(`${tokenSelectionOperationSelect} ORDER BY operation_id`)
+    .iterate() as IterableIterator<TokenSelectionOperationRow>;
+  for (const row of tokenRows) decodeTokenSelectionOperationRow(row);
 };
 
 
@@ -833,6 +884,7 @@ const validateDatabaseState = (database: Database.Database): void => {
   readContractRows(database, "token_contract");
   readWalletAccountRows(database);
   readTokenCatalogRows(database);
+  readOperationRows(database);
   readWalletRaw(database);
   if (database.prepare("PRAGMA foreign_key_check").all().length !== 0) {
     throw new Error("SQLite foreign-key state is invalid.");
@@ -2172,7 +2224,10 @@ export class ProductDatabase {
               selection: stored.selection,
               historicalInspection: inspection,
             })
-          : stored;
+          : tokenSelectionDetailSchema.parse({
+              selection: stored.selection,
+              historicalInspection: null,
+            });
         const operation = parseTokenCatalogOperation({
           contractVersion: "1",
           domain: "token_selection",
@@ -2188,6 +2243,11 @@ export class ProductDatabase {
             selection,
           },
         });
+        const operationBytes = canonicalBytes(operation as unknown as CanonicalJson);
+        if (
+          action.review.kind === "add" &&
+          operationBytes.length > persistedOperationJsonLimits.tokenSelectionBytes
+        ) throw new TokenCatalogOperationError("result_too_large");
         this.#database.prepare(`INSERT INTO token_selection_operation(
           profile_id, operation_id, kind, initiated_by, review_digest,
           chain_id, wallet_address, token_address, operation_json
@@ -2200,7 +2260,7 @@ export class ProductDatabase {
           account.chainId,
           account.address,
           asset.address,
-          canonicalBytes(operation as unknown as CanonicalJson),
+          operationBytes,
         );
         const storedRows = this.#database.prepare(`${tokenSelectionOperationSelect}
           WHERE profile_id = ? AND operation_id = ?`)

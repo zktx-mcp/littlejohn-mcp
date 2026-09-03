@@ -134,6 +134,9 @@ const runtimeResetCreatorName = "createRuntimeStateResetRequiredError";
 const runtimeResetSourceErrorName = "RuntimeStateResetRequiredSourceError";
 const runtimeSqliteSchemaPath = resolve(sourceRoot, "runtime/sqlite-schema.ts");
 const runtimeDatabasePath = resolve(sourceRoot, "runtime/database.ts");
+const mcpAppContractsPath = resolve(sourceRoot, "interfaces/mcp-app/contracts.ts");
+const walletOperationContractPath = resolve(sourceRoot, "wallet/operation-contract.ts");
+const tokenCatalogContractPath = resolve(sourceRoot, "token-catalog/contract-schema.ts");
 
 const unwrapStaticStringExpression = (expression: ts.Expression): ts.Expression => {
   let current = expression;
@@ -2257,6 +2260,60 @@ const externalIntegrationAuthorityViolations = (
 };
 
 describe("runtime architecture boundary", () => {
+  it("keeps operation handoff owners separate from immutable snapshot capacity", async () => {
+    const [appContracts, sqliteSchema, walletContract, tokenContract, database] =
+      await Promise.all([
+        readFile(mcpAppContractsPath, "utf8"),
+        readFile(runtimeSqliteSchemaPath, "utf8"),
+        readFile(walletOperationContractPath, "utf8"),
+        readFile(tokenCatalogContractPath, "utf8"),
+        readFile(runtimeDatabasePath, "utf8"),
+      ]);
+
+    const operationDescriptorStart = appContracts.indexOf(
+      "export const operationToolResultLimits",
+    );
+    const snapshotDescriptorStart = appContracts.indexOf(
+      "export const presentationSnapshotDescriptorSchema",
+    );
+    expect(operationDescriptorStart).toBeGreaterThan(-1);
+    expect(snapshotDescriptorStart).toBeGreaterThan(operationDescriptorStart);
+    const operationDescriptorSource = appContracts.slice(
+      operationDescriptorStart,
+      snapshotDescriptorStart,
+    );
+    expect(operationDescriptorSource).toContain("inputBytes: requestBodyLimitBytes");
+    expect(operationDescriptorSource)
+      .toContain("resultBytes: internalCanonicalJsonResponseLimitBytes");
+    expect(operationDescriptorSource).not.toContain("presentationSnapshotLimits");
+
+    expect(sqliteSchema).toContain(
+      "length(operation_json) BETWEEN 2 AND ${persistedOperationJsonLimits.walletBytes}",
+    );
+    expect(sqliteSchema).toContain(
+      "length(operation_json) BETWEEN 2 AND ${persistedOperationJsonLimits.tokenSelectionBytes}",
+    );
+    expect(walletContract).not.toContain("walletDirectActionMaximumBytes");
+    expect(walletContract.match(/superRefine\(validateWalletOperationActionBytes\)/gu))
+      .toHaveLength(2);
+    expect(tokenContract).toContain("historicalInspection: z.null()");
+
+    const operationReadStart = database.indexOf("const readOperationRows");
+    const walletPreflight = database.indexOf(
+      "operationJsonTables.wallet",
+      operationReadStart,
+    );
+    const tokenPreflight = database.indexOf(
+      "operationJsonTables.tokenSelection",
+      operationReadStart,
+    );
+    const firstBlobSelect = database.indexOf("walletOperationSelect", operationReadStart);
+    expect(operationReadStart).toBeGreaterThan(-1);
+    expect(walletPreflight).toBeGreaterThan(operationReadStart);
+    expect(tokenPreflight).toBeGreaterThan(walletPreflight);
+    expect(firstBlobSelect).toBeGreaterThan(tokenPreflight);
+  });
+
   it("keeps Local HTTP transport identities out of the MCP App graph", async () => {
     const { canonicalProgram, productCodeFiles, productFiles } =
       await loadDefaultStockTokenArchitectureFixture();

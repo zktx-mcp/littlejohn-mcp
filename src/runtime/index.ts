@@ -73,6 +73,7 @@ export {
   problemJsonContentType,
 } from "./http-boundary.js";
 export {
+  internalCanonicalJsonResponseLimitBytes,
   internalResponseLimitBytes,
   ownerDispatchAttemptLimit,
   ownerTransportDeadlineMilliseconds,

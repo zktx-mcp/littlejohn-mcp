@@ -47,6 +47,15 @@ const openDatabase = async (): Promise<Readonly<{
 const sha256 = (bytes: Uint8Array | string): string =>
   createHash("sha256").update(bytes).digest("hex");
 
+const canonicalResultAtBytes = (byteLength: number): CanonicalJson => {
+  const emptyBytes = Buffer.byteLength('{"payload":""}', "utf8");
+  const value = captureCanonicalJson({ payload: "x".repeat(byteLength - emptyBytes) });
+  if (Buffer.byteLength(canonicalJsonStringify(value), "utf8") !== byteLength) {
+    throw new TypeError("Snapshot boundary fixture is invalid.");
+  }
+  return value;
+};
+
 const expectedSnapshotId = (
   contractId: string,
   contractVersion: string,
@@ -192,14 +201,25 @@ describe("presentation snapshot store", () => {
       reason: "snapshot_inconsistent",
     });
 
-    const oversized = captureCanonicalJson({
-      payload: "x".repeat(presentationSnapshotLimits.resultBytes),
-    });
+  });
+
+  it("admits the literal complete result boundary and rejects one byte over", async () => {
+    const { database } = await openDatabase();
+    const store = database.presentationSnapshotStore();
+    const exact = canonicalResultAtBytes(8_388_607);
+    const over = canonicalResultAtBytes(8_388_608);
+    expect(presentationSnapshotLimits.resultBytes).toBe(8_388_607);
     expect(store.prepare({
       contractId: "qualification.read",
       contractVersion: "1",
-      normalizedInput: captureCanonicalJson({}),
-      admittedResult: oversized,
+      normalizedInput: captureCanonicalJson({ subject: "exact" }),
+      admittedResult: exact,
+    }).status).toBe("available");
+    expect(store.prepare({
+      contractId: "qualification.read",
+      contractVersion: "1",
+      normalizedInput: captureCanonicalJson({ subject: "over" }),
+      admittedResult: over,
     })).toEqual({ status: "unavailable", reason: "capacity_exceeded" });
   });
 

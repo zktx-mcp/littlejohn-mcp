@@ -7,7 +7,10 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  canonicalJsonStringify,
+  captureCanonicalJson,
   chainAnchorSchema,
+  contractAnalysisSchema,
   parseCapabilityDataAt,
   parseEvmAddressInput,
   parseEvmChainId,
@@ -32,6 +35,7 @@ import { getRuntimeOperationFailure } from "../../src/runtime/errors.js";
 import { ensureOwnerOnlyDirectory, runtimePaths } from "../../src/runtime/paths.js";
 import {
   createTokenAdditionReviewProjection,
+  parseTokenCatalogOperation,
   parseTokenSelectionReview,
   tokenCatalogOperationIdSchema,
   tokenInspectionDigest,
@@ -62,6 +66,42 @@ const block = chainAnchorSchema.parse({
   blockHash: `0x${"ab".repeat(32)}`,
   blockTimestamp: now,
 });
+
+const operationBoundaryAsset = parseEvmAddressInput(`0x${"12".repeat(20)}`);
+const operationBoundaryBlock = chainAnchorSchema.parse({
+  chainId,
+  blockNumber: "42",
+  blockHash: `0x${"ab".repeat(32)}`,
+  blockTimestamp: "2026-07-18T00:00:00.000Z",
+});
+const operationBoundaryInspection = async (
+  lastSignatureLength: number,
+): Promise<TokenInspectionSuccess> => {
+  const base = createExactResolvedAnalysis(operationBoundaryAsset, operationBoundaryBlock);
+  if (base.declaredFunctions.status !== "observed") {
+    throw new TypeError("Operation boundary analysis is incomplete.");
+  }
+  const filler = Array.from({ length: 48 }, (_, index) =>
+    `z${String(index).padStart(4, "0")}_${"a".repeat(
+      index === 47 ? lastSignatureLength : 994,
+    )}`);
+  const analysis = contractAnalysisSchema.parse({
+    ...base,
+    declaredFunctions: {
+      status: "observed",
+      signatures: [...base.declaredFunctions.signatures, ...filler].sort(),
+    },
+  });
+  return createInspectionSuccess({
+    asset: { kind: "erc20", chainId, address: operationBoundaryAsset },
+    block: { kind: "latest" },
+  }, { analysis });
+};
+
+const canonicalByteLength = (value: unknown): number => Buffer.byteLength(
+  canonicalJsonStringify(captureCanonicalJson(value)),
+  "utf8",
+);
 
 type IndependentJson =
   | null
@@ -257,12 +297,167 @@ const apply = (store: TokenCatalogStore, input: Readonly<{
   completedAt: later,
 });
 
+const operationForAction = (input: Readonly<{
+  action: ReturnType<typeof selectionAction>["action"];
+  inspection: TokenInspectionSuccess;
+  selectionRevision: ReturnType<typeof tokenSelectionRevisionSchema.parse>;
+  selectionSetRevision: ReturnType<typeof tokenSelectionSetRevisionSchema.parse>;
+}>) => parseTokenCatalogOperation({
+  contractVersion: "1",
+  domain: "token_selection",
+  operationId: input.action.review.operationId,
+  kind: "add",
+  initiatedBy: input.action.initiatedBy,
+  review: input.action.review,
+  state: "completed",
+  completedAt: later,
+  result: {
+    outcome: "selection_added",
+    selectionSetRevision: input.selectionSetRevision,
+    selection: {
+      selection: {
+        account,
+        asset: input.inspection.data.asset,
+        included: true,
+        revision: input.selectionRevision,
+        createdAt: later,
+        updatedAt: later,
+      },
+      historicalInspection: input.inspection,
+    },
+  },
+});
+
 const failureCode = (effect: () => unknown): string | undefined => {
   try { effect(); return undefined; }
   catch (error) { return getTokenCatalogOperationFailure(error)?.error.code; }
 };
 
 describe("token selection persistence", () => {
+  it("keeps exact operation delivery and removal independent of retained inspection size", async () => {
+    const { database, connection } = await openDatabase();
+    const snapshot = await sourceSnapshot(database);
+    const inspection = await operationBoundaryInspection(881);
+    expect(canonicalByteLength(inspection)).toBe(63_800);
+    const store = database.tokenCatalogStore();
+    const addition = selectionAction({
+      kind: "add",
+      connectionRevision: connection.revision,
+      asset: inspection.data.asset,
+      previousSelection: null,
+      currentSetRevision: null,
+      inspection,
+      snapshotRevision: snapshot.revision,
+    });
+    const added = apply(store, {
+      action: addition,
+      selectionRevision: selectionRevision(60),
+      selectionSetRevision: setRevision(61),
+    });
+    expect(canonicalByteLength(added)).toBe(65_535);
+    expect(store.readOperation(added.operationId)).toEqual(added);
+
+    const current = store.getSelection(account, inspection.data.asset);
+    expect(current?.historicalInspection).toEqual(inspection);
+    if (current === undefined) throw new TypeError("Boundary selection is unavailable.");
+    const removal = selectionAction({
+      kind: "remove",
+      connectionRevision: connection.revision,
+      asset: inspection.data.asset,
+      previousSelection: current.selection,
+      currentSetRevision: store.getSelectionState(account)?.revision ?? null,
+      inspection: null,
+      snapshotRevision: null,
+    });
+    const removed = apply(store, {
+      action: removal,
+      selectionRevision: selectionRevision(62),
+      selectionSetRevision: setRevision(63),
+    });
+    expect(removed.result.selection.historicalInspection).toBeNull();
+    expect(canonicalByteLength(removed)).toBeLessThan(65_535);
+    expect(store.getSelection(account, inspection.data.asset)?.historicalInspection)
+      .toEqual(inspection);
+    database.close();
+  });
+
+  it("rejects a produced one-over operation without committing any catalog row", async () => {
+    const { database, path, connection } = await openDatabase();
+    const snapshot = await sourceSnapshot(database);
+    const inspection = await operationBoundaryInspection(882);
+    expect(canonicalByteLength(inspection)).toBe(63_801);
+    const store = database.tokenCatalogStore();
+    const addition = selectionAction({
+      kind: "add",
+      connectionRevision: connection.revision,
+      asset: inspection.data.asset,
+      previousSelection: null,
+      currentSetRevision: null,
+      inspection,
+      snapshotRevision: snapshot.revision,
+    });
+    const nextSelectionRevision = selectionRevision(64);
+    const nextSetRevision = setRevision(65);
+    const oneOverOperation = operationForAction({
+      action: addition.action,
+      inspection,
+      selectionRevision: nextSelectionRevision,
+      selectionSetRevision: nextSetRevision,
+    });
+    expect(canonicalByteLength(oneOverOperation)).toBe(65_536);
+    let failure: unknown;
+    try {
+      apply(store, {
+        action: addition,
+        selectionRevision: nextSelectionRevision,
+        selectionSetRevision: nextSetRevision,
+      });
+    } catch (error) { failure = error; }
+    expect(getTokenCatalogOperationFailure(failure)).toMatchObject({
+      error: { code: "result_too_large", retryable: false },
+    });
+    const raw = new Database(path, { readonly: true });
+    for (const table of [
+      "contract",
+      "token_contract",
+      "token_contract_inspection",
+      "wallet_token_selection_state",
+      "wallet_token_selection",
+      "token_selection_operation",
+    ]) expect(raw.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table)
+      .toEqual({ count: 0 });
+    raw.close();
+    const profileId = database.ownerStore().readProfile().profileId;
+    database.close();
+
+    const existing = new Database(path);
+    const insert = existing.prepare(`INSERT INTO token_selection_operation(
+      profile_id, operation_id, kind, initiated_by, review_digest,
+      chain_id, wallet_address, token_address, operation_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const parameters = [
+      profileId,
+      oneOverOperation.operationId,
+      oneOverOperation.kind,
+      oneOverOperation.initiatedBy,
+      oneOverOperation.review.reviewDigest,
+      account.chainId,
+      account.address,
+      oneOverOperation.result.selection.selection.asset.address,
+      Buffer.from(canonicalJsonStringify(captureCanonicalJson(oneOverOperation)), "utf8"),
+    ] as const;
+    expect(() => insert.run(...parameters)).toThrow(/CHECK constraint failed/u);
+    existing.pragma("ignore_check_constraints = ON");
+    insert.run(...parameters);
+    existing.close();
+
+    let startupFailure: unknown;
+    try { await ProductDatabase.open(path, now); }
+    catch (error) { startupFailure = error; }
+    expect(getRuntimeOperationFailure(startupFailure)?.error.code)
+      .toBe("runtime_state_unavailable");
+  });
+
   it("rejects a current stored token inspection missing required source record digests", async () => {
     const { database, path } = await openDatabase();
     const inspection = await createInspectionSuccess({

@@ -9,6 +9,7 @@ import { LocalOperationClient } from "../../src/interfaces/operation-client.js";
 import { operationControlResources, operationInterfaceBindings } from "../../src/interfaces/operation-bindings.js";
 import type { LocalOperationIdentity } from "../../src/interfaces/local-operation.js";
 import {
+  internalCanonicalJsonResponseLimitBytes,
   internalResponseLimitBytes,
   jsonContentType,
   noStoreCacheControl,
@@ -137,6 +138,16 @@ const ownerSessions = (...sessions: RuntimeOwnerSession[]): RuntimeOwnerSessionP
 };
 
 describe("local operation delivery", () => {
+  it("derives one canonical operation payload from the framed internal response", () => {
+    expect(internalCanonicalJsonResponseLimitBytes).toBe(65_535);
+    expect(internalCanonicalJsonResponseLimitBytes + 1).toBe(internalResponseLimitBytes);
+    const envelopeBytes = Buffer.byteLength('{"value":""}\n', "utf8");
+    const packet = responsePacket({
+      value: "x".repeat(65_535 - envelopeBytes + 1),
+    });
+    expect(packet.bytes).toHaveLength(65_536);
+  });
+
   it("rejects identities outside the canonical identity owner before opening a session", async () => {
     let opens = 0;
     const client = new LocalOperationClient({

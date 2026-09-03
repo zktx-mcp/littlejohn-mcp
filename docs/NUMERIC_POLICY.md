@@ -274,6 +274,31 @@ operation-observation and persistence limits remain separate contracts when
 their values are equal. Complete first-response observation and recovery retain
 their independently owned lifecycle bounds in `docs/ARCHITECTURE.md`.
 
+## Durable Operation And Presentation Limits
+
+Immutable presentation and direct operation handling apply these separate
+current boundaries:
+
+| Boundary | Current value | Unit | Produced failure | Existing-state failure | Change meaning |
+| --- | ---: | --- | --- | --- | --- |
+| immutable presentation result | `8,388,607` | UTF-8 bytes per complete canonical result | snapshot `capacity_exceeded` before advertisement or commit | snapshot inconsistency or unavailability retains its owning reason | changes immutable snapshot identity, row and chunk admission, and retention only |
+| direct Wallet operation action | `16,384` | UTF-8 bytes per complete canonical decision or cancellation input | `invalid_input` before lookup, persistence or external effect | not applicable | changes Wallet connect, disconnect and cancellation input admission only |
+| persisted Wallet operation JSON | `65,535` | UTF-8 bytes per SQLite row | the current writer is structurally below the limit | `runtime_state_unavailable` | changes Wallet operation storage and exact-read capacity only |
+| persisted Token Catalog operation JSON | `65,535` | UTF-8 bytes per SQLite row | addition excess is non-retryable `result_too_large` with the complete mutation uncommitted; removal remains structurally representable | `runtime_state_unavailable` | changes Token Catalog operation storage and exact-read capacity only |
+
+The complete canonical JSON payload in a Local HTTP internal response is
+`65,535` UTF-8 bytes, derived exactly from the `65,536`-byte carrier and its
+required one-byte line feed. It is not independently tunable. The MCP App
+operation-result descriptor consumes the Local HTTP request-body maximum for
+its input length and this derived payload maximum for its result length; it
+owns no additional numeric capacity.
+
+Wallet and Token Catalog persistence retain separate owners despite their equal
+current values. Changing either requires review of its canonical operation,
+atomic failure, SQLite admission and exact Local HTTP, MCP and CLI consumers.
+Neither value is a projection of the immutable snapshot or Core capability
+success maximum.
+
 ## Official Asset Limits
 
 Official Stock Token observation applies these independent current boundaries:

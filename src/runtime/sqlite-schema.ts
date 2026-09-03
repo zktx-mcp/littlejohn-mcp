@@ -20,6 +20,7 @@ import {
   runtimeConfigurationMacByteLength,
   runtimeIdentifierByteLength,
 } from "./runtime-identity.js";
+import { internalCanonicalJsonResponseLimitBytes } from "./http-limits.js";
 import { walletConnectionFieldPresenceCheckSql } from "./wallet-connection-storage.js";
 import { presentationSnapshotLimits } from "./presentation-snapshot.js";
 import {
@@ -31,6 +32,18 @@ import {
 
 const sqlIdentifierPattern = /^[a-z][a-z0-9_]*$/u;
 const base64UrlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+export const persistedOperationJsonLimits = Object.freeze({
+  walletBytes: 65_535,
+  tokenSelectionBytes: 65_535,
+} as const);
+
+for (const value of Object.values(persistedOperationJsonLimits)) {
+  if (
+    !Number.isSafeInteger(value) || value < 2 ||
+    value > internalCanonicalJsonResponseLimitBytes
+  ) throw new TypeError("Persisted operation JSON limit is invalid.");
+}
 
 export const runtimeStateResetRequiredCode = "runtime_state_reset_required" as const;
 export const runtimeStateResetRequiredMessage =
@@ -299,7 +312,7 @@ CREATE TABLE token_selection_operation (
   token_address TEXT NOT NULL CHECK (${canonicalEvmAddressSqlCheck("token_address")}),
   operation_json BLOB NOT NULL CHECK (
     typeof(operation_json) = 'blob' AND
-    length(operation_json) BETWEEN 2 AND ${presentationSnapshotLimits.resultBytes}
+    length(operation_json) BETWEEN 2 AND ${persistedOperationJsonLimits.tokenSelectionBytes}
   ),
   FOREIGN KEY (profile_id) REFERENCES local_profile(profile_id)
     ON UPDATE RESTRICT ON DELETE RESTRICT
@@ -318,7 +331,7 @@ CREATE TABLE wallet_operation (
   action_expires_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("action_expires_at")}),
   operation_json BLOB NOT NULL CHECK (
     typeof(operation_json) = 'blob' AND
-    length(operation_json) BETWEEN 2 AND ${presentationSnapshotLimits.resultBytes}
+    length(operation_json) BETWEEN 2 AND ${persistedOperationJsonLimits.walletBytes}
   ),
   FOREIGN KEY (profile_id) REFERENCES local_profile(profile_id)
     ON UPDATE RESTRICT ON DELETE RESTRICT

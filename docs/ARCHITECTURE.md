@@ -286,6 +286,13 @@ canonical result used for that `CallToolResult`. It is ephemeral transport
 correlation and is never a domain field, persisted value, snapshot, evidence
 record, signature, MAC, or Host authentication.
 
+Descriptor input capacity consumes the Local HTTP request-body owner; result
+capacity consumes the derived canonical response-payload owner. Numeric
+classification and their relationship are defined by
+`docs/NUMERIC_POLICY.md#durable-operation-and-presentation-limits`. Neither
+consumes immutable snapshot capacity. Every descriptor-bearing operation input
+is bounded by its domain owner before descriptor construction.
+
 The View always applies the unchanged owning success, failure, or
 `delivery_unknown` admission to standard `structuredContent` first. Only the
 Codex operation-result adapter may inspect another carrier after that fails.
@@ -895,6 +902,10 @@ changes only the projection and never deletes a wallet-account row.
 
 Wallet and token-selection operations are durable exact
 resources under [Durable Operation Ownership](#durable-operation-ownership).
+Existing operation rows are admitted in two stages before Runtime exposure:
+SQLite storage class and byte length are checked without selecting the operation
+BLOB, then each bounded row passes its domain parser and indexed-identity
+comparison. An invalid existing operation is runtime state unavailability.
 Pairing URI and QR material remain owner-memory presentation state and never
 enter the canonical operation, product SQLite, or the WalletConnect public
 store projection.
@@ -1139,7 +1150,9 @@ captures each value as canonical JSON and encodes it once as UTF-8. Canonical
 input consumes the Local HTTP request-body bound owned by
 `docs/NUMERIC_POLICY.md#local-http-limits`. A capability-backed result remains
 subject to its owning capability success admission. The separate presentation-
-result capacity is not a Core read-capability projection. Raw MCP or HTTP
+result capacity is owned by
+`docs/NUMERIC_POLICY.md#durable-operation-and-presentation-limits` and is not a
+Core read-capability or durable-operation projection. Raw MCP or HTTP
 envelopes, headers, Host metadata, user messages, credentials, WalletConnect
 material, and signing material are not snapshot input.
 
@@ -1304,6 +1317,21 @@ creation time, deadline where applicable, exact state, and the one result,
 failure, peer refusal, or empty terminal outcome admitted by that state.
 `initiatedBy` is provenance and never prevents an exact read or permitted
 Wallet cancellation from the other direct interface.
+
+Every stored operation consumes its domain row capacity under
+`docs/NUMERIC_POLICY.md#durable-operation-and-presentation-limits` and must fit
+the complete framed Local HTTP exact-result response. The MCP and CLI paths
+return that same admitted canonical operation and never reconstruct it from a
+summary, snapshot or cache projection.
+
+Token addition stores the exact inspection repeated at action time in its
+completed operation. If the produced operation exceeds its row capacity, the
+existing exclusive mutation rolls back and returns non-retryable
+`result_too_large`; no inspection, selection, selection-state revision or
+operation is committed. Token removal performs no inspection, so its completed
+operation carries `historicalInspection: null`. Public selection reads may
+independently project the latest retained inspection and do not change the
+removal operation.
 
 There is no general operation revision. Operation ID, immutable Review digest,
 exact expected state, and domain subject revision are the predecessor

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 
+import {
+  canonicalJsonStringify,
+  captureCanonicalJson,
+} from "../../src/core/index.js";
 import { createWalletFailure } from "../../src/wallet/errors.js";
 import {
   assertWalletOperationTransition,
@@ -11,6 +15,7 @@ import {
   parseWalletReview,
   walletOperationAllowsQr,
   walletOperationIdByteLength,
+  walletOperationInputLimits,
   walletReviewDigest,
   type WalletManagementOperation,
   type WalletNonterminalManagementOperation,
@@ -42,6 +47,7 @@ const connected = Object.freeze({
 const createReview = (
   kind: "connect" | "disconnect",
   id = operationId,
+  connectionRevision = "3",
 ): WalletReview => {
   const withoutDigest = kind === "connect"
     ? {
@@ -56,7 +62,7 @@ const createReview = (
           requiredMethods: ["eth_sendTransaction"] as const,
           requiredEvents: ["accountsChanged", "chainChanged"] as const,
         },
-        precondition: { connectionRevision: "3", connection: disconnected },
+        precondition: { connectionRevision, connection: disconnected },
         fixedEvidence: { sessionSourceIds: [] as const },
       }
     : {
@@ -68,7 +74,7 @@ const createReview = (
         actionExpiresAt,
         target: { chainId: "eip155:4663" },
         decision: { action: "disconnect_session" as const },
-        precondition: { connectionRevision: "3", connection: connected },
+        precondition: { connectionRevision, connection: connected },
         fixedEvidence: { sessionSourceIds: [sourceId] as const },
       };
   return parseWalletReview({
@@ -114,6 +120,84 @@ const qr = Object.freeze({
 });
 
 describe("wallet immutable Review and durable operation contracts", () => {
+  it("uses one exact canonical action envelope for decisions and cancellation", () => {
+    const byteLength = (value: unknown): number => Buffer.byteLength(
+      canonicalJsonStringify(captureCanonicalJson(value)),
+      "utf8",
+    );
+    const actionForRevisionDigits = (digitCount: number) => {
+      const review = createReview("connect", operationId, "9".repeat(digitCount));
+      return { review, initiatedBy: "mcp_app" as const };
+    };
+    const baselineAction = actionForRevisionDigits(1);
+    const exactAction = actionForRevisionDigits(1 + 16_384 - byteLength(baselineAction));
+    const overAction = actionForRevisionDigits(2 + 16_384 - byteLength(baselineAction));
+    expect(walletOperationInputLimits).toEqual({ actionUtf8Bytes: 16_384 });
+    expect(byteLength(exactAction)).toBe(16_384);
+    expect(byteLength(overAction)).toBe(16_385);
+    expect(parseWalletDirectAction(exactAction)).toEqual(exactAction);
+    expect(() => parseWalletDirectAction(overAction)).toThrow("canonical byte limit");
+
+    const cancellationForRevisionDigits = (digitCount: number) => ({
+      operationId,
+      reviewDigest: exactAction.review.reviewDigest,
+      expectedState: "starting_connection" as const,
+      connectionRevision: "9".repeat(digitCount),
+    });
+    const baselineCancellation = cancellationForRevisionDigits(1);
+    const exactCancellation = cancellationForRevisionDigits(
+      1 + 16_384 - byteLength(baselineCancellation),
+    );
+    const overCancellation = cancellationForRevisionDigits(
+      2 + 16_384 - byteLength(baselineCancellation),
+    );
+    expect(byteLength(exactCancellation)).toBe(16_384);
+    expect(byteLength(overCancellation)).toBe(16_385);
+    expect(parseWalletOperationCancellation(exactCancellation)).toEqual(exactCancellation);
+    expect(() => parseWalletOperationCancellation(overCancellation)).toThrow("canonical byte limit");
+
+    const projectedCancellation = {
+      operationId,
+      reviewDigest: exactAction.review.reviewDigest,
+      expectedState: "starting_connection" as const,
+      connectionRevision: exactAction.review.precondition.connectionRevision,
+    };
+    expect(byteLength(projectedCancellation)).toBeLessThan(16_384);
+    expect(parseWalletOperationCancellation(projectedCancellation)).toEqual(projectedCancellation);
+
+    const maximumIdentifiers = (prefix: "e" | "m") => Object.freeze(
+      Array.from({ length: 64 }, (_, index) =>
+        `${prefix}${String(index).padStart(2, "0")}_${"x".repeat(60)}`),
+    );
+    const maximumProductionOperation = parseWalletManagementOperation({
+      contractVersion: "1",
+      domain: "wallet",
+      operationId,
+      kind: "connect",
+      initiatedBy: "mcp_app",
+      review: exactAction.review,
+      state: "completed",
+      terminationTarget: null,
+      result: {
+        outcome: "connected",
+        connectionRevision: String(
+          BigInt(exactAction.review.precondition.connectionRevision) + 1n,
+        ),
+        connection: {
+          status: "connected",
+          address,
+          chainId: "eip155:4663",
+          approvedMethods: maximumIdentifiers("m"),
+          approvedEvents: maximumIdentifiers("e"),
+          expiresAt: "2026-07-15T00:00:00.000Z",
+        },
+      },
+      failure: null,
+      peerRefusalCode: null,
+    });
+    expect(byteLength(maximumProductionOperation)).toBeLessThan(65_535);
+  });
+
   it("binds every Review field into one digest and rejects changed structure", () => {
     const review = createReview("connect");
     expect(Object.isFrozen(review)).toBe(true);

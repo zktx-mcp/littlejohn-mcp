@@ -8,6 +8,10 @@ import {
   type CanonicalJson,
 } from "../../core/client.js";
 import {
+  internalCanonicalJsonResponseLimitBytes,
+  requestBodyLimitBytes,
+} from "../../runtime/http-limits.js";
+import {
   presentationSnapshotLimits,
   presentationSnapshotUnavailableReasons,
   type PresentationSnapshotRecord,
@@ -39,13 +43,18 @@ export const presentationSnapshotUriSchema = z.string().regex(
 );
 const positiveCanonicalDecimalSchema = z.string().regex(/^[1-9][0-9]*$/u);
 
+export const operationToolResultLimits = Object.freeze({
+  inputBytes: requestBodyLimitBytes,
+  resultBytes: internalCanonicalJsonResponseLimitBytes,
+} as const);
+
 export const operationToolResultDescriptorSchema = z.object({
   kind: z.literal("operation_tool_result_descriptor"),
   version: z.literal(1),
   toolName: z.string().min(1).max(64).regex(/^[a-z][a-z0-9]*(?:_[a-z0-9]+){2,}$/u),
-  inputUtf8Bytes: z.number().int().min(1).max(presentationSnapshotLimits.inputBytes),
+  inputUtf8Bytes: z.number().int().min(1).max(operationToolResultLimits.inputBytes),
   inputSha256: sha256HexSchema,
-  resultUtf8Bytes: z.number().int().min(1).max(presentationSnapshotLimits.resultBytes),
+  resultUtf8Bytes: z.number().int().min(1).max(operationToolResultLimits.resultBytes),
   resultSha256: sha256HexSchema,
   isError: z.boolean(),
 }).strict();

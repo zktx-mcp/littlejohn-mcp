@@ -47,7 +47,9 @@ import {
 export const walletOperationIdByteLength = operationIdByteLength;
 export const walletOperationIdSchema = operationIdSchema;
 export const walletReviewActionLifetimeMilliseconds = 300_000;
-export const walletDirectActionMaximumBytes = 16_384;
+export const walletOperationInputLimits = Object.freeze({
+  actionUtf8Bytes: 16_384,
+} as const);
 
 export const walletPeerRefusalCodes = Object.freeze([
   5000, 5001, 5002, 5003,
@@ -184,15 +186,23 @@ export const walletReviewResultSchema = z.discriminatedUnion("status", [
 ]);
 export type WalletReviewResult = z.infer<typeof walletReviewResultSchema>;
 
+const validateWalletOperationActionBytes = (
+  value: unknown,
+  context: z.core.$RefinementCtx,
+): void => {
+  const bytes = utf8ByteLength(canonicalJsonStringify(value as CanonicalJson));
+  if (bytes > walletOperationInputLimits.actionUtf8Bytes) {
+    context.addIssue({
+      code: "custom",
+      message: "Wallet operation action exceeds its canonical byte limit.",
+    });
+  }
+};
+
 export const walletDirectActionSchema = z.object({
   review: walletReviewSchema,
   initiatedBy: walletInitiatorSchema,
-}).strict().superRefine((value, context) => {
-  const bytes = utf8ByteLength(canonicalJsonStringify(value as unknown as CanonicalJson));
-  if (bytes > walletDirectActionMaximumBytes) {
-    context.addIssue({ code: "custom", message: "Wallet direct action exceeds its canonical byte limit." });
-  }
-});
+}).strict().superRefine(validateWalletOperationActionBytes);
 export type WalletDirectAction = z.infer<typeof walletDirectActionSchema>;
 
 const walletOperationFailureDefinitions = Object.freeze([
@@ -379,7 +389,7 @@ export const walletOperationCancellationSchema = z.object({
   reviewDigest: hash32Schema,
   expectedState: z.enum(["starting_connection", "awaiting_wallet_approval"] as const),
   connectionRevision: unsignedDecimalSchema,
-}).strict();
+}).strict().superRefine(validateWalletOperationActionBytes);
 export type WalletOperationCancellation = z.infer<typeof walletOperationCancellationSchema>;
 
 export const walletQrMatrixSizeLimits = Object.freeze({ minimum: 21, maximum: 177 } as const);

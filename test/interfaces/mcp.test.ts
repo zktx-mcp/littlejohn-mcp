@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   accountBalanceInputSchema,
   canonicalJsonStringify,
+  canonicalSha256,
   captureCanonicalJson,
   parseUtcTimestamp,
 } from "../../src/core/index.js";
@@ -35,7 +36,9 @@ import {
   admitMcpToolResultForDelivery,
 } from "../../src/interfaces/mcp-result.js";
 import {
+  admitOperationToolResultDescriptor,
   admitPresentationSnapshotResource,
+  operationToolResultMetadataKey,
   presentationSnapshotMetadataKey,
 } from "../../src/interfaces/mcp-app/contracts.js";
 import { createMcpAppResource } from "../../src/interfaces/mcp-app/server.js";
@@ -66,6 +69,7 @@ import {
   stockTokenTradeHistoryUnavailableFixture,
 } from
   "./stock-token-trade-history-fixture.js";
+import { createTokenOperation } from "../token-catalog/harness.js";
 
 const unusedSnapshotStore: PresentationSnapshotStore = Object.freeze({
   prepare: () => { throw new Error("Ordinary MCP must not prepare a snapshot."); },
@@ -521,6 +525,54 @@ describe("MCP binding projection", () => {
       },
     });
     expect(runtime.requests).toEqual([]);
+  });
+
+  it("rejects an oversized Wallet cancellation before invocation or descriptor construction", async () => {
+    const runtime = new FakeRuntime();
+    const { client } = await connectApp(runtime);
+    const result = await client.callTool({
+      name: "wallet_cancel_operation",
+      arguments: {
+        operationId: Buffer.alloc(32, 7).toString("base64url"),
+        reviewDigest: `0x${"8".repeat(64)}`,
+        expectedState: "awaiting_wallet_approval",
+        connectionRevision: `1${"0".repeat(16_384)}`,
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
+    });
+    expect(result._meta?.["littlejohn/operation-tool-result"]).toBeUndefined();
+    expect(runtime.requests).toEqual([]);
+  });
+
+  it("delivers one exact removal operation and binds its absent inspection in the descriptor", async () => {
+    const operation = await createTokenOperation({ kind: "remove" });
+    const runtime = new FakeRuntime(() => ({
+      status: 200,
+      body: captureCanonicalJson(operation),
+    }));
+    const { client } = await connectApp(runtime);
+    const result = await client.callTool({
+      name: "token_get_operation",
+      arguments: { operationId: operation.operationId },
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toEqual(operation);
+    expect((result.structuredContent as typeof operation)
+      .result.selection.historicalInspection).toBeNull();
+    const descriptor = admitOperationToolResultDescriptor(
+      result._meta?.[operationToolResultMetadataKey],
+    );
+    expect(descriptor.resultSha256).toBe(canonicalSha256(captureCanonicalJson(operation)));
+    expect(descriptor.resultUtf8Bytes).toBe(Buffer.byteLength(
+      canonicalJsonStringify(captureCanonicalJson(operation)),
+      "utf8",
+    ));
   });
 
   it("accepts only the canonical MCP tool-name grammar", () => {
