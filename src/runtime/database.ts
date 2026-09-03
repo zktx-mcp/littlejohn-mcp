@@ -1920,7 +1920,9 @@ export class ProductDatabase {
           item.verification.block.blockNumber !== verificationBlock.blockNumber ||
           item.verification.block.blockTimestamp !== verificationBlock.blockTimestamp
         )) throw new RuntimeOperationError("state_conflict");
-        const stateRevision = tokenSelectionSetRevisionSchema.parse(randomBytes(16).toString("base64url"));
+        const stateRevision = tokenSelectionSetRevisionSchema.parse(
+          randomBytes(tokenCatalogContractLimits.selectionRevisionBytes).toString("base64url"),
+        );
         if (currentState === undefined) {
           this.#database.prepare(`INSERT INTO wallet_token_selection_state(
             profile_id, chain_id, wallet_address, revision, defaults_initialized, created_at, updated_at
@@ -1943,7 +1945,9 @@ export class ProductDatabase {
             ON CONFLICT(chain_id, contract_address) DO NOTHING`).run(account.chainId, item.asset.address);
           this.#database.prepare(`INSERT INTO token_contract(chain_id, contract_address) VALUES (?, ?)
             ON CONFLICT(chain_id, contract_address) DO NOTHING`).run(account.chainId, item.asset.address);
-          const revision = tokenSelectionRevisionSchema.parse(randomBytes(16).toString("base64url"));
+          const revision = tokenSelectionRevisionSchema.parse(
+            randomBytes(tokenCatalogContractLimits.selectionRevisionBytes).toString("base64url"),
+          );
           this.#database.prepare(`INSERT INTO wallet_token_selection(
             profile_id, chain_id, wallet_address, token_address, included, revision, created_at, updated_at
           ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)`)

@@ -1270,10 +1270,10 @@ or restart behavior.
 
 A model-visible Review is immutable and performs no domain mutation or
 external effect. It contains one reserved, unstored operation ID, creation
-time, one server-owned action deadline exactly `300,000` milliseconds after
-creation, exact decision facts, fixed evidence anchors, one closed domain
-precondition value, and a domain-owned digest. Presentation may retain the
-already admitted Review under the snapshot contract; that cache write does
+time, one server-owned action deadline admitted by that domain's canonical
+operation contract, exact decision facts, fixed evidence anchors, one closed
+domain precondition value, and a domain-owned digest. Presentation may retain
+the already admitted Review under the snapshot contract; that cache write does
 not occupy an operation slot or grant action authority.
 
 An App-only call or interactive CLI decision carries the complete canonical

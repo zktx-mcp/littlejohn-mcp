@@ -146,6 +146,7 @@ describe("token selection durable operations", () => {
   it("keeps Review creation pure, commits mutation and terminal result together, and reopens the exact result", async () => {
     const state = await createState();
     const review = (await state.coordinator.review({ kind: "add", asset })).review;
+    expect(Date.parse(review.actionExpiresAt) - Date.parse(review.createdAt)).toBe(300_000);
 
     const before = new Database(state.path, { readonly: true });
     for (const table of [

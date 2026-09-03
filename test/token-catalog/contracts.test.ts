@@ -37,8 +37,11 @@ import {
   tokenInspectionDataSchema,
   tokenInspectionInputSchema,
   tokenInspectionSuccessSchema,
+  tokenOfficialSelectionEvidenceSchema,
+  tokenSelectionDirectActionSchema,
   tokenSelectionRevisionSchema,
   tokenSelectionSchema,
+  tokenSelectionSetRevisionSchema,
   type TokenCatalogOperation,
   type TokenCatalogOperationVariant,
   type TokenInspectionSuccess,
@@ -103,6 +106,24 @@ const selectionFor = (
   createdAt,
   updatedAt: createdAt,
 });
+
+const selectionPageEntries = (count: number): readonly TokenSelection[] => {
+  const chainId = `eip155:${"9".repeat(32)}`;
+  const accountAddress = `0x${"f".repeat(40)}`;
+  const timestamp = "9999-12-31T23:59:59.999Z";
+  return Array.from({ length: count }, (_, index) => tokenSelectionSchema.parse({
+    account: { chainId, address: accountAddress },
+    asset: {
+      kind: "erc20",
+      chainId,
+      address: `0x${(index + 1).toString(16).padStart(40, "0")}`,
+    },
+    included: index % 2 === 0,
+    revision: Buffer.alloc(16, index + 1).toString("base64url"),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  }));
+};
 
 type AdditionReview = Extract<TokenSelectionReview, { readonly kind: "add" }>;
 
@@ -617,6 +638,12 @@ describe("token catalog contracts", () => {
       limit: 25,
       cursor: null,
     });
+    expect(tokenCatalogApplicationContracts.selections.parseInput({ limit: 25 })).toEqual({
+      limit: 25,
+      cursor: null,
+    });
+    expect(() => tokenCatalogApplicationContracts.selections.parseInput({ limit: 26 }))
+      .toThrow();
     expect(tokenCatalogApplicationContracts.selectionChangeReview.parseInput({
       kind: "add",
       asset,
@@ -628,49 +655,124 @@ describe("token catalog contracts", () => {
     })).toThrow();
   });
 
-  it("uses exact opaque identifier sizes", () => {
+  it("uses exact selection revision and operation identifier sizes", () => {
     expect(tokenCatalogContractLimits).toEqual({
-      displayTextCodePoints: 128,
-      displayTextUtf8Bytes: 512,
       selectionRevisionBytes: 16,
-      operationIdBytes: 32,
       listDefaultLimit: 25,
       listMaximumLimit: 25,
       directActionUtf8Bytes: 32_768,
       reviewActionMilliseconds: 300_000,
     });
-    expect(tokenSelectionRevisionSchema.safeParse("A".repeat(22)).success).toBe(true);
-    expect(tokenSelectionRevisionSchema.safeParse("A".repeat(21)).success).toBe(false);
+    for (const schema of [tokenSelectionRevisionSchema, tokenSelectionSetRevisionSchema]) {
+      expect(schema.safeParse(Buffer.alloc(15).toString("base64url")).success).toBe(false);
+      expect(schema.safeParse(Buffer.alloc(16).toString("base64url")).success).toBe(true);
+      expect(schema.safeParse(Buffer.alloc(17).toString("base64url")).success).toBe(false);
+    }
     expect(tokenCatalogOperationIdSchema.safeParse("A".repeat(43)).success).toBe(true);
     expect(tokenCatalogOperationIdSchema.safeParse("A".repeat(44)).success).toBe(false);
   });
 
   it("keeps the actual maximum selection page within the compatible-process response limit", () => {
-    const chainId = `eip155:${"9".repeat(32)}`;
-    const maximumAddress = BigInt(`0x${"f".repeat(40)}`);
-    const timestamp = "9999-12-31T23:59:59.999Z";
-    const selections = Array.from({ length: tokenCatalogContractLimits.listMaximumLimit }, (_, index) =>
-      tokenSelectionSchema.parse({
-        account: { chainId, address: `0x${"f".repeat(40)}` },
-        asset: {
-          kind: "erc20",
-          chainId,
-          address: `0x${(maximumAddress - BigInt(
-            tokenCatalogContractLimits.listMaximumLimit - index - 1,
-          )).toString(16).padStart(40, "0")}`,
-        },
-        included: index % 2 === 0,
-        revision: Buffer.alloc(tokenCatalogContractLimits.selectionRevisionBytes, index + 1)
-          .toString("base64url"),
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      }));
+    const selections = selectionPageEntries(25);
     const page = tokenCatalogApplicationContracts.selections.parsePublicSuccess(
-      { limit: tokenCatalogContractLimits.listMaximumLimit, cursor: null },
+      { limit: 25, cursor: null },
       { selections, nextCursor: null },
     );
     expect(Buffer.byteLength(`${canonicalJsonStringify(captureCanonicalJson(page))}\n`, "utf8"))
       .toBeLessThanOrEqual(internalResponseLimitBytes);
+  });
+
+  it("admits 25 selection results and rejects 26 independently of request correlation", () => {
+    const schema = tokenCatalogApplicationContracts.selections.successSchema;
+    expect(schema.safeParse({ selections: selectionPageEntries(25), nextCursor: null }).success)
+      .toBe(true);
+    expect(schema.safeParse({ selections: selectionPageEntries(26), nextCursor: null }).success)
+      .toBe(false);
+  });
+
+  it("bounds the complete canonical direct action at 32,768 UTF-8 bytes", async () => {
+    const inspection = await createInspectionSuccess();
+    const baseReview = additionReviewFor(inspection);
+    const actionForRevisionDigits = (digitCount: number) => {
+      const { reviewDigest: _digest, ...withoutDigest } = baseReview;
+      const candidate = {
+        ...withoutDigest,
+        precondition: {
+          ...withoutDigest.precondition,
+          connectionRevision: "1".repeat(digitCount),
+        },
+      };
+      const review = parseTokenSelectionReview({
+        ...candidate,
+        reviewDigest: tokenSelectionReviewDigest(candidate),
+      });
+      const action = { review, initiatedBy: "mcp_app" as const };
+      return {
+        action,
+        byteLength: Buffer.byteLength(
+          canonicalJsonStringify(captureCanonicalJson(action)),
+          "utf8",
+        ),
+      };
+    };
+    const baseline = actionForRevisionDigits(1);
+    const exact = actionForRevisionDigits(1 + 32_768 - baseline.byteLength);
+    const over = actionForRevisionDigits(2 + 32_768 - baseline.byteLength);
+    expect(exact.byteLength).toBe(32_768);
+    expect(over.byteLength).toBe(32_769);
+    expect(tokenSelectionDirectActionSchema.parse(exact.action)).toEqual(exact.action);
+    expect(() => tokenSelectionDirectActionSchema.parse(over.action)).toThrow("too large");
+  });
+
+  it("owns the exact 300,000 millisecond Review action lifetime", async () => {
+    const inspection = await createInspectionSuccess();
+    const baseReview = additionReviewFor(inspection);
+    const reviewAtOffset = (offsetMilliseconds: number) => {
+      const { reviewDigest: _digest, ...withoutDigest } = baseReview;
+      const candidate = {
+        ...withoutDigest,
+        actionExpiresAt: new Date(
+          Date.parse(withoutDigest.createdAt) + 300_000 + offsetMilliseconds,
+        ).toISOString(),
+      };
+      return {
+        ...candidate,
+        reviewDigest: tokenSelectionReviewDigest(candidate),
+      };
+    };
+    expect(() => parseTokenSelectionReview(reviewAtOffset(0))).not.toThrow();
+    expect(() => parseTokenSelectionReview(reviewAtOffset(-1))).toThrow("inconsistent");
+    expect(() => parseTokenSelectionReview(reviewAtOffset(1))).toThrow("inconsistent");
+  });
+
+  it("consumes the Official Asset revision contract in both Review fields", async () => {
+    const inspection = await createInspectionSuccess();
+    const exactRevision = Buffer.alloc(16, 3).toString("base64url");
+    const officialEvidence = {
+      assetUid: parseHash32(`0x${"56".repeat(32)}`),
+      snapshotRevision: exactRevision,
+      verificationBlock: inspection.data.analysis.block,
+    };
+    expect(() => tokenOfficialSelectionEvidenceSchema.parse(officialEvidence)).not.toThrow();
+    const review = additionReviewFor(
+      inspection,
+      tokenOfficialSelectionEvidenceSchema.parse(officialEvidence),
+    );
+    const { reviewDigest: _digest, ...withoutDigest } = review;
+    for (const byteLength of [15, 17]) {
+      const revision = Buffer.alloc(byteLength, 3).toString("base64url");
+      expect(() => tokenOfficialSelectionEvidenceSchema.parse({
+        ...officialEvidence,
+        snapshotRevision: revision,
+      })).toThrow();
+      expect(() => tokenSelectionReviewDigest({
+        ...withoutDigest,
+        fixedEvidence: {
+          ...withoutDigest.fixedEvidence,
+          officialSnapshotRevision: revision,
+        },
+      })).toThrow();
+    }
   });
 
   it("rejects accessor, proxy, and additional-field inputs before authority use", () => {

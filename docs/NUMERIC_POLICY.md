@@ -294,6 +294,25 @@ Equal Token Catalog, Account, RPC or Local HTTP values do not merge these
 contracts. Source authority remains in `docs/EVIDENCE_POLICY.md` and integration
 and lifecycle ownership remains in `docs/ARCHITECTURE.md`.
 
+## Token Catalog Limits
+
+Token selection applies these independent current boundaries:
+
+| Boundary | Current value | Unit | Failure | Change meaning |
+| --- | ---: | --- | --- | --- |
+| selection and selection-set revision | `16` | random bytes encoded as canonical unpadded Base64url | invalid width is a local contract or persistence failure | changes optimistic selection identity, set identity and stored correlation, not Official Asset revision meaning |
+| omitted selection-list limit | `25` | selections | omitted input normalizes to `25` | changes default page demand only and cannot exceed the maximum |
+| selection-list maximum | `25` | selections per request and result page | excess request input is `invalid_input`; an excess produced result is invalid and is not published | changes request, result and bounded persistence-query capacity |
+| direct selection action | `32,768` | UTF-8 bytes of complete canonical JSON | excess direct input is `invalid_input` before operation lookup, state comparison or mutation | changes only the Token Catalog direct-decision envelope, not the Local HTTP request-body limit |
+| Token Catalog Review action lifetime | `300,000` | milliseconds from `createdAt` to `actionExpiresAt` | another interval is an invalid Review; an unacted Review at or after expiry is `token_review_expired` | changes the Token Catalog decision window and commitment, not Wallet Review or owner-session timing |
+
+The canonical Token Catalog contract owns these values, their schemas and
+their state meaning. Selection and selection-set revisions share one width
+because they identify the item and collection sides of the same selection
+state transition. Official Asset revisions, Core display text and operation
+IDs, Account Asset pages, Wallet Reviews, Local HTTP transport, presentation
+results and persisted-operation envelopes retain their separate owners.
+
 ## Runtime Support Manifest Limits
 
 Runtime support-manifest construction applies these separate private

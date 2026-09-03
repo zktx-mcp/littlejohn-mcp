@@ -478,6 +478,9 @@ describe("token selection persistence", () => {
       now,
     });
     expect(initialized.state.defaultsInitialized).toBe(true);
+    expect(Buffer.from(initialized.state.revision, "base64url")).toHaveLength(16);
+    expect(initialized.selections.every((entry) =>
+      Buffer.from(entry.revision, "base64url").byteLength === 16)).toBe(true);
     expect(initialized.selections.map((entry) => entry.asset.address)).toEqual(
       defaultStockTokenManifest.assets.map((entry) => entry.contractAddress),
     );

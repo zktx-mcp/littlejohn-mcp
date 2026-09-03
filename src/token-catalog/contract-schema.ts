@@ -38,14 +38,12 @@ import {
   parseHash32,
   projectZodJsonSchema,
   observationIdSchema,
-  operationIdByteLength,
   operationIdSchema,
   optionalTokenTextSchema,
   readCapabilityLimits,
   replayPublicEvidence,
   staticScopeExclusionSchema,
   availableTokenTextSchema,
-  tokenDisplayTextLimits,
   tokenDisplayTextSchema,
   tokenMetadataDecimalsReadFailureReasonSchema,
   tokenStandardObservationResultSchema,
@@ -74,12 +72,13 @@ import {
   type TokenStandardObservationStatus,
 } from "../core/client.js";
 import { tokenCatalogErrorRegistry } from "./error-registry.js";
-import type {
-  OfficialAssetSnapshotRevision,
-  OfficialAssetSourceMember,
-  OfficialAssetSourceUnavailableReason,
-  StockFactoryVerification,
-  StockFactoryClassificationUnavailableReason,
+import {
+  officialAssetSnapshotRevisionSchema,
+  type OfficialAssetSnapshotRevision,
+  type OfficialAssetSourceMember,
+  type OfficialAssetSourceUnavailableReason,
+  type StockFactoryVerification,
+  type StockFactoryClassificationUnavailableReason,
 } from "../registry/client.js";
 import {
   tokenCatalogInitiators,
@@ -91,10 +90,7 @@ import {
 } from "./state.js";
 
 export const tokenCatalogContractLimits = Object.freeze({
-  displayTextCodePoints: tokenDisplayTextLimits.codePoints,
-  displayTextUtf8Bytes: tokenDisplayTextLimits.utf8Bytes,
   selectionRevisionBytes: 16,
-  operationIdBytes: operationIdByteLength,
   listDefaultLimit: 25,
   listMaximumLimit: 25,
   directActionUtf8Bytes: 32_768,
@@ -972,7 +968,7 @@ export type TokenSelectionState = z.infer<typeof tokenSelectionStateSchema>;
 
 export const tokenOfficialSelectionEvidenceSchema = z.object({
   assetUid: hash32Schema,
-  snapshotRevision: canonicalBase64UrlSchema(16),
+  snapshotRevision: officialAssetSnapshotRevisionSchema,
   verificationBlock: chainAnchorSchema,
 }).strict();
 export type TokenOfficialSelectionEvidence = z.infer<typeof tokenOfficialSelectionEvidenceSchema>;
@@ -1047,7 +1043,7 @@ const additionReviewWithoutDigestSchema = z.object({
   }).strict(),
   fixedEvidence: z.object({
     inspectionBlock: chainAnchorSchema,
-    officialSnapshotRevision: canonicalBase64UrlSchema(16),
+    officialSnapshotRevision: officialAssetSnapshotRevisionSchema,
     officialEvidence: tokenOfficialSelectionEvidenceSchema.nullable(),
   }).strict(),
 }).strict();
