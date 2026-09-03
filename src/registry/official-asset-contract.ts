@@ -141,7 +141,11 @@ export const officialAssetSourceSnapshotSchema = jsonObject(
 });
 export type OfficialAssetSourceSnapshot = z.infer<typeof officialAssetSourceSnapshotSchema>;
 
-export const officialAssetSnapshotRevisionSchema = canonicalBase64UrlSchema(16)
+export const officialAssetSnapshotRevisionByteLength = 16 as const;
+
+export const officialAssetSnapshotRevisionSchema = canonicalBase64UrlSchema(
+  officialAssetSnapshotRevisionByteLength,
+)
   .brand("OfficialAssetSnapshotRevision");
 export type OfficialAssetSnapshotRevision = z.infer<
   typeof officialAssetSnapshotRevisionSchema

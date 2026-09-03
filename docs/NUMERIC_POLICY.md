@@ -274,6 +274,26 @@ operation-observation and persistence limits remain separate contracts when
 their values are equal. Complete first-response observation and recovery retain
 their independently owned lifecycle bounds in `docs/ARCHITECTURE.md`.
 
+## Official Asset Limits
+
+Official Stock Token observation applies these independent current boundaries:
+
+| Boundary | Current value | Unit | Failure | Change meaning |
+| --- | ---: | --- | --- | --- |
+| normalized official members | `512` | members per complete snapshot | excess provider membership is `source_inconsistent` and produces no snapshot | changes official membership admission and every direct bounded projection |
+| snapshot revision | `16` | random bytes encoded as canonical unpadded Base64url | invalid width is a local contract or persistence failure and never source evidence | changes stored revision, cursor and evidence-correlation contracts |
+| provider deployments | `8` | deployments per source asset | excess is `source_inconsistent` | changes only provider-response admission |
+| provider response | `1,048,576` | bytes after HTTP content decoding | declared or cumulative streamed excess is `official_asset_response_too_large` before copying or parsing the overflowing result | changes provider memory and response admission |
+| provider response deadline | `10,000` | milliseconds for fetch plus complete body | expiry is `official_asset_response_unavailable`; caller abort remains `request_aborted` | changes provider resource lifetime and failure timing |
+| StockFactory verification concurrency | `5` | member verifications in flight per `verifyManyAtBlock` call | no partial result is published | changes Chain scheduling and RPC pressure, not the process-wide requester maximum or evidence meaning |
+
+The canonical Registry contract owns member and snapshot-revision admission.
+The Robinhood source adapter privately owns deployment, response-byte and
+deadline limits. Chain privately owns StockFactory verification scheduling.
+Equal Token Catalog, Account, RPC or Local HTTP values do not merge these
+contracts. Source authority remains in `docs/EVIDENCE_POLICY.md` and integration
+and lifecycle ownership remains in `docs/ARCHITECTURE.md`.
+
 ## Runtime Support Manifest Limits
 
 Runtime support-manifest construction applies these separate private

@@ -98,7 +98,7 @@ describe("official asset source", () => {
   it("rejects every incomplete or ambiguous complete-set shape", async () => {
     const invalidResponses = [
       { assets: [] },
-      { assets: [asset(1), asset(1)] },
+      { assets: [asset(1), asset(2, { id: uid(1) })] },
       { assets: [asset(1), asset(2, { deployments: [{ chainId: productChainNumericId, contractAddress: address(1) }] })] },
       { assets: [asset(1, { status: "ASSET_STATUS_INACTIVE" })] },
       { assets: [asset(1, { deployments: [{ chainId: 1, contractAddress: address(1) }] })] },
@@ -144,6 +144,26 @@ describe("official asset source", () => {
     );
   });
 
+  it("admits eight provider deployments and rejects nine", async () => {
+    const deployments = Array.from({ length: 8 }, (_, index) => ({
+      chainId: index === 0 ? productChainNumericId : index,
+      contractAddress: address(index + 1),
+    }));
+    await expect(readSnapshot(bytes({ assets: [asset(1, { deployments })] })))
+      .resolves.toMatchObject({ members: [{ contractAddress: address(1) }] });
+    await expect(createRobinhoodOfficialAssetSourceClient({
+      fetch: (async () => new Response(bytes({
+        assets: [asset(1, { deployments: [...deployments, {
+          chainId: 9,
+          contractAddress: address(9),
+        }] })],
+      }), { status: 200, headers: { "content-type": "application/json" } })) as typeof globalThis.fetch,
+    }).read(new AbortController().signal)).resolves.toEqual({
+      status: "unavailable",
+      reason: "source_inconsistent",
+    });
+  });
+
   it("owns the exact HTTP request and response boundary", async () => {
     const fetchFn = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       expect(input).toBe(expectedSourceUri);
@@ -183,10 +203,6 @@ describe("official asset source", () => {
           "content-length": String(expectedResponseByteLimit + 1),
         },
       }), "official_asset_response_too_large"],
-      [new Response(new Uint8Array(expectedResponseByteLimit + 1), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }), "official_asset_response_too_large"],
     ] as const;
     for (const [response, reason] of cases) {
       const client = createRobinhoodOfficialAssetSourceClient({
@@ -197,6 +213,36 @@ describe("official asset source", () => {
         reason,
       });
     }
+  });
+
+  it("applies the response limit cumulatively across individually admitted chunks", async () => {
+    const json = bytes({ assets: [asset(1)] });
+    const first = Buffer.concat([
+      Buffer.from(json),
+      Buffer.alloc(expectedResponseByteLimit - 1 - json.byteLength, 0x20),
+    ]);
+    expect(first.byteLength).toBe(expectedResponseByteLimit - 1);
+    const read = (tailBytes: number) => createRobinhoodOfficialAssetSourceClient({
+      fetch: (async () => {
+        const chunks = [first, Buffer.alloc(tailBytes, 0x20)];
+        let index = 0;
+        return new Response(new ReadableStream<Uint8Array>({
+          pull(controller) {
+            const chunk = chunks[index];
+            index += 1;
+            if (chunk === undefined) controller.close();
+            else controller.enqueue(chunk);
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }) as typeof globalThis.fetch,
+      now: () => new Date(observedAt),
+    }).read(new AbortController().signal);
+
+    await expect(read(1)).resolves.toMatchObject({ status: "observed" });
+    await expect(read(2)).resolves.toEqual({
+      status: "unavailable",
+      reason: "official_asset_response_too_large",
+    });
   });
 
   it("enforces the whole-response deadline even when the transport never settles", async () => {
@@ -244,8 +290,21 @@ describe("official asset source", () => {
   });
 
   it("rejects invalid UTF-8, truncated JSON, and caller cancellation without a snapshot", async () => {
+    const labelMarker = "valid-label";
+    const validLabelBody = Buffer.from(JSON.stringify({
+      assets: [asset(1, { tokenName: labelMarker })],
+    }), "utf8");
+    const markerOffset = validLabelBody.indexOf(labelMarker);
+    const invalidUtf8Body = Buffer.concat([
+      validLabelBody.subarray(0, markerOffset),
+      Buffer.from([0xff]),
+      validLabelBody.subarray(markerOffset + labelMarker.length),
+    ]);
+    expect(JSON.parse(new TextDecoder().decode(invalidUtf8Body))).toMatchObject({
+      assets: [{ tokenName: "�" }],
+    });
     for (const body of [
-      new Uint8Array([0xc3, 0x28]),
+      invalidUtf8Body,
       Buffer.from('{"assets":[', "utf8"),
     ]) {
       const client = createRobinhoodOfficialAssetSourceClient({

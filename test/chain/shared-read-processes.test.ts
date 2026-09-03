@@ -430,6 +430,73 @@ describe("shared chain read processes", () => {
     await lifecycle.close();
   });
 
+  it("bounds StockFactory member verification concurrency and preserves order", async () => {
+    const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
+    const issuanceRpc = new RecordingRpc((method) => method === "eth_chainId"
+      ? "0x1237"
+      : { number: "0x2c", hash: blockHash, timestamp: "0x687787a4" });
+    const members = Array.from({ length: 6 }, (_, index) =>
+      officialAssetSourceMemberSchema.parse({
+        assetUid: parseHash32(`0x${(index + 1).toString(16).padStart(64, "0")}`),
+        contractAddress: `0x${(index + 1).toString(16).padStart(40, "0")}`,
+      }));
+    let active = 0;
+    let maximumActive = 0;
+    let markFiveStarted!: () => void;
+    const fiveStarted = new Promise<void>((resolve) => { markFiveStarted = resolve; });
+    let releaseFive!: () => void;
+    const fiveRelease = new Promise<void>((resolve) => { releaseFive = resolve; });
+    let initializationCodeReads = 0;
+    const stateRpc: RpcRequester = {
+      async request(method, params) {
+        if (method === "eth_getStorageAt") {
+          return `0x${"0".repeat(24)}${stockFactoryAdmissionManifest.implementationAddress.slice(2)}`;
+        }
+        if (method === "eth_getCode") {
+          initializationCodeReads += 1;
+          if (initializationCodeReads === 1) return stockFactoryProxyCodeFixture;
+          if (initializationCodeReads === 2) return stockFactoryImplementationCodeFixture;
+          return "0x01";
+        }
+        if (method === "eth_call") {
+          const data = (params[0] as { readonly data: string }).data;
+          const member = members.find((candidate) => data.endsWith(candidate.assetUid.slice(2)));
+          if (member === undefined) throw new TypeError("Unexpected StockFactory member call.");
+          active += 1;
+          maximumActive = Math.max(maximumActive, active);
+          if (active === 5) markFiveStarted();
+          try {
+            if (members.indexOf(member) < 5) await fiveRelease;
+            return `0x${"0".repeat(24)}${member.contractAddress.slice(2)}`;
+          } finally {
+            active -= 1;
+          }
+        }
+        throw new TypeError(`Unexpected StockFactory RPC method: ${method}.`);
+      },
+    };
+    const port = createOfficialAssetChainReadPort({ rpc: stateRpc, chainId, lifecycle });
+
+    await lifecycle.run(new AbortController().signal, async (context) => {
+      const block = await resolveConfiguredCanonicalBlock({
+        rpc: issuanceRpc,
+        chainId,
+        selector: { kind: "number", blockNumber: parseUnsignedDecimal("44") },
+        context,
+      });
+      const pending = port.verifyManyAtBlock(members, block, context);
+      await fiveStarted;
+      expect(active).toBe(5);
+      releaseFive();
+      const results = await pending;
+      expect(results.map((result) => result.member)).toEqual(members);
+      expect(results.every((result) => result.status === "verified")).toBe(true);
+    });
+    expect(maximumActive).toBe(5);
+    expect(active).toBe(0);
+    await lifecycle.close();
+  });
+
   it("bounds nested account-asset RPC work below the process-wide requester limit", async () => {
     const lifecycle = createChainInvocationLifecycle(new AbortController().signal);
     const issuanceRpc = new RecordingRpc((method) => method === "eth_chainId"

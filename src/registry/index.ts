@@ -5,6 +5,7 @@ export {
   findOfficialAssetMember,
   officialAssetCandidateSchema,
   officialAssetSnapshotEvidenceSchema,
+  officialAssetSnapshotRevisionByteLength,
   officialAssetSnapshotRevisionSchema,
   officialAssetSourceClassificationUnavailableReasons,
   officialAssetSourceClassificationUnavailableReasonSchema,

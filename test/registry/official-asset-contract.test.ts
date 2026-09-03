@@ -17,6 +17,7 @@ import {
   officialAssetCandidateSchema,
   officialAssetMemberSetDigest,
   officialAssetSnapshotEvidenceSchema,
+  officialAssetSnapshotRevisionByteLength,
   officialAssetSnapshotRevisionSchema,
   officialAssetSourceDefinition,
   projectOfficialAssetSnapshotEvidence,
@@ -61,6 +62,19 @@ describe("official asset contract", () => {
     });
     expect(Object.isFrozen(officialAssetSourceDefinition)).toBe(true);
     expect(Object.isFrozen(stockFactoryAdmissionManifest)).toBe(true);
+  });
+
+  it("owns the exact official snapshot revision width", () => {
+    expect(officialAssetSnapshotRevisionByteLength).toBe(16);
+    expect(() => officialAssetSnapshotRevisionSchema.parse(
+      Buffer.alloc(15).toString("base64url"),
+    )).toThrow();
+    expect(officialAssetSnapshotRevisionSchema.parse(
+      Buffer.alloc(16).toString("base64url"),
+    )).toBe(Buffer.alloc(16).toString("base64url"));
+    expect(() => officialAssetSnapshotRevisionSchema.parse(
+      Buffer.alloc(17).toString("base64url"),
+    )).toThrow();
   });
 
   it("preserves the independent official-candidate schema projection", () => {

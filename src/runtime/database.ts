@@ -41,6 +41,7 @@ import {
   assertOfficialAssetSourceMember,
   defaultStockTokenManifest,
   findOfficialAssetMember,
+  officialAssetSnapshotRevisionByteLength,
   officialAssetSnapshotRevisionSchema,
   stockFactoryVerificationSchema,
   type CommittedOfficialAssetSnapshot,
@@ -1685,7 +1686,9 @@ export class ProductDatabase {
           current.memberSetDigest === snapshot.memberSetDigest &&
           current.candidateListDigest === snapshot.candidateListDigest
           ? current.revision
-          : officialAssetSnapshotRevisionSchema.parse(randomBytes(16).toString("base64url"));
+          : officialAssetSnapshotRevisionSchema.parse(
+              randomBytes(officialAssetSnapshotRevisionByteLength).toString("base64url"),
+            );
         this.#database.prepare("DELETE FROM robinhood_asset WHERE chain_id = ?")
           .run(snapshot.chainId);
         this.#database.prepare(`INSERT INTO robinhood_asset_snapshot(

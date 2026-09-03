@@ -12,7 +12,10 @@ import {
   tokenCatalogInitiators,
   tokenCatalogOperationKinds,
 } from "../token-catalog/state.js";
-import { officialAssetSourceDefinition } from "../registry/official-asset-contract.js";
+import {
+  officialAssetSnapshotRevisionByteLength,
+  officialAssetSourceDefinition,
+} from "../registry/official-asset-contract.js";
 import {
   runtimeConfigurationMacByteLength,
   runtimeIdentifierByteLength,
@@ -136,6 +139,9 @@ export const canonicalSha256HexSqlCheck = (columnInput: string): string => {
 export const canonicalSelectionRevisionSqlCheck = (columnInput: string): string =>
   canonicalBase64UrlSqlCheck(columnInput, tokenCatalogContractLimits.selectionRevisionBytes);
 
+export const canonicalOfficialAssetSnapshotRevisionSqlCheck = (columnInput: string): string =>
+  canonicalBase64UrlSqlCheck(columnInput, officialAssetSnapshotRevisionByteLength);
+
 export const canonicalJsonObjectSqlCheck = (columnInput: string): string => {
   const column = sqlColumn(columnInput);
   return `(${canonicalSqlTextCheck(column)} AND length(CAST(${column} AS BLOB)) BETWEEN 2 AND 65536 AND ` +
@@ -202,7 +208,7 @@ CREATE TABLE robinhood_asset_snapshot (
   raw_response_digest TEXT NOT NULL CHECK (${canonicalHash32SqlCheck("raw_response_digest")}),
   member_set_digest TEXT NOT NULL CHECK (${canonicalHash32SqlCheck("member_set_digest")}),
   candidate_list_digest TEXT NOT NULL CHECK (${canonicalHash32SqlCheck("candidate_list_digest")}),
-  revision TEXT NOT NULL CHECK (${canonicalSelectionRevisionSqlCheck("revision")}),
+  revision TEXT NOT NULL CHECK (${canonicalOfficialAssetSnapshotRevisionSqlCheck("revision")}),
   updated_at TEXT NOT NULL CHECK (${canonicalSqlTextCheck("updated_at")}),
   FOREIGN KEY (chain_id) REFERENCES chain(chain_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 ) STRICT, WITHOUT ROWID;

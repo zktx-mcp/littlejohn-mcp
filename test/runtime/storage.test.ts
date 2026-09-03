@@ -68,6 +68,7 @@ import {
   parseRuntimeRevision,
 } from "../../src/runtime/runtime-identity.js";
 import {
+  canonicalOfficialAssetSnapshotRevisionSqlCheck,
   canonicalSelectionRevisionSqlCheck,
   canonicalRuntimeConfigurationMacSqlCheck,
   canonicalRuntimeIdentifierSqlCheck,
@@ -1125,6 +1126,7 @@ describe("SQLite product state", () => {
     const base64UrlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     const checks = [
       { byteLength: 16, check: canonicalRuntimeIdentifierSqlCheck },
+      { byteLength: 16, check: canonicalOfficialAssetSnapshotRevisionSqlCheck },
       { byteLength: 16, check: canonicalSelectionRevisionSqlCheck },
       { byteLength: 32, check: canonicalRuntimeConfigurationMacSqlCheck },
     ] as const;
